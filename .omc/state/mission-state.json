@@ -1,0 +1,177 @@
+{
+  "updatedAt": "2026-03-21T20:27:06.891Z",
+  "missions": [
+    {
+      "id": "session:dde9ed50-0674-4b21-a292-67dc9acb1c40:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-03-21T16:08:20.643Z",
+      "updatedAt": "2026-03-21T20:27:06.891Z",
+      "status": "done",
+      "workerCount": 11,
+      "taskCounts": {
+        "total": 11,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 0,
+        "completed": 11,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "explore:ad8ccc6",
+          "role": "explore",
+          "ownership": "ad8ccc60dd9401182",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:08:46.946Z"
+        },
+        {
+          "name": "scientist:ab3cd95",
+          "role": "scientist",
+          "ownership": "ab3cd9597d2934736",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:25:47.055Z"
+        },
+        {
+          "name": "scientist:a38791c",
+          "role": "scientist",
+          "ownership": "a38791c3a5a07b075",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:26:13.362Z"
+        },
+        {
+          "name": "scientist:a3115b4",
+          "role": "scientist",
+          "ownership": "a3115b4af2b82a9cb",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:27:48.572Z"
+        },
+        {
+          "name": "scientist:ab94059",
+          "role": "scientist",
+          "ownership": "ab94059412033751d",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:28:20.393Z"
+        },
+        {
+          "name": "scientist:a76713c",
+          "role": "scientist",
+          "ownership": "a76713cdbf6ecf1ad",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:25:53.474Z"
+        },
+        {
+          "name": "scientist:a72cd7b",
+          "role": "scientist",
+          "ownership": "a72cd7bd52959c8a2",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:29:07.011Z"
+        },
+        {
+          "name": "scientist:ab6e5f6",
+          "role": "scientist",
+          "ownership": "ab6e5f605669ac698",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T20:23:23.619Z"
+        },
+        {
+          "name": "scientist:aea8404",
+          "role": "scientist",
+          "ownership": "aea84049e1a143b0f",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T16:26:00.436Z"
+        },
+        {
+          "name": "analyst:ac92db0",
+          "role": "analyst",
+          "ownership": "ac92db0dcd776a497",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T20:25:01.671Z"
+        },
+        {
+          "name": "analyst:a34655b",
+          "role": "analyst",
+          "ownership": "a34655b0504106a23",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-03-21T20:27:06.891Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-stop:ab6e5f605669ac698:2026-03-21T20:23:23.619Z",
+          "at": "2026-03-21T20:23:23.619Z",
+          "kind": "completion",
+          "agent": "scientist:ab6e5f6",
+          "detail": "completed",
+          "sourceKey": "session-stop:ab6e5f605669ac698"
+        },
+        {
+          "id": "session-start:ac92db0dcd776a497:2026-03-21T20:24:10.813Z",
+          "at": "2026-03-21T20:24:10.813Z",
+          "kind": "update",
+          "agent": "analyst:ac92db0",
+          "detail": "started analyst:ac92db0",
+          "sourceKey": "session-start:ac92db0dcd776a497"
+        },
+        {
+          "id": "session-start:a34655b0504106a23:2026-03-21T20:24:24.932Z",
+          "at": "2026-03-21T20:24:24.932Z",
+          "kind": "update",
+          "agent": "analyst:a34655b",
+          "detail": "started analyst:a34655b",
+          "sourceKey": "session-start:a34655b0504106a23"
+        },
+        {
+          "id": "session-stop:ac92db0dcd776a497:2026-03-21T20:25:01.671Z",
+          "at": "2026-03-21T20:25:01.671Z",
+          "kind": "completion",
+          "agent": "analyst:ac92db0",
+          "detail": "completed",
+          "sourceKey": "session-stop:ac92db0dcd776a497"
+        },
+        {
+          "id": "session-stop:a34655b0504106a23:2026-03-21T20:27:06.891Z",
+          "at": "2026-03-21T20:27:06.891Z",
+          "kind": "completion",
+          "agent": "analyst:a34655b",
+          "detail": "completed",
+          "sourceKey": "session-stop:a34655b0504106a23"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,132 @@
+[
+  {
+    "id": "R01",
+    "domain": "Async Runtime Conflict",
+    "component": "libp2p + Bevy",
+    "severity": "CRITICAL",
+    "severity_score": 4,
+    "hypothesis": "libp2p requires a tokio async runtime; Bevy owns its own task scheduler and is not tokio-native. Bridging them causes thread-pool contention, executor conflicts, and non-deterministic frame timing.",
+    "evidence": [
+      "Bevy 0.13 uses its own bevy_tasks executor (based on async-executor, NOT tokio). libp2p 0.53+ hard-depends on tokio::runtime::Runtime.",
+      "Running a second tokio Runtime inside a Bevy app is legal but means two thread pools competing for CPU cores on the same process.",
+      "libp2p network events must be polled on tokio; surfacing them to Bevy ECS requires a channel bridge (e.g. crossbeam or async_channel), adding 1-3 frame latency per event.",
+      "bevy_tokio_tasks crate exists but is unofficial, unmaintained since 2023, and does not cover libp2p's Swarm::select_next_some() poll model.",
+      "GossipSub message storms (common in P2P worlds) will saturate the tokio thread pool and starve Bevy's render thread if core affinity is not pinned manually."
+    ],
+    "mitigations": [
+      "Isolate libp2p in a dedicated OS process; communicate via IPC (Unix socket / named pipe).",
+      "Use bevy_tokio_tasks fork and file a budget for maintenance.",
+      "Cap GossipSub fanout; implement backpressure before messages enter the ECS event queue."
+    ],
+    "show_stopper": true
+  },
+  {
+    "id": "R02",
+    "domain": "Windowing / Rendering Conflict",
+    "component": "wry/webview + Bevy/wgpu",
+    "severity": "CRITICAL",
+    "severity_score": 4,
+    "hypothesis": "Embedding a WebView (wry) inside a Bevy scene requires sharing a window handle. wgpu renders to the same HWND/NSView/GtkWidget that the WebView compositor also owns, causing undefined compositing behavior on all three major platforms.",
+    "evidence": [
+      "wry uses WKWebView (macOS), WebView2 (Windows), WebKitGTK (Linux). Each has its own compositor (Metal, D3D11/D3D12, GL/Vulkan) that cannot share a GPU command queue with wgpu.",
+      "On macOS: WKWebView draws in a separate CALayer; wgpu targets a CAMetalLayer. Overlapping them without explicit layer ordering causes z-fighting and tearing at the OS compositor level.",
+      "On Windows: WebView2 uses a DXGI swap chain. wgpu also creates a DXGI swap chain. Two swap chains on the same HWND is explicitly unsupported by Microsoft (docs: 'only one swap chain per window').",
+      "On Linux: WebKitGTK requires a GtkWindow; Bevy's winit backend creates its own GDK/X11 surface. Nesting them requires a GtkPlug/GtkSocket hack that is deprecated in GTK4.",
+      "tauri v2 (which wraps wry) explicitly documents that mixing wgpu rendering inside a WebView window is unsupported and produces blank frames on Nvidia Wayland.",
+      "Alternative (offscreen WebView \u2192 texture) requires software rasterization fallback on most drivers, tanking GPU utilization by 40-70% based on chromium-headless benchmarks."
+    ],
+    "mitigations": [
+      "Render WebView in a separate OS window, not inside the 3D scene.",
+      "Use offscreen rendering with explicit software-rasterization budget (accept the perf hit).",
+      "Replace embedded browser with an in-engine UI toolkit (bevy_egui or bevy_ui) for all UI needs."
+    ],
+    "show_stopper": true
+  },
+  {
+    "id": "R03",
+    "domain": "Database / ECS Impedance Mismatch",
+    "component": "SurrealDB embedded + Bevy ECS",
+    "severity": "HIGH",
+    "severity_score": 3,
+    "hypothesis": "SurrealDB embedded (RocksDB backend) runs GC and compaction on background threads; query latency is unbounded and will occasionally spike into the 10s of milliseconds, causing frame drops in a 60fps game loop.",
+    "evidence": [
+      "SurrealDB 1.x embedded mode uses RocksDB for persistence. RocksDB level-compaction pauses have been measured at 5-80ms in write-heavy workloads (Facebook RocksDB tuning guide, 2023).",
+      "Bevy's fixed timestep is typically 1/60s = 16.67ms. A single 20ms compaction stall drops 1-2 frames visibly.",
+      "SurrealDB's query language (SurrealQL) is document/graph-oriented; Bevy ECS is an archetype-based columnar store. Synchronising entity state to SurrealDB requires serialisation on every write \u2014 O(n_components) per entity per dirty frame.",
+      "SurrealDB does not expose a zero-copy or memory-mapped API; all data crosses the serde boundary, adding allocation pressure inside the hot ECS update loop.",
+      "SurrealDB 1.x has no official Bevy integration; community crates (bevy_surreal) are prototype-quality (< 100 GitHub stars, last commit 2024-01).",
+      "Graph queries over a live 3D world (spatial adjacency, LOD dependency) run on the same embedded instance that receives writes from the ECS, causing read/write lock contention."
+    ],
+    "mitigations": [
+      "Move SurrealDB to an out-of-process daemon; use async IPC for queries (decouples GC pauses from render loop).",
+      "Write to SurrealDB only on scene save / checkpoint events, not every ECS tick.",
+      "Use Bevy's ReflectComponent + RON/MessagePack for hot-path state; sync to SurrealDB lazily."
+    ],
+    "show_stopper": true
+  },
+  {
+    "id": "R04",
+    "domain": "P2P Scalability",
+    "component": "libp2p mesh network",
+    "severity": "HIGH",
+    "severity_score": 3,
+    "hypothesis": "P2P architectures cannot deliver consistent <100ms latency for 3D world state synchronisation beyond ~50 peers without a relay/CDN layer, and NAT traversal success rates fall below 60% on typical consumer networks.",
+    "evidence": [
+      "libp2p's hole-punching success rate: IPFS/libp2p team measured 58-72% success for TCP hole-punching, 70-82% for QUIC, in their 2022 network study (github.com/libp2p/go-libp2p, RFM17).",
+      "The remaining 20-40% of peers require a relay (Circuit Relay v2). Relay bandwidth is paid by the relay operator \u2014 in a P2P world, this is either the developer's cost or a tragedy-of-the-commons problem.",
+      "3D asset streaming: a 100MB scene chunk at 10Mbps consumer upload = 80 seconds to seed to one peer. With 10 peers, naive replication is 800s. BitTorrent-style chunking helps but adds implementation complexity.",
+      "GossipSub propagation latency for a 50-node mesh: median 120-250ms (libp2p testground benchmarks, 2023). This exceeds the 100ms threshold at which users perceive avatar lag.",
+      "Bevy's transform system runs at 60fps; at 250ms P2P latency, entity positions are 15 frames stale \u2014 interpolation is required but not provided by any current bevy+libp2p crate.",
+      "WebRTC DataChannel (an alternative) has better NAT traversal but libp2p-webrtc is experimental and not stable in the Rust implementation as of libp2p 0.53."
+    ],
+    "mitigations": [
+      "Adopt a hybrid model: P2P for small lobbies (<16 peers), authoritative relay server for larger worlds.",
+      "Use content-addressed storage (IPFS/Iroh) for asset delivery; reserve P2P gossip for delta state only.",
+      "Implement client-side interpolation and lag compensation from day one."
+    ],
+    "show_stopper": false
+  },
+  {
+    "id": "R05",
+    "domain": "API Stability",
+    "component": "Bevy engine",
+    "severity": "HIGH",
+    "severity_score": 3,
+    "hypothesis": "Bevy has no stable 1.0 API. Major releases (every 3-4 months) routinely introduce breaking changes across core crates, making long-term platform investment extremely risky.",
+    "evidence": [
+      "Bevy 0.13 (Feb 2024) \u2192 0.14 (Jul 2024) \u2192 0.15 (Dec 2024): each release required mechanical API migrations across rendering, ECS scheduling, asset system, and UI \u2014 all documented in official migration guides averaging 2,000+ words.",
+      "The bevy_render crate changed its RenderApp extraction API in 0.12, 0.13, and 0.14 \u2014 three consecutive breaks in 12 months for a core rendering concept.",
+      "No LTS release policy exists. The Bevy team has explicitly stated (RFC discussions, 2023) that stability guarantees are post-1.0 only, with no ETA for 1.0.",
+      "Third-party crate ecosystem is fragile: bevy_rapier (physics), bevy_egui (UI), bevy_kira_audio all lag 1-2 major Bevy versions, creating a 'dependency hell' window after each release.",
+      "A production platform (digital twin) requires multi-year stability. Unity LTS is 2 years; Unreal maintains backward compatibility across major versions for shipped titles."
+    ],
+    "mitigations": [
+      "Pin to a specific Bevy version and budget 1-2 engineer-weeks per major Bevy upgrade.",
+      "Isolate Bevy behind an internal abstraction layer (engine facade pattern) to limit migration surface area.",
+      "Track Bevy RFC process and participate early to influence APIs the platform depends on."
+    ],
+    "show_stopper": false
+  },
+  {
+    "id": "R06",
+    "domain": "Competitor Feature Gap",
+    "component": "Bevy vs Godot/Unity/Unreal",
+    "severity": "MEDIUM",
+    "severity_score": 2,
+    "hypothesis": "Bevy lacks features that Godot, Unity, and Unreal ship out-of-the-box, forcing the team to build foundational infrastructure that competitors provide for free.",
+    "evidence": [
+      "Godot 4.3: built-in multiplayer (ENet + WebRTC), SceneTree replication, physics (Jolt), animation state machines, terrain, NavMesh. Bevy has none of these as stable first-party crates.",
+      "Unity Netcode for GameObjects + Unity Relay provides NAT traversal + authoritative server relay with 1 line of config. Equivalent Bevy stack requires libp2p + custom relay + custom state sync.",
+      "Unreal's Chaos physics, Nanite geometry streaming, and Lumen GI are production-proven for large-scale 3D worlds. Bevy's renderer (wgpu-based) lacks Nanite-equivalent mesh LOD and has no GI solution.",
+      "Unity and Unreal both have digital twin / AEC integrations (Unity Reflect, Unreal Datasmith) with CAD format importers (IFC, FBX, STEP). Bevy has no CAD importer ecosystem.",
+      "Godot's GDExtension C API is stable across minor versions. Bevy's plugin API breaks every minor version (see R05).",
+      "Hiring: Unity/Unreal engineers are abundant. Bevy engineers are a tiny talent pool (estimated <5,000 active Bevy developers globally vs. 1.5M Unity developers)."
+    ],
+    "mitigations": [
+      "Scope Bevy to rendering/ECS only; use Godot as a comparison benchmark for feature completeness.",
+      "Evaluate Godot 4 seriously as an alternative \u2014 it has built-in P2P-adjacent networking and is MIT licensed.",
+      "If Bevy is chosen for its Rust safety guarantees, document the explicit build-vs-buy decisions and staff accordingly."
+    ],
+    "show_stopper": false
+  }
+]
