@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "fractalengine",
+    "fe-runtime",
+    "fe-network",
+    "fe-database",
+    "fe-identity",
+    "fe-renderer",
+    "fe-auth",
+    "fe-webview",
+    "fe-sync",
+    "fe-ui",
+]
+resolver = "2"
+
+[workspace.dependencies]
+bevy = { version = "0.18", features = ["dynamic_linking"] }
+bevy_egui = "0.39"
+crossbeam = "0.8"
+tokio = { version = "1", features = ["full"] }
+surrealdb = { version = "3.0", features = ["kv-surrealkv"] }
+libp2p = { version = "0.56", features = ["kad", "mdns", "noise", "yamux", "quic"] }
+iroh-blobs = "0.30"
+iroh-gossip = "0.30"
+iroh-docs = "0.30"
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+jsonwebtoken = "10.3"
+keyring = "3"
+blake3 = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+ulid = "1"

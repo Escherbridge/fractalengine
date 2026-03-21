@@ -1,0 +1,17 @@
+[package]
+name = "fe-database"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fe-runtime = { path = "../fe-runtime" }
+surrealdb = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+crossbeam = { workspace = true }
+
+[dev-dependencies]
+crossbeam = { workspace = true }
+
+[package.metadata.env]
+SURREAL_SYNC_DATA = "true"

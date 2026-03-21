@@ -1,0 +1,13 @@
+[package]
+name = "fe-network"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fe-runtime = { path = "../fe-runtime" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+crossbeam = { workspace = true }
+
+[dev-dependencies]
+crossbeam = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "fractalengine"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fractalengine"
+path = "src/main.rs"
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[dependencies]
+fe-runtime = { path = "../fe-runtime" }
+fe-network = { path = "../fe-network" }
+fe-database = { path = "../fe-database" }
+bevy = { workspace = true }
+crossbeam = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

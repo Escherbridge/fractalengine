@@ -1,0 +1,11 @@
+[package]
+name = "fe-identity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+jsonwebtoken = { workspace = true }
+keyring = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
