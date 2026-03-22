@@ -1,5 +1,5 @@
 use fe_renderer::addressing::{content_address, validate_glb_magic};
-use fe_renderer::ingester::{GltfIngester, AssetIngester, MAX_ASSET_SIZE_BYTES};
+use fe_renderer::ingester::{AssetIngester, GltfIngester, MAX_ASSET_SIZE_BYTES};
 
 #[test]
 fn test_glb_magic_valid() {

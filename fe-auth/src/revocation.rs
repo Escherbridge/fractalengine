@@ -1,5 +1,5 @@
-use fe_database::{PetalId, DbHandle, OpLogEntry, NodeId, OpType};
 use crate::cache::SessionCache;
+use fe_database::{DbHandle, NodeId, OpLogEntry, OpType, PetalId};
 
 pub async fn revoke_session(
     peer_pub_key_bytes: [u8; 32],

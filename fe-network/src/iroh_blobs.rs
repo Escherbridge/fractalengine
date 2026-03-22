@@ -7,7 +7,7 @@ pub async fn register_asset(hash: AssetId, path: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub async fn fetch_asset(hash: AssetId) -> anyhow::Result<Vec<u8>> {
+pub async fn fetch_asset(_hash: AssetId) -> anyhow::Result<Vec<u8>> {
     // CROSS-CRATE: iroh-blobs get — wire to iroh endpoint in Sprint 5B
     anyhow::bail!("iroh-blobs fetch not yet wired — deferred to Sprint 5B")
 }

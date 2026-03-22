@@ -1,7 +1,9 @@
-use crate::types::RoleId;
 use crate::schema;
+use crate::types::RoleId;
 
-pub async fn apply_schema(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> anyhow::Result<()> {
+pub async fn apply_schema(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+) -> anyhow::Result<()> {
     db.query(schema::DEFINE_PETAL).await?;
     db.query(schema::DEFINE_ROOM).await?;
     db.query(schema::DEFINE_MODEL).await?;
@@ -15,6 +17,8 @@ pub async fn get_role(
     node_id: &str,
     petal_id: &str,
 ) -> anyhow::Result<RoleId> {
+    let node_id = node_id.to_string();
+    let petal_id = petal_id.to_string();
     let mut result = db
         .query("SELECT role FROM role WHERE node_id = $node_id AND petal_id = $petal_id")
         .bind(("node_id", node_id))

@@ -1,11 +1,11 @@
 use fe_runtime::messages::{DbCommand, DbResult};
 use surrealdb::engine::local::SurrealKv;
 
-pub mod schema;
-pub mod types;
-pub mod rbac;
 pub mod op_log;
 pub mod queries;
+pub mod rbac;
+pub mod schema;
+pub mod types;
 
 pub use types::*;
 
@@ -30,10 +30,16 @@ pub fn spawn_db_thread(
             let db = surrealdb::Surreal::new::<SurrealKv>("data/fractalengine.db")
                 .await
                 .expect("SurrealDB init");
-            db.use_ns("fractalengine").use_db("fractalengine").await.expect("SurrealDB ns/db");
-            rbac::apply_schema(&db).await.expect("Schema application failed");
+            db.use_ns("fractalengine")
+                .use_db("fractalengine")
+                .await
+                .expect("SurrealDB ns/db");
+            rbac::apply_schema(&db)
+                .await
+                .expect("Schema application failed");
             tracing::info!("SurrealDB ready");
             tx.send(DbResult::Started).ok();
+            #[allow(clippy::while_let_loop)]
             loop {
                 match rx.recv() {
                     Ok(DbCommand::Ping) => {

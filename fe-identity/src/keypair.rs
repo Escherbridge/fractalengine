@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 
 pub struct NodeKeypair {
@@ -7,11 +7,15 @@ pub struct NodeKeypair {
 
 impl NodeKeypair {
     pub fn generate() -> Self {
-        Self { signing_key: SigningKey::generate(&mut OsRng) }
+        Self {
+            signing_key: SigningKey::generate(&mut OsRng),
+        }
     }
 
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, anyhow::Error> {
-        Ok(Self { signing_key: SigningKey::from_bytes(bytes) })
+        Ok(Self {
+            signing_key: SigningKey::from_bytes(bytes),
+        })
     }
 
     pub fn verifying_key(&self) -> VerifyingKey {
@@ -33,11 +37,7 @@ impl NodeKeypair {
     pub(crate) fn pkcs8_der(&self) -> Vec<u8> {
         let seed = self.signing_key.to_bytes();
         let mut der = vec![
-            0x30, 0x2e,
-            0x02, 0x01, 0x00,
-            0x30, 0x05,
-            0x06, 0x03, 0x2b, 0x65, 0x70,
-            0x04, 0x22,
+            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
             0x04, 0x20,
         ];
         der.extend_from_slice(&seed);

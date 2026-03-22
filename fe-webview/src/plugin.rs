@@ -1,5 +1,4 @@
-use crate::ipc::{BrowserCommand, BrowserEvent, BrowserTab};
-use crate::overlay::{BrowserSurface, WebViewConfig};
+use crate::ipc::{BrowserCommand, BrowserEvent};
 use crate::security;
 
 #[allow(dead_code)]
@@ -14,8 +13,8 @@ pub struct WebViewPlugin;
 
 impl bevy::prelude::Plugin for WebViewPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.add_event::<BrowserCommand>();
-        app.add_event::<BrowserEvent>();
+        app.add_message::<BrowserCommand>();
+        app.add_message::<BrowserEvent>();
         app.add_systems(bevy::prelude::Update, webview_command_system);
         app.add_systems(bevy::prelude::PostUpdate, webview_position_system);
     }
@@ -71,24 +70,24 @@ impl BrowserSurface for WryBrowserSurface {
 }
 
 fn webview_command_system(
-    mut commands: bevy::prelude::EventReader<BrowserCommand>,
-    mut events: bevy::prelude::EventWriter<BrowserEvent>,
+    mut commands: bevy::prelude::MessageReader<BrowserCommand>,
+    mut events: bevy::prelude::MessageWriter<BrowserEvent>,
 ) {
     for cmd in commands.read() {
         match cmd {
             BrowserCommand::Navigate { url } => {
                 if !security::is_url_allowed(url) {
-                    events.send(BrowserEvent::Error {
+                    events.write(BrowserEvent::Error {
                         message: format!("URL blocked: {}", url),
                     });
                 } else {
-                    events.send(BrowserEvent::UrlChanged { url: url.clone() });
+                    events.write(BrowserEvent::UrlChanged { url: url.clone() });
                 }
             }
             BrowserCommand::Close => {}
             BrowserCommand::GetUrl => {}
             BrowserCommand::SwitchTab { tab } => {
-                events.send(BrowserEvent::TabChanged { tab: *tab });
+                events.write(BrowserEvent::TabChanged { tab: *tab });
             }
         }
     }

@@ -1,6 +1,6 @@
+use fe_database::RoleId;
 use std::collections::HashMap;
 use std::time::Instant;
-use fe_database::RoleId;
 
 pub const SESSION_TTL_SECS: u64 = 60;
 
@@ -10,11 +10,14 @@ pub struct SessionCache {
 
 impl SessionCache {
     pub fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
     pub fn get(&self, pub_key: &[u8; 32]) -> Option<&RoleId> {
-        self.entries.get(pub_key)
+        self.entries
+            .get(pub_key)
             .filter(|(_, t)| t.elapsed().as_secs() < SESSION_TTL_SECS)
             .map(|(role, _)| role)
     }
@@ -28,7 +31,8 @@ impl SessionCache {
     }
 
     pub fn prune_expired(&mut self) {
-        self.entries.retain(|_, (_, t)| t.elapsed().as_secs() < SESSION_TTL_SECS);
+        self.entries
+            .retain(|_, (_, t)| t.elapsed().as_secs() < SESSION_TTL_SECS);
     }
 }
 

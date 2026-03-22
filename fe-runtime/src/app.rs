@@ -17,10 +17,6 @@ pub struct NetworkEventReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<Netwo
 #[derive(Resource)]
 pub struct DbResultReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<DbResult>>>);
 
-/// Bevy-side channel handles — the Tx ends that Bevy sends commands on,
-/// and the Rx ends that Bevy drains events from each frame.
-/// Thread-side Rx/Tx ends are passed directly to spawn_network_thread /
-/// spawn_db_thread in main.rs before build_app is called.
 pub struct BevyHandles {
     pub net_cmd_tx: crossbeam::channel::Sender<NetworkCommand>,
     pub net_evt_rx: crossbeam::channel::Receiver<NetworkEvent>,
@@ -31,12 +27,14 @@ pub struct BevyHandles {
 pub fn build_app(handles: BevyHandles) -> App {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
-    app.add_plugins(FrameTimeDiagnosticsPlugin);
-    app.add_event::<NetworkEvent>();
-    app.add_event::<DbResult>();
+    app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+    app.add_message::<NetworkEvent>();
+    app.add_message::<DbResult>();
     app.insert_resource(NetworkCommandSender(handles.net_cmd_tx));
     app.insert_resource(DbCommandSender(handles.db_cmd_tx));
-    app.insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(handles.net_evt_rx))));
+    app.insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(
+        handles.net_evt_rx,
+    ))));
     app.insert_resource(DbResultReceiver(Arc::new(Mutex::new(handles.db_res_rx))));
     app.add_systems(Update, (drain_network_events, drain_db_results));
     app
@@ -44,7 +42,7 @@ pub fn build_app(handles: BevyHandles) -> App {
 
 fn drain_network_events(
     receiver: Res<NetworkEventReceiver>,
-    mut writer: EventWriter<NetworkEvent>,
+    mut writer: MessageWriter<NetworkEvent>,
 ) {
     if let Ok(rx) = receiver.0.lock() {
         while let Ok(evt) = rx.try_recv() {
@@ -53,7 +51,7 @@ fn drain_network_events(
     }
 }
 
-fn drain_db_results(receiver: Res<DbResultReceiver>, mut writer: EventWriter<DbResult>) {
+fn drain_db_results(receiver: Res<DbResultReceiver>, mut writer: MessageWriter<DbResult>) {
     if let Ok(rx) = receiver.0.lock() {
         while let Ok(result) = rx.try_recv() {
             writer.write(result);

@@ -1,9 +1,7 @@
-use std::net::IpAddr;
 use ipnet::IpNet;
+use std::net::IpAddr;
 
-pub const BLOCKED_HOSTS: &[&str] = &[
-    "localhost", "127.0.0.1", "::1", "0.0.0.0",
-];
+pub const BLOCKED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1", "0.0.0.0"];
 
 pub const BLOCKED_RANGES: &[&str] = &[
     "10.0.0.0/8",

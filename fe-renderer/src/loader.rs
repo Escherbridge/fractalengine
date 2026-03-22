@@ -1,7 +1,7 @@
-use fe_network::AssetId;
-use bevy::prelude::{AssetServer, Handle};
-use bevy::gltf::Gltf;
 use crate::ingester::cache_path;
+use bevy::gltf::Gltf;
+use bevy::prelude::{AssetServer, Handle};
+use fe_network::AssetId;
 
 pub fn load_to_bevy(asset_id: AssetId, asset_server: &AssetServer) -> Handle<Gltf> {
     let path = cache_path(asset_id);

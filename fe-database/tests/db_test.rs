@@ -17,12 +17,16 @@ fn test_db_ping_pong_roundtrip() {
     let _handle = fe_database::spawn_db_thread(cmd_rx, res_tx);
 
     // Wait for Started — SurrealDB init may take a moment
-    let started = res_rx.recv_timeout(Duration::from_secs(30)).expect("DB thread did not start");
+    let started = res_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("DB thread did not start");
     assert!(matches!(started, DbResult::Started));
 
     let t0 = Instant::now();
     cmd_tx.send(DbCommand::Ping).unwrap();
-    let result = res_rx.recv_timeout(Duration::from_millis(100)).expect("No Pong received");
+    let result = res_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("No Pong received");
     let elapsed = t0.elapsed();
 
     assert!(matches!(result, DbResult::Pong));
@@ -40,7 +44,9 @@ fn test_db_clean_shutdown() {
 
     let handle = fe_database::spawn_db_thread(cmd_rx, res_tx);
 
-    res_rx.recv_timeout(Duration::from_secs(30)).expect("Started");
+    res_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("Started");
 
     cmd_tx.send(DbCommand::Shutdown).unwrap();
     handle.join().expect("DB thread panicked");

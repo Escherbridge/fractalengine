@@ -4,7 +4,8 @@ pub async fn write_op_log(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
     entry: OpLogEntry,
 ) -> anyhow::Result<()> {
-    db.create::<Vec<serde_json::Value>>("op_log").content(entry).await?;
+    let val = serde_json::to_value(entry)?;
+    let _: Option<serde_json::Value> = db.create("op_log").content(val).await?;
     Ok(())
 }
 

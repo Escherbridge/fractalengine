@@ -1,4 +1,4 @@
-use fe_database::{PetalId, DbHandle};
+use fe_database::{DbHandle, PetalId};
 
 pub fn is_petal_available_offline(petal_id: &PetalId) -> bool {
     local_namespace_path(petal_id).exists()

@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, Signer, Verifier};
+use ed25519_dalek::{Signer, SigningKey, Verifier};
 use rand::rngs::OsRng;
 
 #[test]
@@ -14,8 +14,8 @@ fn test_tampered_ed25519_signature() {
 
 #[test]
 fn test_ttl_limit_enforced() {
-    use fe_identity::NodeKeypair;
     use fe_identity::jwt::mint_session_token;
+    use fe_identity::NodeKeypair;
     let kp = NodeKeypair::generate();
     assert!(mint_session_token(&kp, "petal-1", "admin", 301).is_err());
 }
@@ -31,13 +31,17 @@ fn test_rfc1918_url_blocked() {
         "http://localhost/",
     ];
     for url in &blocked {
-        assert!(!is_url_allowed(&url.parse().unwrap()), "should block: {}", url);
+        assert!(
+            !is_url_allowed(&url.parse().unwrap()),
+            "should block: {}",
+            url
+        );
     }
 }
 
 #[test]
 fn test_oversized_asset_rejected() {
-    use fe_renderer::ingester::{GltfIngester, AssetIngester, MAX_ASSET_SIZE_BYTES};
+    use fe_renderer::ingester::{AssetIngester, GltfIngester, MAX_ASSET_SIZE_BYTES};
     let big = vec![0u8; MAX_ASSET_SIZE_BYTES + 1];
     assert!(GltfIngester.ingest(&big).is_err());
 }

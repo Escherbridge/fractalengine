@@ -1,11 +1,14 @@
+use fe_network::AssetId;
 use fe_sync::cache::{AssetCache, CacheEntry};
 use fe_sync::replication::ReplicationConfig;
-use fe_network::AssetId;
 use std::time::Instant;
 
 #[test]
 fn test_cache_size_threshold() {
-    let config = ReplicationConfig { max_cache_gb: 0.000001, eviction_days: 7 };
+    let config = ReplicationConfig {
+        max_cache_gb: 0.000001,
+        eviction_days: 7,
+    };
     let mut cache = AssetCache::new(config);
     let entry = CacheEntry {
         asset_id: AssetId([1u8; 32]),
@@ -24,8 +27,8 @@ fn test_reconcile_empty_delta() {
 
 #[test]
 fn test_offline_detection_false_when_no_dir() {
-    use fe_sync::offline::is_petal_available_offline;
     use fe_database::PetalId;
+    use fe_sync::offline::is_petal_available_offline;
     let petal_id = PetalId(ulid::Ulid::new());
     assert!(!is_petal_available_offline(&petal_id));
 }

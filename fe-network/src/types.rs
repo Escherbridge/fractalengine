@@ -1,8 +1,8 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GossipMessage<T> {
     pub payload: T,
-    pub sig: [u8; 64],
-    pub pub_key: [u8; 32],
+    pub sig: Vec<u8>,
+    pub pub_key: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

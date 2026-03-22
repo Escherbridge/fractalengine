@@ -27,8 +27,8 @@
 | 5C | Track 09 — Gardener Console | `/ultrawork` (worktree) | ✅ Done |
 | 5D | Track 10 — Thorns & Shields | `/ultrawork` (worktree) | ✅ Done |
 | Post-Sprint 5 | Merge all → main | manual | ✅ Done |
-| Wave 6.1 | Build Fix | `/ultrawork` | ⬜ Pending |
-| Wave 6.2 | Lint Pass | `/ultrawork` | ⬜ Pending |
+| Wave 6.1 | Build Fix | `/ultrawork` | ✅ Done |
+| Wave 6.2 | Lint Pass | `/ultrawork` | ✅ Done |
 | Wave 6.3 | Per-Crate Tests | `/ralph` | ⬜ Pending |
 | Wave 6.4 | Integration Tests | `/ultraqa` | ⬜ Pending |
 | Wave 6.5 | Coverage + Quality Gate | `/ultraqa` | ⬜ Pending |

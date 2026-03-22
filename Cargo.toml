@@ -19,10 +19,10 @@ bevy_egui = "0.39"
 crossbeam = "0.8"
 tokio = { version = "1", features = ["full"] }
 surrealdb = { version = "3.0", features = ["kv-surrealkv"] }
-libp2p = { version = "0.56", features = ["kad", "noise", "yamux", "quic"] }
-iroh-blobs = "0.30"
-iroh-gossip = "0.30"
-iroh-docs = "0.30"
+libp2p = { version = "0.56", features = ["kad", "quic", "tokio", "macros"] }
+iroh-blobs = "0.35"
+iroh-gossip = "0.35"
+iroh-docs = "0.35"
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 jsonwebtoken = "10.3"
 keyring = "3"

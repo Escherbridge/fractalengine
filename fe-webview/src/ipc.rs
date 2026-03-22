@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bevy::prelude::Event)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bevy::prelude::Message)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum BrowserCommand {
     Navigate { url: url::Url },
@@ -7,7 +7,7 @@ pub enum BrowserCommand {
     SwitchTab { tab: BrowserTab },
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bevy::prelude::Event)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bevy::prelude::Message)]
 #[serde(tag = "evt", rename_all = "snake_case")]
 pub enum BrowserEvent {
     UrlChanged { url: url::Url },

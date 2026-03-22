@@ -1,5 +1,5 @@
-use crate::types::{PetalId, NodeId, OpType, OpLogEntry};
 use crate::op_log::write_op_log;
+use crate::types::{NodeId, OpLogEntry, OpType, PetalId};
 
 pub async fn create_petal(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
@@ -15,7 +15,8 @@ pub async fn create_petal(
         sig: "00".repeat(64),
     };
     write_op_log(db, entry).await?;
-    db.create::<Vec<serde_json::Value>>("petal")
+    let _: Option<serde_json::Value> = db
+        .create("petal")
         .content(serde_json::json!({
             "petal_id": petal_id.0.to_string(),
             "name": name,
@@ -39,7 +40,8 @@ pub async fn create_room(
         sig: "00".repeat(64),
     };
     write_op_log(db, entry).await?;
-    db.create::<Vec<serde_json::Value>>("room")
+    let _: Option<serde_json::Value> = db
+        .create("room")
         .content(serde_json::json!({
             "petal_id": petal_id.0.to_string(),
             "name": name,
@@ -66,7 +68,8 @@ pub async fn place_model(
         sig: "00".repeat(64),
     };
     write_op_log(db, entry).await?;
-    db.create::<Vec<serde_json::Value>>("model")
+    let _: Option<serde_json::Value> = db
+        .create("model")
         .content(serde_json::json!({
             "petal_id": petal_id.0.to_string(),
             "asset_id": asset_id,

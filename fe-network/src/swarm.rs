@@ -6,7 +6,7 @@ use libp2p::{
 
 #[derive(NetworkBehaviour)]
 pub struct FractalBehaviour {
-    kademlia: kad::Behaviour<MemoryStore>,
+    pub kademlia: kad::Behaviour<MemoryStore>,
 }
 
 pub struct SwarmHandle {

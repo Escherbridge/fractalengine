@@ -1,5 +1,5 @@
-use fe_network::AssetId;
 use crate::addressing::{content_address, validate_glb_magic};
+use fe_network::AssetId;
 
 pub const MAX_ASSET_SIZE_BYTES: usize = 256 * 1024 * 1024;
 

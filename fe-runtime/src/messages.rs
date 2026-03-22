@@ -1,4 +1,4 @@
-use bevy::prelude::Event;
+use bevy::prelude::Message;
 
 #[derive(Debug, Clone)]
 pub enum NetworkCommand {
@@ -6,7 +6,7 @@ pub enum NetworkCommand {
     Shutdown,
 }
 
-#[derive(Debug, Clone, Event)]
+#[derive(Debug, Clone, Message)]
 pub enum NetworkEvent {
     Pong,
     Started,
@@ -19,7 +19,7 @@ pub enum DbCommand {
     Shutdown,
 }
 
-#[derive(Debug, Clone, Event)]
+#[derive(Debug, Clone, Message)]
 pub enum DbResult {
     Pong,
     Started,

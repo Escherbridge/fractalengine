@@ -1,6 +1,6 @@
-use bevy::prelude::Resource;
-use ed25519_dalek::{VerifyingKey, Signature};
 use crate::keypair::NodeKeypair;
+use bevy::prelude::Resource;
+use ed25519_dalek::{Signature, VerifyingKey};
 
 #[derive(Resource)]
 pub struct NodeIdentity {

@@ -1,7 +1,7 @@
+use crate::replication::ReplicationConfig;
+use fe_network::AssetId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use fe_network::AssetId;
-use crate::replication::ReplicationConfig;
 
 pub struct CacheEntry {
     pub asset_id: AssetId,
@@ -16,7 +16,10 @@ pub struct AssetCache {
 
 impl AssetCache {
     pub fn new(config: ReplicationConfig) -> Self {
-        Self { entries: HashMap::new(), config }
+        Self {
+            entries: HashMap::new(),
+            config,
+        }
     }
 
     pub fn touch(&mut self, asset_id: AssetId) -> anyhow::Result<()> {
@@ -28,7 +31,8 @@ impl AssetCache {
 
     pub fn evict_expired(&mut self) -> anyhow::Result<()> {
         let threshold = Duration::from_secs(self.config.eviction_days * 86400);
-        self.entries.retain(|_, e| e.last_accessed.elapsed() < threshold);
+        self.entries
+            .retain(|_, e| e.last_accessed.elapsed() < threshold);
         Ok(())
     }
 

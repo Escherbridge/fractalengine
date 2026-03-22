@@ -1,6 +1,6 @@
-use ed25519_dalek::VerifyingKey;
-use jsonwebtoken::{encode, decode, Header, Algorithm, EncodingKey, DecodingKey, Validation};
 use crate::keypair::NodeKeypair;
+use ed25519_dalek::VerifyingKey;
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FractalClaims {
@@ -51,10 +51,7 @@ pub fn verify_session_token(
 
 fn spki_der(pub_key: &VerifyingKey) -> Vec<u8> {
     let mut der = vec![
-        0x30, 0x2a,
-        0x30, 0x05,
-        0x06, 0x03, 0x2b, 0x65, 0x70,
-        0x03, 0x21, 0x00,
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
     ];
     der.extend_from_slice(&pub_key.to_bytes());
     der

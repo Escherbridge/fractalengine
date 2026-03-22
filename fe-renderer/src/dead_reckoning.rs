@@ -1,5 +1,5 @@
-use bevy::prelude::{Query, Transform, Res, Time, Component};
 use bevy::math::Vec3;
+use bevy::prelude::{Component, Query, Res, Time, Transform};
 
 #[derive(Component)]
 pub struct DeadReckoningPredictor {
@@ -24,7 +24,7 @@ pub fn dead_reckoning_system(
     mut query: Query<(&mut Transform, &mut DeadReckoningPredictor)>,
     time: Res<Time>,
 ) {
-    for (mut transform, mut predictor) in query.iter_mut() {
+    for (mut transform, predictor) in query.iter_mut() {
         let dt = time.elapsed_secs_f64() - predictor.last_network_time;
         let predicted = predictor.last_network_pos + predictor.velocity * dt as f32;
         transform.translation = predicted;

@@ -1,5 +1,5 @@
-use fe_database::{PetalId, DbHandle};
 use crate::replication::ReplicationStore;
+use fe_database::{DbHandle, PetalId};
 
 pub async fn reconcile_petal(
     petal_id: &PetalId,
