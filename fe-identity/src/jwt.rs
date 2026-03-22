@@ -2,6 +2,10 @@ use crate::keypair::NodeKeypair;
 use ed25519_dalek::VerifyingKey;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 
+fn ensure_crypto_provider() {
+    let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FractalClaims {
     pub sub: String,
@@ -17,6 +21,7 @@ pub fn mint_session_token(
     role_id: &str,
     ttl_secs: u64,
 ) -> anyhow::Result<String> {
+    ensure_crypto_provider();
     if ttl_secs > 300 {
         anyhow::bail!("TTL exceeds maximum of 300 seconds");
     }
@@ -39,8 +44,9 @@ pub fn verify_session_token(
     token: &str,
     issuer_pub_key: &VerifyingKey,
 ) -> anyhow::Result<FractalClaims> {
-    let der = spki_der(issuer_pub_key);
-    let decoding_key = DecodingKey::from_ed_der(&der);
+    ensure_crypto_provider();
+    let raw = raw_pub_bytes(issuer_pub_key);
+    let decoding_key = DecodingKey::from_ed_der(&raw);
     let mut validation = Validation::new(Algorithm::EdDSA);
     validation.validate_exp = true;
     validation.required_spec_claims = std::collections::HashSet::new();
@@ -49,12 +55,8 @@ pub fn verify_session_token(
         .map_err(Into::into)
 }
 
-fn spki_der(pub_key: &VerifyingKey) -> Vec<u8> {
-    let mut der = vec![
-        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-    ];
-    der.extend_from_slice(&pub_key.to_bytes());
-    der
+fn raw_pub_bytes(pub_key: &VerifyingKey) -> Vec<u8> {
+    pub_key.to_bytes().to_vec()
 }
 
 #[cfg(test)]

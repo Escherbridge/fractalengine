@@ -6,7 +6,7 @@ use rand::rngs::OsRng;
 #[test]
 fn test_gossip_valid_message() {
     let signing_key = SigningKey::generate(&mut OsRng);
-    let payload = "hello network";
+    let payload = "hello network".to_string();
     let payload_bytes = serde_json::to_vec(&payload).unwrap();
     let sig = signing_key.sign(&payload_bytes);
     let msg = GossipMessage {
@@ -20,7 +20,7 @@ fn test_gossip_valid_message() {
 #[test]
 fn test_gossip_tampered_message() {
     let signing_key = SigningKey::generate(&mut OsRng);
-    let payload = "hello network";
+    let payload = "hello network".to_string();
     let payload_bytes = serde_json::to_vec(&payload).unwrap();
     let sig = signing_key.sign(&payload_bytes);
     let mut bad_sig = sig.to_bytes().to_vec();

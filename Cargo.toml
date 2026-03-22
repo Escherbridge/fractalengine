@@ -23,8 +23,8 @@ libp2p = { version = "0.56", features = ["kad", "quic", "tokio", "macros"] }
 iroh-blobs = "0.35"
 iroh-gossip = "0.35"
 iroh-docs = "0.35"
-ed25519-dalek = { version = "2.2", features = ["rand_core"] }
-jsonwebtoken = "10.3"
+ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
+jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 keyring = "3"
 blake3 = "1"
 tracing = "0.1"
