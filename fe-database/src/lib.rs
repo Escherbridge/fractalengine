@@ -1,6 +1,7 @@
 use fe_runtime::messages::{DbCommand, DbResult};
 use surrealdb::engine::local::SurrealKv;
 
+pub mod admin;
 pub mod op_log;
 pub mod queries;
 pub mod rbac;
