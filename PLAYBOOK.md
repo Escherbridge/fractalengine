@@ -9,24 +9,24 @@
 | Sprint | Track | Plugin | Status |
 |--------|-------|--------|--------|
 | 1 | Track 01 — Seed Runtime | `/ultrawork` | ✅ Done |
-| 2A | Track 02 — Root Identity | `/ultrawork` (worktree) | ⬜ Pending |
-| 2B | Track 03 — Petal Soil scaffold | `/ultrawork` (worktree) | ⬜ Pending |
-| 2C | Track 04 — Mycelium scaffold | `/ultrawork` (worktree) | ⬜ Pending |
-| Post-Sprint 2 | Merge 2A/2B/2C → main | manual | ⬜ Pending |
-| 3A | Track 03 — Petal Soil (full) | `/ultrawork` (worktree) | ⬜ Pending |
-| 3B | Track 04 — Mycelium Network (full) | `/ultrawork` (worktree) | ⬜ Pending |
-| 3C | Track 05 — Bloom Renderer scaffold | `/ultrawork` (worktree) | ⬜ Pending |
-| Post-Sprint 3 | Merge 3A/3B/3C → main | manual | ⬜ Pending |
-| 4A | Track 05 — Bloom Renderer (full) | `/ultrawork` (worktree) | ⬜ Pending |
-| 4B | Track 06 — Petal Gate (full) | `/ultrawork` (worktree) | ⬜ Pending |
-| 4C | Track 07 — Canopy View scaffold | `/ultrawork` (worktree) | ⬜ Pending |
-| 4D | Track 08 — Fractal Mesh scaffold | `/ultrawork` (worktree) | ⬜ Pending |
-| Post-Sprint 4 | Merge 4A/4B/4C/4D → main | manual | ⬜ Pending |
-| 5A | Track 07 — Canopy View (full) | `/ultrawork` (worktree) | ⬜ Pending |
-| 5B | Track 08 — Fractal Mesh (full) | `/ultrawork` (worktree) | ⬜ Pending |
-| 5C | Track 09 — Gardener Console | `/ultrawork` (worktree) | ⬜ Pending |
-| 5D | Track 10 — Thorns & Shields | `/ultrawork` (worktree) | ⬜ Pending |
-| Post-Sprint 5 | Merge all → main | manual | ⬜ Pending |
+| 2A | Track 02 — Root Identity | `/ultrawork` (worktree) | ✅ Done |
+| 2B | Track 03 — Petal Soil scaffold | `/ultrawork` (worktree) | ✅ Done |
+| 2C | Track 04 — Mycelium scaffold | `/ultrawork` (worktree) | ✅ Done |
+| Post-Sprint 2 | Merge 2A/2B/2C → main | manual | ✅ Done |
+| 3A | Track 03 — Petal Soil (full) | `/ultrawork` (worktree) | ✅ Done |
+| 3B | Track 04 — Mycelium Network (full) | `/ultrawork` (worktree) | ✅ Done |
+| 3C | Track 05 — Bloom Renderer scaffold | `/ultrawork` (worktree) | ✅ Done |
+| Post-Sprint 3 | Merge 3A/3B/3C → main | manual | ✅ Done |
+| 4A | Track 05 — Bloom Renderer (full) | `/ultrawork` (worktree) | ✅ Done |
+| 4B | Track 06 — Petal Gate (full) | `/ultrawork` (worktree) | ✅ Done |
+| 4C | Track 07 — Canopy View scaffold | `/ultrawork` (worktree) | ✅ Done |
+| 4D | Track 08 — Fractal Mesh scaffold | `/ultrawork` (worktree) | ✅ Done |
+| Post-Sprint 4 | Merge 4A/4B/4C/4D → main | manual | ✅ Done |
+| 5A | Track 07 — Canopy View (full) | `/ultrawork` (worktree) | ✅ Done |
+| 5B | Track 08 — Fractal Mesh (full) | `/ultrawork` (worktree) | ✅ Done |
+| 5C | Track 09 — Gardener Console | `/ultrawork` (worktree) | ✅ Done |
+| 5D | Track 10 — Thorns & Shields | `/ultrawork` (worktree) | ✅ Done |
+| Post-Sprint 5 | Merge all → main | manual | ✅ Done |
 | Wave 6.1 | Build Fix | `/ultrawork` | ⬜ Pending |
 | Wave 6.2 | Lint Pass | `/ultrawork` | ⬜ Pending |
 | Wave 6.3 | Per-Crate Tests | `/ralph` | ⬜ Pending |

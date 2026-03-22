@@ -8,6 +8,21 @@ fe-runtime = { path = "../fe-runtime" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 crossbeam = { workspace = true }
+libp2p = { workspace = true }
+iroh-blobs = { workspace = true }
+iroh-gossip = { workspace = true }
+iroh-docs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+anyhow = { workspace = true }
+ed25519-dalek = { workspace = true }
+url = "2"
+ipnet = "2"
+hex = "0.4"
 
 [dev-dependencies]
 crossbeam = { workspace = true }
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+rand = "0.8"

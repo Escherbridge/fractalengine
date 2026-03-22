@@ -4,4 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+fe-identity = { path = "../fe-identity" }
+fe-database = { path = "../fe-database" }
+fe-network = { path = "../fe-network" }
+bevy = { workspace = true }
+ed25519-dalek = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+hex = "0.4"
+
+[dev-dependencies]

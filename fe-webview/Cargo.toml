@@ -3,6 +3,17 @@ name = "fe-webview"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+webview = ["wry"]
+
 [dependencies]
 bevy = { workspace = true }
+wry = { version = "0.54", optional = true }
+url = "2"
+ipnet = "2"
+serde = { workspace = true }
 anyhow = { workspace = true }
+fe-database = { path = "../fe-database" }
+
+[dev-dependencies]

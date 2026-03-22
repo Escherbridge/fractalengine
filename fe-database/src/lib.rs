@@ -1,6 +1,17 @@
 use fe_runtime::messages::{DbCommand, DbResult};
 use surrealdb::engine::local::SurrealKv;
 
+pub mod schema;
+pub mod types;
+pub mod rbac;
+pub mod op_log;
+pub mod queries;
+
+pub use types::*;
+
+#[derive(bevy::prelude::Resource, Clone)]
+pub struct DbHandle(pub std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>);
+
 pub fn spawn_db_thread(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
@@ -20,6 +31,7 @@ pub fn spawn_db_thread(
                 .await
                 .expect("SurrealDB init");
             db.use_ns("fractalengine").use_db("fractalengine").await.expect("SurrealDB ns/db");
+            rbac::apply_schema(&db).await.expect("Schema application failed");
             tracing::info!("SurrealDB ready");
             tx.send(DbResult::Started).ok();
             loop {

@@ -9,6 +9,12 @@ surrealdb = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 crossbeam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+ulid = { workspace = true }
+bevy = { workspace = true }
+chrono = "0.4"
 
 [dev-dependencies]
 crossbeam = { workspace = true }

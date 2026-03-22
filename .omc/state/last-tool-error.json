@@ -1,7 +1,7 @@
 {
-  "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/home/jade/projects/fractalengine/.omc/state/sessions/b3f7ab5a-305e-4ceb-90f4-467c9f8e8e04/autopilot-state.json\"}",
-  "error": "File content (27687 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
-  "timestamp": "2026-03-21T21:24:36.710Z",
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"sudo apt-get update -qq && sudo apt-get install -y -qq libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev pkg-config libvulkan-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev...",
+  "error": "Exit code 1\nsudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper",
+  "timestamp": "2026-03-22T04:50:50.079Z",
   "retry_count": 1
 }

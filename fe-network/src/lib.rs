@@ -1,5 +1,14 @@
 use fe_runtime::messages::{NetworkCommand, NetworkEvent};
 
+pub mod types;
+pub mod swarm;
+pub mod discovery;
+pub mod gossip;
+pub mod iroh_blobs;
+pub mod iroh_docs;
+
+pub use types::*;
+
 pub fn spawn_network_thread(
     rx: crossbeam::channel::Receiver<NetworkCommand>,
     tx: crossbeam::channel::Sender<NetworkEvent>,

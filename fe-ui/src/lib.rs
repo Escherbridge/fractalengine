@@ -1,2 +1,3 @@
-//! Stub crate — implemented in Sprint 5C.
-#![allow(dead_code)]
+pub mod plugin;
+pub mod panels;
+pub mod role_chip;

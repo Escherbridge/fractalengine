@@ -7,3 +7,10 @@ edition = "2021"
 bevy = { workspace = true }
 blake3 = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
+fe-database = { path = "../fe-database" }
+fe-network = { path = "../fe-network" }
+dirs = "5"
+hex = "0.4"
+
+[dev-dependencies]

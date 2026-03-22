@@ -1,0 +1,26 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime data
+data/
+coverage/
+
+# Environment
+.env
+.env.*
+
+# Claude/OMC state
+.omc/state/
+.claude/worktrees/

@@ -1,0 +1,17 @@
+[package]
+name = "fractalengine-fuzz"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fe-identity = { path = "../fe-identity" }
+ed25519-dalek = { workspace = true }
+
+[[bin]]
+name = "jwt_parse"
+path = "targets/jwt_parse.rs"
+
+[[bin]]
+name = "ed25519_verify"
+path = "targets/ed25519_verify.rs"

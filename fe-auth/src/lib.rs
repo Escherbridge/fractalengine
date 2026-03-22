@@ -1,2 +1,4 @@
-//! Stub crate — implemented in Sprint 4B.
-#![allow(dead_code)]
+pub mod session;
+pub mod cache;
+pub mod handshake;
+pub mod revocation;
