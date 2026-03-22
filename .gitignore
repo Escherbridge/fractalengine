@@ -22,5 +22,5 @@ coverage/
 .env.*
 
 # Claude/OMC state
-.omc/state/
+.omc/
 .claude/worktrees/

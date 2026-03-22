@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"sudo apt-get update -qq && sudo apt-get install -y -qq libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev pkg-config libvulkan-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev...",
-  "error": "Exit code 1\nsudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper",
-  "timestamp": "2026-03-22T04:50:50.079Z",
-  "retry_count": 1
-}
