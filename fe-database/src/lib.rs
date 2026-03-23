@@ -2,13 +2,16 @@ use fe_runtime::messages::{DbCommand, DbResult};
 use surrealdb::engine::local::{Db, SurrealKv};
 
 pub mod admin;
+pub mod atlas;
 pub mod model_url_meta;
 pub mod op_log;
 pub mod queries;
 pub mod rbac;
 pub mod schema;
+pub mod space_manager;
 pub mod types;
 
+pub use atlas::*;
 pub use model_url_meta::ModelUrlMeta;
 pub use types::*;
 
