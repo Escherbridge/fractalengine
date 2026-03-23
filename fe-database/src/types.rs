@@ -15,6 +15,12 @@ pub enum OpType {
     AssignRole,
     RevokeSession,
     DeletePetal,
+    // Atlas op-log variants (Fractal Atlas track)
+    UpdatePetalMeta,
+    UpdateRoomMeta,
+    UpdateModelMeta,
+    ExportPetal,
+    ImportPetal,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
