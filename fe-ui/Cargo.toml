@@ -9,3 +9,4 @@ bevy_egui = { workspace = true }
 fe-database = { path = "../fe-database" }
 fe-runtime = { path = "../fe-runtime" }
 serde = { workspace = true }
+serde_json = { workspace = true }
