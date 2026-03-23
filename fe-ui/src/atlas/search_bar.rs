@@ -3,22 +3,12 @@ use std::time::{Duration, Instant};
 const DEBOUNCE_MS: u64 = 300;
 
 /// Bevy resource for the search query state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
     pub text: String,
     pub tag_filters: Vec<String>,
     /// Set to `Some(Instant)` when text changes; cleared when search fires.
     pub pending_since: Option<Instant>,
-}
-
-impl Default for SearchQuery {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            tag_filters: Vec::new(),
-            pending_since: None,
-        }
-    }
 }
 
 impl SearchQuery {
@@ -85,8 +75,7 @@ mod tests {
 
     #[test]
     fn filter_chips_compose_and() {
-        let mut q = SearchQuery::default();
-        q.tag_filters = vec!["foo".into(), "bar".into()];
+        let q = SearchQuery { tag_filters: vec!["foo".into(), "bar".into()], ..Default::default() };
         assert_eq!(q.tag_filters.len(), 2);
     }
 

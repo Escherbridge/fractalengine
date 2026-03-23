@@ -1,12 +1,12 @@
-/// Petal Portal — Overlay Activation System
-///
-/// Drives the full lifecycle of the in-scene browser overlay:
-///   - Activation on model entity selection
-///   - Deactivation on deselect / ESC
-///   - Cleanup when the active entity is despawned
-///   - Overlay repositioning each frame (PostUpdate)
-///   - Tab visibility gating by role (Phase 3)
-///   - URL editor commit system (Phase 4)
+//! Petal Portal — Overlay Activation System
+//!
+//! Drives the full lifecycle of the in-scene browser overlay:
+//!   - Activation on model entity selection
+//!   - Deactivation on deselect / ESC
+//!   - Cleanup when the active entity is despawned
+//!   - Overlay repositioning each frame (PostUpdate)
+//!   - Tab visibility gating by role (Phase 3)
+//!   - URL editor commit system (Phase 4)
 
 use bevy::prelude::*;
 use std::collections::HashSet;
@@ -29,11 +29,11 @@ pub struct Selected;
 // ---------------------------------------------------------------------------
 
 /// Fired when all selections are cleared (e.g. clicking empty space, pressing ESC).
-#[derive(Debug, Clone, Event)]
+#[derive(Debug, Clone, Message)]
 pub struct SelectionCleared;
 
 /// Fired by the URL editor panel when the user commits a URL change.
-#[derive(Debug, Clone, Event)]
+#[derive(Debug, Clone, Message)]
 pub struct UrlEditorSaved {
     /// Entity whose `ModelUrlMeta` should be mutated.
     pub entity: Entity,
@@ -63,20 +63,15 @@ pub struct ActivePortal {
 /// Role enum used for tab visibility gating.
 /// Mirrors the role concept in `fe-auth`; defined here to avoid a hard dep.
 // CROSS-CRATE: verify this matches the canonical Role type after merge
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Role {
     /// Full access including Config tab.
     Admin,
     /// Can view but not edit.
+    #[default]
     Viewer,
     /// Can edit content but not admin functions.
     Editor,
-}
-
-impl Default for Role {
-    fn default() -> Self {
-        Role::Viewer
-    }
 }
 
 /// Controls which browser tabs are visible for the current session.
@@ -259,7 +254,7 @@ pub fn petal_portal_activation_system(
 pub fn petal_portal_deactivation_system(
     mut portal: ResMut<ActivePortal>,
     mut visible_tabs: ResMut<VisibleTabs>,
-    mut cleared_events: EventReader<SelectionCleared>,
+    mut cleared_events: MessageReader<SelectionCleared>,
     keys: Res<ButtonInput<KeyCode>>,
     mut browser_commands: MessageWriter<BrowserCommand>,
 ) {
@@ -299,7 +294,7 @@ pub fn position_overlay_system(
         return;
     };
     // Only act when the camera moved (change detection).
-    let Ok((_camera, _cam_transform)) = camera_query.get_single() else {
+    let Ok((_camera, _cam_transform)) = camera_query.single() else {
         return;
     };
     let Ok(_model_transform) = model_query.get(active_entity) else {
@@ -313,7 +308,7 @@ pub fn position_overlay_system(
 /// Update — processes `UrlEditorSaved` events. Validates the new URL, mutates
 /// `ModelUrlMeta`, and (if the overlay is active for this entity) navigates.
 pub fn url_editor_commit_system(
-    mut saved_events: EventReader<UrlEditorSaved>,
+    mut saved_events: MessageReader<UrlEditorSaved>,
     mut meta_query: Query<&mut ModelUrlMeta>,
     portal: Res<ActivePortal>,
     mut browser_commands: MessageWriter<BrowserCommand>,
@@ -342,11 +337,10 @@ pub fn url_editor_commit_system(
         }
 
         // Navigate if this is the currently-active portal entity.
-        if portal.entity == Some(event.entity) {
-            if event.field == UrlField::External {
-                if let Ok(parsed) = event.value.parse::<Url>() {
-                    browser_commands.write(BrowserCommand::Navigate { url: parsed });
-                }
+        if portal.entity == Some(event.entity)
+            && event.field == UrlField::External {
+            if let Ok(parsed) = event.value.parse::<Url>() {
+                browser_commands.write(BrowserCommand::Navigate { url: parsed });
             }
         }
     }
@@ -365,8 +359,8 @@ impl Plugin for PetalPortalPlugin {
         app.init_resource::<TabVisibilityFilter>();
         app.init_resource::<VisibleTabs>();
 
-        app.add_event::<SelectionCleared>();
-        app.add_event::<UrlEditorSaved>();
+        app.add_message::<SelectionCleared>();
+        app.add_message::<UrlEditorSaved>();
 
         app.add_systems(PreUpdate, tab_switch_guard_system);
 
@@ -436,7 +430,6 @@ pub struct InspectorPanelState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::prelude::*;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -511,7 +504,7 @@ mod tests {
         app.world_mut().resource_mut::<ActivePortal>().entity = Some(entity);
 
         // Send the SelectionCleared event.
-        app.world_mut().send_event(SelectionCleared);
+        app.world_mut().write_message(SelectionCleared);
         app.update();
 
         let portal = app.world().resource::<ActivePortal>();
@@ -646,7 +639,7 @@ mod tests {
         app.world_mut().resource_mut::<ActivePortal>().entity = Some(entity);
 
         let new_url = "https://new.example.com".to_string();
-        app.world_mut().send_event(UrlEditorSaved {
+        app.world_mut().write_message(UrlEditorSaved {
             entity,
             field: UrlField::External,
             value: new_url.clone(),
@@ -665,7 +658,7 @@ mod tests {
             config_url: None,
         }).id();
 
-        app.world_mut().send_event(UrlEditorSaved {
+        app.world_mut().write_message(UrlEditorSaved {
             entity,
             field: UrlField::External,
             value: "http://10.0.0.1/secret".to_string(),

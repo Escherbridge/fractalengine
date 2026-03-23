@@ -97,30 +97,25 @@ mod tests {
 
     #[test]
     fn cannot_advance_with_empty_name() {
-        let mut state = PetalWizardState::default();
-        state.name = String::new();
+        let state = PetalWizardState { name: String::new(), ..Default::default() };
         assert!(!state.can_advance());
     }
 
     #[test]
     fn cannot_advance_with_name_over_64_chars() {
-        let mut state = PetalWizardState::default();
-        state.name = "x".repeat(65);
+        let state = PetalWizardState { name: "x".repeat(65), ..Default::default() };
         assert!(!state.can_advance());
     }
 
     #[test]
     fn can_advance_with_valid_name_at_step_one() {
-        let mut state = PetalWizardState::default();
-        state.name = "My Petal".into();
+        let state = PetalWizardState { name: "My Petal".into(), ..Default::default() };
         assert!(state.can_advance());
     }
 
     #[test]
     fn reset_returns_to_step_one_with_cleared_fields() {
-        let mut state = PetalWizardState::default();
-        state.name = "Temp".into();
-        state.step = WizardStep::Confirm;
+        let mut state = PetalWizardState { name: "Temp".into(), step: WizardStep::Confirm, ..Default::default() };
         state.reset();
         assert_eq!(state.step, WizardStep::Identity);
         assert!(state.name.is_empty());
@@ -128,8 +123,7 @@ mod tests {
 
     #[test]
     fn add_tag_rejects_duplicate_case_insensitive() {
-        let mut state = PetalWizardState::default();
-        state.name = "X".into();
+        let mut state = PetalWizardState { name: "X".into(), ..Default::default() };
         state.add_tag("Foo".into()).unwrap();
         let result = state.add_tag("foo".into());
         assert!(result.is_err());
@@ -138,8 +132,7 @@ mod tests {
 
     #[test]
     fn add_tag_rejects_over_32_chars() {
-        let mut state = PetalWizardState::default();
-        state.name = "X".into();
+        let mut state = PetalWizardState { name: "X".into(), ..Default::default() };
         let long_tag = "a".repeat(33);
         let result = state.add_tag(long_tag);
         assert!(result.is_err());
@@ -147,8 +140,7 @@ mod tests {
 
     #[test]
     fn add_tag_rejects_when_count_is_20() {
-        let mut state = PetalWizardState::default();
-        state.name = "X".into();
+        let mut state = PetalWizardState { name: "X".into(), ..Default::default() };
         for i in 0..20 {
             state.add_tag(format!("tag{}", i)).unwrap();
         }

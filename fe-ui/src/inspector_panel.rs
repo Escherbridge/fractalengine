@@ -1,7 +1,7 @@
-/// Inspector panel for model entities — shows URL editor fields with live validation.
-///
-/// The Config URL field is gated behind `TabVisibilityFilter::can_view_config()`;
-/// non-admin users never see it, preventing role-escalation via the UI.
+//! Inspector panel for model entities — shows URL editor fields with live validation.
+//!
+//! The Config URL field is gated behind `TabVisibilityFilter::can_view_config()`;
+//! non-admin users never see it, preventing role-escalation via the UI.
 
 use bevy_egui::egui;
 

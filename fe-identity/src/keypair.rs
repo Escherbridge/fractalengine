@@ -47,7 +47,6 @@ impl NodeKeypair {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::Verifier;
 
     #[test]
     fn test_generate_and_sign() {

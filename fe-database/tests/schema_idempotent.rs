@@ -26,7 +26,7 @@ async fn petal_visibility_rejects_invalid_value() {
     // DEFERRED TO VALIDATION PHASE
     let db = test_db().await;
     apply_schema(&db).await.unwrap();
-    let result: surrealdb::Result<surrealdb::Response> = db
+    let result: surrealdb::Result<surrealdb::IndexedResults> = db
         .query("CREATE petal SET visibility = 'forbidden'")
         .await;
     assert!(result.is_err() || {

@@ -281,7 +281,7 @@ impl SpaceManager {
 
 /// Extract the `count` field from a SurrealDB `count() GROUP ALL` response.
 fn extract_count(
-    result: Result<surrealdb::Response, surrealdb::Error>,
+    result: Result<surrealdb::IndexedResults, surrealdb::Error>,
 ) -> u64 {
     let Ok(mut r) = result else { return 0 };
     let rows: Vec<serde_json::Value> = r.take(0).unwrap_or_default();

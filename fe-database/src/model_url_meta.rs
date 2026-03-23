@@ -1,3 +1,5 @@
+use bevy::prelude::{ReflectComponent, ReflectDefault};
+
 /// `ModelUrlMeta` is a Bevy `Component` that stores optional external and config URLs
 /// for model entities in the FractalEngine scene graph.
 ///

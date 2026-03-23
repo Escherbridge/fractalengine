@@ -1,4 +1,4 @@
-use ed25519_dalek::{Signer, SigningKey, Verifier};
+use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 
 #[test]
