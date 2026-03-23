@@ -16,7 +16,7 @@ pub enum BrowserEvent {
     TabChanged { tab: BrowserTab },
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BrowserTab {
     ExternalUrl,
     Config,

@@ -14,6 +14,7 @@ url = { version = "2", features = ["serde"] }
 ipnet = "2"
 serde = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }
 fe-database = { path = "../fe-database" }
 
 [dev-dependencies]
