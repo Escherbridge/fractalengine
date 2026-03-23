@@ -18,3 +18,4 @@ tracing = { workspace = true }
 fe-database = { path = "../fe-database" }
 
 [dev-dependencies]
+ulid = { workspace = true }
