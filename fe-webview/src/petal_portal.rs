@@ -267,7 +267,7 @@ pub fn petal_portal_deactivation_system(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut browser_commands: MessageWriter<BrowserCommand>,
 ) {
-    let esc_pressed = keys.map_or(false, |k| k.just_pressed(KeyCode::Escape));
+    let esc_pressed = keys.is_some_and(|k| k.just_pressed(KeyCode::Escape));
     let selection_cleared = cleared_events.read().count() > 0;
 
     if esc_pressed || selection_cleared {
