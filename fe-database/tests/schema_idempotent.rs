@@ -27,13 +27,13 @@ async fn petal_visibility_rejects_invalid_value() {
     let db = test_db().await;
     apply_schema(&db).await.unwrap();
     let result: surrealdb::Result<surrealdb::IndexedResults> = db
-        .query("CREATE petal SET visibility = 'forbidden'")
+        .query("CREATE petal SET petal_id = 'p1', name = 'test', node_id = 'n1', created_at = '2026-01-01', visibility = 'forbidden'")
         .await;
+    // SurrealDB v3: validation errors are embedded inside IndexedResults, not the outer Result.
+    // So we check: outer Err OR inner take() Err OR empty results.
     assert!(result.is_err() || {
-        result
-            .unwrap()
-            .take::<Vec<serde_json::Value>>(0)
-            .unwrap()
-            .is_empty()
+        let mut response = result.unwrap();
+        let taken = response.take::<Vec<serde_json::Value>>(0);
+        taken.is_err() || taken.unwrap().is_empty()
     });
 }

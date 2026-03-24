@@ -98,6 +98,11 @@ impl TabVisibilityFilter {
 #[derive(Debug, Resource)]
 pub struct VisibleTabs(pub HashSet<BrowserTab>);
 
+/// Intermediate buffer used by `tab_switch_guard_system` + `flush_browser_commands_system`
+/// to avoid a Bevy B0002 (Res + ResMut on the same Messages<T> in one system).
+#[derive(Debug, Resource, Default)]
+pub struct PendingBrowserCommands(pub Vec<BrowserCommand>);
+
 impl Default for VisibleTabs {
     fn default() -> Self {
         let mut set = HashSet::new();
@@ -175,38 +180,42 @@ fn clear_portal(
 // Systems
 // ---------------------------------------------------------------------------
 
-/// PreUpdate — filters unauthorized `BrowserCommand::SwitchTab` events.
+/// PreUpdate (step 1/2) — filters unauthorized `BrowserCommand::SwitchTab` events.
 ///
 /// Reads every pending `BrowserCommand`; if a `SwitchTab(Config)` arrives
-/// and the current role cannot view config, the message is consumed and a
-/// warning is logged. All other commands are re-emitted unchanged.
+/// and the current role cannot view config, it is dropped with a warning.
+/// Allowed commands are placed into `PendingBrowserCommands` for the flush step.
 ///
-/// NOTE: Because Bevy messages are consumed on read, this system must re-emit
-/// allowed commands so the downstream system still sees them.
+/// Split into two systems to avoid Bevy B0002 (Res + ResMut on Messages<T> in one system):
+/// `MessageReader` borrows Res<Messages<T>>, `MessageWriter` borrows ResMut<Messages<T>>.
 pub fn tab_switch_guard_system(
     filter: Res<TabVisibilityFilter>,
     mut reader: MessageReader<BrowserCommand>,
-    mut writer: MessageWriter<BrowserCommand>,
+    mut pending: ResMut<PendingBrowserCommands>,
 ) {
-    let mut pass_through = Vec::new();
+    pending.0.clear();
     for cmd in reader.read() {
         match cmd {
-            BrowserCommand::SwitchTab { tab: BrowserTab::Config } => {
-                if !filter.can_view_config() {
-                    warn!(
-                        target: "petal_portal",
-                        "Unauthorized SwitchTab(Config) blocked — role={:?}",
-                        filter.role
-                    );
-                    // Drop the command — do not push to pass_through.
-                } else {
-                    pass_through.push(cmd.clone());
-                }
+            BrowserCommand::SwitchTab { tab: BrowserTab::Config } if !filter.can_view_config() => {
+                warn!(
+                    target: "petal_portal",
+                    "Unauthorized SwitchTab(Config) blocked — role={:?}",
+                    filter.role
+                );
+                // Drop — do not add to pending.
             }
-            other => pass_through.push(other.clone()),
+            other => pending.0.push(other.clone()),
         }
     }
-    for cmd in pass_through {
+}
+
+/// PreUpdate (step 2/2) — flushes `PendingBrowserCommands` back into the
+/// `BrowserCommand` message stream after the guard has filtered it.
+pub fn flush_browser_commands_system(
+    mut pending: ResMut<PendingBrowserCommands>,
+    mut writer: MessageWriter<BrowserCommand>,
+) {
+    for cmd in pending.0.drain(..) {
         writer.write(cmd);
     }
 }
@@ -255,10 +264,10 @@ pub fn petal_portal_deactivation_system(
     mut portal: ResMut<ActivePortal>,
     mut visible_tabs: ResMut<VisibleTabs>,
     mut cleared_events: MessageReader<SelectionCleared>,
-    keys: Res<ButtonInput<KeyCode>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
     mut browser_commands: MessageWriter<BrowserCommand>,
 ) {
-    let esc_pressed = keys.just_pressed(KeyCode::Escape);
+    let esc_pressed = keys.map_or(false, |k| k.just_pressed(KeyCode::Escape));
     let selection_cleared = cleared_events.read().count() > 0;
 
     if esc_pressed || selection_cleared {
@@ -358,11 +367,15 @@ impl Plugin for PetalPortalPlugin {
         app.init_resource::<ActivePortal>();
         app.init_resource::<TabVisibilityFilter>();
         app.init_resource::<VisibleTabs>();
+        app.init_resource::<PendingBrowserCommands>();
 
         app.add_message::<SelectionCleared>();
         app.add_message::<UrlEditorSaved>();
 
-        app.add_systems(PreUpdate, tab_switch_guard_system);
+        // Chain guard + flush so they run in order in PreUpdate.
+        // guard: MessageReader<BrowserCommand> → PendingBrowserCommands (no B0002)
+        // flush: PendingBrowserCommands → MessageWriter<BrowserCommand> (no B0002)
+        app.add_systems(PreUpdate, (tab_switch_guard_system, flush_browser_commands_system).chain());
 
         app.add_systems(
             Update,
