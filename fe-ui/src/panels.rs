@@ -165,7 +165,7 @@ fn left_sidebar(ctx: &egui::Context, state: &mut UiState, dashboard: &DashboardS
                     ui.add_space(4.0);
                     sidebar_section_space_overview(ui, dashboard, state);
                     ui.add_space(2.0);
-                    sidebar_section_petals(ui, state);
+                    sidebar_section_petals(ui);
                     ui.add_space(2.0);
                     sidebar_section_peers(ui, dashboard);
                     ui.add_space(2.0);
@@ -178,7 +178,7 @@ fn left_sidebar(ctx: &egui::Context, state: &mut UiState, dashboard: &DashboardS
 }
 
 
-fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState, state: &UiState) {
+fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState, state: &mut UiState) {
     let header = egui::CollapsingHeader::new(
         egui::RichText::new("Space Overview")
             .strong()
@@ -211,8 +211,8 @@ fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState,
                 .small()
                 .color(egui::Color32::from_rgb(120, 120, 140)),
         );
-        let _tag_input = ui.add(
-            egui::TextEdit::singleline(&mut state.tag_filter_buf.clone())
+        ui.add(
+            egui::TextEdit::singleline(&mut state.tag_filter_buf)
                 .hint_text("filter by tag…")
                 .desired_width(f32::INFINITY),
         );
@@ -221,8 +221,7 @@ fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState,
     let _ = header;
 }
 
-fn sidebar_section_petals(ui: &mut egui::Ui, state: &UiState) {
-    let _ = state;
+fn sidebar_section_petals(ui: &mut egui::Ui) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Petals")
             .strong()
@@ -366,7 +365,7 @@ fn right_inspector(ctx: &egui::Context, state: &mut UiState) {
                     ui.add_space(4.0);
                     inspector_entity_section(ui, state);
                     ui.add_space(2.0);
-                    inspector_transform_section(ui);
+                    inspector_transform_section(ui, state);
                     ui.add_space(2.0);
                     inspector_url_meta_section(ui, state);
                 });
@@ -396,7 +395,7 @@ fn inspector_entity_section(ui: &mut egui::Ui, state: &UiState) {
     });
 }
 
-fn inspector_transform_section(ui: &mut egui::Ui) {
+fn inspector_transform_section(ui: &mut egui::Ui, state: &mut UiState) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Transform")
             .strong()
@@ -405,10 +404,11 @@ fn inspector_transform_section(ui: &mut egui::Ui) {
     .default_open(true)
     .show(ui, |ui| {
         ui.add_space(4.0);
-        for (label, values) in [
-            ("Position", ["0.00", "0.00", "0.00"]),
-            ("Rotation", ["0.00", "0.00", "0.00"]),
-            ("Scale",    ["1.00", "1.00", "1.00"]),
+        let axis_color = egui::Color32::from_rgb(160, 100, 100);
+        for (label, bufs) in [
+            ("Position", &mut state.inspector_pos),
+            ("Rotation", &mut state.inspector_rot),
+            ("Scale",    &mut state.inspector_scale),
         ] {
             ui.horizontal(|ui| {
                 ui.add_sized(
@@ -419,10 +419,10 @@ fn inspector_transform_section(ui: &mut egui::Ui) {
                             .color(egui::Color32::from_rgb(120, 120, 140)),
                     ),
                 );
-                for (axis, val) in ["X", "Y", "Z"].iter().zip(values.iter()) {
-                    ui.label(egui::RichText::new(*axis).small().color(egui::Color32::from_rgb(160, 100, 100)));
+                for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
+                    ui.label(egui::RichText::new(*axis).small().color(axis_color));
                     ui.add(
-                        egui::TextEdit::singleline(&mut val.to_string())
+                        egui::TextEdit::singleline(buf)
                             .desired_width(52.0)
                             .font(egui::TextStyle::Monospace),
                     );

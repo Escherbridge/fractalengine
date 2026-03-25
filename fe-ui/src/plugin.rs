@@ -14,6 +14,11 @@ pub struct UiState {
     pub inspector_external_url: String,
     pub inspector_config_url: String,
 
+    // Inspector transform buffers (position, rotation, scale — X/Y/Z)
+    pub inspector_pos: [String; 3],
+    pub inspector_rot: [String; 3],
+    pub inspector_scale: [String; 3],
+
     // Sidebar search buffer
     pub tag_filter_buf: String,
 }
@@ -27,6 +32,9 @@ impl Default for UiState {
             is_admin: false,
             inspector_external_url: String::new(),
             inspector_config_url: String::new(),
+            inspector_pos: ["0.00".into(), "0.00".into(), "0.00".into()],
+            inspector_rot: ["0.00".into(), "0.00".into(), "0.00".into()],
+            inspector_scale: ["1.00".into(), "1.00".into(), "1.00".into()],
             tag_filter_buf: String::new(),
         }
     }
