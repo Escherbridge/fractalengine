@@ -1,7 +1,7 @@
 use fe_database::atlas::SpaceOverview; // CROSS-CRATE: verify this type exists after merge
 
 /// Bevy resource for the space overview dashboard state.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, bevy::prelude::Resource)]
 pub struct DashboardState {
     pub petal_count: u64,
     pub room_count: u64,
