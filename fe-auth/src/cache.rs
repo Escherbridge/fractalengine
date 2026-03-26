@@ -18,7 +18,7 @@ impl SessionCache {
     pub fn get(&self, pub_key: &[u8; 32]) -> Option<&RoleId> {
         self.entries
             .get(pub_key)
-            .filter(|(_, t)| t.elapsed().as_secs() < SESSION_TTL_SECS)
+            .filter(|(_, t): &&(RoleId, Instant)| t.elapsed().as_secs() < SESSION_TTL_SECS)
             .map(|(role, _)| role)
     }
 
@@ -32,7 +32,7 @@ impl SessionCache {
 
     pub fn prune_expired(&mut self) {
         self.entries
-            .retain(|_, (_, t)| t.elapsed().as_secs() < SESSION_TTL_SECS);
+            .retain(|_, (_, t): &mut (RoleId, Instant)| t.elapsed().as_secs() < SESSION_TTL_SECS);
     }
 }
 

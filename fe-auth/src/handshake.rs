@@ -12,7 +12,7 @@ pub async fn connect(
 ) -> anyhow::Result<String> {
     let node_id_hex = hex::encode(peer_pub_key.to_bytes());
     let petal_id_str = petal_id.0.to_string();
-    let role = fe_database::rbac::get_role(&db_handle.0, &node_id_hex, &petal_id_str)
+    let role: RoleId = fe_database::rbac::get_role(&*db_handle.0, &node_id_hex, &petal_id_str)
         .await
         .unwrap_or_else(|_| RoleId("public".to_string()));
     let token = fe_identity::jwt::mint_session_token(node_keypair, &petal_id_str, &role.0, 300)?;

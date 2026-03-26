@@ -1,4 +1,4 @@
-use fe_database::atlas::Visibility; // CROSS-CRATE: verify this type exists after merge
+use fe_database::atlas::Visibility;
 
 /// Step in the petal creation wizard.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -12,6 +12,7 @@ pub enum WizardStep {
 /// Error type for tag validation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagError {
+    Empty,
     Duplicate,
     TooLong,
     LimitReached,
@@ -20,6 +21,7 @@ pub enum TagError {
 impl std::fmt::Display for TagError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            TagError::Empty => write!(f, "Tag cannot be empty"),
             TagError::Duplicate => write!(f, "Tag already exists"),
             TagError::TooLong => write!(f, "Tag must be 32 characters or fewer"),
             TagError::LimitReached => write!(f, "Maximum 20 tags allowed"),
@@ -70,16 +72,7 @@ impl PetalWizardState {
 
     /// Validate and add a tag to the list.
     pub fn add_tag(&mut self, tag: String) -> Result<(), TagError> {
-        if self.tags.len() >= 20 {
-            return Err(TagError::LimitReached);
-        }
-        if tag.len() > 32 {
-            return Err(TagError::TooLong);
-        }
-        let lower = tag.to_lowercase();
-        if self.tags.iter().any(|t| t.to_lowercase() == lower) {
-            return Err(TagError::Duplicate);
-        }
+        super::tag_panel::validate_tag(&self.tags, &tag)?;
         self.tags.push(tag);
         Ok(())
     }

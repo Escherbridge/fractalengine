@@ -693,4 +693,243 @@ At any point to see overall progress:
 
 ---
 
-*Playbook version: 2026-03-21 | Based on deep interview spec + 8-persona research synthesis*
+---
+
+## Wave 7 — Interactive Digital Twin Platform (6 tracks)
+
+> **Context:** Wave 1-6 established the foundation. Wave 7 builds the user-facing interactive platform:
+> drag-and-drop 3D assets, live admin UI, peer discovery, 3D interaction, browser overlays, and metadata management.
+
+### Dependency Graph
+
+```
+Parallel batch A (no deps):
+  ├── Petal Seed (drag-drop + asset ingestion)
+  ├── Garden Console (live admin UI)
+  └── Mycelium Live (peer discovery)
+
+Batch B (after Petal Seed):
+  └── Bloom Stage (3D scene + interaction)
+
+Batch C (after Bloom Stage / Garden Console):
+  ├── Petal Portal (digital twin browser overlay)  ← needs Bloom Stage
+  └── Fractal Atlas (metadata + space manager)     ← needs Garden Console
+```
+
+---
+
+### Batch A — Foundation Features (3 parallel agents)
+
+**Launch all 3 in one message:**
+
+**Agent 7A-1 — Petal Seed (GLTF Drag-and-Drop):**
+
+```
+/conductor:implement petal_seed_20260322
+
+Context: This track enables GLB file drag-and-drop onto the Bevy window,
+ingestion via GltfIngester, DB storage via channel architecture, and 3D spawning.
+
+Follow the TDD plan strictly:
+- Phase 1: Add PlaceModel/ListAssets to DbCommand/DbResult + AssetInfo struct
+- Phase 2: Wire DB thread handlers + list_models query
+- Phase 3: AssetRegistry Resource + live asset browser panel
+- Phase 4: FileDragAndDrop handler + SceneRoot spawning + 3D camera
+
+Run cargo test after each phase. Fix failures before proceeding.
+Commit per phase: feat(fractalengine): Petal Seed Phase N — <description>
+```
+
+**Agent 7A-2 — Garden Console (Live Admin UI):**
+
+```
+/conductor:implement garden_console_20260322
+
+Context: This track wires all 6 stub egui panels to real SurrealDB data,
+adds CRUD operations, and creates the active petal selector.
+
+Follow the TDD plan strictly:
+- Phase 1: Add 7 new DbCommand + DbResult variants + record structs
+- Phase 2: DB thread handlers + query functions (list_petals, list_rooms, etc.)
+- Phase 3: 6 Bevy Resources + polling systems + stale-flag refresh
+- Phase 4: Live panel implementations (Petals, Rooms, Models, Roles, Sessions, NodeStatus)
+- Phase 5: Active Petal Selector + Role Chip + Node Status integration
+
+Run cargo test after each phase. Fix failures before proceeding.
+Commit per phase: feat(fe-ui): Garden Console Phase N — <description>
+```
+
+**Agent 7A-3 — Mycelium Live (Peer Discovery):**
+
+```
+/conductor:implement mycelium_live_20260322
+
+Context: This track wires the existing libp2p swarm into spawn_network_thread,
+extends NetworkCommand/NetworkEvent, and delivers live Peer Manager UI.
+
+Follow the TDD plan strictly:
+- Phase 1: PeerInfo/PetalSummary types + NetworkCommand/Event extensions + identity bridge
+- Phase 2: Swarm init in network thread + tokio::select! event loop + command handlers
+- Phase 3: Kademlia DHT petal announcements + discovery + bootstrap
+- Phase 4: PeerRegistry Resource + live Peer Manager panel + Petal Browser
+
+Run cargo test after each phase. Fix failures before proceeding.
+Commit per phase: feat(fe-network): Mycelium Live Phase N — <description>
+```
+
+---
+
+### Batch B — 3D Scene (after Petal Seed completes)
+
+**Agent 7B-1 — Bloom Stage (3D Scene & Object Interaction):**
+
+```
+/conductor:implement bloom_stage_20260322
+
+Context: This track replaces Camera2d with a 3D orbit camera, spawns GLTF models
+from DB records, adds raycasting selection, highlight system, transform editing,
+and model inspector panel.
+
+Depends on: Petal Seed (models must exist to render them)
+
+Follow the TDD plan strictly:
+- Phase 1: 3D camera with orbit controls + lighting + ground plane
+- Phase 2: ModelMetadata component + GLTF spawning system + schema extensions
+- Phase 3: Raycasting selection + hover highlight + SelectedModel resource
+- Phase 4: Transform editor panel (egui DragValue sliders → DB update)
+- Phase 5: Model inspector panel + URL attachment + activation trigger
+
+Run cargo test after each phase. Fix failures before proceeding.
+Commit per phase: feat(fe-renderer): Bloom Stage Phase N — <description>
+```
+
+---
+
+### Batch C — Digital Twin Features (after Batch B / Garden Console)
+
+**Launch both in parallel:**
+
+**Agent 7C-1 — Petal Portal (Digital Twin Browser Overlay):**
+
+```
+/conductor:implement petal_portal_20260322
+
+Context: This is the crown jewel — click a 3D model and interact with it via
+a browser overlay. IoT dashboards, store pages, game embeds, control panels.
+
+Depends on: Bloom Stage (needs 3D model selection system)
+
+Follow the TDD plan strictly:
+- Phase 1: Model URL metadata (external_url/config_url) + schema extension
+- Phase 2: Overlay activation system (selection → BrowserCommand flow)
+- Phase 3: Two-tab system with role-gated visibility
+- Phase 4: Trust bar injection + lifecycle management + URL editor
+
+Run cargo test after each phase. Fix failures before proceeding.
+Commit per phase: feat(fe-webview): Petal Portal Phase N — <description>
+```
+
+**Agent 7C-2 — Fractal Atlas (Space Manager & Metadata):**
+
+```
+/conductor:implement fractal_atlas_20260322
+
+Context: This track extends the database schema with rich metadata,
+adds wizard UIs for petal/room creation, model metadata editing,
+tag-based search, and JSON import/export.
+
+Depends on: Garden Console (needs live admin UI infrastructure)
+
+Follow the TDD plan strictly:
+- Phase 1: Schema extensions (DEFINE FIELD IF NOT EXISTS) + Rust types in atlas.rs
+- Phase 2: CRUD query functions for metadata (petal, room, model)
+- Phase 3: Petal creation wizard + room editor UI
+- Phase 4: Model metadata editor + tag system + visibility controls
+- Phase 5: Space dashboard + import/export + search/filter
+
+Run cargo test after each phase. Fix failures before proceeding.
+Commit per phase: feat(fe-database): Fractal Atlas Phase N — <description>
+```
+
+---
+
+### Wave 7 Validation
+
+After all 6 tracks complete, run the validation suite:
+
+**Stage 7.1 — Build Check:**
+
+```
+/oh-my-claudecode:build-fix
+Fix all compilation errors in FractalEngine workspace after Wave 7 merges.
+Focus on cross-crate type mismatches from the 6 new tracks.
+```
+
+**Stage 7.2 — Lint + Format:**
+
+```
+/oh-my-claudecode:ultrawork
+Fix all formatting and lint issues from Wave 7.
+Run: cargo fmt --all && cargo clippy -- -D warnings
+Re-run until both pass clean.
+```
+
+**Stage 7.3 — Test Suite:**
+
+```
+/oh-my-claudecode:ralph
+Execute and fix tests for all Wave 7 changes, crate by crate.
+Focus on: fe-runtime (new message types), fe-database (new queries),
+fe-network (swarm integration), fe-ui (live panels), fractalengine (drag-drop + spawn).
+Circuit breaker: 3 attempts per crate, then flag for review.
+```
+
+**Stage 7.4 — Integration QA:**
+
+```
+/oh-my-claudecode:ultraqa
+Full integration test for Wave 7 features:
+  ✓ Drag-and-drop GLB → model appears in 3D scene
+  ✓ Asset browser shows ingested models
+  ✓ Create petal/room via admin UI → appears in DB
+  ✓ Role assignment works through UI
+  ✓ 3D model selection + highlight works
+  ✓ Browser overlay opens on model activation
+  ✓ URL security validation blocks RFC-1918
+  ✓ Peer connection via libp2p (loopback test)
+  ✓ Petal announcement via Kademlia DHT
+  ✓ Metadata CRUD (tags, description, visibility)
+  ✓ JSON export/import round-trip
+```
+
+**Stage 7.5 — Code Review:**
+
+```
+/oh-my-claudecode:code-review
+Review all Wave 7 code changes. Focus on:
+- Thread safety at channel boundaries
+- No unwrap()/expect() in production paths
+- URL validation on every navigation path
+- RBAC enforcement on all DB mutations
+- Memory safety with wry webview lifecycle
+```
+
+---
+
+### Wave 7 Quick Reference — OMC Tools
+
+| Batch | Tool | Purpose |
+|-------|------|---------|
+| A (3 parallel) | `/conductor:implement` | Petal Seed + Garden Console + Mycelium Live |
+| B (sequential) | `/conductor:implement` | Bloom Stage (after Petal Seed) |
+| C (2 parallel) | `/conductor:implement` | Petal Portal + Fractal Atlas |
+| 7.1 | `/oh-my-claudecode:build-fix` | Fix cross-track compilation errors |
+| 7.2 | `/oh-my-claudecode:ultrawork` | Parallel lint/format fixing |
+| 7.3 | `/oh-my-claudecode:ralph` | Per-crate test fixing loop |
+| 7.4 | `/oh-my-claudecode:ultraqa` | QA cycling — integration tests |
+| 7.5 | `/oh-my-claudecode:code-review` | Security + quality review |
+| Monitor | `/conductor:status` | Check progress at any point |
+
+---
+
+*Playbook version: 2026-03-22 | Wave 7 added — Interactive Digital Twin Platform*

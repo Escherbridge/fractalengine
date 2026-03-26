@@ -5,7 +5,10 @@ pub async fn create_petal(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
     name: &str,
     node_id: &NodeId,
+    caller_node_id: &NodeId,
 ) -> anyhow::Result<PetalId> {
+    // TODO: verse-level permission check for petal creation
+    let _ = caller_node_id; // RBAC skipped for creation: no petal_id exists yet
     let petal_id = PetalId(ulid::Ulid::new());
     let entry = OpLogEntry {
         lamport_clock: 0,
@@ -29,12 +32,14 @@ pub async fn create_petal(
 
 pub async fn create_room(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    caller_node_id: &NodeId,
     petal_id: &PetalId,
     name: &str,
 ) -> anyhow::Result<()> {
+    crate::rbac::require_write_role(db, &caller_node_id.0, &petal_id.0.to_string()).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
-        node_id: NodeId("system".to_string()),
+        node_id: caller_node_id.clone(),
         op_type: OpType::CreateRoom,
         payload: serde_json::json!({ "petal_id": petal_id.0.to_string(), "name": name }),
         sig: "00".repeat(64),
@@ -52,13 +57,15 @@ pub async fn create_room(
 
 pub async fn place_model(
     db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    caller_node_id: &NodeId,
     petal_id: &PetalId,
     asset_id: &str,
     transform: serde_json::Value,
 ) -> anyhow::Result<()> {
+    crate::rbac::require_write_role(db, &caller_node_id.0, &petal_id.0.to_string()).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
-        node_id: NodeId("system".to_string()),
+        node_id: caller_node_id.clone(),
         op_type: OpType::PlaceModel,
         payload: serde_json::json!({
             "petal_id": petal_id.0.to_string(),

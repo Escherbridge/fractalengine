@@ -1,0 +1,10 @@
+{
+  "track_id": "mycelium_live_20260322",
+  "name": "Mycelium Live — Peer Discovery & Node Browsing",
+  "status": "pending",
+  "created_at": "2026-03-22",
+  "phases": 4,
+  "tasks": 12,
+  "depends_on": [],
+  "blocks": []
+}

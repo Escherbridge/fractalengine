@@ -27,6 +27,8 @@ pub struct BevyHandles {
 pub fn build_app(handles: BevyHandles) -> App {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
+    // EguiPlugin must be added after DefaultPlugins so Assets<Shader> exists in the World.
+    app.add_plugins(bevy_egui::EguiPlugin::default());
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     app.add_message::<NetworkEvent>();
     app.add_message::<DbResult>();

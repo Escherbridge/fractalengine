@@ -20,6 +20,7 @@ fe-auth = { path = "../fe-auth" }
 fe-runtime = { path = "../fe-runtime" }
 fe-network = { path = "../fe-network" }
 fe-database = { path = "../fe-database" }
+fe-ui = { path = "../fe-ui" }
 bevy = { workspace = true }
 crossbeam = { workspace = true }
 tracing = { workspace = true }

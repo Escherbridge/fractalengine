@@ -1,4 +1,4 @@
-use fe_database::atlas::SpaceOverview; // CROSS-CRATE: verify this type exists after merge
+use fe_database::atlas::SpaceOverview;
 
 /// Bevy resource for the space overview dashboard state.
 #[derive(Debug, Clone, Default, bevy::prelude::Resource)]
@@ -8,6 +8,7 @@ pub struct DashboardState {
     pub model_count: u64,
     pub peer_count: u64,
     pub is_online: bool,
+    pub node_count: u64,
 }
 
 impl DashboardState {

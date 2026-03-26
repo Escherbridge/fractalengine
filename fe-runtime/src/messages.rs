@@ -16,12 +16,14 @@ pub enum NetworkEvent {
 #[derive(Debug, Clone)]
 pub enum DbCommand {
     Ping,
+    Seed,
     Shutdown,
 }
 
 #[derive(Debug, Clone, Message)]
 pub enum DbResult {
     Pong,
+    Seeded { petal_name: String, rooms: Vec<String> },
     Started,
     Stopped,
     Error(String),
