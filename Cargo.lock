@@ -3945,6 +3945,7 @@ dependencies = [
  "fe-identity",
  "fe-network",
  "hex",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
@@ -3955,10 +3956,13 @@ name = "fe-database"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bevy",
  "chrono",
  "crossbeam",
+ "fe-identity",
  "fe-runtime",
+ "hex",
  "serde",
  "serde_json",
  "surrealdb",
@@ -4025,6 +4029,7 @@ name = "fe-runtime"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_egui",
  "crossbeam",
  "tracing",
 ]

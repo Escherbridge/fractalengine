@@ -17,7 +17,7 @@ pub async fn build_swarm(local_key: libp2p::identity::Keypair) -> anyhow::Result
     let swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
         .with_quic()
-        .with_behaviour(|key| {
+        .with_behaviour(|key: &libp2p::identity::Keypair| {
             let peer_id = key.public().to_peer_id();
             let store = MemoryStore::new(peer_id);
             let kademlia = kad::Behaviour::new(peer_id, store);

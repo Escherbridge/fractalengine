@@ -1,10 +1,12 @@
-use bevy_egui::{egui, EguiContexts};
+use bevy_egui::egui;
+use crate::theme;
 
-pub fn role_chip_hud(mut ctx: EguiContexts) {
-    let Ok(ectx) = ctx.ctx_mut() else { return };
+/// Renders the role indicator chip in the bottom-right corner.
+/// `role_label` should come from the actual session role (e.g. "owner", "editor", "public").
+pub fn role_chip_hud(ctx: &egui::Context, role_label: &str) {
     egui::Area::new("role_chip".into())
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
-        .show(ectx, |ui| {
-            ui.add(egui::Button::new("admin").fill(egui::Color32::from_rgb(30, 30, 50)));
+        .show(ctx, |ui| {
+            ui.add(egui::Button::new(role_label).fill(theme::BG_ROLE_CHIP));
         });
 }

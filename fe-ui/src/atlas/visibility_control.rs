@@ -1,5 +1,5 @@
 use bevy_egui::egui;
-use fe_database::atlas::Visibility; // CROSS-CRATE: verify this type exists after merge
+use fe_database::atlas::Visibility;
 
 /// Extension trait that adds a human-readable display name to `Visibility`.
 pub trait VisibilityExt {

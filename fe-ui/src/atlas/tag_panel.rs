@@ -4,6 +4,9 @@ use super::petal_wizard::TagError;
 
 /// Validate a tag string, returning Ok or a TagError.
 pub fn validate_tag(tags: &[String], tag: &str) -> Result<(), TagError> {
+    if tag.trim().is_empty() {
+        return Err(TagError::Empty);
+    }
     if tags.len() >= 20 {
         return Err(TagError::LimitReached);
     }

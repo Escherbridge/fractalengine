@@ -13,9 +13,11 @@ impl SpaceManager {
     /// Update all metadata fields on a petal and write an op-log entry.
     pub async fn update_petal_metadata(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+        caller_node_id: &str,
         petal_id: PetalId,
         meta: PetalMetadata,
     ) -> anyhow::Result<()> {
+        crate::rbac::require_write_role(db, caller_node_id, &petal_id.0.to_string()).await?;
         let vis_str = match meta.visibility {
             Visibility::Public => "public",
             Visibility::Private => "private",
@@ -33,7 +35,7 @@ impl SpaceManager {
 
         let entry = OpLogEntry {
             lamport_clock: 0,
-            node_id: NodeId("system".to_string()),
+            node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdatePetalMeta,
             payload: serde_json::json!({
                 "petal_id": petal_id.0.to_string(),
@@ -51,9 +53,11 @@ impl SpaceManager {
     /// Update only the visibility field of a petal.
     pub async fn set_petal_visibility(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+        caller_node_id: &str,
         petal_id: PetalId,
         visibility: Visibility,
     ) -> anyhow::Result<()> {
+        crate::rbac::require_write_role(db, caller_node_id, &petal_id.0.to_string()).await?;
         let vis_str = match visibility {
             Visibility::Public => "public",
             Visibility::Private => "private",
@@ -66,7 +70,7 @@ impl SpaceManager {
 
         let entry = OpLogEntry {
             lamport_clock: 0,
-            node_id: NodeId("system".to_string()),
+            node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdatePetalMeta,
             payload: serde_json::json!({
                 "petal_id": petal_id.0.to_string(),
@@ -116,9 +120,12 @@ impl SpaceManager {
     /// Update room description, bounds, and spawn point.
     pub async fn update_room_metadata(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+        caller_node_id: &str,
+        petal_id: &str,
         room_id: String,
         meta: RoomMetadata,
     ) -> anyhow::Result<()> {
+        crate::rbac::require_write_role(db, caller_node_id, petal_id).await?;
         let bounds_val = meta
             .bounds
             .as_ref()
@@ -142,7 +149,7 @@ impl SpaceManager {
 
         let entry = OpLogEntry {
             lamport_clock: 0,
-            node_id: NodeId("system".to_string()),
+            node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdateRoomMeta,
             payload: serde_json::json!({ "room_id": room_id }),
             sig: "00".repeat(64),
@@ -169,9 +176,12 @@ impl SpaceManager {
     /// Update all model metadata fields.
     pub async fn update_model_metadata(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+        caller_node_id: &str,
+        petal_id: &str,
         model_id: String,
         update: ModelMetadataUpdate,
     ) -> anyhow::Result<()> {
+        crate::rbac::require_write_role(db, caller_node_id, petal_id).await?;
         db.query(
             "UPDATE model SET \
              display_name = $display_name, \
@@ -193,7 +203,7 @@ impl SpaceManager {
 
         let entry = OpLogEntry {
             lamport_clock: 0,
-            node_id: NodeId("system".to_string()),
+            node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdateModelMeta,
             payload: serde_json::json!({ "model_id": model_id }),
             sig: "00".repeat(64),
@@ -203,21 +213,27 @@ impl SpaceManager {
     }
 
     /// Upsert a single key-value pair into a model's metadata object.
+    ///
+    /// `key` must be a valid identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) to prevent
+    /// SurrealQL injection via the field path, which cannot be parameterised.
     pub async fn upsert_model_kv(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+        caller_node_id: &str,
+        petal_id: &str,
         model_id: String,
         key: &str,
         value: serde_json::Value,
     ) -> anyhow::Result<()> {
-        // Use string interpolation for the field path since SurrealDB doesn't support
-        // parameterised field names in UPDATE SET.
-        let q = format!(
-            "UPDATE model SET metadata.{key} = $value WHERE id = $id",
-            key = key
-        );
+        crate::rbac::require_write_role(db, caller_node_id, petal_id).await?;
+        if !is_valid_field_key(key) {
+            anyhow::bail!(
+                "invalid metadata key {key:?}: must match [a-zA-Z_][a-zA-Z0-9_]*"
+            );
+        }
+        let q = format!("UPDATE model SET metadata.{key} = $value WHERE id = $id");
         db.query(q)
             .bind(("value", value))
-            .bind(("id", model_id.clone()))
+            .bind(("id", model_id))
             .await?;
         Ok(())
     }
@@ -276,6 +292,19 @@ impl SpaceManager {
             peer_count: 0,
             estimated_storage_bytes: 0,
         })
+    }
+}
+
+/// Validate that a metadata field key is a safe SurrealQL identifier.
+/// Accepts `[a-zA-Z_][a-zA-Z0-9_]*` only — no dots, spaces, or operators.
+fn is_valid_field_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        None => false,
+        Some(first) => {
+            (first.is_ascii_alphabetic() || first == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
     }
 }
 

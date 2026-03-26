@@ -1,0 +1,10 @@
+{
+  "track_id": "garden_console_20260322",
+  "name": "Garden Console — Live Admin & Space Manager UI",
+  "status": "pending",
+  "created_at": "2026-03-22",
+  "phases": 5,
+  "tasks": 15,
+  "depends_on": [],
+  "blocks": ["fractal_atlas_20260322"]
+}

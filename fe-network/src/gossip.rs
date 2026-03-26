@@ -1,3 +1,5 @@
+// TODO: Wire gossip to the running swarm handle once it is accessible from this context.
+// Currently these functions are stubs that log only.
 use crate::types::GossipMessage;
 use ed25519_dalek::{Signature, VerifyingKey};
 

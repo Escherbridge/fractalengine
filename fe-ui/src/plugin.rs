@@ -1,42 +1,75 @@
 use crate::{atlas::DashboardState, panels, panels::Tool, role_chip};
 use bevy::prelude::*;
-use bevy_egui::EguiContexts;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
 
-/// Persistent UI state: sidebar visibility, selection, active tool, inspector field buffers.
+/// Sidebar visibility and search state.
 #[derive(Resource)]
-pub struct UiState {
-    pub sidebar_open: bool,
-    pub selected_entity: Option<Entity>,
-    pub active_tool: Tool,
-    pub is_admin: bool,
-
-    // Inspector field edit buffers
-    pub inspector_external_url: String,
-    pub inspector_config_url: String,
-
-    // Inspector transform buffers (position, rotation, scale — X/Y/Z)
-    pub inspector_pos: [String; 3],
-    pub inspector_rot: [String; 3],
-    pub inspector_scale: [String; 3],
-
-    // Sidebar search buffer
+pub struct SidebarState {
+    pub open: bool,
     pub tag_filter_buf: String,
 }
 
-impl Default for UiState {
+impl Default for SidebarState {
     fn default() -> Self {
         Self {
-            sidebar_open: true,
-            selected_entity: None,
-            active_tool: Tool::Select,
-            is_admin: false,
-            inspector_external_url: String::new(),
-            inspector_config_url: String::new(),
-            inspector_pos: ["0.00".into(), "0.00".into(), "0.00".into()],
-            inspector_rot: ["0.00".into(), "0.00".into(), "0.00".into()],
-            inspector_scale: ["1.00".into(), "1.00".into(), "1.00".into()],
+            open: true,
             tag_filter_buf: String::new(),
         }
+    }
+}
+
+/// Currently active editor tool.
+#[derive(Resource, Default)]
+pub struct ToolState {
+    pub active_tool: Tool,
+}
+
+/// Inspector panel state: selection, transform buffers, URL fields.
+#[derive(Resource)]
+pub struct InspectorState {
+    pub selected_entity: Option<Entity>,
+    pub is_admin: bool,
+    pub external_url: String,
+    pub config_url: String,
+    pub pos: [String; 3],
+    pub rot: [String; 3],
+    pub scale: [String; 3],
+}
+
+impl Default for InspectorState {
+    fn default() -> Self {
+        Self {
+            selected_entity: None,
+            is_admin: false,
+            external_url: String::new(),
+            config_url: String::new(),
+            pos: ["0.00".into(), "0.00".into(), "0.00".into()],
+            rot: ["0.00".into(), "0.00".into(), "0.00".into()],
+            scale: ["1.00".into(), "1.00".into(), "1.00".into()],
+        }
+    }
+}
+
+/// Verse and fractal navigation state.
+#[derive(Resource, Default)]
+pub struct NavigationState {
+    pub active_verse_id: Option<String>,
+    pub active_verse_name: String,
+    pub active_fractal_id: Option<String>,
+    pub active_fractal_name: String,
+    pub active_petal_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation_state_default_has_no_active_verse() {
+        let state = NavigationState::default();
+        assert!(state.active_verse_id.is_none());
+        assert!(state.active_fractal_id.is_none());
+        assert!(state.active_petal_id.is_none());
     }
 }
 
@@ -44,26 +77,26 @@ pub struct GardenerConsolePlugin;
 
 impl Plugin for GardenerConsolePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(bevy_egui::EguiPlugin::default());
-        app.init_resource::<UiState>();
+        app.init_resource::<SidebarState>();
+        app.init_resource::<ToolState>();
+        app.init_resource::<InspectorState>();
+        app.init_resource::<NavigationState>();
         app.init_resource::<DashboardState>();
-        app.add_systems(Update, gardener_ui_system);
+        app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
     }
 }
 
 fn gardener_ui_system(
     mut ctx: EguiContexts,
-    mut ui_state: ResMut<UiState>,
+    mut sidebar: ResMut<SidebarState>,
+    mut tool: ResMut<ToolState>,
+    mut inspector: ResMut<InspectorState>,
+    nav: Res<NavigationState>,
     dashboard: Res<DashboardState>,
-    mut warmup: Local<u8>,
 ) {
-    // Egui needs a few frames to initialize after window creation.
-    if *warmup < 3 {
-        *warmup += 1;
-        return;
-    }
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
-    panels::gardener_console(ectx, &mut ui_state, &dashboard);
-    role_chip::role_chip_hud(ectx);
+    panels::gardener_console(ectx, &mut sidebar, &mut tool, &mut inspector, &nav, &dashboard);
+    let role_label = if inspector.is_admin { "admin" } else { "member" };
+    role_chip::role_chip_hud(ectx, role_label);
 }

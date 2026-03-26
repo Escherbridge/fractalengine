@@ -1,4 +1,5 @@
 use fe_runtime::messages::{NetworkCommand, NetworkEvent};
+use libp2p::futures::StreamExt as _;
 
 pub mod discovery;
 pub mod gossip;
@@ -18,23 +19,46 @@ pub fn spawn_network_thread(
         "spawn_network_thread must not be called from within a Tokio runtime"
     );
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to build network Tokio runtime");
         rt.block_on(async {
-            // TODO Sprint 3B: initialise libp2p Swarm and iroh endpoint here
             tracing::info!("Network thread started");
+
+            let local_key = libp2p::identity::Keypair::generate_ed25519();
+
+            let mut swarm_handle = match swarm::build_swarm(local_key).await {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::error!("Failed to build swarm: {e}");
+                    tx.send(NetworkEvent::Stopped).ok();
+                    return;
+                }
+            };
+
+            if let Err(e) = discovery::start_discovery(&mut swarm_handle).await {
+                tracing::warn!("Discovery bootstrap error (continuing): {e}");
+            }
+
             tx.send(NetworkEvent::Started).ok();
-            #[allow(clippy::while_let_loop)]
+
             loop {
-                match rx.recv() {
-                    Ok(NetworkCommand::Ping) => {
-                        tx.send(NetworkEvent::Pong).ok();
+                tokio::select! {
+                    cmd = async { rx.recv() } => {
+                        match cmd {
+                            Ok(NetworkCommand::Ping) => {
+                                tx.send(NetworkEvent::Pong).ok();
+                            }
+                            Ok(NetworkCommand::Shutdown) | Err(_) => break,
+                        }
                     }
-                    Ok(NetworkCommand::Shutdown) | Err(_) => break,
+                    event = swarm_handle.swarm.select_next_some() => {
+                        tracing::debug!("Swarm event: {:?}", event);
+                    }
                 }
             }
+
             tracing::info!("Network thread shutting down");
             tx.send(NetworkEvent::Stopped).ok();
         });
