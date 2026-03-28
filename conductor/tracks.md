@@ -61,6 +61,8 @@ Dependency graph:
 
   Mycelium Live      (independent)
   (peer discovery)
+
+  Seedling Onboarding (independent — builds on Wave 1 infra)
 ```
 
 ## [ ] Track: Petal Seed — GLTF Drag-and-Drop & Asset Seeding
@@ -92,3 +94,8 @@ _Depends on: Bloom Stage_
 
 _Link: [./tracks/fractal_atlas_20260322/](./tracks/fractal_atlas_20260322/)_
 _Depends on: Garden Console_
+
+## [ ] Track: Seedling Onboarding — Local/Peer Instance Bootstrap + Entity CRUD
+
+_Link: [./tracks/seedling_onboarding_20260327/](./tracks/seedling_onboarding_20260327/)_
+_Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Gardener Console, Mycelium Network)_
