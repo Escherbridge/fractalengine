@@ -1,0 +1,7 @@
+{
+  "id": "seedling_onboarding_20260327",
+  "description": "User onboarding, account local/peer setup, and CRUD operations for Verses, Fractals, Petals, Rooms, Nodes",
+  "type": "feature",
+  "created_at": "2026-03-27T00:00:00Z",
+  "status": "pending"
+}
