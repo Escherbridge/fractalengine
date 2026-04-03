@@ -1,0 +1,7 @@
+{
+  "id": "selection_system_20260402",
+  "description": "Raycast selection, highlight shader, multi-select, box select, inspector sync, selection events",
+  "type": "feature",
+  "created_at": "2026-04-02T00:00:00Z",
+  "status": "pending"
+}

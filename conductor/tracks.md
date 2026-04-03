@@ -53,6 +53,15 @@ _Link: [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)_
 ```
 Dependency graph:
 
+  Viewport Foundation ──┬──► Light Box
+  (camera + grid)       │    (lighting rig)
+                        │
+                        ├──► Scene Graph Bridge ──┬──► Selection System ──► Transform Gizmos
+                        │    (DB ↔ ECS sync)      │    (raycast + highlight)  (move/rotate/scale)
+                        │                         │
+                        └──► Drag & Drop ─────────┘
+                             (file drop + placement)
+
   Petal Seed ──────► Bloom Stage ──────► Petal Portal
   (drag-drop)        (3D scene)          (browser overlay)
 
@@ -64,6 +73,40 @@ Dependency graph:
 
   Seedling Onboarding (independent — builds on Wave 1 infra)
 ```
+
+### 3D Editor Pipeline (new)
+
+## [ ] Track: Viewport Foundation — 3D Camera, Infinite Ground Plane, and Bevy Scene Setup
+
+_Link: [./tracks/viewport_foundation_20260402/](./tracks/viewport_foundation_20260402/)_
+_Depends on: none | Blocks: Light Box, Scene Graph Bridge, Selection System, Transform Gizmos, Drag & Drop_
+
+## [ ] Track: Light Box — Default Lighting Rig and Light Management System
+
+_Link: [./tracks/light_box_20260402/](./tracks/light_box_20260402/)_
+_Depends on: Viewport Foundation | Blocks: none_
+
+## [ ] Track: Scene Graph Bridge — DB Entity ↔ Bevy ECS Synchronization
+
+_Link: [./tracks/scene_graph_bridge_20260402/](./tracks/scene_graph_bridge_20260402/)_
+_Depends on: Viewport Foundation | Blocks: Selection System, Drag & Drop_
+
+## [ ] Track: Selection System — Raycasting, Highlighting, and Inspector Sync
+
+_Link: [./tracks/selection_system_20260402/](./tracks/selection_system_20260402/)_
+_Depends on: Viewport Foundation, Scene Graph Bridge | Blocks: Transform Gizmos_
+
+## [ ] Track: Transform Gizmos — Blender-Style Move/Rotate/Scale Handles
+
+_Link: [./tracks/transform_gizmos_20260402/](./tracks/transform_gizmos_20260402/)_
+_Depends on: Selection System | Blocks: none_
+
+## [ ] Track: Drag & Drop Asset Placement — File Drop + Scene Placement Flow
+
+_Link: [./tracks/drag_drop_placement_20260402/](./tracks/drag_drop_placement_20260402/)_
+_Depends on: Viewport Foundation, Scene Graph Bridge | Blocks: none_
+
+### Existing Wave 2 Tracks
 
 ## [ ] Track: Petal Seed — GLTF Drag-and-Drop & Asset Seeding
 

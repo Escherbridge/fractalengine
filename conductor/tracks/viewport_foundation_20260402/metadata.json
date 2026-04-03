@@ -1,0 +1,7 @@
+{
+  "id": "viewport_foundation_20260402",
+  "description": "3D orbit camera, infinite ground grid, sky environment, viewport-egui integration, axis gizmo",
+  "type": "feature",
+  "created_at": "2026-04-02T00:00:00Z",
+  "status": "pending"
+}
