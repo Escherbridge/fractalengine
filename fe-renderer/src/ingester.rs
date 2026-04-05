@@ -32,7 +32,9 @@ pub struct SplatIngester;
 impl AssetIngester for SplatIngester {
     fn ingest(&self, _bytes: &[u8]) -> anyhow::Result<AssetId> {
         // v2 target: Gaussian splatting ingestion — not yet implemented.
-        Err(anyhow::anyhow!("Gaussian splatting ingestion is not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Gaussian splatting ingestion is not yet implemented"
+        ))
     }
 }
 

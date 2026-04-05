@@ -26,5 +26,11 @@ pub const STATUS_ONLINE: Color32 = Color32::from_rgb(100, 180, 100);
 pub const STATUS_OFFLINE: Color32 = Color32::from_rgb(180, 100, 100);
 pub const STATUS_OFFLINE_DOT: Color32 = Color32::from_rgb(180, 60, 60);
 
+// Tree hierarchy
+pub const TREE_NODE_ICON: Color32 = Color32::from_rgb(140, 180, 220);
+pub const TREE_SELECTED_BG: Color32 = Color32::from_rgb(40, 55, 80);
+pub const BG_CONTEXT_MENU: Color32 = Color32::from_rgb(30, 30, 40);
+pub const BG_DIALOG: Color32 = Color32::from_rgb(28, 28, 38);
+
 // Misc
 pub const TEXT_VIEWPORT_HINT: Color32 = Color32::from_rgba_unmultiplied_const(180, 180, 200, 80);

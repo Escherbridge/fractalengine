@@ -23,13 +23,9 @@ fn main() {
         db_res_rx: ch.db_res_rx,
     });
 
-    // Add UI console and a camera so we can see the panels
+    // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
+    app.add_plugins(fe_renderer::viewport::ViewportPlugin);
     app.add_plugins(fe_ui::plugin::GardenerConsolePlugin);
-    app.add_systems(bevy::prelude::Startup, setup_camera);
 
     app.run();
-}
-
-fn setup_camera(mut commands: bevy::prelude::Commands) {
-    commands.spawn(bevy::prelude::Camera2d);
 }

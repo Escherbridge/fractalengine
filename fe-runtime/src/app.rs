@@ -26,7 +26,21 @@ pub struct BevyHandles {
 
 pub fn build_app(handles: BevyHandles) -> App {
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins);
+    // Override AssetPlugin's file_path so Bevy loads assets from the same
+    // directory the GLB import writer uses (`fractalengine/assets` relative
+    // to CWD). We resolve it to an ABSOLUTE path to avoid Bevy's normal
+    // CARGO_MANIFEST_DIR prefixing (which would yield
+    // `fractalengine/fractalengine/assets`) and to avoid the exe-relative
+    // fallback path when launched standalone from `target/{debug,release}/`.
+    let asset_root = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("fractalengine")
+        .join("assets");
+    tracing::info!("Bevy AssetPlugin file_path = {}", asset_root.display());
+    app.add_plugins(DefaultPlugins.set(bevy::asset::AssetPlugin {
+        file_path: asset_root.to_string_lossy().into_owned(),
+        ..Default::default()
+    }));
     // EguiPlugin must be added after DefaultPlugins so Assets<Shader> exists in the World.
     app.add_plugins(bevy_egui::EguiPlugin::default());
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
