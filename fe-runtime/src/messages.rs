@@ -18,6 +18,12 @@ pub enum DbCommand {
     Ping,
     Seed,
     Shutdown,
+    CreateVerse { name: String },
+    CreateFractal { verse_id: String, name: String },
+    CreatePetal { fractal_id: String, name: String },
+    CreateNode { petal_id: String, name: String, position: [f32; 3] },
+    ImportGltf { petal_id: String, name: String, file_path: String, position: [f32; 3] },
+    LoadHierarchy,
 }
 
 #[derive(Debug, Clone, Message)]
@@ -27,6 +33,45 @@ pub enum DbResult {
     Started,
     Stopped,
     Error(String),
+    VerseCreated { id: String, name: String },
+    FractalCreated { id: String, verse_id: String, name: String },
+    PetalCreated { id: String, fractal_id: String, name: String },
+    NodeCreated { id: String, petal_id: String, name: String, has_asset: bool },
+    GltfImported { node_id: String, asset_id: String, petal_id: String, name: String, asset_path: String, position: [f32; 3] },
+    HierarchyLoaded { verses: Vec<VerseHierarchyData> },
+}
+
+#[derive(Debug, Clone)]
+pub struct VerseHierarchyData {
+    pub id: String,
+    pub name: String,
+    pub fractals: Vec<FractalHierarchyData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FractalHierarchyData {
+    pub id: String,
+    pub name: String,
+    pub petals: Vec<PetalHierarchyData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PetalHierarchyData {
+    pub id: String,
+    pub name: String,
+    pub nodes: Vec<NodeHierarchyData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeHierarchyData {
+    pub id: String,
+    pub name: String,
+    pub has_asset: bool,
+    pub position: [f32; 3],
+    pub asset_path: Option<String>,
+    /// The petal that owns this node — used by the UI to scope scene entity
+    /// spawn/despawn to the currently active petal.
+    pub petal_id: String,
 }
 
 #[cfg(test)]
