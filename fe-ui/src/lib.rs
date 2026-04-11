@@ -1,3 +1,7 @@
+// Bevy UI systems and panel functions commonly exceed clippy's 7-argument
+// limit because each piece of UI state is a separate Bevy resource.
+#![allow(clippy::too_many_arguments)]
+
 pub mod atlas;
 pub mod panels;
 pub mod plugin;

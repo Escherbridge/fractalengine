@@ -1,6 +1,6 @@
 # Channel Bridge
 
-All 8 typed crossbeam channels that connect the three threads. Every channel is bounded at 256 to provide backpressure.
+All typed crossbeam channels that connect the three threads. Every channel is bounded at 256 to provide backpressure.
 
 ```mermaid
 graph LR
@@ -54,17 +54,55 @@ classDiagram
     class DbCommand {
         <<enum>>
         Ping
+        Seed
         Shutdown
+        CreateVerse(name)
+        CreateFractal(verse_id, name)
+        CreatePetal(fractal_id, name)
+        CreateNode(petal_id, name, position)
+        ImportGltf(petal_id, name, file_path, position)
+        LoadHierarchy
+        GenerateVerseInvite(verse_id, include_write_cap, expiry_hours)
+        JoinVerseByInvite(invite_string)
+        ResetDatabase
     }
 
     class DbResult {
         <<enum>>
         Pong
+        Seeded(petal_name, rooms)
         Started
         Stopped
         Error(String)
+        VerseCreated(id, name)
+        FractalCreated(id, verse_id, name)
+        PetalCreated(id, fractal_id, name)
+        NodeCreated(id, petal_id, name, has_asset)
+        GltfImported(node_id, asset_id, petal_id, name, asset_path, position)
+        HierarchyLoaded(verses)
+        VerseInviteGenerated(verse_id, invite_string)
+        VerseJoined(verse_id, verse_name)
+        DatabaseReset(petal_name, rooms)
     }
 
     NetworkCommand ..> NetworkEvent : T2 processes → emits
     DbCommand ..> DbResult : T3 processes → emits
+```
+
+## Hierarchy Data Flow
+
+The `LoadHierarchy` command returns the full tree as nested structs:
+
+```
+DbResult::HierarchyLoaded
+  └── Vec<VerseHierarchyData>
+        ├── id, name, namespace_id
+        └── Vec<FractalHierarchyData>
+              ├── id, name
+              └── Vec<PetalHierarchyData>
+                    ├── id, name
+                    └── Vec<NodeHierarchyData>
+                          ├── id, name, has_asset, position
+                          ├── asset_path (optional)
+                          └── petal_id
 ```

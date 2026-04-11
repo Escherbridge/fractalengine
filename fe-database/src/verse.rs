@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct VerseMember {
-    pub member_id: String,        // ULID
+    pub member_id: String, // ULID
     pub verse_id: String,
-    pub peer_did: String,         // did:key
+    pub peer_did: String, // did:key
     pub status: MemberStatus,
     pub invited_by: String,       // did:key of inviter
     pub invite_sig: String,       // hex-encoded Ed25519 signature

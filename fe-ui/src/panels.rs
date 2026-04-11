@@ -3,7 +3,8 @@ use bevy_egui::egui;
 use crate::atlas::DashboardState;
 use crate::plugin::{
     CameraFocusTarget, ContextMenuState, CreateDialogState, CreateKind, GltfImportState,
-    InspectorState, NavigationState, SidebarState, ToolState, VerseHierarchy, ViewportCursorWorld,
+    InspectorState, InviteDialogState, JoinDialogState, NavigationState, PeerDebugPanelState,
+    SidebarState, ToolState, VerseHierarchy, ViewportCursorWorld,
 };
 use crate::theme;
 use fe_runtime::messages::DbCommand;
@@ -27,22 +28,50 @@ pub fn gardener_console(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     camera_focus: &mut CameraFocusTarget,
     cursor_world: &ViewportCursorWorld,
+    invite_dialog: &mut InviteDialogState,
+    join_dialog: &mut JoinDialogState,
+    sync_status: Option<&fe_sync::SyncStatus>,
+    peer_debug: &mut PeerDebugPanelState,
 ) {
     top_toolbar(ctx, sidebar, tool, inspector);
-    status_bar(ctx, dashboard);
-    left_sidebar(ctx, sidebar, nav, dashboard, hierarchy, create_dialog, camera_focus);
+    status_bar(ctx, dashboard, sync_status, nav, peer_debug);
+    left_sidebar(
+        ctx,
+        sidebar,
+        nav,
+        dashboard,
+        hierarchy,
+        create_dialog,
+        camera_focus,
+        invite_dialog,
+        join_dialog,
+        db_tx,
+    );
     right_inspector(ctx, inspector);
 
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ctx, |ui| {
-            viewport_overlay(ui, nav, inspector, context_menu, hierarchy, create_dialog, db_tx, dashboard, cursor_world);
+            viewport_overlay(
+                ui,
+                nav,
+                inspector,
+                context_menu,
+                hierarchy,
+                create_dialog,
+                db_tx,
+                dashboard,
+                cursor_world,
+            );
         });
 
     // Floating dialogs / menus (rendered after panels so they layer on top)
     render_context_menu(ctx, context_menu, gltf_import);
     render_create_dialog(ctx, create_dialog, hierarchy, nav, db_tx);
     render_gltf_import_dialog(ctx, gltf_import, nav, db_tx);
+    render_invite_dialog(ctx, invite_dialog);
+    render_join_dialog(ctx, join_dialog, db_tx);
+    render_peer_debug_panel(ctx, peer_debug, sync_status);
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +93,11 @@ fn top_toolbar(
         )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                let sidebar_icon = if sidebar.open { "\u{25C0} Hide" } else { "\u{25B6} Show" };
+                let sidebar_icon = if sidebar.open {
+                    "\u{25C0} Hide"
+                } else {
+                    "\u{25B6} Show"
+                };
                 if ui
                     .add(egui::Button::new(sidebar_icon).fill(theme::BG_BUTTON))
                     .clicked()
@@ -77,7 +110,11 @@ fn top_toolbar(
                 for (t, label, tooltip) in [
                     (Tool::Select, "\u{2B1A} Select", "Select objects (S)"),
                     (Tool::Move, "\u{271B} Move", "Move selected object (G)"),
-                    (Tool::Rotate, "\u{21BB} Rotate", "Rotate selected object (R)"),
+                    (
+                        Tool::Rotate,
+                        "\u{21BB} Rotate",
+                        "Rotate selected object (R)",
+                    ),
                     (Tool::Scale, "\u{2921} Scale", "Scale selected object (X)"),
                 ] {
                     let active = tool.active_tool == t;
@@ -116,7 +153,13 @@ fn top_toolbar(
 // Status bar
 // ---------------------------------------------------------------------------
 
-fn status_bar(ctx: &egui::Context, dashboard: &DashboardState) {
+fn status_bar(
+    ctx: &egui::Context,
+    dashboard: &DashboardState,
+    sync_status: Option<&fe_sync::SyncStatus>,
+    nav: &NavigationState,
+    peer_debug: &mut PeerDebugPanelState,
+) {
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(22.0)
         .frame(
@@ -126,7 +169,13 @@ fn status_bar(ctx: &egui::Context, dashboard: &DashboardState) {
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if dashboard.is_online {
+                // Phase F: prefer SyncStatus over DashboardState for online/peer info
+                let is_online = sync_status.map(|s| s.online).unwrap_or(dashboard.is_online);
+                let peer_count = sync_status
+                    .map(|s| s.peer_count as u64)
+                    .unwrap_or(dashboard.peer_count);
+
+                if is_online {
                     ui.colored_label(theme::STATUS_ONLINE_DOT, "\u{25CF}");
                     ui.label(
                         egui::RichText::new("Online")
@@ -143,11 +192,35 @@ fn status_bar(ctx: &egui::Context, dashboard: &DashboardState) {
                 }
 
                 ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("{} peers", dashboard.peer_count))
-                        .small()
-                        .color(theme::TEXT_DIM),
-                );
+                // Clickable peer count opens debug panel
+                let peer_label = egui::RichText::new(format!("{} peers", peer_count))
+                    .small()
+                    .color(theme::TEXT_DIM);
+                if ui
+                    .add(egui::Label::new(peer_label).sense(egui::Sense::click()))
+                    .on_hover_text("Click for peer debug panel")
+                    .clicked()
+                {
+                    peer_debug.open = !peer_debug.open;
+                }
+
+                // Phase F: show active verse name
+                if let Some(ref _vid) = nav.active_verse_id {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!("Verse: {}", nav.active_verse_name))
+                            .small()
+                            .color(theme::TEXT_DIM),
+                    );
+                } else if !is_online {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Local only")
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
+
                 ui.separator();
                 ui.label(
                     egui::RichText::new(format!(
@@ -173,6 +246,9 @@ fn left_sidebar(
     hierarchy: &mut VerseHierarchy,
     create_dialog: &mut CreateDialogState,
     camera_focus: &mut CameraFocusTarget,
+    invite_dialog: &mut InviteDialogState,
+    join_dialog: &mut JoinDialogState,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
 ) {
     egui::SidePanel::left("sidebar")
         .resizable(true)
@@ -184,7 +260,7 @@ fn left_sidebar(
                 .inner_margin(egui::Margin::same(0)),
         )
         .show_animated(ctx, sidebar.open, |ui| {
-            sidebar_verse_header(ui, nav, create_dialog);
+            sidebar_verse_header(ui, nav, create_dialog, invite_dialog, join_dialog, db_tx);
             ui.separator();
 
             egui::ScrollArea::vertical()
@@ -196,6 +272,19 @@ fn left_sidebar(
                     sidebar_section_space_overview(ui, dashboard);
                     ui.add_space(4.0);
                 });
+
+            // Bottom-pinned reset button
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
+                let reset_btn = egui::Button::new(
+                    egui::RichText::new("Reset Database").small().color(theme::TEXT_DIM),
+                )
+                .fill(theme::BG_BUTTON_ALT);
+                if ui.add(reset_btn).on_hover_text("Wipe all data and re-seed defaults").clicked() {
+                    db_tx.send(DbCommand::ResetDatabase).ok();
+                }
+                ui.add_space(4.0);
+            });
         });
 }
 
@@ -203,15 +292,14 @@ fn sidebar_verse_header(
     ui: &mut egui::Ui,
     nav: &NavigationState,
     create_dialog: &mut CreateDialogState,
+    invite_dialog: &mut InviteDialogState,
+    join_dialog: &mut JoinDialogState,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
 ) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new("Verse:")
-                .small()
-                .color(theme::TEXT_DIM),
-        );
+        ui.label(egui::RichText::new("Verse:").small().color(theme::TEXT_DIM));
         if nav.active_verse_id.is_some() {
             ui.label(
                 egui::RichText::new(&nav.active_verse_name)
@@ -228,11 +316,7 @@ fn sidebar_verse_header(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
             if ui
-                .add(
-                    egui::Button::new("+")
-                        .fill(theme::BG_BUTTON_ALT)
-                        .small(),
-                )
+                .add(egui::Button::new("+").fill(theme::BG_BUTTON_ALT).small())
                 .on_hover_text("Create new Verse")
                 .clicked()
             {
@@ -241,8 +325,47 @@ fn sidebar_verse_header(
                 create_dialog.parent_id.clear();
                 create_dialog.name_buf.clear();
             }
+            // Phase F: Join Verse button
+            if ui
+                .add(egui::Button::new("Join").fill(theme::BG_BUTTON).small())
+                .on_hover_text("Join a verse by invite")
+                .clicked()
+            {
+                join_dialog.open = true;
+                join_dialog.invite_buf.clear();
+            }
         });
     });
+    // Phase F: Generate Invite button (only when a verse is active)
+    if nav.active_verse_id.is_some() {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            if ui
+                .add(
+                    egui::Button::new("Generate Invite")
+                        .fill(theme::BG_BUTTON)
+                        .small(),
+                )
+                .on_hover_text("Create an invite link for this verse")
+                .clicked()
+            {
+                if let Some(ref vid) = nav.active_verse_id {
+                    let expiry = if invite_dialog.expiry_hours == 0 {
+                        24
+                    } else {
+                        invite_dialog.expiry_hours
+                    };
+                    db_tx
+                        .send(DbCommand::GenerateVerseInvite {
+                            verse_id: vid.clone(),
+                            include_write_cap: invite_dialog.include_write_cap,
+                            expiry_hours: expiry,
+                        })
+                        .ok();
+                }
+            }
+        });
+    }
     ui.add_space(6.0);
 }
 
@@ -271,9 +394,22 @@ fn render_verse_tree(
             .id_salt(format!("verse_{}", verse_id))
             .default_open(true)
             .show(ui, |ui| {
-                render_fractals(ui, &mut hierarchy.verses[vi].fractals, nav, create_dialog, &verse_id, camera_focus);
+                render_fractals(
+                    ui,
+                    &mut hierarchy.verses[vi].fractals,
+                    nav,
+                    create_dialog,
+                    &verse_id,
+                    camera_focus,
+                );
                 // [+] Add Fractal inside the verse collapse
-                add_button_inline(ui, "Add Fractal", CreateKind::Fractal, &verse_id, create_dialog);
+                add_button_inline(
+                    ui,
+                    "Add Fractal",
+                    CreateKind::Fractal,
+                    &verse_id,
+                    create_dialog,
+                );
             });
 
         if resp.header_response.clicked() {
@@ -292,9 +428,10 @@ fn render_verse_tree(
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn render_fractals(
     ui: &mut egui::Ui,
-    fractals: &mut Vec<crate::plugin::FractalEntry>,
+    fractals: &mut [crate::plugin::FractalEntry],
     nav: &mut NavigationState,
     create_dialog: &mut CreateDialogState,
     verse_id: &str,
@@ -306,20 +443,32 @@ fn render_fractals(
         let fractal_name = fractals[fi].name.clone();
         let is_active = nav.active_fractal_id.as_deref() == Some(&fractal_id);
 
-        let header_text = egui::RichText::new(&fractal_name)
-            .color(if is_active {
-                theme::TEXT_BRIGHT
-            } else {
-                theme::TEXT_SECTION
-            });
+        let header_text = egui::RichText::new(&fractal_name).color(if is_active {
+            theme::TEXT_BRIGHT
+        } else {
+            theme::TEXT_SECTION
+        });
 
         let resp = egui::CollapsingHeader::new(header_text)
             .id_salt(format!("fractal_{}_{}", verse_id, fractal_id))
             .default_open(true)
             .show(ui, |ui| {
-                render_petals(ui, &mut fractals[fi].petals, nav, create_dialog, &fractal_id, camera_focus);
+                render_petals(
+                    ui,
+                    &mut fractals[fi].petals,
+                    nav,
+                    create_dialog,
+                    &fractal_id,
+                    camera_focus,
+                );
                 // [+] Add Petal inside the fractal collapse
-                add_button_inline(ui, "Add Petal", CreateKind::Petal, &fractal_id, create_dialog);
+                add_button_inline(
+                    ui,
+                    "Add Petal",
+                    CreateKind::Petal,
+                    &fractal_id,
+                    create_dialog,
+                );
             });
 
         if resp.header_response.clicked() {
@@ -329,9 +478,10 @@ fn render_fractals(
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn render_petals(
     ui: &mut egui::Ui,
-    petals: &mut Vec<crate::plugin::PetalEntry>,
+    petals: &mut [crate::plugin::PetalEntry],
     nav: &mut NavigationState,
     create_dialog: &mut CreateDialogState,
     fractal_id: &str,
@@ -343,12 +493,11 @@ fn render_petals(
         let petal_name = petals[pi].name.clone();
         let is_active = nav.active_petal_id.as_deref() == Some(&petal_id);
 
-        let header_text = egui::RichText::new(&petal_name)
-            .color(if is_active {
-                theme::TEXT_BRIGHT
-            } else {
-                theme::TEXT_SECTION
-            });
+        let header_text = egui::RichText::new(&petal_name).color(if is_active {
+            theme::TEXT_BRIGHT
+        } else {
+            theme::TEXT_SECTION
+        });
 
         let resp = egui::CollapsingHeader::new(header_text)
             .id_salt(format!("petal_{}_{}", fractal_id, petal_id))
@@ -368,7 +517,7 @@ fn render_petals(
 fn render_nodes(
     ui: &mut egui::Ui,
     nodes: &[crate::plugin::NodeEntry],
-    nav: &mut NavigationState,
+    _nav: &mut NavigationState,
     camera_focus: &mut CameraFocusTarget,
 ) {
     for node in nodes {
@@ -518,7 +667,11 @@ fn inspector_entity_section(ui: &mut egui::Ui, inspector: &InspectorState) {
                 .spacing([8.0, 4.0])
                 .show(ui, |ui| {
                     ui.label(egui::RichText::new("ID").small().color(theme::TEXT_DIM));
-                    ui.label(egui::RichText::new(format!("{:?}", entity)).monospace().small());
+                    ui.label(
+                        egui::RichText::new(format!("{:?}", entity))
+                            .monospace()
+                            .small(),
+                    );
                     ui.end_row();
                 });
         }
@@ -538,16 +691,12 @@ fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorState
         for (label, bufs) in [
             ("Position", &mut inspector.pos),
             ("Rotation", &mut inspector.rot),
-            ("Scale",    &mut inspector.scale),
+            ("Scale", &mut inspector.scale),
         ] {
             ui.horizontal(|ui| {
                 ui.add_sized(
                     [60.0, 16.0],
-                    egui::Label::new(
-                        egui::RichText::new(label)
-                            .small()
-                            .color(theme::TEXT_DIM),
-                    ),
+                    egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
                 );
                 for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
                     ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
@@ -573,7 +722,11 @@ fn inspector_url_meta_section(ui: &mut egui::Ui, inspector: &mut InspectorState)
     .show(ui, |ui| {
         ui.add_space(4.0);
 
-        ui.label(egui::RichText::new("External URL").small().color(theme::TEXT_DIM));
+        ui.label(
+            egui::RichText::new("External URL")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
         ui.add(
             egui::TextEdit::singleline(&mut inspector.external_url)
                 .hint_text("https://\u{2026}")
@@ -582,7 +735,11 @@ fn inspector_url_meta_section(ui: &mut egui::Ui, inspector: &mut InspectorState)
 
         if inspector.is_admin {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Config URL (admin)").small().color(theme::TEXT_DIM));
+            ui.label(
+                egui::RichText::new("Config URL (admin)")
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut inspector.config_url)
                     .hint_text("https://admin.\u{2026}")
@@ -630,7 +787,16 @@ fn viewport_overlay(
 
     if nav.active_petal_id.is_some() {
         // === PETAL SELECTED: Full 3D space ===
-        viewport_petal_space(ui, nav, inspector, context_menu, hierarchy, rect, center, cursor_world);
+        viewport_petal_space(
+            ui,
+            nav,
+            inspector,
+            context_menu,
+            hierarchy,
+            rect,
+            center,
+            cursor_world,
+        );
     } else if nav.active_fractal_id.is_some() {
         // === FRACTAL SELECTED: Show petal cards ===
         viewport_petal_browser(ui, nav, hierarchy, create_dialog, db_tx, rect, center);
@@ -639,7 +805,16 @@ fn viewport_overlay(
         viewport_fractal_browser(ui, nav, hierarchy, create_dialog, db_tx, rect, center);
     } else {
         // === NO VERSE: Peer discovery / verse browser ===
-        viewport_verse_browser(ui, nav, hierarchy, create_dialog, db_tx, dashboard, rect, center);
+        viewport_verse_browser(
+            ui,
+            nav,
+            hierarchy,
+            create_dialog,
+            db_tx,
+            dashboard,
+            rect,
+            center,
+        );
     }
 }
 
@@ -656,7 +831,10 @@ fn viewport_petal_space(
 ) {
     // Breadcrumb at top of viewport
     let petal_name = find_petal_name(hierarchy, nav.active_petal_id.as_deref().unwrap_or(""));
-    let breadcrumb = format!("{} / {} / {}", nav.active_verse_name, nav.active_fractal_name, petal_name);
+    let breadcrumb = format!(
+        "{} / {} / {}",
+        nav.active_verse_name, nav.active_fractal_name, petal_name
+    );
     ui.painter().text(
         egui::pos2(center.x, rect.min.y + 16.0),
         egui::Align2::CENTER_CENTER,
@@ -678,12 +856,19 @@ fn viewport_petal_space(
 
     // Use a child ui for the back button so it has proper layout
     let mut back_clicked = false;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(
-        egui::Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0), egui::vec2(80.0, 24.0)),
-    ), |ui| {
-            if ui.add(egui::Button::new(
-                egui::RichText::new("\u{25C0} Back").small(),
-            ).fill(theme::BG_BUTTON)).clicked() {
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
+            egui::vec2(80.0, 24.0),
+        )),
+        |ui| {
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("\u{25C0} Back").small())
+                        .fill(theme::BG_BUTTON),
+                )
+                .clicked()
+            {
                 back_clicked = true;
             }
         },
@@ -710,7 +895,7 @@ fn viewport_verse_browser(
     nav: &mut NavigationState,
     hierarchy: &VerseHierarchy,
     create_dialog: &mut CreateDialogState,
-    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    _db_tx: &crossbeam::channel::Sender<DbCommand>,
     dashboard: &DashboardState,
     rect: egui::Rect,
     center: egui::Pos2,
@@ -757,7 +942,10 @@ fn viewport_verse_browser(
             let resp = ui.add_sized(
                 [card_w, card_h],
                 egui::Button::new(
-                    egui::RichText::new(&verse.name).strong().size(13.0).color(theme::TEXT_BRIGHT),
+                    egui::RichText::new(&verse.name)
+                        .strong()
+                        .size(13.0)
+                        .color(theme::TEXT_BRIGHT),
                 )
                 .fill(theme::BG_PANEL)
                 .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
@@ -789,7 +977,9 @@ fn viewport_verse_browser(
         let resp = ui.add_sized(
             [card_w, card_h],
             egui::Button::new(
-                egui::RichText::new("+ New Verse").size(13.0).color(theme::TEXT_DIM),
+                egui::RichText::new("+ New Verse")
+                    .size(13.0)
+                    .color(theme::TEXT_DIM),
             )
             .fill(egui::Color32::TRANSPARENT)
             .stroke(egui::Stroke::new(1.0, theme::BG_BUTTON_ALT))
@@ -804,7 +994,8 @@ fn viewport_verse_browser(
     });
 
     // --- Peer Discovery section ---
-    let peer_section_y = start_y + ((hierarchy.verses.len() / cards_per_row + 1) as f32) * (card_h + gap) + 20.0;
+    let peer_section_y =
+        start_y + ((hierarchy.verses.len() / cards_per_row + 1) as f32) * (card_h + gap) + 20.0;
 
     ui.painter().text(
         egui::pos2(rect.min.x + 20.0, peer_section_y),
@@ -831,7 +1022,10 @@ fn viewport_verse_browser(
         ui.painter().text(
             peer_box_rect.center(),
             egui::Align2::CENTER_CENTER,
-            format!("{} peers online — browse their open verses", dashboard.peer_count),
+            format!(
+                "{} peers online — browse their open verses",
+                dashboard.peer_count
+            ),
             egui::FontId::proportional(12.0),
             theme::TEXT_SECTION,
         );
@@ -865,12 +1059,19 @@ fn viewport_fractal_browser(
 ) {
     // Back button
     let mut back_clicked = false;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(
-        egui::Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0), egui::vec2(80.0, 24.0)),
-    ), |ui| {
-            if ui.add(egui::Button::new(
-                egui::RichText::new("\u{25C0} Verses").small(),
-            ).fill(theme::BG_BUTTON)).clicked() {
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
+            egui::vec2(80.0, 24.0),
+        )),
+        |ui| {
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("\u{25C0} Verses").small())
+                        .fill(theme::BG_BUTTON),
+                )
+                .clicked()
+            {
                 back_clicked = true;
             }
         },
@@ -890,7 +1091,10 @@ fn viewport_fractal_browser(
         theme::TEXT_STRONG,
     );
 
-    let verse = hierarchy.verses.iter().find(|v| nav.active_verse_id.as_deref() == Some(&v.id));
+    let verse = hierarchy
+        .verses
+        .iter()
+        .find(|v| nav.active_verse_id.as_deref() == Some(&v.id));
 
     if let Some(verse) = verse {
         let card_w = 200.0_f32;
@@ -910,7 +1114,10 @@ fn viewport_fractal_browser(
                 let resp = ui.add_sized(
                     [card_w, card_h],
                     egui::Button::new(
-                        egui::RichText::new(&fractal.name).strong().size(13.0).color(theme::TEXT_BRIGHT),
+                        egui::RichText::new(&fractal.name)
+                            .strong()
+                            .size(13.0)
+                            .color(theme::TEXT_BRIGHT),
                     )
                     .fill(theme::BG_PANEL)
                     .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
@@ -936,13 +1143,16 @@ fn viewport_fractal_browser(
         let new_col = verse.fractals.len() % cards_per_row;
         let new_x = rect.min.x + 20.0 + new_col as f32 * (card_w + gap);
         let new_y = start_y + new_row as f32 * (card_h + gap);
-        let new_rect = egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
+        let new_rect =
+            egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
             let resp = ui.add_sized(
                 [card_w, card_h],
                 egui::Button::new(
-                    egui::RichText::new("+ New Fractal").size(13.0).color(theme::TEXT_DIM),
+                    egui::RichText::new("+ New Fractal")
+                        .size(13.0)
+                        .color(theme::TEXT_DIM),
                 )
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(egui::Stroke::new(1.0, theme::BG_BUTTON_ALT))
@@ -980,12 +1190,19 @@ fn viewport_petal_browser(
 ) {
     // Back button
     let mut back_clicked = false;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(
-        egui::Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0), egui::vec2(100.0, 24.0)),
-    ), |ui| {
-            if ui.add(egui::Button::new(
-                egui::RichText::new("\u{25C0} Fractals").small(),
-            ).fill(theme::BG_BUTTON)).clicked() {
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + 8.0, rect.min.y + 4.0),
+            egui::vec2(100.0, 24.0),
+        )),
+        |ui| {
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("\u{25C0} Fractals").small())
+                        .fill(theme::BG_BUTTON),
+                )
+                .clicked()
+            {
                 back_clicked = true;
             }
         },
@@ -998,7 +1215,10 @@ fn viewport_petal_browser(
     ui.painter().text(
         egui::pos2(center.x, rect.min.y + 35.0),
         egui::Align2::CENTER_CENTER,
-        format!("{} / {} — Select a Petal to enter", nav.active_verse_name, nav.active_fractal_name),
+        format!(
+            "{} / {} — Select a Petal to enter",
+            nav.active_verse_name, nav.active_fractal_name
+        ),
         egui::FontId::proportional(18.0),
         theme::TEXT_STRONG,
     );
@@ -1010,9 +1230,15 @@ fn viewport_petal_browser(
         theme::TEXT_MUTED,
     );
 
-    let fractal_data = hierarchy.verses.iter()
+    let fractal_data = hierarchy
+        .verses
+        .iter()
         .find(|v| nav.active_verse_id.as_deref() == Some(&v.id))
-        .and_then(|v| v.fractals.iter().find(|f| nav.active_fractal_id.as_deref() == Some(&f.id)));
+        .and_then(|v| {
+            v.fractals
+                .iter()
+                .find(|f| nav.active_fractal_id.as_deref() == Some(&f.id))
+        });
 
     if let Some(fractal) = fractal_data {
         let card_w = 180.0_f32;
@@ -1032,7 +1258,10 @@ fn viewport_petal_browser(
                 let resp = ui.add_sized(
                     [card_w, card_h],
                     egui::Button::new(
-                        egui::RichText::new(&petal.name).strong().size(13.0).color(theme::TEXT_BRIGHT),
+                        egui::RichText::new(&petal.name)
+                            .strong()
+                            .size(13.0)
+                            .color(theme::TEXT_BRIGHT),
                     )
                     .fill(theme::BG_PANEL)
                     .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
@@ -1058,13 +1287,16 @@ fn viewport_petal_browser(
         let new_col = fractal.petals.len() % cards_per_row;
         let new_x = rect.min.x + 20.0 + new_col as f32 * (card_w + gap);
         let new_y = start_y + new_row as f32 * (card_h + gap);
-        let new_rect = egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
+        let new_rect =
+            egui::Rect::from_min_size(egui::pos2(new_x, new_y), egui::vec2(card_w, card_h));
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(new_rect), |ui| {
             let resp = ui.add_sized(
                 [card_w, card_h],
                 egui::Button::new(
-                    egui::RichText::new("+ New Petal").size(13.0).color(theme::TEXT_DIM),
+                    egui::RichText::new("+ New Petal")
+                        .size(13.0)
+                        .color(theme::TEXT_DIM),
                 )
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(egui::Stroke::new(1.0, theme::BG_BUTTON_ALT))
@@ -1150,7 +1382,6 @@ fn render_context_menu(
                         // TODO: create empty node at world position
                         context_menu.open = false;
                     }
-
                 });
         });
 
@@ -1203,11 +1434,7 @@ fn render_create_dialog(
                 .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new("Name:")
-                    .small()
-                    .color(theme::TEXT_DIM),
-            );
+            ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
             ui.add(
                 egui::TextEdit::singleline(&mut create_dialog.name_buf)
                     .hint_text("Enter name\u{2026}")
@@ -1222,7 +1449,14 @@ fn render_create_dialog(
                 {
                     let name = create_dialog.name_buf.trim().to_string();
                     if !name.is_empty() {
-                        apply_create(hierarchy, nav, create_dialog.kind, &create_dialog.parent_id, &name, db_tx);
+                        apply_create(
+                            hierarchy,
+                            nav,
+                            create_dialog.kind,
+                            &create_dialog.parent_id,
+                            &name,
+                            db_tx,
+                        );
                         create_dialog.open = false;
                         create_dialog.name_buf.clear();
                     }
@@ -1254,26 +1488,36 @@ fn apply_create(
 ) {
     match kind {
         CreateKind::Verse => {
-            db_tx.send(DbCommand::CreateVerse { name: name.to_string() }).ok();
+            db_tx
+                .send(DbCommand::CreateVerse {
+                    name: name.to_string(),
+                })
+                .ok();
         }
         CreateKind::Fractal => {
-            db_tx.send(DbCommand::CreateFractal {
-                verse_id: parent_id.to_string(),
-                name: name.to_string(),
-            }).ok();
+            db_tx
+                .send(DbCommand::CreateFractal {
+                    verse_id: parent_id.to_string(),
+                    name: name.to_string(),
+                })
+                .ok();
         }
         CreateKind::Petal => {
-            db_tx.send(DbCommand::CreatePetal {
-                fractal_id: parent_id.to_string(),
-                name: name.to_string(),
-            }).ok();
+            db_tx
+                .send(DbCommand::CreatePetal {
+                    fractal_id: parent_id.to_string(),
+                    name: name.to_string(),
+                })
+                .ok();
         }
         CreateKind::Node => {
-            db_tx.send(DbCommand::CreateNode {
-                petal_id: parent_id.to_string(),
-                name: name.to_string(),
-                position: [0.0, 0.0, 0.0],
-            }).ok();
+            db_tx
+                .send(DbCommand::CreateNode {
+                    petal_id: parent_id.to_string(),
+                    name: name.to_string(),
+                    position: [0.0, 0.0, 0.0],
+                })
+                .ok();
         }
     }
 }
@@ -1319,7 +1563,10 @@ fn render_gltf_import_dialog(
                         .hint_text("path/to/model.glb")
                         .desired_width(ui.available_width() - 70.0),
                 );
-                if ui.add(egui::Button::new("Browse...").fill(theme::BG_BUTTON)).clicked() {
+                if ui
+                    .add(egui::Button::new("Browse...").fill(theme::BG_BUTTON))
+                    .clicked()
+                {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("GLTF Models", &["glb", "gltf"])
                         .add_filter("All Files", &["*"])
@@ -1374,12 +1621,18 @@ fn render_gltf_import_dialog(
                     let name = gltf_import.name_buf.trim().to_string();
                     let petal_id = nav.active_petal_id.clone().unwrap_or_default();
                     if !file_path.is_empty() && !petal_id.is_empty() {
-                        db_tx.send(DbCommand::ImportGltf {
-                            petal_id,
-                            name: if name.is_empty() { "Imported Model".to_string() } else { name },
-                            file_path,
-                            position: gltf_import.position,
-                        }).ok();
+                        db_tx
+                            .send(DbCommand::ImportGltf {
+                                petal_id,
+                                name: if name.is_empty() {
+                                    "Imported Model".to_string()
+                                } else {
+                                    name
+                                },
+                                file_path,
+                                position: gltf_import.position,
+                            })
+                            .ok();
                     }
                     gltf_import.open = false;
                 }
@@ -1408,4 +1661,144 @@ pub enum Tool {
     Move,
     Rotate,
     Scale,
+}
+
+// ---------------------------------------------------------------------------
+// Phase F: Invite dialog
+// ---------------------------------------------------------------------------
+
+fn render_invite_dialog(ctx: &egui::Context, invite_dialog: &mut InviteDialogState) {
+    if !invite_dialog.open {
+        return;
+    }
+
+    egui::Window::new("Verse Invite")
+        .collapsible(false)
+        .resizable(true)
+        .default_width(400.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label("Share this invite string with others to let them join your verse:");
+            ui.add_space(4.0);
+
+            // Copyable text field with the invite string
+            let mut invite_str = invite_dialog.invite_string.clone();
+            ui.add(
+                egui::TextEdit::multiline(&mut invite_str)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            );
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Copy to Clipboard").clicked() {
+                    ui.ctx().copy_text(invite_dialog.invite_string.clone());
+                }
+                if ui.button("Close").clicked() {
+                    invite_dialog.open = false;
+                    invite_dialog.invite_string.clear();
+                }
+            });
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Phase F: Join dialog
+// ---------------------------------------------------------------------------
+
+fn render_join_dialog(
+    ctx: &egui::Context,
+    join_dialog: &mut JoinDialogState,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+) {
+    if !join_dialog.open {
+        return;
+    }
+
+    egui::Window::new("Join Verse")
+        .collapsible(false)
+        .resizable(true)
+        .default_width(400.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label("Paste an invite string to join a verse:");
+            ui.add_space(4.0);
+
+            ui.add(
+                egui::TextEdit::multiline(&mut join_dialog.invite_buf)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Paste invite string here...")
+                    .font(egui::TextStyle::Monospace),
+            );
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let can_join = !join_dialog.invite_buf.trim().is_empty();
+                if ui
+                    .add_enabled(can_join, egui::Button::new("Join"))
+                    .clicked()
+                {
+                    db_tx
+                        .send(DbCommand::JoinVerseByInvite {
+                            invite_string: join_dialog.invite_buf.trim().to_string(),
+                        })
+                        .ok();
+                    join_dialog.open = false;
+                    join_dialog.invite_buf.clear();
+                }
+                if ui.button("Cancel").clicked() {
+                    join_dialog.open = false;
+                    join_dialog.invite_buf.clear();
+                }
+            });
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Phase F: Peer debug panel
+// ---------------------------------------------------------------------------
+
+fn render_peer_debug_panel(
+    ctx: &egui::Context,
+    peer_debug: &mut PeerDebugPanelState,
+    sync_status: Option<&fe_sync::SyncStatus>,
+) {
+    if !peer_debug.open {
+        return;
+    }
+
+    egui::Window::new("Peer Debug")
+        .collapsible(true)
+        .resizable(true)
+        .default_width(300.0)
+        .show(ctx, |ui| {
+            if let Some(status) = sync_status {
+                ui.label(format!(
+                    "Online: {}",
+                    if status.online { "Yes" } else { "No" }
+                ));
+                ui.label(format!("Peer count: {}", status.peer_count));
+                if let Some(ref addr) = status.node_addr {
+                    ui.add_space(4.0);
+                    ui.label("Node address:");
+                    ui.monospace(addr);
+                }
+            } else {
+                ui.label("Sync status not available");
+            }
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("Peer list will be populated when gossip discovery is active.")
+                    .small()
+                    .color(theme::TEXT_MUTED),
+            );
+
+            ui.add_space(4.0);
+            if ui.button("Close").clicked() {
+                peer_debug.open = false;
+            }
+        });
 }

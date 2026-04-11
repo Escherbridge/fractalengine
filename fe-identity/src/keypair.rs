@@ -30,8 +30,20 @@ impl NodeKeypair {
         crate::did_key::pub_key_to_did_key(&self.signing_key.verifying_key())
     }
 
-    pub(crate) fn seed_bytes(&self) -> [u8; 32] {
+    /// The raw 32-byte seed (private scalar) of the ed25519 key.
+    ///
+    /// Exposed publicly so that `fe-sync` can derive an [`iroh::SecretKey`]
+    /// from the same seed without depending on `fe-identity` internals.
+    pub fn seed_bytes(&self) -> [u8; 32] {
         self.signing_key.to_bytes()
+    }
+
+    /// Convert to an [`iroh::SecretKey`] sharing the same ed25519 seed.
+    ///
+    /// Both `ed25519-dalek` and `iroh` derive the full keypair deterministically
+    /// from a 32-byte seed, so the resulting `NodeId` matches `self.verifying_key()`.
+    pub fn to_iroh_secret(&self) -> iroh::SecretKey {
+        iroh::SecretKey::from_bytes(&self.seed_bytes())
     }
 
     pub(crate) fn pkcs8_der(&self) -> Vec<u8> {
@@ -54,6 +66,18 @@ mod tests {
         let msg = b"hello fractalengine";
         let sig = kp.sign(msg);
         kp.verifying_key().verify_strict(msg, &sig).unwrap();
+    }
+
+    #[test]
+    fn test_iroh_secret_key_matches_public_key() {
+        let kp = NodeKeypair::generate();
+        let iroh_secret = kp.to_iroh_secret();
+        // Both derive the public key from the same 32-byte seed.
+        assert_eq!(
+            &kp.verifying_key().to_bytes(),
+            iroh_secret.public().as_bytes(),
+            "iroh public key must match ed25519-dalek verifying key"
+        );
     }
 
     #[test]

@@ -7,38 +7,44 @@ graph TD
     FE[fractalengine<br/>Binary Entry Point]
 
     FE --> Runtime[fe-runtime<br/>Bevy App + Channels]
-    FE --> Network[fe-network<br/>libp2p + iroh]
     FE --> Database[fe-database<br/>SurrealDB]
+    FE --> Sync[fe-sync<br/>Replication]
+    FE --> UIPlugin[fe-ui<br/>egui Panels]
 
-    Runtime --> Network
     Runtime --> Database
     Runtime --> Renderer[fe-renderer<br/>Asset Pipeline]
     Runtime --> WebView[fe-webview<br/>wry Browser]
-    Runtime --> UIPlugin[fe-ui<br/>egui Panels]
-    Runtime --> Sync[fe-sync<br/>Replication]
 
-    Network --> Identity[fe-identity<br/>Ed25519 + JWT + DID]
-    Database --> Identity
+    UIPlugin --> Runtime
+    UIPlugin --> Database
+    UIPlugin --> Sync
+
+    Database --> Identity[fe-identity<br/>Ed25519 + JWT + DID]
     Auth[fe-auth<br/>Session + Handshake] --> Identity
+    Auth --> Database
 
-    Network --> Auth
-    Database --> Auth
+    Sync --> Database
+    Sync --> Identity
 
     Renderer --> Identity
-    Sync --> Network
-    Sync --> Database
-
     WebView --> Auth
+
+    TestHarness[fe-test-harness<br/>Integration Scenarios] --> Database
+    TestHarness --> Runtime
+    TestHarness --> Identity
+    TestHarness --> Sync
 
     classDef binary fill:#e74c3c,color:#fff
     classDef core fill:#3498db,color:#fff
     classDef infra fill:#2ecc71,color:#fff
     classDef feature fill:#f39c12,color:#fff
+    classDef test fill:#9b59b6,color:#fff
 
     class FE binary
-    class Runtime,Network,Database core
+    class Runtime,Database core
     class Identity,Auth infra
     class Renderer,WebView,UIPlugin,Sync feature
+    class TestHarness test
 ```
 
 ## External Dependency Map
@@ -51,10 +57,9 @@ graph LR
     end
 
     subgraph P2P["Peer-to-Peer"]
-        Libp2p[libp2p 0.56]
+        Iroh[iroh 0.35]
         IrohB[iroh-blobs 0.35]
         IrohG[iroh-gossip 0.35]
-        IrohD[iroh-docs 0.35]
     end
 
     subgraph Data["Data Layer"]
@@ -79,6 +84,7 @@ graph LR
         Tracing_[tracing 0.1]
         ULID[ulid 1.x]
         Anyhow[anyhow 1.x]
-        Thiserror_[thiserror 1.x]
+        Chrono[chrono 0.4]
+        Base64[base64 0.22]
     end
 ```

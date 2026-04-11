@@ -1,26 +1,53 @@
 # Asset Pipeline
 
-## GLTF Ingestion Flow
+## GLTF Import Flow
 
 ```mermaid
 graph TD
-    Upload[Operator Uploads<br/>GLB File] --> Validate{Valid GLTF/GLB?}
-    Validate -->|No| Reject[Reject Upload<br/>GLTF/GLB only]
-    Validate -->|Yes| Size{Size ≤ 256 MB?}
-    Size -->|No| Reject2[Reject Upload<br/>Exceeds limit]
-    Size -->|Yes| Hash[BLAKE3 Hash<br/>Content Address]
+    Import[Right-click → Import GLB] --> FileDialog{File Dialog<br/>Select .glb/.gltf}
+    FileDialog -->|Selected| Read[Read file bytes]
+    Read --> Hash[BLAKE3 Hash<br/>Content Address]
 
-    Hash --> Ingest[AssetIngester::ingest]
-    Ingest --> Store[Store in local<br/>asset cache]
-    Store --> DB[Record in SurrealDB<br/>model table]
-    DB --> Publish[Publish hash via<br/>iroh-blobs]
+    Hash --> BlobStore[BlobStore::add_blob<br/>Content-addressed storage]
+    Hash --> Copy[Copy to<br/>assets/imported/{hash}.glb]
+
+    BlobStore --> AssetRow[CREATE asset {<br/>  asset_id, name,<br/>  content_type, size_bytes,<br/>  content_hash<br/>}]
+    Copy --> NodeRow[CREATE node {<br/>  node_id, petal_id,<br/>  asset_id, position,<br/>  elevation<br/>}]
+    AssetRow --> NodeRow
+
+    NodeRow --> Result[DbResult::GltfImported]
+    Result --> Spawn[Bevy: Spawn SceneRoot<br/>at click position]
+    Result --> Sidebar[Update sidebar<br/>hierarchy tree]
 
     subgraph "Content Addressing"
-        Hash2[BLAKE3(glb_bytes)]
-        ID["Asset ID = hash<br/>e.g. bafk...abc123"]
+        Hash2[BLAKE3 bytes → hex string]
+        Path["Asset path: blob://{hash}.glb<br/>or assets/imported/{hash}.glb"]
     end
 
-    Hash --> Hash2 --> ID
+    Hash --> Hash2 --> Path
+```
+
+## Legacy Base64 Migration (Phase C)
+
+```mermaid
+sequenceDiagram
+    participant DB as SurrealDB (T3)
+    participant Blob as BlobStore
+    participant Startup as DB Thread Startup
+
+    Note over Startup: Runs eagerly at startup
+
+    Startup->>DB: SELECT asset_id, data, content_hash<br/>FROM asset WHERE data != NONE
+
+    loop Each legacy asset
+        DB-->>Startup: { asset_id, data: "base64...", content_hash: null }
+        Startup->>Startup: Base64 decode → raw bytes
+        Startup->>Startup: BLAKE3(raw_bytes) → hash
+        Startup->>Blob: add_blob(raw_bytes)
+        Startup->>DB: UPDATE asset SET<br/>  content_hash = hash,<br/>  data = NONE
+    end
+
+    Note over Startup: Legacy rows now reference<br/>blob store via content_hash
 ```
 
 ## Asset Distribution (Peer-to-Peer)
@@ -28,7 +55,7 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant Visitor as Visiting Peer
-    participant Cache as Local Asset Cache
+    participant Cache as Local BlobStore
     participant Host as Host Node
     participant Blobs as iroh-blobs
 
@@ -43,10 +70,10 @@ sequenceDiagram
         Blobs-->>Visitor: Verified bytes
         Note over Blobs: Automatic integrity check:<br/>BLAKE3(received) == requested hash
 
-        Visitor->>Cache: Store (LRU, 2GB limit,<br/>7-day eviction)
+        Visitor->>Cache: Store in BlobStore
     end
 
-    Visitor->>Visitor: Bevy GLTF Loader<br/>Spawn 3D model
+    Visitor->>Visitor: Bevy AssetServer loads<br/>blob://{hash}.glb#Scene0
 ```
 
 ## Dead-Reckoning (Bandwidth Reduction)

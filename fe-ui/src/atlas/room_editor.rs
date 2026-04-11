@@ -15,9 +15,7 @@ pub struct RoomEditorState {
 impl RoomEditorState {
     /// Returns `true` if bounds are geometrically valid (min < max on all axes).
     pub fn bounds_valid(&self) -> bool {
-        self.min[0] < self.max[0]
-            && self.min[1] < self.max[1]
-            && self.min[2] < self.max[2]
+        self.min[0] < self.max[0] && self.min[1] < self.max[1] && self.min[2] < self.max[2]
     }
 
     /// Set yaw, clamping to [-180, 180].

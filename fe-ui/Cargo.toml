@@ -10,6 +10,7 @@ crossbeam = { workspace = true }
 fe-database = { path = "../fe-database" }
 fe-runtime = { path = "../fe-runtime" }
 fe-renderer = { path = "../fe-renderer" }
+fe-sync = { path = "../fe-sync" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rfd = { workspace = true }

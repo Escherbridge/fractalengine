@@ -1,8 +1,11 @@
 use std::sync::{Arc, Mutex};
 
+use bevy::asset::io::AssetSourceBuilder;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
+use crate::bevy_blob_reader::OnMissCallback;
+use crate::blob_store::BlobStoreHandle;
 use crate::messages::{DbCommand, DbResult, NetworkCommand, NetworkEvent};
 
 #[derive(Resource)]
@@ -22,10 +25,35 @@ pub struct BevyHandles {
     pub net_evt_rx: crossbeam::channel::Receiver<NetworkEvent>,
     pub db_cmd_tx: crossbeam::channel::Sender<DbCommand>,
     pub db_res_rx: crossbeam::channel::Receiver<DbResult>,
+    /// Shared blob store handle for the `blob://` Bevy asset source.
+    pub blob_store: Option<BlobStoreHandle>,
+    /// Optional callback fired when the blob asset reader encounters a cache
+    /// miss.  Set by the sync layer (Phase D) to trigger peer fetch.
+    pub on_blob_miss: Option<OnMissCallback>,
 }
 
 pub fn build_app(handles: BevyHandles) -> App {
     let mut app = App::new();
+
+    // Phase B: register the "blob" asset source BEFORE DefaultPlugins so Bevy
+    // knows how to load `blob://{hash}.glb` paths via BlobAssetReader.
+    if let Some(blob_store) = handles.blob_store {
+        let on_miss = handles.on_blob_miss;
+        app.register_asset_source(
+            "blob",
+            AssetSourceBuilder::new(move || match on_miss.clone() {
+                Some(cb) => Box::new(crate::bevy_blob_reader::BlobAssetReader::with_on_miss(
+                    blob_store.clone(),
+                    cb,
+                )),
+                None => Box::new(crate::bevy_blob_reader::BlobAssetReader::new(
+                    blob_store.clone(),
+                )),
+            }),
+        );
+        tracing::info!("Registered 'blob' asset source (BlobAssetReader)");
+    }
+
     // Override AssetPlugin's file_path so Bevy loads assets from the same
     // directory the GLB import writer uses (`fractalengine/assets` relative
     // to CWD). We resolve it to an ABSOLUTE path to avoid Bevy's normal

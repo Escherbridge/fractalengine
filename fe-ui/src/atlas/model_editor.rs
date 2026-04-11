@@ -42,9 +42,9 @@ impl ModelEditorState {
     /// Returns `true` if the form is valid and can be saved.
     /// Invalid if any kv row's value is non-empty and not valid JSON.
     pub fn can_save(&self) -> bool {
-        self.kv_rows.iter().all(|row| {
-            row.value_raw.is_empty() || row.value_is_valid_json()
-        })
+        self.kv_rows
+            .iter()
+            .all(|row| row.value_raw.is_empty() || row.value_is_valid_json())
     }
 }
 

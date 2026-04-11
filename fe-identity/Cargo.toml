@@ -13,4 +13,5 @@ anyhow = { workspace = true }
 bevy = { workspace = true }
 multibase = "0.9"
 hex = "0.4"
+iroh = { workspace = true }
 rand = "0.8"

@@ -1,6 +1,4 @@
-use crate::atlas::{
-    ModelMetadataUpdate, PetalMetadata, RoomMetadata, SpaceOverview, Visibility,
-};
+use crate::atlas::{ModelMetadataUpdate, PetalMetadata, RoomMetadata, SpaceOverview, Visibility};
 use crate::op_log::write_op_log;
 use crate::types::{NodeId, OpLogEntry, OpType, PetalId};
 
@@ -226,9 +224,7 @@ impl SpaceManager {
     ) -> anyhow::Result<()> {
         crate::rbac::require_write_role(db, caller_node_id, petal_id).await?;
         if !is_valid_field_key(key) {
-            anyhow::bail!(
-                "invalid metadata key {key:?}: must match [a-zA-Z_][a-zA-Z0-9_]*"
-            );
+            anyhow::bail!("invalid metadata key {key:?}: must match [a-zA-Z_][a-zA-Z0-9_]*");
         }
         let q = format!("UPDATE model SET metadata.{key} = $value WHERE id = $id");
         db.query(q)
@@ -309,14 +305,10 @@ fn is_valid_field_key(key: &str) -> bool {
 }
 
 /// Extract the `count` field from a SurrealDB `count() GROUP ALL` response.
-fn extract_count(
-    result: Result<surrealdb::IndexedResults, surrealdb::Error>,
-) -> u64 {
+fn extract_count(result: Result<surrealdb::IndexedResults, surrealdb::Error>) -> u64 {
     let Ok(mut r) = result else { return 0 };
     let rows: Vec<serde_json::Value> = r.take(0).unwrap_or_default();
-    rows.first()
-        .and_then(|v| v["count"].as_u64())
-        .unwrap_or(0)
+    rows.first().and_then(|v| v["count"].as_u64()).unwrap_or(0)
 }
 
 #[cfg(test)]

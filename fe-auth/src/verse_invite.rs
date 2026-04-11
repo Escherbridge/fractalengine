@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VerseInvite {
     pub verse_id: String,
-    pub invitee_did: String,  // did:key of the person being invited
-    pub inviter_did: String,  // did:key of the inviter (existing member)
-    pub timestamp: String,    // ISO8601, used to prevent replay
+    pub invitee_did: String, // did:key of the person being invited
+    pub inviter_did: String, // did:key of the inviter (existing member)
+    pub timestamp: String,   // ISO8601, used to prevent replay
     /// Hex-encoded Ed25519 signature over `canonical_payload()`.
     pub signature: String,
 }
@@ -64,8 +64,8 @@ impl VerseInvite {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VerseRevocation {
     pub verse_id: String,
-    pub revoked_did: String,  // did:key being removed
-    pub revoker_did: String,  // did:key of revoker (must be verse founder/admin)
+    pub revoked_did: String, // did:key being removed
+    pub revoker_did: String, // did:key of revoker (must be verse founder/admin)
     pub timestamp: String,
     pub signature: String,
 }

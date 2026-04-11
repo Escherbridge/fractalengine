@@ -134,14 +134,15 @@ All cross-thread communication uses **typed crossbeam channels** — never raw b
 FractalEngine uses a botanical/fractal naming convention:
 
 ```
-Fractal          the entire P2P network
-  └── Node       one peer running the desktop app
-        └── Petal    a 3D world/space hosted by the Node
-              └── Room     a zone within a Petal
-                    └── Model    a 3D object (GLTF/GLB)
-                          └── BrowserInteraction
-                                ├── Tab 1: External URL (admin-configured)
-                                └── Tab 2: Config Panel (role-gated settings)
+Verse                the top-level P2P namespace
+  ├── VerseMember    peer membership records (invite-based)
+  └── Fractal        groups Petals under a Verse
+        └── Petal    a 3D world/space
+              ├── Node     an interactive object (placed via right-click)
+              │     └── Asset   GLTF/GLB model (content-addressed via BLAKE3)
+              ├── Room     a zone within a Petal
+              │     └── Model    a placed 3D object (legacy)
+              └── Role     RBAC assignment (peer ↔ petal)
 ```
 
 ---
@@ -160,6 +161,7 @@ Fractal          the entire P2P network
 | `fe-webview` | wry browser overlay, typed IPC, URL security | T1 |
 | `fe-sync` | Petal replication, caching, offline mode | T2/T3 |
 | `fe-ui` | egui admin panels and role display | T1 |
+| `fe-test-harness` | Integration test scenarios (multi-peer) | Test |
 
 ---
 

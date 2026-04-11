@@ -25,7 +25,7 @@ graph TB
         Surreal[SurrealDB 3.0<br/>SurrealKV Backend]
         RBAC[RBAC Engine<br/>PERMISSIONS Clauses]
         OpLog[Immutable Op-Log<br/>Lamport Clock + Signatures]
-        Schema[Schema: Petal, Room,<br/>Model, Role, OpLog]
+        Schema[Schema: Verse, Fractal, Petal,<br/>Node, Asset, Room, Model,<br/>Role, VerseMember, OpLog]
     end
 
     subgraph T4["T4-TN — Task Pool"]
