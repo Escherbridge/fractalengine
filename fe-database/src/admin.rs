@@ -1,47 +1,62 @@
-use surrealdb::engine::local::Db;
+use crate::repo::Db;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnownTable {
-    Petal, Room, Model, Role, OpLog,
-    Verse, VerseMember, Fractal, Node, Asset,
+    Petal,
+    Room,
+    Model,
+    Role,
+    OpLog,
+    Verse,
+    VerseMember,
+    Fractal,
+    Node,
+    Asset,
 }
 
 impl KnownTable {
     pub const ALL: &'static [KnownTable] = &[
-        KnownTable::Petal, KnownTable::Room, KnownTable::Model,
-        KnownTable::Role, KnownTable::OpLog, KnownTable::Verse,
-        KnownTable::VerseMember, KnownTable::Fractal, KnownTable::Node,
+        KnownTable::Petal,
+        KnownTable::Room,
+        KnownTable::Model,
+        KnownTable::Role,
+        KnownTable::OpLog,
+        KnownTable::Verse,
+        KnownTable::VerseMember,
+        KnownTable::Fractal,
+        KnownTable::Node,
         KnownTable::Asset,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
-            KnownTable::Petal       => "petal",
-            KnownTable::Room        => "room",
-            KnownTable::Model       => "model",
-            KnownTable::Role        => "role",
-            KnownTable::OpLog       => "op_log",
-            KnownTable::Verse       => "verse",
+            KnownTable::Petal => "petal",
+            KnownTable::Room => "room",
+            KnownTable::Model => "model",
+            KnownTable::Role => "role",
+            KnownTable::OpLog => "op_log",
+            KnownTable::Verse => "verse",
             KnownTable::VerseMember => "verse_member",
-            KnownTable::Fractal     => "fractal",
-            KnownTable::Node        => "node",
-            KnownTable::Asset       => "asset",
+            KnownTable::Fractal => "fractal",
+            KnownTable::Node => "node",
+            KnownTable::Asset => "asset",
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "petal"        => Some(KnownTable::Petal),
-            "room"         => Some(KnownTable::Room),
-            "model"        => Some(KnownTable::Model),
-            "role"         => Some(KnownTable::Role),
-            "op_log"       => Some(KnownTable::OpLog),
-            "verse"        => Some(KnownTable::Verse),
+            "petal" => Some(KnownTable::Petal),
+            "room" => Some(KnownTable::Room),
+            "model" => Some(KnownTable::Model),
+            "role" => Some(KnownTable::Role),
+            "op_log" => Some(KnownTable::OpLog),
+            "verse" => Some(KnownTable::Verse),
             "verse_member" => Some(KnownTable::VerseMember),
-            "fractal"      => Some(KnownTable::Fractal),
-            "node"         => Some(KnownTable::Node),
-            "asset"        => Some(KnownTable::Asset),
-            _              => None,
+            "fractal" => Some(KnownTable::Fractal),
+            "node" => Some(KnownTable::Node),
+            "asset" => Some(KnownTable::Asset),
+            _ => None,
         }
     }
 }
@@ -52,7 +67,7 @@ impl std::fmt::Display for KnownTable {
     }
 }
 
-pub async fn clear_all_tables(db: &surrealdb::Surreal<Db>) -> anyhow::Result<()> {
+pub async fn clear_all_tables(db: &Db) -> anyhow::Result<()> {
     let stmt = KnownTable::ALL
         .iter()
         .map(|t| format!("REMOVE TABLE IF EXISTS {};", t))
@@ -65,22 +80,19 @@ pub async fn clear_all_tables(db: &surrealdb::Surreal<Db>) -> anyhow::Result<()>
     Ok(())
 }
 
-pub async fn clear_table(db: &surrealdb::Surreal<Db>, table: KnownTable) -> anyhow::Result<()> {
+pub async fn clear_table(db: &Db, table: KnownTable) -> anyhow::Result<()> {
     db.query(format!("DELETE FROM {table}")).await?;
     tracing::info!("Table '{}' cleared", table);
     Ok(())
 }
 
-pub async fn dump_table(
-    db: &surrealdb::Surreal<Db>,
-    table: KnownTable,
-) -> anyhow::Result<Vec<serde_json::Value>> {
+pub async fn dump_table(db: &Db, table: KnownTable) -> anyhow::Result<Vec<serde_json::Value>> {
     let mut result: surrealdb::IndexedResults = db.query(format!("SELECT * FROM {table}")).await?;
     let rows: Vec<serde_json::Value> = result.take(0)?;
     Ok(rows)
 }
 
-pub async fn dump_all(db: &surrealdb::Surreal<Db>) -> anyhow::Result<serde_json::Value> {
+pub async fn dump_all(db: &Db) -> anyhow::Result<serde_json::Value> {
     let mut snapshot = serde_json::Map::new();
     for &table in KnownTable::ALL {
         let rows = dump_table(db, table).await?;
@@ -89,10 +101,7 @@ pub async fn dump_all(db: &surrealdb::Surreal<Db>) -> anyhow::Result<serde_json:
     Ok(serde_json::Value::Object(snapshot))
 }
 
-pub async fn dump_to_file(
-    db: &surrealdb::Surreal<Db>,
-    path: &std::path::Path,
-) -> anyhow::Result<()> {
+pub async fn dump_to_file(db: &Db, path: &std::path::Path) -> anyhow::Result<()> {
     let snapshot = dump_all(db).await?;
     let json = serde_json::to_string_pretty(&snapshot)?;
     std::fs::write(path, json)?;
@@ -100,10 +109,7 @@ pub async fn dump_to_file(
     Ok(())
 }
 
-pub async fn load_from_file(
-    db: &surrealdb::Surreal<Db>,
-    path: &std::path::Path,
-) -> anyhow::Result<()> {
+pub async fn load_from_file(db: &Db, path: &std::path::Path) -> anyhow::Result<()> {
     let json = std::fs::read_to_string(path)?;
     let snapshot: serde_json::Value = serde_json::from_str(&json)?;
     let obj = snapshot
@@ -122,8 +128,10 @@ pub async fn load_from_file(
         };
         if let Some(arr) = rows.as_array() {
             for row in arr {
-                let _: Option<serde_json::Value> =
-                    db.create::<Option<serde_json::Value>>(known.as_str()).content(row.clone()).await?;
+                let _: Option<serde_json::Value> = db
+                    .create::<Option<serde_json::Value>>(known.as_str())
+                    .content(row.clone())
+                    .await?;
             }
         }
     }

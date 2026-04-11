@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bevy = { workspace = true }
+fe-runtime = { path = "../fe-runtime" }
 fe-database = { path = "../fe-database" }
 fe-network = { path = "../fe-network" }
 serde = { workspace = true }
@@ -13,6 +14,11 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 dirs = "5"
+blake3 = { workspace = true }
+hex = "0.4"
+iroh = { workspace = true }
+crossbeam = { workspace = true }
 
 [dev-dependencies]
 ulid = { workspace = true }
+tempfile = "3"

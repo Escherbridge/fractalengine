@@ -1,29 +1,11 @@
-use crate::schema;
+use crate::repo::Db;
 use crate::types::RoleId;
 
-pub async fn apply_schema(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-) -> anyhow::Result<()> {
-    db.query(schema::DEFINE_PETAL).await?;
-    db.query(schema::DEFINE_ROOM).await?;
-    db.query(schema::DEFINE_MODEL).await?;
-    db.query(schema::DEFINE_ROLE).await?;
-    db.query(schema::DEFINE_OP_LOG).await?;
-    db.query(schema::DEFINE_VERSE).await?;
-    db.query(schema::DEFINE_VERSE_MEMBER).await?;
-    db.query(schema::DEFINE_FRACTAL).await?;
-    db.query(schema::DEFINE_NODE).await?;
-    db.query(schema::DEFINE_ASSET).await?;
-    db.query(schema::DEFINE_PETAL_FRACTAL_ID).await?;
-    db.query(schema::DEFINE_PETAL_BOUNDS).await?;
-    Ok(())
+pub async fn apply_schema(db: &Db) -> anyhow::Result<()> {
+    crate::schema::apply_all(db).await
 }
 
-pub async fn get_role(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    node_id: &str,
-    petal_id: &str,
-) -> anyhow::Result<RoleId> {
+pub async fn get_role(db: &Db, node_id: &str, petal_id: &str) -> anyhow::Result<RoleId> {
     let node_id = node_id.to_string();
     let petal_id = petal_id.to_string();
     let mut result: surrealdb::IndexedResults = db
@@ -42,11 +24,7 @@ const WRITE_ROLES: &[&str] = &["owner", "editor"];
 
 /// Check whether `node_id` has one of the required roles in `petal_id`.
 /// Returns Ok(role) on success, Err on permission denied or DB error.
-pub async fn require_write_role(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    node_id: &str,
-    petal_id: &str,
-) -> anyhow::Result<RoleId> {
+pub async fn require_write_role(db: &Db, node_id: &str, petal_id: &str) -> anyhow::Result<RoleId> {
     let role = get_role(db, node_id, petal_id).await?;
     if WRITE_ROLES.contains(&role.0.as_str()) {
         Ok(role)

@@ -8,3 +8,6 @@ bevy = { workspace = true }
 bevy_egui = { workspace = true }
 crossbeam = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }
+hex = "0.4"
+blake3 = { workspace = true }

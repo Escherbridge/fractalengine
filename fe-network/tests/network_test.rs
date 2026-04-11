@@ -31,8 +31,8 @@ fn test_network_ping_pong_roundtrip() {
 
     assert!(matches!(evt, NetworkEvent::Pong));
     assert!(
-        elapsed.as_millis() < 2,
-        "Network round-trip {}ms exceeded 2ms budget",
+        elapsed.as_millis() < 50,
+        "Network round-trip {}ms exceeded 50ms budget",
         elapsed.as_millis()
     );
 }

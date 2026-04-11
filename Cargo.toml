@@ -10,6 +10,7 @@ members = [
     "fe-webview",
     "fe-sync",
     "fe-ui",
+    "fe-test-harness",
 ]
 resolver = "2"
 
@@ -20,6 +21,7 @@ crossbeam = "0.8"
 tokio = { version = "1", features = ["full"] }
 surrealdb = { version = "3.0", features = ["kv-surrealkv", "kv-mem"] }
 libp2p = { version = "0.56", features = ["kad", "quic", "tokio", "macros"] }
+iroh = "0.35"
 iroh-blobs = "0.35"
 iroh-gossip = "0.35"
 iroh-docs = "0.35"

@@ -75,7 +75,10 @@ mod tests {
 
     #[test]
     fn filter_chips_compose_and() {
-        let q = SearchQuery { tag_filters: vec!["foo".into(), "bar".into()], ..Default::default() };
+        let q = SearchQuery {
+            tag_filters: vec!["foo".into(), "bar".into()],
+            ..Default::default()
+        };
         assert_eq!(q.tag_filters.len(), 2);
     }
 

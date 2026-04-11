@@ -45,8 +45,8 @@ impl Default for OrbitCameraController {
         Self {
             focus: Vec3::ZERO,
             distance: 8.66,
-            yaw: 0.7854,   // ~45 degrees
-            pitch: 0.4636, // ~26.6 degrees (camera at roughly (5,4,5))
+            yaw: std::f32::consts::FRAC_PI_4, // 45 degrees
+            pitch: 0.4636,                    // ~26.6 degrees (camera at roughly (5,4,5))
             sensitivity: 0.005,
             pan_speed: 0.01,
             zoom_speed: 1.0,
@@ -160,12 +160,11 @@ fn orbit_camera_system(
     time: Res<Time>,
 ) {
     // Check egui input state.
-    let (egui_wants_pointer, egui_wants_keyboard) =
-        if let Ok(ctx) = egui_ctx.ctx_mut() {
-            (ctx.wants_pointer_input(), ctx.wants_keyboard_input())
-        } else {
-            (false, false)
-        };
+    let (egui_wants_pointer, egui_wants_keyboard) = if let Ok(ctx) = egui_ctx.ctx_mut() {
+        (ctx.wants_pointer_input(), ctx.wants_keyboard_input())
+    } else {
+        (false, false)
+    };
 
     // If egui owns the pointer, consume mouse events and skip mouse controls.
     if egui_wants_pointer {

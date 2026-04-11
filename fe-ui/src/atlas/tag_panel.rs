@@ -29,7 +29,11 @@ pub fn remove_tag(tags: &mut Vec<String>, index: usize) {
 
 /// Render a tag chip list with remove buttons and an "Add" input.
 /// Returns `Some(tag)` if a valid tag was submitted, `None` otherwise.
-pub fn tag_input_ui(ui: &mut egui::Ui, tags: &mut Vec<String>, input: &mut String) -> Option<String> {
+pub fn tag_input_ui(
+    ui: &mut egui::Ui,
+    tags: &mut Vec<String>,
+    input: &mut String,
+) -> Option<String> {
     ui.horizontal_wrapped(|ui| {
         let mut to_remove: Option<usize> = None;
         for (i, tag) in tags.iter().enumerate() {

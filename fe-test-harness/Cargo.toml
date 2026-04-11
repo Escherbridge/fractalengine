@@ -1,0 +1,27 @@
+[package]
+name = "fractalengine-test-harness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fe-database = { path = "../fe-database" }
+fe-runtime = { path = "../fe-runtime" }
+fe-sync = { path = "../fe-sync" }
+fe-identity = { path = "../fe-identity" }
+crossbeam = { workspace = true }
+anyhow = { workspace = true }
+tempfile = "3"
+blake3 = { workspace = true }
+hex = "0.4"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+iroh = { workspace = true }
+surrealdb = { workspace = true }
+ulid = { workspace = true }
+chrono = "0.4"
+base64 = "0.22"
+ed25519-dalek = { workspace = true }
+rand = "0.8"

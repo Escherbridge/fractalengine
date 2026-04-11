@@ -4045,11 +4045,15 @@ dependencies = [
  "anyhow",
  "base64",
  "bevy",
+ "blake3",
  "chrono",
  "crossbeam",
+ "ed25519-dalek",
  "fe-identity",
  "fe-runtime",
  "hex",
+ "keyring",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "surrealdb",
@@ -4066,6 +4070,7 @@ dependencies = [
  "bevy",
  "ed25519-dalek",
  "hex",
+ "iroh",
  "jsonwebtoken",
  "keyring",
  "multibase",
@@ -4116,9 +4121,12 @@ dependencies = [
 name = "fe-runtime"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bevy",
  "bevy_egui",
+ "blake3",
  "crossbeam",
+ "hex",
  "tracing",
 ]
 
@@ -4128,11 +4136,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bevy",
+ "blake3",
+ "crossbeam",
  "dirs 5.0.1",
  "fe-database",
  "fe-network",
+ "fe-runtime",
+ "hex",
+ "iroh",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "ulid",
@@ -4148,6 +4162,7 @@ dependencies = [
  "fe-database",
  "fe-renderer",
  "fe-runtime",
+ "fe-sync",
  "rfd",
  "serde",
  "serde_json",
@@ -4335,6 +4350,7 @@ dependencies = [
 name = "fractalengine"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bevy",
  "crossbeam",
  "ed25519-dalek",
@@ -4344,12 +4360,43 @@ dependencies = [
  "fe-network",
  "fe-renderer",
  "fe-runtime",
+ "fe-sync",
  "fe-ui",
  "fe-webview",
+ "hex",
+ "iroh",
+ "keyring",
  "rand 0.8.5",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "fractalengine-test-harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "blake3",
+ "chrono",
+ "crossbeam",
+ "ed25519-dalek",
+ "fe-database",
+ "fe-identity",
+ "fe-runtime",
+ "fe-sync",
+ "hex",
+ "iroh",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]

@@ -18,6 +18,10 @@ bevy = { workspace = true }
 chrono = "0.4"
 base64 = "0.22"
 hex = "0.4"
+blake3 = { workspace = true }
+keyring = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = "0.8"
 
 [dev-dependencies]
 crossbeam = { workspace = true }

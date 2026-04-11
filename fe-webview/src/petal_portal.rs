@@ -196,7 +196,9 @@ pub fn tab_switch_guard_system(
     pending.0.clear();
     for cmd in reader.read() {
         match cmd {
-            BrowserCommand::SwitchTab { tab: BrowserTab::Config } if !filter.can_view_config() => {
+            BrowserCommand::SwitchTab {
+                tab: BrowserTab::Config,
+            } if !filter.can_view_config() => {
                 warn!(
                     target: "petal_portal",
                     "Unauthorized SwitchTab(Config) blocked — role={:?}",
@@ -346,8 +348,7 @@ pub fn url_editor_commit_system(
         }
 
         // Navigate if this is the currently-active portal entity.
-        if portal.entity == Some(event.entity)
-            && event.field == UrlField::External {
+        if portal.entity == Some(event.entity) && event.field == UrlField::External {
             if let Ok(parsed) = event.value.parse::<Url>() {
                 browser_commands.write(BrowserCommand::Navigate { url: parsed });
             }
@@ -375,7 +376,10 @@ impl Plugin for PetalPortalPlugin {
         // Chain guard + flush so they run in order in PreUpdate.
         // guard: MessageReader<BrowserCommand> → PendingBrowserCommands (no B0002)
         // flush: PendingBrowserCommands → MessageWriter<BrowserCommand> (no B0002)
-        app.add_systems(PreUpdate, (tab_switch_guard_system, flush_browser_commands_system).chain());
+        app.add_systems(
+            PreUpdate,
+            (tab_switch_guard_system, flush_browser_commands_system).chain(),
+        );
 
         app.add_systems(
             Update,
@@ -510,10 +514,13 @@ mod tests {
         let mut app = minimal_app_with_portal_plugin();
 
         // Manually set an active portal.
-        let entity = app.world_mut().spawn(ModelUrlMeta {
-            external_url: Some("https://example.com".to_string()),
-            config_url: None,
-        }).id();
+        let entity = app
+            .world_mut()
+            .spawn(ModelUrlMeta {
+                external_url: Some("https://example.com".to_string()),
+                config_url: None,
+            })
+            .id();
         app.world_mut().resource_mut::<ActivePortal>().entity = Some(entity);
 
         // Send the SelectionCleared event.
@@ -532,10 +539,13 @@ mod tests {
     fn scene_unload_closes_overlay_without_panic() {
         let mut app = minimal_app_with_portal_plugin();
 
-        let entity = app.world_mut().spawn(ModelUrlMeta {
-            external_url: Some("https://example.com".to_string()),
-            config_url: None,
-        }).id();
+        let entity = app
+            .world_mut()
+            .spawn(ModelUrlMeta {
+                external_url: Some("https://example.com".to_string()),
+                config_url: None,
+            })
+            .id();
         app.world_mut().resource_mut::<ActivePortal>().entity = Some(entity);
         assert!(app.world().resource::<ActivePortal>().entity.is_some());
 
@@ -643,10 +653,13 @@ mod tests {
     #[test]
     fn url_editor_save_updates_model_url_meta() {
         let mut app = minimal_app_with_portal_plugin();
-        let entity = app.world_mut().spawn(ModelUrlMeta {
-            external_url: Some("https://old.example.com".to_string()),
-            config_url: None,
-        }).id();
+        let entity = app
+            .world_mut()
+            .spawn(ModelUrlMeta {
+                external_url: Some("https://old.example.com".to_string()),
+                config_url: None,
+            })
+            .id();
 
         // Set active portal to this entity.
         app.world_mut().resource_mut::<ActivePortal>().entity = Some(entity);
@@ -660,16 +673,22 @@ mod tests {
         app.update();
 
         let meta = app.world().get::<ModelUrlMeta>(entity).unwrap();
-        assert_eq!(meta.external_url.as_deref(), Some("https://new.example.com"));
+        assert_eq!(
+            meta.external_url.as_deref(),
+            Some("https://new.example.com")
+        );
     }
 
     #[test]
     fn url_editor_save_blocked_url_does_not_update_meta() {
         let mut app = minimal_app_with_portal_plugin();
-        let entity = app.world_mut().spawn(ModelUrlMeta {
-            external_url: Some("https://original.example.com".to_string()),
-            config_url: None,
-        }).id();
+        let entity = app
+            .world_mut()
+            .spawn(ModelUrlMeta {
+                external_url: Some("https://original.example.com".to_string()),
+                config_url: None,
+            })
+            .id();
 
         app.world_mut().write_message(UrlEditorSaved {
             entity,
@@ -680,7 +699,10 @@ mod tests {
 
         let meta = app.world().get::<ModelUrlMeta>(entity).unwrap();
         // Must not have changed.
-        assert_eq!(meta.external_url.as_deref(), Some("https://original.example.com"));
+        assert_eq!(
+            meta.external_url.as_deref(),
+            Some("https://original.example.com")
+        );
     }
 
     // -----------------------------------------------------------------------

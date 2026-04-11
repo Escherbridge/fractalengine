@@ -2,14 +2,25 @@ use fe_runtime::messages::{
     DbCommand, DbResult, FractalHierarchyData, NodeHierarchyData, PetalHierarchyData,
     VerseHierarchyData,
 };
+use crate::repo::{Repo, Table};
+use crate::schema::{Asset, Fractal, Role, Verse, VerseMemberRow};
 use surrealdb::engine::local::{Db, SurrealKv};
+
+// P2P Mycelium Phase A: re-export blob store types so callers (fe-ui, the
+// binary crate, and tests) can depend only on `fe-database` for the full
+// asset-pipeline surface.
+pub use fe_runtime::blob_store::{
+    hash_from_hex, hash_to_hex, BlobHash, BlobStore, BlobStoreHandle,
+};
 
 pub mod admin;
 pub mod atlas;
+pub mod invite;
 pub mod model_url_meta;
 pub mod op_log;
 pub mod queries;
 pub mod rbac;
+pub mod repo;
 pub mod schema;
 pub mod space_manager;
 pub mod types;
@@ -36,15 +47,90 @@ pub fn imported_assets_dir() -> std::path::PathBuf {
 #[derive(bevy::prelude::Resource, Clone)]
 pub struct DbHandle(pub std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>);
 
+/// A replication event emitted by the DB thread when a replicated row is written.
+/// Defined here (not in fe-sync) to avoid a circular dependency.
+/// The binary crate bridges these into `SyncCommand::WriteRowEntry`.
+#[derive(Debug, Clone)]
+pub struct ReplicationEvent {
+    pub verse_id: String,
+    pub table: String,
+    pub record_id: String,
+    pub content_hash: BlobHash,
+}
+
+/// Sender half for replication events.
+pub type ReplicationSender = crossbeam::channel::Sender<ReplicationEvent>;
+
+/// Serialise row data as JSON, write to blob store, and send a
+/// `ReplicationEvent` to be bridged to the sync thread.
+///
+/// # Arguments
+/// * `repl_tx` — optional replication sender (None = replication disabled)
+/// * `blob_store` — shared blob store for content-addressed row data
+/// * `verse_id` — the verse owning this row
+/// * `table` — SurrealDB table name
+/// * `record_id` — the row's ULID
+/// * `row_json` — serialised row as JSON bytes
+pub fn replicate_row(
+    repl_tx: Option<&ReplicationSender>,
+    blob_store: &BlobStoreHandle,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    row_json: &[u8],
+) {
+    let Some(tx) = repl_tx else { return };
+
+    let hash = match blob_store.add_blob(row_json) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!(
+                "replicate_row: blob_store.add_blob failed for {table}/{record_id}: {e}"
+            );
+            return;
+        }
+    };
+
+    tx.send(ReplicationEvent {
+        verse_id: verse_id.to_string(),
+        table: table.to_string(),
+        record_id: record_id.to_string(),
+        content_hash: hash,
+    })
+    .ok();
+}
+
 pub fn spawn_db_thread(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
+    blob_store: BlobStoreHandle,
+) -> std::thread::JoinHandle<()> {
+    spawn_db_thread_with_sync(rx, tx, blob_store, None, None)
+}
+
+/// Spawn the DB thread with an optional replication sender and node keypair.
+///
+/// When `repl_tx` is `Some`, DB write handlers can send `ReplicationEvent`s
+/// that the binary crate bridges into `SyncCommand::WriteRowEntry`. When
+/// `None`, replication is silently disabled.
+///
+/// When `keypair` is `Some`, invite generation/verification is enabled.
+pub fn spawn_db_thread_with_sync(
+    rx: crossbeam::channel::Receiver<DbCommand>,
+    tx: crossbeam::channel::Sender<DbResult>,
+    blob_store: BlobStoreHandle,
+    repl_tx: Option<ReplicationSender>,
+    keypair: Option<fe_identity::NodeKeypair>,
 ) -> std::thread::JoinHandle<()> {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
         "spawn_db_thread must not be called from within a Tokio runtime"
     );
     std::thread::spawn(move || {
+        // The blob store handle is owned by the DB thread so future handlers
+        // (Phase B: import refactor, Phase C: migration) can write to it
+        // without crossing channel boundaries. Held live for thread lifetime.
+        let blob_store: BlobStoreHandle = blob_store;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -62,6 +148,20 @@ pub fn spawn_db_thread(
             rbac::apply_schema(&db)
                 .await
                 .expect("Schema application failed");
+
+            // Phase C: eagerly migrate any legacy base64 asset rows to the blob store.
+            // Migration failure must NOT prevent startup — log and continue.
+            match migrate_base64_assets_to_blob_store(&db, &blob_store).await {
+                Ok((count, bytes)) => {
+                    if count > 0 {
+                        tracing::info!(
+                            "Migrated {count} base64 assets to blob store ({bytes} bytes)"
+                        );
+                    }
+                }
+                Err(e) => tracing::error!("Asset migration failed: {e}"),
+            }
+
             tracing::info!("SurrealDB ready");
             tx.send(DbResult::Started).ok();
             #[allow(clippy::while_let_loop)]
@@ -70,51 +170,183 @@ pub fn spawn_db_thread(
                     Ok(DbCommand::Ping) => {
                         tx.send(DbResult::Pong).ok();
                     }
-                    Ok(DbCommand::Seed) => {
-                        match seed_default_data(&db).await {
-                            Ok((petal_name, rooms)) => {
-                                tx.send(DbResult::Seeded { petal_name, rooms }).ok();
+                    Ok(DbCommand::Seed) => match seed_default_data(&db, &blob_store).await {
+                        Ok((petal_name, rooms)) => {
+                            tx.send(DbResult::Seeded { petal_name, rooms }).ok();
+                        }
+                        Err(e) => {
+                            tracing::error!("Seed failed: {e}");
+                            tx.send(DbResult::Error(format!("Seed failed: {e}"))).ok();
+                        }
+                    },
+                    Ok(DbCommand::CreateVerse { name }) => {
+                        match create_verse_handler(&db, &blob_store, repl_tx.as_ref(), &name).await
+                        {
+                            Ok(id) => {
+                                tx.send(DbResult::VerseCreated { id, name }).ok();
                             }
                             Err(e) => {
-                                tracing::error!("Seed failed: {e}");
-                                tx.send(DbResult::Error(format!("Seed failed: {e}"))).ok();
+                                tx.send(DbResult::Error(format!("Create verse failed: {e}")))
+                                    .ok();
                             }
-                        }
-                    }
-                    Ok(DbCommand::CreateVerse { name }) => {
-                        match create_verse_handler(&db, &name).await {
-                            Ok(id) => { tx.send(DbResult::VerseCreated { id, name }).ok(); }
-                            Err(e) => { tx.send(DbResult::Error(format!("Create verse failed: {e}"))).ok(); }
                         }
                     }
                     Ok(DbCommand::CreateFractal { verse_id, name }) => {
-                        match create_fractal_handler(&db, &verse_id, &name).await {
-                            Ok(id) => { tx.send(DbResult::FractalCreated { id, verse_id, name }).ok(); }
-                            Err(e) => { tx.send(DbResult::Error(format!("Create fractal failed: {e}"))).ok(); }
+                        match create_fractal_handler(
+                            &db,
+                            &blob_store,
+                            repl_tx.as_ref(),
+                            &verse_id,
+                            &name,
+                        )
+                        .await
+                        {
+                            Ok(id) => {
+                                tx.send(DbResult::FractalCreated { id, verse_id, name })
+                                    .ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("Create fractal failed: {e}")))
+                                    .ok();
+                            }
                         }
                     }
                     Ok(DbCommand::CreatePetal { fractal_id, name }) => {
                         match create_petal_handler(&db, &fractal_id, &name).await {
-                            Ok(id) => { tx.send(DbResult::PetalCreated { id, fractal_id, name }).ok(); }
-                            Err(e) => { tx.send(DbResult::Error(format!("Create petal failed: {e}"))).ok(); }
+                            Ok(id) => {
+                                tx.send(DbResult::PetalCreated {
+                                    id,
+                                    fractal_id,
+                                    name,
+                                })
+                                .ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("Create petal failed: {e}")))
+                                    .ok();
+                            }
                         }
                     }
-                    Ok(DbCommand::CreateNode { petal_id, name, position }) => {
-                        match create_node_handler(&db, &petal_id, &name, position).await {
-                            Ok(id) => { tx.send(DbResult::NodeCreated { id, petal_id, name, has_asset: false }).ok(); }
-                            Err(e) => { tx.send(DbResult::Error(format!("Create node failed: {e}"))).ok(); }
+                    Ok(DbCommand::CreateNode {
+                        petal_id,
+                        name,
+                        position,
+                    }) => match create_node_handler(&db, &petal_id, &name, position).await {
+                        Ok(id) => {
+                            tx.send(DbResult::NodeCreated {
+                                id,
+                                petal_id,
+                                name,
+                                has_asset: false,
+                            })
+                            .ok();
                         }
-                    }
-                    Ok(DbCommand::ImportGltf { petal_id, name, file_path, position }) => {
-                        match import_gltf_handler(&db, &petal_id, &name, &file_path, position).await {
-                            Ok((node_id, asset_id, asset_path)) => { tx.send(DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position }).ok(); }
-                            Err(e) => { tx.send(DbResult::Error(format!("GLTF import failed: {e}"))).ok(); }
+                        Err(e) => {
+                            tx.send(DbResult::Error(format!("Create node failed: {e}")))
+                                .ok();
+                        }
+                    },
+                    Ok(DbCommand::ImportGltf {
+                        petal_id,
+                        name,
+                        file_path,
+                        position,
+                    }) => {
+                        match import_gltf_handler(
+                            &db,
+                            &blob_store,
+                            &petal_id,
+                            &name,
+                            &file_path,
+                            position,
+                        )
+                        .await
+                        {
+                            Ok((node_id, asset_id, asset_path)) => {
+                                tx.send(DbResult::GltfImported {
+                                    node_id,
+                                    asset_id,
+                                    petal_id,
+                                    name,
+                                    asset_path,
+                                    position,
+                                })
+                                .ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("GLTF import failed: {e}")))
+                                    .ok();
+                            }
                         }
                     }
                     Ok(DbCommand::LoadHierarchy) => {
-                        match load_hierarchy_handler(&db).await {
-                            Ok(verses) => { tx.send(DbResult::HierarchyLoaded { verses }).ok(); }
-                            Err(e) => { tx.send(DbResult::Error(format!("Load hierarchy failed: {e}"))).ok(); }
+                        match load_hierarchy_handler(&db, &blob_store).await {
+                            Ok(verses) => {
+                                tx.send(DbResult::HierarchyLoaded { verses }).ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("Load hierarchy failed: {e}")))
+                                    .ok();
+                            }
+                        }
+                    }
+                    Ok(DbCommand::GenerateVerseInvite {
+                        verse_id,
+                        include_write_cap,
+                        expiry_hours,
+                    }) => {
+                        match generate_verse_invite_handler(
+                            &db,
+                            &verse_id,
+                            include_write_cap,
+                            expiry_hours,
+                            keypair.as_ref(),
+                        )
+                        .await
+                        {
+                            Ok(invite_string) => {
+                                tx.send(DbResult::VerseInviteGenerated {
+                                    verse_id,
+                                    invite_string,
+                                })
+                                .ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("Generate invite failed: {e}")))
+                                    .ok();
+                            }
+                        }
+                    }
+                    Ok(DbCommand::JoinVerseByInvite { invite_string }) => {
+                        match join_verse_by_invite_handler(&db, &invite_string).await {
+                            Ok((verse_id, verse_name)) => {
+                                tx.send(DbResult::VerseJoined {
+                                    verse_id,
+                                    verse_name,
+                                })
+                                .ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("Join verse failed: {e}")))
+                                    .ok();
+                            }
+                        }
+                    }
+                    Ok(DbCommand::ResetDatabase) => {
+                        match async {
+                            admin::clear_all_tables(&db).await?;
+                            seed_default_data(&db, &blob_store).await
+                        }
+                        .await
+                        {
+                            Ok((petal_name, rooms)) => {
+                                tx.send(DbResult::DatabaseReset { petal_name, rooms })
+                                    .ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("Database reset failed: {e}")))
+                                    .ok();
+                            }
                         }
                     }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
@@ -127,9 +359,13 @@ pub fn spawn_db_thread(
 }
 
 /// Returns `(asset_id_for_name)` map seeded from files in `assets/models/`.
-/// Each GLB is base64-encoded and stored in the `asset` table.
+/// Each GLB is written to the blob store and its BLAKE3 content hash is
+/// recorded in the `asset` table (Phase B: no more base64 in DB rows).
 /// Skips individual files that cannot be read rather than failing the whole seed.
-async fn seed_assets(db: &surrealdb::Surreal<Db>) -> anyhow::Result<std::collections::HashMap<String, String>> {
+async fn seed_assets(
+    db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
     let models_dir = std::path::Path::new("assets/models");
     let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
@@ -142,11 +378,17 @@ async fn seed_assets(db: &surrealdb::Surreal<Db>) -> anyhow::Result<std::collect
     for entry in std::fs::read_dir(models_dir)? {
         let entry = entry?;
         let path = entry.path();
-        let Some(ext) = path.extension() else { continue };
+        let Some(ext) = path.extension() else {
+            continue;
+        };
         if ext != "glb" && ext != "gltf" {
             continue;
         }
-        let file_name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let file_name = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
@@ -154,9 +396,16 @@ async fn seed_assets(db: &surrealdb::Surreal<Db>) -> anyhow::Result<std::collect
                 continue;
             }
         };
-        let content_type = if ext == "glb" { "model/gltf-binary" } else { "model/gltf+json" };
+        let content_type = if ext == "glb" {
+            "model/gltf-binary"
+        } else {
+            "model/gltf+json"
+        };
         let size_bytes = bytes.len();
-        let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let hash = blob_store.add_blob(&bytes).map_err(|e| {
+            anyhow::anyhow!("blob_store.add_blob failed for {}: {e}", path.display())
+        })?;
+        let content_hash = hash_to_hex(&hash);
         let asset_id = ulid::Ulid::new().to_string();
 
         let _: Option<serde_json::Value> = db
@@ -166,17 +415,20 @@ async fn seed_assets(db: &surrealdb::Surreal<Db>) -> anyhow::Result<std::collect
                 "name": file_name,
                 "content_type": content_type,
                 "size_bytes": size_bytes,
-                "data": data,
+                "content_hash": content_hash,
                 "created_at": now,
             }))
             .await?;
-        tracing::info!("Seeded asset: {file_name} ({size_bytes} bytes → asset_id={asset_id})");
+        tracing::info!("Seeded asset: {file_name} ({size_bytes} bytes → asset_id={asset_id}, hash={content_hash})");
         id_map.insert(file_name, asset_id);
     }
     Ok(id_map)
 }
 
-async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(String, Vec<String>)> {
+pub async fn seed_default_data(
+    db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
+) -> anyhow::Result<(String, Vec<String>)> {
     // Idempotency: skip if genesis verse already exists.
     let mut check: surrealdb::IndexedResults = db
         .query("SELECT * FROM verse WHERE name = 'Genesis Verse' LIMIT 1")
@@ -184,7 +436,14 @@ async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(Strin
     let existing: Vec<serde_json::Value> = check.take(0)?;
     if !existing.is_empty() {
         tracing::info!("Seed already present — skipping");
-        return Ok(("Genesis Petal".to_string(), vec!["Lobby".to_string(), "Workshop".to_string(), "Gallery".to_string()]));
+        return Ok((
+            "Genesis Petal".to_string(),
+            vec![
+                "Lobby".to_string(),
+                "Workshop".to_string(),
+                "Gallery".to_string(),
+            ],
+        ));
     }
 
     let node_id = types::NodeId("local-node".to_string());
@@ -194,22 +453,26 @@ async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(Strin
     let now = chrono::Utc::now().to_rfc3339();
 
     // --- Assets ---
-    let asset_map = seed_assets(db).await?;
-    let beacon_asset_id = asset_map.get("animated_box").or_else(|| asset_map.get("beacon")).cloned();
-    let panel_asset_id  = asset_map.get("box").or_else(|| asset_map.get("info_panel")).cloned();
-    let duck_asset_id   = asset_map.get("duck").cloned();
+    let asset_map = seed_assets(db, blob_store).await?;
+    let beacon_asset_id = asset_map
+        .get("animated_box")
+        .or_else(|| asset_map.get("beacon"))
+        .cloned();
+    let panel_asset_id = asset_map
+        .get("box")
+        .or_else(|| asset_map.get("info_panel"))
+        .cloned();
+    let duck_asset_id = asset_map.get("duck").cloned();
 
     // --- Verse ---
     let verse_id = ulid::Ulid::new().to_string();
-    let _: Option<serde_json::Value> = db
-        .create("verse")
-        .content(serde_json::json!({
-            "verse_id": verse_id,
-            "name": "Genesis Verse",
-            "created_by": local_did,
-            "created_at": now,
-        }))
-        .await?;
+    Repo::<Verse>::create(db, &Verse {
+        verse_id: verse_id.clone(),
+        name: "Genesis Verse".to_string(),
+        created_by: local_did.clone(),
+        created_at: now.clone(),
+        namespace_id: None,
+    }).await?;
     tracing::info!("Seeded verse: Genesis Verse ({verse_id})");
 
     // Local node is the founding member (self-invite).
@@ -220,35 +483,30 @@ async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(Strin
     let invite_sig = hex::encode(invite_sig_bytes.to_bytes());
 
     let member_id = ulid::Ulid::new().to_string();
-    let _: Option<serde_json::Value> = db
-        .create("verse_member")
-        .content(serde_json::json!({
-            "member_id": member_id,
-            "verse_id": verse_id,
-            "peer_did": local_did,
-            "status": "active",
-            "invited_by": local_did,
-            "invite_sig": invite_sig,
-            "invite_timestamp": now,
-            // revoked_at and revoked_by omitted — SurrealDB sets option<string> fields to NONE
-            // when absent. Sending JSON null causes a type coercion error.
-        }))
-        .await?;
+    // Note: revoked_at/revoked_by must be None, not null — SurrealDB rejects
+    // JSON null for option<string> fields. skip_serializing_if isn't on the
+    // macro struct, so we use create_raw to omit them entirely.
+    Repo::<VerseMemberRow>::create_raw(db, serde_json::json!({
+        "member_id": member_id,
+        "verse_id": verse_id,
+        "peer_did": local_did,
+        "status": "active",
+        "invited_by": local_did,
+        "invite_sig": invite_sig,
+        "invite_timestamp": now,
+    })).await?;
     tracing::info!("Seeded verse_member: {local_did}");
 
     // --- Fractal ---
     let fractal_id = ulid::Ulid::new().to_string();
-    let _: Option<serde_json::Value> = db
-        .create("fractal")
-        .content(serde_json::json!({
-            "fractal_id": fractal_id,
-            "verse_id": verse_id,
-            "owner_did": local_did,
-            "name": "Genesis Fractal",
-            "description": "The seed fractal for local-node",
-            "created_at": now,
-        }))
-        .await?;
+    Repo::<Fractal>::create(db, &Fractal {
+        fractal_id: fractal_id.clone(),
+        verse_id: verse_id.clone(),
+        owner_did: local_did.clone(),
+        name: "Genesis Fractal".to_string(),
+        description: Some("The seed fractal for local-node".to_string()),
+        created_at: now.clone(),
+    }).await?;
     tracing::info!("Seeded fractal: Genesis Fractal ({fractal_id})");
 
     // --- Petal (linked to fractal) ---
@@ -262,7 +520,9 @@ async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(Strin
     db.query("UPDATE petal SET fractal_id = $fid, bounds = <geometry<polygon>> { type: 'Polygon', coordinates: [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]] } WHERE petal_id = $pid")
         .bind(("fid", fractal_id.clone()))
         .bind(("pid", petal_id.0.to_string()))
-        .await?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("seed UPDATE petal fractal_id failed: {e}"))?;
     tracing::info!("Seeded petal: {petal_name} ({})", petal_id.0);
 
     // Role must be inserted BEFORE create_room calls, because create_room checks require_write_role.
@@ -283,15 +543,23 @@ async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(Strin
 
     // --- Nodes (GeoJSON Point positions on the XZ plane; elevation = Y height) ---
     // position coordinates are [X, Z] (longitude = X, latitude = Z in engine space).
+    #[allow(clippy::type_complexity)]
     let node_defs: &[(&str, Option<&String>, [f64; 2], f64, bool)] = &[
-        ("Welcome Beacon", beacon_asset_id.as_ref(), [0.0, 0.0],  0.0, false),
-        ("Info Panel",     panel_asset_id.as_ref(),  [3.0, 0.0],  1.2, true),
-        ("Lucky Duck",     duck_asset_id.as_ref(),   [-2.0, 2.0], 0.0, true),
+        (
+            "Welcome Beacon",
+            beacon_asset_id.as_ref(),
+            [0.0, 0.0],
+            0.0,
+            false,
+        ),
+        ("Info Panel", panel_asset_id.as_ref(), [3.0, 0.0], 1.2, true),
+        ("Lucky Duck", duck_asset_id.as_ref(), [-2.0, 2.0], 0.0, true),
     ];
     for (name, asset_id, xz, elevation, interactive) in node_defs {
         let node_record_id = ulid::Ulid::new().to_string();
         let aid: Option<String> = asset_id.map(|s| s.to_string());
-        db.query("CREATE node CONTENT {
+        db.query(
+            "CREATE node CONTENT {
                 node_id: $node_id,
                 petal_id: $petal_id,
                 display_name: $name,
@@ -302,19 +570,20 @@ async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(Strin
                 scale: [1.0, 1.0, 1.0],
                 interactive: $interactive,
                 created_at: $now,
-            }")
-            .bind(("node_id", node_record_id))
-            .bind(("petal_id", petal_id.0.to_string()))
-            .bind(("name", name.to_string()))
-            .bind(("asset_id", aid))
-            .bind(("x", xz[0]))
-            .bind(("z", xz[1]))
-            .bind(("elev", *elevation))
-            .bind(("interactive", *interactive))
-            .bind(("now", now.clone()))
-            .await?
-            .check()
-            .map_err(|e| anyhow::anyhow!("seed CREATE node '{name}' failed: {e}"))?;
+            }",
+        )
+        .bind(("node_id", node_record_id))
+        .bind(("petal_id", petal_id.0.to_string()))
+        .bind(("name", name.to_string()))
+        .bind(("asset_id", aid))
+        .bind(("x", xz[0]))
+        .bind(("z", xz[1]))
+        .bind(("elev", *elevation))
+        .bind(("interactive", *interactive))
+        .bind(("now", now.clone()))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("seed CREATE node '{name}' failed: {e}"))?;
         tracing::info!("Seeded node: {name} at XZ{xz:?} elev={elevation}");
     }
 
@@ -325,46 +594,402 @@ async fn seed_default_data(db: &surrealdb::Surreal<Db>) -> anyhow::Result<(Strin
 }
 
 // ---------------------------------------------------------------------------
+// Phase C: base64 → blob store migration
+// ---------------------------------------------------------------------------
+
+/// Migrate legacy asset rows that store file content as base64 in the `data`
+/// column to the content-addressed blob store. After migration each row has a
+/// `content_hash` and the `data` field is cleared (set to NONE).
+///
+/// Returns `(migrated_count, total_bytes)`. Errors on individual rows are
+/// logged and skipped — the migration never aborts the whole batch.
+async fn migrate_base64_assets_to_blob_store(
+    db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
+) -> anyhow::Result<(usize, usize)> {
+    tracing::info!("Checking for base64 assets to migrate...");
+
+    let mut res: surrealdb::IndexedResults = db
+        .query("SELECT * FROM asset WHERE content_hash IS NONE AND data IS NOT NONE")
+        .await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+
+    if rows.is_empty() {
+        return Ok((0, 0));
+    }
+
+    tracing::info!("Found {} legacy base64 asset(s) to migrate", rows.len());
+
+    let mut migrated_count: usize = 0;
+    let mut total_bytes: usize = 0;
+
+    for row in &rows {
+        let asset_id = match row["asset_id"].as_str() {
+            Some(id) => id,
+            None => {
+                tracing::warn!("Skipping asset row with missing asset_id");
+                continue;
+            }
+        };
+        let data_str = match row["data"].as_str() {
+            Some(d) => d,
+            None => {
+                tracing::warn!("Skipping asset {asset_id}: data field is not a string");
+                continue;
+            }
+        };
+
+        // Decode base64
+        let bytes =
+            match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data_str) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Skipping asset {asset_id}: base64 decode failed: {e}");
+                    continue;
+                }
+            };
+
+        let byte_len = bytes.len();
+
+        // Compute hash for idempotency check before writing
+        let hash = match blob_store.add_blob(&bytes) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::error!("Skipping asset {asset_id}: blob_store.add_blob failed: {e}");
+                continue;
+            }
+        };
+        let hex = hash_to_hex(&hash);
+
+        // Update the DB row: set content_hash, clear data
+        if let Err(e) = db
+            .query("UPDATE asset SET content_hash = $hash, data = NONE WHERE asset_id = $aid")
+            .bind(("hash", hex.clone()))
+            .bind(("aid", asset_id.to_string()))
+            .await
+        {
+            tracing::error!("Skipping asset {asset_id}: DB UPDATE failed: {e}");
+            continue;
+        }
+
+        tracing::info!("Migrated asset {asset_id} ({byte_len} bytes) → content_hash={hex}");
+        migrated_count += 1;
+        total_bytes += byte_len;
+    }
+
+    Ok((migrated_count, total_bytes))
+}
+
+// ---------------------------------------------------------------------------
 // CRUD handler helpers
 // ---------------------------------------------------------------------------
 
 async fn create_verse_handler(
     db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
+    repl_tx: Option<&ReplicationSender>,
     name: &str,
 ) -> anyhow::Result<String> {
     let verse_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+
+    // Phase E: generate a per-verse namespace (pragmatic approach).
+    // A random 32-byte secret is the "namespace secret"; the namespace ID is
+    // derived deterministically as blake3(secret). This decouples namespace
+    // creation from needing a running iroh-docs engine. The mapping to an
+    // actual iroh-docs replica happens when the sync thread opens the replica.
+    let ns_secret = generate_namespace_secret();
+    let ns_id = derive_namespace_id(&ns_secret);
+    let ns_id_hex = hex::encode(ns_id);
+    let ns_secret_hex = hex::encode(ns_secret);
+
+    let verse_row = Verse {
+        verse_id: verse_id.clone(),
+        name: name.to_string(),
+        created_by: "local-node".to_string(),
+        created_at: now.clone(),
+        namespace_id: Some(ns_id_hex.clone()),
+    };
+    let row_json = serde_json::to_value(&verse_row)?;
+
+    Repo::<Verse>::create(db, &verse_row).await?;
+
+    // Replicate the new verse row.
+    replicate_row(
+        repl_tx,
+        blob_store,
+        &verse_id,
+        "verse",
+        &verse_id,
+        serde_json::to_string(&row_json)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+
+    // Store namespace secret in OS keyring so it survives restarts but stays
+    // out of the DB (the ID is public, the secret is not).
+    if let Err(e) = store_namespace_secret_in_keyring(&verse_id, &ns_secret_hex) {
+        // Non-fatal: log and continue. The verse is created; the secret can
+        // be re-derived from a backup flow in a future phase.
+        tracing::warn!("Could not store namespace secret in keyring for verse {verse_id}: {e}");
+    }
+
+    tracing::info!("Created verse: {name} ({verse_id}) namespace_id={ns_id_hex}");
+    Ok(verse_id)
+}
+
+/// Generate a random 32-byte namespace secret using a cryptographically
+/// secure random number generator (CSPRNG).
+fn generate_namespace_secret() -> [u8; 32] {
+    use rand::RngCore;
+    let mut buf = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    buf
+}
+
+/// Derive a deterministic 32-byte namespace ID from a namespace secret.
+pub fn derive_namespace_id(secret: &[u8; 32]) -> [u8; 32] {
+    *blake3::keyed_hash(b"fractalengine:verse:namespace_id", secret).as_bytes()
+}
+
+/// Store a namespace secret in the OS keyring.
+fn store_namespace_secret_in_keyring(verse_id: &str, secret_hex: &str) -> anyhow::Result<()> {
+    let service = format!("fractalengine:verse:{}:ns_secret", verse_id);
+    let entry = keyring::Entry::new(&service, "fractalengine")
+        .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {e}"))?;
+    entry
+        .set_password(secret_hex)
+        .map_err(|e| anyhow::anyhow!("keyring set_password failed: {e}"))?;
+    Ok(())
+}
+
+/// Retrieve a namespace secret from the OS keyring. Returns None if not found.
+pub fn get_namespace_secret_from_keyring(verse_id: &str) -> anyhow::Result<Option<String>> {
+    let service = format!("fractalengine:verse:{}:ns_secret", verse_id);
+    let entry = keyring::Entry::new(&service, "fractalengine")
+        .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {e}"))?;
+    match entry.get_password() {
+        Ok(secret_hex) => {
+            // Validate it's a valid 64-char hex string (32 bytes).
+            if secret_hex.len() != 64 {
+                anyhow::bail!(
+                    "Keyring namespace secret has invalid length: {}",
+                    secret_hex.len()
+                );
+            }
+            hex::decode(&secret_hex)
+                .map_err(|e| anyhow::anyhow!("Keyring namespace secret is not valid hex: {e}"))?;
+            Ok(Some(secret_hex))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("keyring get_password failed: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase F: Invite handlers
+// ---------------------------------------------------------------------------
+
+async fn generate_verse_invite_handler(
+    db: &surrealdb::Surreal<Db>,
+    verse_id: &str,
+    include_write_cap: bool,
+    expiry_hours: u32,
+    keypair: Option<&fe_identity::NodeKeypair>,
+) -> anyhow::Result<String> {
+    let keypair =
+        keypair.ok_or_else(|| anyhow::anyhow!("NodeKeypair not available for invite signing"))?;
+
+    // Look up verse row for namespace_id and name.
+    let mut result: surrealdb::IndexedResults = db
+        .query("SELECT namespace_id, name FROM verse WHERE verse_id = $vid LIMIT 1")
+        .bind(("vid", verse_id.to_string()))
+        .await?;
+    let rows: Vec<serde_json::Value> = result.take(0)?;
+    let row = rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("verse not found: {verse_id}"))?;
+
+    let verse_name = row["name"].as_str().unwrap_or("Unknown").to_string();
+
+    // If the verse was created before Phase E, it won't have a namespace_id.
+    // Backfill: generate a new namespace secret, store it, and update the verse row.
+    let namespace_id = match row["namespace_id"].as_str() {
+        Some(ns) if !ns.is_empty() => ns.to_string(),
+        _ => {
+            tracing::info!("Backfilling namespace_id for pre-Phase-E verse {verse_id}");
+            let ns_secret = generate_namespace_secret();
+            let ns_id = derive_namespace_id(&ns_secret);
+            let ns_id_hex = hex::encode(ns_id);
+            let ns_secret_hex = hex::encode(ns_secret);
+
+            db.query("UPDATE verse SET namespace_id = $nsid WHERE verse_id = $vid")
+                .bind(("nsid", ns_id_hex.clone()))
+                .bind(("vid", verse_id.to_string()))
+                .await?;
+
+            if let Err(e) = store_namespace_secret_in_keyring(verse_id, &ns_secret_hex) {
+                tracing::warn!("Could not store backfilled namespace secret in keyring: {e}");
+            }
+
+            ns_id_hex
+        }
+    };
+
+    // Retrieve namespace secret from keyring.
+    let namespace_secret = if include_write_cap {
+        get_namespace_secret_from_keyring(verse_id)?
+    } else {
+        None
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let expiry = now + (expiry_hours as u64) * 3600;
+
+    // Creator node address: use the keypair's verifying key hex as a node identifier.
+    let creator_node_addr = hex::encode(keypair.verifying_key().to_bytes());
+
+    let mut invite = invite::VerseInvite {
+        namespace_id,
+        namespace_secret,
+        creator_node_addr,
+        verse_name,
+        verse_id: verse_id.to_string(),
+        expiry_timestamp: expiry,
+        signature: String::new(),
+    };
+    invite.sign(keypair);
+
+    let invite_string = invite.to_invite_string();
+    tracing::info!(
+        "Generated invite for verse {verse_id} (write_cap={include_write_cap}, expires in {expiry_hours}h)"
+    );
+    Ok(invite_string)
+}
+
+async fn join_verse_by_invite_handler(
+    db: &surrealdb::Surreal<Db>,
+    invite_string: &str,
+) -> anyhow::Result<(String, String)> {
+    let invite = invite::VerseInvite::from_invite_string(invite_string)?;
+
+    // Verify invite signature using the creator's public key (encoded as hex
+    // in creator_node_addr — this is the ed25519 verifying key bytes).
+    let creator_pk_bytes = hex::decode(&invite.creator_node_addr)
+        .map_err(|e| anyhow::anyhow!("Invalid creator_node_addr hex: {e}"))?;
+    let creator_pk_array: [u8; 32] = creator_pk_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("creator_node_addr is not 32 bytes"))?;
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&creator_pk_array)
+        .map_err(|e| anyhow::anyhow!("Invalid creator public key: {e}"))?;
+    if !invite.verify(&verifying_key) {
+        anyhow::bail!("Invalid invite signature");
+    }
+
+    if invite.is_expired() {
+        anyhow::bail!("Invite has expired");
+    }
+
+    let verse_id = &invite.verse_id;
+    let verse_name = &invite.verse_name;
+    let namespace_id = &invite.namespace_id;
+
+    // Check if verse already exists locally.
+    let mut check: surrealdb::IndexedResults = db
+        .query("SELECT * FROM verse WHERE verse_id = $vid LIMIT 1")
+        .bind(("vid", verse_id.to_string()))
+        .await?;
+    let existing: Vec<serde_json::Value> = check.take(0)?;
+
+    if existing.is_empty() {
+        // Create the verse row.
+        let now = chrono::Utc::now().to_rfc3339();
+        let _: Option<serde_json::Value> = db
+            .create("verse")
+            .content(serde_json::json!({
+                "verse_id": verse_id,
+                "name": verse_name,
+                "created_by": invite.creator_node_addr,
+                "created_at": now,
+                "namespace_id": namespace_id,
+            }))
+            .await?;
+        tracing::info!("Created verse from invite: {verse_name} ({verse_id})");
+    } else {
+        tracing::info!("Verse {verse_id} already exists, updating namespace_id");
+        db.query("UPDATE verse SET namespace_id = $nsid WHERE verse_id = $vid")
+            .bind(("nsid", namespace_id.to_string()))
+            .bind(("vid", verse_id.to_string()))
+            .await?;
+    }
+
+    // Store namespace secret in keyring if present (write capability).
+    if let Some(ref secret) = invite.namespace_secret {
+        if let Err(e) = store_namespace_secret_in_keyring(verse_id, secret) {
+            tracing::warn!("Could not store namespace secret for joined verse {verse_id}: {e}");
+        }
+    }
+
+    // Create verse_member row for self.
+    let now = chrono::Utc::now().to_rfc3339();
+    let member_id = ulid::Ulid::new().to_string();
     let _: Option<serde_json::Value> = db
-        .create("verse")
+        .create("verse_member")
         .content(serde_json::json!({
+            "member_id": member_id,
             "verse_id": verse_id,
-            "name": name,
-            "created_by": "local-node",
-            "created_at": now,
+            "peer_did": "local-node",
+            "status": "active",
+            "invited_by": invite.creator_node_addr,
+            "invite_sig": invite.signature,
+            "invite_timestamp": now,
         }))
         .await?;
-    tracing::info!("Created verse: {name} ({verse_id})");
-    Ok(verse_id)
+
+    tracing::info!(
+        "Joined verse {verse_name} ({verse_id}) via invite (write_cap={})",
+        invite.namespace_secret.is_some()
+    );
+
+    Ok((verse_id.clone(), verse_name.clone()))
 }
 
 async fn create_fractal_handler(
     db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
+    repl_tx: Option<&ReplicationSender>,
     verse_id: &str,
     name: &str,
 ) -> anyhow::Result<String> {
     let fractal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let _: Option<serde_json::Value> = db
-        .create("fractal")
-        .content(serde_json::json!({
-            "fractal_id": fractal_id,
-            "verse_id": verse_id,
-            "owner_did": "local-node",
-            "name": name,
-            "description": "",
-            "created_at": now,
-        }))
-        .await?;
+    let fractal_row = Fractal {
+        fractal_id: fractal_id.clone(),
+        verse_id: verse_id.to_string(),
+        owner_did: "local-node".to_string(),
+        name: name.to_string(),
+        description: Some(String::new()),
+        created_at: now.clone(),
+    };
+    let row_json = serde_json::to_value(&fractal_row)?;
+
+    Repo::<Fractal>::create(db, &fractal_row).await?;
+
+    // Replicate the new fractal row.
+    replicate_row(
+        repl_tx,
+        blob_store,
+        verse_id,
+        "fractal",
+        &fractal_id,
+        serde_json::to_string(&row_json)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+
     tracing::info!("Created fractal: {name} ({fractal_id}) in verse {verse_id}");
     Ok(fractal_id)
 }
@@ -381,14 +1006,18 @@ async fn create_petal_handler(
             petal_id: $petal_id,
             fractal_id: $fractal_id,
             name: $name,
+            node_id: $node_id,
             bounds: <geometry<polygon>> { type: 'Polygon', coordinates: [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]] },
             created_at: $now,
         }")
         .bind(("petal_id", petal_id.clone()))
         .bind(("fractal_id", fractal_id.to_string()))
         .bind(("name", name.to_string()))
+        .bind(("node_id", "local-node".to_string()))
         .bind(("now", now))
-        .await?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
     // Assign owner role so local-node can operate on this petal
     let _: Option<serde_json::Value> = db
         .create("role")
@@ -413,7 +1042,8 @@ async fn create_node_handler(
     let y = position[1] as f64;
     let z = position[2] as f64;
     tracing::info!("Creating node: {name} ({node_id}) in petal {petal_id}");
-    db.query("CREATE node CONTENT {
+    db.query(
+        "CREATE node CONTENT {
             node_id: $node_id,
             petal_id: $petal_id,
             display_name: $name,
@@ -424,22 +1054,24 @@ async fn create_node_handler(
             scale: [1.0, 1.0, 1.0],
             interactive: false,
             created_at: $now,
-        }")
-        .bind(("node_id", node_id.clone()))
-        .bind(("petal_id", petal_id.to_string()))
-        .bind(("name", name.to_string()))
-        .bind(("x", x))
-        .bind(("y", y))
-        .bind(("z", z))
-        .bind(("now", now))
-        .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("CREATE empty node '{name}' failed: {e}"))?;
+        }",
+    )
+    .bind(("node_id", node_id.clone()))
+    .bind(("petal_id", petal_id.to_string()))
+    .bind(("name", name.to_string()))
+    .bind(("x", x))
+    .bind(("y", y))
+    .bind(("z", z))
+    .bind(("now", now))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("CREATE empty node '{name}' failed: {e}"))?;
     Ok(node_id)
 }
 
 async fn import_gltf_handler(
     db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
     petal_id: &str,
     name: &str,
     file_path: &str,
@@ -450,56 +1082,56 @@ async fn import_gltf_handler(
         .map_err(|e| anyhow::anyhow!("Could not read file {}: {e}", path.display()))?;
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("glb");
-    let content_type = if ext == "glb" { "model/gltf-binary" } else { "model/gltf+json" };
+    let content_type = if ext == "glb" {
+        "model/gltf-binary"
+    } else {
+        "model/gltf+json"
+    };
     let size_bytes = bytes.len();
-    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+
+    // Phase B: write bytes to blob store instead of base64-encoding into the DB row.
+    let hash = blob_store
+        .add_blob(&bytes)
+        .map_err(|e| anyhow::anyhow!("blob_store.add_blob failed: {e}"))?;
+    let content_hash = hash_to_hex(&hash);
+
     let asset_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    let _: Option<serde_json::Value> = db
-        .create("asset")
-        .content(serde_json::json!({
-            "asset_id": asset_id,
-            "name": name,
-            "content_type": content_type,
-            "size_bytes": size_bytes,
-            "data": data,
-            "created_at": now,
-        }))
-        .await?;
-    tracing::info!("Imported asset: {name} ({size_bytes} bytes -> asset_id={asset_id})");
-
-    // Copy the file into fractalengine/assets/imported/ so Bevy's asset server can load it.
-    // Bevy looks for assets relative to the binary crate's directory, not the workspace root.
-    let imported_dir = imported_assets_dir();
-    std::fs::create_dir_all(&imported_dir)?;
-    let imported_filename = format!("{}.{}", asset_id, ext);
-    let imported_path = imported_dir.join(&imported_filename);
-    std::fs::write(&imported_path, &bytes)?;
-    // Bevy asset_server paths are relative to `fractalengine/assets/`, so use subdir only.
-    let asset_path = std::path::Path::new(IMPORTED_ASSETS_SUBDIR)
-        .join(&imported_filename)
-        .to_string_lossy()
-        .replace('\\', "/");
-    let absolute_written = imported_path
-        .canonicalize()
-        .unwrap_or_else(|_| imported_path.clone());
-    let cwd_display = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "<unknown-cwd>".to_string());
+    db.query(
+        "CREATE asset CONTENT {
+            asset_id: $asset_id,
+            name: $name,
+            content_type: $content_type,
+            size_bytes: $size_bytes,
+            data: NONE,
+            content_hash: $content_hash,
+            created_at: $now,
+        }",
+    )
+    .bind(("asset_id", asset_id.clone()))
+    .bind(("name", name.to_string()))
+    .bind(("content_type", content_type.to_string()))
+    .bind(("size_bytes", size_bytes as i64))
+    .bind(("content_hash", content_hash.clone()))
+    .bind(("now", now.clone()))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     tracing::info!(
-        "Wrote imported model to {} (absolute: {}, cwd: {})",
-        imported_path.display(),
-        absolute_written.display(),
-        cwd_display
+        "Imported asset: {name} ({size_bytes} bytes -> asset_id={asset_id}, hash={content_hash})"
     );
+
+    // Phase B: asset_path uses blob:// scheme so Bevy loads via the BlobAssetReader.
+    let asset_path = format!("blob://{}.{}", content_hash, ext);
 
     let node_id = ulid::Ulid::new().to_string();
     let x = position[0] as f64;
     let y = position[1] as f64;
     let z = position[2] as f64;
     tracing::info!("Creating node with GLTF: {name} ({node_id}) in petal {petal_id}");
-    db.query("CREATE node CONTENT {
+    db.query(
+        "CREATE node CONTENT {
             node_id: $node_id,
             petal_id: $petal_id,
             display_name: $name,
@@ -510,18 +1142,19 @@ async fn import_gltf_handler(
             scale: [1.0, 1.0, 1.0],
             interactive: true,
             created_at: $now,
-        }")
-        .bind(("node_id", node_id.clone()))
-        .bind(("petal_id", petal_id.to_string()))
-        .bind(("name", name.to_string()))
-        .bind(("asset_id", asset_id.clone()))
-        .bind(("x", x))
-        .bind(("y", y))
-        .bind(("z", z))
-        .bind(("now", now))
-        .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
+        }",
+    )
+    .bind(("node_id", node_id.clone()))
+    .bind(("petal_id", petal_id.to_string()))
+    .bind(("name", name.to_string()))
+    .bind(("asset_id", asset_id.clone()))
+    .bind(("x", x))
+    .bind(("y", y))
+    .bind(("z", z))
+    .bind(("now", now))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
 
     // Verify the node was actually persisted (SurrealDB otherwise swallows
     // errors in the Response even after .check() if the CREATE returned 0 rows).
@@ -530,8 +1163,11 @@ async fn import_gltf_handler(
         .bind(("nid", node_id.clone()))
         .await?;
     let verify_rows: Vec<serde_json::Value> = verify.take(0)?;
-    let count = verify_rows.first().and_then(|r| r["c"].as_i64()).unwrap_or(0);
-    tracing::info!("Post-CREATE verify: node {} count={}", node_id, count);
+    let count = verify_rows
+        .first()
+        .and_then(|r| r["c"].as_i64())
+        .unwrap_or(0);
+    tracing::debug!("Post-CREATE verify: node {} count={}", node_id, count);
     if count == 0 {
         anyhow::bail!("CREATE gltf node '{name}' returned OK but row not found in DB");
     }
@@ -541,6 +1177,7 @@ async fn import_gltf_handler(
 
 async fn load_hierarchy_handler(
     db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
 ) -> anyhow::Result<Vec<VerseHierarchyData>> {
     // Query all verses
     let mut verse_res: surrealdb::IndexedResults = db
@@ -552,6 +1189,8 @@ async fn load_hierarchy_handler(
     for v in &verses_raw {
         let verse_id = v["verse_id"].as_str().unwrap_or_default().to_string();
         let verse_name = v["name"].as_str().unwrap_or_default().to_string();
+        // Phase E: namespace_id for iroh-docs replica mapping.
+        let namespace_id = v["namespace_id"].as_str().map(|s| s.to_string());
 
         // Fractals for this verse
         let mut frac_res: surrealdb::IndexedResults = db
@@ -584,6 +1223,29 @@ async fn load_hierarchy_handler(
                     .await?;
                 let nodes_raw: Vec<serde_json::Value> = node_res.take(0)?;
 
+                // Pre-fetch asset rows for this petal's nodes so we can resolve
+                // content_hash → blob:// paths without N+1 queries.
+                let asset_ids: Vec<String> = nodes_raw
+                    .iter()
+                    .filter_map(|n| n["asset_id"].as_str().map(|s| s.to_string()))
+                    .collect();
+                let mut asset_hash_map: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                if !asset_ids.is_empty() {
+                    let mut asset_res: surrealdb::IndexedResults = db
+                        .query("SELECT asset_id, content_hash FROM asset WHERE asset_id IN $aids")
+                        .bind(("aids", asset_ids))
+                        .await?;
+                    let asset_rows: Vec<serde_json::Value> = asset_res.take(0)?;
+                    for row in &asset_rows {
+                        if let (Some(aid), Some(ch)) =
+                            (row["asset_id"].as_str(), row["content_hash"].as_str())
+                        {
+                            asset_hash_map.insert(aid.to_string(), ch.to_string());
+                        }
+                    }
+                }
+
                 let nodes: Vec<NodeHierarchyData> = nodes_raw
                     .iter()
                     .map(|n| {
@@ -594,15 +1256,30 @@ async fn load_hierarchy_handler(
                         let x = coords[0].as_f64().unwrap_or(0.0) as f32;
                         let z = coords[1].as_f64().unwrap_or(0.0) as f32;
                         let y = n["elevation"].as_f64().unwrap_or(0.0) as f32;
-                        // Check if imported file exists on disk — try .glb then .gltf
-                        // so we don't need a schema migration to record the original extension.
+
+                        // Phase B: resolve asset_path via content_hash → blob store.
+                        // Backward compat: if content_hash is absent, fall back to
+                        // the old imported/ directory probe (Phase C migration will
+                        // backfill content_hash for all legacy rows).
                         let asset_path = asset_id_str.as_ref().and_then(|aid| {
+                            // Try content_hash first (Phase B path).
+                            if let Some(ch) = asset_hash_map.get(aid) {
+                                if let Ok(hash) = hash_from_hex(ch) {
+                                    if blob_store.has_blob(&hash) {
+                                        return Some(format!("blob://{}.glb", ch));
+                                    }
+                                    tracing::warn!(
+                                        "Blob missing for asset_id={aid} content_hash={ch}"
+                                    );
+                                }
+                            }
+                            // Backward compat: probe imported/ directory.
                             let dir = imported_assets_dir();
                             for ext in ["glb", "gltf"] {
                                 let file_name = format!("{}.{}", aid, ext);
                                 let disk_path = dir.join(&file_name);
                                 let exists = disk_path.exists();
-                                tracing::info!(
+                                tracing::debug!(
                                     "Hierarchy asset probe: {} exists={}",
                                     disk_path.display(),
                                     exists
@@ -616,8 +1293,7 @@ async fn load_hierarchy_handler(
                                 }
                             }
                             tracing::warn!(
-                                "Hierarchy asset missing on disk for asset_id={} (tried .glb and .gltf)",
-                                aid
+                                "Hierarchy asset missing for asset_id={aid} (no blob, no imported file)"
                             );
                             None
                         });
@@ -649,6 +1325,7 @@ async fn load_hierarchy_handler(
         verses.push(VerseHierarchyData {
             id: verse_id,
             name: verse_name,
+            namespace_id,
             fractals,
         });
     }
@@ -675,9 +1352,124 @@ mod subdir_tests {
             p.display()
         );
         let s = p.to_string_lossy().replace('\\', "/");
+        assert!(s.contains("fractalengine/assets/imported"), "got: {s}");
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use fe_runtime::blob_store::mock::MockBlobStore;
+    use std::sync::Arc;
+
+    /// Helper: create an in-memory SurrealDB instance with the asset schema applied.
+    async fn setup_test_db() -> surrealdb::Surreal<Db> {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        // Apply the asset table schema via the generated DDL
+        db.query(schema::Asset::schema())
+            .await
+            .expect("define asset")
+            .check()
+            .expect("define asset check");
+        db
+    }
+
+    /// Seed one legacy asset row with base64 data and no content_hash.
+    async fn seed_legacy_asset(db: &surrealdb::Surreal<Db>, asset_id: &str, raw_bytes: &[u8]) {
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw_bytes);
+        let _: Option<serde_json::Value> = db
+            .create("asset")
+            .content(serde_json::json!({
+                "asset_id": asset_id,
+                "name": "test-asset",
+                "content_type": "model/gltf-binary",
+                "size_bytes": raw_bytes.len(),
+                "data": b64,
+                "created_at": "2025-01-01T00:00:00Z",
+            }))
+            .await
+            .expect("seed legacy asset");
+    }
+
+    #[tokio::test]
+    async fn migrate_base64_asset_to_blob_store() {
+        let db = setup_test_db().await;
+        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let raw = b"hello-glb-bytes";
+
+        seed_legacy_asset(&db, "asset-1", raw).await;
+
+        let (count, bytes) = migrate_base64_assets_to_blob_store(&db, &blob_store)
+            .await
+            .expect("migration");
+        assert_eq!(count, 1);
+        assert_eq!(bytes, raw.len());
+
+        // Verify content_hash is set in DB
+        let mut res: surrealdb::IndexedResults = db
+            .query("SELECT content_hash, data FROM asset WHERE asset_id = 'asset-1'")
+            .await
+            .expect("query");
+        let rows: Vec<serde_json::Value> = res.take(0).expect("take");
+        let row = &rows[0];
         assert!(
-            s.contains("fractalengine/assets/imported"),
-            "got: {s}"
+            row["content_hash"].is_string(),
+            "content_hash should be set"
         );
+        assert!(row["data"].is_null(), "data should be cleared (NONE)");
+
+        // Verify blob exists in the store
+        let ch = row["content_hash"].as_str().unwrap();
+        let hash = hash_from_hex(ch).expect("valid hex");
+        assert!(blob_store.has_blob(&hash), "blob should exist in store");
+    }
+
+    #[tokio::test]
+    async fn migrate_is_idempotent() {
+        let db = setup_test_db().await;
+        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+
+        seed_legacy_asset(&db, "asset-2", b"some-data").await;
+
+        let (c1, _) = migrate_base64_assets_to_blob_store(&db, &blob_store)
+            .await
+            .expect("first run");
+        assert_eq!(c1, 1);
+
+        // Second run should find nothing to migrate
+        let (c2, b2) = migrate_base64_assets_to_blob_store(&db, &blob_store)
+            .await
+            .expect("second run");
+        assert_eq!(c2, 0);
+        assert_eq!(b2, 0);
+    }
+
+    #[tokio::test]
+    async fn migrate_skips_rows_with_content_hash() {
+        let db = setup_test_db().await;
+        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+
+        // Insert a row that already has content_hash (Phase B style)
+        let _: Option<serde_json::Value> = db
+            .create("asset")
+            .content(serde_json::json!({
+                "asset_id": "already-migrated",
+                "name": "new-asset",
+                "content_type": "model/gltf-binary",
+                "size_bytes": 42,
+                "content_hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "created_at": "2025-01-01T00:00:00Z",
+            }))
+            .await
+            .expect("seed new-style asset");
+
+        let (count, bytes) = migrate_base64_assets_to_blob_store(&db, &blob_store)
+            .await
+            .expect("migration");
+        assert_eq!(count, 0);
+        assert_eq!(bytes, 0);
     }
 }

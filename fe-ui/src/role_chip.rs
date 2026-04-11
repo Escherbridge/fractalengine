@@ -1,5 +1,5 @@
-use bevy_egui::egui;
 use crate::theme;
+use bevy_egui::egui;
 
 /// Renders the role indicator chip in the bottom-right corner.
 /// `role_label` should come from the actual session role (e.g. "owner", "editor", "public").
