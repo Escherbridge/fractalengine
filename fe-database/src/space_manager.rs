@@ -1,5 +1,7 @@
 use crate::atlas::{ModelMetadataUpdate, PetalMetadata, RoomMetadata, SpaceOverview, Visibility};
 use crate::op_log::write_op_log;
+use crate::repo::Repo;
+use crate::schema::{Model, Petal, Room};
 use crate::types::{NodeId, OpLogEntry, OpType, PetalId};
 
 /// Unified query facade for space (petal/room/model) metadata operations.
@@ -21,14 +23,15 @@ impl SpaceManager {
             Visibility::Private => "private",
             Visibility::Unlisted => "unlisted",
         };
-        db.query(
-            "UPDATE petal SET description = $desc, visibility = $vis, tags = $tags \
-             WHERE petal_id = $id",
+        Repo::<Petal>::merge_by_id(
+            db,
+            &petal_id.0.to_string(),
+            serde_json::json!({
+                "description": meta.description.clone(),
+                "visibility": vis_str,
+                "tags": meta.tags.clone(),
+            }),
         )
-        .bind(("desc", meta.description.clone()))
-        .bind(("vis", vis_str.to_string()))
-        .bind(("tags", meta.tags.clone()))
-        .bind(("id", petal_id.0.to_string()))
         .await?;
 
         let entry = OpLogEntry {
@@ -61,10 +64,12 @@ impl SpaceManager {
             Visibility::Private => "private",
             Visibility::Unlisted => "unlisted",
         };
-        db.query("UPDATE petal SET visibility = $vis WHERE petal_id = $id")
-            .bind(("vis", vis_str.to_string()))
-            .bind(("id", petal_id.0.to_string()))
-            .await?;
+        Repo::<Petal>::merge_by_id(
+            db,
+            &petal_id.0.to_string(),
+            serde_json::json!({ "visibility": vis_str }),
+        )
+        .await?;
 
         let entry = OpLogEntry {
             lamport_clock: 0,
@@ -82,23 +87,31 @@ impl SpaceManager {
     }
 
     /// List petals whose tags array contains the given tag.
+    ///
+    /// Uses raw SurrealQL because `CONTAINS` array containment cannot be
+    /// expressed via the single-field `Repo::find_where` API.
     pub async fn list_petals_by_tag(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
         tag: &str,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<Vec<Petal>> {
         let mut result: surrealdb::IndexedResults = db
             .query("SELECT * FROM petal WHERE tags CONTAINS $tag")
             .bind(("tag", tag.to_string()))
             .await?;
-        let rows: Vec<serde_json::Value> = result.take(0)?;
-        Ok(rows)
+        let raw: Vec<serde_json::Value> = result.take(0)?;
+        raw.into_iter()
+            .map(|v| serde_json::from_value(v).map_err(Into::into))
+            .collect()
     }
 
     /// Full-text search petals by name, description, or tags.
+    ///
+    /// Uses raw SurrealQL because `string::lowercase()` full-text predicates
+    /// cannot be expressed via `Repo::find_where`.
     pub async fn search_petals(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
         query: &str,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<Vec<Petal>> {
         let q = query.to_lowercase();
         let mut result: surrealdb::IndexedResults = db
             .query(
@@ -109,13 +122,19 @@ impl SpaceManager {
             )
             .bind(("q", q))
             .await?;
-        let rows: Vec<serde_json::Value> = result.take(0)?;
-        Ok(rows)
+        let raw: Vec<serde_json::Value> = result.take(0)?;
+        raw.into_iter()
+            .map(|v| serde_json::from_value(v).map_err(Into::into))
+            .collect()
     }
 
     // --- Room metadata ---
 
     /// Update room description, bounds, and spawn point.
+    ///
+    /// Kept as raw SurrealQL because the room table uses `id` as the record
+    /// identifier rather than a named field like `room_id`, so `Repo::merge_by_id`
+    /// (which filters on `Room::ID_FIELD = "petal_id"`) would not match.
     pub async fn update_room_metadata(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
         caller_node_id: &str,
@@ -160,18 +179,23 @@ impl SpaceManager {
     pub async fn get_room_detail(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
         room_id: String,
-    ) -> anyhow::Result<Option<serde_json::Value>> {
+    ) -> anyhow::Result<Option<Room>> {
         let mut result: surrealdb::IndexedResults = db
             .query("SELECT * FROM room WHERE id = $id")
             .bind(("id", room_id))
             .await?;
-        let row: Option<serde_json::Value> = result.take(0)?;
-        Ok(row)
+        let raw: Option<serde_json::Value> = result.take(0)?;
+        raw.map(|v| serde_json::from_value(v).map_err(Into::into))
+            .transpose()
     }
 
     // --- Model metadata ---
 
     /// Update all model metadata fields.
+    ///
+    /// Kept as raw SurrealQL because the model table uses `id` as the record
+    /// identifier rather than a named field, so `Repo::merge_by_id`
+    /// (which filters on `Model::ID_FIELD = "asset_id"`) would not match.
     pub async fn update_model_metadata(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
         caller_node_id: &str,
@@ -235,23 +259,31 @@ impl SpaceManager {
     }
 
     /// List models whose tags array contains the given tag.
+    ///
+    /// Uses raw SurrealQL because `CONTAINS` array containment cannot be
+    /// expressed via the single-field `Repo::find_where` API.
     pub async fn list_models_by_tag(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
         tag: &str,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<Vec<Model>> {
         let mut result: surrealdb::IndexedResults = db
             .query("SELECT * FROM model WHERE tags CONTAINS $tag")
             .bind(("tag", tag.to_string()))
             .await?;
-        let rows: Vec<serde_json::Value> = result.take(0)?;
-        Ok(rows)
+        let raw: Vec<serde_json::Value> = result.take(0)?;
+        raw.into_iter()
+            .map(|v| serde_json::from_value(v).map_err(Into::into))
+            .collect()
     }
 
     /// Full-text search models by display_name, description, or tags.
+    ///
+    /// Uses raw SurrealQL because `string::lowercase()` full-text predicates
+    /// cannot be expressed via `Repo::find_where`.
     pub async fn search_models(
         db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
         query: &str,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<Vec<Model>> {
         let q = query.to_lowercase();
         let mut result: surrealdb::IndexedResults = db
             .query(
@@ -262,8 +294,10 @@ impl SpaceManager {
             )
             .bind(("q", q))
             .await?;
-        let rows: Vec<serde_json::Value> = result.take(0)?;
-        Ok(rows)
+        let raw: Vec<serde_json::Value> = result.take(0)?;
+        raw.into_iter()
+            .map(|v| serde_json::from_value(v).map_err(Into::into))
+            .collect()
     }
 
     // --- Aggregate ---

@@ -1,5 +1,4 @@
 use serde::{de::DeserializeOwned, Serialize};
-use surrealdb::types::SurrealValue;
 
 /// Type alias for the SurrealDB database handle used throughout the crate.
 pub type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;

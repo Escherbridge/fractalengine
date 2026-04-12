@@ -1,4 +1,5 @@
 use crate::repo::Db;
+use crate::schema::Role;
 use crate::types::RoleId;
 
 pub async fn apply_schema(db: &Db) -> anyhow::Result<()> {
@@ -13,9 +14,17 @@ pub async fn get_role(db: &Db, node_id: &str, petal_id: &str) -> anyhow::Result<
         .bind(("node_id", node_id))
         .bind(("petal_id", petal_id))
         .await?;
-    let role: Option<serde_json::Value> = result.take(0)?;
-    Ok(role
-        .and_then(|v: serde_json::Value| v["role"].as_str().map(|s: &str| RoleId(s.to_string())))
+    // Deserialize as typed Role rows; compound-key lookup requires raw SurrealQL
+    // because Repo::find_where only supports a single equality predicate.
+    let raw: Vec<serde_json::Value> = result.take(0)?;
+    let roles: Vec<Role> = raw
+        .into_iter()
+        .map(|v| serde_json::from_value(v))
+        .collect::<Result<_, _>>()?;
+    Ok(roles
+        .into_iter()
+        .next()
+        .map(|r| RoleId(r.role))
         .unwrap_or_else(|| RoleId("public".to_string())))
 }
 

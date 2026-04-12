@@ -2,7 +2,7 @@ use fe_runtime::messages::{
     DbCommand, DbResult, FractalHierarchyData, NodeHierarchyData, PetalHierarchyData,
     VerseHierarchyData,
 };
-use crate::repo::{Repo, Table};
+use crate::repo::Repo;
 use crate::schema::{Asset, Fractal, Role, Verse, VerseMemberRow};
 use surrealdb::engine::local::{Db, SurrealKv};
 
@@ -408,17 +408,14 @@ async fn seed_assets(
         let content_hash = hash_to_hex(&hash);
         let asset_id = ulid::Ulid::new().to_string();
 
-        let _: Option<serde_json::Value> = db
-            .create("asset")
-            .content(serde_json::json!({
-                "asset_id": asset_id,
-                "name": file_name,
-                "content_type": content_type,
-                "size_bytes": size_bytes,
-                "content_hash": content_hash,
-                "created_at": now,
-            }))
-            .await?;
+        Repo::<Asset>::create_raw(db, serde_json::json!({
+            "asset_id": asset_id,
+            "name": file_name,
+            "content_type": content_type,
+            "size_bytes": size_bytes,
+            "content_hash": content_hash,
+            "created_at": now,
+        })).await?;
         tracing::info!("Seeded asset: {file_name} ({size_bytes} bytes → asset_id={asset_id}, hash={content_hash})");
         id_map.insert(file_name, asset_id);
     }
@@ -526,14 +523,11 @@ pub async fn seed_default_data(
     tracing::info!("Seeded petal: {petal_name} ({})", petal_id.0);
 
     // Role must be inserted BEFORE create_room calls, because create_room checks require_write_role.
-    let _: Option<serde_json::Value> = db
-        .create("role")
-        .content(serde_json::json!({
-            "node_id":  node_id.0,
-            "petal_id": petal_id.0.to_string(),
-            "role":     "owner",
-        }))
-        .await?;
+    Repo::<Role>::create(db, &Role {
+        node_id:  node_id.0.clone(),
+        petal_id: petal_id.0.to_string(),
+        role:     "owner".to_string(),
+    }).await?;
     tracing::info!("Assigned owner role to {}", node_id.0);
 
     for room_name in &room_names {
@@ -907,16 +901,13 @@ async fn join_verse_by_invite_handler(
     if existing.is_empty() {
         // Create the verse row.
         let now = chrono::Utc::now().to_rfc3339();
-        let _: Option<serde_json::Value> = db
-            .create("verse")
-            .content(serde_json::json!({
-                "verse_id": verse_id,
-                "name": verse_name,
-                "created_by": invite.creator_node_addr,
-                "created_at": now,
-                "namespace_id": namespace_id,
-            }))
-            .await?;
+        Repo::<Verse>::create(db, &Verse {
+            verse_id:     verse_id.clone(),
+            name:         verse_name.clone(),
+            created_by:   invite.creator_node_addr.clone(),
+            created_at:   now.clone(),
+            namespace_id: Some(namespace_id.clone()),
+        }).await?;
         tracing::info!("Created verse from invite: {verse_name} ({verse_id})");
     } else {
         tracing::info!("Verse {verse_id} already exists, updating namespace_id");
@@ -936,18 +927,15 @@ async fn join_verse_by_invite_handler(
     // Create verse_member row for self.
     let now = chrono::Utc::now().to_rfc3339();
     let member_id = ulid::Ulid::new().to_string();
-    let _: Option<serde_json::Value> = db
-        .create("verse_member")
-        .content(serde_json::json!({
-            "member_id": member_id,
-            "verse_id": verse_id,
-            "peer_did": "local-node",
-            "status": "active",
-            "invited_by": invite.creator_node_addr,
-            "invite_sig": invite.signature,
-            "invite_timestamp": now,
-        }))
-        .await?;
+    Repo::<VerseMemberRow>::create_raw(db, serde_json::json!({
+        "member_id":        member_id,
+        "verse_id":         verse_id,
+        "peer_did":         "local-node",
+        "status":           "active",
+        "invited_by":       invite.creator_node_addr,
+        "invite_sig":       invite.signature,
+        "invite_timestamp": now,
+    })).await?;
 
     tracing::info!(
         "Joined verse {verse_name} ({verse_id}) via invite (write_cap={})",
@@ -1019,14 +1007,11 @@ async fn create_petal_handler(
         .check()
         .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
     // Assign owner role so local-node can operate on this petal
-    let _: Option<serde_json::Value> = db
-        .create("role")
-        .content(serde_json::json!({
-            "node_id": "local-node",
-            "petal_id": petal_id,
-            "role": "owner",
-        }))
-        .await?;
+    Repo::<Role>::create(db, &Role {
+        node_id:  "local-node".to_string(),
+        petal_id: petal_id.clone(),
+        role:     "owner".to_string(),
+    }).await?;
     Ok(petal_id)
 }
 
@@ -1359,6 +1344,7 @@ mod subdir_tests {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
+    use crate::repo::Table;
     use fe_runtime::blob_store::mock::MockBlobStore;
     use std::sync::Arc;
 
@@ -1380,18 +1366,16 @@ mod migration_tests {
     /// Seed one legacy asset row with base64 data and no content_hash.
     async fn seed_legacy_asset(db: &surrealdb::Surreal<Db>, asset_id: &str, raw_bytes: &[u8]) {
         let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw_bytes);
-        let _: Option<serde_json::Value> = db
-            .create("asset")
-            .content(serde_json::json!({
-                "asset_id": asset_id,
-                "name": "test-asset",
-                "content_type": "model/gltf-binary",
-                "size_bytes": raw_bytes.len(),
-                "data": b64,
-                "created_at": "2025-01-01T00:00:00Z",
-            }))
-            .await
-            .expect("seed legacy asset");
+        Repo::<Asset>::create_raw(db, serde_json::json!({
+            "asset_id":     asset_id,
+            "name":         "test-asset",
+            "content_type": "model/gltf-binary",
+            "size_bytes":   raw_bytes.len(),
+            "data":         b64,
+            "created_at":   "2025-01-01T00:00:00Z",
+        }))
+        .await
+        .expect("seed legacy asset");
     }
 
     #[tokio::test]
