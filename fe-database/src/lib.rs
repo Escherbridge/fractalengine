@@ -163,31 +163,45 @@ pub fn spawn_db_thread_with_sync(
             }
 
             tracing::info!("SurrealDB ready");
-            tx.send(DbResult::Started).ok();
+            if tx.send(DbResult::Started).is_err() {
+                tracing::warn!("Result channel closed — UI may have shut down");
+            }
             #[allow(clippy::while_let_loop)]
             loop {
                 match rx.recv() {
                     Ok(DbCommand::Ping) => {
-                        tx.send(DbResult::Pong).ok();
+                        if tx.send(DbResult::Pong).is_err() {
+                            tracing::warn!("Result channel closed — UI may have shut down");
+                        }
                     }
                     Ok(DbCommand::Seed) => match seed_default_data(&db, &blob_store).await {
                         Ok((petal_name, rooms)) => {
-                            tx.send(DbResult::Seeded { petal_name, rooms }).ok();
+                            if tx.send(DbResult::Seeded { petal_name, rooms }).is_err() {
+                                tracing::warn!("Result channel closed — UI may have shut down");
+                            }
                         }
                         Err(e) => {
                             tracing::error!("Seed failed: {e}");
-                            tx.send(DbResult::Error(format!("Seed failed: {e}"))).ok();
+                            if tx.send(DbResult::Error(format!("Seed failed: {e}"))).is_err() {
+                                tracing::warn!("Result channel closed — UI may have shut down");
+                            }
                         }
                     },
                     Ok(DbCommand::CreateVerse { name }) => {
                         match create_verse_handler(&db, &blob_store, repl_tx.as_ref(), &name).await
                         {
                             Ok(id) => {
-                                tx.send(DbResult::VerseCreated { id, name }).ok();
+                                if tx.send(DbResult::VerseCreated { id, name }).is_err() {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("Create verse failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("Create verse failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
@@ -202,28 +216,44 @@ pub fn spawn_db_thread_with_sync(
                         .await
                         {
                             Ok(id) => {
-                                tx.send(DbResult::FractalCreated { id, verse_id, name })
-                                    .ok();
+                                if tx
+                                    .send(DbResult::FractalCreated { id, verse_id, name })
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("Create fractal failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("Create fractal failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
                     Ok(DbCommand::CreatePetal { fractal_id, name }) => {
                         match create_petal_handler(&db, &fractal_id, &name).await {
                             Ok(id) => {
-                                tx.send(DbResult::PetalCreated {
-                                    id,
-                                    fractal_id,
-                                    name,
-                                })
-                                .ok();
+                                if tx
+                                    .send(DbResult::PetalCreated {
+                                        id,
+                                        fractal_id,
+                                        name,
+                                    })
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("Create petal failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("Create petal failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
@@ -233,17 +263,25 @@ pub fn spawn_db_thread_with_sync(
                         position,
                     }) => match create_node_handler(&db, &petal_id, &name, position).await {
                         Ok(id) => {
-                            tx.send(DbResult::NodeCreated {
-                                id,
-                                petal_id,
-                                name,
-                                has_asset: false,
-                            })
-                            .ok();
+                            if tx
+                                .send(DbResult::NodeCreated {
+                                    id,
+                                    petal_id,
+                                    name,
+                                    has_asset: false,
+                                })
+                                .is_err()
+                            {
+                                tracing::warn!("Result channel closed — UI may have shut down");
+                            }
                         }
                         Err(e) => {
-                            tx.send(DbResult::Error(format!("Create node failed: {e}")))
-                                .ok();
+                            if tx
+                                .send(DbResult::Error(format!("Create node failed: {e}")))
+                                .is_err()
+                            {
+                                tracing::warn!("Result channel closed — UI may have shut down");
+                            }
                         }
                     },
                     Ok(DbCommand::ImportGltf {
@@ -263,30 +301,44 @@ pub fn spawn_db_thread_with_sync(
                         .await
                         {
                             Ok((node_id, asset_id, asset_path)) => {
-                                tx.send(DbResult::GltfImported {
-                                    node_id,
-                                    asset_id,
-                                    petal_id,
-                                    name,
-                                    asset_path,
-                                    position,
-                                })
-                                .ok();
+                                if tx
+                                    .send(DbResult::GltfImported {
+                                        node_id,
+                                        asset_id,
+                                        petal_id,
+                                        name,
+                                        asset_path,
+                                        position,
+                                    })
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("GLTF import failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("GLTF import failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
                     Ok(DbCommand::LoadHierarchy) => {
                         match load_hierarchy_handler(&db, &blob_store).await {
                             Ok(verses) => {
-                                tx.send(DbResult::HierarchyLoaded { verses }).ok();
+                                if tx.send(DbResult::HierarchyLoaded { verses }).is_err() {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("Load hierarchy failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("Load hierarchy failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
@@ -305,83 +357,125 @@ pub fn spawn_db_thread_with_sync(
                         .await
                         {
                             Ok(invite_string) => {
-                                tx.send(DbResult::VerseInviteGenerated {
-                                    verse_id,
-                                    invite_string,
-                                })
-                                .ok();
+                                if tx
+                                    .send(DbResult::VerseInviteGenerated {
+                                        verse_id,
+                                        invite_string,
+                                    })
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("Generate invite failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("Generate invite failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
                     Ok(DbCommand::JoinVerseByInvite { invite_string }) => {
                         match join_verse_by_invite_handler(&db, &invite_string).await {
                             Ok((verse_id, verse_name)) => {
-                                tx.send(DbResult::VerseJoined {
-                                    verse_id,
-                                    verse_name,
-                                })
-                                .ok();
+                                if tx
+                                    .send(DbResult::VerseJoined {
+                                        verse_id,
+                                        verse_name,
+                                    })
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("Join verse failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("Join verse failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
                     Ok(DbCommand::ResetDatabase) => {
-                        match async {
-                            admin::clear_all_tables(&db).await?;
-                            seed_default_data(&db, &blob_store).await
-                        }
-                        .await
-                        {
+                        match reset_database_handler(&db, &blob_store).await {
                             Ok((petal_name, rooms)) => {
-                                tx.send(DbResult::DatabaseReset { petal_name, rooms })
-                                    .ok();
+                                if tx
+                                    .send(DbResult::DatabaseReset { petal_name, rooms })
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                             Err(e) => {
-                                tx.send(DbResult::Error(format!("Database reset failed: {e}")))
-                                    .ok();
+                                if tx
+                                    .send(DbResult::Error(format!("Database reset failed: {e}")))
+                                    .is_err()
+                                {
+                                    tracing::warn!("Result channel closed — UI may have shut down");
+                                }
                             }
                         }
                     }
                     Ok(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }) => {
-                        let x = position[0] as f64;
-                        let y = position[1] as f64;
-                        let z = position[2] as f64;
-                        let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
-                        let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
-                        let result = db
-                            .query(
-                                "UPDATE node SET \
-                                    position = <geometry<point>> [$x, $z], \
-                                    elevation = $y, \
-                                    rotation = $rot, \
-                                    scale = $sc \
-                                 WHERE node_id = $node_id",
-                            )
-                            .bind(("node_id", node_id.clone()))
-                            .bind(("x", x))
-                            .bind(("y", y))
-                            .bind(("z", z))
-                            .bind(("rot", rot))
-                            .bind(("sc", sc))
-                            .await;
-                        if let Err(e) = result {
-                            tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
+                        match update_node_transform_handler(&db, &node_id, position, rotation, scale).await {
+                            Ok(()) => {}
+                            Err(e) => {
+                                tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
+                            }
                         }
                     }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
             }
             tracing::info!("Database thread shutting down");
-            tx.send(DbResult::Stopped).ok();
+            if tx.send(DbResult::Stopped).is_err() {
+                tracing::warn!("Result channel closed — UI may have shut down");
+            }
         });
     })
+}
+
+async fn reset_database_handler(
+    db: &surrealdb::Surreal<Db>,
+    blob_store: &BlobStoreHandle,
+) -> anyhow::Result<(String, Vec<String>)> {
+    admin::clear_all_tables(db).await?;
+    seed_default_data(db, blob_store).await
+}
+
+async fn update_node_transform_handler(
+    db: &surrealdb::Surreal<Db>,
+    node_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+) -> anyhow::Result<()> {
+    let x = position[0] as f64;
+    let y = position[1] as f64;
+    let z = position[2] as f64;
+    let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
+    let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
+    db.query(
+        "UPDATE node SET \
+            position = <geometry<point>> [$x, $z], \
+            elevation = $y, \
+            rotation = $rot, \
+            scale = $sc \
+         WHERE node_id = $node_id",
+    )
+    .bind(("node_id", node_id.to_string()))
+    .bind(("x", x))
+    .bind(("y", y))
+    .bind(("z", z))
+    .bind(("rot", rot))
+    .bind(("sc", sc))
+    .await
+    .map_err(|e| anyhow::anyhow!("UpdateNodeTransform DB query failed: {e}"))?;
+    Ok(())
 }
 
 /// Returns `(asset_id_for_name)` map seeded from files in `assets/models/`.

@@ -120,6 +120,79 @@ fn handle_verse_replica_lifecycle(
     *last_verse = nav.active_verse_id.clone();
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigate_to_verse_clears_fractal_and_petal() {
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v1", "Verse 1");
+        nav.navigate_to_fractal("f1", "Fractal 1");
+        nav.navigate_to_petal("p1");
+        nav.navigate_to_verse("v2", "Verse 2");
+        assert_eq!(nav.active_verse_id, Some("v2".to_string()));
+        assert_eq!(nav.active_verse_name, "Verse 2");
+        assert!(nav.active_fractal_id.is_none(), "fractal should be cleared");
+        assert!(nav.active_fractal_name.is_empty(), "fractal name should be cleared");
+        assert!(nav.active_petal_id.is_none(), "petal should be cleared");
+    }
+
+    #[test]
+    fn navigate_to_fractal_clears_petal() {
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v1", "Verse 1");
+        nav.navigate_to_fractal("f1", "Fractal 1");
+        nav.navigate_to_petal("p1");
+        nav.navigate_to_fractal("f2", "Fractal 2");
+        assert_eq!(nav.active_fractal_id, Some("f2".to_string()));
+        assert_eq!(nav.active_fractal_name, "Fractal 2");
+        assert!(nav.active_petal_id.is_none(), "petal should be cleared on fractal change");
+        assert_eq!(nav.active_verse_id, Some("v1".to_string()));
+    }
+
+    #[test]
+    fn back_from_verse_clears_all_fields() {
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v1", "Verse 1");
+        nav.navigate_to_fractal("f1", "Fractal 1");
+        nav.navigate_to_petal("p1");
+        nav.back_from_verse();
+        assert!(nav.active_verse_id.is_none());
+        assert!(nav.active_verse_name.is_empty());
+        assert!(nav.active_fractal_id.is_none());
+        assert!(nav.active_fractal_name.is_empty());
+        assert!(nav.active_petal_id.is_none());
+    }
+
+    #[test]
+    fn back_from_fractal_clears_only_fractal_and_name() {
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v1", "Verse 1");
+        nav.navigate_to_fractal("f1", "Fractal 1");
+        nav.back_from_fractal();
+        assert_eq!(nav.active_verse_id, Some("v1".to_string()));
+        assert!(nav.active_fractal_id.is_none());
+        assert!(nav.active_fractal_name.is_empty());
+    }
+
+    #[test]
+    fn back_from_petal_clears_only_petal() {
+        let mut nav = NavigationManager::default();
+        nav.navigate_to_verse("v1", "Verse 1");
+        nav.navigate_to_fractal("f1", "Fractal 1");
+        nav.navigate_to_petal("p1");
+        nav.back_from_petal();
+        assert_eq!(nav.active_verse_id, Some("v1".to_string()));
+        assert_eq!(nav.active_fractal_id, Some("f1".to_string()));
+        assert!(nav.active_petal_id.is_none(), "only petal should be cleared");
+    }
+}
+
 fn open_replica(
     sync: &fe_sync::SyncCommandSenderRes,
     verse_id: &str,
