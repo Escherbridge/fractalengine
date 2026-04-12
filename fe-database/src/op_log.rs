@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::repo::Repo;
+use crate::schema::OpLog;
 use crate::types::{OpLogEntry, PetalId};
 
 static LAMPORT_CLOCK: AtomicU64 = AtomicU64::new(0);
@@ -10,7 +12,7 @@ pub async fn write_op_log(
 ) -> anyhow::Result<()> {
     entry.lamport_clock = LAMPORT_CLOCK.fetch_add(1, Ordering::SeqCst);
     let val = serde_json::to_value(entry)?;
-    let _: Option<serde_json::Value> = db.create("op_log").content(val).await?;
+    Repo::<OpLog>::create_raw(db, val).await?;
     Ok(())
 }
 

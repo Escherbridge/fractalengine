@@ -1,4 +1,6 @@
 use crate::op_log::write_op_log;
+use crate::repo::Repo;
+use crate::schema::{Model, Petal, Room};
 use crate::types::{NodeId, OpLogEntry, OpType, PetalId};
 
 pub async fn create_petal(
@@ -18,15 +20,18 @@ pub async fn create_petal(
         sig: "00".repeat(64),
     };
     write_op_log(db, entry).await?;
-    let _: Option<serde_json::Value> = db
-        .create("petal")
-        .content(serde_json::json!({
-            "petal_id": petal_id.0.to_string(),
-            "name": name,
-            "node_id": node_id.0,
-            "created_at": chrono::Utc::now().to_rfc3339(),
-        }))
-        .await?;
+    let petal = Petal {
+        petal_id: petal_id.0.to_string(),
+        name: name.to_string(),
+        node_id: node_id.0.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        description: None,
+        visibility: "private".to_string(),
+        tags: vec![],
+        fractal_id: None,
+        bounds: None,
+    };
+    Repo::<Petal>::create(db, &petal).await?;
     Ok(petal_id)
 }
 
@@ -45,13 +50,14 @@ pub async fn create_room(
         sig: "00".repeat(64),
     };
     write_op_log(db, entry).await?;
-    let _: Option<serde_json::Value> = db
-        .create("room")
-        .content(serde_json::json!({
-            "petal_id": petal_id.0.to_string(),
-            "name": name,
-        }))
-        .await?;
+    let room = Room {
+        petal_id: petal_id.0.to_string(),
+        name: name.to_string(),
+        description: None,
+        bounds: None,
+        spawn_point: None,
+    };
+    Repo::<Room>::create(db, &room).await?;
     Ok(())
 }
 
@@ -75,13 +81,17 @@ pub async fn place_model(
         sig: "00".repeat(64),
     };
     write_op_log(db, entry).await?;
-    let _: Option<serde_json::Value> = db
-        .create("model")
-        .content(serde_json::json!({
-            "petal_id": petal_id.0.to_string(),
-            "asset_id": asset_id,
-            "transform": transform,
-        }))
-        .await?;
+    let model = Model {
+        petal_id: petal_id.0.to_string(),
+        asset_id: asset_id.to_string(),
+        transform,
+        display_name: None,
+        description: None,
+        external_url: None,
+        config_url: None,
+        tags: vec![],
+        metadata: None,
+    };
+    Repo::<Model>::create(db, &model).await?;
     Ok(())
 }

@@ -79,7 +79,7 @@ macro_rules! define_table {
     };
 }
 
-pub(crate) use define_table;
+// define_table! is used within this module only; no re-export needed.
 
 // ---------------------------------------------------------------------------
 // Table definitions
