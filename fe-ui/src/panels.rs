@@ -1,11 +1,13 @@
 use bevy_egui::egui;
 
 use crate::atlas::DashboardState;
+use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
     CameraFocusTarget, ContextMenuState, CreateDialogState, CreateKind, GltfImportState,
-    InspectorState, InviteDialogState, JoinDialogState, NavigationState, PeerDebugPanelState,
-    SidebarState, ToolState, VerseHierarchy, ViewportCursorWorld,
+    InspectorState, InviteDialogState, JoinDialogState, NodeOptionsState,
+    PeerDebugPanelState, SidebarState, ToolState, ViewportCursorWorld,
 };
+use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
 use crate::theme;
 use fe_runtime::messages::DbCommand;
 
@@ -14,25 +16,28 @@ use fe_runtime::messages::DbCommand;
 // ---------------------------------------------------------------------------
 
 /// Renders the full UI shell: toolbar -> status bar -> sidebar -> inspector -> viewport.
+/// Returns the screen-space rect of the 3-D viewport (CentralPanel) so the
+/// caller can store it for viewport-click gating in the gimbal system.
 pub fn gardener_console(
     ctx: &egui::Context,
     sidebar: &mut SidebarState,
     tool: &mut ToolState,
     inspector: &mut InspectorState,
-    nav: &mut NavigationState,
+    nav: &mut NavigationManager,
     dashboard: &DashboardState,
-    hierarchy: &mut VerseHierarchy,
+    hierarchy: &mut VerseManager,
     create_dialog: &mut CreateDialogState,
     context_menu: &mut ContextMenuState,
     gltf_import: &mut GltfImportState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     camera_focus: &mut CameraFocusTarget,
     cursor_world: &ViewportCursorWorld,
+    node_options: &mut NodeOptionsState,
     invite_dialog: &mut InviteDialogState,
     join_dialog: &mut JoinDialogState,
     sync_status: Option<&fe_sync::SyncStatus>,
     peer_debug: &mut PeerDebugPanelState,
-) {
+) -> egui::Rect {
     top_toolbar(ctx, sidebar, tool, inspector);
     status_bar(ctx, dashboard, sync_status, nav, peer_debug);
     left_sidebar(
@@ -46,10 +51,11 @@ pub fn gardener_console(
         invite_dialog,
         join_dialog,
         db_tx,
+        node_options,
     );
     right_inspector(ctx, inspector);
 
-    egui::CentralPanel::default()
+    let viewport_response = egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ctx, |ui| {
             viewport_overlay(
@@ -72,6 +78,9 @@ pub fn gardener_console(
     render_invite_dialog(ctx, invite_dialog);
     render_join_dialog(ctx, join_dialog, db_tx);
     render_peer_debug_panel(ctx, peer_debug, sync_status);
+    render_node_options_dialog(ctx, node_options, hierarchy);
+
+    viewport_response.response.rect
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +166,7 @@ fn status_bar(
     ctx: &egui::Context,
     dashboard: &DashboardState,
     sync_status: Option<&fe_sync::SyncStatus>,
-    nav: &NavigationState,
+    nav: &NavigationManager,
     peer_debug: &mut PeerDebugPanelState,
 ) {
     egui::TopBottomPanel::bottom("statusbar")
@@ -241,14 +250,15 @@ fn status_bar(
 fn left_sidebar(
     ctx: &egui::Context,
     sidebar: &mut SidebarState,
-    nav: &mut NavigationState,
+    nav: &mut NavigationManager,
     dashboard: &DashboardState,
-    hierarchy: &mut VerseHierarchy,
+    hierarchy: &mut VerseManager,
     create_dialog: &mut CreateDialogState,
     camera_focus: &mut CameraFocusTarget,
     invite_dialog: &mut InviteDialogState,
     join_dialog: &mut JoinDialogState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
+    node_options: &mut NodeOptionsState,
 ) {
     egui::SidePanel::left("sidebar")
         .resizable(true)
@@ -267,7 +277,7 @@ fn left_sidebar(
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     ui.add_space(4.0);
-                    render_verse_tree(ui, hierarchy, nav, create_dialog, camera_focus);
+                    render_verse_tree(ui, hierarchy, nav, create_dialog, camera_focus, sidebar, node_options);
                     ui.add_space(8.0);
                     sidebar_section_space_overview(ui, dashboard);
                     ui.add_space(4.0);
@@ -290,7 +300,7 @@ fn left_sidebar(
 
 fn sidebar_verse_header(
     ui: &mut egui::Ui,
-    nav: &NavigationState,
+    nav: &NavigationManager,
     create_dialog: &mut CreateDialogState,
     invite_dialog: &mut InviteDialogState,
     join_dialog: &mut JoinDialogState,
@@ -371,10 +381,12 @@ fn sidebar_verse_header(
 
 fn render_verse_tree(
     ui: &mut egui::Ui,
-    hierarchy: &mut VerseHierarchy,
-    nav: &mut NavigationState,
+    hierarchy: &mut VerseManager,
+    nav: &mut NavigationManager,
     create_dialog: &mut CreateDialogState,
     camera_focus: &mut CameraFocusTarget,
+    sidebar: &mut SidebarState,
+    node_options: &mut NodeOptionsState,
 ) {
     let verse_count = hierarchy.verses.len();
     for vi in 0..verse_count {
@@ -401,6 +413,8 @@ fn render_verse_tree(
                     create_dialog,
                     &verse_id,
                     camera_focus,
+                    sidebar,
+                    node_options,
                 );
                 // [+] Add Fractal inside the verse collapse
                 add_button_inline(
@@ -431,11 +445,13 @@ fn render_verse_tree(
 #[allow(clippy::needless_range_loop)]
 fn render_fractals(
     ui: &mut egui::Ui,
-    fractals: &mut [crate::plugin::FractalEntry],
-    nav: &mut NavigationState,
+    fractals: &mut [FractalEntry],
+    nav: &mut NavigationManager,
     create_dialog: &mut CreateDialogState,
     verse_id: &str,
     camera_focus: &mut CameraFocusTarget,
+    sidebar: &mut SidebarState,
+    node_options: &mut NodeOptionsState,
 ) {
     let fractal_count = fractals.len();
     for fi in 0..fractal_count {
@@ -460,6 +476,8 @@ fn render_fractals(
                     create_dialog,
                     &fractal_id,
                     camera_focus,
+                    sidebar,
+                    node_options,
                 );
                 // [+] Add Petal inside the fractal collapse
                 add_button_inline(
@@ -481,11 +499,13 @@ fn render_fractals(
 #[allow(clippy::needless_range_loop)]
 fn render_petals(
     ui: &mut egui::Ui,
-    petals: &mut [crate::plugin::PetalEntry],
-    nav: &mut NavigationState,
+    petals: &mut [PetalEntry],
+    nav: &mut NavigationManager,
     create_dialog: &mut CreateDialogState,
     fractal_id: &str,
     camera_focus: &mut CameraFocusTarget,
+    sidebar: &mut SidebarState,
+    node_options: &mut NodeOptionsState,
 ) {
     let petal_count = petals.len();
     for pi in 0..petal_count {
@@ -503,7 +523,7 @@ fn render_petals(
             .id_salt(format!("petal_{}_{}", fractal_id, petal_id))
             .default_open(true)
             .show(ui, |ui| {
-                render_nodes(ui, &petals[pi].nodes, nav, camera_focus);
+                render_nodes(ui, &mut petals[pi].nodes, nav, camera_focus, sidebar, node_options, is_active);
                 // [+] Add Node inside the petal collapse
                 add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, create_dialog);
             });
@@ -516,34 +536,224 @@ fn render_petals(
 
 fn render_nodes(
     ui: &mut egui::Ui,
-    nodes: &[crate::plugin::NodeEntry],
-    _nav: &mut NavigationState,
+    nodes: &mut Vec<NodeEntry>,
+    _nav: &mut NavigationManager,
     camera_focus: &mut CameraFocusTarget,
+    sidebar: &mut SidebarState,
+    node_options: &mut NodeOptionsState,
+    is_active_petal: bool,
 ) {
-    for node in nodes {
-        let resp = ui.horizontal(|ui| {
-            let icon = if node.has_asset {
-                "\u{25C6}" // filled diamond
+    let drag_id = egui::Id::new("sidebar_node_drag");
+    let dragging_idx: Option<usize> = ui.ctx().data(|d| d.get_temp(drag_id));
+
+    let mut drop_target_idx: Option<usize> = None;
+    let mut node_click: Option<(String, [f32; 3])> = None;
+    let mut node_alt_click: Option<(String, String, String)> = None;
+
+    let node_count = nodes.len();
+    for i in 0..node_count {
+        let node_id = nodes[i].id.clone();
+        let node_name = nodes[i].name.clone();
+        let has_asset = nodes[i].has_asset;
+        let position = nodes[i].position;
+        let webpage_url = nodes[i].webpage_url.clone().unwrap_or_default();
+        let is_selected = sidebar.selected_node_id.as_deref() == Some(node_id.as_str());
+        let is_being_dragged = dragging_idx == Some(i);
+
+        let bg = if is_selected {
+            theme::TREE_SELECTED_BG
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+
+        let row = egui::Frame::NONE
+            .fill(bg)
+            .inner_margin(egui::Margin::symmetric(4, 1))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // Drag handle
+                    ui.label(
+                        egui::RichText::new(if is_being_dragged { "✦" } else { "⠿" })
+                            .small()
+                            .color(theme::TEXT_DIM),
+                    );
+                    let icon = if has_asset { "\u{25C6}" } else { "\u{25CF}" };
+                    ui.label(egui::RichText::new(icon).small().color(theme::TREE_NODE_ICON));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&node_name).small().color(
+                                if !is_active_petal {
+                                    theme::TEXT_MUTED
+                                } else if is_selected {
+                                    theme::TEXT_BRIGHT
+                                } else {
+                                    theme::TEXT_SECTION
+                                },
+                            ),
+                        )
+                        .sense(if is_active_petal {
+                            egui::Sense::click()
+                        } else {
+                            egui::Sense::hover()
+                        }),
+                    )
+                })
+                .inner
+            });
+
+        let label_resp: egui::Response = row.inner;
+        let row_id = egui::Id::new(("node_row_drag", node_id.as_str()));
+        let drag_resp = ui.interact(row.response.rect, row_id, egui::Sense::drag());
+
+        let is_alt = ui.input(|inp| inp.modifiers.alt);
+
+        if label_resp.clicked() && is_active_petal {
+            if is_alt {
+                node_alt_click = Some((node_id.clone(), node_name.clone(), webpage_url));
             } else {
-                "\u{25CF}" // filled circle
-            };
+                node_click = Some((node_id.clone(), position));
+            }
+        }
+
+        if drag_resp.drag_started() {
+            ui.ctx().data_mut(|d| d.insert_temp::<usize>(drag_id, i));
+        }
+
+        if dragging_idx.is_some() && drag_resp.hovered() {
+            if ui.input(|inp| inp.pointer.primary_released()) {
+                drop_target_idx = Some(i);
+            }
+        }
+
+        // Show drop indicator when dragging over this item
+        if dragging_idx.is_some() && drag_resp.hovered() {
+            ui.painter()
+                .hline(row.response.rect.x_range(), row.response.rect.top(), egui::Stroke::new(2.0, theme::BG_BUTTON_ACTIVE));
+        }
+    }
+
+    // Apply selection
+    if let Some((nid, pos)) = node_click {
+        sidebar.selected_node_id = Some(nid);
+        camera_focus.target = Some(pos);
+    }
+
+    // Apply alt-click options dialog
+    if let Some((nid, nname, url)) = node_alt_click {
+        node_options.open = true;
+        node_options.node_id = nid;
+        node_options.node_name_buf = nname;
+        node_options.webpage_url_buf = url;
+    }
+
+    // Apply DnD reorder on pointer release
+    if ui.input(|inp| inp.pointer.primary_released()) {
+        if let Some(from_idx) = dragging_idx {
+            ui.ctx().data_mut(|d| d.remove::<usize>(drag_id));
+            if let Some(to_idx) = drop_target_idx {
+                if from_idx != to_idx && from_idx < nodes.len() && to_idx < nodes.len() {
+                    let item = nodes.remove(from_idx);
+                    let insert_at = if from_idx < to_idx {
+                        to_idx - 1
+                    } else {
+                        to_idx
+                    };
+                    nodes.insert(insert_at, item);
+                }
+            }
+        }
+    }
+}
+
+fn render_node_options_dialog(
+    ctx: &egui::Context,
+    node_options: &mut NodeOptionsState,
+    hierarchy: &mut VerseManager,
+) {
+    if !node_options.open {
+        return;
+    }
+
+    let mut still_open = true;
+    egui::Window::new("Node Options")
+        .open(&mut still_open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(300.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::BG_DIALOG)
+                .inner_margin(egui::Margin::same(12))
+                .corner_radius(6.0)
+                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
+        )
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new("Name:").small().color(theme::TEXT_DIM));
+            ui.add(
+                egui::TextEdit::singleline(&mut node_options.node_name_buf)
+                    .desired_width(f32::INFINITY),
+            );
+
+            ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(icon)
+                egui::RichText::new("Webpage URL:")
                     .small()
-                    .color(theme::TREE_NODE_ICON),
+                    .color(theme::TEXT_DIM),
             );
             ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&node.name)
-                        .small()
-                        .color(theme::TEXT_SECTION),
+                egui::TextEdit::singleline(&mut node_options.webpage_url_buf)
+                    .hint_text("https://\u{2026}")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "This URL will be rendered in the embedded webview when selected.",
                 )
-                .sense(egui::Sense::click()),
-            )
+                .small()
+                .italics()
+                .color(theme::TEXT_MUTED),
+            );
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .clicked()
+                {
+                    let node_id = node_options.node_id.clone();
+                    let url = node_options.webpage_url_buf.trim().to_string();
+                    let url_opt = if url.is_empty() { None } else { Some(url) };
+                    node_options_save_url(hierarchy, &node_id, url_opt);
+                    node_options.open = false;
+                }
+                if ui
+                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .clicked()
+                {
+                    node_options.open = false;
+                }
+            });
         });
-        if resp.inner.clicked() {
-            // Navigate camera to node position
-            camera_focus.target = Some([node.position[0], node.position[1], node.position[2]]);
+
+    if !still_open {
+        node_options.open = false;
+    }
+}
+
+fn node_options_save_url(
+    hierarchy: &mut VerseManager,
+    node_id: &str,
+    url: Option<String>,
+) {
+    for verse in hierarchy.verses.iter_mut() {
+        for fractal in verse.fractals.iter_mut() {
+            for petal in fractal.petals.iter_mut() {
+                if let Some(node) = petal.nodes.iter_mut().find(|n| n.id == node_id) {
+                    node.webpage_url = url;
+                    return;
+                }
+            }
         }
     }
 }
@@ -694,15 +904,28 @@ fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorState
             ("Scale", &mut inspector.scale),
         ] {
             ui.horizontal(|ui| {
+                // Compute a dynamic input width so the three fields always fit
+                // within the inspector panel regardless of its current width.
+                const LABEL_W: f32 = 54.0;
+                const AXIS_W: f32 = 10.0; // "X" / "Y" / "Z"
+                let spacing = ui.spacing().item_spacing.x;
+                // total = LABEL_W + gap + 3*(AXIS_W + gap + input_w + gap)
+                let input_w = ((ui.available_width()
+                    - LABEL_W
+                    - spacing * 7.0
+                    - AXIS_W * 3.0)
+                    / 3.0)
+                    .max(32.0);
+
                 ui.add_sized(
-                    [60.0, 16.0],
+                    [LABEL_W, 16.0],
                     egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
                 );
                 for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
                     ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
                     ui.add(
                         egui::TextEdit::singleline(buf)
-                            .desired_width(52.0)
+                            .desired_width(input_w)
                             .font(egui::TextStyle::Monospace),
                     );
                 }
@@ -773,10 +996,10 @@ fn inspector_url_meta_section(ui: &mut egui::Ui, inspector: &mut InspectorState)
 /// - Petal selected → 3D space with object hints + right-click
 fn viewport_overlay(
     ui: &mut egui::Ui,
-    nav: &mut NavigationState,
+    nav: &mut NavigationManager,
     inspector: &InspectorState,
     context_menu: &mut ContextMenuState,
-    hierarchy: &VerseHierarchy,
+    hierarchy: &VerseManager,
     create_dialog: &mut CreateDialogState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     dashboard: &DashboardState,
@@ -821,10 +1044,10 @@ fn viewport_overlay(
 /// Petal selected — full 3D space with tool hints, breadcrumb, right-click.
 fn viewport_petal_space(
     ui: &mut egui::Ui,
-    nav: &mut NavigationState,
+    nav: &mut NavigationManager,
     inspector: &InspectorState,
     context_menu: &mut ContextMenuState,
-    hierarchy: &VerseHierarchy,
+    hierarchy: &VerseManager,
     rect: egui::Rect,
     center: egui::Pos2,
     cursor_world: &ViewportCursorWorld,
@@ -892,8 +1115,8 @@ fn viewport_petal_space(
 /// No verse selected — verse browser + peer discovery.
 fn viewport_verse_browser(
     ui: &mut egui::Ui,
-    nav: &mut NavigationState,
-    hierarchy: &VerseHierarchy,
+    nav: &mut NavigationManager,
+    hierarchy: &VerseManager,
     create_dialog: &mut CreateDialogState,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     dashboard: &DashboardState,
@@ -1050,8 +1273,8 @@ fn viewport_verse_browser(
 /// Verse selected — browse fractals within it.
 fn viewport_fractal_browser(
     ui: &mut egui::Ui,
-    nav: &mut NavigationState,
-    hierarchy: &VerseHierarchy,
+    nav: &mut NavigationManager,
+    hierarchy: &VerseManager,
     create_dialog: &mut CreateDialogState,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     rect: egui::Rect,
@@ -1181,8 +1404,8 @@ fn viewport_fractal_browser(
 /// Fractal selected — browse petals, select one to enter the 3D room.
 fn viewport_petal_browser(
     ui: &mut egui::Ui,
-    nav: &mut NavigationState,
-    hierarchy: &VerseHierarchy,
+    nav: &mut NavigationManager,
+    hierarchy: &VerseManager,
     create_dialog: &mut CreateDialogState,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     rect: egui::Rect,
@@ -1323,7 +1546,7 @@ fn viewport_petal_browser(
 }
 
 /// Find petal name by ID in the hierarchy.
-fn find_petal_name(hierarchy: &VerseHierarchy, petal_id: &str) -> String {
+fn find_petal_name(hierarchy: &VerseManager, petal_id: &str) -> String {
     for verse in &hierarchy.verses {
         for fractal in &verse.fractals {
             for petal in &fractal.petals {
@@ -1404,8 +1627,8 @@ fn render_context_menu(
 fn render_create_dialog(
     ctx: &egui::Context,
     create_dialog: &mut CreateDialogState,
-    hierarchy: &mut VerseHierarchy,
-    nav: &mut NavigationState,
+    hierarchy: &mut VerseManager,
+    nav: &mut NavigationManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
 ) {
     if !create_dialog.open {
@@ -1479,8 +1702,8 @@ fn render_create_dialog(
 /// Send a DB command to create the entity. The hierarchy will update when
 /// the DbResult comes back — no local push to avoid duplicates.
 fn apply_create(
-    _hierarchy: &mut VerseHierarchy,
-    _nav: &mut NavigationState,
+    _hierarchy: &mut VerseManager,
+    _nav: &mut NavigationManager,
     kind: CreateKind,
     parent_id: &str,
     name: &str,
@@ -1529,7 +1752,7 @@ fn apply_create(
 fn render_gltf_import_dialog(
     ctx: &egui::Context,
     gltf_import: &mut GltfImportState,
-    nav: &NavigationState,
+    nav: &NavigationManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
 ) {
     if !gltf_import.open {

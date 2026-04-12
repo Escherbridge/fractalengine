@@ -38,6 +38,15 @@ pub enum SyncCommand {
     },
     /// Gracefully shut down the sync thread.
     Shutdown,
+    /// Broadcast a node transform change to peers in real time.
+    UpdateNodeTransform {
+        verse_id: String,
+        node_id: String,
+        position: [f32; 3],
+        /// Euler angles in radians (XYZ order).
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
 }
 
 /// Events emitted **from** the sync thread.

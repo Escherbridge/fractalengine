@@ -334,6 +334,9 @@ impl TestPeer {
                                 }
                             }
                         }
+                        Ok(DbCommand::UpdateNodeTransform { .. }) => {
+                            // Not implemented in test harness.
+                        }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }
                 }

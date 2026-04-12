@@ -53,6 +53,14 @@ pub enum DbCommand {
     },
     /// Wipe all tables, re-apply schema, and re-seed default data.
     ResetDatabase,
+    /// Persist a transform change for a node (position/rotation/scale).
+    UpdateNodeTransform {
+        node_id: String,
+        position: [f32; 3],
+        /// Euler angles in radians (XYZ order).
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
 }
 
 #[derive(Debug, Clone, Message)]
