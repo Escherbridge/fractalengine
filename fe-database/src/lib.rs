@@ -428,6 +428,14 @@ pub fn spawn_db_thread_with_sync(
                             }
                         }
                     }
+                    Ok(DbCommand::UpdateNodeUrl { node_id, url }) => {
+                        match update_node_url_handler(&db, &node_id, url).await {
+                            Ok(()) => {}
+                            Err(e) => {
+                                tracing::error!("UpdateNodeUrl failed for {node_id}: {e}");
+                            }
+                        }
+                    }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
             }
@@ -475,6 +483,23 @@ async fn update_node_transform_handler(
     .bind(("sc", sc))
     .await
     .map_err(|e| anyhow::anyhow!("UpdateNodeTransform DB query failed: {e}"))?;
+    Ok(())
+}
+
+async fn update_node_url_handler(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    node_id: &str,
+    url: Option<String>,
+) -> anyhow::Result<()> {
+    // Look up the asset_id for this node, then update the model record.
+    db.query(
+        "UPDATE model SET external_url = $url \
+         WHERE asset_id = (SELECT VALUE asset_id FROM node WHERE node_id = $node_id LIMIT 1)[0]",
+    )
+    .bind(("node_id", node_id.to_string()))
+    .bind(("url", url))
+    .await
+    .map_err(|e| anyhow::anyhow!("UpdateNodeUrl DB query failed: {e}"))?;
     Ok(())
 }
 
@@ -1336,10 +1361,12 @@ async fn load_hierarchy_handler(
                     .collect();
                 let mut asset_hash_map: std::collections::HashMap<String, String> =
                     std::collections::HashMap::new();
+                let mut model_url_map: std::collections::HashMap<String, Option<String>> =
+                    std::collections::HashMap::new();
                 if !asset_ids.is_empty() {
                     let mut asset_res: surrealdb::IndexedResults = db
                         .query("SELECT asset_id, content_hash FROM asset WHERE asset_id IN $aids")
-                        .bind(("aids", asset_ids))
+                        .bind(("aids", asset_ids.clone()))
                         .await?;
                     let asset_rows: Vec<serde_json::Value> = asset_res.take(0)?;
                     for row in &asset_rows {
@@ -1347,6 +1374,18 @@ async fn load_hierarchy_handler(
                             (row["asset_id"].as_str(), row["content_hash"].as_str())
                         {
                             asset_hash_map.insert(aid.to_string(), ch.to_string());
+                        }
+                    }
+                    // Fetch portal URLs from model records (one query for all nodes).
+                    let mut model_res: surrealdb::IndexedResults = db
+                        .query("SELECT asset_id, external_url FROM model WHERE asset_id IN $aids")
+                        .bind(("aids", asset_ids))
+                        .await?;
+                    let model_rows: Vec<serde_json::Value> = model_res.take(0)?;
+                    for row in &model_rows {
+                        if let Some(aid) = row["asset_id"].as_str() {
+                            let url = row["external_url"].as_str().map(|s| s.to_string());
+                            model_url_map.insert(aid.to_string(), url);
                         }
                     }
                 }
@@ -1402,6 +1441,10 @@ async fn load_hierarchy_handler(
                             );
                             None
                         });
+                        let webpage_url = asset_id_str
+                            .as_ref()
+                            .and_then(|aid| model_url_map.get(aid))
+                            .and_then(|u| u.clone());
                         NodeHierarchyData {
                             id: n["node_id"].as_str().unwrap_or_default().to_string(),
                             name: n["display_name"].as_str().unwrap_or_default().to_string(),
@@ -1409,6 +1452,7 @@ async fn load_hierarchy_handler(
                             position: [x, y, z],
                             asset_path,
                             petal_id: petal_id.clone(),
+                            webpage_url,
                         }
                     })
                     .collect();

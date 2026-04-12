@@ -5,7 +5,7 @@ use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
     CameraFocusTarget, ContextMenuState, CreateDialogState, CreateKind, GltfImportState,
     InspectorState, InviteDialogState, JoinDialogState, NodeOptionsState,
-    PeerDebugPanelState, SidebarState, ToolState, ViewportCursorWorld,
+    PeerDebugPanelState, SidebarState, ToolState, ViewportCursorWorld, WebViewOpenRequest,
 };
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
 use crate::theme;
@@ -43,8 +43,8 @@ pub fn gardener_console(
     join_dialog: &mut JoinDialogState,
     sync_status: Option<&fe_sync::SyncStatus>,
     peer_debug: &mut PeerDebugPanelState,
-    // INTEGRATION: plugin.rs gardener_ui_system must pass node_mgr (add to P2pDialogParams bundle or extend system)
     node_mgr: &mut crate::node_manager::NodeManager,
+    webview_request: &mut WebViewOpenRequest,
 ) -> egui::Rect {
     top_toolbar(ctx, sidebar, tool, inspector, node_mgr);
     status_bar(ctx, dashboard, sync_status, nav, peer_debug);
@@ -61,7 +61,7 @@ pub fn gardener_console(
         db_tx,
         node_options,
     );
-    right_inspector(ctx, inspector);
+    right_inspector(ctx, inspector, webview_request);
 
     let viewport_response = egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
@@ -730,7 +730,11 @@ fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState)
 // Right inspector panel
 // ---------------------------------------------------------------------------
 
-fn right_inspector(ctx: &egui::Context, inspector: &mut InspectorState) {
+fn right_inspector(
+    ctx: &egui::Context,
+    inspector: &mut InspectorState,
+    webview_request: &mut WebViewOpenRequest,
+) {
     let open = inspector.selected_entity.is_some();
     egui::SidePanel::right("inspector")
         .resizable(true)
@@ -774,7 +778,7 @@ fn right_inspector(ctx: &egui::Context, inspector: &mut InspectorState) {
                     ui.add_space(2.0);
                     inspector_transform_section(ui, inspector);
                     ui.add_space(2.0);
-                    inspector_url_meta_section(ui, inspector);
+                    inspector_url_meta_section(ui, inspector, webview_request);
                 });
         });
 }
@@ -852,7 +856,11 @@ fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorState
     });
 }
 
-fn inspector_url_meta_section(ui: &mut egui::Ui, inspector: &mut InspectorState) {
+fn inspector_url_meta_section(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorState,
+    webview_request: &mut WebViewOpenRequest,
+) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Portal URLs")
             .strong()
@@ -896,8 +904,23 @@ fn inspector_url_meta_section(ui: &mut egui::Ui, inspector: &mut InspectorState)
             )
             .clicked()
         {
-            // TODO(tracked): UrlEditorSaved Bevy event — requires event type in fe-runtime/messages.rs
+            inspector.url_save_pending = true;
         }
+
+        ui.add_space(4.0);
+
+        let has_url = !inspector.external_url.trim().is_empty();
+        let btn = egui::Button::new("\u{1F310} Open Portal")
+            .fill(if has_url { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON })
+            .min_size(egui::vec2(ui.available_width(), 28.0));
+        let resp = ui.add_enabled(has_url, btn);
+        if resp.clicked() {
+            webview_request.url = Some(inspector.external_url.clone());
+        }
+        if !has_url {
+            resp.on_hover_text("Set a Portal URL above to open the webview");
+        }
+
         ui.add_space(4.0);
     });
 }

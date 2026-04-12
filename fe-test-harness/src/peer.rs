@@ -337,6 +337,9 @@ impl TestPeer {
                         Ok(DbCommand::UpdateNodeTransform { .. }) => {
                             // Not implemented in test harness.
                         }
+                        Ok(DbCommand::UpdateNodeUrl { .. }) => {
+                            // Not implemented in test harness.
+                        }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }
                 }
@@ -806,6 +809,7 @@ async fn load_hierarchy(
                         position: [0.0, 0.0, 0.0],
                         asset_path: None,
                         petal_id: petal_id.clone(),
+                        webpage_url: None,
                     });
                 }
 
