@@ -349,6 +349,32 @@ pub fn spawn_db_thread_with_sync(
                             }
                         }
                     }
+                    Ok(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }) => {
+                        let x = position[0] as f64;
+                        let y = position[1] as f64;
+                        let z = position[2] as f64;
+                        let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
+                        let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
+                        let result = db
+                            .query(
+                                "UPDATE node SET \
+                                    position = <geometry<point>> [$x, $z], \
+                                    elevation = $y, \
+                                    rotation = $rot, \
+                                    scale = $sc \
+                                 WHERE node_id = $node_id",
+                            )
+                            .bind(("node_id", node_id.clone()))
+                            .bind(("x", x))
+                            .bind(("y", y))
+                            .bind(("z", z))
+                            .bind(("rot", rot))
+                            .bind(("sc", sc))
+                            .await;
+                        if let Err(e) = result {
+                            tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
+                        }
+                    }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
             }

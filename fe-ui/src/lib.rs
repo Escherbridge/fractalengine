@@ -3,7 +3,11 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod atlas;
+pub mod gimbal;
+pub mod navigation_manager;
+pub mod node_manager;
 pub mod panels;
 pub mod plugin;
 pub mod role_chip;
 pub mod theme;
+pub mod verse_manager;

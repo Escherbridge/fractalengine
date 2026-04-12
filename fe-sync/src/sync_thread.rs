@@ -100,6 +100,16 @@ pub fn spawn_sync_thread(
                             &content_hash,
                         );
                     }
+                    Ok(SyncCommand::UpdateNodeTransform {
+                        verse_id,
+                        node_id,
+                        position,
+                        rotation,
+                        scale,
+                    }) => {
+                        // TODO: replicate real-time transform update to peers
+                        let _ = (verse_id, node_id, position, rotation, scale);
+                    }
                     Ok(SyncCommand::Shutdown) => {
                         tracing::info!("Sync thread shutting down");
                         break;

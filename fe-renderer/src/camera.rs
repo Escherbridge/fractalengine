@@ -3,7 +3,7 @@
 //! Provides a Blender-style orbit camera with middle-mouse orbit, shift+middle-mouse pan,
 //! and scroll-wheel zoom. All math is extracted into pure public functions for testability.
 
-use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
@@ -161,7 +161,11 @@ fn orbit_camera_system(
 ) {
     // Check egui input state.
     let (egui_wants_pointer, egui_wants_keyboard) = if let Ok(ctx) = egui_ctx.ctx_mut() {
-        (ctx.wants_pointer_input(), ctx.wants_keyboard_input())
+        // is_using_pointer() instead of wants_pointer_input(): the CentralPanel
+        // (3-D viewport) claims pointer ownership even when transparent, so
+        // wants_pointer_input() is always true and blocks orbit/zoom/pan.
+        // is_using_pointer() is only true when a UI widget is actively held.
+        (ctx.is_using_pointer(), ctx.wants_keyboard_input())
     } else {
         (false, false)
     };
@@ -211,11 +215,16 @@ fn orbit_camera_system(
             );
         }
 
-        // Zoom: scroll wheel.
+        // Zoom: scroll wheel. Normalise pixel vs. line units so the zoom
+        // feels consistent across mice and trackpads.
         for ev in scroll.read() {
+            let delta = match ev.unit {
+                MouseScrollUnit::Line => ev.y,
+                MouseScrollUnit::Pixel => ev.y * 0.05,
+            };
             controller.distance = apply_zoom(
                 controller.distance,
-                ev.y,
+                delta,
                 controller.zoom_speed,
                 controller.min_distance,
                 controller.max_distance,
@@ -230,14 +239,17 @@ fn orbit_camera_system(
 
         // Forward/back direction projected onto XZ plane.
         let forward_xz = Vec3::new(-controller.yaw.sin(), 0.0, -controller.yaw.cos()).normalize();
-        let right_xz = Vec3::new(forward_xz.z, 0.0, -forward_xz.x);
+        let right_xz = Vec3::new(-forward_xz.z, 0.0, forward_xz.x);
 
         let mut movement = Vec3::ZERO;
 
         if keyboard.pressed(KeyCode::KeyW) {
             movement += forward_xz;
         }
-        if keyboard.pressed(KeyCode::KeyS) {
+        // Skip S on the exact frame it is first pressed so the tool-shortcut
+        // system (which fires on just_pressed) can claim it without the camera
+        // simultaneously moving backward.
+        if keyboard.pressed(KeyCode::KeyS) && !keyboard.just_pressed(KeyCode::KeyS) {
             movement -= forward_xz;
         }
         if keyboard.pressed(KeyCode::KeyD) {

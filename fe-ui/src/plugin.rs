@@ -1,8 +1,6 @@
 use crate::{atlas::DashboardState, panels, panels::Tool, role_chip};
 use bevy::prelude::*;
-use bevy::scene::SceneRoot;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
-use fe_runtime::messages::{DbCommand, DbResult};
 
 /// Marker attached to every `SceneRoot` spawned from a DB node so that
 /// the UI can despawn/refresh scene entities when the active petal changes.
@@ -17,6 +15,7 @@ pub struct SpawnedNodeMarker {
 pub struct SidebarState {
     pub open: bool,
     pub tag_filter_buf: String,
+    pub selected_node_id: Option<String>,
 }
 
 impl Default for SidebarState {
@@ -24,6 +23,7 @@ impl Default for SidebarState {
         Self {
             open: true,
             tag_filter_buf: String::new(),
+            selected_node_id: None,
         }
     }
 }
@@ -58,59 +58,6 @@ impl Default for InspectorState {
             scale: ["1.00".into(), "1.00".into(), "1.00".into()],
         }
     }
-}
-
-/// Verse and fractal navigation state.
-#[derive(Resource, Default)]
-pub struct NavigationState {
-    pub active_verse_id: Option<String>,
-    pub active_verse_name: String,
-    pub active_fractal_id: Option<String>,
-    pub active_fractal_name: String,
-    pub active_petal_id: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Verse hierarchy tree data
-// ---------------------------------------------------------------------------
-
-#[derive(Resource, Default)]
-pub struct VerseHierarchy {
-    pub verses: Vec<VerseEntry>,
-}
-
-#[derive(Clone, Default)]
-pub struct VerseEntry {
-    pub id: String,
-    pub name: String,
-    /// Phase E: hex-encoded namespace ID for iroh-docs replica.
-    pub namespace_id: Option<String>,
-    pub expanded: bool,
-    pub fractals: Vec<FractalEntry>,
-}
-
-#[derive(Clone, Default)]
-pub struct FractalEntry {
-    pub id: String,
-    pub name: String,
-    pub expanded: bool,
-    pub petals: Vec<PetalEntry>,
-}
-
-#[derive(Clone, Default)]
-pub struct PetalEntry {
-    pub id: String,
-    pub name: String,
-    pub expanded: bool,
-    pub nodes: Vec<NodeEntry>,
-}
-
-#[derive(Clone, Default)]
-pub struct NodeEntry {
-    pub id: String,
-    pub name: String,
-    pub has_asset: bool,
-    pub position: [f32; 3],
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +125,18 @@ pub struct ViewportCursorWorld {
     pub pos: Option<[f32; 3]>,
 }
 
+/// The egui screen-space rect of the 3-D viewport (CentralPanel).
+/// Updated every frame by `gardener_ui_system` and read by the gimbal pick
+/// system to reject clicks that land inside sidebar / inspector panels.
+#[derive(Resource)]
+pub struct ViewportRect(pub bevy_egui::egui::Rect);
+
+impl Default for ViewportRect {
+    fn default() -> Self {
+        Self(bevy_egui::egui::Rect::EVERYTHING)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase F: Invite/Join dialog state
 // ---------------------------------------------------------------------------
@@ -206,13 +165,22 @@ pub struct PeerDebugPanelState {
     pub open: bool,
 }
 
+/// State for the alt-click node options dialog.
+#[derive(Resource, Default)]
+pub struct NodeOptionsState {
+    pub open: bool,
+    pub node_id: String,
+    pub node_name_buf: String,
+    pub webpage_url_buf: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn navigation_state_default_has_no_active_verse() {
-        let state = NavigationState::default();
+    fn navigation_manager_default_has_no_active_verse() {
+        let state = crate::navigation_manager::NavigationManager::default();
         assert!(state.active_verse_id.is_none());
         assert!(state.active_fractal_id.is_none());
         assert!(state.active_petal_id.is_none());
@@ -278,30 +246,32 @@ pub struct GardenerConsolePlugin;
 
 impl Plugin for GardenerConsolePlugin {
     fn build(&self, app: &mut App) {
+        // Domain managers — each owns its state and systems.
+        app.add_plugins(crate::navigation_manager::NavigationManagerPlugin);
+        app.add_plugins(crate::verse_manager::VerseManagerPlugin);
+        app.add_plugins(crate::node_manager::NodeManagerPlugin);
+        // UI-only resources (form buffers, dialog flags, etc.)
         app.init_resource::<SidebarState>();
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorState>();
-        app.init_resource::<NavigationState>();
         app.init_resource::<DashboardState>();
-        app.init_resource::<VerseHierarchy>();
         app.init_resource::<CreateDialogState>();
         app.init_resource::<ContextMenuState>();
         app.init_resource::<GltfImportState>();
         app.init_resource::<CameraFocusTarget>();
         app.init_resource::<ViewportCursorWorld>();
+        app.init_resource::<ViewportRect>();
         app.init_resource::<InviteDialogState>();
         app.init_resource::<JoinDialogState>();
         app.init_resource::<PeerDebugPanelState>();
+        app.init_resource::<NodeOptionsState>();
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
         app.add_systems(
             Update,
             (
-                apply_db_results_to_hierarchy,
                 apply_camera_focus,
-                despawn_and_spawn_on_petal_change,
                 strip_gltf_embedded_cameras,
                 update_viewport_cursor_world,
-                auto_open_close_verse_replica,
             ),
         );
     }
@@ -321,343 +291,48 @@ fn gardener_ui_system(
     mut sidebar: ResMut<SidebarState>,
     mut tool: ResMut<ToolState>,
     mut inspector: ResMut<InspectorState>,
-    mut nav: ResMut<NavigationState>,
+    mut nav: ResMut<crate::navigation_manager::NavigationManager>,
     dashboard: Res<DashboardState>,
-    mut hierarchy: ResMut<VerseHierarchy>,
+    mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
     mut create_dialog: ResMut<CreateDialogState>,
     mut context_menu: ResMut<ContextMenuState>,
     mut gltf_import: ResMut<GltfImportState>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
     mut camera_focus: ResMut<CameraFocusTarget>,
     cursor_world: Res<ViewportCursorWorld>,
+    mut node_options: ResMut<NodeOptionsState>,
     mut p2p: P2pDialogParams,
+    mut viewport_rect: ResMut<ViewportRect>,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
-    panels::gardener_console(
+    let rect = panels::gardener_console(
         ectx,
         &mut sidebar,
         &mut tool,
         &mut inspector,
         &mut nav,
         &dashboard,
-        &mut hierarchy,
+        &mut verse_mgr,
         &mut create_dialog,
         &mut context_menu,
         &mut gltf_import,
         &db_sender.0,
         &mut camera_focus,
         &cursor_world,
+        &mut node_options,
         &mut p2p.invite_dialog,
         &mut p2p.join_dialog,
         p2p.sync_status.as_deref(),
         &mut p2p.peer_debug,
     );
+    viewport_rect.0 = rect;
     let role_label = if inspector.is_admin {
         "admin"
     } else {
         "member"
     };
     role_chip::role_chip_hud(ectx, role_label);
-}
-
-fn apply_db_results_to_hierarchy(
-    mut reader: MessageReader<DbResult>,
-    mut hierarchy: ResMut<VerseHierarchy>,
-    mut nav: ResMut<NavigationState>,
-    db_sender: Res<fe_runtime::app::DbCommandSender>,
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut invite_dialog: ResMut<InviteDialogState>,
-    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
-) {
-    for result in reader.read() {
-        match result {
-            DbResult::Seeded { .. } => {
-                // DB seed complete — load the full hierarchy from the database
-                db_sender
-                    .0
-                    .send(fe_runtime::messages::DbCommand::LoadHierarchy)
-                    .ok();
-                continue;
-            }
-            DbResult::GltfImported {
-                node_id,
-                name,
-                petal_id,
-                asset_path,
-                position,
-                ..
-            } => {
-                // Insert the new node into the correct petal in the hierarchy
-                for verse in hierarchy.verses.iter_mut() {
-                    for fractal in verse.fractals.iter_mut() {
-                        if let Some(petal) = fractal.petals.iter_mut().find(|p| p.id == *petal_id) {
-                            petal.nodes.push(NodeEntry {
-                                id: node_id.clone(),
-                                name: name.clone(),
-                                has_asset: true,
-                                position: *position,
-                            });
-                        }
-                    }
-                }
-                // Only spawn the scene entity if this import targets the currently active petal.
-                if nav.active_petal_id.as_deref() == Some(petal_id.as_str()) {
-                    let gltf_handle: Handle<Scene> =
-                        asset_server.load(format!("{}#Scene0", asset_path));
-                    let spawned = commands
-                        .spawn((
-                            SceneRoot(gltf_handle),
-                            Transform::from_xyz(position[0], position[1], position[2]),
-                            Name::new(name.clone()),
-                            SpawnedNodeMarker {
-                                node_id: node_id.clone(),
-                                petal_id: petal_id.clone(),
-                            },
-                        ))
-                        .id();
-                    bevy::log::debug!(
-                        "Spawned GLTF scene '{}' entity={:?} at {:?} (asset={}, petal={})",
-                        name,
-                        spawned,
-                        position,
-                        asset_path,
-                        petal_id
-                    );
-                } else {
-                    bevy::log::debug!(
-                        "Skipped spawn of '{}' (petal {} is not active: {:?})",
-                        name,
-                        petal_id,
-                        nav.active_petal_id
-                    );
-                }
-            }
-            DbResult::NodeCreated {
-                id,
-                petal_id,
-                name,
-                has_asset,
-            } => {
-                for verse in hierarchy.verses.iter_mut() {
-                    for fractal in verse.fractals.iter_mut() {
-                        if let Some(petal) = fractal.petals.iter_mut().find(|p| p.id == *petal_id) {
-                            petal.nodes.push(NodeEntry {
-                                id: id.clone(),
-                                name: name.clone(),
-                                has_asset: *has_asset,
-                                position: [0.0, 0.0, 0.0],
-                            });
-                        }
-                    }
-                }
-            }
-            DbResult::HierarchyLoaded { verses } => {
-                let was_first_load = nav.active_verse_id.is_none();
-
-                // Auto-select verse and auto-nav to populated petal BEFORE the
-                // hierarchy rebuild so the spawn filter uses the correct petal
-                // on this same HierarchyLoaded event (single round-trip).
-                if was_first_load && nav.active_petal_id.is_none() {
-                    // Auto-select the first verse.
-                    if let Some(v) = verses.first() {
-                        nav.active_verse_id = Some(v.id.clone());
-                        nav.active_verse_name = v.name.clone();
-                    }
-                    // Auto-nav to the first petal containing an asset node.
-                    'outer_pre: for v in verses.iter() {
-                        for f in &v.fractals {
-                            for p in &f.petals {
-                                if p.nodes.iter().any(|n| n.asset_path.is_some()) {
-                                    nav.active_fractal_id = Some(f.id.clone());
-                                    nav.active_fractal_name = f.name.clone();
-                                    nav.active_petal_id = Some(p.id.clone());
-                                    bevy::log::info!(
-                                        "Auto-navigated to populated petal: {}/{}",
-                                        f.name,
-                                        p.name
-                                    );
-                                    break 'outer_pre;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let effective_petal = nav.active_petal_id.clone();
-                hierarchy.verses = verses.iter().map(|v| VerseEntry {
-                    id: v.id.clone(),
-                    name: v.name.clone(),
-                    namespace_id: v.namespace_id.clone(),
-                    expanded: true,
-                    fractals: v.fractals.iter().map(|f| FractalEntry {
-                        id: f.id.clone(),
-                        name: f.name.clone(),
-                        expanded: true,
-                        petals: f.petals.iter().map(|p| PetalEntry {
-                            id: p.id.clone(),
-                            name: p.name.clone(),
-                            expanded: true,
-                            nodes: p.nodes.iter().map(|n| {
-                                // Spawn GLTF scenes only for nodes whose petal matches
-                                // the active petal. When active_petal_id is None
-                                // (verse/fractal browser open) we spawn nothing.
-                                let should_spawn = effective_petal.as_deref() == Some(n.petal_id.as_str())
-                                    && n.asset_path.is_some();
-                                if should_spawn {
-                                    let ap = n.asset_path.as_ref().unwrap();
-                                    let gltf_handle: Handle<Scene> = asset_server.load(format!("{}#Scene0", ap));
-                                    let spawned = commands.spawn((
-                                        SceneRoot(gltf_handle),
-                                        Transform::from_xyz(n.position[0], n.position[1], n.position[2]),
-                                        Name::new(n.name.clone()),
-                                        SpawnedNodeMarker {
-                                            node_id: n.id.clone(),
-                                            petal_id: n.petal_id.clone(),
-                                        },
-                                    )).id();
-                                    bevy::log::debug!(
-                                        "Spawned persisted GLTF '{}' entity={:?} at {:?} (asset={}, petal={})",
-                                        n.name, spawned, n.position, ap, n.petal_id
-                                    );
-                                }
-                                NodeEntry {
-                                    id: n.id.clone(),
-                                    name: n.name.clone(),
-                                    has_asset: n.has_asset,
-                                    position: n.position,
-                                }
-                            }).collect(),
-                        }).collect(),
-                    }).collect(),
-                }).collect();
-                // Non-first-load: auto-select verse if still unset (e.g. after a CreateVerse).
-                if nav.active_verse_id.is_none() {
-                    if let Some(v) = hierarchy.verses.first() {
-                        nav.active_verse_id = Some(v.id.clone());
-                        nav.active_verse_name = v.name.clone();
-                    }
-                }
-            }
-            DbResult::VerseCreated { id, name } => {
-                hierarchy.verses.push(VerseEntry {
-                    id: id.clone(),
-                    name: name.clone(),
-                    namespace_id: None, // Will be populated on next LoadHierarchy
-                    expanded: true,
-                    fractals: Vec::new(),
-                });
-            }
-            DbResult::FractalCreated { id, verse_id, name } => {
-                if let Some(verse) = hierarchy.verses.iter_mut().find(|v| v.id == *verse_id) {
-                    verse.fractals.push(FractalEntry {
-                        id: id.clone(),
-                        name: name.clone(),
-                        expanded: true,
-                        petals: Vec::new(),
-                    });
-                }
-            }
-            DbResult::PetalCreated {
-                id,
-                fractal_id,
-                name,
-            } => {
-                for verse in hierarchy.verses.iter_mut() {
-                    if let Some(fractal) = verse.fractals.iter_mut().find(|f| f.id == *fractal_id) {
-                        fractal.petals.push(PetalEntry {
-                            id: id.clone(),
-                            name: name.clone(),
-                            expanded: true,
-                            nodes: Vec::new(),
-                        });
-                    }
-                }
-            }
-            DbResult::VerseInviteGenerated { invite_string, .. } => {
-                invite_dialog.invite_string = invite_string.clone();
-                invite_dialog.open = true;
-            }
-            DbResult::VerseJoined {
-                verse_id,
-                verse_name,
-            } => {
-                bevy::log::info!("Joined verse: {verse_name} ({verse_id})");
-                // Open the replica for the joined verse.
-                if let Some(ref sync_sender) = sync_sender {
-                    let ns_secret = fe_database::get_namespace_secret_from_keyring(verse_id)
-                        .ok()
-                        .flatten();
-                    // We need namespace_id — for now use the verse_id to look it up.
-                    // The verse was just created with a namespace_id. We'll get it
-                    // on the next LoadHierarchy. For immediate effect, schedule it.
-                    // The auto_open_close_verse_replica system will handle opening
-                    // when the user navigates to this verse.
-                    let _ = sync_sender; // suppress unused warning
-                    let _ = ns_secret;
-                }
-                // Refresh hierarchy to show the new verse.
-                db_sender
-                    .0
-                    .send(fe_runtime::messages::DbCommand::LoadHierarchy)
-                    .ok();
-            }
-            DbResult::DatabaseReset { .. } => {
-                bevy::log::info!("Database reset complete — reloading hierarchy");
-                // Clear in-memory hierarchy and despawn all scene entities
-                hierarchy.verses.clear();
-                // Reload from fresh DB
-                db_sender
-                    .0
-                    .send(fe_runtime::messages::DbCommand::LoadHierarchy)
-                    .ok();
-            }
-            DbResult::Error(msg) => {
-                bevy::log::error!("DB error: {msg}");
-            }
-            _ => {}
-        }
-    }
-}
-
-/// When the active petal changes, despawn every previously-spawned node
-/// entity and trigger a fresh `LoadHierarchy` so the spawn path (scoped
-/// via `active_petal_id`) re-materialises only the active petal's nodes.
-fn despawn_and_spawn_on_petal_change(
-    nav: Res<NavigationState>,
-    mut last: Local<Option<String>>,
-    mut initialized: Local<bool>,
-    query: Query<(Entity, &SpawnedNodeMarker)>,
-    mut commands: Commands,
-    db_sender: Res<fe_runtime::app::DbCommandSender>,
-) {
-    if !*initialized {
-        *last = nav.active_petal_id.clone();
-        *initialized = true;
-        return;
-    }
-    if *last == nav.active_petal_id {
-        return;
-    }
-    let new_active = nav.active_petal_id.clone();
-    bevy::log::info!(
-        "Active petal changed from {:?} to {:?} — despawning stale scene entities",
-        *last,
-        new_active
-    );
-    for (entity, marker) in query.iter() {
-        let keep = new_active
-            .as_deref()
-            .map(|pid| pid == marker.petal_id.as_str())
-            .unwrap_or(false);
-        if !keep {
-            commands.entity(entity).despawn();
-        }
-    }
-    // Re-request hierarchy so the spawn path re-materialises the new petal's nodes.
-    db_sender.0.send(DbCommand::LoadHierarchy).ok();
-    *last = new_active;
 }
 
 /// Bevy's GLTF loader can produce embedded `Camera3d`/`Camera` entities when a
@@ -697,92 +372,6 @@ fn apply_camera_focus(
 }
 
 /// Projects the cursor position onto the Y=0 world plane each frame.
-///
-/// Uses a camera ray → infinite-plane intersection so the context menu can
-/// place newly-imported GLB models at the exact world position the user
-/// right-clicked, rather than a meaningless screen-space pixel delta.
-/// Phase E: automatically open/close verse replicas when the active verse changes.
-///
-/// Watches `NavigationState::active_verse_id` for changes and sends
-/// `CloseVerseReplica` for the previous verse and `OpenVerseReplica` for the
-/// new one to the sync thread.
-fn auto_open_close_verse_replica(
-    nav: Res<NavigationState>,
-    hierarchy: Res<VerseHierarchy>,
-    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
-    mut last_verse: Local<Option<String>>,
-    mut initialized: Local<bool>,
-) {
-    let Some(sync_sender) = sync_sender else {
-        return;
-    };
-
-    if !*initialized {
-        *last_verse = nav.active_verse_id.clone();
-        *initialized = true;
-        // If we already have an active verse on init, open its replica.
-        if let Some(ref vid) = nav.active_verse_id {
-            if let Some(ns_id) = find_namespace_id(&hierarchy, vid) {
-                // Try to retrieve the namespace secret from the keyring.
-                let ns_secret = fe_database::get_namespace_secret_from_keyring(vid)
-                    .ok()
-                    .flatten();
-                sync_sender
-                    .0
-                    .send(fe_sync::SyncCommand::OpenVerseReplica {
-                        verse_id: vid.clone(),
-                        namespace_id: ns_id,
-                        namespace_secret: ns_secret,
-                    })
-                    .ok();
-            }
-        }
-        return;
-    }
-
-    if *last_verse == nav.active_verse_id {
-        return;
-    }
-
-    // Close the old replica.
-    if let Some(ref old_vid) = *last_verse {
-        sync_sender
-            .0
-            .send(fe_sync::SyncCommand::CloseVerseReplica {
-                verse_id: old_vid.clone(),
-            })
-            .ok();
-    }
-
-    // Open the new replica.
-    if let Some(ref new_vid) = nav.active_verse_id {
-        if let Some(ns_id) = find_namespace_id(&hierarchy, new_vid) {
-            let ns_secret = fe_database::get_namespace_secret_from_keyring(new_vid)
-                .ok()
-                .flatten();
-            sync_sender
-                .0
-                .send(fe_sync::SyncCommand::OpenVerseReplica {
-                    verse_id: new_vid.clone(),
-                    namespace_id: ns_id,
-                    namespace_secret: ns_secret,
-                })
-                .ok();
-        }
-    }
-
-    *last_verse = nav.active_verse_id.clone();
-}
-
-/// Look up the namespace_id for a verse in the hierarchy.
-fn find_namespace_id(hierarchy: &VerseHierarchy, verse_id: &str) -> Option<String> {
-    hierarchy
-        .verses
-        .iter()
-        .find(|v| v.id == verse_id)
-        .and_then(|v| v.namespace_id.clone())
-}
-
 fn update_viewport_cursor_world(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
@@ -798,7 +387,7 @@ fn update_viewport_cursor_world(
         cursor_world.pos = None;
         return;
     };
-    if ectx.wants_pointer_input() {
+    if ectx.is_using_pointer() {
         cursor_world.pos = None;
         return;
     }
