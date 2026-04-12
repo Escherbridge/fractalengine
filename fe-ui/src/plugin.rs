@@ -278,12 +278,14 @@ impl Plugin for GardenerConsolePlugin {
 }
 
 /// Phase F: bundle of P2P dialog state to avoid exceeding Bevy's 16-param limit.
+/// Also carries NodeManager so the toolbar deselect button can route through it.
 #[derive(bevy::ecs::system::SystemParam)]
 struct P2pDialogParams<'w> {
     invite_dialog: ResMut<'w, InviteDialogState>,
     join_dialog: ResMut<'w, JoinDialogState>,
     sync_status: Option<Res<'w, fe_sync::SyncStatus>>,
     peer_debug: ResMut<'w, PeerDebugPanelState>,
+    node_mgr: ResMut<'w, crate::node_manager::NodeManager>,
 }
 
 fn gardener_ui_system(
@@ -325,6 +327,7 @@ fn gardener_ui_system(
         &mut p2p.join_dialog,
         p2p.sync_status.as_deref(),
         &mut p2p.peer_debug,
+        &mut p2p.node_mgr,
     );
     viewport_rect.0 = rect;
     let role_label = if inspector.is_admin {

@@ -12,7 +12,7 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
-use crate::gimbal::{GimbalAxis, draw_gimbal_for_entity};
+use crate::gimbal::{GimbalAxis, GIMBAL_LEN, draw_gimbal_for_entity};
 use crate::panels::Tool;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
@@ -180,7 +180,6 @@ fn sync_sidebar_to_manager(
 // System: gimbal axis interaction (pick → drag → commit)
 // ---------------------------------------------------------------------------
 
-const GIMBAL_LEN: f32 = 1.5;
 const PICK_PX: f32 = 20.0;
 
 fn handle_gimbal_interaction(
@@ -294,6 +293,96 @@ fn axis_vec(axis: GimbalAxis) -> Vec3 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entity(n: u32) -> Entity {
+        Entity::from_bits(n as u64)
+    }
+
+    #[test]
+    fn select_sets_selected_entity() {
+        let mut mgr = NodeManager::default();
+        assert!(!mgr.is_selected());
+        mgr.select(entity(1), "node-1");
+        assert!(mgr.is_selected());
+        assert_eq!(mgr.selected_entity(), Some(entity(1)));
+    }
+
+    #[test]
+    fn select_same_entity_preserves_drag_state() {
+        let mut mgr = NodeManager::default();
+        mgr.select(entity(1), "node-1");
+        if let Some(ref mut sel) = mgr.selected {
+            sel.drag_committed = true;
+        }
+        mgr.select(entity(1), "node-1");
+        assert!(
+            mgr.selected.as_ref().map(|s| s.drag_committed).unwrap_or(false),
+            "drag_committed should be preserved when re-selecting same entity"
+        );
+    }
+
+    #[test]
+    fn select_new_entity_resets_drag_state() {
+        let mut mgr = NodeManager::default();
+        mgr.select(entity(1), "node-1");
+        if let Some(ref mut sel) = mgr.selected {
+            sel.drag_committed = true;
+        }
+        mgr.select(entity(2), "node-2");
+        assert_eq!(mgr.selected_entity(), Some(entity(2)));
+        assert!(
+            !mgr.selected.as_ref().map(|s| s.drag_committed).unwrap_or(true),
+            "drag_committed should be false after selecting a new entity"
+        );
+        assert!(
+            mgr.selected.as_ref().and_then(|s| s.drag.as_ref()).is_none(),
+            "drag should be None after selecting a new entity"
+        );
+    }
+
+    #[test]
+    fn deselect_clears_selection() {
+        let mut mgr = NodeManager::default();
+        mgr.select(entity(1), "node-1");
+        assert!(mgr.is_selected());
+        mgr.deselect();
+        assert!(!mgr.is_selected());
+        assert!(mgr.selected_entity().is_none());
+    }
+
+    #[test]
+    fn is_dragging_returns_false_when_no_drag() {
+        let mut mgr = NodeManager::default();
+        assert!(!mgr.is_dragging());
+        mgr.select(entity(1), "node-1");
+        assert!(!mgr.is_dragging());
+    }
+
+    #[test]
+    fn is_dragging_returns_true_when_drag_active() {
+        let mut mgr = NodeManager::default();
+        mgr.select(entity(1), "node-1");
+        if let Some(ref mut sel) = mgr.selected {
+            sel.drag = Some(AxisDrag {
+                axis: crate::gimbal::GimbalAxis::X,
+                start_cursor: Vec2::ZERO,
+                axis_screen_dir: Vec2::X,
+                start_pos: Vec3::ZERO,
+                start_rot: Quat::IDENTITY,
+                start_scale: Vec3::ONE,
+            });
+        }
+        assert!(mgr.is_dragging());
+    }
+}
+
 fn segment_dist_2d(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.dot(ab).max(1e-6)).clamp(0.0, 1.0);
@@ -375,19 +464,41 @@ fn handle_viewport_click(
 fn sync_manager_to_inspector(
     manager: Res<NodeManager>,
     mut inspector: ResMut<InspectorState>,
-    transform_query: Query<&Transform>,
+    // Changed<Transform> avoids 9 format!() allocations per frame while dragging.
+    changed_query: Query<&Transform, Changed<Transform>>,
+    // Plain query used on initial selection so the inspector populates even when
+    // the transform hasn't changed this frame (e.g. freshly selected static node).
+    all_query: Query<&Transform>,
+    mut last_selected: Local<Option<Entity>>,
 ) {
-    // Drive inspector open/close from selection state.
+    // Always sync selected_entity from NodeManager so panels mutations are
+    // corrected on the next frame.
+    //
+    // NOTE: InspectorState.selected_entity is authoritative FROM NodeManager
+    // and should NOT be mutated directly from UI code.
+    //
+    // TODO: Remove InspectorState.selected_entity entirely and have panels
+    // read directly from NodeManager. Deferred to a future refactor.
     inspector.selected_entity = manager.selected_entity();
 
-    // Don't overwrite transform buffers mid-drag (would cause flicker).
-    if manager.is_dragging() {
-        return;
-    }
+    // Early return when nothing is selected.
     let Some(entity) = manager.selected_entity() else {
+        *last_selected = None;
         return;
     };
-    let Ok(t) = transform_query.get(entity) else { return };
+
+    // On initial selection the transform hasn't Changed<> yet — read it
+    // unconditionally so the inspector populates immediately.
+    let just_selected = *last_selected != Some(entity);
+    *last_selected = Some(entity);
+
+    let t = if just_selected {
+        let Ok(t) = all_query.get(entity) else { return };
+        t
+    } else {
+        let Ok(t) = changed_query.get(entity) else { return };
+        t
+    };
     let (rx, ry, rz) = t.rotation.to_euler(EulerRot::XYZ);
     inspector.pos = [
         format!("{:.2}", t.translation.x),
@@ -446,18 +557,9 @@ fn broadcast_transform(
 
     // Keep in-memory NodeEntry in sync so respawn_on_petal_change uses the
     // updated position instead of the stale initial one.
-    for verse in &mut verse_mgr.verses {
-        for fractal in &mut verse.fractals {
-            for petal in &mut fractal.petals {
-                if let Some(node) = petal.nodes.iter_mut().find(|n| n.id == marker.node_id) {
-                    node.position = [pos.x, pos.y, pos.z];
-                    break;
-                }
-            }
-        }
-    }
+    verse_mgr.update_node_position(&marker.node_id, [pos.x, pos.y, pos.z]);
 
-    db_sender
+    if db_sender
         .0
         .send(fe_runtime::messages::DbCommand::UpdateNodeTransform {
             node_id: marker.node_id.clone(),
@@ -465,11 +567,15 @@ fn broadcast_transform(
             rotation: [rx, ry, rz],
             scale: [sc.x, sc.y, sc.z],
         })
-        .ok();
+        .is_err()
+    {
+        bevy::log::warn!("db_sender channel closed — DB thread may have crashed");
+    }
 
     if let Some(sync) = sync_sender {
         if let Some(ref verse_id) = nav.active_verse_id {
-            sync.0
+            if sync
+                .0
                 .send(fe_sync::SyncCommand::UpdateNodeTransform {
                     verse_id: verse_id.clone(),
                     node_id: marker.node_id.clone(),
@@ -477,7 +583,10 @@ fn broadcast_transform(
                     rotation: [rx, ry, rz],
                     scale: [sc.x, sc.y, sc.z],
                 })
-                .ok();
+                .is_err()
+            {
+                bevy::log::warn!("sync_sender channel closed — sync thread may have crashed");
+            }
         }
     }
 }

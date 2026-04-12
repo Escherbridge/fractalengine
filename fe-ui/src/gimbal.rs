@@ -23,7 +23,7 @@ pub enum GimbalAxis {
 // Visual constants
 // ---------------------------------------------------------------------------
 
-const GIMBAL_LEN: f32 = 1.5;
+pub const GIMBAL_LEN: f32 = 1.5;
 const COLOR_X: Color = Color::srgb(0.9, 0.2, 0.2);
 const COLOR_Y: Color = Color::srgb(0.2, 0.9, 0.2);
 const COLOR_Z: Color = Color::srgb(0.3, 0.4, 0.9);
