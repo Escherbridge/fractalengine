@@ -464,6 +464,7 @@ fn handle_viewport_click(
 fn sync_manager_to_inspector(
     manager: Res<NodeManager>,
     mut inspector: ResMut<InspectorState>,
+    verse_mgr: Res<crate::verse_manager::VerseManager>,
     // Changed<Transform> avoids 9 format!() allocations per frame while dragging.
     changed_query: Query<&Transform, Changed<Transform>>,
     // Plain query used on initial selection so the inspector populates even when
@@ -480,6 +481,7 @@ fn sync_manager_to_inspector(
     // TODO: Remove InspectorState.selected_entity entirely and have panels
     // read directly from NodeManager. Deferred to a future refactor.
     inspector.selected_entity = manager.selected_entity();
+    inspector.selected_node_id = manager.selected.as_ref().map(|s| s.node_id.clone());
 
     // Early return when nothing is selected.
     let Some(entity) = manager.selected_entity() else {
@@ -491,6 +493,19 @@ fn sync_manager_to_inspector(
     // unconditionally so the inspector populates immediately.
     let just_selected = *last_selected != Some(entity);
     *last_selected = Some(entity);
+
+    // Sync per-node URL from VerseManager on selection change so the
+    // inspector shows the correct URL for the newly-selected node.
+    if just_selected {
+        if let Some(ref sel) = manager.selected {
+            let url = verse_mgr
+                .all_nodes()
+                .find(|n| n.id == sel.node_id)
+                .and_then(|n| n.webpage_url.clone())
+                .unwrap_or_default();
+            inspector.external_url = url;
+        }
+    }
 
     let t = if just_selected {
         let Ok(t) = all_query.get(entity) else { return };

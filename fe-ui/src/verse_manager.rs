@@ -230,7 +230,7 @@ fn apply_db_results(
                                         name: n.name.clone(),
                                         has_asset: n.has_asset,
                                         position: n.position,
-                                        webpage_url: None,
+                                        webpage_url: n.webpage_url.clone(),
                                         asset_path: n.asset_path.clone(),
                                     }
                                 }).collect(),

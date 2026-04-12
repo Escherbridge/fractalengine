@@ -1,6 +1,7 @@
 use crate::{atlas::DashboardState, panels, panels::Tool, role_chip};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
+use fe_webview::ipc::BrowserCommand;
 
 /// Marker attached to every `SceneRoot` spawned from a DB node so that
 /// the UI can despawn/refresh scene entities when the active petal changes.
@@ -38,24 +39,30 @@ pub struct ToolState {
 #[derive(Resource)]
 pub struct InspectorState {
     pub selected_entity: Option<Entity>,
+    /// Node ID of the selected entity — synced from NodeManager.
+    pub selected_node_id: Option<String>,
     pub is_admin: bool,
     pub external_url: String,
     pub config_url: String,
     pub pos: [String; 3],
     pub rot: [String; 3],
     pub scale: [String; 3],
+    /// Set to true by the Save button; consumed by `handle_url_save` system.
+    pub url_save_pending: bool,
 }
 
 impl Default for InspectorState {
     fn default() -> Self {
         Self {
             selected_entity: None,
+            selected_node_id: None,
             is_admin: false,
             external_url: String::new(),
             config_url: String::new(),
             pos: ["0.00".into(), "0.00".into(), "0.00".into()],
             rot: ["0.00".into(), "0.00".into(), "0.00".into()],
             scale: ["1.00".into(), "1.00".into(), "1.00".into()],
+            url_save_pending: false,
         }
     }
 }
@@ -174,6 +181,15 @@ pub struct NodeOptionsState {
     pub webpage_url_buf: String,
 }
 
+/// One-frame signal set by the inspector's "Open Portal" button.
+/// A system in the main app (or here) reads this and forwards it to the
+/// webview layer as a `BrowserCommand::Navigate` without requiring fe-ui
+/// to depend on fe-webview.
+#[derive(Resource, Default)]
+pub struct WebViewOpenRequest {
+    pub url: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +281,11 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<JoinDialogState>();
         app.init_resource::<PeerDebugPanelState>();
         app.init_resource::<NodeOptionsState>();
+        app.init_resource::<WebViewOpenRequest>();
+        // Register BrowserCommand so MessageWriter<BrowserCommand> is usable.
+        // fe-webview's WebViewPlugin also registers this; calling add_message
+        // twice is idempotent.
+        app.add_message::<BrowserCommand>();
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
         app.add_systems(
             Update,
@@ -272,6 +293,8 @@ impl Plugin for GardenerConsolePlugin {
                 apply_camera_focus,
                 strip_gltf_embedded_cameras,
                 update_viewport_cursor_world,
+                forward_webview_open_request,
+                handle_url_save,
             ),
         );
     }
@@ -286,6 +309,7 @@ struct P2pDialogParams<'w> {
     sync_status: Option<Res<'w, fe_sync::SyncStatus>>,
     peer_debug: ResMut<'w, PeerDebugPanelState>,
     node_mgr: ResMut<'w, crate::node_manager::NodeManager>,
+    webview_request: ResMut<'w, WebViewOpenRequest>,
 }
 
 fn gardener_ui_system(
@@ -328,6 +352,7 @@ fn gardener_ui_system(
         p2p.sync_status.as_deref(),
         &mut p2p.peer_debug,
         &mut p2p.node_mgr,
+        &mut p2p.webview_request,
     );
     viewport_rect.0 = rect;
     let role_label = if inspector.is_admin {
@@ -419,5 +444,81 @@ fn update_viewport_cursor_world(
         cursor_world.pos = Some([point.x, 0.0, point.z]);
     } else {
         cursor_world.pos = None;
+    }
+}
+
+/// Reads the `url_save_pending` flag set by the inspector Save button, persists
+/// the URL to the DB, and updates the in-memory VerseManager.
+fn handle_url_save(
+    mut inspector: ResMut<InspectorState>,
+    mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
+    db_sender: Res<fe_runtime::app::DbCommandSender>,
+) {
+    if !inspector.url_save_pending {
+        return;
+    }
+    inspector.url_save_pending = false;
+
+    let Some(ref node_id) = inspector.selected_node_id.clone() else {
+        return;
+    };
+    let url = if inspector.external_url.trim().is_empty() {
+        None
+    } else {
+        Some(inspector.external_url.clone())
+    };
+
+    verse_mgr.update_node_url(node_id, url.clone());
+
+    if db_sender
+        .0
+        .send(fe_runtime::messages::DbCommand::UpdateNodeUrl {
+            node_id: node_id.clone(),
+            url,
+        })
+        .is_err()
+    {
+        bevy::log::warn!("db_sender channel closed — UpdateNodeUrl not persisted");
+    }
+}
+
+/// Reads `WebViewOpenRequest` set by the inspector's "Open Portal" button and
+/// forwards it as a `BrowserCommand::Navigate` message consumed by the webview layer.
+fn forward_webview_open_request(
+    mut request: ResMut<WebViewOpenRequest>,
+    mut browser_commands: MessageWriter<BrowserCommand>,
+) {
+    let Some(url_str) = request.url.take() else {
+        return;
+    };
+    match url_str.parse::<url::Url>() {
+        Ok(url) => {
+            // Signal the in-app webview layer (consumed by PetalPortalPlugin when wired).
+            browser_commands.write(BrowserCommand::Navigate { url: url.clone() });
+            // Also open in the OS default browser as the primary working path
+            // until the wry overlay is fully integrated.
+            open_url_in_os_browser(url.as_str());
+        }
+        Err(e) => {
+            bevy::log::warn!("WebViewOpenRequest contained an invalid URL: {e}");
+        }
+    }
+}
+
+fn open_url_in_os_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .ok();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).spawn().ok();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(url).spawn().ok();
     }
 }

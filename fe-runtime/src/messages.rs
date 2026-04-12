@@ -61,6 +61,12 @@ pub enum DbCommand {
         rotation: [f32; 3],
         scale: [f32; 3],
     },
+    /// Persist a portal URL change for a node's associated model.
+    UpdateNodeUrl {
+        node_id: String,
+        /// `None` clears the URL.
+        url: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Message)]
@@ -154,6 +160,8 @@ pub struct NodeHierarchyData {
     /// The petal that owns this node — used by the UI to scope scene entity
     /// spawn/despawn to the currently active petal.
     pub petal_id: String,
+    /// Portal URL from the node's associated model record, if any.
+    pub webpage_url: Option<String>,
 }
 
 #[cfg(test)]

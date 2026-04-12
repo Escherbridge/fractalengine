@@ -4163,9 +4163,11 @@ dependencies = [
  "fe-renderer",
  "fe-runtime",
  "fe-sync",
+ "fe-webview",
  "rfd",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]

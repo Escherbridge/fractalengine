@@ -11,6 +11,8 @@ fe-database = { path = "../fe-database" }
 fe-runtime = { path = "../fe-runtime" }
 fe-renderer = { path = "../fe-renderer" }
 fe-sync = { path = "../fe-sync" }
+fe-webview = { path = "../fe-webview" }
+url = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rfd = { workspace = true }
