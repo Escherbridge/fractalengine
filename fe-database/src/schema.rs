@@ -128,10 +128,11 @@ define_table! {
 }
 
 define_table! {
-    /// RBAC role assignment (node <-> petal).
-    table "role" => Role (id: node_id) {
-        node_id:  String => "TYPE string",
-        petal_id: String => "TYPE string",
+    /// RBAC role assignment with hierarchical scope.
+    /// Scope uses the Resource Descriptor format: VERSE#id-FRACTAL#id-PETAL#id
+    table "role" => Role (id: peer_did) {
+        peer_did: String => "TYPE string",
+        scope:    String => "TYPE string",
         role:     String => "TYPE string"
     }
 }
@@ -150,11 +151,12 @@ define_table! {
 define_table! {
     /// A verse -- the top-level container in the hierarchy.
     table "verse" => Verse (id: verse_id) {
-        verse_id:     String         => "TYPE string",
-        name:         String         => "TYPE string",
-        created_by:   String         => "TYPE string",
-        created_at:   String         => "TYPE string",
-        namespace_id: Option<String> => "TYPE option<string>"
+        verse_id:       String         => "TYPE string",
+        name:           String         => "TYPE string",
+        created_by:     String         => "TYPE string",
+        created_at:     String         => "TYPE string",
+        namespace_id:   Option<String> => "TYPE option<string>",
+        default_access: String         => "TYPE string DEFAULT 'viewer'"
     }
 }
 

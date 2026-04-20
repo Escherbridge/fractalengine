@@ -21,6 +21,8 @@ pub mod op_log;
 pub mod queries;
 pub mod rbac;
 pub mod repo;
+pub mod role_level;
+pub mod scope;
 pub mod schema;
 pub mod space_manager;
 pub mod types;
@@ -28,6 +30,8 @@ pub mod verse;
 
 pub use atlas::*;
 pub use model_url_meta::ModelUrlMeta;
+pub use role_level::RoleLevel;
+pub use scope::{build_scope, parse_scope, parent_scope, ScopeParts};
 pub use types::*;
 
 /// Subdirectory under `fractalengine/assets/` where imported GLTF/GLB files are written.
@@ -614,6 +618,7 @@ pub async fn seed_default_data(
         created_by: local_did.clone(),
         created_at: now.clone(),
         namespace_id: None,
+        default_access: "viewer".to_string(),
     }).await?;
     tracing::info!("Seeded verse: Genesis Verse ({verse_id})");
 
@@ -669,8 +674,8 @@ pub async fn seed_default_data(
 
     // Role must be inserted BEFORE create_room calls, because create_room checks require_write_role.
     Repo::<Role>::create(db, &Role {
-        node_id:  node_id.0.clone(),
-        petal_id: petal_id.0.to_string(),
+        peer_did: node_id.0.clone(),
+        scope:    format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0.to_string()),
         role:     "owner".to_string(),
     }).await?;
     tracing::info!("Assigned owner role to {}", node_id.0);
@@ -848,6 +853,7 @@ async fn create_verse_handler(
         created_by: "local-node".to_string(),
         created_at: now.clone(),
         namespace_id: Some(ns_id_hex.clone()),
+        default_access: "viewer".to_string(),
     };
     let row_json = serde_json::to_value(&verse_row)?;
 
@@ -1047,11 +1053,12 @@ async fn join_verse_by_invite_handler(
         // Create the verse row.
         let now = chrono::Utc::now().to_rfc3339();
         Repo::<Verse>::create(db, &Verse {
-            verse_id:     verse_id.clone(),
-            name:         verse_name.clone(),
-            created_by:   invite.creator_node_addr.clone(),
-            created_at:   now.clone(),
-            namespace_id: Some(namespace_id.clone()),
+            verse_id:       verse_id.clone(),
+            name:           verse_name.clone(),
+            created_by:     invite.creator_node_addr.clone(),
+            created_at:     now.clone(),
+            namespace_id:   Some(namespace_id.clone()),
+            default_access: "viewer".to_string(),
         }).await?;
         tracing::info!("Created verse from invite: {verse_name} ({verse_id})");
     } else {
@@ -1153,8 +1160,8 @@ async fn create_petal_handler(
         .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
     // Assign owner role so local-node can operate on this petal
     Repo::<Role>::create(db, &Role {
-        node_id:  "local-node".to_string(),
-        petal_id: petal_id.clone(),
+        peer_did: "local-node".to_string(),
+        scope:    format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.clone()),
         role:     "owner".to_string(),
     }).await?;
     Ok(petal_id)

@@ -41,7 +41,10 @@ pub async fn create_room(
     petal_id: &PetalId,
     name: &str,
 ) -> anyhow::Result<()> {
-    crate::rbac::require_write_role(db, &caller_node_id.0, &petal_id.0.to_string()).await?;
+    // Migration bridge: queries only have petal_id context.
+    // Full hierarchical scope will be used once verse/fractal context is available here.
+    let scope = format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0);
+    crate::rbac::require_write_role(db, &caller_node_id.0, &scope).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
         node_id: caller_node_id.clone(),
@@ -68,7 +71,10 @@ pub async fn place_model(
     asset_id: &str,
     transform: serde_json::Value,
 ) -> anyhow::Result<()> {
-    crate::rbac::require_write_role(db, &caller_node_id.0, &petal_id.0.to_string()).await?;
+    // Migration bridge: queries only have petal_id context.
+    // Full hierarchical scope will be used once verse/fractal context is available here.
+    let scope = format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0);
+    crate::rbac::require_write_role(db, &caller_node_id.0, &scope).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
         node_id: caller_node_id.clone(),
