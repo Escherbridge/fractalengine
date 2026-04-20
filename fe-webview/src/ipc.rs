@@ -2,6 +2,7 @@
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum BrowserCommand {
     Navigate { url: url::Url },
+    GoBack,
     Close,
     GetUrl,
     SwitchTab { tab: BrowserTab },

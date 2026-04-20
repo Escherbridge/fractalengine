@@ -48,6 +48,21 @@ _Link: [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)_
 
 ---
 
+## Chores & Refactors
+
+## [ ] Track: UI Manager Architecture Refactor — UiSet Ordering, UiAction Queue, ActiveDialog Enum, Selection Dedup
+
+_Link: [./tracks/ui_manager_refactor_20260419/](./tracks/ui_manager_refactor_20260419/)_
+_Scope: fe-ui internal refactor | Blocks: none_
+
+## [ ] Track: Code Review Cleanup — SSRF Fix, Dead Code Removal, Stale Docs, Quality Fixes
+
+_Link: [./tracks/code_review_cleanup_20260419/](./tracks/code_review_cleanup_20260419/)_
+_Scope: fe-webview security fix (P0), fe-webview + fe-ui dead code and quality cleanup | Blocks: none_
+_Priority: P0 (contains critical SSRF vulnerability fix)_
+
+---
+
 ## Wave 2: Interactive Digital Twin Platform
 
 ```
@@ -72,6 +87,12 @@ Dependency graph:
   (peer discovery)
 
   Seedling Onboarding (independent — builds on Wave 1 infra)
+
+  Shared Peer Infra ──┬──► Inspector P1-P3  ──┐
+  (NodeIdentity,       │   (tabs, hierarchy)   ├──► Coordinated P4
+   PeerRegistry,       │                       │    (Access tab + P2P sync)
+   presence)           └──► Profile P1-P3   ──┘
+                            (display, edit, identity)
 ```
 
 ### 3D Editor Pipeline (new)
@@ -105,6 +126,31 @@ _Depends on: Selection System | Blocks: none_
 
 _Link: [./tracks/drag_drop_placement_20260402/](./tracks/drag_drop_placement_20260402/)_
 _Depends on: Viewport Foundation, Scene Graph Bridge | Blocks: none_
+
+### Shared Infrastructure
+
+## [ ] Track: Shared Peer Infrastructure — NodeIdentity, PeerRegistry, Peer Presence, Canonical DID Format
+
+_Link: [./tracks/shared_peer_infra_20260419/](./tracks/shared_peer_infra_20260419/)_
+_Depends on: Root Identity (complete), Petal Gate (complete) | Blocks: Inspector Settings P4, Profile Manager P4_
+_Scope: Resolves 3 BLOCKERs and 5 design decisions from cross-track alignment analysis_
+_Priority: P0 (unblocks both Inspector Settings and Profile Manager Phase 4 integration)_
+
+### UI & Configuration
+
+## [ ] Track: Inspector Settings — Portal URL Persistence, Inspector Tabs, Hierarchy Inspection, Auth Settings UI
+
+_Link: [./tracks/inspector_settings_20260419/](./tracks/inspector_settings_20260419/)_
+_Depends on: Gardener Console (complete); Shared Peer Infrastructure (Phase 4 only) | Blocks: none_
+_Scope: fe-ui inspector expansion, SurrealDB URL persistence, RBAC UI_
+_Note: P1-P3 independent of shared infra; P4 (Access tab) requires PeerRegistry + LocalUserRole_
+
+## [ ] Track: User Profile Manager — Identity Display, Profile Editing, Identity Management, P2P Profile Sync
+
+_Link: [./tracks/profile_manager_20260419/](./tracks/profile_manager_20260419/)_
+_Depends on: Root Identity (complete); Shared Peer Infrastructure (Phase 4 only) | Blocks: none_
+_Scope: fe-ui profile panel, fe-identity multi-identity support, iroh-gossip profile broadcast_
+_Note: P1-P3 independent of shared infra; P4 (P2P sync + PeerProfileCache) requires PeerRegistry_
 
 ### Existing Wave 2 Tracks
 

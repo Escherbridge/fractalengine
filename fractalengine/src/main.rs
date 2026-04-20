@@ -114,6 +114,9 @@ fn main() {
     // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
     app.add_plugins(fe_renderer::viewport::ViewportPlugin);
     app.add_plugins(fe_ui::plugin::GardenerConsolePlugin);
+    // WebView portal: inline wry overlay + petal portal lifecycle systems.
+    app.add_plugins(fe_webview::plugin::WebViewPlugin);
+    app.add_plugins(fe_webview::petal_portal::PetalPortalPlugin);
 
     app.run();
 }

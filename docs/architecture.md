@@ -46,20 +46,18 @@ Build direction: `fe-runtime` and `fe-database` are leaves (no FE dependencies).
 |----------|-------|---------|
 | `NavigationManager` | NavigationManagerPlugin | Active hierarchy cursor |
 | `VerseManager` | VerseManagerPlugin | In-memory content tree |
-| `NodeManager` | NodeManagerPlugin | Selection + drag state |
+| `NodeManager` | NodeManagerPlugin | Selection + drag state (sole source of selection truth) |
+| `UiManager` | GardenerConsolePlugin | Centralized UI state: active dialogs, portal panel, UI action queue |
 | `SidebarState` | GardenerConsolePlugin | Sidebar open/close + selected_node_id (UI mirror) |
 | `ToolState` | GardenerConsolePlugin | Active editor tool (Select/Move/Rotate/Scale) |
-| `InspectorState` | GardenerConsolePlugin | Transform buffers for inspector panel (read mirror from NodeManager) |
-| `CreateDialogState` | GardenerConsolePlugin | Create verse/fractal/petal/node dialog form buffers |
-| `ContextMenuState` | GardenerConsolePlugin | Viewport right-click context menu position + state |
-| `GltfImportState` | GardenerConsolePlugin | GLTF import dialog form buffers |
+| `InspectorFormState` | GardenerConsolePlugin | Transform buffers for inspector panel (form buffers only, no selection) |
+| `ActiveDialog` | UiManager | Active dialog variant (on UiManager enum); formerly separate dialog state resources |
+| `PortalState` | UiManager | Portal panel state (formerly separate PortalPanelState resource) |
 | `CameraFocusTarget` | GardenerConsolePlugin | One-shot focus target consumed by orbit camera |
 | `ViewportCursorWorld` | GardenerConsolePlugin | Cursor projected onto Y=0 plane (for model placement) |
 | `ViewportRect` | GardenerConsolePlugin | Screen-space rect of the 3D viewport (for click rejection) |
-| `InviteDialogState` | GardenerConsolePlugin | P2P invite generation dialog |
-| `JoinDialogState` | GardenerConsolePlugin | P2P join dialog form buffer |
 | `PeerDebugPanelState` | GardenerConsolePlugin | Peer debug panel visibility |
-| `NodeOptionsState` | GardenerConsolePlugin | Alt-click node options dialog |
+| `UiAction` queue | UiManager | Action queue for deferred UI operations (replaces WebViewOpenRequest) |
 | `fe_runtime::app::DbCommandSender` | fe-runtime | Channel to DB thread |
 | `fe_sync::SyncCommandSenderRes` | fe-sync | Channel to P2P sync thread (optional — absent if no sync) |
 
