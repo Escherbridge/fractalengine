@@ -51,6 +51,14 @@ pub fn drain_sync_events(
                 status.online = false;
                 tracing::info!("SyncStatus updated: stopped");
             }
+            SyncEvent::PeerConnected { ref peer_id } => {
+                status.peer_count = status.peer_count.saturating_add(1);
+                tracing::info!(peer_id, peer_count = status.peer_count, "Peer connected");
+            }
+            SyncEvent::PeerDisconnected { ref peer_id } => {
+                status.peer_count = status.peer_count.saturating_sub(1);
+                tracing::info!(peer_id, peer_count = status.peer_count, "Peer disconnected");
+            }
         }
     }
 }

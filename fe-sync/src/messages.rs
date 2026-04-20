@@ -62,6 +62,14 @@ pub enum SyncEvent {
     BlobReady { hash: BlobHash },
     /// The sync thread has shut down.
     Stopped,
+    /// A peer has connected to the current verse.
+    ///
+    /// `peer_id` holds the peer's `did:key` format identifier.
+    PeerConnected { peer_id: String },
+    /// A peer has disconnected from the current verse.
+    ///
+    /// `peer_id` holds the peer's `did:key` format identifier.
+    PeerDisconnected { peer_id: String },
 }
 
 /// Sender half for sync commands (type alias for ergonomics).
@@ -120,6 +128,54 @@ mod tests {
         let _ = format!("{:?}", SyncEvent::Started { online: true }.clone());
         let _ = format!("{:?}", SyncEvent::BlobReady { hash: [1u8; 32] }.clone());
         let _ = format!("{:?}", SyncEvent::Stopped.clone());
+    }
+
+    #[test]
+    fn peer_connected_construction() {
+        let ev = SyncEvent::PeerConnected {
+            peer_id: "did:key:z6Mk123".into(),
+        };
+        match &ev {
+            SyncEvent::PeerConnected { peer_id } => {
+                assert_eq!(peer_id, "did:key:z6Mk123");
+            }
+            _ => panic!("expected PeerConnected"),
+        }
+        // Debug + Clone should work
+        let _ = format!("{:?}", ev.clone());
+    }
+
+    #[test]
+    fn peer_disconnected_construction() {
+        let ev = SyncEvent::PeerDisconnected {
+            peer_id: "did:key:z6Mk456".into(),
+        };
+        match &ev {
+            SyncEvent::PeerDisconnected { peer_id } => {
+                assert_eq!(peer_id, "did:key:z6Mk456");
+            }
+            _ => panic!("expected PeerDisconnected"),
+        }
+        let _ = format!("{:?}", ev.clone());
+    }
+
+    #[test]
+    fn peer_variants_distinguished() {
+        let connected = SyncEvent::PeerConnected {
+            peer_id: "did:key:aaa".into(),
+        };
+        let disconnected = SyncEvent::PeerDisconnected {
+            peer_id: "did:key:aaa".into(),
+        };
+        let stopped = SyncEvent::Stopped;
+
+        // Each arm matches only its own variant
+        assert!(matches!(connected, SyncEvent::PeerConnected { .. }));
+        assert!(!matches!(connected, SyncEvent::PeerDisconnected { .. }));
+        assert!(matches!(disconnected, SyncEvent::PeerDisconnected { .. }));
+        assert!(!matches!(disconnected, SyncEvent::PeerConnected { .. }));
+        assert!(!matches!(stopped, SyncEvent::PeerConnected { .. }));
+        assert!(!matches!(stopped, SyncEvent::PeerDisconnected { .. }));
     }
 
     #[test]

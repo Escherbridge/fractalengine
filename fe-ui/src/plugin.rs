@@ -1,6 +1,7 @@
 use crate::{atlas::DashboardState, panels, panels::Tool, role_chip};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
+use fe_database::RoleLevel;
 use fe_webview::ipc::BrowserCommand;
 
 /// Actions queued by the egui render pass, drained by a single Update system.
@@ -164,7 +165,6 @@ pub struct ToolState {
 /// the mutable text buffers that the egui widgets edit.
 #[derive(Resource)]
 pub struct InspectorFormState {
-    pub is_admin: bool,
     pub external_url: String,
     pub config_url: String,
     pub pos: [String; 3],
@@ -175,13 +175,31 @@ pub struct InspectorFormState {
 impl Default for InspectorFormState {
     fn default() -> Self {
         Self {
-            is_admin: false,
             external_url: String::new(),
             config_url: String::new(),
             pos: ["0.00".into(), "0.00".into(), "0.00".into()],
             rot: ["0.00".into(), "0.00".into(), "0.00".into()],
             scale: ["1.00".into(), "1.00".into(), "1.00".into()],
         }
+    }
+}
+
+/// The local user's resolved role at the current scope.
+/// Populated by a system that queries RoleManager.
+#[derive(Resource, Debug, Default)]
+pub struct LocalUserRole {
+    pub role: Option<RoleLevel>,
+}
+
+impl LocalUserRole {
+    /// Check if the local user can manage (assign roles, create entities).
+    pub fn can_manage(&self) -> bool {
+        self.role.map_or(false, |r| r.can_manage())
+    }
+
+    /// Check if the local user can edit content.
+    pub fn can_edit(&self) -> bool {
+        self.role.map_or(false, |r| r.can_edit())
     }
 }
 
@@ -363,6 +381,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<SidebarState>();
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorFormState>();
+        app.init_resource::<LocalUserRole>();
         app.init_resource::<DashboardState>();
         app.init_resource::<CameraFocusTarget>();
         app.init_resource::<ViewportCursorWorld>();
@@ -415,6 +434,7 @@ fn gardener_ui_system(
     cursor_world: Res<ViewportCursorWorld>,
     mut p2p: P2pDialogParams,
     mut viewport_rect: ResMut<ViewportRect>,
+    local_role: Res<LocalUserRole>,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
@@ -432,6 +452,7 @@ fn gardener_ui_system(
         p2p.sync_status.as_deref(),
         &mut p2p.node_mgr,
         &mut p2p.ui_mgr,
+        &local_role,
     );
     viewport_rect.0 = rect;
 
@@ -448,12 +469,11 @@ fn gardener_ui_system(
     p2p.portal_rect.width = (screen.right() - rect.right() - left_pad).max(1.0);
     p2p.portal_rect.height = (rect.height() - toolbar_header - status_bar).max(1.0);
 
-    let role_label = if inspector.is_admin {
-        "admin"
-    } else {
-        "member"
+    let role_label = match &local_role.role {
+        Some(role) => role.to_string(),
+        None => "viewer".to_string(),
     };
-    role_chip::role_chip_hud(ectx, role_label);
+    role_chip::role_chip_hud(ectx, &role_label);
 }
 
 /// Bevy's GLTF loader can produce embedded `Camera3d`/`Camera` entities when a

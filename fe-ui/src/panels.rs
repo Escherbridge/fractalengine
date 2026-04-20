@@ -4,7 +4,8 @@ use crate::atlas::DashboardState;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
     ActiveDialog, CameraFocusTarget, CreateKind,
-    InspectorFormState, SidebarState, ToolState, UiAction, UiManager, ViewportCursorWorld,
+    InspectorFormState, LocalUserRole, SidebarState, ToolState, UiAction, UiManager,
+    ViewportCursorWorld,
 };
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
 use crate::theme;
@@ -37,6 +38,7 @@ pub fn gardener_console(
     sync_status: Option<&fe_sync::SyncStatus>,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) -> egui::Rect {
     top_toolbar(ctx, sidebar, tool, node_mgr);
     status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
@@ -60,7 +62,7 @@ pub fn gardener_console(
     if ui_mgr.portal_is_open() {
         right_portal_toolbar(ctx, ui_mgr);
     } else {
-        right_inspector(ctx, inspector, node_mgr, ui_mgr);
+        right_inspector(ctx, inspector, node_mgr, ui_mgr, local_role);
     }
 
     let viewport_response = egui::CentralPanel::default()
@@ -732,6 +734,7 @@ fn right_inspector(
     inspector: &mut InspectorFormState,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
     let open = node_mgr.selected_entity().is_some();
     // Allow up to 80% of screen width.
@@ -779,7 +782,7 @@ fn right_inspector(
                     ui.add_space(2.0);
                     inspector_transform_section(ui, inspector);
                     ui.add_space(2.0);
-                    inspector_url_meta_section(ui, inspector, ui_mgr);
+                    inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
                 });
         });
 }
@@ -937,6 +940,7 @@ fn inspector_url_meta_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Portal URLs")
@@ -958,7 +962,7 @@ fn inspector_url_meta_section(
                 .desired_width(f32::INFINITY),
         );
 
-        if inspector.is_admin {
+        if local_role.can_manage() {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("Config URL (admin)")

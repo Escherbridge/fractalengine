@@ -3,3 +3,5 @@ pub mod bevy_blob_reader;
 pub mod blob_store;
 pub mod channels;
 pub mod messages;
+pub mod peer_registry;
+pub use peer_registry::{PeerRegistry, PeerEntry};

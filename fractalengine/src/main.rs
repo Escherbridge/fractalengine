@@ -1,8 +1,11 @@
 use std::sync::{Arc, Mutex};
 
+use fe_identity::NodeIdentity;
 use fe_runtime::app::BevyHandles;
 use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
+use fe_runtime::PeerRegistry;
+use fe_ui::plugin::LocalUserRole;
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -110,6 +113,11 @@ fn main() {
     app.init_resource::<fe_sync::SyncStatus>();
     app.init_resource::<fe_sync::VersePeers>();
     app.add_systems(bevy::prelude::Update, fe_sync::drain_sync_events);
+
+    // Insert identity and peer resources
+    app.insert_resource(NodeIdentity::new(node_kp));
+    app.insert_resource(PeerRegistry::default());
+    app.insert_resource(LocalUserRole::default());
 
     // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
     app.add_plugins(fe_renderer::viewport::ViewportPlugin);
