@@ -129,7 +129,7 @@ Key methods:
 2. `sync_sidebar_to_manager` — sidebar selection drives NodeManager
 3. `handle_gimbal_interaction` — axis pick + drag + commit (writes Transform component)
 4. `handle_viewport_click` — ray-cast pick / deselect
-5. `sync_manager_to_inspector` — NodeManager drives InspectorState (display only)
+5. `sync_manager_to_inspector` — NodeManager drives InspectorFormState (display only)
 6. `draw_gimbal_system` — calls gimbal.rs pure drawing functions
 7. `broadcast_transform` — on drag_committed: write DB + P2P + update VerseManager position
 
@@ -210,8 +210,8 @@ is in pure functions in `fe-renderer/src/camera.rs` — no ECS dependencies, ful
    petal changed — a DB query per navigation. Use the in-memory tree in VerseManager instead.
 
 4. **Do not scatter selection state across multiple Resources.**
-   `InspectorState::selected_entity` is a read mirror only — it is written by
-   `sync_manager_to_inspector`, never by UI code. The authoritative source is `NodeManager`.
+   `InspectorFormState` holds form buffers only (position/rotation/scale), not selection. It is written by
+   `sync_manager_to_inspector`, never by UI code. The authoritative source for selection is `NodeManager`.
 
 5. **Do not use `despawn_recursive()` on spawned node entities.**
    Nodes are flat `SceneRoot` entities; use `.despawn()`. Reserve `despawn_recursive()` for

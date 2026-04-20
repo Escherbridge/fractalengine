@@ -11,10 +11,10 @@ the DB imports it and fires a result event, which the UI handles to update state
 spawn a scene entity.
 
 ```
-User selects GLTF file in dialog
+User selects GLTF file in dialog via UiManager active dialog
         │
         ▼
-GltfImportState { file_path_buf, name_buf, position }
+UiManager::ActiveDialog::GltfImport { file_path_buf, name_buf, position }
         │  (user clicks "Import")
         ▼
 db_sender.send(DbCommand::ImportGltf {
@@ -83,7 +83,7 @@ Transform component updated on entity
         │
         ▼
 [sync_manager_to_inspector]
-  InspectorState.pos/rot/scale = formatted transform values
+  InspectorFormState.pos/rot/scale = formatted transform values
   → Inspector panel shows live values
         │  (on mouse release)
         ▼
@@ -183,8 +183,10 @@ Peer sends updated node transform
         ▼
 [fe-sync thread receives iroh-docs update]
   parse node_id + transform from document entry
-  (future: send SyncResult back to Bevy via MessageReader)
+  send UiAction::UpdateNodeTransform queued via UiManager
         │
+NodeManager holds selection as single source of truth.
+
 User drags a node (see Transform Dataflow above)
         │
         ▼
@@ -211,7 +213,7 @@ Invite / Join flow:
   db_sender.send(DbCommand::GenerateVerseInvite { verse_id, ... })
       → DB thread: iroh ticket for namespace
       → DbResult::VerseInviteGenerated { invite_string }
-      → InviteDialogState.invite_string shown in UI
+      → UiManager::ActiveDialog::Invite shows invite_string in UI
 
   db_sender.send(DbCommand::JoinVerse { invite_string })
       → DB thread: parse ticket → get namespace_id → store

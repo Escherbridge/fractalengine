@@ -5,11 +5,20 @@ edition = "2021"
 
 [features]
 default = []
-webview = ["wry"]
+# Webview backends — only one should be active at a time.
+# If both are enabled, Servo takes priority.
+backend-servo = ["winit"]
+backend-wry = ["wry", "winit"]
+# Legacy alias
+webview = ["backend-wry"]
+# winit is needed for window geometry computation
+winit = ["dep:winit"]
 
 [dependencies]
 bevy = { workspace = true }
 wry = { version = "0.54", optional = true }
+winit = { version = "0.30", optional = true }
+raw-window-handle = "0.6"
 url = { version = "2", features = ["serde"] }
 ipnet = "2"
 serde = { workspace = true }

@@ -1,8 +1,8 @@
 //! NodeManager — single source of truth for node selection and gimbal state.
 //!
-//! Replaces the scattered `GimbalState`, `InspectorState::selected_entity`,
-//! and `SidebarState::selected_node_id` ownership with a clean manager that
-//! other systems read from rather than each maintaining their own copy.
+//! All selection queries (entity, node_id) go through this manager.
+//! UI panels and systems read from NodeManager rather than maintaining
+//! their own copies of selection state.
 //!
 //! State machine per selected node:
 //!   None  ──click──►  Selected(Idle)  ──press axis──►  Selected(Dragging)
@@ -16,7 +16,7 @@ use crate::gimbal::{GimbalAxis, GIMBAL_LEN, draw_gimbal_for_entity};
 use crate::panels::Tool;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
-    InspectorState, SidebarState, SpawnedNodeMarker, ToolState, ViewportRect,
+    InspectorFormState, SpawnedNodeMarker, ToolState, UiSet, ViewportRect,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,6 +27,9 @@ use crate::plugin::{
 #[derive(Resource, Default)]
 pub struct NodeManager {
     pub selected: Option<NodeSelection>,
+    /// Sidebar click stores the node_id here; `sync_sidebar_to_manager`
+    /// resolves the ECS Entity and calls `select()`.
+    pub pending_sidebar_select: Option<String>,
 }
 
 /// A currently selected node and its optional in-progress drag session.
@@ -104,7 +107,8 @@ impl Plugin for NodeManagerPlugin {
                 draw_gimbal_system,
                 broadcast_transform,
             )
-                .chain(),
+                .chain()
+                .in_set(UiSet::Selection),
         );
     }
 }
@@ -145,32 +149,24 @@ fn handle_tool_shortcuts(
 // ---------------------------------------------------------------------------
 
 fn sync_sidebar_to_manager(
-    sidebar: Res<SidebarState>,
     nav: Res<NavigationManager>,
     mut manager: ResMut<NodeManager>,
     node_query: Query<(Entity, &SpawnedNodeMarker)>,
-    mut last_id: Local<Option<String>>,
 ) {
-    if *last_id == sidebar.selected_node_id {
-        return;
-    }
-    *last_id = sidebar.selected_node_id.clone();
-
-    let Some(ref node_id) = sidebar.selected_node_id else {
-        manager.deselect();
+    let Some(node_id) = manager.pending_sidebar_select.take() else {
         return;
     };
 
     let active_petal = nav.active_petal_id.as_deref();
     let matched = node_query.iter().find(|(_, m)| {
-        m.node_id == *node_id
+        m.node_id == node_id
             && active_petal
                 .map(|pid| pid == m.petal_id.as_str())
                 .unwrap_or(true)
     });
 
     if let Some((entity, _)) = matched {
-        manager.select(entity, node_id.clone());
+        manager.select(entity, node_id);
     } else {
         manager.deselect();
     }
@@ -402,15 +398,24 @@ fn handle_viewport_click(
     >,
     node_query: Query<(Entity, &GlobalTransform, &SpawnedNodeMarker)>,
     mut manager: ResMut<NodeManager>,
-    mut sidebar: ResMut<SidebarState>,
     nav: Res<NavigationManager>,
     viewport_rect: Res<ViewportRect>,
+    mut egui_ctx: EguiContexts,
 ) {
     // If a drag was just started this frame (by handle_gimbal_interaction), skip.
     if manager.is_dragging() {
         return;
     }
     if !mouse_button.just_pressed(MouseButton::Left) {
+        return;
+    }
+
+    // Guard against egui-owned pointer (panel resize, button hold, etc.)
+    let egui_using = egui_ctx
+        .ctx_mut()
+        .map(|ctx| ctx.is_using_pointer())
+        .unwrap_or(false);
+    if egui_using {
         return;
     }
 
@@ -450,20 +455,18 @@ fn handle_viewport_click(
 
     if let Some((entity, _, node_id)) = best {
         manager.select(entity, node_id.clone());
-        sidebar.selected_node_id = Some(node_id);
     } else {
         manager.deselect();
-        sidebar.selected_node_id = None;
     }
 }
 
 // ---------------------------------------------------------------------------
-// System: NodeManager → InspectorState (display sync)
+// System: NodeManager → InspectorFormState (display sync)
 // ---------------------------------------------------------------------------
 
 fn sync_manager_to_inspector(
     manager: Res<NodeManager>,
-    mut inspector: ResMut<InspectorState>,
+    mut inspector: ResMut<InspectorFormState>,
     verse_mgr: Res<crate::verse_manager::VerseManager>,
     // Changed<Transform> avoids 9 format!() allocations per frame while dragging.
     changed_query: Query<&Transform, Changed<Transform>>,
@@ -472,17 +475,6 @@ fn sync_manager_to_inspector(
     all_query: Query<&Transform>,
     mut last_selected: Local<Option<Entity>>,
 ) {
-    // Always sync selected_entity from NodeManager so panels mutations are
-    // corrected on the next frame.
-    //
-    // NOTE: InspectorState.selected_entity is authoritative FROM NodeManager
-    // and should NOT be mutated directly from UI code.
-    //
-    // TODO: Remove InspectorState.selected_entity entirely and have panels
-    // read directly from NodeManager. Deferred to a future refactor.
-    inspector.selected_entity = manager.selected_entity();
-    inspector.selected_node_id = manager.selected.as_ref().map(|s| s.node_id.clone());
-
     // Early return when nothing is selected.
     let Some(entity) = manager.selected_entity() else {
         *last_selected = None;

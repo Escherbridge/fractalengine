@@ -98,11 +98,6 @@ impl TabVisibilityFilter {
 #[derive(Debug, Resource)]
 pub struct VisibleTabs(pub HashSet<BrowserTab>);
 
-/// Intermediate buffer used by `tab_switch_guard_system` + `flush_browser_commands_system`
-/// to avoid a Bevy B0002 (Res + ResMut on the same Messages<T> in one system).
-#[derive(Debug, Resource, Default)]
-pub struct PendingBrowserCommands(pub Vec<BrowserCommand>);
-
 impl Default for VisibleTabs {
     fn default() -> Self {
         let mut set = HashSet::new();
@@ -179,48 +174,6 @@ fn clear_portal(
 // ---------------------------------------------------------------------------
 // Systems
 // ---------------------------------------------------------------------------
-
-/// PreUpdate (step 1/2) — filters unauthorized `BrowserCommand::SwitchTab` events.
-///
-/// Reads every pending `BrowserCommand`; if a `SwitchTab(Config)` arrives
-/// and the current role cannot view config, it is dropped with a warning.
-/// Allowed commands are placed into `PendingBrowserCommands` for the flush step.
-///
-/// Split into two systems to avoid Bevy B0002 (Res + ResMut on Messages<T> in one system):
-/// `MessageReader` borrows Res<Messages<T>>, `MessageWriter` borrows ResMut<Messages<T>>.
-pub fn tab_switch_guard_system(
-    filter: Res<TabVisibilityFilter>,
-    mut reader: MessageReader<BrowserCommand>,
-    mut pending: ResMut<PendingBrowserCommands>,
-) {
-    pending.0.clear();
-    for cmd in reader.read() {
-        match cmd {
-            BrowserCommand::SwitchTab {
-                tab: BrowserTab::Config,
-            } if !filter.can_view_config() => {
-                warn!(
-                    target: "petal_portal",
-                    "Unauthorized SwitchTab(Config) blocked — role={:?}",
-                    filter.role
-                );
-                // Drop — do not add to pending.
-            }
-            other => pending.0.push(other.clone()),
-        }
-    }
-}
-
-/// PreUpdate (step 2/2) — flushes `PendingBrowserCommands` back into the
-/// `BrowserCommand` message stream after the guard has filtered it.
-pub fn flush_browser_commands_system(
-    mut pending: ResMut<PendingBrowserCommands>,
-    mut writer: MessageWriter<BrowserCommand>,
-) {
-    for cmd in pending.0.drain(..) {
-        writer.write(cmd);
-    }
-}
 
 /// Update — fires when a `Selected` component is added to an entity that has
 /// `ModelUrlMeta`. Emits a `BrowserCommand::Navigate` (if URL is allowed),
@@ -368,18 +321,14 @@ impl Plugin for PetalPortalPlugin {
         app.init_resource::<ActivePortal>();
         app.init_resource::<TabVisibilityFilter>();
         app.init_resource::<VisibleTabs>();
-        app.init_resource::<PendingBrowserCommands>();
 
         app.add_message::<SelectionCleared>();
         app.add_message::<UrlEditorSaved>();
 
-        // Chain guard + flush so they run in order in PreUpdate.
-        // guard: MessageReader<BrowserCommand> → PendingBrowserCommands (no B0002)
-        // flush: PendingBrowserCommands → MessageWriter<BrowserCommand> (no B0002)
-        app.add_systems(
-            PreUpdate,
-            (tab_switch_guard_system, flush_browser_commands_system).chain(),
-        );
+        // NOTE: The guard/flush systems (tab_switch_guard_system +
+        // flush_browser_commands_system) were removed to fix a feedback loop
+        // that duplicated Navigate commands every frame. SwitchTab filtering
+        // is now done inline in dispatch_commands (fe-webview plugin.rs).
 
         app.add_systems(
             Update,

@@ -24,6 +24,7 @@ fe-identity = { path = "../fe-identity" }
 fe-sync = { path = "../fe-sync" }
 fe-renderer = { path = "../fe-renderer" }
 fe-ui = { path = "../fe-ui" }
+fe-webview = { path = "../fe-webview", features = ["webview"] }
 bevy = { workspace = true }
 crossbeam = { workspace = true }
 iroh = { workspace = true }

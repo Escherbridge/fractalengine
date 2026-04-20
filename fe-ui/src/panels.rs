@@ -3,9 +3,8 @@ use bevy_egui::egui;
 use crate::atlas::DashboardState;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
-    CameraFocusTarget, ContextMenuState, CreateDialogState, CreateKind, GltfImportState,
-    InspectorState, InviteDialogState, JoinDialogState, NodeOptionsState,
-    PeerDebugPanelState, SidebarState, ToolState, ViewportCursorWorld, WebViewOpenRequest,
+    ActiveDialog, CameraFocusTarget, CreateKind,
+    InspectorFormState, SidebarState, ToolState, UiAction, UiManager, ViewportCursorWorld,
 };
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
 use crate::theme;
@@ -28,40 +27,41 @@ pub fn gardener_console(
     ctx: &egui::Context,
     sidebar: &mut SidebarState,
     tool: &mut ToolState,
-    inspector: &mut InspectorState,
+    inspector: &mut InspectorFormState,
     nav: &mut NavigationManager,
     dashboard: &DashboardState,
     hierarchy: &mut VerseManager,
-    create_dialog: &mut CreateDialogState,
-    context_menu: &mut ContextMenuState,
-    gltf_import: &mut GltfImportState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     camera_focus: &mut CameraFocusTarget,
     cursor_world: &ViewportCursorWorld,
-    node_options: &mut NodeOptionsState,
-    invite_dialog: &mut InviteDialogState,
-    join_dialog: &mut JoinDialogState,
     sync_status: Option<&fe_sync::SyncStatus>,
-    peer_debug: &mut PeerDebugPanelState,
     node_mgr: &mut crate::node_manager::NodeManager,
-    webview_request: &mut WebViewOpenRequest,
+    ui_mgr: &mut UiManager,
 ) -> egui::Rect {
-    top_toolbar(ctx, sidebar, tool, inspector, node_mgr);
-    status_bar(ctx, dashboard, sync_status, nav, peer_debug);
+    top_toolbar(ctx, sidebar, tool, node_mgr);
+    status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
     left_sidebar(
         ctx,
         sidebar,
         nav,
         dashboard,
         hierarchy,
-        create_dialog,
         camera_focus,
-        invite_dialog,
-        join_dialog,
         db_tx,
-        node_options,
+        node_mgr,
+        ui_mgr,
     );
-    right_inspector(ctx, inspector, webview_request);
+
+    // Auto-collapse left sidebar when right panel is open, restore when closed.
+    let right_panel_open = ui_mgr.portal_is_open() || node_mgr.selected_entity().is_some();
+    sidebar.open = !right_panel_open;
+
+    // When the portal webview is open, show the portal toolbar instead of inspector.
+    if ui_mgr.portal_is_open() {
+        right_portal_toolbar(ctx, ui_mgr);
+    } else {
+        right_inspector(ctx, inspector, node_mgr, ui_mgr);
+    }
 
     let viewport_response = egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
@@ -69,24 +69,23 @@ pub fn gardener_console(
             viewport_overlay(
                 ui,
                 nav,
-                inspector,
-                context_menu,
+                node_mgr,
                 hierarchy,
-                create_dialog,
                 db_tx,
                 dashboard,
                 cursor_world,
+                ui_mgr,
             );
         });
 
     // Floating dialogs / menus (rendered after panels so they layer on top)
-    render_context_menu(ctx, context_menu, gltf_import);
-    render_create_dialog(ctx, create_dialog, hierarchy, nav, db_tx);
-    render_gltf_import_dialog(ctx, gltf_import, nav, db_tx);
-    render_invite_dialog(ctx, invite_dialog);
-    render_join_dialog(ctx, join_dialog, db_tx);
-    render_peer_debug_panel(ctx, peer_debug, sync_status);
-    render_node_options_dialog(ctx, node_options, hierarchy);
+    render_context_menu(ctx, ui_mgr);
+    render_create_dialog(ctx, ui_mgr, hierarchy, nav, db_tx);
+    render_gltf_import_dialog(ctx, ui_mgr, nav, db_tx);
+    render_invite_dialog(ctx, ui_mgr);
+    render_join_dialog(ctx, ui_mgr, db_tx);
+    render_peer_debug_panel(ctx, ui_mgr, sync_status);
+    render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx);
 
     viewport_response.response.rect
 }
@@ -99,7 +98,6 @@ fn top_toolbar(
     ctx: &egui::Context,
     sidebar: &mut SidebarState,
     tool: &mut ToolState,
-    inspector: &mut InspectorState,
     node_mgr: &mut crate::node_manager::NodeManager,
 ) {
     egui::TopBottomPanel::top("toolbar")
@@ -148,7 +146,7 @@ fn top_toolbar(
 
                 ui.separator();
 
-                if inspector.selected_entity.is_some()
+                if node_mgr.selected_entity().is_some()
                     && ui
                         .add(egui::Button::new("\u{2715} Deselect").fill(theme::BG_DANGER))
                         .clicked()
@@ -176,7 +174,7 @@ fn status_bar(
     dashboard: &DashboardState,
     sync_status: Option<&fe_sync::SyncStatus>,
     nav: &NavigationManager,
-    peer_debug: &mut PeerDebugPanelState,
+    ui_mgr: &mut UiManager,
 ) {
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(22.0)
@@ -219,7 +217,11 @@ fn status_bar(
                     .on_hover_text("Click for peer debug panel")
                     .clicked()
                 {
-                    peer_debug.open = !peer_debug.open;
+                    if matches!(ui_mgr.active_dialog, ActiveDialog::PeerDebug) {
+                        ui_mgr.close_dialog();
+                    } else {
+                        ui_mgr.open_dialog(ActiveDialog::PeerDebug);
+                    }
                 }
 
                 // Phase F: show active verse name
@@ -262,12 +264,10 @@ fn left_sidebar(
     nav: &mut NavigationManager,
     dashboard: &DashboardState,
     hierarchy: &mut VerseManager,
-    create_dialog: &mut CreateDialogState,
     camera_focus: &mut CameraFocusTarget,
-    invite_dialog: &mut InviteDialogState,
-    join_dialog: &mut JoinDialogState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
-    node_options: &mut NodeOptionsState,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
 ) {
     egui::SidePanel::left("sidebar")
         .resizable(true)
@@ -279,14 +279,14 @@ fn left_sidebar(
                 .inner_margin(egui::Margin::same(0)),
         )
         .show_animated(ctx, sidebar.open, |ui| {
-            sidebar_verse_header(ui, nav, create_dialog, invite_dialog, join_dialog, db_tx);
+            sidebar_verse_header(ui, nav, db_tx, ui_mgr);
             ui.separator();
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     ui.add_space(4.0);
-                    render_verse_tree(ui, hierarchy, nav, create_dialog, camera_focus, sidebar, node_options);
+                    render_verse_tree(ui, hierarchy, nav, camera_focus, node_mgr, ui_mgr);
                     ui.add_space(8.0);
                     sidebar_section_space_overview(ui, dashboard);
                     ui.add_space(4.0);
@@ -310,10 +310,8 @@ fn left_sidebar(
 fn sidebar_verse_header(
     ui: &mut egui::Ui,
     nav: &NavigationManager,
-    create_dialog: &mut CreateDialogState,
-    invite_dialog: &mut InviteDialogState,
-    join_dialog: &mut JoinDialogState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
+    ui_mgr: &mut UiManager,
 ) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -339,10 +337,11 @@ fn sidebar_verse_header(
                 .on_hover_text("Create new Verse")
                 .clicked()
             {
-                create_dialog.open = true;
-                create_dialog.kind = CreateKind::Verse;
-                create_dialog.parent_id.clear();
-                create_dialog.name_buf.clear();
+                ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+                    kind: CreateKind::Verse,
+                    parent_id: String::new(),
+                    name_buf: String::new(),
+                });
             }
             // Phase F: Join Verse button
             if ui
@@ -350,8 +349,9 @@ fn sidebar_verse_header(
                 .on_hover_text("Join a verse by invite")
                 .clicked()
             {
-                join_dialog.open = true;
-                join_dialog.invite_buf.clear();
+                ui_mgr.open_dialog(ActiveDialog::JoinDialog {
+                    invite_buf: String::new(),
+                });
             }
         });
     });
@@ -369,15 +369,19 @@ fn sidebar_verse_header(
                 .clicked()
             {
                 if let Some(ref vid) = nav.active_verse_id {
-                    let expiry = if invite_dialog.expiry_hours == 0 {
-                        24
-                    } else {
-                        invite_dialog.expiry_hours
+                    // Read expiry/write_cap from current dialog if it's an InviteDialog,
+                    // otherwise use defaults.
+                    let (include_write_cap, expiry_hours) = match &ui_mgr.active_dialog {
+                        ActiveDialog::InviteDialog { include_write_cap, expiry_hours, .. } => {
+                            (*include_write_cap, *expiry_hours)
+                        }
+                        _ => (false, 24),
                     };
+                    let expiry = if expiry_hours == 0 { 24 } else { expiry_hours };
                     db_tx
                         .send(DbCommand::GenerateVerseInvite {
                             verse_id: vid.clone(),
-                            include_write_cap: invite_dialog.include_write_cap,
+                            include_write_cap,
                             expiry_hours: expiry,
                         })
                         .ok();
@@ -392,10 +396,9 @@ fn render_verse_tree(
     ui: &mut egui::Ui,
     hierarchy: &mut VerseManager,
     nav: &mut NavigationManager,
-    create_dialog: &mut CreateDialogState,
     camera_focus: &mut CameraFocusTarget,
-    sidebar: &mut SidebarState,
-    node_options: &mut NodeOptionsState,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
 ) {
     let verse_count = hierarchy.verses.len();
     for vi in 0..verse_count {
@@ -419,11 +422,10 @@ fn render_verse_tree(
                     ui,
                     &mut hierarchy.verses[vi].fractals,
                     nav,
-                    create_dialog,
                     &verse_id,
                     camera_focus,
-                    sidebar,
-                    node_options,
+                    node_mgr,
+                    ui_mgr,
                 );
                 // [+] Add Fractal inside the verse collapse
                 add_button_inline(
@@ -431,12 +433,11 @@ fn render_verse_tree(
                     "Add Fractal",
                     CreateKind::Fractal,
                     &verse_id,
-                    create_dialog,
+                    ui_mgr,
                 );
             });
 
         if resp.header_response.clicked() {
-            // Clone needed: egui borrows ui through the CollapsingHeader, preventing direct borrow of hierarchy field after show()
             nav.navigate_to_verse(verse_id.clone(), verse_name.clone());
         }
     }
@@ -456,15 +457,13 @@ fn render_fractals(
     ui: &mut egui::Ui,
     fractals: &mut [FractalEntry],
     nav: &mut NavigationManager,
-    create_dialog: &mut CreateDialogState,
     verse_id: &str,
     camera_focus: &mut CameraFocusTarget,
-    sidebar: &mut SidebarState,
-    node_options: &mut NodeOptionsState,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
 ) {
     let fractal_count = fractals.len();
     for fi in 0..fractal_count {
-        // Clone needed: egui borrows ui through the CollapsingHeader, preventing direct borrow of hierarchy field after show()
         let fractal_id = fractals[fi].id.clone();
         let fractal_name = fractals[fi].name.clone();
         let is_active = nav.active_fractal_id.as_deref() == Some(&fractal_id);
@@ -483,11 +482,10 @@ fn render_fractals(
                     ui,
                     &mut fractals[fi].petals,
                     nav,
-                    create_dialog,
                     &fractal_id,
                     camera_focus,
-                    sidebar,
-                    node_options,
+                    node_mgr,
+                    ui_mgr,
                 );
                 // [+] Add Petal inside the fractal collapse
                 add_button_inline(
@@ -495,12 +493,11 @@ fn render_fractals(
                     "Add Petal",
                     CreateKind::Petal,
                     &fractal_id,
-                    create_dialog,
+                    ui_mgr,
                 );
             });
 
         if resp.header_response.clicked() {
-            // Clone needed: egui borrows ui through the CollapsingHeader, preventing direct borrow of hierarchy field after show()
             nav.navigate_to_fractal(fractal_id.clone(), fractal_name.clone());
         }
     }
@@ -511,15 +508,13 @@ fn render_petals(
     ui: &mut egui::Ui,
     petals: &mut [PetalEntry],
     nav: &mut NavigationManager,
-    create_dialog: &mut CreateDialogState,
     fractal_id: &str,
     camera_focus: &mut CameraFocusTarget,
-    sidebar: &mut SidebarState,
-    node_options: &mut NodeOptionsState,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
 ) {
     let petal_count = petals.len();
     for pi in 0..petal_count {
-        // Clone needed: egui borrows ui through the CollapsingHeader, preventing direct borrow of hierarchy field after show()
         let petal_id = petals[pi].id.clone();
         let petal_name = petals[pi].name.clone();
         let is_active = nav.active_petal_id.as_deref() == Some(&petal_id);
@@ -534,9 +529,9 @@ fn render_petals(
             .id_salt(format!("petal_{}_{}", fractal_id, petal_id))
             .default_open(true)
             .show(ui, |ui| {
-                render_nodes(ui, &mut petals[pi].nodes, camera_focus, sidebar, node_options, is_active);
+                render_nodes(ui, &mut petals[pi].nodes, camera_focus, node_mgr, ui_mgr, is_active);
                 // [+] Add Node inside the petal collapse
-                add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, create_dialog);
+                add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, ui_mgr);
             });
 
         if resp.header_response.clicked() {
@@ -549,8 +544,8 @@ fn render_nodes(
     ui: &mut egui::Ui,
     nodes: &mut Vec<NodeEntry>,
     camera_focus: &mut CameraFocusTarget,
-    sidebar: &mut SidebarState,
-    node_options: &mut NodeOptionsState,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
     is_active_petal: bool,
 ) {
     let drag_id = egui::Id::new("sidebar_node_drag");
@@ -567,7 +562,7 @@ fn render_nodes(
         let has_asset = nodes[i].has_asset;
         let position = nodes[i].position;
         let webpage_url = nodes[i].webpage_url.clone().unwrap_or_default();
-        let is_selected = sidebar.selected_node_id.as_deref() == Some(node_id.as_str());
+        let is_selected = node_mgr.selected.as_ref().map(|s| s.node_id.as_str()) == Some(node_id.as_str());
         let is_being_dragged = dragging_idx == Some(i);
 
         let bg = if is_selected {
@@ -642,18 +637,19 @@ fn render_nodes(
         }
     }
 
-    // Apply selection
+    // Apply selection — route through NodeManager's pending mechanism.
     if let Some((nid, pos)) = node_click {
-        sidebar.selected_node_id = Some(nid);
+        node_mgr.pending_sidebar_select = Some(nid);
         camera_focus.target = Some(pos);
     }
 
     // Apply alt-click options dialog
     if let Some((nid, nname, url)) = node_alt_click {
-        node_options.open = true;
-        node_options.node_id = nid;
-        node_options.node_name_buf = nname;
-        node_options.webpage_url_buf = url;
+        ui_mgr.open_dialog(ActiveDialog::NodeOptions {
+            node_id: nid,
+            node_name_buf: nname,
+            webpage_url_buf: url,
+        });
     }
 
     // Apply DnD reorder on pointer release
@@ -680,7 +676,7 @@ fn add_button_inline(
     tooltip: &str,
     kind: CreateKind,
     parent_id: &str,
-    create_dialog: &mut CreateDialogState,
+    ui_mgr: &mut UiManager,
 ) {
     ui.horizontal(|ui| {
         if ui
@@ -688,10 +684,11 @@ fn add_button_inline(
             .on_hover_text(tooltip)
             .clicked()
         {
-            create_dialog.open = true;
-            create_dialog.kind = kind;
-            create_dialog.parent_id = parent_id.to_string();
-            create_dialog.name_buf.clear();
+            ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+                kind,
+                parent_id: parent_id.to_string(),
+                name_buf: String::new(),
+            });
         }
     });
 }
@@ -732,18 +729,22 @@ fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState)
 
 fn right_inspector(
     ctx: &egui::Context,
-    inspector: &mut InspectorState,
-    webview_request: &mut WebViewOpenRequest,
+    inspector: &mut InspectorFormState,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
 ) {
-    let open = inspector.selected_entity.is_some();
+    let open = node_mgr.selected_entity().is_some();
+    // Allow up to 80% of screen width.
+    let max_w = ctx.screen_rect().width() * 0.8;
     egui::SidePanel::right("inspector")
         .resizable(true)
         .default_width(260.0)
-        .width_range(200.0..=400.0)
+        .width_range(200.0..=max_w)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
-                .inner_margin(egui::Margin::same(0)),
+                .inner_margin(egui::Margin::same(0))
+                .stroke(egui::Stroke::new(2.0, theme::BG_BUTTON)),
         )
         .show_animated(ctx, open, |ui| {
             ui.add_space(8.0);
@@ -764,7 +765,7 @@ fn right_inspector(
                         )
                         .clicked()
                     {
-                        inspector.selected_entity = None;
+                        node_mgr.deselect();
                     }
                 });
             });
@@ -774,16 +775,92 @@ fn right_inspector(
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     ui.add_space(4.0);
-                    inspector_entity_section(ui, inspector);
+                    inspector_entity_section(ui, node_mgr);
                     ui.add_space(2.0);
                     inspector_transform_section(ui, inspector);
                     ui.add_space(2.0);
-                    inspector_url_meta_section(ui, inspector, webview_request);
+                    inspector_url_meta_section(ui, inspector, ui_mgr);
                 });
         });
 }
 
-fn inspector_entity_section(ui: &mut egui::Ui, inspector: &InspectorState) {
+// ---------------------------------------------------------------------------
+// Portal webview toolbar (replaces inspector when portal is open)
+// ---------------------------------------------------------------------------
+
+fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) {
+    let max_w = ctx.screen_rect().width() * 0.8;
+    egui::SidePanel::right("portal_toolbar")
+        .resizable(true)
+        .default_width(400.0)
+        .width_range(260.0..=max_w)
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::BG_PANEL)
+                .inner_margin(egui::Margin::same(0))
+                .stroke(egui::Stroke::new(2.0, theme::BG_BUTTON)),
+        )
+        .show(ctx, |ui| {
+            // Toolbar row: back, URL, close
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(6.0);
+
+                // Back button
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("\u{2190}").size(16.0), // ←
+                        )
+                        .fill(theme::BG_BUTTON)
+                        .min_size(egui::vec2(28.0, 24.0)),
+                    )
+                    .on_hover_text("Go back")
+                    .clicked()
+                {
+                    ui_mgr.push_action(UiAction::PortalGoBack);
+                }
+
+                ui.add_space(4.0);
+
+                // URL label (truncated hostname — pre-cached, no per-frame parse)
+                let display_url = ui_mgr.portal_hostname().to_string();
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("\u{1F310} {display_url}"))
+                            .color(theme::TEXT_DIM)
+                            .size(12.0),
+                    )
+                    .truncate(),
+                );
+
+                // Close button (right-aligned)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(6.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("\u{2715}").size(14.0), // ✕
+                            )
+                            .fill(egui::Color32::TRANSPARENT)
+                            .small(),
+                        )
+                        .on_hover_text("Close portal")
+                        .clicked()
+                    {
+                        ui_mgr.push_action(UiAction::ClosePortal);
+                    }
+                });
+            });
+
+            ui.separator();
+
+            // The rest of the panel is empty — the native webview renders over it.
+            ui.allocate_space(ui.available_size());
+        });
+}
+
+fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::NodeManager) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Entity")
             .strong()
@@ -792,7 +869,7 @@ fn inspector_entity_section(ui: &mut egui::Ui, inspector: &InspectorState) {
     .default_open(true)
     .show(ui, |ui| {
         ui.add_space(4.0);
-        if let Some(entity) = inspector.selected_entity {
+        if let Some(entity) = node_mgr.selected_entity() {
             egui::Grid::new("entity_info")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
@@ -810,7 +887,7 @@ fn inspector_entity_section(ui: &mut egui::Ui, inspector: &InspectorState) {
     });
 }
 
-fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorState) {
+fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorFormState) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Transform")
             .strong()
@@ -858,8 +935,8 @@ fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorState
 
 fn inspector_url_meta_section(
     ui: &mut egui::Ui,
-    inspector: &mut InspectorState,
-    webview_request: &mut WebViewOpenRequest,
+    inspector: &mut InspectorFormState,
+    ui_mgr: &mut UiManager,
 ) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Portal URLs")
@@ -904,7 +981,7 @@ fn inspector_url_meta_section(
             )
             .clicked()
         {
-            inspector.url_save_pending = true;
+            ui_mgr.push_action(UiAction::SaveUrl);
         }
 
         ui.add_space(4.0);
@@ -915,7 +992,8 @@ fn inspector_url_meta_section(
             .min_size(egui::vec2(ui.available_width(), 28.0));
         let resp = ui.add_enabled(has_url, btn);
         if resp.clicked() {
-            webview_request.url = Some(inspector.external_url.clone());
+            bevy::log::info!("Portal: 'Open Portal' clicked — URL: {}", inspector.external_url);
+            ui_mgr.push_action(UiAction::OpenPortal { url: inspector.external_url.clone() });
         }
         if !has_url {
             resp.on_hover_text("Set a Portal URL above to open the webview");

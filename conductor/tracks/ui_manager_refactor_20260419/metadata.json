@@ -1,0 +1,7 @@
+{
+  "id": "ui_manager_refactor_20260419",
+  "description": "UI Manager Architecture Refactor - UiManager pattern, system ordering, dialog consolidation, selection dedup",
+  "type": "chore",
+  "created_at": "2026-04-19T00:00:00Z",
+  "status": "pending"
+}

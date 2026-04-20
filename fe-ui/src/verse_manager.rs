@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use fe_runtime::messages::{DbCommand, DbResult};
 
 use crate::navigation_manager::NavigationManager;
-use crate::plugin::{InviteDialogState, SpawnedNodeMarker};
+use crate::plugin::{ActiveDialog, SpawnedNodeMarker, UiManager, UiSet};
 
 // ---------------------------------------------------------------------------
 // Hierarchy tree types
@@ -142,7 +142,8 @@ impl Plugin for VerseManagerPlugin {
             (
                 apply_db_results,
                 respawn_on_petal_change,
-            ),
+            )
+                .before(UiSet::ProcessActions),
         );
     }
 }
@@ -158,7 +159,7 @@ fn apply_db_results(
     db_sender: Res<fe_runtime::app::DbCommandSender>,
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut invite_dialog: ResMut<InviteDialogState>,
+    mut ui_mgr: ResMut<UiManager>,
 ) {
     for result in reader.read() {
         match result {
@@ -315,8 +316,11 @@ fn apply_db_results(
             }
 
             DbResult::VerseInviteGenerated { invite_string, .. } => {
-                invite_dialog.invite_string = invite_string.clone();
-                invite_dialog.open = true;
+                ui_mgr.open_dialog(ActiveDialog::InviteDialog {
+                    invite_string: invite_string.clone(),
+                    include_write_cap: false,
+                    expiry_hours: 24,
+                });
             }
 
             DbResult::VerseJoined { .. } => {

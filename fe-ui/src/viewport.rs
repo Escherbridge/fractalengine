@@ -3,7 +3,7 @@ use bevy_egui::egui;
 use crate::atlas::DashboardState;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
-    ContextMenuState, CreateDialogState, CreateKind, InspectorState, ViewportCursorWorld,
+    ActiveDialog, CreateKind, UiManager, ViewportCursorWorld,
 };
 use crate::theme;
 use crate::verse_manager::VerseManager;
@@ -21,13 +21,12 @@ use fe_runtime::messages::DbCommand;
 pub fn viewport_overlay(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
-    inspector: &InspectorState,
-    context_menu: &mut ContextMenuState,
+    node_mgr: &crate::node_manager::NodeManager,
     hierarchy: &VerseManager,
-    create_dialog: &mut CreateDialogState,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     dashboard: &DashboardState,
     cursor_world: &ViewportCursorWorld,
+    ui_mgr: &mut UiManager,
 ) {
     let rect = ui.available_rect_before_wrap();
     let center = rect.center();
@@ -37,30 +36,30 @@ pub fn viewport_overlay(
         viewport_petal_space(
             ui,
             nav,
-            inspector,
-            context_menu,
+            node_mgr,
             hierarchy,
             rect,
             center,
             cursor_world,
+            ui_mgr,
         );
     } else if nav.active_fractal_id.is_some() {
         // === FRACTAL SELECTED: Show petal cards ===
-        viewport_petal_browser(ui, nav, hierarchy, create_dialog, db_tx, rect, center);
+        viewport_petal_browser(ui, nav, hierarchy, db_tx, rect, center, ui_mgr);
     } else if nav.active_verse_id.is_some() {
         // === VERSE SELECTED: Show fractal cards ===
-        viewport_fractal_browser(ui, nav, hierarchy, create_dialog, db_tx, rect, center);
+        viewport_fractal_browser(ui, nav, hierarchy, db_tx, rect, center, ui_mgr);
     } else {
         // === NO VERSE: Peer discovery / verse browser ===
         viewport_verse_browser(
             ui,
             nav,
             hierarchy,
-            create_dialog,
             db_tx,
             dashboard,
             rect,
             center,
+            ui_mgr,
         );
     }
 }
@@ -69,12 +68,12 @@ pub fn viewport_overlay(
 pub fn viewport_petal_space(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
-    inspector: &InspectorState,
-    context_menu: &mut ContextMenuState,
+    node_mgr: &crate::node_manager::NodeManager,
     hierarchy: &VerseManager,
     rect: egui::Rect,
     center: egui::Pos2,
     cursor_world: &ViewportCursorWorld,
+    ui_mgr: &mut UiManager,
 ) {
     // Breadcrumb at top of viewport
     let petal_name = find_petal_name(hierarchy, nav.active_petal_id.as_deref().unwrap_or(""));
@@ -91,7 +90,7 @@ pub fn viewport_petal_space(
     );
 
     // Tool hints at bottom
-    if inspector.selected_entity.is_none() {
+    if node_mgr.selected_entity().is_none() {
         ui.painter().text(
             egui::pos2(center.x, rect.max.y - 40.0),
             egui::Align2::CENTER_CENTER,
@@ -128,9 +127,10 @@ pub fn viewport_petal_space(
     if ui.input(|i| i.pointer.secondary_clicked()) {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             if rect.contains(pos) {
-                context_menu.open = true;
-                context_menu.screen_pos = [pos.x, pos.y];
-                context_menu.world_pos = cursor_world.pos.unwrap_or([0.0, 0.0, 0.0]);
+                ui_mgr.open_dialog(ActiveDialog::ContextMenu {
+                    screen_pos: [pos.x, pos.y],
+                    world_pos: cursor_world.pos.unwrap_or([0.0, 0.0, 0.0]),
+                });
             }
         }
     }
@@ -141,11 +141,11 @@ pub fn viewport_verse_browser(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
     hierarchy: &VerseManager,
-    create_dialog: &mut CreateDialogState,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     dashboard: &DashboardState,
     rect: egui::Rect,
     center: egui::Pos2,
+    ui_mgr: &mut UiManager,
 ) {
     // Title
     ui.painter().text(
@@ -232,10 +232,11 @@ pub fn viewport_verse_browser(
             .corner_radius(6.0),
         );
         if resp.clicked() {
-            create_dialog.open = true;
-            create_dialog.kind = CreateKind::Verse;
-            create_dialog.parent_id.clear();
-            create_dialog.name_buf.clear();
+            ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+                kind: CreateKind::Verse,
+                parent_id: String::new(),
+                name_buf: String::new(),
+            });
         }
     });
 
@@ -298,10 +299,10 @@ pub fn viewport_fractal_browser(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
     hierarchy: &VerseManager,
-    create_dialog: &mut CreateDialogState,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     rect: egui::Rect,
     center: egui::Pos2,
+    ui_mgr: &mut UiManager,
 ) {
     // Back button
     let mut back_clicked = false;
@@ -401,10 +402,11 @@ pub fn viewport_fractal_browser(
                 .corner_radius(6.0),
             );
             if resp.clicked() {
-                create_dialog.open = true;
-                create_dialog.kind = CreateKind::Fractal;
-                create_dialog.parent_id = verse.id.clone();
-                create_dialog.name_buf.clear();
+                ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+                    kind: CreateKind::Fractal,
+                    parent_id: verse.id.clone(),
+                    name_buf: String::new(),
+                });
             }
         });
 
@@ -425,10 +427,10 @@ pub fn viewport_petal_browser(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
     hierarchy: &VerseManager,
-    create_dialog: &mut CreateDialogState,
     _db_tx: &crossbeam::channel::Sender<DbCommand>,
     rect: egui::Rect,
     center: egui::Pos2,
+    ui_mgr: &mut UiManager,
 ) {
     // Back button
     let mut back_clicked = false;
@@ -544,10 +546,11 @@ pub fn viewport_petal_browser(
                 .corner_radius(6.0),
             );
             if resp.clicked() {
-                create_dialog.open = true;
-                create_dialog.kind = CreateKind::Petal;
-                create_dialog.parent_id = fractal_id;
-                create_dialog.name_buf.clear();
+                ui_mgr.open_dialog(ActiveDialog::CreateEntity {
+                    kind: CreateKind::Petal,
+                    parent_id: fractal_id,
+                    name_buf: String::new(),
+                });
             }
         });
 
