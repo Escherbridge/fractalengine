@@ -22,6 +22,7 @@ pub mod queries;
 pub mod rbac;
 pub mod repo;
 pub mod role_level;
+pub mod role_manager;
 pub mod scope;
 pub mod schema;
 pub mod space_manager;
