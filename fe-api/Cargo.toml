@@ -1,0 +1,19 @@
+[package]
+name = "fe-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fe-runtime = { path = "../fe-runtime" }
+fe-identity = { path = "../fe-identity" }
+fe-database = { path = "../fe-database" }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+crossbeam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+ulid = { workspace = true }
+ed25519-dalek = { workspace = true }

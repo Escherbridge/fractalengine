@@ -25,8 +25,10 @@ fe-sync = { path = "../fe-sync" }
 fe-renderer = { path = "../fe-renderer" }
 fe-ui = { path = "../fe-ui" }
 fe-webview = { path = "../fe-webview", features = ["webview"] }
+fe-api = { path = "../fe-api" }
 bevy = { workspace = true }
 crossbeam = { workspace = true }
+tokio = { workspace = true }
 iroh = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

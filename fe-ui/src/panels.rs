@@ -12,7 +12,8 @@ use crate::theme;
 use fe_runtime::messages::DbCommand;
 
 use crate::dialogs::{
-    render_context_menu, render_create_dialog, render_gltf_import_dialog, render_invite_dialog,
+    render_context_menu, render_create_dialog, render_entity_settings_dialog,
+    render_gltf_import_dialog,
     render_join_dialog, render_node_options_dialog, render_peer_debug_panel,
 };
 use crate::viewport::viewport_overlay;
@@ -77,6 +78,7 @@ pub fn gardener_console(
                 dashboard,
                 cursor_world,
                 ui_mgr,
+                local_role,
             );
         });
 
@@ -84,10 +86,10 @@ pub fn gardener_console(
     render_context_menu(ctx, ui_mgr);
     render_create_dialog(ctx, ui_mgr, hierarchy, nav, db_tx);
     render_gltf_import_dialog(ctx, ui_mgr, nav, db_tx);
-    render_invite_dialog(ctx, ui_mgr);
     render_join_dialog(ctx, ui_mgr, db_tx);
     render_peer_debug_panel(ctx, ui_mgr, sync_status);
     render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx);
+    render_entity_settings_dialog(ctx, ui_mgr, db_tx);
 
     viewport_response.response.rect
 }
@@ -312,7 +314,7 @@ fn left_sidebar(
 fn sidebar_verse_header(
     ui: &mut egui::Ui,
     nav: &NavigationManager,
-    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    _db_tx: &crossbeam::channel::Sender<DbCommand>,
     ui_mgr: &mut UiManager,
 ) {
     ui.add_space(6.0);
@@ -357,40 +359,6 @@ fn sidebar_verse_header(
             }
         });
     });
-    // Phase F: Generate Invite button (only when a verse is active)
-    if nav.active_verse_id.is_some() {
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            if ui
-                .add(
-                    egui::Button::new("Generate Invite")
-                        .fill(theme::BG_BUTTON)
-                        .small(),
-                )
-                .on_hover_text("Create an invite link for this verse")
-                .clicked()
-            {
-                if let Some(ref vid) = nav.active_verse_id {
-                    // Read expiry/write_cap from current dialog if it's an InviteDialog,
-                    // otherwise use defaults.
-                    let (include_write_cap, expiry_hours) = match &ui_mgr.active_dialog {
-                        ActiveDialog::InviteDialog { include_write_cap, expiry_hours, .. } => {
-                            (*include_write_cap, *expiry_hours)
-                        }
-                        _ => (false, 24),
-                    };
-                    let expiry = if expiry_hours == 0 { 24 } else { expiry_hours };
-                    db_tx
-                        .send(DbCommand::GenerateVerseInvite {
-                            verse_id: vid.clone(),
-                            include_write_cap,
-                            expiry_hours: expiry,
-                        })
-                        .ok();
-                }
-            }
-        });
-    }
     ui.add_space(6.0);
 }
 

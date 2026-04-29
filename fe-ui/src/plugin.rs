@@ -64,6 +64,24 @@ pub enum ActiveDialog {
         invite_buf: String,
     },
     PeerDebug,
+    EntitySettings {
+        entity_type: EntitySettingsType,
+        entity_id: String,
+        entity_name: String,
+        active_tab: SettingsTab,
+        // General tab state
+        name_buf: String,
+        default_access_buf: Option<String>,
+        description_buf: Option<String>,
+        // Access tab state
+        peer_roles: Vec<PeerRoleEntry>,
+        roles_loading: bool,
+        invite_role_buf: String,
+        invite_expiry_buf: u32,
+        generated_invite_link: Option<String>,
+        // Confirmation state
+        pending_delete: bool,
+    },
 }
 
 /// Centralized UI state resource.
@@ -212,6 +230,30 @@ pub enum CreateKind {
     Node,
 }
 
+/// Which entity type the settings dialog is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntitySettingsType {
+    Verse,
+    Fractal,
+    Petal,
+}
+
+/// Active tab in the EntitySettings dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+    Access,
+}
+
+/// A peer's resolved role at a specific scope, for display in the Access tab.
+#[derive(Debug, Clone)]
+pub struct PeerRoleEntry {
+    pub peer_did: String,
+    pub display_name: String,
+    pub role: String,
+    pub is_online: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Camera focus target (set by sidebar click, consumed by camera system)
 // ---------------------------------------------------------------------------
@@ -357,6 +399,30 @@ mod tests {
         });
         assert!(matches!(mgr.active_dialog, ActiveDialog::JoinDialog { .. }));
     }
+
+    #[test]
+    fn active_dialog_entity_settings_opens_and_closes() {
+        let mut mgr = UiManager::default();
+        mgr.open_dialog(ActiveDialog::EntitySettings {
+            entity_type: EntitySettingsType::Verse,
+            entity_id: "v1".to_string(),
+            entity_name: "Test Verse".to_string(),
+            active_tab: SettingsTab::General,
+            name_buf: "Test Verse".to_string(),
+            default_access_buf: Some("viewer".to_string()),
+            description_buf: None,
+            peer_roles: vec![],
+            roles_loading: false,
+            invite_role_buf: "viewer".to_string(),
+            invite_expiry_buf: 24,
+            generated_invite_link: None,
+            pending_delete: false,
+        });
+        assert!(mgr.any_dialog_open());
+        assert!(matches!(mgr.active_dialog, ActiveDialog::EntitySettings { .. }));
+        mgr.close_dialog();
+        assert!(!mgr.any_dialog_open());
+    }
 }
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -398,6 +464,7 @@ impl Plugin for GardenerConsolePlugin {
         );
 
         app.add_systems(Update, process_ui_actions.in_set(UiSet::ProcessActions));
+        app.add_systems(Update, resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions));
 
         app.add_systems(
             Update,
@@ -419,6 +486,9 @@ struct P2pDialogParams<'w> {
     node_mgr: ResMut<'w, crate::node_manager::NodeManager>,
     ui_mgr: ResMut<'w, UiManager>,
     portal_rect: ResMut<'w, fe_webview::plugin::PortalPanelRect>,
+    peer_registry: Res<'w, fe_runtime::PeerRegistry>,
+    // TODO: add node_identity once fe-identity is a dependency of fe-ui
+    // node_identity: Res<'w, fe_identity::NodeIdentity>,
 }
 
 fn gardener_ui_system(
@@ -557,6 +627,30 @@ fn update_viewport_cursor_world(
         cursor_world.pos = Some([point.x, 0.0, point.z]);
     } else {
         cursor_world.pos = None;
+    }
+}
+
+/// Sends ResolveLocalRole when the navigation scope changes.
+fn resolve_local_role_on_nav_change(
+    nav: Res<crate::navigation_manager::NavigationManager>,
+    db_sender: Res<fe_runtime::app::DbCommandSender>,
+    mut last_scope: Local<Option<String>>,
+) {
+    let current_scope = nav.active_verse_id.as_ref().map(|vid| {
+        fe_database::build_scope(
+            vid,
+            nav.active_fractal_id.as_deref(),
+            nav.active_petal_id.as_deref(),
+        )
+    });
+
+    if *last_scope == current_scope {
+        return;
+    }
+    *last_scope = current_scope.clone();
+
+    if let Some(scope) = current_scope {
+        db_sender.0.send(fe_runtime::messages::DbCommand::ResolveLocalRole { scope }).ok();
     }
 }
 

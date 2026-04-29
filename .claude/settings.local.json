@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/atooz/Programming/fractalengine-workspace/fractalengine/**)",
+      "Bash(cargo check:*)",
+      "Bash(ls -d fe-*/)",
+      "Bash(rustup show:*)",
+      "Bash(rustc --version)",
+      "Bash(cargo clean:*)",
+      "Bash(grep -E \"test .* ok$|test .* FAILED$|test result:|failures\")",
+      "Bash(ls -lh target/debug/deps/libsurrealdb*.rlib)",
+      "Bash(for pkg:*)",
+      "Bash(do echo:*)",
+      "Bash(ls -1 /c/Users/atooz/Programming/fractalengine-workspace/fractalengine/*.md)"
+    ]
+  }
+}

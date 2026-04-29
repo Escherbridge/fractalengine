@@ -25,11 +25,13 @@ use crate::verse_peers;
 /// * `blob_store` — shared content-addressed blob store.
 /// * `cmd_rx` — receives [`SyncCommand`]s from the main / Bevy thread.
 /// * `evt_tx` — sends [`SyncEvent`]s back to the main / Bevy thread.
+/// * `local_did` — the node's DID (`did:key:z6Mk…`) used as author ID in replicas.
 pub fn spawn_sync_thread(
     secret_key: iroh::SecretKey,
     blob_store: BlobStoreHandle,
     cmd_rx: SyncCommandReceiver,
     evt_tx: SyncEventSender,
+    local_did: String,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -80,6 +82,7 @@ pub fn spawn_sync_thread(
                             &verse_id,
                             &namespace_id,
                             namespace_secret,
+                            &local_did,
                         );
                     }
                     Ok(SyncCommand::CloseVerseReplica { verse_id }) => {
@@ -181,6 +184,7 @@ fn handle_open_verse_replica(
     verse_id: &str,
     namespace_id: &str,
     namespace_secret: Option<String>,
+    local_did: &str,
 ) {
     // Close existing replica if any.
     if let Some(old) = replicas.remove(verse_id) {
@@ -192,7 +196,7 @@ fn handle_open_verse_replica(
     let replicator = IrohDocsReplicator::new(
         namespace_id.to_string(),
         secret,
-        "local-node".to_string(), // TODO(Phase F): use actual node DID
+        local_did.to_string(),
     );
     replicas.insert(verse_id.to_string(), Box::new(replicator));
 
@@ -317,7 +321,7 @@ mod tests {
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(8);
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
 
-        let handle = spawn_sync_thread(secret, store, cmd_rx, evt_tx);
+        let handle = spawn_sync_thread(secret, store, cmd_rx, evt_tx, "test-node-did".to_string());
         // Wait for Started event (online or offline)
         let started = evt_rx.recv_timeout(std::time::Duration::from_secs(15));
         assert!(

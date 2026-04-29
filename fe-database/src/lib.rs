@@ -16,7 +16,9 @@ pub use fe_runtime::blob_store::{
 pub mod admin;
 pub mod atlas;
 pub mod invite;
+pub mod migrations;
 pub mod model_url_meta;
+pub mod reconcile;
 pub mod op_log;
 pub mod queries;
 pub mod rbac;
@@ -24,6 +26,7 @@ pub mod repo;
 pub mod role_level;
 pub mod role_manager;
 pub mod scope;
+pub mod scoped_invite;
 pub mod schema;
 pub mod space_manager;
 pub mod types;
@@ -154,6 +157,20 @@ pub fn spawn_db_thread_with_sync(
                 .await
                 .expect("Schema application failed");
 
+            // Derive the local DID from the node keypair (falls back to
+            // "local-node" when no keypair is available).
+            let local_did = keypair.as_ref()
+                .map(|kp| kp.to_did_key())
+                .unwrap_or_else(|| "local-node".to_string());
+
+            // Declarative reconciliation — runs every startup, converges to correct state.
+            // Fixes ownership, backfills defaults, no tracking table needed.
+            match reconcile::reconcile(&db, &local_did).await {
+                Ok(n) if n > 0 => tracing::info!("Reconciliation applied {n} fix(es)"),
+                Ok(_) => {}
+                Err(e) => tracing::error!("Reconciliation failed: {e}"),
+            }
+
             // Phase C: eagerly migrate any legacy base64 asset rows to the blob store.
             // Migration failure must NOT prevent startup — log and continue.
             match migrate_base64_assets_to_blob_store(&db, &blob_store).await {
@@ -179,7 +196,7 @@ pub fn spawn_db_thread_with_sync(
                             tracing::warn!("Result channel closed — UI may have shut down");
                         }
                     }
-                    Ok(DbCommand::Seed) => match seed_default_data(&db, &blob_store).await {
+                    Ok(DbCommand::Seed) => match seed_default_data(&db, &blob_store, &local_did).await {
                         Ok((petal_name, rooms)) => {
                             if tx.send(DbResult::Seeded { petal_name, rooms }).is_err() {
                                 tracing::warn!("Result channel closed — UI may have shut down");
@@ -193,7 +210,7 @@ pub fn spawn_db_thread_with_sync(
                         }
                     },
                     Ok(DbCommand::CreateVerse { name }) => {
-                        match create_verse_handler(&db, &blob_store, repl_tx.as_ref(), &name).await
+                        match create_verse_handler(&db, &blob_store, repl_tx.as_ref(), &name, &local_did).await
                         {
                             Ok(id) => {
                                 if tx.send(DbResult::VerseCreated { id, name }).is_err() {
@@ -217,6 +234,7 @@ pub fn spawn_db_thread_with_sync(
                             repl_tx.as_ref(),
                             &verse_id,
                             &name,
+                            &local_did,
                         )
                         .await
                         {
@@ -239,7 +257,7 @@ pub fn spawn_db_thread_with_sync(
                         }
                     }
                     Ok(DbCommand::CreatePetal { fractal_id, name }) => {
-                        match create_petal_handler(&db, &fractal_id, &name).await {
+                        match create_petal_handler(&db, &fractal_id, &name, &local_did).await {
                             Ok(id) => {
                                 if tx
                                     .send(DbResult::PetalCreated {
@@ -383,7 +401,7 @@ pub fn spawn_db_thread_with_sync(
                         }
                     }
                     Ok(DbCommand::JoinVerseByInvite { invite_string }) => {
-                        match join_verse_by_invite_handler(&db, &invite_string).await {
+                        match join_verse_by_invite_handler(&db, &invite_string, &local_did).await {
                             Ok((verse_id, verse_name)) => {
                                 if tx
                                     .send(DbResult::VerseJoined {
@@ -406,7 +424,7 @@ pub fn spawn_db_thread_with_sync(
                         }
                     }
                     Ok(DbCommand::ResetDatabase) => {
-                        match reset_database_handler(&db, &blob_store).await {
+                        match reset_database_handler(&db, &blob_store, &local_did).await {
                             Ok((petal_name, rooms)) => {
                                 if tx
                                     .send(DbResult::DatabaseReset { petal_name, rooms })
@@ -441,6 +459,138 @@ pub fn spawn_db_thread_with_sync(
                             }
                         }
                     }
+                    Ok(DbCommand::RenameEntity { entity_type, entity_id, new_name }) => {
+                        let result = match entity_type.as_str() {
+                            "verse" => db.query("UPDATE verse SET name = $name WHERE verse_id = $id")
+                                .bind(("name", new_name.clone()))
+                                .bind(("id", entity_id.clone()))
+                                .await,
+                            "fractal" => db.query("UPDATE fractal SET name = $name WHERE fractal_id = $id")
+                                .bind(("name", new_name.clone()))
+                                .bind(("id", entity_id.clone()))
+                                .await,
+                            "petal" => db.query("UPDATE petal SET name = $name WHERE petal_id = $id")
+                                .bind(("name", new_name.clone()))
+                                .bind(("id", entity_id.clone()))
+                                .await,
+                            other => {
+                                tx.send(DbResult::Error(format!("Unknown entity type: {other}"))).ok();
+                                continue;
+                            }
+                        };
+                        match result {
+                            Ok(_) => { tx.send(DbResult::EntityRenamed { entity_type, entity_id, new_name }).ok(); }
+                            Err(e) => { tx.send(DbResult::Error(format!("Rename failed: {e}"))).ok(); }
+                        }
+                    }
+                    Ok(DbCommand::SetVerseDefaultAccess { verse_id, default_access }) => {
+                        match crate::role_manager::set_default_access(&db, &verse_id, &default_access).await {
+                            Ok(()) => { tx.send(DbResult::VerseDefaultAccessSet { verse_id, default_access }).ok(); }
+                            Err(e) => { tx.send(DbResult::Error(format!("Set default access failed: {e}"))).ok(); }
+                        }
+                    }
+                    Ok(DbCommand::UpdateFractalDescription { fractal_id, description }) => {
+                        match db.query("UPDATE fractal SET description = $desc WHERE fractal_id = $id")
+                            .bind(("desc", description.clone()))
+                            .bind(("id", fractal_id.clone()))
+                            .await
+                        {
+                            Ok(_) => { tx.send(DbResult::FractalDescriptionUpdated { fractal_id, description }).ok(); }
+                            Err(e) => { tx.send(DbResult::Error(format!("Update description failed: {e}"))).ok(); }
+                        }
+                    }
+                    Ok(DbCommand::DeleteEntity { entity_type, entity_id }) => {
+                        let result = match entity_type.as_str() {
+                            "verse" => async {
+                                // Cascade: delete nodes -> petals -> fractals -> roles -> verse
+                                db.query("DELETE FROM node WHERE petal_id IN (SELECT petal_id FROM petal WHERE fractal_id IN (SELECT fractal_id FROM fractal WHERE verse_id = $id))")
+                                    .bind(("id", entity_id.clone())).await?;
+                                db.query("DELETE FROM petal WHERE fractal_id IN (SELECT fractal_id FROM fractal WHERE verse_id = $id)")
+                                    .bind(("id", entity_id.clone())).await?;
+                                db.query("DELETE FROM fractal WHERE verse_id = $id")
+                                    .bind(("id", entity_id.clone())).await?;
+                                db.query("DELETE FROM role WHERE string::starts_with(scope, $prefix)")
+                                    .bind(("prefix", format!("VERSE#{}", entity_id))).await?;
+                                db.query("DELETE FROM verse_member WHERE verse_id = $id")
+                                    .bind(("id", entity_id.clone())).await?;
+                                db.query("DELETE FROM verse WHERE verse_id = $id")
+                                    .bind(("id", entity_id.clone())).await?;
+                                Ok::<(), surrealdb::Error>(())
+                            }.await,
+                            "fractal" => async {
+                                db.query("DELETE FROM node WHERE petal_id IN (SELECT petal_id FROM petal WHERE fractal_id = $id)")
+                                    .bind(("id", entity_id.clone())).await?;
+                                db.query("DELETE FROM petal WHERE fractal_id = $id")
+                                    .bind(("id", entity_id.clone())).await?;
+                                db.query("DELETE FROM fractal WHERE fractal_id = $id")
+                                    .bind(("id", entity_id.clone())).await?;
+                                Ok(())
+                            }.await,
+                            "petal" => async {
+                                db.query("DELETE FROM node WHERE petal_id = $id")
+                                    .bind(("id", entity_id.clone())).await?;
+                                db.query("DELETE FROM petal WHERE petal_id = $id")
+                                    .bind(("id", entity_id.clone())).await?;
+                                Ok(())
+                            }.await,
+                            other => {
+                                tx.send(DbResult::Error(format!("Unknown entity type: {other}"))).ok();
+                                continue;
+                            }
+                        };
+                        match result {
+                            Ok(()) => { tx.send(DbResult::EntityDeleted { entity_type, entity_id }).ok(); }
+                            Err(e) => { tx.send(DbResult::Error(format!("Delete failed: {e}"))).ok(); }
+                        }
+                    }
+                    Ok(DbCommand::ResolveRolesForPeers { scope, peer_dids }) => {
+                        let mut roles = Vec::new();
+                        for did in &peer_dids {
+                            match crate::role_manager::resolve_role(&db, did, &scope).await {
+                                Ok(level) => roles.push((did.clone(), level.to_string())),
+                                Err(e) => {
+                                    tracing::warn!("resolve_role failed for {did}: {e}");
+                                    roles.push((did.clone(), "none".to_string()));
+                                }
+                            }
+                        }
+                        tx.send(DbResult::PeerRolesResolved { scope, roles }).ok();
+                    }
+                    Ok(DbCommand::AssignRole { peer_did, scope, role }) => {
+                        let role_level = crate::RoleLevel::from(role.as_str());
+                        match crate::role_manager::assign_role_checked(&db, &local_did, &peer_did, &scope, role_level).await {
+                            Ok(()) => { tx.send(DbResult::RoleAssigned { peer_did, scope, role }).ok(); }
+                            Err(e) => { tx.send(DbResult::Error(format!("Assign role failed: {e}"))).ok(); }
+                        }
+                    }
+                    Ok(DbCommand::RevokeRole { peer_did, scope }) => {
+                        match crate::role_manager::revoke_role_checked(&db, &local_did, &peer_did, &scope).await {
+                            Ok(()) => { tx.send(DbResult::RoleRevoked { peer_did, scope }).ok(); }
+                            Err(e) => { tx.send(DbResult::Error(format!("Revoke role failed: {e}"))).ok(); }
+                        }
+                    }
+                    Ok(DbCommand::GenerateScopedInvite { scope, role, expiry_hours }) => {
+                        let Some(ref kp) = keypair else {
+                            tx.send(DbResult::Error("NodeKeypair not available for invite signing".to_string())).ok();
+                            continue;
+                        };
+                        let role_level = crate::RoleLevel::from(role.as_str());
+                        let expiry_secs = (expiry_hours as u64) * 3600;
+                        match crate::scoped_invite::generate_scoped_invite(kp, &local_did, &scope, role_level, expiry_secs) {
+                            Ok(invite) => {
+                                tx.send(DbResult::ScopedInviteGenerated { invite_link: invite.to_invite_link() }).ok();
+                            }
+                            Err(e) => {
+                                tx.send(DbResult::Error(format!("Generate scoped invite failed: {e}"))).ok();
+                            }
+                        }
+                    }
+                    Ok(DbCommand::ResolveLocalRole { scope }) => {
+                        match crate::role_manager::resolve_role(&db, &local_did, &scope).await {
+                            Ok(level) => { tx.send(DbResult::LocalRoleResolved { scope, role: level.to_string() }).ok(); }
+                            Err(e) => { tx.send(DbResult::Error(format!("Resolve local role failed: {e}"))).ok(); }
+                        }
+                    }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
             }
@@ -455,9 +605,10 @@ pub fn spawn_db_thread_with_sync(
 async fn reset_database_handler(
     db: &surrealdb::Surreal<Db>,
     blob_store: &BlobStoreHandle,
+    local_did: &str,
 ) -> anyhow::Result<(String, Vec<String>)> {
     admin::clear_all_tables(db).await?;
-    seed_default_data(db, blob_store).await
+    seed_default_data(db, blob_store, local_did).await
 }
 
 async fn update_node_transform_handler(
@@ -575,6 +726,7 @@ async fn seed_assets(
 pub async fn seed_default_data(
     db: &surrealdb::Surreal<Db>,
     blob_store: &BlobStoreHandle,
+    local_did: &str,
 ) -> anyhow::Result<(String, Vec<String>)> {
     // Idempotency: skip if genesis verse already exists.
     let mut check: surrealdb::IndexedResults = db
@@ -593,10 +745,10 @@ pub async fn seed_default_data(
         ));
     }
 
-    let node_id = types::NodeId("local-node".to_string());
-    // Generate ephemeral seed keypair (not persisted — seed data only).
+    // Use the node's real DID so the local user is recognized as Owner.
     let seed_keypair = fe_identity::NodeKeypair::generate();
-    let local_did = seed_keypair.to_did_key();
+    let local_did = local_did.to_string();
+    let node_id = types::NodeId(local_did.clone());
     let now = chrono::Utc::now().to_rfc3339();
 
     // --- Assets ---
@@ -652,7 +804,7 @@ pub async fn seed_default_data(
         verse_id: verse_id.clone(),
         owner_did: local_did.clone(),
         name: "Genesis Fractal".to_string(),
-        description: Some("The seed fractal for local-node".to_string()),
+        description: Some(format!("The seed fractal for {local_did}")),
         created_at: now.clone(),
     }).await?;
     tracing::info!("Seeded fractal: Genesis Fractal ({fractal_id})");
@@ -834,6 +986,7 @@ async fn create_verse_handler(
     blob_store: &BlobStoreHandle,
     repl_tx: Option<&ReplicationSender>,
     name: &str,
+    local_did: &str,
 ) -> anyhow::Result<String> {
     let verse_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -851,7 +1004,7 @@ async fn create_verse_handler(
     let verse_row = Verse {
         verse_id: verse_id.clone(),
         name: name.to_string(),
-        created_by: "local-node".to_string(),
+        created_by: local_did.to_string(),
         created_at: now.clone(),
         namespace_id: Some(ns_id_hex.clone()),
         default_access: "viewer".to_string(),
@@ -1019,8 +1172,27 @@ async fn generate_verse_invite_handler(
 async fn join_verse_by_invite_handler(
     db: &surrealdb::Surreal<Db>,
     invite_string: &str,
+    local_did: &str,
 ) -> anyhow::Result<(String, String)> {
-    let invite = invite::VerseInvite::from_invite_string(invite_string)?;
+    // Strip fractalengine://invite/ prefix if present
+    let payload = invite_string.trim();
+    let payload = payload
+        .strip_prefix("fractalengine://invite/")
+        .unwrap_or(payload);
+
+    // Try parsing as a scoped invite first (new format), then fall back to verse invite (old format)
+    if let Ok(scoped) = scoped_invite::ScopedInvite::from_invite_string(payload) {
+        // Validate the scoped invite
+        if let Err(e) = scoped_invite::validate_scoped_invite(&scoped) {
+            anyhow::bail!("Invalid scoped invite: {e}");
+        }
+        let parts = crate::scope::parse_scope(&scoped.scope)?;
+        let verse_id = parts.verse_id;
+        // For scoped invites, we don't have verse name — use scope as name
+        return Ok((verse_id, format!("Joined via scoped invite")));
+    }
+
+    let invite = invite::VerseInvite::from_invite_string(payload)?;
 
     // Verify invite signature using the creator's public key (encoded as hex
     // in creator_node_addr — this is the ed25519 verifying key bytes).
@@ -1083,7 +1255,7 @@ async fn join_verse_by_invite_handler(
     Repo::<VerseMemberRow>::create_raw(db, serde_json::json!({
         "member_id":        member_id,
         "verse_id":         verse_id,
-        "peer_did":         "local-node",
+        "peer_did":         local_did,
         "status":           "active",
         "invited_by":       invite.creator_node_addr,
         "invite_sig":       invite.signature,
@@ -1104,13 +1276,14 @@ async fn create_fractal_handler(
     repl_tx: Option<&ReplicationSender>,
     verse_id: &str,
     name: &str,
+    local_did: &str,
 ) -> anyhow::Result<String> {
     let fractal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let fractal_row = Fractal {
         fractal_id: fractal_id.clone(),
         verse_id: verse_id.to_string(),
-        owner_did: "local-node".to_string(),
+        owner_did: local_did.to_string(),
         name: name.to_string(),
         description: Some(String::new()),
         created_at: now.clone(),
@@ -1139,6 +1312,7 @@ async fn create_petal_handler(
     db: &surrealdb::Surreal<Db>,
     fractal_id: &str,
     name: &str,
+    local_did: &str,
 ) -> anyhow::Result<String> {
     let petal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -1154,14 +1328,14 @@ async fn create_petal_handler(
         .bind(("petal_id", petal_id.clone()))
         .bind(("fractal_id", fractal_id.to_string()))
         .bind(("name", name.to_string()))
-        .bind(("node_id", "local-node".to_string()))
+        .bind(("node_id", local_did.to_string()))
         .bind(("now", now))
         .await?
         .check()
         .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
-    // Assign owner role so local-node can operate on this petal
+    // Assign owner role so the local node can operate on this petal
     Repo::<Role>::create(db, &Role {
-        peer_did: "local-node".to_string(),
+        peer_did: local_did.to_string(),
         scope:    format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.clone()),
         role:     "owner".to_string(),
     }).await?;

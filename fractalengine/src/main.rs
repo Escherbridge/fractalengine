@@ -1,7 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use fe_identity::NodeIdentity;
-use fe_runtime::app::BevyHandles;
+use fe_runtime::app::{
+    ApiCommandReceiver, ApiCommandSender, BevyHandles, PendingApiRequests,
+    TransformBroadcastSender,
+};
 use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
 use fe_runtime::PeerRegistry;
@@ -32,6 +35,7 @@ fn main() {
         }
     };
     let iroh_secret = node_kp.to_iroh_secret();
+    let local_did = node_kp.to_did_key();
 
     // Phase F: create a second keypair from the same seed for the DB thread.
     // NodeKeypair is not Clone, so we recreate from the same seed bytes.
@@ -63,7 +67,7 @@ fn main() {
     );
 
     let _sync_thread =
-        fe_sync::spawn_sync_thread(iroh_secret, blob_store.clone(), sync_cmd_rx, sync_evt_tx);
+        fe_sync::spawn_sync_thread(iroh_secret, blob_store.clone(), sync_cmd_rx, sync_evt_tx, local_did);
 
     // Phase E: bridge replication events from DB thread to sync thread.
     {
@@ -118,6 +122,27 @@ fn main() {
     app.insert_resource(NodeIdentity::new(node_kp));
     app.insert_resource(PeerRegistry::default());
     app.insert_resource(LocalUserRole::default());
+
+    // ---- API Gateway thread ----
+    // Channel: API thread sends ApiCommand -> tx, Bevy drains from rx.
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(256);
+    let (transform_broadcast_tx, _) =
+        tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
+
+    let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
+        bind_addr: "127.0.0.1:8765".to_string(),
+        api_cmd_tx: api_cmd_tx.clone(),
+        transform_broadcast_tx: transform_broadcast_tx.clone(),
+    });
+
+    app.insert_resource(ApiCommandReceiver(Arc::new(Mutex::new(api_cmd_rx))));
+    app.insert_resource(ApiCommandSender(api_cmd_tx));
+    app.insert_resource(TransformBroadcastSender(transform_broadcast_tx));
+    app.init_resource::<PendingApiRequests>();
+    app.add_systems(
+        bevy::prelude::Update,
+        fe_runtime::app::drain_api_commands,
+    );
 
     // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
     app.add_plugins(fe_renderer::viewport::ViewportPlugin);
