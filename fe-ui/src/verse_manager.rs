@@ -160,6 +160,7 @@ fn apply_db_results(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut ui_mgr: ResMut<UiManager>,
+    mut local_role: ResMut<crate::plugin::LocalUserRole>,
 ) {
     for result in reader.read() {
         match result {
@@ -335,6 +336,126 @@ fn apply_db_results(
 
             DbResult::Error(msg) => {
                 bevy::log::error!("DB error: {msg}");
+            }
+
+            DbResult::EntityRenamed { entity_type, entity_id, new_name } => {
+                match entity_type.as_str() {
+                    "verse" => {
+                        if let Some(v) = verse_mgr.verses.iter_mut().find(|v| v.id == *entity_id) {
+                            v.name = new_name.clone();
+                        }
+                        if nav.active_verse_id.as_deref() == Some(entity_id.as_str()) {
+                            nav.active_verse_name = new_name.clone();
+                        }
+                    }
+                    "fractal" => {
+                        for v in verse_mgr.verses.iter_mut() {
+                            if let Some(f) = v.fractals.iter_mut().find(|f| f.id == *entity_id) {
+                                f.name = new_name.clone();
+                            }
+                        }
+                        if nav.active_fractal_id.as_deref() == Some(entity_id.as_str()) {
+                            nav.active_fractal_name = new_name.clone();
+                        }
+                    }
+                    "petal" => {
+                        for v in verse_mgr.verses.iter_mut() {
+                            for f in v.fractals.iter_mut() {
+                                if let Some(p) = f.petals.iter_mut().find(|p| p.id == *entity_id) {
+                                    p.name = new_name.clone();
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                bevy::log::info!("Renamed {} {} to '{}'", entity_type, entity_id, new_name);
+            }
+
+            DbResult::VerseDefaultAccessSet { verse_id, default_access } => {
+                bevy::log::info!("Set default access for verse {} to '{}'", verse_id, default_access);
+            }
+
+            DbResult::FractalDescriptionUpdated { fractal_id, description } => {
+                bevy::log::info!("Updated description for fractal {}: '{}'", fractal_id, description);
+            }
+
+            DbResult::EntityDeleted { entity_type, entity_id } => {
+                match entity_type.as_str() {
+                    "verse" => {
+                        verse_mgr.verses.retain(|v| v.id != *entity_id);
+                        if nav.active_verse_id.as_deref() == Some(entity_id.as_str()) {
+                            nav.back_from_verse();
+                        }
+                    }
+                    "fractal" => {
+                        for v in verse_mgr.verses.iter_mut() {
+                            v.fractals.retain(|f| f.id != *entity_id);
+                        }
+                        if nav.active_fractal_id.as_deref() == Some(entity_id.as_str()) {
+                            nav.back_from_fractal();
+                        }
+                    }
+                    "petal" => {
+                        for v in verse_mgr.verses.iter_mut() {
+                            for f in v.fractals.iter_mut() {
+                                f.petals.retain(|p| p.id != *entity_id);
+                            }
+                        }
+                        if nav.active_petal_id.as_deref() == Some(entity_id.as_str()) {
+                            nav.back_from_petal();
+                        }
+                    }
+                    _ => {}
+                }
+                ui_mgr.close_dialog();
+                bevy::log::info!("Deleted {} {}", entity_type, entity_id);
+            }
+
+            DbResult::PeerRolesResolved { scope, roles } => {
+                if let ActiveDialog::EntitySettings { ref mut peer_roles, ref mut roles_loading, .. } = ui_mgr.active_dialog {
+                    *peer_roles = roles.iter().map(|(did, role)| {
+                        crate::plugin::PeerRoleEntry {
+                            peer_did: did.clone(),
+                            display_name: String::new(),
+                            role: role.clone(),
+                            is_online: false,
+                        }
+                    }).collect();
+                    *roles_loading = false;
+                }
+                bevy::log::debug!("Resolved {} peer roles at scope {}", roles.len(), scope);
+            }
+
+            DbResult::RoleAssigned { peer_did, scope, role } => {
+                if let ActiveDialog::EntitySettings { ref mut peer_roles, .. } = ui_mgr.active_dialog {
+                    if let Some(entry) = peer_roles.iter_mut().find(|p| p.peer_did == *peer_did) {
+                        entry.role = role.clone();
+                    }
+                }
+                bevy::log::info!("Assigned role '{}' to {} at scope {}", role, peer_did, scope);
+            }
+
+            DbResult::RoleRevoked { peer_did, scope } => {
+                if let ActiveDialog::EntitySettings { ref mut peer_roles, .. } = ui_mgr.active_dialog {
+                    if let Some(entry) = peer_roles.iter_mut().find(|p| p.peer_did == *peer_did) {
+                        entry.role = "none".to_string();
+                    }
+                }
+                bevy::log::info!("Revoked role for {} at scope {}", peer_did, scope);
+            }
+
+            DbResult::ScopedInviteGenerated { invite_link } => {
+                if let ActiveDialog::EntitySettings { ref mut generated_invite_link, .. } = ui_mgr.active_dialog {
+                    *generated_invite_link = Some(invite_link.clone());
+                }
+                bevy::log::info!("Generated scoped invite link");
+            }
+
+            DbResult::LocalRoleResolved { scope, role } => {
+                let level = fe_database::RoleLevel::from(role.as_str());
+                bevy::log::info!("Local role resolved at {}: {} ({:?})", scope, role, level);
+                local_role.role = Some(level);
             }
 
             _ => {}

@@ -1,7 +1,7 @@
 use bevy_egui::egui;
 
 use crate::navigation_manager::NavigationManager;
-use crate::plugin::{ActiveDialog, CreateKind, UiManager};
+use crate::plugin::{ActiveDialog, CreateKind, EntitySettingsType, SettingsTab, UiManager};
 use crate::theme;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
@@ -341,55 +341,6 @@ pub fn render_gltf_import_dialog(
 }
 
 // ---------------------------------------------------------------------------
-// Phase F: Invite dialog
-// ---------------------------------------------------------------------------
-
-pub fn render_invite_dialog(ctx: &egui::Context, ui_mgr: &mut UiManager) {
-    let ActiveDialog::InviteDialog {
-        ref invite_string, ..
-    } = ui_mgr.active_dialog
-    else {
-        return;
-    };
-
-    let invite_str_clone = invite_string.clone();
-    let mut close = false;
-
-    egui::Window::new("Verse Invite")
-        .collapsible(false)
-        .resizable(true)
-        .default_width(400.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label("Share this invite string with others to let them join your verse:");
-            ui.add_space(4.0);
-
-            // Copyable text field with the invite string
-            let mut display_str = invite_str_clone.clone();
-            ui.add(
-                egui::TextEdit::multiline(&mut display_str)
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace),
-            );
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.button("Copy to Clipboard").clicked() {
-                    ui.ctx().copy_text(invite_str_clone.clone());
-                }
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
-            });
-        });
-
-    if close {
-        ui_mgr.close_dialog();
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Phase F: Join dialog
 // ---------------------------------------------------------------------------
 
@@ -602,5 +553,328 @@ pub fn node_options_save_url(
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — UpdateNodeUrl (node options) not persisted");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entity Settings dialog (General + Access tabs)
+// ---------------------------------------------------------------------------
+
+pub fn render_entity_settings_dialog(
+    ctx: &egui::Context,
+    ui_mgr: &mut UiManager,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+) {
+    // Early-return guard: only render when EntitySettings is active.
+    let ActiveDialog::EntitySettings {
+        ref entity_type,
+        ref entity_id,
+        ref entity_name,
+        ref mut active_tab,
+        ref mut name_buf,
+        ref mut default_access_buf,
+        ref mut description_buf,
+        ref mut peer_roles,
+        ref mut roles_loading,
+        ref mut invite_role_buf,
+        ref mut invite_expiry_buf,
+        ref mut generated_invite_link,
+        ref mut pending_delete,
+    } = ui_mgr.active_dialog
+    else {
+        return;
+    };
+
+    let type_label = match entity_type {
+        EntitySettingsType::Verse => "Verse",
+        EntitySettingsType::Fractal => "Fractal",
+        EntitySettingsType::Petal => "Petal",
+    };
+    let title = format!("{} Settings — {}", type_label, entity_name);
+    let current_tab = *active_tab;
+
+    let mut close = false;
+    let mut still_open = true;
+
+    egui::Window::new(title)
+        .open(&mut still_open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(500.0)
+        .min_width(400.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(
+            egui::Frame::NONE
+                .fill(theme::BG_DIALOG)
+                .inner_margin(egui::Margin::same(16))
+                .corner_radius(6.0)
+                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
+        )
+        .show(ctx, |ui| {
+            // Tab bar
+            ui.horizontal(|ui| {
+                let gen_fill = if current_tab == SettingsTab::General {
+                    theme::BG_TAB_ACTIVE
+                } else {
+                    theme::BG_TAB_INACTIVE
+                };
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new("General").color(theme::TEXT_BRIGHT),
+                    ).fill(gen_fill))
+                    .clicked()
+                {
+                    *active_tab = SettingsTab::General;
+                }
+
+                let acc_fill = if current_tab == SettingsTab::Access {
+                    theme::BG_TAB_ACTIVE
+                } else {
+                    theme::BG_TAB_INACTIVE
+                };
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new("Access").color(theme::TEXT_BRIGHT),
+                    ).fill(acc_fill))
+                    .clicked()
+                {
+                    *active_tab = SettingsTab::Access;
+                }
+            });
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            // Tab content
+            match current_tab {
+                SettingsTab::General => {
+                    // --- Rename ---
+                    ui.label(egui::RichText::new("Name").color(theme::TEXT_SECTION).strong());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(name_buf)
+                                .desired_width(300.0),
+                        );
+                        if ui.add(egui::Button::new("Rename").fill(theme::BG_SAVE)).clicked() {
+                            let new_name = name_buf.trim().to_string();
+                            if !new_name.is_empty() {
+                                let etype = match entity_type {
+                                    EntitySettingsType::Verse => "verse",
+                                    EntitySettingsType::Fractal => "fractal",
+                                    EntitySettingsType::Petal => "petal",
+                                };
+                                db_tx.send(DbCommand::RenameEntity {
+                                    entity_type: etype.to_string(),
+                                    entity_id: entity_id.clone(),
+                                    new_name,
+                                }).ok();
+                            }
+                        }
+                    });
+
+                    // --- Default Access (Verse only) ---
+                    if *entity_type == EntitySettingsType::Verse {
+                        ui.add_space(12.0);
+                        ui.label(egui::RichText::new("Default Access").color(theme::TEXT_SECTION).strong());
+                        ui.add_space(4.0);
+                        if let Some(ref mut da) = default_access_buf {
+                            let mut is_viewer = da == "viewer";
+                            if ui.radio_value(&mut is_viewer, true, "Public (viewer) — anyone can see").clicked() {
+                                *da = "viewer".to_string();
+                                db_tx.send(DbCommand::SetVerseDefaultAccess {
+                                    verse_id: entity_id.clone(),
+                                    default_access: "viewer".to_string(),
+                                }).ok();
+                            }
+                            if ui.radio_value(&mut is_viewer, false, "Private (none) — explicit grants only").clicked() {
+                                *da = "none".to_string();
+                                db_tx.send(DbCommand::SetVerseDefaultAccess {
+                                    verse_id: entity_id.clone(),
+                                    default_access: "none".to_string(),
+                                }).ok();
+                            }
+                        }
+                    }
+
+                    // --- Description (Fractal only) ---
+                    if *entity_type == EntitySettingsType::Fractal {
+                        ui.add_space(12.0);
+                        ui.label(egui::RichText::new("Description").color(theme::TEXT_SECTION).strong());
+                        ui.add_space(4.0);
+                        if let Some(ref mut desc) = description_buf {
+                            ui.add(
+                                egui::TextEdit::multiline(desc)
+                                    .desired_rows(3)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            if ui.add(egui::Button::new("Save Description").fill(theme::BG_SAVE)).clicked() {
+                                db_tx.send(DbCommand::UpdateFractalDescription {
+                                    fractal_id: entity_id.clone(),
+                                    description: desc.clone(),
+                                }).ok();
+                            }
+                        }
+                    }
+
+                    // --- Delete ---
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    if !*pending_delete {
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new("Delete").color(egui::Color32::WHITE),
+                        ).fill(theme::BG_DANGER)).clicked() {
+                            *pending_delete = true;
+                        }
+                    } else {
+                        ui.label(egui::RichText::new("Are you sure? This cannot be undone.").color(theme::STATUS_OFFLINE));
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(
+                                egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
+                            ).fill(theme::BG_DANGER)).clicked() {
+                                let etype = match entity_type {
+                                    EntitySettingsType::Verse => "verse",
+                                    EntitySettingsType::Fractal => "fractal",
+                                    EntitySettingsType::Petal => "petal",
+                                };
+                                db_tx.send(DbCommand::DeleteEntity {
+                                    entity_type: etype.to_string(),
+                                    entity_id: entity_id.clone(),
+                                }).ok();
+                                close = true;
+                            }
+                            if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).clicked() {
+                                *pending_delete = false;
+                            }
+                        });
+                    }
+                }
+                SettingsTab::Access => {
+                    ui.label(egui::RichText::new("Peer Access").color(theme::TEXT_SECTION).strong());
+                    ui.add_space(8.0);
+
+                    if peer_roles.is_empty() && !*roles_loading {
+                        ui.label(egui::RichText::new("No peers known yet. Peers will appear here when they connect.").color(theme::TEXT_MUTED).italics());
+                    } else if *roles_loading {
+                        ui.label(egui::RichText::new("Loading peer roles...").color(theme::TEXT_MUTED).italics());
+                    } else {
+                        // Peer list table
+                        for (i, peer) in peer_roles.iter_mut().enumerate() {
+                            let row_bg = if i % 2 == 0 { theme::BG_PEER_ROW_EVEN } else { theme::BG_PEER_ROW_ODD };
+                            egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    // Online indicator
+                                    let dot_color = if peer.is_online { theme::ICON_ONLINE } else { theme::ICON_OFFLINE };
+                                    ui.colored_label(dot_color, "\u{25CF}");
+
+                                    // Display name
+                                    let display = if peer.display_name.is_empty() { &peer.peer_did } else { &peer.display_name };
+                                    ui.label(egui::RichText::new(display).strong());
+
+                                    // Truncated DID
+                                    if !peer.display_name.is_empty() {
+                                        let truncated = if peer.peer_did.len() > 20 {
+                                            format!("{}...", &peer.peer_did[..20])
+                                        } else {
+                                            peer.peer_did.clone()
+                                        };
+                                        ui.label(egui::RichText::new(truncated).monospace().small().color(theme::TEXT_DIM));
+                                    }
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        // Role badge (read-only display for now)
+                                        let role_color = match peer.role.as_str() {
+                                            "owner" => theme::TEXT_ROLE_OWNER,
+                                            "manager" => theme::TEXT_ROLE_MANAGER,
+                                            "editor" => theme::TEXT_ROLE_EDITOR,
+                                            _ => theme::TEXT_ROLE_VIEWER,
+                                        };
+                                        ui.label(egui::RichText::new(&peer.role).color(role_color).strong());
+                                    });
+                                });
+                            });
+                        }
+                    }
+
+                    // --- Invite generation section ---
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Generate Invite Link").color(theme::TEXT_SECTION).strong());
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Role:");
+                        egui::ComboBox::from_id_salt("invite_role")
+                            .selected_text(invite_role_buf.as_str())
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(invite_role_buf, "viewer".to_string(), "Viewer");
+                                ui.selectable_value(invite_role_buf, "editor".to_string(), "Editor");
+                                ui.selectable_value(invite_role_buf, "manager".to_string(), "Manager");
+                            });
+
+                        ui.label("Expires:");
+                        egui::ComboBox::from_id_salt("invite_expiry")
+                            .selected_text(match *invite_expiry_buf {
+                                1 => "1 hour",
+                                24 => "24 hours",
+                                168 => "7 days",
+                                720 => "30 days",
+                                _ => "24 hours",
+                            })
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(invite_expiry_buf, 1, "1 hour");
+                                ui.selectable_value(invite_expiry_buf, 24, "24 hours");
+                                ui.selectable_value(invite_expiry_buf, 168, "7 days");
+                                ui.selectable_value(invite_expiry_buf, 720, "30 days");
+                            });
+
+                        if ui.add(egui::Button::new("Generate").fill(theme::BG_SAVE)).clicked() {
+                            let _etype = match entity_type {
+                                EntitySettingsType::Verse => "verse",
+                                EntitySettingsType::Fractal => "fractal",
+                                EntitySettingsType::Petal => "petal",
+                            };
+                            // Build scope from entity_type + entity_id
+                            // For now, use a simple scope. The full scope building needs nav context.
+                            let scope = format!("VERSE#{}", entity_id);
+                            db_tx.send(DbCommand::GenerateScopedInvite {
+                                scope,
+                                role: invite_role_buf.clone(),
+                                expiry_hours: *invite_expiry_buf,
+                            }).ok();
+                        }
+                    });
+
+                    // Show generated link
+                    if let Some(ref link) = generated_invite_link {
+                        ui.add_space(8.0);
+                        egui::Frame::NONE
+                            .fill(theme::BG_INVITE_LINK)
+                            .inner_margin(egui::Margin::same(8))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                let mut link_display = link.clone();
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut link_display)
+                                        .desired_rows(2)
+                                        .desired_width(f32::INFINITY)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                                if ui.button("Copy to Clipboard").clicked() {
+                                    ui.ctx().copy_text(link.clone());
+                                }
+                            });
+                    }
+                }
+            }
+        });
+
+    if !still_open || close {
+        ui_mgr.close_dialog();
     }
 }

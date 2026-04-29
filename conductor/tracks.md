@@ -188,3 +188,14 @@ _Depends on: Garden Console_
 
 _Link: [./tracks/seedling_onboarding_20260327/](./tracks/seedling_onboarding_20260327/)_
 _Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Gardener Console, Mycelium Network)_
+
+---
+
+## Wave 3: External Access & IoT Platform
+
+## [ ] Track: Realtime API Gateway — MCP + REST + WebSocket for External Access
+
+_Link: [./tracks/realtime_api_mcp_20260427/](./tracks/realtime_api_mcp_20260427/)_
+_Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Fractal Mesh) | Blocks: IoT Integration, AI Agent Framework, External SDK_
+_Scope: New fe-api crate — axum HTTP/WS server, rmcp MCP tools, ApiClaims auth, transform streaming_
+_Priority: P1 (first-of-kind: no Rust 3D engine exposes MCP/REST APIs)_

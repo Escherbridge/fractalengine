@@ -84,9 +84,15 @@ impl VerseInvite {
     }
 
     /// Parse an invite string back into a `VerseInvite`.
+    ///
+    /// Accepts both raw base64 and `fractalengine://invite/<base64>` links.
     pub fn from_invite_string(s: &str) -> anyhow::Result<Self> {
+        let payload = s.trim();
+        let payload = payload
+            .strip_prefix("fractalengine://invite/")
+            .unwrap_or(payload);
         let bytes = URL_SAFE_NO_PAD
-            .decode(s.trim())
+            .decode(payload)
             .map_err(|e| anyhow::anyhow!("invalid base64: {e}"))?;
         let invite: Self =
             serde_json::from_slice(&bytes).map_err(|e| anyhow::anyhow!("invalid JSON: {e}"))?;

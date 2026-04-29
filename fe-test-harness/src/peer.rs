@@ -56,6 +56,7 @@ impl TestPeer {
         );
 
         let keypair = NodeKeypair::generate();
+        let local_did = keypair.to_did_key();
 
         // DB channels
         let (db_cmd_tx, db_cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
@@ -76,6 +77,7 @@ impl TestPeer {
             sync_blob_store,
             sync_cmd_rx,
             sync_evt_tx,
+            local_did.clone(),
         );
 
         // Spawn DB thread with in-memory SurrealDB
@@ -84,6 +86,7 @@ impl TestPeer {
         // We actually want to use the SAME keypair for invite generation,
         // so clone the seed bytes.
         let kp_seed = keypair.seed_bytes();
+        let db_local_did = local_did.clone();
         let db_handle = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -120,7 +123,7 @@ impl TestPeer {
                             db_result_tx.send(DbResult::Pong).ok();
                         }
                         Ok(DbCommand::Seed) => {
-                            match seed_test_data(&db).await {
+                            match seed_test_data(&db, &db_local_did).await {
                                 Ok((petal_name, rooms)) => {
                                     db_result_tx
                                         .send(DbResult::Seeded { petal_name, rooms })
@@ -134,7 +137,7 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::CreateVerse { name }) => {
-                            match create_verse(&db, &name).await {
+                            match create_verse(&db, &name, &db_local_did).await {
                                 Ok(id) => {
                                     db_result_tx
                                         .send(DbResult::VerseCreated { id, name })
@@ -150,7 +153,7 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::CreateFractal { verse_id, name }) => {
-                            match create_fractal(&db, &verse_id, &name).await {
+                            match create_fractal(&db, &verse_id, &name, &db_local_did).await {
                                 Ok(id) => {
                                     db_result_tx
                                         .send(DbResult::FractalCreated { id, verse_id, name })
@@ -166,7 +169,7 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::CreatePetal { fractal_id, name }) => {
-                            match create_petal(&db, &fractal_id, &name).await {
+                            match create_petal(&db, &fractal_id, &name, &db_local_did).await {
                                 Ok(id) => {
                                     db_result_tx
                                         .send(DbResult::PetalCreated {
@@ -295,7 +298,7 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::JoinVerseByInvite { invite_string }) => {
-                            match join_verse(&db, &invite_string).await {
+                            match join_verse(&db, &invite_string, &db_local_did).await {
                                 Ok((verse_id, verse_name)) => {
                                     db_result_tx
                                         .send(DbResult::VerseJoined {
@@ -316,7 +319,7 @@ impl TestPeer {
                         Ok(DbCommand::ResetDatabase) => {
                             match async {
                                 fe_database::admin::clear_all_tables(&db).await?;
-                                seed_test_data(&db).await
+                                seed_test_data(&db, &db_local_did).await
                             }
                             .await
                             {
@@ -339,6 +342,17 @@ impl TestPeer {
                         }
                         Ok(DbCommand::UpdateNodeUrl { .. }) => {
                             // Not implemented in test harness.
+                        }
+                        Ok(DbCommand::RenameEntity { .. })
+                        | Ok(DbCommand::SetVerseDefaultAccess { .. })
+                        | Ok(DbCommand::UpdateFractalDescription { .. })
+                        | Ok(DbCommand::DeleteEntity { .. })
+                        | Ok(DbCommand::ResolveRolesForPeers { .. })
+                        | Ok(DbCommand::AssignRole { .. })
+                        | Ok(DbCommand::RevokeRole { .. })
+                        | Ok(DbCommand::GenerateScopedInvite { .. })
+                        | Ok(DbCommand::ResolveLocalRole { .. }) => {
+                            // Entity settings commands — not implemented in test harness.
                         }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }
@@ -486,6 +500,7 @@ use surrealdb::engine::local::Db;
 
 async fn seed_test_data(
     db: &surrealdb::Surreal<Db>,
+    local_did: &str,
 ) -> anyhow::Result<(String, Vec<String>)> {
     // Check idempotency
     let mut check: surrealdb::IndexedResults = db
@@ -516,7 +531,7 @@ async fn seed_test_data(
         .content(serde_json::json!({
             "verse_id": verse_id,
             "name": "Genesis Verse",
-            "created_by": "local-node",
+            "created_by": local_did,
             "created_at": now,
             "namespace_id": ns_id_hex,
         }))
@@ -529,7 +544,7 @@ async fn seed_test_data(
         .content(serde_json::json!({
             "fractal_id": fractal_id,
             "verse_id": verse_id,
-            "owner_did": "local-node",
+            "owner_did": local_did,
             "name": "Genesis Fractal",
             "created_at": now,
         }))
@@ -542,7 +557,7 @@ async fn seed_test_data(
         .content(serde_json::json!({
             "petal_id": petal_id,
             "name": "Genesis Petal",
-            "node_id": "local-node",
+            "node_id": local_did,
             "created_at": now,
             "fractal_id": fractal_id,
         }))
@@ -569,6 +584,7 @@ async fn seed_test_data(
 async fn create_verse(
     db: &surrealdb::Surreal<Db>,
     name: &str,
+    local_did: &str,
 ) -> anyhow::Result<String> {
     let verse_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -583,7 +599,7 @@ async fn create_verse(
         .content(serde_json::json!({
             "verse_id": verse_id,
             "name": name,
-            "created_by": "local-node",
+            "created_by": local_did,
             "created_at": now,
             "namespace_id": ns_id_hex,
         }))
@@ -603,6 +619,7 @@ async fn create_fractal(
     db: &surrealdb::Surreal<Db>,
     verse_id: &str,
     name: &str,
+    local_did: &str,
 ) -> anyhow::Result<String> {
     let fractal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -611,7 +628,7 @@ async fn create_fractal(
         .content(serde_json::json!({
             "fractal_id": fractal_id,
             "verse_id": verse_id,
-            "owner_did": "local-node",
+            "owner_did": local_did,
             "name": name,
             "created_at": now,
         }))
@@ -623,6 +640,7 @@ async fn create_petal(
     db: &surrealdb::Surreal<Db>,
     fractal_id: &str,
     name: &str,
+    local_did: &str,
 ) -> anyhow::Result<String> {
     let petal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -631,7 +649,7 @@ async fn create_petal(
         .content(serde_json::json!({
             "petal_id": petal_id,
             "name": name,
-            "node_id": "local-node",
+            "node_id": local_did,
             "created_at": now,
             "fractal_id": fractal_id,
         }))
@@ -893,6 +911,7 @@ async fn generate_invite(
 async fn join_verse(
     db: &surrealdb::Surreal<Db>,
     invite_string: &str,
+    local_did: &str,
 ) -> anyhow::Result<(String, String)> {
     let invite = fe_database::invite::VerseInvite::from_invite_string(invite_string)?;
 
@@ -945,7 +964,7 @@ async fn join_verse(
         .content(serde_json::json!({
             "member_id": member_id,
             "verse_id": verse_id,
-            "peer_did": "local-node",
+            "peer_did": local_did,
             "status": "active",
             "invited_by": invite.creator_node_addr,
             "invite_sig": invite.signature,

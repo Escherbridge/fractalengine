@@ -791,6 +791,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core",
+ "base64",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -809,8 +810,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -4022,6 +4025,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fe-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "crossbeam",
+ "ed25519-dalek",
+ "fe-database",
+ "fe-identity",
+ "fe-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
 name = "fe-auth"
 version = "0.1.0"
 dependencies = [
@@ -4127,6 +4149,9 @@ dependencies = [
  "blake3",
  "crossbeam",
  "hex",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
 ]
 
@@ -4358,6 +4383,7 @@ dependencies = [
  "bevy",
  "crossbeam",
  "ed25519-dalek",
+ "fe-api",
  "fe-auth",
  "fe-database",
  "fe-identity",
@@ -12346,6 +12372,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

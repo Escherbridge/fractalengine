@@ -233,4 +233,59 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn resolve_role_uses_verse_default_access() {
+        // Set up in-memory SurrealDB
+        let db: surrealdb::Surreal<surrealdb::engine::local::Db> =
+            surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+                .await
+                .expect("SurrealDB Mem init");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+
+        // Apply schema
+        crate::rbac::apply_schema(&db).await.expect("schema");
+
+        // Create a verse with default_access = "none"
+        let verse_id = "test-verse-1";
+        let owner_did = "did:key:zOwnerXYZ";
+        let now = chrono::Utc::now().to_rfc3339();
+        let _: Option<serde_json::Value> = db
+            .create("verse")
+            .content(serde_json::json!({
+                "verse_id": verse_id,
+                "name": "Test Verse",
+                "created_by": owner_did,
+                "created_at": now,
+                "default_access": "none",
+            }))
+            .await
+            .expect("create verse");
+
+        let scope = crate::scope::build_scope(verse_id, None, None);
+
+        // A random peer with no explicit role should get None
+        let random_peer = "did:key:zRandomPeer123";
+        let role = super::resolve_role(&db, random_peer, &scope)
+            .await
+            .expect("resolve_role");
+        assert_eq!(role, RoleLevel::None, "peer with no role on default_access=none verse should get None");
+
+        // The owner should still get Owner regardless of default_access
+        let owner_role = super::resolve_role(&db, owner_did, &scope)
+            .await
+            .expect("resolve_role for owner");
+        assert_eq!(owner_role, RoleLevel::Owner, "verse owner should always resolve to Owner");
+
+        // Now change default_access to "viewer"
+        super::set_default_access(&db, verse_id, "viewer")
+            .await
+            .expect("set_default_access");
+
+        // The random peer should now get Viewer
+        let role2 = super::resolve_role(&db, random_peer, &scope)
+            .await
+            .expect("resolve_role after change");
+        assert_eq!(role2, RoleLevel::Viewer, "peer with no role on default_access=viewer verse should get Viewer");
+    }
 }

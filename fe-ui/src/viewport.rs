@@ -3,7 +3,8 @@ use bevy_egui::egui;
 use crate::atlas::DashboardState;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
-    ActiveDialog, CreateKind, UiManager, ViewportCursorWorld,
+    ActiveDialog, CreateKind, EntitySettingsType, LocalUserRole, SettingsTab, UiManager,
+    ViewportCursorWorld,
 };
 use crate::theme;
 use crate::verse_manager::VerseManager;
@@ -27,6 +28,7 @@ pub fn viewport_overlay(
     dashboard: &DashboardState,
     cursor_world: &ViewportCursorWorld,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
     let rect = ui.available_rect_before_wrap();
     let center = rect.center();
@@ -42,13 +44,14 @@ pub fn viewport_overlay(
             center,
             cursor_world,
             ui_mgr,
+            local_role,
         );
     } else if nav.active_fractal_id.is_some() {
         // === FRACTAL SELECTED: Show petal cards ===
-        viewport_petal_browser(ui, nav, hierarchy, db_tx, rect, center, ui_mgr);
+        viewport_petal_browser(ui, nav, hierarchy, db_tx, rect, center, ui_mgr, local_role);
     } else if nav.active_verse_id.is_some() {
         // === VERSE SELECTED: Show fractal cards ===
-        viewport_fractal_browser(ui, nav, hierarchy, db_tx, rect, center, ui_mgr);
+        viewport_fractal_browser(ui, nav, hierarchy, db_tx, rect, center, ui_mgr, local_role);
     } else {
         // === NO VERSE: Peer discovery / verse browser ===
         viewport_verse_browser(
@@ -60,6 +63,7 @@ pub fn viewport_overlay(
             rect,
             center,
             ui_mgr,
+            local_role,
         );
     }
 }
@@ -74,6 +78,7 @@ pub fn viewport_petal_space(
     center: egui::Pos2,
     cursor_world: &ViewportCursorWorld,
     ui_mgr: &mut UiManager,
+    _local_role: &LocalUserRole,
 ) {
     // Breadcrumb at top of viewport
     let petal_name = find_petal_name(hierarchy, nav.active_petal_id.as_deref().unwrap_or(""));
@@ -146,6 +151,7 @@ pub fn viewport_verse_browser(
     rect: egui::Rect,
     center: egui::Pos2,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
     // Title
     ui.painter().text(
@@ -185,6 +191,7 @@ pub fn viewport_verse_browser(
         let y = start_y + row as f32 * (card_h + gap);
         let card_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(card_w, card_h));
 
+        let mut card_clicked = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
             let resp = ui.add_sized(
                 [card_w, card_h],
@@ -199,9 +206,52 @@ pub fn viewport_verse_browser(
                 .corner_radius(6.0),
             );
             if resp.clicked() {
-                nav.navigate_to_verse(verse.id.clone(), verse.name.clone());
+                card_clicked = true;
             }
         });
+
+        // Gear icon overlay on top-right of card (managers only)
+        let mut gear_clicked = false;
+        if local_role.can_manage() {
+            let gear_rect = egui::Rect::from_min_size(
+                egui::pos2(card_rect.right() - 26.0, card_rect.top() + 4.0),
+                egui::vec2(22.0, 22.0),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
+                let gear_resp = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("\u{2699}")
+                            .size(14.0)
+                            .color(theme::ICON_GEAR),
+                    )
+                    .fill(theme::BG_BUTTON)
+                    .corner_radius(4.0),
+                );
+                if gear_resp.clicked() {
+                    gear_clicked = true;
+                }
+            });
+        }
+
+        if gear_clicked {
+            ui_mgr.open_dialog(ActiveDialog::EntitySettings {
+                entity_type: EntitySettingsType::Verse,
+                entity_id: verse.id.clone(),
+                entity_name: verse.name.clone(),
+                active_tab: SettingsTab::General,
+                name_buf: verse.name.clone(),
+                default_access_buf: Some("viewer".to_string()),
+                description_buf: None,
+                peer_roles: vec![],
+                roles_loading: false,
+                invite_role_buf: "viewer".to_string(),
+                invite_expiry_buf: 24,
+                generated_invite_link: None,
+                pending_delete: false,
+            });
+        } else if card_clicked {
+            nav.navigate_to_verse(verse.id.clone(), verse.name.clone());
+        }
 
         ui.painter().text(
             egui::pos2(x + card_w / 2.0, y + card_h - 12.0),
@@ -303,6 +353,7 @@ pub fn viewport_fractal_browser(
     rect: egui::Rect,
     center: egui::Pos2,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
     // Back button
     let mut back_clicked = false;
@@ -354,6 +405,7 @@ pub fn viewport_fractal_browser(
             let y = start_y + row as f32 * (card_h + gap);
             let card_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(card_w, card_h));
 
+            let mut card_clicked = false;
             ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
                 let resp = ui.add_sized(
                     [card_w, card_h],
@@ -368,9 +420,52 @@ pub fn viewport_fractal_browser(
                     .corner_radius(6.0),
                 );
                 if resp.clicked() {
-                    nav.navigate_to_fractal(fractal.id.clone(), fractal.name.clone());
+                    card_clicked = true;
                 }
             });
+
+            // Gear icon overlay on top-right of card (managers only)
+            let mut gear_clicked = false;
+            if local_role.can_manage() {
+                let gear_rect = egui::Rect::from_min_size(
+                    egui::pos2(card_rect.right() - 26.0, card_rect.top() + 4.0),
+                    egui::vec2(22.0, 22.0),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
+                    let gear_resp = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("\u{2699}")
+                                .size(14.0)
+                                .color(theme::ICON_GEAR),
+                        )
+                        .fill(theme::BG_BUTTON)
+                        .corner_radius(4.0),
+                    );
+                    if gear_resp.clicked() {
+                        gear_clicked = true;
+                    }
+                });
+            }
+
+            if gear_clicked {
+                ui_mgr.open_dialog(ActiveDialog::EntitySettings {
+                    entity_type: EntitySettingsType::Fractal,
+                    entity_id: fractal.id.clone(),
+                    entity_name: fractal.name.clone(),
+                    active_tab: SettingsTab::General,
+                    name_buf: fractal.name.clone(),
+                    default_access_buf: Some("viewer".to_string()),
+                    description_buf: None,
+                    peer_roles: vec![],
+                    roles_loading: false,
+                    invite_role_buf: "viewer".to_string(),
+                    invite_expiry_buf: 24,
+                    generated_invite_link: None,
+                    pending_delete: false,
+                });
+            } else if card_clicked {
+                nav.navigate_to_fractal(fractal.id.clone(), fractal.name.clone());
+            }
 
             ui.painter().text(
                 egui::pos2(x + card_w / 2.0, y + card_h - 12.0),
@@ -431,6 +526,7 @@ pub fn viewport_petal_browser(
     rect: egui::Rect,
     center: egui::Pos2,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
     // Back button
     let mut back_clicked = false;
@@ -497,6 +593,7 @@ pub fn viewport_petal_browser(
             let y = start_y + row as f32 * (card_h + gap);
             let card_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(card_w, card_h));
 
+            let mut card_clicked = false;
             ui.scope_builder(egui::UiBuilder::new().max_rect(card_rect), |ui| {
                 let resp = ui.add_sized(
                     [card_w, card_h],
@@ -511,9 +608,52 @@ pub fn viewport_petal_browser(
                     .corner_radius(6.0),
                 );
                 if resp.clicked() {
-                    nav.navigate_to_petal(petal.id.clone());
+                    card_clicked = true;
                 }
             });
+
+            // Gear icon overlay on top-right of card (managers only)
+            let mut gear_clicked = false;
+            if local_role.can_manage() {
+                let gear_rect = egui::Rect::from_min_size(
+                    egui::pos2(card_rect.right() - 26.0, card_rect.top() + 4.0),
+                    egui::vec2(22.0, 22.0),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(gear_rect), |ui| {
+                    let gear_resp = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("\u{2699}")
+                                .size(14.0)
+                                .color(theme::ICON_GEAR),
+                        )
+                        .fill(theme::BG_BUTTON)
+                        .corner_radius(4.0),
+                    );
+                    if gear_resp.clicked() {
+                        gear_clicked = true;
+                    }
+                });
+            }
+
+            if gear_clicked {
+                ui_mgr.open_dialog(ActiveDialog::EntitySettings {
+                    entity_type: EntitySettingsType::Petal,
+                    entity_id: petal.id.clone(),
+                    entity_name: petal.name.clone(),
+                    active_tab: SettingsTab::General,
+                    name_buf: petal.name.clone(),
+                    default_access_buf: Some("viewer".to_string()),
+                    description_buf: None,
+                    peer_roles: vec![],
+                    roles_loading: false,
+                    invite_role_buf: "viewer".to_string(),
+                    invite_expiry_buf: 24,
+                    generated_invite_link: None,
+                    pending_delete: false,
+                });
+            } else if card_clicked {
+                nav.navigate_to_petal(petal.id.clone());
+            }
 
             ui.painter().text(
                 egui::pos2(x + card_w / 2.0, y + card_h - 12.0),

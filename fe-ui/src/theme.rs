@@ -34,3 +34,17 @@ pub const BG_DIALOG: Color32 = Color32::from_rgb(28, 28, 38);
 
 // Misc
 pub const TEXT_VIEWPORT_HINT: Color32 = Color32::from_rgba_unmultiplied_const(180, 180, 200, 80);
+
+// Settings dialog
+pub const BG_TAB_ACTIVE: Color32 = Color32::from_rgb(50, 60, 90);
+pub const BG_TAB_INACTIVE: Color32 = Color32::from_rgb(30, 30, 42);
+pub const BG_PEER_ROW_EVEN: Color32 = Color32::from_rgb(26, 26, 34);
+pub const BG_PEER_ROW_ODD: Color32 = Color32::from_rgb(30, 30, 40);
+pub const TEXT_ROLE_VIEWER: Color32 = Color32::from_rgb(120, 160, 200);
+pub const TEXT_ROLE_EDITOR: Color32 = Color32::from_rgb(140, 200, 140);
+pub const TEXT_ROLE_MANAGER: Color32 = Color32::from_rgb(200, 180, 100);
+pub const TEXT_ROLE_OWNER: Color32 = Color32::from_rgb(200, 140, 100);
+pub const BG_INVITE_LINK: Color32 = Color32::from_rgb(35, 35, 50);
+pub const ICON_GEAR: Color32 = Color32::from_rgb(140, 140, 170);
+pub const ICON_ONLINE: Color32 = Color32::from_rgb(80, 180, 80);
+pub const ICON_OFFLINE: Color32 = Color32::from_rgb(100, 100, 120);
