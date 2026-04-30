@@ -209,6 +209,32 @@ mod tests {
         assert!(s.contains("fractalengine/blobs"), "got: {s}");
     }
 
+    /// Task 2.5: dirs::data_local_dir() returns Some on all desktop platforms.
+    #[test]
+    fn data_local_dir_exists() {
+        assert!(
+            dirs::data_local_dir().is_some(),
+            "dirs::data_local_dir() returned None on this platform"
+        );
+    }
+
+    /// Task 2.2: On Unix, blob store root gets 0o700 permissions.
+    #[cfg(unix)]
+    #[test]
+    fn blob_store_sets_restrictive_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = FsBlobStore::new(dir.path().join("restricted")).expect("open store");
+        let perms = std::fs::metadata(store.root())
+            .expect("metadata")
+            .permissions();
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o700,
+            "blob store root should have 0700 permissions"
+        );
+    }
+
     #[test]
     fn distinct_content_produces_distinct_hashes() {
         let tmp = tempfile::tempdir().expect("tempdir");
