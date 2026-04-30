@@ -1,0 +1,29 @@
+{
+  "id": "cross_platform_desktop_20260429",
+  "name": "Cross-Platform Desktop",
+  "status": "pending",
+  "priority": "P1",
+  "created": "2026-04-29",
+  "depends_on": [],
+  "blocks": ["release_ci_20260429"],
+  "phases": [
+    {
+      "id": 1,
+      "name": "Build Infrastructure",
+      "status": "pending",
+      "tasks": 5
+    },
+    {
+      "id": 2,
+      "name": "Platform Code Audit and Testing",
+      "status": "pending",
+      "tasks": 7
+    },
+    {
+      "id": 3,
+      "name": "Documentation and Verification",
+      "status": "pending",
+      "tasks": 3
+    }
+  ]
+}

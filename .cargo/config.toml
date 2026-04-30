@@ -3,3 +3,8 @@ jobs = 2
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+# Linux and macOS use default system linker — no override needed
