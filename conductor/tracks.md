@@ -218,9 +218,23 @@ _Depends on: Realtime API Gateway (complete) | Blocks: none_
 _Scope: OIDC token exchange endpoint, provider management, identity mapping — supports Okta, Authentik, Google, LinkedIn, Azure AD, Keycloak, and any custom OIDC provider_
 _Priority: P2 (enables enterprise SSO integration for verse access)_
 
-## [ ] Track: Headless Relay — Cross-Platform Build Split, SecretStore Trait, Thin Client Surface
+## [~] Track: Cross-Platform Desktop — Linux + macOS + Windows ARM64 GUI Builds
+
+_Link: [./tracks/cross_platform_desktop_20260429/](./tracks/cross_platform_desktop_20260429/)_
+_Depends on: none | Blocks: Release CI_
+_Scope: Multi-target .cargo/config.toml, Linux/macOS compile verification, platform #[cfg] audit + tests, BUILDING.md_
+_Priority: P1 (validates that GUI binary compiles on all desktop platforms)_
+
+## [ ] Track: Headless Relay — Build Split, SecretStore Trait, Thin Client Surface
 
 _Link: [./tracks/headless_relay_20260429/](./tracks/headless_relay_20260429/)_
-_Depends on: Realtime API Gateway (complete) | Blocks: Web Client SDK, IoT Integration, Docker Deployment, Mobile Client_
-_Scope: Separate headless binary crate, SecretStore trait (OS/env/file backends), feature-gated Bevy headless mode, scene graph streaming over WS, asset delivery endpoint, cross-compilation CI for 8 targets, Docker image_
+_Depends on: Realtime API Gateway (complete) | Blocks: Release CI, Web Client SDK, IoT Integration, Docker Deployment, Mobile Client_
+_Scope: Separate headless binary crate, SecretStore trait (OS/env/file backends), feature-gated Bevy headless mode, scene graph streaming over WS, asset delivery endpoint, relay hardening_
 _Priority: P1 (enables server deployment, thin clients, and all non-desktop access patterns)_
+
+## [ ] Track: Release CI — Cross-Compilation Pipeline, Artifact Publishing, Docker Image
+
+_Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/)_
+_Depends on: Cross-Platform Desktop, Headless Relay | Blocks: none_
+_Scope: GitHub Actions PR check (3 OS), release workflow (8 targets), sccache, cargo-zigbuild for musl, macOS universal binary, Docker image to GHCR_
+_Priority: P2 (CI validates what we claim about cross-platform support)_
