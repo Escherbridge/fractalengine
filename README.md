@@ -108,7 +108,7 @@ cargo fmt && cargo clippy -- -D warnings && cargo test
 
 ## Architecture Overview
 
-FractalEngine runs as a single native desktop application with a strict **three-thread topology**:
+FractalEngine runs as a single native desktop application with a **six-thread topology**:
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -121,6 +121,14 @@ FractalEngine runs as a single native desktop application with a strict **three-
 │  libp2p + iroh          │  │  SurrealDB (SurrealKV)  │
 │  Dedicated Tokio runtime│  │  Dedicated Tokio runtime │
 └─────────────────────────┘  └──────────────────────────┘
+┌─────────────────────────┐  ┌──────────────────────────┐
+│  T4 — Sync Thread       │  │  T5 — Replication Bridge │
+│  Petal replication      │  │  DB ↔ Network bridge     │
+└─────────────────────────┘  └──────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  T6 — API Gateway (multi-thread Tokio)              │
+│  axum HTTP/WS on 127.0.0.1:8765, MCP tools         │
+└─────────────────────────────────────────────────────┘
 ```
 
 All cross-thread communication uses **typed crossbeam channels** — never raw bytes, never shared mutable state.
@@ -162,6 +170,7 @@ Verse                the top-level P2P namespace
 | `fe-sync` | Petal replication, caching, offline mode | T2/T3 |
 | `fe-ui` | egui admin panels and role display | T1 |
 | `fe-test-harness` | Integration test scenarios (multi-peer) | Test |
+| `fe-api` | API gateway: axum HTTP/WS, MCP tools, ApiClaims auth | T6 |
 
 ---
 
@@ -181,6 +190,8 @@ Verse                the top-level P2P namespace
 | `bevy_egui` | 0.39 | In-game UI |
 | `crossbeam` | 0.8 | Typed channel bridges |
 | `blake3` | 1.x | Content addressing |
+| `axum` | 0.8 | HTTP/WebSocket API gateway |
+| `tower-http` | 0.6 | HTTP middleware (CORS, tracing) |
 
 ---
 
@@ -217,15 +228,11 @@ Verse                the top-level P2P namespace
 
 ## Project Status
 
-All 10 implementation tracks complete. Currently in validation phase:
-
 | Wave | Description | Status |
 |---|---|---|
-| 6.1 | Build Fix | Done |
-| 6.2 | Lint Pass | Done |
-| 6.3 | Per-Crate Tests | Done |
-| 6.4 | Integration Tests | Done |
-| 6.5 | Coverage + Quality Gate | Pending |
+| Wave 1 | Core Infrastructure (9 tracks) | Complete |
+| Wave 2 | Interactive Digital Twin Platform | In Progress |
+| Wave 3 | External Access & IoT Platform | Started (API Gateway) |
 
 ---
 

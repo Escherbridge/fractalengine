@@ -1,5 +1,10 @@
 use bevy::prelude::Message;
 
+/// JTI string broadcast for token revocation notifications.
+/// Carried by the API config so the validation middleware can invalidate
+/// in-process caches without a DB round-trip.
+pub type RevocationNotifier = tokio::sync::broadcast::Sender<String>;
+
 // ---------------------------------------------------------------------------
 // API Gateway types (Phase: Realtime API Gateway)
 // ---------------------------------------------------------------------------
@@ -60,6 +65,44 @@ pub enum NetworkEvent {
     Stopped,
 }
 
+// ---------------------------------------------------------------------------
+// Entity type enum
+// ---------------------------------------------------------------------------
+
+/// Type-safe entity classification replacing stringly-typed "verse"/"fractal"/"petal" fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntityType {
+    Verse,
+    Fractal,
+    Petal,
+}
+
+impl std::fmt::Display for EntityType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Verse => write!(f, "verse"),
+            Self::Fractal => write!(f, "fractal"),
+            Self::Petal => write!(f, "petal"),
+        }
+    }
+}
+
+impl std::str::FromStr for EntityType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "verse" => Ok(Self::Verse),
+            "fractal" => Ok(Self::Fractal),
+            "petal" => Ok(Self::Petal),
+            other => Err(format!("Unknown entity type: {other}")),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Database command/result types
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone)]
 pub enum DbCommand {
     Ping,
@@ -117,7 +160,7 @@ pub enum DbCommand {
     // --- Entity Settings: General config ---
     /// Rename a verse, fractal, or petal.
     RenameEntity {
-        entity_type: String,
+        entity_type: EntityType,
         entity_id: String,
         new_name: String,
     },
@@ -133,7 +176,7 @@ pub enum DbCommand {
     },
     /// Delete a verse, fractal, or petal (with cascade).
     DeleteEntity {
-        entity_type: String,
+        entity_type: EntityType,
         entity_id: String,
     },
     // --- Entity Settings: Access management ---
@@ -162,6 +205,34 @@ pub enum DbCommand {
     /// Resolve the local user's effective role at a scope.
     ResolveLocalRole {
         scope: String,
+    },
+    // --- API Token management ---
+    /// Mint a new API token and persist its metadata.
+    MintApiToken {
+        scope: String,
+        max_role: String,
+        ttl_hours: u32,
+        label: Option<String>,
+    },
+    /// Revoke an API token by JTI.
+    RevokeApiToken {
+        jti: String,
+    },
+    /// List active (non-revoked) API tokens for this node.
+    ListApiTokens,
+    /// List active (non-revoked) API tokens whose scope falls within a prefix.
+    /// Used by admin dashboards to show tokens at verse/fractal/petal level.
+    ListApiTokensByScope {
+        scope_prefix: String,
+    },
+    /// Resolve a petal's full scope string (VERSE#v-FRACTAL#f-PETAL#p) by
+    /// walking petal → fractal → verse in the DB.
+    ResolvePetalScope {
+        petal_id: String,
+    },
+    /// Resolve a node's full scope string by walking node → petal → fractal → verse.
+    ResolveNodeScope {
+        node_id: String,
     },
 }
 
@@ -223,7 +294,7 @@ pub enum DbResult {
     },
     // --- Entity Settings results ---
     EntityRenamed {
-        entity_type: String,
+        entity_type: EntityType,
         entity_id: String,
         new_name: String,
     },
@@ -236,7 +307,7 @@ pub enum DbResult {
         description: String,
     },
     EntityDeleted {
-        entity_type: String,
+        entity_type: EntityType,
         entity_id: String,
     },
     PeerRolesResolved {
@@ -259,6 +330,42 @@ pub enum DbResult {
         scope: String,
         role: String,
     },
+    // --- API Token results ---
+    ApiTokenMinted {
+        token: String,
+        jti: String,
+        scope: String,
+        max_role: String,
+        expires_at: String,
+        label: Option<String>,
+    },
+    ApiTokenRevoked {
+        jti: String,
+    },
+    ApiTokensListed {
+        tokens: Vec<ApiTokenInfo>,
+    },
+    /// Tokens listed for an admin scope view (separate from user's own tokens).
+    ScopedApiTokensListed {
+        tokens: Vec<ApiTokenInfo>,
+    },
+    /// Result of `ResolvePetalScope` or `ResolveNodeScope`.
+    /// `scope` is `None` when the requested entity was not found.
+    ScopeResolved {
+        scope: Option<String>,
+    },
+}
+
+/// Lightweight API token info for UI display (avoids exposing the actual JWT).
+#[derive(Debug, Clone)]
+pub struct ApiTokenInfo {
+    pub jti: String,
+    pub scope: String,
+    pub max_role: String,
+    pub label: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+    pub revoked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -346,7 +453,7 @@ mod tests {
     #[test]
     fn test_new_db_command_variants_debug_clone() {
         let cmd = DbCommand::RenameEntity {
-            entity_type: "verse".to_string(),
+            entity_type: EntityType::Verse,
             entity_id: "v1".to_string(),
             new_name: "New Name".to_string(),
         };
@@ -362,7 +469,7 @@ mod tests {
     #[test]
     fn test_new_db_result_variants_debug_clone() {
         let r = DbResult::EntityRenamed {
-            entity_type: "verse".to_string(),
+            entity_type: EntityType::Verse,
             entity_id: "v1".to_string(),
             new_name: "New".to_string(),
         };

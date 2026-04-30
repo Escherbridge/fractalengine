@@ -48,6 +48,17 @@ _Link: [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)_
 
 ---
 
+## Chore / Exploration Tracks
+
+- [x] `db_repository_pattern_20260407/` — Repository pattern for DB access
+- [x] `glb_stability_20260405/` — GLB loading stability fixes
+- [x] `mycelium_scaling_20260407/` — Mycelium network scaling research
+- [x] `p2p_mycelium_20260405/` — P2P mycelium initial implementation
+- [x] `relay_data_horizon_20260407/` — Relay-based data horizon strategy
+- [x] `render_distance_lod_20260407/` — Render distance and LOD system
+
+---
+
 ## Chores & Refactors
 
 ## [ ] Track: UI Manager Architecture Refactor — UiSet Ordering, UiAction Queue, ActiveDialog Enum, Selection Dedup
@@ -196,6 +207,20 @@ _Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Gardener Co
 ## [ ] Track: Realtime API Gateway — MCP + REST + WebSocket for External Access
 
 _Link: [./tracks/realtime_api_mcp_20260427/](./tracks/realtime_api_mcp_20260427/)_
-_Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Fractal Mesh) | Blocks: IoT Integration, AI Agent Framework, External SDK_
+_Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Fractal Mesh) | Blocks: IoT Integration, AI Agent Framework, External SDK, SSO Federation_
 _Scope: New fe-api crate — axum HTTP/WS server, rmcp MCP tools, ApiClaims auth, transform streaming_
 _Priority: P1 (first-of-kind: no Rust 3D engine exposes MCP/REST APIs)_
+
+## [ ] Track: SSO Federation — OIDC Provider Integration for External Authentication
+
+_Link: [./tracks/sso_federation_20260429/](./tracks/sso_federation_20260429/)_
+_Depends on: Realtime API Gateway (complete) | Blocks: none_
+_Scope: OIDC token exchange endpoint, provider management, identity mapping — supports Okta, Authentik, Google, LinkedIn, Azure AD, Keycloak, and any custom OIDC provider_
+_Priority: P2 (enables enterprise SSO integration for verse access)_
+
+## [ ] Track: Headless Relay — Cross-Platform Build Split, SecretStore Trait, Thin Client Surface
+
+_Link: [./tracks/headless_relay_20260429/](./tracks/headless_relay_20260429/)_
+_Depends on: Realtime API Gateway (complete) | Blocks: Web Client SDK, IoT Integration, Docker Deployment, Mobile Client_
+_Scope: Separate headless binary crate, SecretStore trait (OS/env/file backends), feature-gated Bevy headless mode, scene graph streaming over WS, asset delivery endpoint, cross-compilation CI for 8 targets, Docker image_
+_Priority: P1 (enables server deployment, thin clients, and all non-desktop access patterns)_

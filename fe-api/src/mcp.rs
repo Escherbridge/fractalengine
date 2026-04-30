@@ -2,10 +2,13 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Json};
+use axum::Extension;
 use serde::{Deserialize, Serialize};
 
+use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 
+use crate::auth::{require_role, require_role_and_scope};
 use crate::server::ApiState;
 
 // ---------------------------------------------------------------------------
@@ -53,12 +56,12 @@ fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "get_hierarchy".into(),
-            description: "Get the full verse/fractal/petal/node hierarchy".into(),
+            description: "Get the full verse/fractal/petal/node hierarchy (filtered by token scope)".into(),
             input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         },
         ToolDefinition {
             name: "create_verse".into(),
-            description: "Create a new verse".into(),
+            description: "Create a new verse (requires manager role)".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": { "name": { "type": "string" } },
@@ -66,11 +69,38 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "create_node".into(),
-            description: "Create a new node in a petal".into(),
+            name: "create_fractal".into(),
+            description: "Create a fractal in a verse (requires editor role + verse scope)".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "verse_id": { "type": "string" },
+                    "name": { "type": "string" }
+                },
+                "required": ["verse_id", "name"]
+            }),
+        },
+        ToolDefinition {
+            name: "create_petal".into(),
+            description: "Create a petal in a fractal (requires editor role + fractal scope)".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "verse_id": { "type": "string" },
+                    "fractal_id": { "type": "string" },
+                    "name": { "type": "string" }
+                },
+                "required": ["verse_id", "fractal_id", "name"]
+            }),
+        },
+        ToolDefinition {
+            name: "create_node".into(),
+            description: "Create a new node in a petal (requires editor role + scope)".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "verse_id": { "type": "string", "description": "Parent verse ID (required for scope enforcement)" },
+                    "fractal_id": { "type": "string", "description": "Parent fractal ID (required for scope enforcement)" },
                     "petal_id": { "type": "string" },
                     "name": { "type": "string" },
                     "position": {
@@ -80,12 +110,12 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                         "maxItems": 3
                     }
                 },
-                "required": ["petal_id", "name"]
+                "required": ["verse_id", "fractal_id", "petal_id", "name"]
             }),
         },
         ToolDefinition {
             name: "update_transform".into(),
-            description: "Update a node's position, rotation, and scale".into(),
+            description: "Update a node's position, rotation, and scale (requires editor role)".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -121,10 +151,10 @@ fn tool_definitions() -> Vec<ToolDefinition> {
 
 pub async fn mcp_handler(
     State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
     Json(req): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
     let response = match req.method.as_str() {
-        // MCP initialize handshake
         "initialize" => JsonRpcResponse {
             jsonrpc: "2.0".into(),
             id: req.id,
@@ -141,7 +171,6 @@ pub async fn mcp_handler(
             error: None,
         },
 
-        // List available tools
         "tools/list" => JsonRpcResponse {
             jsonrpc: "2.0".into(),
             id: req.id,
@@ -149,7 +178,6 @@ pub async fn mcp_handler(
             error: None,
         },
 
-        // Invoke a tool
         "tools/call" => {
             let tool_name = req
                 .params
@@ -161,10 +189,9 @@ pub async fn mcp_handler(
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
-            handle_tool_call(&state, req.id, tool_name, arguments).await
+            handle_tool_call(&state, &claims, req.id, tool_name, arguments).await
         }
 
-        // Notifications — acknowledge but return an empty result
         "notifications/initialized" => JsonRpcResponse {
             jsonrpc: "2.0".into(),
             id: req.id,
@@ -192,29 +219,36 @@ pub async fn mcp_handler(
 
 async fn handle_tool_call(
     state: &ApiState,
+    claims: &ApiClaims,
     id: Option<serde_json::Value>,
     tool_name: &str,
     args: serde_json::Value,
 ) -> JsonRpcResponse {
     match tool_name {
         "get_hierarchy" => {
+            if require_role(claims, "viewer").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let _ = state.api_cmd_tx.send(ApiCommand::GetHierarchy { reply_tx });
             match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
                 Ok(Ok(data)) => {
                     let dto: Vec<crate::types::VerseDto> = crate::types::hierarchy_to_dto(&data);
-                    tool_result(id, serde_json::to_value(dto).unwrap_or_default())
+                    // Filter by token scope (same as REST handler)
+                    let filtered = crate::rest::filter_hierarchy_by_scope(dto, &claims.scope);
+                    tool_result(id, serde_json::to_value(filtered).unwrap_or_default())
                 }
                 _ => tool_error(id, "hierarchy request failed"),
             }
         }
 
         "create_verse" => {
-            let name = args
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            if require_role(claims, "manager").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+
+            let name = str_arg(&args, "name");
             if name.is_empty() {
                 return tool_error(id, "name is required");
             }
@@ -224,26 +258,105 @@ async fn handle_tool_call(
                 reply_tx,
             });
             match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-                Ok(Ok(DbResult::VerseCreated {
-                    id: vid,
-                    name: vname,
-                })) => tool_result(id, serde_json::json!({ "id": vid, "name": vname })),
-                Ok(Ok(DbResult::Error(e))) => tool_error(id, &e),
+                Ok(Ok(DbResult::VerseCreated { id: vid, name: vname })) => {
+                    tool_result(id, serde_json::json!({ "id": vid, "name": vname }))
+                }
+                Ok(Ok(DbResult::Error(e))) => {
+                    tracing::error!("create_verse MCP failed: {e}");
+                    tool_error(id, "operation failed")
+                }
                 _ => tool_error(id, "create_verse failed"),
             }
         }
 
+        "create_fractal" => {
+            let verse_id = str_arg(&args, "verse_id");
+            let name = str_arg(&args, "name");
+            if verse_id.is_empty() || name.is_empty() {
+                return tool_error(id, "verse_id and name are required");
+            }
+
+            let scope = fe_database::build_scope(&verse_id, None, None);
+            if require_role_and_scope(claims, "editor", &scope).is_err() {
+                return tool_error(id, "insufficient permissions or scope");
+            }
+
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
+                cmd: DbCommand::CreateFractal { verse_id, name },
+                reply_tx,
+            });
+            match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+                Ok(Ok(DbResult::FractalCreated { id: fid, name: fname, .. })) => {
+                    tool_result(id, serde_json::json!({ "id": fid, "name": fname }))
+                }
+                Ok(Ok(DbResult::Error(e))) => {
+                    tracing::error!("create_fractal MCP failed: {e}");
+                    tool_error(id, "operation failed")
+                }
+                _ => tool_error(id, "create_fractal failed"),
+            }
+        }
+
+        "create_petal" => {
+            let verse_id = str_arg(&args, "verse_id");
+            let fractal_id = str_arg(&args, "fractal_id");
+            let name = str_arg(&args, "name");
+            if fractal_id.is_empty() || name.is_empty() {
+                return tool_error(id, "fractal_id and name are required");
+            }
+
+            if !verse_id.is_empty() {
+                let scope = fe_database::build_scope(&verse_id, Some(&fractal_id), None);
+                if require_role_and_scope(claims, "editor", &scope).is_err() {
+                    return tool_error(id, "insufficient permissions or scope");
+                }
+            } else if require_role(claims, "editor").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
+                cmd: DbCommand::CreatePetal { fractal_id, name },
+                reply_tx,
+            });
+            match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+                Ok(Ok(DbResult::PetalCreated { id: pid, name: pname, .. })) => {
+                    tool_result(id, serde_json::json!({ "id": pid, "name": pname }))
+                }
+                Ok(Ok(DbResult::Error(e))) => {
+                    tracing::error!("create_petal MCP failed: {e}");
+                    tool_error(id, "operation failed")
+                }
+                _ => tool_error(id, "create_petal failed"),
+            }
+        }
+
         "create_node" => {
-            let petal_id = args
-                .get("petal_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let name = args
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let petal_id = str_arg(&args, "petal_id");
+            let name = str_arg(&args, "name");
+            let verse_id = str_arg(&args, "verse_id");
+            let fractal_id = str_arg(&args, "fractal_id");
+
+            if petal_id.is_empty() || name.is_empty() {
+                return tool_error(id, "petal_id and name are required");
+            }
+
+            // Scope enforcement: require hierarchy IDs for proper scope check
+            if !verse_id.is_empty() && !fractal_id.is_empty() {
+                let scope = fe_database::build_scope(&verse_id, Some(&fractal_id), Some(&petal_id));
+                if require_role_and_scope(claims, "editor", &scope).is_err() {
+                    return tool_error(id, "insufficient permissions or scope");
+                }
+            } else {
+                // Fallback: role-only check when hierarchy IDs not provided.
+                // NOTE: This path lacks scope enforcement. Callers should provide
+                // verse_id and fractal_id for proper scope validation.
+                if require_role(claims, "editor").is_err() {
+                    return tool_error(id, "insufficient permissions");
+                }
+            }
+
             let position: [f32; 3] = args
                 .get("position")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -258,22 +371,23 @@ async fn handle_tool_call(
                 reply_tx,
             });
             match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-                Ok(Ok(DbResult::NodeCreated {
-                    id: nid,
-                    name: nname,
-                    ..
-                })) => tool_result(id, serde_json::json!({ "id": nid, "name": nname })),
-                Ok(Ok(DbResult::Error(e))) => tool_error(id, &e),
+                Ok(Ok(DbResult::NodeCreated { id: nid, name: nname, .. })) => {
+                    tool_result(id, serde_json::json!({ "id": nid, "name": nname }))
+                }
+                Ok(Ok(DbResult::Error(e))) => {
+                    tracing::error!("create_node MCP failed: {e}");
+                    tool_error(id, "operation failed")
+                }
                 _ => tool_error(id, "create_node failed"),
             }
         }
 
         "update_transform" => {
-            let node_id = args
-                .get("node_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            if require_role(claims, "editor").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+
+            let node_id = str_arg(&args, "node_id");
             let position: [f32; 3] = args
                 .get("position")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -298,7 +412,6 @@ async fn handle_tool_call(
                 reply_tx,
             });
 
-            // Also fan-out on the real-time broadcast channel
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -312,10 +425,9 @@ async fn handle_tool_call(
                     rotation,
                     scale,
                     timestamp_ms: now,
-                    source_did: String::new(),
+                    source_did: claims.sub.clone(),
                 });
 
-            // Fire-and-forget: don't wait for the DB ack
             drop(reply_rx);
             tool_result(id, serde_json::json!({ "status": "ok" }))
         }
@@ -325,8 +437,15 @@ async fn handle_tool_call(
 }
 
 // ---------------------------------------------------------------------------
-// MCP content helpers
+// Helpers
 // ---------------------------------------------------------------------------
+
+fn str_arg(args: &serde_json::Value, key: &str) -> String {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
 
 fn tool_result(id: Option<serde_json::Value>, content: serde_json::Value) -> JsonRpcResponse {
     JsonRpcResponse {

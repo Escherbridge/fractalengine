@@ -235,3 +235,302 @@ fn test_two_peer_sync_blobs() {
     assert_eq!(bob_row["verse_id"], "sync-verse-001");
     assert_eq!(bob_row["name"], "Sync Test Verse");
 }
+
+// ---------------------------------------------------------------------------
+// API Token tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_api_token_mint_and_verify() {
+    use fe_identity::api_token::{mint_api_token, verify_api_token};
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+    let token = mint_api_token(&kp, "VERSE#v1", "editor", 3600, "jti-test-001").unwrap();
+
+    let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
+    assert_eq!(claims.sub, kp.to_did_key());
+    assert_eq!(claims.token_type, "api");
+    assert_eq!(claims.scope, "VERSE#v1");
+    assert_eq!(claims.max_role, "editor");
+    assert_eq!(claims.jti, "jti-test-001");
+    assert!(claims.exp > claims.iat);
+    assert_eq!(claims.exp - claims.iat, 3600);
+}
+
+#[test]
+fn test_api_token_wrong_key_rejected() {
+    use fe_identity::api_token::{mint_api_token, verify_api_token};
+    use fe_identity::NodeKeypair;
+
+    let alice = NodeKeypair::generate();
+    let bob = NodeKeypair::generate();
+
+    let token = mint_api_token(&alice, "VERSE#v1", "viewer", 3600, "jti-xkey").unwrap();
+
+    // Verify with wrong key fails
+    assert!(verify_api_token(&token, &bob.verifying_key()).is_err());
+    // Verify with correct key succeeds
+    assert!(verify_api_token(&token, &alice.verifying_key()).is_ok());
+}
+
+#[test]
+fn test_api_token_tampered_rejected() {
+    use fe_identity::api_token::{mint_api_token, verify_api_token};
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+    let mut token = mint_api_token(&kp, "VERSE#v1", "editor", 3600, "jti-tamper").unwrap();
+
+    // Flip the last character
+    let last = token.pop().unwrap();
+    token.push(if last == 'a' { 'b' } else { 'a' });
+
+    assert!(verify_api_token(&token, &kp.verifying_key()).is_err());
+}
+
+#[test]
+fn test_api_token_empty_scope_rejected() {
+    use fe_identity::api_token::mint_api_token;
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+    let result = mint_api_token(&kp, "", "viewer", 3600, "jti-empty");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("scope"));
+}
+
+#[test]
+fn test_api_token_excessive_ttl_rejected() {
+    use fe_identity::api_token::{mint_api_token, MAX_API_TOKEN_TTL_SECS};
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+    let result = mint_api_token(&kp, "VERSE#v1", "viewer", MAX_API_TOKEN_TTL_SECS + 1, "jti-ttl");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("30 days"));
+}
+
+#[test]
+fn test_api_token_max_ttl_accepted() {
+    use fe_identity::api_token::{mint_api_token, verify_api_token, MAX_API_TOKEN_TTL_SECS};
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+    let token = mint_api_token(&kp, "VERSE#v1", "viewer", MAX_API_TOKEN_TTL_SECS, "jti-max").unwrap();
+    let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
+    assert_eq!(claims.exp - claims.iat, MAX_API_TOKEN_TTL_SECS);
+}
+
+#[test]
+fn test_api_token_session_token_rejected() {
+    use fe_identity::api_token::verify_api_token;
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+    // Mint a session token (FractalClaims, not ApiClaims)
+    let session = fe_identity::jwt::mint_session_token(&kp, "petal-1", "admin", 300).unwrap();
+
+    // Attempt to verify as API token should fail (wrong token_type)
+    assert!(verify_api_token(&session, &kp.verifying_key()).is_err());
+}
+
+#[test]
+fn test_api_token_multiple_scopes() {
+    use fe_identity::api_token::{mint_api_token, verify_api_token};
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+
+    // Test various scope levels
+    for scope in &["VERSE#v1", "VERSE#v1-FRACTAL#f1", "VERSE#v1-FRACTAL#f1-PETAL#p1"] {
+        let token = mint_api_token(&kp, scope, "viewer", 3600, &format!("jti-{}", scope)).unwrap();
+        let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
+        assert_eq!(claims.scope, *scope);
+    }
+}
+
+#[test]
+fn test_api_token_all_roles() {
+    use fe_identity::api_token::{mint_api_token, verify_api_token};
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+
+    for role in &["viewer", "editor", "manager", "owner"] {
+        let token = mint_api_token(&kp, "VERSE#v1", role, 3600, &format!("jti-{}", role)).unwrap();
+        let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
+        assert_eq!(claims.max_role, *role);
+    }
+}
+
+#[test]
+fn test_api_token_did_key_format() {
+    use fe_identity::api_token::{mint_api_token, verify_api_token};
+    use fe_identity::NodeKeypair;
+
+    let kp = NodeKeypair::generate();
+    let token = mint_api_token(&kp, "VERSE#v1", "viewer", 3600, "jti-did").unwrap();
+    let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
+
+    // sub should be a valid did:key
+    assert!(claims.sub.starts_with("did:key:z6Mk"), "sub should be did:key format, got: {}", claims.sub);
+}
+
+#[tokio::test]
+async fn test_api_token_store_roundtrip() {
+    use fe_database::api_token_store::*;
+
+    // Set up in-memory SurrealDB
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .expect("in-memory SurrealDB");
+    db.use_ns("test").use_db("test").await.expect("ns/db");
+
+    apply_api_token_schema(&db).await.expect("apply schema");
+
+    let record = ApiTokenRecord {
+        jti: "test-jti-001".to_string(),
+        scope: "VERSE#v1".to_string(),
+        max_role: "editor".to_string(),
+        label: Some("Test".to_string()),
+        sub: "did:key:z6MkTest".to_string(),
+        created_at: "2025-01-01T00:00:00Z".to_string(),
+        expires_at: "2025-01-02T00:00:00Z".to_string(),
+        revoked: false,
+    };
+
+    // Store
+    store_api_token(&db, &record).await.expect("store");
+
+    // Check not revoked
+    let revoked = is_token_revoked(&db, "test-jti-001").await.expect("check revoked");
+    assert!(!revoked);
+
+    // List
+    let tokens = list_active_tokens(&db, "did:key:z6MkTest").await.expect("list");
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0].jti, "test-jti-001");
+    assert_eq!(tokens[0].scope, "VERSE#v1");
+
+    // Revoke
+    let did_revoke = revoke_api_token(&db, "test-jti-001").await.expect("revoke");
+    assert!(did_revoke);
+
+    // Check revoked
+    let revoked_after = is_token_revoked(&db, "test-jti-001").await.expect("check revoked after");
+    assert!(revoked_after);
+
+    // List should be empty now (revoked tokens filtered)
+    let tokens_after = list_active_tokens(&db, "did:key:z6MkTest").await.expect("list after");
+    assert!(tokens_after.is_empty());
+}
+
+#[tokio::test]
+async fn test_api_token_store_revoke_nonexistent() {
+    use fe_database::api_token_store::*;
+
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .expect("in-memory SurrealDB");
+    db.use_ns("test").use_db("test").await.expect("ns/db");
+
+    apply_api_token_schema(&db).await.expect("apply schema");
+
+    // Revoking a non-existent token returns false
+    let result = revoke_api_token(&db, "non-existent-jti").await.expect("revoke");
+    assert!(!result);
+}
+
+#[tokio::test]
+async fn test_api_token_store_is_revoked_unknown_token() {
+    use fe_database::api_token_store::*;
+
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .expect("in-memory SurrealDB");
+    db.use_ns("test").use_db("test").await.expect("ns/db");
+
+    apply_api_token_schema(&db).await.expect("apply schema");
+
+    // Unknown token is treated as non-revoked
+    let revoked = is_token_revoked(&db, "totally-unknown").await.expect("check");
+    assert!(!revoked);
+}
+
+#[tokio::test]
+async fn test_api_token_store_list_wrong_sub() {
+    use fe_database::api_token_store::*;
+
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .expect("in-memory SurrealDB");
+    db.use_ns("test").use_db("test").await.expect("ns/db");
+
+    apply_api_token_schema(&db).await.expect("apply schema");
+
+    let record = ApiTokenRecord {
+        jti: "isolation-jti".to_string(),
+        scope: "VERSE#v1".to_string(),
+        max_role: "viewer".to_string(),
+        label: None,
+        sub: "did:key:z6MkAlice".to_string(),
+        created_at: "2025-01-01T00:00:00Z".to_string(),
+        expires_at: "2025-01-02T00:00:00Z".to_string(),
+        revoked: false,
+    };
+    store_api_token(&db, &record).await.expect("store");
+
+    // Listing with a different sub should return empty
+    let tokens = list_active_tokens(&db, "did:key:z6MkBob").await.expect("list");
+    assert!(tokens.is_empty(), "Bob should not see Alice's tokens");
+
+    // Listing with correct sub should return the token
+    let alice_tokens = list_active_tokens(&db, "did:key:z6MkAlice").await.expect("list");
+    assert_eq!(alice_tokens.len(), 1);
+}
+
+#[tokio::test]
+async fn test_api_token_store_multiple_tokens() {
+    use fe_database::api_token_store::*;
+
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .expect("in-memory SurrealDB");
+    db.use_ns("test").use_db("test").await.expect("ns/db");
+
+    apply_api_token_schema(&db).await.expect("apply schema");
+
+    // Create 5 tokens
+    for i in 0..5 {
+        let record = ApiTokenRecord {
+            jti: format!("multi-jti-{}", i),
+            scope: format!("VERSE#v{}", i),
+            max_role: "viewer".to_string(),
+            label: None,
+            sub: "did:key:z6MkMulti".to_string(),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            expires_at: "2025-01-02T00:00:00Z".to_string(),
+            revoked: false,
+        };
+        store_api_token(&db, &record).await.expect("store");
+    }
+
+    let tokens = list_active_tokens(&db, "did:key:z6MkMulti").await.expect("list");
+    assert_eq!(tokens.len(), 5);
+
+    // Revoke 2 of them
+    revoke_api_token(&db, "multi-jti-1").await.expect("revoke 1");
+    revoke_api_token(&db, "multi-jti-3").await.expect("revoke 3");
+
+    let tokens_after = list_active_tokens(&db, "did:key:z6MkMulti").await.expect("list after");
+    assert_eq!(tokens_after.len(), 3);
+
+    // Verify the right ones remain
+    let remaining_jtis: Vec<&str> = tokens_after.iter().map(|t| t.jti.as_str()).collect();
+    assert!(remaining_jtis.contains(&"multi-jti-0"));
+    assert!(!remaining_jtis.contains(&"multi-jti-1"));
+    assert!(remaining_jtis.contains(&"multi-jti-2"));
+    assert!(!remaining_jtis.contains(&"multi-jti-3"));
+    assert!(remaining_jtis.contains(&"multi-jti-4"));
+}

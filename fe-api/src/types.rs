@@ -10,8 +10,20 @@ pub struct CreateVerseRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateFractalRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreatePetalRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CreateNodeRequest {
-    pub petal_id: String,
+    /// petal_id is optional in the body when using the hierarchical path
+    /// (where it comes from the URL). Required for the legacy `/api/v1/nodes` path.
+    pub petal_id: Option<String>,
     pub name: String,
     pub position: Option<[f32; 3]>,
 }
@@ -145,4 +157,24 @@ pub fn node_to_dto(node: &fe_runtime::messages::NodeHierarchyData) -> NodeDto {
         asset_path: node.asset_path.clone(),
         webpage_url: node.webpage_url.clone(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+/// Validate that a string looks like a ULID (26 alphanumeric Crockford base32 chars).
+pub fn is_valid_ulid(s: &str) -> bool {
+    s.len() == 26 && s.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Validate a scope string matches the expected pattern.
+pub fn is_valid_scope(s: &str) -> bool {
+    // Must start with VERSE# and optionally have -FRACTAL# and -PETAL# segments
+    fe_database::parse_scope(s).is_ok()
+}
+
+/// Validate a role string is one of the known values.
+pub fn is_valid_role(s: &str) -> bool {
+    matches!(s, "viewer" | "editor" | "manager" | "owner" | "none")
 }

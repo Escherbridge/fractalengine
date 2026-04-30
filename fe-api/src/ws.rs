@@ -6,7 +6,8 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 
-use fe_runtime::messages::TransformUpdate;
+use fe_identity::api_token::ApiClaims;
+use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
 
 use crate::server::ApiState;
 
@@ -73,7 +74,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
     send_msg(&mut socket, &WsServerMsg::AuthRequired {}).await;
 
     // 2. Wait for auth message (5-second timeout)
-    let authenticated = match tokio::time::timeout(
+    let auth_claims: Option<ApiClaims> = match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         recv_msg(&mut socket),
     )
@@ -88,10 +89,34 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                     },
                 )
                 .await;
-                false
+                None
             } else {
-                send_msg(&mut socket, &WsServerMsg::AuthOk {}).await;
-                true
+                match fe_identity::api_token::verify_api_token(
+                    &access_token,
+                    &state.verifying_key,
+                ) {
+                    Ok(claims) => {
+                        tracing::info!(
+                            "WS authenticated: sub={} scope={} role={}",
+                            claims.sub,
+                            claims.scope,
+                            claims.max_role
+                        );
+                        send_msg(&mut socket, &WsServerMsg::AuthOk {}).await;
+                        Some(claims)
+                    }
+                    Err(e) => {
+                        tracing::warn!("WS auth failed: {e}");
+                        send_msg(
+                            &mut socket,
+                            &WsServerMsg::AuthInvalid {
+                                message: "invalid token".into(),
+                            },
+                        )
+                        .await;
+                        None
+                    }
+                }
             }
         }
         _ => {
@@ -102,13 +127,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                 },
             )
             .await;
-            false
+            None
         }
     };
 
-    if !authenticated {
+    let Some(claims) = auth_claims else {
         return;
-    }
+    };
 
     // 3. Enter command loop.
     //
@@ -123,6 +148,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
             msg = recv_msg(&mut socket) => {
                 match msg {
                     Some(WsClientMsg::Subscribe { channel, petal_id }) => {
+                        // Resolve petal scope and enforce against token scope
+                        if let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await {
+                            if !fe_database::scope_contains(&claims.scope, &scope) {
+                                send_msg(&mut socket, &WsServerMsg::Error {
+                                    code: "forbidden".into(),
+                                    message: "subscription outside token scope".into(),
+                                }).await;
+                                continue;
+                            }
+                        }
                         subscribed_petals.insert(petal_id.clone());
                         let resp = WsServerMsg::Subscribed { channel, petal_id };
                         send_msg(&mut socket, &resp).await;
@@ -146,6 +181,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         rotation,
                         scale,
                     }) => {
+                        // Enforce editor role — viewers cannot push transforms.
+                        let role = fe_database::RoleLevel::from(claims.max_role.as_str());
+                        if !role.can_edit() {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "forbidden".into(),
+                                message: "editor role required for transform updates".into(),
+                            }).await;
+                            continue;
+                        }
                         let now = unix_now_ms();
                         let _ = state.transform_broadcast_tx.send(TransformUpdate {
                             node_id,
@@ -154,7 +198,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             rotation,
                             scale,
                             timestamp_ms: now,
-                            source_did: String::new(),
+                            source_did: claims.sub.clone(),
                         });
                     }
                     Some(WsClientMsg::Auth { .. }) => {
@@ -167,8 +211,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
             // Outbound transform broadcasts
             update = transform_rx.recv() => {
                 match update {
-                    Ok(tu) if subscribed_petals.is_empty()
-                        || subscribed_petals.contains(&tu.petal_id) =>
+                    Ok(tu) if !subscribed_petals.is_empty()
+                        && subscribed_petals.contains(&tu.petal_id) =>
                     {
                         let msg = WsServerMsg::TransformUpdate {
                             node_id: tu.node_id,
@@ -214,6 +258,19 @@ async fn recv_msg(socket: &mut WebSocket) -> Option<WsClientMsg> {
             Ok(_) => continue, // ping/pong/binary — skip
             Err(_) => return None,
         }
+    }
+}
+
+/// Resolve a petal_id to its full scope string via the API command channel.
+async fn resolve_petal_scope_ws(state: &ApiState, petal_id: &str) -> Option<String> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    state.api_cmd_tx.send(ApiCommand::DbRequest {
+        cmd: DbCommand::ResolvePetalScope { petal_id: petal_id.to_string() },
+        reply_tx,
+    }).ok()?;
+    match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
+        Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
+        _ => None,
     }
 }
 

@@ -67,6 +67,14 @@ fn main() {
             "Two-Peer Sync Pipeline",
             scenarios::two_peer_sync_pipeline::run,
         ),
+        (
+            "API Token Flow",
+            scenarios::api_token_flow::run,
+        ),
+        (
+            "API Token Edge Cases",
+            scenarios::api_token_flow::run_edge_cases,
+        ),
     ];
 
     let mut passed = 0;

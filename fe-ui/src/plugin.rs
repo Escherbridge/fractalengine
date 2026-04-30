@@ -68,6 +68,10 @@ pub enum ActiveDialog {
         entity_type: EntitySettingsType,
         entity_id: String,
         entity_name: String,
+        /// Parent verse ID (always set; needed for correct scope strings).
+        parent_verse_id: String,
+        /// Parent fractal ID (set when entity is a Petal).
+        parent_fractal_id: Option<String>,
         active_tab: SettingsTab,
         // General tab state
         name_buf: String,
@@ -81,6 +85,16 @@ pub enum ActiveDialog {
         generated_invite_link: Option<String>,
         // Confirmation state
         pending_delete: bool,
+        // API Access tab state
+        api_tokens: Vec<ApiTokenEntry>,
+        api_tokens_loading: bool,
+        api_token_scope_buf: String,
+        api_token_role_buf: String,
+        api_token_expiry_buf: u32,
+        generated_api_token: Option<String>,
+        /// Tokens scoped to this entity's scope tree (admin view).
+        scoped_api_tokens: Vec<ApiTokenEntry>,
+        scoped_tokens_loading: bool,
     },
 }
 
@@ -243,6 +257,7 @@ pub enum EntitySettingsType {
 pub enum SettingsTab {
     General,
     Access,
+    ApiAccess,
 }
 
 /// A peer's resolved role at a specific scope, for display in the Access tab.
@@ -252,6 +267,18 @@ pub struct PeerRoleEntry {
     pub display_name: String,
     pub role: String,
     pub is_online: bool,
+}
+
+/// An API token record for display in the API Access tab.
+#[derive(Debug, Clone)]
+pub struct ApiTokenEntry {
+    pub jti: String,
+    pub scope: String,
+    pub max_role: String,
+    pub label: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+    pub revoked: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +434,8 @@ mod tests {
             entity_type: EntitySettingsType::Verse,
             entity_id: "v1".to_string(),
             entity_name: "Test Verse".to_string(),
+            parent_verse_id: "v1".to_string(),
+            parent_fractal_id: None,
             active_tab: SettingsTab::General,
             name_buf: "Test Verse".to_string(),
             default_access_buf: Some("viewer".to_string()),
@@ -417,6 +446,14 @@ mod tests {
             invite_expiry_buf: 24,
             generated_invite_link: None,
             pending_delete: false,
+            api_tokens: vec![],
+            api_tokens_loading: false,
+            api_token_scope_buf: String::new(),
+            api_token_role_buf: "viewer".to_string(),
+            api_token_expiry_buf: 24,
+            generated_api_token: None,
+            scoped_api_tokens: vec![],
+            scoped_tokens_loading: false,
         });
         assert!(mgr.any_dialog_open());
         assert!(matches!(mgr.active_dialog, ActiveDialog::EntitySettings { .. }));

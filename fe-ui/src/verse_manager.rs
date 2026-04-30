@@ -10,7 +10,7 @@
 //! tree when `NavigationManager::active_petal_id` changes.
 
 use bevy::prelude::*;
-use fe_runtime::messages::{DbCommand, DbResult};
+use fe_runtime::messages::{DbCommand, DbResult, EntityType};
 
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{ActiveDialog, SpawnedNodeMarker, UiManager, UiSet};
@@ -161,6 +161,7 @@ fn apply_db_results(
     asset_server: Res<AssetServer>,
     mut ui_mgr: ResMut<UiManager>,
     mut local_role: ResMut<crate::plugin::LocalUserRole>,
+    revocation_tx: Option<Res<fe_runtime::app::RevocationBroadcastSender>>,
 ) {
     for result in reader.read() {
         match result {
@@ -339,8 +340,8 @@ fn apply_db_results(
             }
 
             DbResult::EntityRenamed { entity_type, entity_id, new_name } => {
-                match entity_type.as_str() {
-                    "verse" => {
+                match entity_type {
+                    EntityType::Verse => {
                         if let Some(v) = verse_mgr.verses.iter_mut().find(|v| v.id == *entity_id) {
                             v.name = new_name.clone();
                         }
@@ -348,7 +349,7 @@ fn apply_db_results(
                             nav.active_verse_name = new_name.clone();
                         }
                     }
-                    "fractal" => {
+                    EntityType::Fractal => {
                         for v in verse_mgr.verses.iter_mut() {
                             if let Some(f) = v.fractals.iter_mut().find(|f| f.id == *entity_id) {
                                 f.name = new_name.clone();
@@ -358,7 +359,7 @@ fn apply_db_results(
                             nav.active_fractal_name = new_name.clone();
                         }
                     }
-                    "petal" => {
+                    EntityType::Petal => {
                         for v in verse_mgr.verses.iter_mut() {
                             for f in v.fractals.iter_mut() {
                                 if let Some(p) = f.petals.iter_mut().find(|p| p.id == *entity_id) {
@@ -367,7 +368,6 @@ fn apply_db_results(
                             }
                         }
                     }
-                    _ => {}
                 }
                 bevy::log::info!("Renamed {} {} to '{}'", entity_type, entity_id, new_name);
             }
@@ -381,14 +381,14 @@ fn apply_db_results(
             }
 
             DbResult::EntityDeleted { entity_type, entity_id } => {
-                match entity_type.as_str() {
-                    "verse" => {
+                match entity_type {
+                    EntityType::Verse => {
                         verse_mgr.verses.retain(|v| v.id != *entity_id);
                         if nav.active_verse_id.as_deref() == Some(entity_id.as_str()) {
                             nav.back_from_verse();
                         }
                     }
-                    "fractal" => {
+                    EntityType::Fractal => {
                         for v in verse_mgr.verses.iter_mut() {
                             v.fractals.retain(|f| f.id != *entity_id);
                         }
@@ -396,7 +396,7 @@ fn apply_db_results(
                             nav.back_from_fractal();
                         }
                     }
-                    "petal" => {
+                    EntityType::Petal => {
                         for v in verse_mgr.verses.iter_mut() {
                             for f in v.fractals.iter_mut() {
                                 f.petals.retain(|p| p.id != *entity_id);
@@ -406,7 +406,6 @@ fn apply_db_results(
                             nav.back_from_petal();
                         }
                     }
-                    _ => {}
                 }
                 ui_mgr.close_dialog();
                 bevy::log::info!("Deleted {} {}", entity_type, entity_id);
@@ -456,6 +455,55 @@ fn apply_db_results(
                 let level = fe_database::RoleLevel::from(role.as_str());
                 bevy::log::info!("Local role resolved at {}: {} ({:?})", scope, role, level);
                 local_role.role = Some(level);
+            }
+
+            DbResult::ApiTokenMinted { token, jti, scope, max_role, expires_at, label } => {
+                if let ActiveDialog::EntitySettings { ref mut generated_api_token, .. } = ui_mgr.active_dialog {
+                    *generated_api_token = Some(token.clone());
+                }
+                bevy::log::info!("API token minted: jti={} scope={} role={}", jti, scope, max_role);
+                // Refresh the token list
+                db_sender.0.send(DbCommand::ListApiTokens).ok();
+            }
+
+            DbResult::ApiTokenRevoked { jti } => {
+                bevy::log::info!("API token revoked: jti={}", jti);
+                // Notify API thread to update its revocation cache
+                if let Some(ref tx) = revocation_tx {
+                    tx.0.send(jti.clone()).ok();
+                }
+                // Refresh the token list
+                db_sender.0.send(DbCommand::ListApiTokens).ok();
+            }
+
+            DbResult::ApiTokensListed { tokens } => {
+                if let ActiveDialog::EntitySettings { ref mut api_tokens, ref mut api_tokens_loading, .. } = ui_mgr.active_dialog {
+                    *api_tokens = tokens.iter().map(|t| crate::plugin::ApiTokenEntry {
+                        jti: t.jti.clone(),
+                        scope: t.scope.clone(),
+                        max_role: t.max_role.clone(),
+                        label: t.label.clone(),
+                        created_at: t.created_at.clone(),
+                        expires_at: t.expires_at.clone(),
+                        revoked: t.revoked,
+                    }).collect();
+                    *api_tokens_loading = false;
+                }
+            }
+
+            DbResult::ScopedApiTokensListed { tokens } => {
+                if let ActiveDialog::EntitySettings { ref mut scoped_api_tokens, ref mut scoped_tokens_loading, .. } = ui_mgr.active_dialog {
+                    *scoped_api_tokens = tokens.iter().map(|t| crate::plugin::ApiTokenEntry {
+                        jti: t.jti.clone(),
+                        scope: t.scope.clone(),
+                        max_role: t.max_role.clone(),
+                        label: t.label.clone(),
+                        created_at: t.created_at.clone(),
+                        expires_at: t.expires_at.clone(),
+                        revoked: t.revoked,
+                    }).collect();
+                    *scoped_tokens_loading = false;
+                }
             }
 
             _ => {}

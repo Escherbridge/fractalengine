@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use crossbeam::channel::{Receiver, Sender};
 use fe_database::BlobStoreHandle;
 use fe_identity::NodeKeypair;
-use fe_runtime::messages::{DbCommand, DbResult};
+use fe_runtime::messages::{ApiTokenInfo, DbCommand, DbResult};
 use fe_sync::messages::{SyncCommand, SyncEvent};
 use fe_sync::{FsBlobStore, SyncCommandSender, SyncEventReceiver};
 
@@ -108,6 +108,10 @@ impl TestPeer {
                 fe_database::rbac::apply_schema(&db)
                     .await
                     .expect("Schema application failed");
+
+                fe_database::api_token_store::apply_api_token_schema(&db)
+                    .await
+                    .expect("API token schema");
 
                 tracing::info!("Peer DB ready (in-memory)");
                 db_result_tx.send(DbResult::Started).ok();
@@ -353,6 +357,151 @@ impl TestPeer {
                         | Ok(DbCommand::GenerateScopedInvite { .. })
                         | Ok(DbCommand::ResolveLocalRole { .. }) => {
                             // Entity settings commands — not implemented in test harness.
+                        }
+                        Ok(DbCommand::MintApiToken {
+                            scope,
+                            max_role,
+                            ttl_hours,
+                            label,
+                        }) => {
+                            let jti = ulid::Ulid::new().to_string();
+                            let ttl_secs = (ttl_hours as u64) * 3600;
+                            match fe_identity::api_token::mint_api_token(
+                                &invite_keypair,
+                                &scope,
+                                &max_role,
+                                ttl_secs,
+                                &jti,
+                            ) {
+                                Ok(token) => {
+                                    let now_ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs();
+                                    let created_at = chrono::DateTime::from_timestamp(
+                                        now_ts as i64,
+                                        0,
+                                    )
+                                    .unwrap_or_default()
+                                    .to_rfc3339();
+                                    let expires_at = chrono::DateTime::from_timestamp(
+                                        (now_ts + ttl_secs) as i64,
+                                        0,
+                                    )
+                                    .unwrap_or_default()
+                                    .to_rfc3339();
+
+                                    let record =
+                                        fe_database::api_token_store::ApiTokenRecord {
+                                            jti: jti.clone(),
+                                            scope: scope.clone(),
+                                            max_role: max_role.clone(),
+                                            label: label.clone(),
+                                            sub: db_local_did.clone(),
+                                            created_at: created_at.clone(),
+                                            expires_at: expires_at.clone(),
+                                            revoked: false,
+                                        };
+                                    match fe_database::api_token_store::store_api_token(
+                                        &db, &record,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {
+                                            db_result_tx
+                                                .send(DbResult::ApiTokenMinted {
+                                                    token,
+                                                    jti,
+                                                    scope,
+                                                    max_role,
+                                                    expires_at,
+                                                    label,
+                                                })
+                                                .ok();
+                                        }
+                                        Err(e) => {
+                                            db_result_tx
+                                                .send(DbResult::Error(format!(
+                                                    "Store API token failed: {e}"
+                                                )))
+                                                .ok();
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    db_result_tx
+                                        .send(DbResult::Error(format!(
+                                            "Mint API token failed: {e}"
+                                        )))
+                                        .ok();
+                                }
+                            }
+                        }
+                        Ok(DbCommand::RevokeApiToken { jti }) => {
+                            match fe_database::api_token_store::revoke_api_token(&db, &jti)
+                                .await
+                            {
+                                Ok(true) => {
+                                    db_result_tx
+                                        .send(DbResult::ApiTokenRevoked { jti })
+                                        .ok();
+                                }
+                                Ok(false) => {
+                                    db_result_tx
+                                        .send(DbResult::Error(format!(
+                                            "API token not found: {jti}"
+                                        )))
+                                        .ok();
+                                }
+                                Err(e) => {
+                                    db_result_tx
+                                        .send(DbResult::Error(format!(
+                                            "Revoke API token failed: {e}"
+                                        )))
+                                        .ok();
+                                }
+                            }
+                        }
+                        Ok(DbCommand::ListApiTokens) => {
+                            match fe_database::api_token_store::list_active_tokens(
+                                &db,
+                                &db_local_did,
+                            )
+                            .await
+                            {
+                                Ok(records) => {
+                                    let tokens: Vec<ApiTokenInfo> = records
+                                        .into_iter()
+                                        .map(|r| ApiTokenInfo {
+                                            jti: r.jti,
+                                            scope: r.scope,
+                                            max_role: r.max_role,
+                                            label: r.label,
+                                            created_at: r.created_at,
+                                            expires_at: r.expires_at,
+                                            revoked: r.revoked,
+                                        })
+                                        .collect();
+                                    db_result_tx
+                                        .send(DbResult::ApiTokensListed { tokens })
+                                        .ok();
+                                }
+                                Err(e) => {
+                                    db_result_tx
+                                        .send(DbResult::Error(format!(
+                                            "List API tokens failed: {e}"
+                                        )))
+                                        .ok();
+                                }
+                            }
+                        }
+                        Ok(DbCommand::ListApiTokensByScope { .. }) => {
+                            // Not implemented in test harness
+                            db_result_tx.send(DbResult::ScopedApiTokensListed { tokens: vec![] }).ok();
+                        }
+                        Ok(DbCommand::ResolvePetalScope { .. })
+                        | Ok(DbCommand::ResolveNodeScope { .. }) => {
+                            // Scope resolution — not implemented in test harness.
                         }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }

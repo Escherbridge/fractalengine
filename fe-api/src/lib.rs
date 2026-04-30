@@ -15,6 +15,9 @@ pub struct ApiConfig {
     pub api_cmd_tx: crossbeam::channel::Sender<fe_runtime::messages::ApiCommand>,
     pub transform_broadcast_tx:
         tokio::sync::broadcast::Sender<fe_runtime::messages::TransformUpdate>,
+    pub verifying_key: ed25519_dalek::VerifyingKey,
+    /// Receiver for revoked token JTI notifications.
+    pub revocation_rx: tokio::sync::broadcast::Receiver<String>,
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
@@ -32,9 +35,31 @@ pub fn spawn_api_thread(config: ApiConfig) -> std::thread::JoinHandle<()> {
 }
 
 async fn run_server(config: ApiConfig) {
+    let revoked_jtis = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
+
     let state = Arc::new(ApiState {
         api_cmd_tx: config.api_cmd_tx,
         transform_broadcast_tx: config.transform_broadcast_tx,
+        verifying_key: config.verifying_key,
+        revoked_jtis: revoked_jtis.clone(),
+    });
+
+    // Background task: listen for revocation notifications from Bevy thread
+    let revoked_cache = revoked_jtis.clone();
+    let mut revocation_rx = config.revocation_rx;
+    tokio::spawn(async move {
+        loop {
+            match revocation_rx.recv().await {
+                Ok(jti) => {
+                    revoked_cache.write().await.insert(jti);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("Revocation listener lagged by {n} messages");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+        tracing::info!("Revocation listener shut down");
     });
 
     let router = server::build_router(state);
