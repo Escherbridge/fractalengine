@@ -36,6 +36,7 @@ fn main() {
     };
     let iroh_secret = node_kp.to_iroh_secret();
     let local_did = node_kp.to_did_key();
+    let api_verifying_key = node_kp.verifying_key();
 
     // Phase F: create a second keypair from the same seed for the DB thread.
     // NodeKeypair is not Clone, so we recreate from the same seed bytes.
@@ -128,13 +129,18 @@ fn main() {
     let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(256);
     let (transform_broadcast_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
+    // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
+    let (revocation_tx, revocation_rx) = tokio::sync::broadcast::channel::<String>(64);
 
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
         bind_addr: "127.0.0.1:8765".to_string(),
         api_cmd_tx: api_cmd_tx.clone(),
         transform_broadcast_tx: transform_broadcast_tx.clone(),
+        verifying_key: api_verifying_key,
+        revocation_rx,
     });
 
+    app.insert_resource(fe_runtime::app::RevocationBroadcastSender(revocation_tx));
     app.insert_resource(ApiCommandReceiver(Arc::new(Mutex::new(api_cmd_rx))));
     app.insert_resource(ApiCommandSender(api_cmd_tx));
     app.insert_resource(TransformBroadcastSender(transform_broadcast_tx));

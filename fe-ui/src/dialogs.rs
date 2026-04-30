@@ -4,7 +4,26 @@ use crate::navigation_manager::NavigationManager;
 use crate::plugin::{ActiveDialog, CreateKind, EntitySettingsType, SettingsTab, UiManager};
 use crate::theme;
 use crate::verse_manager::VerseManager;
-use fe_runtime::messages::DbCommand;
+use fe_runtime::messages::{DbCommand, EntityType};
+
+/// Build a hierarchical scope string from entity settings dialog context.
+fn build_entity_scope(
+    entity_type: &EntitySettingsType,
+    entity_id: &str,
+    parent_verse_id: &str,
+    parent_fractal_id: &Option<String>,
+) -> String {
+    match entity_type {
+        EntitySettingsType::Verse => fe_database::build_scope(entity_id, None, None),
+        EntitySettingsType::Fractal => {
+            fe_database::build_scope(parent_verse_id, Some(entity_id), None)
+        }
+        EntitySettingsType::Petal => {
+            let fid = parent_fractal_id.as_deref().unwrap_or("");
+            fe_database::build_scope(parent_verse_id, Some(fid), Some(entity_id))
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Context menu (viewport right-click)
@@ -570,6 +589,8 @@ pub fn render_entity_settings_dialog(
         ref entity_type,
         ref entity_id,
         ref entity_name,
+        ref parent_verse_id,
+        ref parent_fractal_id,
         ref mut active_tab,
         ref mut name_buf,
         ref mut default_access_buf,
@@ -580,6 +601,14 @@ pub fn render_entity_settings_dialog(
         ref mut invite_expiry_buf,
         ref mut generated_invite_link,
         ref mut pending_delete,
+        ref mut api_tokens,
+        ref mut api_tokens_loading,
+        ref mut api_token_scope_buf,
+        ref mut api_token_role_buf,
+        ref mut api_token_expiry_buf,
+        ref mut generated_api_token,
+        ref mut scoped_api_tokens,
+        ref mut scoped_tokens_loading,
     } = ui_mgr.active_dialog
     else {
         return;
@@ -640,6 +669,22 @@ pub fn render_entity_settings_dialog(
                 {
                     *active_tab = SettingsTab::Access;
                 }
+
+                let api_fill = if current_tab == SettingsTab::ApiAccess {
+                    theme::BG_TAB_ACTIVE
+                } else {
+                    theme::BG_TAB_INACTIVE
+                };
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new("API").color(theme::TEXT_BRIGHT),
+                    ).fill(api_fill))
+                    .clicked()
+                {
+                    *active_tab = SettingsTab::ApiAccess;
+                    // Request token list when switching to API tab
+                    db_tx.send(DbCommand::ListApiTokens).ok();
+                }
             });
 
             ui.add_space(12.0);
@@ -661,12 +706,12 @@ pub fn render_entity_settings_dialog(
                             let new_name = name_buf.trim().to_string();
                             if !new_name.is_empty() {
                                 let etype = match entity_type {
-                                    EntitySettingsType::Verse => "verse",
-                                    EntitySettingsType::Fractal => "fractal",
-                                    EntitySettingsType::Petal => "petal",
+                                    EntitySettingsType::Verse => EntityType::Verse,
+                                    EntitySettingsType::Fractal => EntityType::Fractal,
+                                    EntitySettingsType::Petal => EntityType::Petal,
                                 };
                                 db_tx.send(DbCommand::RenameEntity {
-                                    entity_type: etype.to_string(),
+                                    entity_type: etype,
                                     entity_id: entity_id.clone(),
                                     new_name,
                                 }).ok();
@@ -735,12 +780,12 @@ pub fn render_entity_settings_dialog(
                                 egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
                             ).fill(theme::BG_DANGER)).clicked() {
                                 let etype = match entity_type {
-                                    EntitySettingsType::Verse => "verse",
-                                    EntitySettingsType::Fractal => "fractal",
-                                    EntitySettingsType::Petal => "petal",
+                                    EntitySettingsType::Verse => EntityType::Verse,
+                                    EntitySettingsType::Fractal => EntityType::Fractal,
+                                    EntitySettingsType::Petal => EntityType::Petal,
                                 };
                                 db_tx.send(DbCommand::DeleteEntity {
-                                    entity_type: etype.to_string(),
+                                    entity_type: etype,
                                     entity_id: entity_id.clone(),
                                 }).ok();
                                 close = true;
@@ -839,9 +884,7 @@ pub fn render_entity_settings_dialog(
                                 EntitySettingsType::Fractal => "fractal",
                                 EntitySettingsType::Petal => "petal",
                             };
-                            // Build scope from entity_type + entity_id
-                            // For now, use a simple scope. The full scope building needs nav context.
-                            let scope = format!("VERSE#{}", entity_id);
+                            let scope = build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
                             db_tx.send(DbCommand::GenerateScopedInvite {
                                 scope,
                                 role: invite_role_buf.clone(),
@@ -869,6 +912,219 @@ pub fn render_entity_settings_dialog(
                                     ui.ctx().copy_text(link.clone());
                                 }
                             });
+                    }
+                }
+                SettingsTab::ApiAccess => {
+                    ui.label(egui::RichText::new("API Access Tokens").color(theme::TEXT_SECTION).strong());
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(
+                        "Generate tokens for external API, MCP, and IoT access to this entity."
+                    ).small().color(theme::TEXT_MUTED).italics());
+                    ui.add_space(8.0);
+
+                    // --- Server info ---
+                    ui.label(egui::RichText::new("API Server").color(theme::TEXT_SECTION).strong());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Endpoint:").small().color(theme::TEXT_DIM));
+                        ui.label(egui::RichText::new("http://127.0.0.1:8765").monospace().small());
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("MCP:").small().color(theme::TEXT_DIM));
+                        ui.label(egui::RichText::new("POST /mcp").monospace().small());
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("WebSocket:").small().color(theme::TEXT_DIM));
+                        ui.label(egui::RichText::new("GET /ws").monospace().small());
+                    });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    // --- Generate new token ---
+                    ui.label(egui::RichText::new("Generate New Token").color(theme::TEXT_SECTION).strong());
+                    ui.add_space(4.0);
+
+                    // Auto-fill scope from entity using correct hierarchy
+                    if api_token_scope_buf.is_empty() {
+                        *api_token_scope_buf = build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
+                    }
+
+                    // Auto-load scoped tokens for admin dashboard on first render
+                    if scoped_api_tokens.is_empty() && !*scoped_tokens_loading {
+                        *scoped_tokens_loading = true;
+                        let scope_prefix = build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
+                        db_tx.send(DbCommand::ListApiTokensByScope { scope_prefix }).ok();
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.label("Scope:");
+                        ui.add(
+                            egui::TextEdit::singleline(api_token_scope_buf)
+                                .desired_width(200.0)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Max Role:");
+                        egui::ComboBox::from_id_salt("api_token_role")
+                            .selected_text(api_token_role_buf.as_str())
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(api_token_role_buf, "viewer".to_string(), "Viewer");
+                                ui.selectable_value(api_token_role_buf, "editor".to_string(), "Editor");
+                                ui.selectable_value(api_token_role_buf, "manager".to_string(), "Manager");
+                            });
+
+                        ui.label("Expires:");
+                        egui::ComboBox::from_id_salt("api_token_expiry")
+                            .selected_text(match *api_token_expiry_buf {
+                                1 => "1 hour",
+                                24 => "24 hours",
+                                168 => "7 days",
+                                720 => "30 days",
+                                _ => "24 hours",
+                            })
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(api_token_expiry_buf, 1, "1 hour");
+                                ui.selectable_value(api_token_expiry_buf, 24, "24 hours");
+                                ui.selectable_value(api_token_expiry_buf, 168, "7 days");
+                                ui.selectable_value(api_token_expiry_buf, 720, "30 days");
+                            });
+                    });
+
+                    ui.add_space(4.0);
+                    if ui.add(egui::Button::new("Generate API Token").fill(theme::BG_SAVE)).clicked() {
+                        db_tx.send(DbCommand::MintApiToken {
+                            scope: api_token_scope_buf.clone(),
+                            max_role: api_token_role_buf.clone(),
+                            ttl_hours: *api_token_expiry_buf,
+                            label: None,
+                        }).ok();
+                    }
+
+                    // Show generated token
+                    if let Some(ref token) = generated_api_token {
+                        ui.add_space(8.0);
+                        egui::Frame::NONE
+                            .fill(theme::BG_INVITE_LINK)
+                            .inner_margin(egui::Margin::same(8))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Token (copy now — shown only once):").small().color(theme::STATUS_OFFLINE).strong());
+                                let mut token_display = token.clone();
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut token_display)
+                                        .desired_rows(3)
+                                        .desired_width(f32::INFINITY)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                                if ui.button("Copy to Clipboard").clicked() {
+                                    ui.ctx().copy_text(token.clone());
+                                }
+                            });
+                    }
+
+                    // --- Active tokens list ---
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Active Tokens").color(theme::TEXT_SECTION).strong());
+                    ui.add_space(4.0);
+
+                    if *api_tokens_loading {
+                        ui.label(egui::RichText::new("Loading tokens...").color(theme::TEXT_MUTED).italics());
+                    } else if api_tokens.is_empty() {
+                        ui.label(egui::RichText::new("No active API tokens.").color(theme::TEXT_MUTED).italics());
+                    } else {
+                        let mut revoke_jti: Option<String> = None;
+                        for (i, tok) in api_tokens.iter().enumerate() {
+                            let row_bg = if i % 2 == 0 { theme::BG_PEER_ROW_EVEN } else { theme::BG_PEER_ROW_ODD };
+                            egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let role_color = match tok.max_role.as_str() {
+                                        "manager" => theme::TEXT_ROLE_MANAGER,
+                                        "editor" => theme::TEXT_ROLE_EDITOR,
+                                        _ => theme::TEXT_ROLE_VIEWER,
+                                    };
+                                    ui.label(egui::RichText::new(&tok.max_role).color(role_color).strong());
+                                    ui.label(egui::RichText::new(&tok.scope).monospace().small().color(theme::TEXT_DIM));
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).clicked() {
+                                            revoke_jti = Some(tok.jti.clone());
+                                        }
+                                        ui.label(egui::RichText::new(format!("exp: {}", &tok.expires_at[..10.min(tok.expires_at.len())])).small().color(theme::TEXT_MUTED));
+                                    });
+                                });
+                            });
+                        }
+                        if let Some(jti) = revoke_jti {
+                            db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
+                            // Request refresh
+                            db_tx.send(DbCommand::ListApiTokens).ok();
+                        }
+                    }
+
+                    // --- Admin: All tokens scoped to this entity ---
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    let scope_label = match entity_type {
+                        EntitySettingsType::Verse => "Verse",
+                        EntitySettingsType::Fractal => "Fractal",
+                        EntitySettingsType::Petal => "Petal",
+                    };
+                    ui.label(egui::RichText::new(format!("All API Tokens in this {}", scope_label)).color(theme::TEXT_SECTION).strong());
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(
+                        format!("Tokens scoped to this {} and all sub-entities.", scope_label.to_lowercase())
+                    ).small().color(theme::TEXT_MUTED).italics());
+                    ui.add_space(4.0);
+
+                    if *scoped_tokens_loading && scoped_api_tokens.is_empty() {
+                        ui.label(egui::RichText::new("Loading scoped tokens...").color(theme::TEXT_MUTED).italics());
+                    } else if scoped_api_tokens.is_empty() {
+                        ui.label(egui::RichText::new("No active API tokens in this scope.").color(theme::TEXT_MUTED).italics());
+                    } else {
+                        ui.label(egui::RichText::new(format!("{} active token(s)", scoped_api_tokens.len())).small().color(theme::TEXT_MUTED));
+                        ui.add_space(4.0);
+                        let mut revoke_scoped_jti: Option<String> = None;
+                        for (i, tok) in scoped_api_tokens.iter().enumerate() {
+                            let row_bg = if i % 2 == 0 { theme::BG_PEER_ROW_EVEN } else { theme::BG_PEER_ROW_ODD };
+                            egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let role_color = match tok.max_role.as_str() {
+                                        "manager" => theme::TEXT_ROLE_MANAGER,
+                                        "editor" => theme::TEXT_ROLE_EDITOR,
+                                        _ => theme::TEXT_ROLE_VIEWER,
+                                    };
+                                    ui.label(egui::RichText::new(&tok.max_role).color(role_color).strong());
+                                    ui.label(egui::RichText::new(&tok.scope).monospace().small().color(theme::TEXT_DIM));
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).clicked() {
+                                            revoke_scoped_jti = Some(tok.jti.clone());
+                                        }
+                                        ui.label(egui::RichText::new(format!("exp: {}", &tok.expires_at[..10.min(tok.expires_at.len())])).small().color(theme::TEXT_MUTED));
+                                        if let Some(ref lbl) = tok.label {
+                                            ui.label(egui::RichText::new(lbl).small().color(theme::TEXT_BRIGHT));
+                                        }
+                                    });
+                                });
+                            });
+                        }
+                        if let Some(jti) = revoke_scoped_jti {
+                            db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
+                            // Refresh both lists
+                            db_tx.send(DbCommand::ListApiTokens).ok();
+                            let scope_prefix = build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
+                            db_tx.send(DbCommand::ListApiTokensByScope { scope_prefix }).ok();
+                        }
                     }
                 }
             }

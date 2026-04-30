@@ -105,6 +105,28 @@ pub async fn list_active_tokens(db: &Db, sub: &str) -> anyhow::Result<Vec<ApiTok
         .collect()
 }
 
+/// List all active (non-revoked) tokens whose scope falls within the given
+/// scope prefix (exact match OR starts with prefix + "-").
+///
+/// This enables admin views: a verse admin sees all tokens scoped to their
+/// verse and its fractals/petals. Uses boundary-safe matching to prevent
+/// `VERSE#v1` from matching `VERSE#v10`.
+pub async fn list_tokens_by_scope(db: &Db, scope_prefix: &str) -> anyhow::Result<Vec<ApiTokenRecord>> {
+    let prefix_dash = format!("{}-", scope_prefix);
+    let mut result: surrealdb::IndexedResults = db
+        .query(
+            "SELECT * FROM api_token WHERE revoked = false \
+             AND (scope = $prefix OR string::starts_with(scope, $prefix_dash))",
+        )
+        .bind(("prefix", scope_prefix.to_string()))
+        .bind(("prefix_dash", prefix_dash))
+        .await?;
+    let raw: Vec<serde_json::Value> = result.take(0)?;
+    raw.into_iter()
+        .map(|v| serde_json::from_value(v).map_err(Into::into))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     // Tests require an in-memory SurrealDB instance.

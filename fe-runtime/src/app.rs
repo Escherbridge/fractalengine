@@ -123,6 +123,12 @@ pub struct ApiCommandSender(pub crossbeam::channel::Sender<ApiCommand>);
 #[derive(Resource, Clone)]
 pub struct TransformBroadcastSender(pub tokio::sync::broadcast::Sender<TransformUpdate>);
 
+/// Bevy resource: broadcast sender for revoked token JTI notifications.
+/// When a token is revoked, the JTI is broadcast so the API thread can
+/// update its revocation cache immediately.
+#[derive(Resource, Clone)]
+pub struct RevocationBroadcastSender(pub tokio::sync::broadcast::Sender<String>);
+
 /// Bevy resource: pending API requests awaiting DB results.
 #[derive(Resource, Default)]
 pub struct PendingApiRequests {

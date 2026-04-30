@@ -1,3 +1,9 @@
+//! # Reconciliation — the sole startup data-fixing mechanism
+//!
+//! The former `migrations.rs` module was removed because tracked-once semantics
+//! don't work in P2P (peers can't coordinate "which migration ran").
+//! Reconciliation rules are idempotent invariants — safe to re-run forever.
+//!
 //! Declarative DB reconciliation — runs every startup, converges to correct state.
 //!
 //! Unlike ordered migrations that run once, reconciliation rules are **invariants**:

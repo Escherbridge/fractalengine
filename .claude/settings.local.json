@@ -11,7 +11,17 @@
       "Bash(ls -lh target/debug/deps/libsurrealdb*.rlib)",
       "Bash(for pkg:*)",
       "Bash(do echo:*)",
-      "Bash(ls -1 /c/Users/atooz/Programming/fractalengine-workspace/fractalengine/*.md)"
+      "Bash(ls -1 /c/Users/atooz/Programming/fractalengine-workspace/fractalengine/*.md)",
+      "Bash(cargo run:*)",
+      "WebFetch(domain:www.iroh.computer)",
+      "WebFetch(domain:docs.iroh.computer)",
+      "WebFetch(domain:bevy-cheatbook.github.io)",
+      "Bash(grep -r \"data/fractalengine.db\\\\|imported\\\\|fractalengine/assets\" --include=*.rs .)",
+      "Bash(grep -r \"wry\\\\|winit\\\\|rfd\\\\|backend\\\\|target_os\\\\|#\\\\[cfg\" --include=*.rs fe-webview fe-ui)",
+      "Bash(grep -rn \"keyring\\\\|dirs::\" --include=*.rs .)",
+      "Bash(grep -rn \"unix\\\\|windows\\\\|macos\\\\|linux\\\\|android\\\\|ios\" --include=*.rs .)",
+      "Bash(grep -rn \"Process::Command\\\\|spawn\\\\|std::process\" --include=*.rs .)",
+      "Bash(grep -rn \"wry\\\\|WebView2\" --include=*.rs .)"
     ]
   }
 }

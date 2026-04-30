@@ -1,0 +1,41 @@
+{
+  "id": "headless_relay_20260429",
+  "name": "Headless Relay",
+  "status": "pending",
+  "priority": "P1",
+  "created": "2026-04-29",
+  "depends_on": ["realtime_api_mcp_20260427"],
+  "blocks": ["web_client_sdk", "iot_integration", "docker_deployment", "mobile_client"],
+  "phases": [
+    {
+      "id": 1,
+      "name": "SecretStore Trait Extraction",
+      "status": "pending",
+      "tasks": 7
+    },
+    {
+      "id": 2,
+      "name": "Feature-Gated Bevy + Relay Binary",
+      "status": "pending",
+      "tasks": 5
+    },
+    {
+      "id": 3,
+      "name": "Scene Graph Streaming",
+      "status": "pending",
+      "tasks": 6
+    },
+    {
+      "id": 4,
+      "name": "Relay Hardening",
+      "status": "pending",
+      "tasks": 5
+    },
+    {
+      "id": 5,
+      "name": "Cross-Compilation CI",
+      "status": "pending",
+      "tasks": 3
+    }
+  ]
+}

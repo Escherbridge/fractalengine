@@ -195,6 +195,26 @@ pub fn scope_level(scope: &str) -> Result<ScopeLevel, ScopeError> {
     }
 }
 
+/// Check whether `token_scope` grants access to `resource_scope`.
+///
+/// A token scoped to a higher level in the hierarchy grants access to all
+/// resources beneath it. For example:
+/// - `VERSE#v1` covers `VERSE#v1-FRACTAL#f1-PETAL#p1`
+/// - `VERSE#v1-FRACTAL#f1` covers `VERSE#v1-FRACTAL#f1-PETAL#p1`
+/// - `VERSE#v1-FRACTAL#f1-PETAL#p1` does NOT cover `VERSE#v1-FRACTAL#f1`
+///
+/// Returns `true` if the token scope is a prefix of (or equal to) the
+/// resource scope at a keyword boundary.
+pub fn scope_contains(token_scope: &str, resource_scope: &str) -> bool {
+    if token_scope == resource_scope {
+        return true;
+    }
+    // Token scope must be a proper prefix ending at a keyword boundary.
+    // e.g. "VERSE#v1" is a prefix of "VERSE#v1-FRACTAL#f1" at the "-FRACTAL#" boundary.
+    resource_scope.starts_with(token_scope)
+        && resource_scope[token_scope.len()..].starts_with('-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +365,49 @@ mod tests {
     fn scope_level_error_on_invalid() {
         assert!(scope_level("").is_err());
         assert!(scope_level("bad-input").is_err());
+    }
+
+    // --- scope_contains ---
+
+    #[test]
+    fn verse_contains_fractal_and_petal() {
+        let verse = build_scope("v1", None, None);
+        let fractal = build_scope("v1", Some("f1"), None);
+        let petal = build_scope("v1", Some("f1"), Some("p1"));
+        assert!(scope_contains(&verse, &fractal));
+        assert!(scope_contains(&verse, &petal));
+    }
+
+    #[test]
+    fn fractal_contains_petal() {
+        let fractal = build_scope("v1", Some("f1"), None);
+        let petal = build_scope("v1", Some("f1"), Some("p1"));
+        assert!(scope_contains(&fractal, &petal));
+    }
+
+    #[test]
+    fn petal_does_not_contain_fractal() {
+        let fractal = build_scope("v1", Some("f1"), None);
+        let petal = build_scope("v1", Some("f1"), Some("p1"));
+        assert!(!scope_contains(&petal, &fractal));
+    }
+
+    #[test]
+    fn exact_scope_match() {
+        let s = build_scope("v1", Some("f1"), None);
+        assert!(scope_contains(&s, &s));
+    }
+
+    #[test]
+    fn different_verse_ids_not_contained() {
+        let v1 = build_scope("v1", None, None);
+        let v2 = build_scope("v2", None, None);
+        assert!(!scope_contains(&v1, &v2));
+    }
+
+    #[test]
+    fn partial_id_not_a_boundary() {
+        // VERSE#v1 should NOT contain VERSE#v11
+        assert!(!scope_contains("VERSE#v1", "VERSE#v11"));
     }
 }

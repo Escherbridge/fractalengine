@@ -80,7 +80,7 @@ pub fn viewport_petal_space(
     ui_mgr: &mut UiManager,
     _local_role: &LocalUserRole,
 ) {
-    // Breadcrumb at top of viewport
+    // Breadcrumb at top of viewport (names)
     let petal_name = find_petal_name(hierarchy, nav.active_petal_id.as_deref().unwrap_or(""));
     let breadcrumb = format!(
         "{} / {} / {}",
@@ -93,6 +93,23 @@ pub fn viewport_petal_space(
         egui::FontId::proportional(11.0),
         theme::TEXT_DIM,
     );
+
+    // Breadcrumb: verse / fractal / petal with IDs (top-left)
+    if let (Some(ref vid), Some(ref fid), Some(ref pid)) =
+        (&nav.active_verse_id, &nav.active_fractal_id, &nav.active_petal_id)
+    {
+        let crumb = format!(
+            "v:{} / f:{} / p:{}",
+            truncate_id(vid), truncate_id(fid), truncate_id(pid),
+        );
+        ui.painter().text(
+            egui::pos2(rect.min.x + 10.0, rect.min.y + 10.0),
+            egui::Align2::LEFT_CENTER,
+            crumb,
+            egui::FontId::proportional(9.0),
+            theme::TEXT_DIM,
+        );
+    }
 
     // Tool hints at bottom
     if node_mgr.selected_entity().is_none() {
@@ -238,6 +255,8 @@ pub fn viewport_verse_browser(
                 entity_type: EntitySettingsType::Verse,
                 entity_id: verse.id.clone(),
                 entity_name: verse.name.clone(),
+                parent_verse_id: verse.id.clone(),
+                parent_fractal_id: None,
                 active_tab: SettingsTab::General,
                 name_buf: verse.name.clone(),
                 default_access_buf: Some("viewer".to_string()),
@@ -248,6 +267,14 @@ pub fn viewport_verse_browser(
                 invite_expiry_buf: 24,
                 generated_invite_link: None,
                 pending_delete: false,
+                api_tokens: vec![],
+                api_tokens_loading: false,
+                api_token_scope_buf: String::new(),
+                api_token_role_buf: "viewer".to_string(),
+                api_token_expiry_buf: 24,
+                generated_api_token: None,
+                scoped_api_tokens: vec![],
+                scoped_tokens_loading: false,
             });
         } else if card_clicked {
             nav.navigate_to_verse(verse.id.clone(), verse.name.clone());
@@ -386,6 +413,18 @@ pub fn viewport_fractal_browser(
         theme::TEXT_STRONG,
     );
 
+    // Breadcrumb: verse ID + name
+    if let Some(ref vid) = nav.active_verse_id {
+        let crumb = format!("verse: {} ({})", nav.active_verse_name, truncate_id(vid));
+        ui.painter().text(
+            egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0),
+            egui::Align2::LEFT_CENTER,
+            crumb,
+            egui::FontId::proportional(9.0),
+            theme::TEXT_DIM,
+        );
+    }
+
     let verse = hierarchy
         .verses
         .iter()
@@ -452,6 +491,8 @@ pub fn viewport_fractal_browser(
                     entity_type: EntitySettingsType::Fractal,
                     entity_id: fractal.id.clone(),
                     entity_name: fractal.name.clone(),
+                    parent_verse_id: verse.id.clone(),
+                    parent_fractal_id: None,
                     active_tab: SettingsTab::General,
                     name_buf: fractal.name.clone(),
                     default_access_buf: Some("viewer".to_string()),
@@ -462,6 +503,14 @@ pub fn viewport_fractal_browser(
                     invite_expiry_buf: 24,
                     generated_invite_link: None,
                     pending_delete: false,
+                    api_tokens: vec![],
+                    api_tokens_loading: false,
+                    api_token_scope_buf: String::new(),
+                    api_token_role_buf: "viewer".to_string(),
+                    api_token_expiry_buf: 24,
+                    generated_api_token: None,
+                    scoped_api_tokens: vec![],
+                    scoped_tokens_loading: false,
                 });
             } else if card_clicked {
                 nav.navigate_to_fractal(fractal.id.clone(), fractal.name.clone());
@@ -569,6 +618,22 @@ pub fn viewport_petal_browser(
         theme::TEXT_MUTED,
     );
 
+    // Breadcrumb: verse / fractal with IDs
+    if let (Some(ref vid), Some(ref fid)) = (&nav.active_verse_id, &nav.active_fractal_id) {
+        let crumb = format!(
+            "verse: {} ({}) / fractal: {} ({})",
+            nav.active_verse_name, truncate_id(vid),
+            nav.active_fractal_name, truncate_id(fid),
+        );
+        ui.painter().text(
+            egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0),
+            egui::Align2::LEFT_CENTER,
+            crumb,
+            egui::FontId::proportional(9.0),
+            theme::TEXT_DIM,
+        );
+    }
+
     let fractal_data = hierarchy
         .verses
         .iter()
@@ -640,6 +705,8 @@ pub fn viewport_petal_browser(
                     entity_type: EntitySettingsType::Petal,
                     entity_id: petal.id.clone(),
                     entity_name: petal.name.clone(),
+                    parent_verse_id: nav.active_verse_id.clone().unwrap_or_default(),
+                    parent_fractal_id: nav.active_fractal_id.clone(),
                     active_tab: SettingsTab::General,
                     name_buf: petal.name.clone(),
                     default_access_buf: Some("viewer".to_string()),
@@ -650,6 +717,14 @@ pub fn viewport_petal_browser(
                     invite_expiry_buf: 24,
                     generated_invite_link: None,
                     pending_delete: false,
+                    api_tokens: vec![],
+                    api_tokens_loading: false,
+                    api_token_scope_buf: String::new(),
+                    api_token_role_buf: "viewer".to_string(),
+                    api_token_expiry_buf: 24,
+                    generated_api_token: None,
+                    scoped_api_tokens: vec![],
+                    scoped_tokens_loading: false,
                 });
             } else if card_clicked {
                 nav.navigate_to_petal(petal.id.clone());
@@ -707,6 +782,11 @@ pub fn viewport_petal_browser(
 }
 
 /// Find petal name by ID in the hierarchy.
+/// Truncate a ULID to its first 8 characters for compact display in breadcrumbs.
+fn truncate_id(id: &str) -> &str {
+    &id[..8.min(id.len())]
+}
+
 pub fn find_petal_name(hierarchy: &VerseManager, petal_id: &str) -> String {
     for verse in &hierarchy.verses {
         for fractal in &verse.fractals {
