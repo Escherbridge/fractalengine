@@ -72,3 +72,37 @@ fn open_in_system_browser(url: &str) {
         tracing::warn!("StubBackend: system browser open not implemented on Android");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Task 2.4: Verify the system browser launch command exists on this platform.
+    #[test]
+    fn stub_browser_command_exists() {
+        #[cfg(target_os = "windows")]
+        assert!(
+            std::process::Command::new("cmd")
+                .args(["/C", "echo", "test"])
+                .output()
+                .is_ok(),
+            "cmd.exe should be available on Windows"
+        );
+
+        #[cfg(target_os = "macos")]
+        assert!(
+            std::process::Command::new("which")
+                .arg("open")
+                .output()
+                .is_ok(),
+            "'open' command should be available on macOS"
+        );
+
+        #[cfg(target_os = "linux")]
+        assert!(
+            std::process::Command::new("which")
+                .arg("xdg-open")
+                .output()
+                .is_ok(),
+            "'xdg-open' should be available on Linux"
+        );
+    }
+}

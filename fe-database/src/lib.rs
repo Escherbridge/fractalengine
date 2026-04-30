@@ -52,6 +52,11 @@ pub fn imported_assets_dir() -> std::path::PathBuf {
 #[derive(bevy::prelude::Resource, Clone)]
 pub struct DbHandle(pub std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>);
 
+/// Bevy resource wrapping an `Arc<dyn SecretStore>` so ECS systems can
+/// access the secret store (e.g. for namespace secret lookups).
+#[derive(bevy::prelude::Resource, Clone)]
+pub struct SecretStoreRes(pub std::sync::Arc<dyn fe_identity::SecretStore>);
+
 /// A replication event emitted by the DB thread when a replicated row is written.
 /// Defined here (not in fe-sync) to avoid a circular dependency.
 /// The binary crate bridges these into `SyncCommand::WriteRowEntry`.
@@ -110,22 +115,27 @@ pub fn spawn_db_thread(
     tx: crossbeam::channel::Sender<DbResult>,
     blob_store: BlobStoreHandle,
 ) -> std::thread::JoinHandle<()> {
-    spawn_db_thread_with_sync(rx, tx, blob_store, None, None)
+    spawn_db_thread_with_sync(rx, tx, blob_store, None, None, None)
 }
 
-/// Spawn the DB thread with an optional replication sender and node keypair.
+/// Spawn the DB thread with optional replication sender, node keypair, and
+/// secret store.
 ///
 /// When `repl_tx` is `Some`, DB write handlers can send `ReplicationEvent`s
 /// that the binary crate bridges into `SyncCommand::WriteRowEntry`. When
 /// `None`, replication is silently disabled.
 ///
 /// When `keypair` is `Some`, invite generation/verification is enabled.
+///
+/// When `secret_store` is `Some`, namespace secrets are persisted through the
+/// provided backend. When `None`, namespace secret storage is silently skipped.
 pub fn spawn_db_thread_with_sync(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
     blob_store: BlobStoreHandle,
     repl_tx: Option<ReplicationSender>,
     keypair: Option<fe_identity::NodeKeypair>,
+    secret_store: Option<std::sync::Arc<dyn fe_identity::SecretStore>>,
 ) -> std::thread::JoinHandle<()> {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
@@ -204,7 +214,7 @@ pub fn spawn_db_thread_with_sync(
                         }
                     },
                     Ok(DbCommand::CreateVerse { name }) => {
-                        match handlers::crud::create_verse_handler(&db, &blob_store, repl_tx.as_ref(), &name, &local_did).await {
+                        match handlers::crud::create_verse_handler(&db, &blob_store, repl_tx.as_ref(), &name, &local_did, secret_store.as_ref()).await {
                             Ok(id) => send_result(&tx, DbResult::VerseCreated { id, name }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create verse failed: {e}"))),
                         }
@@ -240,13 +250,13 @@ pub fn spawn_db_thread_with_sync(
                         }
                     }
                     Ok(DbCommand::GenerateVerseInvite { verse_id, include_write_cap, expiry_hours }) => {
-                        match handlers::invite::generate_verse_invite_handler(&db, &verse_id, include_write_cap, expiry_hours, keypair.as_ref()).await {
+                        match handlers::invite::generate_verse_invite_handler(&db, &verse_id, include_write_cap, expiry_hours, keypair.as_ref(), secret_store.as_ref()).await {
                             Ok(invite_string) => send_result(&tx, DbResult::VerseInviteGenerated { verse_id, invite_string }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Generate invite failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::JoinVerseByInvite { invite_string }) => {
-                        match handlers::invite::join_verse_by_invite_handler(&db, &invite_string, &local_did).await {
+                        match handlers::invite::join_verse_by_invite_handler(&db, &invite_string, &local_did, secret_store.as_ref()).await {
                             Ok((verse_id, verse_name)) => send_result(&tx, DbResult::VerseJoined { verse_id, verse_name }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Join verse failed: {e}"))),
                         }
@@ -384,25 +394,28 @@ pub fn derive_namespace_id(secret: &[u8; 32]) -> [u8; 32] {
     *blake3::keyed_hash(b"fractalengine:verse:namespace_id", secret).as_bytes()
 }
 
-/// Retrieve a namespace secret from the OS keyring. Returns None if not found.
-pub fn get_namespace_secret_from_keyring(verse_id: &str) -> anyhow::Result<Option<String>> {
+/// Retrieve a namespace secret from the secret store. Returns `None` if not found.
+///
+/// Validates that the stored value is exactly 64 hex characters (a 32-byte secret).
+pub fn get_namespace_secret(
+    store: &dyn fe_identity::SecretStore,
+    verse_id: &str,
+) -> anyhow::Result<Option<String>> {
     let service = format!("fractalengine:verse:{}:ns_secret", verse_id);
-    let entry = keyring::Entry::new(&service, "fractalengine")
-        .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {e}"))?;
-    match entry.get_password() {
-        Ok(secret_hex) => {
+    match store.get(&service, "fractalengine") {
+        Ok(Some(secret_hex)) => {
             if secret_hex.len() != 64 {
                 anyhow::bail!(
-                    "Keyring namespace secret has invalid length: {}",
+                    "Namespace secret has invalid length: {}",
                     secret_hex.len()
                 );
             }
             hex::decode(&secret_hex)
-                .map_err(|e| anyhow::anyhow!("Keyring namespace secret is not valid hex: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("Namespace secret is not valid hex: {e}"))?;
             Ok(Some(secret_hex))
         }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(anyhow::anyhow!("keyring get_password failed: {e}")),
+        Ok(None) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("secret store get failed: {e}")),
     }
 }
 
@@ -511,12 +524,14 @@ mod subdir_tests {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
-    use crate::repo::Table;
+    use crate::repo::{Db, Repo, Table};
+    use crate::schema::Asset;
+    use base64::Engine as _;
     use fe_runtime::blob_store::mock::MockBlobStore;
     use std::sync::Arc;
 
     /// Helper: create an in-memory SurrealDB instance with the asset schema applied.
-    async fn setup_test_db() -> surrealdb::Surreal<Db> {
+    async fn setup_test_db() -> Db {
         let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .expect("in-memory SurrealDB");
@@ -531,8 +546,8 @@ mod migration_tests {
     }
 
     /// Seed one legacy asset row with base64 data and no content_hash.
-    async fn seed_legacy_asset(db: &surrealdb::Surreal<Db>, asset_id: &str, raw_bytes: &[u8]) {
-        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw_bytes);
+    async fn seed_legacy_asset(db: &Db, asset_id: &str, raw_bytes: &[u8]) {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw_bytes);
         Repo::<Asset>::create_raw(db, serde_json::json!({
             "asset_id":     asset_id,
             "name":         "test-asset",

@@ -501,3 +501,20 @@ impl Drop for WryBackend {
         self.destroy();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Task 2.3: Compile-time verification that platform #[cfg] gates are correct.
+    /// This test compiling on each platform proves the gates work.
+    #[test]
+    fn wry_backend_platform_types_compile() {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::mem::size_of::<super::PopupHandle>();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::mem::size_of::<super::ParentHandle>();
+        }
+    }
+}

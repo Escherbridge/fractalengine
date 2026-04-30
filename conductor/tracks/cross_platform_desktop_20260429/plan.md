@@ -119,7 +119,7 @@ This file grows in each phase — Phase 2 adds testing info, Phase 3 adds the sm
 
 ---
 
-### Task 2.1 — Audit all #[cfg] usage
+### Task 2.1 — Audit all #[cfg] usage [x]
 
 Grep the entire workspace for conditional compilation:
 
@@ -144,7 +144,7 @@ Document findings. Create subtasks for B and C items.
 
 ---
 
-### Task 2.2 — Test blob_store Unix permissions (TDD)
+### Task 2.2 — Test blob_store Unix permissions (TDD) [x]
 
 Write a test for `fe-sync/src/blob_store.rs` that verifies:
 - On Unix: blob store root directory has 0o700 permissions after initialization
@@ -166,7 +166,7 @@ fn blob_store_sets_restrictive_permissions() {
 
 ---
 
-### Task 2.3 — Test wry backend platform compilation
+### Task 2.3 — Test wry backend platform compilation [x]
 
 Add compile-time verification tests:
 
@@ -192,7 +192,7 @@ fn wry_backend_compiles() {
 
 ---
 
-### Task 2.4 — Test stub backend browser launch commands
+### Task 2.4 — Test stub backend browser launch commands [x]
 
 Verify the browser-open commands are valid on each platform:
 
@@ -214,7 +214,7 @@ fn stub_browser_command_exists() {
 
 ---
 
-### Task 2.5 — Verify dirs crate paths on each platform
+### Task 2.5 — Verify dirs crate paths on each platform [x]
 
 Write a test that `dirs::data_local_dir()` returns `Some` on all platforms (it should, but verify):
 
@@ -231,7 +231,7 @@ This runs in CI on all 3 OS families and catches any platform where the director
 
 ---
 
-### Task 2.6 — Audit hardcoded paths for platform safety
+### Task 2.6 — Audit hardcoded paths for platform safety [x]
 
 Grep for string literals that look like paths:
 
@@ -247,7 +247,7 @@ Verify all use `std::path::Path` / `PathBuf` (not string concatenation). The cur
 
 ---
 
-### Task 2.7 — Phase 2 docs: update BUILDING.md with testing info
+### Task 2.7 — Phase 2 docs: update BUILDING.md with testing info [x]
 
 Add to `BUILDING.md`:
 - "Running tests" section: `cargo test --workspace`
@@ -274,7 +274,7 @@ Add to `BUILDING.md`:
 
 ---
 
-### Task 3.1 — Create BUILDING.md
+### Task 3.1 — Create BUILDING.md [x]
 
 Document build prerequisites per platform:
 
@@ -310,7 +310,7 @@ cargo build --release -p fractalengine
 
 ---
 
-### Task 3.2 — Full workspace test on all platforms
+### Task 3.2 — Full workspace test on all platforms [x] (Windows verified)
 
 Run `cargo test --workspace` on:
 - Ubuntu latest (x86_64)

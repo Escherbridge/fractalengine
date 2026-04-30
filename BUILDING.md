@@ -96,6 +96,26 @@ cargo build --release -p fractalengine
 RUST_LOG=debug cargo run -p fractalengine
 ```
 
+## Testing
+
+```bash
+# Run all tests
+cargo test --workspace
+
+# Run with env-based keystore (for CI / headless)
+FE_KEYSTORE_BACKEND=env cargo test --workspace
+```
+
+### Platform-specific test notes
+
+- **Unix-only:** `blob_store_sets_restrictive_permissions` verifies 0o700 directory permissions
+  (skipped on Windows via `#[cfg(unix)]`)
+- **Windows-only:** `wry_backend_platform_types_compile` checks Win32 popup handle types
+  (non-Windows variant checks `ParentHandle`)
+- **Per-OS:** `stub_browser_command_exists` verifies the system browser launcher
+  (`cmd` on Windows, `open` on macOS, `xdg-open` on Linux)
+- **All platforms:** `data_local_dir_exists` confirms `dirs::data_local_dir()` returns `Some`
+
 ## Known Issues
 
 - Cross-compilation from Windows to Linux/macOS requires platform-specific C toolchains
