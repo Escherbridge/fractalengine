@@ -12,6 +12,7 @@ members = [
     "fe-ui",
     "fe-test-harness",
     "fe-api",
+    "fractalengine-relay",
 ]
 resolver = "2"
 

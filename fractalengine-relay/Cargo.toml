@@ -1,0 +1,23 @@
+[package]
+name = "fractalengine-relay"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fe-relay"
+path = "src/main.rs"
+
+[dependencies]
+fe-runtime  = { path = "../fe-runtime" }
+fe-network  = { path = "../fe-network" }
+fe-database = { path = "../fe-database" }
+fe-identity = { path = "../fe-identity", default-features = false }
+fe-sync     = { path = "../fe-sync" }
+fe-api      = { path = "../fe-api" }
+bevy        = { workspace = true }
+crossbeam   = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow      = { workspace = true }
+hex         = "0.4"
