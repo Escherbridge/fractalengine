@@ -86,6 +86,44 @@ cargo build --release -p fractalengine
 cargo build --release -p fractalengine
 ```
 
+## Building the Relay (headless server)
+
+The relay binary compiles without GPU, windowing, or OS keychain dependencies.
+It depends on `fe-identity` with `default-features = false`, which excludes the
+`keyring` crate -- the relay uses environment variables for secrets instead of
+the OS keychain.
+
+```bash
+# Debug build
+cargo build -p fractalengine-relay
+
+# Release build
+cargo build --release -p fractalengine-relay
+```
+
+Run it:
+
+```bash
+FE_BIND_ADDR=0.0.0.0:8765 FE_DB_PATH=data/relay.db ./target/release/fe-relay
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FE_BIND_ADDR` | `0.0.0.0:8765` | Listen address (host:port) |
+| `FE_DB_PATH` | `data/fractalengine.db` | SurrealDB storage path |
+| `FE_CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins |
+
+See [fractalengine-relay/README.md](fractalengine-relay/README.md) for full configuration.
+
+## Running in Docker
+
+```bash
+docker build -f docker/Dockerfile.relay -t fractalengine-relay .
+docker run -p 8765:8765 -v relay-data:/data fractalengine-relay
+```
+
+See [docker/README.md](docker/README.md) for Docker Compose examples.
+
 ## Running
 
 ```bash

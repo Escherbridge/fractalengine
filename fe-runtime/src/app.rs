@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::io::AssetSourceBuilder;
-use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
 use crate::bevy_blob_reader::OnMissCallback;
@@ -24,6 +23,9 @@ pub struct NetworkEventReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<Netwo
 #[derive(Resource)]
 pub struct DbResultReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<DbResult>>>);
 
+/// Channel handles that the Bevy app needs to communicate with background
+/// threads (network, database). Constructed during engine wiring and passed
+/// to [`setup_core_systems`] to register the corresponding ECS resources.
 pub struct BevyHandles {
     pub net_cmd_tx: crossbeam::channel::Sender<NetworkCommand>,
     pub net_evt_rx: crossbeam::channel::Receiver<NetworkEvent>,
@@ -36,13 +38,33 @@ pub struct BevyHandles {
     pub on_blob_miss: Option<OnMissCallback>,
 }
 
+/// Register ECS resources and drain systems shared by both GUI and headless
+/// binaries. Call this on any `App` (with `DefaultPlugins` *or*
+/// `MinimalPlugins`) to wire up the core channel infrastructure.
+pub fn setup_core_systems(app: &mut App, handles: BevyHandles) {
+    app.add_message::<NetworkEvent>();
+    app.add_message::<DbResult>();
+    app.insert_resource(NetworkCommandSender(handles.net_cmd_tx));
+    app.insert_resource(DbCommandSender(handles.db_cmd_tx));
+    app.insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(
+        handles.net_evt_rx,
+    ))));
+    app.insert_resource(DbResultReceiver(Arc::new(Mutex::new(handles.db_res_rx))));
+    app.add_systems(Update, (drain_network_events, drain_db_results));
+}
+
+/// Build a full GUI application with `DefaultPlugins`, blob asset source, and
+/// the core ECS resources. The caller is responsible for adding GUI-specific
+/// plugins such as `EguiPlugin` and `FrameTimeDiagnosticsPlugin` after this
+/// returns.
 pub fn build_app(handles: BevyHandles) -> App {
     let mut app = App::new();
 
     // Phase B: register the "blob" asset source BEFORE DefaultPlugins so Bevy
     // knows how to load `blob://{hash}.glb` paths via BlobAssetReader.
-    if let Some(blob_store) = handles.blob_store {
-        let on_miss = handles.on_blob_miss;
+    if let Some(ref blob_store) = handles.blob_store {
+        let blob_store = blob_store.clone();
+        let on_miss = handles.on_blob_miss.clone();
         app.register_asset_source(
             "blob",
             AssetSourceBuilder::new(move || match on_miss.clone() {
@@ -73,18 +95,8 @@ pub fn build_app(handles: BevyHandles) -> App {
         file_path: asset_root.to_string_lossy().into_owned(),
         ..Default::default()
     }));
-    // EguiPlugin must be added after DefaultPlugins so Assets<Shader> exists in the World.
-    app.add_plugins(bevy_egui::EguiPlugin::default());
-    app.add_plugins(FrameTimeDiagnosticsPlugin::default());
-    app.add_message::<NetworkEvent>();
-    app.add_message::<DbResult>();
-    app.insert_resource(NetworkCommandSender(handles.net_cmd_tx));
-    app.insert_resource(DbCommandSender(handles.db_cmd_tx));
-    app.insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(
-        handles.net_evt_rx,
-    ))));
-    app.insert_resource(DbResultReceiver(Arc::new(Mutex::new(handles.db_res_rx))));
-    app.add_systems(Update, (drain_network_events, drain_db_results));
+
+    setup_core_systems(&mut app, handles);
     app
 }
 
@@ -197,5 +209,33 @@ pub fn drain_api_commands(
             }
             Err(_) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_core_systems_inserts_resources() {
+        let ch = crate::channels::ChannelHandles::new();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        setup_core_systems(
+            &mut app,
+            BevyHandles {
+                net_cmd_tx: ch.net_cmd_tx,
+                net_evt_rx: ch.net_evt_rx,
+                db_cmd_tx: ch.db_cmd_tx,
+                db_res_rx: ch.db_res_rx,
+                blob_store: None,
+                on_blob_miss: None,
+            },
+        );
+        app.update(); // should not panic
+        assert!(app.world().get_resource::<DbCommandSender>().is_some());
+        assert!(app.world().get_resource::<NetworkCommandSender>().is_some());
+        assert!(app.world().get_resource::<DbResultReceiver>().is_some());
+        assert!(app.world().get_resource::<NetworkEventReceiver>().is_some());
     }
 }

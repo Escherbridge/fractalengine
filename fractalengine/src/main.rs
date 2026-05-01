@@ -24,13 +24,18 @@ fn main() {
     // the DB thread and the Bevy blob:// asset source.
     let blob_store: fe_database::BlobStoreHandle =
         std::sync::Arc::new(fe_sync::FsBlobStore::open_default().expect("open blob store"));
+
+    // Secret store: OS keychain on desktop.
+    let secret_store: Arc<dyn fe_identity::SecretStore> =
+        Arc::new(fe_identity::OsKeystoreBackend::new());
+
     // Load or generate a persistent node keypair. The 32-byte seed is stored
-    // in the OS keyring so the node identity survives across launches,
+    // in the secret store so the node identity survives across launches,
     // preserving P2P reconnection and invite verification.
-    let node_kp = match load_or_generate_keypair() {
+    let node_kp = match load_or_generate_keypair(&secret_store) {
         Ok(kp) => kp,
         Err(e) => {
-            tracing::warn!("Could not load/store keypair in keyring, generating ephemeral: {e}");
+            tracing::warn!("Could not load/store keypair in secret store, generating ephemeral: {e}");
             fe_identity::NodeKeypair::generate()
         }
     };
@@ -48,12 +53,18 @@ fn main() {
     // after the sync command sender is created below.
     let (repl_tx, repl_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(256);
 
+    // Scene change broadcast: DB thread emits CUD deltas, API thread fans out to WS clients.
+    let (entity_change_tx, _) =
+        tokio::sync::broadcast::channel::<fe_runtime::messages::SceneChange>(256);
+
     let _db_thread = fe_database::spawn_db_thread_with_sync(
         ch.db_cmd_rx,
         ch.db_res_tx,
         blob_store.clone(),
         Some(repl_tx),
         Some(db_keypair),
+        Some(secret_store.clone()),
+        Some(entity_change_tx.clone()),
     );
 
     // Send seed command so the DB populates initial data
@@ -110,6 +121,10 @@ fn main() {
         on_blob_miss: Some(on_miss),
     });
 
+    // GUI-only plugins (removed from fe-runtime so the headless relay can skip them)
+    app.add_plugins(bevy_egui::EguiPlugin::default());
+    app.add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default());
+
     // Insert sync resources into Bevy world
     app.insert_resource(fe_sync::SyncCommandSenderRes(sync_cmd_tx));
     app.insert_resource(fe_sync::SyncEventReceiverRes(Arc::new(Mutex::new(
@@ -119,10 +134,11 @@ fn main() {
     app.init_resource::<fe_sync::VersePeers>();
     app.add_systems(bevy::prelude::Update, fe_sync::drain_sync_events);
 
-    // Insert identity and peer resources
+    // Insert identity, peer, and secret store resources
     app.insert_resource(NodeIdentity::new(node_kp));
     app.insert_resource(PeerRegistry::default());
     app.insert_resource(LocalUserRole::default());
+    app.insert_resource(fe_database::SecretStoreRes(secret_store));
 
     // ---- API Gateway thread ----
     // Channel: API thread sends ApiCommand -> tx, Bevy drains from rx.
@@ -138,6 +154,9 @@ fn main() {
         transform_broadcast_tx: transform_broadcast_tx.clone(),
         verifying_key: api_verifying_key,
         revocation_rx,
+        blob_store: None,
+        cors_origins: None, // defaults to localhost-only
+        entity_change_tx: entity_change_tx.clone(),
     });
 
     app.insert_resource(fe_runtime::app::RevocationBroadcastSender(revocation_tx));
@@ -160,34 +179,33 @@ fn main() {
     app.run();
 }
 
-/// Load a node keypair from the OS keyring, or generate a new one and store it.
+/// Load a node keypair from the secret store, or generate a new one and store it.
 ///
 /// The 32-byte seed is stored as a 64-char hex string under the service
-/// `"fractalengine"` with username `"node_keypair"`.
-fn load_or_generate_keypair() -> anyhow::Result<fe_identity::NodeKeypair> {
-    let entry = keyring::Entry::new("fractalengine", "node_keypair")
-        .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {e}"))?;
-
-    match entry.get_password() {
-        Ok(seed_hex) => {
+/// `"fractalengine"` with account `"node_keypair"`.
+fn load_or_generate_keypair(
+    store: &Arc<dyn fe_identity::SecretStore>,
+) -> anyhow::Result<fe_identity::NodeKeypair> {
+    match store.get("fractalengine", "node_keypair") {
+        Ok(Some(seed_hex)) => {
             let seed_bytes = hex::decode(&seed_hex)
-                .map_err(|e| anyhow::anyhow!("invalid keypair hex in keyring: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("invalid keypair hex in secret store: {e}"))?;
             let seed_array: [u8; 32] = seed_bytes
                 .try_into()
-                .map_err(|_| anyhow::anyhow!("keyring keypair seed is not 32 bytes"))?;
+                .map_err(|_| anyhow::anyhow!("secret store keypair seed is not 32 bytes"))?;
             let kp = fe_identity::NodeKeypair::from_bytes(&seed_array)?;
-            tracing::info!("Loaded node keypair from keyring");
+            tracing::info!("Loaded node keypair from secret store");
             Ok(kp)
         }
-        Err(keyring::Error::NoEntry) => {
+        Ok(None) => {
             let kp = fe_identity::NodeKeypair::generate();
             let seed_hex = hex::encode(kp.seed_bytes());
-            entry
-                .set_password(&seed_hex)
-                .map_err(|e| anyhow::anyhow!("keyring set_password failed: {e}"))?;
-            tracing::info!("Generated and stored new node keypair in keyring");
+            store
+                .set("fractalengine", "node_keypair", &seed_hex)
+                .map_err(|e| anyhow::anyhow!("secret store set failed: {e}"))?;
+            tracing::info!("Generated and stored new node keypair in secret store");
             Ok(kp)
         }
-        Err(e) => Err(anyhow::anyhow!("keyring get_password failed: {e}")),
+        Err(e) => Err(anyhow::anyhow!("secret store get failed: {e}")),
     }
 }
