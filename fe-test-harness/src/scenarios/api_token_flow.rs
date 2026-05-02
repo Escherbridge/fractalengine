@@ -62,14 +62,14 @@ pub fn run() -> Result<TestResult> {
     assert_eq!(claims.exp - claims.iat, 24 * 3600, "TTL should be 24 hours");
 
     // 4. List tokens — should contain our minted token
-    alice.send(DbCommand::ListApiTokens);
+    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
     let list_result = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(30),
     )?;
 
     match &list_result {
-        DbResult::ApiTokensListed { tokens } => {
+        DbResult::ApiTokensListed { tokens, .. } => {
             assert!(!tokens.is_empty(), "token list should not be empty");
             let found = tokens.iter().find(|t| t.jti == jti);
             assert!(found.is_some(), "minted token should appear in list");
@@ -96,14 +96,14 @@ pub fn run() -> Result<TestResult> {
     }
 
     // 6. List tokens — revoked token should no longer appear (list_active_tokens filters)
-    alice.send(DbCommand::ListApiTokens);
+    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
     let list_after = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(30),
     )?;
 
     match &list_after {
-        DbResult::ApiTokensListed { tokens } => {
+        DbResult::ApiTokensListed { tokens, .. } => {
             let found = tokens.iter().find(|t| t.jti == jti);
             assert!(found.is_none(), "revoked token should not appear in active list");
         }
@@ -131,13 +131,13 @@ pub fn run() -> Result<TestResult> {
     };
 
     // 8. List should show exactly 1 active token (the second one; first was revoked)
-    alice.send(DbCommand::ListApiTokens);
+    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
     let list_multi = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(30),
     )?;
     match &list_multi {
-        DbResult::ApiTokensListed { tokens } => {
+        DbResult::ApiTokensListed { tokens, .. } => {
             assert_eq!(tokens.len(), 1, "should have exactly 1 active token");
             assert_eq!(tokens[0].jti, jti2);
         }
@@ -212,13 +212,13 @@ pub fn run_edge_cases() -> Result<TestResult> {
 
     // Edge case 4: List tokens when none exist should return empty list
     // (Alice has no valid tokens — the previous mints all failed)
-    alice.send(DbCommand::ListApiTokens);
+    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
     let list_empty = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(10),
     )?;
     match &list_empty {
-        DbResult::ApiTokensListed { tokens } => {
+        DbResult::ApiTokensListed { tokens, .. } => {
             assert!(tokens.is_empty(), "should have no active tokens");
         }
         other => anyhow::bail!("Expected ApiTokensListed, got: {other:?}"),

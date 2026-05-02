@@ -4,9 +4,24 @@
 //! This module only knows how to *draw* the coloured axis handles for a given
 //! entity, active tool, and optionally highlighted axis.
 
+use bevy::gizmos::config::{GizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
 
 use crate::panels::Tool;
+
+// ---------------------------------------------------------------------------
+// Custom gizmo group — renders on top of all 3D geometry
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct GimbalGizmoGroup;
+
+/// Call once at Startup to configure the gimbal gizmo group to draw on top.
+pub fn configure_gimbal_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
+    let (cfg, _) = config_store.config_mut::<GimbalGizmoGroup>();
+    cfg.depth_bias = -1.0; // always render in front of meshes
+    cfg.line.width = 2.5;
+}
 
 // ---------------------------------------------------------------------------
 // Public types (used by node_manager for drag state)
@@ -33,24 +48,50 @@ const COLOR_HOVER: Color = Color::srgb(1.0, 1.0, 0.2);
 // Public drawing entry point (called by node_manager's draw system)
 // ---------------------------------------------------------------------------
 
-/// Draw the gimbal handles for `entity` given the current `tool` and which
-/// axis (if any) is actively being dragged (`dragging`).
-pub fn draw_gimbal_for_entity(
+/// Compute the world-space center of the gimbal for an entity.
+///
+/// If the entity (or any child) has a Bevy `Aabb`, the gimbal is placed at
+/// the AABB center transformed to world space.  Otherwise it falls back to
+/// the entity's `GlobalTransform` translation.
+pub fn gimbal_center(
     entity: Entity,
-    tool: Tool,
-    dragging: Option<GimbalAxis>,
     g_transform_query: &Query<&GlobalTransform>,
-    mut gizmos: Gizmos,
+    aabb_query: &Query<&bevy::camera::primitives::Aabb>,
+    children_query: &Query<&Children>,
+) -> Option<Vec3> {
+    let g_tx = g_transform_query.get(entity).ok()?;
+    // Try the entity itself first, then scan immediate children (glTF scenes
+    // often place the Aabb on a child mesh entity, not the root).
+    if let Ok(aabb) = aabb_query.get(entity) {
+        return Some(g_tx.transform_point(aabb.center.into()));
+    }
+    if let Ok(children) = children_query.get(entity) {
+        for child in children.iter() {
+            if let (Ok(child_gtx), Ok(aabb)) =
+                (g_transform_query.get(child), aabb_query.get(child))
+            {
+                return Some(child_gtx.transform_point(aabb.center.into()));
+            }
+        }
+    }
+    Some(g_tx.translation())
+}
+
+/// Draw the gimbal handles at `center` given the current `tool` and which
+/// axis (if any) is highlighted (`highlight` covers both hover and drag).
+pub fn draw_gimbal(
+    center: Vec3,
+    tool: Tool,
+    highlight: Option<GimbalAxis>,
+    mut gizmos: Gizmos<GimbalGizmoGroup>,
 ) {
     if tool == Tool::Select {
         return;
     }
-    let Ok(g_tx) = g_transform_query.get(entity) else { return };
-    let center = g_tx.translation();
 
-    let cx = if dragging == Some(GimbalAxis::X) { COLOR_HOVER } else { COLOR_X };
-    let cy = if dragging == Some(GimbalAxis::Y) { COLOR_HOVER } else { COLOR_Y };
-    let cz = if dragging == Some(GimbalAxis::Z) { COLOR_HOVER } else { COLOR_Z };
+    let cx = if highlight == Some(GimbalAxis::X) { COLOR_HOVER } else { COLOR_X };
+    let cy = if highlight == Some(GimbalAxis::Y) { COLOR_HOVER } else { COLOR_Y };
+    let cz = if highlight == Some(GimbalAxis::Z) { COLOR_HOVER } else { COLOR_Z };
 
     match tool {
         Tool::Select => {}
@@ -76,7 +117,7 @@ pub fn draw_gimbal_for_entity(
 // Drawing helpers
 // ---------------------------------------------------------------------------
 
-fn draw_move_handle(gizmos: &mut Gizmos, center: Vec3, dir: Vec3, color: Color) {
+fn draw_move_handle(gizmos: &mut Gizmos<GimbalGizmoGroup>, center: Vec3, dir: Vec3, color: Color) {
     let tip = center + dir * GIMBAL_LEN;
     gizmos.line(center, tip, color);
     let perp = if dir.abs().dot(Vec3::Y) < 0.9 {
@@ -89,8 +130,8 @@ fn draw_move_handle(gizmos: &mut Gizmos, center: Vec3, dir: Vec3, color: Color) 
     gizmos.line(tip, back - perp * 0.12, color);
 }
 
-fn draw_rotate_ring(gizmos: &mut Gizmos, center: Vec3, axis: Vec3, color: Color) {
-    const SEGS: usize = 32;
+fn draw_rotate_ring(gizmos: &mut Gizmos<GimbalGizmoGroup>, center: Vec3, axis: Vec3, color: Color) {
+    const SEGS: usize = 48;
     let perp1 = if axis.abs().dot(Vec3::Y) < 0.9 {
         axis.cross(Vec3::Y).normalize()
     } else {
@@ -106,7 +147,7 @@ fn draw_rotate_ring(gizmos: &mut Gizmos, center: Vec3, axis: Vec3, color: Color)
     }
 }
 
-fn draw_scale_handle(gizmos: &mut Gizmos, center: Vec3, dir: Vec3, color: Color) {
+fn draw_scale_handle(gizmos: &mut Gizmos<GimbalGizmoGroup>, center: Vec3, dir: Vec3, color: Color) {
     let tip = center + dir * GIMBAL_LEN;
     gizmos.line(center, tip, color);
     let perp1 = if dir.abs().dot(Vec3::Y) < 0.9 {
@@ -124,4 +165,30 @@ fn draw_scale_handle(gizmos: &mut Gizmos, center: Vec3, dir: Vec3, color: Color)
     gizmos.line(c2, c3, color);
     gizmos.line(c3, c4, color);
     gizmos.line(c4, c1, color);
+}
+
+// ---------------------------------------------------------------------------
+// Ring geometry helpers (used by node_manager for hit-testing)
+// ---------------------------------------------------------------------------
+
+/// Returns the two perpendicular basis vectors for a rotation ring around `axis`.
+pub fn ring_basis(axis: Vec3) -> (Vec3, Vec3) {
+    let perp1 = if axis.abs().dot(Vec3::Y) < 0.9 {
+        axis.cross(Vec3::Y).normalize()
+    } else {
+        axis.cross(Vec3::X).normalize()
+    };
+    let perp2 = axis.cross(perp1).normalize();
+    (perp1, perp2)
+}
+
+/// Sample points along a rotation ring for screen-space hit testing.
+pub fn ring_points(center: Vec3, axis: Vec3, count: usize) -> Vec<Vec3> {
+    let (perp1, perp2) = ring_basis(axis);
+    (0..count)
+        .map(|i| {
+            let angle = i as f32 * std::f32::consts::TAU / count as f32;
+            center + (perp1 * angle.cos() + perp2 * angle.sin()) * GIMBAL_LEN
+        })
+        .collect()
 }

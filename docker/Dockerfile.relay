@@ -1,0 +1,17 @@
+# Build stage
+FROM rust:1-alpine AS builder
+RUN apk add --no-cache musl-dev perl make
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p fractalengine-relay
+
+# Runtime stage
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /app/target/release/fe-relay /usr/local/bin/fe-relay
+VOLUME ["/data"]
+EXPOSE 8765
+ENV FE_DB_PATH=/data/fractalengine.db
+ENV FE_BIND_ADDR=0.0.0.0:8765
+ENV FE_CORS_ORIGINS=*
+ENTRYPOINT ["fe-relay"]

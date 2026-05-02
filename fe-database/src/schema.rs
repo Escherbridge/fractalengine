@@ -243,6 +243,17 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<OpLog>::apply_schema(db).await?;
     Repo::<Node>::apply_schema(db).await?;
     Repo::<Asset>::apply_schema(db).await?;
+
+    // Critical indexes for query performance
+    db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_node_petal: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_petal_fractal ON TABLE petal FIELDS fractal_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_petal_fractal: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_fractal_verse ON TABLE fractal FIELDS verse_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_fractal_verse: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_role_scope ON TABLE role FIELDS scope")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_role_scope: {e}"))?;
+
     Ok(())
 }
 

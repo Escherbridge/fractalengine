@@ -5,6 +5,9 @@
 
 use crate::repo::Db;
 
+/// Maximum number of active (non-revoked, non-expired) tokens a single subject may hold.
+pub const MAX_ACTIVE_TOKENS_PER_SUB: usize = 50;
+
 /// Schema definition for the api_token table.
 pub async fn apply_api_token_schema(db: &Db) -> anyhow::Result<()> {
     db.query(
@@ -61,13 +64,15 @@ pub async fn store_api_token(db: &Db, record: &ApiTokenRecord) -> anyhow::Result
 }
 
 /// Revoke a token by setting `revoked = true`.
+/// Only revokes if the token belongs to `owner_sub` (ownership check).
 ///
-/// Returns `true` if a token with the given `jti` was found and updated,
-/// `false` if no matching token exists.
-pub async fn revoke_api_token(db: &Db, jti: &str) -> anyhow::Result<bool> {
+/// Returns `true` if a matching token was found and updated,
+/// `false` if no matching token exists or it belongs to a different subject.
+pub async fn revoke_api_token(db: &Db, jti: &str, owner_sub: &str) -> anyhow::Result<bool> {
     let mut result: surrealdb::IndexedResults = db
-        .query("UPDATE api_token SET revoked = true WHERE jti = $jti RETURN AFTER")
+        .query("UPDATE api_token SET revoked = true WHERE jti = $jti AND sub = $sub RETURN AFTER")
         .bind(("jti", jti.to_string()))
+        .bind(("sub", owner_sub.to_string()))
         .await?;
     let rows: Vec<serde_json::Value> = result.take(0)?;
     Ok(!rows.is_empty())
@@ -90,41 +95,121 @@ pub async fn is_token_revoked(db: &Db, jti: &str) -> anyhow::Result<bool> {
         .unwrap_or(false))
 }
 
-/// List all active (non-revoked) tokens for a subject.
-///
-/// Note: expired tokens are not filtered here — callers that need expiry
-/// enforcement should check `expires_at` against the current time.
-pub async fn list_active_tokens(db: &Db, sub: &str) -> anyhow::Result<Vec<ApiTokenRecord>> {
-    let mut result: surrealdb::IndexedResults = db
-        .query("SELECT * FROM api_token WHERE sub = $sub AND revoked = false")
-        .bind(("sub", sub.to_string()))
-        .await?;
-    let raw: Vec<serde_json::Value> = result.take(0)?;
-    raw.into_iter()
-        .map(|v| serde_json::from_value(v).map_err(Into::into))
-        .collect()
-}
-
-/// List all active (non-revoked) tokens whose scope falls within the given
-/// scope prefix (exact match OR starts with prefix + "-").
-///
-/// This enables admin views: a verse admin sees all tokens scoped to their
-/// verse and its fractals/petals. Uses boundary-safe matching to prevent
-/// `VERSE#v1` from matching `VERSE#v10`.
-pub async fn list_tokens_by_scope(db: &Db, scope_prefix: &str) -> anyhow::Result<Vec<ApiTokenRecord>> {
-    let prefix_dash = format!("{}-", scope_prefix);
+/// Count active (non-revoked, non-expired) tokens for a subject.
+pub async fn count_active_tokens(db: &Db, sub: &str, now_rfc3339: &str) -> anyhow::Result<usize> {
     let mut result: surrealdb::IndexedResults = db
         .query(
-            "SELECT * FROM api_token WHERE revoked = false \
-             AND (scope = $prefix OR string::starts_with(scope, $prefix_dash))",
+            "SELECT count() AS c FROM api_token \
+             WHERE sub = $sub AND revoked = false AND expires_at > $now \
+             GROUP ALL",
+        )
+        .bind(("sub", sub.to_string()))
+        .bind(("now", now_rfc3339.to_string()))
+        .await?;
+    let rows: Vec<serde_json::Value> = result.take(0)?;
+    let count = rows
+        .first()
+        .and_then(|v| v.get("c"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    Ok(count as usize)
+}
+
+/// List active (non-revoked, non-expired) tokens for a subject, with pagination.
+pub async fn list_active_tokens(
+    db: &Db,
+    sub: &str,
+    now_rfc3339: &str,
+    offset: u32,
+    limit: u32,
+) -> anyhow::Result<(Vec<ApiTokenRecord>, u64)> {
+    // Count total matching
+    let mut count_result: surrealdb::IndexedResults = db
+        .query(
+            "SELECT count() AS c FROM api_token \
+             WHERE sub = $sub AND revoked = false AND expires_at > $now \
+             GROUP ALL",
+        )
+        .bind(("sub", sub.to_string()))
+        .bind(("now", now_rfc3339.to_string()))
+        .await?;
+    let count_rows: Vec<serde_json::Value> = count_result.take(0)?;
+    let total = count_rows
+        .first()
+        .and_then(|v| v.get("c"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Fetch page
+    let mut result: surrealdb::IndexedResults = db
+        .query(
+            "SELECT * FROM api_token \
+             WHERE sub = $sub AND revoked = false AND expires_at > $now \
+             ORDER BY created_at DESC \
+             LIMIT $limit START $offset",
+        )
+        .bind(("sub", sub.to_string()))
+        .bind(("now", now_rfc3339.to_string()))
+        .bind(("limit", limit as i64))
+        .bind(("offset", offset as i64))
+        .await?;
+    let raw: Vec<serde_json::Value> = result.take(0)?;
+    let records: Vec<ApiTokenRecord> = raw
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((records, total))
+}
+
+/// List active (non-revoked, non-expired) tokens whose scope falls within the
+/// given scope prefix (exact match OR starts with prefix + "-"), with pagination.
+pub async fn list_tokens_by_scope(
+    db: &Db,
+    scope_prefix: &str,
+    now_rfc3339: &str,
+    offset: u32,
+    limit: u32,
+) -> anyhow::Result<(Vec<ApiTokenRecord>, u64)> {
+    let prefix_dash = format!("{}-", scope_prefix);
+
+    // Count total matching
+    let mut count_result: surrealdb::IndexedResults = db
+        .query(
+            "SELECT count() AS c FROM api_token WHERE revoked = false AND expires_at > $now \
+             AND (scope = $prefix OR string::starts_with(scope, $prefix_dash)) \
+             GROUP ALL",
+        )
+        .bind(("prefix", scope_prefix.to_string()))
+        .bind(("prefix_dash", prefix_dash.clone()))
+        .bind(("now", now_rfc3339.to_string()))
+        .await?;
+    let count_rows: Vec<serde_json::Value> = count_result.take(0)?;
+    let total = count_rows
+        .first()
+        .and_then(|v| v.get("c"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Fetch page
+    let mut result: surrealdb::IndexedResults = db
+        .query(
+            "SELECT * FROM api_token WHERE revoked = false AND expires_at > $now \
+             AND (scope = $prefix OR string::starts_with(scope, $prefix_dash)) \
+             ORDER BY created_at DESC \
+             LIMIT $limit START $offset",
         )
         .bind(("prefix", scope_prefix.to_string()))
         .bind(("prefix_dash", prefix_dash))
+        .bind(("now", now_rfc3339.to_string()))
+        .bind(("limit", limit as i64))
+        .bind(("offset", offset as i64))
         .await?;
     let raw: Vec<serde_json::Value> = result.take(0)?;
-    raw.into_iter()
-        .map(|v| serde_json::from_value(v).map_err(Into::into))
-        .collect()
+    let records: Vec<ApiTokenRecord> = raw
+        .into_iter()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((records, total))
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use crate::messages::{ApiCommand, DbCommand, DbResult, NetworkCommand, NetworkEvent, TransformUpdate};
+use crate::messages::{ApiCommand, DbCommand, DbResult, NetworkCommand, NetworkEvent, SceneChange, TransformUpdate};
 
 /// Buffer size for all bounded crossbeam channels.
 pub const CHANNEL_BUFFER: usize = 256;
@@ -46,16 +46,20 @@ pub struct ApiChannels {
     pub api_cmd_rx: crossbeam::channel::Receiver<ApiCommand>,
     /// Real-time transform fan-out for WebSocket subscribers.
     pub transform_tx: tokio::sync::broadcast::Sender<TransformUpdate>,
+    /// Scene change broadcast for entity CUD operations (Phase 3).
+    pub entity_change_tx: tokio::sync::broadcast::Sender<SceneChange>,
 }
 
 impl ApiChannels {
     pub fn new() -> Self {
         let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(CHANNEL_BUFFER);
         let (transform_tx, _) = tokio::sync::broadcast::channel(TRANSFORM_BROADCAST_BUFFER);
+        let (entity_change_tx, _) = tokio::sync::broadcast::channel(CHANNEL_BUFFER);
         Self {
             api_cmd_tx,
             api_cmd_rx,
             transform_tx,
+            entity_change_tx,
         }
     }
 }

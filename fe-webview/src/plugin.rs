@@ -227,7 +227,7 @@ fn dispatch_commands(
                     bevy::log::warn!("Unauthorized SwitchTab(Config) blocked — role={:?}", tab_filter.role);
                     continue;
                 }
-                events.write(BrowserEvent::TabChanged { tab: tab.clone() });
+                events.write(BrowserEvent::TabChanged { tab: *tab });
             }
         }
     }
@@ -274,10 +274,10 @@ fn sync_portal_position(
     >,
 ) {
     let Some(mut res) = backend_res else { return };
-    let Some(backend) = res.backend.as_mut() else { return };
 
     #[cfg(feature = "winit")]
     {
+        let Some(backend) = res.backend.as_mut() else { return };
         let Ok(entity) = primary_window.single() else { return };
         bevy::winit::WINIT_WINDOWS.with_borrow(|winit_windows| {
             let Some(wrapper) = winit_windows.get_window(entity) else { return };

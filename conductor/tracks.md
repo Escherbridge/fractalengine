@@ -225,7 +225,7 @@ _Depends on: none | Blocks: Release CI_
 _Scope: Multi-target .cargo/config.toml, Linux/macOS compile verification, platform #[cfg] audit + tests, BUILDING.md_
 _Priority: P1 (validates that GUI binary compiles on all desktop platforms)_
 
-## [ ] Track: Headless Relay — Build Split, SecretStore Trait, Thin Client Surface
+## [~] Track: Headless Relay — Build Split, SecretStore Trait, Thin Client Surface
 
 _Link: [./tracks/headless_relay_20260429/](./tracks/headless_relay_20260429/)_
 _Depends on: Realtime API Gateway (complete) | Blocks: Release CI, Web Client SDK, IoT Integration, Docker Deployment, Mobile Client_
@@ -238,3 +238,45 @@ _Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/)_
 _Depends on: Cross-Platform Desktop, Headless Relay | Blocks: none_
 _Scope: GitHub Actions PR check (3 OS), release workflow (8 targets), sccache, cargo-zigbuild for musl, macOS universal binary, Docker image to GHCR_
 _Priority: P2 (CI validates what we claim about cross-platform support)_
+
+---
+
+## Code Review 2026-04-30 — Quality & Performance Fixes
+
+Comprehensive code review findings from 2026-04-30. Six tracks addressing 18 issues across `fe-ui`, `fe-webview`, `fe-database`, and `fractalengine`.
+
+## [ ] Track: Replace Deprecated egui `screen_rect()` API
+
+_Link: [./tracks/code_review_20260430_egui_deprecation/](./tracks/code_review_20260430_egui_deprecation/)_
+_Scope: `fe-ui` — 3 call sites | Blocks: next egui bump_
+_Priority: HIGH (will break on next dependency update)_
+
+## [ ] Track: Fix Silent Channel Send Error Swallowing
+
+_Link: [./tracks/code_review_20260430_channel_errors/](./tracks/code_review_20260430_channel_errors/)_
+_Scope: `fe-ui` — `navigation_manager.rs`, `verse_manager.rs`, `node_manager.rs` | Blocks: none_
+_Priority: HIGH (hides DB/sync thread crashes)_
+
+## [ ] Track: Refactor `apply_db_results` Mega-Function
+
+_Link: [./tracks/code_review_20260430_mega_function/](./tracks/code_review_20260430_mega_function/)_
+_Scope: `fe-ui` — `verse_manager.rs` ~450-line function → thin dispatcher | Blocks: none_
+_Priority: MEDIUM (maintainability, testability)_
+
+## [ ] Track: Fix Hot-Path Performance Regressions
+
+_Link: [./tracks/code_review_20260430_performance_hotpaths/](./tracks/code_review_20260430_performance_hotpaths/)_
+_Scope: `fe-ui` — O(n³) node lookup, per-frame Vec allocation, full tree traversal | Blocks: none_
+_Priority: HIGH (frame-time regression at scale)_
+
+## [ ] Track: Clippy Warnings, Code Quality, and Polish
+
+_Link: [./tracks/code_review_20260430_clippy_quality/](./tracks/code_review_20260430_clippy_quality/)_
+_Scope: `fe-ui`, `fe-webview`, `fe-database` — dead code, clippy lints, logging consistency, missing Debug | Blocks: none_
+_Priority: MEDIUM (developer experience)_
+
+## [ ] Track: Graceful Degradation on DB Init Failure
+
+_Link: [./tracks/code_review_20260430_db_graceful/](./tracks/code_review_20260430_db_graceful/)_
+_Scope: `fe-database` + `fractalengine` — replace `.expect("SurrealDB init")` with `Result` | Blocks: none_
+_Priority: MEDIUM (production robustness)_

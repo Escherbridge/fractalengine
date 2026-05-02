@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod auth;
 pub mod mcp;
 pub mod rest;
@@ -18,6 +19,12 @@ pub struct ApiConfig {
     pub verifying_key: ed25519_dalek::VerifyingKey,
     /// Receiver for revoked token JTI notifications.
     pub revocation_rx: tokio::sync::broadcast::Receiver<String>,
+    /// Content-addressed blob store for asset delivery. `None` if not configured.
+    pub blob_store: Option<fe_runtime::blob_store::BlobStoreHandle>,
+    /// Allowed CORS origins. Defaults to localhost-only if `None`.
+    pub cors_origins: Option<Vec<String>>,
+    /// Entity change broadcast for scene graph streaming (CUD deltas).
+    pub entity_change_tx: tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>,
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
@@ -37,11 +44,21 @@ pub fn spawn_api_thread(config: ApiConfig) -> std::thread::JoinHandle<()> {
 async fn run_server(config: ApiConfig) {
     let revoked_jtis = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
 
+    let cors_origins = config.cors_origins.unwrap_or_else(|| {
+        vec![
+            "http://localhost:8765".to_string(),
+            "http://127.0.0.1:8765".to_string(),
+        ]
+    });
+
     let state = Arc::new(ApiState {
         api_cmd_tx: config.api_cmd_tx,
         transform_broadcast_tx: config.transform_broadcast_tx,
+        entity_change_tx: config.entity_change_tx,
         verifying_key: config.verifying_key,
         revoked_jtis: revoked_jtis.clone(),
+        blob_store: config.blob_store,
+        cors_origins,
     });
 
     // Background task: listen for revocation notifications from Bevy thread

@@ -438,7 +438,7 @@ impl TestPeer {
                             }
                         }
                         Ok(DbCommand::RevokeApiToken { jti }) => {
-                            match fe_database::api_token_store::revoke_api_token(&db, &jti)
+                            match fe_database::api_token_store::revoke_api_token(&db, &jti, &db_local_did)
                                 .await
                             {
                                 Ok(true) => {
@@ -449,7 +449,7 @@ impl TestPeer {
                                 Ok(false) => {
                                     db_result_tx
                                         .send(DbResult::Error(format!(
-                                            "API token not found: {jti}"
+                                            "API token not found or not owned: {jti}"
                                         )))
                                         .ok();
                                 }
@@ -462,14 +462,18 @@ impl TestPeer {
                                 }
                             }
                         }
-                        Ok(DbCommand::ListApiTokens) => {
+                        Ok(DbCommand::ListApiTokens { offset, limit }) => {
+                            let now = chrono::Utc::now().to_rfc3339();
                             match fe_database::api_token_store::list_active_tokens(
                                 &db,
                                 &db_local_did,
+                                &now,
+                                offset,
+                                limit,
                             )
                             .await
                             {
-                                Ok(records) => {
+                                Ok((records, total)) => {
                                     let tokens: Vec<ApiTokenInfo> = records
                                         .into_iter()
                                         .map(|r| ApiTokenInfo {
@@ -483,7 +487,7 @@ impl TestPeer {
                                         })
                                         .collect();
                                     db_result_tx
-                                        .send(DbResult::ApiTokensListed { tokens })
+                                        .send(DbResult::ApiTokensListed { tokens, total })
                                         .ok();
                                 }
                                 Err(e) => {
@@ -497,11 +501,22 @@ impl TestPeer {
                         }
                         Ok(DbCommand::ListApiTokensByScope { .. }) => {
                             // Not implemented in test harness
-                            db_result_tx.send(DbResult::ScopedApiTokensListed { tokens: vec![] }).ok();
+                            db_result_tx.send(DbResult::ScopedApiTokensListed { tokens: vec![], total: 0 }).ok();
                         }
                         Ok(DbCommand::ResolvePetalScope { .. })
                         | Ok(DbCommand::ResolveNodeScope { .. }) => {
                             // Scope resolution — not implemented in test harness.
+                        }
+                        Ok(DbCommand::LoadNodesByPetal { petal_id }) => {
+                            db_result_tx.send(DbResult::NodesLoaded { petal_id, nodes: vec![] }).ok();
+                        }
+                        Ok(DbCommand::GetNodeTransform { node_id }) => {
+                            db_result_tx.send(DbResult::NodeTransformLoaded {
+                                node_id,
+                                position: [0.0, 0.0, 0.0],
+                                rotation: [0.0, 0.0, 0.0],
+                                scale: [1.0, 1.0, 1.0],
+                            }).ok();
                         }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }

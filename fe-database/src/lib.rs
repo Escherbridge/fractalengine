@@ -1,6 +1,41 @@
 use fe_runtime::messages::{DbCommand, DbResult};
 use surrealdb::engine::local::SurrealKv;
 
+/// Error type for database thread initialization failures.
+#[derive(Debug)]
+pub enum DbInitError {
+    RuntimeBuild(std::io::Error),
+    SurrealOpen { path: String, source: surrealdb::Error },
+    SurrealNsDb(surrealdb::Error),
+    SchemaApply(String),
+    ApiTokenSchemaApply(String),
+}
+
+impl std::fmt::Display for DbInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DbInitError::RuntimeBuild(e) => write!(f, "Failed to build Tokio runtime: {e}"),
+            DbInitError::SurrealOpen { path, source } => {
+                write!(f, "Failed to open SurrealDB at {path}: {source}")
+            }
+            DbInitError::SurrealNsDb(e) => write!(f, "Failed to set SurrealDB namespace/database: {e}"),
+            DbInitError::SchemaApply(e) => write!(f, "Schema application failed: {e}"),
+            DbInitError::ApiTokenSchemaApply(e) => write!(f, "API token schema application failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DbInitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            DbInitError::RuntimeBuild(e) => Some(e),
+            DbInitError::SurrealOpen { source, .. } => Some(source),
+            DbInitError::SurrealNsDb(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 // P2P Mycelium Phase A: re-export blob store types so callers (fe-ui, the
 // binary crate, and tests) can depend only on `fe-database` for the full
 // asset-pipeline surface.
@@ -114,21 +149,12 @@ pub fn spawn_db_thread(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
     blob_store: BlobStoreHandle,
-) -> std::thread::JoinHandle<()> {
-    spawn_db_thread_with_sync(rx, tx, blob_store, None, None, None)
+) -> Result<std::thread::JoinHandle<()>, DbInitError> {
+    spawn_db_thread_with_sync(rx, tx, blob_store, None, None, None, None)
 }
 
-/// Spawn the DB thread with optional replication sender, node keypair, and
-/// secret store.
-///
-/// When `repl_tx` is `Some`, DB write handlers can send `ReplicationEvent`s
-/// that the binary crate bridges into `SyncCommand::WriteRowEntry`. When
-/// `None`, replication is silently disabled.
-///
-/// When `keypair` is `Some`, invite generation/verification is enabled.
-///
-/// When `secret_store` is `Some`, namespace secrets are persisted through the
-/// provided backend. When `None`, namespace secret storage is silently skipped.
+/// Spawn the DB thread with optional replication, keypair, secret store,
+/// and entity-change broadcast for scene streaming.
 pub fn spawn_db_thread_with_sync(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
@@ -136,36 +162,54 @@ pub fn spawn_db_thread_with_sync(
     repl_tx: Option<ReplicationSender>,
     keypair: Option<fe_identity::NodeKeypair>,
     secret_store: Option<std::sync::Arc<dyn fe_identity::SecretStore>>,
-) -> std::thread::JoinHandle<()> {
+    entity_change_tx: Option<tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>>,
+) -> Result<std::thread::JoinHandle<()>, DbInitError> {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
         "spawn_db_thread must not be called from within a Tokio runtime"
     );
-    std::thread::spawn(move || {
+    let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel::<Result<(), DbInitError>>(0);
+    let handle = std::thread::spawn(move || {
         // The blob store handle is owned by the DB thread so future handlers
         // (Phase B: import refactor, Phase C: migration) can write to it
         // without crossing channel boundaries. Held live for thread lifetime.
         let blob_store: BlobStoreHandle = blob_store;
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("Failed to build database Tokio runtime");
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = startup_tx.send(Err(DbInitError::RuntimeBuild(e)));
+                return;
+            }
+        };
         rt.block_on(async {
             tracing::info!("Database thread started, initialising SurrealDB");
             let db: surrealdb::Surreal<surrealdb::engine::local::Db> =
-                surrealdb::Surreal::new::<SurrealKv>("data/fractalengine.db")
-                    .await
-                    .expect("SurrealDB init");
-            db.use_ns("fractalengine")
-                .use_db("fractalengine")
-                .await
-                .expect("SurrealDB ns/db");
-            rbac::apply_schema(&db)
-                .await
-                .expect("Schema application failed");
-            api_token_store::apply_api_token_schema(&db)
-                .await
-                .expect("API token schema application failed");
+                match surrealdb::Surreal::new::<SurrealKv>("data/fractalengine.db").await {
+                    Ok(db) => db,
+                    Err(e) => {
+                        let _ = startup_tx.send(Err(DbInitError::SurrealOpen {
+                            path: "data/fractalengine.db".to_string(),
+                            source: e,
+                        }));
+                        return;
+                    }
+                };
+            if let Err(e) = db.use_ns("fractalengine").use_db("fractalengine").await {
+                let _ = startup_tx.send(Err(DbInitError::SurrealNsDb(e)));
+                return;
+            }
+            if let Err(e) = rbac::apply_schema(&db).await {
+                let _ = startup_tx.send(Err(DbInitError::SchemaApply(e.to_string())));
+                return;
+            }
+            if let Err(e) = api_token_store::apply_api_token_schema(&db).await {
+                let _ = startup_tx.send(Err(DbInitError::ApiTokenSchemaApply(e.to_string())));
+                return;
+            }
+            let _ = startup_tx.send(Ok(()));
 
             // Derive the local DID from the node keypair (falls back to
             // "local-node" when no keypair is available).
@@ -233,7 +277,23 @@ pub fn spawn_db_thread_with_sync(
                     }
                     Ok(DbCommand::CreateNode { petal_id, name, position }) => {
                         match handlers::crud::create_node_handler(&db, &petal_id, &name, position).await {
-                            Ok(id) => send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false }),
+                            Ok(id) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
+                                        node: fe_runtime::messages::NodeDto {
+                                            node_id: id.clone(),
+                                            petal_id: petal_id.clone(),
+                                            name: name.clone(),
+                                            position,
+                                            rotation: [0.0, 0.0, 0.0, 1.0],
+                                            scale: [1.0, 1.0, 1.0],
+                                            has_asset: false,
+                                            asset_path: None,
+                                        },
+                                    });
+                                }
+                                send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false });
+                            }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create node failed: {e}"))),
                         }
                     }
@@ -268,8 +328,43 @@ pub fn spawn_db_thread_with_sync(
                         }
                     }
                     Ok(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }) => {
-                        if let Err(e) = handlers::transform::update_node_transform_handler(&db, &node_id, position, rotation, scale).await {
-                            tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
+                        match handlers::transform::update_node_transform_handler(&db, &node_id, position, rotation, scale).await {
+                            Ok(()) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeTransform {
+                                        node_id,
+                                        position,
+                                        rotation,
+                                        scale,
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
+                                // Emit rollback with last-known-good values from DB
+                                if let Some(ref ect) = entity_change_tx {
+                                    let rollback = match handlers::crud::get_node_transform_handler(&db, &node_id).await {
+                                        Ok(Some((pos, rot, sc))) => {
+                                            fe_runtime::messages::SceneChange::TransformFailed {
+                                                node_id,
+                                                position: pos,
+                                                rotation: rot,
+                                                scale: sc,
+                                            }
+                                        }
+                                        _ => {
+                                            // Can't read old values — send back zeros as a signal
+                                            fe_runtime::messages::SceneChange::TransformFailed {
+                                                node_id,
+                                                position: [0.0; 3],
+                                                rotation: [0.0; 3],
+                                                scale: [1.0, 1.0, 1.0],
+                                            }
+                                        }
+                                    };
+                                    let _ = ect.send(rollback);
+                                }
+                            }
                         }
                     }
                     Ok(DbCommand::UpdateNodeUrl { node_id, url }) => {
@@ -297,7 +392,15 @@ pub fn spawn_db_thread_with_sync(
                     }
                     Ok(DbCommand::DeleteEntity { entity_type, entity_id }) => {
                         match handlers::entity::delete_entity_handler(&db, entity_type, &entity_id).await {
-                            Ok(()) => send_result(&tx, DbResult::EntityDeleted { entity_type, entity_id }),
+                            Ok(()) => {
+                                // Emit NodeRemoved for node-level deletes (petal/fractal/verse
+                                // cascades are not individually tracked — clients should
+                                // re-subscribe after structural deletes).
+                                if entity_type == fe_runtime::messages::EntityType::Petal {
+                                    // Nodes were cascade-deleted; no individual events.
+                                }
+                                send_result(&tx, DbResult::EntityDeleted { entity_type, entity_id });
+                            }
                             Err(e) => send_result(&tx, DbResult::Error(e)),
                         }
                     }
@@ -346,21 +449,21 @@ pub fn spawn_db_thread_with_sync(
                         }
                     }
                     Ok(DbCommand::RevokeApiToken { jti }) => {
-                        match handlers::api_token::revoke_api_token_handler(&db, &jti).await {
+                        match handlers::api_token::revoke_api_token_handler(&db, &local_did, &jti).await {
                             Ok(true) => send_result(&tx, DbResult::ApiTokenRevoked { jti }),
-                            Ok(false) => send_result(&tx, DbResult::Error(format!("API token not found: {jti}"))),
+                            Ok(false) => send_result(&tx, DbResult::Error(format!("API token not found or not owned: {jti}"))),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Revoke API token failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::ListApiTokens) => {
-                        match handlers::api_token::list_api_tokens_handler(&db, &local_did).await {
-                            Ok(tokens) => send_result(&tx, DbResult::ApiTokensListed { tokens }),
+                    Ok(DbCommand::ListApiTokens { offset, limit }) => {
+                        match handlers::api_token::list_api_tokens_handler(&db, &local_did, offset, limit).await {
+                            Ok((tokens, total)) => send_result(&tx, DbResult::ApiTokensListed { tokens, total }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("List API tokens failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::ListApiTokensByScope { scope_prefix }) => {
-                        match handlers::api_token::list_api_tokens_by_scope_handler(&db, &scope_prefix).await {
-                            Ok(tokens) => send_result(&tx, DbResult::ScopedApiTokensListed { tokens }),
+                    Ok(DbCommand::ListApiTokensByScope { scope_prefix, offset, limit }) => {
+                        match handlers::api_token::list_api_tokens_by_scope_handler(&db, &scope_prefix, offset, limit).await {
+                            Ok((tokens, total)) => send_result(&tx, DbResult::ScopedApiTokensListed { tokens, total }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("List API tokens by scope failed: {e}"))),
                         }
                     }
@@ -376,13 +479,36 @@ pub fn spawn_db_thread_with_sync(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Resolve node scope failed: {e}"))),
                         }
                     }
+                    Ok(DbCommand::LoadNodesByPetal { petal_id }) => {
+                        match handlers::crud::load_nodes_by_petal_handler(&db, &blob_store, &petal_id).await {
+                            Ok(nodes) => send_result(&tx, DbResult::NodesLoaded { petal_id, nodes }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Load nodes by petal failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::GetNodeTransform { node_id }) => {
+                        match handlers::crud::get_node_transform_handler(&db, &node_id).await {
+                            Ok(Some((position, rotation, scale))) => {
+                                send_result(&tx, DbResult::NodeTransformLoaded { node_id, position, rotation, scale });
+                            }
+                            Ok(None) => send_result(&tx, DbResult::Error(format!("Node not found: {node_id}"))),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Get node transform failed: {e}"))),
+                        }
+                    }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
             }
             tracing::info!("Database thread shutting down");
             send_result(&tx, DbResult::Stopped);
         });
-    })
+    });
+    startup_rx
+        .recv()
+        .map_err(|_| DbInitError::RuntimeBuild(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "DB thread startup channel closed (thread may have panicked)",
+        )))?
+        .map_err(|e| e)?;
+    Ok(handle)
 }
 
 // ---------------------------------------------------------------------------

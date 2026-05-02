@@ -4,7 +4,7 @@ use fe_runtime::messages::{
 use crate::repo::{Db, Repo};
 use crate::schema::{Fractal, Role, Verse};
 
-use super::invite::{generate_namespace_secret, store_namespace_secret_in_keyring};
+use super::invite::{generate_namespace_secret, store_namespace_secret};
 use crate::{
     hash_from_hex, hash_to_hex, imported_assets_dir, replicate_row, BlobStoreHandle,
     ReplicationSender, IMPORTED_ASSETS_SUBDIR,
@@ -20,6 +20,7 @@ pub(crate) async fn create_verse_handler(
     repl_tx: Option<&ReplicationSender>,
     name: &str,
     local_did: &str,
+    secret_store: Option<&std::sync::Arc<dyn fe_identity::SecretStore>>,
 ) -> anyhow::Result<String> {
     let verse_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -52,8 +53,10 @@ pub(crate) async fn create_verse_handler(
             .as_bytes(),
     );
 
-    if let Err(e) = store_namespace_secret_in_keyring(&verse_id, &ns_secret_hex) {
-        tracing::warn!("Could not store namespace secret in keyring for verse {verse_id}: {e}");
+    if let Some(ss) = secret_store {
+        if let Err(e) = store_namespace_secret(ss.as_ref(), &verse_id, &ns_secret_hex) {
+            tracing::warn!("Could not store namespace secret for verse {verse_id}: {e}");
+        }
     }
 
     tracing::info!("Created verse: {name} ({verse_id}) namespace_id={ns_id_hex}");
@@ -452,6 +455,156 @@ pub(crate) async fn load_hierarchy_handler(
 
     tracing::info!("Loaded hierarchy: {} verses", verses.len());
     Ok(verses)
+}
+
+// ---------------------------------------------------------------------------
+// Load nodes by petal (scene snapshot)
+// ---------------------------------------------------------------------------
+
+/// Load all nodes belonging to a petal as `NodeDto` values for scene streaming.
+pub(crate) async fn load_nodes_by_petal_handler(
+    db: &Db,
+    blob_store: &BlobStoreHandle,
+    petal_id: &str,
+) -> anyhow::Result<Vec<fe_runtime::messages::NodeDto>> {
+    let mut node_res: surrealdb::IndexedResults = db
+        .query("SELECT * FROM node WHERE petal_id = $pid ORDER BY created_at ASC")
+        .bind(("pid", petal_id.to_string()))
+        .await?;
+    let nodes_raw: Vec<serde_json::Value> = node_res.take(0)?;
+
+    // Batch-fetch asset content hashes for blob:// paths
+    let asset_ids: Vec<String> = nodes_raw
+        .iter()
+        .filter_map(|n| n["asset_id"].as_str().map(|s| s.to_string()))
+        .collect();
+    let mut asset_hash_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if !asset_ids.is_empty() {
+        let mut asset_res: surrealdb::IndexedResults = db
+            .query("SELECT asset_id, content_hash FROM asset WHERE asset_id IN $aids")
+            .bind(("aids", asset_ids))
+            .await?;
+        let asset_rows: Vec<serde_json::Value> = asset_res.take(0)?;
+        for row in &asset_rows {
+            if let (Some(aid), Some(ch)) =
+                (row["asset_id"].as_str(), row["content_hash"].as_str())
+            {
+                asset_hash_map.insert(aid.to_string(), ch.to_string());
+            }
+        }
+    }
+
+    let nodes = nodes_raw
+        .iter()
+        .map(|n| {
+            let has_asset = !n["asset_id"].is_null();
+            let asset_id_str = n["asset_id"].as_str().map(|s| s.to_string());
+            let coords = &n["position"]["coordinates"];
+            let x = coords[0].as_f64().unwrap_or(0.0) as f32;
+            let z = coords[1].as_f64().unwrap_or(0.0) as f32;
+            let y = n["elevation"].as_f64().unwrap_or(0.0) as f32;
+
+            let rotation_raw = &n["rotation"];
+            let rotation = if rotation_raw.is_array() {
+                let arr = rotation_raw.as_array().unwrap();
+                [
+                    arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    arr.get(3).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                ]
+            } else {
+                [0.0, 0.0, 0.0, 1.0]
+            };
+
+            let scale_raw = &n["scale"];
+            let scale = if scale_raw.is_array() {
+                let arr = scale_raw.as_array().unwrap();
+                [
+                    arr.first().and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                    arr.get(1).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                    arr.get(2).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                ]
+            } else {
+                [1.0, 1.0, 1.0]
+            };
+
+            let asset_path = asset_id_str.as_ref().and_then(|aid| {
+                if let Some(ch) = asset_hash_map.get(aid) {
+                    if let Ok(hash) = hash_from_hex(ch) {
+                        if blob_store.has_blob(&hash) {
+                            return Some(format!("blob://{}.glb", ch));
+                        }
+                    }
+                }
+                None
+            });
+
+            fe_runtime::messages::NodeDto {
+                node_id: n["node_id"].as_str().unwrap_or_default().to_string(),
+                petal_id: petal_id.to_string(),
+                name: n["display_name"].as_str().unwrap_or_default().to_string(),
+                position: [x, y, z],
+                rotation,
+                scale,
+                has_asset,
+                asset_path,
+            }
+        })
+        .collect();
+
+    Ok(nodes)
+}
+
+// ---------------------------------------------------------------------------
+// Get node transform
+// ---------------------------------------------------------------------------
+
+/// Read a single node's persisted transform (position, rotation, scale).
+pub(crate) async fn get_node_transform_handler(
+    db: &Db,
+    node_id: &str,
+) -> anyhow::Result<Option<([f32; 3], [f32; 3], [f32; 3])>> {
+    let mut res: surrealdb::IndexedResults = db
+        .query("SELECT position, elevation, rotation, scale FROM node WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+
+    let coords = &row["position"]["coordinates"];
+    let x = coords[0].as_f64().unwrap_or(0.0) as f32;
+    let z = coords[1].as_f64().unwrap_or(0.0) as f32;
+    let y = row["elevation"].as_f64().unwrap_or(0.0) as f32;
+
+    let rotation_raw = &row["rotation"];
+    let rotation = if rotation_raw.is_array() {
+        let arr = rotation_raw.as_array().unwrap();
+        [
+            arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+        ]
+    } else {
+        [0.0, 0.0, 0.0]
+    };
+
+    let scale_raw = &row["scale"];
+    let scale = if scale_raw.is_array() {
+        let arr = scale_raw.as_array().unwrap();
+        [
+            arr.first().and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+        ]
+    } else {
+        [1.0, 1.0, 1.0]
+    };
+
+    Ok(Some(([x, y, z], rotation, scale)))
 }
 
 // ---------------------------------------------------------------------------

@@ -298,30 +298,77 @@ pub async fn update_transform(
         }
     }
 
-    // Fire-and-forget DB persist — we don't wait for the result.
-    let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
-    let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
-        cmd: DbCommand::UpdateNodeTransform {
-            node_id: node_id.clone(),
-            position: req.position,
-            rotation: req.rotation,
-            scale: req.scale,
-        },
-        reply_tx,
-    });
-
-    // Broadcast real-time update to WebSocket subscribers.
-    let _ = state.transform_broadcast_tx.send(TransformUpdate {
+    // Optimistic broadcast: push transform to WS subscribers + Bevy bridge
+    // immediately, BEFORE the DB persist completes.
+    let broadcast_receivers = state.transform_broadcast_tx.send(TransformUpdate {
         node_id: node_id.clone(),
-        petal_id: String::new(), // caller doesn't know petal_id for now
+        petal_id: String::new(),
         position: req.position,
         rotation: req.rotation,
         scale: req.scale,
         timestamp_ms: now_ms(),
         source_did: claims.sub,
+    }).unwrap_or(0);
+
+    // Fire-and-forget DB persist via TransformPersist (bypasses PendingApiRequests).
+    // On failure the DB thread emits SceneChange::TransformFailed so WS subscribers
+    // receive a rollback with the last-known-good values.
+    let _ = state.api_cmd_tx.send(ApiCommand::TransformPersist {
+        node_id: node_id.clone(),
+        position: req.position,
+        rotation: req.rotation,
+        scale: req.scale,
     });
 
-    Json(ApiResponse::success(serde_json::json!({ "node_id": node_id })))
+    Json(ApiResponse::success(serde_json::json!({
+        "node_id": node_id,
+        "broadcast_receivers": broadcast_receivers,
+        "persist": "queued"
+    })))
+}
+
+/// GET /api/v1/nodes/:node_id/transform -- read current transform.
+///
+/// Queries the node's persisted position, rotation, and scale directly from the
+/// database via `DbCommand::GetNodeTransform`.
+pub async fn get_transform(
+    State(state): State<Arc<crate::server::ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    use crate::types::TransformDto;
+
+    if let Err(_) = require_role(&claims, "viewer") {
+        return Json(ApiResponse::<TransformDto>::error("insufficient permissions"));
+    }
+    if !is_valid_ulid(&node_id) {
+        return Json(ApiResponse::<TransformDto>::error("invalid node_id"));
+    }
+
+    // Resolve node scope for enforcement
+    if let Some(scope) = resolve_node_scope(&state, &node_id).await {
+        if let Err(_) = require_scope(&claims, &scope) {
+            return Json(ApiResponse::<TransformDto>::error("insufficient scope"));
+        }
+    }
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let cmd = ApiCommand::DbRequest {
+        cmd: DbCommand::GetNodeTransform { node_id: node_id.clone() },
+        reply_tx,
+    };
+    if state.api_cmd_tx.send(cmd).is_err() {
+        return Json(ApiResponse::<TransformDto>::error("internal channel closed"));
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+        Ok(Ok(DbResult::NodeTransformLoaded { position, rotation, scale, .. })) => {
+            Json(ApiResponse::success(TransformDto { position, rotation, scale }))
+        }
+        Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<TransformDto>::error(e)),
+        Ok(Ok(_)) => Json(ApiResponse::<TransformDto>::error("unexpected response")),
+        Ok(Err(_)) => Json(ApiResponse::<TransformDto>::error("request cancelled")),
+        Err(_) => Json(ApiResponse::<TransformDto>::error("request timed out")),
+    }
 }
 
 // ---------------------------------------------------------------------------

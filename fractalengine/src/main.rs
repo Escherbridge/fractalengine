@@ -57,7 +57,7 @@ fn main() {
     let (entity_change_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::SceneChange>(256);
 
-    let _db_thread = fe_database::spawn_db_thread_with_sync(
+    let _db_thread = match fe_database::spawn_db_thread_with_sync(
         ch.db_cmd_rx,
         ch.db_res_tx,
         blob_store.clone(),
@@ -65,7 +65,15 @@ fn main() {
         Some(db_keypair),
         Some(secret_store.clone()),
         Some(entity_change_tx.clone()),
-    );
+    ) {
+        Ok(handle) => handle,
+        Err(e) => {
+            tracing::error!("Failed to start database thread: {}", e);
+            eprintln!("Fatal error: Could not initialize database.\n{}", e);
+            eprintln!("Please ensure the 'data/' directory is writable and the path is valid.");
+            std::process::exit(1);
+        }
+    };
 
     // Send seed command so the DB populates initial data
     ch.db_cmd_tx.send(DbCommand::Seed).ok();
@@ -162,7 +170,50 @@ fn main() {
     app.insert_resource(fe_runtime::app::RevocationBroadcastSender(revocation_tx));
     app.insert_resource(ApiCommandReceiver(Arc::new(Mutex::new(api_cmd_rx))));
     app.insert_resource(ApiCommandSender(api_cmd_tx));
-    app.insert_resource(TransformBroadcastSender(transform_broadcast_tx));
+    app.insert_resource(TransformBroadcastSender(transform_broadcast_tx.clone()));
+
+    // Bridge: tokio broadcast → crossbeam channel so Bevy can poll inbound
+    // API transform updates without a tokio runtime.
+    let (inbound_tx, inbound_rx) = crossbeam::channel::bounded::<fe_runtime::messages::TransformUpdate>(256);
+    {
+        let mut rx = transform_broadcast_tx.subscribe();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("inbound transform bridge runtime");
+            rt.block_on(async move {
+                tracing::info!("Transform bridge started — listening for broadcasts");
+                loop {
+                    match rx.recv().await {
+                        Ok(update) => {
+                            tracing::debug!(
+                                "Bridge recv: node={} pos=[{:.2},{:.2},{:.2}]",
+                                update.node_id, update.position[0], update.position[1], update.position[2],
+                            );
+                            match inbound_tx.try_send(update) {
+                                Ok(()) => {}
+                                Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                    tracing::warn!("Bridge: inbound crossbeam channel full — dropping transform");
+                                }
+                                Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                                    tracing::error!("Bridge: inbound crossbeam channel disconnected");
+                                    break;
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Bridge lagged by {n} transform broadcasts");
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        });
+    }
+    app.insert_resource(fe_runtime::app::InboundTransformReceiver(inbound_rx));
+
     app.init_resource::<PendingApiRequests>();
     app.add_systems(
         bevy::prelude::Update,

@@ -19,7 +19,7 @@ pub async fn get_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<Ro
     let raw: Vec<serde_json::Value> = result.take(0)?;
     let roles: Vec<Role> = raw
         .into_iter()
-        .map(|v| serde_json::from_value(v))
+        .map(serde_json::from_value)
         .collect::<Result<_, _>>()?;
     Ok(roles
         .into_iter()

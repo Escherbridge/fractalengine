@@ -135,6 +135,12 @@ pub struct ApiCommandSender(pub crossbeam::channel::Sender<ApiCommand>);
 #[derive(Resource, Clone)]
 pub struct TransformBroadcastSender(pub tokio::sync::broadcast::Sender<TransformUpdate>);
 
+/// Bevy resource: crossbeam receiver for inbound API transform updates.
+/// Bridged from the tokio broadcast in the API thread so Bevy can poll
+/// without a tokio runtime.
+#[derive(Resource)]
+pub struct InboundTransformReceiver(pub crossbeam::channel::Receiver<TransformUpdate>);
+
 /// Bevy resource: broadcast sender for revoked token JTI notifications.
 /// When a token is revoked, the JTI is broadcast so the API thread can
 /// update its revocation cache immediately.
@@ -159,16 +165,21 @@ impl PendingApiRequests {
     }
 
     /// Try to deliver a DbResult to the first pending request.
-    /// Returns true if a pending request consumed the result.
+    /// Returns true if a result was delivered.
+    ///
+    /// Skips any stale entries whose receivers were dropped (caller timed out)
+    /// so they cannot poison the FIFO queue for subsequent requests.
     pub fn try_deliver(&mut self, result: DbResult) -> bool {
-        // Simple FIFO: deliver to the oldest pending request.
-        if let Some((&id, _)) = self.pending.iter().next() {
-            if let Some(tx) = self.pending.remove(&id) {
-                let _ = tx.send(result);
-                return true;
+        loop {
+            let Some((&id, _)) = self.pending.iter().next() else { return false };
+            let Some(tx) = self.pending.remove(&id) else { return false };
+            if tx.is_closed() {
+                // Receiver dropped — discard stale entry and try the next one.
+                continue;
             }
+            let _ = tx.send(result);
+            return true;
         }
-        false
     }
 
     pub fn enqueue_hierarchy(
@@ -206,6 +217,15 @@ pub fn drain_api_commands(
             }
             Ok(ApiCommand::SyncForward { .. }) => {
                 // Transform sync forwarding handled via broadcast channel
+            }
+            Ok(ApiCommand::TransformPersist { node_id, position, rotation, scale }) => {
+                // Fire-and-forget: send directly to DB without enqueuing a reply.
+                let _ = db_tx.0.send(DbCommand::UpdateNodeTransform {
+                    node_id,
+                    position,
+                    rotation,
+                    scale,
+                });
             }
             Err(_) => break,
         }
