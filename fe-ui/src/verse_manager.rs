@@ -162,11 +162,15 @@ fn apply_db_results(
     mut ui_mgr: ResMut<UiManager>,
     mut local_role: ResMut<crate::plugin::LocalUserRole>,
     revocation_tx: Option<Res<fe_runtime::app::RevocationBroadcastSender>>,
+    mut inspector: ResMut<crate::plugin::InspectorFormState>,
+    mut pending_api: ResMut<fe_runtime::app::PendingApiRequests>,
 ) {
     for result in reader.read() {
         match result {
             DbResult::Seeded { .. } => {
-                db_sender.0.send(DbCommand::LoadHierarchy).ok();
+                if db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
+                    bevy::log::error!("db_sender channel closed after Seeded — DB thread may have crashed");
+                }
             }
 
             DbResult::HierarchyLoaded { verses } => {
@@ -249,6 +253,9 @@ fn apply_db_results(
                         nav.active_verse_name = v.name.clone();
                     }
                 }
+
+                // Deliver to pending API requests (GET /api/v1/hierarchy).
+                pending_api.deliver_hierarchy(verses.clone());
             }
 
             DbResult::GltfImported { node_id, name, petal_id, asset_path, position, .. } => {
@@ -326,13 +333,17 @@ fn apply_db_results(
             }
 
             DbResult::VerseJoined { .. } => {
-                db_sender.0.send(DbCommand::LoadHierarchy).ok();
+                if db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
+                    bevy::log::error!("db_sender channel closed after VerseJoined — DB thread may have crashed");
+                }
             }
 
             DbResult::DatabaseReset { .. } => {
                 bevy::log::info!("Database reset — clearing hierarchy");
                 verse_mgr.verses.clear();
-                db_sender.0.send(DbCommand::LoadHierarchy).ok();
+                if db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
+                    bevy::log::error!("db_sender channel closed after DatabaseReset — DB thread may have crashed");
+                }
             }
 
             DbResult::Error(msg) => {
@@ -457,56 +468,91 @@ fn apply_db_results(
                 local_role.role = Some(level);
             }
 
-            DbResult::ApiTokenMinted { token, jti, scope, max_role, expires_at, label } => {
+            DbResult::ApiTokenMinted { token, jti, scope, max_role, expires_at: _, label: _ } => {
                 if let ActiveDialog::EntitySettings { ref mut generated_api_token, .. } = ui_mgr.active_dialog {
                     *generated_api_token = Some(token.clone());
                 }
+                inspector.generated_api_token = Some(token.clone());
                 bevy::log::info!("API token minted: jti={} scope={} role={}", jti, scope, max_role);
-                // Refresh the token list
-                db_sender.0.send(DbCommand::ListApiTokens).ok();
+                // Refresh the scoped token list at current page
+                refresh_inspector_tokens(&db_sender, &inspector);
             }
 
             DbResult::ApiTokenRevoked { jti } => {
                 bevy::log::info!("API token revoked: jti={}", jti);
-                // Notify API thread to update its revocation cache
                 if let Some(ref tx) = revocation_tx {
-                    tx.0.send(jti.clone()).ok();
+                    if tx.0.send(jti.clone()).is_err() {
+                        bevy::log::error!("revocation_tx channel closed — API thread may have crashed");
+                    }
                 }
-                // Refresh the token list
-                db_sender.0.send(DbCommand::ListApiTokens).ok();
+                // Refresh the scoped token list at current page
+                refresh_inspector_tokens(&db_sender, &inspector);
             }
 
-            DbResult::ApiTokensListed { tokens } => {
+            DbResult::ApiTokensListed { tokens, total } => {
+                let entries = tokens_to_entries(tokens);
                 if let ActiveDialog::EntitySettings { ref mut api_tokens, ref mut api_tokens_loading, .. } = ui_mgr.active_dialog {
-                    *api_tokens = tokens.iter().map(|t| crate::plugin::ApiTokenEntry {
-                        jti: t.jti.clone(),
-                        scope: t.scope.clone(),
-                        max_role: t.max_role.clone(),
-                        label: t.label.clone(),
-                        created_at: t.created_at.clone(),
-                        expires_at: t.expires_at.clone(),
-                        revoked: t.revoked,
-                    }).collect();
+                    *api_tokens = entries.clone();
                     *api_tokens_loading = false;
                 }
+                inspector.api_tokens = entries;
+                inspector.api_tokens_total = *total;
+                inspector.api_tokens_loading = false;
             }
 
-            DbResult::ScopedApiTokensListed { tokens } => {
+            DbResult::ScopedApiTokensListed { tokens, total } => {
+                let entries = tokens_to_entries(tokens);
                 if let ActiveDialog::EntitySettings { ref mut scoped_api_tokens, ref mut scoped_tokens_loading, .. } = ui_mgr.active_dialog {
-                    *scoped_api_tokens = tokens.iter().map(|t| crate::plugin::ApiTokenEntry {
-                        jti: t.jti.clone(),
-                        scope: t.scope.clone(),
-                        max_role: t.max_role.clone(),
-                        label: t.label.clone(),
-                        created_at: t.created_at.clone(),
-                        expires_at: t.expires_at.clone(),
-                        revoked: t.revoked,
-                    }).collect();
+                    *scoped_api_tokens = entries.clone();
                     *scoped_tokens_loading = false;
                 }
+                inspector.api_tokens = entries;
+                inspector.api_tokens_total = *total;
+                inspector.api_tokens_loading = false;
             }
 
             _ => {}
+        }
+
+        // Also try delivering every result to pending API requests.
+        // This covers cases like ScopeResolved, NodeCreated, etc. that
+        // the API thread may be waiting on.
+        pending_api.try_deliver(result.clone());
+    }
+}
+
+/// Convert ApiTokenInfo list to UI-displayable ApiTokenEntry list.
+fn tokens_to_entries(tokens: &[fe_runtime::messages::ApiTokenInfo]) -> Vec<crate::plugin::ApiTokenEntry> {
+    tokens.iter().map(|t| crate::plugin::ApiTokenEntry {
+        jti: t.jti.clone(),
+        scope: t.scope.clone(),
+        max_role: t.max_role.clone(),
+        label: t.label.clone(),
+        created_at: t.created_at.clone(),
+        expires_at: t.expires_at.clone(),
+        revoked: t.revoked,
+    }).collect()
+}
+
+/// Send a scoped, paginated token list refresh using the inspector's current scope and page.
+fn refresh_inspector_tokens(
+    db_sender: &fe_runtime::app::DbCommandSender,
+    inspector: &crate::plugin::InspectorFormState,
+) {
+    let offset = inspector.api_tokens_page * crate::plugin::API_TOKEN_PAGE_SIZE;
+    let limit = crate::plugin::API_TOKEN_PAGE_SIZE;
+    let scope = &inspector.api_token_scope_buf;
+    if scope.is_empty() {
+        if db_sender.0.send(DbCommand::ListApiTokens { offset, limit }).is_err() {
+            bevy::log::error!("db_sender channel closed during token list refresh — DB thread may have crashed");
+        }
+    } else {
+        if db_sender.0.send(DbCommand::ListApiTokensByScope {
+            scope_prefix: scope.clone(),
+            offset,
+            limit,
+        }).is_err() {
+            bevy::log::error!("db_sender channel closed during scoped token list refresh — DB thread may have crashed");
         }
     }
 }

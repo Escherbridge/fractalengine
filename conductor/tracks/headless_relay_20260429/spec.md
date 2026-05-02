@@ -1,4 +1,4 @@
-# Track: Headless Relay — Cross-Platform Build Split, SecretStore Trait, Thin Client Surface
+# Track: Headless Relay — Build Split, SecretStore Trait, Thin Client Surface
 
 **Created:** 2026-04-29
 **Status:** Draft
@@ -24,11 +24,11 @@ The existing `fe-api` gateway (axum on `:8765`) already provides ~70% of the rel
 ## Goals
 
 1. A `fractalengine-relay` binary crate that compiles and runs without GPU, windowing, WebView, or OS keychain
-2. A `SecretStore` trait abstracting keyring access — OS keychain on desktop, env vars / encrypted file in containers
-3. Feature-gated `fe-runtime` with clean `gui` / `headless` split in `build_app()` — no `#[cfg]` spaghetti
+2. A `SecretStore` trait abstracting keyring access — injectable, testable, zero configuration for the common case
+3. Zero feature flags on shared crates — the dependency graph alone controls what compiles
 4. Every new abstraction is unit-testable with mock implementations
-5. Cross-compilation CI producing 8 artifacts (3 GUI + 3 headless + macOS universal + Docker image)
-6. Scene graph streaming additions to `fe-api` (snapshot + delta) so thin clients can render remote state
+5. Scene graph streaming additions to `fe-api` (snapshot + delta) so thin clients can render remote state
+6. Documentation updated at every phase, not bolted on at the end
 
 ## Non-Goals (this track)
 
@@ -37,6 +37,37 @@ The existing `fe-api` gateway (axum on `:8765`) already provides ~70% of the rel
 - WebTransport / QUIC upgrade for browser clients — deferred
 - Binary protocol encoding (MessagePack/FlatBuffers) — deferred
 - TLS termination (use reverse proxy for now)
+- CI/CD pipeline (covered by Release CI track)
+
+---
+
+## Design Principle: No Flags, Just Crates
+
+The key architectural insight is that **the Cargo dependency graph is the feature flag**. The relay binary simply does not depend on `fe-renderer`, `fe-ui`, or `fe-webview`. No `#[cfg]` needed to exclude them — they never compile.
+
+For the one place where behavior must differ (`build_app` — plugin selection), we use **two plain functions** in `fe-runtime` instead of conditional compilation:
+
+```rust
+// fe-runtime/src/app.rs
+
+/// Shared setup: inserts channel resources, registers drain systems.
+/// Called by both GUI and relay after they add their own plugins.
+pub fn setup_core_systems(app: &mut App, handles: BevyHandles) { ... }
+```
+
+Each binary's `main.rs` does:
+```rust
+// GUI
+app.add_plugins(DefaultPlugins.set(AssetPlugin { ... }));
+app.add_plugins(EguiPlugin);
+fe_runtime::app::setup_core_systems(&mut app, handles);
+
+// Relay
+app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_millis(16))));
+fe_runtime::app::setup_core_systems(&mut app, handles);
+```
+
+**Result:** Zero feature flags on `fe-runtime`. Zero `#[cfg]` blocks. `bevy_egui` is a dependency of the GUI binary crate, never of `fe-runtime`.
 
 ---
 
@@ -47,22 +78,23 @@ The existing `fe-api` gateway (axum on `:8765`) already provides ~70% of the rel
 ```
 fractalengine (GUI)                 fractalengine-relay (headless)
 +---------------------------------+ +----------------------------------+
-| fe-runtime (gui feature)        | | fe-runtime (headless feature)    |
+| fe-runtime                      | | fe-runtime                       |
 | fe-database                     | | fe-database                      |
 | fe-network                      | | fe-network                       |
 | fe-sync                         | | fe-sync                          |
-| fe-identity (keyring-os)        | | fe-identity (headless)           |
+| fe-identity                     | | fe-identity (no keyring dep)     |
 | fe-auth                         | | fe-auth                          |
 | fe-api                          | | fe-api                           |
 | fe-renderer  <-- GUI only       | |                                  |
 | fe-ui        <-- GUI only       | |                                  |
 | fe-webview   <-- GUI only       | |                                  |
-| Bevy DefaultPlugins             | | Bevy MinimalPlugins              |
-| keyring (OS)                    | | SecretStore (env/file)           |
+| bevy (full)                     | | bevy (full, MinimalPlugins used) |
+| bevy_egui    <-- GUI only       | |                                  |
+| keyring      <-- GUI only       | |                                  |
 +---------------------------------+ +----------------------------------+
 ```
 
-The relay is NOT a stripped-down GUI build. It is a **separate binary crate** that depends only on shared crates. The dependency graph enforces the split — no feature flags needed to exclude GUI crates.
+**Only one optional dependency in the entire workspace:** `keyring` on `fe-identity` (default-enabled, omitted by the relay crate).
 
 ### SecretStore Trait
 
@@ -74,20 +106,27 @@ pub trait SecretStore: Send + Sync + 'static {
 }
 ```
 
-Implementations:
-- `OsKeystoreBackend` — wraps `keyring` crate (desktop, feature-gated)
+Three implementations, all always compiled (pure Rust):
+- `OsKeystoreBackend` — wraps `keyring` crate, available when `keyring` dep is present
 - `EnvBackend` — maps `(service, account)` to `FE_SECRET_{SERVICE}_{ACCOUNT}` env vars
 - `InMemoryBackend` — for tests
 
-Backend selection: `FE_KEYSTORE_BACKEND` env var, with auto-detection fallback.
+**No factory function. No env var to select backend.** Each binary constructs the one it needs:
+- GUI `main.rs`: `let store = Arc::new(OsKeystoreBackend);`
+- Relay `main.rs`: `let store = Arc::new(EnvBackend::new());`
+- Tests: `let store = Arc::new(InMemoryBackend::new());`
 
-### Bevy Headless Mode
+### Relay Configuration
 
-`fe-runtime` gains `gui` (default) and `headless` features:
-- `gui`: `DefaultPlugins` + `bevy_egui` + `FrameTimeDiagnosticsPlugin`
-- `headless`: `MinimalPlugins` + `ScheduleRunnerPlugin::run_loop(16ms)` + `LogPlugin`
+Three env vars, all with sensible defaults:
 
-Both paths share: channel resources, drain systems, message types. The relay still runs Bevy ECS for scheduling — it is a headless Bevy app, not a non-Bevy app.
+| Env Var | Default | Purpose |
+|---------|---------|---------|
+| `FE_BIND_ADDR` | `0.0.0.0:8765` | Listen address |
+| `FE_DB_PATH` | `data/fractalengine.db` | SurrealDB storage path |
+| `FE_CORS_ORIGINS` | `*` | Allowed CORS origins (comma-separated) |
+
+Secrets are injected via the `FE_SECRET_*` pattern. No other configuration is needed.
 
 ### Scene Graph Streaming (fe-api additions)
 
@@ -100,7 +139,6 @@ Thin clients need more than transforms. New WS message types:
 | `SceneDelta` | server -> client | Incremental changes (add/remove/rename) |
 | `EntityCommand` | client -> server | CUD operations over WS (not just REST) |
 | `EntityCommandResult` | server -> client | Response to EntityCommand |
-| `AssetReady` | server -> client | Asset URL + content hash for fetching |
 
 New REST endpoint: `GET /api/v1/assets/:content_hash` — serves blob store content with immutable cache headers.
 
@@ -111,13 +149,13 @@ New broadcast channel: `entity_change_tx/rx` — parallel to transform broadcast
 ## Functional Requirements
 
 ### FR-1: Headless Relay Binary
-The `fractalengine-relay` binary compiles without `fe-renderer`, `fe-ui`, `fe-webview`, or `bevy_egui`. It runs Bevy with `MinimalPlugins`, spawns DB/network/sync/API threads, and blocks until shutdown signal.
+The `fractalengine-relay` binary compiles without `fe-renderer`, `fe-ui`, `fe-webview`, `bevy_egui`, or `keyring`. It runs Bevy with `MinimalPlugins`, spawns DB/network/sync/API threads, and blocks until shutdown signal.
 
 ### FR-2: SecretStore Trait
-All keyring access (3 call sites: node keypair, named keypair, verse namespace secret) goes through `Arc<dyn SecretStore>`. Desktop uses OS keychain. Headless uses env vars. Both are injectable and testable.
+All keyring access (3 call sites: node keypair, named keypair, verse namespace secret) goes through `Arc<dyn SecretStore>`. Each binary picks its backend. Tests use `InMemoryBackend`.
 
-### FR-3: Feature-Gated build_app
-`fe-runtime::app::build_app()` branches on `#[cfg(feature = "gui")]` / `#[cfg(feature = "headless")]`. `bevy_egui` becomes an optional dependency of `fe-runtime`. No other shared crate changes.
+### FR-3: Zero-Flag Shared Crates
+No feature flags on `fe-runtime`, `fe-database`, `fe-network`, `fe-sync`, `fe-api`, or `fe-auth`. The only optional dep is `keyring` on `fe-identity`. Plugin selection happens in each binary's `main.rs`, not behind `#[cfg]`.
 
 ### FR-4: Scene Graph Streaming
 WS clients can subscribe to a petal's scene graph and receive a snapshot followed by incremental deltas. CUD operations broadcast `SceneChange` events to all subscribed clients.
@@ -125,26 +163,10 @@ WS clients can subscribe to a petal's scene graph and receive a snapshot followe
 ### FR-5: Asset Delivery
 HTTP endpoint serves content-addressed assets from the blob store. Responses are cacheable (ETag + `Cache-Control: immutable`).
 
-### FR-6: Cross-Compilation CI
-GitHub Actions workflow builds 8 targets: Linux x64 GUI, Windows x64/ARM64 GUI, macOS universal GUI, Linux x64/ARM64 musl headless, Linux ARM64 GNU headless. Uses sccache, cargo-zigbuild (musl), cross-rs (ARM GNU).
+### FR-6: Incremental Documentation
+Each phase updates `README.md` and/or `BUILDING.md` with what was just built. Inline doc comments on all new public types and functions. Architecture docs stay current, not aspirational.
 
-### FR-7: Docker Image
-Multi-stage Dockerfile producing a `FROM scratch` image with the musl static relay binary. Configurable via `FE_KEYSTORE_BACKEND`, `FE_DB_PATH`, and `FE_SECRET_*` env vars.
-
----
-
-## Target Platform Matrix
-
-| Target | Type | Tool | Binary |
-|--------|------|------|--------|
-| `x86_64-unknown-linux-gnu` | GUI | native | `fractalengine-linux-x86_64` |
-| `x86_64-pc-windows-msvc` | GUI | native | `fractalengine-windows-x86_64.exe` |
-| `aarch64-pc-windows-msvc` | GUI | MSVC cross | `fractalengine-windows-aarch64.exe` |
-| `aarch64-apple-darwin` | GUI | native (M1 runner) | `fractalengine-macos-universal` |
-| `x86_64-apple-darwin` | GUI | cross from M1 | (merged into universal) |
-| `x86_64-unknown-linux-musl` | Headless | cargo-zigbuild | `fe-relay-linux-musl-x86_64` |
-| `aarch64-unknown-linux-musl` | Headless | cargo-zigbuild | `fe-relay-linux-musl-aarch64` |
-| `aarch64-unknown-linux-gnu` | Headless | cross-rs | `fe-relay-linux-aarch64` |
+**Note:** Cross-compilation CI and Docker image publishing are covered by the separate [Release CI track](../release_ci_20260429/spec.md).
 
 ---
 
@@ -153,11 +175,10 @@ Multi-stage Dockerfile producing a `FROM scratch` image with the musl static rel
 Every new abstraction introduces a testable seam:
 
 - **SecretStore**: `InMemoryBackend` for all tests. No OS keychain needed in CI.
-- **build_app headless**: `cargo test -p fe-runtime --features headless` — Bevy app builds and ticks without GPU.
+- **setup_core_systems**: Unit test builds a `MinimalPlugins` app, calls `setup_core_systems`, asserts resources exist.
 - **Relay binary**: `cargo build -p fractalengine-relay` succeeds on Linux CI without display deps.
 - **Scene streaming**: Integration tests in `fe-test-harness` — connect WS client, subscribe to petal, verify snapshot + delta messages.
 - **Asset delivery**: Integration test — upload blob, GET by hash, verify content + headers.
-- **Cross-compilation**: CI matrix — all 8 targets build green.
 
 ---
 
@@ -167,6 +188,6 @@ Every new abstraction introduces a testable seam:
 |------|------------|
 | `ring` crate fails under musl | Verified: ring 0.17.x builds under musl with zig cc. Fallback: `aws-lc-sys`. |
 | SurrealKV mmap issues on musl | SurrealKV uses `memmap2` which is POSIX-compliant. No musl-specific issues known. |
-| Bevy `MinimalPlugins` missing systems the relay needs | Verified: only `TransformPlugin` propagation needed, included in MinimalPlugins. |
-| `bevy_egui` conditional import breaks compile | Gate with `#[cfg(feature = "gui")] use bevy_egui::EguiPlugin;` — single import change. |
-| Relay `main.rs` diverges from GUI `main.rs` | Extract shared wiring into a function in `fe-runtime` that both binaries call. |
+| Bevy `MinimalPlugins` missing systems the relay needs | Verified: `TransformPlugin` propagation included in MinimalPlugins. |
+| Relay `main.rs` diverges from GUI `main.rs` | Extract shared wiring into `fe-runtime::wiring::wire_engine()` that both call. |
+| `bevy_egui` pulled transitively into relay | Verified: only the GUI binary depends on it. No shared crate imports it. |

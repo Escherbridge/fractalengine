@@ -3,8 +3,8 @@ use bevy_egui::egui;
 use crate::atlas::DashboardState;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{
-    ActiveDialog, CameraFocusTarget, CreateKind,
-    InspectorFormState, LocalUserRole, SidebarState, ToolState, UiAction, UiManager,
+    ActiveDialog, CameraFocusTarget, CreateKind, API_TOKEN_PAGE_SIZE,
+    InspectorFormState, InspectorTab, LocalUserRole, SidebarState, ToolState, UiAction, UiManager,
     ViewportCursorWorld,
 };
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
@@ -63,7 +63,7 @@ pub fn gardener_console(
     if ui_mgr.portal_is_open() {
         right_portal_toolbar(ctx, ui_mgr);
     } else {
-        right_inspector(ctx, inspector, node_mgr, ui_mgr, local_role);
+        right_inspector(ctx, inspector, node_mgr, ui_mgr, local_role, db_tx, nav);
     }
 
     let viewport_response = egui::CentralPanel::default()
@@ -91,7 +91,34 @@ pub fn gardener_console(
     render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx);
     render_entity_settings_dialog(ctx, ui_mgr, db_tx);
 
+    // Toast overlay (bottom-left, semi-transparent)
+    render_toast(ctx, ui_mgr);
+
     viewport_response.response.rect
+}
+
+fn render_toast(ctx: &egui::Context, ui_mgr: &UiManager) {
+    let now = ctx.input(|i| i.time);
+    let Some((msg, alpha)) = ui_mgr.active_toast(now) else { return };
+
+    let bg = egui::Color32::from_rgba_unmultiplied(30, 30, 40, (alpha * 220.0) as u8);
+    let text_color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, (alpha * 255.0) as u8);
+
+    egui::Area::new(egui::Id::new("toast_overlay"))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -40.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(bg)
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(msg).color(text_color).small());
+                });
+        });
+
+    // Request repaint while toast is visible so the fade animates
+    ctx.request_repaint();
 }
 
 // ---------------------------------------------------------------------------
@@ -703,10 +730,12 @@ fn right_inspector(
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    nav: &NavigationManager,
 ) {
     let open = node_mgr.selected_entity().is_some();
     // Allow up to 80% of screen width.
-    let max_w = ctx.screen_rect().width() * 0.8;
+    let max_w = ctx.viewport_rect().width() * 0.8;
     egui::SidePanel::right("inspector")
         .resizable(true)
         .default_width(260.0)
@@ -731,7 +760,7 @@ fn right_inspector(
                     if ui
                         .add(
                             egui::Button::new("\u{2715}")
-                                .fill(egui::Color32::TRANSPARENT) // intentionally transparent, not themed
+                                .fill(egui::Color32::TRANSPARENT)
                                 .small(),
                         )
                         .clicked()
@@ -740,19 +769,80 @@ fn right_inspector(
                     }
                 });
             });
+
+            // Tab bar
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                for (tab, label) in [
+                    (InspectorTab::Properties, "Properties"),
+                    (InspectorTab::ApiAccess, "API Access"),
+                ] {
+                    let active = inspector.active_tab == tab;
+                    let btn = egui::Button::new(
+                        egui::RichText::new(label).small().color(
+                            if active { theme::TEXT_BRIGHT } else { theme::TEXT_DIM }
+                        ),
+                    )
+                    .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+                    if ui.add(btn).clicked() {
+                        let prev_tab = inspector.active_tab;
+                        inspector.active_tab = tab;
+
+                        // Clear sensitive state when leaving the API tab
+                        if prev_tab == InspectorTab::ApiAccess && tab != InspectorTab::ApiAccess {
+                            inspector.generated_api_token = None;
+                        }
+
+                        // Auto-populate scope + fetch tokens when entering API tab
+                        if tab == InspectorTab::ApiAccess {
+                            inspector.api_tokens_page = 0;
+                            if inspector.api_token_scope_buf.is_empty() {
+                                inspector.api_token_scope_buf = build_nav_scope(nav);
+                            }
+                            let scope = inspector.api_token_scope_buf.clone();
+                            if !scope.is_empty() {
+                                db_tx.send(DbCommand::ListApiTokensByScope {
+                                    scope_prefix: scope,
+                                    offset: 0,
+                                    limit: API_TOKEN_PAGE_SIZE,
+                                }).ok();
+                            }
+                        }
+                    }
+                }
+            });
             ui.separator();
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    ui.add_space(4.0);
-                    inspector_entity_section(ui, node_mgr);
-                    ui.add_space(2.0);
-                    inspector_transform_section(ui, inspector);
-                    ui.add_space(2.0);
-                    inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
+                    match inspector.active_tab {
+                        InspectorTab::Properties => {
+                            ui.add_space(4.0);
+                            inspector_entity_section(ui, node_mgr);
+                            ui.add_space(2.0);
+                            inspector_transform_section(ui, inspector);
+                            ui.add_space(2.0);
+                            inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
+                        }
+                        InspectorTab::ApiAccess => {
+                            ui.add_space(4.0);
+                            inspector_api_access_section(ui, inspector, node_mgr, db_tx, local_role, ui_mgr);
+                        }
+                    }
                 });
         });
+}
+
+/// Build a scope string from the current navigation state.
+fn build_nav_scope(nav: &NavigationManager) -> String {
+    match (&nav.active_verse_id, &nav.active_fractal_id, &nav.active_petal_id) {
+        (Some(v), Some(f), Some(p)) => fe_database::build_scope(v, Some(f), Some(p)),
+        (Some(v), Some(f), None) => fe_database::build_scope(v, Some(f), None),
+        (Some(v), None, _) => fe_database::build_scope(v, None, None),
+        _ => String::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -760,7 +850,7 @@ fn right_inspector(
 // ---------------------------------------------------------------------------
 
 fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) {
-    let max_w = ctx.screen_rect().width() * 0.8;
+    let max_w = ctx.viewport_rect().width() * 0.8;
     egui::SidePanel::right("portal_toolbar")
         .resizable(true)
         .default_width(400.0)
@@ -840,17 +930,24 @@ fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::N
     .default_open(true)
     .show(ui, |ui| {
         ui.add_space(4.0);
-        if let Some(entity) = node_mgr.selected_entity() {
+        if let Some(sel) = &node_mgr.selected {
             egui::Grid::new("entity_info")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("ID").small().color(theme::TEXT_DIM));
-                    ui.label(
-                        egui::RichText::new(format!("{:?}", entity))
-                            .monospace()
-                            .small(),
+                    ui.label(egui::RichText::new("Node ID").small().color(theme::TEXT_DIM));
+                    let id_label = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&sel.node_id)
+                                .monospace()
+                                .small(),
+                        )
+                        .sense(egui::Sense::click()),
                     );
+                    if id_label.clicked() {
+                        ui.ctx().copy_text(sel.node_id.clone());
+                    }
+                    id_label.on_hover_text("Click to copy");
                     ui.end_row();
                 });
         }
@@ -973,6 +1070,387 @@ fn inspector_url_meta_section(
 
         ui.add_space(4.0);
     });
+}
+
+fn inspector_api_access_section(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    node_mgr: &crate::node_manager::NodeManager,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    local_role: &LocalUserRole,
+    ui_mgr: &mut UiManager,
+) {
+    let node_id = match node_mgr.selected.as_ref() {
+        Some(sel) => &sel.node_id,
+        None => return,
+    };
+
+    // Padded container for the entire API Access tab
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.set_max_width(ui.available_width());
+
+            if !local_role.can_manage() {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Manager role or higher required to manage API tokens.")
+                        .small()
+                        .color(theme::TEXT_MUTED)
+                        .italics(),
+                );
+                return;
+            }
+
+            // --- Generate Token section ---
+            egui::CollapsingHeader::new(
+                egui::RichText::new("Generate Token")
+                    .strong()
+                    .color(theme::TEXT_SECTION),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+
+                // Scope + Node ID — read-only, wrapped to panel width
+                ui.label(egui::RichText::new("Scope").small().color(theme::TEXT_DIM));
+                egui::Frame::NONE
+                    .fill(theme::BG_BUTTON)
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .corner_radius(3.0)
+                    .show(ui, |ui| {
+                        ui.set_max_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&inspector.api_token_scope_buf)
+                                    .small()
+                                    .monospace()
+                                    .color(theme::TEXT_SECTION),
+                            )
+                            .wrap(),
+                        );
+                    });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Node ID").small().color(theme::TEXT_DIM));
+                    let id_resp = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(node_id)
+                                .small()
+                                .monospace()
+                                .color(theme::TEXT_SECTION),
+                        )
+                        .sense(egui::Sense::click()),
+                    );
+                    if id_resp.clicked() {
+                        ui.ctx().copy_text(node_id.to_string());
+                        let now = ui.ctx().input(|i| i.time);
+                        ui_mgr.show_toast("Copied Node ID", now);
+                    }
+                    id_resp.on_hover_text("Click to copy");
+                });
+
+                if inspector.api_token_scope_buf.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Navigate to a verse/fractal/petal to set the token scope.")
+                            .small()
+                            .color(theme::TEXT_MUTED)
+                            .italics(),
+                    );
+                    return;
+                }
+
+                ui.add_space(6.0);
+
+                // Role + Expiry on separate rows for narrow panels
+                egui::Grid::new("api_token_opts")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Role").small().color(theme::TEXT_DIM));
+                        egui::ComboBox::from_id_salt("inspector_api_role")
+                            .selected_text(inspector.api_token_role_buf.as_str())
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut inspector.api_token_role_buf, "viewer".to_string(), "Viewer");
+                                ui.selectable_value(&mut inspector.api_token_role_buf, "editor".to_string(), "Editor");
+                                ui.selectable_value(&mut inspector.api_token_role_buf, "manager".to_string(), "Manager");
+                            });
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Expires").small().color(theme::TEXT_DIM));
+                        egui::ComboBox::from_id_salt("inspector_api_expiry")
+                            .selected_text(match inspector.api_token_expiry_buf {
+                                1 => "1 hour",
+                                24 => "24 hours",
+                                168 => "7 days",
+                                720 => "30 days",
+                                _ => "30 days",
+                            })
+                            .width(100.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 1, "1 hour");
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 24, "24 hours");
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 168, "7 days");
+                                ui.selectable_value(&mut inspector.api_token_expiry_buf, 720, "30 days");
+                            });
+                        ui.end_row();
+                    });
+
+                ui.add_space(6.0);
+                if ui
+                    .add(
+                        egui::Button::new("Generate API Token")
+                            .fill(theme::BG_SAVE)
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    )
+                    .clicked()
+                {
+                    db_tx
+                        .send(DbCommand::MintApiToken {
+                            scope: inspector.api_token_scope_buf.clone(),
+                            max_role: inspector.api_token_role_buf.clone(),
+                            ttl_hours: inspector.api_token_expiry_buf,
+                            label: Some(format!("node:{}", node_id)),
+                        })
+                        .ok();
+                }
+
+                // Show generated token (selectable, with copy buttons)
+                let mut dismiss_token = false;
+                if let Some(ref token) = inspector.generated_api_token {
+                    ui.add_space(6.0);
+                    egui::Frame::NONE
+                        .fill(theme::BG_BUTTON)
+                        .inner_margin(egui::Margin::same(8))
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.set_max_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Generated Token")
+                                        .small()
+                                        .strong()
+                                        .color(theme::TEXT_SECTION),
+                                );
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.add(egui::Button::new("\u{2715}").fill(egui::Color32::TRANSPARENT).small()).clicked() {
+                                        dismiss_token = true;
+                                    }
+                                });
+                            });
+
+                            ui.add_space(2.0);
+                            let mut display = token.clone();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut display)
+                                    .desired_width(ui.available_width())
+                                    .desired_rows(3)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+
+                            ui.add_space(4.0);
+                            let now = ui.ctx().input(|i| i.time);
+
+                            // Copy Token button
+                            ui.horizontal(|ui| {
+                                if ui.add(egui::Button::new("\u{1F4CB} Copy Token").fill(theme::BG_BUTTON_ACTIVE).small()).clicked() {
+                                    ui.ctx().copy_text(token.clone());
+                                    ui_mgr.show_toast("Copied token to clipboard", now);
+                                }
+                            });
+
+                            // curl command — pre-built with the actual token
+                            ui.add_space(4.0);
+                            let curl_cmd = format!(
+                                "curl.exe -s http://localhost:8765/health -H \"Authorization: Bearer {}\"",
+                                token,
+                            );
+                            egui::Frame::NONE
+                                .fill(egui::Color32::from_rgb(20, 20, 30))
+                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .corner_radius(3.0)
+                                .show(ui, |ui| {
+                                    ui.set_max_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("curl")
+                                                .small()
+                                                .color(theme::TEXT_MUTED),
+                                        );
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
+                                                .on_hover_text("Copy curl command")
+                                                .clicked()
+                                            {
+                                                ui.ctx().copy_text(curl_cmd.clone());
+                                                ui_mgr.show_toast("Copied curl command", now);
+                                            }
+                                        });
+                                    });
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&curl_cmd)
+                                                .small()
+                                                .monospace()
+                                                .color(theme::TEXT_DIM),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                        });
+                }
+                if dismiss_token {
+                    inspector.generated_api_token = None;
+                }
+
+                ui.add_space(4.0);
+            });
+
+            ui.add_space(2.0);
+
+            // --- Active Tokens section ---
+            egui::CollapsingHeader::new(
+                egui::RichText::new("Active Tokens")
+                    .strong()
+                    .color(theme::TEXT_SECTION),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+
+                if inspector.api_tokens_loading {
+                    ui.label(
+                        egui::RichText::new("Loading tokens...")
+                            .color(theme::TEXT_MUTED)
+                            .italics(),
+                    );
+                } else if inspector.api_tokens.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No active API tokens.")
+                            .color(theme::TEXT_MUTED)
+                            .italics(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Showing {} of {}",
+                            inspector.api_tokens.len(),
+                            inspector.api_tokens_total,
+                        ))
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                    );
+                    ui.add_space(2.0);
+
+                    let mut revoke_jti: Option<String> = None;
+                    for (i, tok) in inspector.api_tokens.iter().enumerate() {
+                        let row_bg = if i % 2 == 0 {
+                            theme::BG_PEER_ROW_EVEN
+                        } else {
+                            theme::BG_PEER_ROW_ODD
+                        };
+                        egui::Frame::NONE
+                            .fill(row_bg)
+                            .inner_margin(egui::Margin::symmetric(6, 4))
+                            .corner_radius(2.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&tok.max_role)
+                                            .small()
+                                            .strong()
+                                            .color(theme::TEXT_SECTION),
+                                    );
+                                    if let Some(ref lbl) = tok.label {
+                                        ui.label(
+                                            egui::RichText::new(lbl)
+                                                .small()
+                                                .color(theme::TEXT_MUTED),
+                                        );
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("Revoke").small(),
+                                                    )
+                                                    .fill(theme::BG_DANGER),
+                                                )
+                                                .clicked()
+                                            {
+                                                revoke_jti = Some(tok.jti.clone());
+                                            }
+                                        },
+                                    );
+                                });
+                                ui.label(
+                                    egui::RichText::new(format!("exp: {}", tok.expires_at))
+                                        .small()
+                                        .color(theme::TEXT_MUTED),
+                                );
+                            });
+                        ui.add_space(1.0);
+                    }
+                    if let Some(jti) = revoke_jti {
+                        db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
+                    }
+                }
+
+                // Pagination + refresh row
+                ui.add_space(4.0);
+                let total_pages = ((inspector.api_tokens_total as u32).max(1) - 1) / API_TOKEN_PAGE_SIZE + 1;
+                let current_page = inspector.api_tokens_page;
+                ui.horizontal(|ui| {
+                    let can_prev = current_page > 0;
+                    if ui.add_enabled(can_prev, egui::Button::new("\u{25C0}").fill(theme::BG_BUTTON).small()).clicked() {
+                        inspector.api_tokens_page = current_page.saturating_sub(1);
+                        send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{}/{}", current_page + 1, total_pages))
+                            .small()
+                            .color(theme::TEXT_DIM),
+                    );
+                    let can_next = current_page + 1 < total_pages;
+                    if ui.add_enabled(can_next, egui::Button::new("\u{25B6}").fill(theme::BG_BUTTON).small()).clicked() {
+                        inspector.api_tokens_page = current_page + 1;
+                        send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new("\u{21BB} Refresh").fill(theme::BG_BUTTON).small()).clicked() {
+                            send_scoped_token_list(db_tx, &inspector.api_token_scope_buf, inspector.api_tokens_page);
+                        }
+                    });
+                });
+
+                ui.add_space(4.0);
+            });
+        });
+}
+
+/// Send a scoped, paginated token list request.
+fn send_scoped_token_list(
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    scope: &str,
+    page: u32,
+) {
+    if scope.is_empty() {
+        db_tx.send(DbCommand::ListApiTokens {
+            offset: page * API_TOKEN_PAGE_SIZE,
+            limit: API_TOKEN_PAGE_SIZE,
+        }).ok();
+    } else {
+        db_tx.send(DbCommand::ListApiTokensByScope {
+            scope_prefix: scope.to_string(),
+            offset: page * API_TOKEN_PAGE_SIZE,
+            limit: API_TOKEN_PAGE_SIZE,
+        }).ok();
+    }
 }
 
 // viewport_overlay and related functions are defined in crate::viewport

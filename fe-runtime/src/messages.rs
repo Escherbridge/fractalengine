@@ -46,6 +46,15 @@ pub enum ApiCommand {
     GetHierarchy {
         reply_tx: tokio::sync::oneshot::Sender<Vec<VerseHierarchyData>>,
     },
+    /// Fire-and-forget transform persist — bypasses PendingApiRequests.
+    /// The DB thread will emit `SceneChange::TransformFailed` on error so the
+    /// API layer can broadcast a rollback to WebSocket subscribers.
+    TransformPersist {
+        node_id: String,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -208,22 +217,28 @@ pub enum DbCommand {
     },
     // --- API Token management ---
     /// Mint a new API token and persist its metadata.
+    /// Authorization is enforced server-side: caller must have Manager+ at scope.
     MintApiToken {
         scope: String,
         max_role: String,
         ttl_hours: u32,
         label: Option<String>,
     },
-    /// Revoke an API token by JTI.
+    /// Revoke an API token by JTI. Ownership is enforced server-side.
     RevokeApiToken {
         jti: String,
     },
-    /// List active (non-revoked) API tokens for this node.
-    ListApiTokens,
-    /// List active (non-revoked) API tokens whose scope falls within a prefix.
-    /// Used by admin dashboards to show tokens at verse/fractal/petal level.
+    /// List active (non-revoked, non-expired) API tokens for this node, paginated.
+    ListApiTokens {
+        offset: u32,
+        limit: u32,
+    },
+    /// List active (non-revoked, non-expired) API tokens whose scope falls within
+    /// a prefix, paginated. Used by admin dashboards.
     ListApiTokensByScope {
         scope_prefix: String,
+        offset: u32,
+        limit: u32,
     },
     /// Resolve a petal's full scope string (VERSE#v-FRACTAL#f-PETAL#p) by
     /// walking petal → fractal → verse in the DB.
@@ -232,6 +247,14 @@ pub enum DbCommand {
     },
     /// Resolve a node's full scope string by walking node → petal → fractal → verse.
     ResolveNodeScope {
+        node_id: String,
+    },
+    /// Load all nodes belonging to a petal (for scene snapshot).
+    LoadNodesByPetal {
+        petal_id: String,
+    },
+    /// Read a single node's persisted transform (position/rotation/scale).
+    GetNodeTransform {
         node_id: String,
     },
 }
@@ -344,15 +367,29 @@ pub enum DbResult {
     },
     ApiTokensListed {
         tokens: Vec<ApiTokenInfo>,
+        total: u64,
     },
     /// Tokens listed for an admin scope view (separate from user's own tokens).
     ScopedApiTokensListed {
         tokens: Vec<ApiTokenInfo>,
+        total: u64,
     },
     /// Result of `ResolvePetalScope` or `ResolveNodeScope`.
     /// `scope` is `None` when the requested entity was not found.
     ScopeResolved {
         scope: Option<String>,
+    },
+    /// Result of `LoadNodesByPetal` — all nodes in a petal as DTOs.
+    NodesLoaded {
+        petal_id: String,
+        nodes: Vec<NodeDto>,
+    },
+    /// Result of `GetNodeTransform` — a single node's persisted transform.
+    NodeTransformLoaded {
+        node_id: String,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
     },
 }
 
@@ -403,6 +440,67 @@ pub struct NodeHierarchyData {
     pub petal_id: String,
     /// Portal URL from the node's associated model record, if any.
     pub webpage_url: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Bevy components
+// ---------------------------------------------------------------------------
+
+/// Bevy component: last transform value confirmed by the DB.
+/// Used alongside the live `Transform` for optimistic update + rollback.
+/// Attach to any entity whose transform is persisted via `TransformPersist`.
+#[derive(Debug, Clone, bevy::prelude::Component)]
+pub struct DbConfirmedTransform {
+    pub position: [f32; 3],
+    pub rotation: [f32; 3],
+    pub scale: [f32; 3],
+}
+
+// ---------------------------------------------------------------------------
+// Scene graph change events (Phase 3: scene streaming)
+// ---------------------------------------------------------------------------
+
+/// A DTO for node data sent over the scene streaming protocol.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeDto {
+    pub node_id: String,
+    pub petal_id: String,
+    pub name: String,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+    pub has_asset: bool,
+    pub asset_path: Option<String>,
+}
+
+/// Describes a single change to the scene graph.
+///
+/// Each variant maps to a CUD operation on the node table. Serialized with
+/// `serde(tag = "op")` so the JSON looks like `{"op": "node_added", ...}`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SceneChange {
+    /// A new node was created in a petal.
+    NodeAdded { node: NodeDto },
+    /// A node was removed from the scene.
+    NodeRemoved { node_id: String },
+    /// A node was renamed.
+    NodeRenamed { node_id: String, new_name: String },
+    /// A node's transform was updated.
+    NodeTransform {
+        node_id: String,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
+    /// A transform persist failed — the optimistic update should be rolled back.
+    /// Contains the last-known-good values read from the DB before the failed write.
+    TransformFailed {
+        node_id: String,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
 }
 
 #[cfg(test)]
@@ -480,5 +578,78 @@ mod tests {
             roles: vec![("did:key:z6Mk".to_string(), "editor".to_string())],
         };
         let _ = format!("{:?}", r2.clone());
+    }
+}
+
+#[cfg(test)]
+mod scene_change_tests {
+    use super::*;
+
+    #[test]
+    fn scene_change_node_added_serde_roundtrip() {
+        let change = SceneChange::NodeAdded {
+            node: NodeDto {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                name: "Test Node".into(),
+                position: [1.0, 2.0, 3.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                has_asset: false,
+                asset_path: None,
+            },
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains("\"op\":\"node_added\""));
+        let deserialized: SceneChange = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            SceneChange::NodeAdded { node } => assert_eq!(node.node_id, "n1"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn scene_change_node_removed_serde_roundtrip() {
+        let change = SceneChange::NodeRemoved { node_id: "n1".into() };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains("\"op\":\"node_removed\""));
+        let deserialized: SceneChange = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            SceneChange::NodeRemoved { node_id } => assert_eq!(node_id, "n1"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn scene_change_node_renamed_serde_roundtrip() {
+        let change = SceneChange::NodeRenamed { node_id: "n1".into(), new_name: "New Name".into() };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains("\"op\":\"node_renamed\""));
+        let _: SceneChange = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn scene_change_node_transform_serde_roundtrip() {
+        let change = SceneChange::NodeTransform {
+            node_id: "n1".into(),
+            position: [1.0, 2.0, 3.0],
+            rotation: [0.0, 90.0, 0.0],
+            scale: [2.0, 2.0, 2.0],
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains("\"op\":\"node_transform\""));
+        let _: SceneChange = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn scene_change_broadcast_send_recv() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<SceneChange>(16);
+        let change = SceneChange::NodeRemoved { node_id: "test".into() };
+        tx.send(change.clone()).unwrap();
+        let received = rx.try_recv().unwrap();
+        match received {
+            SceneChange::NodeRemoved { node_id } => assert_eq!(node_id, "test"),
+            _ => panic!("wrong variant"),
+        }
     }
 }

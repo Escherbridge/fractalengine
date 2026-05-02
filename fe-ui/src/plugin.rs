@@ -109,7 +109,12 @@ pub struct UiManager {
     pub sidebar_open: bool,
     /// Which floating dialog is currently open (at most one).
     pub active_dialog: ActiveDialog,
+    /// Toast message with spawn time (seconds since startup).
+    toast: Option<(String, f64)>,
 }
+
+/// Duration in seconds for toast visibility.
+const TOAST_DURATION: f64 = 2.0;
 
 impl Default for UiManager {
     fn default() -> Self {
@@ -118,6 +123,7 @@ impl Default for UiManager {
             portal: PortalState::Closed,
             sidebar_open: true,
             active_dialog: ActiveDialog::None,
+            toast: None,
         }
     }
 }
@@ -160,6 +166,29 @@ impl UiManager {
     pub fn close_dialog(&mut self) {
         self.active_dialog = ActiveDialog::None;
     }
+
+    /// Show a brief toast message (fades after TOAST_DURATION seconds).
+    pub fn show_toast(&mut self, msg: impl Into<String>, now_secs: f64) {
+        self.toast = Some((msg.into(), now_secs));
+    }
+
+    /// Returns (message, alpha 0.0..1.0) if a toast is currently visible.
+    pub fn active_toast(&self, now_secs: f64) -> Option<(&str, f32)> {
+        let (ref msg, spawn_t) = self.toast.as_ref()?;
+        let elapsed = now_secs - spawn_t;
+        if elapsed > TOAST_DURATION {
+            return None;
+        }
+        // Fade in over first 0.2s, fade out over last 0.5s
+        let alpha = if elapsed < 0.2 {
+            (elapsed / 0.2) as f32
+        } else if elapsed > TOAST_DURATION - 0.5 {
+            ((TOAST_DURATION - elapsed) / 0.5) as f32
+        } else {
+            1.0
+        };
+        Some((msg, alpha.clamp(0.0, 1.0)))
+    }
 }
 
 /// Marker attached to every `SceneRoot` spawned from a DB node so that
@@ -192,26 +221,56 @@ pub struct ToolState {
     pub active_tool: Tool,
 }
 
+/// Which tab is active in the inspector panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InspectorTab {
+    #[default]
+    Properties,
+    ApiAccess,
+}
+
+/// Default page size for paginated API token listings.
+pub const API_TOKEN_PAGE_SIZE: u32 = 20;
+
 /// Inspector panel state: form buffers for transform editing & URL fields.
 /// Selection state lives in [`NodeManager`] — this resource only holds
 /// the mutable text buffers that the egui widgets edit.
 #[derive(Resource)]
 pub struct InspectorFormState {
+    pub active_tab: InspectorTab,
     pub external_url: String,
     pub config_url: String,
     pub pos: [String; 3],
     pub rot: [String; 3],
     pub scale: [String; 3],
+    // API Access tab state
+    pub api_token_scope_buf: String,
+    pub api_token_role_buf: String,
+    pub api_token_expiry_buf: u32,
+    pub generated_api_token: Option<String>,
+    pub api_tokens: Vec<ApiTokenEntry>,
+    pub api_tokens_loading: bool,
+    pub api_tokens_page: u32,
+    pub api_tokens_total: u64,
 }
 
 impl Default for InspectorFormState {
     fn default() -> Self {
         Self {
+            active_tab: InspectorTab::Properties,
             external_url: String::new(),
             config_url: String::new(),
             pos: ["0.00".into(), "0.00".into(), "0.00".into()],
             rot: ["0.00".into(), "0.00".into(), "0.00".into()],
             scale: ["1.00".into(), "1.00".into(), "1.00".into()],
+            api_token_scope_buf: String::new(),
+            api_token_role_buf: "viewer".into(),
+            api_token_expiry_buf: 720,
+            generated_api_token: None,
+            api_tokens: Vec::new(),
+            api_tokens_loading: false,
+            api_tokens_page: 0,
+            api_tokens_total: 0,
         }
     }
 }
@@ -567,7 +626,7 @@ fn gardener_ui_system(
     // Inset for the portal toolbar header (~36px) and status bar (~22px).
     // Left padding leaves room for the panel resize handle so it isn't blocked
     // by the webview overlay.
-    let screen = ectx.screen_rect();
+    let screen = ectx.viewport_rect();
     let toolbar_header = 36.0_f32;
     let status_bar = 22.0_f32;
     let left_pad = 6.0_f32;

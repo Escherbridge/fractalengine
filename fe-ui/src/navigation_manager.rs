@@ -84,6 +84,7 @@ fn handle_verse_replica_lifecycle(
     nav: Res<NavigationManager>,
     verse_mgr: Res<VerseManager>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+    secret_store: Option<Res<fe_database::SecretStoreRes>>,
     mut last_verse: Local<Option<String>>,
     mut initialized: Local<bool>,
 ) {
@@ -94,7 +95,7 @@ fn handle_verse_replica_lifecycle(
         *initialized = true;
         // Open any verse that was already active on startup.
         if let Some(ref vid) = nav.active_verse_id {
-            open_replica(sync, vid, &verse_mgr);
+            open_replica(sync, vid, &verse_mgr, secret_store.as_deref());
         }
         return;
     }
@@ -105,16 +106,19 @@ fn handle_verse_replica_lifecycle(
 
     // Close the previous replica.
     if let Some(ref old) = *last_verse {
-        sync.0
+        if sync.0
             .send(fe_sync::SyncCommand::CloseVerseReplica {
                 verse_id: old.clone(),
             })
-            .ok();
+            .is_err()
+        {
+            bevy::log::error!("sync_sender channel closed while closing verse replica — sync thread may have crashed");
+        }
     }
 
     // Open the new one.
     if let Some(ref new_vid) = nav.active_verse_id {
-        open_replica(sync, new_vid, &verse_mgr);
+        open_replica(sync, new_vid, &verse_mgr, secret_store.as_deref());
     }
 
     *last_verse = nav.active_verse_id.clone();
@@ -197,6 +201,7 @@ fn open_replica(
     sync: &fe_sync::SyncCommandSenderRes,
     verse_id: &str,
     verse_mgr: &VerseManager,
+    secret_store: Option<&fe_database::SecretStoreRes>,
 ) {
     let Some(ns_id) = verse_mgr
         .verses
@@ -206,14 +211,17 @@ fn open_replica(
     else {
         return;
     };
-    let ns_secret = fe_database::get_namespace_secret_from_keyring(verse_id)
-        .ok()
+    let ns_secret = secret_store
+        .and_then(|ss| fe_database::get_namespace_secret(ss.0.as_ref(), verse_id).ok())
         .flatten();
-    sync.0
+    if sync.0
         .send(fe_sync::SyncCommand::OpenVerseReplica {
             verse_id: verse_id.to_string(),
             namespace_id: ns_id,
             namespace_secret: ns_secret,
         })
-        .ok();
+        .is_err()
+    {
+        bevy::log::error!("sync_sender channel closed while opening verse replica — sync thread may have crashed");
+    }
 }

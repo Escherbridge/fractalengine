@@ -16,6 +16,7 @@ pub(crate) async fn generate_verse_invite_handler(
     include_write_cap: bool,
     expiry_hours: u32,
     keypair: Option<&fe_identity::NodeKeypair>,
+    secret_store: Option<&std::sync::Arc<dyn fe_identity::SecretStore>>,
 ) -> anyhow::Result<String> {
     let keypair =
         keypair.ok_or_else(|| anyhow::anyhow!("NodeKeypair not available for invite signing"))?;
@@ -45,8 +46,10 @@ pub(crate) async fn generate_verse_invite_handler(
                 .bind(("vid", verse_id.to_string()))
                 .await?;
 
-            if let Err(e) = store_namespace_secret_in_keyring(verse_id, &ns_secret_hex) {
-                tracing::warn!("Could not store backfilled namespace secret in keyring: {e}");
+            if let Some(ss) = secret_store {
+                if let Err(e) = store_namespace_secret(ss.as_ref(), verse_id, &ns_secret_hex) {
+                    tracing::warn!("Could not store backfilled namespace secret: {e}");
+                }
             }
 
             ns_id_hex
@@ -54,7 +57,10 @@ pub(crate) async fn generate_verse_invite_handler(
     };
 
     let namespace_secret = if include_write_cap {
-        crate::get_namespace_secret_from_keyring(verse_id)?
+        match secret_store {
+            Some(ss) => crate::get_namespace_secret(ss.as_ref(), verse_id)?,
+            None => None,
+        }
     } else {
         None
     };
@@ -93,6 +99,7 @@ pub(crate) async fn join_verse_by_invite_handler(
     db: &Db,
     invite_string: &str,
     local_did: &str,
+    secret_store: Option<&std::sync::Arc<dyn fe_identity::SecretStore>>,
 ) -> anyhow::Result<(String, String)> {
     let payload = invite_string.trim();
     let payload = payload
@@ -160,8 +167,10 @@ pub(crate) async fn join_verse_by_invite_handler(
     }
 
     if let Some(ref secret) = invite.namespace_secret {
-        if let Err(e) = store_namespace_secret_in_keyring(verse_id, secret) {
-            tracing::warn!("Could not store namespace secret for joined verse {verse_id}: {e}");
+        if let Some(ss) = secret_store {
+            if let Err(e) = store_namespace_secret(ss.as_ref(), verse_id, secret) {
+                tracing::warn!("Could not store namespace secret for joined verse {verse_id}: {e}");
+            }
         }
     }
 
@@ -200,12 +209,14 @@ pub(crate) fn generate_namespace_secret() -> [u8; 32] {
     buf
 }
 
-pub(crate) fn store_namespace_secret_in_keyring(verse_id: &str, secret_hex: &str) -> anyhow::Result<()> {
+/// Store a namespace secret for a verse in the given secret store.
+pub(crate) fn store_namespace_secret(
+    store: &dyn fe_identity::SecretStore,
+    verse_id: &str,
+    secret_hex: &str,
+) -> anyhow::Result<()> {
     let service = format!("fractalengine:verse:{}:ns_secret", verse_id);
-    let entry = keyring::Entry::new(&service, "fractalengine")
-        .map_err(|e| anyhow::anyhow!("keyring entry creation failed: {e}"))?;
-    entry
-        .set_password(secret_hex)
-        .map_err(|e| anyhow::anyhow!("keyring set_password failed: {e}"))?;
-    Ok(())
+    store
+        .set(&service, "fractalengine", secret_hex)
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }

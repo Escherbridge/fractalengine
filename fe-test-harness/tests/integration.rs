@@ -395,8 +395,8 @@ async fn test_api_token_store_roundtrip() {
         max_role: "editor".to_string(),
         label: Some("Test".to_string()),
         sub: "did:key:z6MkTest".to_string(),
-        created_at: "2025-01-01T00:00:00Z".to_string(),
-        expires_at: "2025-01-02T00:00:00Z".to_string(),
+        created_at: "2099-01-01T00:00:00Z".to_string(),
+        expires_at: "2099-01-02T00:00:00Z".to_string(),
         revoked: false,
     };
 
@@ -408,13 +408,13 @@ async fn test_api_token_store_roundtrip() {
     assert!(!revoked);
 
     // List
-    let tokens = list_active_tokens(&db, "did:key:z6MkTest").await.expect("list");
+    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkTest", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
     assert_eq!(tokens.len(), 1);
     assert_eq!(tokens[0].jti, "test-jti-001");
     assert_eq!(tokens[0].scope, "VERSE#v1");
 
     // Revoke
-    let did_revoke = revoke_api_token(&db, "test-jti-001").await.expect("revoke");
+    let did_revoke = revoke_api_token(&db, "test-jti-001", "did:key:z6MkTest").await.expect("revoke");
     assert!(did_revoke);
 
     // Check revoked
@@ -422,7 +422,7 @@ async fn test_api_token_store_roundtrip() {
     assert!(revoked_after);
 
     // List should be empty now (revoked tokens filtered)
-    let tokens_after = list_active_tokens(&db, "did:key:z6MkTest").await.expect("list after");
+    let (tokens_after, _) = list_active_tokens(&db, "did:key:z6MkTest", "2026-01-01T00:00:00Z", 0, 100).await.expect("list after");
     assert!(tokens_after.is_empty());
 }
 
@@ -438,7 +438,7 @@ async fn test_api_token_store_revoke_nonexistent() {
     apply_api_token_schema(&db).await.expect("apply schema");
 
     // Revoking a non-existent token returns false
-    let result = revoke_api_token(&db, "non-existent-jti").await.expect("revoke");
+    let result = revoke_api_token(&db, "non-existent-jti", "did:key:z6MkTest").await.expect("revoke");
     assert!(!result);
 }
 
@@ -475,18 +475,18 @@ async fn test_api_token_store_list_wrong_sub() {
         max_role: "viewer".to_string(),
         label: None,
         sub: "did:key:z6MkAlice".to_string(),
-        created_at: "2025-01-01T00:00:00Z".to_string(),
-        expires_at: "2025-01-02T00:00:00Z".to_string(),
+        created_at: "2099-01-01T00:00:00Z".to_string(),
+        expires_at: "2099-01-02T00:00:00Z".to_string(),
         revoked: false,
     };
     store_api_token(&db, &record).await.expect("store");
 
     // Listing with a different sub should return empty
-    let tokens = list_active_tokens(&db, "did:key:z6MkBob").await.expect("list");
+    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkBob", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
     assert!(tokens.is_empty(), "Bob should not see Alice's tokens");
 
     // Listing with correct sub should return the token
-    let alice_tokens = list_active_tokens(&db, "did:key:z6MkAlice").await.expect("list");
+    let (alice_tokens, _) = list_active_tokens(&db, "did:key:z6MkAlice", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
     assert_eq!(alice_tokens.len(), 1);
 }
 
@@ -509,21 +509,21 @@ async fn test_api_token_store_multiple_tokens() {
             max_role: "viewer".to_string(),
             label: None,
             sub: "did:key:z6MkMulti".to_string(),
-            created_at: "2025-01-01T00:00:00Z".to_string(),
-            expires_at: "2025-01-02T00:00:00Z".to_string(),
+            created_at: "2099-01-01T00:00:00Z".to_string(),
+            expires_at: "2099-01-02T00:00:00Z".to_string(),
             revoked: false,
         };
         store_api_token(&db, &record).await.expect("store");
     }
 
-    let tokens = list_active_tokens(&db, "did:key:z6MkMulti").await.expect("list");
+    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkMulti", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
     assert_eq!(tokens.len(), 5);
 
     // Revoke 2 of them
-    revoke_api_token(&db, "multi-jti-1").await.expect("revoke 1");
-    revoke_api_token(&db, "multi-jti-3").await.expect("revoke 3");
+    revoke_api_token(&db, "multi-jti-1", "did:key:z6MkMulti").await.expect("revoke 1");
+    revoke_api_token(&db, "multi-jti-3", "did:key:z6MkMulti").await.expect("revoke 3");
 
-    let tokens_after = list_active_tokens(&db, "did:key:z6MkMulti").await.expect("list after");
+    let (tokens_after, _) = list_active_tokens(&db, "did:key:z6MkMulti", "2026-01-01T00:00:00Z", 0, 100).await.expect("list after");
     assert_eq!(tokens_after.len(), 3);
 
     // Verify the right ones remain

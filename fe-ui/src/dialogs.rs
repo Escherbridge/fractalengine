@@ -683,7 +683,7 @@ pub fn render_entity_settings_dialog(
                 {
                     *active_tab = SettingsTab::ApiAccess;
                     // Request token list when switching to API tab
-                    db_tx.send(DbCommand::ListApiTokens).ok();
+                    db_tx.send(DbCommand::ListApiTokens { offset: 0, limit: crate::plugin::API_TOKEN_PAGE_SIZE }).ok();
                 }
             });
 
@@ -922,21 +922,37 @@ pub fn render_entity_settings_dialog(
                     ).small().color(theme::TEXT_MUTED).italics());
                     ui.add_space(8.0);
 
-                    // --- Server info ---
-                    ui.label(egui::RichText::new("API Server").color(theme::TEXT_SECTION).strong());
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Endpoint:").small().color(theme::TEXT_DIM));
-                        ui.label(egui::RichText::new("http://127.0.0.1:8765").monospace().small());
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("MCP:").small().color(theme::TEXT_DIM));
-                        ui.label(egui::RichText::new("POST /mcp").monospace().small());
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("WebSocket:").small().color(theme::TEXT_DIM));
-                        ui.label(egui::RichText::new("GET /ws").monospace().small());
-                    });
+                    // --- Endpoint URL bar (prominent, copyable) ---
+                    let base_url = "http://127.0.0.1:8765";
+                    egui::Frame::NONE
+                        .fill(egui::Color32::from_rgb(30, 35, 50))
+                        .inner_margin(egui::Margin::same(8))
+                        .corner_radius(4.0)
+                        .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("API Endpoint").small().color(theme::TEXT_MUTED));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Copy").clicked() {
+                                        ui.ctx().copy_text(base_url.to_string());
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(base_url)
+                                            .monospace()
+                                            .color(egui::Color32::from_rgb(130, 200, 255))
+                                            .size(14.0),
+                                    );
+                                });
+                            });
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("MCP:").small().color(theme::TEXT_DIM));
+                                ui.label(egui::RichText::new("POST /mcp").monospace().small().color(theme::TEXT_BRIGHT));
+                                ui.add_space(12.0);
+                                ui.label(egui::RichText::new("WebSocket:").small().color(theme::TEXT_DIM));
+                                ui.label(egui::RichText::new("GET /ws").monospace().small().color(theme::TEXT_BRIGHT));
+                            });
+                        });
 
                     ui.add_space(12.0);
                     ui.separator();
@@ -955,7 +971,7 @@ pub fn render_entity_settings_dialog(
                     if scoped_api_tokens.is_empty() && !*scoped_tokens_loading {
                         *scoped_tokens_loading = true;
                         let scope_prefix = build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
-                        db_tx.send(DbCommand::ListApiTokensByScope { scope_prefix }).ok();
+                        db_tx.send(DbCommand::ListApiTokensByScope { scope_prefix, offset: 0, limit: crate::plugin::API_TOKEN_PAGE_SIZE }).ok();
                     }
 
                     ui.horizontal(|ui| {
@@ -1006,7 +1022,7 @@ pub fn render_entity_settings_dialog(
                         }).ok();
                     }
 
-                    // Show generated token
+                    // Show generated token + curl example
                     if let Some(ref token) = generated_api_token {
                         ui.add_space(8.0);
                         egui::Frame::NONE
@@ -1022,9 +1038,44 @@ pub fn render_entity_settings_dialog(
                                         .desired_width(f32::INFINITY)
                                         .font(egui::TextStyle::Monospace),
                                 );
-                                if ui.button("Copy to Clipboard").clicked() {
-                                    ui.ctx().copy_text(token.clone());
-                                }
+                                ui.horizontal(|ui| {
+                                    if ui.button("Copy Token").clicked() {
+                                        ui.ctx().copy_text(token.clone());
+                                    }
+                                    if ui.button("Copy curl").clicked() {
+                                        let curl_cmd = format!(
+                                            "curl -s {}/health -H \"Authorization: Bearer {}\"",
+                                            base_url, token,
+                                        );
+                                        ui.ctx().copy_text(curl_cmd);
+                                    }
+                                });
+                            });
+
+                        // curl example
+                        ui.add_space(6.0);
+                        egui::Frame::NONE
+                            .fill(egui::Color32::from_rgb(25, 25, 35))
+                            .inner_margin(egui::Margin::same(8))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Test with curl:").small().color(theme::TEXT_MUTED));
+                                ui.add_space(2.0);
+                                let curl_health = format!(
+                                    "curl -s {}/health \\\n  -H \"Authorization: Bearer <token>\"",
+                                    base_url,
+                                );
+                                let curl_rest = format!(
+                                    "curl -s {}/api/v1/nodes \\\n  -H \"Authorization: Bearer <token>\"",
+                                    base_url,
+                                );
+                                let mut curl_display = format!("# Health check\n{}\n\n# List nodes\n{}", curl_health, curl_rest);
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut curl_display)
+                                        .desired_rows(6)
+                                        .desired_width(f32::INFINITY)
+                                        .font(egui::TextStyle::Monospace),
+                                );
                             });
                     }
 
@@ -1064,8 +1115,7 @@ pub fn render_entity_settings_dialog(
                         }
                         if let Some(jti) = revoke_jti {
                             db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
-                            // Request refresh
-                            db_tx.send(DbCommand::ListApiTokens).ok();
+                            // Refresh is triggered by DbResult::ApiTokenRevoked handler
                         }
                     }
 
@@ -1120,10 +1170,7 @@ pub fn render_entity_settings_dialog(
                         }
                         if let Some(jti) = revoke_scoped_jti {
                             db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
-                            // Refresh both lists
-                            db_tx.send(DbCommand::ListApiTokens).ok();
-                            let scope_prefix = build_entity_scope(entity_type, entity_id, parent_verse_id, parent_fractal_id);
-                            db_tx.send(DbCommand::ListApiTokensByScope { scope_prefix }).ok();
+                            // Refresh is triggered by DbResult::ApiTokenRevoked handler
                         }
                     }
                 }

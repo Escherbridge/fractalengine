@@ -3,13 +3,18 @@ name = "fe-identity"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["keyring"]
+keyring = ["dep:keyring"]
+
 [dependencies]
 ed25519-dalek = { workspace = true }
 jsonwebtoken = { workspace = true }
-keyring = { workspace = true }
+keyring = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 bevy = { workspace = true }
 multibase = "0.9"
 hex = "0.4"

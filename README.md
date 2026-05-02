@@ -208,6 +208,40 @@ Verse                the top-level P2P namespace
 
 ---
 
+## API Gateway
+
+The `fe-api` crate provides an axum-based HTTP/WebSocket API on port 8765.
+
+### REST Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/health` | No | Liveness probe |
+| GET | `/ready` | No | Readiness probe (DB ping) |
+| GET | `/api/v1/hierarchy` | Bearer JWT | Full scene hierarchy snapshot |
+| POST | `/api/v1/verses` | Bearer JWT | Create a verse |
+| POST | `/api/v1/verses/:vid/fractals` | Bearer JWT | Create a fractal |
+| POST | `/api/v1/verses/:vid/fractals/:fid/petals` | Bearer JWT | Create a petal |
+| POST | `/api/v1/verses/:vid/fractals/:fid/petals/:pid/nodes` | Bearer JWT | Create a node |
+| PATCH | `/api/v1/nodes/:id/transform` | Bearer JWT | Update node transform |
+| GET | `/api/v1/nodes/:id/transform` | Bearer JWT | Read node transform |
+| GET | `/api/v1/assets/:content_hash` | Bearer JWT | Content-addressed asset delivery (immutable caching) |
+
+### WebSocket Protocol (`/ws`)
+
+After connecting, the server sends `auth_required`. The client must respond with
+an `auth` message containing a valid API token within 5 seconds.
+
+**Scene streaming** (thin client flow):
+1. Client sends `scene_subscribe { petal_id }`.
+2. Server responds with `scene_snapshot { petal_id, version, nodes }`.
+3. On CUD mutations, server pushes `scene_delta { petal_id, version, changes }`.
+
+**Transform streaming**: Subscribe to a petal channel, then receive real-time
+`transform_update` messages as other clients modify node positions.
+
+---
+
 ## Documentation
 
 | Document | Description |

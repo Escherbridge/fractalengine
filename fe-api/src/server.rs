@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::{HeaderValue, Method, StatusCode},
     response::IntoResponse,
     routing::{get, patch, post},
@@ -13,15 +13,21 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use fe_runtime::messages::{ApiCommand, TransformUpdate};
+use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
 
 /// Shared state injected into every axum handler via `State<Arc<ApiState>>`.
 pub struct ApiState {
     pub api_cmd_tx: crossbeam::channel::Sender<ApiCommand>,
     pub transform_broadcast_tx: tokio::sync::broadcast::Sender<TransformUpdate>,
+    /// Entity change broadcast for scene graph streaming (CUD deltas).
+    pub entity_change_tx: tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>,
     pub verifying_key: ed25519_dalek::VerifyingKey,
     /// Cache of revoked token JTIs. Checked by auth middleware.
     pub revoked_jtis: Arc<tokio::sync::RwLock<HashSet<String>>>,
+    /// Content-addressed blob store for asset delivery. `None` if not configured.
+    pub blob_store: Option<fe_runtime::blob_store::BlobStoreHandle>,
+    /// Allowed CORS origins. Use `["*"]` to allow any origin.
+    pub cors_origins: Vec<String>,
 }
 
 /// Build the complete axum [`Router`] for the API server.
@@ -50,17 +56,29 @@ pub struct ApiState {
 ///   PATCH /api/v1/nodes/:node_id/transform
 ///   GET   /api/v1/nodes/:node_id/transform
 ///
+///   Assets:
+///   GET   /api/v1/assets/:content_hash
+///
 ///   MCP:
 ///   POST /mcp
 /// ```
 pub fn build_router(state: Arc<ApiState>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::list([
-            "http://localhost:8765".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1:8765".parse::<HeaderValue>().unwrap(),
-        ]))
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
-        .allow_headers(tower_http::cors::Any);
+    let cors = if state.cors_origins.iter().any(|o| o == "*") {
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::any())
+            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
+            .allow_headers(tower_http::cors::Any)
+    } else {
+        let origins: Vec<HeaderValue> = state
+            .cors_origins
+            .iter()
+            .filter_map(|o| o.parse::<HeaderValue>().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
+            .allow_headers(tower_http::cors::Any)
+    };
 
     // Public routes — no auth required.
     let public = Router::new()
@@ -68,6 +86,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/health",
             get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
         )
+        .route("/ready", get(ready_handler))
         // WebSocket does its own auth after the upgrade handshake.
         .route("/ws", get(crate::ws::ws_handler));
 
@@ -78,27 +97,28 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/verses", post(crate::rest::create_verse))
         // Verse-scoped
         .route(
-            "/api/v1/verses/:verse_id/fractals",
+            "/api/v1/verses/{verse_id}/fractals",
             post(crate::rest::create_fractal),
         )
         // Fractal-scoped
         .route(
-            "/api/v1/verses/:verse_id/fractals/:fractal_id/petals",
+            "/api/v1/verses/{verse_id}/fractals/{fractal_id}/petals",
             post(crate::rest::create_petal),
         )
         // Petal-scoped
         .route(
-            "/api/v1/verses/:verse_id/fractals/:fractal_id/petals/:petal_id/nodes",
+            "/api/v1/verses/{verse_id}/fractals/{fractal_id}/petals/{petal_id}/nodes",
             post(crate::rest::create_node),
         )
-        // Node operations (legacy flat path kept for backwards compat)
+        // Node operations
         .route(
-            "/api/v1/nodes/:node_id/transform",
-            patch(crate::rest::update_transform),
+            "/api/v1/nodes/{node_id}/transform",
+            patch(crate::rest::update_transform).get(crate::rest::get_transform),
         )
+        // Asset delivery (content-addressed)
         .route(
-            "/api/v1/nodes/:node_id/transform",
-            get(get_transform_placeholder),
+            "/api/v1/assets/{content_hash}",
+            get(crate::assets::get_asset),
         )
         // Legacy flat create endpoints (for MCP and existing integrations)
         .route("/api/v1/nodes", post(crate::rest::create_node_legacy))
@@ -116,10 +136,32 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .with_state(state)
 }
 
-/// Placeholder for the read-transform endpoint (501 Not Implemented).
-async fn get_transform_placeholder(
-    State(_state): State<Arc<ApiState>>,
-    Path(_node_id): Path<String>,
-) -> impl IntoResponse {
-    StatusCode::NOT_IMPLEMENTED
+/// Readiness probe: sends a `DbCommand::Ping` through the API command channel
+/// and waits up to 2 seconds for a `DbResult::Pong` response.
+async fn ready_handler(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest {
+            cmd: DbCommand::Ping,
+            reply_tx,
+        })
+        .is_err()
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "status": "not_ready" })),
+        );
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx).await {
+        Ok(Ok(DbResult::Pong)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "ready" })),
+        ),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "status": "not_ready" })),
+        ),
+    }
 }
+

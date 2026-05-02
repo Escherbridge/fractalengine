@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
+use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, SceneChange, TransformUpdate};
 
 use crate::server::ApiState;
 
@@ -15,18 +15,34 @@ use crate::server::ApiState;
 // Client → Server messages
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Deserialize)]
+/// Messages sent from the WebSocket client to the server.
+///
+/// Serialized with `serde(tag = "type")` so JSON looks like
+/// `{"type": "scene_subscribe", "petal_id": "..."}`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsClientMsg {
+    /// Authenticate with a Bearer API token.
     Auth { access_token: String },
+    /// Subscribe to a named channel for a specific petal (e.g. transforms).
     Subscribe { channel: String, petal_id: String },
+    /// Unsubscribe from a named channel.
     Unsubscribe { channel: String, petal_id: String },
+    /// Push a real-time transform update (requires editor role).
     TransformUpdate {
         node_id: String,
         position: [f32; 3],
         rotation: [f32; 3],
         scale: [f32; 3],
     },
+    /// Subscribe to scene graph changes for a petal. The server responds with a
+    /// `SceneSnapshot` followed by incremental `SceneDelta` messages.
+    SceneSubscribe {
+        petal_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last_known_version: Option<u64>,
+    },
+    /// Latency probe.
     Ping { timestamp_ms: u64 },
 }
 
@@ -34,14 +50,21 @@ pub enum WsClientMsg {
 // Server → Client messages
 // ---------------------------------------------------------------------------
 
+/// Messages sent from the server to the WebSocket client.
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsServerMsg {
+    /// Server requests authentication (sent immediately after upgrade).
     AuthRequired {},
+    /// Authentication succeeded.
     AuthOk {},
+    /// Authentication failed.
     AuthInvalid { message: String },
+    /// Channel subscription confirmed.
     Subscribed { channel: String, petal_id: String },
+    /// Channel unsubscription confirmed.
     Unsubscribed { channel: String, petal_id: String },
+    /// Real-time transform broadcast from another client.
     TransformUpdate {
         node_id: String,
         petal_id: String,
@@ -50,7 +73,29 @@ pub enum WsServerMsg {
         scale: [f32; 3],
         timestamp_ms: u64,
     },
+    /// Full snapshot of all nodes in a petal (sent after `SceneSubscribe`).
+    SceneSnapshot {
+        petal_id: String,
+        version: u64,
+        nodes: Vec<crate::types::NodeDto>,
+    },
+    /// Incremental scene changes (node added/removed/renamed/transformed).
+    SceneDelta {
+        petal_id: String,
+        version: u64,
+        changes: Vec<fe_runtime::messages::SceneChange>,
+    },
+    /// Latency probe response.
     Pong { timestamp_ms: u64, server_timestamp_ms: u64 },
+    /// A previously-optimistic transform failed to persist — client should
+    /// revert the node to these last-known-good values.
+    TransformRollback {
+        node_id: String,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
+    /// Error message.
     Error { code: String, message: String },
 }
 
@@ -141,6 +186,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
     // per iteration, so recv_msg and socket.send never race on the same &mut.
     let mut subscribed_petals: HashSet<String> = HashSet::new();
     let mut transform_rx = state.transform_broadcast_tx.subscribe();
+    let mut entity_change_rx = state.entity_change_tx.subscribe();
+    let mut scene_version: u64 = 0;
+
+    // Debounce map: last transform update per node, flushed to DB every 200ms.
+    let mut transform_debounce: std::collections::HashMap<String, ([f32; 3], [f32; 3], [f32; 3])> =
+        std::collections::HashMap::new();
+    let mut debounce_interval = tokio::time::interval(std::time::Duration::from_millis(200));
+    debounce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -191,8 +244,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             continue;
                         }
                         let now = unix_now_ms();
+                        // Optimistic broadcast — subscribers see the update immediately.
                         let _ = state.transform_broadcast_tx.send(TransformUpdate {
-                            node_id,
+                            node_id: node_id.clone(),
                             petal_id: String::new(),
                             position,
                             rotation,
@@ -200,6 +254,33 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             timestamp_ms: now,
                             source_did: claims.sub.clone(),
                         });
+                        // Store for debounced DB persist (200ms batching).
+                        // The debounce_interval branch drains this map and sends
+                        // TransformPersist commands so the DB isn't flooded by
+                        // high-frequency WS streams.
+                        transform_debounce.insert(node_id, (position, rotation, scale));
+                    }
+                    Some(WsClientMsg::SceneSubscribe { petal_id, .. }) => {
+                        // Resolve petal scope and enforce against token scope
+                        if let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await {
+                            if !fe_database::scope_contains(&claims.scope, &scope) {
+                                send_msg(&mut socket, &WsServerMsg::Error {
+                                    code: "forbidden".into(),
+                                    message: "scene subscription outside token scope".into(),
+                                }).await;
+                                continue;
+                            }
+                        }
+                        subscribed_petals.insert(petal_id.clone());
+
+                        // Query current nodes for this petal from DB
+                        let nodes = load_petal_nodes(&state, &petal_id).await;
+                        scene_version += 1;
+                        send_msg(&mut socket, &WsServerMsg::SceneSnapshot {
+                            petal_id,
+                            version: scene_version,
+                            nodes,
+                        }).await;
                     }
                     Some(WsClientMsg::Auth { .. }) => {
                         // Already authenticated; ignore re-auth
@@ -229,6 +310,61 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         tracing::warn!("WS client lagged by {n} transform updates");
                     }
                     Err(_) => break,
+                }
+            }
+
+            // Outbound entity change deltas (scene graph CUD)
+            change = entity_change_rx.recv() => {
+                match change {
+                    Ok(ref sc) if !subscribed_petals.is_empty() => {
+                        // TransformFailed → send rollback instead of a delta
+                        if let SceneChange::TransformFailed { node_id, position, rotation, scale } = sc {
+                            send_msg(&mut socket, &WsServerMsg::TransformRollback {
+                                node_id: node_id.clone(),
+                                position: *position,
+                                rotation: *rotation,
+                                scale: *scale,
+                            }).await;
+                            continue;
+                        }
+                        // Extract the petal_id from the change to filter by subscription
+                        let petal_id = match sc {
+                            SceneChange::NodeAdded { node } => Some(node.petal_id.clone()),
+                            // NodeRemoved/NodeRenamed/NodeTransform don't carry petal_id;
+                            // broadcast to all subscribed petals (clients filter locally).
+                            _ => None,
+                        };
+                        let should_send = match &petal_id {
+                            Some(pid) => subscribed_petals.contains(pid),
+                            None => true, // broadcast to all subscribers
+                        };
+                        if should_send {
+                            scene_version += 1;
+                            let pid = petal_id.unwrap_or_default();
+                            send_msg(&mut socket, &WsServerMsg::SceneDelta {
+                                petal_id: pid,
+                                version: scene_version,
+                                changes: vec![sc.clone()],
+                            }).await;
+                        }
+                    }
+                    Ok(_) => {} // no subscriptions
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("WS client lagged by {n} entity change updates");
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // Debounce flush: persist batched transform updates to DB every 200ms.
+            _ = debounce_interval.tick() => {
+                for (node_id, (position, rotation, scale)) in transform_debounce.drain() {
+                    let _ = state.api_cmd_tx.send(ApiCommand::TransformPersist {
+                        node_id,
+                        position,
+                        rotation,
+                        scale,
+                    });
                 }
             }
         }
@@ -261,6 +397,46 @@ async fn recv_msg(socket: &mut WebSocket) -> Option<WsClientMsg> {
     }
 }
 
+/// Load all nodes for a petal via the API command channel.
+///
+/// Returns `NodeDto` list from `fe_runtime::messages` (the scene streaming DTO,
+/// not the REST API DTO). Falls back to an empty vec on timeout or error.
+async fn load_petal_nodes(
+    state: &ApiState,
+    petal_id: &str,
+) -> Vec<crate::types::NodeDto> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest {
+            cmd: DbCommand::LoadNodesByPetal {
+                petal_id: petal_id.to_string(),
+            },
+            reply_tx,
+        })
+        .is_err()
+    {
+        return vec![];
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+        Ok(Ok(DbResult::NodesLoaded { nodes, .. })) => {
+            nodes
+                .into_iter()
+                .map(|n| crate::types::NodeDto {
+                    id: n.node_id,
+                    name: n.name,
+                    petal_id: n.petal_id,
+                    position: n.position,
+                    has_asset: n.has_asset,
+                    asset_path: n.asset_path,
+                    webpage_url: None,
+                })
+                .collect()
+        }
+        _ => vec![],
+    }
+}
+
 /// Resolve a petal_id to its full scope string via the API command channel.
 async fn resolve_petal_scope_ws(state: &ApiState, petal_id: &str) -> Option<String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -280,4 +456,68 @@ fn unix_now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_subscribe_serde() {
+        let msg = WsClientMsg::SceneSubscribe {
+            petal_id: "p1".into(),
+            last_known_version: Some(42),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"scene_subscribe\""));
+        let roundtrip: WsClientMsg = serde_json::from_str(&json).unwrap();
+        match roundtrip {
+            WsClientMsg::SceneSubscribe { petal_id, last_known_version } => {
+                assert_eq!(petal_id, "p1");
+                assert_eq!(last_known_version, Some(42));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn scene_subscribe_without_version() {
+        let json = r#"{"type":"scene_subscribe","petal_id":"p2"}"#;
+        let msg: WsClientMsg = serde_json::from_str(json).unwrap();
+        match msg {
+            WsClientMsg::SceneSubscribe { petal_id, last_known_version } => {
+                assert_eq!(petal_id, "p2");
+                assert_eq!(last_known_version, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn scene_snapshot_serde() {
+        let msg = WsServerMsg::SceneSnapshot {
+            petal_id: "p1".into(),
+            version: 1,
+            nodes: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"scene_snapshot\""));
+        assert!(json.contains("\"version\":1"));
+    }
+
+    #[test]
+    fn scene_delta_serde() {
+        let msg = WsServerMsg::SceneDelta {
+            petal_id: "p1".into(),
+            version: 2,
+            changes: vec![
+                fe_runtime::messages::SceneChange::NodeRemoved {
+                    node_id: "n1".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"scene_delta\""));
+        assert!(json.contains("\"node_removed\""));
+    }
 }
