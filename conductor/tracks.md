@@ -72,6 +72,12 @@ _Link: [./tracks/code_review_cleanup_20260419/](./tracks/code_review_cleanup_202
 _Scope: fe-webview security fix (P0), fe-webview + fe-ui dead code and quality cleanup | Blocks: none_
 _Priority: P0 (contains critical SSRF vulnerability fix)_
 
+## [ ] Track: Build Size Optimization & Mobile Deployment Preparation
+
+_Link: [./tracks/build_size_mobile_prep_20260508/](./tracks/build_size_mobile_prep_20260508/)_
+_Scope: Tokio feature pruning, Bevy plugin slimming, mobile architecture strategy doc | Blocks: none_
+_Priority: P1 (reduces 154 MB GUI / 106 MB relay binaries, documents mobile thin-client approach)_
+
 ---
 
 ## Wave 2: Interactive Digital Twin Platform
@@ -98,6 +104,11 @@ Dependency graph:
   (peer discovery)
 
   Seedling Onboarding (independent — builds on Wave 1 infra)
+
+  Hexon Format (6.5) ───────────┬──► fe-terrain (Phase 7) ──► fe-hexon (Phase 8)
+  Entity Data Layer 6.1 (GIS) ─┤    (GPX + terrain +         (registry, P2P hosting,
+  Viewport Foundation ──────────┘     map layers + IoT)        skybox/material/model hexons)
+  Scene Graph Bridge ───────────┘
 
   Shared Peer Infra ──┬──► Inspector P1-P3  ──┐
   (NodeIdentity,       │   (tabs, hierarchy)   ├──► Coordinated P4
@@ -203,6 +214,65 @@ _Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Gardener Co
 ---
 
 ## Wave 3: External Access & IoT Platform
+
+### Entity Data Layer (Phases 1-5 complete, Phase 6 in progress)
+
+## [x] Track: Entity Data Layer — Hierarchy Optimization, HLC, Observability (Phase 1)
+_Scope: N+1→4 query hierarchy loader, HLC clock upgrade, #[instrument] on all handlers_
+
+## [x] Track: Entity Data Layer — Direct API DB Reads, Transform Oplog (Phase 2)
+_Scope: Read-only SurrealKV connection for API, transform mutations through op_log_
+
+## [x] Track: Entity Data Layer — Custom Properties, Petal Iroh Replication (Phase 3)
+_Scope: Node custom properties CRUD, field_def schema, SceneChange::PropertyChanged, petal replication_
+
+## [x] Track: Entity Data Layer — Query Endpoint, Scene Streaming (Phase 4)
+_Scope: POST /api/v1/query (scope-guarded SurrealQL), scene snapshot + delta streaming over WS_
+
+## [x] Track: Entity Data Layer — Format, Entity Store, Node Log (Phase 5)
+_Scope: fe-format crate (ZIP export/import), fe-entity-store crate (papaya lock-free cache), node_log table (append-only), elevated query endpoint_
+_Crates: fe-format, fe-entity-store_
+
+## [ ] Track: Entity Data Layer — fe-query LINQ Builder, GraphQL, GIS Validation (Phase 6.1)
+_Link: [.omc/plans/skill-chain-prompts.md — Phase 6.1]_
+_Depends on: Phase 5 complete | Blocks: Phase 6.2 (DataFusion + peer compute)_
+_Scope: fe-query crate with LINQ-style QueryBuilder (parameterized, type-safe), async-graphql schema, GIS coordinate validation, spatial query filters_
+_Crates: fe-query (new)_
+_Priority: P1 (eliminates raw SQL strings, enables GraphQL + digital twin GIS queries)_
+
+## [ ] Track: Entity Data Layer — DataFusion + GeoParquet + Peer Compute (Phase 6.2)
+_Depends on: Phase 6.1 | Blocks: Final Architecture Review_
+_Scope: DataFusion execution engine, GeoParquet read/write, spatial UDFs, DuckDB compat layer, peer compute mesh, Arrow Flight endpoint_
+
+## [ ] Track: Hexon Format — Universal .hexon Package, amp.SDK Addressing, Signed Manifests (Phase 6.5)
+_Link: [.omc/plans/skill-chain-prompts.md — Phase 6.5]_
+_Depends on: Phase 5 (fe-format exists) | Blocks: Phase 7 (terrain), Phase 8 (hexon registry)_
+_Scope: Rewrite fe-format as Hexon v1.0.0 — HexonManifest (hexon_type, publisher_did, version, signature, tags, platforms, amp-compatible address), entries.json (AssetEntry with amp EntryKind mapping), license.json, .hexon extension, ed25519 signing, hexon_ref property type, 3-level address system (NodeID/AttrID/ItemID). Spec: docs/hexon-format-spec.md_
+_Priority: P0 (foundational — all subsequent tracks depend on the universal format)_
+_Interop: amp.SDK (Go), plan.3D (Unity) — shared format spec_
+
+### Terrain, GPX & Crate Registry
+
+## [ ] Track: Terrain & GPX — 3D Map Tiles, GPX Tracks, Elevation Mesh, Petal-Bound Terrain (Phase 7)
+
+_Link: [./tracks/terrain_gpx_maps_20260508/](./tracks/terrain_gpx_maps_20260508/)_
+_Depends on: Phase 6.5 (Hexon format), Phase 6.1 (fe-query GIS), Viewport Foundation, Scene Graph Bridge | Blocks: Hexon Registry (terrain hexon type), IoT Path Tracking_
+_Scope: Unified fe-terrain — GPX 1.0/1.1 parsing, terrain tile fetching (XYZ/TMS), elevation mesh from DEM, satellite draping, petal-scoped terrain config, layer stack (GPX tracks, GeoJSON overlays, heatmaps), waypoint interaction, IoT path tracking, .hexon terrain/ directory integration_
+_Crates: fe-terrain (new — consolidates GPX + terrain + map layers + IoT path tracking)_
+_Priority: P1 (enables outdoor digital twin, gpx.studio-style 3D visualization, IoT route tracking)_
+_Key deps: gpx 0.10, geojson 1.0, flat_projection 0.4, image 0.25, reqwest 0.12_
+
+## [ ] Track: Hexon Registry — P2P Distribution, Multi-Format Assets, Marketplace (Phase 8)
+
+_Link: [./tracks/crate_registry_20260508/](./tracks/crate_registry_20260508/)_
+_Depends on: Phase 6.5 (Hexon format), Headless Relay, Fractal Mesh (P2P), Terrain & GPX (terrain hexon type) | Blocks: Community Marketplace_
+_Scope: fe-hexon handles registry + distribution (format in fe-format). Local registry (SurrealDB), install/uninstall, multi-format asset handlers (GLB, HDR/EXR skyboxes, PBR materials, terrain tilesets, GPX collections, sounds), P2P distribution via DHT+iroh, paywall (ChaCha20-Poly1305 encrypted blobs), publisher DID identity_
+_Crates: fe-hexon (new — registry, P2P distribution, asset handlers, publisher tools)_
+_Priority: P1 (enables community content ecosystem — any peer/relay can host hexons for all verses)_
+_Key deps: chacha20poly1305 (paid hexon encryption), blake3 1, ed25519-dalek 2.2_
+_Interop: amp.SDK (Go), plan.3D (Unity) — shared Hexon format (docs/hexon-format-spec.md)_
+
+### External Access
 
 ## [ ] Track: Realtime API Gateway — MCP + REST + WebSocket for External Access
 
