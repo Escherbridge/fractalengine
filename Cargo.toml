@@ -13,14 +13,34 @@ members = [
     "fe-test-harness",
     "fe-api",
     "fractalengine-relay",
+    "fe-format",
+    "fe-entity-store",
+    "fe-query",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-bevy = { version = "0.18" }
+bevy = { version = "0.18", default-features = false, features = [
+    # 3D rendering pipeline (PBR, GLTF, gizmos, anti-alias, post-process)
+    "3d_bevy_render",
+    # App fundamentals (asset, state, window, logging, input focus)
+    "default_app",
+    # UI rendering (bevy_ui + render backend)
+    "ui_bevy_render",
+    # Scene serialization
+    "scene",
+    # Picking (mesh, sprite, UI)
+    "bevy_picking", "mesh_picking", "sprite_picking", "ui_picking",
+    # Platform (windowing, threading, fonts)
+    "std", "bevy_winit", "default_font", "multi_threaded",
+    # Linux display servers
+    "x11", "wayland",
+    # Diagnostics
+    "sysinfo_plugin",
+] }
 bevy_egui = "0.39"
 crossbeam = "0.8"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 surrealdb = { version = "3.0", features = ["kv-surrealkv", "kv-mem"] }
@@ -41,3 +61,9 @@ anyhow = "1"
 thiserror = "1"
 ulid = "1"
 rfd = "0.15"
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
