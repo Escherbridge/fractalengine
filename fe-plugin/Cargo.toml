@@ -1,0 +1,24 @@
+[package]
+name = "fe-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fe-runtime = { path = "../fe-runtime" }
+rhai = "1.19"
+wasmtime = { version = "29", features = ["async"] }
+blake3 = { workspace = true }
+anyhow = { workspace = true }
+crossbeam = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+bevy = { workspace = true }
+thiserror = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
+wat = "1"
