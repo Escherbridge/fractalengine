@@ -1,0 +1,88 @@
+// WIT interface definition for FractalEngine plugins.
+//
+// This file defines the component-model contract between the engine host
+// and WebAssembly guest plugins. The host provides `node-api` and
+// `plugin-log`; the guest exports `scene-hooks`.
+
+package fractalengine:plugin@1.0.0;
+
+/// A read-only snapshot of a node's current state.
+/// Mirrors fe-sdk's NodeSnapshot but expressed in WIT value types.
+record node-snapshot {
+    node-id: string,
+    petal-id: string,
+    name: string,
+    pos-x: f64,
+    pos-y: f64,
+    pos-z: f64,
+}
+
+/// A single scene mutation, used both for incoming change notifications
+/// and for reactive changes returned by `on-scene-change`.
+record scene-change {
+    /// The type of change: "node_added", "node_removed", "property_changed",
+    /// "transform_changed", etc.
+    change-type: string,
+    /// The node affected by this change.
+    node-id: string,
+    /// Property key (for property changes).
+    key: option<string>,
+    /// Property value as a JSON string (for property changes).
+    value: option<string>,
+}
+
+/// Host-provided API for reading and mutating the scene graph.
+interface node-api {
+    /// Retrieve a snapshot of a single node by its ULID.
+    get-node: func(id: string) -> option<node-snapshot>;
+
+    /// Set a string property on a node.
+    set-property: func(node-id: string, key: string, value: string);
+
+    /// Query all nodes in a petal, optionally filtered.
+    /// The filter is a JSON-encoded filter expression.
+    query-nodes: func(petal-id: string, filter: string) -> list<node-snapshot>;
+
+    /// Create a new node in a petal. Returns the provisional node ID.
+    create-node: func(petal-id: string, name: string) -> string;
+
+    /// Delete a node by its ULID.
+    delete-node: func(node-id: string);
+}
+
+/// Host-provided structured logging.
+interface plugin-log {
+    log-debug: func(msg: string);
+    log-info: func(msg: string);
+    log-warn: func(msg: string);
+    log-error: func(msg: string);
+}
+
+/// Guest-exported lifecycle and scene hooks.
+interface scene-hooks {
+    /// Called when the plugin is first installed into a petal.
+    on-install: func(petal-id: string);
+
+    /// Called when the plugin transitions to Active state.
+    on-activate: func(petal-id: string);
+
+    /// Called when the plugin is deactivated.
+    on-deactivate: func();
+
+    /// Called when the plugin is permanently uninstalled.
+    on-uninstall: func();
+
+    /// Called each tick with batched scene changes.
+    /// Returns reactive changes the plugin wants to apply.
+    on-scene-change: func(changes: list<scene-change>) -> list<scene-change>;
+
+    /// Called every tick with the elapsed time in milliseconds.
+    on-tick: func(delta-ms: u32);
+}
+
+/// The top-level world that a fractal plugin component targets.
+world fractal-plugin {
+    import node-api;
+    import plugin-log;
+    export scene-hooks;
+}
