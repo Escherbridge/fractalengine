@@ -18,6 +18,7 @@ pub async fn create_petal(
         op_type: OpType::CreatePetal,
         payload: serde_json::json!({ "name": name, "petal_id": petal_id.0.to_string() }),
         sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
     };
     write_op_log(db, entry).await?;
     let petal = Petal {
@@ -30,6 +31,7 @@ pub async fn create_petal(
         tags: vec![],
         fractal_id: None,
         bounds: None,
+        hexon_manifest: None,
     };
     Repo::<Petal>::create(db, &petal).await?;
     Ok(petal_id)
@@ -51,6 +53,7 @@ pub async fn create_room(
         op_type: OpType::CreateRoom,
         payload: serde_json::json!({ "petal_id": petal_id.0.to_string(), "name": name }),
         sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
     };
     write_op_log(db, entry).await?;
     let room = Room {
@@ -85,6 +88,7 @@ pub async fn place_model(
             "transform": transform,
         }),
         sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
     };
     write_op_log(db, entry).await?;
     let model = Model {

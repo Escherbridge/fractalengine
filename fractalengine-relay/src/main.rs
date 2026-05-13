@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     let secret_store: Arc<dyn fe_identity::SecretStore> =
         Arc::new(fe_identity::EnvBackend::new());
 
-    let node_kp = match load_or_generate_keypair(&secret_store) {
+    let node_kp = match fe_identity::load_or_generate_keypair(&secret_store, "node_keypair") {
         Ok(kp) => kp,
         Err(e) => {
             tracing::warn!("Could not load/store keypair, generating ephemeral: {e}");
@@ -45,14 +45,12 @@ fn main() -> anyhow::Result<()> {
 
     let (repl_tx, repl_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(256);
 
-    let _db_path = std::env::var("FE_DB_PATH").unwrap_or_else(|_| "data/fractalengine.db".into());
+    let db_path = std::env::var("FE_DB_PATH").unwrap_or_else(|_| "data/fractalengine.db".into());
 
     // Scene change broadcast: DB thread emits CUD deltas, API thread fans out to WS clients.
     let (entity_change_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::SceneChange>(256);
 
-    // NOTE: spawn_db_thread_with_sync uses the default db path internally.
-    // Custom db_path support will come in Phase 4.
     let _db_thread = fe_database::spawn_db_thread_with_sync(
         ch.db_cmd_rx,
         ch.db_res_tx,
@@ -61,6 +59,7 @@ fn main() -> anyhow::Result<()> {
         Some(db_keypair),
         Some(secret_store.clone()),
         Some(entity_change_tx.clone()),
+        Some(db_path.clone()),
     );
 
     ch.db_cmd_tx.send(DbCommand::Seed).ok();
@@ -152,6 +151,43 @@ fn main() -> anyhow::Result<()> {
         tokio::sync::broadcast::channel::<fe_runtime::messages::TransformUpdate>(1024);
     let (revocation_tx, revocation_rx) = tokio::sync::broadcast::channel::<String>(64);
 
+    // Open a second read-only SurrealKV connection for direct API reads.
+    // SurrealKV supports concurrent readers; this bypasses the crossbeam channel.
+    let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("api_db_reader runtime");
+        match rt.block_on(async {
+            let db = surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(&db_path).await?;
+            db.use_ns("fractalengine").use_db("fractalengine").await?;
+            Ok::<_, surrealdb::Error>(db)
+        }) {
+            Ok(db) => {
+                tracing::info!("Opened read-only SurrealKV connection for API gateway");
+                Some(Arc::new(db))
+            }
+            Err(e) => {
+                tracing::warn!("Could not open API read connection, falling back to channel: {e}");
+                None
+            }
+        }
+    };
+
+    // Tileset registry: scan installed hexon tilesets and load into memory.
+    let tileset_registry = match fe_terrain::tiles::HexonStore::new() {
+        Ok(store) => {
+            let registry = fe_terrain::tiles::TilesetRegistry::new(store);
+            let loaded = registry.load_all();
+            tracing::info!(count = loaded.len(), "Loaded hexon tilesets into registry");
+            Some(Arc::new(registry))
+        }
+        Err(e) => {
+            tracing::warn!("Could not initialize hexon store: {e}");
+            None
+        }
+    };
+
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
         bind_addr,
         api_cmd_tx: api_cmd_tx.clone(),
@@ -161,6 +197,11 @@ fn main() -> anyhow::Result<()> {
         blob_store: None,
         cors_origins: Some(cors_origins),
         entity_change_tx,
+        api_db_reader,
+        entity_store: None, // TODO: share Arc<EntityStore> with relay once wired
+        tileset_registry,
+        hexon_registry: None,
+        announcement_store: None,
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));
@@ -178,30 +219,3 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Load a node keypair from the secret store, or generate and store a new one.
-fn load_or_generate_keypair(
-    store: &Arc<dyn fe_identity::SecretStore>,
-) -> anyhow::Result<fe_identity::NodeKeypair> {
-    match store.get("fractalengine", "node_keypair") {
-        Ok(Some(seed_hex)) => {
-            let seed_bytes = hex::decode(&seed_hex)
-                .map_err(|e| anyhow::anyhow!("invalid keypair hex: {e}"))?;
-            let seed_array: [u8; 32] = seed_bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("keypair seed is not 32 bytes"))?;
-            let kp = fe_identity::NodeKeypair::from_bytes(&seed_array)?;
-            tracing::info!("Loaded node keypair from secret store");
-            Ok(kp)
-        }
-        Ok(None) => {
-            let kp = fe_identity::NodeKeypair::generate();
-            let seed_hex = hex::encode(kp.seed_bytes());
-            store
-                .set("fractalengine", "node_keypair", &seed_hex)
-                .map_err(|e| anyhow::anyhow!("secret store set failed: {e}"))?;
-            tracing::info!("Generated and stored new node keypair");
-            Ok(kp)
-        }
-        Err(e) => Err(anyhow::anyhow!("secret store get failed: {e}")),
-    }
-}

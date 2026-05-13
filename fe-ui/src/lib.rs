@@ -5,6 +5,8 @@
 pub mod atlas;
 pub mod dialogs;
 pub mod gimbal;
+pub mod hexon_manager;
+pub mod petal_manifest;
 pub mod navigation_manager;
 pub mod node_manager;
 pub mod panels;

@@ -97,7 +97,9 @@ define_table! {
         tags:        Vec<String>    => "TYPE array<string> VALUE $value OR []",
         fractal_id:  Option<String> => "TYPE option<string>",
         #[serde(skip_serializing_if = "Option::is_none")]
-        bounds: Option<serde_json::Value> => "TYPE option<geometry<polygon>>"
+        bounds: Option<serde_json::Value> => "TYPE option<geometry<polygon>>",
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hexon_manifest: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
     }
 }
 
@@ -140,11 +142,12 @@ define_table! {
 define_table! {
     /// Append-only operation log for CRDT convergence.
     table "op_log" => OpLog (id: lamport_clock) {
-        lamport_clock: i64              => "TYPE int",
-        node_id:       String           => "TYPE string",
-        op_type:       String           => "TYPE string",
-        payload:       serde_json::Value => "TYPE object FLEXIBLE",
-        sig:           String           => "TYPE string"
+        lamport_clock:  i64              => "TYPE int",
+        hlc_timestamp:  String           => "TYPE string DEFAULT ''",
+        node_id:        String           => "TYPE string",
+        op_type:        String           => "TYPE string",
+        payload:        serde_json::Value => "TYPE object FLEXIBLE",
+        sig:            String           => "TYPE string"
     }
 }
 
@@ -204,7 +207,11 @@ define_table! {
         rotation:     Vec<f64>                  => "TYPE array",
         scale:        Vec<f64>                  => "TYPE array",
         interactive:  bool                      => "TYPE bool DEFAULT false",
-        created_at:   String                    => "TYPE string"
+        created_at:   String                    => "TYPE string",
+        /// Monotonic edit counter for optimistic concurrency on node mutations.
+        edit_seq:     i64                       => "TYPE int DEFAULT 0",
+        #[serde(skip_serializing_if = "Option::is_none")]
+        properties:   Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
     }
 }
 
@@ -221,6 +228,70 @@ define_table! {
         data:         Option<String> => "TYPE option<string> VALUE $value OR NONE",
         created_at:   String         => "TYPE string",
         content_hash: Option<String> => "TYPE option<string>"
+    }
+}
+
+define_table! {
+    /// Append-only, per-node operation log. Each row is an immutable fact
+    /// recording a single mutation on a node. Rows are INSERT-only — no
+    /// UPDATE or DELETE is ever issued against this table.
+    ///
+    /// `row_version` is monotonically increasing per `node_id` and serves as
+    /// hidden metadata for "most recent state" queries. `hlc_timestamp` is
+    /// the HLC-packed u64 for time-series ordering and distributed merge.
+    table "node_log" => NodeLog (id: log_id) {
+        log_id:        String           => "TYPE string",
+        node_id:       String           => "TYPE string",
+        hlc_timestamp: i64              => "TYPE int",
+        op:            String           => "TYPE string",
+        source_did:    String           => "TYPE string DEFAULT ''",
+        payload:       serde_json::Value => "TYPE object FLEXIBLE",
+        row_version:   i64              => "TYPE int",
+        created_at:    String           => "TYPE string"
+    }
+}
+
+define_table! {
+    /// Schema definition for user-defined custom properties on entities.
+    table "field_def" => FieldDef (id: field_def_id) {
+        field_def_id: String                    => "TYPE string",
+        scope:        String                    => "TYPE string",
+        entity_type:  String                    => "TYPE string",
+        key:          String                    => "TYPE string",
+        value_type:   String                    => "TYPE string",
+        default_val:  Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
+        created_by:   String                    => "TYPE string",
+        created_at:   String                    => "TYPE string"
+    }
+}
+
+define_table! {
+    /// Hexon crate registry — tracks locally installed .fecrate packages.
+    table "crate_registry" => CrateRegistry (id: hexon_uri) {
+        hexon_uri:       String => "TYPE string",
+        manifest_hash:   String => "TYPE string",
+        publisher_did:   String => "TYPE string",
+        hexon_type:      String => "TYPE string",
+        version:         String => "TYPE string",
+        name:            String => "TYPE string",
+        tags:            String => "TYPE string VALUE $value OR '[]'",
+        petal_id:        String => "TYPE string",
+        size_bytes:      i64    => "TYPE int",
+        installed_at:    String => "TYPE string",
+        signature_valid: bool   => "TYPE bool",
+    }
+}
+
+define_table! {
+    /// Individual asset entries within an installed hexon crate.
+    table "crate_entry" => CrateEntry (id: entry_id) {
+        entry_id:   String                    => "TYPE string",
+        hexon_uri:  String                    => "TYPE string",
+        kind:       String                    => "TYPE string",
+        asset_hash: String                    => "TYPE string",
+        format:     String                    => "TYPE string",
+        label:      String                    => "TYPE string",
+        metadata:   Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
     }
 }
 
@@ -243,6 +314,10 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<OpLog>::apply_schema(db).await?;
     Repo::<Node>::apply_schema(db).await?;
     Repo::<Asset>::apply_schema(db).await?;
+    Repo::<FieldDef>::apply_schema(db).await?;
+    Repo::<NodeLog>::apply_schema(db).await?;
+    Repo::<CrateRegistry>::apply_schema(db).await?;
+    Repo::<CrateEntry>::apply_schema(db).await?;
 
     // Critical indexes for query performance
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
@@ -253,6 +328,14 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_fractal_verse: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_role_scope ON TABLE role FIELDS scope")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_role_scope: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_node ON TABLE node_log FIELDS node_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_node_log_node: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_hlc ON TABLE node_log FIELDS node_id, hlc_timestamp")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_node_log_hlc: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_crate_registry_hexon_uri ON TABLE crate_registry FIELDS hexon_uri")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_crate_registry_hexon_uri: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_crate_entry_hexon_uri ON TABLE crate_entry FIELDS hexon_uri")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_crate_entry_hexon_uri: {e}"))?;
 
     Ok(())
 }
@@ -269,6 +352,10 @@ pub const ALL_TABLE_NAMES: &[&str] = &[
     Fractal::TABLE_NAME,
     Node::TABLE_NAME,
     Asset::TABLE_NAME,
+    FieldDef::TABLE_NAME,
+    NodeLog::TABLE_NAME,
+    CrateRegistry::TABLE_NAME,
+    CrateEntry::TABLE_NAME,
 ];
 
 // ---------------------------------------------------------------------------
@@ -311,6 +398,13 @@ mod tests {
     #[test]
     fn petal_schema_contains_bounds_field() {
         assert!(Petal::schema().contains("bounds ON TABLE petal TYPE option<geometry<polygon>>"));
+    }
+
+    #[test]
+    fn petal_schema_contains_hexon_manifest_field() {
+        let s = Petal::schema();
+        assert!(s.contains("hexon_manifest ON TABLE petal"));
+        assert!(s.contains("option<object>"));
     }
 
     // --- Room schema ---
@@ -412,7 +506,7 @@ mod tests {
 
     #[test]
     fn all_table_names_are_present() {
-        assert_eq!(ALL_TABLE_NAMES.len(), 10);
+        assert_eq!(ALL_TABLE_NAMES.len(), 12);
         assert!(ALL_TABLE_NAMES.contains(&"petal"));
         assert!(ALL_TABLE_NAMES.contains(&"verse_member"));
         assert!(ALL_TABLE_NAMES.contains(&"asset"));

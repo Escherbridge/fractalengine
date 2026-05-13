@@ -11,6 +11,10 @@ use fe_runtime::PeerRegistry;
 use fe_ui::plugin::LocalUserRole;
 use tracing_subscriber::EnvFilter;
 
+/// Default SurrealKV database path. Must match the path used by
+/// `fe_database::spawn_db_thread_with_sync` so the API reader opens the same store.
+const DB_PATH: &str = "data/fractalengine.db";
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -32,7 +36,7 @@ fn main() {
     // Load or generate a persistent node keypair. The 32-byte seed is stored
     // in the secret store so the node identity survives across launches,
     // preserving P2P reconnection and invite verification.
-    let node_kp = match load_or_generate_keypair(&secret_store) {
+    let node_kp = match fe_identity::load_or_generate_keypair(&secret_store, "node_keypair") {
         Ok(kp) => kp,
         Err(e) => {
             tracing::warn!("Could not load/store keypair in secret store, generating ephemeral: {e}");
@@ -65,6 +69,7 @@ fn main() {
         Some(db_keypair),
         Some(secret_store.clone()),
         Some(entity_change_tx.clone()),
+        None, // use default db_path
     ) {
         Ok(handle) => handle,
         Err(e) => {
@@ -156,6 +161,29 @@ fn main() {
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
     let (revocation_tx, revocation_rx) = tokio::sync::broadcast::channel::<String>(64);
 
+    // Open a second read-only SurrealKV connection for direct API reads.
+    // SurrealKV supports concurrent readers; this bypasses the crossbeam channel.
+    let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("api_db_reader runtime");
+        match rt.block_on(async {
+            let db = surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(DB_PATH).await?;
+            db.use_ns("fractalengine").use_db("fractalengine").await?;
+            Ok::<_, surrealdb::Error>(db)
+        }) {
+            Ok(db) => {
+                tracing::info!("Opened read-only SurrealKV connection for API gateway");
+                Some(Arc::new(db))
+            }
+            Err(e) => {
+                tracing::warn!("Could not open API read connection, falling back to channel: {e}");
+                None
+            }
+        }
+    };
+
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
         bind_addr: "127.0.0.1:8765".to_string(),
         api_cmd_tx: api_cmd_tx.clone(),
@@ -165,7 +193,50 @@ fn main() {
         blob_store: None,
         cors_origins: None, // defaults to localhost-only
         entity_change_tx: entity_change_tx.clone(),
+        api_db_reader,
+        entity_store: None, // TODO: share Arc<EntityStore> with Bevy once resource type is Arc-wrapped
+        tileset_registry: None, // TODO: wire for GUI app when terrain viewer is integrated
+        hexon_registry: None,
+        announcement_store: None,
     });
+
+    // ---- Entity Store (in-memory hot cache) ----
+    app.insert_resource(fe_entity_store::EntityStore::new());
+
+    // Bridge: tokio broadcast → crossbeam channel so Bevy can drain scene changes
+    // into the EntityStore without a tokio runtime.
+    let (scene_change_tx_bevy, scene_change_rx_bevy) =
+        crossbeam::channel::bounded::<fe_runtime::messages::SceneChange>(256);
+    {
+        let mut entity_change_rx = entity_change_tx.subscribe();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("scene change bridge runtime");
+            rt.block_on(async move {
+                tracing::info!("Scene change bridge started — feeding EntityStore");
+                loop {
+                    match entity_change_rx.recv().await {
+                        Ok(change) => {
+                            match scene_change_tx_bevy.try_send(change) {
+                                Ok(()) => {}
+                                Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                    tracing::warn!("Scene change bridge: channel full — dropping");
+                                }
+                                Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Scene change bridge lagged by {n}");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        });
+    }
+    app.insert_resource(SceneChangeReceiver(scene_change_rx_bevy));
 
     app.insert_resource(fe_runtime::app::RevocationBroadcastSender(revocation_tx));
     app.insert_resource(ApiCommandReceiver(Arc::new(Mutex::new(api_cmd_rx))));
@@ -217,7 +288,7 @@ fn main() {
     app.init_resource::<PendingApiRequests>();
     app.add_systems(
         bevy::prelude::Update,
-        fe_runtime::app::drain_api_commands,
+        (fe_runtime::app::drain_api_commands, drain_scene_changes_to_store),
     );
 
     // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
@@ -230,33 +301,80 @@ fn main() {
     app.run();
 }
 
-/// Load a node keypair from the secret store, or generate a new one and store it.
-///
-/// The 32-byte seed is stored as a 64-char hex string under the service
-/// `"fractalengine"` with account `"node_keypair"`.
-fn load_or_generate_keypair(
-    store: &Arc<dyn fe_identity::SecretStore>,
-) -> anyhow::Result<fe_identity::NodeKeypair> {
-    match store.get("fractalengine", "node_keypair") {
-        Ok(Some(seed_hex)) => {
-            let seed_bytes = hex::decode(&seed_hex)
-                .map_err(|e| anyhow::anyhow!("invalid keypair hex in secret store: {e}"))?;
-            let seed_array: [u8; 32] = seed_bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("secret store keypair seed is not 32 bytes"))?;
-            let kp = fe_identity::NodeKeypair::from_bytes(&seed_array)?;
-            tracing::info!("Loaded node keypair from secret store");
-            Ok(kp)
-        }
-        Ok(None) => {
-            let kp = fe_identity::NodeKeypair::generate();
-            let seed_hex = hex::encode(kp.seed_bytes());
-            store
-                .set("fractalengine", "node_keypair", &seed_hex)
-                .map_err(|e| anyhow::anyhow!("secret store set failed: {e}"))?;
-            tracing::info!("Generated and stored new node keypair in secret store");
-            Ok(kp)
-        }
-        Err(e) => Err(anyhow::anyhow!("secret store get failed: {e}")),
+// ---------------------------------------------------------------------------
+// EntityStore bridge: scene change receiver + drain system
+// ---------------------------------------------------------------------------
+
+#[derive(bevy::prelude::Resource)]
+struct SceneChangeReceiver(crossbeam::channel::Receiver<fe_runtime::messages::SceneChange>);
+
+/// Bevy system: drain scene change events from the bridge channel into the
+/// `EntityStore` hot cache each frame.
+fn drain_scene_changes_to_store(
+    receiver: bevy::prelude::Res<SceneChangeReceiver>,
+    store: bevy::prelude::Res<fe_entity_store::EntityStore>,
+) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    while let Ok(change) = receiver.0.try_recv() {
+        // Convert fe_runtime::messages::SceneChange to fe_entity_store::SceneChange
+        let store_change = match change {
+            fe_runtime::messages::SceneChange::NodeAdded { node } => {
+                fe_entity_store::SceneChange::NodeAdded {
+                    node: fe_entity_store::NodeSnapshot {
+                        node_id: node.node_id,
+                        petal_id: node.petal_id,
+                        name: node.name,
+                        position: node.position,
+                        rotation: node.rotation,
+                        scale: node.scale,
+                        has_asset: node.has_asset,
+                        asset_path: node.asset_path,
+                    },
+                }
+            }
+            fe_runtime::messages::SceneChange::NodeRemoved { node_id } => {
+                fe_entity_store::SceneChange::NodeRemoved { node_id }
+            }
+            fe_runtime::messages::SceneChange::NodeRenamed { node_id, new_name } => {
+                fe_entity_store::SceneChange::NodeRenamed { node_id, new_name }
+            }
+            fe_runtime::messages::SceneChange::NodeTransform {
+                node_id,
+                position,
+                rotation,
+                scale,
+            } => fe_entity_store::SceneChange::NodeTransform {
+                node_id,
+                position,
+                rotation,
+                scale,
+            },
+            fe_runtime::messages::SceneChange::TransformFailed {
+                node_id,
+                position,
+                rotation,
+                scale,
+            } => fe_entity_store::SceneChange::TransformFailed {
+                node_id,
+                position,
+                rotation,
+                scale,
+            },
+            fe_runtime::messages::SceneChange::PropertyChanged {
+                node_id,
+                key,
+                value,
+            } => fe_entity_store::SceneChange::PropertyChanged {
+                node_id,
+                key,
+                value,
+            },
+        };
+        store.apply_scene_change(&store_change, now_ms);
     }
 }
+

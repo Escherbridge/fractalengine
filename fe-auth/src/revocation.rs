@@ -16,6 +16,7 @@ pub async fn revoke_session(
             "pub_key": hex::encode(peer_pub_key_bytes),
         }),
         sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
     };
     fe_database::op_log::write_op_log(&db_handle.0, entry).await?;
     // CROSS-CRATE: send NetworkCommand::BroadcastRevocation to network thread — deferred Sprint 5B

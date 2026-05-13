@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use crate::{atlas::DashboardState, panels, panels::Tool, role_chip};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
@@ -16,7 +19,113 @@ pub enum UiAction {
     PortalGoBack,
     /// Save URL for the selected node (replaces InspectorFormState.url_save_pending).
     SaveUrl,
+    /// Submit a SurrealQL query via the API gateway.
+    SubmitQuery { sql: String, scope: String },
+    /// Request loading properties for selected node.
+    LoadNodeProperties { node_id: String },
+    /// Set a property value on a node.
+    SetNodeProperty { node_id: String, key: String, value: serde_json::Value },
+    /// Delete a property from a node.
+    DeleteNodeProperty { node_id: String, key: String },
+    // Hexon Manager actions
+    HexonInstallFromFile(PathBuf),
+    HexonRemoveTileset(String),
+    HexonToggleSeeding(String, bool),
+    HexonStartDownload(String),
+    HexonCancelDownload(String),
+    HexonRefreshList,
+    HexonOpenStorageDir,
+    // Petal Manifest actions
+    PetalManifestSave { petal_id: String, manifest: PetalManifest },
+    PetalManifestOpen { petal_id: String, petal_name: String },
 }
+
+// ---------------------------------------------------------------------------
+// Hexon Manager types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HexonManagerTab {
+    Installed,
+    Available,
+    Downloads,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstalledTilesetDto {
+    pub hexon_id: String,
+    pub region_name: String,
+    pub bounds: [f64; 4],
+    pub zoom_range: (u8, u8),
+    pub tile_count: u32,
+    pub size_bytes: u64,
+    pub seeding_enabled: bool,
+    pub installed_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AvailableTilesetDto {
+    pub hexon_id: String,
+    pub region_name: String,
+    pub bounds: [f64; 4],
+    pub zoom_range: (u8, u8),
+    pub tile_count: u32,
+    pub approx_size_bytes: u64,
+    pub peer_count: u32,
+    pub already_installed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum DownloadStatus {
+    Queued,
+    Downloading,
+    Verifying,
+    Complete,
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadProgress {
+    pub tileset_id: String,
+    pub chunks_received: u32,
+    pub total_chunks: u32,
+    pub bytes_received: u64,
+    pub total_bytes_estimate: u64,
+    pub status: DownloadStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageInfoDto {
+    pub base_dir: String,
+    pub total_bytes: u64,
+    pub count: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Petal Manifest types
+// ---------------------------------------------------------------------------
+
+/// A single hexon requirement in a petal's manifest.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManifestHexonEntry {
+    pub hexon_id: String,
+    pub hexon_type: String,
+    pub required: bool,
+}
+
+/// Parsed petal manifest — mirrors the JSON stored in `petal.hexon_manifest`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PetalManifest {
+    #[serde(default)]
+    pub hexons: Vec<ManifestHexonEntry>,
+    #[serde(default = "default_render_distance")]
+    pub render_distance: f32,
+    #[serde(default = "default_fallback")]
+    pub fallback: String,
+}
+
+fn default_render_distance() -> f32 { 500.0 }
+fn default_fallback() -> String { "sign".to_string() }
 
 /// Portal webview lifecycle state (replaces PortalPanelState).
 #[derive(Debug, Clone, Default)]
@@ -64,6 +173,27 @@ pub enum ActiveDialog {
         invite_buf: String,
     },
     PeerDebug,
+    HexonManager {
+        installed_tilesets: Vec<InstalledTilesetDto>,
+        available_tilesets: Vec<AvailableTilesetDto>,
+        download_progress: HashMap<String, DownloadProgress>,
+        filter_text: String,
+        active_tab: HexonManagerTab,
+        storage_info: StorageInfoDto,
+        loading: bool,
+        pending_remove: Option<String>,
+    },
+    PetalManifest {
+        petal_id: String,
+        petal_name: String,
+        manifest: PetalManifest,
+        /// Hexon IDs available locally (from the global hexon store).
+        available_hexon_ids: Vec<String>,
+        add_hexon_id_buf: String,
+        add_hexon_type_buf: String,
+        render_distance_buf: String,
+        dirty: bool,
+    },
     EntitySettings {
         entity_type: EntitySettingsType,
         entity_id: String,
@@ -227,10 +357,22 @@ pub enum InspectorTab {
     #[default]
     Properties,
     ApiAccess,
+    Query,
 }
 
 /// Default page size for paginated API token listings.
 pub const API_TOKEN_PAGE_SIZE: u32 = 20;
+
+/// A single field definition (property schema entry) for display in the inspector.
+#[derive(Debug, Clone)]
+pub struct FieldDefEntry {
+    pub field_def_id: String,
+    pub key: String,
+    pub value_type: String,
+    pub description: String,
+    pub required: bool,
+    pub default_val: Option<serde_json::Value>,
+}
 
 /// Inspector panel state: form buffers for transform editing & URL fields.
 /// Selection state lives in [`NodeManager`] — this resource only holds
@@ -252,6 +394,23 @@ pub struct InspectorFormState {
     pub api_tokens_loading: bool,
     pub api_tokens_page: u32,
     pub api_tokens_total: u64,
+    // Query tab state
+    pub query_sql_buf: String,
+    pub query_result: Option<String>,
+    pub query_loading: bool,
+    // Property value editing state
+    pub node_properties: serde_json::Value,
+    pub node_properties_loading: bool,
+    pub prop_add_key_buf: String,
+    pub prop_add_value_buf: String,
+    pub prop_add_type_buf: String,
+    // Field definition (schema) editing state
+    pub field_defs: Vec<FieldDefEntry>,
+    pub field_defs_loading: bool,
+    pub field_def_add_key_buf: String,
+    pub field_def_add_type_buf: String,
+    pub field_def_add_desc_buf: String,
+    pub field_def_add_required: bool,
 }
 
 impl Default for InspectorFormState {
@@ -271,6 +430,20 @@ impl Default for InspectorFormState {
             api_tokens_loading: false,
             api_tokens_page: 0,
             api_tokens_total: 0,
+            query_sql_buf: String::new(),
+            query_result: None,
+            query_loading: false,
+            node_properties: serde_json::Value::Object(Default::default()),
+            node_properties_loading: false,
+            prop_add_key_buf: String::new(),
+            prop_add_value_buf: String::new(),
+            prop_add_type_buf: "string".into(),
+            field_defs: Vec::new(),
+            field_defs_loading: false,
+            field_def_add_key_buf: String::new(),
+            field_def_add_type_buf: "string".into(),
+            field_def_add_desc_buf: String::new(),
+            field_def_add_required: false,
         }
     }
 }
@@ -338,6 +511,8 @@ pub struct ApiTokenEntry {
     pub created_at: String,
     pub expires_at: String,
     pub revoked: bool,
+    /// DID of the node that minted this token.
+    pub sub: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -549,6 +724,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<ViewportCursorWorld>();
         app.init_resource::<ViewportRect>();
         app.init_resource::<UiManager>();
+        app.init_resource::<fe_sync::TilesetEventBuffer>();
         // Register BrowserCommand so MessageWriter<BrowserCommand> is usable.
         // fe-webview's WebViewPlugin also registers this; calling add_message
         // twice is idempotent.
@@ -561,6 +737,7 @@ impl Plugin for GardenerConsolePlugin {
 
         app.add_systems(Update, process_ui_actions.in_set(UiSet::ProcessActions));
         app.add_systems(Update, resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions));
+        app.add_systems(Update, drain_tileset_events.in_set(UiSet::ProcessActions));
 
         app.add_systems(
             Update,
@@ -759,6 +936,7 @@ fn process_ui_actions(
     mut browser_commands: MessageWriter<BrowserCommand>,
     mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
+    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
 ) {
     // Auto-close portal when the selected entity changes or is deselected.
     if let PortalState::Open { opened_for_entity, .. } = ui_mgr.portal {
@@ -826,6 +1004,301 @@ fn process_ui_actions(
                     bevy::log::warn!("db_sender channel closed — UpdateNodeUrl not persisted");
                 }
             }
+            UiAction::SubmitQuery { sql, scope: _ } => {
+                if db_sender
+                    .0
+                    .send(fe_runtime::messages::DbCommand::RawQuery {
+                        sql,
+                        vars: std::collections::HashMap::new(),
+                    })
+                    .is_err()
+                {
+                    bevy::log::warn!("db_sender channel closed — RawQuery not dispatched");
+                }
+            }
+            UiAction::LoadNodeProperties { node_id } => {
+                if db_sender
+                    .0
+                    .send(fe_runtime::messages::DbCommand::GetNodeProperties { node_id })
+                    .is_err()
+                {
+                    bevy::log::warn!("db_sender channel closed — GetNodeProperties not dispatched");
+                }
+            }
+            UiAction::SetNodeProperty { node_id, key, value } => {
+                if db_sender
+                    .0
+                    .send(fe_runtime::messages::DbCommand::SetNodeProperty { node_id, key, value })
+                    .is_err()
+                {
+                    bevy::log::warn!("db_sender channel closed — SetNodeProperty not dispatched");
+                }
+            }
+            UiAction::DeleteNodeProperty { node_id, key } => {
+                if db_sender
+                    .0
+                    .send(fe_runtime::messages::DbCommand::DeleteNodeProperty { node_id, key })
+                    .is_err()
+                {
+                    bevy::log::warn!("db_sender channel closed — DeleteNodeProperty not dispatched");
+                }
+            }
+            // Hexon Manager actions — wire to sync thread for P2P distribution.
+            UiAction::HexonInstallFromFile(path) => {
+                bevy::log::info!("Hexon: install from file {:?}", path);
+                // Read file and install via db command (async install via API
+                // gateway is a future improvement; for now log the path).
+                // TODO: POST /api/v1/hexons/tilesets/install with file bytes
+            }
+            UiAction::HexonRemoveTileset(id) => {
+                bevy::log::info!("Hexon: remove tileset {}", id);
+                // TODO: DELETE /api/v1/hexons/tilesets/{id}
+            }
+            UiAction::HexonToggleSeeding(id, enabled) => {
+                bevy::log::info!("Hexon: toggle seeding {}={}", id, enabled);
+                // TODO: PATCH /api/v1/hexons/tilesets/{id}/seeding
+                // After toggling, re-advertise to peers
+                if let Some(ref sender) = sync_sender {
+                    sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
+                        advertisements_json: String::new(), // refreshed by terrain layer
+                    }).ok();
+                }
+            }
+            UiAction::HexonStartDownload(id) => {
+                bevy::log::info!("Hexon: start P2P download for tileset {}", id);
+                // Initialize a download tracker in the dialog state
+                if let ActiveDialog::HexonManager {
+                    ref mut download_progress, ..
+                } = ui_mgr.active_dialog
+                {
+                    download_progress.insert(id.clone(), DownloadProgress {
+                        tileset_id: id.clone(),
+                        chunks_received: 0,
+                        total_chunks: 0,
+                        bytes_received: 0,
+                        total_bytes_estimate: 0,
+                        status: DownloadStatus::Queued,
+                    });
+                }
+                // Request metadata from any peer that has it
+                if let Some(ref sender) = sync_sender {
+                    sender.0.send(fe_sync::SyncCommand::RequestTilesetMeta {
+                        peer_id: String::new(), // sync thread picks best peer
+                        tileset_id: id,
+                    }).ok();
+                }
+            }
+            UiAction::HexonCancelDownload(id) => {
+                bevy::log::info!("Hexon: cancel download {}", id);
+                if let Some(ref sender) = sync_sender {
+                    sender.0.send(fe_sync::SyncCommand::CancelTilesetDownload {
+                        tileset_id: id.clone(),
+                    }).ok();
+                }
+                // Update status in dialog
+                if let ActiveDialog::HexonManager {
+                    ref mut download_progress, ..
+                } = ui_mgr.active_dialog
+                {
+                    download_progress.remove(&id);
+                }
+            }
+            UiAction::HexonRefreshList => {
+                bevy::log::info!("Hexon: refresh tileset list");
+                // Re-advertise our tilesets to trigger peer exchange
+                if let Some(ref sender) = sync_sender {
+                    sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
+                        advertisements_json: String::new(),
+                    }).ok();
+                }
+            }
+            UiAction::HexonOpenStorageDir => {
+                if let ActiveDialog::HexonManager { ref storage_info, .. } = ui_mgr.active_dialog {
+                    let dir = &storage_info.base_dir;
+                    if !dir.is_empty() {
+                        #[cfg(target_os = "windows")]
+                        { let _ = std::process::Command::new("explorer").arg(dir).spawn(); }
+                        #[cfg(target_os = "macos")]
+                        { let _ = std::process::Command::new("open").arg(dir).spawn(); }
+                        #[cfg(target_os = "linux")]
+                        { let _ = std::process::Command::new("xdg-open").arg(dir).spawn(); }
+                    }
+                }
+            }
+            UiAction::PetalManifestSave { petal_id, manifest } => {
+                bevy::log::info!("PetalManifest: save requested for petal {petal_id} ({} hexons)", manifest.hexons.len());
+                // TODO: PATCH /api/v1/petals/{petal_id}/manifest
+            }
+            UiAction::PetalManifestOpen { petal_id, petal_name } => {
+                bevy::log::info!("PetalManifest: open dialog for petal {petal_id} ({petal_name})");
+                ui_mgr.active_dialog = ActiveDialog::PetalManifest {
+                    petal_id,
+                    petal_name,
+                    manifest: PetalManifest::default(),
+                    available_hexon_ids: Vec::new(),
+                    add_hexon_id_buf: String::new(),
+                    add_hexon_type_buf: String::new(),
+                    render_distance_buf: "500".to_string(),
+                    dirty: false,
+                };
+            }
+        }
+    }
+}
+
+/// Drains tileset distribution events from the sync thread and updates
+/// the Hexon Manager dialog's available/download state.
+fn drain_tileset_events(
+    mut ui_mgr: ResMut<UiManager>,
+    mut tileset_buf: ResMut<fe_sync::TilesetEventBuffer>,
+    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+) {
+    if tileset_buf.events.is_empty() {
+        return;
+    }
+
+    let events: Vec<fe_sync::SyncEvent> = tileset_buf.events.drain(..).collect();
+
+    for evt in events {
+        match evt {
+            fe_sync::SyncEvent::PeerTilesetAdvertisement {
+                peer_id,
+                advertisements_json,
+            } => {
+                // Parse advertisements and merge into available tilesets
+                let Ok(ads): Result<Vec<serde_json::Value>, _> =
+                    serde_json::from_str(&advertisements_json)
+                else {
+                    bevy::log::warn!("Failed to parse peer tileset advertisements");
+                    continue;
+                };
+
+                if let ActiveDialog::HexonManager {
+                    ref mut available_tilesets,
+                    ref installed_tilesets,
+                    ..
+                } = ui_mgr.active_dialog
+                {
+                    for ad in ads {
+                        let Some(tileset_id) = ad.get("tileset_id").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        // Skip if we already have it in available list
+                        if available_tilesets.iter().any(|t| t.hexon_id == tileset_id) {
+                            // Increment peer count
+                            if let Some(existing) = available_tilesets.iter_mut().find(|t| t.hexon_id == tileset_id) {
+                                existing.peer_count += 1;
+                            }
+                            continue;
+                        }
+                        let already_installed = installed_tilesets.iter().any(|t| t.hexon_id == tileset_id);
+                        available_tilesets.push(AvailableTilesetDto {
+                            hexon_id: tileset_id.to_string(),
+                            region_name: ad.get("region_name").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
+                            bounds: ad.get("bounds").and_then(|v| {
+                                serde_json::from_value::<[f64; 4]>(v.clone()).ok()
+                            }).unwrap_or([0.0; 4]),
+                            zoom_range: (
+                                ad.get("min_zoom").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+                                ad.get("max_zoom").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+                            ),
+                            tile_count: ad.get("tile_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                            approx_size_bytes: ad.get("approx_size_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                            peer_count: 1,
+                            already_installed,
+                        });
+                    }
+                }
+                bevy::log::info!(
+                    "Received tileset advertisements from peer {}",
+                    peer_id,
+                );
+            }
+            fe_sync::SyncEvent::TilesetMetaReceived {
+                tileset_id,
+                total_chunks,
+                approx_size_bytes,
+                ..
+            } => {
+                // Update the download tracker with chunk count and start requesting chunks
+                if let ActiveDialog::HexonManager {
+                    ref mut download_progress, ..
+                } = ui_mgr.active_dialog
+                {
+                    if let Some(dl) = download_progress.get_mut(&tileset_id) {
+                        dl.total_chunks = total_chunks;
+                        dl.total_bytes_estimate = approx_size_bytes;
+                        dl.status = DownloadStatus::Downloading;
+                    }
+                }
+                // Request the first chunk
+                if let Some(ref sender) = sync_sender {
+                    sender.0.send(fe_sync::SyncCommand::RequestChunk {
+                        peer_id: String::new(),
+                        tileset_id,
+                        chunk_seq: 0,
+                    }).ok();
+                }
+            }
+            fe_sync::SyncEvent::ChunkReceived {
+                tileset_id,
+                chunk_seq,
+                chunk_bytes,
+            } => {
+                let chunk_size = chunk_bytes.len() as u64;
+                let mut request_next = None;
+
+                if let ActiveDialog::HexonManager {
+                    ref mut download_progress, ..
+                } = ui_mgr.active_dialog
+                {
+                    if let Some(dl) = download_progress.get_mut(&tileset_id) {
+                        dl.chunks_received += 1;
+                        dl.bytes_received += chunk_size;
+
+                        if dl.chunks_received >= dl.total_chunks {
+                            dl.status = DownloadStatus::Verifying;
+                        } else {
+                            // Request next missing chunk
+                            request_next = Some((tileset_id.clone(), dl.chunks_received));
+                        }
+                    }
+                }
+
+                // Request next chunk if needed
+                if let (Some((ts_id, next_seq)), Some(ref sender)) = (request_next, &sync_sender) {
+                    sender.0.send(fe_sync::SyncCommand::RequestChunk {
+                        peer_id: String::new(),
+                        tileset_id: ts_id,
+                        chunk_seq: next_seq,
+                    }).ok();
+                }
+
+                bevy::log::debug!(
+                    "Chunk {chunk_seq} received for tileset {tileset_id} ({chunk_size} bytes)"
+                );
+            }
+            fe_sync::SyncEvent::ChunkFailed {
+                tileset_id,
+                chunk_seq,
+                reason,
+            } => {
+                bevy::log::warn!(
+                    "Chunk {chunk_seq} failed for tileset {tileset_id}: {reason}"
+                );
+                if let ActiveDialog::HexonManager {
+                    ref mut download_progress, ..
+                } = ui_mgr.active_dialog
+                {
+                    if let Some(dl) = download_progress.get_mut(&tileset_id) {
+                        dl.status = DownloadStatus::Failed(format!(
+                            "Chunk {} failed: {}",
+                            chunk_seq, reason
+                        ));
+                    }
+                }
+            }
+            _ => {} // other SyncEvent variants handled elsewhere
         }
     }
 }

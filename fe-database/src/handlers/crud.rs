@@ -1,6 +1,10 @@
+use tracing::instrument;
+
+use fe_query::InsertBuilder;
 use fe_runtime::messages::{
     FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
 };
+use crate::query_helpers::exec_query;
 use crate::repo::{Db, Repo};
 use crate::schema::{Fractal, Role, Verse};
 
@@ -14,6 +18,7 @@ use crate::{
 // Verse
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db, blob_store, repl_tx, secret_store))]
 pub(crate) async fn create_verse_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
@@ -67,6 +72,7 @@ pub(crate) async fn create_verse_handler(
 // Fractal
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db, blob_store, repl_tx))]
 pub(crate) async fn create_fractal_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
@@ -108,6 +114,7 @@ pub(crate) async fn create_fractal_handler(
 // Petal
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db))]
 pub(crate) async fn create_petal_handler(
     db: &Db,
     fractal_id: &str,
@@ -117,21 +124,20 @@ pub(crate) async fn create_petal_handler(
     let petal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     tracing::info!("Creating petal: {name} ({petal_id}) in fractal {fractal_id}");
-    db.query("CREATE petal CONTENT {
-            petal_id: $petal_id,
-            fractal_id: $fractal_id,
-            name: $name,
-            node_id: $node_id,
-            bounds: <geometry<polygon>> { type: 'Polygon', coordinates: [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]] },
-            created_at: $now,
-        }")
-        .bind(("petal_id", petal_id.clone()))
-        .bind(("fractal_id", fractal_id.to_string()))
-        .bind(("name", name.to_string()))
-        .bind(("node_id", local_did.to_string()))
-        .bind(("now", now))
-        .await?
-        .check()
+    let q = InsertBuilder::insert_into("petal")
+        .values(serde_json::json!({
+            "petal_id": petal_id,
+            "fractal_id": fractal_id,
+            "name": name,
+            "node_id": local_did,
+            "bounds": {
+                "type": "Polygon",
+                "coordinates": [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
+            },
+            "created_at": now,
+        }))
+        .build();
+    exec_query(db, &q).await
         .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
     Repo::<Role>::create(db, &Role {
         peer_did: local_did.to_string(),
@@ -145,6 +151,7 @@ pub(crate) async fn create_petal_handler(
 // Node
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db))]
 pub(crate) async fn create_node_handler(
     db: &Db,
     petal_id: &str,
@@ -153,34 +160,34 @@ pub(crate) async fn create_node_handler(
 ) -> anyhow::Result<String> {
     let node_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let x = position[0] as f64;
-    let y = position[1] as f64;
-    let z = position[2] as f64;
     tracing::info!("Creating node: {name} ({node_id}) in petal {petal_id}");
-    db.query(
-        "CREATE node CONTENT {
-            node_id: $node_id,
-            petal_id: $petal_id,
-            display_name: $name,
-            asset_id: NONE,
-            position: <geometry<point>> [$x, $z],
-            elevation: $y,
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-            interactive: false,
-            created_at: $now,
-        }",
-    )
-    .bind(("node_id", node_id.clone()))
-    .bind(("petal_id", petal_id.to_string()))
-    .bind(("name", name.to_string()))
-    .bind(("x", x))
-    .bind(("y", y))
-    .bind(("z", z))
-    .bind(("now", now))
-    .await?
-    .check()
-    .map_err(|e| anyhow::anyhow!("CREATE empty node '{name}' failed: {e}"))?;
+    let q = InsertBuilder::insert_into("node")
+        .values(serde_json::json!({
+            "node_id": node_id,
+            "petal_id": petal_id,
+            "display_name": name,
+            "asset_id": null,
+            "position": {
+                "type": "Point",
+                "coordinates": [position[0] as f64, position[2] as f64]
+            },
+            "elevation": position[1] as f64,
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0],
+            "interactive": false,
+            "created_at": now,
+        }))
+        .build();
+    exec_query(db, &q).await
+        .map_err(|e| anyhow::anyhow!("CREATE empty node '{name}' failed: {e}"))?;
+
+    if let Err(e) = super::node_log::append_node_log(
+        db, &node_id, "created", "local",
+        &serde_json::json!({ "petal_id": petal_id, "name": name, "position": position }),
+    ).await {
+        tracing::warn!("Failed to write node_log for created node {node_id}: {e}");
+    }
+
     Ok(node_id)
 }
 
@@ -188,6 +195,7 @@ pub(crate) async fn create_node_handler(
 // Import GLTF
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db, blob_store))]
 pub(crate) async fn import_gltf_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
@@ -243,35 +251,26 @@ pub(crate) async fn import_gltf_handler(
     let asset_path = format!("blob://{}.{}", content_hash, ext);
 
     let node_id = ulid::Ulid::new().to_string();
-    let x = position[0] as f64;
-    let y = position[1] as f64;
-    let z = position[2] as f64;
     tracing::info!("Creating node with GLTF: {name} ({node_id}) in petal {petal_id}");
-    db.query(
-        "CREATE node CONTENT {
-            node_id: $node_id,
-            petal_id: $petal_id,
-            display_name: $name,
-            asset_id: $asset_id,
-            position: <geometry<point>> [$x, $z],
-            elevation: $y,
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-            interactive: true,
-            created_at: $now,
-        }",
-    )
-    .bind(("node_id", node_id.clone()))
-    .bind(("petal_id", petal_id.to_string()))
-    .bind(("name", name.to_string()))
-    .bind(("asset_id", asset_id.clone()))
-    .bind(("x", x))
-    .bind(("y", y))
-    .bind(("z", z))
-    .bind(("now", now))
-    .await?
-    .check()
-    .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
+    let q = InsertBuilder::insert_into("node")
+        .values(serde_json::json!({
+            "node_id": node_id,
+            "petal_id": petal_id,
+            "display_name": name,
+            "asset_id": asset_id,
+            "position": {
+                "type": "Point",
+                "coordinates": [position[0] as f64, position[2] as f64]
+            },
+            "elevation": position[1] as f64,
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0],
+            "interactive": true,
+            "created_at": now,
+        }))
+        .build();
+    exec_query(db, &q).await
+        .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
 
     let mut verify: surrealdb::IndexedResults = db
         .query("SELECT count() AS c FROM node WHERE node_id = $nid GROUP ALL")
@@ -287,6 +286,16 @@ pub(crate) async fn import_gltf_handler(
         anyhow::bail!("CREATE gltf node '{name}' returned OK but row not found in DB");
     }
 
+    if let Err(e) = super::node_log::append_node_log(
+        db, &node_id, "created", "local",
+        &serde_json::json!({
+            "petal_id": petal_id, "name": name, "position": position,
+            "asset_id": asset_id, "asset_path": &asset_path,
+        }),
+    ).await {
+        tracing::warn!("Failed to write node_log for imported gltf node {node_id}: {e}");
+    }
+
     Ok((node_id, asset_id, asset_path))
 }
 
@@ -294,164 +303,245 @@ pub(crate) async fn import_gltf_handler(
 // Load Hierarchy
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db, blob_store))]
 pub(crate) async fn load_hierarchy_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
 ) -> anyhow::Result<Vec<VerseHierarchyData>> {
-    let mut verse_res: surrealdb::IndexedResults = db
-        .query("SELECT * FROM verse ORDER BY created_at ASC")
+    use std::collections::HashMap;
+
+    // -----------------------------------------------------------------------
+    // Phase 1: Batch-fetch all four entity tables in 4 queries (was N+1)
+    // -----------------------------------------------------------------------
+    let mut all_res: surrealdb::IndexedResults = db
+        .query(
+            "SELECT * FROM verse ORDER BY created_at ASC;\
+             SELECT * FROM fractal ORDER BY created_at ASC;\
+             SELECT * FROM petal ORDER BY created_at ASC;\
+             SELECT * FROM node ORDER BY created_at ASC",
+        )
         .await?;
-    let verses_raw: Vec<serde_json::Value> = verse_res.take(0)?;
 
-    let mut verses = Vec::new();
-    for v in &verses_raw {
-        let verse_id = v["verse_id"].as_str().unwrap_or_default().to_string();
-        let verse_name = v["name"].as_str().unwrap_or_default().to_string();
-        let namespace_id = v["namespace_id"].as_str().map(|s| s.to_string());
+    let verses_raw: Vec<serde_json::Value> = all_res.take(0)?;
+    let fractals_raw: Vec<serde_json::Value> = all_res.take(1)?;
+    let petals_raw: Vec<serde_json::Value> = all_res.take(2)?;
+    let nodes_raw: Vec<serde_json::Value> = all_res.take(3)?;
 
-        let mut frac_res: surrealdb::IndexedResults = db
-            .query("SELECT * FROM fractal WHERE verse_id = $vid ORDER BY created_at ASC")
-            .bind(("vid", verse_id.clone()))
+    // -----------------------------------------------------------------------
+    // Phase 2: Collect all asset_ids, batch-fetch asset hashes + model URLs
+    // -----------------------------------------------------------------------
+    let all_asset_ids: Vec<String> = nodes_raw
+        .iter()
+        .filter_map(|n| n["asset_id"].as_str().map(|s| s.to_string()))
+        .collect();
+
+    let mut asset_hash_map: HashMap<String, String> = HashMap::new();
+    let mut model_url_map: HashMap<String, Option<String>> = HashMap::new();
+
+    if !all_asset_ids.is_empty() {
+        let mut asset_res: surrealdb::IndexedResults = db
+            .query("SELECT asset_id, content_hash FROM asset WHERE asset_id IN $aids")
+            .bind(("aids", all_asset_ids.clone()))
             .await?;
-        let fractals_raw: Vec<serde_json::Value> = frac_res.take(0)?;
-
-        let mut fractals = Vec::new();
-        for f in &fractals_raw {
-            let fractal_id = f["fractal_id"].as_str().unwrap_or_default().to_string();
-            let fractal_name = f["name"].as_str().unwrap_or_default().to_string();
-
-            let mut petal_res: surrealdb::IndexedResults = db
-                .query("SELECT * FROM petal WHERE fractal_id = $fid ORDER BY created_at ASC")
-                .bind(("fid", fractal_id.clone()))
-                .await?;
-            let petals_raw: Vec<serde_json::Value> = petal_res.take(0)?;
-
-            let mut petals = Vec::new();
-            for p in &petals_raw {
-                let petal_id = p["petal_id"].as_str().unwrap_or_default().to_string();
-                let petal_name = p["name"].as_str().unwrap_or_default().to_string();
-
-                let mut node_res: surrealdb::IndexedResults = db
-                    .query("SELECT * FROM node WHERE petal_id = $pid ORDER BY created_at ASC")
-                    .bind(("pid", petal_id.clone()))
-                    .await?;
-                let nodes_raw: Vec<serde_json::Value> = node_res.take(0)?;
-
-                let asset_ids: Vec<String> = nodes_raw
-                    .iter()
-                    .filter_map(|n| n["asset_id"].as_str().map(|s| s.to_string()))
-                    .collect();
-                let mut asset_hash_map: std::collections::HashMap<String, String> =
-                    std::collections::HashMap::new();
-                let mut model_url_map: std::collections::HashMap<String, Option<String>> =
-                    std::collections::HashMap::new();
-                if !asset_ids.is_empty() {
-                    let mut asset_res: surrealdb::IndexedResults = db
-                        .query("SELECT asset_id, content_hash FROM asset WHERE asset_id IN $aids")
-                        .bind(("aids", asset_ids.clone()))
-                        .await?;
-                    let asset_rows: Vec<serde_json::Value> = asset_res.take(0)?;
-                    for row in &asset_rows {
-                        if let (Some(aid), Some(ch)) =
-                            (row["asset_id"].as_str(), row["content_hash"].as_str())
-                        {
-                            asset_hash_map.insert(aid.to_string(), ch.to_string());
-                        }
-                    }
-                    let mut model_res: surrealdb::IndexedResults = db
-                        .query("SELECT asset_id, external_url FROM model WHERE asset_id IN $aids")
-                        .bind(("aids", asset_ids))
-                        .await?;
-                    let model_rows: Vec<serde_json::Value> = model_res.take(0)?;
-                    for row in &model_rows {
-                        if let Some(aid) = row["asset_id"].as_str() {
-                            let url = row["external_url"].as_str().map(|s| s.to_string());
-                            model_url_map.insert(aid.to_string(), url);
-                        }
-                    }
-                }
-
-                let nodes: Vec<NodeHierarchyData> = nodes_raw
-                    .iter()
-                    .map(|n| {
-                        let has_asset = !n["asset_id"].is_null();
-                        let asset_id_str = n["asset_id"].as_str().map(|s| s.to_string());
-                        let coords = &n["position"]["coordinates"];
-                        let x = coords[0].as_f64().unwrap_or(0.0) as f32;
-                        let z = coords[1].as_f64().unwrap_or(0.0) as f32;
-                        let y = n["elevation"].as_f64().unwrap_or(0.0) as f32;
-
-                        let asset_path = asset_id_str.as_ref().and_then(|aid| {
-                            if let Some(ch) = asset_hash_map.get(aid) {
-                                if let Ok(hash) = hash_from_hex(ch) {
-                                    if blob_store.has_blob(&hash) {
-                                        return Some(format!("blob://{}.glb", ch));
-                                    }
-                                    tracing::warn!(
-                                        "Blob missing for asset_id={aid} content_hash={ch}"
-                                    );
-                                }
-                            }
-                            let dir = imported_assets_dir();
-                            for ext in ["glb", "gltf"] {
-                                let file_name = format!("{}.{}", aid, ext);
-                                let disk_path = dir.join(&file_name);
-                                let exists = disk_path.exists();
-                                tracing::debug!(
-                                    "Hierarchy asset probe: {} exists={}",
-                                    disk_path.display(),
-                                    exists
-                                );
-                                if exists {
-                                    let rel = std::path::Path::new(IMPORTED_ASSETS_SUBDIR)
-                                        .join(&file_name)
-                                        .to_string_lossy()
-                                        .replace('\\', "/");
-                                    return Some(rel);
-                                }
-                            }
-                            tracing::warn!(
-                                "Hierarchy asset missing for asset_id={aid} (no blob, no imported file)"
-                            );
-                            None
-                        });
-                        let webpage_url = asset_id_str
-                            .as_ref()
-                            .and_then(|aid| model_url_map.get(aid))
-                            .and_then(|u| u.clone());
-                        NodeHierarchyData {
-                            id: n["node_id"].as_str().unwrap_or_default().to_string(),
-                            name: n["display_name"].as_str().unwrap_or_default().to_string(),
-                            has_asset,
-                            position: [x, y, z],
-                            asset_path,
-                            petal_id: petal_id.clone(),
-                            webpage_url,
-                        }
-                    })
-                    .collect();
-
-                petals.push(PetalHierarchyData {
-                    id: petal_id,
-                    name: petal_name,
-                    nodes,
-                });
+        let asset_rows: Vec<serde_json::Value> = asset_res.take(0)?;
+        for row in &asset_rows {
+            if let (Some(aid), Some(ch)) =
+                (row["asset_id"].as_str(), row["content_hash"].as_str())
+            {
+                asset_hash_map.insert(aid.to_string(), ch.to_string());
             }
-
-            fractals.push(FractalHierarchyData {
-                id: fractal_id,
-                name: fractal_name,
-                petals,
-            });
         }
 
-        verses.push(VerseHierarchyData {
-            id: verse_id,
-            name: verse_name,
-            namespace_id,
-            fractals,
-        });
+        let mut model_res: surrealdb::IndexedResults = db
+            .query("SELECT asset_id, external_url FROM model WHERE asset_id IN $aids")
+            .bind(("aids", all_asset_ids))
+            .await?;
+        let model_rows: Vec<serde_json::Value> = model_res.take(0)?;
+        for row in &model_rows {
+            if let Some(aid) = row["asset_id"].as_str() {
+                let url = row["external_url"].as_str().map(|s| s.to_string());
+                model_url_map.insert(aid.to_string(), url);
+            }
+        }
     }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Build parent→children lookup maps
+    // -----------------------------------------------------------------------
+
+    // fractal.verse_id → Vec<fractal row>
+    let mut fractals_by_verse: HashMap<String, Vec<&serde_json::Value>> = HashMap::new();
+    for f in &fractals_raw {
+        let vid = f["verse_id"].as_str().unwrap_or_default().to_string();
+        fractals_by_verse.entry(vid).or_default().push(f);
+    }
+
+    // petal.fractal_id → Vec<petal row>
+    let mut petals_by_fractal: HashMap<String, Vec<&serde_json::Value>> = HashMap::new();
+    for p in &petals_raw {
+        let fid = p["fractal_id"].as_str().unwrap_or_default().to_string();
+        petals_by_fractal.entry(fid).or_default().push(p);
+    }
+
+    // node.petal_id → Vec<node row>
+    let mut nodes_by_petal: HashMap<String, Vec<&serde_json::Value>> = HashMap::new();
+    for n in &nodes_raw {
+        let pid = n["petal_id"].as_str().unwrap_or_default().to_string();
+        nodes_by_petal.entry(pid).or_default().push(n);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4: Assemble the hierarchy tree in-memory
+    // -----------------------------------------------------------------------
+    let resolve_asset_path = |aid: &str| -> Option<String> {
+        if let Some(ch) = asset_hash_map.get(aid) {
+            if let Ok(hash) = hash_from_hex(ch) {
+                if blob_store.has_blob(&hash) {
+                    return Some(format!("blob://{}.glb", ch));
+                }
+                tracing::warn!(
+                    "Blob missing for asset_id={aid} content_hash={ch}"
+                );
+            }
+        }
+        let dir = imported_assets_dir();
+        for ext in ["glb", "gltf"] {
+            let file_name = format!("{}.{}", aid, ext);
+            let disk_path = dir.join(&file_name);
+            let exists = disk_path.exists();
+            tracing::debug!(
+                "Hierarchy asset probe: {} exists={}",
+                disk_path.display(),
+                exists
+            );
+            if exists {
+                let rel = std::path::Path::new(IMPORTED_ASSETS_SUBDIR)
+                    .join(&file_name)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                return Some(rel);
+            }
+        }
+        tracing::warn!(
+            "Hierarchy asset missing for asset_id={aid} (no blob, no imported file)"
+        );
+        None
+    };
+
+    let verses: Vec<VerseHierarchyData> = verses_raw
+        .iter()
+        .map(|v| {
+            let verse_id = v["verse_id"].as_str().unwrap_or_default().to_string();
+            let verse_name = v["name"].as_str().unwrap_or_default().to_string();
+            let namespace_id = v["namespace_id"].as_str().map(|s| s.to_string());
+
+            let fractals: Vec<FractalHierarchyData> = fractals_by_verse
+                .get(&verse_id)
+                .map(|fs| {
+                    fs.iter()
+                        .map(|f| {
+                            let fractal_id =
+                                f["fractal_id"].as_str().unwrap_or_default().to_string();
+                            let fractal_name =
+                                f["name"].as_str().unwrap_or_default().to_string();
+
+                            let petals: Vec<PetalHierarchyData> = petals_by_fractal
+                                .get(&fractal_id)
+                                .map(|ps| {
+                                    ps.iter()
+                                        .map(|p| {
+                                            let petal_id = p["petal_id"]
+                                                .as_str()
+                                                .unwrap_or_default()
+                                                .to_string();
+                                            let petal_name = p["name"]
+                                                .as_str()
+                                                .unwrap_or_default()
+                                                .to_string();
+
+                                            let nodes: Vec<NodeHierarchyData> = nodes_by_petal
+                                                .get(&petal_id)
+                                                .map(|ns| {
+                                                    ns.iter()
+                                                        .map(|n| {
+                                                            let has_asset =
+                                                                !n["asset_id"].is_null();
+                                                            let asset_id_str = n["asset_id"]
+                                                                .as_str()
+                                                                .map(|s| s.to_string());
+                                                            let coords =
+                                                                &n["position"]["coordinates"];
+                                                            let x = coords[0]
+                                                                .as_f64()
+                                                                .unwrap_or(0.0)
+                                                                as f32;
+                                                            let z = coords[1]
+                                                                .as_f64()
+                                                                .unwrap_or(0.0)
+                                                                as f32;
+                                                            let y = n["elevation"]
+                                                                .as_f64()
+                                                                .unwrap_or(0.0)
+                                                                as f32;
+
+                                                            let asset_path =
+                                                                asset_id_str.as_ref().and_then(
+                                                                    |aid| resolve_asset_path(aid),
+                                                                );
+                                                            let webpage_url = asset_id_str
+                                                                .as_ref()
+                                                                .and_then(|aid| {
+                                                                    model_url_map.get(aid)
+                                                                })
+                                                                .and_then(|u| u.clone());
+                                                            NodeHierarchyData {
+                                                                id: n["node_id"]
+                                                                    .as_str()
+                                                                    .unwrap_or_default()
+                                                                    .to_string(),
+                                                                name: n["display_name"]
+                                                                    .as_str()
+                                                                    .unwrap_or_default()
+                                                                    .to_string(),
+                                                                has_asset,
+                                                                position: [x, y, z],
+                                                                asset_path,
+                                                                petal_id: petal_id.clone(),
+                                                                webpage_url,
+                                                            }
+                                                        })
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
+
+                                            PetalHierarchyData {
+                                                id: petal_id,
+                                                name: petal_name,
+                                                nodes,
+                                            }
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            FractalHierarchyData {
+                                id: fractal_id,
+                                name: fractal_name,
+                                petals,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            VerseHierarchyData {
+                id: verse_id,
+                name: verse_name,
+                namespace_id,
+                fractals,
+            }
+        })
+        .collect();
 
     tracing::info!("Loaded hierarchy: {} verses", verses.len());
     Ok(verses)
@@ -462,6 +552,7 @@ pub(crate) async fn load_hierarchy_handler(
 // ---------------------------------------------------------------------------
 
 /// Load all nodes belonging to a petal as `NodeDto` values for scene streaming.
+#[instrument(skip(db, blob_store))]
 pub(crate) async fn load_nodes_by_petal_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
@@ -562,6 +653,7 @@ pub(crate) async fn load_nodes_by_petal_handler(
 // ---------------------------------------------------------------------------
 
 /// Read a single node's persisted transform (position, rotation, scale).
+#[instrument(skip(db))]
 pub(crate) async fn get_node_transform_handler(
     db: &Db,
     node_id: &str,
@@ -616,6 +708,7 @@ pub(crate) async fn get_node_transform_handler(
 ///
 /// Returns `None` when the petal (or its parent fractal/verse chain) cannot be
 /// found in the database.
+#[instrument(skip(db))]
 pub(crate) async fn resolve_petal_scope_handler(
     db: &Db,
     petal_id: &str,
@@ -649,6 +742,7 @@ pub(crate) async fn resolve_petal_scope_handler(
 /// [`resolve_petal_scope_handler`].
 ///
 /// Returns `None` when the node (or any ancestor in the chain) is not found.
+#[instrument(skip(db))]
 pub(crate) async fn resolve_node_scope_handler(
     db: &Db,
     node_id: &str,

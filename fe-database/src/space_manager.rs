@@ -46,6 +46,7 @@ impl SpaceManager {
                 "tags": meta.tags,
             }),
             sig: "00".repeat(64),
+            hlc_timestamp: String::new(),
         };
         write_op_log(db, entry).await?;
         Ok(())
@@ -81,6 +82,7 @@ impl SpaceManager {
                 "visibility": vis_str,
             }),
             sig: "00".repeat(64),
+            hlc_timestamp: String::new(),
         };
         write_op_log(db, entry).await?;
         Ok(())
@@ -170,6 +172,7 @@ impl SpaceManager {
             op_type: OpType::UpdateRoomMeta,
             payload: serde_json::json!({ "room_id": room_id }),
             sig: "00".repeat(64),
+            hlc_timestamp: String::new(),
         };
         write_op_log(db, entry).await?;
         Ok(())
@@ -229,6 +232,7 @@ impl SpaceManager {
             op_type: OpType::UpdateModelMeta,
             payload: serde_json::json!({ "model_id": model_id }),
             sig: "00".repeat(64),
+            hlc_timestamp: String::new(),
         };
         write_op_log(db, entry).await?;
         Ok(())

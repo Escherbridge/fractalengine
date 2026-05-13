@@ -30,6 +30,35 @@ pub fn load_keypair(store: &Arc<dyn SecretStore>, node_id: &str) -> anyhow::Resu
     NodeKeypair::from_bytes(&arr)
 }
 
+/// Load a node keypair from the secret store, or generate a new one and persist it.
+///
+/// Used by both the GUI and relay binaries to ensure a stable node identity
+/// across launches. The 32-byte seed is stored as a 64-char hex string.
+pub fn load_or_generate_keypair(
+    store: &Arc<dyn SecretStore>,
+    account: &str,
+) -> anyhow::Result<NodeKeypair> {
+    match store.get(SERVICE, account) {
+        Ok(Some(seed_hex)) => {
+            let seed_bytes = hex::decode(&seed_hex)
+                .map_err(|e| anyhow::anyhow!("invalid keypair hex in secret store: {e}"))?;
+            let seed_array: [u8; 32] = seed_bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("secret store keypair seed is not 32 bytes"))?;
+            NodeKeypair::from_bytes(&seed_array)
+        }
+        Ok(None) => {
+            let kp = NodeKeypair::generate();
+            let seed_hex = hex::encode(kp.seed_bytes());
+            store
+                .set(SERVICE, account, &seed_hex)
+                .map_err(|e| anyhow::anyhow!("secret store set failed: {e}"))?;
+            Ok(kp)
+        }
+        Err(e) => Err(anyhow::anyhow!("secret store get failed: {e}")),
+    }
+}
+
 /// Delete a node keypair from the secret store.
 pub fn delete_keypair(store: &Arc<dyn SecretStore>, node_id: &str) -> anyhow::Result<()> {
     store

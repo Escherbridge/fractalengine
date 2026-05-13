@@ -52,6 +52,7 @@ pub mod model_url_meta;
 pub mod reconcile;
 pub mod op_log;
 pub mod queries;
+pub(crate) mod query_helpers;
 pub mod rbac;
 pub mod repo;
 pub mod role_level;
@@ -101,6 +102,7 @@ pub struct ReplicationEvent {
     pub table: String,
     pub record_id: String,
     pub content_hash: BlobHash,
+    pub petal_id: Option<String>,
 }
 
 /// Sender half for replication events.
@@ -124,6 +126,20 @@ pub fn replicate_row(
     record_id: &str,
     row_json: &[u8],
 ) {
+    replicate_row_with_petal(repl_tx, blob_store, verse_id, table, record_id, row_json, None)
+}
+
+/// Like [`replicate_row`] but allows attaching a `petal_id` to the event
+/// for petal-scoped replication routing.
+pub fn replicate_row_with_petal(
+    repl_tx: Option<&ReplicationSender>,
+    blob_store: &BlobStoreHandle,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    row_json: &[u8],
+    petal_id: Option<String>,
+) {
     let Some(tx) = repl_tx else { return };
 
     let hash = match blob_store.add_blob(row_json) {
@@ -141,6 +157,7 @@ pub fn replicate_row(
         table: table.to_string(),
         record_id: record_id.to_string(),
         content_hash: hash,
+        petal_id,
     })
     .ok();
 }
@@ -150,11 +167,13 @@ pub fn spawn_db_thread(
     tx: crossbeam::channel::Sender<DbResult>,
     blob_store: BlobStoreHandle,
 ) -> Result<std::thread::JoinHandle<()>, DbInitError> {
-    spawn_db_thread_with_sync(rx, tx, blob_store, None, None, None, None)
+    spawn_db_thread_with_sync(rx, tx, blob_store, None, None, None, None, None)
 }
 
 /// Spawn the DB thread with optional replication, keypair, secret store,
-/// and entity-change broadcast for scene streaming.
+/// entity-change broadcast for scene streaming, and custom DB path.
+///
+/// If `db_path` is `None`, defaults to `"data/fractalengine.db"`.
 pub fn spawn_db_thread_with_sync(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
@@ -163,6 +182,7 @@ pub fn spawn_db_thread_with_sync(
     keypair: Option<fe_identity::NodeKeypair>,
     secret_store: Option<std::sync::Arc<dyn fe_identity::SecretStore>>,
     entity_change_tx: Option<tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>>,
+    db_path: Option<String>,
 ) -> Result<std::thread::JoinHandle<()>, DbInitError> {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
@@ -185,13 +205,14 @@ pub fn spawn_db_thread_with_sync(
             }
         };
         rt.block_on(async {
-            tracing::info!("Database thread started, initialising SurrealDB");
+            let db_path = db_path.unwrap_or_else(|| "data/fractalengine.db".to_string());
+            tracing::info!("Database thread started, initialising SurrealDB at {db_path}");
             let db: surrealdb::Surreal<surrealdb::engine::local::Db> =
-                match surrealdb::Surreal::new::<SurrealKv>("data/fractalengine.db").await {
+                match surrealdb::Surreal::new::<SurrealKv>(&db_path).await {
                     Ok(db) => db,
                     Err(e) => {
                         let _ = startup_tx.send(Err(DbInitError::SurrealOpen {
-                            path: "data/fractalengine.db".to_string(),
+                            path: db_path,
                             source: e,
                         }));
                         return;
@@ -210,6 +231,30 @@ pub fn spawn_db_thread_with_sync(
                 return;
             }
             let _ = startup_tx.send(Ok(()));
+
+            // Initialize the Hybrid Logical Clock from the max persisted value
+            // so clocks survive restarts.
+            {
+                let max_lc = match db
+                    .query("SELECT math::max(lamport_clock) AS max_lc FROM op_log GROUP ALL")
+                    .await
+                {
+                    Ok(mut hlc_res) => {
+                        match hlc_res.take::<Vec<serde_json::Value>>(0) {
+                            Ok(rows) => rows
+                                .first()
+                                .and_then(|r| r["max_lc"].as_u64())
+                                .unwrap_or(0),
+                            Err(_) => 0,
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("HLC init query failed: {e}, starting from 0");
+                        0
+                    }
+                };
+                op_log::init_hlc(max_lc);
+            }
 
             // Derive the local DID from the node keypair (falls back to
             // "local-node" when no keypair is available).
@@ -246,7 +291,9 @@ pub fn spawn_db_thread_with_sync(
 
             #[allow(clippy::while_let_loop)]
             loop {
-                match rx.recv() {
+                let cmd = rx.recv();
+                let cmd_start = std::time::Instant::now();
+                match cmd {
                     Ok(DbCommand::Ping) => {
                         send_result(&tx, DbResult::Pong);
                     }
@@ -292,6 +339,13 @@ pub fn spawn_db_thread_with_sync(
                                         },
                                     });
                                 }
+                                // Append to node_log (append-only)
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &id, "created", &local_did,
+                                    &serde_json::json!({"name": name, "position": position, "petal_id": petal_id}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {id}: {e}");
+                                }
                                 send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create node failed: {e}"))),
@@ -299,7 +353,29 @@ pub fn spawn_db_thread_with_sync(
                     }
                     Ok(DbCommand::ImportGltf { petal_id, name, file_path, position }) => {
                         match handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position).await {
-                            Ok((node_id, asset_id, asset_path)) => send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position }),
+                            Ok((node_id, asset_id, asset_path)) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
+                                        node: fe_runtime::messages::NodeDto {
+                                            node_id: node_id.clone(),
+                                            petal_id: petal_id.clone(),
+                                            name: name.clone(),
+                                            position,
+                                            rotation: [0.0, 0.0, 0.0, 1.0],
+                                            scale: [1.0, 1.0, 1.0],
+                                            has_asset: true,
+                                            asset_path: Some(asset_path.clone()),
+                                        },
+                                    });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &node_id, "created", &local_did,
+                                    &serde_json::json!({"name": name, "position": position, "petal_id": petal_id, "asset_id": asset_id}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {node_id}: {e}");
+                                }
+                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position });
+                            }
                             Err(e) => send_result(&tx, DbResult::Error(format!("GLTF import failed: {e}"))),
                         }
                     }
@@ -332,11 +408,17 @@ pub fn spawn_db_thread_with_sync(
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeTransform {
-                                        node_id,
+                                        node_id: node_id.clone(),
                                         position,
                                         rotation,
                                         scale,
                                     });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &node_id, "transform_update", &local_did,
+                                    &serde_json::json!({"position": position, "rotation": rotation, "scale": scale}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {node_id}: {e}");
                                 }
                             }
                             Err(e) => {
@@ -393,12 +475,10 @@ pub fn spawn_db_thread_with_sync(
                     Ok(DbCommand::DeleteEntity { entity_type, entity_id }) => {
                         match handlers::entity::delete_entity_handler(&db, entity_type, &entity_id).await {
                             Ok(()) => {
-                                // Emit NodeRemoved for node-level deletes (petal/fractal/verse
-                                // cascades are not individually tracked — clients should
-                                // re-subscribe after structural deletes).
-                                if entity_type == fe_runtime::messages::EntityType::Petal {
-                                    // Nodes were cascade-deleted; no individual events.
-                                }
+                                // EntityType covers Verse/Fractal/Petal only (no Node variant).
+                                // Cascade deletes remove child nodes — clients should
+                                // re-subscribe after structural deletes. Individual NodeRemoved
+                                // events for each cascaded node are deferred to a future track.
                                 send_result(&tx, DbResult::EntityDeleted { entity_type, entity_id });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(e)),
@@ -448,8 +528,8 @@ pub fn spawn_db_thread_with_sync(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Mint API token failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::RevokeApiToken { jti }) => {
-                        match handlers::api_token::revoke_api_token_handler(&db, &local_did, &jti).await {
+                    Ok(DbCommand::RevokeApiToken { jti, sub }) => {
+                        match handlers::api_token::revoke_api_token_handler(&db, &sub, &jti).await {
                             Ok(true) => send_result(&tx, DbResult::ApiTokenRevoked { jti }),
                             Ok(false) => send_result(&tx, DbResult::Error(format!("API token not found or not owned: {jti}"))),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Revoke API token failed: {e}"))),
@@ -494,8 +574,172 @@ pub fn spawn_db_thread_with_sync(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Get node transform failed: {e}"))),
                         }
                     }
+                    Ok(DbCommand::SetNodeProperty { node_id, key, value }) => {
+                        match handlers::entity_property::set_entity_property_handler(&db, &node_id, &key, &value).await {
+                            Ok(()) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
+                                        node_id: node_id.clone(),
+                                        key: key.clone(),
+                                        value: value.clone(),
+                                    });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &node_id, "property_set", &local_did,
+                                    &serde_json::json!({"key": key, "value": value}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {node_id}: {e}");
+                                }
+                                send_result(&tx, DbResult::NodePropertySet { node_id, key });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Set node property failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::GetNodeProperties { node_id }) => {
+                        match handlers::entity_property::get_entity_properties_handler(&db, &node_id).await {
+                            Ok(properties) => send_result(&tx, DbResult::NodePropertiesLoaded { node_id, properties }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Get node properties failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::DeleteNodeProperty { node_id, key }) => {
+                        match handlers::entity_property::delete_entity_property_handler(&db, &node_id, &key).await {
+                            Ok(()) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
+                                        node_id: node_id.clone(),
+                                        key: key.clone(),
+                                        value: serde_json::Value::Null,
+                                    });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &node_id, "property_deleted", &local_did,
+                                    &serde_json::json!({"key": key}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {node_id}: {e}");
+                                }
+                                send_result(&tx, DbResult::NodePropertyDeleted { node_id, key });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Delete node property failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::CreateFieldDef { scope, entity_type, key, value_type, default_val }) => {
+                        match handlers::field_def::create_field_def_handler(&db, &scope, &entity_type, &key, &value_type, default_val.as_ref(), &local_did).await {
+                            Ok(field_def_id) => send_result(&tx, DbResult::FieldDefCreated { field_def_id, scope, key }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Create field def failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::ListFieldDefs { scope }) => {
+                        match handlers::field_def::list_field_defs_handler(&db, &scope).await {
+                            Ok(rows) => {
+                                let field_defs: Vec<fe_runtime::messages::FieldDefInfo> = rows.iter().filter_map(|r| {
+                                    Some(fe_runtime::messages::FieldDefInfo {
+                                        field_def_id: r.get("field_def_id")?.as_str()?.to_string(),
+                                        scope: r.get("scope")?.as_str()?.to_string(),
+                                        entity_type: r.get("entity_type")?.as_str()?.to_string(),
+                                        key: r.get("key")?.as_str()?.to_string(),
+                                        value_type: r.get("value_type")?.as_str()?.to_string(),
+                                        default_val: r.get("default_val").cloned(),
+                                        created_by: r.get("created_by").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                        created_at: r.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                    })
+                                }).collect();
+                                send_result(&tx, DbResult::FieldDefsListed { scope, field_defs });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("List field defs failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::UpdateFieldDef { field_def_id, value_type, default_val }) => {
+                        match handlers::field_def::update_field_def_handler(&db, &field_def_id, &value_type, default_val.as_ref()).await {
+                            Ok(()) => send_result(&tx, DbResult::FieldDefUpdated { field_def_id }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Update field def failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::DeleteFieldDef { field_def_id }) => {
+                        match handlers::field_def::delete_field_def_handler(&db, &field_def_id).await {
+                            Ok(()) => send_result(&tx, DbResult::FieldDefDeleted { field_def_id }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Delete field def failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::RawQuery { sql, vars }) => {
+                        // Security: only allow single SELECT statements.
+                        let sql_trimmed = sql.trim();
+                        let sql_upper = sql_trimmed.to_uppercase();
+                        let blocked = sql_trimmed.contains(';')
+                            || !sql_upper.starts_with("SELECT")
+                            || ["CREATE","UPDATE","DELETE","DEFINE","REMOVE","RELATE","INSERT",
+                                "LET","RETURN","INFO","FOR","THROW","SLEEP","BREAK","LIVE","KILL",
+                                "IF","BEGIN","COMMIT","CANCEL"]
+                                .iter()
+                                .any(|kw| {
+                                    let mut start = 0;
+                                    while let Some(pos) = sql_upper[start..].find(kw) {
+                                        let abs = start + pos;
+                                        let before = abs == 0 || !sql_upper.as_bytes()[abs - 1].is_ascii_alphanumeric() && sql_upper.as_bytes()[abs - 1] != b'_';
+                                        let after_pos = abs + kw.len();
+                                        let after = after_pos >= sql_upper.len() || !sql_upper.as_bytes()[after_pos].is_ascii_alphanumeric() && sql_upper.as_bytes()[after_pos] != b'_';
+                                        if before && after { return true; }
+                                        start = abs + kw.len();
+                                    }
+                                    false
+                                });
+                        if blocked {
+                            send_result(&tx, DbResult::Error("only single SELECT statements are allowed".to_string()));
+                        } else {
+                            let mut query_builder = db.query(&sql);
+                            for (key, value) in &vars {
+                                query_builder = query_builder.bind((key.clone(), value.clone()));
+                            }
+                            match query_builder.await {
+                                Ok(mut response) => {
+                                    let mut data = Vec::new();
+                                    let mut idx = 0usize;
+                                    loop {
+                                        match response.take::<Vec<serde_json::Value>>(idx) {
+                                            Ok(rows) => {
+                                                data.extend(rows);
+                                                idx += 1;
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                    send_result(&tx, DbResult::QueryResult { data });
+                                }
+                                Err(e) => {
+                                    send_result(&tx, DbResult::Error(format!("query failed: {e}")));
+                                }
+                            }
+                        }
+                    }
+                    // --- Hexon crate registry (Phase 8) ---
+                    Ok(DbCommand::InstallCrate { hexon_uri, manifest_hash, publisher_did, hexon_type, version, name, tags, petal_id, size_bytes }) => {
+                        let tx = tx.clone();
+                        match handlers::crate_registry::install_crate(
+                            &db, &hexon_uri, &manifest_hash, &publisher_did, &hexon_type,
+                            &version, &name, &tags, &petal_id, size_bytes,
+                        ).await {
+                            Ok(()) => send_result(&tx, DbResult::CrateInstalled { hexon_uri, petal_id }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Install crate failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::InstallCrateEntry { entry_id, hexon_uri, kind, asset_hash, format, label, metadata }) => {
+                        let tx = tx.clone();
+                        match handlers::crate_registry::install_crate_entry(
+                            &db, &entry_id, &hexon_uri, &kind, &asset_hash, &format, &label, &metadata,
+                        ).await {
+                            Ok(()) => send_result(&tx, DbResult::CrateEntryInstalled { entry_id, hexon_uri }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Install crate entry failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::UninstallCrate { hexon_uri }) => {
+                        let tx = tx.clone();
+                        match handlers::crate_registry::uninstall_crate(&db, &hexon_uri).await {
+                            Ok(()) => send_result(&tx, DbResult::CrateUninstalled { hexon_uri }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Uninstall crate failed: {e}"))),
+                        }
+                    }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
+                tracing::debug!(elapsed_ms = %cmd_start.elapsed().as_millis(), "DB command processed");
             }
             tracing::info!("Database thread shutting down");
             send_result(&tx, DbResult::Stopped);

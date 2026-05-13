@@ -1,3 +1,6 @@
+use fe_query::{DeleteBuilder, Filter, InsertBuilder, QueryBuilder};
+
+use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::schema::Role;
 use crate::types::RoleId;
@@ -7,13 +10,13 @@ pub async fn apply_schema(db: &Db) -> anyhow::Result<()> {
 }
 
 pub async fn get_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<RoleId> {
-    let peer_did = peer_did.to_string();
-    let scope = scope.to_string();
-    let mut result: surrealdb::IndexedResults = db
-        .query("SELECT role FROM role WHERE peer_did = $peer_did AND scope = $scope")
-        .bind(("peer_did", peer_did))
-        .bind(("scope", scope))
-        .await?;
+    let q = QueryBuilder::new()
+        .select(&["role"])
+        .from("role")
+        .filter(Filter::eq("peer_did", peer_did))
+        .filter(Filter::eq("scope", scope))
+        .build();
+    let mut result = exec_query(db, &q).await?;
     // Deserialize as typed Role rows; compound-key lookup requires raw SurrealQL
     // because Repo::find_where only supports a single equality predicate.
     let raw: Vec<serde_json::Value> = result.take(0)?;
@@ -48,11 +51,12 @@ pub async fn require_write_role(db: &Db, peer_did: &str, scope: &str) -> anyhow:
 
 /// Get all peer roles for a given scope.
 pub async fn get_all_roles_for_scope(db: &Db, scope: &str) -> anyhow::Result<Vec<(String, String)>> {
-    let scope = scope.to_string();
-    let mut result = db
-        .query("SELECT peer_did, role FROM role WHERE scope = $scope")
-        .bind(("scope", scope))
-        .await?;
+    let q = QueryBuilder::new()
+        .select(&["peer_did", "role"])
+        .from("role")
+        .filter(Filter::eq("scope", scope))
+        .build();
+    let mut result = exec_query(db, &q).await?;
     let rows: Vec<serde_json::Value> = result.take(0)?;
     let mut roles = Vec::new();
     for row in rows {
@@ -68,29 +72,32 @@ pub async fn get_all_roles_for_scope(db: &Db, scope: &str) -> anyhow::Result<Vec
 
 /// Assign a role to a peer at a specific scope.
 pub async fn assign_role(db: &Db, peer_did: &str, scope: &str, role: &str) -> anyhow::Result<()> {
-    let peer_did = peer_did.to_string();
-    let scope = scope.to_string();
-    let role = role.to_string();
-    db.query("DELETE FROM role WHERE peer_did = $peer_did AND scope = $scope")
-        .bind(("peer_did", peer_did.clone()))
-        .bind(("scope", scope.clone()))
-        .await?;
-    db.query("CREATE role SET peer_did = $peer_did, scope = $scope, role = $role")
-        .bind(("peer_did", peer_did))
-        .bind(("scope", scope))
-        .bind(("role", role))
-        .await?;
+    // Remove any existing role first
+    let del_q = DeleteBuilder::delete_from("role")
+        .where_clause(Filter::eq("peer_did", peer_did))
+        .where_clause(Filter::eq("scope", scope))
+        .build();
+    exec_query(db, &del_q).await?;
+
+    // Insert the new role
+    let ins_q = InsertBuilder::insert_into("role")
+        .values(serde_json::json!({
+            "peer_did": peer_did,
+            "scope": scope,
+            "role": role,
+        }))
+        .build();
+    exec_query(db, &ins_q).await?;
     Ok(())
 }
 
 /// Remove a peer's role at a specific scope (they fall back to inherited role).
 pub async fn revoke_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<()> {
-    let peer_did = peer_did.to_string();
-    let scope = scope.to_string();
-    db.query("DELETE FROM role WHERE peer_did = $peer_did AND scope = $scope")
-        .bind(("peer_did", peer_did))
-        .bind(("scope", scope))
-        .await?;
+    let q = DeleteBuilder::delete_from("role")
+        .where_clause(Filter::eq("peer_did", peer_did))
+        .where_clause(Filter::eq("scope", scope))
+        .build();
+    exec_query(db, &q).await?;
     Ok(())
 }
 

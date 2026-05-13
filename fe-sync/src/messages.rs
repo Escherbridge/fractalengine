@@ -36,6 +36,30 @@ pub enum SyncCommand {
         record_id: String,
         content_hash: BlobHash,
     },
+    /// Subscribe to petal-level replication for a specific petal.
+    SubscribePetal { petal_id: String },
+    /// Unsubscribe from petal-level replication for a specific petal.
+    UnsubscribePetal { petal_id: String },
+    /// Advertise locally-seeding tilesets to connected peers.
+    AdvertiseTilesets {
+        /// Serialized JSON of `Vec<TilesetAdvertisement>` from fe-terrain.
+        advertisements_json: String,
+    },
+    /// Request tileset metadata from a specific peer.
+    RequestTilesetMeta {
+        peer_id: String,
+        tileset_id: String,
+    },
+    /// Request a single chunk from a specific peer.
+    RequestChunk {
+        peer_id: String,
+        tileset_id: String,
+        chunk_seq: u32,
+    },
+    /// Cancel an in-progress tileset download.
+    CancelTilesetDownload {
+        tileset_id: String,
+    },
     /// Gracefully shut down the sync thread.
     Shutdown,
     /// Broadcast a node transform change to peers in real time.
@@ -46,6 +70,16 @@ pub enum SyncCommand {
         /// Euler angles in radians (XYZ order).
         rotation: [f32; 3],
         scale: [f32; 3],
+    },
+    /// Submit a compute task to a peer or execute locally.
+    ///
+    /// Phase 6.2: tasks are always executed locally. Peer offloading is
+    /// deferred to Phase 8 (fe-hexon P2P distribution).
+    SubmitComputeTask {
+        task_id: String,
+        query: String,
+        petal_scope: Option<String>,
+        requester_did: String,
     },
 }
 
@@ -70,6 +104,43 @@ pub enum SyncEvent {
     ///
     /// `peer_id` holds the peer's `did:key` format identifier.
     PeerDisconnected { peer_id: String },
+    /// A compute task has completed (locally or from a peer).
+    ///
+    /// `result_hash` is the blake3 digest of the serialised result rows,
+    /// used for cross-peer verification.
+    ComputeResultReady {
+        task_id: String,
+        row_count: usize,
+        result_hash: String,
+    },
+    /// A peer has advertised its available tilesets.
+    PeerTilesetAdvertisement {
+        peer_id: String,
+        /// Serialized JSON of `Vec<TilesetAdvertisement>` from fe-terrain.
+        advertisements_json: String,
+    },
+    /// Tileset metadata received from a peer.
+    TilesetMetaReceived {
+        peer_id: String,
+        tileset_id: String,
+        /// Serialized JSON of `TilesetMeta` from fe-format.
+        meta_json: String,
+        total_chunks: u32,
+        approx_size_bytes: u64,
+    },
+    /// A chunk has been received from a peer.
+    ChunkReceived {
+        tileset_id: String,
+        chunk_seq: u32,
+        /// Raw `.hexon` chunk archive bytes.
+        chunk_bytes: Vec<u8>,
+    },
+    /// A chunk download has failed.
+    ChunkFailed {
+        tileset_id: String,
+        chunk_seq: u32,
+        reason: String,
+    },
 }
 
 /// Sender half for sync commands (type alias for ergonomics).
@@ -118,6 +189,22 @@ mod tests {
                 table: "verse".into(),
                 record_id: "r1".into(),
                 content_hash: [1u8; 32],
+            }
+            .clone()
+        );
+
+        // Petal replication variants
+        let _ = format!(
+            "{:?}",
+            SyncCommand::SubscribePetal {
+                petal_id: "p1".into(),
+            }
+            .clone()
+        );
+        let _ = format!(
+            "{:?}",
+            SyncCommand::UnsubscribePetal {
+                petal_id: "p1".into(),
             }
             .clone()
         );
@@ -179,9 +266,126 @@ mod tests {
     }
 
     #[test]
+    fn submit_compute_task_debug_clone() {
+        let cmd = SyncCommand::SubmitComputeTask {
+            task_id: "task-001".into(),
+            query: "SELECT * FROM node".into(),
+            petal_scope: Some("petal-abc".into()),
+            requester_did: "did:key:z6Mk789".into(),
+        };
+        let cloned = cmd.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("SubmitComputeTask"));
+        assert!(dbg.contains("task-001"));
+
+        // Also test with no petal scope
+        let cmd_no_scope = SyncCommand::SubmitComputeTask {
+            task_id: "task-002".into(),
+            query: "SELECT count() FROM node GROUP ALL".into(),
+            petal_scope: None,
+            requester_did: "did:key:z6Mk000".into(),
+        };
+        let _ = format!("{:?}", cmd_no_scope.clone());
+    }
+
+    #[test]
+    fn compute_result_ready_debug_clone() {
+        let ev = SyncEvent::ComputeResultReady {
+            task_id: "task-001".into(),
+            row_count: 42,
+            result_hash: "abc123".into(),
+        };
+        let cloned = ev.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("ComputeResultReady"));
+        assert!(dbg.contains("42"));
+
+        match &ev {
+            SyncEvent::ComputeResultReady {
+                task_id,
+                row_count,
+                result_hash,
+            } => {
+                assert_eq!(task_id, "task-001");
+                assert_eq!(*row_count, 42);
+                assert_eq!(result_hash, "abc123");
+            }
+            _ => panic!("expected ComputeResultReady"),
+        }
+    }
+
+    #[test]
     fn channel_roundtrip() {
         let (tx, rx) = crossbeam::channel::bounded(1);
         tx.send(SyncCommand::Shutdown).unwrap();
         assert!(matches!(rx.recv().unwrap(), SyncCommand::Shutdown));
+    }
+
+    #[test]
+    fn advertise_tilesets_debug_clone() {
+        let cmd = SyncCommand::AdvertiseTilesets {
+            advertisements_json: "[]".into(),
+        };
+        let _ = format!("{:?}", cmd.clone());
+    }
+
+    #[test]
+    fn request_chunk_debug_clone() {
+        let cmd = SyncCommand::RequestChunk {
+            peer_id: "did:key:z6Mk123".into(),
+            tileset_id: "ts-001".into(),
+            chunk_seq: 0,
+        };
+        let _ = format!("{:?}", cmd.clone());
+    }
+
+    #[test]
+    fn peer_tileset_advertisement_debug_clone() {
+        let ev = SyncEvent::PeerTilesetAdvertisement {
+            peer_id: "did:key:z6Mk123".into(),
+            advertisements_json: "[]".into(),
+        };
+        let _ = format!("{:?}", ev.clone());
+    }
+
+    #[test]
+    fn chunk_received_construction() {
+        let ev = SyncEvent::ChunkReceived {
+            tileset_id: "ts-001".into(),
+            chunk_seq: 2,
+            chunk_bytes: vec![0u8; 64],
+        };
+        match &ev {
+            SyncEvent::ChunkReceived { tileset_id, chunk_seq, chunk_bytes } => {
+                assert_eq!(tileset_id, "ts-001");
+                assert_eq!(*chunk_seq, 2);
+                assert_eq!(chunk_bytes.len(), 64);
+            }
+            _ => panic!("expected ChunkReceived"),
+        }
+        let _ = format!("{:?}", ev.clone());
+    }
+
+    #[test]
+    fn channel_roundtrip_compute_task() {
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        tx.send(SyncCommand::SubmitComputeTask {
+            task_id: "task-rt".into(),
+            query: "SELECT * FROM node".into(),
+            petal_scope: None,
+            requester_did: "did:key:z6MkRT".into(),
+        })
+        .unwrap();
+        match rx.recv().unwrap() {
+            SyncCommand::SubmitComputeTask {
+                task_id, query, petal_scope, requester_did,
+            } => {
+                assert_eq!(task_id, "task-rt");
+                assert_eq!(query, "SELECT * FROM node");
+                assert!(petal_scope.is_none());
+                assert_eq!(requester_did, "did:key:z6MkRT");
+            }
+            _ => panic!("expected SubmitComputeTask"),
+        }
     }
 }

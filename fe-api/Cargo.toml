@@ -7,6 +7,12 @@ edition = "2021"
 fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
 fe-database = { path = "../fe-database" }
+fe-format = { path = "../fe-format" }
+fe-query = { path = "../fe-query", features = ["datafusion"] }
+fe-entity-store = { path = "../fe-entity-store" }
+fe-terrain = { path = "../fe-terrain" }
+fe-hexon = { path = "../fe-hexon" }
+axum-extra = { version = "0.10", features = ["multipart"] }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
@@ -17,3 +23,5 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 ulid = { workspace = true }
 ed25519-dalek = { workspace = true }
+surrealdb = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }

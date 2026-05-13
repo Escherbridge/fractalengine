@@ -2,6 +2,8 @@
 //!
 //! All authorization checks happen here (server-side), not in the UI.
 
+use tracing::instrument;
+
 use fe_runtime::messages::ApiTokenInfo;
 
 use crate::api_token_store;
@@ -26,6 +28,7 @@ fn now_rfc3339() -> String {
 /// and the requested `max_role` must not exceed the caller's own role.
 ///
 /// Returns `(jwt_string, jti, created_at, expires_at)` on success.
+#[instrument(skip(db, keypair))]
 pub(crate) async fn mint_api_token_handler(
     db: &Db,
     keypair: &fe_identity::NodeKeypair,
@@ -110,6 +113,7 @@ pub(crate) async fn mint_api_token_handler(
 
 /// Revoke an API token by JTI. Only the token's owner (`local_did`) can revoke it.
 /// Returns `true` if a matching token was found and revoked.
+#[instrument(skip(db))]
 pub(crate) async fn revoke_api_token_handler(
     db: &Db,
     local_did: &str,
@@ -119,6 +123,7 @@ pub(crate) async fn revoke_api_token_handler(
 }
 
 /// List active (non-revoked, non-expired) tokens for the local node, paginated.
+#[instrument(skip(db))]
 pub(crate) async fn list_api_tokens_handler(
     db: &Db,
     local_did: &str,
@@ -132,6 +137,7 @@ pub(crate) async fn list_api_tokens_handler(
 
 /// List active (non-revoked, non-expired) tokens whose scope falls within a
 /// given scope prefix, paginated.
+#[instrument(skip(db))]
 pub(crate) async fn list_api_tokens_by_scope_handler(
     db: &Db,
     scope_prefix: &str,
@@ -155,6 +161,7 @@ fn records_to_info(records: Vec<api_token_store::ApiTokenRecord>) -> Vec<ApiToke
             created_at: r.created_at,
             expires_at: r.expires_at,
             revoked: r.revoked,
+            sub: r.sub,
         })
         .collect()
 }

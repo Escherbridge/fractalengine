@@ -113,6 +113,39 @@ pub fn spawn_sync_thread(
                         // TODO: replicate real-time transform update to peers
                         let _ = (verse_id, node_id, position, rotation, scale);
                     }
+                    Ok(SyncCommand::SubscribePetal { petal_id }) => {
+                        // TODO(Wave 2): create IrohPetalReplicator and insert into petal replica map
+                        tracing::debug!(%petal_id, "SubscribePetal (stub)");
+                    }
+                    Ok(SyncCommand::UnsubscribePetal { petal_id }) => {
+                        // TODO(Wave 2): close and remove petal replicator
+                        tracing::debug!(%petal_id, "UnsubscribePetal (stub)");
+                    }
+                    Ok(SyncCommand::SubmitComputeTask {
+                        task_id,
+                        query,
+                        petal_scope,
+                        requester_did,
+                    }) => {
+                        // TODO(Phase 6.2): execute compute task locally, emit ComputeResultReady
+                        tracing::debug!(%task_id, %query, ?petal_scope, %requester_did, "SubmitComputeTask (stub)");
+                    }
+                    Ok(SyncCommand::AdvertiseTilesets { advertisements_json }) => {
+                        // TODO(Phase 7.4): broadcast tileset advertisements to connected peers
+                        tracing::debug!(len = advertisements_json.len(), "AdvertiseTilesets (stub)");
+                    }
+                    Ok(SyncCommand::RequestTilesetMeta { peer_id, tileset_id }) => {
+                        // TODO(Phase 7.4): request tileset metadata from peer
+                        tracing::debug!(%peer_id, %tileset_id, "RequestTilesetMeta (stub)");
+                    }
+                    Ok(SyncCommand::RequestChunk { peer_id, tileset_id, chunk_seq }) => {
+                        // TODO(Phase 7.4): request a specific chunk from peer
+                        tracing::debug!(%peer_id, %tileset_id, chunk_seq, "RequestChunk (stub)");
+                    }
+                    Ok(SyncCommand::CancelTilesetDownload { tileset_id }) => {
+                        // TODO(Phase 7.4): cancel in-progress tileset download
+                        tracing::debug!(%tileset_id, "CancelTilesetDownload (stub)");
+                    }
                     Ok(SyncCommand::Shutdown) => {
                         tracing::info!("Sync thread shutting down");
                         break;

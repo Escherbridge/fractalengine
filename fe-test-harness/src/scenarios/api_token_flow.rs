@@ -82,7 +82,8 @@ pub fn run() -> Result<TestResult> {
     }
 
     // 5. Revoke the token
-    alice.send(DbCommand::RevokeApiToken { jti: jti.clone() });
+    let alice_sub = alice.keypair.to_did_key();
+    alice.send(DbCommand::RevokeApiToken { jti: jti.clone(), sub: alice_sub.clone() });
     let revoke_result = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenRevoked { .. }),
         std::time::Duration::from_secs(30),
@@ -161,6 +162,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
     // Edge case 1: Revoke a non-existent token
     alice.send(DbCommand::RevokeApiToken {
         jti: "non-existent-jti-12345".to_string(),
+        sub: alice.keypair.to_did_key(),
     });
     // Should get an Error result
     let revoke_bad = alice.db_result_rx.recv_timeout(std::time::Duration::from_secs(10))?;
@@ -241,7 +243,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
     };
 
     // First revoke should succeed
-    alice.send(DbCommand::RevokeApiToken { jti: double_jti.clone() });
+    alice.send(DbCommand::RevokeApiToken { jti: double_jti.clone(), sub: alice.keypair.to_did_key() });
     let first_revoke = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenRevoked { .. }),
         std::time::Duration::from_secs(10),
@@ -251,7 +253,7 @@ pub fn run_edge_cases() -> Result<TestResult> {
     // Second revoke — the token is already revoked, but the UPDATE still matches
     // (it sets revoked=true on an already-revoked row), so it returns Ok(true).
     // This is acceptable idempotent behavior.
-    alice.send(DbCommand::RevokeApiToken { jti: double_jti.clone() });
+    alice.send(DbCommand::RevokeApiToken { jti: double_jti.clone(), sub: alice.keypair.to_did_key() });
     let second_revoke = alice.db_result_rx.recv_timeout(std::time::Duration::from_secs(10))?;
     // Accept either ApiTokenRevoked (idempotent) or Error — both are valid
     match &second_revoke {

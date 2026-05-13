@@ -1,7 +1,10 @@
+use tracing::instrument;
+
 use crate::BlobStoreHandle;
 use crate::repo::Db;
 
 /// Wipe all tables, re-apply schema, and re-seed default data.
+#[instrument(skip(db, blob_store))]
 pub(crate) async fn reset_database_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
