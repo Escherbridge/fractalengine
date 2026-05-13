@@ -1,3 +1,6 @@
+use fe_query::{Filter, QueryBuilder, UpdateBuilder};
+
+use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::role_level::RoleLevel;
 use crate::scope::{parse_scope, parent_scope};
@@ -12,10 +15,12 @@ struct VerseInfo {
 
 /// Fetch the verse owner DID and default_access from the database.
 async fn get_verse_owner_and_default(db: &Db, verse_id: &str) -> anyhow::Result<VerseInfo> {
-    let mut result = db
-        .query("SELECT created_by, default_access FROM verse WHERE verse_id = $verse_id")
-        .bind(("verse_id", verse_id.to_string()))
-        .await?;
+    let q = QueryBuilder::new()
+        .select(&["created_by", "default_access"])
+        .from("verse")
+        .filter(Filter::eq("verse_id", verse_id))
+        .build();
+    let mut result = exec_query(db, &q).await?;
     let row: Option<serde_json::Value> = result.take(0)?;
     let row = row.ok_or_else(|| anyhow::anyhow!("verse not found: {}", verse_id))?;
     Ok(VerseInfo {
@@ -104,6 +109,7 @@ pub async fn assign_role_checked(
             "role": role.to_string(),
         }),
         sig: "00".repeat(64), // placeholder signature
+        hlc_timestamp: String::new(),
     };
     op_log::write_op_log(db, entry).await?;
 
@@ -139,6 +145,7 @@ pub async fn revoke_role_checked(
             "action": "revoke",
         }),
         sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
     };
     op_log::write_op_log(db, entry).await?;
 
@@ -173,10 +180,11 @@ pub async fn set_default_access(db: &Db, verse_id: &str, default: &str) -> anyho
             default
         );
     }
-    db.query("UPDATE verse SET default_access = $default WHERE verse_id = $verse_id")
-        .bind(("default", default.to_string()))
-        .bind(("verse_id", verse_id.to_string()))
-        .await?;
+    let q = UpdateBuilder::update("verse")
+        .set("default_access", default)
+        .where_clause(Filter::eq("verse_id", verse_id))
+        .build();
+    exec_query(db, &q).await?;
     Ok(())
 }
 

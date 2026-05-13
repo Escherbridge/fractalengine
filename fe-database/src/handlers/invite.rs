@@ -3,6 +3,11 @@
 //! Separated from crud.rs for semantic clarity: invites are an auth/access
 //! concern, not a CRUD concern.
 
+use tracing::instrument;
+
+use fe_query::{Filter, QueryBuilder, UpdateBuilder};
+
+use crate::query_helpers::exec_query;
 use crate::repo::{Db, Repo};
 use crate::schema::{Verse, VerseMemberRow};
 
@@ -10,6 +15,7 @@ use crate::schema::{Verse, VerseMemberRow};
 // Generate verse invite
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db, keypair, secret_store))]
 pub(crate) async fn generate_verse_invite_handler(
     db: &Db,
     verse_id: &str,
@@ -21,10 +27,13 @@ pub(crate) async fn generate_verse_invite_handler(
     let keypair =
         keypair.ok_or_else(|| anyhow::anyhow!("NodeKeypair not available for invite signing"))?;
 
-    let mut result: surrealdb::IndexedResults = db
-        .query("SELECT namespace_id, name FROM verse WHERE verse_id = $vid LIMIT 1")
-        .bind(("vid", verse_id.to_string()))
-        .await?;
+    let sel_q = QueryBuilder::new()
+        .select(&["namespace_id", "name"])
+        .from("verse")
+        .filter(Filter::eq("verse_id", verse_id))
+        .limit(1)
+        .build();
+    let mut result = exec_query(db, &sel_q).await?;
     let rows: Vec<serde_json::Value> = result.take(0)?;
     let row = rows
         .first()
@@ -41,10 +50,11 @@ pub(crate) async fn generate_verse_invite_handler(
             let ns_id_hex = hex::encode(ns_id);
             let ns_secret_hex = hex::encode(ns_secret);
 
-            db.query("UPDATE verse SET namespace_id = $nsid WHERE verse_id = $vid")
-                .bind(("nsid", ns_id_hex.clone()))
-                .bind(("vid", verse_id.to_string()))
-                .await?;
+            let upd_q = UpdateBuilder::update("verse")
+                .set("namespace_id", ns_id_hex.as_str())
+                .where_clause(Filter::eq("verse_id", verse_id))
+                .build();
+            exec_query(db, &upd_q).await?;
 
             if let Some(ss) = secret_store {
                 if let Err(e) = store_namespace_secret(ss.as_ref(), verse_id, &ns_secret_hex) {
@@ -95,6 +105,7 @@ pub(crate) async fn generate_verse_invite_handler(
 // Join verse by invite
 // ---------------------------------------------------------------------------
 
+#[instrument(skip(db, secret_store))]
 pub(crate) async fn join_verse_by_invite_handler(
     db: &Db,
     invite_string: &str,
@@ -137,10 +148,13 @@ pub(crate) async fn join_verse_by_invite_handler(
     let verse_name = &invite.verse_name;
     let namespace_id = &invite.namespace_id;
 
-    let mut check: surrealdb::IndexedResults = db
-        .query("SELECT * FROM verse WHERE verse_id = $vid LIMIT 1")
-        .bind(("vid", verse_id.to_string()))
-        .await?;
+    let check_q = QueryBuilder::new()
+        .select(&["*"])
+        .from("verse")
+        .filter(Filter::eq("verse_id", verse_id.as_str()))
+        .limit(1)
+        .build();
+    let mut check = exec_query(db, &check_q).await?;
     let existing: Vec<serde_json::Value> = check.take(0)?;
 
     if existing.is_empty() {
@@ -160,10 +174,11 @@ pub(crate) async fn join_verse_by_invite_handler(
         tracing::info!("Created verse from invite: {verse_name} ({verse_id})");
     } else {
         tracing::info!("Verse {verse_id} already exists, updating namespace_id");
-        db.query("UPDATE verse SET namespace_id = $nsid WHERE verse_id = $vid")
-            .bind(("nsid", namespace_id.to_string()))
-            .bind(("vid", verse_id.to_string()))
-            .await?;
+        let upd_ns_q = UpdateBuilder::update("verse")
+            .set("namespace_id", namespace_id.as_str())
+            .where_clause(Filter::eq("verse_id", verse_id.as_str()))
+            .build();
+        exec_query(db, &upd_ns_q).await?;
     }
 
     if let Some(ref secret) = invite.namespace_secret {

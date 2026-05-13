@@ -1,0 +1,15 @@
+[package]
+name = "fe-plugin-test"
+version = "0.1.0"
+edition = "2021"
+description = "Testing utilities for FractalEngine plugins — mock hosts, fixtures, assertions"
+
+[dependencies]
+fe-sdk = { path = "../fe-sdk" }
+rhai = "1.19"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ulid = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

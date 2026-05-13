@@ -21,11 +21,18 @@ pub enum OpType {
     UpdateModelMeta,
     ExportPetal,
     ImportPetal,
+    TransformUpdate,
+    PropertySet,
+    PropertyDeleted,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OpLogEntry {
     pub lamport_clock: u64,
+    /// HLC timestamp string in the format `"<wall_ms>:<counter_hex>"`.
+    /// Populated by [`crate::op_log::next_hlc_timestamp`] before persistence.
+    #[serde(default)]
+    pub hlc_timestamp: String,
     pub node_id: NodeId,
     pub op_type: OpType,
     pub payload: serde_json::Value,

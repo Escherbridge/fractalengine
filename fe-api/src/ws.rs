@@ -397,14 +397,19 @@ async fn recv_msg(socket: &mut WebSocket) -> Option<WsClientMsg> {
     }
 }
 
-/// Load all nodes for a petal via the API command channel.
+/// Load all nodes for a petal.
 ///
-/// Returns `NodeDto` list from `fe_runtime::messages` (the scene streaming DTO,
-/// not the REST API DTO). Falls back to an empty vec on timeout or error.
+/// When a direct `db_reader` is available, queries SurrealDB directly and
+/// bypasses the crossbeam channel. Falls back to the channel-based
+/// `DbCommand::LoadNodesByPetal` otherwise.
 async fn load_petal_nodes(
     state: &ApiState,
     petal_id: &str,
 ) -> Vec<crate::types::NodeDto> {
+    if let Some(ref db) = state.db_reader {
+        return crate::rest::direct_load_petal_nodes(db, petal_id).await;
+    }
+    // Fallback: channel-based query
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .api_cmd_tx
@@ -437,8 +442,15 @@ async fn load_petal_nodes(
     }
 }
 
-/// Resolve a petal_id to its full scope string via the API command channel.
+/// Resolve a petal_id to its full scope string.
+///
+/// Uses a direct DB query when `db_reader` is available, falling back to the
+/// crossbeam channel otherwise.
 async fn resolve_petal_scope_ws(state: &ApiState, petal_id: &str) -> Option<String> {
+    if let Some(ref db) = state.db_reader {
+        return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
+    }
+    // Fallback: channel-based resolution
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     state.api_cmd_tx.send(ApiCommand::DbRequest {
         cmd: DbCommand::ResolvePetalScope { petal_id: petal_id.to_string() },

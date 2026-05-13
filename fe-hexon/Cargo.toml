@@ -1,0 +1,23 @@
+[package]
+name = "fe-hexon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fe-runtime = { path = "../fe-runtime" }
+fe-identity = { path = "../fe-identity" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+zip = "0.6"
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+base64 = "0.22"
+multibase = "0.9"
+rand = "0.8"
+crossbeam = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+ulid = { workspace = true }

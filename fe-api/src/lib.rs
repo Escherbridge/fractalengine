@@ -1,8 +1,12 @@
 pub mod assets;
 pub mod auth;
+pub mod format;
+pub mod gpx;
+pub mod hexon;
 pub mod mcp;
 pub mod rest;
 pub mod server;
+pub mod terrain;
 pub mod types;
 pub mod ws;
 
@@ -25,6 +29,16 @@ pub struct ApiConfig {
     pub cors_origins: Option<Vec<String>>,
     /// Entity change broadcast for scene graph streaming (CUD deltas).
     pub entity_change_tx: tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>,
+    /// Read-only SurrealDB connection for direct queries (bypasses crossbeam channel).
+    pub api_db_reader: Option<std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
+    /// In-memory entity store for DataFusion analytics queries.
+    pub entity_store: Option<std::sync::Arc<fe_entity_store::EntityStore>>,
+    /// Tileset registry for hexon tile serving and management.
+    pub tileset_registry: Option<std::sync::Arc<fe_terrain::tiles::TilesetRegistry>>,
+    /// Hexon crate registry for package install/uninstall.
+    pub hexon_registry: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::registry::HexonRegistry>>>,
+    /// P2P announcement store for peer-discovered crates.
+    pub announcement_store: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
@@ -59,6 +73,12 @@ async fn run_server(config: ApiConfig) {
         revoked_jtis: revoked_jtis.clone(),
         blob_store: config.blob_store,
         cors_origins,
+        db_reader: config.api_db_reader,
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: config.entity_store,
+        tileset_registry: config.tileset_registry,
+        hexon_registry: config.hexon_registry,
+        announcement_store: config.announcement_store,
     });
 
     // Background task: listen for revocation notifications from Bevy thread

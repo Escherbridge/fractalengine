@@ -16,6 +16,11 @@ members = [
     "fe-format",
     "fe-entity-store",
     "fe-query",
+    "fe-terrain",
+    "fe-hexon",
+    "fe-plugin",
+    "fe-plugin-test",
+    "fe-sdk",
 ]
 resolver = "2"
 

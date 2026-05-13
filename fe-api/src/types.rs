@@ -35,6 +35,24 @@ pub struct UpdateTransformRequest {
     pub scale: [f32; 3],
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SetPropertyRequest {
+    pub key: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PropertiesDto {
+    pub node_id: String,
+    pub properties: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PropertySetDto {
+    pub node_id: String,
+    pub key: String,
+}
+
 // ---------------------------------------------------------------------------
 // Response envelope
 // ---------------------------------------------------------------------------
@@ -62,6 +80,42 @@ impl<T: Serialize> ApiResponse<T> {
             error: Some(msg.into()),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Field definition (property schema) DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateFieldDefRequest {
+    pub scope: String,
+    #[serde(default = "default_entity_type")]
+    pub entity_type: String,
+    pub key: String,
+    pub value_type: String,
+    pub default_val: Option<serde_json::Value>,
+}
+
+fn default_entity_type() -> String {
+    "node".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateFieldDefRequest {
+    pub value_type: String,
+    pub default_val: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldDefDto {
+    pub field_def_id: String,
+    pub scope: String,
+    pub entity_type: String,
+    pub key: String,
+    pub value_type: String,
+    pub default_val: Option<serde_json::Value>,
+    pub created_by: String,
+    pub created_at: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -177,4 +231,66 @@ pub fn is_valid_scope(s: &str) -> bool {
 /// Validate a role string is one of the known values.
 pub fn is_valid_role(s: &str) -> bool {
     matches!(s, "viewer" | "editor" | "manager" | "owner" | "none")
+}
+
+// ---------------------------------------------------------------------------
+// Query endpoint DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct QueryRequest {
+    pub sql: String,
+    #[serde(default)]
+    pub vars: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueryResultDto {
+    pub data: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnalyticsQueryRequest {
+    pub sql: String,
+    /// Optional petal_id to scope the query to a single petal's nodes.
+    pub petal_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Waypoint / Track DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWaypointRequest {
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub ele: f64,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub symbol: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MoveWaypointRequest {
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub ele: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ElevationPointDto {
+    pub distance_m: f64,
+    pub elevation_m: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackStatsDto {
+    pub total_distance_m: f64,
+    pub min_elevation_m: f64,
+    pub max_elevation_m: f64,
+    pub avg_speed_kmh: Option<f64>,
+    pub duration_seconds: Option<f64>,
 }

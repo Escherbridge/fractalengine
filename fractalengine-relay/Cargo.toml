@@ -14,10 +14,11 @@ fe-database = { path = "../fe-database" }
 fe-identity = { path = "../fe-identity", default-features = false }
 fe-sync     = { path = "../fe-sync" }
 fe-api      = { path = "../fe-api" }
+fe-terrain  = { path = "../fe-terrain" }
 bevy        = { workspace = true }
 crossbeam   = { workspace = true }
 tokio       = { workspace = true }
 tracing     = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow      = { workspace = true }
-hex         = "0.4"
+surrealdb   = { workspace = true }

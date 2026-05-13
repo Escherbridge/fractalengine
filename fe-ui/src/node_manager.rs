@@ -629,6 +629,7 @@ fn sync_manager_to_inspector(
     manager: Res<NodeManager>,
     mut inspector: ResMut<InspectorFormState>,
     verse_mgr: Res<crate::verse_manager::VerseManager>,
+    db_sender: Res<fe_runtime::app::DbCommandSender>,
     // Changed<Transform> avoids 9 format!() allocations per frame while dragging.
     changed_query: Query<&Transform, Changed<Transform>>,
     // Plain query used on initial selection so the inspector populates even when
@@ -657,6 +658,14 @@ fn sync_manager_to_inspector(
                 .and_then(|n| n.webpage_url.clone())
                 .unwrap_or_default();
             inspector.external_url = url;
+        }
+        // Load properties for the newly selected node
+        if let Some(ref sel) = manager.selected {
+            inspector.node_properties_loading = true;
+            inspector.node_properties = serde_json::Value::Object(Default::default());
+            let _ = db_sender.0.send(fe_runtime::messages::DbCommand::GetNodeProperties {
+                node_id: sel.node_id.clone(),
+            });
         }
         // Reset API token tab state for the new selection
         inspector.generated_api_token = None;

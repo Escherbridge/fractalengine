@@ -1,0 +1,24 @@
+[package]
+name = "fe-query"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["geo"]
+graphql = ["dep:async-graphql"]
+geo = []
+datafusion = ["dep:datafusion", "dep:async-trait", "dep:fe-entity-store"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+# Optional
+async-graphql = { version = "7", optional = true }
+fe-entity-store = { path = "../fe-entity-store", optional = true }
+async-trait = { version = "0.1", optional = true }
+datafusion = { version = "46", optional = true, default-features = false, features = ["nested_expressions"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

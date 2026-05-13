@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
+fe-query = { path = "../fe-query" }
 surrealdb = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -27,6 +28,7 @@ crossbeam = { workspace = true }
 surrealdb = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
+tempfile = "3"
 
 [package.metadata.env]
 SURREAL_SYNC_DATA = "true"

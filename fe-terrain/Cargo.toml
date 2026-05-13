@@ -1,0 +1,38 @@
+[package]
+name = "fe-terrain"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+render = ["bevy"]
+fetch = ["reqwest", "async-trait", "tokio", "ed25519-dalek"]
+
+[dependencies]
+gpx = "0.10"
+geo-types = "0.7"
+flat_projection = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ulid = { workspace = true, features = ["serde"] }
+earcutr = "0.4"
+geojson = "0.24"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+dirs = "5"
+tracing = { workspace = true }
+fe-format = { path = "../fe-format" }
+fe-sdk = { path = "../fe-sdk" }
+
+# Optional
+bevy = { workspace = true, optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+async-trait = { version = "0.1", optional = true }
+tokio = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

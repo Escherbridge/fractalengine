@@ -27,11 +27,21 @@ pub struct SyncStatus {
     pub peer_count: usize,
 }
 
+/// Bevy resource that buffers tileset distribution events for the UI layer.
+///
+/// `drain_sync_events` pushes tileset-related events here; `fe-ui` drains
+/// them each frame to update the Hexon Manager dialog.
+#[derive(Resource, Default)]
+pub struct TilesetEventBuffer {
+    pub events: Vec<SyncEvent>,
+}
+
 /// Bevy system that drains [`SyncEvent`]s from the sync thread and updates
 /// [`SyncStatus`].
 pub fn drain_sync_events(
     receiver: Option<Res<SyncEventReceiverRes>>,
     mut status: ResMut<SyncStatus>,
+    mut tileset_buf: ResMut<TilesetEventBuffer>,
 ) {
     let Some(receiver) = receiver else { return };
     let Ok(rx) = receiver.0.lock() else { return };
@@ -58,6 +68,20 @@ pub fn drain_sync_events(
             SyncEvent::PeerDisconnected { ref peer_id } => {
                 status.peer_count = status.peer_count.saturating_sub(1);
                 tracing::info!(peer_id, peer_count = status.peer_count, "Peer disconnected");
+            }
+            SyncEvent::ComputeResultReady {
+                ref task_id,
+                row_count,
+                ref result_hash,
+            } => {
+                tracing::info!(task_id, row_count, result_hash, "Compute result ready");
+            }
+            // Tileset distribution events — buffer for the UI/terrain layer.
+            ev @ SyncEvent::PeerTilesetAdvertisement { .. }
+            | ev @ SyncEvent::TilesetMetaReceived { .. }
+            | ev @ SyncEvent::ChunkReceived { .. }
+            | ev @ SyncEvent::ChunkFailed { .. } => {
+                tileset_buf.events.push(ev);
             }
         }
     }

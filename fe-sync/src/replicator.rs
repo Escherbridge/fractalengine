@@ -264,6 +264,116 @@ impl VerseReplicator for IrohDocsReplicator {
 }
 
 // ---------------------------------------------------------------------------
+// PetalReplicator trait — petal-level replication (Wave 2)
+// ---------------------------------------------------------------------------
+
+/// Abstraction over a per-petal iroh-docs replica.
+///
+/// Each subscribed petal has exactly one `PetalReplicator` instance. Unlike
+/// `VerseReplicator` (verse-scoped), this replicates at petal granularity:
+/// one iroh-docs namespace per petal.
+///
+/// Key encoding within the namespace: `/{table}/{record_id}`
+/// (e.g., `/node/{node_id}`)
+pub trait PetalReplicator: Send + Sync {
+    /// Write (or overwrite) a row entry in the petal replica.
+    ///
+    /// The entry key is `"/{table}/{record_id}"`. The value is the content
+    /// hash of the serialised row JSON.
+    fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()>;
+
+    /// Subscribe to incoming row changes from peers within this petal.
+    fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>;
+
+    /// Close the replica, flushing any pending state.
+    fn close(&self) -> anyhow::Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// IrohPetalReplicator — petal-level replication backed by iroh-docs
+// ---------------------------------------------------------------------------
+
+/// Petal-level replicator using iroh-docs 0.35.
+///
+/// Each petal gets its own iroh-docs namespace. Key encoding:
+/// `/{table}/{record_id}` (e.g., `/node/{node_id}`).
+///
+/// Currently backed by an in-memory store (same as MockVerseReplicator) with
+/// the petal-scoped interface. The iroh-docs wiring will connect in a future
+/// phase once the iroh endpoint lifecycle is fully integrated.
+pub struct IrohPetalReplicator {
+    /// The petal ID this replicator is responsible for.
+    pub petal_id: String,
+    /// The iroh-docs namespace ID (derived from petal_id).
+    pub namespace_id: String,
+    inner: MockVerseReplicator,
+}
+
+impl IrohPetalReplicator {
+    /// Create a new petal replicator.
+    ///
+    /// `petal_id` — the petal this replica covers.
+    /// `namespace_id` — derived namespace ID for the iroh-docs document.
+    /// `author_id` — the local peer's DID / public key.
+    pub fn new(petal_id: String, namespace_id: String, author_id: String) -> Self {
+        Self {
+            petal_id,
+            namespace_id,
+            inner: MockVerseReplicator::new(author_id),
+        }
+    }
+
+    /// Resolve an HLC conflict: returns `true` if remote should win.
+    ///
+    /// Rules:
+    /// - If remote HLC > local HLC for the same (node_id, key): apply remote
+    /// - If remote HLC == local HLC: higher author_id wins (lexicographic)
+    /// - If remote HLC < local HLC: discard remote
+    pub fn should_apply_remote(
+        remote_hlc: u64,
+        local_hlc: u64,
+        remote_author: &str,
+        local_author: &str,
+    ) -> bool {
+        if remote_hlc > local_hlc {
+            return true;
+        }
+        if remote_hlc == local_hlc {
+            return remote_author.as_bytes() > local_author.as_bytes();
+        }
+        false
+    }
+
+    /// Encode a key for the iroh-docs namespace.
+    ///
+    /// Format: `/{table}/{record_id}`
+    pub fn encode_key(table: &str, record_id: &str) -> String {
+        format!("/{table}/{record_id}")
+    }
+}
+
+impl PetalReplicator for IrohPetalReplicator {
+    fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()> {
+        tracing::debug!(
+            petal = %self.petal_id,
+            ns = %self.namespace_id,
+            key = %Self::encode_key(table, record_id),
+            "IrohPetalReplicator::write_row"
+        );
+        self.inner.write_row(table, record_id, data)
+    }
+
+    fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>> {
+        self.inner.subscribe()
+    }
+
+    fn close(&self) -> anyhow::Result<()> {
+        tracing::debug!(petal = %self.petal_id, ns = %self.namespace_id, "IrohPetalReplicator::close");
+        self.inner.close()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -372,5 +482,57 @@ mod tests {
         let applicator2 = IncomingEntryApplicator::new("author-z");
         let change2 = make_change("author-b", 100);
         assert!(!applicator2.should_apply(&change2, Some(100), Some("author-z")));
+    }
+
+    // --- IrohPetalReplicator tests ---
+
+    #[test]
+    fn petal_replicator_write_and_subscribe() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let repl = IrohPetalReplicator::new(
+                "petal-1".to_string(),
+                "ns-petal-1".to_string(),
+                "local-author".to_string(),
+            );
+            let mut rx = repl.subscribe().unwrap();
+            repl.write_row("node", "n1", b"{\"name\":\"test\"}").unwrap();
+            let change = rx.try_recv().unwrap();
+            assert_eq!(change.table, "node");
+            assert_eq!(change.record_id, "n1");
+        });
+    }
+
+    #[test]
+    fn petal_replicator_close_rejects_writes() {
+        let repl = IrohPetalReplicator::new(
+            "petal-2".to_string(),
+            "ns-petal-2".to_string(),
+            "local-author".to_string(),
+        );
+        repl.close().unwrap();
+        assert!(repl.write_row("node", "n1", b"{}").is_err());
+    }
+
+    #[test]
+    fn petal_key_encoding() {
+        assert_eq!(
+            IrohPetalReplicator::encode_key("node", "abc123"),
+            "/node/abc123"
+        );
+    }
+
+    #[test]
+    fn hlc_conflict_resolution() {
+        // Remote is newer — apply
+        assert!(IrohPetalReplicator::should_apply_remote(200, 100, "author-b", "author-a"));
+        // Remote is older — discard
+        assert!(!IrohPetalReplicator::should_apply_remote(50, 100, "author-b", "author-a"));
+        // Equal HLC, higher author wins
+        assert!(IrohPetalReplicator::should_apply_remote(100, 100, "author-b", "author-a"));
+        assert!(!IrohPetalReplicator::should_apply_remote(100, 100, "author-a", "author-b"));
     }
 }

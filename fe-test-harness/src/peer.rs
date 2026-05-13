@@ -437,8 +437,8 @@ impl TestPeer {
                                 }
                             }
                         }
-                        Ok(DbCommand::RevokeApiToken { jti }) => {
-                            match fe_database::api_token_store::revoke_api_token(&db, &jti, &db_local_did)
+                        Ok(DbCommand::RevokeApiToken { jti, sub }) => {
+                            match fe_database::api_token_store::revoke_api_token(&db, &jti, &sub)
                                 .await
                             {
                                 Ok(true) => {
@@ -484,6 +484,7 @@ impl TestPeer {
                                             created_at: r.created_at,
                                             expires_at: r.expires_at,
                                             revoked: r.revoked,
+                                            sub: r.sub,
                                         })
                                         .collect();
                                     db_result_tx
@@ -517,6 +518,47 @@ impl TestPeer {
                                 rotation: [0.0, 0.0, 0.0],
                                 scale: [1.0, 1.0, 1.0],
                             }).ok();
+                        }
+                        Ok(DbCommand::SetNodeProperty { node_id, key, .. }) => {
+                            db_result_tx.send(DbResult::NodePropertySet { node_id, key }).ok();
+                        }
+                        Ok(DbCommand::GetNodeProperties { node_id }) => {
+                            db_result_tx.send(DbResult::NodePropertiesLoaded {
+                                node_id,
+                                properties: serde_json::json!({}),
+                            }).ok();
+                        }
+                        Ok(DbCommand::DeleteNodeProperty { node_id, key }) => {
+                            db_result_tx.send(DbResult::NodePropertyDeleted { node_id, key }).ok();
+                        }
+                        Ok(DbCommand::RawQuery { .. }) => {
+                            db_result_tx.send(DbResult::QueryResult { data: vec![] }).ok();
+                        }
+                        Ok(DbCommand::CreateFieldDef { scope, key, .. }) => {
+                            db_result_tx.send(DbResult::FieldDefCreated {
+                                field_def_id: ulid::Ulid::new().to_string(),
+                                scope,
+                                key,
+                            }).ok();
+                        }
+                        Ok(DbCommand::ListFieldDefs { scope }) => {
+                            db_result_tx.send(DbResult::FieldDefsListed { scope, field_defs: vec![] }).ok();
+                        }
+                        Ok(DbCommand::UpdateFieldDef { field_def_id, .. }) => {
+                            db_result_tx.send(DbResult::FieldDefUpdated { field_def_id }).ok();
+                        }
+                        Ok(DbCommand::DeleteFieldDef { field_def_id }) => {
+                            db_result_tx.send(DbResult::FieldDefDeleted { field_def_id }).ok();
+                        }
+                        // Hexon crate registry — test harness stubs
+                        Ok(DbCommand::InstallCrate { hexon_uri, petal_id, .. }) => {
+                            db_result_tx.send(DbResult::CrateInstalled { hexon_uri, petal_id }).ok();
+                        }
+                        Ok(DbCommand::InstallCrateEntry { entry_id, hexon_uri, .. }) => {
+                            db_result_tx.send(DbResult::CrateEntryInstalled { entry_id, hexon_uri }).ok();
+                        }
+                        Ok(DbCommand::UninstallCrate { hexon_uri }) => {
+                            db_result_tx.send(DbResult::CrateUninstalled { hexon_uri }).ok();
                         }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }

@@ -1,0 +1,8 @@
+{
+    "id": "example:property-transformer",
+    "name": "Property Transformer",
+    "runtime": "rhai",
+    "capabilities": {
+        "property_scope": ["raw_temperature_*", "temperature_*"]
+    }
+}

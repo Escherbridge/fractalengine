@@ -224,9 +224,11 @@ pub enum DbCommand {
         ttl_hours: u32,
         label: Option<String>,
     },
-    /// Revoke an API token by JTI. Ownership is enforced server-side.
+    /// Revoke an API token by JTI. Ownership is enforced server-side
+    /// using the `sub` provided by the caller (from the token info).
     RevokeApiToken {
         jti: String,
+        sub: String,
     },
     /// List active (non-revoked, non-expired) API tokens for this node, paginated.
     ListApiTokens {
@@ -256,6 +258,77 @@ pub enum DbCommand {
     /// Read a single node's persisted transform (position/rotation/scale).
     GetNodeTransform {
         node_id: String,
+    },
+    /// Set a custom property on a node.
+    SetNodeProperty {
+        node_id: String,
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Get all custom properties of a node.
+    GetNodeProperties {
+        node_id: String,
+    },
+    /// Delete a custom property from a node.
+    DeleteNodeProperty {
+        node_id: String,
+        key: String,
+    },
+    // --- Field definition (property schema) management ---
+    /// Create a new field definition for a scope.
+    CreateFieldDef {
+        scope: String,
+        entity_type: String,
+        key: String,
+        value_type: String,
+        default_val: Option<serde_json::Value>,
+    },
+    /// List all field definitions for a scope.
+    ListFieldDefs {
+        scope: String,
+    },
+    /// Update a field definition's type and default value.
+    UpdateFieldDef {
+        field_def_id: String,
+        value_type: String,
+        default_val: Option<serde_json::Value>,
+    },
+    /// Delete a field definition by ID.
+    DeleteFieldDef {
+        field_def_id: String,
+    },
+    /// Execute a read-only SurrealQL query (SELECT/RETURN only).
+    /// Used by the GUI query tab. Security: only SELECT/RETURN are accepted.
+    RawQuery {
+        sql: String,
+        vars: std::collections::HashMap<String, serde_json::Value>,
+    },
+    // --- Hexon crate registry (Phase 8) ---
+    /// Install a hexon crate into a petal.
+    InstallCrate {
+        hexon_uri: String,
+        manifest_hash: String,
+        publisher_did: String,
+        hexon_type: String, // HexonKind serialized
+        version: String,
+        name: String,
+        tags: Vec<String>,
+        petal_id: String,
+        size_bytes: u64,
+    },
+    /// Install a single asset entry for a hexon crate.
+    InstallCrateEntry {
+        entry_id: String,
+        hexon_uri: String,
+        kind: String, // EntryKind serialized
+        asset_hash: String,
+        format: String,
+        label: String,
+        metadata: serde_json::Value,
+    },
+    /// Uninstall a hexon crate from a petal.
+    UninstallCrate {
+        hexon_uri: String,
     },
 }
 
@@ -391,6 +464,73 @@ pub enum DbResult {
         rotation: [f32; 3],
         scale: [f32; 3],
     },
+    /// Result of `GetNodeProperties`.
+    NodePropertiesLoaded {
+        node_id: String,
+        properties: serde_json::Value,
+    },
+    /// Result of `SetNodeProperty`.
+    NodePropertySet {
+        node_id: String,
+        key: String,
+    },
+    /// Result of `DeleteNodeProperty`.
+    NodePropertyDeleted {
+        node_id: String,
+        key: String,
+    },
+    // --- Field definition results ---
+    /// Result of `CreateFieldDef`.
+    FieldDefCreated {
+        field_def_id: String,
+        scope: String,
+        key: String,
+    },
+    /// Result of `ListFieldDefs`.
+    FieldDefsListed {
+        scope: String,
+        field_defs: Vec<FieldDefInfo>,
+    },
+    /// Result of `UpdateFieldDef`.
+    FieldDefUpdated {
+        field_def_id: String,
+    },
+    /// Result of `DeleteFieldDef`.
+    FieldDefDeleted {
+        field_def_id: String,
+    },
+    /// Result of `RawQuery`.
+    QueryResult {
+        data: Vec<serde_json::Value>,
+    },
+    // --- Hexon crate registry results (Phase 8) ---
+    /// Result of `InstallCrate`.
+    CrateInstalled {
+        hexon_uri: String,
+        petal_id: String,
+    },
+    /// Result of `InstallCrateEntry`.
+    CrateEntryInstalled {
+        entry_id: String,
+        hexon_uri: String,
+    },
+    /// Result of `UninstallCrate`.
+    CrateUninstalled {
+        hexon_uri: String,
+    },
+}
+
+/// Field definition info for UI display.
+#[derive(Debug, Clone)]
+pub struct FieldDefInfo {
+    pub field_def_id: String,
+    pub scope: String,
+    pub entity_type: String,
+    pub key: String,
+    pub value_type: String,
+    pub default_val: Option<serde_json::Value>,
+    pub created_by: String,
+    pub created_at: String,
 }
 
 /// Lightweight API token info for UI display (avoids exposing the actual JWT).
@@ -403,6 +543,8 @@ pub struct ApiTokenInfo {
     pub created_at: String,
     pub expires_at: String,
     pub revoked: bool,
+    /// DID of the node that minted this token.
+    pub sub: String,
 }
 
 #[derive(Debug, Clone)]
@@ -500,6 +642,12 @@ pub enum SceneChange {
         position: [f32; 3],
         rotation: [f32; 3],
         scale: [f32; 3],
+    },
+    /// A custom property was changed on a node.
+    PropertyChanged {
+        node_id: String,
+        key: String,
+        value: serde_json::Value,
     },
 }
 

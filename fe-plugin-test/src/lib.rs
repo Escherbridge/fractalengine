@@ -1,0 +1,46 @@
+//! fe-plugin-test — Testing utilities for FractalEngine plugins (Phase 9C.1).
+//!
+//! This crate provides a mock host environment, spy recorder, scene fixtures,
+//! assertion helpers, and a Rhai test runner so plugin authors can test their
+//! scripts without spinning up a real engine.
+//!
+//! # Quick start
+//!
+//! ```rust
+//! use fe_plugin_test::prelude::*;
+//!
+//! let fixture = fixtures::basic_terrain();
+//! let host = fixture.to_mock_host();
+//! let runner = RhaiTestRunner::new(host);
+//!
+//! runner.eval_script(r#"
+//!     let node = get_node("terrain_000");
+//!     log_info("got node");
+//! "#).unwrap();
+//!
+//! let host = runner.host();
+//! assertions::assert_logged(&host, "log_info", "got node").unwrap();
+//! assertions::assert_no_writes(&host).unwrap();
+//! ```
+
+pub mod assertions;
+pub mod fixtures;
+pub mod mock_host;
+pub mod rhai_runner;
+pub mod spy;
+
+/// Convenience re-exports for typical test usage.
+pub mod prelude {
+    pub use crate::assertions;
+    pub use crate::fixtures;
+    pub use crate::mock_host::MockHostEnv;
+    pub use crate::rhai_runner::RhaiTestRunner;
+    pub use crate::spy::SpyRecorder;
+}
+
+// Top-level re-exports
+pub use assertions::{assert_logged, assert_no_writes, assert_nodes_created, assert_property_set};
+pub use fixtures::SceneFixture;
+pub use mock_host::MockHostEnv;
+pub use rhai_runner::RhaiTestRunner;
+pub use spy::SpyRecorder;

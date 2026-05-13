@@ -1,6 +1,7 @@
 pub mod bevy_asset_reader;
 pub mod blob_store;
 pub mod cache;
+pub mod compute;
 pub mod endpoint;
 pub mod messages;
 pub mod offline;
@@ -16,8 +17,12 @@ pub use blob_store::FsBlobStore;
 pub use fe_database::invite::VerseInvite;
 pub use messages::{SyncCommand, SyncCommandSender, SyncEvent, SyncEventReceiver};
 pub use replicator::{
-    IncomingEntryApplicator, IrohDocsReplicator, MockVerseReplicator, RowChange, VerseReplicator,
+    IncomingEntryApplicator, IrohDocsReplicator, IrohPetalReplicator, MockVerseReplicator,
+    PetalReplicator, RowChange, VerseReplicator,
 };
-pub use status::{drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus};
+pub use status::{
+    drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus,
+    TilesetEventBuffer,
+};
 pub use sync_thread::spawn_sync_thread;
 pub use verse_peers::VersePeers;

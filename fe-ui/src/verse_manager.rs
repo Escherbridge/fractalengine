@@ -348,6 +348,11 @@ fn apply_db_results(
 
             DbResult::Error(msg) => {
                 bevy::log::error!("DB error: {msg}");
+                // If query tab is waiting, deliver the error there
+                if inspector.query_loading {
+                    inspector.query_result = Some(format!("Error: {msg}"));
+                    inspector.query_loading = false;
+                }
             }
 
             DbResult::EntityRenamed { entity_type, entity_id, new_name } => {
@@ -511,6 +516,48 @@ fn apply_db_results(
                 inspector.api_tokens_loading = false;
             }
 
+            DbResult::QueryResult { data } => {
+                let formatted = serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"));
+                inspector.query_result = Some(formatted);
+                inspector.query_loading = false;
+            }
+
+            // --- Property value results ---
+            DbResult::NodePropertiesLoaded { node_id: _, ref properties } => {
+                inspector.node_properties = properties.clone();
+                inspector.node_properties_loading = false;
+            }
+            DbResult::NodePropertySet { ref node_id, key: _ } => {
+                // Re-fetch properties for the node to refresh UI
+                inspector.node_properties_loading = true;
+                let _ = db_sender.0.send(DbCommand::GetNodeProperties {
+                    node_id: node_id.clone(),
+                });
+            }
+            DbResult::NodePropertyDeleted { node_id: _, ref key } => {
+                // Remove the key locally for immediate UI feedback
+                if let Some(obj) = inspector.node_properties.as_object_mut() {
+                    obj.remove(key.as_str());
+                }
+            }
+
+            // --- Field definition results ---
+            DbResult::FieldDefsListed { scope: _, ref field_defs } => {
+                inspector.field_defs = field_defs.iter().map(|f| crate::plugin::FieldDefEntry {
+                    field_def_id: f.field_def_id.clone(),
+                    key: f.key.clone(),
+                    value_type: f.value_type.clone(),
+                    description: String::new(),
+                    required: false,
+                    default_val: f.default_val.clone(),
+                }).collect();
+                inspector.field_defs_loading = false;
+            }
+            DbResult::FieldDefCreated { .. } | DbResult::FieldDefUpdated { .. } | DbResult::FieldDefDeleted { .. } => {
+                // Trigger a refresh of field defs — re-list from current scope
+                // (the UI will need to re-send ListFieldDefs; handled by the panel code)
+            }
+
             _ => {}
         }
 
@@ -531,6 +578,7 @@ fn tokens_to_entries(tokens: &[fe_runtime::messages::ApiTokenInfo]) -> Vec<crate
         created_at: t.created_at.clone(),
         expires_at: t.expires_at.clone(),
         revoked: t.revoked,
+        sub: t.sub.clone(),
     }).collect()
 }
 
@@ -569,6 +617,8 @@ fn respawn_on_petal_change(
     spawned: Query<(Entity, &SpawnedNodeMarker)>,
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if !*initialized {
         *last = nav.active_petal_id.clone();
@@ -615,20 +665,31 @@ fn respawn_on_petal_change(
                         continue;
                     }
                     for node in &petal.nodes {
-                        let Some(ref ap) = node.asset_path else { continue };
                         // Skip if already spawned and being kept (petal didn't fully change).
                         if kept_node_ids.contains(node.id.as_str()) {
                             continue;
                         }
-                        spawn_node_entity(
-                            &mut commands,
-                            &asset_server,
-                            &node.id,
-                            pid,
-                            &node.name,
-                            node.position,
-                            ap,
-                        );
+                        if let Some(ref ap) = node.asset_path {
+                            spawn_node_entity(
+                                &mut commands,
+                                &asset_server,
+                                &node.id,
+                                pid,
+                                &node.name,
+                                node.position,
+                                ap,
+                            );
+                        } else {
+                            spawn_fallback_sign(
+                                &mut commands,
+                                &mut meshes,
+                                &mut materials,
+                                &node.id,
+                                pid,
+                                &node.name,
+                                node.position,
+                            );
+                        }
                     }
                 }
             }
@@ -665,6 +726,51 @@ fn spawn_node_entity(
         .id();
     bevy::log::debug!(
         "Spawned '{}' entity={:?} (petal={})", name, entity, petal_id
+    );
+}
+
+/// Marker component for fallback sign entities (nodes without geometry).
+#[derive(Component, Debug)]
+pub struct FallbackSign;
+
+/// Spawn a simple vertical plane (sign) for nodes that lack a scene asset.
+/// The sign is a thin cuboid standing upright with the node name visible
+/// via the `Name` component (Bevy inspector / gizmo overlays show it).
+fn spawn_fallback_sign(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    node_id: &str,
+    petal_id: &str,
+    name: &str,
+    position: [f32; 3],
+) {
+    // A thin vertical cuboid: 0.8 wide, 0.6 tall, 0.02 deep — like a placard.
+    let mesh = meshes.add(Cuboid::new(0.8, 0.6, 0.02));
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.3, 0.35, 0.5, 0.9),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    // Position the sign slightly above the node's Y so it hovers at eye level.
+    let sign_y = position[1] + 0.5;
+    let entity = commands
+        .spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::from_xyz(position[0], sign_y, position[2]),
+            Name::new(format!("[{}]", name)),
+            SpawnedNodeMarker {
+                node_id: node_id.to_string(),
+                petal_id: petal_id.to_string(),
+            },
+            FallbackSign,
+        ))
+        .id();
+    bevy::log::debug!(
+        "Spawned fallback sign '{}' entity={:?} (petal={})",
+        name, entity, petal_id
     );
 }
 

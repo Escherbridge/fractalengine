@@ -16,6 +16,8 @@ use crate::dialogs::{
     render_gltf_import_dialog,
     render_join_dialog, render_node_options_dialog, render_peer_debug_panel,
 };
+use crate::hexon_manager::render_hexon_manager;
+use crate::petal_manifest::render_petal_manifest;
 use crate::viewport::viewport_overlay;
 
 // ---------------------------------------------------------------------------
@@ -41,7 +43,7 @@ pub fn gardener_console(
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
 ) -> egui::Rect {
-    top_toolbar(ctx, sidebar, tool, node_mgr);
+    top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr);
     status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
     left_sidebar(
         ctx,
@@ -90,6 +92,8 @@ pub fn gardener_console(
     render_peer_debug_panel(ctx, ui_mgr, sync_status);
     render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx);
     render_entity_settings_dialog(ctx, ui_mgr, db_tx);
+    render_hexon_manager(ctx, ui_mgr);
+    render_petal_manifest(ctx, ui_mgr);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);
@@ -130,6 +134,7 @@ fn top_toolbar(
     sidebar: &mut SidebarState,
     tool: &mut ToolState,
     node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
 ) {
     egui::TopBottomPanel::top("toolbar")
         .exact_height(40.0)
@@ -191,6 +196,28 @@ fn top_toolbar(
                             .color(theme::TEXT_DIM)
                             .small(),
                     );
+
+                    if ui
+                        .add(egui::Button::new("\u{1F4E6} Hexons").fill(theme::BG_BUTTON))
+                        .on_hover_text("Manage terrain tilesets")
+                        .clicked()
+                    {
+                        ui_mgr.open_dialog(ActiveDialog::HexonManager {
+                            installed_tilesets: Vec::new(),
+                            available_tilesets: Vec::new(),
+                            download_progress: std::collections::HashMap::new(),
+                            filter_text: String::new(),
+                            active_tab: crate::plugin::HexonManagerTab::Installed,
+                            storage_info: crate::plugin::StorageInfoDto {
+                                base_dir: String::new(),
+                                total_bytes: 0,
+                                count: 0,
+                            },
+                            loading: true,
+                            pending_remove: None,
+                        });
+                        ui_mgr.push_action(UiAction::HexonRefreshList);
+                    }
                 });
             });
         });
@@ -527,8 +554,22 @@ fn render_petals(
             .default_open(true)
             .show(ui, |ui| {
                 render_nodes(ui, &mut petals[pi].nodes, camera_focus, node_mgr, ui_mgr, is_active);
-                // [+] Add Node inside the petal collapse
-                add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, ui_mgr);
+                ui.horizontal(|ui| {
+                    // [+] Add Node inside the petal collapse
+                    add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, ui_mgr);
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new("Manifest").small(),
+                        ).fill(theme::BG_BUTTON).small())
+                        .on_hover_text("Edit petal hexon manifest")
+                        .clicked()
+                    {
+                        ui_mgr.push_action(UiAction::PetalManifestOpen {
+                            petal_id: petal_id.clone(),
+                            petal_name: petal_name.clone(),
+                        });
+                    }
+                });
             });
 
         if resp.header_response.clicked() {
@@ -777,6 +818,7 @@ fn right_inspector(
                 for (tab, label) in [
                     (InspectorTab::Properties, "Properties"),
                     (InspectorTab::ApiAccess, "API Access"),
+                    (InspectorTab::Query, "Query"),
                 ] {
                     let active = inspector.active_tab == tab;
                     let btn = egui::Button::new(
@@ -825,10 +867,18 @@ fn right_inspector(
                             inspector_transform_section(ui, inspector);
                             ui.add_space(2.0);
                             inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
+                            ui.add_space(2.0);
+                            inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
+                            ui.add_space(2.0);
+                            inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav);
                         }
                         InspectorTab::ApiAccess => {
                             ui.add_space(4.0);
                             inspector_api_access_section(ui, inspector, node_mgr, db_tx, local_role, ui_mgr);
+                        }
+                        InspectorTab::Query => {
+                            ui.add_space(4.0);
+                            inspector_query_section(ui, inspector, nav, ui_mgr);
                         }
                     }
                 });
@@ -1345,7 +1395,7 @@ fn inspector_api_access_section(
                     );
                     ui.add_space(2.0);
 
-                    let mut revoke_jti: Option<String> = None;
+                    let mut revoke_jti: Option<(String, String)> = None;
                     for (i, tok) in inspector.api_tokens.iter().enumerate() {
                         let row_bg = if i % 2 == 0 {
                             theme::BG_PEER_ROW_EVEN
@@ -1383,7 +1433,7 @@ fn inspector_api_access_section(
                                                 )
                                                 .clicked()
                                             {
-                                                revoke_jti = Some(tok.jti.clone());
+                                                revoke_jti = Some((tok.jti.clone(), tok.sub.clone()));
                                             }
                                         },
                                     );
@@ -1396,8 +1446,8 @@ fn inspector_api_access_section(
                             });
                         ui.add_space(1.0);
                     }
-                    if let Some(jti) = revoke_jti {
-                        db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
+                    if let Some((jti, sub)) = revoke_jti.take() {
+                        db_tx.send(DbCommand::RevokeApiToken { jti, sub }).ok();
                     }
                 }
 
@@ -1453,12 +1503,475 @@ fn send_scoped_token_list(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Query tab
+// ---------------------------------------------------------------------------
+
+/// Inspector Query tab: a text area for submitting SurrealQL SELECT queries.
+/// Results are displayed below as formatted JSON. The query is scoped to the
+/// current navigation context (the petal/fractal/verse the user has navigated to).
+fn inspector_query_section(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    nav: &NavigationManager,
+    ui_mgr: &mut UiManager,
+) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.set_max_width(ui.available_width());
+
+            ui.label(
+                egui::RichText::new("SurrealQL Query")
+                    .strong()
+                    .color(theme::TEXT_SECTION),
+            );
+            ui.add_space(4.0);
+
+            // Show current scope context
+            let scope = build_nav_scope(nav);
+            if !scope.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Scope:").small().color(theme::TEXT_DIM));
+                    ui.label(
+                        egui::RichText::new(&scope)
+                            .small()
+                            .monospace()
+                            .color(theme::TEXT_SECTION),
+                    );
+                });
+                ui.add_space(4.0);
+            }
+
+            ui.label(egui::RichText::new("Only SELECT and RETURN statements are allowed.").small().color(theme::TEXT_MUTED));
+            ui.add_space(4.0);
+
+            // SQL text area
+            let response = ui.add(
+                egui::TextEdit::multiline(&mut inspector.query_sql_buf)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_rows(6)
+                    .desired_width(ui.available_width())
+                    .hint_text("SELECT * FROM node LIMIT 10"),
+            );
+
+            ui.add_space(6.0);
+
+            // Submit button
+            let can_submit = !inspector.query_sql_buf.trim().is_empty() && !inspector.query_loading;
+            ui.horizontal(|ui| {
+                let btn = egui::Button::new(if inspector.query_loading { "Running..." } else { "Run Query" })
+                    .fill(if can_submit { theme::BG_SAVE } else { theme::BG_BUTTON });
+                let submit_clicked = ui.add_enabled(can_submit, btn).clicked();
+                let ctrl_enter = response.has_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);
+
+                if (submit_clicked || ctrl_enter) && can_submit {
+                    inspector.query_loading = true;
+                    inspector.query_result = Some("Submitting...".to_string());
+                    ui_mgr.push_action(UiAction::SubmitQuery {
+                        sql: inspector.query_sql_buf.clone(),
+                        scope,
+                    });
+                }
+
+                if inspector.query_result.is_some() {
+                    if ui.add(egui::Button::new("Clear").fill(theme::BG_BUTTON)).clicked() {
+                        inspector.query_result = None;
+                    }
+                }
+            });
+
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Ctrl+Enter to submit").small().color(theme::TEXT_DIM));
+
+            // Results display
+            if let Some(ref result) = inspector.query_result {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Result").small().strong().color(theme::TEXT_SECTION));
+                ui.add_space(2.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut result.as_str())
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(ui.available_width())
+                                .interactive(false),
+                        );
+                    });
+            }
+        });
+}
+
 // viewport_overlay and related functions are defined in crate::viewport
 
 
 // render_context_menu, render_create_dialog, apply_create, render_gltf_import_dialog
 // are defined in crate::dialogs
 
+
+// ---------------------------------------------------------------------------
+// Property type options for ComboBox dropdowns
+// ---------------------------------------------------------------------------
+
+const PROPERTY_TYPES: &[&str] = &[
+    "string", "number", "bool", "datetime",
+    "geometry_point", "geometry_polygon",
+    "blob_ref", "hexon_ref", "address", "array", "object",
+];
+
+// ---------------------------------------------------------------------------
+// Custom Properties section (key-value editor)
+// ---------------------------------------------------------------------------
+
+fn inspector_properties_section(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    node_mgr: &crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
+) {
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Custom Properties")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    )
+    .default_open(true)
+    .show(ui, |ui| {
+        ui.add_space(4.0);
+
+        let node_id = match node_mgr.selected.as_ref() {
+            Some(sel) => sel.node_id.clone(),
+            None => {
+                ui.label(
+                    egui::RichText::new("No node selected")
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                );
+                return;
+            }
+        };
+
+        if inspector.node_properties_loading {
+            ui.label(
+                egui::RichText::new("Loading...")
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
+            return;
+        }
+
+        // Display existing properties
+        let mut delete_key: Option<String> = None;
+        if let Some(obj) = inspector.node_properties.as_object() {
+            if obj.is_empty() {
+                ui.label(
+                    egui::RichText::new("No custom properties")
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                );
+            } else {
+                egui::Grid::new("node_props_grid")
+                    .num_columns(3)
+                    .spacing([6.0, 3.0])
+                    .show(ui, |ui| {
+                        for (key, value) in obj {
+                            ui.label(
+                                egui::RichText::new(key)
+                                    .small()
+                                    .strong()
+                                    .color(theme::TEXT_DIM),
+                            );
+                            let val_str = match value {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            };
+                            ui.label(
+                                egui::RichText::new(&val_str)
+                                    .small()
+                                    .monospace()
+                                    .color(theme::TEXT_BRIGHT),
+                            );
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("\u{2715}").small(),
+                                    )
+                                    .fill(theme::BG_DANGER)
+                                    .small(),
+                                )
+                                .on_hover_text("Delete property")
+                                .clicked()
+                            {
+                                delete_key = Some(key.clone());
+                            }
+                            ui.end_row();
+                        }
+                    });
+            }
+        }
+
+        if let Some(key) = delete_key {
+            ui_mgr.push_action(UiAction::DeleteNodeProperty {
+                node_id: node_id.clone(),
+                key,
+            });
+        }
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        // Add property row
+        ui.label(
+            egui::RichText::new("Add Property")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add_space(2.0);
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut inspector.prop_add_key_buf)
+                    .hint_text("key")
+                    .desired_width(60.0),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut inspector.prop_add_value_buf)
+                    .hint_text("value")
+                    .desired_width(60.0),
+            );
+            egui::ComboBox::from_id_salt("prop_type_combo")
+                .selected_text(&inspector.prop_add_type_buf)
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for &t in PROPERTY_TYPES {
+                        ui.selectable_value(&mut inspector.prop_add_type_buf, t.to_string(), t);
+                    }
+                });
+        });
+
+        ui.add_space(4.0);
+
+        let can_add = !inspector.prop_add_key_buf.trim().is_empty()
+            && !inspector.prop_add_value_buf.trim().is_empty();
+
+        let btn = egui::Button::new("Add")
+            .fill(if can_add { theme::BG_SAVE } else { theme::BG_BUTTON })
+            .min_size(egui::vec2(ui.available_width(), 24.0));
+
+        if ui.add_enabled(can_add, btn).clicked() {
+            let key = inspector.prop_add_key_buf.trim().to_string();
+            let raw = inspector.prop_add_value_buf.trim().to_string();
+            let value = match inspector.prop_add_type_buf.as_str() {
+                "number" => raw
+                    .parse::<f64>()
+                    .map(|n| serde_json::Value::from(n))
+                    .unwrap_or_else(|_| serde_json::Value::String(raw.clone())),
+                "bool" => match raw.to_lowercase().as_str() {
+                    "true" | "1" | "yes" => serde_json::Value::Bool(true),
+                    "false" | "0" | "no" => serde_json::Value::Bool(false),
+                    _ => serde_json::Value::String(raw.clone()),
+                },
+                _ => serde_json::Value::String(raw.clone()),
+            };
+            ui_mgr.push_action(UiAction::SetNodeProperty {
+                node_id: node_id.clone(),
+                key,
+                value,
+            });
+            inspector.prop_add_key_buf.clear();
+            inspector.prop_add_value_buf.clear();
+        }
+
+        ui.add_space(4.0);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Property Schema section (field definition management)
+// ---------------------------------------------------------------------------
+
+fn inspector_schema_section(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    node_mgr: &crate::node_manager::NodeManager,
+    local_role: &LocalUserRole,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+    nav: &NavigationManager,
+) {
+    if !local_role.can_manage() {
+        return;
+    }
+
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Property Schema")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    )
+    .default_open(false)
+    .show(ui, |ui| {
+        ui.add_space(4.0);
+
+        if node_mgr.selected.is_none() {
+            ui.label(
+                egui::RichText::new("No node selected")
+                    .small()
+                    .color(theme::TEXT_MUTED),
+            );
+            return;
+        }
+
+        if inspector.field_defs_loading {
+            ui.label(
+                egui::RichText::new("Loading...")
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
+            return;
+        }
+
+        // Display existing field definitions
+        let mut delete_idx: Option<usize> = None;
+        if inspector.field_defs.is_empty() {
+            ui.label(
+                egui::RichText::new("No field definitions")
+                    .small()
+                    .color(theme::TEXT_MUTED),
+            );
+        } else {
+            egui::Grid::new("field_defs_grid")
+                .num_columns(4)
+                .spacing([6.0, 3.0])
+                .show(ui, |ui| {
+                    // Header
+                    ui.label(egui::RichText::new("Key").small().strong().color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new("Type").small().strong().color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new("Req").small().strong().color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new("").small());
+                    ui.end_row();
+
+                    for (idx, fd) in inspector.field_defs.iter().enumerate() {
+                        ui.label(
+                            egui::RichText::new(&fd.key)
+                                .small()
+                                .color(theme::TEXT_BRIGHT),
+                        );
+                        ui.label(
+                            egui::RichText::new(&fd.value_type)
+                                .small()
+                                .monospace()
+                                .color(theme::TEXT_AXIS),
+                        );
+                        let req_label = if fd.required { "\u{2713}" } else { "\u{2014}" };
+                        ui.label(egui::RichText::new(req_label).small().color(theme::TEXT_DIM));
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("\u{2715}").small(),
+                                )
+                                .fill(theme::BG_DANGER)
+                                .small(),
+                            )
+                            .on_hover_text(format!("Delete field def '{}'", fd.key))
+                            .clicked()
+                        {
+                            delete_idx = Some(idx);
+                        }
+                        ui.end_row();
+                    }
+                });
+        }
+
+        if let Some(idx) = delete_idx {
+            let fd = inspector.field_defs.remove(idx);
+            db_tx.send(DbCommand::DeleteFieldDef {
+                field_def_id: fd.field_def_id,
+            }).ok();
+        }
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        // Add field definition row
+        ui.label(
+            egui::RichText::new("Add Field Definition")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add_space(2.0);
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut inspector.field_def_add_key_buf)
+                    .hint_text("key")
+                    .desired_width(60.0),
+            );
+            egui::ComboBox::from_id_salt("field_def_type_combo")
+                .selected_text(&inspector.field_def_add_type_buf)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for &t in PROPERTY_TYPES {
+                        ui.selectable_value(
+                            &mut inspector.field_def_add_type_buf,
+                            t.to_string(),
+                            t,
+                        );
+                    }
+                });
+            ui.checkbox(&mut inspector.field_def_add_required, "Req");
+        });
+
+        ui.add_space(2.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut inspector.field_def_add_desc_buf)
+                .hint_text("description (optional)")
+                .desired_width(f32::INFINITY),
+        );
+
+        ui.add_space(4.0);
+
+        let can_add = !inspector.field_def_add_key_buf.trim().is_empty();
+        let btn = egui::Button::new("Add Field")
+            .fill(if can_add { theme::BG_SAVE } else { theme::BG_BUTTON })
+            .min_size(egui::vec2(ui.available_width(), 24.0));
+
+        if ui.add_enabled(can_add, btn).clicked() {
+            let key = inspector.field_def_add_key_buf.trim().to_string();
+            let value_type = inspector.field_def_add_type_buf.clone();
+            let scope = build_nav_scope(nav);
+
+            // Send DbCommand to persist
+            db_tx.send(DbCommand::CreateFieldDef {
+                scope: scope.clone(),
+                entity_type: "node".to_string(),
+                key: key.clone(),
+                value_type: value_type.clone(),
+                default_val: None,
+            }).ok();
+
+            // Add locally for immediate feedback
+            let entry = crate::plugin::FieldDefEntry {
+                field_def_id: format!("pending-{}", inspector.field_defs.len()),
+                key,
+                value_type,
+                description: inspector.field_def_add_desc_buf.trim().to_string(),
+                required: inspector.field_def_add_required,
+                default_val: None,
+            };
+            inspector.field_defs.push(entry);
+            inspector.field_def_add_key_buf.clear();
+            inspector.field_def_add_desc_buf.clear();
+            inspector.field_def_add_required = false;
+        }
+
+        ui.add_space(4.0);
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Tool enum

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="FractalEngine Test"
+     xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Test Trail</name>
+    <desc>A sample GPX for unit tests</desc>
+  </metadata>
+  <wpt lat="47.6062" lon="-122.3321">
+    <ele>56.0</ele>
+    <name>Space Needle</name>
+    <desc>Landmark in Seattle</desc>
+    <sym>Flag</sym>
+  </wpt>
+  <wpt lat="47.6205" lon="-122.3493">
+    <ele>10.0</ele>
+    <name>Kerry Park</name>
+  </wpt>
+  <trk>
+    <name>Morning Run</name>
+    <trkseg>
+      <trkpt lat="47.6062" lon="-122.3321">
+        <ele>56.0</ele>
+        <time>2026-01-15T08:00:00Z</time>
+      </trkpt>
+      <trkpt lat="47.6080" lon="-122.3350">
+        <ele>62.0</ele>
+        <time>2026-01-15T08:05:00Z</time>
+      </trkpt>
+      <trkpt lat="47.6100" lon="-122.3380">
+        <ele>58.0</ele>
+        <time>2026-01-15T08:10:00Z</time>
+      </trkpt>
+      <trkpt lat="47.6120" lon="-122.3400">
+        <ele>70.0</ele>
+        <time>2026-01-15T08:15:00Z</time>
+      </trkpt>
+      <trkpt lat="47.6150" lon="-122.3420">
+        <ele>65.0</ele>
+        <time>2026-01-15T08:20:00Z</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>

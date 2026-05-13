@@ -104,6 +104,7 @@ fn drain_network_events(
     receiver: Res<NetworkEventReceiver>,
     mut writer: MessageWriter<NetworkEvent>,
 ) {
+    let _span = tracing::debug_span!("drain_network_events").entered();
     if let Ok(rx) = receiver.0.lock() {
         while let Ok(evt) = rx.try_recv() {
             writer.write(evt);
@@ -112,6 +113,7 @@ fn drain_network_events(
 }
 
 fn drain_db_results(receiver: Res<DbResultReceiver>, mut writer: MessageWriter<DbResult>) {
+    let _span = tracing::debug_span!("drain_db_results").entered();
     if let Ok(rx) = receiver.0.lock() {
         while let Ok(result) = rx.try_recv() {
             writer.write(result);
@@ -202,6 +204,7 @@ pub fn drain_api_commands(
     db_tx: Res<DbCommandSender>,
     mut pending: ResMut<PendingApiRequests>,
 ) {
+    let _span = tracing::debug_span!("drain_api_commands").entered();
     let Some(api_rx) = api_rx else { return };
     let Ok(rx) = api_rx.0.lock() else { return };
     // Drain up to 64 commands per frame to avoid stalling the main loop.

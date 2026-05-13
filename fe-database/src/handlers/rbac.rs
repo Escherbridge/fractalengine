@@ -1,7 +1,10 @@
+use tracing::instrument;
+
 use crate::repo::Db;
 use crate::RoleLevel;
 
 /// Resolve effective roles for a list of peers at a scope.
+#[instrument(skip(db))]
 pub(crate) async fn resolve_roles_for_peers_handler(
     db: &Db,
     scope: &str,
@@ -21,6 +24,7 @@ pub(crate) async fn resolve_roles_for_peers_handler(
 }
 
 /// Assign a role to a peer (privilege-checked against the actor's own role).
+#[instrument(skip(db))]
 pub(crate) async fn assign_role_handler(
     db: &Db,
     local_did: &str,
@@ -33,6 +37,7 @@ pub(crate) async fn assign_role_handler(
 }
 
 /// Revoke a peer's explicit role at a scope (privilege-checked).
+#[instrument(skip(db))]
 pub(crate) async fn revoke_role_handler(
     db: &Db,
     local_did: &str,
@@ -43,6 +48,7 @@ pub(crate) async fn revoke_role_handler(
 }
 
 /// Resolve the local user's effective role at a scope.
+#[instrument(skip(db))]
 pub(crate) async fn resolve_local_role_handler(
     db: &Db,
     local_did: &str,
@@ -53,6 +59,7 @@ pub(crate) async fn resolve_local_role_handler(
 }
 
 /// Generate a scoped invite link with a specific role and expiry.
+#[instrument(skip(keypair))]
 pub(crate) async fn generate_scoped_invite_handler(
     keypair: &fe_identity::NodeKeypair,
     local_did: &str,

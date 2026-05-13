@@ -1,3 +1,8 @@
+use tracing::instrument;
+
+use fe_query::{Filter, InsertBuilder, QueryBuilder, UpdateBuilder};
+
+use crate::query_helpers::exec_query;
 use crate::repo::{Db, Repo};
 use crate::schema::{Asset, Fractal, Role, Verse, VerseMemberRow};
 use crate::{hash_to_hex, BlobStoreHandle};
@@ -6,6 +11,7 @@ use crate::types::NodeId;
 /// Returns `(asset_id_for_name)` map seeded from files in `assets/models/`.
 /// Each GLB is written to the blob store and its BLAKE3 content hash is
 /// recorded in the `asset` table.
+#[instrument(skip(db, blob_store))]
 pub(crate) async fn seed_assets(
     db: &Db,
     blob_store: &BlobStoreHandle,
@@ -66,15 +72,20 @@ pub(crate) async fn seed_assets(
     Ok(id_map)
 }
 
+#[instrument(skip(db, blob_store))]
 pub async fn seed_default_data(
     db: &Db,
     blob_store: &BlobStoreHandle,
     local_did: &str,
 ) -> anyhow::Result<(String, Vec<String>)> {
     // Idempotency: skip if genesis verse already exists.
-    let mut check: surrealdb::IndexedResults = db
-        .query("SELECT * FROM verse WHERE name = 'Genesis Verse' LIMIT 1")
-        .await?;
+    let genesis_q = QueryBuilder::new()
+        .select(&["*"])
+        .from("verse")
+        .filter(Filter::eq("name", "Genesis Verse"))
+        .limit(1)
+        .build();
+    let mut check = exec_query(db, &genesis_q).await?;
     let existing: Vec<serde_json::Value> = check.take(0)?;
     if !existing.is_empty() {
         tracing::info!("Seed already present — skipping");
@@ -150,11 +161,15 @@ pub async fn seed_default_data(
     let room_names = vec!["Lobby", "Workshop", "Gallery"];
 
     let petal_id = crate::queries::create_petal(db, petal_name, &node_id, &node_id).await?;
-    db.query("UPDATE petal SET fractal_id = $fid, bounds = <geometry<polygon>> { type: 'Polygon', coordinates: [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]] } WHERE petal_id = $pid")
-        .bind(("fid", fractal_id.clone()))
-        .bind(("pid", petal_id.0.to_string()))
-        .await?
-        .check()
+    let q = UpdateBuilder::update("petal")
+        .set("fractal_id", fractal_id.as_str())
+        .set("bounds", serde_json::json!({
+            "type": "Polygon",
+            "coordinates": [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
+        }))
+        .where_clause(Filter::eq("petal_id", petal_id.0.to_string()))
+        .build();
+    exec_query(db, &q).await
         .map_err(|e| anyhow::anyhow!("seed UPDATE petal fractal_id failed: {e}"))?;
     tracing::info!("Seeded petal: {petal_name} ({})", petal_id.0);
 
@@ -186,32 +201,25 @@ pub async fn seed_default_data(
     for (name, asset_id, xz, elevation, interactive) in node_defs {
         let node_record_id = ulid::Ulid::new().to_string();
         let aid: Option<String> = asset_id.map(|s| s.to_string());
-        db.query(
-            "CREATE node CONTENT {
-                node_id: $node_id,
-                petal_id: $petal_id,
-                display_name: $name,
-                asset_id: $asset_id,
-                position: <geometry<point>> [$x, $z],
-                elevation: $elev,
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0, 1.0, 1.0],
-                interactive: $interactive,
-                created_at: $now,
-            }",
-        )
-        .bind(("node_id", node_record_id))
-        .bind(("petal_id", petal_id.0.to_string()))
-        .bind(("name", name.to_string()))
-        .bind(("asset_id", aid))
-        .bind(("x", xz[0]))
-        .bind(("z", xz[1]))
-        .bind(("elev", *elevation))
-        .bind(("interactive", *interactive))
-        .bind(("now", now.clone()))
-        .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("seed CREATE node '{name}' failed: {e}"))?;
+        let q = InsertBuilder::insert_into("node")
+            .values(serde_json::json!({
+                "node_id": node_record_id,
+                "petal_id": petal_id.0.to_string(),
+                "display_name": name,
+                "asset_id": aid,
+                "position": {
+                    "type": "Point",
+                    "coordinates": [xz[0], xz[1]]
+                },
+                "elevation": elevation,
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "scale": [1.0, 1.0, 1.0],
+                "interactive": interactive,
+                "created_at": now,
+            }))
+            .build();
+        exec_query(db, &q).await
+            .map_err(|e| anyhow::anyhow!("seed CREATE node '{name}' failed: {e}"))?;
         tracing::info!("Seeded node: {name} at XZ{xz:?} elev={elevation}");
     }
 

@@ -1091,7 +1091,7 @@ pub fn render_entity_settings_dialog(
                     } else if api_tokens.is_empty() {
                         ui.label(egui::RichText::new("No active API tokens.").color(theme::TEXT_MUTED).italics());
                     } else {
-                        let mut revoke_jti: Option<String> = None;
+                        let mut revoke_jti: Option<(String, String)> = None;
                         for (i, tok) in api_tokens.iter().enumerate() {
                             let row_bg = if i % 2 == 0 { theme::BG_PEER_ROW_EVEN } else { theme::BG_PEER_ROW_ODD };
                             egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
@@ -1106,15 +1106,15 @@ pub fn render_entity_settings_dialog(
 
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).clicked() {
-                                            revoke_jti = Some(tok.jti.clone());
+                                            revoke_jti = Some((tok.jti.clone(), tok.sub.clone()));
                                         }
                                         ui.label(egui::RichText::new(format!("exp: {}", &tok.expires_at[..10.min(tok.expires_at.len())])).small().color(theme::TEXT_MUTED));
                                     });
                                 });
                             });
                         }
-                        if let Some(jti) = revoke_jti {
-                            db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
+                        if let Some((jti, sub)) = revoke_jti.take() {
+                            db_tx.send(DbCommand::RevokeApiToken { jti, sub }).ok();
                             // Refresh is triggered by DbResult::ApiTokenRevoked handler
                         }
                     }
@@ -1143,7 +1143,7 @@ pub fn render_entity_settings_dialog(
                     } else {
                         ui.label(egui::RichText::new(format!("{} active token(s)", scoped_api_tokens.len())).small().color(theme::TEXT_MUTED));
                         ui.add_space(4.0);
-                        let mut revoke_scoped_jti: Option<String> = None;
+                        let mut revoke_scoped_jti: Option<(String, String)> = None;
                         for (i, tok) in scoped_api_tokens.iter().enumerate() {
                             let row_bg = if i % 2 == 0 { theme::BG_PEER_ROW_EVEN } else { theme::BG_PEER_ROW_ODD };
                             egui::Frame::NONE.fill(row_bg).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
@@ -1158,7 +1158,7 @@ pub fn render_entity_settings_dialog(
 
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if ui.add(egui::Button::new("Revoke").fill(theme::BG_DANGER).small()).clicked() {
-                                            revoke_scoped_jti = Some(tok.jti.clone());
+                                            revoke_scoped_jti = Some((tok.jti.clone(), tok.sub.clone()));
                                         }
                                         ui.label(egui::RichText::new(format!("exp: {}", &tok.expires_at[..10.min(tok.expires_at.len())])).small().color(theme::TEXT_MUTED));
                                         if let Some(ref lbl) = tok.label {
@@ -1168,8 +1168,8 @@ pub fn render_entity_settings_dialog(
                                 });
                             });
                         }
-                        if let Some(jti) = revoke_scoped_jti {
-                            db_tx.send(DbCommand::RevokeApiToken { jti }).ok();
+                        if let Some((jti, sub)) = revoke_scoped_jti.take() {
+                            db_tx.send(DbCommand::RevokeApiToken { jti, sub }).ok();
                             // Refresh is triggered by DbResult::ApiTokenRevoked handler
                         }
                     }
