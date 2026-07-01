@@ -1,0 +1,35 @@
+{
+  "id": "tauri_host_shell_spike_20260630",
+  "name": "Tauri-Host Shell SPIKE — Exploratory: Tauri as Primary Window + Bevy Render-into-Surface",
+  "status": "pending",
+  "priority": "P2",
+  "created": "2026-06-30",
+  "depends_on": [],
+  "blocks": [],
+  "phases": [
+    {
+      "id": 1,
+      "name": "Reference Implementation Analysis",
+      "status": "pending",
+      "tasks": 4
+    },
+    {
+      "id": 2,
+      "name": "bevy 0.18 API Reconciliation",
+      "status": "pending",
+      "tasks": 3
+    },
+    {
+      "id": 3,
+      "name": "Proof-of-Concept Implementation",
+      "status": "pending",
+      "tasks": 4
+    },
+    {
+      "id": 4,
+      "name": "Exit Report + Decision",
+      "status": "pending",
+      "tasks": 2
+    }
+  ]
+}
