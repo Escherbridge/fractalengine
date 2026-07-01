@@ -1,0 +1,29 @@
+{
+  "id": "tauri_webview_backend_20260630",
+  "name": "Tauri WebView Backend — Robust Tauri Browser for fe-webview",
+  "status": "pending",
+  "priority": "P0",
+  "created": "2026-06-30",
+  "depends_on": [],
+  "blocks": ["tauri_ipc_asset_bridge_20260630", "tauri_backend_cutover_20260630"],
+  "phases": [
+    {
+      "id": 1,
+      "name": "Tauri Backend Integration",
+      "status": "pending",
+      "tasks": 4
+    },
+    {
+      "id": 2,
+      "name": "Feature Flags + Default Selection",
+      "status": "pending",
+      "tasks": 3
+    },
+    {
+      "id": 3,
+      "name": "PetalPortal Parity",
+      "status": "pending",
+      "tasks": 3
+    }
+  ]
+}

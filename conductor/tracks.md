@@ -350,3 +350,49 @@ _Priority: MEDIUM (developer experience)_
 _Link: [./tracks/code_review_20260430_db_graceful/](./tracks/code_review_20260430_db_graceful/)_
 _Scope: `fe-database` + `fractalengine` — replace `.expect("SurrealDB init")` with `Result` | Blocks: none_
 _Priority: MEDIUM (production robustness)_
+
+---
+
+## Tauri WebView Migration (2026-06-30) — Browser-First Path
+
+### Track 1: Tauri WebView Backend — Robust Tauri Browser for fe-webview
+
+_Link: [./tracks/tauri_webview_backend_20260630/](./tracks/tauri_webview_backend_20260630/)_
+_Depends on: none | Blocks: Tauri IPC/Asset Bridge (track 2), Tauri Backend Cutover (track 3)_
+_Scope: fe-webview browser backend — add Tauri-powered webview to replace raw wry FFI. Bevy STAYS host, bevy_egui REMAINS leading UI. Tauri integrates via commands, not replaces._
+_Priority: P0 (primary deliverable: robust webview)_
+
+### Track 2: Tauri IPC/Asset Bridge — Shared Node Structure + egui-Led Event Bridge
+
+_Link: [./tracks/tauri_ipc_asset_bridge_20260630/](./tracks/tauri_ipc_asset_bridge_20260630/)_
+_Depends on: Tauri WebView Backend (track 1) | Blocks: Tauri Backend Cutover (track 3)_
+_Scope: IPC via `#[tauri::command]` + JS `invoke()`, shared "node" data structure bridging Tauri↔Bevy, custom `asset://` protocol. egui LEADS — Tauri integrates via commands._
+_Priority: P1 (interop backbone, the seam Pear will plug into)_
+
+### Track 3: Tauri Backend Cutover — Make Tauri Default Browser, Retire Raw wry
+
+_Link: [./tracks/tauri_backend_cutover_20260630/](./tracks/tauri_backend_cutover_20260630/)_
+_Depends on: Tauri IPC/Asset Bridge (track 2) | Blocks: none_
+_Scope: Make `backend-tauri` default for fe-webview (BROWSER backend only, NOT app shell). Update docs (AGENTS.md, BUILDING.md, tech-stack.md). Bevy remains host._
+_Priority: P1 (completes browser migration)_
+
+---
+
+## SPIKE / Research Tracks
+
+### Track 4: Tauri-Host Shell SPIKE — Exploratory: Full Shell Inversion
+
+_Link: [./tracks/tauri_host_shell_spike_20260630/](./tracks/tauri_host_shell_spike_20260630/)_
+_Depends on: none | Blocks: none (SPIKE, not on critical path)_
+_Scope: SPIKE — time-boxed exploration of full architecture inversion: Tauri owns window/event-loop, Bevy renders into Tauri surface (REPLACES bevy_winit). Reference: sunxfancy/BevyTauriExample. Tests: input bridging for picking, bevy_egui compatibility with custom renderer, bevy 0.18 API reconciliation._
+_Priority: P2 (exploratory, informs future decisions)_
+_Status: SPIKE_
+
+### Track 5: Pear Runtime P2P Layer SPIKE — Research: JS-Native P2P
+
+_Link: [./tracks/pears_p2p_layer_spike_20260630/](./tracks/pears_p2p_layer_spike_20260630/)_
+_Depends on: none | Blocks: none (SPIKE, research only)_
+_Scope: SPIKE — research Pear Runtime (pears.com, Holepunch) for P2P layer. Core tension: existing mycelium is Rust-native (libp2p + iroh); Pear is JS-native (Hypercore/Hyperswarm). Would run inside Tauri webview, bridge via shared node structure (track 2). Options: augment mycelium, replace, or hybrid._
+_Priority: P2 (research, relates to tracks 1 & 2)_
+_Status: SPIKE_
+

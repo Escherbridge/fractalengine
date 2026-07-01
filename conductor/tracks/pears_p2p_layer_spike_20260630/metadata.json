@@ -1,0 +1,35 @@
+{
+  "id": "pears_p2p_layer_spike_20260630",
+  "name": "Pear Runtime P2P Layer SPIKE — Research: JS-Native P2P for FractalEngine",
+  "status": "pending",
+  "priority": "P2",
+  "created": "2026-06-30",
+  "depends_on": [],
+  "blocks": [],
+  "phases": [
+    {
+      "id": 1,
+      "name": "Pear Runtime Research",
+      "status": "pending",
+      "tasks": 4
+    },
+    {
+      "id": 2,
+      "name": "Architecture Analysis",
+      "status": "pending",
+      "tasks": 3
+    },
+    {
+      "id": 3,
+      "name": "Proof-of-Concept Plan",
+      "status": "pending",
+      "tasks": 3
+    },
+    {
+      "id": 4,
+      "name": "Exit Report + Recommendation",
+      "status": "pending",
+      "tasks": 2
+    }
+  ]
+}

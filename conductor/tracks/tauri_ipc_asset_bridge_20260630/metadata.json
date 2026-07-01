@@ -1,0 +1,29 @@
+{
+  "id": "tauri_ipc_asset_bridge_20260630",
+  "name": "Tauri IPC/Asset Bridge — Shared Node Structure + egui-Led Event Bridge",
+  "status": "pending",
+  "priority": "P1",
+  "created": "2026-06-30",
+  "depends_on": ["tauri_webview_backend_20260630"],
+  "blocks": ["tauri_backend_cutover_20260630"],
+  "phases": [
+    {
+      "id": 1,
+      "name": "Shared Node Data Structure",
+      "status": "pending",
+      "tasks": 4
+    },
+    {
+      "id": 2,
+      "name": "IPC Command Handlers",
+      "status": "pending",
+      "tasks": 3
+    },
+    {
+      "id": 3,
+      "name": "Event Bridge + Asset Protocol",
+      "status": "pending",
+      "tasks": 4
+    }
+  ]
+}

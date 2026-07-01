@@ -1,0 +1,29 @@
+{
+  "id": "tauri_backend_cutover_20260630",
+  "name": "Tauri Backend Cutover — Make Tauri Default Browser, Retire Raw wry",
+  "status": "pending",
+  "priority": "P1",
+  "created": "2026-06-30",
+  "depends_on": ["tauri_ipc_asset_bridge_20260630"],
+  "blocks": [],
+  "phases": [
+    {
+      "id": 1,
+      "name": "Default Backend Migration",
+      "status": "pending",
+      "tasks": 4
+    },
+    {
+      "id": 2,
+      "name": "Documentation + System Deps",
+      "status": "pending",
+      "tasks": 4
+    },
+    {
+      "id": 3,
+      "name": "Cleanup + Verification",
+      "status": "pending",
+      "tasks": 3
+    }
+  ]
+}
