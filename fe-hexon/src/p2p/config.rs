@@ -91,6 +91,10 @@ pub struct PeerCandidate {
 mod tests {
     use super::*;
 
+    /// Process-global env is shared across parallel test threads; serialize the
+    /// env-mutating tests so `from_env` reads a stable state.
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_default_config() {
         let cfg = P2pConfig::default();
@@ -102,6 +106,7 @@ mod tests {
 
     #[test]
     fn test_from_env_defaults() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         // Clear any env vars that might interfere
         env::remove_var("FE_SEED_CRATES");
         env::remove_var("FE_CRATE_HOST");
@@ -117,6 +122,7 @@ mod tests {
 
     #[test]
     fn test_from_env_overrides() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         env::set_var("FE_SEED_CRATES", "false");
         env::set_var("FE_CRATE_HOST", "true");
         env::set_var("FE_MAX_CONCURRENT_DOWNLOADS", "8");

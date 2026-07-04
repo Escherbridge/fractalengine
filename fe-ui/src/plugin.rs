@@ -986,6 +986,7 @@ fn process_ui_actions(
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     mut petal_map: ResMut<PetalMapState>,
     mut hexon_ops: ResMut<PendingHexonOps>,
+    nav: Res<crate::navigation_manager::NavigationManager>,
 ) {
     // Auto-close portal when the selected entity changes or is deselected.
     if let PortalState::Open { opened_for_entity, .. } = ui_mgr.portal {
@@ -1108,6 +1109,7 @@ fn process_ui_actions(
                 // After toggling, re-advertise to peers
                 if let Some(ref sender) = sync_sender {
                     sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
+                        verse_id: nav.active_verse_id.clone().unwrap_or_default(),
                         advertisements_json: String::new(), // refreshed by terrain layer
                     }).ok();
                 }
@@ -1157,6 +1159,7 @@ fn process_ui_actions(
                 // Re-advertise our tilesets to trigger peer exchange
                 if let Some(ref sender) = sync_sender {
                     sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
+                        verse_id: nav.active_verse_id.clone().unwrap_or_default(),
                         advertisements_json: String::new(),
                     }).ok();
                 }
