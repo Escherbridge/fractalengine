@@ -104,15 +104,28 @@ impl HexonTileSource {
     }
 
     /// Check if a coordinate falls within this tileset's bounds and zoom range.
+    ///
+    /// Uses the tile's full geographic extent (its NW corner to the NW corner of
+    /// the next tile), not just its NW-corner point — a coarse-zoom tile can serve
+    /// a region while its own NW corner lies just outside a tightly-drawn bounds box.
     pub fn covers(&self, coord: TileCoord) -> bool {
         let (min_z, max_z) = self.zoom_range();
         if coord.zoom < min_z || coord.zoom > max_z {
             return false;
         }
-        // Convert tile coord to lat/lon and check bounds
-        let (lat, lon) = coord.to_lat_lon();
+        // Tile geographic extent: NW corner of this tile → NW corner of the (x+1, y+1) tile.
+        let (nw_lat, nw_lon) = coord.to_lat_lon();
+        let (se_lat, se_lon) = TileCoord::new(coord.x + 1, coord.y + 1, coord.zoom).to_lat_lon();
+        let tile_min_lat = se_lat.min(nw_lat);
+        let tile_max_lat = se_lat.max(nw_lat);
+        let tile_min_lon = nw_lon.min(se_lon);
+        let tile_max_lon = nw_lon.max(se_lon);
         let [min_lat, min_lon, max_lat, max_lon] = self.tileset_meta.bounds;
-        lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
+        // Rectangle intersection between the tile's extent and the tileset bounds.
+        tile_min_lat <= max_lat
+            && tile_max_lat >= min_lat
+            && tile_min_lon <= max_lon
+            && tile_max_lon >= min_lon
     }
 }
 
