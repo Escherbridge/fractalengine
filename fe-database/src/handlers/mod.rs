@@ -12,6 +12,7 @@
 //! - `seed` — Default data seeding
 //! - `admin` — Database reset
 //! - `crate_registry` — Hexon crate registry install/uninstall
+//! - `petal_terrain` — Per-petal terrain config get/set
 
 pub mod admin;
 pub mod api_token;
@@ -22,6 +23,7 @@ pub mod entity_property;
 pub mod field_def;
 pub mod invite;
 pub mod node_log;
+pub mod petal_terrain;
 pub mod rbac;
 pub mod seed;
 pub mod transform;

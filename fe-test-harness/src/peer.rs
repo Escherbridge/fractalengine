@@ -560,6 +560,13 @@ impl TestPeer {
                         Ok(DbCommand::UninstallCrate { hexon_uri }) => {
                             db_result_tx.send(DbResult::CrateUninstalled { hexon_uri }).ok();
                         }
+                        // Petal terrain — test harness stub echoes the set value.
+                        Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {
+                            db_result_tx.send(DbResult::PetalTerrainLoaded { petal_id, terrain }).ok();
+                        }
+                        Ok(DbCommand::GetPetalTerrain { petal_id }) => {
+                            db_result_tx.send(DbResult::PetalTerrainLoaded { petal_id, terrain: None }).ok();
+                        }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }
                 }

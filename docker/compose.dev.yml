@@ -1,0 +1,35 @@
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.relay
+    ports:
+      - "8765:8765"
+    volumes:
+      - relay-data:/data
+    environment:
+      FE_BIND_ADDR: "0.0.0.0:8765"
+      FE_DB_PATH: "/data/fractalengine.db"
+      FE_CORS_ORIGINS: "*"
+      RUST_LOG: "info"
+    restart: unless-stopped
+
+  hexon-registry:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.hexon-registry
+    ports:
+      - "8790:8790"
+    volumes:
+      # sample-hexons/dist is produced by: cargo run -p fe-hexon --example build_sample_hexons
+      - ../sample-hexons/dist:/data/hexons
+    environment:
+      FE_REGISTRY_DIR: "/data/hexons"
+      FE_REGISTRY_BIND: "0.0.0.0:8790"
+      # FE_REGISTRY_TOKEN: "dev-token"   # uncomment to gate all /api/v1 routes
+      # FE_REGISTRY_READONLY: "true"     # uncomment to reject publishes
+      RUST_LOG: "info"
+    restart: unless-stopped
+
+volumes:
+  relay-data:

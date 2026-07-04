@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="FractalEngine Sample Hexons"
+     xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Morning Run — Lake Zurich</name>
+    <desc>A short sample run along the Lake Zurich shore (Seefeldquai)</desc>
+    <time>2026-07-01T06:30:00Z</time>
+  </metadata>
+  <wpt lat="47.36560" lon="8.54120">
+    <ele>406.0</ele>
+    <name>Start — Utoquai</name>
+    <sym>Flag</sym>
+  </wpt>
+  <wpt lat="47.35342" lon="8.55222">
+    <ele>405.9</ele>
+    <name>Finish — Zurichhorn</name>
+    <sym>Flag</sym>
+  </wpt>
+  <trk>
+    <name>Morning Run</name>
+    <type>running</type>
+    <trkseg>
+      <trkpt lat="47.36560" lon="8.54120"><ele>406.0</ele><time>2026-07-01T06:30:00Z</time></trkpt>
+      <trkpt lat="47.36518" lon="8.54158"><ele>406.5</ele><time>2026-07-01T06:30:30Z</time></trkpt>
+      <trkpt lat="47.36476" lon="8.54196"><ele>407.2</ele><time>2026-07-01T06:31:00Z</time></trkpt>
+      <trkpt lat="47.36434" lon="8.54234"><ele>408.0</ele><time>2026-07-01T06:31:30Z</time></trkpt>
+      <trkpt lat="47.36392" lon="8.54272"><ele>408.6</ele><time>2026-07-01T06:32:00Z</time></trkpt>
+      <trkpt lat="47.36350" lon="8.54310"><ele>409.1</ele><time>2026-07-01T06:32:30Z</time></trkpt>
+      <trkpt lat="47.36308" lon="8.54348"><ele>409.5</ele><time>2026-07-01T06:33:00Z</time></trkpt>
+      <trkpt lat="47.36266" lon="8.54386"><ele>410.2</ele><time>2026-07-01T06:33:30Z</time></trkpt>
+      <trkpt lat="47.36224" lon="8.54424"><ele>411.0</ele><time>2026-07-01T06:34:00Z</time></trkpt>
+      <trkpt lat="47.36182" lon="8.54462"><ele>411.8</ele><time>2026-07-01T06:34:30Z</time></trkpt>
+      <trkpt lat="47.36140" lon="8.54500"><ele>412.3</ele><time>2026-07-01T06:35:00Z</time></trkpt>
+      <trkpt lat="47.36098" lon="8.54538"><ele>412.9</ele><time>2026-07-01T06:35:30Z</time></trkpt>
+      <trkpt lat="47.36056" lon="8.54576"><ele>413.4</ele><time>2026-07-01T06:36:00Z</time></trkpt>
+      <trkpt lat="47.36014" lon="8.54614"><ele>413.0</ele><time>2026-07-01T06:36:30Z</time></trkpt>
+      <trkpt lat="47.35972" lon="8.54652"><ele>412.5</ele><time>2026-07-01T06:37:00Z</time></trkpt>
+      <trkpt lat="47.35930" lon="8.54690"><ele>412.0</ele><time>2026-07-01T06:37:30Z</time></trkpt>
+      <trkpt lat="47.35888" lon="8.54728"><ele>411.4</ele><time>2026-07-01T06:38:00Z</time></trkpt>
+      <trkpt lat="47.35846" lon="8.54766"><ele>410.8</ele><time>2026-07-01T06:38:30Z</time></trkpt>
+      <trkpt lat="47.35804" lon="8.54804"><ele>410.1</ele><time>2026-07-01T06:39:00Z</time></trkpt>
+      <trkpt lat="47.35762" lon="8.54842"><ele>409.5</ele><time>2026-07-01T06:39:30Z</time></trkpt>
+      <trkpt lat="47.35720" lon="8.54880"><ele>409.0</ele><time>2026-07-01T06:40:00Z</time></trkpt>
+      <trkpt lat="47.35678" lon="8.54918"><ele>408.4</ele><time>2026-07-01T06:40:30Z</time></trkpt>
+      <trkpt lat="47.35636" lon="8.54956"><ele>407.9</ele><time>2026-07-01T06:41:00Z</time></trkpt>
+      <trkpt lat="47.35594" lon="8.54994"><ele>407.5</ele><time>2026-07-01T06:41:30Z</time></trkpt>
+      <trkpt lat="47.35552" lon="8.55032"><ele>407.0</ele><time>2026-07-01T06:42:00Z</time></trkpt>
+      <trkpt lat="47.35510" lon="8.55070"><ele>406.6</ele><time>2026-07-01T06:42:30Z</time></trkpt>
+      <trkpt lat="47.35468" lon="8.55108"><ele>406.3</ele><time>2026-07-01T06:43:00Z</time></trkpt>
+      <trkpt lat="47.35426" lon="8.55146"><ele>406.1</ele><time>2026-07-01T06:43:30Z</time></trkpt>
+      <trkpt lat="47.35384" lon="8.55184"><ele>406.0</ele><time>2026-07-01T06:44:00Z</time></trkpt>
+      <trkpt lat="47.35342" lon="8.55222"><ele>405.9</ele><time>2026-07-01T06:44:30Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

@@ -506,9 +506,11 @@ mod tests {
 
     #[test]
     fn all_table_names_are_present() {
-        assert_eq!(ALL_TABLE_NAMES.len(), 12);
+        assert_eq!(ALL_TABLE_NAMES.len(), 14);
         assert!(ALL_TABLE_NAMES.contains(&"petal"));
         assert!(ALL_TABLE_NAMES.contains(&"verse_member"));
         assert!(ALL_TABLE_NAMES.contains(&"asset"));
+        assert!(ALL_TABLE_NAMES.contains(&CrateRegistry::TABLE_NAME));
+        assert!(ALL_TABLE_NAMES.contains(&CrateEntry::TABLE_NAME));
     }
 }

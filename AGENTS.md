@@ -33,7 +33,7 @@ fractalengine/          (workspace root)
 ├── fe-sync/            P2P sync thread (iroh-docs); SyncCommand / SyncCommandSenderRes
 ├── fe-runtime/         Shared message types: DbCommand, DbResult, SyncCommand
 ├── fe-network/         Low-level iroh networking helpers
-├── fe-webview/         Embedded webview for node webpage_url display
+├── fe-webview/         Embedded webview for node webpage_url display (Tauri backend default)
 ├── fe-auth/            Authentication / identity helpers
 ├── fe-identity/        Identity key management
 └── fe-test-harness/    Integration test utilities
@@ -49,6 +49,33 @@ fe-ui ──► fe-renderer
                   ──► fe-runtime
                   ──► fe-database
 ```
+
+---
+
+## fe-webview / PetalPortal
+
+fe-webview provides the browser overlay for PetalPortal (displaying node webpage_url).
+
+### Available Backends
+
+| Backend | Description | Default |
+|---------|-------------|---------|
+| `backend-tauri` | Tauri-powered webview with IPC | **Yes** |
+| `backend-wry` | Raw wry FFI | Deprecated |
+| `backend-servo` | Servo browser (feature-gated) | No |
+
+Since 2026-06-30, Tauri is the default backend for robust IPC and custom protocol support.
+
+### Feature Selection
+
+```toml
+# fe-webview/Cargo.toml
+[features]
+default = ["backend-tauri"]  # Tauri is the default
+webview = ["backend-tauri"]   # Legacy alias maps to Tauri
+```
+
+The legacy `webview` feature alias now maps to `backend-tauri` for backward compatibility.
 
 ---
 
@@ -261,3 +288,30 @@ is in pure functions in `fe-renderer/src/camera.rs` — no ECS dependencies, ful
 2. Add keyboard shortcut in `handle_tool_shortcuts` in `node_manager.rs`.
 3. Add rendering in `draw_gimbal_for_entity` in `gimbal.rs`.
 4. Add drag handling in `handle_gimbal_interaction` in `node_manager.rs`.
+
+## §petal-map — "Choose a map for this petal"
+
+Per-petal terrain binding flows through the DB thread and out to fe-terrain:
+
+- **Persistence**: `DbCommand::{SetPetalTerrain, GetPetalTerrain}` →
+  `fe-database/src/handlers/petal_terrain.rs` (same SurrealQL statements as
+  `fe-api/src/terrain.rs`: `UPDATE petal SET terrain = $config` / `terrain = NONE`,
+  `SELECT terrain FROM petal`). Both reply `DbResult::PetalTerrainLoaded` (set echoes
+  the written value — authoritative confirmation for the UI's optimistic update).
+- **UI state**: `fe-ui/plugin.rs::PetalMapState` mirrors the active petal's
+  `terrain.tileset_hexon_uris`. Loaded on petal switch by
+  `load_petal_terrain_on_nav_change`; confirmed by the `PetalTerrainLoaded` arm in
+  `verse_manager.rs::apply_db_results`. The Hexon Manager "Installed" tab renders a
+  "Map" column: "Set petal map" sends `UiAction::PetalSetMap { tileset: Some(_) }`,
+  "Active map ✓" clears with `tileset: None`.
+- **Terrain JSON**: built UI-side in `plugin.rs::tileset_to_terrain_json` to match
+  fe-terrain `TerrainConfig` serde exactly. Tileset bounds are
+  `[min_lat, min_lon, max_lat, max_lon]` (see `HexonTileSource::covers`); origin is
+  the bounds center. fe-ui deliberately has NO fe-terrain dependency — JSON only.
+- **Registry ops**: fe-ui has no `TilesetRegistry` access, so install/remove/seeding/
+  refresh actions queue `HexonOp`s into `PendingHexonOps`; the main binary's
+  `fractalengine/src/terrain_bridge.rs::drain_hexon_ops` executes them against
+  `SharedTilesetRegistry` and repopulates the open Hexon Manager dialog.
+- **Runtime**: `terrain_bridge::bridge_petal_terrain` converts `PetalTerrainLoaded`
+  into `fe_terrain::petal_binding::TerrainAssignmentMsg` (config parsed via
+  `terrain_config_from_petal_json`); `TerrainPlugin` consumes it.

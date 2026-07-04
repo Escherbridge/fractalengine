@@ -1,0 +1,34 @@
+{
+  "field_defs": [
+    {
+      "key": "gpx_type",
+      "property_type": "string",
+      "description": "GPX element type: track, segment, trackpoint, waypoint, route",
+      "required": false
+    },
+    {
+      "key": "gpx_name",
+      "property_type": "string",
+      "description": "Display name carried over from the GPX element",
+      "required": false
+    },
+    {
+      "key": "elevation",
+      "property_type": "number",
+      "description": "Elevation above sea level in meters",
+      "required": false
+    },
+    {
+      "key": "hexon_ref",
+      "property_type": "hexon_ref",
+      "description": "URI reference to a hexon entry: hexon://{publisher}/{hexon_id}@{version}[#{entry_id}]",
+      "required": false
+    },
+    {
+      "key": "note",
+      "property_type": "string",
+      "description": "Freeform annotation text",
+      "required": false
+    }
+  ]
+}

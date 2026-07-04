@@ -21,6 +21,8 @@ fn format_size(bytes: u64) -> String {
 pub fn render_hexon_manager(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
+    petal_map: &crate::plugin::PetalMapState,
+    active_petal_id: Option<&str>,
 ) {
     let ActiveDialog::HexonManager {
         ref mut installed_tilesets,
@@ -130,7 +132,7 @@ pub fn render_hexon_manager(
 
                 match current_tab {
                     HexonManagerTab::Installed => {
-                        render_installed_tab(ui, installed_tilesets, &filter_lower, &mut actions, pending_remove);
+                        render_installed_tab(ui, installed_tilesets, &filter_lower, &mut actions, pending_remove, petal_map, active_petal_id);
                     }
                     HexonManagerTab::Available => {
                         render_available_tab(ui, available_tilesets, &filter_lower, &mut actions);
@@ -191,6 +193,8 @@ fn render_installed_tab(
     filter: &str,
     actions: &mut Vec<UiAction>,
     pending_remove: &mut Option<String>,
+    petal_map: &crate::plugin::PetalMapState,
+    active_petal_id: Option<&str>,
 ) {
     if tilesets.is_empty() {
         ui.label(
@@ -203,7 +207,7 @@ fn render_installed_tab(
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // Header row
         egui::Grid::new("installed_header")
-            .num_columns(6)
+            .num_columns(7)
             .striped(false)
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
@@ -212,6 +216,7 @@ fn render_installed_tab(
                 ui.label(egui::RichText::new("Tiles").color(theme::TEXT_SECTION).strong());
                 ui.label(egui::RichText::new("Size").color(theme::TEXT_SECTION).strong());
                 ui.label(egui::RichText::new("Seeding").color(theme::TEXT_SECTION).strong());
+                ui.label(egui::RichText::new("Map").color(theme::TEXT_SECTION).strong());
                 ui.label(egui::RichText::new("Actions").color(theme::TEXT_SECTION).strong());
                 ui.end_row();
             });
@@ -219,7 +224,7 @@ fn render_installed_tab(
         ui.separator();
 
         egui::Grid::new("installed_grid")
-            .num_columns(6)
+            .num_columns(7)
             .striped(true)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
@@ -245,6 +250,43 @@ fn render_installed_tab(
                             ts.hexon_id.clone(),
                             seeding,
                         ));
+                    }
+
+                    // Map column: set/clear this tileset as the active petal's map.
+                    let is_active_map = petal_map.tileset_ids.iter().any(|id| id == &ts.hexon_id);
+                    if is_active_map {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Active map \u{2713}").color(theme::TEXT_BRIGHT),
+                                )
+                                .fill(theme::BG_BUTTON_ACTIVE),
+                            )
+                            .on_hover_text("Click to clear this petal's map")
+                            .clicked()
+                        {
+                            if let Some(pid) = active_petal_id {
+                                actions.push(UiAction::PetalSetMap {
+                                    petal_id: pid.to_string(),
+                                    tileset: None,
+                                });
+                            }
+                        }
+                    } else {
+                        let response = ui
+                            .add_enabled(
+                                active_petal_id.is_some(),
+                                egui::Button::new("Set petal map").fill(theme::BG_BUTTON),
+                            )
+                            .on_disabled_hover_text("Navigate to a petal first");
+                        if response.clicked() {
+                            if let Some(pid) = active_petal_id {
+                                actions.push(UiAction::PetalSetMap {
+                                    petal_id: pid.to_string(),
+                                    tileset: Some(ts.clone()),
+                                });
+                            }
+                        }
                     }
 
                     // Remove button with confirmation

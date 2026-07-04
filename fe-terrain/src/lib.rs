@@ -5,6 +5,7 @@ pub mod format;
 pub mod gpx;
 pub mod iot;
 pub mod mesh;
+pub mod petal_binding;
 pub mod projection;
 pub mod simplify;
 pub mod tiles;

@@ -622,6 +622,18 @@ pub fn spawn_db_thread_with_sync(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Delete node property failed: {e}"))),
                         }
                     }
+                    Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {
+                        match handlers::petal_terrain::set_petal_terrain_handler(&db, &petal_id, terrain.as_ref()).await {
+                            Ok(()) => send_result(&tx, DbResult::PetalTerrainLoaded { petal_id, terrain }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Set petal terrain failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::GetPetalTerrain { petal_id }) => {
+                        match handlers::petal_terrain::get_petal_terrain_handler(&db, &petal_id).await {
+                            Ok(terrain) => send_result(&tx, DbResult::PetalTerrainLoaded { petal_id, terrain }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Get petal terrain failed: {e}"))),
+                        }
+                    }
                     Ok(DbCommand::CreateFieldDef { scope, entity_type, key, value_type, default_val }) => {
                         match handlers::field_def::create_field_def_handler(&db, &scope, &entity_type, &key, &value_type, default_val.as_ref(), &local_did).await {
                             Ok(field_def_id) => send_result(&tx, DbResult::FieldDefCreated { field_def_id, scope, key }),

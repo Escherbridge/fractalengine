@@ -11,6 +11,8 @@ use fe_runtime::PeerRegistry;
 use fe_ui::plugin::LocalUserRole;
 use tracing_subscriber::EnvFilter;
 
+mod terrain_bridge;
+
 /// Default SurrealKV database path. Must match the path used by
 /// `fe_database::spawn_db_thread_with_sync` so the API reader opens the same store.
 const DB_PATH: &str = "data/fractalengine.db";
@@ -184,6 +186,21 @@ fn main() {
         }
     };
 
+    // ---- Terrain tileset registry (local .hexon store) ----
+    let tileset_registry: Option<Arc<fe_terrain::tiles::TilesetRegistry>> =
+        match fe_terrain::tiles::HexonStore::new() {
+            Ok(store) => {
+                let registry = fe_terrain::tiles::TilesetRegistry::new(store);
+                let loaded = registry.load_all();
+                tracing::info!("Tileset registry loaded {} tileset(s)", loaded.len());
+                Some(Arc::new(registry))
+            }
+            Err(e) => {
+                tracing::warn!("Hexon store unavailable — terrain tileset wiring skipped: {e}");
+                None
+            }
+        };
+
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
         bind_addr: "127.0.0.1:8765".to_string(),
         api_cmd_tx: api_cmd_tx.clone(),
@@ -195,7 +212,7 @@ fn main() {
         entity_change_tx: entity_change_tx.clone(),
         api_db_reader,
         entity_store: None, // TODO: share Arc<EntityStore> with Bevy once resource type is Arc-wrapped
-        tileset_registry: None, // TODO: wire for GUI app when terrain viewer is integrated
+        tileset_registry: tileset_registry.clone(),
         hexon_registry: None,
         announcement_store: None,
     });
@@ -294,6 +311,15 @@ fn main() {
     // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
     app.add_plugins(fe_renderer::viewport::ViewportPlugin);
     app.add_plugins(fe_ui::plugin::GardenerConsolePlugin);
+    // Terrain runtime: petal map assignments + tileset registry bridge.
+    app.add_plugins(fe_terrain::terrain_plugin::TerrainPlugin);
+    if let Some(ref registry) = tileset_registry {
+        app.insert_resource(fe_terrain::petal_binding::SharedTilesetRegistry(registry.clone()));
+    }
+    app.add_systems(
+        bevy::prelude::Update,
+        (terrain_bridge::bridge_petal_terrain, terrain_bridge::drain_hexon_ops),
+    );
     // WebView portal: inline wry overlay + petal portal lifecycle systems.
     app.add_plugins(fe_webview::plugin::WebViewPlugin);
     app.add_plugins(fe_webview::petal_portal::PetalPortalPlugin);

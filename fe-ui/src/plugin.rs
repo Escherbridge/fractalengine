@@ -35,6 +35,8 @@ pub enum UiAction {
     HexonCancelDownload(String),
     HexonRefreshList,
     HexonOpenStorageDir,
+    /// Set (Some) or clear (None) the active petal's map tileset. See AGENTS.md §petal-map.
+    PetalSetMap { petal_id: String, tileset: Option<InstalledTilesetDto> },
     // Petal Manifest actions
     PetalManifestSave { petal_id: String, manifest: PetalManifest },
     PetalManifestOpen { petal_id: String, petal_name: String },
@@ -100,6 +102,27 @@ pub struct StorageInfoDto {
     pub total_bytes: u64,
     pub count: u32,
 }
+
+/// Which tileset(s) the active petal uses as its map. See AGENTS.md §petal-map.
+#[derive(Debug, Clone, Default, Resource)]
+pub struct PetalMapState {
+    pub petal_id: Option<String>,
+    pub tileset_ids: Vec<String>,
+    pub loaded: bool,
+}
+
+/// Registry operation requested by the UI; drained by the main binary. See AGENTS.md §petal-map.
+#[derive(Debug, Clone)]
+pub enum HexonOp {
+    Install(std::path::PathBuf),
+    Remove(String),
+    SetSeeding(String, bool),
+    RefreshList,
+}
+
+/// Queue of pending registry ops (fe-ui has no TilesetRegistry access).
+#[derive(Debug, Default, Resource)]
+pub struct PendingHexonOps(pub Vec<HexonOp>);
 
 // ---------------------------------------------------------------------------
 // Petal Manifest types
@@ -724,6 +747,8 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<ViewportCursorWorld>();
         app.init_resource::<ViewportRect>();
         app.init_resource::<UiManager>();
+        app.init_resource::<PetalMapState>();
+        app.init_resource::<PendingHexonOps>();
         app.init_resource::<fe_sync::TilesetEventBuffer>();
         // Register BrowserCommand so MessageWriter<BrowserCommand> is usable.
         // fe-webview's WebViewPlugin also registers this; calling add_message
@@ -737,6 +762,7 @@ impl Plugin for GardenerConsolePlugin {
 
         app.add_systems(Update, process_ui_actions.in_set(UiSet::ProcessActions));
         app.add_systems(Update, resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions));
+        app.add_systems(Update, load_petal_terrain_on_nav_change.before(process_ui_actions).in_set(UiSet::ProcessActions));
         app.add_systems(Update, drain_tileset_events.in_set(UiSet::ProcessActions));
 
         app.add_systems(
@@ -778,6 +804,7 @@ fn gardener_ui_system(
     mut p2p: P2pDialogParams,
     mut viewport_rect: ResMut<ViewportRect>,
     local_role: Res<LocalUserRole>,
+    petal_map: Res<PetalMapState>,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
@@ -796,6 +823,7 @@ fn gardener_ui_system(
         &mut p2p.node_mgr,
         &mut p2p.ui_mgr,
         &local_role,
+        &petal_map,
     );
     viewport_rect.0 = rect;
 
@@ -927,6 +955,25 @@ fn resolve_local_role_on_nav_change(
     }
 }
 
+/// Requests the petal's terrain config when the active petal changes.
+fn load_petal_terrain_on_nav_change(
+    nav: Res<crate::navigation_manager::NavigationManager>,
+    mut petal_map: ResMut<PetalMapState>,
+    db_sender: Res<fe_runtime::app::DbCommandSender>,
+) {
+    if petal_map.petal_id == nav.active_petal_id {
+        return;
+    }
+    petal_map.petal_id = nav.active_petal_id.clone();
+    petal_map.tileset_ids.clear();
+    petal_map.loaded = false;
+    if let Some(petal_id) = nav.active_petal_id.clone() {
+        if db_sender.0.send(fe_runtime::messages::DbCommand::GetPetalTerrain { petal_id }).is_err() {
+            bevy::log::warn!("db_sender channel closed — GetPetalTerrain not dispatched");
+        }
+    }
+}
+
 /// Drains all UiActions queued during the egui pass and processes them.
 /// Replaces: forward_webview_open_request, drain_portal_panel_actions, handle_url_save.
 fn process_ui_actions(
@@ -937,6 +984,8 @@ fn process_ui_actions(
     mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+    mut petal_map: ResMut<PetalMapState>,
+    mut hexon_ops: ResMut<PendingHexonOps>,
 ) {
     // Auto-close portal when the selected entity changes or is deselected.
     if let PortalState::Open { opened_for_entity, .. } = ui_mgr.portal {
@@ -1043,20 +1092,19 @@ fn process_ui_actions(
                     bevy::log::warn!("db_sender channel closed — DeleteNodeProperty not dispatched");
                 }
             }
-            // Hexon Manager actions — wire to sync thread for P2P distribution.
+            // Hexon Manager actions — queue registry ops for the main binary,
+            // wire sync-thread side effects here. See AGENTS.md §petal-map.
             UiAction::HexonInstallFromFile(path) => {
                 bevy::log::info!("Hexon: install from file {:?}", path);
-                // Read file and install via db command (async install via API
-                // gateway is a future improvement; for now log the path).
-                // TODO: POST /api/v1/hexons/tilesets/install with file bytes
+                hexon_ops.0.push(HexonOp::Install(path));
             }
             UiAction::HexonRemoveTileset(id) => {
                 bevy::log::info!("Hexon: remove tileset {}", id);
-                // TODO: DELETE /api/v1/hexons/tilesets/{id}
+                hexon_ops.0.push(HexonOp::Remove(id));
             }
             UiAction::HexonToggleSeeding(id, enabled) => {
                 bevy::log::info!("Hexon: toggle seeding {}={}", id, enabled);
-                // TODO: PATCH /api/v1/hexons/tilesets/{id}/seeding
+                hexon_ops.0.push(HexonOp::SetSeeding(id, enabled));
                 // After toggling, re-advertise to peers
                 if let Some(ref sender) = sync_sender {
                     sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
@@ -1105,6 +1153,7 @@ fn process_ui_actions(
             }
             UiAction::HexonRefreshList => {
                 bevy::log::info!("Hexon: refresh tileset list");
+                hexon_ops.0.push(HexonOp::RefreshList);
                 // Re-advertise our tilesets to trigger peer exchange
                 if let Some(ref sender) = sync_sender {
                     sender.0.send(fe_sync::SyncCommand::AdvertiseTilesets {
@@ -1122,6 +1171,20 @@ fn process_ui_actions(
                         { let _ = std::process::Command::new("open").arg(dir).spawn(); }
                         #[cfg(target_os = "linux")]
                         { let _ = std::process::Command::new("xdg-open").arg(dir).spawn(); }
+                    }
+                }
+            }
+            UiAction::PetalSetMap { petal_id, tileset } => {
+                let terrain = tileset.as_ref().map(tileset_to_terrain_json);
+                let tileset_ids = tileset.as_ref().map(|ts| vec![ts.hexon_id.clone()]).unwrap_or_default();
+                match db_sender.0.send(fe_runtime::messages::DbCommand::SetPetalTerrain { petal_id: petal_id.clone(), terrain }) {
+                    Ok(()) => {
+                        // Optimistic local update only after the command is queued; DbResult::PetalTerrainLoaded confirms.
+                        petal_map.petal_id = Some(petal_id);
+                        petal_map.tileset_ids = tileset_ids;
+                    }
+                    Err(_) => {
+                        bevy::log::warn!("db_sender channel closed — SetPetalTerrain not dispatched; local map state unchanged");
                     }
                 }
             }
@@ -1144,6 +1207,33 @@ fn process_ui_actions(
             }
         }
     }
+}
+
+/// Builds petal terrain JSON matching fe-terrain's `TerrainConfig` serde shape.
+/// Bounds are `[min_lat, min_lon, max_lat, max_lon]`; origin = bounds center.
+fn tileset_to_terrain_json(ts: &InstalledTilesetDto) -> serde_json::Value {
+    if ts.bounds == [0.0, 0.0, 0.0, 0.0] {
+        bevy::log::warn!("tileset {} has unpopulated bounds; origin will default to (0,0) (Gulf of Guinea)", ts.hexon_id);
+    }
+    serde_json::json!({
+        "enabled": true,
+        "origin": {
+            "origin_lat": (ts.bounds[0] + ts.bounds[2]) / 2.0,
+            "origin_lon": (ts.bounds[1] + ts.bounds[3]) / 2.0,
+            "origin_ele": 0.0,
+        },
+        "tile_source_url": "",
+        "elevation_source": "terrain_rgb",
+        "max_zoom": ts.zoom_range.1,
+        "min_zoom": ts.zoom_range.0,
+        "cache_dir": "terrain_cache",
+        "layers": [
+            {"name": "satellite", "visible": true},
+            {"name": "terrain", "visible": true},
+        ],
+        "tileset_hexon_uris": [ts.hexon_id],
+        "tile_source_mode": "hybrid",
+    })
 }
 
 /// Drains tileset distribution events from the sync thread and updates

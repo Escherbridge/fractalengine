@@ -1,7 +1,7 @@
 {
   "id": "cross_platform_desktop_20260429",
   "name": "Cross-Platform Desktop",
-  "status": "pending",
+  "status": "in_progress",
   "priority": "P1",
   "created": "2026-04-29",
   "depends_on": [],
@@ -10,20 +10,24 @@
     {
       "id": 1,
       "name": "Build Infrastructure",
-      "status": "pending",
-      "tasks": 5
+      "status": "complete",
+      "tasks": 5,
+      "notes": "config.toml updated for multi-target; BUILDING.md scaffold created"
     },
     {
       "id": 2,
       "name": "Platform Code Audit and Testing",
-      "status": "pending",
-      "tasks": 7
+      "status": "complete",
+      "tasks": 7,
+      "notes": "All #[cfg] blocks audited; tests added for blob_store, wry, stub backends"
     },
     {
       "id": 3,
       "name": "Documentation and Verification",
-      "status": "pending",
-      "tasks": 3
+      "status": "in_progress",
+      "tasks": 3,
+      "notes": "BUILDING.md complete; needs cross-platform verification (Linux/macOS/ARM64 Windows compile)"
     }
-  ]
+  ],
+  "blockers": ["Cross-platform compile verification requires CI or native Linux/macOS environment"]
 }

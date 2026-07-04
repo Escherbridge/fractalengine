@@ -12,7 +12,7 @@ fetch = ["reqwest", "async-trait", "tokio", "ed25519-dalek"]
 gpx = "0.10"
 geo-types = "0.7"
 flat_projection = "0.3"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ulid = { workspace = true, features = ["serde"] }

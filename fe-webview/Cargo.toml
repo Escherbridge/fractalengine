@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["backend-tauri"]
 # Webview backends — only one should be active at a time.
 # If both are enabled, Servo takes priority.
 backend-servo = ["winit"]
-backend-wry = ["wry", "winit"]
-# Legacy alias
-webview = ["backend-wry"]
+backend-tauri = ["tauri", "wry", "winit"]  # Tauri-powered webview
+# Legacy alias — now maps to Tauri
+webview = ["backend-tauri"]
 # winit is needed for window geometry computation
 winit = ["dep:winit"]
 
@@ -18,6 +18,8 @@ winit = ["dep:winit"]
 bevy = { workspace = true }
 wry = { version = "0.54", optional = true }
 winit = { version = "0.30", optional = true }
+# Tauri dependency for backend-tauri feature (wry provides the webview)
+tauri = { version = "2", optional = true }
 raw-window-handle = "0.6"
 url = { version = "2", features = ["serde"] }
 ipnet = "2"
@@ -25,6 +27,7 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 fe-database = { path = "../fe-database" }
+fe-runtime = { path = "../fe-runtime" }
 
 [dev-dependencies]
 ulid = { workspace = true }

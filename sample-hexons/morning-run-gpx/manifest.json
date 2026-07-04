@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "hexon_id": "morning-run-gpx",
+  "hexon_type": "gpx_collection",
+  "publisher_did": "did:key:z6MkSampleTrailRunner",
+  "publisher_name": "Sample Trail Runner",
+  "version": "0.1.0",
+  "build_id": "260702-v0.1.0",
+  "name": "Morning Run — Lake Zurich",
+  "description": "A short ~30-point morning run along the Lake Zurich shore, with elevations and timestamps. Demo gpx_collection hexon.",
+  "tags": ["gpx", "running", "demo", "sample", "zurich"],
+  "created_at": "2026-07-01T06:30:00Z",
+  "updated_at": "2026-07-02T00:00:00Z",
+  "min_engine_version": "0.1.0",
+  "dependencies": [],
+  "platforms": []
+}
