@@ -108,6 +108,40 @@ impl CompositeTileSource {
             }
         }
     }
+
+    /// Synchronous satellite lookup — hexon sources and disk cache (`composite_sat`) only.
+    pub fn get_satellite_tile_sync(&self, coord: TileCoord) -> Option<Vec<u8>> {
+        use crate::config::TileSourceMode;
+
+        match self.tile_source_mode {
+            TileSourceMode::Offline => {
+                for src in &self.hexon_sources {
+                    if src.covers(coord) {
+                        if let Some(data) = src.get_satellite_tile(coord) {
+                            return Some(data.to_vec());
+                        }
+                    }
+                }
+                None
+            }
+            TileSourceMode::Online => self
+                .cache
+                .as_ref()
+                .and_then(|c| c.get("composite_sat", &coord.cache_key())),
+            TileSourceMode::Hybrid => {
+                for src in &self.hexon_sources {
+                    if src.covers(coord) {
+                        if let Some(data) = src.get_satellite_tile(coord) {
+                            return Some(data.to_vec());
+                        }
+                    }
+                }
+                self.cache
+                    .as_ref()
+                    .and_then(|c| c.get("composite_sat", &coord.cache_key()))
+            }
+        }
+    }
 }
 
 #[cfg(feature = "fetch")]
@@ -219,16 +253,19 @@ mod tests {
     use fe_format::manifest::{ElevationEncoding, HexonManifest, HexonType, TilesetMeta};
     use fe_format::HexonArchive;
 
-    fn make_hexon_source(tiles: Vec<(String, Vec<u8>)>) -> HexonTileSource {
+    fn make_hexon_source(
+        tiles: Vec<(String, Vec<u8>)>,
+        satellite: Vec<(String, Vec<u8>)>,
+    ) -> HexonTileSource {
         let meta = TilesetMeta {
             bounds: [45.0, -122.0, 46.0, -121.0],
             min_zoom: 10,
             max_zoom: 12,
             tile_size: 256,
             elevation_encoding: ElevationEncoding::TerrainRgb,
-            has_satellite: false,
+            has_satellite: !satellite.is_empty(),
             tile_count: tiles.len() as u32,
-            satellite_tile_count: 0,
+            satellite_tile_count: satellite.len() as u32,
             region_name: "Test".into(),
             parent_tileset: None,
             chunk_index: None,
@@ -255,7 +292,8 @@ mod tests {
             address: None,
             signature: None,
         };
-        let bytes = HexonArchive::export_tileset(manifest, &meta, &tiles, &[], None).unwrap();
+        let bytes =
+            HexonArchive::export_tileset(manifest, &meta, &tiles, &satellite, None).unwrap();
         HexonTileSource::from_archive(&bytes).unwrap()
     }
 
@@ -264,7 +302,7 @@ mod tests {
         // Use a tile coordinate that falls within bounds [45.0, -122.0, 46.0, -121.0]
         let coord = TileCoord::from_lat_lon(45.5, -121.5, 11);
         let key = coord.cache_key();
-        let source = make_hexon_source(vec![(key, vec![42u8; 16])]);
+        let source = make_hexon_source(vec![(key, vec![42u8; 16])], vec![]);
         let mut composite = CompositeTileSource::new();
         composite.add_hexon_source(source);
 
@@ -278,5 +316,31 @@ mod tests {
         let composite = CompositeTileSource::new();
         let coord = TileCoord::new(0, 0, 5);
         assert!(composite.get_tile_sync(coord).is_none());
+        assert!(composite.get_satellite_tile_sync(coord).is_none());
+    }
+
+    #[test]
+    fn composite_satellite_sync_from_hexon() {
+        let coord = TileCoord::from_lat_lon(45.5, -121.5, 11);
+        let key = coord.cache_key();
+        let source = make_hexon_source(vec![], vec![(key, vec![7u8; 8])]);
+        let mut composite = CompositeTileSource::new();
+        composite.add_hexon_source(source);
+
+        assert_eq!(composite.get_satellite_tile_sync(coord).unwrap(), vec![7u8; 8]);
+        // Elevation lookup must not see satellite tiles.
+        assert!(composite.get_tile_sync(coord).is_none());
+    }
+
+    #[test]
+    fn composite_satellite_sync_respects_offline_mode() {
+        let coord = TileCoord::from_lat_lon(45.5, -121.5, 11);
+        let key = coord.cache_key();
+        let source = make_hexon_source(vec![], vec![(key, vec![9u8; 4])]);
+        let mut composite = CompositeTileSource::new();
+        composite.add_hexon_source(source);
+        composite.set_tile_source_mode(crate::config::TileSourceMode::Offline);
+
+        assert_eq!(composite.get_satellite_tile_sync(coord).unwrap(), vec![9u8; 4]);
     }
 }

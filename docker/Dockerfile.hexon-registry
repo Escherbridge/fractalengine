@@ -1,0 +1,16 @@
+# Build stage
+FROM rust:1-alpine AS builder
+RUN apk add --no-cache musl-dev perl make
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p fe-hexon-registry
+
+# Runtime stage
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /app/target/release/fe-hexon-registry /usr/local/bin/fe-hexon-registry
+VOLUME ["/data"]
+EXPOSE 8790
+ENV FE_REGISTRY_DIR=/data/hexons
+ENV FE_REGISTRY_BIND=0.0.0.0:8790
+ENTRYPOINT ["fe-hexon-registry"]

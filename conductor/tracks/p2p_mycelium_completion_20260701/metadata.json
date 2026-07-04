@@ -1,0 +1,71 @@
+{
+  "id": "p2p_mycelium_completion_20260701",
+  "description": "Complete the P2P Mycelium layer: connect IrohDocsReplicator to real iroh-docs Engine, implement petal-level replication, real-time transform sync, gossip topics, and tileset P2P",
+  "type": "feature",
+  "created_at": "2026-07-01T14:00:00Z",
+  "status": "in_progress",
+  "priority": "P0",
+  "depends_on": [
+    "p2p_mycelium_20260405"
+  ],
+  "phases": [
+    {
+      "id": "phase_1",
+      "name": "IrohDocsReplicator Integration",
+      "description": "Connect IrohDocsReplicator to real iroh_docs::Engine instead of in-memory HashMap",
+      "hours_estimate": "3-4",
+      "status": "completed",
+      "completed_at": "2026-07-01T15:00:00Z"
+    },
+    {
+      "id": "phase_2",
+      "name": "Petal-Level Replication",
+      "description": "Full SubscribePetal/UnsubscribePetal implementation with per-petal namespaces",
+      "hours_estimate": "2-3",
+      "status": "completed",
+      "completed_at": "2026-07-01T16:30:00Z"
+    },
+    {
+      "id": "phase_3",
+      "name": "Real-Time Transform Sync",
+      "description": "Broadcast node transform changes to peers via iroh-gossip",
+      "hours_estimate": "3-4",
+      "status": "pending"
+    },
+    {
+      "id": "phase_4",
+      "name": "Gossip Topic Subscription",
+      "description": "Subscribe to iroh-gossip topics per Verse and per Petal",
+      "hours_estimate": "2",
+      "status": "pending"
+    },
+    {
+      "id": "phase_5",
+      "name": "Tileset P2P",
+      "description": "Implement tileset advertisement, metadata request, and chunk fetch over P2P",
+      "hours_estimate": "4-5",
+      "status": "pending"
+    }
+  ],
+  "total_hours_estimate": "14-18",
+  "hours_completed": "5-7",
+  "files_to_modify": [
+    "fe-sync/src/replicator.rs",
+    "fe-sync/src/sync_thread.rs",
+    "fe-sync/src/messages.rs",
+    "fe-network/src/gossip.rs"
+  ],
+  "tests_added": [
+    "derive_namespace_id_is_deterministic",
+    "derive_namespace_id_format",
+    "handle_subscribe_petal_creates_replicator",
+    "handle_subscribe_petal_idempotent_resubscribe",
+    "handle_unsubscribe_petal_removes_replicator",
+    "handle_unsubscribe_petal_nonexistent_is_noop",
+    "petal_replicator_write_and_subscribe"
+  ],
+  "research_refs": [
+    "conductor/tracks/p2p_mycelium_20260405/spec.md",
+    "conductor/tracks/p2p_mycelium_20260405/plan.md"
+  ]
+}

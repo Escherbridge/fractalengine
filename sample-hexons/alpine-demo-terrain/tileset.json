@@ -1,0 +1,11 @@
+{
+  "region_name": "Zurich Demo Region",
+  "bounds": [47.05, 8.40, 47.50, 9.20],
+  "min_zoom": 10,
+  "max_zoom": 12,
+  "tile_size": 64,
+  "elevation_encoding": "terrain_rgb",
+  "has_satellite": true,
+  "tile_count": 12,
+  "satellite_tile_count": 12
+}

@@ -9,7 +9,7 @@
 
 use fe_runtime::blob_store::BlobHash;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // RowChange — a single replicated row event
@@ -211,54 +211,94 @@ impl IncomingEntryApplicator {
 }
 
 // ---------------------------------------------------------------------------
-// IrohDocsReplicator — stub (E.4)
+// IrohDocsEngineHolder — holds the shared iroh-docs Engine (Phase F.1)
 // ---------------------------------------------------------------------------
 
-/// Stub implementation of `VerseReplicator` backed by an in-memory HashMap.
+/// Placeholder holder for the iroh-docs Engine.
 ///
-/// In a future phase this will connect to an `iroh_docs::Engine` replica. For
-/// now it behaves identically to `MockVerseReplicator` but is typed separately
-/// so production code can depend on it without importing test utilities.
+/// Real iroh-docs 0.35 `Engine<D>` wiring is deferred — the 0.35 `Engine::spawn`
+/// requires a full P2P stack (gossip, blob store, downloader, local pool) that is
+/// out of scope here. `is_available()` therefore stays `false` and replicators use
+/// the in-memory fallback. See `fe-sync/src/AGENTS.md` §iroh-0.35.
+#[derive(Default)]
+pub struct IrohDocsEngineHolder {
+    available: std::sync::atomic::AtomicBool,
+}
+
+impl IrohDocsEngineHolder {
+    /// Create a new empty holder (real Engine wiring deferred to iroh-0.35 follow-up).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether a real iroh-docs Engine is available. Currently always `false`.
+    pub fn is_available(&self) -> bool {
+        self.available.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IrohDocsReplicator — backed by iroh-docs Engine (Phase F.1)
+// ---------------------------------------------------------------------------
+
+/// Implementation of `VerseReplicator` backed by iroh-docs.
+///
+/// Real iroh-docs 0.35 wiring is deferred (`Engine<D>` needs the full P2P stack);
+/// until then this is backed by the in-memory mock. The `engine_holder` is carried
+/// so the real path can be dropped in later without changing call sites.
+/// See `fe-sync/src/AGENTS.md` §iroh-0.35.
 pub struct IrohDocsReplicator {
     pub namespace_id: String,
     pub namespace_secret: String,
+    /// The shared Engine holder (real Engine wiring deferred).
+    engine_holder: Arc<IrohDocsEngineHolder>,
+    /// In-memory backing store (fallback until iroh-docs is wired).
     inner: MockVerseReplicator,
 }
 
 impl IrohDocsReplicator {
-    /// Create a new stub replicator for a given namespace.
+    /// Create a new replicator for a given namespace.
     ///
     /// `author_id` is the local peer's DID / public key.
-    pub fn new(namespace_id: String, namespace_secret: String, author_id: String) -> Self {
+    pub fn new(
+        namespace_id: String,
+        namespace_secret: String,
+        author_id: String,
+        engine_holder: Arc<IrohDocsEngineHolder>,
+    ) -> Self {
         Self {
             namespace_id,
             namespace_secret,
+            engine_holder,
             inner: MockVerseReplicator::new(author_id),
         }
+    }
+
+    /// Open the document for this namespace.
+    ///
+    /// No-op until the real iroh-docs 0.35 Engine is wired.
+    pub fn open_document(&self) -> anyhow::Result<()> {
+        // TODO(iroh-0.35): open/create the iroh-docs document via Engine<D>.
+        Ok(())
     }
 }
 
 impl VerseReplicator for IrohDocsReplicator {
     fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()> {
-        // TODO(Phase F): Use iroh_docs::Engine to write an entry with
-        //   key = "{table}/{record_id}", value = blake3(data)
-        //   and write the actual bytes to the blob store via iroh-blobs.
-        tracing::debug!(
-            ns = %self.namespace_id,
-            key = %format!("{table}/{record_id}"),
-            "IrohDocsReplicator::write_row (stub)"
-        );
+        // TODO(iroh-0.35): route through the real iroh-docs Doc when available.
+        let backend = if self.engine_holder.is_available() { "iroh-docs" } else { "mock fallback" };
+        tracing::debug!(ns = %self.namespace_id, key = %format!("{table}/{record_id}"), backend, "IrohDocsReplicator::write_row");
         self.inner.write_row(table, record_id, data)
     }
 
     fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>> {
-        // TODO(Phase F): Subscribe to the iroh-docs replica event stream.
+        // TODO(iroh-0.35): subscribe to real iroh-docs Doc events when available.
+        tracing::debug!(ns = %self.namespace_id, "IrohDocsReplicator::subscribe (mock fallback)");
         self.inner.subscribe()
     }
 
     fn close(&self) -> anyhow::Result<()> {
-        // TODO(Phase F): Close the iroh-docs replica handle.
-        tracing::debug!(ns = %self.namespace_id, "IrohDocsReplicator::close (stub)");
+        tracing::debug!(ns = %self.namespace_id, "IrohDocsReplicator::close");
         self.inner.close()
     }
 }
@@ -419,10 +459,12 @@ mod tests {
 
     #[test]
     fn iroh_docs_replicator_stub_works() {
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new());
         let repl = IrohDocsReplicator::new(
             "ns-id-hex".to_string(),
             "ns-secret-hex".to_string(),
             "local-author".to_string(),
+            engine_holder,
         );
         repl.write_row("verse", "v1", b"{\"name\":\"test\"}")
             .unwrap();

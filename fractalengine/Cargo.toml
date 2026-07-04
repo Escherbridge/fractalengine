@@ -27,6 +27,7 @@ fe-ui = { path = "../fe-ui" }
 fe-webview = { path = "../fe-webview", features = ["webview"] }
 fe-api = { path = "../fe-api" }
 fe-entity-store = { path = "../fe-entity-store" }
+fe-terrain = { path = "../fe-terrain", features = ["render"] }
 bevy = { workspace = true }
 bevy_egui = { workspace = true }
 crossbeam = { workspace = true }

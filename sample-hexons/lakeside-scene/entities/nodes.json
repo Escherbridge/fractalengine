@@ -1,0 +1,98 @@
+[
+  {
+    "node_id": "01JZ0SAMPN0DE0000000000001",
+    "petal_id": "01JZ0SAMPPETA0000000000001",
+    "name": "Utoquai Pier Waypoint",
+    "position": [47.3656, 0.5, 8.5412],
+    "rotation": [0.0, 0.0, 0.0, 1.0],
+    "scale": [1.0, 1.0, 1.0],
+    "has_asset": false,
+    "properties": {
+      "gpx_type": "waypoint",
+      "gpx_name": "Start — Utoquai",
+      "elevation": 406.0
+    },
+    "node_log": [
+      {
+        "hlc_timestamp": 1782864000000,
+        "op": "created",
+        "source_did": "did:key:z6MkSampleSceneAuthor",
+        "payload": { "position": [47.3656, 0.5, 8.5412] },
+        "row_version": 1
+      }
+    ]
+  },
+  {
+    "node_id": "01JZ0SAMPN0DE0000000000002",
+    "petal_id": "01JZ0SAMPPETA0000000000001",
+    "name": "Zurichhorn Waypoint",
+    "position": [47.3534, 0.5, 8.5522],
+    "rotation": [0.0, 0.0, 0.0, 1.0],
+    "scale": [1.0, 1.0, 1.0],
+    "has_asset": false,
+    "properties": {
+      "gpx_type": "waypoint",
+      "gpx_name": "Finish — Zurichhorn",
+      "elevation": 405.9
+    },
+    "node_log": [
+      {
+        "hlc_timestamp": 1782864000001,
+        "op": "created",
+        "source_did": "did:key:z6MkSampleSceneAuthor",
+        "payload": { "position": [47.3534, 0.5, 8.5522] },
+        "row_version": 1
+      }
+    ]
+  },
+  {
+    "node_id": "01JZ0SAMPN0DE0000000000003",
+    "petal_id": "01JZ0SAMPPETA0000000000001",
+    "name": "Alpine Terrain Anchor",
+    "position": [47.3769, 0.0, 8.5417],
+    "rotation": [0.0, 0.0, 0.0, 1.0],
+    "scale": [1.0, 1.0, 1.0],
+    "has_asset": false,
+    "properties": {
+      "hexon_ref": "hexon://did:key:z6MkSampleAlpineGis/alpine-demo-terrain@0.1.0",
+      "note": "Anchors the offline Zurich demo tileset for this petal"
+    },
+    "node_log": [
+      {
+        "hlc_timestamp": 1782864000002,
+        "op": "created",
+        "source_did": "did:key:z6MkSampleSceneAuthor",
+        "payload": { "position": [47.3769, 0.0, 8.5417] },
+        "row_version": 1
+      },
+      {
+        "hlc_timestamp": 1782864000003,
+        "op": "hexon_installed",
+        "source_did": "did:key:z6MkSampleSceneAuthor",
+        "payload": { "hexon_ref": "hexon://did:key:z6MkSampleAlpineGis/alpine-demo-terrain@0.1.0" },
+        "row_version": 2
+      }
+    ]
+  },
+  {
+    "node_id": "01JZ0SAMPN0DE0000000000004",
+    "petal_id": "01JZ0SAMPPETA0000000000001",
+    "name": "Lakeside Info Sign",
+    "position": [47.3600, 1.2, 8.5470],
+    "rotation": [0.0, 0.0, 0.0, 1.0],
+    "scale": [1.0, 1.0, 1.0],
+    "has_asset": false,
+    "properties": {
+      "note": "Demo scene built from sample-hexons; pairs with morning-run-gpx"
+    },
+    "node_log": [
+      {
+        "hlc_timestamp": 1782864000004,
+        "op": "created",
+        "source_did": "did:key:z6MkSampleSceneAuthor",
+        "payload": { "position": [47.3600, 1.2, 8.5470] },
+        "row_version": 1
+      }
+    ]
+  }
+]

@@ -18,6 +18,7 @@ blake3 = { workspace = true }
 hex = "0.4"
 iroh = { workspace = true }
 iroh-docs = { workspace = true }
+iroh-gossip = { workspace = true }
 crossbeam = { workspace = true }
 
 [dev-dependencies]

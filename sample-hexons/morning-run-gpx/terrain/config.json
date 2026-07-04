@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "origin": {
+    "origin_lat": 47.3656,
+    "origin_lon": 8.5412,
+    "origin_ele": 406.0
+  },
+  "tile_source_url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "elevation_source": "none",
+  "max_zoom": 15,
+  "min_zoom": 10,
+  "cache_dir": "terrain_cache",
+  "layers": [
+    { "name": "morning_run", "visible": true, "opacity": 1.0 }
+  ],
+  "tile_source_mode": "hybrid"
+}

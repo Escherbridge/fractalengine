@@ -1,7 +1,7 @@
 {
   "id": "headless_relay_20260429",
   "name": "Headless Relay",
-  "status": "pending",
+  "status": "in_progress",
   "priority": "P1",
   "created": "2026-04-29",
   "depends_on": ["realtime_api_mcp_20260427"],
@@ -10,26 +10,36 @@
     {
       "id": 1,
       "name": "SecretStore Trait Extraction",
-      "status": "pending",
-      "tasks": 5
+      "status": "complete",
+      "tasks": 5,
+      "notes": "SecretStore trait + 3 backends (InMemory, OsKeystore, Env) implemented; all keyring call sites migrated"
     },
     {
       "id": 2,
       "name": "Relay Binary",
-      "status": "pending",
-      "tasks": 5
+      "status": "complete",
+      "tasks": 5,
+      "notes": "fractalengine-relay crate created; setup_core_systems and wire_engine extracted; GUI refactored to use shared wiring"
     },
     {
       "id": 3,
       "name": "Scene Graph Streaming",
-      "status": "pending",
-      "tasks": 7
+      "status": "in_progress",
+      "tasks": 7,
+      "notes": "SceneChange enum done; asset delivery done; remaining: entity change broadcast wiring (3.2), scene subscription handler (3.4), docs (3.7)"
     },
     {
       "id": 4,
       "name": "Relay Hardening",
-      "status": "pending",
-      "tasks": 5
+      "status": "in_progress",
+      "tasks": 5,
+      "notes": "Configurable bind/CORS done; graceful shutdown done; health endpoints done; Dockerfile done; remaining: docs (4.5)"
     }
+  ],
+  "blockers": [
+    "Phase 3 Task 3.2: Entity change broadcast wiring into DB CUD handlers",
+    "Phase 3 Task 3.4: Scene subscription handler (WS client -> snapshot -> delta flow)",
+    "Phase 3 Task 3.7: Documentation",
+    "Phase 4 Task 4.5: Documentation"
   ]
 }

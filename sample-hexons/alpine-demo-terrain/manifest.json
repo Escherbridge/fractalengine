@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "hexon_id": "alpine-demo-terrain",
+  "hexon_type": "terrain",
+  "publisher_did": "did:key:z6MkSampleAlpineGis",
+  "publisher_name": "Alpine GIS Co. (Sample)",
+  "version": "0.1.0",
+  "build_id": "260702-v0.1.0",
+  "name": "Alpine Demo Terrain",
+  "description": "Tiny demo tileset around Zurich: flat-color satellite tiles plus Terrain-RGB elevation tiles for a gentle slope, zooms 10-12. Generated programmatically for terrain UX demos.",
+  "tags": ["terrain", "demo", "sample", "zurich", "offline"],
+  "created_at": "2026-07-02T00:00:00Z",
+  "updated_at": "2026-07-02T00:00:00Z",
+  "min_engine_version": "0.1.0",
+  "dependencies": [],
+  "platforms": []
+}

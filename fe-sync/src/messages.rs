@@ -42,6 +42,8 @@ pub enum SyncCommand {
     UnsubscribePetal { petal_id: String },
     /// Advertise locally-seeding tilesets to connected peers.
     AdvertiseTilesets {
+        /// The verse to broadcast to.
+        verse_id: String,
         /// Serialized JSON of `Vec<TilesetAdvertisement>` from fe-terrain.
         advertisements_json: String,
     },
@@ -141,6 +143,30 @@ pub enum SyncEvent {
         chunk_seq: u32,
         reason: String,
     },
+    /// A node transform was updated by a peer.
+    NodeTransformed {
+        verse_id: String,
+        node_id: String,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+        author_id: String,
+    },
+}
+
+/// Real-time transform update message for P2P gossip.
+///
+/// This is the payload broadcast via iroh-gossip when a node's
+/// transform changes (drag commit, etc).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TransformUpdate {
+    pub verse_id: String,
+    pub node_id: String,
+    pub position: [f32; 3],
+    pub rotation: [f32; 3],
+    pub scale: [f32; 3],
+    pub author_id: String,
+    pub timestamp: u64,
 }
 
 /// Sender half for sync commands (type alias for ergonomics).
@@ -324,6 +350,7 @@ mod tests {
     #[test]
     fn advertise_tilesets_debug_clone() {
         let cmd = SyncCommand::AdvertiseTilesets {
+            verse_id: "verse-1".into(),
             advertisements_json: "[]".into(),
         };
         let _ = format!("{:?}", cmd.clone());

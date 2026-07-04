@@ -164,6 +164,7 @@ fn apply_db_results(
     revocation_tx: Option<Res<fe_runtime::app::RevocationBroadcastSender>>,
     mut inspector: ResMut<crate::plugin::InspectorFormState>,
     mut pending_api: ResMut<fe_runtime::app::PendingApiRequests>,
+    mut petal_map: ResMut<crate::plugin::PetalMapState>,
 ) {
     for result in reader.read() {
         match result {
@@ -556,6 +557,20 @@ fn apply_db_results(
             DbResult::FieldDefCreated { .. } | DbResult::FieldDefUpdated { .. } | DbResult::FieldDefDeleted { .. } => {
                 // Trigger a refresh of field defs — re-list from current scope
                 // (the UI will need to re-send ListFieldDefs; handled by the panel code)
+            }
+
+            DbResult::PetalTerrainLoaded { ref petal_id, ref terrain } => {
+                // Only the active petal's terrain drives the map picker state.
+                if nav.active_petal_id.as_deref() == Some(petal_id.as_str()) {
+                    petal_map.petal_id = Some(petal_id.clone());
+                    petal_map.tileset_ids = terrain
+                        .as_ref()
+                        .and_then(|t| t.get("tileset_hexon_uris"))
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    petal_map.loaded = true;
+                }
             }
 
             _ => {}

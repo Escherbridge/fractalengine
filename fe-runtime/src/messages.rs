@@ -330,6 +330,16 @@ pub enum DbCommand {
     UninstallCrate {
         hexon_uri: String,
     },
+    // --- Petal terrain binding ---
+    /// Set or clear a petal's terrain config (None clears).
+    SetPetalTerrain {
+        petal_id: String,
+        terrain: Option<serde_json::Value>,
+    },
+    /// Load a petal's terrain config.
+    GetPetalTerrain {
+        petal_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Message)]
@@ -517,6 +527,11 @@ pub enum DbResult {
     /// Result of `UninstallCrate`.
     CrateUninstalled {
         hexon_uri: String,
+    },
+    /// Result of Get/SetPetalTerrain — authoritative petal terrain JSON (None = no terrain).
+    PetalTerrainLoaded {
+        petal_id: String,
+        terrain: Option<serde_json::Value>,
     },
 }
 

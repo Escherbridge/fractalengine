@@ -42,6 +42,7 @@ pub fn gardener_console(
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
+    petal_map: &crate::plugin::PetalMapState,
 ) -> egui::Rect {
     top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr);
     status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
@@ -92,7 +93,7 @@ pub fn gardener_console(
     render_peer_debug_panel(ctx, ui_mgr, sync_status);
     render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx);
     render_entity_settings_dialog(ctx, ui_mgr, db_tx);
-    render_hexon_manager(ctx, ui_mgr);
+    render_hexon_manager(ctx, ui_mgr, petal_map, nav.active_petal_id.as_deref());
     render_petal_manifest(ctx, ui_mgr);
 
     // Toast overlay (bottom-left, semi-transparent)

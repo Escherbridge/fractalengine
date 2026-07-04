@@ -24,3 +24,6 @@ coverage/
 # Claude/OMC state
 .omc/
 .claude/worktrees/
+
+# Built sample hexon packages (regenerate via `cargo run -p fe-hexon --example build_sample_hexons`)
+sample-hexons/dist/

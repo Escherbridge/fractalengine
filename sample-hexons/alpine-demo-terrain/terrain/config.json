@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "origin": {
+    "origin_lat": 47.3769,
+    "origin_lon": 8.5417,
+    "origin_ele": 408.0
+  },
+  "tile_source_url": "",
+  "elevation_source": "terrain_rgb",
+  "max_zoom": 12,
+  "min_zoom": 10,
+  "cache_dir": "terrain_cache",
+  "layers": [
+    { "name": "satellite", "visible": true, "opacity": 1.0 },
+    { "name": "elevation", "visible": true }
+  ],
+  "tileset_hexon_uris": ["sample-hexons/dist/alpine-demo-terrain.hexon"],
+  "tile_source_mode": "offline"
+}

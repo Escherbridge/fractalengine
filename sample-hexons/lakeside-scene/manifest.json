@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "hexon_id": "lakeside-scene",
+  "hexon_type": "scene",
+  "publisher_did": "did:key:z6MkSampleSceneAuthor",
+  "publisher_name": "Sample Scene Author",
+  "version": "0.1.0",
+  "build_id": "260702-v0.1.0",
+  "name": "Lakeside Scene",
+  "description": "Small demo scene near Lake Zurich: two GPX waypoints, a terrain anchor referencing the alpine-demo-terrain hexon, and an info node.",
+  "tags": ["scene", "demo", "sample", "zurich"],
+  "created_at": "2026-07-02T00:00:00Z",
+  "updated_at": "2026-07-02T00:00:00Z",
+  "min_engine_version": "0.1.0",
+  "dependencies": [
+    {
+      "hexon_uri": "hexon://did:key:z6MkSampleAlpineGis/alpine-demo-terrain",
+      "version_req": "^0.1"
+    }
+  ],
+  "platforms": []
+}

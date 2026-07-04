@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use anyhow::Result;
-use fe_format::manifest::TilesetMeta;
+use fe_format::manifest::{ElevationEncoding, TilesetMeta};
 use serde::{Deserialize, Serialize};
 
 use super::hexon_source::HexonTileSource;
@@ -28,6 +28,9 @@ pub struct TilesetInfo {
     pub zoom_range: (u8, u8),
     pub tile_count: u32,
     pub seeding: bool,
+    /// Elevation encoding from the tileset meta, when the tileset is loaded in memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_encoding: Option<ElevationEncoding>,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,16 +128,23 @@ impl TilesetRegistry {
 
     /// List all installed tilesets as lightweight `TilesetInfo` summaries.
     pub fn list_tilesets(&self) -> Vec<TilesetInfo> {
+        let sources = self.sources.read().expect("sources lock poisoned");
         self.store
             .list_installed()
             .into_iter()
-            .map(|t| TilesetInfo {
-                tileset_id: t.hexon_id,
-                region_name: t.region_name,
-                bounds: t.bounds,
-                zoom_range: t.zoom_range,
-                tile_count: t.tile_count,
-                seeding: t.seeding_enabled,
+            .map(|t| {
+                let elevation_encoding = sources
+                    .get(&t.hexon_id)
+                    .map(|src| src.tileset_meta.elevation_encoding.clone());
+                TilesetInfo {
+                    tileset_id: t.hexon_id,
+                    region_name: t.region_name,
+                    bounds: t.bounds,
+                    zoom_range: t.zoom_range,
+                    tile_count: t.tile_count,
+                    seeding: t.seeding_enabled,
+                    elevation_encoding,
+                }
             })
             .collect()
     }

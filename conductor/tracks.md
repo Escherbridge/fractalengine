@@ -294,6 +294,7 @@ _Link: [./tracks/cross_platform_desktop_20260429/](./tracks/cross_platform_deskt
 _Depends on: none | Blocks: Release CI_
 _Scope: Multi-target .cargo/config.toml, Linux/macOS compile verification, platform #[cfg] audit + tests, BUILDING.md_
 _Priority: P1 (validates that GUI binary compiles on all desktop platforms)_
+_Status: Phase 1-2 complete; Phase 3 in progress (needs cross-platform compile verification)_
 
 ## [~] Track: Headless Relay — Build Split, SecretStore Trait, Thin Client Surface
 
@@ -301,6 +302,7 @@ _Link: [./tracks/headless_relay_20260429/](./tracks/headless_relay_20260429/)_
 _Depends on: Realtime API Gateway (complete) | Blocks: Release CI, Web Client SDK, IoT Integration, Docker Deployment, Mobile Client_
 _Scope: Separate headless binary crate, SecretStore trait (OS/env/file backends), feature-gated Bevy headless mode, scene graph streaming over WS, asset delivery endpoint, relay hardening_
 _Priority: P1 (enables server deployment, thin clients, and all non-desktop access patterns)_
+_Status: Phase 1-2 complete; Phase 3-4 in progress (entity change broadcast & scene subscription handlers pending)_
 
 ## [ ] Track: Release CI — Cross-Compilation Pipeline, Artifact Publishing, Docker Image
 

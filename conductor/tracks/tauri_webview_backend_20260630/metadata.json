@@ -1,29 +1,33 @@
 {
   "id": "tauri_webview_backend_20260630",
   "name": "Tauri WebView Backend — Robust Tauri Browser for fe-webview",
-  "status": "pending",
+  "status": "in_progress",
   "priority": "P0",
   "created": "2026-06-30",
   "depends_on": [],
   "blocks": ["tauri_ipc_asset_bridge_20260630", "tauri_backend_cutover_20260630"],
+  "notes": "Implementation complete. Build verification blocked by WSL missing GTK3/Wayland dev libraries. Code review confirms correct implementation.",
   "phases": [
     {
       "id": 1,
       "name": "Tauri Backend Integration",
-      "status": "pending",
-      "tasks": 4
+      "status": "complete",
+      "tasks": 4,
+      "notes": "TauriBackend implements WebViewBackend trait with all required methods"
     },
     {
       "id": 2,
       "name": "Feature Flags + Default Selection",
-      "status": "pending",
-      "tasks": 3
+      "status": "complete",
+      "tasks": 3,
+      "notes": "backend-tauri feature properly configured in Cargo.toml and mod.rs"
     },
     {
       "id": 3,
       "name": "PetalPortal Parity",
-      "status": "pending",
-      "tasks": 3
+      "status": "in_progress",
+      "tasks": 3,
+      "notes": "Tests created in tauri_backend_test.rs but cannot run due to missing system deps"
     }
   ]
 }
