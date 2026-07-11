@@ -4,6 +4,7 @@ pub mod extension;
 pub mod format;
 pub mod gpx;
 pub mod iot;
+pub mod lod_ring;
 pub mod mesh;
 pub mod petal_binding;
 pub mod projection;

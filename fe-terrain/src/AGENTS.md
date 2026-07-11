@@ -114,6 +114,69 @@ runs first so the frame's assignment is visible to everything downstream.
   `layer_stack.is_changed()`, and opacity < 1.0 also sets
   `AlphaMode::Blend` (alpha alone doesn't blend on `StandardMaterial`).
 
+**LOD hardening (terrain_lod_hardening_20260711).** Three region-scale
+(`world_scale < 1`) rendering defects were fixed. The pure math lives in
+`lod_ring.rs` (no `bevy`, always compiled + unit-tested) and `mesh/skirt.rs`
++ `mesh/interp.rs` (pure grid helpers under the non-gated `mesh` module):
+
+1. **Seams (thin black lines between tiles).** `terrain_mesh` now grows
+   **downward skirt walls** around each tile's four edges (`mesh/skirt.rs`).
+   Edge vertices are duplicated and dropped by `skirt_depth = SKIRT_TEXELS ×
+   cell_size` (world units — the cell size is already scaled, so the skirt
+   scales with the tile). Each wall segment is emitted with **both windings**
+   (two-sided) so it never culls to the background regardless of view angle;
+   skirt UVs copy the edge UV so the satellite texture / terrain colour
+   continues down the wall. This hides both float-precision gaps at
+   `scaled_tile_size` edges and small edge-height disagreements between
+   adjacent tiles (which decode their borders from separate tiles). Skirt
+   vertices/indices are appended **after** the base normals are finalised so
+   base lighting is unaffected. Base normals are still computed only over base
+   indices.
+
+2. **Zoom-out clipping / holes.** The fetch ring is no longer a fixed 3×3:
+   - **Adaptive radius.** `view_radius_world(cam_height_world, far_world,
+     VIEW_RADIUS_FACTOR)` = camera world-height × 3, capped by the camera's
+     **actual perspective far plane** (read from the bevy `Projection`
+     component — the single source of truth that fe-renderer's
+     `scaled_far_plane` already sizes to the scale). `ring_radius_tiles`
+     converts that world radius into a tile radius, clamped to
+     `max_ring_radius_for_budget(max_chunks)` so `(2r+1)² ≤ max_chunks`.
+     At 1:1 this collapses back to radius 1 (≈ the old 3×3) — no regression.
+   - **Nearest-first, budgeted.** `ring_offsets(radius)` yields offsets sorted
+     by squared distance; spawning stops at `max_chunks` or
+     `MAX_SPAWNS_PER_FRAME` (16) so a large ring fills the visible centre first
+     and never hitches (it accumulates across frames).
+   - **Despawn hysteresis.** `spawn_despawn_radii` returns a despawn radius
+     strictly greater than the spawn radius (`× DESPAWN_HYSTERESIS = 1.5`,
+     floored to ~2 tiles + the LOD base), so a tile that is still visible is
+     never despawned — no flicker, no edge holes.
+   - **Hole-free wrong-zoom despawn.** A chunk at the wrong zoom is despawned
+     **only once its desired-zoom replacement fully covers it**
+     (`wrong_zoom_replacement_present` → `covering_tiles`: parent for
+     zoom-out, the `f×f` children for zoom-in, bounded by `MAX_COVER_DZ`).
+     `update_terrain_lod` runs before `fetch_and_spawn`, so on a zoom change
+     the old coverage is kept until the new tiles exist — brief overlap
+     instead of a gap.
+
+3. **Close-range quality (blocky terrain).** When the camera descends below the
+   served max zoom's natural height (`desired_zoom` is clamped to
+   `config.max_zoom`, so `zoom >= config.max_zoom` means "can't fetch finer"),
+   `upsample_factor_for_height(cam_real_height, ZOOM_BASE_HEIGHT_M,
+   MAX_UPSAMPLE)` returns a power-of-two factor (≤ 4×; each halving below the
+   200 m base doubles it). `spawn_chunk` then `upsample_bilinear`s the decoded
+   elevations onto a denser grid **before scaling**, so the world-Y invariant
+   `(ele − origin_ele) × scale` is preserved (bilinear samples are convex
+   combinations of the originals, and original samples land exactly on grid
+   nodes). Geometry stays smooth up close.
+   **Honest limitation:** only the *elevation mesh* is densified. Satellite
+   **texture** sharpness is capped by the source hexon's max-zoom tiles —
+   higher-zoom imagery is a **gis-tile-etl** concern (produce deeper-zoom
+   hexons), not a renderer one. The upsampled mesh drapes the same texels more
+   smoothly but cannot invent texture detail.
+
+`ZOOM_BASE_HEIGHT_M` (200 m) is the single source for `desired_zoom`'s base and
+the close-range trigger, keeping the two in lock-step.
+
 ## §scale
 
 `TerrainConfig.world_scale` (serde default `1.0`, additive — pre-feature petal

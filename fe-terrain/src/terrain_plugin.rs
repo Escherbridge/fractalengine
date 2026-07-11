@@ -4,11 +4,18 @@ use std::collections::HashSet;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
+use bevy::prelude::Projection as CameraProjection;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
 use crate::iot::TrackRouteMap;
 use crate::layers::{LayerId, LayerStack, LayerType};
+use crate::lod_ring::{
+    max_ring_radius_for_budget, ring_offsets, ring_radius_tiles, spawn_despawn_radii,
+    upsample_factor_for_height, view_radius_world, wrong_zoom_replacement_present,
+    DESPAWN_HYSTERESIS, MAX_UPSAMPLE, VIEW_RADIUS_FACTOR, ZOOM_BASE_HEIGHT_M,
+};
+use crate::mesh::interp::upsample_bilinear;
 use crate::mesh::terrain::terrain_mesh;
 use crate::petal_binding::{
     apply_terrain_assignments, ActivePetalTerrain, ActiveTileSource, TerrainAssignmentMsg,
@@ -19,6 +26,9 @@ use crate::tiles::{
     decode_png_pixels, CompositeTileSource, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder,
     TileCoord,
 };
+
+/// Max chunks spawned per frame so a large adaptive ring fills without hitching.
+const MAX_SPAWNS_PER_FRAME: usize = 16;
 
 /// Links an entity to a layer in the [`LayerStack`] for visibility synchronization.
 #[derive(Component)]
@@ -140,10 +150,18 @@ pub(crate) fn desired_zoom(cam_height_m: f32, min_zoom: u8, max_zoom: u8) -> u8 
         (max_zoom, min_zoom)
     };
     let h = f64::from(cam_height_m.max(1.0));
-    // One zoom step out per doubling of height above a 200 m base.
-    let steps = (h / 200.0).max(1.0).log2().floor() as i64;
+    // One zoom step out per doubling of height above the base (see ZOOM_BASE_HEIGHT_M).
+    let steps = (h / ZOOM_BASE_HEIGHT_M).max(1.0).log2().floor() as i64;
     let z = max_zoom as i64 - steps.max(0);
     z.clamp(min_zoom as i64, max_zoom as i64) as u8
+}
+
+/// Perspective far plane in world units, if the camera has a perspective projection.
+fn perspective_far_world(proj: &CameraProjection) -> Option<f64> {
+    match proj {
+        CameraProjection::Perspective(p) => Some(p.far as f64),
+        _ => None,
+    }
 }
 
 /// East-west width of a slippy tile in meters at the given latitude and zoom.
@@ -151,15 +169,16 @@ pub(crate) fn tile_world_size_m(lat: f64, zoom: u8) -> f64 {
     40_075_016.686 * lat.to_radians().cos() / 2f64.powi(zoom as i32)
 }
 
-/// Despawn chunks at the wrong zoom for the camera or beyond the max view distance.
+/// Despawn chunks beyond the hysteresis view radius, or at a stale zoom once the
+/// desired-zoom replacement fully covers them (hole-free); see AGENTS.md §terrain_plugin.
 fn update_terrain_lod(
-    camera_query: Query<&GlobalTransform, With<Camera>>,
+    camera_query: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
     chunk_query: Query<(Entity, &TerrainChunk, &GlobalTransform)>,
     lod_config: Res<TerrainLodConfig>,
     active: Res<ActivePetalTerrain>,
     mut commands: Commands,
 ) {
-    let Ok(cam_transform) = camera_query.single() else {
+    let Ok((cam_transform, cam_proj)) = camera_query.single() else {
         return;
     };
     let cam_pos = cam_transform.translation();
@@ -180,26 +199,39 @@ fn update_terrain_lod(
         )
     });
 
-    // Max distance never shrinks below ~2 tiles so big low-zoom tiles don't churn.
-    let base_max = lod_config.lod_distances.last().copied().unwrap_or(1000.0) * 2.0;
-    let max_dist = match desired {
-        Some(z) => base_max.max(2.0 * scaled_tile_size(tile_world_size_m(0.0, z), scale) as f32),
-        None => base_max,
+    // Despawn radius follows the visible frustum with hysteresis so tiles never
+    // flicker or leave holes while still in view; floored to ~2 tiles + the LOD
+    // base so big low-zoom tiles don't churn.
+    let far_world = perspective_far_world(cam_proj)
+        .unwrap_or_else(|| (cam_pos.y as f64).abs() * VIEW_RADIUS_FACTOR);
+    let view_r = view_radius_world(cam_pos.y as f64, far_world, VIEW_RADIUS_FACTOR);
+    let base_max = lod_config.lod_distances.last().copied().unwrap_or(1000.0) as f64 * 2.0;
+    let tile_world_equator = match desired {
+        Some(z) => scaled_tile_size(tile_world_size_m(0.0, z), scale),
+        None => scaled_tile_size(tile_world_size_m(0.0, 0), scale),
     };
+    let (_spawn_r, despawn_r) =
+        spawn_despawn_radii(view_r.max(base_max), tile_world_equator, DESPAWN_HYSTERESIS);
+
+    let existing: HashSet<(u8, u32, u32)> =
+        chunk_query.iter().map(|(_, c, _)| c.tile_coords).collect();
 
     for (entity, chunk, chunk_transform) in chunk_query.iter() {
-        let wrong_zoom = desired.is_some_and(|z| chunk.tile_coords.0 != z);
-        let too_far = cam_pos.distance(chunk_transform.translation()) > max_dist;
-        if wrong_zoom || too_far {
+        let too_far = (cam_pos.distance(chunk_transform.translation()) as f64) > despawn_r;
+        let coord = TileCoord::new(chunk.tile_coords.1, chunk.tile_coords.2, chunk.tile_coords.0);
+        let stale_zoom = desired
+            .is_some_and(|z| wrong_zoom_replacement_present(coord, z, &existing));
+        if too_far || stale_zoom {
             commands.entity(entity).despawn();
         }
     }
 }
 
-/// Offline-first chunk spawning: 3×3 tile ring around the camera at the desired zoom.
+/// Offline-first chunk spawning: an adaptive tile ring (frustum-sized, nearest-first)
+/// around the camera at the desired zoom; see AGENTS.md §terrain_plugin.
 #[allow(clippy::too_many_arguments)]
 fn fetch_and_spawn_terrain_chunks(
-    camera_query: Query<&GlobalTransform, With<Camera>>,
+    camera_query: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
     chunk_query: Query<&TerrainChunk>,
     lod_config: Res<TerrainLodConfig>,
     active: Res<ActivePetalTerrain>,
@@ -220,7 +252,7 @@ fn fetch_and_spawn_terrain_chunks(
     ) else {
         return;
     };
-    let Ok(cam_transform) = camera_query.single() else {
+    let Ok((cam_transform, cam_proj)) = camera_query.single() else {
         return;
     };
 
@@ -248,46 +280,67 @@ fn fetch_and_spawn_terrain_chunks(
     let cam_real_height = world_to_real_height(cam_pos.y as f64, scale) as f32;
     let zoom = desired_zoom(cam_real_height, config.min_zoom, config.max_zoom);
 
+    // Adaptive ring: cover the visible frustum (camera height × factor, capped by
+    // the scale-aware far plane) instead of a fixed 3×3, bounded by the chunk budget.
+    let far_world = perspective_far_world(cam_proj)
+        .unwrap_or_else(|| (cam_pos.y as f64).abs() * VIEW_RADIUS_FACTOR);
+    let view_r = view_radius_world(cam_pos.y as f64, far_world, VIEW_RADIUS_FACTOR);
+    let scaled_tile = scaled_tile_size(tile_world_size_m(lat, zoom), scale);
+    let max_radius = max_ring_radius_for_budget(lod_config.max_chunks);
+    let radius = ring_radius_tiles(view_r, scaled_tile, max_radius);
+
+    // Close-range upsampling: once the camera descends below the served max zoom's
+    // natural height, densify decoded elevations so geometry stays smooth up close.
+    let upsample = if zoom >= config.max_zoom {
+        upsample_factor_for_height(cam_real_height as f64, ZOOM_BASE_HEIGHT_M, MAX_UPSAMPLE)
+    } else {
+        1
+    };
+
     let existing: HashSet<(u8, u32, u32)> = chunk_query.iter().map(|c| c.tile_coords).collect();
     let center = TileCoord::from_lat_lon(lat, lon, zoom);
     let tiles_per_axis = TileCoord::tiles_at_zoom(zoom) as i64;
 
-    for dy in -1i64..=1 {
-        for dx in -1i64..=1 {
-            if active_count >= lod_config.max_chunks {
-                return;
-            }
-            let x = center.x as i64 + dx;
-            let y = center.y as i64 + dy;
-            if x < 0 || y < 0 || x >= tiles_per_axis || y >= tiles_per_axis {
-                continue;
-            }
-            let coord = TileCoord::new(x as u32, y as u32, zoom);
-            let key = (zoom, coord.x, coord.y);
-            if existing.contains(&key) || failed.tiles.contains(&key) {
-                continue;
-            }
+    let mut spawned_this_frame = 0usize;
+    // Nearest-first so the camera's immediate surroundings fill before the edges.
+    for (dx, dy) in ring_offsets(radius) {
+        if active_count >= lod_config.max_chunks || spawned_this_frame >= MAX_SPAWNS_PER_FRAME {
+            return;
+        }
+        let x = center.x as i64 + dx;
+        let y = center.y as i64 + dy;
+        if x < 0 || y < 0 || x >= tiles_per_axis || y >= tiles_per_axis {
+            continue;
+        }
+        let coord = TileCoord::new(x as u32, y as u32, zoom);
+        let key = (zoom, coord.x, coord.y);
+        if existing.contains(&key) || failed.tiles.contains(&key) {
+            continue;
+        }
 
-            if spawn_chunk(
-                coord,
-                config,
-                composite,
-                projection,
-                &layer_stack,
-                &mut commands,
-                &mut meshes,
-                &mut materials,
-                &mut images,
-            ) {
-                active_count += 1;
-            } else {
-                failed.tiles.insert(key);
-            }
+        if spawn_chunk(
+            coord,
+            config,
+            composite,
+            projection,
+            &layer_stack,
+            upsample,
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+        ) {
+            active_count += 1;
+            spawned_this_frame += 1;
+        } else {
+            failed.tiles.insert(key);
         }
     }
 }
 
 /// Build + spawn one terrain chunk entity; returns false when no data was usable.
+///
+/// `upsample` (≥1) bilinearly densifies decoded elevations for close-range detail.
 #[allow(clippy::too_many_arguments)]
 fn spawn_chunk(
     coord: TileCoord,
@@ -295,6 +348,7 @@ fn spawn_chunk(
     composite: &CompositeTileSource,
     projection: &Projection,
     layer_stack: &LayerStack,
+    upsample: u32,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -322,10 +376,13 @@ fn spawn_chunk(
                 ElevationSourceKind::Terrarium => TerrariumDecoder.decode(&pixels, w, h),
                 ElevationSourceKind::None => vec![0.0; (w * h) as usize],
             };
+            // Densify before scaling so interpolation stays in real meters and the
+            // world-Y invariant `(ele - origin_ele) * scale` is preserved.
+            let (grid, gw, gh) = upsample_bilinear(&decoded, w as usize, h as usize, upsample);
             // Scale heights to world units (origin_ele subtraction lands in the anchor).
-            let scaled = scale_elevations(&decoded, scale as f32);
-            let flipped = flip_rows(&scaled, w as usize, h as usize);
-            Some(terrain_mesh(&flipped, w, h, tile_size))
+            let scaled = scale_elevations(&grid, scale as f32);
+            let flipped = flip_rows(&scaled, gw, gh);
+            Some(terrain_mesh(&flipped, gw as u32, gh as u32, tile_size))
         }
         Ok(_) => {
             tracing::warn!(tile = %coord.cache_key(), "elevation tile smaller than 2x2; ignoring");
