@@ -1,6 +1,28 @@
+---
+type: Code Styleguide
+title: Rust Style Guide
+tags: [enforcement, 2026-07-10]
+timestamp: 2026-07-10T00:00:00Z
+---
+
 # Rust Style Guide — FractalEngine
 
 This guide covers Rust-specific conventions for FractalEngine. All rules build on `general.md`. Where this guide and `general.md` conflict, `general.md`'s Safety & Security rules win.
+
+## Enforcement — Rust-Specific Patterns (concrete, greppable)
+
+`general.md` states the shared principles (file size, doc comments, typed
+writes, fail-closed capabilities, central policy engine, test sweep timing).
+This section gives the exact commands to check them in this codebase.
+
+| Rule (see `general.md`) | Command / pattern |
+|---|---|
+| File soft cap ~300 lines | `wc -l fe-*/src/**/*.rs \| sort -rn \| head` — anything materially over 300 is a decomposition candidate |
+| Terse one-line doc comments | `rg -U '//!.*\n//!.*\n//!' <changed files>` — 3+ consecutive `//!` lines in a diff is a candidate for moving into the directory `AGENTS.md` |
+| Typed writes for schema-typed tables | `rg 'InsertBuilder\|UpdateBuilder' fe-database/src/handlers/` — any hit touching a `geometry<...>`-typed column is the `§geometry-inserts` regression pattern; see `fe-database/src/AGENTS.md` |
+| Fail-closed extension APIs | `rg 'pub fn' fe-plugin/src/host_env.rs` cross-checked against `rg 'require\('  fe-plugin/src/host_env.rs` — every routed operation should have a matching `require(token, CAP_*)` call before touching `self.storage`/`self.query` |
+| Central policy engine | `rg 'const \w+_ROLES: &\[&str\]'` and `rg 'fn require_\w+\('` across the workspace — new hits outside the eventual policy-engine crate are the ad-hoc-role-check pattern this rule exists to stop (`fe-database/src/rbac.rs::WRITE_ROLES` and `fe-api/src/auth.rs::require_role` are the pre-existing examples, not templates to copy) |
+| Handler success = persisted state | For any new `fe-database` handler, confirm a paired test does a read-back query (`SELECT ... WHERE`), not just an assertion on the handler's `Ok` return |
 
 ## Formatting
 

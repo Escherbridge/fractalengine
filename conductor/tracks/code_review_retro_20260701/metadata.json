@@ -1,0 +1,10 @@
+{
+  "id": "code_review_retro_20260701",
+  "description": "System-wide code review & retrospective session",
+  "type": "chore",
+  "created_at": "2026-07-01T00:00:00Z",
+  "status": "completed",
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "not previously registered in conductor/tracks.md; added 2026-07-10. Findings synthesized into conductor/tracks/wave_retros_20260710/retro.md"
+}

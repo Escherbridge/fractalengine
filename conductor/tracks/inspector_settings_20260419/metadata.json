@@ -1,0 +1,8 @@
+{
+  "id": "inspector_settings_20260419",
+  "description": "Portal URL Persistence, Inspector Tabs, Hierarchy Inspection, Auth Settings UI",
+  "type": "feature",
+  "created_at": "2026-04-19T00:00:00Z",
+  "status": "pending",
+  "notes": "verified 2026-07-10: inspector shipped with a different tab set (Properties/ApiAccess/Query) than specced (Info/Settings/Access + hierarchy inspection)"
+}

@@ -1,10 +1,13 @@
 {
-  "track_id": "petal_portal_20260322",
+  "id": "petal_portal_20260322",
   "name": "Petal Portal — Digital Twin Browser Overlay & IoT Interaction",
-  "status": "pending",
+  "status": "completed",
   "created_at": "2026-03-22",
   "phases": 4,
   "tasks": 12,
   "depends_on": ["bloom_stage_20260322"],
-  "blocks": []
+  "blocks": [],
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "verified 2026-07-10: fe-webview/src/petal_portal.rs TabVisibilityFilter + BrowserTab role-gated tabs. Key was 'track_id' (schema drift) — repaired to 'id'."
 }

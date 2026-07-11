@@ -1,0 +1,9 @@
+{
+  "id": "realtime_api_mcp_20260427",
+  "description": "Realtime API Gateway — MCP + REST + WebSocket for External Access",
+  "type": "feature",
+  "created_at": "2026-04-27T00:00:00Z",
+  "status": "completed",
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z"
+}

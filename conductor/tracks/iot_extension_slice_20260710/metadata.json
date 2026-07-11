@@ -1,0 +1,10 @@
+{
+  "id": "iot_extension_slice_20260710",
+  "description": "IoT bridge extension proving push/pull device to node loop end-to-end through the plugin host",
+  "type": "feature",
+  "created_at": "2026-07-10T00:00:00Z",
+  "status": "pending",
+  "depends_on": ["analytics_extension_api_20260710"],
+  "blocks": [],
+  "notes": "verified 2026-07-10: fe-terrain/src/iot/ (path_tracker.rs, animation.rs) is one-directional device-to-visualization only; fe-plugin-test sensor_network() fixture exists and unused by any real extension — good starting point"
+}

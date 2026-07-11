@@ -7,6 +7,8 @@
   "completed": "2026-07-01",
   "depends_on": ["tauri_ipc_asset_bridge_20260630"],
   "blocks": [],
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
   "phases": [
     {
       "id": 1,

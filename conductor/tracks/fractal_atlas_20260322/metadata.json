@@ -1,10 +1,13 @@
 {
-  "track_id": "fractal_atlas_20260322",
+  "id": "fractal_atlas_20260322",
   "name": "Fractal Atlas — Space Manager & Metadata System",
-  "status": "pending",
+  "status": "completed",
   "created_at": "2026-03-22",
   "phases": 5,
   "tasks": 14,
   "depends_on": ["garden_console_20260322"],
-  "blocks": []
+  "blocks": [],
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "verified 2026-07-10: fe-ui/src/atlas/{dashboard,model_editor,petal_wizard,room_editor,search_bar,tag_panel,visibility_control}.rs all present. Key was 'track_id' (schema drift) — repaired to 'id'."
 }

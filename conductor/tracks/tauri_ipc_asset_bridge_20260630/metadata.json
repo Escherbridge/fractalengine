@@ -1,28 +1,31 @@
 {
   "id": "tauri_ipc_asset_bridge_20260630",
   "name": "Tauri IPC/Asset Bridge — Shared Node Structure + egui-Led Event Bridge",
-  "status": "pending",
+  "status": "completed",
   "priority": "P1",
   "created": "2026-06-30",
   "depends_on": ["tauri_webview_backend_20260630"],
   "blocks": ["tauri_backend_cutover_20260630"],
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "verified 2026-07-10: fe-webview/src/tauri_commands.rs implements the #[tauri::command] IPC surface; status was stale 'pending' despite shipping (tauri_backend_cutover_20260630, which depends on this track, was already separately marked completed — inconsistent until this repair)",
   "phases": [
     {
       "id": 1,
       "name": "Shared Node Data Structure",
-      "status": "pending",
+      "status": "completed",
       "tasks": 4
     },
     {
       "id": 2,
       "name": "IPC Command Handlers",
-      "status": "pending",
+      "status": "completed",
       "tasks": 3
     },
     {
       "id": 3,
       "name": "Event Bridge + Asset Protocol",
-      "status": "pending",
+      "status": "completed",
       "tasks": 4
     }
   ]

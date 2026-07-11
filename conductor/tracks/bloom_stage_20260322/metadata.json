@@ -1,10 +1,13 @@
 {
-  "track_id": "bloom_stage_20260322",
+  "id": "bloom_stage_20260322",
   "name": "Bloom Stage — 3D Scene Rendering & Object Interaction",
-  "status": "pending",
+  "status": "completed",
   "created_at": "2026-03-22",
   "phases": 5,
   "tasks": 14,
   "depends_on": ["petal_seed_20260322"],
-  "blocks": ["petal_portal_20260322"]
+  "blocks": ["petal_portal_20260322"],
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "verified 2026-07-10: GroundPlane + orbit camera (fe-renderer/src/camera.rs) + raycast selection (fe-ui/src/node_manager.rs). Key was 'track_id' (schema drift) — repaired to 'id'. Note: depends_on petal_seed_20260322 which itself remains unimplemented as specced — bloom_stage shipped via a different asset path."
 }
