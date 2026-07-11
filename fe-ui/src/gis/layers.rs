@@ -1,0 +1,144 @@
+//! Pure terrain-layer JSON read/mutate helpers backing the Layer Manager
+//! card. Operates on the raw petal terrain JSON (`PetalMapState.terrain_json`)
+//! shaped like fe-terrain's `TerrainConfig`/`LayerConfig` — fe-ui never
+//! depends on fe-terrain (boundary rule), so this is all `serde_json`. See
+//! `fe-ui/src/AGENTS.md` §gis-query-ui and `fe-terrain/src/AGENTS.md`
+//! §petal_binding for the consuming side.
+
+/// A single layer row for display: name, visibility, opacity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerUiEntry {
+    pub name: String,
+    pub visible: bool,
+    pub opacity: f32,
+}
+
+/// Extracts the `layers` array of a petal terrain JSON doc for display.
+/// Returns an empty vec for a missing/malformed `layers` field.
+pub(crate) fn layer_entries_from_terrain_json(terrain_json: &serde_json::Value) -> Vec<LayerUiEntry> {
+    terrain_json
+        .get("layers")
+        .and_then(|l| l.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| {
+                    let name = l.get("name")?.as_str()?.to_string();
+                    let visible = l.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let opacity = l.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0) as f32;
+                    Some(LayerUiEntry { name, visible, opacity })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Returns a mutated clone of `terrain_json` with the named layer's
+/// `visible`/`opacity` fields updated (only the `Some(..)` ones), inserting a
+/// new layer entry if `layer_name` isn't present yet. Every other field of
+/// the document (origin, elevation source, world_scale, other layers, ...)
+/// is preserved verbatim — this is the "mutate one field, round-trip via
+/// SetPetalTerrain" idiom from `actions::hexon::set_petal_map_scale`, applied
+/// to the actual stored doc rather than a freshly rebuilt one.
+pub(crate) fn set_layer_field(
+    terrain_json: &serde_json::Value,
+    layer_name: &str,
+    visible: Option<bool>,
+    opacity: Option<f32>,
+) -> serde_json::Value {
+    let mut doc = terrain_json.clone();
+    let Some(obj) = doc.as_object_mut() else { return doc };
+    let layers = obj
+        .entry("layers".to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(arr) = layers.as_array_mut() else { return doc };
+
+    let existing = arr
+        .iter_mut()
+        .find(|l| l.get("name").and_then(|n| n.as_str()) == Some(layer_name));
+
+    match existing {
+        Some(entry) => {
+            if let Some(map) = entry.as_object_mut() {
+                if let Some(v) = visible {
+                    map.insert("visible".to_string(), serde_json::Value::Bool(v));
+                }
+                if let Some(o) = opacity {
+                    map.insert("opacity".to_string(), serde_json::json!(o));
+                }
+            }
+        }
+        None => {
+            arr.push(serde_json::json!({
+                "name": layer_name,
+                "visible": visible.unwrap_or(true),
+                "opacity": opacity,
+            }));
+        }
+    }
+    doc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_doc() -> serde_json::Value {
+        serde_json::json!({
+            "enabled": true,
+            "world_scale": 0.01,
+            "layers": [
+                { "name": "satellite", "visible": true },
+                { "name": "terrain", "visible": true, "opacity": 0.8 },
+            ],
+        })
+    }
+
+    #[test]
+    fn layer_entries_extracts_defaults() {
+        let entries = layer_entries_from_terrain_json(&sample_doc());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], LayerUiEntry { name: "satellite".into(), visible: true, opacity: 1.0 });
+        assert_eq!(entries[1], LayerUiEntry { name: "terrain".into(), visible: true, opacity: 0.8 });
+    }
+
+    #[test]
+    fn layer_entries_empty_for_missing_layers_field() {
+        assert!(layer_entries_from_terrain_json(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn set_layer_field_updates_existing_layer_visible_only() {
+        let updated = set_layer_field(&sample_doc(), "satellite", Some(false), None);
+        let entries = layer_entries_from_terrain_json(&updated);
+        assert!(!entries[0].visible);
+        // opacity untouched (still default 1.0 since it wasn't set before either)
+        assert_eq!(entries[0].opacity, 1.0);
+        // sibling fields preserved
+        assert_eq!(updated["world_scale"], serde_json::json!(0.01));
+    }
+
+    #[test]
+    fn set_layer_field_updates_opacity_only() {
+        let updated = set_layer_field(&sample_doc(), "terrain", None, Some(0.3));
+        let entries = layer_entries_from_terrain_json(&updated);
+        assert_eq!(entries[1].opacity, 0.3);
+        assert!(entries[1].visible, "visible must be untouched when only opacity is set");
+    }
+
+    #[test]
+    fn set_layer_field_inserts_missing_layer() {
+        let updated = set_layer_field(&sample_doc(), "gpx_track", Some(true), Some(0.5));
+        let entries = layer_entries_from_terrain_json(&updated);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].name, "gpx_track");
+        assert!(entries[2].visible);
+        assert_eq!(entries[2].opacity, 0.5);
+    }
+
+    #[test]
+    fn set_layer_field_noop_on_non_object_doc() {
+        let doc = serde_json::json!([1, 2, 3]);
+        let updated = set_layer_field(&doc, "satellite", Some(true), None);
+        assert_eq!(updated, doc);
+    }
+}

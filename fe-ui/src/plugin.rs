@@ -105,6 +105,10 @@ pub struct InspectorFormState {
     pub prop_add_key_buf: String,
     pub prop_add_value_buf: String,
     pub prop_add_type_buf: String,
+    // Annotation card state (gis.annotation.* reserved property editor)
+    pub annotation_title_buf: String,
+    pub annotation_body_buf: String,
+    pub annotation_color_buf: String,
     // Field definition (schema) editing state
     pub field_defs: Vec<FieldDefEntry>,
     pub field_defs_loading: bool,
@@ -139,6 +143,9 @@ impl Default for InspectorFormState {
             prop_add_key_buf: String::new(),
             prop_add_value_buf: String::new(),
             prop_add_type_buf: "string".into(),
+            annotation_title_buf: String::new(),
+            annotation_body_buf: String::new(),
+            annotation_color_buf: String::new(),
             field_defs: Vec::new(),
             field_defs_loading: false,
             field_def_add_key_buf: String::new(),
@@ -272,6 +279,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<PendingHexonOps>();
         app.init_resource::<crate::asset_ops::PendingAssetOps>();
         app.init_resource::<crate::asset_ops::AssetDownloadStatus>();
+        app.init_resource::<crate::gis::GisPanelState>();
         app.init_resource::<fe_sync::TilesetEventBuffer>();
         // Register BrowserCommand so MessageWriter<BrowserCommand> is usable.
         // fe-webview's WebViewPlugin also registers this; calling add_message
@@ -325,6 +333,15 @@ struct P2pDialogParams<'w> {
     // node_identity: Res<'w, fe_identity::NodeIdentity>,
 }
 
+/// Small bundle for miscellaneous read/write-once resources that don't fit an
+/// existing group — keeps `gardener_ui_system`'s own param list under Bevy's
+/// 16-param `SystemParam` tuple limit as new cross-cutting UI surfaces land.
+#[derive(bevy::ecs::system::SystemParam)]
+struct MiscUiParams<'w> {
+    asset_status: Res<'w, crate::asset_ops::AssetDownloadStatus>,
+    gis_panel: ResMut<'w, crate::gis::GisPanelState>,
+}
+
 fn gardener_ui_system(
     mut ctx: EguiContexts,
     mut sidebar: ResMut<SidebarState>,
@@ -340,6 +357,7 @@ fn gardener_ui_system(
     mut viewport_rect: ResMut<ViewportRect>,
     local_role: Res<LocalUserRole>,
     mut petal_map: ResMut<PetalMapState>,
+    mut misc: MiscUiParams,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
@@ -359,6 +377,8 @@ fn gardener_ui_system(
         &mut p2p.ui_mgr,
         &local_role,
         &mut petal_map,
+        &misc.asset_status,
+        &mut misc.gis_panel,
     );
     viewport_rect.0 = rect;
 

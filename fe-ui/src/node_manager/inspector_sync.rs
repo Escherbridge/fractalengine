@@ -43,6 +43,12 @@ pub(super) fn sync_manager_to_inspector(
         if let Some(ref sel) = manager.selected {
             inspector.node_properties_loading = true;
             inspector.node_properties = serde_json::Value::Object(Default::default());
+            // Clear the Annotation card buffers so they don't briefly show the
+            // previous node's values while the async property load is in flight
+            // (populated by `DbResult::NodePropertiesLoaded` in db_results.rs).
+            inspector.annotation_title_buf.clear();
+            inspector.annotation_body_buf.clear();
+            inspector.annotation_color_buf.clear();
             let _ = db_sender.0.send(fe_runtime::messages::DbCommand::GetNodeProperties {
                 node_id: sel.node_id.clone(),
             });

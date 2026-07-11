@@ -22,6 +22,7 @@ pub(super) fn apply_db_results(
     mut inspector: ResMut<crate::plugin::InspectorFormState>,
     mut pending_api: ResMut<fe_runtime::app::PendingApiRequests>,
     mut petal_map: ResMut<crate::terrain_map::PetalMapState>,
+    mut gis_panel: ResMut<crate::gis::GisPanelState>,
 ) {
     for result in reader.read() {
         match result {
@@ -206,8 +207,13 @@ pub(super) fn apply_db_results(
 
             DbResult::Error(msg) => {
                 bevy::log::error!("DB error: {msg}");
-                // If query tab is waiting, deliver the error there
-                if inspector.query_loading {
+                // GIS panel queries take priority over the ad-hoc Query tab
+                // when both happen to be in flight — see `DbResult::QueryResult`
+                // below for why these two share one untagged result channel.
+                if gis_panel.query_pending {
+                    gis_panel.last_error = Some(msg.clone());
+                    gis_panel.query_pending = false;
+                } else if inspector.query_loading {
                     inspector.query_result = Some(format!("Error: {msg}"));
                     inspector.query_loading = false;
                 }
@@ -375,15 +381,30 @@ pub(super) fn apply_db_results(
             }
 
             DbResult::QueryResult { data } => {
-                let formatted = serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"));
-                inspector.query_result = Some(formatted);
-                inspector.query_loading = false;
+                // `RawQuery`'s result carries no request-id to correlate against,
+                // so whichever caller is actually waiting claims it: the GIS
+                // panel's queries take priority since they're the newer/rarer
+                // caller — the ad-hoc Query tab falls back to its own buffer.
+                if gis_panel.query_pending {
+                    gis_panel.results = crate::gis::parse_gis_rows(data);
+                    gis_panel.query_pending = false;
+                } else {
+                    let formatted = serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"));
+                    inspector.query_result = Some(formatted);
+                    inspector.query_loading = false;
+                }
             }
 
             // --- Property value results ---
             DbResult::NodePropertiesLoaded { node_id: _, ref properties } => {
                 inspector.node_properties = properties.clone();
                 inspector.node_properties_loading = false;
+                // Annotation card buffers derive from the same properties object.
+                let (title, body, color) =
+                    crate::actions::node_props::annotation_fields_from_properties(properties);
+                inspector.annotation_title_buf = title;
+                inspector.annotation_body_buf = body;
+                inspector.annotation_color_buf = color;
             }
             DbResult::NodePropertySet { ref node_id, key: _ } => {
                 // Re-fetch properties for the node to refresh UI
@@ -397,6 +418,11 @@ pub(super) fn apply_db_results(
                 if let Some(obj) = inspector.node_properties.as_object_mut() {
                     obj.remove(key.as_str());
                 }
+                let (title, body, color) =
+                    crate::actions::node_props::annotation_fields_from_properties(&inspector.node_properties);
+                inspector.annotation_title_buf = title;
+                inspector.annotation_body_buf = body;
+                inspector.annotation_color_buf = color;
             }
 
             // --- Field definition results ---
@@ -433,6 +459,8 @@ pub(super) fn apply_db_results(
                         .and_then(|v| v.as_f64())
                         .filter(|s| s.is_finite() && *s > 0.0)
                         .unwrap_or(1.0);
+                    // Keep the raw doc for the GIS Layer Manager's mutate-and-round-trip flow.
+                    petal_map.terrain_json = terrain.clone();
                     petal_map.loaded = true;
                 }
             }

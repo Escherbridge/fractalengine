@@ -11,7 +11,9 @@
   (`pick_axis`, `segment_dist_2d`, etc.) private to this file.
 - `viewport_pick.rs` — 3-D viewport click → nearest-node select/deselect.
 - `inspector_sync.rs` — `NodeManager` → `InspectorFormState` display sync
-  (transform strings + per-node URL/property load on selection change).
+  (transform strings + per-node URL/property load on selection change; also
+  clears the Annotation card's title/body/color buffers here since the
+  underlying property load is async — see root `AGENTS.md` §gis-query-ui).
 - `transform_broadcast.rs` — commits a finished gimbal drag to
   `DbCommand::UpdateNodeTransform` + P2P sync, and applies inbound API
   transforms back onto the ECS.

@@ -15,6 +15,7 @@ see each module's own doc-comment for the "what"; this file is the "why".
 | `dialogs` | `ActiveDialog` (mutual-exclusion enum) + one render function per floating dialog/window. |
 | `terrain_map` | Petal-map state (`PetalMapState`), the hexon registry op queue (`HexonOp`/`PendingHexonOps`), Hexon Manager DTOs, the petal manifest type, and tileset-event draining. |
 | `asset_ops` | Node-asset download op queue (`AssetOp`/`PendingAssetOps`) + the result-status resource (`AssetDownloadStatus`) the main binary writes back to. See §asset-download. |
+| `gis` | `GisPanelState` (GIS Query panel resource) + pure query-building/row-parsing/bbox-filter/layer-JSON logic backing the GIS Query & Layer Manager panel. See §gis-query-ui. |
 | `panels` | The top-level egui shell (`gardener_console`) + one file per panel (toolbar, status bar, sidebar tree, inspector tabs, query tab, portal toolbar). |
 | `node_manager` | `NodeManager` (single source of truth for selection) + gimbal interaction/hover/pick, viewport click-to-select, transform broadcast, inspector sync — one file per concern. |
 | `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. |
@@ -145,3 +146,91 @@ scope for this decomposition task):
 - Whitespace is preserved (not trimmed) in the stored URL string; only the
   "is it empty" check trims, so `"  https://x  "` is stored with the
   padding intact and will need re-parsing/trimming on read.
+
+## §gis-query-ui — Annotation editor, GIS Query panel, Layer Manager
+
+Track `gis_query_ui_20260711`. Three pieces, all in `fe-ui` only (no new
+crate deps — in particular no `fe-terrain`/`fe-query` dependency was added;
+everything is `serde_json` + the existing `DbCommand`/`DbResult` surface).
+
+**Annotation card** (`panels::annotation_card`). Edits three reserved,
+flat, dotted-string node-property keys — `gis.annotation.title`,
+`gis.annotation.body`, `gis.annotation.color` — through the *exact* Phase 5
+custom-property path: `UiAction::SetNodeProperty`/`DeleteNodeProperty` →
+`actions::node_props::set`/`delete` → `DbCommand::SetNodeProperty`/
+`DeleteNodeProperty` (see `fe-database/src/handlers/entity_property.rs`'s
+`properties[$key]` dynamic-key setter — the dotted key is one flat map key,
+not a nested path). Saving an empty field pushes `DeleteNodeProperty`
+instead of `SetNodeProperty` (clears the key). The three key constants and a
+pure `annotation_fields_from_properties` extractor live in
+`actions::node_props`; `InspectorFormState` gained three buffers
+(`annotation_title_buf`/`_body_buf`/`_color_buf`) populated by
+`db_results::apply_db_results` whenever `DbResult::NodePropertiesLoaded`/
+`NodePropertyDeleted` land, and cleared by `node_manager::inspector_sync` on
+every new selection (properties load asynchronously, unlike the synchronous
+`external_url` sync, so they can't be populated at `just_selected` time).
+**Shared-contract note:** `fe_query::gis` independently defines the same
+three key strings for the data-layer side (petal_gis_endpoints track);
+fe-ui deliberately duplicates the literals rather than depending on
+`fe_query` for three constants — keep both in sync by hand if either ever
+changes.
+
+**GIS Query panel** (`panels::gis_panel`, state in top-level `crate::gis`,
+I/O in `actions::gis`). An independent floating `egui::Window` (not part of
+the mutual-exclusion `ActiveDialog` set — see `dialogs/AGENTS.md` — so it
+can stay open alongside the inspector), toggled by the toolbar's "GIS"
+button. Three modes:
+- **Annotated** / **Property filter** — a single `SELECT` over
+  `DbCommand::RawQuery` (the same mechanism `query_tab`'s ad-hoc SurrealQL
+  box already uses), built by pure functions in `gis::query`
+  (`annotation_query`/`property_filter_query`). All user-controlled values
+  (petal_id, filter key/value) are passed as **bind vars** in the `vars`
+  map — never string-formatted into the SQL — per fe-database's `RawQuery`
+  security filter (single `SELECT`, no `;`, keyword blocklist; see
+  `fe-database/src/lib.rs`). Only the compile-time-constant annotation-title
+  key is inlined as a literal (safe: not user input).
+- **Bbox** (local XZ plane around the camera) — **no DB round-trip**: an
+  existing RawQuery precedent existed (used for the other two modes above),
+  but node positions for the active petal are already resident in
+  `VerseManager` (used for sidebar rendering/gimbal), so the bbox filter
+  (`gis::bbox_contains`, pure) runs client-side over `verse_mgr.find_petal(..).nodes`
+  directly — this is a deliberate design choice, not a fallback residual.
+- **Result routing residual:** `DbResult::QueryResult`/`DbResult::Error`
+  carry no request-id, so `db_results::apply_db_results` can't tell "this
+  reply is for the GIS panel" vs "this reply is for the inspector's ad-hoc
+  Query tab" apart from a `GisPanelState.query_pending` flag checked first
+  (GIS claims the reply when pending, the Query tab is the fallback). If a
+  user manages to have both an ad-hoc query and a GIS query in flight in
+  the same frame window, one reply will go to the wrong buffer — accepted
+  as a pre-existing architectural constraint of the untagged `RawQuery`
+  channel, not something this track introduced.
+- **Click-to-select:** reuses the exact sidebar mechanism — clicking a
+  result row sets `NodeManager.pending_sidebar_select` (resolved to an
+  `Entity` next frame by `node_manager::sidebar_sync`) and
+  `CameraFocusTarget.target` (consumed by `plugin::apply_camera_focus`).
+  No new selection/focus mechanism was invented.
+
+**Layer Manager** (`panels::layer_manager_card`, embedded in the GIS
+panel). `PetalMapState` gained a `terrain_json: Option<serde_json::Value>`
+field — the raw, last-loaded petal terrain doc (previously only derived
+fields like `tileset_ids`/`world_scale` were kept) — populated by
+`db_results` on `DbResult::PetalTerrainLoaded` and cleared on petal switch.
+Toggling a layer's visible/opacity mutates that stored doc in place via the
+pure `gis::set_layer_field` (find-or-insert by `name`, update only the
+`Some(..)` fields, preserve everything else) and round-trips through
+`SetPetalTerrain` — the same "mutate one field of the stored JSON, then
+persist" idiom as `actions::hexon::set_petal_map_scale`, but operating on
+the actual persisted doc instead of rebuilding one from an
+`InstalledTilesetDto` (more robust: doesn't require the tileset DTO to be
+in hand, preserves origin/elevation/`world_scale`/any other layers
+untouched). The opacity slider mirrors `hexon_manager::render_scale_controls`'s
+world-scale idiom exactly: every `changed()` frame writes a **local-only**
+preview into `petal_map.terrain_json` (so dragging feels live), while the
+persisting `UiAction::GisSetLayer` only fires on `drag_stopped()` (or a
+non-drag `changed()`, e.g. a discrete click) to avoid flooding
+`SetPetalTerrain` sends during a drag. Only `"satellite"`/`"terrain"` are
+currently mapped to a `LayerType` in `fe-terrain::petal_binding` (see
+`fe-terrain/src/AGENTS.md` §petal_binding); GPX-track/GeoJSON-overlay
+checkboxes are shown **disabled with a tooltip** explaining they're inert —
+tracked as a residual per FR-3, not wired to any config since fe-ui must
+not couple to fe-terrain's layer-name mapping.

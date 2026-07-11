@@ -24,6 +24,7 @@ pub(crate) fn top_toolbar(
     tool: &mut ToolState,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    gis_panel: &mut crate::gis::GisPanelState,
 ) {
     egui::TopBottomPanel::top("toolbar")
         .exact_height(40.0)
@@ -85,6 +86,17 @@ pub(crate) fn top_toolbar(
                             .color(theme::TEXT_DIM)
                             .small(),
                     );
+
+                    if ui
+                        .add(
+                            egui::Button::new("\u{1F5FA} GIS")
+                                .fill(if gis_panel.open { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON }),
+                        )
+                        .on_hover_text("Query nodes, annotations, and terrain layers")
+                        .clicked()
+                    {
+                        gis_panel.open = !gis_panel.open;
+                    }
 
                     if ui
                         .add(egui::Button::new("\u{1F4E6} Hexons").fill(theme::BG_BUTTON))

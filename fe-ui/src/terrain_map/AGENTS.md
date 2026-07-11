@@ -9,6 +9,14 @@
   and `sync_camera_scale_from_petal_map` (mirrors `PetalMapState.world_scale`
   into fe-renderer's `CameraScaleSettings` so the camera adapts live and on
   restart; no-op when the renderer resource is absent).
+  `PetalMapState.terrain_json: Option<serde_json::Value>` (added for the GIS
+  Layer Manager, see root `AGENTS.md` §gis-query-ui) holds the raw,
+  last-loaded terrain doc verbatim — not just the derived `tileset_ids`/
+  `world_scale` fields — so `crate::gis`/`actions::gis` can mutate a single
+  layer's `visible`/`opacity` and round-trip via `SetPetalTerrain` without
+  clobbering unrelated fields. Populated in `db_results.rs` on
+  `DbResult::PetalTerrainLoaded`, reset to `None` on petal switch in
+  `load_petal_terrain_on_nav_change`.
 
 ### Terrain scale controls
 

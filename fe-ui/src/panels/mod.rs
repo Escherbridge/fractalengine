@@ -2,18 +2,22 @@
 //! viewport, floating dialogs, and the toast overlay. See
 //! `fe-ui/src/panels/AGENTS.md` for the per-panel file map.
 
+pub(crate) mod gis_panel;
 pub(crate) mod inspector;
 pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
 pub(crate) mod toolbar;
 
+mod annotation_card;
 mod asset_card;
+mod layer_manager_card;
 mod portal_toolbar;
 
 use bevy_egui::egui;
 
 use crate::actions::UiManager;
+use crate::asset_ops::AssetDownloadStatus;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{CameraFocusTarget, InspectorFormState, LocalUserRole, SidebarState, ToolState, ViewportCursorWorld};
 use crate::verse_manager::VerseManager;
@@ -42,8 +46,10 @@ pub fn gardener_console(
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
     petal_map: &mut crate::terrain_map::PetalMapState,
+    asset_status: &AssetDownloadStatus,
+    gis_panel: &mut crate::gis::GisPanelState,
 ) -> egui::Rect {
-    toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr);
+    toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr, gis_panel);
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
     sidebar::left_sidebar(
         ctx,
@@ -65,7 +71,7 @@ pub fn gardener_console(
     if ui_mgr.portal_is_open() {
         portal_toolbar::right_portal_toolbar(ctx, ui_mgr);
     } else {
-        inspector::right_inspector(ctx, inspector, node_mgr, hierarchy, ui_mgr, local_role, db_tx, nav);
+        inspector::right_inspector(ctx, inspector, node_mgr, hierarchy, ui_mgr, local_role, db_tx, nav, asset_status);
     }
 
     let viewport_response = egui::CentralPanel::default()
@@ -94,6 +100,10 @@ pub fn gardener_console(
     crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx);
     crate::dialogs::render_hexon_manager(ctx, ui_mgr, petal_map, nav.active_petal_id.as_deref());
     crate::dialogs::render_petal_manifest(ctx, ui_mgr);
+
+    // GIS query & layer-manager panel (independent floating window, not part
+    // of the mutual-exclusion `ActiveDialog` set — see panels/AGENTS.md §gis).
+    gis_panel::render_gis_panel(ctx, gis_panel, node_mgr, hierarchy, nav, petal_map, ui_mgr, camera_focus);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);

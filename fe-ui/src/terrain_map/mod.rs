@@ -23,6 +23,12 @@ pub struct PetalMapState {
     pub loaded: bool,
     /// World units per real meter for the active map (`1.0` = human scale).
     pub world_scale: f64,
+    /// The raw, last-loaded petal terrain JSON (fe-terrain's `TerrainConfig`
+    /// serde shape). Kept verbatim (not just the derived fields above) so the
+    /// GIS Layer Manager (`crate::gis`) can mutate a single field (e.g. one
+    /// layer's `visible`/`opacity`) and round-trip via `SetPetalTerrain`
+    /// without clobbering unrelated fields. `None` when no map is assigned.
+    pub terrain_json: Option<serde_json::Value>,
 }
 
 impl Default for PetalMapState {
@@ -32,6 +38,7 @@ impl Default for PetalMapState {
             tileset_ids: Vec::new(),
             loaded: false,
             world_scale: 1.0,
+            terrain_json: None,
         }
     }
 }
@@ -63,6 +70,7 @@ pub(crate) fn load_petal_terrain_on_nav_change(
     petal_map.loaded = false;
     // Reset to human scale pending the load; PetalTerrainLoaded restores the stored value.
     petal_map.world_scale = 1.0;
+    petal_map.terrain_json = None;
     if let Some(petal_id) = nav.active_petal_id.clone() {
         if db_sender
             .0

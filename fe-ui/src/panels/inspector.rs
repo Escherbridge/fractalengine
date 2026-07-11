@@ -22,6 +22,7 @@ pub(crate) fn right_inspector(
     local_role: &LocalUserRole,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
+    asset_status: &crate::asset_ops::AssetDownloadStatus,
 ) {
     let open = node_mgr.selected_entity().is_some();
     // Allow up to 80% of screen width.
@@ -113,7 +114,9 @@ pub(crate) fn right_inspector(
                             ui.add_space(4.0);
                             inspector_entity_section(ui, node_mgr);
                             ui.add_space(2.0);
-                            crate::panels::asset_card::asset_card_section(ui, node_mgr, hierarchy, ui_mgr);
+                            crate::panels::asset_card::asset_card_section(ui, node_mgr, hierarchy, ui_mgr, asset_status);
+                            ui.add_space(2.0);
+                            crate::panels::annotation_card::annotation_card_section(ui, inspector, node_mgr, ui_mgr);
                             ui.add_space(2.0);
                             inspector_transform_section(ui, inspector);
                             ui.add_space(2.0);
