@@ -1,0 +1,27 @@
+{
+  "id": "p2p_unblock_now_20260711",
+  "description": "Unblock-now P2P/perf fixes from hexon-p2p-commons research: try_send replication bridge, node_log ring-buffer cap, sync-thread blocking read, explicit BBR congestion control",
+  "type": "bug",
+  "created_at": "2026-07-11T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 0,
+  "wave_rationale": "P0 per decisions D5-3: try_send bridge / BBR / node_log cap / spawn_blocking. Independent of format+auth; must land before real iroh-docs (masks a DB-freeze). Ships first.",
+  "priority": "P0",
+  "depends_on": [],
+  "blocks": [
+    "p2p_mycelium_completion_20260701 (FR-1 must land before real iroh-docs replaces the mock, or the masked DB-freeze ships)"
+  ],
+  "decisions_ref": "conductor/decisions/hexon-p2p-commons-20260711.md#d5",
+  "research_refs": [
+    "research/hexon-p2p-commons/report.md",
+    "research/hexon-p2p-commons/stages/stage1-hexon-format-data-layer.md",
+    "research/hexon-p2p-commons/stages/stage2-p2p-sync-runtime-path.md"
+  ],
+  "files_to_modify": [
+    "fe-database/src/lib.rs",
+    "fractalengine/src/main.rs",
+    "fe-entity-store/src/lib.rs",
+    "fe-sync/src/sync_thread.rs"
+  ],
+  "notes": "All four findings spot-check-verified in source (report \u00c2\u00a78.1). Spec-only this session; implementation next session per decisions D5-3 sequencing (these ship first, independent of format/auth tracks)."
+}
