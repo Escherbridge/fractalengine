@@ -1,0 +1,11 @@
+{
+  "id": "terrain_splat_view_20260711",
+  "description": "Synthesized 3D splat rendering of terrain hexons with Mesh/Splats/Hybrid view modes; phase 2 pre-bakes splat buffers into hexon archives",
+  "type": "feature",
+  "created_at": "2026-07-11T00:00:00Z",
+  "status": "pending",
+  "depends_on": ["terrain_scale_controls_20260711"],
+  "blocks": [],
+  "archived": false,
+  "notes": "requested 2026-07-11 ('if easy and convenient'). Scoped to synthesized splats (per-texel from elevation+satellite) — photogrammetric 3DGS training impossible from single orthographic tile imagery. Phase 1 runtime synthesis + view modes; phase 2 hexon pre-bake (additive entry type) + gis-tile-etl bake stage. Implementation queued behind terrain_scale_controls (same crates)."
+}

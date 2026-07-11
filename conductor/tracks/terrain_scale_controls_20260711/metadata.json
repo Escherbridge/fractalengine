@@ -1,0 +1,11 @@
+{
+  "id": "terrain_scale_controls_20260711",
+  "description": "Per-petal terrain world scale + scale-aware camera zoom + settings UI for operating at multiple scales of space",
+  "type": "feature",
+  "created_at": "2026-07-11T00:00:00Z",
+  "status": "in-progress",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "requested 2026-07-11 after terrain/GLB/links verified working in-app; root problem: z8 tiles ~110km vs 1km far plane and no world-scale knob"
+}
