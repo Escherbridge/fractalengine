@@ -32,6 +32,7 @@ pub async fn create_petal(
         fractal_id: None,
         bounds: None,
         hexon_manifest: None,
+        terrain: None,
     };
     Repo::<Petal>::create(db, &petal).await?;
     Ok(petal_id)

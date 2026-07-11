@@ -531,8 +531,38 @@ impl TestPeer {
                         Ok(DbCommand::DeleteNodeProperty { node_id, key }) => {
                             db_result_tx.send(DbResult::NodePropertyDeleted { node_id, key }).ok();
                         }
-                        Ok(DbCommand::RawQuery { .. }) => {
-                            db_result_tx.send(DbResult::QueryResult { data: vec![] }).ok();
+                        Ok(DbCommand::RawQuery { sql, vars }) => {
+                            let mut query_builder = db.query(&sql);
+                            for (key, value) in &vars {
+                                query_builder = query_builder.bind((key.clone(), value.clone()));
+                            }
+                            // Surface statement-level errors via `.check()` before draining
+                            // (the §geometry-inserts anti-pattern: a failed statement must
+                            // never read as an empty-but-successful result). After check()
+                            // succeeds, every statement is Ok, so a `take` past the last
+                            // index is loop termination — not a swallowed failure.
+                            let checked = match query_builder.await {
+                                Ok(response) => response.check(),
+                                Err(e) => Err(e),
+                            };
+                            match checked {
+                                Ok(mut response) => {
+                                    let mut data = Vec::new();
+                                    let num = response.num_statements();
+                                    for idx in 0..num {
+                                        match response.take::<Vec<serde_json::Value>>(idx) {
+                                            Ok(rows) => {
+                                                data.extend(rows);
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                    db_result_tx.send(DbResult::QueryResult { data }).ok();
+                                }
+                                Err(e) => {
+                                    db_result_tx.send(DbResult::Error(format!("query failed: {e}"))).ok();
+                                }
+                            }
                         }
                         Ok(DbCommand::CreateFieldDef { scope, key, .. }) => {
                             db_result_tx.send(DbResult::FieldDefCreated {

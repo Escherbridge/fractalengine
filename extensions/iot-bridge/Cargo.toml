@@ -13,7 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-# Only used by tests/bridge_loop.rs for a shape-compatibility check against the real
-# mock-host/assertion helpers; src/ never depends on fe-plugin-test. See AGENTS.md
-# "Integration" for why this crate builds its own adapter instead of RhaiTestRunner.
+# tests/bridge_loop.rs drives iot_bridge.rhai through fe-plugin-test's shared
+# RhaiTestRunner host-fn surface (the real HOST-FN CONTRACT). src/ keeps its own
+# capability-gated IotHostAdapter for the runtime path — see AGENTS.md "Integration".
 fe-plugin-test = { path = "../../fe-plugin-test" }

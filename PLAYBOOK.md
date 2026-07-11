@@ -32,6 +32,7 @@
 | Wave 6.3 | Per-Crate Tests | `/ralph` | ✅ Done |
 | Wave 6.4 | Integration Tests | `/ultraqa` | ✅ Done |
 | Wave 6.5 | Coverage + Quality Gate | `/ultraqa` | ⬜ Pending |
+| Wave 7 | P2P Mycelium Completion | `/ultrawork` | ⬜ Pending |
 
 ---
 

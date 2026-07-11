@@ -282,6 +282,8 @@ impl Plugin for GardenerConsolePlugin {
 
         app.add_systems(Update, crate::actions::process_ui_actions.in_set(UiSet::ProcessActions));
         app.add_systems(Update, resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions));
+        // Surface asset-download outcomes (written by the main binary's bridge) as toasts.
+        app.add_systems(Update, crate::asset_ops::surface_asset_download_status);
         app.add_systems(
             Update,
             crate::terrain_map::load_petal_terrain_on_nav_change

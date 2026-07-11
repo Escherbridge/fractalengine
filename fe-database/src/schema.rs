@@ -99,7 +99,9 @@ define_table! {
         #[serde(skip_serializing_if = "Option::is_none")]
         bounds: Option<serde_json::Value> => "TYPE option<geometry<polygon>>",
         #[serde(skip_serializing_if = "Option::is_none")]
-        hexon_manifest: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
+        hexon_manifest: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
+        #[serde(skip_serializing_if = "Option::is_none")]
+        terrain: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
     }
 }
 
@@ -404,6 +406,13 @@ mod tests {
     fn petal_schema_contains_hexon_manifest_field() {
         let s = Petal::schema();
         assert!(s.contains("hexon_manifest ON TABLE petal"));
+        assert!(s.contains("option<object>"));
+    }
+
+    #[test]
+    fn petal_schema_contains_terrain_field() {
+        let s = Petal::schema();
+        assert!(s.contains("terrain ON TABLE petal"));
         assert!(s.contains("option<object>"));
     }
 

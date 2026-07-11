@@ -1,0 +1,2 @@
+# Standalone workspace build artifacts. Cargo.lock stays tracked (binary/leaf crate).
+/target

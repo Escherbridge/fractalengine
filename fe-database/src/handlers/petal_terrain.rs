@@ -15,13 +15,17 @@ pub(crate) async fn set_petal_terrain_handler(
                 .bind(("config", config.clone()))
                 .bind(("pid", petal_id.to_string()))
                 .await
-                .map_err(|e| anyhow::anyhow!("SetPetalTerrain DB query failed: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("SetPetalTerrain DB query failed: {e}"))?
+                .check()
+                .map_err(|e| anyhow::anyhow!("SetPetalTerrain DB update failed: {e}"))?;
         }
         None => {
             db.query("UPDATE petal SET terrain = NONE WHERE petal_id = $pid")
                 .bind(("pid", petal_id.to_string()))
                 .await
-                .map_err(|e| anyhow::anyhow!("SetPetalTerrain (clear) DB query failed: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("SetPetalTerrain (clear) DB query failed: {e}"))?
+                .check()
+                .map_err(|e| anyhow::anyhow!("SetPetalTerrain (clear) DB update failed: {e}"))?;
         }
     }
     Ok(())
