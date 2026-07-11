@@ -1,8 +1,11 @@
+//! Hexon Manager dialog: installed / available / downloads tabs.
+
 use bevy_egui::egui;
 
-use crate::plugin::{
-    ActiveDialog, DownloadStatus, HexonManagerTab, UiAction, UiManager,
-};
+use super::ActiveDialog;
+use crate::actions::{UiAction, UiManager};
+use crate::terrain_map::dto::{AvailableTilesetDto, DownloadStatus, HexonManagerTab, InstalledTilesetDto};
+use crate::terrain_map::PetalMapState;
 use crate::theme;
 
 /// Format bytes into human-readable size string.
@@ -21,7 +24,7 @@ fn format_size(bytes: u64) -> String {
 pub fn render_hexon_manager(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
-    petal_map: &crate::plugin::PetalMapState,
+    petal_map: &PetalMapState,
     active_petal_id: Option<&str>,
 ) {
     let ActiveDialog::HexonManager {
@@ -40,18 +43,16 @@ pub fn render_hexon_manager(
 
     let current_tab = *active_tab;
     let is_loading = *loading;
-    let close = false;
+    let mut close = false;
     let mut still_open = true;
     let mut actions: Vec<UiAction> = Vec::new();
 
     egui::Window::new("Hexon Manager")
         .open(&mut still_open)
         .collapsible(false)
-        .resizable(true)
-        .default_width(800.0)
-        .default_height(600.0)
-        .min_width(600.0)
-        .min_height(400.0)
+        .resizable(false)
+        .default_width(600.0)
+        .default_height(350.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::NONE
@@ -71,6 +72,18 @@ pub fn render_hexon_manager(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
+                        .add(egui::Button::new("Close").fill(theme::BG_BUTTON))
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Refresh").fill(theme::BG_BUTTON))
+                        .clicked()
+                    {
+                        actions.push(UiAction::HexonRefreshList);
+                    }
+                    if ui
                         .add(egui::Button::new("Install from file...").fill(theme::BG_SAVE))
                         .clicked()
                     {
@@ -80,12 +93,6 @@ pub fn render_hexon_manager(
                         {
                             actions.push(UiAction::HexonInstallFromFile(path));
                         }
-                    }
-                    if ui
-                        .add(egui::Button::new("Refresh").fill(theme::BG_BUTTON))
-                        .clicked()
-                    {
-                        actions.push(UiAction::HexonRefreshList);
                     }
                 });
             });
@@ -106,10 +113,8 @@ pub fn render_hexon_manager(
                     };
                     if ui
                         .add(
-                            egui::Button::new(
-                                egui::RichText::new(label).color(theme::TEXT_BRIGHT),
-                            )
-                            .fill(fill),
+                            egui::Button::new(egui::RichText::new(label).color(theme::TEXT_BRIGHT))
+                                .fill(fill),
                         )
                         .clicked()
                     {
@@ -132,7 +137,15 @@ pub fn render_hexon_manager(
 
                 match current_tab {
                     HexonManagerTab::Installed => {
-                        render_installed_tab(ui, installed_tilesets, &filter_lower, &mut actions, pending_remove, petal_map, active_petal_id);
+                        render_installed_tab(
+                            ui,
+                            installed_tilesets,
+                            &filter_lower,
+                            &mut actions,
+                            pending_remove,
+                            petal_map,
+                            active_petal_id,
+                        );
                     }
                     HexonManagerTab::Available => {
                         render_available_tab(ui, available_tilesets, &filter_lower, &mut actions);
@@ -158,18 +171,9 @@ pub fn render_hexon_manager(
                     .color(theme::TEXT_MUTED),
                 );
                 ui.separator();
-                ui.label(
-                    egui::RichText::new(&storage_info.base_dir)
-                        .small()
-                        .color(theme::TEXT_DIM),
-                );
+                ui.label(egui::RichText::new(&storage_info.base_dir).small().color(theme::TEXT_DIM));
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Open folder").small(),
-                        )
-                        .fill(theme::BG_BUTTON),
-                    )
+                    .add(egui::Button::new(egui::RichText::new("Open folder").small()).fill(theme::BG_BUTTON))
                     .clicked()
                 {
                     actions.push(UiAction::HexonOpenStorageDir);
@@ -189,17 +193,19 @@ pub fn render_hexon_manager(
 
 fn render_installed_tab(
     ui: &mut egui::Ui,
-    tilesets: &mut [crate::plugin::InstalledTilesetDto],
+    tilesets: &mut [InstalledTilesetDto],
     filter: &str,
     actions: &mut Vec<UiAction>,
     pending_remove: &mut Option<String>,
-    petal_map: &crate::plugin::PetalMapState,
+    petal_map: &PetalMapState,
     active_petal_id: Option<&str>,
 ) {
     if tilesets.is_empty() {
         ui.label(
-            egui::RichText::new("No tilesets installed. Use \"Install from file...\" or download from the Available tab.")
-                .color(theme::TEXT_MUTED),
+            egui::RichText::new(
+                "No tilesets installed. Use \"Install from file...\" or download from the Available tab.",
+            )
+            .color(theme::TEXT_MUTED),
         );
         return;
     }
@@ -246,10 +252,7 @@ fn render_installed_tab(
                         .changed()
                     {
                         ts.seeding_enabled = seeding;
-                        actions.push(UiAction::HexonToggleSeeding(
-                            ts.hexon_id.clone(),
-                            seeding,
-                        ));
+                        actions.push(UiAction::HexonToggleSeeding(ts.hexon_id.clone(), seeding));
                     }
 
                     // Map column: set/clear this tileset as the active petal's map.
@@ -302,29 +305,18 @@ fn render_installed_tab(
                                 .small()
                                 .color(theme::TEXT_MUTED),
                             );
-                            if ui
-                                .add(
-                                    egui::Button::new("Yes")
-                                        .fill(theme::BG_DANGER),
-                                )
-                                .clicked()
-                            {
+                            if ui.add(egui::Button::new("Yes").fill(theme::BG_DANGER)).clicked() {
                                 actions.push(UiAction::HexonRemoveTileset(ts.hexon_id.clone()));
                                 *pending_remove = None;
                             }
-                            if ui
-                                .add(egui::Button::new("No").fill(theme::BG_BUTTON))
-                                .clicked()
-                            {
+                            if ui.add(egui::Button::new("No").fill(theme::BG_BUTTON)).clicked() {
                                 *pending_remove = None;
                             }
                         });
                     } else if ui
                         .add(
-                            egui::Button::new(
-                                egui::RichText::new("Remove").color(egui::Color32::WHITE),
-                            )
-                            .fill(theme::BG_DANGER),
+                            egui::Button::new(egui::RichText::new("Remove").color(egui::Color32::WHITE))
+                                .fill(theme::BG_DANGER),
                         )
                         .clicked()
                     {
@@ -339,14 +331,16 @@ fn render_installed_tab(
 
 fn render_available_tab(
     ui: &mut egui::Ui,
-    tilesets: &[crate::plugin::AvailableTilesetDto],
+    tilesets: &[AvailableTilesetDto],
     filter: &str,
     actions: &mut Vec<UiAction>,
 ) {
     if tilesets.is_empty() {
         ui.label(
-            egui::RichText::new("No peers connected. Available tilesets will appear when you connect to peers sharing terrain data.")
-                .color(theme::TEXT_MUTED),
+            egui::RichText::new(
+                "No peers connected. Available tilesets will appear when you connect to peers sharing terrain data.",
+            )
+            .color(theme::TEXT_MUTED),
         );
         return;
     }
@@ -385,15 +379,8 @@ fn render_available_tab(
                     ui.label(ts.peer_count.to_string());
 
                     if ts.already_installed {
-                        ui.label(
-                            egui::RichText::new("Installed")
-                                .color(theme::TEXT_MUTED)
-                                .italics(),
-                        );
-                    } else if ui
-                        .add(egui::Button::new("Download").fill(theme::BG_SAVE))
-                        .clicked()
-                    {
+                        ui.label(egui::RichText::new("Installed").color(theme::TEXT_MUTED).italics());
+                    } else if ui.add(egui::Button::new("Download").fill(theme::BG_SAVE)).clicked() {
                         actions.push(UiAction::HexonStartDownload(ts.hexon_id.clone()));
                     }
 
@@ -405,14 +392,11 @@ fn render_available_tab(
 
 fn render_downloads_tab(
     ui: &mut egui::Ui,
-    downloads: &std::collections::HashMap<String, crate::plugin::DownloadProgress>,
+    downloads: &crate::terrain_map::dto::DownloadProgressMap,
     actions: &mut Vec<UiAction>,
 ) {
     if downloads.is_empty() {
-        ui.label(
-            egui::RichText::new("No active downloads.")
-                .color(theme::TEXT_MUTED),
-        );
+        ui.label(egui::RichText::new("No active downloads.").color(theme::TEXT_MUTED));
         return;
     }
 
@@ -420,36 +404,20 @@ fn render_downloads_tab(
         for (id, dl) in downloads {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(&dl.tileset_id)
-                            .color(theme::TEXT_BRIGHT)
-                            .strong(),
-                    );
+                    ui.label(egui::RichText::new(&dl.tileset_id).color(theme::TEXT_BRIGHT).strong());
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         match &dl.status {
                             DownloadStatus::Queued => {
-                                ui.label(
-                                    egui::RichText::new("Queued")
-                                        .color(theme::TEXT_MUTED),
-                                );
+                                ui.label(egui::RichText::new("Queued").color(theme::TEXT_MUTED));
                             }
                             DownloadStatus::Downloading => {
-                                if ui
-                                    .add(
-                                        egui::Button::new("Cancel")
-                                            .fill(theme::BG_DANGER),
-                                    )
-                                    .clicked()
-                                {
+                                if ui.add(egui::Button::new("Cancel").fill(theme::BG_DANGER)).clicked() {
                                     actions.push(UiAction::HexonCancelDownload(id.clone()));
                                 }
                             }
                             DownloadStatus::Verifying => {
-                                ui.label(
-                                    egui::RichText::new("Verifying...")
-                                        .color(theme::TEXT_DIM),
-                                );
+                                ui.label(egui::RichText::new("Verifying...").color(theme::TEXT_DIM));
                             }
                             DownloadStatus::Complete => {
                                 ui.label(

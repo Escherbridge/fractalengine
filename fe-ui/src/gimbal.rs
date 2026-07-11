@@ -7,7 +7,7 @@
 use bevy::gizmos::config::{GizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
 
-use crate::panels::Tool;
+use crate::panels::toolbar::Tool;
 
 // ---------------------------------------------------------------------------
 // Custom gizmo group — renders on top of all 3D geometry
