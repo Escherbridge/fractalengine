@@ -32,6 +32,24 @@ per frame and, in one pass:
 4. Despawns every `TerrainChunk`, `GpxTrackLine`, `GeoJsonOverlay`, and
    `GeoJsonProcessed` entity so content respawns under the new config.
 
+**Config reconciliation (2026-07).** The stored petal config is not trusted
+for two fields, because fe-ui's `tileset_to_terrain_json` cannot know them
+(the store/DTO layer doesn't carry encoding, and origin elevation is unknown
+at write time):
+
+- `elevation_source` is overridden from the **loaded hexon's**
+  `tileset_meta.elevation_encoding` (first source wins). Decoding Terrarium
+  bytes with the Terrain-RGB formula puts vertices ~900 km up — invisible
+  past the camera's 1000 m far plane, which read as "terrain doesn't load".
+  `Raw16` has no decoder yet → `None` (flat).
+- `origin.origin_ele == 0.0` is treated as "unset" and grounded via
+  `sample_center_elevation` (mean of the origin tile at min zoom), because
+  mesh world-Y = absolute elevation − origin_ele; real terrain (e.g. Pacific
+  NW at 500–1500 m ASL) would otherwise float far above the camera.
+
+The reconciled config is written back to `ActivePetalTerrain` so
+`fetch_and_spawn_terrain_chunks` and the projection agree.
+
 **Non-gated helpers.** `terrain_config_from_petal_json` parses a petal
 record's `terrain` JSON property (null/invalid → `None`, invalid warns).
 `config_for_tileset` builds an enabled default config from a `TilesetInfo`:
