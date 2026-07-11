@@ -75,6 +75,10 @@ pub struct ApiState {
 ///   GET   /api/v1/nodes/:track_id/elevation-profile
 ///   GET   /api/v1/nodes/:track_id/stats
 ///
+///   Petal GIS reads (Viewer+):
+///   GET   /api/v1/petals/:petal_id/gis/nodes
+///   GET   /api/v1/petals/:petal_id/gis/tracks
+///
 ///   Waypoints (petal-scoped):
 ///   POST  /api/v1/petals/:petal_id/waypoints
 ///
@@ -201,6 +205,15 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             get(crate::terrain::get_terrain_config)
                 .put(crate::terrain::set_terrain_config)
                 .delete(crate::terrain::delete_terrain_config),
+        )
+        // Petal GIS reads (geo nodes + GPX tracks)
+        .route(
+            "/api/v1/petals/{petal_id}/gis/nodes",
+            get(crate::gis::list_gis_nodes),
+        )
+        .route(
+            "/api/v1/petals/{petal_id}/gis/tracks",
+            get(crate::gis::list_gis_tracks),
         )
         // Waypoint CRUD
         .route(

@@ -9,6 +9,81 @@ handlers may bypass that round-trip entirely with a direct SurrealDB query
 (`direct_*` helpers in `rest.rs`/`assets.rs`) — this is the established escape
 hatch for reads that don't have (or don't need) a dedicated `DbCommand`.
 
+## §gis
+
+Two petal-scoped read endpoints (`src/gis.rs`), under the JWT-authenticated
+router in `server.rs`:
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/v1/petals/{petal_id}/gis/nodes` | geo-positioned nodes with their `gis.annotation.*` bundle; optional `bbox` / `bbox_ll` / `radius` filters. |
+| GET | `/api/v1/petals/{petal_id}/gis/tracks` | GPX track nodes (`properties.gpx_type == "track"`) with the cached stats GPX import wrote. |
+
+**RBAC**: Viewer+ role + petal-scope coverage, resolved via
+`rest::direct_resolve_petal_scope` (or the `ResolvePetalScope` channel command
+when no `db_reader` is wired). Deny-by-default and real HTTP status codes,
+mirroring `§assets`: 400 (bad ULID / bad filter params), 403 (role or scope),
+404 (unknown petal), 502 (query transport failure). This is stricter than the
+older `rest.rs` handlers that return 200 + `{"ok":false}`; GIS reads follow the
+asset-delivery precedent because external consumers (dashboards, IoT) care
+about status codes.
+
+**Annotation-key contract** (shared with the `gis_query_ui_20260711` track):
+reserved node-property keys `gis.annotation.title` / `.body` / `.color`. The
+canonical constants live in `fe_query::gis` and are **re-exported** from
+`gis.rs` (`pub use fe_query::gis::{ANNOTATION_*_KEY}`) so the endpoint and the
+query layer share one definition and can't drift. These keys are stored by
+`DbCommand::SetNodeProperty` as **flat dotted keys** inside the node's
+`properties` object (`properties[$key] = $val`, per
+`fe-database/handlers/entity_property.rs`), so extraction reads
+`properties["gis.annotation.title"]` — `annotation_str` also tolerates a nested
+`{"gis":{"annotation":{...}}}` shape defensively. Absence of all three keys ⇒
+no `annotation` field on the DTO.
+
+**Coordinate model**: `position` is a SurrealDB `geometry<point>` stored as
+`[x, z]` (local meters, XZ plane) with `elevation` as a separate `y` column.
+SELECTs decode `position.coordinates`; this crate never *writes* geometry (see
+`fe-database/src/AGENTS.md §geometry-inserts`). `bbox` / `radius` are in
+petal-local meters. `bbox_ll` (lat/lon) is converted **API-side** using
+`fe_terrain::projection::Projection` seeded from the petal's
+`terrain.origin.{origin_lat,origin_lon,origin_ele}` — the same equirectangular
+projection GPX import uses, so a round-tripped GPX box lands where its nodes do.
+If `bbox_ll` is requested on a petal with no terrain origin, the endpoint
+returns 400 rather than guessing an origin. At most one spatial filter may be
+supplied per request (else 400).
+
+**Filter-in-Rust tradeoff** (deliberate divergence from the `fe-query` spatial
+builders — flag for the coordinator sweep): the SQL rendered locally in
+`gis.rs` selects the petal's nodes (`WHERE petal_id = $pid`, plus the verified
+`properties.gpx_type = 'track'` navigation for tracks — mirroring `gpx.rs`, not
+the novel `(properties ?? {})[...]` construct) and the spatial predicate is
+applied in-process over the decoded rows (`Bbox::contains` / `within_radius`,
+both pure + unit-tested).
+
+`fe_query::gis` now ships `nodes_in_bbox`/`nodes_within_radius`/
+`annotated_nodes` and the coordinator asked to prefer them. We reuse its
+annotation **constants** but keep local Rust filtering for the spatial
+predicates for two reasons: (1) **correctness** — `nodes_within_radius` renders
+`geo::distance(position, …)`, which in SurrealDB is a **geodesic** (haversine,
+lon/lat→meters) computation; our `position` values are **petal-local meters**
+on the XZ plane, so `geo::distance` is semantically wrong for a local-meter
+radius (it only matches at the exact center). Euclidean `(x-cx)²+(z-cz)² ≤ r²`
+is the correct metric and lives in `within_radius`. (2) **verifiability** — the
+`geo::inside`/`geo::distance` cast-in-argument forms are new to this repo and
+unverified until the coordinator's cargo sweep; this crate must not `cargo`
+here, so betting the endpoint on unverified DB constructs is avoided. Swapping
+to the `fe-query` builders is a localized change once the sweep confirms the
+`geo::*` path executes **and** the geodesic-vs-local-meter radius semantics are
+resolved (either a `math::`-based Euclidean builder, or a decision that
+`position` is lon/lat). Keeping the math in pure functions also satisfies the
+track's "bbox filter math" test requirement without a live DB.
+
+Data access rides `db_reader` directly (like the other read handlers) and falls
+back to the `DbCommand::RawQuery` gateway channel (single SELECT, bound vars,
+no `;`, no blocked bare-word keywords). No new `DbCommand`/`DbResult` variants
+were added (the dispatch match lives in the quarantined
+`fe-database/src/lib.rs`).
+
 ## §assets
 
 Three GET endpoints, all under the JWT-authenticated router in `server.rs`:
