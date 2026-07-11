@@ -80,6 +80,8 @@ pub struct ApiState {
 ///
 ///   Assets:
 ///   GET   /api/v1/assets/:content_hash
+///   GET   /api/v1/assets/by-id/:asset_id
+///   GET   /api/v1/nodes/:node_id/asset
 ///
 ///   MCP:
 ///   POST /mcp
@@ -164,6 +166,16 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route(
             "/api/v1/assets/{content_hash}",
             get(crate::assets::get_asset),
+        )
+        // Asset delivery (by asset_id -- real content-type/name/length headers)
+        .route(
+            "/api/v1/assets/by-id/{asset_id}",
+            get(crate::assets::get_asset_by_id),
+        )
+        // Node asset download (node -> asset -> blob, real headers)
+        .route(
+            "/api/v1/nodes/{node_id}/asset",
+            get(crate::assets::get_node_asset),
         )
         // Petal export/import (.hexon archive)
         .route(

@@ -566,8 +566,9 @@ async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) ->
 /// Resolve a node_id to its full scope string.
 ///
 /// Uses a direct DB query when `db_reader` is available, falling back to the
-/// crossbeam channel otherwise.
-async fn resolve_node_scope(state: &crate::server::ApiState, node_id: &str) -> Option<String> {
+/// crossbeam channel otherwise. `pub(crate)` so other REST modules (e.g.
+/// `assets`) can reuse the same RBAC scope resolution for node-scoped routes.
+pub(crate) async fn resolve_node_scope(state: &crate::server::ApiState, node_id: &str) -> Option<String> {
     if let Some(ref db) = state.db_reader {
         return direct_resolve_node_scope(db, node_id).await;
     }
@@ -786,10 +787,12 @@ pub async fn execute_query(
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
 
+    println!("DEBUG: Inside execute_query - checking role");
     if let Err(_) = require_role(&claims, "viewer") {
         return Json(ApiResponse::<QueryResultDto>::error("insufficient permissions"));
     }
 
+    println!("DEBUG: Inside execute_query - acquiring rate limiter lock");
     // Rate limiting: 10 queries/sec per user (keyed by sub/DID, not jti, so
     // creating multiple tokens doesn't bypass the limit).
     {
@@ -859,7 +862,10 @@ pub async fn execute_query(
     }
 
     // Table whitelist: only allow queries against these tables.
-    const ALLOWED_TABLES: &[&str] = &["NODE", "VERSE", "FRACTAL", "PETAL", "NODE_LOG", "FIELD_DEF"];
+    const ALLOWED_TABLES: &[&str] = &[
+        "NODE", "VERSE", "FRACTAL", "PETAL", "NODE_LOG", "FIELD_DEF",
+        "ASSET", "MODEL", "ROLE", "ROOM", "CRATE_REGISTRY", "CRATE_ENTRY", "VERSE_MEMBER",
+    ];
     if let Some(from_pos) = sql_upper.find("FROM") {
         let after_from = &sql_upper[from_pos + 4..].trim_start();
         let table_name: String = after_from
@@ -892,12 +898,14 @@ pub async fn execute_query(
         query_builder = query_builder.bind((key.clone(), value.clone()));
     }
 
+    println!("DEBUG: Inside execute_query - executing query: {}", final_sql);
     // Execute with timeout
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         async { query_builder.await },
     )
     .await;
+    println!("DEBUG: Inside execute_query - query execution finished");
 
     match result {
         Ok(Ok(mut response)) => {
@@ -980,7 +988,7 @@ pub async fn execute_elevated_query(
     // Allowed tables for mutations
     const ELEVATED_TABLES: &[&str] = &[
         "NODE", "NODE_LOG", "VERSE", "FRACTAL", "PETAL", "FIELD_DEF",
-        "MODEL", "ASSET", "ROLE",
+        "MODEL", "ASSET", "ROLE", "ROOM", "CRATE_REGISTRY", "CRATE_ENTRY", "VERSE_MEMBER",
     ];
 
     // Check that any FROM/INTO/UPDATE targets are in the allowed list
@@ -1914,5 +1922,146 @@ async fn check_tracking_and_alert(
             },
             reply_tx: tx,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use axum::Json;
+    use axum::extract::State;
+    use axum::Extension;
+    use axum::response::IntoResponse;
+    use fe_identity::api_token::ApiClaims;
+    use crate::types::QueryRequest;
+    use crate::server::ApiState;
+
+    async fn setup_test_db() -> surrealdb::Surreal<surrealdb::engine::local::Db> {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        fe_database::schema::apply_all(&db).await.expect("apply schema");
+        db
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_whitelist() {
+        println!("DEBUG: Starting test_execute_query_whitelist");
+        println!("DEBUG: Setting up test DB");
+        let db = setup_test_db().await;
+        println!("DEBUG: DB setup complete");
+        
+        let now = chrono::Utc::now().to_rfc3339();
+        println!("DEBUG: Creating asset record");
+        db.query("CREATE asset CONTENT {
+            asset_id: 'asset-1',
+            name: 'test-model',
+            content_type: 'model/gltf-binary',
+            size_bytes: 1024,
+            created_at: $now,
+            content_hash: 'abc123hash'
+        }").bind(("now", serde_json::json!(now))).await.unwrap().check().unwrap();
+        println!("DEBUG: Asset record created");
+
+        println!("DEBUG: Creating crate_registry record");
+        db.query("CREATE crate_registry CONTENT {
+            hexon_uri: 'hexon://test-uri',
+            manifest_hash: 'manifest-hash-val',
+            publisher_did: 'did:key:z6MkPub',
+            hexon_type: 'model',
+            version: '1.0.0',
+            name: 'test-crate',
+            tags: '[\"test\"]',
+            petal_id: 'petal-1',
+            size_bytes: 4096,
+            installed_at: $now,
+            signature_valid: true
+        }").bind(("now", serde_json::json!(now))).await.unwrap().check().unwrap();
+        println!("DEBUG: Crate registry record created");
+
+        let (api_cmd_tx, _) = crossbeam::channel::bounded(1);
+        let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+        let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap();
+
+        let state = Arc::new(ApiState {
+            api_cmd_tx,
+            transform_broadcast_tx,
+            entity_change_tx,
+            verifying_key,
+            revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+            blob_store: None,
+            cors_origins: vec![],
+            db_reader: Some(Arc::new(db)),
+            query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            entity_store: None,
+            tileset_registry: None,
+            hexon_registry: None,
+            announcement_store: None,
+        });
+
+        let claims = ApiClaims {
+            sub: "did:key:z6MkUser".to_string(),
+            scope: "VERSE#v1".to_string(),
+            max_role: "editor".to_string(),
+            token_type: "api".to_string(),
+            iat: 0,
+            exp: u64::MAX,
+            jti: "jti-1".to_string(),
+        };
+
+        // 1. Query asset
+        let req = QueryRequest {
+            sql: "SELECT * FROM asset".to_string(),
+            vars: std::collections::HashMap::new(),
+        };
+        println!("DEBUG: Executing first query");
+        let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;
+        println!("DEBUG: First query returned");
+        let response = res.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        
+        println!("DEBUG: Reading response body for first query");
+        let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(body_json["success"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
+        let data = body_json["data"]["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["asset_id"], "asset-1");
+
+        // 2. Query crate_registry
+        let req = QueryRequest {
+            sql: "SELECT * FROM crate_registry".to_string(),
+            vars: std::collections::HashMap::new(),
+        };
+        println!("DEBUG: Executing second query");
+        let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;
+        println!("DEBUG: Second query returned");
+        let response = res.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        println!("DEBUG: Reading response body for second query");
+        let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(body_json["success"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
+        let data = body_json["data"]["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["hexon_uri"], "hexon://test-uri");
+
+        // 3. Blocked query (mutation keyword)
+        let req = QueryRequest {
+            sql: "DELETE FROM asset WHERE asset_id = 'asset-1'".to_string(),
+            vars: std::collections::HashMap::new(),
+        };
+        println!("DEBUG: Executing third query (blocked)");
+        let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;
+        println!("DEBUG: Third query returned");
+        let response = res.into_response();
+        let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(!body_json["success"].as_bool().unwrap_or(false));
+        assert!(body_json["error"].as_str().unwrap().contains("not allowed"));
     }
 }
