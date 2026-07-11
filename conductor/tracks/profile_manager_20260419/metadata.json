@@ -1,7 +1,9 @@
 {
   "id": "profile_manager_20260419",
-  "description": "User Profile Manager — Identity Display, Profile Editing, Identity Management, P2P Profile Sync",
+  "description": "User Profile Manager \u00e2\u20ac\u201d Identity Display, Profile Editing, Identity Management, P2P Profile Sync",
   "type": "feature",
   "created_at": "2026-04-19T00:00:00Z",
-  "status": "pending"
+  "status": "pending",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog UI track; P4 needs PeerRegistry (exists)."
 }

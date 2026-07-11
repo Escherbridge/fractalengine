@@ -2,10 +2,20 @@
   "id": "headless_relay_20260429",
   "name": "Headless Relay",
   "status": "in_progress",
+  "execution_wave": 5,
+  "wave_rationale": "P1; blocks Release CI + thin clients. Also the always-on seeder / first verse service (D3).",
   "priority": "P1",
   "created": "2026-04-29",
-  "depends_on": ["realtime_api_mcp_20260427"],
-  "blocks": ["release_ci_20260429", "web_client_sdk", "iot_integration", "docker_deployment", "mobile_client"],
+  "depends_on": [
+    "realtime_api_mcp_20260427"
+  ],
+  "blocks": [
+    "release_ci_20260429",
+    "web_client_sdk",
+    "iot_integration",
+    "docker_deployment",
+    "mobile_client"
+  ],
   "phases": [
     {
       "id": 1,

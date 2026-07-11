@@ -4,5 +4,7 @@
   "type": "feature",
   "created_at": "2026-04-19T00:00:00Z",
   "status": "pending",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog UI track; P4 needs PeerRegistry (exists).",
   "notes": "verified 2026-07-10: inspector shipped with a different tab set (Properties/ApiAccess/Query) than specced (Info/Settings/Access + hierarchy inspection)"
 }

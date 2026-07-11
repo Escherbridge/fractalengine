@@ -4,8 +4,12 @@
   "type": "feature",
   "created_at": "2026-07-11T00:00:00Z",
   "status": "pending",
-  "depends_on": ["terrain_scale_controls_20260711"],
+  "execution_wave": 1,
+  "wave_rationale": "Gated behind terrain_lod_hardening (wave 0, same crates); user gated 'if easy and convenient'.",
+  "depends_on": [
+    "terrain_scale_controls_20260711"
+  ],
   "blocks": [],
   "archived": false,
-  "notes": "requested 2026-07-11 ('if easy and convenient'). Scoped to synthesized splats (per-texel from elevation+satellite) — photogrammetric 3DGS training impossible from single orthographic tile imagery. Phase 1 runtime synthesis + view modes; phase 2 hexon pre-bake (additive entry type) + gis-tile-etl bake stage. Implementation queued behind terrain_scale_controls (same crates)."
+  "notes": "requested 2026-07-11 ('if easy and convenient'). Scoped to synthesized splats (per-texel from elevation+satellite) \u00e2\u20ac\u201d photogrammetric 3DGS training impossible from single orthographic tile imagery. Phase 1 runtime synthesis + view modes; phase 2 hexon pre-bake (additive entry type) + gis-tile-etl bake stage. Implementation queued behind terrain_scale_controls (same crates)."
 }

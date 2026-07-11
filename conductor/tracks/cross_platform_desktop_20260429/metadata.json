@@ -2,10 +2,14 @@
   "id": "cross_platform_desktop_20260429",
   "name": "Cross-Platform Desktop",
   "status": "in_progress",
+  "execution_wave": 5,
+  "wave_rationale": "P1 platform validation; blocks Release CI.",
   "priority": "P1",
   "created": "2026-04-29",
   "depends_on": [],
-  "blocks": ["release_ci_20260429"],
+  "blocks": [
+    "release_ci_20260429"
+  ],
   "phases": [
     {
       "id": 1,
@@ -29,5 +33,7 @@
       "notes": "BUILDING.md complete; needs cross-platform verification (Linux/macOS/ARM64 Windows compile)"
     }
   ],
-  "blockers": ["Cross-platform compile verification requires CI or native Linux/macOS environment"]
+  "blockers": [
+    "Cross-platform compile verification requires CI or native Linux/macOS environment"
+  ]
 }

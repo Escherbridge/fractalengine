@@ -1,7 +1,9 @@
 {
   "id": "sso_federation_20260429",
-  "description": "SSO Federation — OIDC Provider Integration for External Authentication",
+  "description": "SSO Federation \u00e2\u20ac\u201d OIDC Provider Integration for External Authentication",
   "type": "feature",
   "created_at": "2026-04-29T00:00:00Z",
-  "status": "pending"
+  "status": "pending",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog P2 enterprise SSO; no blocking deps."
 }

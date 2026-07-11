@@ -2,9 +2,14 @@
   "id": "release_ci_20260429",
   "name": "Release CI",
   "status": "pending",
+  "execution_wave": 5,
+  "wave_rationale": "P2; depends on cross_platform_desktop + headless_relay.",
   "priority": "P2",
   "created": "2026-04-29",
-  "depends_on": ["cross_platform_desktop_20260429", "headless_relay_20260429"],
+  "depends_on": [
+    "cross_platform_desktop_20260429",
+    "headless_relay_20260429"
+  ],
   "blocks": [],
   "phases": [
     {

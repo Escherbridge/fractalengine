@@ -4,7 +4,12 @@
   "type": "spike",
   "created_at": "2026-07-10T00:00:00Z",
   "status": "spec_only",
-  "depends_on": ["crate_registry_20260508", "hexon_delta_format_20260710"],
+  "execution_wave": 3,
+  "wave_rationale": "Depends on hexon_delta_format (wave 1) + Hexon Registry (done). Handshake-then-swarm transport, relay-as-seeder, BBR.",
+  "depends_on": [
+    "crate_registry_20260508",
+    "hexon_delta_format_20260710"
+  ],
   "blocks": [],
-  "notes": "spec-only per coordinator directive; grounded in existing primitives (fe-runtime blob_store blake3 content-addressing, fe-api/src/assets.rs GET /api/v1/assets/:content_hash, fe-format ed25519 signing, fe-hexon registry). Biggest confirmed gap: fe-network/src/iroh_blobs.rs is a 13-line Wave-1 stub, not real iroh P2P blob transport. Relates to hexon_delta_format_20260710 as the content-layer counterpart to that spec's operations-layer. No plan.md created this round. UPDATED 2026-07-11: GET /nodes/{id}/asset + GET /assets/by-id/{asset_id} landed (commit 3a97fc1) during the same ultrapilot run — exists-table and a DbCommand::GetNodeAsset/GetAssetMeta channel-variant follow-up added to spec.md. Still spec-only overall (no implementation of the P2P bucket vision itself)."
+  "notes": "spec-only per coordinator directive; grounded in existing primitives (fe-runtime blob_store blake3 content-addressing, fe-api/src/assets.rs GET /api/v1/assets/:content_hash, fe-format ed25519 signing, fe-hexon registry). Biggest confirmed gap: fe-network/src/iroh_blobs.rs is a 13-line Wave-1 stub, not real iroh P2P blob transport. Relates to hexon_delta_format_20260710 as the content-layer counterpart to that spec's operations-layer. No plan.md created this round. UPDATED 2026-07-11: GET /nodes/{id}/asset + GET /assets/by-id/{asset_id} landed (commit 3a97fc1) during the same ultrapilot run \u00e2\u20ac\u201d exists-table and a DbCommand::GetNodeAsset/GetAssetMeta channel-variant follow-up added to spec.md. Still spec-only overall (no implementation of the P2P bucket vision itself)."
 }

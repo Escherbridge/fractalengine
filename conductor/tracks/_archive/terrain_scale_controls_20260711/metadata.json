@@ -1,0 +1,12 @@
+{
+  "id": "terrain_scale_controls_20260711",
+  "description": "Per-petal terrain world scale + scale-aware camera zoom + settings UI for operating at multiple scales of space",
+  "type": "feature",
+  "created_at": "2026-07-11T00:00:00Z",
+  "status": "complete",
+  "depends_on": [],
+  "blocks": [],
+  "archived": true,
+  "archived_at": "2026-07-11T00:00:00Z",
+  "notes": "verified: commit 66395c5 (21 tests) + user in-app confirmation 2026-07-11 with region-overview screenshot. Follow-on rendering issues it surfaced are tracked in terrain_lod_hardening_20260711."
+}
