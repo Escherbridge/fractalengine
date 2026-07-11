@@ -1,6 +1,6 @@
 use tracing::instrument;
 
-use fe_query::{Filter, InsertBuilder, QueryBuilder, UpdateBuilder};
+use fe_query::{Filter, QueryBuilder};
 
 use crate::query_helpers::exec_query;
 use crate::repo::{Db, Repo};
@@ -161,16 +161,21 @@ pub async fn seed_default_data(
     let room_names = vec!["Lobby", "Workshop", "Gallery"];
 
     let petal_id = crate::queries::create_petal(db, petal_name, &node_id, &node_id).await?;
-    let q = UpdateBuilder::update("petal")
-        .set("fractal_id", fractal_id.as_str())
-        .set("bounds", serde_json::json!({
-            "type": "Polygon",
-            "coordinates": [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
-        }))
-        .where_clause(Filter::eq("petal_id", petal_id.0.to_string()))
-        .build();
-    exec_query(db, &q).await
-        .map_err(|e| anyhow::anyhow!("seed UPDATE petal fractal_id failed: {e}"))?;
+    // Geometry needs the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
+    db.query(
+        "UPDATE petal SET
+            fractal_id = $fractal_id,
+            bounds = <geometry<polygon>> {
+                type: 'Polygon',
+                coordinates: [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
+            }
+        WHERE petal_id = $petal_id",
+    )
+    .bind(("fractal_id", fractal_id.clone()))
+    .bind(("petal_id", petal_id.0.to_string()))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("seed UPDATE petal fractal_id failed: {e}"))?;
     tracing::info!("Seeded petal: {petal_name} ({})", petal_id.0);
 
     Repo::<Role>::create(db, &Role {
@@ -201,24 +206,39 @@ pub async fn seed_default_data(
     for (name, asset_id, xz, elevation, interactive) in node_defs {
         let node_record_id = ulid::Ulid::new().to_string();
         let aid: Option<String> = asset_id.map(|s| s.to_string());
-        let q = InsertBuilder::insert_into("node")
-            .values(serde_json::json!({
-                "node_id": node_record_id,
-                "petal_id": petal_id.0.to_string(),
-                "display_name": name,
-                "asset_id": aid,
-                "position": {
-                    "type": "Point",
-                    "coordinates": [xz[0], xz[1]]
-                },
-                "elevation": elevation,
-                "rotation": [0.0, 0.0, 0.0, 1.0],
-                "scale": [1.0, 1.0, 1.0],
-                "interactive": interactive,
-                "created_at": now,
-            }))
-            .build();
-        exec_query(db, &q).await
+        // NONE vs bound param: SCHEMAFULL option<> fields reject JSON null.
+        // Geometry needs the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
+        let asset_fragment = if aid.is_some() { "$asset_id" } else { "NONE" };
+        let sql = format!(
+            "CREATE node CONTENT {{
+                node_id: $node_id,
+                petal_id: $petal_id,
+                display_name: $name,
+                asset_id: {asset_fragment},
+                position: <geometry<point>> [$x, $z],
+                elevation: $elevation,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                interactive: $interactive,
+                created_at: $now,
+            }}"
+        );
+        let mut query = db
+            .query(&sql)
+            .bind(("node_id", node_record_id.clone()))
+            .bind(("petal_id", petal_id.0.to_string()))
+            .bind(("name", name.to_string()))
+            .bind(("x", xz[0]))
+            .bind(("z", xz[1]))
+            .bind(("elevation", *elevation))
+            .bind(("interactive", *interactive))
+            .bind(("now", now.clone()));
+        if let Some(a) = aid {
+            query = query.bind(("asset_id", a));
+        }
+        query
+            .await?
+            .check()
             .map_err(|e| anyhow::anyhow!("seed CREATE node '{name}' failed: {e}"))?;
         tracing::info!("Seeded node: {name} at XZ{xz:?} elev={elevation}");
     }

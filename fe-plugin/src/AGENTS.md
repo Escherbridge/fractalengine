@@ -83,3 +83,8 @@ live in `fe-sdk` (`CAP_STORAGE_READ`, `CAP_STORAGE_WRITE`, `CAP_QUERY_SELECT`).
 (additive to `@1.0.0`). Values cross the boundary as JSON strings so no new
 record types are forced on existing `node-api` consumers. The world imports it
 (`import query-api;`); guests that don't use it are unaffected.
+
+The WIT is the **aspirational contract**, not the wired ABI: the running WASM
+host registers core-ABI `func_wrap` imports with `-1` denial sentinels
+(`wasm/host_imports.rs`), and no component-model bindgen exists yet. Keep the
+two in sync by name/shape; wiring bindgen is future work.
