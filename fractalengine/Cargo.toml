@@ -15,6 +15,7 @@ fe-identity = { path = "../fe-identity" }
 fe-webview = { path = "../fe-webview" }
 fe-renderer = { path = "../fe-renderer" }
 fe-auth = { path = "../fe-auth" }
+tempfile = "3"
 
 [dependencies]
 fe-runtime = { path = "../fe-runtime" }
@@ -37,5 +38,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 hex = "0.4"
 dirs = "5"
+rfd = { workspace = true }
 anyhow    = { workspace = true }
 surrealdb = { workspace = true }

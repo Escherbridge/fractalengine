@@ -1,10 +1,16 @@
 //! Inspector "Asset" card: selected node's asset name + a Download button.
 //! Queues `UiAction::DownloadNodeAsset`; fe-ui does no file I/O itself — see
 //! `crate::asset_ops` for the pending-ops/result-status integration contract.
+//!
+//! `status` param is new (FR-3 persistent status row) — see
+//! `fractalengine/src/AGENTS.md` §assets INTEGRATION_REQUEST for the call-site
+//! chain (`panels/mod.rs` → `inspector.rs` → here) needed to thread it in from
+//! the `AssetDownloadStatus` Bevy resource.
 
 use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
+use crate::asset_ops::AssetDownloadStatus;
 use crate::node_manager::NodeManager;
 use crate::theme;
 use crate::verse_manager::VerseManager;
@@ -14,6 +20,7 @@ pub(crate) fn asset_card_section(
     node_mgr: &NodeManager,
     verse_mgr: &VerseManager,
     ui_mgr: &mut UiManager,
+    status: &AssetDownloadStatus,
 ) {
     let Some(sel) = node_mgr.selected.as_ref() else { return };
     let node = verse_mgr.all_nodes().find(|n| n.id == sel.node_id);
@@ -58,6 +65,26 @@ pub(crate) fn asset_card_section(
         }
         if !has_asset {
             resp.on_hover_text("This node has no asset to download");
+        }
+
+        // Persistent status row (FR-3): stays visible after the toast fades,
+        // and only for the node it actually applies to — otherwise a stale
+        // result from a previously-selected node would bleed into this card.
+        if status.node_id.as_deref() == Some(sel.node_id.as_str()) {
+            ui.add_space(4.0);
+            if let Some(path) = &status.saved_path {
+                ui.label(
+                    egui::RichText::new(format!("\u{2713} Saved to {path}"))
+                        .small()
+                        .color(theme::STATUS_ONLINE),
+                );
+            } else if let Some(err) = &status.error {
+                ui.label(
+                    egui::RichText::new(format!("\u{2717} {err}"))
+                        .small()
+                        .color(theme::STATUS_OFFLINE),
+                );
+            }
         }
         ui.add_space(4.0);
     });

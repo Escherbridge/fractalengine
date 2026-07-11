@@ -3,8 +3,9 @@
 //! §actions.
 
 mod asset;
+pub(crate) mod gis;
 mod hexon;
-mod node_props;
+pub(crate) mod node_props;
 pub(crate) mod portal;
 mod query;
 
@@ -57,6 +58,18 @@ pub enum UiAction {
     /// Download the given node's asset. Queued for the main binary; see
     /// `crate::asset_ops` for the pending-ops/result-status contract.
     DownloadNodeAsset { node_id: String },
+    // GIS query panel + layer manager actions — see AGENTS.md §gis-query-ui.
+    /// Run the "nodes with annotations" query for a petal.
+    GisQueryAnnotated { petal_id: String },
+    /// Run the property key/value filter query for a petal.
+    GisQueryPropertyFilter { petal_id: String, key: String, value: serde_json::Value },
+    /// Toggle a terrain layer's visibility/opacity on the active petal's map.
+    GisSetLayer {
+        petal_id: String,
+        layer_name: String,
+        visible: Option<bool>,
+        opacity: Option<f32>,
+    },
 }
 
 /// Centralized UI state resource.
@@ -167,6 +180,7 @@ pub(crate) fn process_ui_actions(
     mut asset_ops: ResMut<PendingAssetOps>,
     nav: Res<crate::navigation_manager::NavigationManager>,
     time: Res<Time>,
+    mut gis_panel: ResMut<crate::gis::GisPanelState>,
 ) {
     // egui reads toast time from the same Bevy clock (bevy_egui feeds
     // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
@@ -274,6 +288,15 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::DownloadNodeAsset { node_id } => {
                 asset::request_download(&mut asset_ops, node_id);
+            }
+            UiAction::GisQueryAnnotated { petal_id } => {
+                gis::query_annotated(&db_sender, &mut gis_panel, petal_id);
+            }
+            UiAction::GisQueryPropertyFilter { petal_id, key, value } => {
+                gis::query_property_filter(&db_sender, &mut gis_panel, petal_id, key, value);
+            }
+            UiAction::GisSetLayer { petal_id, layer_name, visible, opacity } => {
+                gis::set_layer(&db_sender, &mut petal_map, petal_id, layer_name, visible, opacity);
             }
         }
     }
