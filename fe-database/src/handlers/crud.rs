@@ -1,10 +1,8 @@
 use tracing::instrument;
 
-use fe_query::InsertBuilder;
 use fe_runtime::messages::{
     FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
 };
-use crate::query_helpers::exec_query;
 use crate::repo::{Db, Repo};
 use crate::schema::{Fractal, Role, Verse};
 
@@ -124,21 +122,28 @@ pub(crate) async fn create_petal_handler(
     let petal_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     tracing::info!("Creating petal: {name} ({petal_id}) in fractal {fractal_id}");
-    let q = InsertBuilder::insert_into("petal")
-        .values(serde_json::json!({
-            "petal_id": petal_id,
-            "fractal_id": fractal_id,
-            "name": name,
-            "node_id": local_did,
-            "bounds": {
-                "type": "Polygon",
-                "coordinates": [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
+    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
+    db.query(
+        "CREATE petal CONTENT {
+            petal_id: $petal_id,
+            fractal_id: $fractal_id,
+            name: $name,
+            node_id: $node_id,
+            bounds: <geometry<polygon>> {
+                type: 'Polygon',
+                coordinates: [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
             },
-            "created_at": now,
-        }))
-        .build();
-    exec_query(db, &q).await
-        .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
+            created_at: $now,
+        }",
+    )
+    .bind(("petal_id", petal_id.clone()))
+    .bind(("fractal_id", fractal_id.to_string()))
+    .bind(("name", name.to_string()))
+    .bind(("node_id", local_did.to_string()))
+    .bind(("now", now.clone()))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
     Repo::<Role>::create(db, &Role {
         peer_did: local_did.to_string(),
         scope:    format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.clone()),
@@ -161,25 +166,31 @@ pub(crate) async fn create_node_handler(
     let node_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     tracing::info!("Creating node: {name} ({node_id}) in petal {petal_id}");
-    let q = InsertBuilder::insert_into("node")
-        .values(serde_json::json!({
-            "node_id": node_id,
-            "petal_id": petal_id,
-            "display_name": name,
-            "asset_id": null,
-            "position": {
-                "type": "Point",
-                "coordinates": [position[0] as f64, position[2] as f64]
-            },
-            "elevation": position[1] as f64,
-            "rotation": [0.0, 0.0, 0.0, 1.0],
-            "scale": [1.0, 1.0, 1.0],
-            "interactive": false,
-            "created_at": now,
-        }))
-        .build();
-    exec_query(db, &q).await
-        .map_err(|e| anyhow::anyhow!("CREATE empty node '{name}' failed: {e}"))?;
+    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
+    db.query(
+        "CREATE node CONTENT {
+            node_id: $node_id,
+            petal_id: $petal_id,
+            display_name: $name,
+            asset_id: NONE,
+            position: <geometry<point>> [$x, $z],
+            elevation: $y,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            interactive: false,
+            created_at: $now,
+        }",
+    )
+    .bind(("node_id", node_id.clone()))
+    .bind(("petal_id", petal_id.to_string()))
+    .bind(("name", name.to_string()))
+    .bind(("x", position[0] as f64))
+    .bind(("z", position[2] as f64))
+    .bind(("y", position[1] as f64))
+    .bind(("now", now.clone()))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("CREATE empty node '{name}' failed: {e}"))?;
 
     if let Err(e) = super::node_log::append_node_log(
         db, &node_id, "created", "local",
@@ -252,39 +263,32 @@ pub(crate) async fn import_gltf_handler(
 
     let node_id = ulid::Ulid::new().to_string();
     tracing::info!("Creating node with GLTF: {name} ({node_id}) in petal {petal_id}");
-    let q = InsertBuilder::insert_into("node")
-        .values(serde_json::json!({
-            "node_id": node_id,
-            "petal_id": petal_id,
-            "display_name": name,
-            "asset_id": asset_id,
-            "position": {
-                "type": "Point",
-                "coordinates": [position[0] as f64, position[2] as f64]
-            },
-            "elevation": position[1] as f64,
-            "rotation": [0.0, 0.0, 0.0, 1.0],
-            "scale": [1.0, 1.0, 1.0],
-            "interactive": true,
-            "created_at": now,
-        }))
-        .build();
-    exec_query(db, &q).await
-        .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
-
-    let mut verify: surrealdb::IndexedResults = db
-        .query("SELECT count() AS c FROM node WHERE node_id = $nid GROUP ALL")
-        .bind(("nid", node_id.clone()))
-        .await?;
-    let verify_rows: Vec<serde_json::Value> = verify.take(0)?;
-    let count = verify_rows
-        .first()
-        .and_then(|r| r["c"].as_i64())
-        .unwrap_or(0);
-    tracing::debug!("Post-CREATE verify: node {} count={}", node_id, count);
-    if count == 0 {
-        anyhow::bail!("CREATE gltf node '{name}' returned OK but row not found in DB");
-    }
+    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
+    db.query(
+        "CREATE node CONTENT {
+            node_id: $node_id,
+            petal_id: $petal_id,
+            display_name: $name,
+            asset_id: $asset_id,
+            position: <geometry<point>> [$x, $z],
+            elevation: $y,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            interactive: true,
+            created_at: $now,
+        }",
+    )
+    .bind(("node_id", node_id.clone()))
+    .bind(("petal_id", petal_id.to_string()))
+    .bind(("name", name.to_string()))
+    .bind(("asset_id", asset_id.clone()))
+    .bind(("x", position[0] as f64))
+    .bind(("z", position[2] as f64))
+    .bind(("y", position[1] as f64))
+    .bind(("now", now.clone()))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
 
     if let Err(e) = super::node_log::append_node_log(
         db, &node_id, "created", "local",

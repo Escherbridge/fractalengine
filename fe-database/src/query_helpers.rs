@@ -9,7 +9,8 @@ use crate::repo::Db;
 /// Execute a [`BuiltQuery`] against the database, binding all parameters.
 ///
 /// Returns the raw `surrealdb::IndexedResults` so callers can `.take::<T>(0)`
-/// as needed.
+/// as needed. Statement-level errors are surfaced via `.check()` — a failed
+/// statement must never read as success (see AGENTS.md §geometry-inserts).
 pub(crate) async fn exec_query(
     db: &Db,
     q: &BuiltQuery,
@@ -18,5 +19,5 @@ pub(crate) async fn exec_query(
     for (name, val) in &q.params {
         query = query.bind((name.clone(), val.clone()));
     }
-    query.await
+    query.await?.check()
 }

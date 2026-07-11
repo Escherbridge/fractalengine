@@ -275,6 +275,39 @@ fn test_create_node_emits_scene_change() {
     }
 }
 
+/// A freshly created node must be readable back from the DB with its geometry
+/// persisted — handler `Ok` alone is not proof of persistence (regression:
+/// see fe-database/src/AGENTS.md §geometry-inserts).
+#[test]
+fn test_created_node_is_persisted_with_geometry() {
+    let _guard = db_lock();
+    let db = shared_scene_db();
+
+    let petal_id = seed_hierarchy(&db.cmd_tx, &db.res_rx);
+    let node_id = create_node(&db.cmd_tx, &db.res_rx, &petal_id);
+
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("nid".to_string(), serde_json::json!(node_id));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT node_id, position FROM node WHERE node_id = $nid".to_string(),
+            vars,
+        })
+        .unwrap();
+
+    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("RawQuery result") {
+        DbResult::QueryResult { data } => {
+            assert_eq!(data.len(), 1, "created node must exist in DB, got {data:?}");
+            assert!(
+                !data[0]["position"].is_null(),
+                "node.position must persist as geometry, got {:?}",
+                data[0]
+            );
+        }
+        other => panic!("expected QueryResult, got {other:?}"),
+    }
+}
+
 /// `UpdateNodeTransform` must emit `SceneChange::NodeTransform` on the broadcast
 /// channel.  Note: this command does NOT send a `DbResult` on success — the
 /// broadcast event is the only observable outcome from the caller's perspective.
