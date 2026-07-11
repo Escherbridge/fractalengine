@@ -48,22 +48,27 @@ pub(crate) async fn update_node_transform_handler(
         // Don't fail the transform — op_log is best-effort for now
     }
 
-    // Step 3: Perform the actual UPDATE
+    // Step 3: perform the UPDATE — geometry needs the explicit cast; see AGENTS.md §geometry-inserts.
     let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
     let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
-    let q = UpdateBuilder::update("node")
-        .set("position", serde_json::json!({
-            "type": "Point",
-            "coordinates": [position[0] as f64, position[2] as f64]
-        }))
-        .set("elevation", position[1] as f64)
-        .set("rotation", serde_json::json!(rot))
-        .set("scale", serde_json::json!(sc))
-        .set_expr("edit_seq", "edit_seq + 1")
-        .where_clause(Filter::eq("node_id", node_id))
-        .build();
-    exec_query(db, &q).await
-        .map_err(|e| anyhow::anyhow!("UpdateNodeTransform DB query failed: {e}"))?;
+    db.query(
+        "UPDATE node SET
+            position = <geometry<point>> [$x, $z],
+            elevation = $y,
+            rotation = $rot,
+            scale = $sc,
+            edit_seq = edit_seq + 1
+        WHERE node_id = $node_id",
+    )
+    .bind(("x", position[0] as f64))
+    .bind(("z", position[2] as f64))
+    .bind(("y", position[1] as f64))
+    .bind(("rot", rot))
+    .bind(("sc", sc))
+    .bind(("node_id", node_id.to_string()))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("UpdateNodeTransform DB query failed: {e}"))?;
     Ok(())
 }
 

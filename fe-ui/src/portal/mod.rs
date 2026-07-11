@@ -67,8 +67,9 @@ mod tests {
 
     #[test]
     fn compute_portal_rect_clamps_width_and_height_to_min_one() {
-        // Degenerate case: viewport takes the whole screen (no room for portal).
-        let screen = Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 100.0));
+        // Degenerate case: viewport fills the screen and is shorter than the
+        // toolbar+status insets (58), so both dimensions must clamp.
+        let screen = Rect::from_min_max(pos2(0.0, 0.0), pos2(500.0, 50.0));
         let viewport_rect = screen;
 
         let insets = compute_portal_rect(screen, viewport_rect);
