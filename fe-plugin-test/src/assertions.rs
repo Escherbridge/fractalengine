@@ -94,6 +94,47 @@ pub fn assert_logged(
     }
 }
 
+/// Assert that `node_set_property` was called for `node_id`/`key` via the
+/// storage host API during script execution.
+pub fn assert_node_property_set(
+    host: &MockHostEnv,
+    node_id: &str,
+    key: &str,
+) -> Result<(), String> {
+    let sets = host.storage.property_sets();
+    if sets.iter().any(|(n, k, _)| n == node_id && k == key) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Expected node_set_property({node_id}, {key}, ..) but recorded sets were: {sets:?}"
+        ))
+    }
+}
+
+/// Assert that a per-extension KV write occurred for `key`.
+pub fn assert_kv_set(host: &MockHostEnv, key: &str) -> Result<(), String> {
+    let sets = host.storage.kv_sets();
+    if sets.iter().any(|(_, k, _)| k == key) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Expected ext_storage_set(.., {key}, ..) but recorded KV sets were: {sets:?}"
+        ))
+    }
+}
+
+/// Assert that a `query_select` whose SQL contains `substring` was executed.
+pub fn assert_query_ran(host: &MockHostEnv, substring: &str) -> Result<(), String> {
+    let queries = host.storage.queries();
+    if queries.iter().any(|q| q.contains(substring)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Expected a query_select containing '{substring}' but queries were: {queries:?}"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

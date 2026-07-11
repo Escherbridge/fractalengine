@@ -17,6 +17,16 @@ pub struct SpyRecorder {
     pub query_calls: Vec<(String, String)>,
     /// `log_*(level, message)` calls.
     pub log_messages: Vec<(String, String)>,
+    /// `node_get_properties(node_id)` calls.
+    pub node_get_properties_calls: Vec<String>,
+    /// `node_set_property(node_id, key, value_repr)` calls.
+    pub node_set_property_calls: Vec<(String, String, String)>,
+    /// `query_select(sql)` calls.
+    pub query_select_calls: Vec<String>,
+    /// `ext_storage_get(key)` calls.
+    pub ext_storage_get_calls: Vec<String>,
+    /// `ext_storage_set(key, value_repr)` calls.
+    pub ext_storage_set_calls: Vec<(String, String)>,
 }
 
 impl SpyRecorder {
@@ -47,6 +57,11 @@ impl SpyRecorder {
             "set_property" => self.set_property_calls.len(),
             "create_node" => self.create_node_calls.len(),
             "query_nodes" => self.query_calls.len(),
+            "node_get_properties" => self.node_get_properties_calls.len(),
+            "node_set_property" => self.node_set_property_calls.len(),
+            "query_select" => self.query_select_calls.len(),
+            "ext_storage_get" => self.ext_storage_get_calls.len(),
+            "ext_storage_set" => self.ext_storage_set_calls.len(),
             "log_debug" | "log_info" | "log_warn" | "log_error" => self
                 .log_messages
                 .iter()
@@ -64,6 +79,11 @@ impl SpyRecorder {
         self.create_node_calls.clear();
         self.query_calls.clear();
         self.log_messages.clear();
+        self.node_get_properties_calls.clear();
+        self.node_set_property_calls.clear();
+        self.query_select_calls.clear();
+        self.ext_storage_get_calls.clear();
+        self.ext_storage_set_calls.clear();
     }
 }
 

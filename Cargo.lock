@@ -5391,6 +5391,7 @@ dependencies = [
  "blake3",
  "crossbeam",
  "fe-runtime",
+ "fe-sdk",
  "rhai",
  "serde",
  "serde_json",

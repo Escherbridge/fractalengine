@@ -26,6 +26,7 @@
 pub mod assertions;
 pub mod fixtures;
 pub mod mock_host;
+pub mod mock_storage;
 pub mod rhai_runner;
 pub mod spy;
 
@@ -34,13 +35,18 @@ pub mod prelude {
     pub use crate::assertions;
     pub use crate::fixtures;
     pub use crate::mock_host::MockHostEnv;
+    pub use crate::mock_storage::MockStorage;
     pub use crate::rhai_runner::RhaiTestRunner;
     pub use crate::spy::SpyRecorder;
 }
 
 // Top-level re-exports
-pub use assertions::{assert_logged, assert_no_writes, assert_nodes_created, assert_property_set};
+pub use assertions::{
+    assert_kv_set, assert_logged, assert_no_writes, assert_node_property_set,
+    assert_nodes_created, assert_property_set, assert_query_ran,
+};
 pub use fixtures::SceneFixture;
 pub use mock_host::MockHostEnv;
+pub use mock_storage::MockStorage;
 pub use rhai_runner::RhaiTestRunner;
 pub use spy::SpyRecorder;

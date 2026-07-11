@@ -7,14 +7,16 @@
 use crossbeam::channel::Sender;
 
 use crate::capability::CapabilityToken;
+use crate::host_env::HostEnv;
 use crate::transaction::PluginTransaction;
 use crate::PluginCommand;
 
 /// Runtime context provided to plugin callbacks.
 ///
 /// Wraps the crossbeam sender so plugins can issue commands back to the host
-/// without holding a reference to the full engine.
-#[derive(Debug, Clone)]
+/// without holding a reference to the full engine. The optional [`HostEnv`]
+/// carries the binary-injected storage/query trait objects (empty by default).
+#[derive(Clone)]
 pub struct PluginContext {
     /// The plugin's unique identifier.
     pub(crate) plugin_id: String,
@@ -24,10 +26,12 @@ pub struct PluginContext {
     pub(crate) capabilities: CapabilityToken,
     /// Sender end of the plugin command channel.
     pub(crate) tx: Sender<PluginCommand>,
+    /// Host-injected storage/query services (empty until the binary injects).
+    pub(crate) host: HostEnv,
 }
 
 impl PluginContext {
-    /// Create a new plugin context.
+    /// Create a new plugin context with no injected host services.
     pub fn new(
         plugin_id: String,
         petal_id: String,
@@ -39,7 +43,19 @@ impl PluginContext {
             petal_id,
             capabilities,
             tx,
+            host: HostEnv::new(),
         }
+    }
+
+    /// Attach a [`HostEnv`] carrying binary-injected storage/query services.
+    pub fn with_host_env(mut self, host: HostEnv) -> Self {
+        self.host = host;
+        self
+    }
+
+    /// The host-injected storage/query services for this plugin.
+    pub fn host(&self) -> &HostEnv {
+        &self.host
     }
 
     /// Begin a new transaction for batching operations.
@@ -69,5 +85,16 @@ impl PluginContext {
     /// Send a raw command to the plugin host.
     pub fn send_command(&self, cmd: PluginCommand) -> Result<(), crossbeam::channel::SendError<PluginCommand>> {
         self.tx.send(cmd)
+    }
+}
+
+impl std::fmt::Debug for PluginContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginContext")
+            .field("plugin_id", &self.plugin_id)
+            .field("petal_id", &self.petal_id)
+            .field("capabilities", &self.capabilities)
+            .field("host", &self.host)
+            .finish_non_exhaustive()
     }
 }

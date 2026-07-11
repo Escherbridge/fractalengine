@@ -22,6 +22,7 @@
 
 pub mod capability;
 pub mod context;
+pub mod host_env;
 pub mod lifecycle;
 pub mod registry;
 pub mod rhai;
@@ -30,12 +31,24 @@ pub mod wasm;
 
 use bevy::prelude::*;
 use crossbeam::channel::{Receiver, Sender};
-use fe_runtime::messages::SceneChange;
 use serde::{Deserialize, Serialize};
 
 use crate::context::PluginContext;
 use crate::registry::PluginRegistry;
 use crate::transaction::PendingOp;
+
+// ---------------------------------------------------------------------------
+// Unified SDK types — fe-sdk is the single source of truth for the stable,
+// serde-only data types the extension API is expressed in. fe-plugin no longer
+// maintains parallel definitions; see fe-plugin/src/AGENTS.md §type-unification.
+// ---------------------------------------------------------------------------
+
+pub use fe_sdk::node::NodeSnapshot;
+pub use fe_sdk::property::{PropertyBag, PropertyValue};
+pub use fe_sdk::scene::{SceneChange, SceneChangeBatch};
+pub use fe_sdk::storage::{ExtensionStorageApi, StorageError};
+pub use fe_sdk::query::{ExtensionQueryApi, QueryError};
+pub use crate::host_env::{HostApiError, HostEnv};
 
 // ---------------------------------------------------------------------------
 // Channel message types

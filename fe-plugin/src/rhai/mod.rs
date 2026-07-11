@@ -5,6 +5,7 @@
 
 pub mod host_api;
 pub mod sandbox;
+pub mod storage_api;
 
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +25,8 @@ impl RhaiEngine {
     pub fn new(ctx: Arc<Mutex<PluginContext>>) -> Self {
         let mut engine = Engine::new();
         sandbox::configure_sandbox(&mut engine, sandbox::DEFAULT_MAX_OPERATIONS);
-        host_api::register_host_api(&mut engine, ctx);
+        host_api::register_host_api(&mut engine, ctx.clone());
+        storage_api::register_storage_query_api(&mut engine, ctx);
         Self { engine }
     }
 
@@ -32,7 +34,8 @@ impl RhaiEngine {
     pub fn with_max_operations(ctx: Arc<Mutex<PluginContext>>, max_ops: u64) -> Self {
         let mut engine = Engine::new();
         sandbox::configure_sandbox(&mut engine, max_ops);
-        host_api::register_host_api(&mut engine, ctx);
+        host_api::register_host_api(&mut engine, ctx.clone());
+        storage_api::register_storage_query_api(&mut engine, ctx);
         Self { engine }
     }
 
