@@ -110,7 +110,7 @@ pub fn register_host_api(engine: &mut Engine, ctx: Arc<Mutex<PluginContext>>) {
 }
 
 /// Convert a Rhai [`Dynamic`] value to a [`serde_json::Value`].
-fn dynamic_to_json(value: &Dynamic) -> serde_json::Value {
+pub(crate) fn dynamic_to_json(value: &Dynamic) -> serde_json::Value {
     if value.is_unit() {
         serde_json::Value::Null
     } else if let Ok(b) = value.as_bool() {

@@ -7,13 +7,18 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use rhai::{Dynamic, Engine, Map};
+use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Position};
 
 use fe_sdk::node::NodeSnapshot;
 use fe_sdk::property::PropertyValue;
 use fe_sdk::scene::SceneChange;
+use fe_sdk::storage::ExtensionStorageApi;
+use fe_sdk::query::ExtensionQueryApi;
 
 use crate::mock_host::MockHostEnv;
+
+/// Namespace used for `ext_storage_*` calls in the test runner.
+const TEST_EXT_NAMESPACE: &str = "test-extension";
 
 /// A test runner that evaluates Rhai scripts against a mock host environment.
 pub struct RhaiTestRunner {
@@ -185,6 +190,104 @@ impl RhaiTestRunner {
             s.parse::<i64>().unwrap_or(0)
         });
 
+        // ---- Storage + query host API (backed by MockHostEnv::storage) ----
+        // These mirror fe-plugin's registered surface so extension scripts can
+        // be exercised without a database. Errors surface as Rhai runtime errors.
+
+        // node_get_properties(node_id: String) -> Map
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "node_get_properties",
+                move |node_id: &str| -> Result<Map, Box<EvalAltResult>> {
+                    let mut host = h.lock().unwrap();
+                    host.spy.node_get_properties_calls.push(node_id.to_string());
+                    let props = host
+                        .storage
+                        .node_get_properties(node_id)
+                        .map_err(to_script_error)?;
+                    let mut map = Map::new();
+                    for (k, v) in props {
+                        map.insert(k.into(), property_to_dynamic(&v));
+                    }
+                    Ok(map)
+                },
+            );
+        }
+
+        // node_set_property(node_id: String, key: String, value: Dynamic)
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "node_set_property",
+                move |node_id: &str, key: &str, value: Dynamic| -> Result<(), Box<EvalAltResult>> {
+                    let prop = dynamic_to_property(&value);
+                    let mut host = h.lock().unwrap();
+                    host.spy.node_set_property_calls.push((
+                        node_id.to_string(),
+                        key.to_string(),
+                        format!("{prop:?}"),
+                    ));
+                    host.storage
+                        .node_set_property(node_id, key, prop)
+                        .map_err(to_script_error)
+                },
+            );
+        }
+
+        // query_select(sql: String, params: Map) -> Array
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "query_select",
+                move |sql: &str, params: Map| -> Result<Array, Box<EvalAltResult>> {
+                    let json_params = map_to_params(&params);
+                    let mut host = h.lock().unwrap();
+                    host.spy.query_select_calls.push(sql.to_string());
+                    let rows = host
+                        .storage
+                        .query_select(sql, json_params)
+                        .map_err(to_script_error)?;
+                    Ok(rows.iter().map(json_to_dynamic).collect())
+                },
+            );
+        }
+
+        // ext_storage_get(key: String) -> Dynamic
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "ext_storage_get",
+                move |key: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+                    let mut host = h.lock().unwrap();
+                    host.spy.ext_storage_get_calls.push(key.to_string());
+                    let value = host
+                        .storage
+                        .storage_get(TEST_EXT_NAMESPACE, key)
+                        .map_err(to_script_error)?;
+                    Ok(value.map(|v| property_to_dynamic(&v)).unwrap_or(Dynamic::UNIT))
+                },
+            );
+        }
+
+        // ext_storage_set(key: String, value: Dynamic)
+        {
+            let h = host.clone();
+            engine.register_fn(
+                "ext_storage_set",
+                move |key: &str, value: Dynamic| -> Result<(), Box<EvalAltResult>> {
+                    let prop = dynamic_to_property(&value);
+                    let mut host = h.lock().unwrap();
+                    host.spy
+                        .ext_storage_set_calls
+                        .push((key.to_string(), format!("{prop:?}")));
+                    host.storage
+                        .storage_set(TEST_EXT_NAMESPACE, key, prop)
+                        .map_err(to_script_error)
+                },
+            );
+        }
+
         Self { host, engine }
     }
 
@@ -232,6 +335,99 @@ fn snapshot_to_dynamic(snapshot: &NodeSnapshot) -> Dynamic {
     map.insert("properties".into(), Dynamic::from(props));
 
     Dynamic::from(map)
+}
+
+/// Wrap a storage/query error as a Rhai runtime error surfaced to the script.
+fn to_script_error(err: impl std::fmt::Display) -> Box<EvalAltResult> {
+    Box::new(EvalAltResult::ErrorRuntime(
+        Dynamic::from(err.to_string()),
+        Position::NONE,
+    ))
+}
+
+/// Convert a [`PropertyValue`] into a Rhai [`Dynamic`].
+fn property_to_dynamic(value: &PropertyValue) -> Dynamic {
+    match value {
+        PropertyValue::String(s) => Dynamic::from(s.clone()),
+        PropertyValue::Number(n) => Dynamic::from(*n),
+        PropertyValue::Bool(b) => Dynamic::from(*b),
+        PropertyValue::Json(j) => json_to_dynamic(j),
+    }
+}
+
+/// Convert a Rhai [`Dynamic`] into a [`PropertyValue`].
+fn dynamic_to_property(value: &Dynamic) -> PropertyValue {
+    if let Ok(b) = value.as_bool() {
+        PropertyValue::Bool(b)
+    } else if let Ok(i) = value.as_int() {
+        PropertyValue::Number(i as f64)
+    } else if let Ok(f) = value.as_float() {
+        PropertyValue::Number(f)
+    } else if let Ok(s) = value.clone().into_string() {
+        PropertyValue::String(s)
+    } else {
+        PropertyValue::Json(dynamic_to_json(value))
+    }
+}
+
+/// Convert a Rhai param [`Map`] into JSON bind params.
+fn map_to_params(map: &Map) -> HashMap<String, serde_json::Value> {
+    map.iter()
+        .map(|(k, v)| (k.to_string(), dynamic_to_json(v)))
+        .collect()
+}
+
+/// Convert a Rhai [`Dynamic`] into a [`serde_json::Value`].
+fn dynamic_to_json(value: &Dynamic) -> serde_json::Value {
+    if value.is_unit() {
+        serde_json::Value::Null
+    } else if let Ok(b) = value.as_bool() {
+        serde_json::Value::Bool(b)
+    } else if let Ok(i) = value.as_int() {
+        serde_json::json!(i)
+    } else if let Ok(f) = value.as_float() {
+        serde_json::json!(f)
+    } else if let Ok(s) = value.clone().into_string() {
+        serde_json::Value::String(s)
+    } else if value.is_array() {
+        let arr = value.clone().into_typed_array::<Dynamic>().unwrap_or_default();
+        serde_json::Value::Array(arr.iter().map(dynamic_to_json).collect())
+    } else if value.is_map() {
+        let map = value.clone().cast::<Map>();
+        let mut obj = serde_json::Map::new();
+        for (k, v) in map.iter() {
+            obj.insert(k.to_string(), dynamic_to_json(v));
+        }
+        serde_json::Value::Object(obj)
+    } else {
+        serde_json::Value::Null
+    }
+}
+
+/// Convert a [`serde_json::Value`] into a Rhai [`Dynamic`].
+fn json_to_dynamic(value: &serde_json::Value) -> Dynamic {
+    match value {
+        serde_json::Value::Null => Dynamic::UNIT,
+        serde_json::Value::Bool(b) => Dynamic::from(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Dynamic::from(i)
+            } else {
+                Dynamic::from(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Dynamic::from(s.clone()),
+        serde_json::Value::Array(arr) => {
+            Dynamic::from(arr.iter().map(json_to_dynamic).collect::<Array>())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = Map::new();
+            for (k, v) in obj {
+                map.insert(k.clone().into(), json_to_dynamic(v));
+            }
+            Dynamic::from(map)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -403,5 +599,54 @@ mod tests {
 
         let host = runner.host();
         assert_no_writes(&host).unwrap();
+    }
+
+    #[test]
+    fn storage_host_api_roundtrip() {
+        let host = MockHostEnv::new();
+        host.storage
+            .seed_node_property("n1", "elevation", PropertyValue::Number(100.0));
+        let runner = RhaiTestRunner::new(host);
+
+        runner
+            .eval_script(
+                r#"
+                let props = node_get_properties("n1");
+                node_set_property("n1", "flagged", true);
+                ext_storage_set("last_seen", "n1");
+                let v = ext_storage_get("last_seen");
+            "#,
+            )
+            .unwrap();
+
+        let host = runner.host();
+        assert_node_property_set(&host, "n1", "flagged").unwrap();
+        assert_kv_set(&host, "last_seen").unwrap();
+        assert!(host.spy().was_called("node_get_properties"));
+        assert!(host.spy().was_called("ext_storage_get"));
+    }
+
+    #[test]
+    fn query_select_returns_seeded_rows() {
+        let host = MockHostEnv::new();
+        host.storage
+            .seed_query_rows(vec![serde_json::json!({"id": 1, "name": "a"})]);
+        let runner = RhaiTestRunner::new(host);
+
+        runner
+            .eval_script(r#"let rows = query_select("SELECT * FROM node", #{});"#)
+            .unwrap();
+
+        let host = runner.host();
+        assert_query_ran(&host, "SELECT").unwrap();
+    }
+
+    #[test]
+    fn query_select_rejects_non_select() {
+        let host = MockHostEnv::new();
+        let runner = RhaiTestRunner::new(host);
+
+        let result = runner.eval_script(r#"let rows = query_select("DELETE node", #{});"#);
+        assert!(result.is_err(), "non-SELECT query should raise a script error");
     }
 }

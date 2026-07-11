@@ -58,6 +58,46 @@ interface plugin-log {
     log-error: func(msg: string);
 }
 
+/// Host-provided storage + SELECT-only query access for extensions.
+///
+/// Mirrors the Rhai host functions of the same name. Every call is gated
+/// per-invocation by the plugin's capability grants ("storage.read",
+/// "storage.write", "query.select"); a denied or failed call returns a
+/// `host-error` result rather than trapping. Values crossing the boundary are
+/// JSON-encoded strings so this stays additive to @1.0.0 (no new records that
+/// existing node-api consumers must understand).
+interface query-api {
+    /// A fallible host call outcome. Mirrors `fe-plugin`'s `HostApiError`.
+    variant host-error {
+        /// The extension lacks the required capability grant.
+        capability-denied(string),
+        /// No implementation for this API was injected by the host.
+        not-available(string),
+        /// The query was not a single safe SELECT statement.
+        not-select-only,
+        /// An argument failed host-boundary validation.
+        invalid-input(string),
+        /// The underlying storage/query backend failed.
+        backend(string),
+    }
+
+    /// Read all custom properties of a node as a JSON object string.
+    node-get-properties: func(node-id: string) -> result<string, host-error>;
+
+    /// Set a single property on a node. `value` is a JSON-encoded scalar/object.
+    node-set-property: func(node-id: string, key: string, value: string) -> result<_, host-error>;
+
+    /// Run a single SELECT statement with JSON-encoded bind params.
+    /// Returns a JSON array string of result rows.
+    query-select: func(sql: string, params: string) -> result<string, host-error>;
+
+    /// Read a per-extension namespaced KV value (JSON string), none if absent.
+    ext-storage-get: func(key: string) -> result<option<string>, host-error>;
+
+    /// Write a per-extension namespaced KV value. `value` is JSON-encoded.
+    ext-storage-set: func(key: string, value: string) -> result<_, host-error>;
+}
+
 /// Guest-exported lifecycle and scene hooks.
 interface scene-hooks {
     /// Called when the plugin is first installed into a petal.
@@ -84,5 +124,6 @@ interface scene-hooks {
 world fractal-plugin {
     import node-api;
     import plugin-log;
+    import query-api;
     export scene-hooks;
 }

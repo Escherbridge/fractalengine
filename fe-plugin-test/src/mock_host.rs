@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use fe_sdk::node::NodeSnapshot;
 use fe_sdk::scene::SceneChange;
 
+use crate::mock_storage::MockStorage;
 use crate::spy::SpyRecorder;
 
 /// An in-memory mock of the FractalEngine host environment.
@@ -26,6 +27,8 @@ pub struct MockHostEnv {
     pub spy: SpyRecorder,
     /// Scene changes accumulated during script execution.
     pub scene_changes: Vec<SceneChange>,
+    /// In-memory backend implementing the `fe-sdk` storage + query traits.
+    pub storage: MockStorage,
 }
 
 impl MockHostEnv {
@@ -36,6 +39,7 @@ impl MockHostEnv {
             properties: HashMap::new(),
             spy: SpyRecorder::new(),
             scene_changes: Vec::new(),
+            storage: MockStorage::new(),
         }
     }
 

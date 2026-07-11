@@ -108,6 +108,24 @@ fn wit_file_exists_and_has_expected_content() {
         "plugin-log should declare log-error"
     );
 
+    // Verify the storage/query interface was added alongside node-api.
+    assert!(
+        content.contains("interface query-api"),
+        "WIT should define query-api interface"
+    );
+    for func in [
+        "node-get-properties:",
+        "node-set-property:",
+        "query-select:",
+        "ext-storage-get:",
+        "ext-storage-set:",
+    ] {
+        assert!(
+            content.contains(func),
+            "query-api should declare {func}"
+        );
+    }
+
     // Verify world
     assert!(
         content.contains("world fractal-plugin"),
@@ -120,6 +138,10 @@ fn wit_file_exists_and_has_expected_content() {
     assert!(
         content.contains("import plugin-log"),
         "fractal-plugin world should import plugin-log"
+    );
+    assert!(
+        content.contains("import query-api"),
+        "fractal-plugin world should import query-api"
     );
     assert!(
         content.contains("export scene-hooks"),

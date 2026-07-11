@@ -26,6 +26,11 @@ pub struct CapabilityManifest {
     /// Property key patterns the plugin may read/write (e.g. `["color", "health"]`).
     #[serde(default)]
     pub property_scope: Vec<String>,
+    /// Named capability grants (e.g. `["storage.read", "storage.write",
+    /// "query.select"]`). Absent = denied (fail closed). See the `fe_sdk`
+    /// `CAP_*` constants for the canonical names.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     /// Network access level: `"none"`, `"local"`, `"internet"`.
     #[serde(default = "default_network_scope")]
     pub network_scope: String,
@@ -63,6 +68,8 @@ pub struct CapabilityToken {
     pub petal_scope: Vec<String>,
     /// Allowed property key patterns.
     pub property_scope: Vec<String>,
+    /// Named capability grants (see [`CapabilityManifest::capabilities`]).
+    pub capabilities: Vec<String>,
     /// Network scope level.
     pub network_scope: String,
     /// Whether outbound HTTP is allowed.
@@ -77,9 +84,16 @@ impl CapabilityToken {
             verse_scope: manifest.verse_scope.clone(),
             petal_scope: manifest.petal_scope.clone(),
             property_scope: manifest.property_scope.clone(),
+            capabilities: manifest.capabilities.clone(),
             network_scope: manifest.network_scope.clone(),
             external_http: manifest.external_http,
         }
+    }
+
+    /// Whether this token grants a named capability. Fail closed: an absent
+    /// grant returns `false` so the host never registers/executes the gated fn.
+    pub fn has_capability(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|c| c == capability)
     }
 }
 
@@ -255,6 +269,29 @@ mod tests {
             &CapabilityManifest::from_json(r#"{"external_http": true}"#).unwrap(),
         );
         assert!(validate_access(&token, &CapabilityOperation::HttpRequest).is_ok());
+    }
+
+    #[test]
+    fn capability_grants_fail_closed() {
+        // No capabilities declared => every named capability is denied.
+        let token = CapabilityToken::mint(
+            "test-plugin",
+            &CapabilityManifest::from_json("{}").unwrap(),
+        );
+        assert!(!token.has_capability(fe_sdk::CAP_STORAGE_READ));
+        assert!(!token.has_capability(fe_sdk::CAP_QUERY_SELECT));
+
+        // Explicit grants are honored; unlisted ones stay denied.
+        let token = CapabilityToken::mint(
+            "test-plugin",
+            &CapabilityManifest::from_json(
+                r#"{"capabilities": ["storage.read", "query.select"]}"#,
+            )
+            .unwrap(),
+        );
+        assert!(token.has_capability(fe_sdk::CAP_STORAGE_READ));
+        assert!(token.has_capability(fe_sdk::CAP_QUERY_SELECT));
+        assert!(!token.has_capability(fe_sdk::CAP_STORAGE_WRITE));
     }
 
     #[test]

@@ -13,6 +13,8 @@
 //! | [`scene`] | [`SceneChange`], [`SceneChangeBatch`] — scene mutations |
 //! | [`transaction`] | [`PluginTransaction`] trait — batched writes |
 //! | [`context`] | [`PluginContext`] trait — engine services |
+//! | [`storage`] | [`ExtensionStorageApi`] — node-property + KV access |
+//! | [`query`] | [`ExtensionQueryApi`], [`is_select_only`] — SELECT-only reads |
 //! | [`ui`] | [`UiSlot`], [`UiContribution`], [`UiExtensionRegistry`] |
 //! | [`events`] | [`PluginEvent`], [`EventSubscription`] — inter-plugin events |
 
@@ -21,7 +23,9 @@ pub mod context;
 pub mod events;
 pub mod node;
 pub mod property;
+pub mod query;
 pub mod scene;
+pub mod storage;
 pub mod transaction;
 pub mod ui;
 
@@ -31,7 +35,11 @@ pub use context::PluginContext;
 pub use events::{EventSubscription, PluginEvent};
 pub use node::NodeSnapshot;
 pub use property::{PropertyBag, PropertyValue};
+pub use query::{is_select_only, ExtensionQueryApi, QueryError, CAP_QUERY_SELECT};
 pub use scene::{SceneChange, SceneChangeBatch};
+pub use storage::{
+    ExtensionStorageApi, StorageError, CAP_STORAGE_READ, CAP_STORAGE_WRITE,
+};
 pub use transaction::PluginTransaction;
 pub use ui::{UiContribution, UiExtensionRegistry, UiSlot};
 
