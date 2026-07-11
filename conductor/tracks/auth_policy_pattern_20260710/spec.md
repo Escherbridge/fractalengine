@@ -3,7 +3,9 @@ type: Track Spec
 title: Policy Engine — Unified Authorization for Layered Tokens and Entry Points
 tags: [spike, spec-only, auth_policy_pattern_20260710]
 timestamp: 2026-07-10T00:00:00Z
+updated: 2026-07-11T00:00:00Z
 resource: ./metadata.json
+decisions: ../../decisions/hexon-p2p-commons-20260711.md
 ---
 
 # Specification: Policy Engine
@@ -33,11 +35,12 @@ instead of hand-rolling its own role comparison.
 | Hexon registry handlers | `fe-hexon/**` | **No role/scope/RBAC references found anywhere in the crate** | Confirmed gap — Phase 8.4 review already flagged "RBAC not enforced in fe-hexon"; this survey re-confirms it as of 2026-07-10 |
 | Plugin capabilities | `fe-plugin/src/capability.rs::{CapabilityManifest, CapabilityToken}` | Named capability strings (`"storage.read"`, `"query.select"`, etc.), fail-closed (`has_capability`) | The **best-designed** of the seven — already deny-by-default, already the pattern `analytics_extension_api_20260710`'s `HostEnv` reuses. The policy engine should generalize this shape, not replace it. |
 | UI tab gating | `fe-webview/src/petal_portal.rs::{TabVisibilityFilter, VisibleTabs}` | Role-gated set of visible `BrowserTab` variants | UI-layer enforcement, redundant with (and trusting) whatever gated access to the underlying data |
+| **P2P sync write path** *(added 2026-07-11)* | `fe-sync/src/sync_thread.rs:345` (`handle_write_row_entry`) | **No authorization at all** — grep for `role_manager\|require_role\|require_scope\|RoleLevel\|evaluate(` in `fe-sync/src` returns zero matches (hexon-p2p-commons report §8.1 SC5) | The worst of the surfaces: possession of the verse namespace secret = unrestricted write to every table; revocation is local-only (`fe-auth/src/revocation.rs:22` deferred). Currently masked because replication is mock-backed — must be gated **before** real iroh-docs ships |
 
-Seven surfaces, at least four distinct "role" representations (`RoleLevel`
+Eight surfaces, at least four distinct "role" representations (`RoleLevel`
 enum, raw role-name strings, `ApiClaims` fields, named capability strings),
-and one confirmed enforcement gap (fe-hexon). This is the concrete case for
-a single evaluation point.
+and two confirmed enforcement gaps (fe-hexon, fe-sync). This is the concrete
+case for a single evaluation point.
 
 ## Target shape
 
@@ -91,6 +94,15 @@ Every entry point becomes a thin adapter calling one `Policy::evaluate`:
   does inline; same behavior, one shared implementation.
 - UI gating (`fe-webview::TabVisibilityFilter`) — becomes a read of the
   engine's decision for the tabs in question, not its own role comparison.
+- **P2P sync write path (`fe-sync`)** *(added 2026-07-11, decisions §D1/§D5)* —
+  gate `handle_write_row_entry` (`fe-sync/src/sync_thread.rs:345`) behind
+  `Policy::evaluate(peer_did, Action::Write, resource_scope)` backed by the
+  existing `role` table, before applying any peer-originated row. This is the
+  highest-priority adapter: it must land **before or with** real iroh-docs
+  replication (`p2p_mycelium_completion_20260701`), because today's mock is the
+  only thing standing between "namespace secret" and "god-mode write." It also
+  gives revocation something real to disable (deny at evaluate-time) even before
+  cross-peer revocation broadcast exists.
 
 ### Deny-by-default + decision logging
 
@@ -117,6 +129,30 @@ enforceable, greppable rule (see Acceptance Criteria).
   then checked synchronously many times).
 - Deny-by-default: a resource/action pair with no matching policy is
   `Deny`, verified by a test with an empty policy set.
+
+## Amendment (2026-07-11): membership state is a causal DAG — never LWW
+
+Ratified as decisions §D1 (auth carve-out) after the hexon-p2p-commons round.
+Binding on the implementation track:
+
+- **Auth state (grants, revokes, membership) MUST NOT be replicated as plain
+  last-write-wins entries.** Under LWW, an older "grant" can win on timestamp
+  skew and silently restore a revoked user — the exact mechanism of the 2025
+  Matrix state-reset CVEs (Project Hydra; report §4.2). Content state (names,
+  transforms) may stay LWW; auth may not.
+- Instead: grants/revokes are **signed ops in the op-log causal DAG** (with
+  `previous` + `dependencies` links, per the delta-hexon entry chain) and a
+  **strong-removal resolver** applies at materialization — a revoked author's
+  concurrent ops are invalidated, and dual-admin mutual revocation resolves
+  deterministically rather than by wall clock. State of the art here (Keyhive,
+  p2panda) is pre-alpha research; FractalEngine is implementing this machinery,
+  so keep the resolver small, well-tested, and confined to the auth op subset.
+- **Dependency:** per-op ed25519 signing must be real first (decisions §D5-1 —
+  all 13 `OpLogEntry.sig` sites are placeholders today, report §8.1 SC1). The
+  engine *verifies* those signatures; it cannot ship before them.
+- **Documented limits (decisions §D6):** revocation is not time-bounded under
+  partition — prefer short-lived capabilities + re-delegation over reliance on
+  revocation propagation.
 
 ## Out of Scope (this spec)
 

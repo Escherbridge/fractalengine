@@ -4,6 +4,8 @@
   "type": "feature",
   "created_at": "2026-07-01T14:00:00Z",
   "status": "in_progress",
+  "execution_wave": 2,
+  "wave_rationale": "P0: real iroh-docs + gossip RX loop. Depends on p2p_unblock_now (wave 0) and the sync-path policy gate (auth_policy_pattern, wave 2).",
   "priority": "P0",
   "depends_on": [
     "p2p_mycelium_20260405"
@@ -14,21 +16,24 @@
       "name": "IrohDocsReplicator Integration",
       "description": "Connect IrohDocsReplicator to real iroh_docs::Engine instead of in-memory HashMap",
       "hours_estimate": "3-4",
-      "status": "completed",
-      "completed_at": "2026-07-01T15:00:00Z"
+      "status": "reopened",
+      "reopened_at": "2026-07-11T00:00:00Z",
+      "reopen_evidence": "hexon-p2p-commons report \u00c2\u00a78.1 SC3: IrohDocsEngineHolder::is_available() reads an AtomicBool nothing ever sets true (fe-sync/src/replicator.rs:235-237); write_row/subscribe/close delegate unconditionally to MockVerseReplicator (replicator.rs:286-304); two TODO(iroh-0.35) markers remain. Prior completed_at 2026-07-01T15:00:00Z was scaffolding-only.",
+      "prerequisite": "p2p_unblock_now_20260711 FR-1 (try_send bridge) must land first or the mock stops masking a DB freeze; sync write path must be policy-gated per auth_policy_pattern_20260710 amendment"
     },
     {
       "id": "phase_2",
       "name": "Petal-Level Replication",
       "description": "Full SubscribePetal/UnsubscribePetal implementation with per-petal namespaces",
       "hours_estimate": "2-3",
-      "status": "completed",
-      "completed_at": "2026-07-01T16:30:00Z"
+      "status": "reopened",
+      "reopened_at": "2026-07-11T00:00:00Z",
+      "reopen_evidence": "Subscribe/unsubscribe handlers + namespace derivation exist and are tested, but they create mock-backed replicators (phase_1 evidence) \u00e2\u20ac\u201d petal state never crosses the network. Prior completed_at 2026-07-01T16:30:00Z reflected the handler scaffolding, not working replication."
     },
     {
       "id": "phase_3",
       "name": "Real-Time Transform Sync",
-      "description": "Broadcast node transform changes to peers via iroh-gossip",
+      "description": "Broadcast node transform changes to peers via iroh-gossip AND receive them: add the gossip receive loop (topic.next() into the command loop) and apply inbound transforms to the Bevy scene. Send path exists (sync_thread.rs:538,678); receive loop does not (report \u00c2\u00a78.1 bonus check) \u00e2\u20ac\u201d without it the send path broadcasts into the void.",
       "hours_estimate": "3-4",
       "status": "pending"
     },
@@ -48,7 +53,7 @@
     }
   ],
   "total_hours_estimate": "14-18",
-  "hours_completed": "5-7",
+  "hours_completed": "0 (phases 1-2 reopened 2026-07-11 \u00e2\u20ac\u201d prior 5-7h was scaffolding/tests, not working replication)",
   "files_to_modify": [
     "fe-sync/src/replicator.rs",
     "fe-sync/src/sync_thread.rs",

@@ -3,7 +3,9 @@ type: Track Spec
 title: Hexon Deltas — Replayable Op-Log Hexons over P2P
 tags: [spike, spec-only, hexon_delta_format_20260710]
 timestamp: 2026-07-10T00:00:00Z
+updated: 2026-07-11T00:00:00Z
 resource: ./metadata.json
+decisions: ../../decisions/hexon-p2p-commons-20260711.md
 ---
 
 # Specification: Hexon Deltas
@@ -30,13 +32,18 @@ re-discovering the primitives.
 
 ## What already exists (verified 2026-07-10 — ground truth for this spec)
 
-- **Op-log with HLC + lamport clocks + signatures:**
+- **Op-log with HLC + lamport clocks:**
   `fe-database/src/types.rs::OpLogEntry { lamport_clock: u64, hlc_timestamp: String,
   node_id: NodeId, op_type: OpType, payload: serde_json::Value, sig: String }`.
-  `sig` is a hex-encoded ed25519 signature (`fe-database/src/op_log.rs`). This
-  is already exactly "an append-only operation log" per node — the delta
-  hexon's raw material already exists, it just isn't packaged or distributed
+  This is already "an append-only operation log" per node — the delta
+  hexon's raw material exists structurally, it just isn't packaged or distributed
   as a hexon today.
+  **CORRECTED 2026-07-11:** the `sig` field is a schema placeholder, **not** a real
+  signature — all **13** construction sites across the workspace hardcode
+  `sig: "00".repeat(64)` (verified by the hexon-p2p-commons round, report §8.1 SC1;
+  e.g. `fe-database/src/role_manager.rs:111` carries a literal "placeholder signature"
+  comment). Sovereign authorship must be **built** (decisions §D5-1), not repackaged;
+  it is a prerequisite of this track, not an existing primitive.
 - **Content addressing:** `blake3::hash(bytes)` in
   `fe-renderer/src/addressing.rs::content_address()`. The same primitive
   `fe-hexon`/`fe-format` use for asset entries (per MEMORY.md: "blake3 1" key
@@ -122,7 +129,7 @@ replay/materialization function, (c) the signature chain.
 | Primitive | Status |
 |---|---|
 | Per-op HLC + lamport clock | Exists (`fe-database/src/op_log.rs`) |
-| Per-op ed25519 signature | Exists (`OpLogEntry.sig`) |
+| Per-op ed25519 signature | **Missing** — `OpLogEntry.sig` is `"00".repeat(64)` at all 13 sites; must be built first (decisions §D5-1) |
 | Content addressing (blake3) | Exists (`fe-renderer/src/addressing.rs`) |
 | Signed hexon manifests + registry/P2P distribution | Exists (Phase 6.5, Phase 8) |
 | iroh P2P transport, gossip topics | Exists (`fe-sync`, `p2p_mycelium_completion_20260701`) |
@@ -132,15 +139,70 @@ replay/materialization function, (c) the signature chain.
 | Entry hash-chaining (sequence tamper detection) | **New** |
 | Delta payload compression | **New** |
 
+## Amendments (2026-07-11) — ratified decisions from the hexon-p2p-commons round
+
+Grounded in `conductor/decisions/hexon-p2p-commons-20260711.md` (§D-refs) and
+`research/hexon-p2p-commons/report.md`. These amendments are binding on the
+implementation track that follows this spec.
+
+### A1. Container: HashSeq/manifest-of-blobs for streamable types — not ZIP
+
+The current hexon container (ZIP) places its central directory at EOF, so a
+hexon must be **fully downloaded and fully unzipped into memory before even the
+manifest is readable**, and assets are read before the signature check
+(`fe-hexon/src/package.rs:120-238`, report §3 P3). This is disqualifying for
+the two hexon types that grow or stream: **tilesets** and **delta ranges**.
+
+- Streamable hexon types (delta, tileset) use an **iroh-blobs HashSeq /
+  manifest-of-hashes** container: per-blob fetch + BLAKE3 verified range reads,
+  mirroring 3D Tiles (blob-per-subtree, small Morton→hash manifest). Report §5b-5.
+- ZIP is **retained** for small whole-archive hexons (scene/model) where
+  whole-download semantics are acceptable.
+- Decide this **before** implementing the delta format — changing container
+  later is a format break.
+
+### A2. Log-first write path (decisions §D4) — supersedes the out-of-scope note below
+
+The original spec scoped out "changing the live op_log write path." Decision
+§D4 reverses that: the **signed op-log becomes the source of truth (WAL)**;
+SurrealDB remains the realtime operational representation as a rebuildable
+materialized view; **fe-query routes by intent** (live/operational → SurrealDB;
+history/time-travel/audit → op-log). Today's DB-first, best-effort op-log
+writes (non-fatal on failure — replay history silently under-represents edits,
+report stage 1) cannot anchor replay or the serverless operating mode. The
+inversion is part of this track's implementation scope, sequenced after
+§D5-1 signing.
+
+### A3. Unify the two manifest-signing schemes
+
+Two incompatible schemes coexist: `fe-format` signs canonical-JSON, `fe-hexon`
+signs raw manifest bytes (report stage 1 §1.1). This spec's "reuse existing
+machinery unchanged" claim is ambiguous until one scheme is chosen. The
+implementation track must pick **one** (default recommendation: canonical-JSON,
+since delta entries are JSON-shaped and canonicalization is already implemented
+in `fe-format`) and migrate the other.
+
+### A4. Consistency + distribution context
+
+Delta distribution operates under the §D1 consistency contract (T2 eventual for
+federation; T1 verse-live for gossip-carried hot deltas) and the §D2
+handshake-then-swarm transport (deltas swarm within the authorized member set;
+relay seeds). Compression (zstd, below) plus content addressing makes the delta
+unit exactly what §D4's serverless workers consume.
+
 ## Out of Scope (this spec)
 
 - Implementation of any of the above — tracked separately once this spec is
   reviewed.
 - Conflict resolution / CRDT merge semantics for concurrently-authored
   deltas from different peers (a real and hard problem — deserves its own
-  spec once this foundational shape is agreed).
-- Changing the live `op_log` write path — this is purely an
-  export/distribution format layered on top of it.
+  spec once this foundational shape is agreed). **Note (2026-07-11):** for the
+  *auth* subset of ops this is no longer open — decisions §D1 mandates causal-DAG
+  strong-removal, never LWW; see `auth_policy_pattern_20260710`.
+- ~~Changing the live `op_log` write path — this is purely an
+  export/distribution format layered on top of it.~~ **Superseded by A2
+  (decisions §D4): the write path inversion is in scope for the implementation
+  track.**
 
 ## Open Questions
 
