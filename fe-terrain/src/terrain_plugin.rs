@@ -14,6 +14,7 @@ use crate::petal_binding::{
     apply_terrain_assignments, ActivePetalTerrain, ActiveTileSource, TerrainAssignmentMsg,
 };
 use crate::projection::Projection;
+use crate::scale::{scale_elevations, scale_local, scaled_tile_size, world_to_real_height};
 use crate::tiles::{
     decode_png_pixels, CompositeTileSource, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder,
     TileCoord,
@@ -163,16 +164,26 @@ fn update_terrain_lod(
     };
     let cam_pos = cam_transform.translation();
 
-    let desired = active
+    // Scale-aware: reason about zoom in real meters and despawn distances in
+    // world units (chunk transforms are scaled); see AGENTS.md §scale.
+    let scale = active
         .config
         .as_ref()
         .filter(|c| c.enabled)
-        .map(|c| desired_zoom(cam_pos.y, c.min_zoom, c.max_zoom));
+        .map(|c| c.effective_world_scale())
+        .unwrap_or(1.0);
+    let desired = active.config.as_ref().filter(|c| c.enabled).map(|c| {
+        desired_zoom(
+            world_to_real_height(cam_pos.y as f64, scale) as f32,
+            c.min_zoom,
+            c.max_zoom,
+        )
+    });
 
     // Max distance never shrinks below ~2 tiles so big low-zoom tiles don't churn.
     let base_max = lod_config.lod_distances.last().copied().unwrap_or(1000.0) * 2.0;
     let max_dist = match desired {
-        Some(z) => base_max.max(2.0 * tile_world_size_m(0.0, z) as f32),
+        Some(z) => base_max.max(2.0 * scaled_tile_size(tile_world_size_m(0.0, z), scale) as f32),
         None => base_max,
     };
 
@@ -223,12 +234,19 @@ fn fetch_and_spawn_terrain_chunks(
         return;
     }
 
+    // Invert world scale so the camera is reasoned about in real meters (zoom
+    // selection + projection expect real-world coordinates); see AGENTS.md §scale.
+    let scale = config.effective_world_scale();
     let cam_pos = cam_transform.translation();
-    let (lat, lon, _) =
-        projection.local_to_wgs84(cam_pos.x as f64, cam_pos.y as f64, cam_pos.z as f64);
+    let (lat, lon, _) = projection.local_to_wgs84(
+        cam_pos.x as f64 / scale,
+        cam_pos.y as f64 / scale,
+        cam_pos.z as f64 / scale,
+    );
     let lat = lat.clamp(-85.0, 85.0);
     let lon = lon.clamp(-180.0, 180.0);
-    let zoom = desired_zoom(cam_pos.y, config.min_zoom, config.max_zoom);
+    let cam_real_height = world_to_real_height(cam_pos.y as f64, scale) as f32;
+    let zoom = desired_zoom(cam_real_height, config.min_zoom, config.max_zoom);
 
     let existing: HashSet<(u8, u32, u32)> = chunk_query.iter().map(|c| c.tile_coords).collect();
     let center = TileCoord::from_lat_lon(lat, lon, zoom);
@@ -290,9 +308,12 @@ fn spawn_chunk(
     }
 
     // Tile geometry: SW-corner anchor, mesh +x = east, +z = north (rows flipped).
+    // World scale shrinks/grows the whole tile (size, heights, anchor) so several
+    // scales of space are viewable; see `src/AGENTS.md` §scale.
+    let scale = config.effective_world_scale();
     let (nw_lat, nw_lon) = coord.to_lat_lon();
     let (s_lat, _) = TileCoord::new(coord.x, coord.y.saturating_add(1), coord.zoom).to_lat_lon();
-    let tile_size = tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom);
+    let tile_size = scaled_tile_size(tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom), scale);
 
     let elevation_mesh = elevation_png.and_then(|png| match decode_png_pixels(&png) {
         Ok((pixels, w, h)) if w > 1 && h > 1 => {
@@ -301,7 +322,9 @@ fn spawn_chunk(
                 ElevationSourceKind::Terrarium => TerrariumDecoder.decode(&pixels, w, h),
                 ElevationSourceKind::None => vec![0.0; (w * h) as usize],
             };
-            let flipped = flip_rows(&decoded, w as usize, h as usize);
+            // Scale heights to world units (origin_ele subtraction lands in the anchor).
+            let scaled = scale_elevations(&decoded, scale as f32);
+            let flipped = flip_rows(&scaled, w as usize, h as usize);
             Some(terrain_mesh(&flipped, w, h, tile_size))
         }
         Ok(_) => {
@@ -342,9 +365,9 @@ fn spawn_chunk(
         }
     };
 
-    // Anchor at SW corner with ele=0 so mesh y (absolute meters) lands at ele - origin_ele.
+    // Anchor at SW corner with ele=0 so mesh y (scaled meters) lands at (ele - origin_ele) * scale.
     let anchor = match projection.wgs84_to_local(s_lat, nw_lon, 0.0) {
-        Ok(a) => a,
+        Ok(a) => scale_local(a, scale),
         Err(err) => {
             tracing::warn!(tile = %coord.cache_key(), error = %err, "tile corner outside projection bounds");
             return false;
@@ -685,5 +708,24 @@ mod tests {
     fn flip_rows_reverses_row_order() {
         let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2 cols x 3 rows
         assert_eq!(flip_rows(&v, 2, 3), vec![5.0, 6.0, 3.0, 4.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn scaled_mesh_size_shrinks_tile_with_scale() {
+        let real = tile_world_size_m(45.0, 8);
+        assert_eq!(scaled_tile_size(real, 1.0), real);
+        assert!((scaled_tile_size(real, 0.001) - real * 0.001).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inverse_camera_mapping_recovers_real_height() {
+        // A camera at world-Y 500 under 0.001 scale sits at 500 km real → low zoom.
+        let scale = 0.001;
+        let world_y = 500.0_f64;
+        let real = world_to_real_height(world_y, scale);
+        assert!((real - 500_000.0).abs() < 1e-3);
+        let z_scaled = desired_zoom(real as f32, 8, 15);
+        let z_unscaled = desired_zoom(world_y as f32, 8, 15);
+        assert!(z_scaled < z_unscaled, "inverting scale must pick a lower zoom");
     }
 }

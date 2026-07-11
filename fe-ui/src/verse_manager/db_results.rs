@@ -426,6 +426,13 @@ pub(super) fn apply_db_results(
                         .and_then(|v| v.as_array())
                         .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                         .unwrap_or_default();
+                    // Restore the stored world scale (drives the settings slider + camera).
+                    petal_map.world_scale = terrain
+                        .as_ref()
+                        .and_then(|t| t.get("world_scale"))
+                        .and_then(|v| v.as_f64())
+                        .filter(|s| s.is_finite() && *s > 0.0)
+                        .unwrap_or(1.0);
                     petal_map.loaded = true;
                 }
             }

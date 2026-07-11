@@ -113,3 +113,34 @@ runs first so the frame's assignment is visible to everything downstream.
 - `sync_layer_visibility` ran every frame; now gated on
   `layer_stack.is_changed()`, and opacity < 1.0 also sets
   `AlphaMode::Blend` (alpha alone doesn't blend on `StandardMaterial`).
+
+## §scale
+
+`TerrainConfig.world_scale` (serde default `1.0`, additive — pre-feature petal
+JSON keeps parsing) is **world units per real meter** (`0.001` → 1 unit per km).
+It lets the user operate at several scales of space: a zoom-8 tile is ~110 km,
+so at 1:1 you only ever see a sliver, while at 1:1000 the whole region fits.
+
+Pure math lives in `scale.rs` (not render-gated, unit-tested without `bevy`):
+`sanitize_world_scale` (finite & > 0, else 1.0), `scaled_tile_size`,
+`world_to_real_height` (the inverse used for zoom selection), `scale_local`,
+`scale_elevations`. `TerrainConfig::effective_world_scale()` wraps the sanitizer
+so bad JSON never divides by zero or flips signs.
+
+Applied in `terrain_plugin`:
+- `spawn_chunk` scales the **tile mesh size**, the **decoded elevations**, and
+  the **anchor transform** by `scale`. Composition is the load-bearing invariant:
+  anchor.y = `-origin_ele * scale` (from `wgs84_to_local(_, _, 0.0)` then
+  `scale_local`) and mesh y = `ele * scale`, so world-Y = `(ele - origin_ele) *
+  scale`. `origin_ele` is still grounded in **real meters** in `petal_binding`
+  (pre-scale) — the subtraction composes cleanly because both terms are scaled
+  together.
+- `fetch_and_spawn_terrain_chunks` and `update_terrain_lod` **invert** scale: the
+  camera is projected/zoom-selected in real meters (`cam / scale`,
+  `world_to_real_height`). LOD despawn distance stays in world units — the tile
+  term is scaled (`scaled_tile_size`) while the `~2 tile` floor is a world-unit
+  heuristic left as-is so 1:1 behavior is unchanged.
+
+A live scale change round-trips as a `SetPetalTerrain` → `PetalTerrainLoaded` →
+`TerrainAssignmentMsg`, bumping `ActivePetalTerrain.revision` and respawning
+chunks (no restart). Camera limits adapt via fe-renderer's `CameraScaleSettings`.

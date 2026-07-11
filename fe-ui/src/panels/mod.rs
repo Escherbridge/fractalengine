@@ -41,7 +41,7 @@ pub fn gardener_console(
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
-    petal_map: &crate::terrain_map::PetalMapState,
+    petal_map: &mut crate::terrain_map::PetalMapState,
 ) -> egui::Rect {
     toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr);
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);

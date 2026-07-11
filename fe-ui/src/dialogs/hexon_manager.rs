@@ -24,7 +24,7 @@ fn format_size(bytes: u64) -> String {
 pub fn render_hexon_manager(
     ctx: &egui::Context,
     ui_mgr: &mut UiManager,
-    petal_map: &PetalMapState,
+    petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
 ) {
     let ActiveDialog::HexonManager {
@@ -197,9 +197,23 @@ fn render_installed_tab(
     filter: &str,
     actions: &mut Vec<UiAction>,
     pending_remove: &mut Option<String>,
-    petal_map: &PetalMapState,
+    petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
 ) {
+    // Scale controls for the petal's active map (above the tileset grid).
+    if let Some(pid) = active_petal_id {
+        if let Some(active_ts) = tilesets
+            .iter()
+            .find(|ts| petal_map.tileset_ids.iter().any(|id| id == &ts.hexon_id))
+            .cloned()
+        {
+            render_scale_controls(ui, &active_ts, petal_map, actions, pid);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+        }
+    }
+
     if tilesets.is_empty() {
         ui.label(
             egui::RichText::new(
@@ -327,6 +341,78 @@ fn render_installed_tab(
                 }
             });
     });
+}
+
+/// World-scale presets: (label, world units per real meter). `1:N` → scale `1/N`.
+const SCALE_PRESETS: &[(&str, f64)] = &[
+    ("1:1 human", 1.0),
+    ("1:10", 0.1),
+    ("1:100", 0.01),
+    ("1:1000 region", 0.001),
+];
+
+/// Minimum / maximum world scale for the log slider (1:10000 .. 1:1).
+const SCALE_MIN: f64 = 0.0001;
+const SCALE_MAX: f64 = 1.0;
+
+/// Terrain world-scale settings for the active petal's map: presets + a log
+/// slider. Writes `petal_map.world_scale` for a live camera preview and emits
+/// `PetalSetMapScale` (persist + respawn) on release / preset click.
+fn render_scale_controls(
+    ui: &mut egui::Ui,
+    active_ts: &InstalledTilesetDto,
+    petal_map: &mut PetalMapState,
+    actions: &mut Vec<UiAction>,
+    petal_id: &str,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Terrain scale").color(theme::TEXT_SECTION).strong());
+        let ratio = if petal_map.world_scale > 0.0 {
+            (1.0 / petal_map.world_scale).round() as i64
+        } else {
+            1
+        };
+        ui.label(
+            egui::RichText::new(format!("1:{ratio}"))
+                .small()
+                .color(theme::TEXT_MUTED),
+        )
+        .on_hover_text("World units per real meter (region ↔ human scale of space)");
+    });
+
+    ui.horizontal(|ui| {
+        for (label, preset) in SCALE_PRESETS {
+            let selected = (petal_map.world_scale - *preset).abs() < 1e-9;
+            let fill = if selected { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON };
+            if ui.add(egui::Button::new(*label).fill(fill)).clicked() {
+                petal_map.world_scale = *preset;
+                actions.push(UiAction::PetalSetMapScale {
+                    petal_id: petal_id.to_string(),
+                    tileset: active_ts.clone(),
+                    world_scale: *preset,
+                });
+            }
+        }
+    });
+
+    // Log slider: live-preview the camera on drag; persist terrain on release.
+    let mut scale = petal_map.world_scale.clamp(SCALE_MIN, SCALE_MAX);
+    let resp = ui.add(
+        egui::Slider::new(&mut scale, SCALE_MIN..=SCALE_MAX)
+            .logarithmic(true)
+            .custom_formatter(|v, _| format!("1:{}", (1.0 / v).round() as i64))
+            .text("scale"),
+    );
+    if resp.changed() {
+        petal_map.world_scale = scale;
+    }
+    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+        actions.push(UiAction::PetalSetMapScale {
+            petal_id: petal_id.to_string(),
+            tileset: active_ts.clone(),
+            world_scale: scale,
+        });
+    }
 }
 
 fn render_available_tab(
