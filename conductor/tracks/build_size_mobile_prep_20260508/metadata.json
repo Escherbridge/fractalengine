@@ -3,5 +3,7 @@
   "description": "Build Size Optimization & Mobile Deployment Preparation",
   "type": "chore",
   "created_at": "2026-05-08T00:00:00Z",
-  "status": "pending"
+  "status": "pending",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog; mobile arch doc exists, binary-slimming pending."
 }

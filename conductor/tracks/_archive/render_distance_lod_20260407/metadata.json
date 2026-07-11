@@ -3,5 +3,7 @@
   "description": "Render distance and LOD system",
   "type": "feature",
   "created_at": "2026-04-07T00:00:00Z",
-  "status": "completed"
+  "status": "completed",
+  "archived": true,
+  "archived_at": "2026-07-11T00:00:00Z"
 }

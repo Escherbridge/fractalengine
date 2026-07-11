@@ -1,7 +1,9 @@
 {
   "id": "tauri_host_shell_spike_20260630",
-  "name": "Tauri-Host Shell SPIKE — Exploratory: Tauri as Primary Window + Bevy Render-into-Surface",
+  "name": "Tauri-Host Shell SPIKE \u00e2\u20ac\u201d Exploratory: Tauri as Primary Window + Bevy Render-into-Surface",
   "status": "pending",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog P2 exploratory SPIKE; off critical path.",
   "priority": "P2",
   "created": "2026-06-30",
   "depends_on": [],

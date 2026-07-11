@@ -2,6 +2,8 @@
   "id": "pears_p2p_layer_spike_20260630",
   "name": "Pear Runtime P2P Layer SPIKE — Research: JS-Native P2P for FractalEngine",
   "status": "completed",
+  "archived": true,
+  "archived_at": "2026-07-11T00:00:00Z",
   "priority": "P2",
   "created": "2026-06-30",
   "completed": "2026-07-01",

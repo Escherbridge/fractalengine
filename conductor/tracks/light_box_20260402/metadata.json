@@ -3,5 +3,7 @@
   "description": "Default 3-point lighting rig, light presets (Studio/Outdoor/Dark), light entity persistence, light inspector panel",
   "type": "feature",
   "created_at": "2026-04-02T00:00:00Z",
-  "status": "pending"
+  "status": "pending",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog Wave-2 feature (lighting rig); no blocking deps."
 }

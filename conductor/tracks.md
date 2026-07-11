@@ -1,52 +1,38 @@
 ---
 type: Track Index
 title: FractalEngine Project Tracks
-timestamp: 2026-07-10T00:00:00Z
+timestamp: 2026-07-11T00:00:00Z
 ---
 
 # Project Tracks
 
 This file tracks all major tracks for the project. Each track has its own detailed plan in its respective folder.
 
+> **Pruned + archived 2026-07-11 (hexon-p2p-commons pass):** completed `[x]` tracks are collapsed to
+> one-liners AND their folders physically relocated into [`./tracks/_archive/`](./tracks/_archive/)
+> (37 tracks) — full scope/verification detail lives in each moved folder; links above updated to
+> `_archive/` paths. Open tracks keep their full entries and stay at `./tracks/<id>/`. Statuses
+> reconciled against verified evidence from `research/hexon-p2p-commons/report.md`.
+> **Execution order** for open tracks is encoded as an `execution_wave` field (0=in-flight/P0 →
+> 5=release; `DEADLINE`=iroh 1.0 by 2026-12-31) plus `depends_on`/`blocks` edges in each
+> `metadata.json` — query with `jq '.execution_wave' tracks/*/metadata.json`. Architecture
+> decisions ratified this pass: [./decisions/hexon-p2p-commons-20260711.md](./decisions/hexon-p2p-commons-20260711.md).
+
 ---
 
 ## Wave 1: Core Infrastructure (Foundation)
 
-## [x] Track: Seed Runtime — Three-Thread Topology and Channel Skeleton
+Completed (collapsed — see folders):
 
-_Link: [./tracks/seed_runtime_20260321/](./tracks/seed_runtime_20260321/)_
-
-## [x] Track: Root Identity — Ed25519 Keypair, OS Keychain, JWT + did:key
-
-_Link: [./tracks/root_identity_20260321/](./tracks/root_identity_20260321/)_
-
-## [x] Track: Petal Soil — SurrealDB Schema, RBAC Permissions, Op-Log
-
-_Link: [./tracks/petal_soil_20260321/](./tracks/petal_soil_20260321/)_
-
-## [x] Track: Mycelium Network — libp2p DHT + iroh Data Transport
-
-_Link: [./tracks/mycelium_network_20260321/](./tracks/mycelium_network_20260321/)_
-
-## [x] Track: Bloom Renderer — GLTF Asset Pipeline, Content Addressing, Dead-Reckoning
-
-_Link: [./tracks/bloom_renderer_20260321/](./tracks/bloom_renderer_20260321/)_
-
-## [x] Track: Petal Gate — Auth Handshake, Session Cache, Role Enforcement
-
-_Link: [./tracks/petal_gate_20260321/](./tracks/petal_gate_20260321/)_
-
-## [x] Track: Canopy View — wry WebView Overlay + BrowserInteraction Tabs
-
-_Link: [./tracks/canopy_view_20260321/](./tracks/canopy_view_20260321/)_
-
-## [x] Track: Fractal Mesh — Multi-Node Sync, Petal Replication, Offline Cache
-
-_Link: [./tracks/fractal_mesh_20260321/](./tracks/fractal_mesh_20260321/)_
-
-## [x] Track: Gardener Console — Node Operator Admin UI
-
-_Link: [./tracks/gardener_console_20260321/](./tracks/gardener_console_20260321/)_
+- [x] Seed Runtime — three-thread topology + channel skeleton — [./tracks/_archive/seed_runtime_20260321/](./tracks/_archive/seed_runtime_20260321/)
+- [x] Root Identity — ed25519 keypair, OS keychain, JWT + did:key — [./tracks/root_identity_20260321/](./tracks/root_identity_20260321/)
+- [x] Petal Soil — SurrealDB schema, RBAC permissions, op-log — [./tracks/petal_soil_20260321/](./tracks/petal_soil_20260321/)
+- [x] Mycelium Network — libp2p DHT + iroh data transport — [./tracks/mycelium_network_20260321/](./tracks/mycelium_network_20260321/)
+- [x] Bloom Renderer — GLTF pipeline, content addressing, dead-reckoning — [./tracks/bloom_renderer_20260321/](./tracks/bloom_renderer_20260321/)
+- [x] Petal Gate — auth handshake, session cache, role enforcement — [./tracks/petal_gate_20260321/](./tracks/petal_gate_20260321/)
+- [x] Canopy View — wry WebView overlay + BrowserInteraction tabs — [./tracks/canopy_view_20260321/](./tracks/canopy_view_20260321/)
+- [x] Fractal Mesh — multi-node sync, petal replication, offline cache — [./tracks/fractal_mesh_20260321/](./tracks/fractal_mesh_20260321/)
+- [x] Gardener Console — node operator admin UI — [./tracks/gardener_console_20260321/](./tracks/gardener_console_20260321/)
 
 ## [ ] Track: Thorns and Shields — Security Hardening + Pre-Launch Documents
 
@@ -57,33 +43,29 @@ _verified: genuinely open — `docs/webview-threat-model.md`, `docs/security-che
 
 ## Chore / Exploration Tracks
 
-- [x] `db_repository_pattern_20260407/` — Repository pattern for DB access
-- [x] `glb_stability_20260405/` — GLB loading stability fixes
-- [x] `mycelium_scaling_20260407/` — Mycelium network scaling research
-- [x] `p2p_mycelium_20260405/` — P2P mycelium initial implementation
+- [x] `_archive/db_repository_pattern_20260407/` — Repository pattern for DB access
+- [x] `_archive/glb_stability_20260405/` — GLB loading stability fixes
+- [x] `_archive/mycelium_scaling_20260407/` — Mycelium network scaling research
+- [x] `_archive/p2p_mycelium_20260405/` — P2P mycelium initial implementation
 - [ ] `p2p_mycelium_completion_20260701/` — P2P mycelium completion (Real iroh-docs Engine + Gossip Router integration)
-  _verified: genuinely open — `fe-sync/src/replicator.rs` doc comment: "Whether a real iroh-docs Engine is available. Currently always `false`"; two `TODO(iroh-0.35)` markers remain for routing through the real Doc. Phases 3-5 (transform sync, gossip topics, tileset P2P) have code + tests in `fe-sync/src/sync_thread.rs`, but Phase 1 (real docs Engine) is still stubbed despite metadata.json marking it "completed"_
-- [x] `relay_data_horizon_20260407/` — Relay-based data horizon strategy
-- [x] `render_distance_lod_20260407/` — Render distance and LOD system
-- [x] `code_review_retro_20260701/` — System-wide code review & retrospective session (spec.md + plan.md; not previously listed here). See `conductor/tracks/wave_retros_20260710/retro.md` for the consolidated follow-on retro.
-- [x] `wave_retros_20260710/` — Consolidated Wave 1-3 + Tauri migration retrospective (this reconciliation pass's findings)
+  _reconciled 2026-07-11 (hexon-p2p-commons report §8.1): phases 1-2 REOPENED in metadata.json — `IrohDocsEngineHolder::is_available()` hardcoded false, all replicators delegate to `MockVerseReplicator` (`fe-sync/src/replicator.rs:235-237,286-304`); gossip is send-only (broadcast at sync_thread.rs:538/678, no receive loop — added to Phase 3 scope). Prerequisites before wiring real docs: `p2p_unblock_now_20260711` FR-1 (try_send bridge) and the policy gate on the sync write path (see auth_policy_pattern amendment)_
+- [x] `_archive/relay_data_horizon_20260407/` — Relay-based data horizon strategy
+- [x] `_archive/render_distance_lod_20260407/` — Render distance and LOD system
+- [x] `_archive/code_review_retro_20260701/` — System-wide code review & retrospective session. See `conductor/tracks/_archive/wave_retros_20260710/retro.md` for the consolidated follow-on retro.
+- [x] `_archive/wave_retros_20260710/` — Consolidated Wave 1-3 + Tauri migration retrospective
 
 ---
 
 ## Chores & Refactors
 
-## [x] Track: UI Manager Architecture Refactor — UiSet Ordering, UiAction Queue, ActiveDialog Enum, Selection Dedup
-
-_Link: [./tracks/ui_manager_refactor_20260419/](./tracks/ui_manager_refactor_20260419/)_
-_Scope: fe-ui internal refactor | Blocks: none_
-_verified: `UiSet` enum (fe-ui/src/plugin.rs:723), `UiAction` enum (plugin.rs:13) + `UiManager::push_action`/`drain_actions`, `ActiveDialog` enum (plugin.rs:168), `InspectorFormState` (renamed from `InspectorState`, no `selected_entity`/`selected_node_id` fields — `NodeManager::selected_entity()` is sole source) — FR-1 through FR-4 all present_
+- [x] UI Manager Architecture Refactor — UiSet ordering, UiAction queue, ActiveDialog enum — [./tracks/_archive/ui_manager_refactor_20260419/](./tracks/_archive/ui_manager_refactor_20260419/)
 
 ## [ ] Track: Code Review Cleanup — SSRF Fix, Dead Code Removal, Stale Docs, Quality Fixes
 
 _Link: [./tracks/code_review_cleanup_20260419/](./tracks/code_review_cleanup_20260419/)_
 _Scope: fe-webview security fix (P0), fe-webview + fe-ui dead code and quality cleanup | Blocks: none_
 _Priority: P0 (contains critical SSRF vulnerability fix)_
-_verified: partial — FR-1 (SSRF fix) done: `is_url_allowed()` wired into `navigation_handler` in both `fe-webview/src/plugin.rs:203` and `fe-webview/src/backends/tauri.rs:54`. FR-2 (dead guard/flush code) done: `tab_switch_guard_system`/`flush_browser_commands_system`/`PendingBrowserCommands` confirmed removed (comment at petal_portal.rs:328). FR-3–FR-9 (stale docs, VerseManager UiSet ordering, URL persistence, hostname caching, context-menu close detection, sidebar toggle, dead `tag_filter_buf`) not verified — track stays open_
+_verified: partial — FR-1 (SSRF fix) done: `is_url_allowed()` wired into `navigation_handler` in both `fe-webview/src/plugin.rs:203` and `fe-webview/src/backends/tauri.rs:54`. FR-2 (dead guard/flush code) done. FR-3–FR-9 (stale docs, VerseManager UiSet ordering, URL persistence, hostname caching, context-menu close detection, sidebar toggle, dead `tag_filter_buf`) not verified — track stays open_
 
 ## [ ] Track: Build Size Optimization & Mobile Deployment Preparation
 
@@ -96,48 +78,18 @@ _verified: genuinely open — `docs/mobile-architecture.md` exists (thin-client 
 
 ## Wave 2: Interactive Digital Twin Platform
 
-```
-Dependency graph:
+Completed (collapsed — see folders):
 
-  Viewport Foundation ──┬──► Light Box
-  (camera + grid)       │    (lighting rig)
-                        │
-                        ├──► Scene Graph Bridge ──┬──► Selection System ──► Transform Gizmos
-                        │    (DB ↔ ECS sync)      │    (raycast + highlight)  (move/rotate/scale)
-                        │                         │
-                        └──► Drag & Drop ─────────┘
-                             (file drop + placement)
-
-  Petal Seed ──────► Bloom Stage ──────► Petal Portal
-  (drag-drop)        (3D scene)          (browser overlay)
-
-  Garden Console ──► Fractal Atlas
-  (live admin UI)    (metadata/spaces)
-
-  Mycelium Live      (independent)
-  (peer discovery)
-
-  Seedling Onboarding (independent — builds on Wave 1 infra)
-
-  Hexon Format (6.5) ───────────┬──► fe-terrain (Phase 7) ──► fe-hexon (Phase 8)
-  Entity Data Layer 6.1 (GIS) ─┤    (GPX + terrain +         (registry, P2P hosting,
-  Viewport Foundation ──────────┘     map layers + IoT)        skybox/material/model hexons)
-  Scene Graph Bridge ───────────┘
-
-  Shared Peer Infra ──┬──► Inspector P1-P3  ──┐
-  (NodeIdentity,       │   (tabs, hierarchy)   ├──► Coordinated P4
-   PeerRegistry,       │                       │    (Access tab + P2P sync)
-   presence)           └──► Profile P1-P3   ──┘
-                            (display, edit, identity)
-```
-
-### 3D Editor Pipeline (new)
-
-## [x] Track: Viewport Foundation — 3D Camera, Infinite Ground Plane, and Bevy Scene Setup
-
-_Link: [./tracks/viewport_foundation_20260402/](./tracks/viewport_foundation_20260402/)_
-_Depends on: none | Blocks: Light Box, Scene Graph Bridge, Selection System, Transform Gizmos, Drag & Drop_
-_verified: fe-renderer/src/camera.rs (orbit camera), grid.rs (ground grid), axis_gizmo.rs (axis gizmo) all exist_
+- [x] Viewport Foundation — 3D camera, ground plane, Bevy scene setup — [./tracks/_archive/viewport_foundation_20260402/](./tracks/_archive/viewport_foundation_20260402/)
+- [x] Scene Graph Bridge — DB entity ↔ Bevy ECS sync — [./tracks/_archive/scene_graph_bridge_20260402/](./tracks/_archive/scene_graph_bridge_20260402/)
+- [x] Selection System — raycasting, highlighting, inspector sync — [./tracks/_archive/selection_system_20260402/](./tracks/_archive/selection_system_20260402/)
+- [x] Transform Gizmos — move/rotate/scale handles — [./tracks/_archive/transform_gizmos_20260402/](./tracks/_archive/transform_gizmos_20260402/)
+- [x] Shared Peer Infrastructure — NodeIdentity, PeerRegistry, presence, canonical DID — [./tracks/_archive/shared_peer_infra_20260419/](./tracks/_archive/shared_peer_infra_20260419/) _(note: fe-ui `peer_registry` dead_code warning — shipped but not fully consumed)_
+- [x] Garden Console — live admin & space manager UI — [./tracks/_archive/garden_console_20260322/](./tracks/_archive/garden_console_20260322/)
+- [x] Mycelium Live — peer discovery & node browsing — [./tracks/_archive/mycelium_live_20260322/](./tracks/_archive/mycelium_live_20260322/)
+- [x] Bloom Stage — 3D scene rendering & object interaction — [./tracks/_archive/bloom_stage_20260322/](./tracks/_archive/bloom_stage_20260322/)
+- [x] Petal Portal — digital twin browser overlay & IoT interaction — [./tracks/_archive/petal_portal_20260322/](./tracks/_archive/petal_portal_20260322/)
+- [x] Fractal Atlas — space manager & metadata system — [./tracks/_archive/fractal_atlas_20260322/](./tracks/_archive/fractal_atlas_20260322/)
 
 ## [ ] Track: Light Box — Default Lighting Rig and Light Management System
 
@@ -145,41 +97,11 @@ _Link: [./tracks/light_box_20260402/](./tracks/light_box_20260402/)_
 _Depends on: Viewport Foundation | Blocks: none_
 _verified: genuinely open — no `DirectionalLight`/`PointLight`/`AmbientLight`/lighting-rig code found anywhere in the workspace_
 
-## [x] Track: Scene Graph Bridge — DB Entity ↔ Bevy ECS Synchronization
-
-_Link: [./tracks/scene_graph_bridge_20260402/](./tracks/scene_graph_bridge_20260402/)_
-_Depends on: Viewport Foundation | Blocks: Selection System, Drag & Drop_
-_verified: `SceneChange` type wired through fe-sdk/src/scene.rs, fe-runtime/src/messages.rs, and consumed in fe-ui node_manager.rs/plugin.rs_
-
-## [x] Track: Selection System — Raycasting, Highlighting, and Inspector Sync
-
-_Link: [./tracks/selection_system_20260402/](./tracks/selection_system_20260402/)_
-_Depends on: Viewport Foundation, Scene Graph Bridge | Blocks: Transform Gizmos_
-_verified: `handle_viewport_click` raycast pick/deselect system in fe-ui/src/node_manager.rs:553, chained with `sync_manager_to_inspector`_
-
-## [x] Track: Transform Gizmos — Blender-Style Move/Rotate/Scale Handles
-
-_Link: [./tracks/transform_gizmos_20260402/](./tracks/transform_gizmos_20260402/)_
-_Depends on: Selection System | Blocks: none_
-_verified: fe-ui/src/gimbal.rs implements `Tool::Move`/`Tool::Rotate`/`Tool::Scale` handle rendering + drag_
-
 ## [ ] Track: Drag & Drop Asset Placement — File Drop + Scene Placement Flow
 
 _Link: [./tracks/drag_drop_placement_20260402/](./tracks/drag_drop_placement_20260402/)_
 _Depends on: Viewport Foundation, Scene Graph Bridge | Blocks: none_
 _verified: genuinely open — no `FileDragAndDrop` event handling found anywhere in the workspace; GLTF import instead ships via a manual file-path text field (`ActiveDialog::GltfImport` in fe-ui/src/dialogs.rs), not OS drag-drop + placement-preview + Alt-Drag duplication + Asset Library panel as specced_
-
-### Shared Infrastructure
-
-## [x] Track: Shared Peer Infrastructure — NodeIdentity, PeerRegistry, Peer Presence, Canonical DID Format
-
-_Link: [./tracks/shared_peer_infra_20260419/](./tracks/shared_peer_infra_20260419/)_
-_Depends on: Root Identity (complete), Petal Gate (complete) | Blocks: Inspector Settings P4, Profile Manager P4_
-_Scope: Resolves 3 BLOCKERs and 5 design decisions from cross-track alignment analysis_
-_Priority: P0 (unblocks both Inspector Settings and Profile Manager Phase 4 integration)_
-_verified: `PeerRegistry` in fe-runtime/src/peer_registry.rs, `NodeIdentity` in fe-identity/src/resource.rs (note: MEMORY.md records a pre-existing `peer_registry` dead_code warning in fe-ui — infra shipped but not fully consumed everywhere)_
-
-### UI & Configuration
 
 ## [ ] Track: Inspector Settings — Portal URL Persistence, Inspector Tabs, Hierarchy Inspection, Auth Settings UI
 
@@ -197,154 +119,38 @@ _Scope: fe-ui profile panel, fe-identity multi-identity support, iroh-gossip pro
 _Note: P1-P3 independent of shared infra; P4 (P2P sync + PeerProfileCache) requires PeerRegistry_
 _verified: genuinely open — no `ProfilePanel`/`PeerProfileCache`/`UserProfile` implementation found anywhere_
 
-### Existing Wave 2 Tracks
-
 ## [ ] Track: Petal Seed — GLTF Drag-and-Drop & Asset Seeding
 
 _Link: [./tracks/petal_seed_20260322/](./tracks/petal_seed_20260322/)_
-_Depends on: none | Blocks: Bloom Stage_
+_Depends on: none | Blocks: Bloom Stage (shipped without it)_
 _verified: genuinely open — no `AssetRegistry`/asset-browser-panel found; ingestion pipeline exists (fe-renderer/src/ingester.rs) but the drag-drop UI + asset library flow specced here was not built (superseded by manual `GltfImport` dialog)_
-
-## [x] Track: Garden Console — Live Admin & Space Manager UI
-
-_Link: [./tracks/garden_console_20260322/](./tracks/garden_console_20260322/)_
-_Depends on: none | Blocks: Fractal Atlas_
-_verified: fe-database/src/space_manager.rs, handlers/rbac.rs, list_petals/list_rooms queries wired to live fe-ui panels_
-
-## [x] Track: Mycelium Live — Peer Discovery & Node Browsing
-
-_Link: [./tracks/mycelium_live_20260322/](./tracks/mycelium_live_20260322/)_
-_Depends on: none_
-_verified: Kademlia DHT in fe-network/src/swarm.rs + discovery.rs_
-
-## [x] Track: Bloom Stage — 3D Scene Rendering & Object Interaction
-
-_Link: [./tracks/bloom_stage_20260322/](./tracks/bloom_stage_20260322/)_
-_Depends on: Petal Seed | Blocks: Petal Portal_
-_verified: `GroundPlane` + orbit camera (fe-renderer/src/camera.rs) + raycast selection (fe-ui/src/node_manager.rs) all present_
-
-## [x] Track: Petal Portal — Digital Twin Browser Overlay & IoT Interaction
-
-_Link: [./tracks/petal_portal_20260322/](./tracks/petal_portal_20260322/)_
-_Depends on: Bloom Stage_
-_verified: fe-webview/src/petal_portal.rs — `TabVisibilityFilter`, `BrowserTab`, role-gated tab visibility_
-
-## [x] Track: Fractal Atlas — Space Manager & Metadata System
-
-_Link: [./tracks/fractal_atlas_20260322/](./tracks/fractal_atlas_20260322/)_
-_Depends on: Garden Console_
-_verified: fe-ui/src/atlas/{dashboard,model_editor,petal_wizard,room_editor,search_bar,tag_panel,visibility_control}.rs all present_
 
 ## [ ] Track: Seedling Onboarding — Local/Peer Instance Bootstrap + Entity CRUD
 
 _Link: [./tracks/seedling_onboarding_20260327/](./tracks/seedling_onboarding_20260327/)_
-_Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Gardener Console, Mycelium Network)_
+_Depends on: Wave 1 complete_
 _verified: genuinely open — no first-launch onboarding wizard or entity CRUD dialogs beyond `seed_default_data()` found; only generic libp2p "bootstrap" networking terminology present_
 
 ---
 
 ## Wave 3: External Access & IoT Platform
 
-### Entity Data Layer (Phases 1-5 complete, Phase 6 in progress)
+Completed (collapsed — see folders / `.omc/plans/skill-chain-prompts.md`):
 
-## [x] Track: Entity Data Layer — Hierarchy Optimization, HLC, Observability (Phase 1)
-_Scope: N+1→4 query hierarchy loader, HLC clock upgrade, #[instrument] on all handlers_
-
-## [x] Track: Entity Data Layer — Direct API DB Reads, Transform Oplog (Phase 2)
-_Scope: Read-only SurrealKV connection for API, transform mutations through op_log_
-
-## [x] Track: Entity Data Layer — Custom Properties, Petal Iroh Replication (Phase 3)
-_Scope: Node custom properties CRUD, field_def schema, SceneChange::PropertyChanged, petal replication_
-
-## [x] Track: Entity Data Layer — Query Endpoint, Scene Streaming (Phase 4)
-_Scope: POST /api/v1/query (scope-guarded SurrealQL), scene snapshot + delta streaming over WS_
-
-## [x] Track: Entity Data Layer — Format, Entity Store, Node Log (Phase 5)
-_Scope: fe-format crate (ZIP export/import), fe-entity-store crate (papaya lock-free cache), node_log table (append-only), elevated query endpoint_
-_Crates: fe-format, fe-entity-store_
-
-## [x] Track: Entity Data Layer — fe-query LINQ Builder, GraphQL, GIS Validation (Phase 6.1)
-_Link: [.omc/plans/skill-chain-prompts.md — Phase 6.1]_
-_Depends on: Phase 5 complete | Blocks: Phase 6.2 (DataFusion + peer compute)_
-_Scope: fe-query crate with LINQ-style QueryBuilder (parameterized, type-safe), async-graphql schema, GIS coordinate validation, spatial query filters_
-_Crates: fe-query (new)_
-_Priority: P1 (eliminates raw SQL strings, enables GraphQL + digital twin GIS queries)_
-_verified: fe-query crate exists with builder/, graphql/, geo/, duckdb_compat/, columnar/ modules; wired into fe-ui inspector's `InspectorTab::Query` tab_
+- [x] Entity Data Layer Phases 1-5 — hierarchy/HLC/observability, direct API reads + transform op-log, custom properties + petal iroh replication, query endpoint + scene streaming, fe-format/fe-entity-store/node_log
+- [x] Entity Data Layer Phase 6.1 — fe-query LINQ builder, GraphQL, GIS validation
+- [x] Hexon Format (Phase 6.5) — universal .hexon package, amp.SDK addressing, signed manifests (`docs/hexon-format-spec.md`)
+- [x] Terrain & GPX (Phase 7) — 3D map tiles, GPX, elevation mesh, petal-bound terrain — [./tracks/_archive/terrain_gpx_maps_20260508/](./tracks/_archive/terrain_gpx_maps_20260508/)
+- [x] Hexon Registry (Phase 8) — P2P distribution, multi-format assets, marketplace — [./tracks/_archive/crate_registry_20260508/](./tracks/_archive/crate_registry_20260508/) _(known gaps: terrain auto-config not wired; registry RBAC gap → now closed-by-design via auth_policy_pattern amendment 2026-07-11)_
+- [x] Plugin Host (Phase 9A) — Rhai + Wasmtime runtime — [./tracks/_archive/plugin_host_20260509/](./tracks/_archive/plugin_host_20260509/)
+- [x] Extension SDK + UI Slots (Phase 9B) — [./tracks/_archive/extension_sdk_ui_20260509/](./tracks/_archive/extension_sdk_ui_20260509/)
+- [x] Plugin Testing DX (Phase 9C) — [./tracks/_archive/plugin_testing_dx_20260509/](./tracks/_archive/plugin_testing_dx_20260509/) _(9C's "fe-plugin should depend on fe-sdk" gap was closed by analytics_extension_api_20260710)_
+- [x] Realtime API Gateway — MCP + REST + WebSocket — [./tracks/_archive/realtime_api_mcp_20260427/](./tracks/_archive/realtime_api_mcp_20260427/)
 
 ## [ ] Track: Entity Data Layer — DataFusion + GeoParquet + Peer Compute (Phase 6.2)
 _Depends on: Phase 6.1 | Blocks: Final Architecture Review_
 _Scope: DataFusion execution engine, GeoParquet read/write, spatial UDFs, DuckDB compat layer, peer compute mesh, Arrow Flight endpoint_
-_verified: intentionally deferred per MEMORY.md ("Phase 6.2: SKIPPED — DataFusion + GeoParquet (intentionally deferred)"); no DataFusion/GeoParquet/Arrow Flight code found — correctly left open_
-
-## [x] Track: Hexon Format — Universal .hexon Package, amp.SDK Addressing, Signed Manifests (Phase 6.5)
-_Link: [.omc/plans/skill-chain-prompts.md — Phase 6.5]_
-_Depends on: Phase 5 (fe-format exists) | Blocks: Phase 7 (terrain), Phase 8 (hexon registry)_
-_Scope: Rewrite fe-format as Hexon v1.0.0 — HexonManifest (hexon_type, publisher_did, version, signature, tags, platforms, amp-compatible address), entries.json (AssetEntry with amp EntryKind mapping), license.json, .hexon extension, ed25519 signing, hexon_ref property type, 3-level address system (NodeID/AttrID/ItemID). Spec: docs/hexon-format-spec.md_
-_Priority: P0 (foundational — all subsequent tracks depend on the universal format)_
-_Interop: amp.SDK (Go), plan.3D (Unity) — shared format spec_
-_verified: fe-format crate rewritten — manifest.rs, entries.rs, license.rs, signature.rs, archive.rs; docs/hexon-format-spec.md present_
-
-### Terrain, GPX & Crate Registry
-
-## [x] Track: Terrain & GPX — 3D Map Tiles, GPX Tracks, Elevation Mesh, Petal-Bound Terrain (Phase 7)
-
-_Link: [./tracks/terrain_gpx_maps_20260508/](./tracks/terrain_gpx_maps_20260508/)_
-_Depends on: Phase 6.5 (Hexon format), Phase 6.1 (fe-query GIS), Viewport Foundation, Scene Graph Bridge | Blocks: Hexon Registry (terrain hexon type), IoT Path Tracking_
-_Scope: Unified fe-terrain — GPX 1.0/1.1 parsing, terrain tile fetching (XYZ/TMS), elevation mesh from DEM, satellite draping, petal-scoped terrain config, layer stack (GPX tracks, GeoJSON overlays, heatmaps), waypoint interaction, IoT path tracking, .hexon terrain/ directory integration_
-_Crates: fe-terrain (new — consolidates GPX + terrain + map layers + IoT path tracking)_
-_Priority: P1 (enables outdoor digital twin, gpx.studio-style 3D visualization, IoT route tracking)_
-_Key deps: gpx 0.10, geojson 1.0, flat_projection 0.4, image 0.25, reqwest 0.12_
-_verified: fe-terrain crate complete per MEMORY.md (Phase 7.1-7.4, 65+ tests); fe-api/src/{gpx,terrain}.rs expose it over the API gateway; §petal-map flow documented in AGENTS.md_
-
-## [x] Track: Hexon Registry — P2P Distribution, Multi-Format Assets, Marketplace (Phase 8)
-
-_Link: [./tracks/crate_registry_20260508/](./tracks/crate_registry_20260508/)_
-_Depends on: Phase 6.5 (Hexon format), Headless Relay, Fractal Mesh (P2P), Terrain & GPX (terrain hexon type) | Blocks: Community Marketplace_
-_Scope: fe-hexon handles registry + distribution (format in fe-format). Local registry (SurrealDB), install/uninstall, multi-format asset handlers (GLB, HDR/EXR skyboxes, PBR materials, terrain tilesets, GPX collections, sounds), P2P distribution via DHT+iroh, paywall (ChaCha20-Poly1305 encrypted blobs), publisher DID identity_
-_Crates: fe-hexon (new — registry, P2P distribution, asset handlers, publisher tools)_
-_Priority: P1 (enables community content ecosystem — any peer/relay can host hexons for all verses)_
-_Key deps: chacha20poly1305 (paid hexon encryption), blake3 1, ed25519-dalek 2.2_
-_Interop: amp.SDK (Go), plan.3D (Unity) — shared Hexon format (docs/hexon-format-spec.md)_
-_verified: fe-hexon + fe-hexon-registry crates exist, per MEMORY.md Phase 8 COMPLETE (review 5/7 PASS). Known gaps (unresolved): terrain crate auto-config not wired, RBAC not enforced in fe-hexon registry handlers (tracked below under auth_policy_pattern_20260710)_
-
-### Plugin System (Phase 9)
-
-> Track folders existed on disk (spec.md + plan.md) but were never registered in this file. Added here with the rest of the reconciliation pass — 2026-07-10.
-
-## [x] Track: Plugin Host — Rhai + Wasmtime Extension Runtime (Phase 9A)
-
-_Link: [./tracks/plugin_host_20260509/](./tracks/plugin_host_20260509/)_
-_Depends on: Hexon Format (Phase 6.5) | Blocks: Extension SDK UI (Phase 9B)_
-_Scope: fe-plugin crate — `FractalExtension` trait, `PluginRegistry`, `PluginTransaction`, `CapabilityManifest`, Rhai sandboxed engine (eval/import disabled, 1M op limit), Wasmtime engine (pooling, fuel metering, AOT cache), install/activate/deactivate/uninstall lifecycle with signature verification_
-_Crates: fe-plugin (new)_
-_verified: fe-plugin crate exists — capability.rs, context.rs, lifecycle.rs, registry.rs, transaction.rs, rhai/, wasm/; per MEMORY.md Phase 9A COMPLETE, 49 tests, QA 6/6 PASS_
-
-## [x] Track: Extension SDK + UI Slots (Phase 9B)
-
-_Link: [./tracks/extension_sdk_ui_20260509/](./tracks/extension_sdk_ui_20260509/)_
-_Depends on: Plugin Host (Phase 9A) | Blocks: Plugin Testing DX (Phase 9C)_
-_Scope: fe-sdk crate — stable serde-only API, `NodeSnapshot`, `PropertyValue`, `SceneChange`, `UiExtensionRegistry` (6 slots), `ApiExtensionHandle`; WIT interface (`fractalengine:plugin@1.0.0`); fe-terrain first-party extension with 3 UI contributions_
-_Crates: fe-sdk (new)_
-_verified: fe-sdk crate exists — api.rs, context.rs, events.rs, node.rs, property.rs, scene.rs, transaction.rs, ui/; fe-plugin/wit/hexon-plugin.wit present; per MEMORY.md Phase 9B COMPLETE, 11+16 tests, review 7/7 PASS_
-
-## [x] Track: Plugin Testing DX — Mock Host, Fixtures, Rhai Test Runner (Phase 9C)
-
-_Link: [./tracks/plugin_testing_dx_20260509/](./tracks/plugin_testing_dx_20260509/)_
-_Depends on: Extension SDK UI (Phase 9B) | Blocks: none_
-_Scope: fe-plugin-test crate — `MockHostEnv`, `SpyRecorder`, 3 fixtures (empty/terrain/sensor), assertion helpers, `RhaiTestRunner`_
-_Crates: fe-plugin-test (new)_
-_verified: fe-plugin-test crate exists — assertions.rs, fixtures.rs, mock_host.rs, rhai_runner.rs, spy.rs; per MEMORY.md Phase 9C COMPLETE, 28 tests, QA 6/6 PASS, final review 7/7 PASS (89 plugin-system tests total)_
-_Known gap: fe-plugin does not yet depend on fe-sdk (parallel type definitions) — tracked as a prerequisite for analytics_extension_api_20260710_
-
-### External Access
-
-## [x] Track: Realtime API Gateway — MCP + REST + WebSocket for External Access
-
-_Link: [./tracks/realtime_api_mcp_20260427/](./tracks/realtime_api_mcp_20260427/)_
-_Depends on: Wave 1 complete (Root Identity, Petal Soil, Petal Gate, Fractal Mesh) | Blocks: IoT Integration, AI Agent Framework, External SDK, SSO Federation_
-_Scope: New fe-api crate — axum HTTP/WS server, rmcp MCP tools, ApiClaims auth, transform streaming_
-_Priority: P1 (first-of-kind: no Rust 3D engine exposes MCP/REST APIs)_
-_verified: fe-api crate — rest.rs, ws.rs, mcp.rs (hand-rolled JSON-RPC 2.0 request/response types rather than the `rmcp` crate as specced, but MCP+REST+WS all delivered), auth.rs, server.rs_
+_verified: intentionally deferred per MEMORY.md; no DataFusion/GeoParquet/Arrow Flight code found — correctly left open_
 
 ## [ ] Track: SSO Federation — OIDC Provider Integration for External Authentication
 
@@ -369,6 +175,7 @@ _Depends on: Realtime API Gateway (complete) | Blocks: Release CI, Web Client SD
 _Scope: Separate headless binary crate, SecretStore trait (OS/env/file backends), feature-gated Bevy headless mode, scene graph streaming over WS, asset delivery endpoint, relay hardening_
 _Priority: P1 (enables server deployment, thin clients, and all non-desktop access patterns)_
 _Status: Phase 1-2 complete; Phase 3-4 in progress (entity change broadcast & scene subscription handlers pending)_
+_Note (2026-07-11): the relay is also the designated always-on seeder / first "verse service" per decisions §D3 — see verse_services_20260711_
 
 ## [ ] Track: Release CI — Cross-Compilation Pipeline, Artifact Publishing, Docker Image
 
@@ -382,21 +189,7 @@ _verified: genuinely open — no `.github/` directory found in the workspace_
 
 ## Code Review 2026-04-30 — Quality & Performance Fixes
 
-Comprehensive code review findings from 2026-04-30. Six tracks addressing 18 issues across `fe-ui`, `fe-webview`, `fe-database`, and `fractalengine`.
-
-## [x] Track: Replace Deprecated egui `screen_rect()` API
-
-_Link: [./tracks/code_review_20260430_egui_deprecation/](./tracks/code_review_20260430_egui_deprecation/)_
-_Scope: `fe-ui` — 3 call sites | Blocks: next egui bump_
-_Priority: HIGH (will break on next dependency update)_
-_verified: no `screen_rect()` calls remain anywhere in the workspace_
-
-## [x] Track: Fix Silent Channel Send Error Swallowing
-
-_Link: [./tracks/code_review_20260430_channel_errors/](./tracks/code_review_20260430_channel_errors/)_
-_Scope: `fe-ui` — `navigation_manager.rs`, `verse_manager.rs`, `node_manager.rs` | Blocks: none_
-_Priority: HIGH (hides DB/sync thread crashes)_
-_verified: named call sites in verse_manager.rs (Seeded/VerseJoined/DatabaseReset/revocation_tx/ListApiTokens) now use `.send(...).is_err()` + `bevy::log::error!(...)` instead of bare `.ok()`; navigation_manager.rs has no `.ok()` sends remaining_
+Completed (collapsed): `code_review_20260430_egui_deprecation` [x], `code_review_20260430_channel_errors` [x], `code_review_20260430_db_graceful` [x].
 
 ## [ ] Track: Refactor `apply_db_results` Mega-Function
 
@@ -411,6 +204,7 @@ _Link: [./tracks/code_review_20260430_performance_hotpaths/](./tracks/code_revie
 _Scope: `fe-ui` — O(n³) node lookup, per-frame Vec allocation, full tree traversal | Blocks: none_
 _Priority: HIGH (frame-time regression at scale)_
 _verified: genuinely open — `VerseManager::update_node_position`/`update_node_url` still walk the full verse/fractal/petal tree with nested loops (verse_manager.rs:103+), unchanged from the spec's "before" example_
+_Note (2026-07-11): related engine-side hot-path fixes (entity-store O(N) clone, replication bridge) are now scoped in p2p_unblock_now_20260711 — this track remains the fe-ui-side counterpart_
 
 ## [ ] Track: Clippy Warnings, Code Quality, and Polish
 
@@ -419,60 +213,23 @@ _Scope: `fe-ui`, `fe-webview`, `fe-database` — dead code, clippy lints, loggin
 _Priority: MEDIUM (developer experience)_
 _verified: genuinely open — MEMORY.md records a pre-existing `fe-ui` `peer_registry` dead_code warning and an unused import in `fe-terrain/store.rs` still outstanding_
 
-## [x] Track: Graceful Degradation on DB Init Failure
-
-_Link: [./tracks/code_review_20260430_db_graceful/](./tracks/code_review_20260430_db_graceful/)_
-_Scope: `fe-database` + `fractalengine` — replace `.expect("SurrealDB init")` with `Result` | Blocks: none_
-_Priority: MEDIUM (production robustness)_
-_verified: `DbInitError` enum (fe-database/src/lib.rs) with variants for RuntimeBuild/SurrealOpen/SurrealNsDb/SchemaApply/ApiTokenSchemaApply replaces the old `.expect("SurrealDB init")`; no such `.expect()` call remains in the workspace_
-
 ---
 
 ## Tauri WebView Migration (2026-06-30) — Browser-First Path
 
-### Track 1: Tauri WebView Backend — Robust Tauri Browser for fe-webview [x]
-
-_Link: [./tracks/tauri_webview_backend_20260630/](./tracks/tauri_webview_backend_20260630/)_
-_Depends on: none | Blocks: Tauri IPC/Asset Bridge (track 2), Tauri Backend Cutover (track 3)_
-_Scope: fe-webview browser backend — add Tauri-powered webview to replace raw wry FFI. Bevy STAYS host, bevy_egui REMAINS leading UI. Tauri integrates via commands, not replaces._
-_Priority: P0 (primary deliverable: robust webview)_
-_verified: fe-webview/src/backends/tauri.rs implements the Tauri-powered backend_
-
-### Track 2: Tauri IPC/Asset Bridge — Shared Node Structure + egui-Led Event Bridge [x]
-
-_Link: [./tracks/tauri_ipc_asset_bridge_20260630/](./tracks/tauri_ipc_asset_bridge_20260630/)_
-_Depends on: Tauri WebView Backend (track 1) | Blocks: Tauri Backend Cutover (track 3)_
-_Scope: IPC via `#[tauri::command]` + JS `invoke()`, shared "node" data structure bridging Tauri↔Bevy, custom `asset://` protocol. egui LEADS — Tauri integrates via commands._
-_Priority: P1 (interop backbone, the seam Pear will plug into)_
-_verified: fe-webview/src/tauri_commands.rs implements the `#[tauri::command]` IPC surface_
-
-### Track 3: Tauri Backend Cutover — Make Tauri Default Browser, Retire Raw wry [x]
-
-_Link: [./tracks/tauri_backend_cutover_20260630/](./tracks/tauri_backend_cutover_20260630/)_
-_Depends on: Tauri IPC/Asset Bridge (track 2) | Blocks: none_
-_Scope: Make `backend-tauri` default for fe-webview (BROWSER backend only, NOT app shell). Update docs (AGENTS.md, BUILDING.md, tech-stack.md). Bevy remains host._
-_Priority: P1 (completes browser migration)_
-_verified: fe-webview/Cargo.toml has `default = ["backend-tauri"]`; AGENTS.md documents the cutover_
-
----
+Completed (collapsed): Tauri WebView Backend [x], Tauri IPC/Asset Bridge [x], Tauri Backend Cutover [x] — Bevy stays host, bevy_egui leads, `backend-tauri` is fe-webview's default. Folders: [tauri_webview_backend_20260630](./tracks/_archive/tauri_webview_backend_20260630/), [tauri_ipc_asset_bridge_20260630](./tracks/_archive/tauri_ipc_asset_bridge_20260630/), [tauri_backend_cutover_20260630](./tracks/_archive/tauri_backend_cutover_20260630/).
 
 ## SPIKE / Research Tracks
 
-### Track 4: Tauri-Host Shell SPIKE — Exploratory: Full Shell Inversion
+### Track: Tauri-Host Shell SPIKE — Exploratory: Full Shell Inversion
 
 _Link: [./tracks/tauri_host_shell_spike_20260630/](./tracks/tauri_host_shell_spike_20260630/)_
 _Depends on: none | Blocks: none (SPIKE, not on critical path)_
-_Scope: SPIKE — time-boxed exploration of full architecture inversion: Tauri owns window/event-loop, Bevy renders into Tauri surface (REPLACES bevy_winit). Reference: sunxfancy/BevyTauriExample. Tests: input bridging for picking, bevy_egui compatibility with custom renderer, bevy 0.18 API reconciliation._
+_Scope: SPIKE — time-boxed exploration of full architecture inversion: Tauri owns window/event-loop, Bevy renders into Tauri surface (REPLACES bevy_winit). Reference: sunxfancy/BevyTauriExample._
 _Priority: P2 (exploratory, informs future decisions)_
 _Status: SPIKE — verified: metadata.json status "pending", all 4 phases pending — not started_
 
-### Track 5: Pear Runtime P2P Layer SPIKE — Research: JS-Native P2P
-
-_Link: [./tracks/pears_p2p_layer_spike_20260630/](./tracks/pears_p2p_layer_spike_20260630/)_
-_Depends on: none | Blocks: none (SPIKE, research only)_
-_Scope: SPIKE — research Pear Runtime (pears.com, Holepunch) for P2P layer. Core tension: existing mycelium is Rust-native (libp2p + iroh); Pear is JS-native (Hypercore/Hyperswarm). Would run inside Tauri webview, bridge via shared node structure (track 2). Options: augment mycelium, replace, or hybrid._
-_Priority: P2 (research, relates to tracks 1 & 2)_
-_Status: SPIKE — verified: metadata.json status "completed" 2026-07-01, all 4 phases done, recommendation: hybrid_
+- [x] Pear Runtime P2P Layer SPIKE — completed 2026-07-01, recommendation: hybrid — [./tracks/_archive/pears_p2p_layer_spike_20260630/](./tracks/_archive/pears_p2p_layer_spike_20260630/)
 
 ---
 
@@ -480,87 +237,143 @@ _Status: SPIKE — verified: metadata.json status "completed" 2026-07-01, all 4 
 
 > Goal: 3D P2P analytics engine on the hexon format, with an extension storage/query API and Rhai/WASM scripting. Builds on Phase 9 (Plugin System) and Phase 6.1 (fe-query).
 
-```
-Dependency graph:
+Completed (collapsed — see folders):
 
-  Plugin Host (9A) ──┬──► Analytics Extension API ──┬──► IoT Extension Slice
-  Extension SDK (9B) ┤    (storage+query for exts)   │    (proves the loop end-to-end)
-  fe-query (6.1) ─────┘                              │
-                                                      │
-  Auth Policy Pattern (spec) ───────────────────────►┘ (capability gating depends on
-                                                          the policy engine existing)
-
-  feUI Decomposition (independent — successor to ui_manager_refactor_20260419 physical split)
-
-  Hexon Delta Format (spec) ───┬─ depends conceptually on Hexon Format (6.5) + fe-sync P2P,
-  Hexon P2P Bucket (spec)   ───┘  but both are design-only this round — no code dependency yet.
-                                  Deltas = operations layer; Bucket = content layer (see
-                                  hexon_p2p_bucket_20260710/spec.md "Relationship" section).
-```
-
-## [x] Track: Analytics Extension API — Storage + Query API for Extensions
-
-_Link: [./tracks/analytics_extension_api_20260710/](./tracks/analytics_extension_api_20260710/)_
-_Depends on: Plugin Host (9A), Extension SDK UI (9B), fe-query (6.1) | Blocks: IoT Extension Slice_
-_Scope: Unify fe-plugin/fe-sdk (fe-plugin depends on fe-sdk types instead of parallel definitions), capability-gated storage + query API surface exposed to extensions, WIT query-api addition_
-_verified: commit `0ddb539` — `storage.read`/`storage.write`/`query.select` capabilities, fail-closed gating, WIT `query-api`, `fe-plugin` unified onto `fe-sdk`. **Residual, not closed:** production DB wiring of the host traits (`ExtensionStorageApi`/`ExtensionQueryApi`) into the running `fractalengine` binary remains open — see spec.md "Residual (post-ultrapilot)" section_
-
-## [x] Track: IoT Extension Slice — Device ↔ Node Push/Pull Proof
-
-_Link: [./tracks/iot_extension_slice_20260710/](./tracks/iot_extension_slice_20260710/)_
-_Depends on: Analytics Extension API | Blocks: none_
-_Scope: A real IoT bridge extension built on the Analytics Extension API, proving the push/pull device↔node loop end-to-end through the plugin host_
-_verified: commit `c811856` + integration (`19a2df2`) — 6 bridge-loop tests green through `fe-plugin-test`'s `RhaiTestRunner`, running against the real host functions post-integration_
-
-## [x] Track: fe-ui Decomposition — God-File Breakup into Domain Modules
-
-_Link: [./tracks/feui_decomposition_20260710/](./tracks/feui_decomposition_20260710/)_
-_Depends on: none (successor to ui_manager_refactor_20260419's remaining physical-split work) | Blocks: none_
-_Scope: Decompose fe-ui's largest files (panels.rs 1991 lines, plugin.rs 1397 lines, dialogs.rs 1183 lines, verse_manager.rs 914 lines, node_manager.rs 834 lines) into domain modules, soft-capped ~300 lines each_
-_verified: commit `7df071c` — five god-files split into `actions/panels/dialogs/node_manager/verse_manager/terrain_map/portal`; `plugin.rs` now a 480-line shell. **Follow-up (not blocking completion):** `panels/inspector.rs` (1042), `dialogs/entity_settings.rs` (799), `dialogs/hexon_manager.rs` (466) still exceed the ~300-line guideline — second split pass needed, see spec.md "Follow-up" section_
+- [x] Analytics Extension API — storage/query capabilities, fail-closed, WIT query-api, fe-plugin unified onto fe-sdk — [./tracks/_archive/analytics_extension_api_20260710/](./tracks/_archive/analytics_extension_api_20260710/) _(residual open: production DB wiring of `ExtensionStorageApi`/`ExtensionQueryApi` into the running binary — see spec.md; also a prerequisite for verse_services_20260711)_
+- [x] IoT Extension Slice — device ↔ node push/pull proof, 6 bridge-loop tests — [./tracks/_archive/iot_extension_slice_20260710/](./tracks/_archive/iot_extension_slice_20260710/)
+- [x] fe-ui Decomposition — god-file breakup into domain modules — [./tracks/_archive/feui_decomposition_20260710/](./tracks/_archive/feui_decomposition_20260710/) _(follow-up second split pass noted in spec.md)_
+- [x] Terrain Scale Controls — multi-scale space operation, per-petal `world_scale` — [./tracks/_archive/terrain_scale_controls_20260711/](./tracks/_archive/terrain_scale_controls_20260711/) _(follow-ons tracked in terrain_lod_hardening_20260711)_
 
 ## [ ] Track: Hexon Deltas — Replayable Op-Log Hexons over P2P (spec only)
 
 _Link: [./tracks/hexon_delta_format_20260710/](./tracks/hexon_delta_format_20260710/)_
-_Depends on: Hexon Format (6.5), fe-sync P2P | Blocks: none (design-only this round)_
+_Depends on: Hexon Format (6.5), fe-sync P2P | Blocks: none (design-only)_
 _Scope: A delta-hexon manifest type over the existing op_log, enabling replay/materialization, time-travel checkpoints, sovereign-authored signature chains, compression, and content-addressed P2P distribution of op-log deltas_
-_Status: spec-only via ultrapilot — no implementation this round_
+_**AMENDED 2026-07-11** (decisions §D4/§D5): per-op signatures corrected to MISSING (13 placeholder sites — must be built first); container = HashSeq/manifest-of-blobs for streamable types (ZIP no-streaming disqualified); log-first write path (op-log as WAL, SurrealDB as realtime materialized view, fe-query intent routing) now IN implementation scope; signing schemes to be unified. See spec.md "Amendments" section_
 
 ## [ ] Track: Policy Engine — Unified Authorization for Layered Tokens and Entry Points (spec only)
 
 _Link: [./tracks/auth_policy_pattern_20260710/](./tracks/auth_policy_pattern_20260710/)_
-_Depends on: none (surveys fe-auth, fe-identity, fe-database RBAC, fe-api, fe-hexon, fe-plugin, fe-webview) | Blocks: none (design-only this round)_
+_Depends on: hexon_delta_format (per-op signing D5-1) | Blocks: p2p_mycelium_completion (sync write path must be gated before real replication)_
 _Scope: A central `Policy` abstraction (`evaluate(subject, action, resource) -> Decision`) replacing scattered ad-hoc role checks across every entry point; deny-by-default; closes the fe-hexon registry RBAC enforcement gap (Phase 8.4)_
-_Status: spec-only via ultrapilot — no implementation this round_
+_**AMENDED 2026-07-11** (decisions §D1): 8th surface added — the P2P sync write path has ZERO authz (`handle_write_row_entry`, sync_thread.rs:345) and is the highest-priority adapter; membership/auth state is NEVER plain LWW — signed causal-DAG ops + strong-removal resolver (Matrix state-reset precedent). See spec.md "Amendment" section_
 
 ## [ ] Track: Hexon P2P Bucket — 3D Visual IPFS (spec only)
 
 _Link: [./tracks/hexon_p2p_bucket_20260710/](./tracks/hexon_p2p_bucket_20260710/)_
-_Depends on: Hexon Registry (Phase 8), Hexon Deltas (spec, content-vs-operations counterpart) | Blocks: none (design-only this round)_
-_Scope: Generalize node assets from GLTF-only to any file type or a directory of files (with a placeholder-rendering contract for content with no native 3D form); download/upload endpoints; distribute the resulting content-addressed, sovereign-authored bucket over iroh P2P — "3D visual IPFS." Confirmed gap: `fe-network/src/iroh_blobs.rs` is a 13-line unfilled Wave-1 stub — the P2P blob transport itself does not exist yet._
-_Status: spec-only via ultrapilot — no implementation this round. Note: the node-asset download endpoint referenced in this spec's original draft landed during the same ultrapilot run (commit `3a97fc1`, `feat(api): node asset download endpoints)` — see spec.md for the updated exists-vs-new table and the follow-up (`DbCommand::GetNodeAsset`/`GetAssetMeta` channel variants) this surfaced_
-
-## [~] Track: Terrain Scale Controls — Multi-Scale Space Operation
-
-_Link: [./tracks/terrain_scale_controls_20260711/](./tracks/terrain_scale_controls_20260711/)_
-_Depends on: Terrain & GPX Maps (Phase 7) | Blocks: none_
-_Scope: Per-petal `world_scale` in TerrainConfig (additive JSON field), scale-aware orbit camera (far plane, zoom-out limit, log zoom speed), terrain settings UI with scale presets persisted through SetPetalTerrain. Root problem: z8 tiles are ~110 km wide vs a 1 km camera far plane — region overview and human scale can't coexist._
-_Status: in progress (requested 2026-07-11 after terrain/GLB/link-save verification in-app)_
+_Depends on: Hexon Registry (Phase 8), Hexon Deltas (spec, content-vs-operations counterpart) | Blocks: none (design-only)_
+_Scope: Generalize node assets from GLTF-only to any file type or directory (placeholder-rendering contract); download/upload endpoints; distribute the content-addressed, sovereign-authored bucket over iroh P2P. Confirmed gap: `fe-network/src/iroh_blobs.rs` is a 13-line unfilled Wave-1 stub_
+_**AMENDED 2026-07-11** (decisions §D2): handshake-then-swarm topology (authorize once at membership boundary, swarm within); relay-as-seeder is design, not fallback (~70% NAT reality, browsers 100% relay); BBR congestion control required (30x lever); HashSeq container alignment; crypto-shred for erasable content. See spec.md "Amendments" section_
 
 ## [ ] Track: Terrain Splat View — Synthesized 3D Splats from Hexon Data
 
 _Link: [./tracks/terrain_splat_view_20260711/](./tracks/terrain_splat_view_20260711/)_
 _Depends on: Terrain Scale Controls | Blocks: none_
 _Scope: One splat per elevation texel (position from tile geo + elevation, color from satellite, slope-aware anisotropy) rendered via instanced quads; `TerrainViewMode { Mesh, Splats, Hybrid }` toggle persisted per petal; phase 2 pre-bakes quantized splat buffers into hexon archives (additive entry type + `splat_ready` flag) with a gis-tile-etl bake stage. Photogrammetric 3DGS training is explicitly out of scope (single orthographic view)._
-_Status: pending — queued behind terrain_scale_controls_20260711 (same crates)_
+_Status: pending — queued behind terrain_lod_hardening_20260711 (same crates; user gated "if easy and convenient")_
+
+## [ ] Track: Terrain LOD Hardening — Seams, Clipping, Close-Range Quality
+
+_Link: [./tracks/terrain_lod_hardening_20260711/](./tracks/terrain_lod_hardening_20260711/)_
+_Depends on: Terrain Scale Controls | Blocks: Terrain Splat View (same crates)_
+_Scope: Fix inter-tile seam gaps (black vertical lines between chunks), zoom-out clipping/holes (fetch ring vs scaled far plane coherence, despawn hysteresis), and close-range quality via elevation interpolation + denser meshes when the camera outruns the tileset's max zoom. Honest limit documented: satellite texture resolution is capped by the hexon's max zoom — higher-zoom hexons come from gis-tile-etl, not the renderer._
+_Status: in progress (2026-07-11 GIS hardening run, W1)_
+
+## [ ] Track: Asset Download Fix — Save Dialog + E2E Resolution (bug)
+
+_Link: [./tracks/asset_download_fix_20260711/](./tracks/asset_download_fix_20260711/)_
+_Depends on: node asset download (commit `3a97fc1`/`19a2df2`) | Blocks: none_
+_Scope: User report 2026-07-11: Download button in the inspector Asset card produces no visible result ("no glb download box"). Root-cause the queue→bridge→blob-store chain with an integration test against a real temp blob store, and replace silent-copy-to-Downloads UX with an rfd native save dialog (fe-ui already uses rfd for GLB import) + persistent status row in the card._
+_Status: in progress (2026-07-11 GIS hardening run, W2)_
+
+## [ ] Track: Petal GIS Endpoints — Petal-Scoped Geo Data over REST
+
+_Link: [./tracks/petal_gis_endpoints_20260711/](./tracks/petal_gis_endpoints_20260711/)_
+_Depends on: fe-query GIS (Phase 6.1), Terrain & GPX (Phase 7), fe-api gateway | Blocks: none_
+_Scope: Petal-scoped read endpoints for GIS data — nodes with geo positions + annotations, GPX tracks, bbox/radius spatial queries — as additive fe-api modules (new `gis.rs`, wired in `server.rs`; `rest.rs`/`assets.rs`/`Cargo.toml` are under external-IDE quarantine). Bearer + scope RBAC per the assets.rs precedent. Shared data layer (fe-query gis builders + fe-database handler tests) delivered alongside (W5)._
+_Status: in progress (2026-07-11 GIS hardening run, W3+W5)_
+
+## [ ] Track: GIS Query & Annotation UI — Edit, Query, Orchestrate Geo Data
+
+_Link: [./tracks/gis_query_ui_20260711/](./tracks/gis_query_ui_20260711/)_
+_Depends on: fe-ui decomposition, Petal GIS Endpoints (shares the `gis.annotation.*` property contract) | Blocks: none_
+_Scope: In-app surface for editing, querying, and orchestrating GIS data: annotation editor on selected nodes (`gis.annotation.*` properties), spatial/property query panel with results list + fly-to, and a layer manager (satellite/terrain/GPX/GeoJSON visibility + opacity). fe-ui must not depend on fe-terrain — lat/lon math stays API/terrain-side._
+_Status: in progress (2026-07-11 GIS hardening run, W4)_
 
 ---
 
+## Wave: P2P Commons Hardening (2026-07-11)
+
+> Goal: close the gap between the platform premise (hexon as P2P digital-twin format;
+> FractalEngine as browser + peer-server for a distributed, resilient, self-permissioned
+> federated 3D commons) and the verified present. Evidence:
+> [research/hexon-p2p-commons/report.md](../research/hexon-p2p-commons/report.md).
+> Ratified decisions: [./decisions/hexon-p2p-commons-20260711.md](./decisions/hexon-p2p-commons-20260711.md)
+> (D1 consistency tiers + auth never-LWW; D2 handshake-then-swarm; D3 accelerator-only
+> verse services; D4 log-first WAL + SurrealDB operational view; D5 sequencing; D6 non-promises).
+
+```
+Sequencing (decisions §D5 — ordered to avoid rework):
+
+  p2p_unblock_now ──► p2p_mycelium_completion ──► (real replication, policy-gated)
+  (try_send, BBR,      (reopened ph.1-2 + gossip RX;
+   node_log cap)        gated by policy evaluate())
+                                                        ┌──► verse_services (spec)
+  hexon_delta_format ──► auth_policy_pattern ───────────┤    (accelerator-only)
+  (per-op signing D5-1,   (sync-path evaluate(),        └──► serverless materializer (§D4)
+   HashSeq, log-first)     causal-DAG membership)
+  iroh_1_0_upgrade — independent; HARD DEADLINE 2026-12-31 (0.35 relay EOL)
+```
+
+## [ ] Track: P2P Unblock-Now — Bridge Backpressure, BBR, Node-Log Cap, Sync-Thread Blocking Read
+
+_Link: [./tracks/p2p_unblock_now_20260711/](./tracks/p2p_unblock_now_20260711/)_
+_Depends on: none | Blocks: p2p_mycelium_completion (FR-1 must land before real iroh-docs replaces the mock)_
+_Priority: P0 (decisions §D5-3 — ships first, independent of format/auth)_
+_Scope: try_send + drop-metric on the two-hop replication bridge (`fe-database/src/lib.rs:155`, `main.rs:113-120`); ring-buffer cap on hot-cache `node_log` (`fe-entity-store/src/lib.rs:136,198-207`); `spawn_blocking` for the sync-thread `std::fs::read` (`sync_thread.rs:377`); verify + explicitly configure BBR (30x throughput lever, iroh#4286)_
+_Status: spec + plan ready — implementation next session_
+
+## [ ] Track: Verse Services — Opt-In Per-Verse Centralization as Accelerator-Only Plugins (spec only)
+
+_Link: [./tracks/verse_services_20260711/](./tracks/verse_services_20260711/)_
+_Depends on: auth_policy_pattern (services are policy subjects), hexon_delta_format (delta units + signing) | Blocks: none_
+_Priority: P2 (queued behind auth + delta foundations)_
+_Scope: Plugin service class (`service.host`/`service.seed`/`service.presence`/`service.materialize` capabilities) for seeder, presence host, serverless materializer (§D4), order-hinter. Invariant: signed op-log stays state of record; any member reconstructs without the service (testable). Relay + registry re-framed as first instances. Sequencer authority deferred._
+_Status: spec-only (decisions §D3)_
+
+## [ ] Track: iroh 1.0 Upgrade — 0.35 → 1.0 Behind the VerseReplicator Seam
+
+_Link: [./tracks/iroh_1_0_upgrade_20260711/](./tracks/iroh_1_0_upgrade_20260711/)_
+_Depends on: none | Coordinate with: p2p_mycelium_completion (wire real iroh-docs against 1.x directly if still in flight)_
+_Priority: P1 — **HARD EXTERNAL DEADLINE 2026-12-31** (n0 hosted-relay support for the 0.35 wire protocol ends; iroh 1.0 shipped 2026-06-15)_
+_Scope: Migrate fe-sync/fe-network to iroh 1.x behind the `VerseReplicator` trait seam; re-verify BBR on the 1.x API; evaluate self-hosted 1.x relay (the §D3 seam) as the resilient default_
+_Status: pending_
+
+---
+
+## Execution Order (open tracks, 2026-07-11)
+
+Machine source of truth is the `execution_wave` + `depends_on`/`blocks` fields in each
+`metadata.json`; this table is the human-readable rendering. Waves gate on the ratified D5
+sequencing ([decisions](./decisions/hexon-p2p-commons-20260711.md)). Within a wave, tracks
+are independent and parallelizable.
+
+| Wave | Tracks | Gate |
+|---|---|---|
+| **0 — in-flight / P0** | `terrain_lod_hardening`, `petal_gis_endpoints`, `gis_query_ui`, `asset_download_fix` (GIS hardening W1–W5, underway); `p2p_unblock_now` (P0 fixes) | finish what's started; unblock fixes ship first |
+| **1 — foundations** | `hexon_delta_format` (per-op signing D5-1 + HashSeq + log-first); `terrain_splat_view` | signing is the prerequisite for auth |
+| **2 — gated by wave 1** | `auth_policy_pattern` (policy engine + sync-path `evaluate()` + causal-DAG membership); `p2p_mycelium_completion` (real iroh-docs + gossip RX) | needs signing + the policy gate |
+| **3 — gated by auth+delta** | `hexon_p2p_bucket` (handshake-then-swarm); `verse_services` (accelerator-only) | needs auth engine + delta units |
+| **DEADLINE** | `iroh_1_0_upgrade` — **by 2026-12-31** (0.35 relay EOL) | independent; calendar-driven |
+| **4 — backlog** | `code_review_*` (mega_function, perf_hotpaths, clippy, cleanup); UI (`light_box`, `drag_drop_placement`, `petal_seed`, `inspector_settings`, `profile_manager`, `seedling_onboarding`); `build_size_mobile_prep`, `sso_federation`, `tauri_host_shell_spike` | no blocking deps; opportunistic |
+| **5 — release/platform** | `cross_platform_desktop`, `headless_relay` (also the D3 seeder), `release_ci` | platform readiness |
+
 ## Archived Tracks
 
-**Convention (established 2026-07-10, no prior convention existed in PLAYBOOK.md/workflow.md):** Archiving here means "implementation complete, no longer active work" — it does **not** mean moved or deleted. Links above remain valid. A track is archived by (1) its checkbox being `[x]` above, and (2) its `metadata.json` carrying `"archived": true` + `"archived_at"`. This pass added the `archived` field only to the metadata.json files it created or repaired (the tracks newly flipped to `[x]` today); pre-existing `[x]` tracks from Waves 1-2 were left untouched (non-destructive — see notepad/report for the full list).
+**Convention (established 2026-07-10; extended 2026-07-11 to a physical move):** Archiving means "implementation complete, no longer active work." A track is archived by (1) its checkbox being `[x]` above, (2) its `metadata.json` carrying `"archived": true` + `"archived_at"`, and — **as of 2026-07-11** — (3) its folder living under `./tracks/_archive/<id>/` rather than `./tracks/<id>/`. The move is non-destructive (git-tracked rename; content identical) and links above were updated to the `_archive/` paths. Open/in-progress tracks stay at `./tracks/<id>/`. To un-archive, move the folder back and flip the flags.
 
 Tracks archived in this pass (2026-07-10 reconciliation): `ui_manager_refactor_20260419`, `viewport_foundation_20260402`, `scene_graph_bridge_20260402`, `selection_system_20260402`, `transform_gizmos_20260402`, `shared_peer_infra_20260419`, `garden_console_20260322`, `mycelium_live_20260322`, `bloom_stage_20260322`, `petal_portal_20260322`, `fractal_atlas_20260322`, Entity Data Layer Phase 6.1 (fe-query), Hexon Format Phase 6.5, Terrain & GPX Phase 7, Hexon Registry Phase 8, Realtime API Gateway, `tauri_webview_backend_20260630`, `tauri_ipc_asset_bridge_20260630`, `tauri_backend_cutover_20260630`, `code_review_20260430_egui_deprecation`, `code_review_20260430_channel_errors`, `code_review_20260430_db_graceful`, `plugin_host_20260509`, `extension_sdk_ui_20260509`, `plugin_testing_dx_20260509`.
 
-Tracks archived in the 2026-07-10/11 ultrapilot close-out pass: `analytics_extension_api_20260710` (residual DB-wiring item still open — see spec.md; archived because the extension-facing contract itself is complete and shipped), `iot_extension_slice_20260710`, `feui_decomposition_20260710` (follow-up second split pass noted — see spec.md; archived because the god-file breakup itself is complete and shipped). `hexon_delta_format_20260710`, `auth_policy_pattern_20260710`, and `hexon_p2p_bucket_20260710` remain spec-only/pending — not archived.
+Tracks archived in the 2026-07-10/11 ultrapilot close-out pass: `analytics_extension_api_20260710` (residual DB-wiring item still open — see spec.md), `iot_extension_slice_20260710`, `feui_decomposition_20260710` (follow-up second split pass noted — see spec.md). `hexon_delta_format_20260710`, `auth_policy_pattern_20260710`, and `hexon_p2p_bucket_20260710` remain spec-only/pending — not archived.
 
+**2026-07-11 hexon-p2p-commons pass:** this file was pruned (completed entries collapsed to one-liners — no track folders touched); `p2p_mycelium_completion_20260701` phases 1-2 were **reopened** with file:line evidence (see its metadata.json); the three 2026-07-10 spec-only tracks were amended against the ratified decision record; and the P2P Commons Hardening wave was registered (`p2p_unblock_now_20260711`, `verse_services_20260711`, `iroh_1_0_upgrade_20260711`). Wave 2's historical dependency graph was dropped from this index in the prune — it survives in the git history and the track folders.
