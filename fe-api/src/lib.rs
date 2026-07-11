@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod auth;
 pub mod format;
+pub mod gis;
 pub mod gpx;
 pub mod hexon;
 pub mod mcp;
