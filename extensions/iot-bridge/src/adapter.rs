@@ -2,13 +2,13 @@
 //! `node_set_property`, `query_select`, `ext_storage_get`/`ext_storage_set`) against a
 //! small in-memory mock, with fail-closed capability enforcement from `manifest.json`.
 //!
-//! FINALIZE AT INTEGRATION: `fe-plugin-test::RhaiTestRunner` cannot yet host these
-//! functions (its `Engine` field is private and it only registers the legacy
-//! `get_node`/`set_property`/`create_node`/`query_nodes` surface). Once worker 2 lands
-//! the HOST-FN CONTRACT there, swap `IotHostAdapter::new` + `compile`/`call_tick` for
-//! `fe_plugin_test::rhai_runner::RhaiTestRunner` and drop this file's engine wiring —
-//! everything above it (`BridgeLoop`, the `.rhai` script) is unaffected. See AGENTS.md
-//! "Integration".
+//! INTEGRATION STATUS: fe-plugin-test now hosts the same HOST-FN CONTRACT on
+//! `RhaiTestRunner` (backed by `MockStorage`), and the extension's integration test
+//! (`tests/bridge_loop.rs`) drives the real `iot_bridge.rhai` script through it — see
+//! AGENTS.md "Integration". `IotHostAdapter` is deliberately retained as the *runtime*
+//! host because it adds registration-time capability gating (`require`) that
+//! `RhaiTestRunner` is capability-agnostic about; that gate is what makes `BridgeLoop`'s
+//! fail-closed guarantee (`TickError::CapabilityDenied`) real and testable here.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

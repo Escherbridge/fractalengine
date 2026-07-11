@@ -11,6 +11,13 @@ use bevy::prelude::PluginGroup;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> anyhow::Result<()> {
+    // Durability: default SurrealKV's fsync mode unless the operator overrode it,
+    // mirroring the GUI binary so both agree. Valid values are `never` | `every` |
+    // a duration >100ms. Must run before the DB thread opens the datastore below.
+    if std::env::var("SURREAL_DATASTORE_SYNC_DATA").is_err() {
+        std::env::set_var("SURREAL_DATASTORE_SYNC_DATA", "every");
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();

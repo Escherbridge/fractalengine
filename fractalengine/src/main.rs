@@ -11,6 +11,7 @@ use fe_runtime::PeerRegistry;
 use fe_ui::plugin::LocalUserRole;
 use tracing_subscriber::EnvFilter;
 
+mod asset_bridge;
 mod terrain_bridge;
 
 /// Default SurrealKV database path. Must match the path used by
@@ -18,6 +19,14 @@ mod terrain_bridge;
 const DB_PATH: &str = "data/fractalengine.db";
 
 fn main() {
+    // Durability: default SurrealKV's fsync mode unless the operator overrode it.
+    // Valid values are `never` | `every` | a duration >100ms; `"true"` is invalid
+    // and would brick startup. See src/AGENTS.md §durability. Must run before any
+    // datastore opens (the DB thread below).
+    if std::env::var("SURREAL_DATASTORE_SYNC_DATA").is_err() {
+        std::env::set_var("SURREAL_DATASTORE_SYNC_DATA", "every");
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -127,6 +136,12 @@ fn main() {
             .ok();
     });
 
+    // Clone the blob-store handle for the API thread (asset endpoints) and the
+    // asset-download bridge before it moves into BevyHandles below. All share one
+    // content-addressed store.
+    let blob_store_for_api = blob_store.clone();
+    let blob_store_for_assets = blob_store.clone();
+
     let mut app = fe_runtime::app::build_app(BevyHandles {
         net_cmd_tx: ch.net_cmd_tx,
         net_evt_rx: ch.net_evt_rx,
@@ -207,7 +222,7 @@ fn main() {
         transform_broadcast_tx: transform_broadcast_tx.clone(),
         verifying_key: api_verifying_key,
         revocation_rx,
-        blob_store: None,
+        blob_store: Some(blob_store_for_api),
         cors_origins: None, // defaults to localhost-only
         entity_change_tx: entity_change_tx.clone(),
         api_db_reader,
@@ -320,6 +335,10 @@ fn main() {
         bevy::prelude::Update,
         (terrain_bridge::bridge_petal_terrain, terrain_bridge::drain_hexon_ops),
     );
+    // Asset-download bridge: drains fe-ui's queued node-asset downloads, copying
+    // resolved blobs into the user's downloads folder. See src/AGENTS.md §assets.
+    app.insert_resource(asset_bridge::AssetBlobStore(blob_store_for_assets));
+    app.add_systems(bevy::prelude::Update, asset_bridge::drain_asset_ops);
     // WebView portal: inline wry overlay + petal portal lifecycle systems.
     app.add_plugins(fe_webview::plugin::WebViewPlugin);
     app.add_plugins(fe_webview::petal_portal::PetalPortalPlugin);

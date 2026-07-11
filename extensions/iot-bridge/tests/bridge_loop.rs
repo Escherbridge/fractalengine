@@ -2,9 +2,9 @@
 //!
 //! Runs several ticks of a mock thermostat through `iot_bridge.rhai` via [`BridgeLoop`]
 //! and checks the full round trip: device -> node properties, and node desired-state ->
-//! device commands, plus the fail-closed and resilience guarantees. See AGENTS.md
-//! "Integration" for how this swaps onto fe-plugin-test's `RhaiTestRunner` once it
-//! exposes the HOST-FN CONTRACT.
+//! device commands, plus the fail-closed and resilience guarantees. The final test
+//! drives the same script through fe-plugin-test's shared `RhaiTestRunner` surface —
+//! see AGENTS.md "Integration".
 
 use fe_sdk::property::PropertyValue;
 use iot_bridge::capability::Capabilities;
@@ -83,27 +83,43 @@ fn bad_reading_skips_the_tick_without_stopping_the_loop() {
     assert!(matches!(outcome, TickOutcome::Applied { .. }));
 }
 
-/// Shape-compatibility check: values this adapter produces must round-trip cleanly
-/// through fe-plugin-test's `MockHostEnv`/assertion helpers, since that's what the real
-/// `RhaiTestRunner`-backed test will use once worker 2 lands the HOST-FN CONTRACT there
-/// (see AGENTS.md "Integration"). `RhaiTestRunner` itself can't be extended today (its
-/// `Engine` is private), so this test only exercises the shared `MockHostEnv` shape.
+/// Integration: the real `iot_bridge.rhai` script now runs against fe-plugin-test's
+/// shared `RhaiTestRunner` host-fn surface (`node_get_properties`, `node_set_property`,
+/// `query_select`, `ext_storage_get`/`set`, backed by `MockStorage`) — the swap called
+/// out in AGENTS.md "Integration". This exercises the canonical host functions the real
+/// engine registers, not this crate's private `IotHostAdapter` duplicate.
 #[test]
-fn iot_bridge_properties_are_representable_in_fe_plugin_test_mock_host() {
-    use fe_plugin_test::assertions::assert_property_set;
+fn iot_bridge_script_runs_on_fe_plugin_test_rhai_runner() {
+    use fe_plugin_test::assertions::{assert_kv_set, assert_node_property_set, assert_query_ran};
     use fe_plugin_test::mock_host::MockHostEnv;
+    use fe_plugin_test::rhai_runner::RhaiTestRunner;
 
-    let mut bridge = full_bridge();
-    bridge.run_tick().expect("tick should not hard-fail");
+    let host = MockHostEnv::new();
+    // Seed desired-state so actuate() reads it back through node_get_properties.
+    host.storage
+        .seed_node_property(NODE_ID, "iot.setpoint", PropertyValue::Number(30.0));
+    host.storage
+        .seed_node_property(NODE_ID, "iot.power", PropertyValue::Bool(true));
 
-    let props = bridge.host_state().properties_for(NODE_ID);
-    let temperature = props.get("iot.temperature").expect("temperature must be set");
-    let expected = match temperature {
-        PropertyValue::Number(n) => n.to_string(),
-        other => panic!("expected a numeric temperature, got {other:?}"),
-    };
+    let runner = RhaiTestRunner::new(host);
 
-    let mut host = MockHostEnv::new();
-    host.spy.set_property_calls.push((NODE_ID.to_string(), "iot.temperature".to_string(), expected.clone()));
-    assert_property_set(&host, NODE_ID, "iot.temperature", &expected).unwrap();
+    // The script only defines functions; append a top-level `tick(..)` call so eval
+    // drives one ingest+actuate cycle through the real shared host fns.
+    let script = format!(
+        "{}\n tick(\"{}\", #{{ temperature: 21.5, humidity: 40.0, timestamp: 1720000000 }});",
+        iot_bridge::SCRIPT_SOURCE, NODE_ID
+    );
+    runner
+        .eval_script(&script)
+        .expect("iot_bridge.rhai tick must run on the shared RhaiTestRunner surface");
+
+    let host = runner.host();
+    // ingest() wrote the three device properties via node_set_property.
+    assert_node_property_set(&host, NODE_ID, "iot.temperature").unwrap();
+    assert_node_property_set(&host, NODE_ID, "iot.humidity").unwrap();
+    assert_node_property_set(&host, NODE_ID, "iot.last_seen").unwrap();
+    // actuate() ran the history SELECT via query_select.
+    assert_query_ran(&host, "SELECT").unwrap();
+    // tick() bumped its per-extension KV counter via ext_storage_set.
+    assert_kv_set(&host, "iot_bridge.tick_count").unwrap();
 }

@@ -44,18 +44,19 @@ pub struct ApiTokenRecord {
 
 /// Store a newly minted API token's metadata.
 pub async fn store_api_token(db: &Db, record: &ApiTokenRecord) -> anyhow::Result<()> {
+    let mut val = serde_json::to_value(record)?;
+    // Force revoked to false
+    val["revoked"] = serde_json::Value::Bool(false);
+    // Remove label if it is null to satisfy SurrealDB option type constraint
+    if val["label"].is_null() {
+        if let serde_json::Value::Object(ref mut map) = val {
+            map.remove("label");
+        }
+    }
     let q = InsertBuilder::insert_into("api_token")
-        .values(serde_json::json!({
-            "jti": record.jti,
-            "scope": record.scope,
-            "max_role": record.max_role,
-            "label": record.label,
-            "sub": record.sub,
-            "created_at": record.created_at,
-            "expires_at": record.expires_at,
-            "revoked": false,
-        }))
+        .values(val)
         .build();
+    // exec_query already calls `.check()` internally — no redundant re-check.
     exec_query(db, &q).await?;
     Ok(())
 }

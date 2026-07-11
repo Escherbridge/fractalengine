@@ -65,22 +65,25 @@ actually enforces today; reconcile the two once fe-plugin's `CapabilityManifest`
 
 `src/adapter.rs` (`IotHostAdapter`) implements the HOST-FN CONTRACT
 (`node_get_properties`, `node_set_property`, `query_select`, `ext_storage_get`/`set`)
-against its own tiny in-memory `HostState`, with the exact same capability-gated
-semantics the real engine will use. This exists only because
-`fe-plugin-test::RhaiTestRunner`'s `Engine` field is private and it currently only
-registers the legacy `get_node`/`set_property`/`create_node`/`query_nodes` surface — it
-cannot be extended from outside that crate, and this crate was told not to edit it.
+against its own tiny in-memory `HostState`, with capability-gated (`require`) semantics.
 
-**Once worker 2 lands the HOST-FN CONTRACT on `fe-plugin-test::RhaiTestRunner`:**
-replace `IotHostAdapter::new`/`compile`/`call_tick` in `src/adapter.rs` with
-`fe_plugin_test::rhai_runner::RhaiTestRunner::new(host)` + `eval_script`/`call_fn`, and
-back `HostState` with `fe_plugin_test::mock_host::MockHostEnv` directly. Nothing above
-that file (`BridgeLoop`, `iot_bridge.rhai`, the property-key contract) needs to change —
-that's the whole point of keeping the adapter as one small, swappable module.
+**The swap has landed.** fe-plugin-test now hosts the same contract on
+`RhaiTestRunner` (backed by `MockStorage`), so the integration test
+`tests/bridge_loop.rs::iot_bridge_script_runs_on_fe_plugin_test_rhai_runner` runs the
+real `iot_bridge.rhai` `tick()` through
+`fe_plugin_test::rhai_runner::RhaiTestRunner::new(host)` + `eval_script`, asserting the
+ingest/actuate cycle writes node properties, runs a SELECT, and bumps its per-extension
+KV counter through the **canonical shared host fns** — not this crate's private
+duplicate. That is the "swap onto the now-real host-fn surface."
 
-`tests/bridge_loop.rs`'s last test (`iot_bridge_properties_are_representable_in_fe_plugin_test_mock_host`)
-is a shape-compatibility check confirming the values this adapter produces round-trip
-through `MockHostEnv`/`assert_property_set` today, so that swap is low-risk.
+`IotHostAdapter` is deliberately **kept** as the runtime host, not deleted:
+`RhaiTestRunner` registers all five host fns unconditionally (capability-agnostic by
+design), whereas the adapter's `require()` gate turns a missing capability into
+`TickError::CapabilityDenied`. That fail-closed authorization path is what `BridgeLoop`
+and the `missing_capability_fails_closed` tests depend on. So the two coexist: the
+adapter for capability-gated **runtime**, `RhaiTestRunner` for shared-surface **script
+verification**. `BridgeLoop`, `iot_bridge.rhai`, and the property-key contract are
+unchanged either way.
 
 ## Running it
 

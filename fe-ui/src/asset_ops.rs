@@ -27,3 +27,25 @@ pub struct AssetDownloadStatus {
     /// Error message, if the download failed.
     pub error: Option<String>,
 }
+
+/// Surfaces the outcome of the most recently drained asset download (written by
+/// the main binary's `asset_bridge`) as a toast. Runs each frame but reacts only
+/// on change — the `HexonOpenStorageDir` follow-up shape called out in
+/// AGENTS.md §asset-download.
+pub fn surface_asset_download_status(
+    status: Res<AssetDownloadStatus>,
+    mut ui_mgr: ResMut<crate::actions::UiManager>,
+    time: Res<Time>,
+) {
+    if !status.is_changed() || status.node_id.is_none() {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if let Some(path) = &status.saved_path {
+        bevy::log::info!("Asset saved to downloads: {path}");
+        ui_mgr.show_toast("Asset saved to Downloads", now);
+    } else if let Some(err) = &status.error {
+        bevy::log::warn!("Asset download failed: {err}");
+        ui_mgr.show_toast(format!("Download failed: {err}"), now);
+    }
+}

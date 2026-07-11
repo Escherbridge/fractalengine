@@ -3,11 +3,6 @@
 // timestamp sanity are rejected upstream in Rust (device::Reading::validate) before this
 // script ever runs; this script clamps otherwise-finite sensor noise into physical bounds.
 
-const MIN_TEMPERATURE_C = -50.0;
-const MAX_TEMPERATURE_C = 150.0;
-const MIN_HUMIDITY_PCT = 0.0;
-const MAX_HUMIDITY_PCT = 100.0;
-
 /// Clamp `value` into `[lo, hi]`.
 fn clamp(value, lo, hi) {
     if value < lo { lo } else if value > hi { hi } else { value }
@@ -16,6 +11,14 @@ fn clamp(value, lo, hi) {
 /// Validate + write one device reading onto the bound node (`iot.temperature`,
 /// `iot.humidity`, `iot.last_seen`).
 fn ingest(node_id, device_reading) {
+    // Physical bounds are function-local: rhai script functions can't read
+    // script-global consts when `tick`/`ingest` are invoked via the host's
+    // `call_fn` entry point, so keep them where `ingest` can always resolve them.
+    const MIN_TEMPERATURE_C = -50.0;
+    const MAX_TEMPERATURE_C = 150.0;
+    const MIN_HUMIDITY_PCT = 0.0;
+    const MAX_HUMIDITY_PCT = 100.0;
+
     if !device_reading.contains("temperature") || !device_reading.contains("humidity") || !device_reading.contains("timestamp") {
         throw "iot_bridge.ingest: reading missing required field(s) (temperature, humidity, timestamp)";
     }

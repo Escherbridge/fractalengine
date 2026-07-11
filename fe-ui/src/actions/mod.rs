@@ -164,7 +164,12 @@ pub(crate) fn process_ui_actions(
     mut hexon_ops: ResMut<PendingHexonOps>,
     mut asset_ops: ResMut<PendingAssetOps>,
     nav: Res<crate::navigation_manager::NavigationManager>,
+    time: Res<Time>,
 ) {
+    // egui reads toast time from the same Bevy clock (bevy_egui feeds
+    // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
+    let now_secs = time.elapsed_secs_f64();
+
     // Auto-close portal when the selected entity changes or is deselected.
     if portal::should_auto_close(&ui_mgr.portal, node_mgr.selected_entity()) {
         ui_mgr.portal = PortalState::Closed;
@@ -193,14 +198,24 @@ pub(crate) fn process_ui_actions(
                 browser_commands.write(BrowserCommand::GoBack);
             }
             UiAction::SaveUrl => {
-                if let Some((node_id, url)) = portal::compute_save_url(&node_mgr, &inspector) {
-                    verse_mgr.update_node_url(&node_id, url.clone());
-                    if db_sender
-                        .0
-                        .send(fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url })
-                        .is_err()
-                    {
-                        bevy::log::warn!("db_sender channel closed — UpdateNodeUrl not persisted");
+                // compute_save_url returns None only when nothing is selected;
+                // surface that instead of silently dropping the click (see
+                // AGENTS.md §portal for the old silent no-op fragility).
+                match portal::compute_save_url(&node_mgr, &inspector) {
+                    Some((node_id, url)) => {
+                        verse_mgr.update_node_url(&node_id, url.clone());
+                        if db_sender
+                            .0
+                            .send(fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url })
+                            .is_err()
+                        {
+                            bevy::log::warn!("db_sender channel closed — UpdateNodeUrl not persisted");
+                        } else {
+                            ui_mgr.show_toast("URL saved", now_secs);
+                        }
+                    }
+                    None => {
+                        ui_mgr.show_toast("No node selected", now_secs);
                     }
                 }
             }
