@@ -643,6 +643,12 @@ async fn handle_advertise_tilesets(
         return;
     };
 
+    // Empty payload = nothing to advertise (fe-ui sends "" as a refresh nudge).
+    if advertisements_json.trim().is_empty() {
+        tracing::debug!("AdvertiseTilesets with empty payload — skipping");
+        return;
+    }
+
     // Parse advertisements
     let ads: Vec<TilesetAdvertisement> = match serde_json::from_str(advertisements_json) {
         Ok(a) => a,
