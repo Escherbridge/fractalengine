@@ -1,0 +1,8 @@
+{
+  "id": "code_review_20260430_mega_function",
+  "description": "Refactor apply_db_results Mega-Function",
+  "type": "chore",
+  "created_at": "2026-04-30T00:00:00Z",
+  "status": "pending",
+  "notes": "verified 2026-07-10: apply_db_results still ~430 lines, unrefactored"
+}

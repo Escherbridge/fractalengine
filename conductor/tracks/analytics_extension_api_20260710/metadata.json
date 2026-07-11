@@ -1,0 +1,10 @@
+{
+  "id": "analytics_extension_api_20260710",
+  "description": "Storage + query API exposed to extensions (fe-plugin/fe-sdk unification, capability gating, WIT query-api)",
+  "type": "feature",
+  "created_at": "2026-07-10T00:00:00Z",
+  "status": "in_progress",
+  "depends_on": ["plugin_host_20260509", "extension_sdk_ui_20260509", "analytics_extension_api_phase6_1"],
+  "blocks": ["iot_extension_slice_20260710"],
+  "notes": "verified 2026-07-10: contract layer (fe-sdk storage/query traits, fe-plugin HostEnv capability-gated routing, WIT query-api interface) already exists from Phase 9A/9B; only production backend wiring (fe-database-backed impl + binary injection) remains. fe-plugin already depends on fe-sdk — the MEMORY.md 'parallel type definitions' known issue appears resolved, re-verify before re-opening."
+}

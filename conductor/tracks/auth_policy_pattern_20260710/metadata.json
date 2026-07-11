@@ -1,0 +1,10 @@
+{
+  "id": "auth_policy_pattern_20260710",
+  "description": "Policy Engine — unified authorization for layered tokens and entry points (spec only, no implementation this round)",
+  "type": "spike",
+  "created_at": "2026-07-10T00:00:00Z",
+  "status": "spec_only",
+  "depends_on": [],
+  "blocks": ["analytics_extension_api_20260710 (capability generalization, non-blocking)"],
+  "notes": "spec-only per coordinator directive; read-only survey of 7 scattered authorization surfaces (fe-auth, fe-identity, fe-database rbac/role_level/role_manager, fe-api auth.rs, fe-hexon [confirmed gap], fe-plugin capability.rs, fe-webview TabVisibilityFilter). fe-hexon confirmed to have zero role/scope/rbac references anywhere in the crate. No plan.md created this round."
+}

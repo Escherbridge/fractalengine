@@ -1,0 +1,10 @@
+{
+  "id": "crate_registry_20260508",
+  "description": "Hexon Registry — P2P Distribution, Multi-Format Assets, Marketplace (Phase 8)",
+  "type": "feature",
+  "created_at": "2026-05-08T00:00:00Z",
+  "status": "completed",
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "review 5/7 PASS per MEMORY.md; known gaps: terrain crate auto-config not wired, RBAC not enforced in fe-hexon registry handlers. plan.md was never created for this track (spec.md only) — gap noted, not fabricated in this pass."
+}

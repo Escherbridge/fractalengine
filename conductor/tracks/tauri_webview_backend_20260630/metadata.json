@@ -1,12 +1,14 @@
 {
   "id": "tauri_webview_backend_20260630",
   "name": "Tauri WebView Backend — Robust Tauri Browser for fe-webview",
-  "status": "in_progress",
+  "status": "completed",
   "priority": "P0",
   "created": "2026-06-30",
   "depends_on": [],
   "blocks": ["tauri_ipc_asset_bridge_20260630", "tauri_backend_cutover_20260630"],
-  "notes": "Implementation complete. Build verification blocked by WSL missing GTK3/Wayland dev libraries. Code review confirms correct implementation.",
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "verified 2026-07-10: fe-webview/src/backends/tauri.rs exists, backend-tauri is default feature. Was internally inconsistent (status in_progress but notes said 'Implementation complete') — resolved to completed.",
   "phases": [
     {
       "id": 1,

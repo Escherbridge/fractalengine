@@ -3,5 +3,8 @@
   "description": "Bidirectional SurrealDB-to-Bevy ECS sync for scene entities, asset resolution, room boundary visualization",
   "type": "feature",
   "created_at": "2026-04-02T00:00:00Z",
-  "status": "pending"
+  "status": "completed",
+  "archived": true,
+  "archived_at": "2026-07-10T00:00:00Z",
+  "notes": "verified 2026-07-10: SceneChange type wired through fe-sdk/src/scene.rs, fe-runtime/src/messages.rs, node_manager.rs/plugin.rs; status was stale 'pending' despite shipping"
 }
