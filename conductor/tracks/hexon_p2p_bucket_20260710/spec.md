@@ -3,7 +3,9 @@ type: Track Spec
 title: Hexon P2P Bucket — 3D Visual IPFS
 tags: [spike, spec-only, hexon_p2p_bucket_20260710]
 timestamp: 2026-07-10T00:00:00Z
+updated: 2026-07-11T00:00:00Z
 resource: ./metadata.json
+decisions: ../../decisions/hexon-p2p-commons-20260711.md
 ---
 
 # Specification: Hexon P2P Bucket
@@ -173,6 +175,41 @@ collection for content no longer referenced by any live node/delta.
   from the DB" reachability scan) gates eviction.
 - Eviction is logged (`tracing::info!`) per `general.md`'s Failure
   Transparency rule.
+
+## Amendments (2026-07-11) — ratified transport decisions from the hexon-p2p-commons round
+
+Grounded in `conductor/decisions/hexon-p2p-commons-20260711.md` §D2 (transport)
+and the research report's measured numbers. Binding on the implementation track:
+
+- **Topology: handshake-then-swarm (§D2).** The "visual IPFS" is *not* an open
+  DHT: authorization happens **once** at the membership/capability boundary
+  (ticket-invite / registry discovery); within the authorized set, FR-5's
+  fetch-by-hash is an anonymous content-addressed swarm fetch. No per-asset
+  pairwise negotiation — that would forfeit swarming and re-concentrate load on
+  origin peers. This is also what structurally avoids IPFS's "ask everyone"
+  Bitswap discovery amplification: discovery is the registry's job, not a
+  flood's.
+- **Relay-as-seeder is part of the design, not a fallback (§D3/§D4).** Plan
+  against the pessimistic end of NAT reality — ~70% independently-measured
+  hole-punch success, and **browser peers are relay-only by construction**
+  (sandbox forbids UDP). The relay/registry container doubles as the always-on
+  paid seeder for cold content; FR-6's quota/GC applies to it with a larger
+  budget. Optional hardening for high-value verses: erasure-code bucket content
+  across members (Storj-style ~2.75x expansion) so no single seed is
+  load-bearing (report §4.4).
+- **BBR congestion control is a requirement, not a tuning knob.** iroh-blobs
+  throughput differs ~30x between BBR (~40% of link) and CUBIC (~1-1.5%)
+  (iroh#4286, report §3 P8). FR-5's implementation must verify and explicitly
+  configure BBR on the iroh endpoint.
+- **Container alignment:** large/streamable bucket content follows the
+  delta-track's A1 amendment — HashSeq/manifest-of-blobs with BLAKE3 verified
+  range reads, not ZIP — so a directory asset's files are individually
+  fetchable/verifiable (this also answers Open Question 3's direction:
+  per-file addressability falls out of blob-per-file + manifest).
+- **Erasure/PII (§D6):** bucket content that may need erasure is encrypted at
+  ingest (extend the existing ChaCha20-Poly1305 paid-hexon mechanism);
+  erasure = key destruction (crypto-shred) + local tombstones. No GDPR-hard
+  erasure promise for openly-swarmed content.
 
 ## Out of Scope (this spec)
 
