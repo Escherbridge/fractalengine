@@ -85,10 +85,10 @@ mod tests {
 
     /// Test invalid URL handling
     #[test]
-    #[should_panic(expected = "relative URL without a base")]
     fn test_invalid_url() {
-        // This should fail - relative URL without base
-        let _ = Url::parse("/relative");
+        // Relative URL without base must be rejected.
+        let err = Url::parse("/relative").expect_err("relative URL must not parse");
+        assert_eq!(err, url::ParseError::RelativeUrlWithoutBase);
     }
 
     /// Test that empty geometry produces expected values

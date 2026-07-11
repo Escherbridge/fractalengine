@@ -183,12 +183,15 @@ pub(crate) mod win32 {
     }
 
     pub(crate) fn move_window(hwnd: HWND, geometry: &WindowGeometry) {
+        // SWP_NOZORDER: z-order is managed by show(); forcing HWND_TOP here
+        // (called every frame) would raise the popup over other apps' windows.
+        const SWP_NOZORDER: UINT = 0x0004;
         unsafe {
             SetWindowPos(
-                hwnd, HWND_TOP,
+                hwnd, 0,
                 geometry.x, geometry.y,
                 geometry.width as i32, geometry.height as i32,
-                SWP_NOACTIVATE,
+                SWP_NOACTIVATE | SWP_NOZORDER,
             );
         }
     }
