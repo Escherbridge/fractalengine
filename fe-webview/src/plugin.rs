@@ -36,6 +36,10 @@ impl bevy::prelude::Plugin for WebViewPlugin {
 /// native window handles are thread-bound.
 pub struct WebViewBackendRes {
     pub backend: Option<ActiveBackend>,
+    /// Set when the backend window died externally (e.g. Alt+F4) so
+    /// `init_backend` recreates it. Never set on create-failure, which stays
+    /// terminal to avoid a retry-every-frame loop.
+    pub lost: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +94,13 @@ fn portal_rect_to_geometry(
 
 /// Deferred init: creates the backend once WinitWindows is available.
 fn init_backend(world: &mut bevy::prelude::World) {
-    if world
-        .get_non_send_resource::<WebViewBackendRes>()
-        .is_some()
-    {
-        return;
+    if let Some(res) = world.get_non_send_resource::<WebViewBackendRes>() {
+        if !res.lost {
+            return;
+        }
+        // Backend window died externally — drop it and fall through to recreate.
+        eprintln!("[PORTAL] init_backend: backend lost, recreating");
+        world.remove_non_send_resource::<WebViewBackendRes>();
     }
 
     #[cfg(feature = "winit")]
@@ -153,11 +159,12 @@ fn init_backend(world: &mut bevy::prelude::World) {
                 eprintln!("[PORTAL] backend initialized OK: {}", std::any::type_name::<ActiveBackend>());
                 world.insert_non_send_resource(WebViewBackendRes {
                     backend: Some(backend),
+                    lost: false,
                 });
             }
             Err(e) => {
                 eprintln!("[PORTAL] backend init FAILED: {e}");
-                world.insert_non_send_resource(WebViewBackendRes { backend: None });
+                world.insert_non_send_resource(WebViewBackendRes { backend: None, lost: false });
             }
         }
     }
@@ -165,7 +172,7 @@ fn init_backend(world: &mut bevy::prelude::World) {
     #[cfg(not(feature = "winit"))]
     {
         bevy::log::warn!("WebView backend requires winit feature");
-        world.insert_non_send_resource(WebViewBackendRes { backend: None });
+        world.insert_non_send_resource(WebViewBackendRes { backend: None, lost: false });
     }
 }
 
@@ -242,6 +249,7 @@ fn drain_backend_events(
     let Some(backend) = res.backend.as_mut() else { return };
 
     let drained = backend.drain_events();
+    let mut window_closed = false;
     for evt in drained {
         match evt {
             BackendEvent::UrlChanged(ref url) => {
@@ -257,9 +265,14 @@ fn drain_backend_events(
                 events.write(BrowserEvent::Error { message: message.clone() });
             }
             BackendEvent::WindowClosed => {
-                bevy::log::warn!("Portal: backend window was closed by OS");
+                bevy::log::warn!("Portal: backend window was closed by OS — scheduling recreate");
+                window_closed = true;
             }
         }
+    }
+    if window_closed {
+        res.backend = None;
+        res.lost = true;
     }
 }
 
@@ -272,6 +285,8 @@ fn sync_portal_position(
         bevy::prelude::Entity,
         bevy::prelude::With<bevy::window::PrimaryWindow>,
     >,
+    #[cfg(feature = "winit")]
+    mut last_geometry: bevy::prelude::Local<Option<WindowGeometry>>,
 ) {
     let Some(mut res) = backend_res else { return };
 
@@ -283,7 +298,13 @@ fn sync_portal_position(
             let Some(wrapper) = winit_windows.get_window(entity) else { return };
             let inner: &winit::window::Window = &**wrapper;
             let geometry = portal_rect_to_geometry(&portal_rect, inner);
-            let _ = backend.reposition(geometry);
+            // Skip the SetWindowPos/set_bounds round-trip when nothing moved.
+            if *last_geometry == Some(geometry) {
+                return;
+            }
+            if backend.reposition(geometry).is_ok() {
+                *last_geometry = Some(geometry);
+            }
         });
     }
 }

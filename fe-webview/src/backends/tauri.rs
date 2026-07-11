@@ -153,10 +153,11 @@ impl WebViewBackend for TauriBackend {
             return Ok(());
         }
         eprintln!("[PORTAL] TauriBackend::navigate — {url}");
-        self.current_url = Some(url.clone());
         self.webview
             .load_url(url.as_str())
             .map_err(|e| anyhow::anyhow!("TauriBackend: load_url failed: {e}"))?;
+        // Record only after load_url succeeds so a failed load stays retryable.
+        self.current_url = Some(url.clone());
         self.show()?;
         Ok(())
     }
@@ -229,7 +230,14 @@ impl WebViewBackend for TauriBackend {
             return vec![BackendEvent::WindowClosed];
         }
 
-        std::mem::take(&mut *self.events.borrow_mut())
+        let drained = std::mem::take(&mut *self.events.borrow_mut());
+        // Track in-page navigations so the navigate() dedup matches reality.
+        for evt in &drained {
+            if let BackendEvent::UrlChanged(url) = evt {
+                self.current_url = Some(url.clone());
+            }
+        }
+        drained
     }
 
     fn is_alive(&self) -> bool {

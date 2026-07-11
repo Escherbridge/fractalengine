@@ -2,7 +2,7 @@ use url::Url;
 
 /// Screen-space rectangle in physical pixels (screen coordinates).
 /// Computed by the Bevy plugin from the primary window's position and layout.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowGeometry {
     pub x: i32,
     pub y: i32,
