@@ -498,26 +498,26 @@ Dependency graph:
                                   hexon_p2p_bucket_20260710/spec.md "Relationship" section).
 ```
 
-## [ ] Track: Analytics Extension API — Storage + Query API for Extensions
+## [x] Track: Analytics Extension API — Storage + Query API for Extensions
 
 _Link: [./tracks/analytics_extension_api_20260710/](./tracks/analytics_extension_api_20260710/)_
 _Depends on: Plugin Host (9A), Extension SDK UI (9B), fe-query (6.1) | Blocks: IoT Extension Slice_
 _Scope: Unify fe-plugin/fe-sdk (fe-plugin depends on fe-sdk types instead of parallel definitions), capability-gated storage + query API surface exposed to extensions, WIT query-api addition_
-_Status: in progress via ultrapilot_
+_verified: commit `0ddb539` — `storage.read`/`storage.write`/`query.select` capabilities, fail-closed gating, WIT `query-api`, `fe-plugin` unified onto `fe-sdk`. **Residual, not closed:** production DB wiring of the host traits (`ExtensionStorageApi`/`ExtensionQueryApi`) into the running `fractalengine` binary remains open — see spec.md "Residual (post-ultrapilot)" section_
 
-## [ ] Track: IoT Extension Slice — Device ↔ Node Push/Pull Proof
+## [x] Track: IoT Extension Slice — Device ↔ Node Push/Pull Proof
 
 _Link: [./tracks/iot_extension_slice_20260710/](./tracks/iot_extension_slice_20260710/)_
 _Depends on: Analytics Extension API | Blocks: none_
 _Scope: A real IoT bridge extension built on the Analytics Extension API, proving the push/pull device↔node loop end-to-end through the plugin host_
-_Status: in progress via ultrapilot_
+_verified: commit `c811856` + integration (`19a2df2`) — 6 bridge-loop tests green through `fe-plugin-test`'s `RhaiTestRunner`, running against the real host functions post-integration_
 
-## [ ] Track: fe-ui Decomposition — God-File Breakup into Domain Modules
+## [x] Track: fe-ui Decomposition — God-File Breakup into Domain Modules
 
 _Link: [./tracks/feui_decomposition_20260710/](./tracks/feui_decomposition_20260710/)_
 _Depends on: none (successor to ui_manager_refactor_20260419's remaining physical-split work) | Blocks: none_
 _Scope: Decompose fe-ui's largest files (panels.rs 1991 lines, plugin.rs 1397 lines, dialogs.rs 1183 lines, verse_manager.rs 914 lines, node_manager.rs 834 lines) into domain modules, soft-capped ~300 lines each_
-_Status: in progress via ultrapilot_
+_verified: commit `7df071c` — five god-files split into `actions/panels/dialogs/node_manager/verse_manager/terrain_map/portal`; `plugin.rs` now a 480-line shell. **Follow-up (not blocking completion):** `panels/inspector.rs` (1042), `dialogs/entity_settings.rs` (799), `dialogs/hexon_manager.rs` (466) still exceed the ~300-line guideline — second split pass needed, see spec.md "Follow-up" section_
 
 ## [ ] Track: Hexon Deltas — Replayable Op-Log Hexons over P2P (spec only)
 
@@ -537,8 +537,8 @@ _Status: spec-only via ultrapilot — no implementation this round_
 
 _Link: [./tracks/hexon_p2p_bucket_20260710/](./tracks/hexon_p2p_bucket_20260710/)_
 _Depends on: Hexon Registry (Phase 8), Hexon Deltas (spec, content-vs-operations counterpart) | Blocks: none (design-only this round)_
-_Scope: Generalize node assets from GLTF-only to any file type or a directory of files (with a placeholder-rendering contract for content with no native 3D form); download/upload endpoints (relates to the concurrently in-progress `GET /nodes/{id}/asset`); distribute the resulting content-addressed, sovereign-authored bucket over iroh P2P — "3D visual IPFS." Confirmed gap: `fe-network/src/iroh_blobs.rs` is a 13-line unfilled Wave-1 stub — the P2P blob transport itself does not exist yet._
-_Status: spec-only via ultrapilot — no implementation this round_
+_Scope: Generalize node assets from GLTF-only to any file type or a directory of files (with a placeholder-rendering contract for content with no native 3D form); download/upload endpoints; distribute the resulting content-addressed, sovereign-authored bucket over iroh P2P — "3D visual IPFS." Confirmed gap: `fe-network/src/iroh_blobs.rs` is a 13-line unfilled Wave-1 stub — the P2P blob transport itself does not exist yet._
+_Status: spec-only via ultrapilot — no implementation this round. Note: the node-asset download endpoint referenced in this spec's original draft landed during the same ultrapilot run (commit `3a97fc1`, `feat(api): node asset download endpoints`) — see spec.md for the updated exists-vs-new table and the follow-up (`DbCommand::GetNodeAsset`/`GetAssetMeta` channel variants) this surfaced_
 
 ---
 
@@ -547,4 +547,6 @@ _Status: spec-only via ultrapilot — no implementation this round_
 **Convention (established 2026-07-10, no prior convention existed in PLAYBOOK.md/workflow.md):** Archiving here means "implementation complete, no longer active work" — it does **not** mean moved or deleted. Links above remain valid. A track is archived by (1) its checkbox being `[x]` above, and (2) its `metadata.json` carrying `"archived": true` + `"archived_at"`. This pass added the `archived` field only to the metadata.json files it created or repaired (the tracks newly flipped to `[x]` today); pre-existing `[x]` tracks from Waves 1-2 were left untouched (non-destructive — see notepad/report for the full list).
 
 Tracks archived in this pass (2026-07-10 reconciliation): `ui_manager_refactor_20260419`, `viewport_foundation_20260402`, `scene_graph_bridge_20260402`, `selection_system_20260402`, `transform_gizmos_20260402`, `shared_peer_infra_20260419`, `garden_console_20260322`, `mycelium_live_20260322`, `bloom_stage_20260322`, `petal_portal_20260322`, `fractal_atlas_20260322`, Entity Data Layer Phase 6.1 (fe-query), Hexon Format Phase 6.5, Terrain & GPX Phase 7, Hexon Registry Phase 8, Realtime API Gateway, `tauri_webview_backend_20260630`, `tauri_ipc_asset_bridge_20260630`, `tauri_backend_cutover_20260630`, `code_review_20260430_egui_deprecation`, `code_review_20260430_channel_errors`, `code_review_20260430_db_graceful`, `plugin_host_20260509`, `extension_sdk_ui_20260509`, `plugin_testing_dx_20260509`.
+
+Tracks archived in the 2026-07-10/11 ultrapilot close-out pass: `analytics_extension_api_20260710` (residual DB-wiring item still open — see spec.md; archived because the extension-facing contract itself is complete and shipped), `iot_extension_slice_20260710`, `feui_decomposition_20260710` (follow-up second split pass noted — see spec.md; archived because the god-file breakup itself is complete and shipped). `hexon_delta_format_20260710`, `auth_policy_pattern_20260710`, and `hexon_p2p_bucket_20260710` remain spec-only/pending — not archived.
 

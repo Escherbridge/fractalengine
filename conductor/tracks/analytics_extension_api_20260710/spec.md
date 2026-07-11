@@ -152,3 +152,38 @@ FR-4's analytics shape).
 - `fe-query` (Phase 6.1, builder/) — exists.
 - `fe-database` (op_log, schema) — exists; needs the new per-extension KV
   table (FR-1) and a query-builder-backed adapter (FR-2).
+
+## Residual (post-ultrapilot, 2026-07-11)
+
+Track closed in `conductor/tracks.md` per commit `0ddb539` — the
+extension-facing contract (capabilities `storage.read`/`storage.write`/
+`query.select`, fail-closed gating, WIT `query-api`, `fe-plugin` unified onto
+`fe-sdk`) is shipped. Two items surfaced during the close-out that are **not**
+resolved and should not be read as implicitly closed just because the track
+checkbox flipped:
+
+1. **FR-1/FR-3 production DB wiring remains open.** Real
+   `ExtensionStorageApi`/`ExtensionQueryApi` implementations backed by
+   `fe-database`, injected into the running `fractalengine` binary's
+   `PluginContext`, are still outstanding — everything shipped so far is the
+   contract + fail-closed routing, exercised by test/mock hosts
+   (`iot_extension_slice_20260710`'s bridge-loop tests run through
+   `fe-plugin-test`'s harness, not the real binary). Keep this as an open
+   checklist item on any future extension-storage work; do not treat
+   `analytics_extension_api_20260710` as fully end-to-end just because its
+   own checkbox is `[x]`.
+2. **Security review note: `petal.terrain` FLEXIBLE-blob bounds.** The
+   `petal.terrain` column is a `FLEXIBLE object` (schema-relaxed) — the same
+   category of column this track's FR-1 KV table and FR-2 query scoping are
+   designed to keep bounded/validated for *extension-authored* writes. A
+   review during the ultrapilot close-out flagged that the handler layer for
+   `petal.terrain` itself does not currently enforce a size/shape bound the
+   way a `FLEXIBLE` column probably should, independent of the extension API
+   — worth a follow-up pass on the terrain handler(s) in `fe-database`
+   applying the same size/shape discipline this track establishes for
+   extension KV writes.
+3. **fe-api envelope-key test mismatch — no action needed here.** A test
+   mismatch around an envelope key was flagged during the close-out; it is
+   already owned by an in-flight rework elsewhere (external to this track)
+   and is recorded here only so it isn't independently rediscovered as a new
+   `analytics_extension_api` bug.

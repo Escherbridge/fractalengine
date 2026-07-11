@@ -155,3 +155,33 @@ in `node_manager/mod.rs`.
 
 - `ui_manager_refactor_20260419` — must be understood before touching any of
   these files (this track builds directly on its types).
+
+## Follow-up (post-completion, 2026-07-11)
+
+Track closed in `conductor/tracks.md` per commit `7df071c` — the five
+originally-named god-files (`panels.rs`, `plugin.rs`, `dialogs.rs`,
+`verse_manager.rs`, `node_manager.rs`) are split into `actions/`, `panels/`,
+`dialogs/`, `node_manager/`, `verse_manager/`, `terrain_map/`, `portal/`
+modules, with `plugin.rs` reduced to a 480-line `Plugin`-impl shell (see
+`fe-ui/src/AGENTS.md` for the current module map — this spec does not
+duplicate that table). Two items surfaced during the close-out that are
+**not** resolved by this closure:
+
+1. **A second split pass is needed.** Three files produced by (or exposed
+   during) the first pass still exceed the ~300-line guideline:
+   `panels/inspector.rs` (1042 lines), `dialogs/entity_settings.rs` (799
+   lines), `dialogs/hexon_manager.rs` (466 lines). This is exactly the kind
+   of "large panels may need one more split level" case anticipated in
+   FR-1's original acceptance criteria (e.g. `inspector/` split further by
+   `InspectorTab` variant) — a follow-up track or phase should pick this up
+   rather than reopening this one.
+2. **`SaveUrl` payload-carrying action + DB-ack surfacing.** The portal save
+   chain (`UiAction::SaveUrl` is a bare signal with no payload, re-read from
+   `NodeManager`/`InspectorFormState` at drain time; a failed/no-op save is
+   currently silent) is called out in `fe-ui/src/AGENTS.md`'s §portal
+   fragility list as the crate's most fragile seam. That file is outside
+   `conductor/**` and is not edited here — this entry exists so the
+   follow-up is discoverable from the track record. A future track should
+   (a) give `UiAction::SaveUrl` an explicit payload instead of re-reading
+   ambient state at drain time, and (b) surface DB-ack/failure back to the
+   UI instead of a silent no-op on empty selection.
