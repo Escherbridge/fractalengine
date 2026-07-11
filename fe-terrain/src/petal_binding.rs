@@ -36,6 +36,7 @@ pub fn config_for_tileset(info: &crate::tiles::TilesetInfo) -> TerrainConfig {
     );
     let elevation_source = match info.elevation_encoding {
         Some(ElevationEncoding::TerrainRgb) => ElevationSourceKind::TerrainRgb,
+        Some(ElevationEncoding::Terrarium) => ElevationSourceKind::Terrarium,
         _ => ElevationSourceKind::None,
     };
     TerrainConfig {
@@ -71,10 +72,14 @@ mod render_support {
     use bevy::prelude::*;
 
     use super::PetalTerrainAssignment;
-    use crate::config::TerrainConfig;
+    use crate::config::{ElevationSourceKind, TerrainConfig};
     use crate::layers::{LayerStack, LayerType, MapLayer};
     use crate::terrain_plugin::{GeoJsonOverlay, GeoJsonProcessed, GpxTrackLine, TerrainChunk};
-    use crate::tiles::{CompositeTileSource, DiskTileCache, TilesetRegistry};
+    use crate::tiles::{
+        decode_png_pixels, CompositeTileSource, DiskTileCache, ElevationDecoder,
+        TerrainRgbDecoder, TerrariumDecoder, TileCoord, TilesetRegistry,
+    };
+    use fe_format::manifest::ElevationEncoding;
 
     /// Default disk cache budget for the active petal's tile cache.
     const DEFAULT_TILE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
@@ -130,19 +135,40 @@ mod render_support {
         active.config = assignment.config.clone();
         active.revision += 1;
 
-        match assignment.config.as_ref().filter(|c| c.enabled) {
-            Some(config) => {
+        match assignment.config.filter(|c| c.enabled) {
+            Some(mut config) => {
                 let mut composite = CompositeTileSource::new();
+                let mut hexon_encoding: Option<ElevationEncoding> = None;
                 for uri in &config.tileset_hexon_uris {
                     let Some(reg) = registry.as_ref() else {
                         tracing::warn!(uri = %uri, "no SharedTilesetRegistry resource; cannot load tileset");
                         continue;
                     };
                     match reg.0.store().load_tileset(uri) {
-                        Ok(src) => composite.add_hexon_source(src),
+                        Ok(src) => {
+                            hexon_encoding.get_or_insert(src.tileset_meta.elevation_encoding.clone());
+                            composite.add_hexon_source(src);
+                        }
                         Err(err) => {
                             tracing::warn!(uri = %uri, error = %err, "failed to load tileset for terrain assignment");
                         }
+                    }
+                }
+                // Loaded hexons are authoritative for decoding — the stored
+                // config may guess wrong (fe-ui emits terrain_rgb; see AGENTS.md).
+                if let Some(enc) = hexon_encoding {
+                    let authoritative = match enc {
+                        ElevationEncoding::TerrainRgb => ElevationSourceKind::TerrainRgb,
+                        ElevationEncoding::Terrarium => ElevationSourceKind::Terrarium,
+                        ElevationEncoding::Raw16 => ElevationSourceKind::None,
+                    };
+                    if config.elevation_source != authoritative {
+                        tracing::info!(
+                            stored = ?config.elevation_source,
+                            hexon = ?authoritative,
+                            "overriding elevation source from loaded tileset metadata"
+                        );
+                        config.elevation_source = authoritative;
                     }
                 }
                 composite.set_tile_source_mode(config.tile_source_mode.clone());
@@ -153,6 +179,15 @@ mod render_support {
                         config.cache_dir.clone(),
                         DEFAULT_TILE_CACHE_BYTES,
                     ));
+                }
+                // Ground the projection: mesh world-Y = elevation − origin_ele,
+                // so an unset origin_ele leaves real terrain hundreds of meters
+                // above the camera (and past the far plane).
+                if config.origin.origin_ele == 0.0 {
+                    if let Some(ele) = sample_center_elevation(&composite, &config) {
+                        tracing::info!(origin_ele = ele, "grounded terrain origin from center-tile elevation");
+                        config.origin.origin_ele = ele;
+                    }
                 }
                 tile_source.composite = Some(composite);
                 tile_source.projection = Some(config.origin.clone());
@@ -172,6 +207,9 @@ mod render_support {
                     map_layer.opacity = layer.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
                     layer_stack.add_layer(map_layer);
                 }
+
+                // Publish the reconciled config (encoding + grounded origin).
+                active.config = Some(config);
             }
             None => {
                 tile_source.composite = None;
@@ -184,6 +222,34 @@ mod render_support {
         for entity in spawned.iter() {
             commands.entity(entity).despawn();
         }
+    }
+
+    /// Mean elevation of the tile at the config origin (min zoom); `None` when
+    /// no elevation tile or decoder is available.
+    fn sample_center_elevation(
+        composite: &CompositeTileSource,
+        config: &TerrainConfig,
+    ) -> Option<f64> {
+        let coord = TileCoord::from_lat_lon(
+            config.origin.origin_lat,
+            config.origin.origin_lon,
+            config.min_zoom,
+        );
+        let png = composite.get_tile_sync(coord)?;
+        let (pixels, w, h) = decode_png_pixels(&png).ok()?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let decoded = match config.elevation_source {
+            ElevationSourceKind::TerrainRgb => TerrainRgbDecoder.decode(&pixels, w, h),
+            ElevationSourceKind::Terrarium => TerrariumDecoder.decode(&pixels, w, h),
+            ElevationSourceKind::None => return None,
+        };
+        if decoded.is_empty() {
+            return None;
+        }
+        let sum: f64 = decoded.iter().map(|v| *v as f64).sum();
+        Some(sum / decoded.len() as f64)
     }
 }
 
