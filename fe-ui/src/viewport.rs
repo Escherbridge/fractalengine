@@ -1,11 +1,10 @@
 use bevy_egui::egui;
 
+use crate::actions::UiManager;
 use crate::atlas::DashboardState;
+use crate::dialogs::{ActiveDialog, CreateKind, EntitySettingsType, SettingsTab};
 use crate::navigation_manager::NavigationManager;
-use crate::plugin::{
-    ActiveDialog, CreateKind, EntitySettingsType, LocalUserRole, SettingsTab, UiManager,
-    ViewportCursorWorld,
-};
+use crate::plugin::{LocalUserRole, ViewportCursorWorld};
 use crate::theme;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;

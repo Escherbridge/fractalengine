@@ -1,0 +1,147 @@
+# fe-ui — module map and design rationale
+
+`fe-ui` is the egui-based control surface for FractalEngine's GUI binary:
+sidebar hierarchy, inspector, dialogs, the embedded webview ("portal"), and
+terrain/hexon map management. This doc replaces verbose inline comments —
+see each module's own doc-comment for the "what"; this file is the "why".
+
+## Module map
+
+| Module | Owns |
+| --- | --- |
+| `plugin` | `GardenerConsolePlugin`, `UiSet` ordering, the `EguiPrimaryContextPass` entry system, cross-crate re-export shims (see §compat), UI-only resources that don't belong to a specific domain manager (`SidebarState`, `ToolState`, `InspectorFormState`, `LocalUserRole`, `CameraFocusTarget`, `ViewportCursorWorld`, `ViewportRect`, `SpawnedNodeMarker`). |
+| `actions` | `UiAction` (the one-frame action queue enum) + `UiManager` (queue + portal + active dialog + toast) + `process_ui_actions`, split into domain files (`portal`, `node_props`, `hexon`, `query`). See §actions. |
+| `portal` | `PortalState` + the pure webview-rect-sync math (`compute_portal_rect`). See §portal — this is the browser-integration seam. |
+| `dialogs` | `ActiveDialog` (mutual-exclusion enum) + one render function per floating dialog/window. |
+| `terrain_map` | Petal-map state (`PetalMapState`), the hexon registry op queue (`HexonOp`/`PendingHexonOps`), Hexon Manager DTOs, the petal manifest type, and tileset-event draining. |
+| `asset_ops` | Node-asset download op queue (`AssetOp`/`PendingAssetOps`) + the result-status resource (`AssetDownloadStatus`) the main binary writes back to. See §asset-download. |
+| `panels` | The top-level egui shell (`gardener_console`) + one file per panel (toolbar, status bar, sidebar tree, inspector tabs, query tab, portal toolbar). |
+| `node_manager` | `NodeManager` (single source of truth for selection) + gimbal interaction/hover/pick, viewport click-to-select, transform broadcast, inspector sync — one file per concern. |
+| `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. |
+| `navigation_manager`, `viewport`, `atlas`, `gimbal`, `theme`, `role_chip` | Unchanged from before this decomposition; not god-files. |
+
+This module tree is a **physical decomposition only** — no behavior changed
+during the split. The architectural design (UiSet ordering, UiAction queue,
+ActiveDialog enum, NodeManager-as-selection-source) was implemented earlier;
+see `conductor/tracks/ui_manager_refactor_20260419/spec.md`.
+
+## §compat — cross-crate re-export shims
+
+`fractalengine/src/main.rs` and `fractalengine/src/terrain_bridge.rs` import
+`fe_ui::plugin::{GardenerConsolePlugin, LocalUserRole, ActiveDialog, HexonOp,
+InstalledTilesetDto, PendingHexonOps, StorageInfoDto, UiManager}` and cannot
+be edited by this change. `plugin.rs` keeps these reachable via `pub use`
+shims even though the types now live in `actions`, `dialogs`, and
+`terrain_map`. `UiAction` and `PetalMapState` are also re-exported at the old
+path defensively (not currently used externally, but were technically part
+of the old public surface). When adding a new type that logically belongs in
+one of the split modules, prefer importing it from its real home
+(`crate::dialogs::X`, `crate::actions::X`, `crate::terrain_map::X`) in new
+fe-ui code — only `plugin.rs` needs the compat re-export.
+
+One surface *narrowed* during the split: `Tool` (the viewport transform
+tool enum) moved from `fe_ui::panels::Tool` to `fe_ui::panels::toolbar::Tool`,
+and the `panels::{toolbar,sidebar,status_bar,inspector,query_tab}` submodules
+are `pub(crate)` (crate-internal) rather than `pub`. Nothing outside fe-ui
+referenced `fe_ui::panels::*` before this change (verified via
+`grep -rn "fe_ui::" fractalengine/src fe-webview/src`), so this is safe.
+
+## §actions
+
+`UiAction` is a one-frame signal queue pushed during the egui render pass
+(`EguiPrimaryContextPass`) and drained once per `Update` frame by
+`process_ui_actions` (registered in `UiSet::ProcessActions`). Each match arm
+delegates to a small domain function in `portal.rs` / `node_props.rs` /
+`hexon.rs` / `query.rs` — this keeps `process_ui_actions` itself as a thin
+dispatcher and lets the domain logic be unit-tested without a Bevy `App`
+where possible (see §portal).
+
+## §portal — the browser-integration seam
+
+This is the highest-polish, most fragility-prone part of the crate: it's
+where inspector form state crosses into `fe-webview`'s `BrowserCommand`
+queue and the DB persistence layer. `actions::portal` intentionally splits
+each action into a **pure decision function** (`compute_open_portal`,
+`should_auto_close`, `compute_save_url`) that takes plain resource
+references and returns an outcome/tuple, with the actual `MessageWriter`/
+`Sender` I/O left in `process_ui_actions`. This makes the save/open/close
+semantics unit-testable with plain `#[test]` functions (no `MinimalPlugins`
+app needed) — see the `#[cfg(test)]` modules in `actions/portal.rs` and
+`portal/mod.rs`.
+
+**The complete save chain**, UI field → action → system → persistence:
+
+1. `InspectorFormState.external_url` is a plain text buffer, edited directly
+   by `panels::inspector::inspector_url_meta_section`. It is populated from
+   `VerseManager` (not the DB) whenever selection changes
+   (`node_manager::inspector_sync::sync_manager_to_inspector`).
+2. Clicking **Save** pushes `UiAction::SaveUrl` — a bare signal with **no
+   payload**. It does not carry `node_id` or the URL value; both are
+   re-read from `NodeManager`/`InspectorFormState` at drain time.
+3. `process_ui_actions` calls `actions::portal::compute_save_url(&node_mgr,
+   &inspector)`. If nothing is selected, this returns `None` and the save is
+   a **silent no-op** — no log, no toast. Whitespace-only URLs become
+   `None` (clears the field); non-empty URLs are stored **as typed, not
+   trimmed** — leading/trailing whitespace survives into the DB.
+4. On `Some((node_id, url))`: `verse_mgr.update_node_url(...)` updates the
+   in-memory tree immediately (optimistic local echo), then
+   `db_sender.send(DbCommand::UpdateNodeUrl { .. })` is fired at the DB
+   thread over an unbounded crossbeam channel. If the send fails, a single
+   `bevy::log::warn!` fires and **nothing else happens** — no retry, no
+   user-visible error, and the in-memory copy is already "saved" from the
+   UI's perspective regardless of DB outcome.
+5. Clicking **Open Portal** is a *separate* action (`UiAction::OpenPortal`)
+   that independently re-reads `inspector.external_url` — saving does not
+   automatically open the portal, and opening does not require a prior save.
+6. `compute_open_portal` mirrors the same "no selection ⇒ silent no-op"
+   shape: invalid URL syntax logs a warning, but a *valid* URL with nothing
+   selected does nothing at all (not even a log line).
+7. Every `Update` frame, before draining new actions, `should_auto_close`
+   checks whether the currently-open portal's `opened_for_entity` still
+   matches the live selection; if the selection changed or cleared, the
+   portal force-closes (`BrowserCommand::Close`) — by design (FR-2), but it
+   means selecting a *different* node while a portal is open silently kills
+   the webview with no confirmation.
+
+## §asset-download — integration contract for the main binary
+
+The inspector's "Asset" card (`panels::asset_card`) is UI-only: it reads
+`NodeEntry.has_asset`/`asset_path` from `VerseManager` to enable/disable the
+Download button and, on click, pushes `UiAction::DownloadNodeAsset { node_id
+}`. `process_ui_actions` drains that into `asset_ops::PendingAssetOps`
+exactly like `UiAction::Hexon*` actions drain into `terrain_map::PendingHexonOps`
+— fe-ui never touches a `BlobStoreHandle` or writes files itself.
+
+Integration contract for `fractalengine` (main binary, not owned by this
+worker):
+1. Each frame (or on a timer), drain `Res<PendingAssetOps>` (mirrors the
+   existing `terrain_bridge.rs` pattern that drains `PendingHexonOps`),
+   resolve `AssetOp::Download { node_id }` via the node's asset/blob
+   reference and `BlobStoreHandle`, write the resolved bytes to disk.
+2. Write the outcome into `ResMut<AssetDownloadStatus>`: `node_id` +
+   `saved_path` on success, or `node_id` + `error` on failure. fe-ui exposes
+   this resource for exactly this purpose; it is not read anywhere inside
+   fe-ui yet (no auto-toast wiring was added, to keep this change minimal —
+   a follow-up system reading `AssetDownloadStatus` and calling
+   `UiManager::show_toast` is the natural next step, following the same
+   shape as `HexonOpenStorageDir`'s OS-explorer reveal).
+
+**Fragilities worth a dedicated e2e pass** (flagged, not fixed here — out of
+scope for this decomposition task):
+- Two silent no-op paths (`SaveUrl` and `OpenPortal` with no selection) with
+  zero user feedback. If a user's click races a selection change by even one
+  frame, the save/open is dropped with no visible signal.
+- `UiAction::SaveUrl` carries no `node_id`/url payload — it trusts that
+  `NodeManager.selected` and `InspectorFormState.external_url` are still
+  valid at drain time, which is normally true (drain happens the same or
+  next frame) but is a latent footgun if that assumption ever breaks (e.g. a
+  future async dialog between click and drain).
+- Three copies of "the URL": `InspectorFormState.external_url` (form buffer),
+  `VerseManager`'s `NodeEntry.webpage_url` (in-memory tree), and the DB
+  column. Steps 2-4 write only the first two synchronously; the DB write is
+  fire-and-forget with no ack surfaced to the UI (`DbResult::NodePropertySet`
+  has an equivalent round-trip for custom properties, but `UpdateNodeUrl`
+  has no corresponding `DbResult` handled here to confirm the write landed).
+- Whitespace is preserved (not trimmed) in the stored URL string; only the
+  "is it empty" check trims, so `"  https://x  "` is stored with the
+  padding intact and will need re-parsing/trimming on read.

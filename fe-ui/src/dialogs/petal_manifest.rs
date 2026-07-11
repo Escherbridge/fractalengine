@@ -1,6 +1,10 @@
+//! Petal hexon manifest editor dialog.
+
 use bevy_egui::egui;
 
-use crate::plugin::{ActiveDialog, UiAction, UiManager};
+use super::ActiveDialog;
+use crate::actions::{UiAction, UiManager};
+use crate::terrain_map::manifest::ManifestHexonEntry;
 use crate::theme;
 
 pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
@@ -48,10 +52,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
             // --- Render distance ---
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Render distance:").color(theme::TEXT_SECTION));
-                let resp = ui.add(
-                    egui::TextEdit::singleline(render_distance_buf)
-                        .desired_width(80.0),
-                );
+                let resp = ui.add(egui::TextEdit::singleline(render_distance_buf).desired_width(80.0));
                 if resp.changed() {
                     if let Ok(v) = render_distance_buf.parse::<f32>() {
                         manifest.render_distance = v;
@@ -103,13 +104,11 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                             let installed = available_hexon_ids.contains(&entry.hexon_id);
                             if installed {
                                 ui.label(
-                                    egui::RichText::new("Installed")
-                                        .color(egui::Color32::from_rgb(100, 200, 100)),
+                                    egui::RichText::new("Installed").color(egui::Color32::from_rgb(100, 200, 100)),
                                 );
                             } else {
                                 ui.label(
-                                    egui::RichText::new("Missing")
-                                        .color(egui::Color32::from_rgb(200, 100, 80)),
+                                    egui::RichText::new("Missing").color(egui::Color32::from_rgb(200, 100, 80)),
                                 );
                             }
 
@@ -163,7 +162,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                     .add_enabled(can_add, egui::Button::new("Add").fill(theme::BG_SAVE))
                     .clicked()
                 {
-                    manifest.hexons.push(crate::plugin::ManifestHexonEntry {
+                    manifest.hexons.push(ManifestHexonEntry {
                         hexon_id: add_hexon_id_buf.trim().to_string(),
                         hexon_type: add_hexon_type_buf.clone(),
                         required: true,
@@ -214,10 +213,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                     });
                     *dirty = false;
                 }
-                if ui
-                    .add(egui::Button::new("Close").fill(theme::BG_BUTTON))
-                    .clicked()
-                {
+                if ui.add(egui::Button::new("Close").fill(theme::BG_BUTTON)).clicked() {
                     close = true;
                 }
             });
