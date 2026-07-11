@@ -15,6 +15,7 @@
 
 pub mod builder;
 pub mod geo;
+pub mod gis;
 
 #[cfg(feature = "graphql")]
 pub mod graphql;
