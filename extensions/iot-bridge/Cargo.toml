@@ -1,0 +1,19 @@
+[workspace]
+
+[package]
+name = "iot-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Vertical-slice extension proving IoT device <-> node interop over the HOST-FN CONTRACT"
+
+[dependencies]
+fe-sdk = { path = "../../fe-sdk" }
+rhai = "1.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Only used by tests/bridge_loop.rs for a shape-compatibility check against the real
+# mock-host/assertion helpers; src/ never depends on fe-plugin-test. See AGENTS.md
+# "Integration" for why this crate builds its own adapter instead of RhaiTestRunner.
+fe-plugin-test = { path = "../../fe-plugin-test" }

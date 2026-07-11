@@ -1,0 +1,12 @@
+{
+  "extension_id": "iot-bridge",
+  "version": "0.1.0",
+  "description": "Push IoT device readings into a node; pull node state to drive device operations.",
+  "entry_script": "scripts/iot_bridge.rhai",
+  "capabilities": ["storage.read", "storage.write", "query.select"],
+  "verse_scope": ["VERSE#*"],
+  "petal_scope": [],
+  "property_scope": ["iot.*"],
+  "network_scope": "none",
+  "external_http": false
+}
