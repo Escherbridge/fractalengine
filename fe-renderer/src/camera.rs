@@ -7,6 +7,28 @@ use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
+/// Human-scale (1:1) orbit zoom-out limit in world units.
+pub const BASE_MAX_DISTANCE: f32 = 500.0;
+/// Human-scale (1:1) perspective far plane in world units.
+pub const BASE_FAR: f32 = 1000.0;
+/// Upper bound on the scale-driven zoom-out distance (keeps depth precision sane).
+const MAX_SCALE_DISTANCE: f32 = 100_000.0;
+/// Fraction of the current distance a single scroll notch travels (log zoom).
+const ZOOM_FRACTION: f32 = 0.1;
+
+/// Per-world-scale camera limits (world units per real meter). fe-ui writes this
+/// when the active petal's terrain scale changes; see `src/AGENTS.md` §camera-scale.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct CameraScaleSettings {
+    pub world_scale: f32,
+}
+
+impl Default for CameraScaleSettings {
+    fn default() -> Self {
+        Self { world_scale: 1.0 }
+    }
+}
+
 /// Orbit camera controller component.
 ///
 /// Attach to a `Camera3d` entity to get orbit/pan/zoom controls.
@@ -95,6 +117,35 @@ pub fn apply_zoom(distance: f32, scroll_delta: f32, zoom_speed: f32, min: f32, m
     (distance - scroll_delta * zoom_speed).clamp(min, max)
 }
 
+/// Log-style zoom: the step is a fraction of the current distance, so a scroll
+/// notch feels the same at 5 units or 50 000 units (needed for multi-scale space).
+pub fn apply_zoom_proportional(
+    distance: f32,
+    scroll_delta: f32,
+    zoom_speed: f32,
+    min: f32,
+    max: f32,
+) -> f32 {
+    let step = scroll_delta * zoom_speed * ZOOM_FRACTION * distance;
+    (distance - step).clamp(min, max)
+}
+
+/// Orbit zoom-out limit for a world scale: smaller scales let you pull back
+/// further so the whole (scaled-down) region fits; clamped to keep 1:1 unchanged.
+pub fn scaled_max_distance(base_max_distance: f32, world_scale: f32) -> f32 {
+    let s = if world_scale.is_finite() && world_scale > 0.0 {
+        world_scale
+    } else {
+        1.0
+    };
+    (base_max_distance / s).clamp(base_max_distance, MAX_SCALE_DISTANCE)
+}
+
+/// Perspective far plane that always clears the farthest zoom-out plus the scene.
+pub fn scaled_far_plane(base_far: f32, max_distance: f32, _world_scale: f32) -> f32 {
+    (max_distance * 2.0).max(base_far)
+}
+
 /// Apply a pan in the camera-local plane and return the new focus point.
 ///
 /// Pan speed is scaled by `distance` so movement feels consistent regardless of zoom level.
@@ -121,8 +172,29 @@ pub struct CameraControllerPlugin;
 
 impl Plugin for CameraControllerPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<CameraScaleSettings>();
         app.add_systems(Startup, spawn_orbit_camera);
-        app.add_systems(Update, orbit_camera_system);
+        app.add_systems(Update, (orbit_camera_system, apply_camera_scale));
+    }
+}
+
+/// Applies [`CameraScaleSettings`] to the orbit controller's zoom-out limit and
+/// the perspective far plane whenever the scale changes; see AGENTS.md §camera-scale.
+fn apply_camera_scale(
+    settings: Res<CameraScaleSettings>,
+    mut query: Query<(&mut OrbitCameraController, &mut Projection)>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let scale = settings.world_scale;
+    for (mut controller, mut projection) in query.iter_mut() {
+        let max_distance = scaled_max_distance(BASE_MAX_DISTANCE, scale);
+        controller.max_distance = max_distance;
+        controller.distance = controller.distance.min(max_distance);
+        if let Projection::Perspective(persp) = projection.as_mut() {
+            persp.far = scaled_far_plane(BASE_FAR, max_distance, scale);
+        }
     }
 }
 
@@ -216,13 +288,14 @@ fn orbit_camera_system(
         }
 
         // Zoom: scroll wheel. Normalise pixel vs. line units so the zoom
-        // feels consistent across mice and trackpads.
+        // feels consistent across mice and trackpads. Proportional (log) zoom
+        // keeps notches usable across scales (5 units .. 100 000 units).
         for ev in scroll.read() {
             let delta = match ev.unit {
                 MouseScrollUnit::Line => ev.y,
                 MouseScrollUnit::Pixel => ev.y * 0.05,
             };
-            controller.distance = apply_zoom(
+            controller.distance = apply_zoom_proportional(
                 controller.distance,
                 delta,
                 controller.zoom_speed,
@@ -424,5 +497,58 @@ mod tests {
             far.length() > near.length(),
             "pan at greater distance should produce larger movement"
         );
+    }
+
+    #[test]
+    fn scaled_max_distance_unchanged_at_unit_scale() {
+        assert!((scaled_max_distance(BASE_MAX_DISTANCE, 1.0) - BASE_MAX_DISTANCE).abs() < EPSILON);
+    }
+
+    #[test]
+    fn scaled_max_distance_grows_as_scale_shrinks() {
+        let human = scaled_max_distance(BASE_MAX_DISTANCE, 1.0);
+        let region = scaled_max_distance(BASE_MAX_DISTANCE, 0.001);
+        assert!(region > human, "region scale must allow pulling back further");
+        // Clamped so depth precision stays sane.
+        assert!(region <= MAX_SCALE_DISTANCE + EPSILON);
+    }
+
+    #[test]
+    fn scaled_max_distance_guards_bad_scale() {
+        assert!((scaled_max_distance(BASE_MAX_DISTANCE, 0.0) - BASE_MAX_DISTANCE).abs() < EPSILON);
+        assert!((scaled_max_distance(BASE_MAX_DISTANCE, f32::NAN) - BASE_MAX_DISTANCE).abs() < EPSILON);
+    }
+
+    #[test]
+    fn scaled_far_plane_unchanged_at_unit_scale() {
+        let max_d = scaled_max_distance(BASE_MAX_DISTANCE, 1.0);
+        assert!((scaled_far_plane(BASE_FAR, max_d, 1.0) - BASE_FAR).abs() < EPSILON);
+    }
+
+    #[test]
+    fn scaled_far_plane_clears_zoom_out_at_region_scale() {
+        let max_d = scaled_max_distance(BASE_MAX_DISTANCE, 0.001);
+        let far = scaled_far_plane(BASE_FAR, max_d, 0.001);
+        assert!(far > max_d, "far plane must clear the farthest zoom-out distance");
+        assert!(far > BASE_FAR);
+    }
+
+    #[test]
+    fn apply_zoom_proportional_is_distance_relative() {
+        // Same scroll notch moves proportionally more when far out.
+        let near = 10.0 - apply_zoom_proportional(10.0, 1.0, 1.0, 0.1, 1e6);
+        let far = 10_000.0 - apply_zoom_proportional(10_000.0, 1.0, 1.0, 0.1, 1e6);
+        assert!(far > near, "log zoom step scales with current distance");
+    }
+
+    #[test]
+    fn apply_zoom_proportional_clamps() {
+        assert!((apply_zoom_proportional(100.0, 1e6, 1.0, 0.5, 1000.0) - 0.5).abs() < EPSILON);
+        assert!((apply_zoom_proportional(100.0, -1e6, 1.0, 0.5, 1000.0) - 1000.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn camera_scale_settings_default_is_unit() {
+        assert_eq!(CameraScaleSettings::default().world_scale, 1.0);
     }
 }

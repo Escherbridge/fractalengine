@@ -149,7 +149,9 @@ pub(crate) fn set_petal_map(
     petal_id: String,
     tileset: Option<InstalledTilesetDto>,
 ) {
-    let terrain = tileset.as_ref().map(tileset_to_terrain_json);
+    // Carry over the petal's current world scale when (re)assigning a map.
+    let world_scale = petal_map.world_scale;
+    let terrain = tileset.as_ref().map(|ts| tileset_to_terrain_json(ts, world_scale));
     let tileset_ids = tileset.as_ref().map(|ts| vec![ts.hexon_id.clone()]).unwrap_or_default();
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
@@ -163,6 +165,34 @@ pub(crate) fn set_petal_map(
         Err(_) => {
             bevy::log::warn!(
                 "db_sender channel closed — SetPetalTerrain not dispatched; local map state unchanged"
+            );
+        }
+    }
+}
+
+/// Persist a new world scale on the active petal's map (rebuilds terrain JSON).
+/// Live-apply is free: SetPetalTerrain → PetalTerrainLoaded → apply_terrain_assignments
+/// respawns chunks; the camera adapts via the CameraScaleSettings sync system.
+pub(crate) fn set_petal_map_scale(
+    db_sender: &DbCommandSender,
+    petal_map: &mut PetalMapState,
+    petal_id: String,
+    tileset: InstalledTilesetDto,
+    world_scale: f64,
+) {
+    let terrain = tileset_to_terrain_json(&tileset, world_scale);
+    match db_sender.0.send(DbCommand::SetPetalTerrain {
+        petal_id: petal_id.clone(),
+        terrain: Some(terrain),
+    }) {
+        Ok(()) => {
+            petal_map.petal_id = Some(petal_id);
+            petal_map.tileset_ids = vec![tileset.hexon_id];
+            petal_map.world_scale = world_scale;
+        }
+        Err(_) => {
+            bevy::log::warn!(
+                "db_sender channel closed — SetPetalTerrain (scale) not dispatched; local map state unchanged"
             );
         }
     }

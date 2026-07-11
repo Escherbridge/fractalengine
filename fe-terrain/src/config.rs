@@ -69,6 +69,20 @@ pub struct TerrainConfig {
     /// Tile resolution strategy used at runtime.
     #[serde(default)]
     pub tile_source_mode: TileSourceMode,
+    /// World units per real meter (`0.001` → 1 unit per km); see `src/AGENTS.md` §scale.
+    #[serde(default = "default_world_scale")]
+    pub world_scale: f64,
+}
+
+impl TerrainConfig {
+    /// Sanitized world scale (finite, > 0); falls back to `1.0` on bad JSON.
+    pub fn effective_world_scale(&self) -> f64 {
+        crate::scale::sanitize_world_scale(self.world_scale)
+    }
+}
+
+fn default_world_scale() -> f64 {
+    1.0
 }
 
 fn default_max_zoom() -> u8 {
@@ -97,6 +111,7 @@ impl Default for TerrainConfig {
             layers: vec![],
             tileset_hexon_uris: vec![],
             tile_source_mode: TileSourceMode::default(),
+            world_scale: default_world_scale(),
         }
     }
 }
@@ -106,4 +121,41 @@ impl Default for TerrainConfig {
 pub struct PetalTerrainBinding {
     pub petal_id: String,
     pub config: TerrainConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn world_scale_defaults_when_absent() {
+        // Existing stored petal JSON (pre-feature) has no `world_scale` key.
+        let json = serde_json::json!({
+            "enabled": true,
+            "origin": { "origin_lat": 45.0, "origin_lon": -122.0, "origin_ele": 0.0 },
+            "tile_source_url": "",
+            "elevation_source": "terrain_rgb",
+        });
+        let cfg: TerrainConfig = serde_json::from_value(json).expect("parses without world_scale");
+        assert_eq!(cfg.world_scale, 1.0);
+        assert_eq!(cfg.effective_world_scale(), 1.0);
+    }
+
+    #[test]
+    fn world_scale_roundtrips_and_sanitizes() {
+        let mut cfg = TerrainConfig {
+            world_scale: 0.001,
+            ..TerrainConfig::default()
+        };
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["world_scale"], serde_json::json!(0.001));
+        let parsed: TerrainConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.world_scale, 0.001);
+
+        // Bad values fall back to 1.0 via effective_world_scale.
+        cfg.world_scale = 0.0;
+        assert_eq!(cfg.effective_world_scale(), 1.0);
+        cfg.world_scale = f64::NAN;
+        assert_eq!(cfg.effective_world_scale(), 1.0);
+    }
 }

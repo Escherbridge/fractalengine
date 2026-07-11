@@ -190,6 +190,7 @@ fn config_serde_roundtrip() {
         }],
         tileset_hexon_uris: vec![],
         tile_source_mode: fe_terrain::config::TileSourceMode::Hybrid,
+        world_scale: 0.01,
     };
 
     let json = serde_json::to_string(&config).unwrap();
@@ -202,6 +203,7 @@ fn config_serde_roundtrip() {
     assert_eq!(deserialized.layers.len(), 1);
     assert_eq!(deserialized.layers[0].name, "satellite");
     assert!((deserialized.origin.origin_lat - 47.6).abs() < 1e-6);
+    assert_eq!(deserialized.world_scale, 0.01);
 }
 
 #[test]

@@ -49,6 +49,8 @@ pub enum UiAction {
     HexonOpenStorageDir,
     /// Set (Some) or clear (None) the active petal's map tileset. See AGENTS.md §terrain-map.
     PetalSetMap { petal_id: String, tileset: Option<InstalledTilesetDto> },
+    /// Set the active petal's map world scale (world units per real meter). See AGENTS.md §terrain-map.
+    PetalSetMapScale { petal_id: String, tileset: InstalledTilesetDto, world_scale: f64 },
     // Petal Manifest actions
     PetalManifestSave { petal_id: String, manifest: PetalManifest },
     PetalManifestOpen { petal_id: String, petal_name: String },
@@ -260,6 +262,9 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PetalSetMap { petal_id, tileset } => {
                 hexon::set_petal_map(&db_sender, &mut petal_map, petal_id, tileset);
+            }
+            UiAction::PetalSetMapScale { petal_id, tileset, world_scale } => {
+                hexon::set_petal_map_scale(&db_sender, &mut petal_map, petal_id, tileset, world_scale);
             }
             UiAction::PetalManifestSave { petal_id, manifest } => {
                 hexon::manifest_save(petal_id, manifest);

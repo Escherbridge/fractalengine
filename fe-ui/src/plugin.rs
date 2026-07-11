@@ -266,6 +266,9 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<ViewportRect>();
         app.init_resource::<UiManager>();
         app.init_resource::<PetalMapState>();
+        // Guarantee the renderer scale resource exists so fe-ui can drive it
+        // (idempotent with CameraControllerPlugin's own init).
+        app.init_resource::<fe_renderer::camera::CameraScaleSettings>();
         app.init_resource::<PendingHexonOps>();
         app.init_resource::<crate::asset_ops::PendingAssetOps>();
         app.init_resource::<crate::asset_ops::AssetDownloadStatus>();
@@ -291,6 +294,11 @@ impl Plugin for GardenerConsolePlugin {
                 .in_set(UiSet::ProcessActions),
         );
         app.add_systems(Update, crate::terrain_map::drain_tileset_events.in_set(UiSet::ProcessActions));
+        // Mirror the active petal's world scale into the renderer's camera settings.
+        app.add_systems(
+            Update,
+            crate::terrain_map::sync_camera_scale_from_petal_map.in_set(UiSet::PostSelection),
+        );
 
         app.add_systems(
             Update,
@@ -331,7 +339,7 @@ fn gardener_ui_system(
     mut p2p: P2pDialogParams,
     mut viewport_rect: ResMut<ViewportRect>,
     local_role: Res<LocalUserRole>,
-    petal_map: Res<PetalMapState>,
+    mut petal_map: ResMut<PetalMapState>,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
@@ -350,7 +358,7 @@ fn gardener_ui_system(
         &mut p2p.node_mgr,
         &mut p2p.ui_mgr,
         &local_role,
-        &petal_map,
+        &mut petal_map,
     );
     viewport_rect.0 = rect;
 
