@@ -538,7 +538,21 @@ _Status: spec-only via ultrapilot — no implementation this round_
 _Link: [./tracks/hexon_p2p_bucket_20260710/](./tracks/hexon_p2p_bucket_20260710/)_
 _Depends on: Hexon Registry (Phase 8), Hexon Deltas (spec, content-vs-operations counterpart) | Blocks: none (design-only this round)_
 _Scope: Generalize node assets from GLTF-only to any file type or a directory of files (with a placeholder-rendering contract for content with no native 3D form); download/upload endpoints; distribute the resulting content-addressed, sovereign-authored bucket over iroh P2P — "3D visual IPFS." Confirmed gap: `fe-network/src/iroh_blobs.rs` is a 13-line unfilled Wave-1 stub — the P2P blob transport itself does not exist yet._
-_Status: spec-only via ultrapilot — no implementation this round. Note: the node-asset download endpoint referenced in this spec's original draft landed during the same ultrapilot run (commit `3a97fc1`, `feat(api): node asset download endpoints`) — see spec.md for the updated exists-vs-new table and the follow-up (`DbCommand::GetNodeAsset`/`GetAssetMeta` channel variants) this surfaced_
+_Status: spec-only via ultrapilot — no implementation this round. Note: the node-asset download endpoint referenced in this spec's original draft landed during the same ultrapilot run (commit `3a97fc1`, `feat(api): node asset download endpoints)` — see spec.md for the updated exists-vs-new table and the follow-up (`DbCommand::GetNodeAsset`/`GetAssetMeta` channel variants) this surfaced_
+
+## [~] Track: Terrain Scale Controls — Multi-Scale Space Operation
+
+_Link: [./tracks/terrain_scale_controls_20260711/](./tracks/terrain_scale_controls_20260711/)_
+_Depends on: Terrain & GPX Maps (Phase 7) | Blocks: none_
+_Scope: Per-petal `world_scale` in TerrainConfig (additive JSON field), scale-aware orbit camera (far plane, zoom-out limit, log zoom speed), terrain settings UI with scale presets persisted through SetPetalTerrain. Root problem: z8 tiles are ~110 km wide vs a 1 km camera far plane — region overview and human scale can't coexist._
+_Status: in progress (requested 2026-07-11 after terrain/GLB/link-save verification in-app)_
+
+## [ ] Track: Terrain Splat View — Synthesized 3D Splats from Hexon Data
+
+_Link: [./tracks/terrain_splat_view_20260711/](./tracks/terrain_splat_view_20260711/)_
+_Depends on: Terrain Scale Controls | Blocks: none_
+_Scope: One splat per elevation texel (position from tile geo + elevation, color from satellite, slope-aware anisotropy) rendered via instanced quads; `TerrainViewMode { Mesh, Splats, Hybrid }` toggle persisted per petal; phase 2 pre-bakes quantized splat buffers into hexon archives (additive entry type + `splat_ready` flag) with a gis-tile-etl bake stage. Photogrammetric 3DGS training is explicitly out of scope (single orthographic view)._
+_Status: pending — queued behind terrain_scale_controls_20260711 (same crates)_
 
 ---
 
