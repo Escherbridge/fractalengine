@@ -3,8 +3,10 @@
   "description": "Storage + query API exposed to extensions (fe-plugin/fe-sdk unification, capability gating, WIT query-api)",
   "type": "feature",
   "created_at": "2026-07-10T00:00:00Z",
-  "status": "in_progress",
+  "status": "completed",
   "depends_on": ["plugin_host_20260509", "extension_sdk_ui_20260509", "analytics_extension_api_phase6_1"],
   "blocks": ["iot_extension_slice_20260710"],
-  "notes": "verified 2026-07-10: contract layer (fe-sdk storage/query traits, fe-plugin HostEnv capability-gated routing, WIT query-api interface) already exists from Phase 9A/9B; only production backend wiring (fe-database-backed impl + binary injection) remains. fe-plugin already depends on fe-sdk — the MEMORY.md 'parallel type definitions' known issue appears resolved, re-verify before re-opening."
+  "archived": true,
+  "archived_at": "2026-07-11T00:00:00Z",
+  "notes": "verified 2026-07-10: contract layer (fe-sdk storage/query traits, fe-plugin HostEnv capability-gated routing, WIT query-api interface) already exists from Phase 9A/9B; only production backend wiring (fe-database-backed impl + binary injection) remains. fe-plugin already depends on fe-sdk — the MEMORY.md 'parallel type definitions' known issue appears resolved, re-verify before re-opening. CLOSED 2026-07-11 per commit 0ddb539: storage.read/storage.write/query.select capabilities, fail-closed gating, WIT query-api, fe-plugin unified onto fe-sdk. RESIDUAL (not closed, tracked in spec.md): production wiring of ExtensionStorageApi/ExtensionQueryApi into the running fractalengine binary is still open — do not treat this track as fully done end-to-end."
 }

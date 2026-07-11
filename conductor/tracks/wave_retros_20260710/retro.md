@@ -165,3 +165,80 @@ Tauri-Host-Shell spike has not been started.
    open, and marking undone/substituted work as done) are costly for
    planning — verification against actual code, not against a prior
    session's summary, is the only reliable check.
+
+---
+
+## Ultrapilot Run — Analytics & Extension Platform (2026-07-10/11)
+
+**What shipped:** 5 parallel workers + an integration pass, ~10 commits.
+Node-asset download UI+API end-to-end (`3a97fc1` API endpoints +
+`19a2df2` integration), the extension storage/query API
+(`0ddb539` — capabilities `storage.read`/`storage.write`/`query.select`,
+fail-closed gating, WIT `query-api`, `fe-plugin` unified onto `fe-sdk`), an
+IoT bridge vertical slice (`c811856`, 6 bridge-loop tests green through
+`fe-plugin-test`'s `RhaiTestRunner`), the fe-ui god-file decomposition
+(`7df071c` — five files split into `actions/panels/dialogs/node_manager/
+verse_manager/terrain_map/portal`, `plugin.rs` down to a 480-line shell),
+and this conductor reconciliation pass itself (`9adedea` + this run's
+close-out). Two new spec-only tracks (`hexon_delta_format_20260710`,
+`auth_policy_pattern_20260710`) plus a third added mid-run
+(`hexon_p2p_bucket_20260710`) captured design work without implementation,
+per explicit coordinator instruction to keep them spec-only this round.
+
+**Incidents worth recording:**
+
+1. **The geometry-cast regression family — a bug that came back after being
+   fixed once, in a different code path.** `059f381` (2026-05, per
+   `fe-database/src/AGENTS.md` §geometry-inserts) broke geometry inserts by
+   routing them through `fe_query::InsertBuilder`, which can't emit the
+   required `<geometry<point>>`/`<geometry<polygon>>` casts. `75f2aab` fixed
+   the **CREATE** path — but the **UPDATE**/movement path had the exact same
+   defect, silently broken since the same original `059f381` commit, and was
+   only found and fixed (`8060af4`) during this run's *integration* step —
+   specifically, once `exec_query` gained a `.check()` call (the same fix
+   `75f2aab` applied to the create path), the update path's silent failures
+   started surfacing as real errors instead of a quiet no-op. **Lesson:** a
+   fix that adds `.check()`/read-back verification to one code path can (and
+   here, did) surface a *sibling* bug that error-swallowing was hiding
+   elsewhere in the same file — when you fix a "handler success doesn't mean
+   persisted" bug, sweep for every other handler with the same shape, not
+   just the one that was reported. This is now enforced going forward via
+   `code_styleguides/general.md`'s "Data Access" and "Handler success must
+   mean persisted state" rules, added during the original reconciliation
+   pass — this incident is the second, independent confirmation of exactly
+   the failure mode those rules exist to catch.
+2. **Concurrent-compile rustc OOM crashes.** Running the Antigravity IDE's
+   auto-test-on-save alongside an agent's own `cargo` invocations caused
+   overlapping `rustc` processes to OOM-crash, leaving poisoned `.rmeta`
+   phantom files behind that produced confusing "cannot find crate" errors
+   on the *next* clean build (the phantom `.rmeta` looked valid to cargo's
+   fingerprinting but was truncated/corrupt). **Remedy:** one `cargo`
+   invocation at a time across all tools/agents touching the workspace; use
+   an isolated `CARGO_TARGET_DIR` for any sweep/validation run that might
+   overlap with an IDE's own background compilation, so a crash in one
+   target dir can't poison the other.
+3. **Rhai `call_fn` cannot see script-global `const`s.** A Rhai extension
+   script that declared `const` values at the top level and then called a
+   function via the engine's `call_fn` API found those consts were not
+   visible inside the called function (they're visible when the script runs
+   top-to-bottom normally, but `call_fn` invokes a function in a scope that
+   doesn't inherit script-level consts the way top-level execution does).
+   **Remedy:** move constants into the functions that use them (or pass them
+   as explicit parameters) rather than relying on script-global `const`
+   visibility across a `call_fn` boundary — relevant to any future
+   `fe-plugin`/Rhai extension work, including `iot_extension_slice_20260710`'s
+   successors.
+
+**Residual items intentionally left open** (not closed by this run, tracked
+in the relevant track specs so they aren't lost): production DB wiring for
+the extension storage/query API into the running binary
+(`analytics_extension_api_20260710/spec.md` "Residual" section); a second
+fe-ui split pass for `inspector.rs`/`entity_settings.rs`/`hexon_manager.rs`
+(`feui_decomposition_20260710/spec.md` "Follow-up" section); `SaveUrl`
+payload/DB-ack surfacing (same file, referencing `fe-ui/src/AGENTS.md`
+§portal); `DbCommand::GetNodeAsset`/`GetAssetMeta` channel variants
+(`hexon_p2p_bucket_20260710/spec.md` "Follow-up" section, referencing
+`fe-api/AGENTS.md` §assets); `petal.terrain` FLEXIBLE-blob size/shape bounds
+at the handler layer (`analytics_extension_api_20260710/spec.md` "Residual"
+section); the fe-api envelope-key test mismatch (owned by an external
+in-flight rework, recorded for traceability only).

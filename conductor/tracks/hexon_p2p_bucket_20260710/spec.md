@@ -57,7 +57,7 @@ get to a peer that doesn't have them yet.
 | Sovereign authorship (ed25519 signing) | **Exists** | `fe-format/src/signature.rs::{sign_manifest, verify_manifest, verifying_key_to_did}` — already used for hexon manifests (Phase 6.5) |
 | Signed hexon manifests + registry + local install | **Exists** | `fe-format` (Phase 6.5), `fe-hexon`/`fe-hexon-registry` (Phase 8) |
 | P2P blob transport over iroh | **Stub only, not implemented** | `fe-network/src/iroh_blobs.rs` is 13 lines — `register_asset`/`fetch_asset` are the original Wave-1 scaffold signatures, never filled in. **This is the single biggest gap this spec identifies**: none of the "transported over iroh" vision exists yet at the blob layer, though iroh *is* wired up elsewhere (`fe-sync` gossip/replication, iroh-docs) |
-| `GET /nodes/{id}/asset` endpoint | **In progress concurrently** (per coordinator — not yet in `fe-api/src/rest.rs` as of this spec) | would resolve a node's `asset_id` → `content_hash` → blob, likely delegating to `assets.rs::get_asset` internally |
+| `GET /nodes/{id}/asset`, `GET /assets/by-id/{asset_id}` endpoints | **Landed 2026-07-11**, commit `3a97fc1` | `fe-api` — three GET endpoints total (`/api/v1/assets/{content_hash}`, `/api/v1/assets/by-id/{asset_id}`, `/api/v1/nodes/{node_id}/asset`), Viewer+ RBAC via `resolve_node_scope`, real `content_type`/`name`/`size` from the DB. See `fe-api/AGENTS.md` §assets for the full contract (including the noted "asset has no owner column of its own" caveat) — not duplicated here. **These currently read the DB/blob store directly from the async API-gateway thread**, not through the `DbCommand` channel (see Follow-up below). |
 
 ## Functional Requirements (design sketch — no implementation this round)
 
@@ -219,3 +219,24 @@ collection for content no longer referenced by any live node/delta.
    (NodeID/AttrID/ItemID) already defined for hexons (Phase 6.5) — i.e.
    should a file *within* a directory asset be individually addressable
    without going through the manifest first?
+
+## Follow-up (post-close-out, 2026-07-11)
+
+The `GET /nodes/{id}/asset` family of endpoints landed during the same
+ultrapilot run this spec was written in (commit `3a97fc1`) — the exists-table
+above has been updated accordingly. That landing surfaced one concrete gap
+this spec's FR-1/FR-4 (generic asset model, download/upload endpoints)
+should account for:
+
+- **`DbCommand::GetNodeAsset`/`GetAssetMeta` channel variants are needed so
+  asset endpoints work channel-only.** The endpoints as landed read the DB
+  and blob store directly from `fe-api`'s async gateway thread rather than
+  going through the `DbCommand`/`DbResult` channel pattern the rest of the
+  three-thread topology uses. This works today (`fe-api` already has direct
+  read access per the Phase 2 "Direct API DB Reads" precedent), but as this
+  spec's FR-1 (generic asset model) and FR-4 (upload endpoint, which
+  *mutates*) land, the mutating half in particular should go through typed
+  `DbCommand` variants rather than a second direct-write path growing next
+  to the existing channel-based mutation path. See `fe-api/AGENTS.md`
+  §assets for the current endpoint contract this needs to compose with (not
+  duplicated here — that file is outside `conductor/**`).
