@@ -148,6 +148,9 @@ fn render_edit_view(
         }
     }
 
+    // FR-10: per-track color / line style / visibility controls.
+    crate::panels::track_style_card::track_style_section(ui, path_state, ui_mgr, track_id);
+
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(4.0);
@@ -158,6 +161,14 @@ fn render_edit_view(
         ui.label(egui::RichText::new("No points yet — append one from the 3D cursor.").small().color(theme::TEXT_MUTED).italics());
         return;
     }
+
+    ui.label(
+        egui::RichText::new("Click terrain to add \u{2022} drag markers to move \u{2022} Shift/Alt+click a marker to annotate")
+            .small()
+            .color(theme::TEXT_MUTED)
+            .italics(),
+    );
+    ui.add_space(4.0);
 
     let mut to_remove: Option<usize> = None;
     let mut to_annotate: Option<usize> = None;
@@ -192,19 +203,72 @@ fn render_edit_view(
 
     if let Some(index) = to_remove {
         ui_mgr.push_action(UiAction::PathRemovePoint { track_node_id: track_id.to_string(), index });
+        if path_state.annotating_index == Some(index) {
+            path_state.close_annotate_form();
+        }
     }
     if let Some(index) = to_annotate {
-        // v1: annotate with a placeholder title derived from the index —
-        // out of scope to add a per-point annotation form in this pass
-        // (no dedicated buffer for it); reuses the same reserved
-        // `gis.annotation.*` contract as the Annotation card once the
-        // bridge creates the waypoint node. See AGENTS.md §path-editor.
-        ui_mgr.push_action(UiAction::PathAnnotatePoint {
-            track_node_id: track_id.to_string(),
-            index,
-            title: format!("Waypoint {index}"),
-            body: String::new(),
-            color: String::new(),
-        });
+        path_state.open_annotate_form(index);
     }
+
+    // FR-9: inline annotation form for the point set by a list "Annotate"
+    // click or a Shift/Alt+click on the point's viewport marker. Replaces the
+    // v1 placeholder-title-only flow — reuses the `gis.annotation.*` contract.
+    if let Some(index) = path_state.annotating_index {
+        render_annotate_form(ui, path_state, ui_mgr, track_id, index);
+    }
+}
+
+fn render_annotate_form(
+    ui: &mut egui::Ui,
+    path_state: &mut PathEditorState,
+    ui_mgr: &mut UiManager,
+    track_id: &str,
+    index: usize,
+) {
+    ui.add_space(6.0);
+    egui::Frame::NONE
+        .fill(theme::BG_PEER_ROW_EVEN)
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(3.0)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("Annotate point {index}"))
+                    .strong()
+                    .color(theme::TEXT_SECTION),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Title");
+                ui.add(egui::TextEdit::singleline(&mut path_state.annotate_title_buf).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Body ");
+                ui.add(egui::TextEdit::singleline(&mut path_state.annotate_body_buf).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Color");
+                ui.add(
+                    egui::TextEdit::singleline(&mut path_state.annotate_color_buf)
+                        .hint_text("#00ff00")
+                        .desired_width(120.0),
+                );
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new("Save").fill(theme::BG_SAVE)).clicked() {
+                    ui_mgr.push_action(UiAction::PathAnnotatePoint {
+                        track_node_id: track_id.to_string(),
+                        index,
+                        title: path_state.annotate_title_buf.clone(),
+                        body: path_state.annotate_body_buf.clone(),
+                        color: path_state.annotate_color_buf.clone(),
+                    });
+                    path_state.close_annotate_form();
+                }
+                if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).clicked() {
+                    path_state.close_annotate_form();
+                }
+            });
+        });
 }

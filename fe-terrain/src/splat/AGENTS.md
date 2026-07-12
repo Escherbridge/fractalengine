@@ -65,6 +65,53 @@ camera position, at the whole-chunk level for Hybrid mode); adding it would
 mean a new per-chunk or per-frame resource dependency into the bake path,
 which is out of scope for this pass. Follow-up if revisited.
 
+## §interpolation (`interpolate.rs`, track `splat_marching_squares_20260712`)
+
+Density **fallback** for when the splat LOD zoom pipeline
+(`splat_lod_zoom_20260712`) hits the tileset `max_zoom` ceiling: no higher-res
+tile exists to fetch, so instead of holding flat density we synthesize
+intermediate splats by upscaling the already-baked `SplatBuffer` (no new
+network/tile fetches — operates purely on resident data). Pure, bevy-free,
+always compiled, unit-tested — same pure/render split as `synth.rs`.
+
+- **Ceiling detection (FR-1):** `splat_needs_interpolation(requested, actual)` =
+  `requested > actual`. `requested` is the sibling track's `splat_desired_zoom`;
+  `actual` is the zoom the sub-tile was actually baked at. Never fires when real
+  tile data already satisfies the request → zero behavior change off the ceiling.
+- **Marching-squares synthesis (FR-2):** operates on the exact same `SplatBuffer`
+  shape `synth.rs` produces (parallel `positions/colors/scales/normals`), so the
+  output composes straight into `bake_splat_mesh` with no translation. The buffer
+  carries no grid topology, so the implicit XZ grid is reconstructed per pass from
+  nearest-neighbor distances; each cell **edge** (a close neighbor pair within
+  `EDGE_SPACING_TOLERANCE` × current spacing) gets one midpoint splat whose
+  position/normal/color/scale are the interpolated average of its two endpoints.
+- **Logarithmic densify until overlap-or-seam (FR-5, refined):** the fill is
+  **not** a fixed pass count. Each pass roughly halves the point spacing (recursive
+  cell subdivision); it terminates on a *geometric* condition, whichever comes
+  first: **(a) overlap** — once median neighbor spacing drops to `2 * SPLAT_COVERAGE`
+  (reusing synth's round-3 `SPLAT_COVERAGE = 0.8` overlap tuning as the "dense
+  enough" signal, not a new threshold) the field already self-overlaps and we
+  halt; **(b) seam** — a synthesized midpoint that would land outside this tile's
+  own footprint (`TileFootprint`, either the buffer's XZ extent or an explicit
+  world rectangle) is dropped, so neighboring tiles never double-fill the shared
+  edge (no density seam / z-fight there). `MAX_INTERPOLATION_PASSES = 5` is a
+  pure degenerate-input backstop, never the normal terminator.
+- **Anti-dot-grid (FR-3):** synthesized points reuse synth's deterministic
+  hash-based jitter — a self-contained mirror of `hash01`/`hash_signed` (those are
+  private in `synth.rs`; duplicated with the identical mix rather than editing that
+  file, since a sibling worker owns the module this session), `±JITTER_FRACTION`
+  XZ position jitter + `±RADIUS_VARIATION_FRACTION` radius variation, keyed on the
+  edge and salted per pass so successive generations don't stack identical offsets.
+  Each generation's radius scales toward the native so doubled density keeps
+  proportional overlap instead of fat blobs. Result: upscaled and native points are
+  statistically indistinguishable in density pattern.
+- **Integration (FR-4):** `augment_splat_buffer_if_needed(baked, requested_zoom,
+  actual_zoom) -> Option<SplatBuffer>` (or `_within` with an explicit seam) is the
+  single additive entry point for `reconcile_splat_chunks` to call per sub-tile
+  before `bake_splat_mesh` — `None` means "not past the ceiling, use the baked
+  buffer unchanged". Kept as one call, not a restructure, to minimize the merge
+  seam with the sibling track that owns `render.rs`.
+
 ## §rendering (FR-2, `render.rs`)
 
 Pragmatic v1 — **no custom render pipeline**. Per tile, every splat is baked into
@@ -80,15 +127,33 @@ sample) sharing a single procedurally-built `StandardMaterial`:
   `(major, minor)`; `t` is derived from the normal so orientation needs no extra
   vertex data.
 
-**Chunk lifecycle shadows the mesh.** `reconcile_splat_chunks` watches the same
-`ActivePetalTerrain` / `ActiveTileSource` resources and the live `TerrainChunk`
-set: for each mesh chunk lacking a splat shadow it re-fetches the tile (from the
-composite cache) and bakes a `SplatChunk` at the mesh chunk's **own** anchor
-`Transform` (guaranteeing alignment without recomputing the projection); splats
-whose mesh chunk despawned (LOD / revision reset) are dropped. Spawns are budgeted
-per frame. We deliberately **replicate the fetch** rather than edit
-`terrain_plugin` (owned elsewhere) — the LOD ring/despawn/hysteresis math stays
-solely in `terrain_plugin`, and splats inherit it for free by shadowing.
+**Chunk lifecycle shadows the mesh, with an independent splat zoom.**
+`reconcile_splat_chunks` watches the same `ActivePetalTerrain` / `ActiveTileSource`
+resources and the live `TerrainChunk` set. Each `SplatChunk` spawns at the mesh
+chunk's **own** anchor `Transform` (guaranteeing alignment without recomputing the
+projection) but is a *container*: its child entities are the actual baked splat
+sub-tile meshes. Splat resolution is decoupled from the mesh LOD via
+`lod_ring::splat_desired_zoom(cam_height_m, mesh_zoom, min_zoom, max_zoom)` (the
+splat-track "zoom in for higher-res imagery" pipeline, `splat_lod_zoom_20260712`):
+when the camera is close it requests up to `SPLAT_CLOSE_ZOOM_BONUS` extra zoom
+steps beyond the mesh chunk's zoom, clamped to the tileset's `max_zoom` (FR-5
+graceful ceiling — no error past the top source zoom, splats just stop densifying).
+
+At a higher splat zoom one mesh chunk's footprint needs several sub-tiles
+(`lod_ring::covering_tiles`, ~4× per zoom step); each sub-tile is fetched at that
+zoom via the composite (already accepts arbitrary `TileCoord` — no cache changes)
+and baked in tile-local space, then re-anchored inside the parent via
+`sub_tile_local_offset` (projection SW corner minus the parent world anchor).
+
+Despawn/respawn coherence (FR-4): a `SplatChunk` records the `splat_zoom` it was
+baked at; when the camera-driven `splat_desired_zoom` changes, the whole chunk
+(container + children) is despawned and re-baked at the new zoom. Per-frame budget
+counts baked *sub-tile meshes* (`MAX_SPLAT_SPAWNS_PER_FRAME`), so a rapid zoom-in
+that quadruples tile count still spreads the bake cost across frames. A chunk is
+only committed once ≥1 sub-tile baked (no empty container entities). Splats whose
+mesh chunk despawned (LOD / revision reset) are still dropped. We deliberately
+**replicate the fetch** rather than edit `terrain_plugin` (owned elsewhere) — the
+mesh LOD ring/despawn/hysteresis math stays solely in `terrain_plugin`.
 
 Splats are only baked in `Splats`/`Hybrid` mode; `Mesh` mode drops them all, so
 the default view carries zero splat cost.

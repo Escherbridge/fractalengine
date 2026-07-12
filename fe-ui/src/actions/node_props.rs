@@ -21,6 +21,16 @@ pub const ANNOTATION_COLOR_KEY: &str = "gis.annotation.color";
 #[allow(dead_code)]
 pub const TRACK_NAME_KEY: &str = "gis.track.name";
 
+/// FR-10 per-track line styling flat properties, same flat-key convention as
+/// `gis.track.name`/`gis.annotation.*`. Persisted via `SetNodeProperty`; read
+/// by the bridge to attach `fe_terrain::terrain_plugin::GpxTrackStyle`.
+/// `gis.track.color` is a `#rrggbb` hex string, `gis.track.line_style` is
+/// `"solid"|"dashed"` (dashed no-ops to solid in phase 2), `gis.track.visible`
+/// is a bool.
+pub const TRACK_COLOR_KEY: &str = "gis.track.color";
+pub const TRACK_LINE_STYLE_KEY: &str = "gis.track.line_style";
+pub const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
+
 /// Extract the Annotation card's (title, body, color) text buffers from a
 /// node's loaded `properties` object. Missing/non-string values become "".
 pub(crate) fn annotation_fields_from_properties(props: &serde_json::Value) -> (String, String, String) {

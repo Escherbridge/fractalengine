@@ -491,6 +491,7 @@ pub fn advance_gpx_imports(
 enum PendingPathRead {
     AppendPoint { position: [f32; 3], time_seconds: Option<f64> },
     RemovePoint { index: usize },
+    MovePoint { index: usize, position: [f32; 3] },
     AnnotatePoint { index: usize, title: String, body: String, color: String },
     ExportGpx { save_path: std::path::PathBuf },
 }
@@ -577,6 +578,10 @@ pub fn drain_path_ops(
             PathOp::RemovePoint { track_node_id, index } => {
                 db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
                 pending.reads.entry(track_node_id).or_default().push_back(PendingPathRead::RemovePoint { index });
+            }
+            PathOp::MovePoint { track_node_id, index, position } => {
+                db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
+                pending.reads.entry(track_node_id).or_default().push_back(PendingPathRead::MovePoint { index, position });
             }
             PathOp::AnnotatePoint { track_node_id, index, title, body, color } => {
                 db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
@@ -748,6 +753,24 @@ pub fn advance_path_edits(
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: Some("Point removed".to_string()),
+                                error: None,
+                            };
+                        } else {
+                            *status = PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: None,
+                                error: Some(format!("point index {index} out of range")),
+                            };
+                        }
+                    }
+                    PendingPathRead::MovePoint { index, position } => {
+                        if let Some(point) = points.get_mut(index) {
+                            // Preserve the existing timestamp; only reposition (avoids index churn from remove+append).
+                            point.position = [position[0] as f64, position[1] as f64, position[2] as f64];
+                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                            *status = PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: Some("Point moved".to_string()),
                                 error: None,
                             };
                         } else {
