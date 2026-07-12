@@ -315,6 +315,12 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<Role>::apply_schema(db).await?;
     Repo::<OpLog>::apply_schema(db).await?;
     Repo::<Node>::apply_schema(db).await?;
+    // Backfill nodes created before `edit_seq` existed: DEFAULT only fires
+    // when a field is absent from a write, not when it's stored as NONE, so
+    // any pre-existing node with edit_seq = NONE fails schema coercion on
+    // every future UPDATE (including SetNodeProperty) until backfilled once.
+    db.query("UPDATE node SET edit_seq = 0 WHERE edit_seq = NONE")
+        .await?.check().map_err(|e| anyhow::anyhow!("edit_seq backfill: {e}"))?;
     Repo::<Asset>::apply_schema(db).await?;
     Repo::<FieldDef>::apply_schema(db).await?;
     Repo::<NodeLog>::apply_schema(db).await?;
