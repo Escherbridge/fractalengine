@@ -10,6 +10,7 @@ pub mod petal_binding;
 pub mod projection;
 pub mod scale;
 pub mod simplify;
+pub mod splat;
 pub mod tiles;
 
 #[cfg(feature = "render")]
