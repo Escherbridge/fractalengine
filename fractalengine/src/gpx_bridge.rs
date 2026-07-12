@@ -14,7 +14,7 @@ use fe_terrain::iot::animation::{TimestampedRoutePoint, TrackRoute};
 use fe_terrain::iot::TrackRouteMap;
 use fe_terrain::petal_binding::ActivePetalTerrain;
 use fe_terrain::projection::Projection;
-use fe_terrain::terrain_plugin::GpxTrackLine;
+use fe_terrain::terrain_plugin::{GpxTrackLine, GpxTrackStyle};
 use fe_terrain::ExportNode;
 use fe_ui::gpx_ops::{GpxImportStatus, GpxOp, PendingGpxOps};
 use fe_ui::path_ops::{PathEditStatus, PathOp, PendingPathOps};
@@ -36,6 +36,52 @@ const TRACK_NAME_KEY: &str = "gis.track.name";
 /// JSON array of `[x, y, z, time_seconds]` in petal-local meters. See
 /// `src/AGENTS.md` §path-editor.
 const GPX_POINTS_KEY: &str = "gpx_points";
+/// FR-10 per-track line style keys — MUST match `fe-ui::actions::node_props`'s
+/// `TRACK_COLOR_KEY`/`TRACK_LINE_STYLE_KEY`/`TRACK_VISIBLE_KEY`, since the style
+/// card writes these and this bridge reads them back into `GpxTrackStyle`.
+const TRACK_COLOR_KEY: &str = "gis.track.color";
+const TRACK_LINE_STYLE_KEY: &str = "gis.track.line_style";
+const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
+
+/// Parse a `#rgb`/`#rrggbb` sRGB hex string into linear RGBA (alpha 1.0).
+/// Mirrors `fe-ui::panels::annotation_card::parse_hex_color`; converts sRGB→
+/// linear via Bevy so the value matches `GpxTrackStyle.color`'s linear space.
+/// `None` on malformed input (caller falls back to the style default).
+fn hex_to_linear_rgba(hex: &str) -> Option<[f32; 4]> {
+    let s = hex.trim().strip_prefix('#')?;
+    let (r, g, b) = match s.len() {
+        3 => {
+            let f = |i: usize| u8::from_str_radix(&s[i..i + 1].repeat(2), 16).ok();
+            (f(0)?, f(1)?, f(2)?)
+        }
+        6 => {
+            let f = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok();
+            (f(0)?, f(2)?, f(4)?)
+        }
+        _ => return None,
+    };
+    let linear = Color::srgb_u8(r, g, b).to_linear();
+    Some([linear.red, linear.green, linear.blue, linear.alpha])
+}
+
+/// Build a `GpxTrackStyle` from a node's flat `gis.track.*` properties, falling
+/// back to the render default for any absent/malformed field. Returns `None`
+/// only when NONE of the three style keys is present, so a track that never had
+/// style set stays at the renderer's default cyan (no component attached).
+fn read_track_style(properties: &serde_json::Value) -> Option<GpxTrackStyle> {
+    let color = properties.get(TRACK_COLOR_KEY).and_then(|v| v.as_str());
+    let line_style = properties.get(TRACK_LINE_STYLE_KEY).and_then(|v| v.as_str());
+    let visible = properties.get(TRACK_VISIBLE_KEY).and_then(|v| v.as_bool());
+    if color.is_none() && line_style.is_none() && visible.is_none() {
+        return None;
+    }
+    let default = GpxTrackStyle::default();
+    Some(GpxTrackStyle {
+        color: color.and_then(hex_to_linear_rgba).unwrap_or(default.color),
+        line_style: line_style.map(str::to_string).unwrap_or(default.line_style),
+        visible: visible.unwrap_or(default.visible),
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Pure mapping: GpxData -> node drafts (no Bevy/DB — unit tested directly)
@@ -208,6 +254,7 @@ fn spawn_track_route(
     track_node_id: &str,
     points: Vec<TimestampedRoutePoint>,
     existing_entity: Option<Entity>,
+    style: Option<GpxTrackStyle>,
 ) {
     if points.len() < 2 {
         route_map.routes.remove(track_node_id);
@@ -220,10 +267,15 @@ fn spawn_track_route(
     route_map
         .routes
         .insert(track_node_id.to_string(), TrackRoute { points, total_duration_secs: total });
+    // Despawn+respawn so the fresh entity re-enters `render_gpx_tracks`'
+    // `Without<Mesh3d>` query and rebuilds the ribbon with the current style.
     if let Some(entity) = existing_entity {
         commands.entity(entity).despawn();
     }
-    commands.spawn(GpxTrackLine { track_node_id: track_node_id.to_string() });
+    let mut e = commands.spawn(GpxTrackLine { track_node_id: track_node_id.to_string() });
+    if let Some(style) = style {
+        e.insert(style);
+    }
 }
 
 /// Build one draft per `<wpt>` in the file. Out-of-range coordinates are
@@ -437,7 +489,7 @@ pub fn advance_gpx_imports(
                             value: route_points_to_json(&track.route_points),
                         })
                         .ok();
-                    spawn_track_route(&mut route_map, &mut commands, &id, track.route_points, None);
+                    spawn_track_route(&mut route_map, &mut commands, &id, track.route_points, None, None);
                 }
                 continue;
             }
@@ -732,6 +784,9 @@ pub fn advance_path_edits(
                     .get(GPX_POINTS_KEY)
                     .map(json_to_route_points)
                     .unwrap_or_default();
+                // Preserve any per-track style across point edits (the respawn
+                // in `persist_and_render_points` would otherwise drop it).
+                let style = read_track_style(properties);
 
                 match action {
                     PendingPathRead::AppendPoint { position, time_seconds } => {
@@ -739,7 +794,7 @@ pub fn advance_path_edits(
                             position: [position[0] as f64, position[1] as f64, position[2] as f64],
                             time_seconds: time_seconds.unwrap_or(0.0),
                         });
-                        persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                        persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points, style.clone());
                         *status = PathEditStatus {
                             track_node_id: Some(node_id.clone()),
                             message: Some("Point added".to_string()),
@@ -749,7 +804,7 @@ pub fn advance_path_edits(
                     PendingPathRead::RemovePoint { index } => {
                         if index < points.len() {
                             points.remove(index);
-                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points, style.clone());
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: Some("Point removed".to_string()),
@@ -767,7 +822,7 @@ pub fn advance_path_edits(
                         if let Some(point) = points.get_mut(index) {
                             // Preserve the existing timestamp; only reposition (avoids index churn from remove+append).
                             point.position = [position[0] as f64, position[1] as f64, position[2] as f64];
-                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points, style.clone());
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: Some("Point moved".to_string()),
@@ -866,6 +921,7 @@ fn persist_and_render_points(
     commands: &mut Commands,
     track_node_id: &str,
     points: Vec<TimestampedRoutePoint>,
+    style: Option<GpxTrackStyle>,
 ) {
     db_tx
         .0
@@ -876,7 +932,7 @@ fn persist_and_render_points(
         })
         .ok();
     let existing = track_lines.iter().find(|(_, t)| t.track_node_id.as_str() == track_node_id).map(|(e, _)| e);
-    spawn_track_route(route_map, commands, track_node_id, points, existing);
+    spawn_track_route(route_map, commands, track_node_id, points, existing, style);
 }
 
 /// Wrap route points as the `segment` > `trackpoint` child hierarchy
@@ -935,6 +991,7 @@ pub fn advance_path_materialization(
     mut db_results: MessageReader<DbResult>,
     mut route_map: ResMut<TrackRouteMap>,
     track_lines: Query<(Entity, &GpxTrackLine)>,
+    mut style_refresh: ResMut<PendingStyleRefresh>,
     mut commands: Commands,
 ) {
     for result in db_results.read() {
@@ -949,11 +1006,41 @@ pub fn advance_path_materialization(
             continue;
         }
         let existing = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
-        // Only respawn if this track isn't already rendered (materialization
-        // fires once per petal-load batch, not on every unrelated property
-        // read) — avoids despawn/respawn churn for tracks already live.
-        if existing.is_none() {
-            spawn_track_route(&mut route_map, &mut commands, node_id, points, None);
+        // Respawn when the track isn't rendered yet (petal-load materialization)
+        // OR when a style change requested a refresh (FR-10) — the despawn+
+        // respawn in `spawn_track_route` forces `render_gpx_tracks` to rebuild
+        // the ribbon with the newly-read `GpxTrackStyle`. Absent both, skip to
+        // avoid churn from the broad, uncorrelated petal-load property batch.
+        let wants_style_refresh = style_refresh.0.remove(node_id);
+        if existing.is_none() || wants_style_refresh {
+            let style = read_track_style(properties);
+            spawn_track_route(&mut route_map, &mut commands, node_id, points, existing, style);
+        }
+    }
+}
+
+/// FR-10: node_ids whose `gis.track.*` style changed since the last frame and
+/// need their `GpxTrackLine` respawned once their `GetNodeProperties` (issued
+/// by `refresh_track_style_on_change`) comes back. Set-semantics: coalesces
+/// rapid successive style edits on the same track into a single refresh.
+#[derive(Resource, Default)]
+pub struct PendingStyleRefresh(std::collections::HashSet<String>);
+
+/// FR-10 read-back bridge: the style card writes `SetNodeProperty` for
+/// `gis.track.{color,line_style,visible}`, whose `NodePropertySet` result
+/// carries only the key. On seeing one, request the node's full properties and
+/// mark it for a style refresh so `advance_path_materialization` re-attaches
+/// `GpxTrackStyle` and forces a re-render.
+pub fn refresh_track_style_on_change(
+    mut db_results: MessageReader<DbResult>,
+    db_tx: Res<DbCommandSender>,
+    mut style_refresh: ResMut<PendingStyleRefresh>,
+) {
+    for result in db_results.read() {
+        let DbResult::NodePropertySet { node_id, key } = result else { continue };
+        if key == TRACK_COLOR_KEY || key == TRACK_LINE_STYLE_KEY || key == TRACK_VISIBLE_KEY {
+            db_tx.0.send(DbCommand::GetNodeProperties { node_id: node_id.clone() }).ok();
+            style_refresh.0.insert(node_id.clone());
         }
     }
 }
@@ -1138,6 +1225,53 @@ mod tests {
         let active = ActivePetalTerrain::default();
         let err = prepare_import("petal-1", Path::new("does-not-exist.gpx"), &active).unwrap_err();
         assert!(err.contains("could not read GPX file"));
+    }
+
+    #[test]
+    fn hex_to_linear_rgba_converts_srgb_to_linear() {
+        // Pure black and white are fixpoints across the sRGB<->linear transfer.
+        assert_eq!(hex_to_linear_rgba("#000000"), Some([0.0, 0.0, 0.0, 1.0]));
+        let white = hex_to_linear_rgba("#ffffff").unwrap();
+        assert!((white[0] - 1.0).abs() < 1e-5 && (white[3] - 1.0).abs() < 1e-5);
+        // Mid-grey must be gamma-decoded, NOT the raw byte fraction (~0.502).
+        let grey = hex_to_linear_rgba("#808080").unwrap();
+        assert!(grey[0] < 0.3, "sRGB 0x80 should decode to ~0.216 linear, got {}", grey[0]);
+        // Shorthand hex expands per-nibble.
+        assert_eq!(hex_to_linear_rgba("#f00"), hex_to_linear_rgba("#ff0000"));
+    }
+
+    #[test]
+    fn hex_to_linear_rgba_rejects_malformed() {
+        assert_eq!(hex_to_linear_rgba("ff0000"), None);
+        assert_eq!(hex_to_linear_rgba("#ff00"), None);
+        assert_eq!(hex_to_linear_rgba("#zzzzzz"), None);
+    }
+
+    #[test]
+    fn read_track_style_none_when_no_style_keys() {
+        let props = serde_json::json!({ "gpx_type": "track", "gpx_points": [] });
+        assert!(read_track_style(&props).is_none());
+    }
+
+    #[test]
+    fn read_track_style_reads_all_fields_and_defaults_partial() {
+        let props = serde_json::json!({
+            "gis.track.color": "#ff0000",
+            "gis.track.line_style": "dashed",
+            "gis.track.visible": false,
+        });
+        let style = read_track_style(&props).expect("style present");
+        assert!(style.color[0] > 0.9 && style.color[1] < 0.01, "red: {:?}", style.color);
+        assert_eq!(style.line_style, "dashed");
+        assert!(!style.visible);
+
+        // Only one key set: the rest fall back to the render default.
+        let partial = serde_json::json!({ "gis.track.visible": false });
+        let style = read_track_style(&partial).expect("style present");
+        let default = GpxTrackStyle::default();
+        assert_eq!(style.color, default.color);
+        assert_eq!(style.line_style, default.line_style);
+        assert!(!style.visible);
     }
 
     #[test]

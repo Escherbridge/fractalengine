@@ -34,6 +34,32 @@ described below; it does not require the sibling track's code to exist to
 be developed (it operates on already-baked highest-zoom tile data,
 independent of how that data was fetched).
 
+## Refinement (user, 2026-07-12, with screenshot) — coverage/hole-filling
+
+Observing the close-up splats, the real defect is **holes**: dark background
+shows through the gaps between blurry splat blobs (plus visible tile-seam
+grid lines). The goal is not "smaller blobs via higher zoom" (smaller blobs
+still leave gaps) but **fill every hole until no untouched background
+remains**, driven by scale + proximity:
+
+- **Place a new splat in each hole**, sized by proximity to nearest existing
+  splats — large enough to touch/overlap its neighbors and close the gap.
+- **Logarithmic shrink:** as the local field densifies (neighbors closer),
+  newly-added splats get progressively smaller — big holes filled with big
+  splats, small remaining gaps with small splats. Scale is driven by
+  **nearest-neighbor distance**, not a fixed average of endpoint scales.
+- **Coverage-driven termination:** keep filling until every spot is touched
+  (a new splat's coverage radius overlaps its neighbors / no gap remains) or
+  the splat needed would fall below the degenerate floor. Not a fixed pass
+  count.
+- **Decouple from the max_zoom ceiling gate:** holes are visible at *normal*
+  zoom too, so hole-filling runs whenever gaps exist — not only past the
+  tileset's max_zoom. The zoom pipeline (sibling track) is complementary
+  (brings in real higher-res data) but does not by itself close holes.
+- Keep the seam guard and the anti-degenerate-cluster floor from below.
+
+FR-2/FR-3/FR-5 below are re-aimed toward this coverage goal.
+
 ## Functional Requirements
 
 - **FR-1 Ceiling detection:** a pure function

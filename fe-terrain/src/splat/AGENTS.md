@@ -85,17 +85,30 @@ always compiled, unit-tested — same pure/render split as `synth.rs`.
   nearest-neighbor distances; each cell **edge** (a close neighbor pair within
   `EDGE_SPACING_TOLERANCE` × current spacing) gets one midpoint splat whose
   position/normal/color/scale are the interpolated average of its two endpoints.
-- **Logarithmic densify until overlap-or-seam (FR-5, refined):** the fill is
-  **not** a fixed pass count. Each pass roughly halves the point spacing (recursive
-  cell subdivision); it terminates on a *geometric* condition, whichever comes
-  first: **(a) overlap** — once median neighbor spacing drops to `2 * SPLAT_COVERAGE`
-  (reusing synth's round-3 `SPLAT_COVERAGE = 0.8` overlap tuning as the "dense
-  enough" signal, not a new threshold) the field already self-overlaps and we
-  halt; **(b) seam** — a synthesized midpoint that would land outside this tile's
-  own footprint (`TileFootprint`, either the buffer's XZ extent or an explicit
-  world rectangle) is dropped, so neighboring tiles never double-fill the shared
-  edge (no density seam / z-fight there). `MAX_INTERPOLATION_PASSES = 5` is a
-  pure degenerate-input backstop, never the normal terminator.
+- **Coverage-driven hole fill (re-aimed 2026-07-12):** the primary goal is to
+  leave **no untouched background** between splats. The visible defect was dark
+  holes where neighboring splat discs fail to touch (jitter + irregular spacing
+  open gaps even *below* the max_zoom ceiling), so the fill is now driven by
+  **coverage, not zoom**: `augment_splat_buffer_coverage(baked)` runs whenever
+  holes exist, ungated by the zoom ceiling. `augment_splat_buffer_if_needed`
+  (ceiling-gated) remains for the complementary real-higher-res path.
+  - For each near neighbor pair, the **uncovered gap** is `dist − (minor_a +
+    minor_b)`. Pairs whose discs already touch (`gap ≤ 0`) are skipped — nothing
+    to fill. Pairs with a real gap get one midpoint splat.
+  - **Proximity-driven scale:** the new splat's minor radius is
+    `gap × GAP_FILL_RADIUS_FRACTION (0.6)` — sized to bridge *that specific gap*
+    and overlap both endpoints. Big holes → big fill splats; as passes densify the
+    field, residual gaps (and thus fill radii) shrink logarithmically on their own.
+    Discs are round (major ≈ minor) — a hole-filler has no slope to elongate along.
+  - **Coverage-driven termination (whichever first):** **(a)** a pass adds nothing
+    (every pair now touches → no holes); **(b)** the bridging radius drops below
+    `base_spacing × MIN_FILL_RADIUS_FRACTION (0.08)` (residual gap is sub-splat,
+    already effectively touched); **(c) seam** — a midpoint outside this tile's
+    `TileFootprint` is dropped so neighbors never double-fill the shared edge.
+    `MAX_INTERPOLATION_PASSES = 8` is a pure degenerate-input backstop.
+  - **Anti-cluster floor:** a midpoint within `base_spacing ×
+    MIN_MIDPOINT_SEP_FRACTION (0.4)` of any existing/just-emitted splat is dropped
+    (no coincident points → no moiré / z-fight).
 - **Anti-dot-grid (FR-3):** synthesized points reuse synth's deterministic
   hash-based jitter — a self-contained mirror of `hash01`/`hash_signed` (those are
   private in `synth.rs`; duplicated with the identical mix rather than editing that
@@ -105,12 +118,12 @@ always compiled, unit-tested — same pure/render split as `synth.rs`.
   Each generation's radius scales toward the native so doubled density keeps
   proportional overlap instead of fat blobs. Result: upscaled and native points are
   statistically indistinguishable in density pattern.
-- **Integration (FR-4):** `augment_splat_buffer_if_needed(baked, requested_zoom,
-  actual_zoom) -> Option<SplatBuffer>` (or `_within` with an explicit seam) is the
-  single additive entry point for `reconcile_splat_chunks` to call per sub-tile
-  before `bake_splat_mesh` — `None` means "not past the ceiling, use the baked
-  buffer unchanged". Kept as one call, not a restructure, to minimize the merge
-  seam with the sibling track that owns `render.rs`.
+- **Integration (FR-4):** `build_tile_splat_mesh` calls
+  `augment_splat_buffer_coverage(baked) -> Option<SplatBuffer>` per sub-tile
+  before `bake_splat_mesh`; `None` means "no holes, use the baked buffer
+  unchanged". The ceiling-gated `augment_splat_buffer_if_needed(baked,
+  requested_zoom, actual_zoom)` / `_within` variants remain in the API for the
+  complementary real-higher-res path but are not the primary hole-fill driver.
 
 ## §rendering (FR-2, `render.rs`)
 

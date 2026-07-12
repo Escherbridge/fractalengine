@@ -6,6 +6,7 @@
 
 use bevy_egui::egui;
 
+use crate::actions::node_props::TRACK_VISIBLE_KEY;
 use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
 use crate::path_ops::PathEditStatus;
@@ -70,6 +71,9 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
 
     let mut selected: Option<String> = None;
     let mut to_delete: Option<String> = None;
+    // (node_id, new_visible) pending visibility writes — reuses the same
+    // `gis.track.visible` SetNodeProperty path as `track_style_card`.
+    let mut to_toggle_visible: Option<(String, bool)> = None;
     egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
         for row in &path_state.tracks {
             egui::Frame::NONE
@@ -78,6 +82,11 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
                 .corner_radius(2.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // Per-row visibility toggle (absent property => visible).
+                        let mut visible = row.visible.unwrap_or(true);
+                        if ui.checkbox(&mut visible, "").on_hover_text("Visible").changed() {
+                            to_toggle_visible = Some((row.node_id.clone(), visible));
+                        }
                         let label = egui::RichText::new(row.annotation_title.as_deref().unwrap_or(&row.name))
                             .color(theme::TEXT_BRIGHT);
                         if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
@@ -87,6 +96,9 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
                             if ui.small_button("Delete").clicked() {
                                 to_delete = Some(row.node_id.clone());
                             }
+                            if ui.small_button("Edit").clicked() {
+                                selected = Some(row.node_id.clone());
+                            }
                         });
                     });
                 });
@@ -94,6 +106,13 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
         }
     });
 
+    if let Some((node_id, visible)) = to_toggle_visible {
+        ui_mgr.push_action(UiAction::SetNodeProperty {
+            node_id,
+            key: TRACK_VISIBLE_KEY.to_string(),
+            value: serde_json::Value::Bool(visible),
+        });
+    }
     if let Some(node_id) = selected {
         path_state.start_editing(node_id);
     }

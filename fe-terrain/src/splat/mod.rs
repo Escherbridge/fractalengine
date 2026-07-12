@@ -10,8 +10,8 @@ pub mod view_mode;
 pub mod render;
 
 pub use interpolate::{
-    augment_splat_buffer_if_needed, augment_splat_buffer_within, splat_needs_interpolation,
-    TileFootprint,
+    augment_splat_buffer_coverage, augment_splat_buffer_if_needed, augment_splat_buffer_within,
+    splat_needs_interpolation, TileFootprint,
 };
 pub use synth::{synthesize_splats, SplatBuffer, TileSatellite};
 pub use view_mode::{view_mode_from_terrain_json, TerrainViewMode};

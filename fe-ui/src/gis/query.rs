@@ -15,6 +15,8 @@ const ANNOTATION_COLOR_KEY: &str = "gis.annotation.color";
 /// Mirrors `actions::node_props::TRACK_NAME_KEY` (duplicated for the same
 /// import-free reason as the annotation keys above).
 const TRACK_NAME_KEY: &str = "gis.track.name";
+/// Mirrors `actions::node_props::TRACK_VISIBLE_KEY` (same import-free reason).
+const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
 
 // ---------------------------------------------------------------------------
 // Query builders (pure). Single SELECT, no `;`, no banned keywords — see
@@ -45,9 +47,11 @@ pub(crate) fn annotation_query(petal_id: &str) -> (String, HashMap<String, serde
 /// `annotation_title` fallback chain).
 pub(crate) fn track_query(petal_id: &str) -> (String, HashMap<String, serde_json::Value>) {
     let sql = format!(
-        "SELECT node_id, display_name, position, elevation, properties[\"{name_key}\"] AS annotation_title \
+        "SELECT node_id, display_name, position, elevation, properties[\"{name_key}\"] AS annotation_title, \
+         properties[\"{visible_key}\"] AS track_visible \
          FROM node WHERE petal_id = $petal_id AND properties[\"{name_key}\"] != NONE",
         name_key = TRACK_NAME_KEY,
+        visible_key = TRACK_VISIBLE_KEY,
     );
     let mut vars = HashMap::new();
     vars.insert("petal_id".to_string(), serde_json::Value::String(petal_id.to_string()));
@@ -115,7 +119,8 @@ fn parse_gis_row(v: &serde_json::Value) -> Option<GisResultRow> {
         .or_else(|| v.get("matched_value").and_then(|a| a.as_str()))
         .map(str::to_string);
     let annotation_color = v.get("annotation_color").and_then(|a| a.as_str()).map(str::to_string);
-    Some(GisResultRow { node_id, name, position: [x, elevation, z], annotation_title, annotation_color })
+    let visible = v.get("track_visible").and_then(|a| a.as_bool());
+    Some(GisResultRow { node_id, name, position: [x, elevation, z], annotation_title, annotation_color, visible })
 }
 
 /// Extracts `(x, z)` from a node's `position` field. Handles both the
