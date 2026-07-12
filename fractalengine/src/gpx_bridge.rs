@@ -1,0 +1,594 @@
+//! Bridges fe-ui's queued GPX import ops into parse → project → persist.
+//! See src/AGENTS.md §gpx for the full import→persist→render→serve map and
+//! the rationale behind the correlation/projection/hierarchy design below.
+
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
+
+use bevy::prelude::*;
+
+use fe_runtime::app::DbCommandSender;
+use fe_runtime::messages::{DbCommand, DbResult};
+use fe_terrain::gpx::{compute_stats, parse_gpx_bytes, GpxData, TrackStats};
+use fe_terrain::iot::animation::{TimestampedRoutePoint, TrackRoute};
+use fe_terrain::iot::TrackRouteMap;
+use fe_terrain::petal_binding::ActivePetalTerrain;
+use fe_terrain::projection::Projection;
+use fe_terrain::terrain_plugin::GpxTrackLine;
+use fe_ui::gpx_ops::{GpxImportStatus, GpxOp, PendingGpxOps};
+
+/// Reserved flat property key marking a node as GPX-derived (`"track"` or `"waypoint"`).
+const GPX_TYPE_KEY: &str = "gpx_type";
+/// Approximates a "child of track" relation — see AGENTS.md §gpx (no `parent_node_id` column exists).
+const GPX_TRACK_ID_KEY: &str = "gpx_track_id";
+/// Reserved annotation key shared with `fe-database/src/AGENTS.md` §gis.
+const ANNOTATION_TITLE_KEY: &str = "gis.annotation.title";
+
+// ---------------------------------------------------------------------------
+// Pure mapping: GpxData -> node drafts (no Bevy/DB — unit tested directly)
+// ---------------------------------------------------------------------------
+
+/// A node about to be persisted: name, projected local position, and the
+/// flat property key/value pairs to set on it (one `SetNodeProperty` call
+/// per pair — `CreateNode` itself has no `properties` field).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpxNodeDraft {
+    pub name: String,
+    pub position: [f32; 3],
+    pub properties: Vec<(String, serde_json::Value)>,
+}
+
+/// Prepared persistence plan for one imported GPX file.
+#[derive(Debug)]
+struct PreparedImport {
+    /// `None` when the file has zero trackpoints — see AGENTS.md §gpx.
+    track: Option<PreparedTrack>,
+    /// Only populated when `track` is `None` (waypoints otherwise become the track's children).
+    standalone_waypoints: Vec<GpxNodeDraft>,
+}
+
+#[derive(Debug)]
+struct PreparedTrack {
+    draft: GpxNodeDraft,
+    waypoints: Vec<GpxNodeDraft>,
+    /// Full projected trackpoint list, kept for the render half (TrackRouteMap).
+    route_points: Vec<TimestampedRoutePoint>,
+}
+
+/// Resolve the `Projection` to use for a GPX import into `petal_id`.
+///
+/// Prefers the already-resident `ActivePetalTerrain` state when it matches
+/// the target petal (no new DB round trip, no side effect on the viewport's
+/// active terrain); falls back to the GPX bounding-box center, same as
+/// `fe-api/src/gpx.rs`'s HTTP import endpoint.
+fn resolve_projection(petal_id: &str, active: &ActivePetalTerrain, stats: &TrackStats) -> Projection {
+    if active.petal_id.as_deref() == Some(petal_id) {
+        if let Some(cfg) = &active.config {
+            return cfg.origin.clone();
+        }
+    }
+    let bb = &stats.bounding_box;
+    Projection::new(
+        (bb.min_lat + bb.max_lat) / 2.0,
+        (bb.min_lon + bb.max_lon) / 2.0,
+        bb.min_ele.unwrap_or(0.0),
+    )
+}
+
+/// Build the single merged track node draft, positioned at the first
+/// trackpoint in document order. Returns `None` when the file has no
+/// trackpoints at all (waypoint-only GPX files are handled as standalone).
+fn build_track_draft(data: &GpxData, projection: &Projection, stats: &TrackStats) -> Option<GpxNodeDraft> {
+    let first_point = data
+        .tracks
+        .iter()
+        .flat_map(|t| t.segments.iter())
+        .flat_map(|s| s.points.iter())
+        .next()?;
+
+    let local = projection
+        .wgs84_to_local(first_point.lat, first_point.lon, first_point.ele.unwrap_or(0.0))
+        .ok()?;
+
+    let name = data
+        .tracks
+        .first()
+        .and_then(|t| t.name.clone())
+        .or_else(|| data.metadata.as_ref().and_then(|m| m.name.clone()))
+        .unwrap_or_else(|| "GPX Track".to_string());
+
+    Some(GpxNodeDraft {
+        name,
+        position: [local[0] as f32, local[1] as f32, local[2] as f32],
+        properties: vec![
+            (GPX_TYPE_KEY.to_string(), serde_json::json!("track")),
+            ("total_distance_m".to_string(), serde_json::json!(stats.total_distance_m)),
+            ("elevation_gain_m".to_string(), serde_json::json!(stats.elevation_gain_m)),
+            ("elevation_loss_m".to_string(), serde_json::json!(stats.elevation_loss_m)),
+            ("duration_s".to_string(), serde_json::json!(stats.duration)),
+            ("avg_speed_kmh".to_string(), serde_json::json!(stats.avg_speed_kmh)),
+            ("max_speed_kmh".to_string(), serde_json::json!(stats.max_speed_kmh)),
+            (
+                "bounding_box".to_string(),
+                serde_json::json!({
+                    "min_lat": stats.bounding_box.min_lat,
+                    "max_lat": stats.bounding_box.max_lat,
+                    "min_lon": stats.bounding_box.min_lon,
+                    "max_lon": stats.bounding_box.max_lon,
+                }),
+            ),
+        ],
+    })
+}
+
+/// Project every trackpoint (document order) into a renderable route.
+/// `time_seconds` is relative to the first timestamp; untimestamped points
+/// fall back to their index (uniform 1 s spacing keeps animation monotonic).
+fn build_route_points(data: &GpxData, projection: &Projection) -> Vec<TimestampedRoutePoint> {
+    let first_time = data
+        .tracks
+        .iter()
+        .flat_map(|t| t.segments.iter())
+        .flat_map(|s| s.points.iter())
+        .find_map(|p| p.time);
+    data.tracks
+        .iter()
+        .flat_map(|t| t.segments.iter())
+        .flat_map(|s| s.points.iter())
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let local = projection.wgs84_to_local(p.lat, p.lon, p.ele.unwrap_or(0.0)).ok()?;
+            let time_seconds = match (first_time, p.time) {
+                (Some(t0), Some(t)) => (t - t0).num_milliseconds() as f64 / 1000.0,
+                _ => i as f64,
+            };
+            Some(TimestampedRoutePoint { position: [local[0], local[1], local[2]], time_seconds })
+        })
+        .collect()
+}
+
+/// Build one draft per `<wpt>` in the file. Out-of-range coordinates are
+/// silently skipped (mirrors `fe_terrain::gpx::convert`'s precedent).
+/// `gpx_track_id` is NOT included here — it's only known once the track's
+/// `CreateNode` result resolves, so the bridge system appends it later.
+fn build_waypoint_drafts(data: &GpxData, projection: &Projection) -> Vec<GpxNodeDraft> {
+    data.waypoints
+        .iter()
+        .enumerate()
+        .filter_map(|(i, wp)| {
+            let local = projection.wgs84_to_local(wp.lat, wp.lon, wp.ele.unwrap_or(0.0)).ok()?;
+            let name = wp.name.clone().unwrap_or_else(|| format!("Waypoint {}", i + 1));
+            Some(GpxNodeDraft {
+                name: name.clone(),
+                position: [local[0] as f32, local[1] as f32, local[2] as f32],
+                properties: vec![
+                    (GPX_TYPE_KEY.to_string(), serde_json::json!("waypoint")),
+                    (ANNOTATION_TITLE_KEY.to_string(), serde_json::json!(name)),
+                ],
+            })
+        })
+        .collect()
+}
+
+/// Read + parse a GPX file and build its persistence plan. Pure aside from
+/// the filesystem read; `active` supplies the petal-terrain-origin lookup.
+fn prepare_import(petal_id: &str, path: &Path, active: &ActivePetalTerrain) -> Result<PreparedImport, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read GPX file {}: {e}", path.display()))?;
+    let data = parse_gpx_bytes(&bytes).map_err(|e| format!("invalid GPX: {e}"))?;
+    let stats = compute_stats(&data);
+    let projection = resolve_projection(petal_id, active, &stats);
+    let waypoint_drafts = build_waypoint_drafts(&data, &projection);
+
+    match build_track_draft(&data, &projection, &stats) {
+        Some(draft) => Ok(PreparedImport {
+            track: Some(PreparedTrack {
+                draft,
+                waypoints: waypoint_drafts,
+                route_points: build_route_points(&data, &projection),
+            }),
+            standalone_waypoints: vec![],
+        }),
+        None => Ok(PreparedImport { track: None, standalone_waypoints: waypoint_drafts }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bevy resources + systems (DB-command correlation — see AGENTS.md §gpx)
+// ---------------------------------------------------------------------------
+
+/// A track node's `CreateNode` was sent; once its `DbResult::NodeCreated`
+/// arrives, set these stat properties and create these waypoint children.
+struct PendingTrackImport {
+    petal_id: String,
+    stats_props: Vec<(String, serde_json::Value)>,
+    waypoints: Vec<GpxNodeDraft>,
+    route_points: Vec<TimestampedRoutePoint>,
+}
+
+/// A waypoint node's `CreateNode` was sent; once its `DbResult::NodeCreated`
+/// arrives, set its type/title/(optional) track-link properties.
+struct PendingWaypointImport {
+    title: String,
+    track_node_id: Option<String>,
+}
+
+/// Correlates fire-and-forget `CreateNode` commands with their eventual
+/// `DbResult::NodeCreated` by `(petal_id, name)` — see AGENTS.md §gpx for why
+/// this content-based FIFO match (rather than a request ID) is the best
+/// available option given the existing command/result channel shape.
+#[derive(Resource, Default)]
+pub struct PendingGpxImports {
+    tracks: HashMap<(String, String), VecDeque<PendingTrackImport>>,
+    waypoints: HashMap<(String, String), VecDeque<PendingWaypointImport>>,
+}
+
+/// Drains `PendingGpxOps` each frame: parse the file, resolve the petal's
+/// terrain projection, and send the first `CreateNode` command(s) — either
+/// the merged track node (waypoints become its children once it resolves)
+/// or, for waypoint-only files, the waypoints directly as standalones.
+pub fn drain_gpx_ops(
+    mut ops: ResMut<PendingGpxOps>,
+    db_tx: Res<DbCommandSender>,
+    active_terrain: Res<ActivePetalTerrain>,
+    mut pending: ResMut<PendingGpxImports>,
+    mut status: ResMut<GpxImportStatus>,
+) {
+    if ops.0.is_empty() {
+        return;
+    }
+
+    for op in ops.0.drain(..) {
+        let GpxOp::ImportFile { petal_id, path } = op;
+        match prepare_import(&petal_id, &path, &active_terrain) {
+            Ok(prepared) => {
+                let track_count = prepared.track.is_some() as u32;
+                let waypoint_count = (prepared.standalone_waypoints.len()
+                    + prepared.track.as_ref().map(|t| t.waypoints.len()).unwrap_or(0))
+                    as u32;
+
+                if let Some(track) = prepared.track {
+                    let key = (petal_id.clone(), track.draft.name.clone());
+                    db_tx
+                        .0
+                        .send(DbCommand::CreateNode {
+                            petal_id: petal_id.clone(),
+                            name: track.draft.name.clone(),
+                            position: track.draft.position,
+                        })
+                        .ok();
+                    pending.tracks.entry(key).or_default().push_back(PendingTrackImport {
+                        petal_id: petal_id.clone(),
+                        stats_props: track.draft.properties,
+                        waypoints: track.waypoints,
+                        route_points: track.route_points,
+                    });
+                }
+
+                for wp in prepared.standalone_waypoints {
+                    let key = (petal_id.clone(), wp.name.clone());
+                    db_tx
+                        .0
+                        .send(DbCommand::CreateNode {
+                            petal_id: petal_id.clone(),
+                            name: wp.name.clone(),
+                            position: wp.position,
+                        })
+                        .ok();
+                    pending.waypoints.entry(key).or_default().push_back(PendingWaypointImport {
+                        title: wp.name,
+                        track_node_id: None,
+                    });
+                }
+
+                tracing::info!(petal_id = %petal_id, track_count, waypoint_count, "GPX import queued");
+                *status = GpxImportStatus {
+                    petal_id: Some(petal_id),
+                    track_count,
+                    waypoint_count,
+                    error: None,
+                };
+            }
+            Err(e) => {
+                tracing::warn!(petal_id = %petal_id, path = %path.display(), "GPX import failed: {e}");
+                *status = GpxImportStatus {
+                    petal_id: Some(petal_id),
+                    track_count: 0,
+                    waypoint_count: 0,
+                    error: Some(e),
+                };
+            }
+        }
+    }
+}
+
+/// Advances pending GPX imports as their `CreateNode` results arrive: sets
+/// the track's cached stats + spawns its waypoint children, then sets each
+/// waypoint's type/title/track-link properties once its own node exists.
+pub fn advance_gpx_imports(
+    mut db_results: MessageReader<DbResult>,
+    db_tx: Res<DbCommandSender>,
+    mut pending: ResMut<PendingGpxImports>,
+    mut route_map: ResMut<TrackRouteMap>,
+    mut commands: Commands,
+) {
+    if pending.tracks.is_empty() && pending.waypoints.is_empty() {
+        return;
+    }
+
+    for result in db_results.read() {
+        let DbResult::NodeCreated { id, petal_id, name, .. } = result else {
+            continue;
+        };
+        let key = (petal_id.clone(), name.clone());
+
+        if let Some(queue) = pending.tracks.get_mut(&key) {
+            if let Some(track) = queue.pop_front() {
+                if queue.is_empty() {
+                    pending.tracks.remove(&key);
+                }
+                for (prop_key, value) in track.stats_props {
+                    db_tx
+                        .0
+                        .send(DbCommand::SetNodeProperty { node_id: id.clone(), key: prop_key, value })
+                        .ok();
+                }
+                for wp in track.waypoints {
+                    let wp_key = (track.petal_id.clone(), wp.name.clone());
+                    db_tx
+                        .0
+                        .send(DbCommand::CreateNode {
+                            petal_id: track.petal_id.clone(),
+                            name: wp.name.clone(),
+                            position: wp.position,
+                        })
+                        .ok();
+                    pending.waypoints.entry(wp_key).or_default().push_back(PendingWaypointImport {
+                        title: wp.name,
+                        track_node_id: Some(id.clone()),
+                    });
+                }
+                // Render half: trackpoints only exist in memory here (they are
+                // not persisted) — see AGENTS.md §gpx. Session-scoped by design.
+                if track.route_points.len() >= 2 {
+                    let total = track.route_points.last().map(|p| p.time_seconds).unwrap_or(0.0);
+                    route_map.routes.insert(
+                        id.clone(),
+                        TrackRoute { points: track.route_points, total_duration_secs: total },
+                    );
+                    commands.spawn(GpxTrackLine { track_node_id: id.clone() });
+                }
+                continue;
+            }
+        }
+
+        if let Some(queue) = pending.waypoints.get_mut(&key) {
+            if let Some(wp) = queue.pop_front() {
+                if queue.is_empty() {
+                    pending.waypoints.remove(&key);
+                }
+                db_tx
+                    .0
+                    .send(DbCommand::SetNodeProperty {
+                        node_id: id.clone(),
+                        key: GPX_TYPE_KEY.to_string(),
+                        value: serde_json::json!("waypoint"),
+                    })
+                    .ok();
+                db_tx
+                    .0
+                    .send(DbCommand::SetNodeProperty {
+                        node_id: id.clone(),
+                        key: ANNOTATION_TITLE_KEY.to_string(),
+                        value: serde_json::json!(wp.title),
+                    })
+                    .ok();
+                if let Some(track_id) = wp.track_node_id {
+                    db_tx
+                        .0
+                        .send(DbCommand::SetNodeProperty {
+                            node_id: id.clone(),
+                            key: GPX_TRACK_ID_KEY.to_string(),
+                            value: serde_json::json!(track_id),
+                        })
+                        .ok();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fe_terrain::config::TerrainConfig;
+    use std::path::PathBuf;
+
+    const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="test">
+  <trk>
+    <name>Test Hike</name>
+    <trkseg>
+      <trkpt lat="45.0" lon="-122.0"><ele>100.0</ele></trkpt>
+      <trkpt lat="45.001" lon="-122.001"><ele>110.0</ele></trkpt>
+    </trkseg>
+  </trk>
+  <wpt lat="45.0005" lon="-122.0005">
+    <ele>105.0</ele>
+    <name>Camp</name>
+  </wpt>
+  <wpt lat="45.0006" lon="-122.0006">
+    <ele>106.0</ele>
+  </wpt>
+</gpx>"#;
+
+    const WAYPOINT_ONLY_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="test">
+  <wpt lat="10.0" lon="20.0">
+    <name>Lone Marker</name>
+  </wpt>
+</gpx>"#;
+
+    fn parse(gpx: &str) -> GpxData {
+        parse_gpx_bytes(gpx.as_bytes()).expect("sample GPX must parse")
+    }
+
+    fn prop<'a>(draft: &'a GpxNodeDraft, key: &str) -> &'a serde_json::Value {
+        draft
+            .properties
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+            .unwrap_or_else(|| panic!("expected property {key:?} on draft {draft:?}"))
+    }
+
+    #[test]
+    fn track_draft_positions_at_first_trackpoint_with_matching_origin() {
+        let data = parse(SAMPLE_GPX);
+        let stats = compute_stats(&data);
+        // Origin == first trackpoint exactly, so the projected position is ~[0,0,0].
+        let projection = Projection::new(45.0, -122.0, 100.0);
+
+        let draft = build_track_draft(&data, &projection, &stats).expect("track present");
+        assert_eq!(draft.name, "Test Hike");
+        assert!(draft.position[0].abs() < 1e-3, "x should be ~0: {:?}", draft.position);
+        assert!(draft.position[1].abs() < 1e-3, "y should be ~0: {:?}", draft.position);
+        assert!(draft.position[2].abs() < 1e-3, "z should be ~0: {:?}", draft.position);
+    }
+
+    #[test]
+    fn track_draft_carries_gpx_type_and_all_cached_stat_keys() {
+        let data = parse(SAMPLE_GPX);
+        let stats = compute_stats(&data);
+        let projection = Projection::new(45.0, -122.0, 100.0);
+        let draft = build_track_draft(&data, &projection, &stats).unwrap();
+
+        assert_eq!(prop(&draft, "gpx_type"), &serde_json::json!("track"));
+        for key in [
+            "total_distance_m",
+            "elevation_gain_m",
+            "elevation_loss_m",
+            "duration_s",
+            "avg_speed_kmh",
+            "max_speed_kmh",
+            "bounding_box",
+        ] {
+            assert!(
+                draft.properties.iter().any(|(k, _)| k == key),
+                "missing expected stat key {key:?} in {:?}",
+                draft.properties
+            );
+        }
+        let bbox = prop(&draft, "bounding_box");
+        assert_eq!(bbox["min_lat"], serde_json::json!(45.0));
+    }
+
+    #[test]
+    fn track_draft_none_when_file_has_no_trackpoints() {
+        let data = parse(WAYPOINT_ONLY_GPX);
+        let stats = compute_stats(&data);
+        let projection = Projection::new(10.0, 20.0, 0.0);
+        assert!(build_track_draft(&data, &projection, &stats).is_none());
+    }
+
+    #[test]
+    fn waypoint_drafts_use_name_and_set_annotation_title() {
+        let data = parse(SAMPLE_GPX);
+        let projection = Projection::new(45.0, -122.0, 100.0);
+        let drafts = build_waypoint_drafts(&data, &projection);
+
+        assert_eq!(drafts.len(), 2);
+        assert_eq!(drafts[0].name, "Camp");
+        assert_eq!(prop(&drafts[0], "gpx_type"), &serde_json::json!("waypoint"));
+        assert_eq!(prop(&drafts[0], "gis.annotation.title"), &serde_json::json!("Camp"));
+    }
+
+    #[test]
+    fn waypoint_draft_falls_back_to_default_name_when_unnamed() {
+        let data = parse(SAMPLE_GPX);
+        let projection = Projection::new(45.0, -122.0, 100.0);
+        let drafts = build_waypoint_drafts(&data, &projection);
+
+        // Second <wpt> in the fixture has no <name>.
+        assert_eq!(drafts[1].name, "Waypoint 2");
+        assert_eq!(prop(&drafts[1], "gis.annotation.title"), &serde_json::json!("Waypoint 2"));
+    }
+
+    #[test]
+    fn resolve_projection_prefers_active_terrain_when_petal_matches() {
+        let data = parse(SAMPLE_GPX);
+        let stats = compute_stats(&data);
+        let expected_origin = Projection::new(1.0, 2.0, 3.0);
+        let active = ActivePetalTerrain {
+            petal_id: Some("petal-1".to_string()),
+            config: Some(TerrainConfig { origin: expected_origin.clone(), ..TerrainConfig::default() }),
+            revision: 1,
+        };
+
+        let resolved = resolve_projection("petal-1", &active, &stats);
+        assert_eq!(resolved.origin_lat, expected_origin.origin_lat);
+        assert_eq!(resolved.origin_lon, expected_origin.origin_lon);
+        assert_eq!(resolved.origin_ele, expected_origin.origin_ele);
+    }
+
+    #[test]
+    fn resolve_projection_falls_back_to_bbox_center_when_petal_does_not_match() {
+        let data = parse(SAMPLE_GPX);
+        let stats = compute_stats(&data);
+        let active = ActivePetalTerrain {
+            petal_id: Some("some-other-petal".to_string()),
+            config: Some(TerrainConfig::default()),
+            revision: 1,
+        };
+
+        let resolved = resolve_projection("petal-1", &active, &stats);
+        let bb = &stats.bounding_box;
+        assert_eq!(resolved.origin_lat, (bb.min_lat + bb.max_lat) / 2.0);
+        assert_eq!(resolved.origin_lon, (bb.min_lon + bb.max_lon) / 2.0);
+    }
+
+    #[test]
+    fn resolve_projection_falls_back_when_no_terrain_configured() {
+        let data = parse(SAMPLE_GPX);
+        let stats = compute_stats(&data);
+        let active = ActivePetalTerrain::default();
+
+        let resolved = resolve_projection("petal-1", &active, &stats);
+        let bb = &stats.bounding_box;
+        assert_eq!(resolved.origin_lat, (bb.min_lat + bb.max_lat) / 2.0);
+        assert_eq!(resolved.origin_lon, (bb.min_lon + bb.max_lon) / 2.0);
+    }
+
+    #[test]
+    fn prepare_import_reads_file_and_produces_track_plus_waypoint_children() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path: PathBuf = tmp.path().join("sample.gpx");
+        std::fs::write(&path, SAMPLE_GPX).expect("write fixture");
+        let active = ActivePetalTerrain::default();
+
+        let prepared = prepare_import("petal-1", &path, &active).expect("prepare_import should succeed");
+        let track = prepared.track.expect("track present");
+        assert_eq!(track.draft.name, "Test Hike");
+        assert_eq!(track.waypoints.len(), 2);
+        assert!(prepared.standalone_waypoints.is_empty());
+    }
+
+    #[test]
+    fn prepare_import_reports_missing_file() {
+        let active = ActivePetalTerrain::default();
+        let err = prepare_import("petal-1", Path::new("does-not-exist.gpx"), &active).unwrap_err();
+        assert!(err.contains("could not read GPX file"));
+    }
+
+    #[test]
+    fn prepare_import_waypoint_only_file_has_no_track_and_standalone_waypoints() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path: PathBuf = tmp.path().join("waypoints.gpx");
+        std::fs::write(&path, WAYPOINT_ONLY_GPX).expect("write fixture");
+        let active = ActivePetalTerrain::default();
+
+        let prepared = prepare_import("petal-1", &path, &active).expect("prepare_import should succeed");
+        assert!(prepared.track.is_none());
+        assert_eq!(prepared.standalone_waypoints.len(), 1);
+        assert_eq!(prepared.standalone_waypoints[0].name, "Lone Marker");
+    }
+}

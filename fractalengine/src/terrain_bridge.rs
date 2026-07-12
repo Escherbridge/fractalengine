@@ -7,12 +7,14 @@ use fe_terrain::petal_binding::{
     terrain_config_from_petal_json, PetalTerrainAssignment, SharedTilesetRegistry,
     TerrainAssignmentMsg,
 };
+use fe_terrain::splat::{view_mode_from_terrain_json, TerrainViewModeMsg};
 use fe_ui::plugin::{ActiveDialog, HexonOp, InstalledTilesetDto, PendingHexonOps, StorageInfoDto, UiManager};
 
 /// Forwards `DbResult::PetalTerrainLoaded` to the terrain runtime as an assignment.
 pub fn bridge_petal_terrain(
     mut db_results: MessageReader<DbResult>,
     mut assignments: MessageWriter<TerrainAssignmentMsg>,
+    mut view_modes: MessageWriter<TerrainViewModeMsg>,
 ) {
     for result in db_results.read() {
         if let DbResult::PetalTerrainLoaded { petal_id, terrain } = result {
@@ -21,6 +23,8 @@ pub fn bridge_petal_terrain(
                 petal_id: petal_id.clone(),
                 config,
             }));
+            // view_mode is an additive JSON field TerrainConfig drops — forward raw.
+            view_modes.write(TerrainViewModeMsg(view_mode_from_terrain_json(terrain.as_ref())));
         }
     }
 }
