@@ -12,6 +12,9 @@ use super::GisResultRow;
 /// import-free of the `actions` layer — see AGENTS.md).
 const ANNOTATION_TITLE_KEY: &str = "gis.annotation.title";
 const ANNOTATION_COLOR_KEY: &str = "gis.annotation.color";
+/// Mirrors `actions::node_props::TRACK_NAME_KEY` (duplicated for the same
+/// import-free reason as the annotation keys above).
+const TRACK_NAME_KEY: &str = "gis.track.name";
 
 // ---------------------------------------------------------------------------
 // Query builders (pure). Single SELECT, no `;`, no banned keywords — see
@@ -30,6 +33,21 @@ pub(crate) fn annotation_query(petal_id: &str) -> (String, HashMap<String, serde
          FROM node WHERE petal_id = $petal_id AND properties[\"{title_key}\"] != NONE",
         title_key = ANNOTATION_TITLE_KEY,
         color_key = ANNOTATION_COLOR_KEY,
+    );
+    let mut vars = HashMap::new();
+    vars.insert("petal_id".to_string(), serde_json::Value::String(petal_id.to_string()));
+    (sql, vars)
+}
+
+/// Builds the "track nodes" query for a petal: every node whose
+/// `gis.track.name` property is set. Reuses `annotation_title` as the row's
+/// display slot for the track name (via `parse_gis_row`'s `matched_value`/
+/// `annotation_title` fallback chain).
+pub(crate) fn track_query(petal_id: &str) -> (String, HashMap<String, serde_json::Value>) {
+    let sql = format!(
+        "SELECT node_id, display_name, position, elevation, properties[\"{name_key}\"] AS annotation_title \
+         FROM node WHERE petal_id = $petal_id AND properties[\"{name_key}\"] != NONE",
+        name_key = TRACK_NAME_KEY,
     );
     let mut vars = HashMap::new();
     vars.insert("petal_id".to_string(), serde_json::Value::String(petal_id.to_string()));
@@ -209,6 +227,15 @@ mod tests {
         }]);
         let rows = parse_gis_rows(data.as_array().unwrap());
         assert!(rows[0].annotation_color.is_none());
+    }
+
+    #[test]
+    fn track_query_binds_petal_id_and_has_no_semicolon() {
+        let (sql, vars) = track_query("petal-1");
+        assert!(sql.starts_with("SELECT"));
+        assert!(!sql.contains(';'));
+        assert!(sql.contains("gis.track.name"));
+        assert_eq!(vars.get("petal_id"), Some(&serde_json::Value::String("petal-1".into())));
     }
 
     #[test]

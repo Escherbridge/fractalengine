@@ -282,6 +282,9 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::gis::GisPanelState>();
         app.init_resource::<crate::gpx_ops::PendingGpxOps>();
         app.init_resource::<crate::gpx_ops::GpxImportStatus>();
+        app.init_resource::<crate::gis::PathEditorState>();
+        app.init_resource::<crate::path_ops::PendingPathOps>();
+        app.init_resource::<crate::path_ops::PathEditStatus>();
         app.init_resource::<fe_sync::TilesetEventBuffer>();
         // Register BrowserCommand so MessageWriter<BrowserCommand> is usable.
         // fe-webview's WebViewPlugin also registers this; calling add_message
@@ -299,6 +302,8 @@ impl Plugin for GardenerConsolePlugin {
         app.add_systems(Update, crate::asset_ops::surface_asset_download_status);
         // Surface GPX-import outcomes (written by the main binary's bridge) as toasts.
         app.add_systems(Update, crate::gpx_ops::surface_gpx_import_status);
+        // Surface path-editor outcomes (written by the main binary's bridge) as toasts.
+        app.add_systems(Update, crate::path_ops::surface_path_edit_status);
         app.add_systems(
             Update,
             crate::terrain_map::load_petal_terrain_on_nav_change
@@ -345,6 +350,8 @@ struct MiscUiParams<'w> {
     asset_status: Res<'w, crate::asset_ops::AssetDownloadStatus>,
     gis_panel: ResMut<'w, crate::gis::GisPanelState>,
     gpx_status: Res<'w, crate::gpx_ops::GpxImportStatus>,
+    path_state: ResMut<'w, crate::gis::PathEditorState>,
+    path_status: Res<'w, crate::path_ops::PathEditStatus>,
 }
 
 fn gardener_ui_system(
@@ -385,6 +392,8 @@ fn gardener_ui_system(
         &misc.asset_status,
         &mut misc.gis_panel,
         &misc.gpx_status,
+        &mut misc.path_state,
+        &misc.path_status,
     );
     viewport_rect.0 = rect;
 

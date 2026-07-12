@@ -12,7 +12,7 @@ pub(crate) use layers::{
 };
 pub(crate) use query::{
     annotation_query, bbox_contains, parse_bbox_fields, parse_filter_value, parse_gis_rows,
-    property_filter_query,
+    property_filter_query, track_query,
 };
 
 use bevy::prelude::*;
@@ -33,6 +33,7 @@ pub enum GisPanelTab {
     Query,
     Annotations,
     Layers,
+    Paths,
 }
 
 /// A single query result row: enough to display and to select+focus the node.
@@ -106,6 +107,55 @@ impl GisPanelState {
     }
 }
 
+/// A single point in the track currently being edited. `time_seconds` is
+/// `None` for points authored via "Append from cursor" (no timestamp).
+/// Local-only editing buffer — fe-ui never persists this itself, see
+/// `crate::path_ops`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathPointRow {
+    pub position: [f32; 3],
+    pub time_seconds: Option<f64>,
+}
+
+/// Paths tab state: the list of track nodes (from `track_query`) plus the
+/// currently-selected-for-edit track's local point-list buffer. See
+/// `fe-ui/src/AGENTS.md` §path-editor.
+#[derive(Resource, Default)]
+pub struct PathEditorState {
+    /// Track nodes in the active petal, refreshed via `track_query`.
+    pub tracks: Vec<GisResultRow>,
+    /// `true` while a `RawQuery` round-trip for the track list is in
+    /// flight — same routing flag idiom as `GisPanelState::query_pending`,
+    /// kept separate since Paths and Query/Annotations can be open on
+    /// different tabs whose `RawQuery` replies would otherwise collide.
+    pub tracks_pending: bool,
+    /// Buffer for the "New Path" name field.
+    pub new_track_name_buf: String,
+    /// The track node currently selected for editing, if any.
+    pub editing_track_id: Option<String>,
+    /// Local point-list buffer for `editing_track_id`. fe-ui builds this up
+    /// purely from queued `PathOp`s (Append/Remove) — there is no read-back
+    /// from the DB in v1, since the bridge is the only reader/writer of
+    /// `gpx_points` (see FR-2/FR-3 in the track spec).
+    pub points: Vec<PathPointRow>,
+    pub last_error: Option<String>,
+}
+
+impl PathEditorState {
+    /// Starts editing `track_node_id` with a fresh (empty) point buffer —
+    /// v1 has no read-back of persisted `gpx_points`, so re-selecting an
+    /// existing track always starts from an empty local list.
+    pub(crate) fn start_editing(&mut self, track_node_id: String) {
+        self.editing_track_id = Some(track_node_id);
+        self.points.clear();
+    }
+
+    pub(crate) fn stop_editing(&mut self) {
+        self.editing_track_id = None;
+        self.points.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +176,32 @@ mod tests {
         gis.center_bbox_on([10.0, 20.0], 5.0);
         assert_eq!(parse_bbox_fields(&gis.bbox_min), Some([5.0, 15.0]));
         assert_eq!(parse_bbox_fields(&gis.bbox_max), Some([15.0, 25.0]));
+    }
+
+    #[test]
+    fn path_editor_default_has_no_active_edit() {
+        let s = PathEditorState::default();
+        assert!(s.editing_track_id.is_none());
+        assert!(s.points.is_empty());
+        assert!(s.tracks.is_empty());
+    }
+
+    #[test]
+    fn path_editor_start_editing_clears_points() {
+        let mut s = PathEditorState::default();
+        s.points.push(PathPointRow { position: [1.0, 0.0, 1.0], time_seconds: None });
+        s.start_editing("track-1".to_string());
+        assert_eq!(s.editing_track_id.as_deref(), Some("track-1"));
+        assert!(s.points.is_empty());
+    }
+
+    #[test]
+    fn path_editor_stop_editing_clears_state() {
+        let mut s = PathEditorState::default();
+        s.start_editing("track-1".to_string());
+        s.points.push(PathPointRow { position: [1.0, 0.0, 1.0], time_seconds: None });
+        s.stop_editing();
+        assert!(s.editing_track_id.is_none());
+        assert!(s.points.is_empty());
     }
 }

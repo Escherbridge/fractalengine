@@ -44,6 +44,27 @@ Color is a nearest-neighbor RGBA sample of the satellite tile at the texel
 the mesh path which v-flips the texture). Tiles with no satellite fall back to a
 neutral terrain color.
 
+**Anti-moiré polish (visual quality pass).** A perfectly regular grid of
+uniform-size discs reads as a texture/dot-grid pattern rather than organic
+coverage, so three deterministic (hash-based, no RNG crate) perturbations are
+applied per splat, keyed on `(row, col)`:
+
+- `SPLAT_COVERAGE` raised to `0.8` so the minor radius overlaps a neighbor's by
+  ~1.4-1.8x the decimated spacing (was exact/near-exact tiling).
+- Positional XZ jitter up to `±JITTER_FRACTION` (35%) of spacing, so splats
+  don't sit on a perfectly regular lattice.
+- Radius variation up to `±RADIUS_VARIATION_FRACTION` (20%) of the base minor
+  radius, applied to both major/minor so isotropy on flat ground is preserved.
+
+`hash01`/`hash_signed` are a pure xorshift-style integer mix — deterministic
+(same `(row, col)` always jitters identically, so re-synthesis/mode-switch
+re-bakes are stable) and dependency-free. Distance-aware sizing (larger/fewer
+splats far from camera) was scoped out: `render.rs`'s bake path has no camera
+distance threaded through per-splat (only `apply_view_mode_visibility` reads
+camera position, at the whole-chunk level for Hybrid mode); adding it would
+mean a new per-chunk or per-frame resource dependency into the bake path,
+which is out of scope for this pass. Follow-up if revisited.
+
 ## §rendering (FR-2, `render.rs`)
 
 Pragmatic v1 — **no custom render pipeline**. Per tile, every splat is baked into

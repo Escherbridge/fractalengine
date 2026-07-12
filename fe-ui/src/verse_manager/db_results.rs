@@ -23,6 +23,7 @@ pub(super) fn apply_db_results(
     mut pending_api: ResMut<fe_runtime::app::PendingApiRequests>,
     mut petal_map: ResMut<crate::terrain_map::PetalMapState>,
     mut gis_panel: ResMut<crate::gis::GisPanelState>,
+    mut path_state: ResMut<crate::gis::PathEditorState>,
     node_mgr: Res<crate::node_manager::NodeManager>,
 ) {
     for result in reader.read() {
@@ -214,6 +215,9 @@ pub(super) fn apply_db_results(
                 if gis_panel.query_pending {
                     gis_panel.last_error = Some(msg.clone());
                     gis_panel.query_pending = false;
+                } else if path_state.tracks_pending {
+                    path_state.last_error = Some(msg.clone());
+                    path_state.tracks_pending = false;
                 } else if inspector.query_loading {
                     inspector.query_result = Some(format!("Error: {msg}"));
                     inspector.query_loading = false;
@@ -389,6 +393,8 @@ pub(super) fn apply_db_results(
                 if gis_panel.query_pending {
                     gis_panel.results = crate::gis::parse_gis_rows(data);
                     gis_panel.query_pending = false;
+                } else if path_state.tracks_pending {
+                    crate::actions::path::apply_track_rows(&mut path_state, crate::gis::parse_gis_rows(data));
                 } else {
                     let formatted = serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"));
                     inspector.query_result = Some(formatted);
