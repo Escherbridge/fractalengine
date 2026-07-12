@@ -9,6 +9,7 @@ mod hexon;
 pub(crate) mod node_props;
 pub(crate) mod portal;
 mod query;
+mod transform;
 
 use std::path::PathBuf;
 
@@ -33,6 +34,9 @@ pub enum UiAction {
     PortalGoBack,
     /// Save URL for the selected node (replaces InspectorFormState.url_save_pending).
     SaveUrl,
+    /// Apply the inspector's Position/Rotation/Scale text buffers to the
+    /// selected node's `Transform`. See AGENTS.md §inspector-transform.
+    ApplyNodeTransform,
     /// Submit a SurrealQL query via the API gateway.
     SubmitQuery { sql: String, scope: String },
     /// Request loading properties for selected node.
@@ -177,7 +181,8 @@ impl UiManager {
 pub(crate) fn process_ui_actions(
     mut ui_mgr: ResMut<UiManager>,
     inspector: Res<InspectorFormState>,
-    node_mgr: Res<crate::node_manager::NodeManager>,
+    mut node_mgr: ResMut<crate::node_manager::NodeManager>,
+    mut transform_query: Query<&mut Transform>,
     mut browser_commands: MessageWriter<BrowserCommand>,
     mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
@@ -242,6 +247,9 @@ pub(crate) fn process_ui_actions(
                         ui_mgr.show_toast("No node selected", now_secs);
                     }
                 }
+            }
+            UiAction::ApplyNodeTransform => {
+                transform::apply(&inspector, &mut node_mgr, &mut transform_query);
             }
             UiAction::SubmitQuery { sql, scope: _ } => {
                 query::submit(&db_sender, sql);

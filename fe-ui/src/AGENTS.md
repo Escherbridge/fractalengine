@@ -10,7 +10,7 @@ see each module's own doc-comment for the "what"; this file is the "why".
 | Module | Owns |
 | --- | --- |
 | `plugin` | `GardenerConsolePlugin`, `UiSet` ordering, the `EguiPrimaryContextPass` entry system, cross-crate re-export shims (see §compat), UI-only resources that don't belong to a specific domain manager (`SidebarState`, `ToolState`, `InspectorFormState`, `LocalUserRole`, `CameraFocusTarget`, `ViewportCursorWorld`, `ViewportRect`, `SpawnedNodeMarker`). |
-| `actions` | `UiAction` (the one-frame action queue enum) + `UiManager` (queue + portal + active dialog + toast) + `process_ui_actions`, split into domain files (`portal`, `node_props`, `hexon`, `query`). See §actions. |
+| `actions` | `UiAction` (the one-frame action queue enum) + `UiManager` (queue + portal + active dialog + toast) + `process_ui_actions`, split into domain files (`portal`, `node_props`, `hexon`, `query`, `transform`). See §actions and §inspector-transform. |
 | `portal` | `PortalState` + the pure webview-rect-sync math (`compute_portal_rect`). See §portal — this is the browser-integration seam. |
 | `dialogs` | `ActiveDialog` (mutual-exclusion enum) + one render function per floating dialog/window. |
 | `terrain_map` | Petal-map state (`PetalMapState`), the hexon registry op queue (`HexonOp`/`PendingHexonOps`), Hexon Manager DTOs, the petal manifest type, and tileset-event draining. |
@@ -104,6 +104,36 @@ app needed) — see the `#[cfg(test)]` modules in `actions/portal.rs` and
    portal force-closes (`BrowserCommand::Close`) — by design (FR-2), but it
    means selecting a *different* node while a portal is open silently kills
    the webview with no confirmation.
+
+## §inspector-transform — Position/Rotation/Scale write-back
+
+The Transform section's Position/Rotation/Scale fields were historically
+**display-only**: `node_manager::inspector_sync::sync_manager_to_inspector`
+formats the selected entity's `Transform` into `inspector.pos/rot/scale`
+every frame, but nothing ever read those buffers back. Editing a field
+changed the text, not the node — no removed system, this write-back never
+existed.
+
+The fix follows the same `UiAction` pure-decision-function shape as §portal:
+
+1. Losing focus on any field via Enter, or clicking the **Apply** button
+   (`panels/inspector.rs::inspector_transform_section`), pushes
+   `UiAction::ApplyNodeTransform` (no payload — it reads current buffer
+   state at drain time, same as `SaveUrl`).
+2. `process_ui_actions` (`UiSet::ProcessActions`) dispatches to
+   `actions::transform::apply`, which parses the three `[String; 3]`
+   buffers (rotation in degrees, matching the display format) via the pure
+   `parse_inspector_transform`, writes the result onto the selected
+   entity's `Transform`, and sets `NodeSelection::drag_committed = true`.
+3. `UiSet::ProcessActions` runs *before* `UiSet::Selection`
+   (`node_manager::NodeManagerPlugin`'s chain), so in the same frame:
+   `sync_manager_to_inspector` re-reads the just-written `Transform` (a
+   harmless round-trip), and `transform_broadcast::broadcast_transform`
+   sees `drag_committed` and persists to DB + P2P — the exact same commit
+   path the gimbal drag uses, so no second persistence path was added.
+4. A field that fails to parse (non-numeric text) aborts the whole apply
+   with a warning log rather than partially applying — see
+   `actions/transform.rs::apply`.
 
 ## §asset-download — integration contract for the main binary
 

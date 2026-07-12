@@ -118,7 +118,7 @@ pub(crate) fn right_inspector(
                             ui.add_space(2.0);
                             crate::panels::annotation_card::annotation_card_section(ui, inspector, node_mgr, ui_mgr);
                             ui.add_space(2.0);
-                            inspector_transform_section(ui, inspector);
+                            inspector_transform_section(ui, inspector, ui_mgr);
                             ui.add_space(2.0);
                             inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
                             ui.add_space(2.0);
@@ -183,7 +183,11 @@ fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::N
     });
 }
 
-fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorFormState) {
+fn inspector_transform_section(
+    ui: &mut egui::Ui,
+    inspector: &mut InspectorFormState,
+    ui_mgr: &mut UiManager,
+) {
     egui::CollapsingHeader::new(
         egui::RichText::new("Transform")
             .strong()
@@ -192,6 +196,11 @@ fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorFormS
     .default_open(true)
     .show(ui, |ui| {
         ui.add_space(4.0);
+        // Enter/Tab away from any field commits the edit; the button covers
+        // click-away commits too. Both funnel through the same UiAction so
+        // the parse + Transform write happens exactly once, in
+        // `actions::transform::apply` — see AGENTS.md §inspector-transform.
+        let mut commit = false;
         for (label, bufs) in [
             ("Position", &mut inspector.pos),
             ("Rotation", &mut inspector.rot),
@@ -217,13 +226,25 @@ fn inspector_transform_section(ui: &mut egui::Ui, inspector: &mut InspectorFormS
                 );
                 for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
                     ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
-                    ui.add(
+                    let resp = ui.add(
                         egui::TextEdit::singleline(buf)
                             .desired_width(input_w)
                             .font(egui::TextStyle::Monospace),
                     );
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        commit = true;
+                    }
                 }
             });
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.button("Apply").clicked() {
+                commit = true;
+            }
+        });
+        if commit {
+            ui_mgr.push_action(UiAction::ApplyNodeTransform);
         }
         ui.add_space(4.0);
     });
