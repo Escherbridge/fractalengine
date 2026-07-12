@@ -1,0 +1,13 @@
+{
+  "id": "path_node_binding_hardening_20260712",
+  "description": "Two-way data binding for track/path nodes: single source of truth (DB row) with a change-notification backbone so DB, ECS render state, the GIS Paths tab, and the left-hand node panel stay 1:1 — plus the missing DeleteNode primitive",
+  "type": "feature",
+  "created_at": "2026-07-12T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 0,
+  "wave_rationale": "User 2026-07-12: path editor persistence + delete are broken. Two confirmed bugs — (1) create/edit did not persist, (2) deleting a track left orphans (DB node, gis.track.name property [so it reappears in Paths tab], waypoints, left-hand node panel entry, GIS cache all survived). Root cause is architectural: no single source of truth and NO DeleteNode primitive exists in the platform. Must harden before cherry-picking the reverted phase-2 editor on top.",
+  "depends_on": ["gpx_path_editor_20260711"],
+  "blocks": ["gpx_path_editor_20260711"],
+  "archived": false,
+  "notes": "Architecture trace 2026-07-12 (full report in conversation). Track = a plain node row tagged by flat props (gpx_type='track', gis.track.name, gpx_points inline JSON array). THREE independent 'which tracks exist' answers with nothing keeping them in sync: DB rows (query on gis.track.name), left panel VerseManager.verses[].nodes (in-memory Vec, incremental DbResult arms, NO delete arm), render TrackRouteMap+GpxTrackLine (bridge-mutated). BUG1: optimistic fire-and-forget writes (db_tx.send().ok()), PathEditStatus set to success BEFORE DB confirms (gpx_bridge.rs:714), track-identity props set via 2nd async hop correlated by non-unique (petal_id,name) that advance_path_edits AND advance_gpx_imports both consume from the same NodeCreated stream -> silent drop on collision -> node exists but isn't a track. AppendPoint read-modify-write race clobbers points. BUG2: NO DeleteNode command exists — EntityType is only Verse|Fractal|Petal (messages.rs:83-87), only DeleteNodeProperty exists. DeleteTrack (gpx_bridge.rs:550-568) clears gpx_points+gpx_type + despawns line — misses node row, gis.track.name (so track REAPPEARS in Paths tab), waypoints, left panel, GIS cache. DB DOES emit SceneChange::NodeAdded/PropertyChanged (lib.rs:328,581,608) but no NodeRemoved, and fe-ui panels don't subscribe. LIVE queries unused. Reverted phase-2 editor is on branch archive/splat-coverage-experiment-20260712 (cherry-pick AFTER this lands, excluding splat changes)."
+}
