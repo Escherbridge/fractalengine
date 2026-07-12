@@ -17,6 +17,7 @@ see each module's own doc-comment for the "what"; this file is the "why".
 | `asset_ops` | Node-asset download op queue (`AssetOp`/`PendingAssetOps`) + the result-status resource (`AssetDownloadStatus`) the main binary writes back to. See §asset-download. |
 | `gis` | `GisPanelState` (GIS Query panel resource, incl. `GisPanelTab`) + pure query-building/row-parsing/bbox-filter/layer-JSON/view-mode logic backing the GIS Query, Annotations & Layer Manager panel. See §gis-query-ui. |
 | `gpx_ops` | GPX track import op queue (`GpxOp`/`PendingGpxOps`) + the result-status resource (`GpxImportStatus`) the main binary writes back to. See §gpx-import. |
+| `path_ops` | Path-editor op queue (`PathOp`/`PendingPathOps`) + the result-status resource (`PathEditStatus`) the main binary's GPX bridge writes back to. See §path-editor. |
 | `panels` | The top-level egui shell (`gardener_console`) + one file per panel (toolbar, status bar, sidebar tree, inspector tabs, query tab, portal toolbar). |
 | `node_manager` | `NodeManager` (single source of truth for selection) + gimbal interaction/hover/pick, viewport click-to-select, transform broadcast, inspector sync — one file per concern. |
 | `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. |
@@ -351,3 +352,68 @@ worker; contract reconciled with the GPX-bridge worker mid-track):
    the outcome as a toast; `gpx_import_card::gpx_import_section` additionally
    renders a persistent status row gated on `petal_id` matching the active
    petal (mirrors `asset_card`'s FR-3 status row).
+
+## §path-editor — GPX Path Editor (Paths tab)
+
+Track `gpx_path_editor_20260711`, FR-1/FR-2. The GIS panel's fourth tab
+(`GisPanelTab::Paths`) lets a user author, annotate, and export GPX paths as
+first-class planning artifacts. fe-ui owns the `PathOp`/`PathEditStatus`
+contract (per FR-2) — the main binary's GPX bridge
+(`fractalengine/src/gpx_bridge.rs`, another worker) drains it and persists
+`gpx_points` as a flat node property. Mirrors the `gpx_ops`/§gpx-import
+pattern exactly (queue + status resource, no fe-ui-side I/O).
+
+1. **`path_ops.rs`** (crate root, mirrors `gpx_ops.rs`): `PathOp` — one
+   variant per intent (`CreateTrack`, `DeleteTrack`, `AppendPoint`,
+   `RemovePoint`, `AnnotatePoint`, `ExportGpx`) — queued into
+   `PendingPathOps` and drained by the bridge; `PathEditStatus` is the
+   bridge's write-back result resource (`track_node_id` + `message` on
+   success, `track_node_id` + `error` on failure).
+   `path_ops::surface_path_edit_status` toasts the outcome, registered
+   alongside `surface_gpx_import_status` in `plugin.rs`.
+2. **Track listing** (`crate::gis::PathEditorState`, state module
+   `gis/mod.rs`): track nodes are identified by a new reserved property key,
+   `gis.track.name` (`actions::node_props::TRACK_NAME_KEY`) — set by the
+   bridge on `CreateTrack`/import, mirroring how `gis.annotation.title`
+   marks annotated nodes. `gis::query::track_query` builds the same
+   "`SELECT` where `properties[key] != NONE`" shape as `annotation_query`;
+   `actions::path::query_tracks` submits it via `DbCommand::RawQuery`, and
+   `PathEditorState.tracks_pending` claims the untagged `DbResult::QueryResult`/
+   `Error` reply in `verse_manager/db_results.rs` — a **third** claimant on
+   top of `GisPanelState.query_pending`/the inspector's ad-hoc Query tab (see
+   the existing residual note above); checked after `gis_panel.query_pending`,
+   before the inspector fallback.
+3. **Point-list editing is local-only in v1** — `PathEditorState.points`
+   (`Vec<PathPointRow>`, `{ position, time_seconds }`) is populated purely by
+   queuing `AppendPoint`/`RemovePoint` ops (`actions::path::append_point`/
+   `remove_point`), never read back from the DB. Re-selecting an
+   already-edited track (`PathEditorState::start_editing`) always starts
+   from an empty local buffer — there is no `GetNodeProperties`-style
+   round-trip to repopulate `gpx_points` client-side. This is an accepted v1
+   gap (out of scope per the track spec's "no drag-gizmo... list-based
+   move/remove suffices"): if a user navigates away from the Paths tab
+   mid-edit and returns, their in-progress point list is gone (the queued
+   ops already landed at the bridge, only the *UI's echo* is lost).
+4. **Append from cursor** reuses `plugin::ViewportCursorWorld` (the same
+   resource the context-menu GLB-import flow uses) — the button is disabled
+   when `cursor_world.pos` is `None` (cursor not over the viewport / no
+   terrain hit this frame).
+5. **Annotate** reuses the exact `gis.annotation.*` property contract
+   (`actions::node_props::ANNOTATION_TITLE_KEY`/etc.) via `PathOp::AnnotatePoint`
+   — the bridge is expected to create a waypoint node at the point's stored
+   position and set the three annotation properties, the same way GPX-import
+   waypoints get `gis.annotation.title` (see §gpx-import). **v1 has no
+   per-point annotation form** — `path_editor_card`'s Annotate button queues
+   a placeholder `"Waypoint {index}"` title with empty body/color; a
+   dedicated inline form (mirroring `annotation_card`'s title/body/color
+   fields) is a natural follow-up, not added here to keep this pass to the
+   spec's FR-1 list shape.
+6. **Export** queues `PathOp::ExportGpx { track_node_id }` — per FR-5, the
+   actual GPX 1.1 writer + rfd save dialog is fe-terrain's/the bridge's
+   responsibility (pure writer in fe-terrain's gpx module); fe-ui only
+   signals intent, same as every other `PathOp`.
+7. **Contract note for the bridge worker:** if the bridge's independently
+   authored types don't match `PathOp`/`PathEditStatus` field-for-field, this
+   file (`path_ops.rs`) is the authoritative definition per FR-2 ("fe-ui does
+   no persistence I/O" implies fe-ui also owns the intent vocabulary) — the
+   bridge should conform to this shape rather than the reverse.

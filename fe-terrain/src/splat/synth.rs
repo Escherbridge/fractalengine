@@ -1,11 +1,36 @@
 //! Pure tile→splat synthesis (no bevy); see `src/splat/AGENTS.md` §synthesis.
 
-/// Fraction of the decimated texel spacing a splat's minor radius covers (soft overlap).
-const SPLAT_COVERAGE: f32 = 0.7;
+/// Fraction of the decimated texel spacing a splat's minor radius covers.
+/// >0.5 means neighboring splats overlap rather than exactly tile — this is what
+/// breaks up the dot-grid/moiré look (target overlap ratio ~1.4-1.8x spacing,
+/// see `overlap_ratio_within_target` test).
+const SPLAT_COVERAGE: f32 = 0.8;
 /// Cap on along-slope elongation so near-vertical cliffs don't spawn giant quads.
 const MAX_ELONGATION: f32 = 4.0;
 /// Fallback vertex color when a tile carries no satellite imagery.
 const DEFAULT_COLOR: [f32; 4] = [0.42, 0.45, 0.35, 1.0];
+/// Max positional jitter as a fraction of decimated spacing (per axis, ± this fraction).
+const JITTER_FRACTION: f32 = 0.35;
+/// Max per-splat radius variation, ± this fraction of the base radius.
+const RADIUS_VARIATION_FRACTION: f32 = 0.2;
+
+/// Deterministic hash of two integers into `[0, 1)`. Pure, no RNG crate — same
+/// inputs always produce the same output (unit-tested for determinism).
+fn hash01(a: u32, b: u32) -> f32 {
+    // xorshift-style integer mix; cheap, well-distributed enough for visual jitter.
+    let mut h = a.wrapping_mul(0x9E3779B1) ^ b.wrapping_mul(0x85EBCA6B);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A2D39);
+    h ^= h >> 15;
+    (h as f32) / (u32::MAX as f32)
+}
+
+/// Deterministic signed hash in `[-1, 1)`, derived from [`hash01`].
+fn hash_signed(a: u32, b: u32, salt: u32) -> f32 {
+    hash01(a ^ salt, b.wrapping_add(salt)) * 2.0 - 1.0
+}
 
 /// One synthesized splat per (decimated) elevation texel, in tile-local space.
 ///
@@ -89,13 +114,21 @@ pub fn synthesize_splats(
             let normal = [-gx * inv_len, inv_len, -gz * inv_len];
 
             let elong = (1.0 + g * g).sqrt().min(MAX_ELONGATION);
-            let minor = SPLAT_COVERAGE * spacing;
+            // Deterministic per-splat radius variation (±RADIUS_VARIATION_FRACTION)
+            // breaks up the uniform-size moiré pattern.
+            let radius_jitter = 1.0 + hash_signed(dr as u32, dc as u32, 0x1234) * RADIUS_VARIATION_FRACTION;
+            let minor = SPLAT_COVERAGE * spacing * radius_jitter;
             let major = minor * elong;
 
+            // Deterministic per-splat positional jitter (small XZ offset, a fraction
+            // of texel spacing) so splats don't sit on a perfectly regular grid.
+            let jitter_x = hash_signed(dr as u32, dc as u32, 0xA5A5) * JITTER_FRACTION * spacing;
+            let jitter_z = hash_signed(dr as u32, dc as u32, 0x5A5A) * JITTER_FRACTION * spacing;
+
             buf.positions.push([
-                dc as f32 * cell_x,
+                dc as f32 * cell_x + jitter_x,
                 ele(dr, dc),
-                (height - 1 - dr) as f32 * cell_z,
+                (height - 1 - dr) as f32 * cell_z + jitter_z,
             ]);
             buf.normals.push(normal);
             buf.scales.push([major, minor]);
@@ -196,9 +229,13 @@ mod tests {
         let buf = synthesize_splats(&ele, w, h, None, tile, scale, 1);
         let cell = (tile / (w - 1) as f64) as f32;
         let ne = buf.positions[0 * w + 2];
-        assert!((ne[0] - 2.0 * cell).abs() < 1e-3); // col 2 → east
-        assert!((ne[2] - (h - 1) as f32 * cell).abs() < 1e-3); // north row → max +z
-        assert!((ne[1] - 80.0 * scale).abs() < 1e-3); // scaled height
+        // Jitter offsets x/z by up to JITTER_FRACTION * spacing; bound the tolerance
+        // to that instead of asserting exact grid alignment.
+        let spacing = 1.0 * cell; // stride=1, cell_x==cell_z here
+        let jitter_bound = JITTER_FRACTION * spacing + 1e-3;
+        assert!((ne[0] - 2.0 * cell).abs() < jitter_bound); // col 2 → east
+        assert!((ne[2] - (h - 1) as f32 * cell).abs() < jitter_bound); // north row → max +z
+        assert!((ne[1] - 80.0 * scale).abs() < 1e-3); // scaled height (no jitter on y)
     }
 
     #[test]
@@ -233,5 +270,99 @@ mod tests {
         let ele = vec![0.0f32; 4];
         let buf = synthesize_splats(&ele, 2, 2, None, 100.0, 1.0, 1);
         assert_eq!(buf.colors[0], DEFAULT_COLOR);
+    }
+
+    #[test]
+    fn hash01_is_deterministic() {
+        assert_eq!(hash01(3, 7), hash01(3, 7));
+        assert_eq!(hash_signed(3, 7, 42), hash_signed(3, 7, 42));
+        // Different inputs should (almost always) differ.
+        assert_ne!(hash01(3, 7), hash01(3, 8));
+    }
+
+    #[test]
+    fn hash01_stays_in_unit_range() {
+        for a in 0..20u32 {
+            for b in 0..20u32 {
+                let v = hash01(a, b);
+                assert!((0.0..1.0).contains(&v), "hash01({a},{b}) = {v} out of range");
+            }
+        }
+    }
+
+    #[test]
+    fn jitter_is_deterministic_across_calls() {
+        // Same grid synthesized twice must produce byte-identical positions.
+        let ele: Vec<f32> = (0..64).map(|i| (i % 7) as f32).collect();
+        let buf1 = synthesize_splats(&ele, 8, 8, None, 400.0, 1.0, 1);
+        let buf2 = synthesize_splats(&ele, 8, 8, None, 400.0, 1.0, 1);
+        assert_eq!(buf1.positions, buf2.positions);
+        assert_eq!(buf1.scales, buf2.scales);
+    }
+
+    #[test]
+    fn jitter_stays_within_bounded_fraction_of_spacing() {
+        let w = 6;
+        let h = 6;
+        let ele = vec![0.0f32; w * h];
+        let tile = 300.0f64;
+        let buf = synthesize_splats(&ele, w, h, None, tile, 1.0, 1);
+        let cell = (tile / (w - 1) as f64) as f32;
+        let spacing = cell; // stride 1, square cells
+        let bound = JITTER_FRACTION * spacing + 1e-4;
+        for (i, p) in buf.positions.iter().enumerate() {
+            let row = i / w;
+            let col = i % w;
+            let expected_x = col as f32 * cell;
+            let expected_z = (h - 1 - row) as f32 * cell;
+            assert!(
+                (p[0] - expected_x).abs() <= bound,
+                "splat {i} x jitter out of bound: {p:?}"
+            );
+            assert!(
+                (p[2] - expected_z).abs() <= bound,
+                "splat {i} z jitter out of bound: {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn radius_variation_stays_within_bounds() {
+        let w = 6;
+        let h = 6;
+        let ele = vec![0.0f32; w * h]; // flat → elongation == 1, minor == major
+        let tile = 300.0f64;
+        let buf = synthesize_splats(&ele, w, h, None, tile, 1.0, 1);
+        let cell = (tile / (w - 1) as f64) as f32;
+        let spacing = cell;
+        let base_minor = SPLAT_COVERAGE * spacing;
+        let lo = base_minor * (1.0 - RADIUS_VARIATION_FRACTION) - 1e-4;
+        let hi = base_minor * (1.0 + RADIUS_VARIATION_FRACTION) + 1e-4;
+        for s in &buf.scales {
+            assert!(s[1] >= lo && s[1] <= hi, "radius out of bound: {s:?} not in [{lo},{hi}]");
+        }
+    }
+
+    #[test]
+    fn overlap_ratio_within_target() {
+        // On flat ground, minor radius should overlap the spacing by ~1.4-1.8x on
+        // average (SPLAT_COVERAGE * 2, since radius spans both sides of a splat's
+        // footprint relative to its neighbor's center-to-center spacing).
+        let w = 8;
+        let h = 8;
+        let ele = vec![0.0f32; w * h];
+        let tile = 400.0f64;
+        let buf = synthesize_splats(&ele, w, h, None, tile, 1.0, 1);
+        let cell = (tile / (w - 1) as f64) as f32;
+        let spacing = cell;
+        // Average minor radius across all splats (radius variation averages out).
+        let avg_minor: f32 = buf.scales.iter().map(|s| s[1]).sum::<f32>() / buf.scales.len() as f32;
+        // Two adjacent splats each extend `avg_minor` toward each other; the ratio
+        // of combined coverage (2*avg_minor) to spacing is the overlap ratio.
+        let overlap_ratio = (2.0 * avg_minor) / spacing;
+        assert!(
+            (1.4..=1.8).contains(&overlap_ratio),
+            "overlap ratio {overlap_ratio} outside 1.4-1.8x target (avg_minor={avg_minor}, spacing={spacing})"
+        );
     }
 }

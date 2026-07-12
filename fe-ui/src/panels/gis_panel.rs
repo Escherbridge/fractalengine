@@ -11,7 +11,8 @@ use crate::gis::{self, GisPanelState, GisPanelTab, GisQueryMode};
 use crate::gpx_ops::GpxImportStatus;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
-use crate::plugin::CameraFocusTarget;
+use crate::path_ops::PathEditStatus;
+use crate::plugin::{CameraFocusTarget, ViewportCursorWorld};
 use crate::terrain_map::PetalMapState;
 use crate::theme;
 use crate::verse_manager::VerseManager;
@@ -30,6 +31,9 @@ pub(crate) fn render_gis_panel(
     ui_mgr: &mut UiManager,
     camera_focus: &mut CameraFocusTarget,
     gpx_status: &GpxImportStatus,
+    path_state: &mut gis::PathEditorState,
+    path_status: &PathEditStatus,
+    cursor_world: &ViewportCursorWorld,
 ) {
     if !gis_state.open {
         return;
@@ -73,6 +77,11 @@ pub(crate) fn render_gis_panel(
                 GisPanelTab::Layers => {
                     crate::panels::layer_manager_card::layer_manager_section(ui, petal_map, ui_mgr, &petal_id);
                 }
+                GisPanelTab::Paths => {
+                    crate::panels::path_editor_card::path_editor_section(
+                        ui, path_state, path_status, ui_mgr, cursor_world, &petal_id,
+                    );
+                }
             }
         });
 
@@ -87,6 +96,7 @@ fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
             (GisPanelTab::Query, "Query"),
             (GisPanelTab::Annotations, "Annotations"),
             (GisPanelTab::Layers, "Layers"),
+            (GisPanelTab::Paths, "Paths"),
         ] {
             let active = gis_state.active_tab == tab;
             let btn = egui::Button::new(

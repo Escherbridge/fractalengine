@@ -10,6 +10,17 @@ pub const ANNOTATION_TITLE_KEY: &str = "gis.annotation.title";
 pub const ANNOTATION_BODY_KEY: &str = "gis.annotation.body";
 pub const ANNOTATION_COLOR_KEY: &str = "gis.annotation.color";
 
+/// Marker property set on track nodes (name of the track) — lets the Paths
+/// tab list track nodes with the same "nodes with a reserved property"
+/// query shape as the Annotations tab, without a `fe-terrain` dependency.
+/// The bridge (`fractalengine/src/gpx_bridge.rs`) sets this alongside
+/// `gpx_points` on `CreateTrack`/import. See `fe-ui/src/AGENTS.md`
+/// §path-editor. Not referenced in-crate — `gis::query` keeps its own copy
+/// (import-free by design, see that module); this is the canonical doc of
+/// the contract for cross-crate readers.
+#[allow(dead_code)]
+pub const TRACK_NAME_KEY: &str = "gis.track.name";
+
 /// Extract the Annotation card's (title, body, color) text buffers from a
 /// node's loaded `properties` object. Missing/non-string values become "".
 pub(crate) fn annotation_fields_from_properties(props: &serde_json::Value) -> (String, String, String) {

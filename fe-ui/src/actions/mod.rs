@@ -7,6 +7,7 @@ pub(crate) mod gis;
 mod gpx;
 mod hexon;
 pub(crate) mod node_props;
+pub(crate) mod path;
 pub(crate) mod portal;
 mod query;
 mod transform;
@@ -81,6 +82,28 @@ pub enum UiAction {
     /// the main binary — see `crate::gpx_ops` for the pending-ops/status
     /// contract (mirrors `DownloadNodeAsset`/`asset_ops`).
     GpxImportFile { petal_id: String, path: PathBuf },
+    // Path editor actions — see AGENTS.md §path-editor.
+    /// Run the "track nodes" query for a petal (Paths tab track list).
+    PathQueryTracks { petal_id: String },
+    /// Create a new (empty) track node named `name` under `petal_id`.
+    PathCreateTrack { petal_id: String, name: String },
+    /// Delete a track node and its persisted points.
+    PathDeleteTrack { track_node_id: String },
+    /// Append a point at the current 3D cursor world position.
+    PathAppendPoint { track_node_id: String, position: [f32; 3] },
+    /// Remove the point at `index` from a track's point list.
+    PathRemovePoint { track_node_id: String, index: usize },
+    /// Create a waypoint annotation at point `index`'s position.
+    PathAnnotatePoint {
+        track_node_id: String,
+        index: usize,
+        title: String,
+        body: String,
+        color: String,
+    },
+    /// Queue a GPX export for a track node. Resolved by the main binary —
+    /// see `crate::path_ops` for the pending-ops/status contract.
+    PathExportGpx { track_node_id: String },
 }
 
 /// Centralized UI state resource.
@@ -176,6 +199,18 @@ impl UiManager {
     }
 }
 
+/// Bundle of GIS/GPX/path-editor queue+state params to keep
+/// `process_ui_actions` under Bevy's 16-param `SystemParam` tuple limit as
+/// new panel surfaces (Query/Annotations/Layers/Paths tabs) land — mirrors
+/// `plugin::MiscUiParams`.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct GisPathParams<'w> {
+    gis_panel: ResMut<'w, crate::gis::GisPanelState>,
+    gpx_ops: ResMut<'w, crate::gpx_ops::PendingGpxOps>,
+    path_state: ResMut<'w, crate::gis::PathEditorState>,
+    path_ops: ResMut<'w, crate::path_ops::PendingPathOps>,
+}
+
 /// Drains all UiActions queued during the egui pass and processes them.
 /// Replaces: forward_webview_open_request, drain_portal_panel_actions, handle_url_save.
 pub(crate) fn process_ui_actions(
@@ -192,9 +227,9 @@ pub(crate) fn process_ui_actions(
     mut asset_ops: ResMut<PendingAssetOps>,
     nav: Res<crate::navigation_manager::NavigationManager>,
     time: Res<Time>,
-    mut gis_panel: ResMut<crate::gis::GisPanelState>,
-    mut gpx_ops: ResMut<crate::gpx_ops::PendingGpxOps>,
+    gis: GisPathParams,
 ) {
+    let GisPathParams { mut gis_panel, mut gpx_ops, mut path_state, mut path_ops } = gis;
     // egui reads toast time from the same Bevy clock (bevy_egui feeds
     // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
     let now_secs = time.elapsed_secs_f64();
@@ -319,6 +354,34 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::GpxImportFile { petal_id, path } => {
                 gpx::request_import(&mut gpx_ops, petal_id, path);
+            }
+            UiAction::PathQueryTracks { petal_id } => {
+                path::query_tracks(&db_sender, &mut path_state, petal_id);
+            }
+            UiAction::PathCreateTrack { petal_id, name } => {
+                if let Err(err) = path::create_track(&mut path_ops, petal_id, name) {
+                    path_state.last_error = Some(err.to_string());
+                } else {
+                    path_state.last_error = None;
+                }
+            }
+            UiAction::PathDeleteTrack { track_node_id } => {
+                if path_state.editing_track_id.as_deref() == Some(track_node_id.as_str()) {
+                    path_state.stop_editing();
+                }
+                path::delete_track(&mut path_ops, track_node_id);
+            }
+            UiAction::PathAppendPoint { track_node_id, position } => {
+                path::append_point(&mut path_ops, &mut path_state, track_node_id, position);
+            }
+            UiAction::PathRemovePoint { track_node_id, index } => {
+                path::remove_point(&mut path_ops, &mut path_state, track_node_id, index);
+            }
+            UiAction::PathAnnotatePoint { track_node_id, index, title, body, color } => {
+                path::annotate_point(&mut path_ops, track_node_id, index, title, body, color);
+            }
+            UiAction::PathExportGpx { track_node_id } => {
+                path::export_gpx(&mut path_ops, track_node_id);
             }
         }
     }
