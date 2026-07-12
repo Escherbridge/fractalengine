@@ -46,6 +46,9 @@ pub struct GisResultRow {
     /// `gis.annotation.color` hex string, when the row came from the
     /// annotated-nodes query — used for the Annotations tab's swatch.
     pub annotation_color: Option<String>,
+    /// `gis.track.visible` bool, when the row came from the track query.
+    /// `None`/absent renders as visible (default) in the Paths row toggle.
+    pub visible: Option<bool>,
 }
 
 /// GIS Query & Layer Manager panel state — an independent floating window,

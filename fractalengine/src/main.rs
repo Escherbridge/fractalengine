@@ -353,12 +353,14 @@ fn main() {
     // remove/annotate/export/delete) and materializes persisted gpx_points
     // on petal load. See src/AGENTS.md §gpx and conductor/tracks/gpx_path_editor_20260711.
     app.init_resource::<gpx_bridge::PendingPathEdits>();
+    app.init_resource::<gpx_bridge::PendingStyleRefresh>();
     app.add_systems(
         bevy::prelude::Update,
         (
             gpx_bridge::drain_path_ops,
             gpx_bridge::advance_path_edits,
             gpx_bridge::request_petal_gpx_materialization,
+            gpx_bridge::refresh_track_style_on_change,
             gpx_bridge::advance_path_materialization,
         ),
     );

@@ -168,6 +168,10 @@ fn reconcile_splat_chunks(
         splat_desired_zoom(cam_real_height, mesh_zoom, config.min_zoom, config.max_zoom)
     };
 
+    // SPLAT_LOD_DEBUG: throttled (~1/s) trace of camera height vs. the zoom the
+    // splat pipeline picks, so zooming in is visible in the log. STRIP AFTER QA.
+    splat_lod_debug(cam_real_height, config.max_zoom, &terrain_set, &wanted_zoom);
+
     // Despawn splats whose mesh chunk is gone, or whose baked splat zoom is now stale (FR-4).
     let mut existing: HashSet<(u8, u32, u32)> = HashSet::new();
     for (e, s) in splat_chunks.iter() {
@@ -232,6 +236,38 @@ fn reconcile_splat_chunks(
             ));
         }
     }
+}
+
+/// SPLAT_LOD_DEBUG: throttled (~1/s) diagnostic of camera height vs. chosen splat
+/// zoom. Temporary — remove after the close-range densification is verified.
+fn splat_lod_debug(
+    cam_real_height: f32,
+    max_zoom: u8,
+    terrain_set: &HashSet<(u8, u32, u32)>,
+    wanted_zoom: &impl Fn(u8) -> u8,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static LAST_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last = LAST_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) < 1000 {
+        return;
+    }
+    LAST_MS.store(now_ms, Ordering::Relaxed);
+    let mesh_zoom = terrain_set.iter().map(|c| c.0).min();
+    let splat_zoom = mesh_zoom.map(wanted_zoom);
+    tracing::info!(
+        target: "SPLAT_LOD_DEBUG",
+        cam_real_height_m = cam_real_height,
+        mesh_zoom = ?mesh_zoom,
+        splat_zoom = ?splat_zoom,
+        max_zoom,
+        "splat lod: camera height -> chosen splat zoom (coverage-fill closes residual holes)"
+    );
 }
 
 /// Local offset of a sub-tile's SW corner within its parent chunk's transform frame.
@@ -330,7 +366,7 @@ fn set_vis(mut vis: Mut<Visibility>, show: bool) {
 /// Re-fetch a tile's data and bake all its splats into one mesh; `None` when unusable.
 fn build_tile_splat_mesh(
     coords: (u8, u32, u32),
-    requested_zoom: u8,
+    _requested_zoom: u8,
     config: &TerrainConfig,
     composite: &CompositeTileSource,
     stride: usize,
@@ -381,13 +417,14 @@ fn build_tile_splat_mesh(
     if buffer.is_empty() {
         return None;
     }
-    // Past the tileset max_zoom ceiling, log-fill density instead of holding flat (splat_marching_squares track).
-    let buffer = crate::splat::interpolate::augment_splat_buffer_if_needed(
-        &buffer,
-        requested_zoom,
-        coords.0,
-    )
-    .unwrap_or(buffer);
+    // Coverage-driven hole fill: close any visible background gaps between splats
+    // (jitter + irregular spacing leave them at every zoom), sizing each new splat
+    // to its neighbor gap and shrinking as the field densifies. Runs whenever holes
+    // exist, independent of the zoom ceiling. The requested zoom still selects the
+    // real sub-tile resolution at the call site (higher zoom = real higher-res
+    // data), complementary to filling residual holes at whatever res was baked.
+    let buffer =
+        crate::splat::interpolate::augment_splat_buffer_coverage(&buffer).unwrap_or(buffer);
     Some(bake_splat_mesh(&buffer))
 }
 
