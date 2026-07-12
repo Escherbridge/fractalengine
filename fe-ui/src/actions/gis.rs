@@ -79,3 +79,36 @@ pub(crate) fn set_layer(
         }
     }
 }
+
+/// Sets the active petal's splat view mode (`"mesh"|"splats"|"hybrid"`) on
+/// the stored terrain JSON and persists via `SetPetalTerrain` — same
+/// mutate-then-persist idiom as `set_layer`. Unrecognized `view_mode`
+/// strings are dropped (with a warn) rather than written, since the field
+/// contract is fixed by the renderer track consuming it.
+pub(crate) fn set_view_mode(
+    db_sender: &DbCommandSender,
+    petal_map: &mut PetalMapState,
+    petal_id: String,
+    view_mode: String,
+) {
+    let Some(mode) = gis::ViewMode::from_str(&view_mode) else {
+        bevy::log::warn!("GIS: unrecognized view_mode '{view_mode}' — not sent");
+        return;
+    };
+    let Some(current) = petal_map.terrain_json.clone() else {
+        bevy::log::warn!("GIS: no terrain JSON loaded for petal {petal_id}; cannot set view_mode");
+        return;
+    };
+    let updated = gis::set_view_mode_field(&current, mode);
+    match db_sender.0.send(DbCommand::SetPetalTerrain {
+        petal_id: petal_id.clone(),
+        terrain: Some(updated.clone()),
+    }) {
+        Ok(()) => {
+            petal_map.terrain_json = Some(updated);
+        }
+        Err(_) => {
+            bevy::log::warn!("db_sender channel closed — SetPetalTerrain (view_mode) not dispatched");
+        }
+    }
+}

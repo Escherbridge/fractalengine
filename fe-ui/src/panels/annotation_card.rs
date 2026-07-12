@@ -43,27 +43,31 @@ pub(crate) fn annotation_card_section(
         );
 
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Color (hex)").small().color(theme::TEXT_DIM));
+        ui.label(egui::RichText::new("Color").small().color(theme::TEXT_DIM));
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut inspector.annotation_color_buf)
                     .hint_text("#RRGGBB")
                     .desired_width(100.0),
             );
-            match parse_hex_color(&inspector.annotation_color_buf) {
-                Some((r, g, b)) => {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
-                }
-                None if !inspector.annotation_color_buf.trim().is_empty() => {
-                    ui.label(
-                        egui::RichText::new("invalid hex")
-                            .small()
-                            .color(theme::STATUS_OFFLINE),
-                    );
-                }
-                None => {}
+            // Interactive swatch: egui's own color picker, bound to the hex
+            // buffer via round-trip parse/format so the stored value stays a
+            // hex string per the gis.annotation.color contract (see
+            // `fe-ui/src/AGENTS.md` §gis-query-ui).
+            let mut rgb = parse_hex_color(&inspector.annotation_color_buf)
+                .map(|(r, g, b)| [r, g, b])
+                .unwrap_or([255, 255, 255]);
+            if egui::widgets::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
+                inspector.annotation_color_buf = rgb_to_hex(rgb[0], rgb[1], rgb[2]);
+            }
+            if parse_hex_color(&inspector.annotation_color_buf).is_none()
+                && !inspector.annotation_color_buf.trim().is_empty()
+            {
+                ui.label(
+                    egui::RichText::new("invalid hex")
+                        .small()
+                        .color(theme::STATUS_OFFLINE),
+                );
             }
         });
 
@@ -76,24 +80,13 @@ pub(crate) fn annotation_card_section(
             )
             .clicked()
         {
-            for (key, buf) in [
-                (ANNOTATION_TITLE_KEY, inspector.annotation_title_buf.clone()),
-                (ANNOTATION_BODY_KEY, inspector.annotation_body_buf.clone()),
-                (ANNOTATION_COLOR_KEY, inspector.annotation_color_buf.clone()),
-            ] {
-                let trimmed = buf.trim();
-                if trimmed.is_empty() {
-                    ui_mgr.push_action(UiAction::DeleteNodeProperty {
-                        node_id: node_id.clone(),
-                        key: key.to_string(),
-                    });
-                } else {
-                    ui_mgr.push_action(UiAction::SetNodeProperty {
-                        node_id: node_id.clone(),
-                        key: key.to_string(),
-                        value: serde_json::Value::String(trimmed.to_string()),
-                    });
-                }
+            for action in annotation_save_actions(
+                &node_id,
+                &inspector.annotation_title_buf,
+                &inspector.annotation_body_buf,
+                &inspector.annotation_color_buf,
+            ) {
+                ui_mgr.push_action(action);
             }
         }
         ui.label(
@@ -129,6 +122,46 @@ pub(crate) fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
         }
         _ => None,
     }
+}
+
+/// Formats `(r, g, b)` bytes back into a lowercase `#rrggbb` hex string —
+/// the inverse of `parse_hex_color`, used when the color picker swatch
+/// changes.
+pub(crate) fn rgb_to_hex(r: u8, g: u8, b: u8) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Computes the Set/Delete actions for a "Save Annotation" click: one action
+/// per field (title/body/color, in that order) — a non-empty (post-trim)
+/// buffer becomes `SetNodeProperty` with the trimmed value, an empty buffer
+/// becomes `DeleteNodeProperty`. Pure so the action-emission logic is
+/// testable without an egui context — see `fe-ui/src/AGENTS.md`
+/// §gis-query-ui.
+pub(crate) fn annotation_save_actions(
+    node_id: &str,
+    title: &str,
+    body: &str,
+    color: &str,
+) -> Vec<UiAction> {
+    [
+        (ANNOTATION_TITLE_KEY, title),
+        (ANNOTATION_BODY_KEY, body),
+        (ANNOTATION_COLOR_KEY, color),
+    ]
+    .into_iter()
+    .map(|(key, buf)| {
+        let trimmed = buf.trim();
+        if trimmed.is_empty() {
+            UiAction::DeleteNodeProperty { node_id: node_id.to_string(), key: key.to_string() }
+        } else {
+            UiAction::SetNodeProperty {
+                node_id: node_id.to_string(),
+                key: key.to_string(),
+                value: serde_json::Value::String(trimmed.to_string()),
+            }
+        }
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -168,5 +201,63 @@ mod tests {
     #[test]
     fn trims_surrounding_whitespace() {
         assert_eq!(parse_hex_color("  #00ff00  "), Some((0, 255, 0)));
+    }
+
+    #[test]
+    fn rgb_to_hex_round_trips_through_parse_hex_color() {
+        let hex = rgb_to_hex(255, 136, 0);
+        assert_eq!(hex, "#ff8800");
+        assert_eq!(parse_hex_color(&hex), Some((255, 136, 0)));
+    }
+
+    #[test]
+    fn save_actions_set_for_non_empty_fields() {
+        let actions = annotation_save_actions("node-1", "Trailhead", "Start here", "#ff0000");
+        assert_eq!(actions.len(), 3);
+        match &actions[0] {
+            UiAction::SetNodeProperty { node_id, key, value } => {
+                assert_eq!(node_id, "node-1");
+                assert_eq!(key, ANNOTATION_TITLE_KEY);
+                assert_eq!(value, &serde_json::json!("Trailhead"));
+            }
+            other => panic!("expected SetNodeProperty, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_actions_delete_for_empty_fields() {
+        let actions = annotation_save_actions("node-1", "", "", "");
+        assert_eq!(actions.len(), 3);
+        for action in &actions {
+            match action {
+                UiAction::DeleteNodeProperty { node_id, .. } => assert_eq!(node_id, "node-1"),
+                other => panic!("expected DeleteNodeProperty, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn save_actions_trims_before_deciding_set_vs_delete() {
+        let actions = annotation_save_actions("node-1", "  ", "Body", "  ");
+        match &actions[0] {
+            UiAction::DeleteNodeProperty { key, .. } => assert_eq!(key, ANNOTATION_TITLE_KEY),
+            other => panic!("expected DeleteNodeProperty for whitespace-only title, got {other:?}"),
+        }
+        match &actions[1] {
+            UiAction::SetNodeProperty { value, .. } => assert_eq!(value, &serde_json::json!("Body")),
+            other => panic!("expected SetNodeProperty for body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_actions_mixed_set_and_delete_are_independent() {
+        // Title set, body/color empty — the historical bug: sibling Delete
+        // results must not stomp the sibling Set buffer. This test only
+        // covers action *emission*; see db_results.rs tests for the
+        // buffer-stomping fix itself.
+        let actions = annotation_save_actions("node-1", "Only Title", "", "");
+        assert!(matches!(actions[0], UiAction::SetNodeProperty { .. }));
+        assert!(matches!(actions[1], UiAction::DeleteNodeProperty { .. }));
+        assert!(matches!(actions[2], UiAction::DeleteNodeProperty { .. }));
     }
 }

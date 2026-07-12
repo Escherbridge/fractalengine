@@ -1,12 +1,14 @@
-//! GIS Query panel: a floating window with three query modes (nodes with
-//! annotations, property key/value filter, local-coords bbox) plus an
-//! embedded Layer Manager (`layer_manager_card`) for the active petal's
-//! terrain layer stack. See `fe-ui/src/AGENTS.md` §gis-query-ui.
+//! GIS Query panel: a floating window with a Query tab (three query modes —
+//! nodes with annotations, property key/value filter, local-coords bbox,
+//! plus GPX import), an Annotations tab (all annotated nodes in the active
+//! petal), and a Layers tab (`layer_manager_card`, view mode). See
+//! `fe-ui/src/AGENTS.md` §gis-query-ui.
 
 use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
-use crate::gis::{self, GisPanelState, GisQueryMode};
+use crate::gis::{self, GisPanelState, GisPanelTab, GisQueryMode};
+use crate::gpx_ops::GpxImportStatus;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
 use crate::plugin::CameraFocusTarget;
@@ -27,6 +29,7 @@ pub(crate) fn render_gis_panel(
     petal_map: &mut PetalMapState,
     ui_mgr: &mut UiManager,
     camera_focus: &mut CameraFocusTarget,
+    gpx_status: &GpxImportStatus,
 ) {
     if !gis_state.open {
         return;
@@ -55,18 +58,84 @@ pub(crate) fn render_gis_panel(
                 return;
             };
 
-            render_query_section(ui, gis_state, node_mgr, verse_mgr, ui_mgr, camera_focus, &petal_id);
-
-            ui.add_space(8.0);
+            render_tab_bar(ui, gis_state);
+            ui.add_space(4.0);
             ui.separator();
             ui.add_space(4.0);
 
-            crate::panels::layer_manager_card::layer_manager_section(ui, petal_map, ui_mgr, &petal_id);
+            match gis_state.active_tab {
+                GisPanelTab::Query => {
+                    render_query_section(ui, gis_state, node_mgr, verse_mgr, ui_mgr, camera_focus, &petal_id, gpx_status);
+                }
+                GisPanelTab::Annotations => {
+                    render_annotations_tab(ui, gis_state, node_mgr, verse_mgr, ui_mgr, camera_focus, &petal_id);
+                }
+                GisPanelTab::Layers => {
+                    crate::panels::layer_manager_card::layer_manager_section(ui, petal_map, ui_mgr, &petal_id);
+                }
+            }
         });
 
     if !still_open {
         gis_state.open = false;
     }
+}
+
+fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
+    ui.horizontal(|ui| {
+        for (tab, label) in [
+            (GisPanelTab::Query, "Query"),
+            (GisPanelTab::Annotations, "Annotations"),
+            (GisPanelTab::Layers, "Layers"),
+        ] {
+            let active = gis_state.active_tab == tab;
+            let btn = egui::Button::new(
+                egui::RichText::new(label)
+                    .small()
+                    .color(if active { theme::TEXT_BRIGHT } else { theme::TEXT_DIM }),
+            )
+            .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+            if ui.add(btn).clicked() {
+                gis_state.active_tab = tab;
+            }
+        }
+    });
+}
+
+/// Annotations tab: every annotated node in the active petal, reusing the
+/// "nodes with annotations" query flow (`GisQueryMode::Annotated` +
+/// `gis_state.results`) behind a Refresh button instead of the Query tab's
+/// Run Query flow.
+fn render_annotations_tab(
+    ui: &mut egui::Ui,
+    gis_state: &mut GisPanelState,
+    node_mgr: &mut NodeManager,
+    verse_mgr: &VerseManager,
+    ui_mgr: &mut UiManager,
+    camera_focus: &mut CameraFocusTarget,
+    petal_id: &str,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Annotated Nodes").strong().color(theme::TEXT_SECTION));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let label = if gis_state.query_pending { "Refreshing..." } else { "Refresh" };
+            if ui
+                .add_enabled(!gis_state.query_pending, egui::Button::new(label).fill(theme::BG_BUTTON))
+                .clicked()
+            {
+                gis_state.mode = GisQueryMode::Annotated;
+                run_query(gis_state, verse_mgr, ui_mgr, petal_id);
+            }
+        });
+    });
+    ui.add_space(4.0);
+
+    if let Some(err) = &gis_state.last_error {
+        ui.label(egui::RichText::new(err).small().color(theme::STATUS_OFFLINE));
+        ui.add_space(4.0);
+    }
+
+    render_results(ui, gis_state, node_mgr, camera_focus);
 }
 
 fn render_query_section(
@@ -77,6 +146,7 @@ fn render_query_section(
     ui_mgr: &mut UiManager,
     camera_focus: &mut CameraFocusTarget,
     petal_id: &str,
+    gpx_status: &GpxImportStatus,
 ) {
     ui.label(egui::RichText::new("Query").strong().color(theme::TEXT_SECTION));
     ui.add_space(4.0);
@@ -174,6 +244,11 @@ fn render_query_section(
     ui.separator();
     ui.add_space(4.0);
     render_results(ui, gis_state, node_mgr, camera_focus);
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(4.0);
+    crate::panels::gpx_import_card::gpx_import_section(ui, ui_mgr, gpx_status, petal_id);
 }
 
 /// Dispatches the active query mode: DB round-trip (annotated/property) via
@@ -222,6 +297,7 @@ fn run_query(
                     name: n.name.clone(),
                     position: n.position,
                     annotation_title: None,
+                    annotation_color: None,
                 })
                 .collect();
         }
@@ -255,6 +331,15 @@ fn render_results(
                 .corner_radius(2.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        if let Some((r, g, b)) = row
+                            .annotation_color
+                            .as_deref()
+                            .and_then(crate::panels::annotation_card::parse_hex_color)
+                        {
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
+                        }
                         let label = egui::RichText::new(&row.name).color(theme::TEXT_BRIGHT);
                         if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
                             clicked_row = Some((row.node_id.clone(), row.position));

@@ -21,19 +21,32 @@
 - `annotation_card.rs` — Properties-tab "Annotation" card
   (`gis.annotation.title`/`body`/`color`). Reuses `SetNodeProperty`/
   `DeleteNodeProperty` exactly like the Custom Properties section below it;
-  see root `AGENTS.md` §gis-query-ui.
+  Save-click action emission is a pure `annotation_save_actions` helper; the
+  color field pairs a hex `TextEdit` with an interactive
+  `egui::widgets::color_picker::color_edit_button_srgb` swatch
+  (`rgb_to_hex`/`parse_hex_color` round-trip). See root `AGENTS.md`
+  §gis-query-ui.
 - `query_tab.rs` — inspector "Query" tab (ad-hoc SurrealQL).
 - `portal_toolbar.rs` — replaces the inspector panel while a portal webview
   is open (back/url/close row).
 - `gis_panel.rs` — GIS Query panel: an independent floating window (toggled
-  from the toolbar, not part of `ActiveDialog`) with three query modes
-  (annotated / property filter / bbox) and a results list that reuses the
-  sidebar's click-to-select + camera-focus mechanism. Embeds
+  from the toolbar, not part of `ActiveDialog`), tab-strip'd into Query /
+  Annotations / Layers (`GisPanelTab`, mirrors `inspector.rs`'s tab bar).
+  Query tab: three query modes (annotated / property filter / bbox), a
+  results list that reuses the sidebar's click-to-select + camera-focus
+  mechanism, and the embedded `gpx_import_card`. Annotations tab: every
+  annotated node in the active petal (reuses the Annotated query flow +
+  `render_results`, plus a Refresh button). Layers tab: embeds
   `layer_manager_card`. State lives in `crate::gis::GisPanelState`; see root
   `AGENTS.md` §gis-query-ui.
 - `layer_manager_card.rs` — visibility/opacity toggles for the active
-  petal's terrain layer stack, round-tripped through `SetPetalTerrain`. See
-  root `AGENTS.md` §gis-query-ui.
+  petal's terrain layer stack, round-tripped through `SetPetalTerrain`, plus
+  the Mesh/Splats/Hybrid view-mode selector (`render_view_mode_row`,
+  additive `"view_mode"` terrain JSON field). See root `AGENTS.md`
+  §gis-query-ui.
+- `gpx_import_card.rs` — GIS panel's GPX import button (rfd file picker) +
+  persistent status row, queues `UiAction::GpxImportFile`. See root
+  `AGENTS.md` §gpx-import.
 
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.

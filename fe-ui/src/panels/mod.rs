@@ -11,6 +11,7 @@ pub(crate) mod toolbar;
 
 mod annotation_card;
 mod asset_card;
+mod gpx_import_card;
 mod layer_manager_card;
 mod portal_toolbar;
 
@@ -48,6 +49,7 @@ pub fn gardener_console(
     petal_map: &mut crate::terrain_map::PetalMapState,
     asset_status: &AssetDownloadStatus,
     gis_panel: &mut crate::gis::GisPanelState,
+    gpx_status: &crate::gpx_ops::GpxImportStatus,
 ) -> egui::Rect {
     toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr, gis_panel);
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
@@ -103,7 +105,7 @@ pub fn gardener_console(
 
     // GIS query & layer-manager panel (independent floating window, not part
     // of the mutual-exclusion `ActiveDialog` set — see panels/AGENTS.md §gis).
-    gis_panel::render_gis_panel(ctx, gis_panel, node_mgr, hierarchy, nav, petal_map, ui_mgr, camera_focus);
+    gis_panel::render_gis_panel(ctx, gis_panel, node_mgr, hierarchy, nav, petal_map, ui_mgr, camera_focus, gpx_status);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);

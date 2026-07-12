@@ -17,6 +17,28 @@ pub(crate) fn annotation_fields_from_properties(props: &serde_json::Value) -> (S
     (get(ANNOTATION_TITLE_KEY), get(ANNOTATION_BODY_KEY), get(ANNOTATION_COLOR_KEY))
 }
 
+/// Which Annotation-card buffer a property key corresponds to, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnnotationField {
+    Title,
+    Body,
+    Color,
+}
+
+/// Maps a deleted/set property key to its Annotation-card buffer. Used by
+/// `DbResult::NodePropertyDeleted` handling to clear only the buffer for the
+/// touched key instead of re-deriving all three from the (possibly stale,
+/// mid-Save-batch) properties cache — see `fe-ui/src/AGENTS.md`
+/// §gis-query-ui annotation-save-fix for the race this avoids.
+pub(crate) fn annotation_field_for_key(key: &str) -> Option<AnnotationField> {
+    match key {
+        ANNOTATION_TITLE_KEY => Some(AnnotationField::Title),
+        ANNOTATION_BODY_KEY => Some(AnnotationField::Body),
+        ANNOTATION_COLOR_KEY => Some(AnnotationField::Color),
+        _ => None,
+    }
+}
+
 pub(crate) fn load(db_sender: &DbCommandSender, node_id: String) {
     if db_sender
         .0
@@ -79,5 +101,17 @@ mod tests {
         let props = serde_json::json!({ (ANNOTATION_TITLE_KEY): 42 });
         let (title, _, _) = annotation_fields_from_properties(&props);
         assert_eq!(title, "");
+    }
+
+    #[test]
+    fn annotation_field_for_key_maps_all_three() {
+        assert_eq!(annotation_field_for_key(ANNOTATION_TITLE_KEY), Some(AnnotationField::Title));
+        assert_eq!(annotation_field_for_key(ANNOTATION_BODY_KEY), Some(AnnotationField::Body));
+        assert_eq!(annotation_field_for_key(ANNOTATION_COLOR_KEY), Some(AnnotationField::Color));
+    }
+
+    #[test]
+    fn annotation_field_for_key_none_for_unrelated_key() {
+        assert_eq!(annotation_field_for_key("custom.other"), None);
     }
 }
