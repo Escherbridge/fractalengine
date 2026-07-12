@@ -1,0 +1,13 @@
+{
+  "id": "splat_lod_zoom_20260712",
+  "description": "Splat resolution driven by camera-distance zoom (Esri-style scale in/out) instead of inheriting the mesh chunk's fixed zoom",
+  "type": "feature",
+  "created_at": "2026-07-12T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 0,
+  "wave_rationale": "User 2026-07-12: splats 'still very low res' after round-3 jitter/overlap polish (terrain_splat_view_20260711 phase 1). User explicitly prioritized this (tile/LOD zoom pipeline) over marching-squares-style splat interpolation as the first fix to attempt.",
+  "depends_on": ["terrain_splat_view_20260711", "terrain_lod_hardening_20260711"],
+  "blocks": [],
+  "archived": false,
+  "notes": "Research (2026-07-12) confirmed CompositeTileSource is stateless-per-call and coordinate-driven — it already supports fetching any zoom on demand (fe-terrain/src/tiles/composite.rs); nothing pins it to one zoom. The only reason splats inherit the mesh chunk's zoom today is that reconcile_splat_chunks (fe-terrain/src/splat/render.rs:119-181) reuses chunk.tile_coords verbatim instead of computing its own camera-distance-aware desired zoom. This significantly de-risks the track: it's zoom-selection decoupling + a fetch-at-higher-zoom path, not a new fetch pipeline."
+}
