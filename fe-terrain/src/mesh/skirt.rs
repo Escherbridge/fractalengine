@@ -1,4 +1,4 @@
-//! Pure mesh-skirt geometry: vertical edge walls that hide seams between tiles; see `src/AGENTS.md` §terrain_plugin.
+//! Pure mesh-skirt geometry: down+outward edge walls that hide seams between tiles; see `src/AGENTS.md` §terrain_plugin.
 
 /// Extra geometry to append to a base grid mesh; `indices` already offset by `base`.
 pub struct SkirtGeometry {
@@ -8,17 +8,26 @@ pub struct SkirtGeometry {
     pub indices: Vec<u32>,
 }
 
-/// Skirt depth in world units: `texels` × the larger grid cell size.
-pub fn skirt_depth(cell_size_x: f32, cell_size_z: f32, texels: f32) -> f32 {
-    cell_size_x.abs().max(cell_size_z.abs()) * texels.max(0.0)
+/// Skirt depth in world units: the larger of `texels × cell size` and
+/// `min_fraction × tile_world_size` (so huge low-zoom tiles still get a
+/// visually significant skirt versus inter-tile elevation disagreements).
+pub fn skirt_depth(
+    cell_size_x: f32,
+    cell_size_z: f32,
+    texels: f32,
+    tile_world_size: f32,
+    min_fraction: f32,
+) -> f32 {
+    let texel_based = cell_size_x.abs().max(cell_size_z.abs()) * texels.max(0.0);
+    let size_based = tile_world_size.abs() * min_fraction.max(0.0);
+    texel_based.max(size_based)
 }
 
-/// Build vertical skirt walls around the four edges of a row-major `w×h` grid.
+/// Build down+outward-flared, two-sided skirt walls around a `w×h` grid's four edges; see `src/AGENTS.md` §terrain_plugin.
 ///
-/// Edge vertices are duplicated and their copies dropped by `depth`; each edge
-/// segment becomes a two-sided quad so the wall shows from any viewing angle,
-/// hiding float-precision gaps and edge-height mismatches between adjacent tiles.
-/// `base` is the existing vertex count; emitted indices reference `base + local`.
+/// Bottoms drop by `depth` and flare outward by `overlap` (XZ); `base` is the
+/// existing vertex count so emitted indices reference `base + local`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_skirt(
     positions: &[[f32; 3]],
     uvs: &[[f32; 2]],
@@ -26,6 +35,7 @@ pub fn build_skirt(
     w: usize,
     h: usize,
     depth: f32,
+    overlap: f32,
     base: u32,
 ) -> SkirtGeometry {
     let mut out = SkirtGeometry {
@@ -44,13 +54,22 @@ pub fn build_skirt(
     let left: Vec<usize> = (0..h).map(|r| r * w).collect(); // col 0
     let right: Vec<usize> = (0..h).map(|r| r * w + (w - 1)).collect(); // col w-1
 
-    for edge in [top, bottom, left, right] {
-        append_edge_skirt(&mut out, positions, uvs, normals, &edge, depth, base);
+    // Outward XZ unit direction per edge (rows grow +z, cols grow +x).
+    for (edge, outward) in [
+        (top, [0.0f32, -1.0]),   // row 0 → -z
+        (bottom, [0.0, 1.0]),    // row h-1 → +z
+        (left, [-1.0, 0.0]),     // col 0 → -x
+        (right, [1.0, 0.0]),     // col w-1 → +x
+    ] {
+        append_edge_skirt(
+            &mut out, positions, uvs, normals, &edge, depth, overlap, outward, base,
+        );
     }
     out
 }
 
-/// Append one edge's skirt strip (top + dropped-bottom vertices, two-sided quads).
+/// Append one edge's skirt strip (top + dropped/flared-bottom vertices, two-sided quads).
+#[allow(clippy::too_many_arguments)]
 fn append_edge_skirt(
     out: &mut SkirtGeometry,
     positions: &[[f32; 3]],
@@ -58,13 +77,20 @@ fn append_edge_skirt(
     normals: &[[f32; 3]],
     edge: &[usize],
     depth: f32,
+    overlap: f32,
+    outward: [f32; 2],
     base: u32,
 ) {
+    let overlap = overlap.max(0.0);
     let start = base + out.positions.len() as u32;
     for &gi in edge {
         let p = positions[gi];
         out.positions.push(p); // wall top (local even)
-        out.positions.push([p[0], p[1] - depth, p[2]]); // wall bottom (local odd)
+        out.positions.push([
+            p[0] + outward[0] * overlap,
+            p[1] - depth,
+            p[2] + outward[1] * overlap,
+        ]); // wall bottom, dropped + flared outward (local odd)
         let uv = uvs[gi];
         out.uvs.push(uv);
         out.uvs.push(uv);
@@ -91,9 +117,21 @@ mod tests {
 
     #[test]
     fn skirt_depth_uses_larger_cell_times_texels() {
-        assert_eq!(skirt_depth(2.0, 3.0, 2.0), 6.0);
-        assert_eq!(skirt_depth(5.0, 1.0, 3.0), 15.0);
-        assert_eq!(skirt_depth(2.0, 3.0, 0.0), 0.0);
+        // With no fraction floor, the texel-based term wins.
+        assert_eq!(skirt_depth(2.0, 3.0, 2.0, 0.0, 0.0), 6.0);
+        assert_eq!(skirt_depth(5.0, 1.0, 3.0, 0.0, 0.0), 15.0);
+        assert_eq!(skirt_depth(2.0, 3.0, 0.0, 0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn skirt_depth_fraction_floor_dominates_for_large_tiles() {
+        // Tiny texel-based depth (2×1 = 2) is floored to 1.5% of a 1000-unit tile.
+        assert_eq!(skirt_depth(1.0, 1.0, 2.0, 1000.0, 0.015), 15.0);
+        // When cells are large the texel term still wins over the floor.
+        assert_eq!(skirt_depth(100.0, 100.0, 2.0, 1000.0, 0.015), 200.0);
+        // Negative inputs are treated by magnitude / clamped to non-negative.
+        assert_eq!(skirt_depth(1.0, 1.0, 2.0, -1000.0, 0.015), 15.0);
+        assert_eq!(skirt_depth(1.0, 1.0, 2.0, 1000.0, -0.5), 2.0);
     }
 
     #[test]
@@ -101,12 +139,12 @@ mod tests {
         let pos = vec![[0.0, 0.0, 0.0]];
         let uv = vec![[0.0, 0.0]];
         let n = vec![[0.0, 1.0, 0.0]];
-        let s = build_skirt(&pos, &uv, &n, 1, 1, 1.0, 0);
+        let s = build_skirt(&pos, &uv, &n, 1, 1, 1.0, 0.0, 0);
         assert!(s.positions.is_empty());
         assert!(s.indices.is_empty());
 
         // Zero depth also yields no skirt.
-        let s = build_skirt(&pos, &uv, &n, 1, 1, 0.0, 0);
+        let s = build_skirt(&pos, &uv, &n, 1, 1, 0.0, 0.0, 0);
         assert!(s.positions.is_empty());
     }
 
@@ -122,7 +160,8 @@ mod tests {
         let uv = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
         let n = vec![[0.0, 1.0, 0.0]; 4];
         let depth = 2.0;
-        let s = build_skirt(&pos, &uv, &n, 2, 2, depth, 100);
+        // Zero overlap so bottoms stay directly below their tops for this check.
+        let s = build_skirt(&pos, &uv, &n, 2, 2, depth, 0.0, 100);
 
         // 4 edges, each with 2 grid vertices → 2 (top+bottom) × 2 = 4 verts per edge.
         assert_eq!(s.positions.len(), 16);
@@ -139,5 +178,34 @@ mod tests {
         }
         // Indices are all offset by base and within the appended range.
         assert!(s.indices.iter().all(|&i| i >= 100 && i < 100 + 16));
+    }
+
+    #[test]
+    fn build_skirt_flares_bottoms_outward() {
+        // 2x2 grid at y = 10; edges are appended top, bottom, left, right.
+        let pos = vec![
+            [0.0, 10.0, 0.0],
+            [1.0, 10.0, 0.0],
+            [0.0, 10.0, 1.0],
+            [1.0, 10.0, 1.0],
+        ];
+        let uv = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let n = vec![[0.0, 1.0, 0.0]; 4];
+        let depth = 2.0;
+        let overlap = 0.5;
+        let s = build_skirt(&pos, &uv, &n, 2, 2, depth, overlap, 0);
+
+        // Top edge (indices 0..4): bottoms flare to -z, dropped by depth.
+        assert_eq!(s.positions[1], [0.0, 10.0 - depth, -overlap]);
+        assert_eq!(s.positions[3], [1.0, 10.0 - depth, -overlap]);
+        // Bottom edge (indices 4..8): grid z = 1, bottoms flare to +z.
+        assert_eq!(s.positions[5], [0.0, 10.0 - depth, 1.0 + overlap]);
+        assert_eq!(s.positions[7], [1.0, 10.0 - depth, 1.0 + overlap]);
+        // Left edge (indices 8..12): grid x = 0, bottoms flare to -x.
+        assert_eq!(s.positions[9], [-overlap, 10.0 - depth, 0.0]);
+        assert_eq!(s.positions[11], [-overlap, 10.0 - depth, 1.0]);
+        // Right edge (indices 12..16): grid x = 1, bottoms flare to +x.
+        assert_eq!(s.positions[13], [1.0 + overlap, 10.0 - depth, 0.0]);
+        assert_eq!(s.positions[15], [1.0 + overlap, 10.0 - depth, 1.0]);
     }
 }

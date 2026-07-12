@@ -4,8 +4,14 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 
 use crate::mesh::skirt::{build_skirt, skirt_depth};
 
-/// Skirt depth as a multiple of the grid cell size (hides inter-tile seams).
+/// Skirt depth as a multiple of the grid cell size (hides small inter-tile seams).
 const SKIRT_TEXELS: f32 = 2.0;
+/// Skirt depth floor as a fraction of tile edge length so huge low-zoom tiles
+/// still get a visible skirt versus inter-tile elevation disagreements.
+const SKIRT_MIN_FRACTION: f32 = 0.015;
+/// Outward skirt flare as a fraction of tile edge length; covers the horizontal
+/// XZ gaps between independently-anchored neighbour tiles (see AGENTS.md).
+const SKIRT_OVERLAP_FRACTION: f32 = 0.02;
 
 /// Generate a terrain mesh from a grid of elevation values.
 ///
@@ -88,11 +94,14 @@ pub fn terrain_mesh(
         *n = [v.x, v.y, v.z];
     }
 
-    // Extrude the four edges downward into skirt walls once the base normals are
-    // final, so background never shows through inter-tile seams.
+    // Extrude the four edges down + outward into skirt walls once the base normals
+    // are final, so neither elevation-step nor horizontal-gap seams reveal the
+    // background. Both depth and flare scale with the (already-scaled) tile size.
     let base = positions.len() as u32;
-    let depth = skirt_depth(cell_size_x, cell_size_z, SKIRT_TEXELS);
-    let skirt = build_skirt(&positions, &uvs, &normals, w, h, depth, base);
+    let tile_size = tile_world_size as f32;
+    let depth = skirt_depth(cell_size_x, cell_size_z, SKIRT_TEXELS, tile_size, SKIRT_MIN_FRACTION);
+    let overlap = tile_size.abs() * SKIRT_OVERLAP_FRACTION;
+    let skirt = build_skirt(&positions, &uvs, &normals, w, h, depth, overlap, base);
     positions.extend(skirt.positions);
     normals.extend(skirt.normals);
     uvs.extend(skirt.uvs);

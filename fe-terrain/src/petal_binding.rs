@@ -73,7 +73,7 @@ mod render_support {
 
     use super::PetalTerrainAssignment;
     use crate::config::{ElevationSourceKind, TerrainConfig};
-    use crate::layers::{LayerStack, LayerType, MapLayer};
+    use crate::layers::{layer_type_from_config_name, LayerStack, MapLayer};
     use crate::terrain_plugin::{GeoJsonOverlay, GeoJsonProcessed, GpxTrackLine, TerrainChunk};
     use crate::tiles::{
         decode_png_pixels, CompositeTileSource, DiskTileCache, ElevationDecoder,
@@ -194,13 +194,12 @@ mod render_support {
 
                 layer_stack.clear();
                 for (index, layer) in config.layers.iter().enumerate() {
-                    let layer_type = match layer.name.as_str() {
-                        "satellite" => LayerType::Satellite,
-                        "terrain" => LayerType::Terrain,
-                        other => {
-                            tracing::warn!(layer = %other, "unknown terrain layer name; skipping");
-                            continue;
-                        }
+                    // `source_url` = GPX node_id / GeoJSON path; see `src/AGENTS.md` §petal_binding.
+                    let Some(layer_type) =
+                        layer_type_from_config_name(layer.name.as_str(), layer.source_url.as_deref())
+                    else {
+                        tracing::warn!(layer = %layer.name, "unknown terrain layer name; skipping");
+                        continue;
                     };
                     let mut map_layer = MapLayer::new(layer_type, index as i32);
                     map_layer.visible = layer.visible;

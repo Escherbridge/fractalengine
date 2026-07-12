@@ -35,6 +35,27 @@ pub enum LayerType {
     Waypoints,
 }
 
+/// Map a petal-config layer `name` (+ optional `source` id) to a [`LayerType`].
+///
+/// The config carries only a free-form name and optional source URL; the variants
+/// that need an identifier (`GpxTrack.node_id`, `GeoJsonOverlay.source_path`) take
+/// it from `source` so a matching track/overlay entity binds for visibility (empty
+/// when absent). Unknown names return `None` — callers warn and skip.
+pub fn layer_type_from_config_name(name: &str, source: Option<&str>) -> Option<LayerType> {
+    match name {
+        "satellite" => Some(LayerType::Satellite),
+        "terrain" => Some(LayerType::Terrain),
+        "gpx_track" => Some(LayerType::GpxTrack {
+            node_id: source.unwrap_or_default().to_string(),
+            color_mode: "solid".to_string(),
+        }),
+        "geojson_overlay" => Some(LayerType::GeoJsonOverlay {
+            source_path: source.unwrap_or_default().to_string(),
+        }),
+        _ => None,
+    }
+}
+
 /// A single compositable layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapLayer {
@@ -242,5 +263,45 @@ mod tests {
         assert!(stack.get_visible_layers().is_empty());
         // But get_all_layers_sorted still includes it
         assert_eq!(stack.get_all_layers_sorted().len(), 1);
+    }
+
+    #[test]
+    fn layer_type_from_config_name_known_names() {
+        assert!(matches!(
+            layer_type_from_config_name("satellite", None),
+            Some(LayerType::Satellite)
+        ));
+        assert!(matches!(
+            layer_type_from_config_name("terrain", None),
+            Some(LayerType::Terrain)
+        ));
+    }
+
+    #[test]
+    fn layer_type_from_config_name_maps_gpx_and_geojson_with_source() {
+        match layer_type_from_config_name("gpx_track", Some("node-42")) {
+            Some(LayerType::GpxTrack { node_id, .. }) => assert_eq!(node_id, "node-42"),
+            other => panic!("expected GpxTrack, got {other:?}"),
+        }
+        match layer_type_from_config_name("geojson_overlay", Some("/tmp/a.geojson")) {
+            Some(LayerType::GeoJsonOverlay { source_path }) => {
+                assert_eq!(source_path, "/tmp/a.geojson")
+            }
+            other => panic!("expected GeoJsonOverlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layer_type_from_config_name_source_defaults_empty() {
+        match layer_type_from_config_name("gpx_track", None) {
+            Some(LayerType::GpxTrack { node_id, .. }) => assert!(node_id.is_empty()),
+            other => panic!("expected GpxTrack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layer_type_from_config_name_unknown_is_none() {
+        assert!(layer_type_from_config_name("heatmap", None).is_none());
+        assert!(layer_type_from_config_name("", None).is_none());
     }
 }
