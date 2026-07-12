@@ -5777,6 +5777,7 @@ dependencies = [
  "iroh",
  "rand 0.8.6",
  "rfd",
+ "serde_json",
  "surrealdb",
  "tempfile",
  "tokio",

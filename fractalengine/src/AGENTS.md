@@ -72,3 +72,163 @@ Two asset paths converge here:
    outside this track's owned-file set (`plugin.rs` explicitly belongs to
    another worker), so this wiring is left for the coordinator/owning worker
    to apply — it's a mechanical thread-through, not a design decision.
+
+## §gpx
+
+`gpx_pipeline_20260711` track — the import→persist→render→serve chain for
+GPX files. `gpx_bridge.rs` is the persist step; render (spawning
+`GpxTrackLine` entities + populating `TrackRouteMap`) and the `gpx_track`
+layer wiring are **out of scope here** (per `metadata.json`, that's W-B's
+`petal_binding` territory) and remain unwired after this pass — see
+"Residuals" below.
+
+**Current state of the pieces (as found, before this pass):**
+
+- `fe-terrain/src/gpx/{parser,stats,convert,export}.rs` — GPX 1.0/1.1
+  parsing (`parse_gpx_bytes` → `GpxData`), stats (`compute_stats` →
+  `TrackStats` with `total_distance_m`, `elevation_gain_m`,
+  `elevation_loss_m`, `duration: Option<f64>`, `avg_speed_kmh`,
+  `max_speed_kmh`, `bounding_box: BoundingBox`), and a **fe-terrain-local**
+  `DbCommand` struct (`convert.rs`, fields `petal_id, name, position,
+  parent_node_id, properties`) used by `gpx_to_scene_commands`. This local
+  struct is a dead end for any real persistence path: it is NOT
+  `fe_runtime::messages::DbCommand` and nothing translates its
+  `parent_node_id`/`properties` fields into the real command set (see next
+  bullet) — `gpx_bridge.rs` does its own mapping instead of reusing it.
+- `fe-api/src/gpx.rs`'s `import_gpx` HTTP handler calls
+  `gpx_to_scene_commands` and then creates nodes via the *real*
+  `fe_runtime::messages::DbCommand::CreateNode { petal_id, name, position }`
+  — which has no `properties` or `parent_node_id` field. The handler only
+  ever forwards `cmd.name`/`cmd.position`; `cmd.properties` and
+  `cmd.parent_node_id` are silently dropped. **This means the shipped HTTP
+  import endpoint has never actually written `gpx_type`/stats properties or
+  any hierarchy** — confirmed by reading `create_node_handler`
+  (`fe-database/src/handlers/crud.rs`): it never populates `properties`, and
+  the `node` schema has no `parent_node_id` column at all (grep across
+  `fe-database/src` returns zero hits outside the DTO-shape code in
+  `fe-api/src/gpx.rs`'s export path, which reads a field that was never
+  written). `gpx_bridge.rs` fixes the properties gap for the UI-driven path
+  via `SetNodeProperty`; the missing schema column is a residual (below).
+- `fe-terrain/src/terrain_plugin.rs`'s `GpxTrackLine` component
+  (`{ track_node_id: String }`) + `render_gpx_tracks` system + `TrackRouteMap`
+  resource (`fe-terrain/src/iot/animation.rs`, keyed by `track_node_id`,
+  values carry **timestamped** route points) are fully implemented but
+  **nothing in the codebase ever spawns a `GpxTrackLine` entity or populates
+  `TrackRouteMap`** (grep for `GpxTrackLine` outside `terrain_plugin.rs` /
+  `petal_binding.rs` returns nothing). Wiring that spawn (reading
+  `gpx_type == "track"` nodes for the active petal, and populating
+  `TrackRouteMap` from per-point data with timestamps for the animation) is
+  the FR-3 render half of this track and is **not done by this worker**.
+- `fe-api/src/gis.rs`'s `GET .../gis/tracks` reads nodes via
+  `properties.gpx_type = 'track'` and deserializes cached stats straight off
+  flat property keys (`row_to_track`: `total_distance_m`,
+  `elevation_gain_m`, `elevation_loss_m`, `duration_s`, `avg_speed_kmh`,
+  `max_speed_kmh`, `bounding_box`). `GET .../gis/nodes` surfaces
+  `gis.annotation.title/body/color` (flat dotted keys, per
+  `fe-database/src/AGENTS.md` §gis) via `extract_annotation`. These two
+  read shapes are the **contract** `gpx_bridge.rs` writes against.
+
+**`gpx_bridge.rs` design (the persist step, FR-2):**
+
+- Contract with fe-ui (mirrors `asset_ops` exactly, per spec): drains
+  `fe_ui::gpx_ops::PendingGpxOps` (`GpxOp::ImportFile { petal_id, path:
+  PathBuf }`), writes `fe_ui::gpx_ops::GpxImportStatus` for the UI to
+  surface. **fe-ui's `gpx_ops` module did not exist when this file was
+  written** (a parallel worker owns it) — the exact field names of
+  `GpxImportStatus` (`petal_id: Option<String>, track_count: u32,
+  waypoint_count: u32, error: Option<String>`, mirroring
+  `asset_ops::AssetDownloadStatus`'s shape) are this worker's best guess and
+  may need reconciling once the real module lands (see INTEGRATION_REQUEST
+  below).
+- **One track node per imported file.** All `<trk>` elements/segments in
+  the file are merged into a single synthesized track node (`compute_stats`
+  already aggregates across every track in the `GpxData`), positioned at
+  the **first trackpoint** in document order (not the bounding-box center
+  the HTTP endpoint uses — a petal with a real terrain origin needs the
+  track's own position to align with that origin, not an arbitrary
+  bbox-center local origin). Node properties: `gpx_type = "track"` plus the
+  six stat keys + `bounding_box` object, written via one `SetNodeProperty`
+  call per key (flat keys — `CreateNode` has no `properties` field, see
+  above). If the file has zero trackpoints, no track node is created and
+  every `<wpt>` is persisted as a standalone waypoint instead (see below).
+- **Waypoints as the track's "children".** Every `<wpt>` in the file is
+  persisted as its own node with `gpx_type = "waypoint"` and
+  `gis.annotation.title` set to the waypoint's name (or `Waypoint {n}` if
+  unnamed) — matching the reserved annotation-key contract in
+  `fe-database/src/AGENTS.md` §gis exactly, so these waypoints also surface
+  through `GET .../gis/nodes`. **There is no `parent_node_id` column on the
+  `node` table and no DbCommand to set one** (see above), so "child" is
+  approximated with a custom flat property `gpx_track_id` = the track
+  node's ID, set once the track's `CreateNode` result resolves. This is the
+  best available linkage under "existing commands only" — a real
+  parent/child relation would need a new schema column + `DbCommand`
+  variant, which is out of scope (`fe-database/src/lib.rs` is quarantined).
+  Standalone waypoints (no track in the file) get no `gpx_track_id`.
+- **Correlating `CreateNode`'s fire-and-forget result.** `DbCommandSender`
+  is fire-and-forget and `DbResult` is a broadcast Bevy `Message` with no
+  request ID — unlike `ApiCommand::DbRequest`'s `PendingApiRequests`
+  correlation (oneshot channels), a plain ECS system has no such mechanism.
+  `gpx_bridge.rs` correlates by content: a `PendingGpxImports` resource
+  keeps a `HashMap<(petal_id, name), VecDeque<...>>` of "what to do when the
+  next matching `DbResult::NodeCreated` arrives" (set the track's stat
+  properties + create its waypoints; set a waypoint's type/title/track-link
+  properties). The DB thread's dispatch loop is a single sequential
+  `loop { rx.recv() ... await ... send_result() }` (`fe-database/src/lib.rs`)
+  with **no per-command concurrency**, so results for a given caller's
+  commands arrive in the same relative order they were sent — the
+  `VecDeque` per key correctly disambiguates duplicate names (e.g. two
+  waypoints both literally named "Camp") in FIFO order. The residual risk:
+  an unrelated `CreateNode` elsewhere in the app with an identical
+  `(petal_id, name)` racing the same frame window would be misattributed —
+  acceptable for a desktop single-user import flow, documented rather than
+  solved (solving it properly needs a real request-id channel, which is a
+  `fe_runtime`/`fe-database` change out of this track's scope).
+- **Projection (petal terrain origin).** Per spec, points project through
+  the *petal's* terrain origin, not an arbitrary bbox-center. The only
+  already-resident state carrying a resolved terrain origin is
+  `fe_terrain::petal_binding::ActivePetalTerrain` (inserted by
+  `TerrainPlugin`, tracks whichever petal is currently the *active*
+  viewport petal). `gpx_bridge.rs` reads it directly (no new DB round trip)
+  when `active_terrain.petal_id` matches the import's target `petal_id`; if
+  it doesn't match (importing into a non-active petal, or no terrain
+  configured yet) it falls back to the bounding-box-center `Projection`,
+  same as `fe-api/src/gpx.rs`'s HTTP endpoint. A dedicated
+  `DbCommand::GetPetalTerrain` round trip was considered and rejected: its
+  `DbResult::PetalTerrainLoaded` is already consumed by
+  `terrain_bridge::bridge_petal_terrain`, which unconditionally reassigns
+  the *active* petal's terrain — reusing it here for a possibly-different
+  target petal would hijack the viewport's active terrain as a side effect.
+
+**INTEGRATION_REQUEST (gpx_pipeline_20260711, coordinator-owned `main.rs`):**
+Register two new systems and one resource, mirroring the asset-bridge
+wiring: `app.init_resource::<gpx_bridge::PendingGpxImports>();` and
+`app.add_systems(Update, (gpx_bridge::drain_gpx_ops,
+gpx_bridge::advance_gpx_imports));` — placed after `TerrainPlugin` is added
+(needs `ActivePetalTerrain` to exist) and after fe-ui's `gpx_ops` module
+lands (needs `PendingGpxOps`/`GpxImportStatus` to exist and be
+`init_resource`'d, mirroring how `PendingAssetOps`/`AssetDownloadStatus` are
+init'd in `fe_ui::plugin::GardenerConsolePlugin::build`). This binary cannot
+compile until fe-ui's `gpx_ops` module exists — expected, per the coordinator's
+final sweep.
+
+**Residuals (not fixed by this pass, flagged for follow-up):**
+
+1. No `parent_node_id` column on `node` — GPX waypoint "children" (and any
+   future track/segment/trackpoint hierarchy) are property-linked
+   (`gpx_track_id`) rather than a real FK. A future track should add the
+   column + a `DbCommand::SetNodeParent`-style variant.
+2. No per-trackpoint nodes are persisted (only the one track node's cached
+   stats + standalone waypoint nodes) — `TrackRouteMap`'s
+   `TimestampedRoutePoint` data (needed for `render_gpx_tracks`'s animated
+   polyline) has no source yet. Whoever wires FR-3 rendering needs either a
+   trackpoint-node persistence path added here, or a different route-data
+   source (e.g. re-parsing the original GPX file referenced by the track
+   node, if its source path/hash were cached).
+3. `fe-api/src/gpx.rs`'s HTTP `import_gpx`/`export_gpx` endpoints are
+   unaffected by this pass and remain incomplete in the ways described
+   above (properties/hierarchy silently dropped on import; export reads a
+   `parent_node_id` field that is never written). Out of this track's
+   owned-file set (`fe-api/src/gpx.rs` is read-only here).
+4. `GpxImportStatus`'s exact field names are this worker's assumption,
+   pending reconciliation with whatever fe-ui's `gpx_ops` worker actually
+   ships (see above).

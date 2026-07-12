@@ -12,6 +12,7 @@ use fe_ui::plugin::LocalUserRole;
 use tracing_subscriber::EnvFilter;
 
 mod asset_bridge;
+mod gpx_bridge;
 mod terrain_bridge;
 
 /// Default SurrealKV database path. Must match the path used by
@@ -328,6 +329,8 @@ fn main() {
     app.add_plugins(fe_ui::plugin::GardenerConsolePlugin);
     // Terrain runtime: petal map assignments + tileset registry bridge.
     app.add_plugins(fe_terrain::terrain_plugin::TerrainPlugin);
+    // Splat view: synthesized terrain splats + Mesh/Splats/Hybrid view modes.
+    app.add_plugins(fe_terrain::splat::SplatPlugin);
     if let Some(ref registry) = tileset_registry {
         app.insert_resource(fe_terrain::petal_binding::SharedTilesetRegistry(registry.clone()));
     }
@@ -339,6 +342,13 @@ fn main() {
     // resolved blobs into the user's downloads folder. See src/AGENTS.md §assets.
     app.insert_resource(asset_bridge::AssetBlobStore(blob_store_for_assets));
     app.add_systems(bevy::prelude::Update, asset_bridge::drain_asset_ops);
+    // GPX import bridge: drains fe-ui's queued GPX imports into petal-bound
+    // track + waypoint nodes. See src/AGENTS.md §gpx.
+    app.init_resource::<gpx_bridge::PendingGpxImports>();
+    app.add_systems(
+        bevy::prelude::Update,
+        (gpx_bridge::drain_gpx_ops, gpx_bridge::advance_gpx_imports),
+    );
     // WebView portal: inline wry overlay + petal portal lifecycle systems.
     app.add_plugins(fe_webview::plugin::WebViewPlugin);
     app.add_plugins(fe_webview::petal_portal::PetalPortalPlugin);
