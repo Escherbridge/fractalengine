@@ -8,15 +8,17 @@
   save/open chain this drives.
 - `node_props.rs` — custom node property load/set/delete (`DbCommand`
   fire-and-forget with a `warn!` on channel-closed). Also owns the reserved
-  `gis.annotation.{title,body,color}` key constants + a pure
-  `annotation_fields_from_properties` extractor used by the inspector's
-  Annotation card — see root `AGENTS.md` §gis-query-ui.
+  `gis.annotation.{title,body,color}` key constants + pure
+  `annotation_fields_from_properties`/`annotation_field_for_key` extractors
+  used by the inspector's Annotation card and its
+  `NodePropertyDeleted`-handling fix — see root `AGENTS.md` §gis-query-ui.
 - `hexon.rs` — hexon/tileset install/remove/seed/download + petal-map
   set + petal-manifest save/open.
 - `query.rs` — SurrealQL query submission.
-- `gis.rs` — GIS query panel + layer manager I/O: submits
+- `gis.rs` — GIS query panel + layer manager + view-mode I/O: submits
   `DbCommand::RawQuery` built by `crate::gis::query`'s pure builders, and
-  round-trips terrain layer edits via `SetPetalTerrain` (mirrors
+  round-trips terrain layer edits (`set_layer`) and the splat view mode
+  (`set_view_mode`) via `SetPetalTerrain` (mirrors
   `hexon.rs::set_petal_map_scale`'s mutate-then-persist idiom). State lives
   in `crate::gis::GisPanelState` (top-level module, not under `actions/`) —
   see root `AGENTS.md` §gis-query-ui for why the state/pure-logic and the
@@ -26,6 +28,9 @@
   `crate::asset_ops::PendingAssetOps`, mirroring the `hexon.rs` pattern of
   queuing for the main binary rather than resolving in fe-ui. See root
   `AGENTS.md` §asset-download.
+- `gpx.rs` — GPX track import request; only pushes onto
+  `crate::gpx_ops::PendingGpxOps`, mirroring `asset.rs` exactly. See root
+  `AGENTS.md` §gpx-import.
 
 `process_ui_actions` stays a thin per-variant dispatcher; keep new actions'
 actual logic in the matching domain file rather than growing the match arms

@@ -39,6 +39,11 @@ pub(crate) fn layer_manager_section(
         return;
     }
 
+    render_view_mode_row(ui, petal_map, ui_mgr, petal_id);
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
     for name in HONORED_LAYER_NAMES {
         render_honored_layer_row(ui, petal_map, ui_mgr, petal_id, name);
     }
@@ -58,6 +63,46 @@ pub(crate) fn layer_manager_section(
             "Layer name isn't mapped in fe-terrain's petal_binding yet — see fe-terrain/src/AGENTS.md §petal_binding",
         );
     }
+}
+
+/// Splat "View mode" selector (Mesh/Splats/Hybrid) — persisted as the
+/// additive `"view_mode"` petal terrain JSON field via the same
+/// mutate-and-round-trip idiom as the layer checkboxes below. Another track
+/// builds the renderer side reading this field; the values must stay
+/// exactly `"mesh"|"splats"|"hybrid"` (see `crate::gis::ViewMode`).
+fn render_view_mode_row(
+    ui: &mut egui::Ui,
+    petal_map: &mut PetalMapState,
+    ui_mgr: &mut UiManager,
+    petal_id: &str,
+) {
+    let current = petal_map
+        .terrain_json
+        .as_ref()
+        .map(gis::view_mode_from_terrain_json)
+        .unwrap_or_default();
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("View mode").small().color(theme::TEXT_DIM));
+        for (mode, label) in [
+            (gis::ViewMode::Mesh, "Mesh"),
+            (gis::ViewMode::Splats, "Splats"),
+            (gis::ViewMode::Hybrid, "Hybrid"),
+        ] {
+            let active = current == mode;
+            let btn = egui::Button::new(label)
+                .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+            if ui.add(btn).clicked() && !active {
+                if let Some(current_doc) = &petal_map.terrain_json {
+                    petal_map.terrain_json = Some(gis::set_view_mode_field(current_doc, mode));
+                }
+                ui_mgr.push_action(UiAction::GisSetViewMode {
+                    petal_id: petal_id.to_string(),
+                    view_mode: mode.as_str().to_string(),
+                });
+            }
+        }
+    });
 }
 
 /// Renders one honored layer's visible checkbox + opacity slider. Mirrors

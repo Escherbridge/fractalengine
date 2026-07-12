@@ -78,6 +78,60 @@ pub(crate) fn set_layer_field(
     doc
 }
 
+/// Splat rendering mode for a petal's terrain — additive `"view_mode"`
+/// field on the stored terrain JSON, consumed by the renderer (another
+/// track, not fe-ui — fe-ui only round-trips the field name/values, which
+/// must not deviate: `"mesh" | "splats" | "hybrid"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Mesh,
+    Splats,
+    Hybrid,
+}
+
+impl ViewMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ViewMode::Mesh => "mesh",
+            ViewMode::Splats => "splats",
+            ViewMode::Hybrid => "hybrid",
+        }
+    }
+
+    pub(crate) fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "mesh" => Some(ViewMode::Mesh),
+            "splats" => Some(ViewMode::Splats),
+            "hybrid" => Some(ViewMode::Hybrid),
+            _ => None,
+        }
+    }
+
+    pub(crate) const ALL: [ViewMode; 3] = [ViewMode::Mesh, ViewMode::Splats, ViewMode::Hybrid];
+}
+
+/// Reads the petal terrain JSON's `"view_mode"` field, defaulting to `Mesh`
+/// when absent or unrecognized (back-compat with terrain docs predating
+/// this field).
+pub(crate) fn view_mode_from_terrain_json(terrain_json: &serde_json::Value) -> ViewMode {
+    terrain_json
+        .get("view_mode")
+        .and_then(|v| v.as_str())
+        .and_then(ViewMode::from_str)
+        .unwrap_or_default()
+}
+
+/// Returns a mutated clone of `terrain_json` with `"view_mode"` set,
+/// preserving every other field — same "mutate one field, round-trip"
+/// idiom as `set_layer_field`.
+pub(crate) fn set_view_mode_field(terrain_json: &serde_json::Value, mode: ViewMode) -> serde_json::Value {
+    let mut doc = terrain_json.clone();
+    let Some(obj) = doc.as_object_mut() else { return doc };
+    obj.insert("view_mode".to_string(), serde_json::Value::String(mode.as_str().to_string()));
+    doc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +193,45 @@ mod tests {
     fn set_layer_field_noop_on_non_object_doc() {
         let doc = serde_json::json!([1, 2, 3]);
         let updated = set_layer_field(&doc, "satellite", Some(true), None);
+        assert_eq!(updated, doc);
+    }
+
+    #[test]
+    fn view_mode_str_round_trips_for_all_variants() {
+        for mode in ViewMode::ALL {
+            assert_eq!(ViewMode::from_str(mode.as_str()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn view_mode_from_str_rejects_unknown() {
+        assert_eq!(ViewMode::from_str("wireframe"), None);
+    }
+
+    #[test]
+    fn view_mode_from_terrain_json_defaults_to_mesh_when_absent() {
+        assert_eq!(view_mode_from_terrain_json(&sample_doc()), ViewMode::Mesh);
+    }
+
+    #[test]
+    fn view_mode_from_terrain_json_defaults_to_mesh_when_unrecognized() {
+        let doc = serde_json::json!({ "view_mode": "not_a_mode" });
+        assert_eq!(view_mode_from_terrain_json(&doc), ViewMode::Mesh);
+    }
+
+    #[test]
+    fn set_view_mode_field_reads_back_and_preserves_siblings() {
+        let updated = set_view_mode_field(&sample_doc(), ViewMode::Splats);
+        assert_eq!(view_mode_from_terrain_json(&updated), ViewMode::Splats);
+        // sibling fields preserved
+        assert_eq!(updated["world_scale"], serde_json::json!(0.01));
+        assert_eq!(layer_entries_from_terrain_json(&updated).len(), 2);
+    }
+
+    #[test]
+    fn set_view_mode_field_noop_on_non_object_doc() {
+        let doc = serde_json::json!([1, 2, 3]);
+        let updated = set_view_mode_field(&doc, ViewMode::Hybrid);
         assert_eq!(updated, doc);
     }
 }

@@ -23,6 +23,7 @@ pub(super) fn apply_db_results(
     mut pending_api: ResMut<fe_runtime::app::PendingApiRequests>,
     mut petal_map: ResMut<crate::terrain_map::PetalMapState>,
     mut gis_panel: ResMut<crate::gis::GisPanelState>,
+    node_mgr: Res<crate::node_manager::NodeManager>,
 ) {
     for result in reader.read() {
         match result {
@@ -396,7 +397,16 @@ pub(super) fn apply_db_results(
             }
 
             // --- Property value results ---
-            DbResult::NodePropertiesLoaded { node_id: _, ref properties } => {
+            // All three arms below are gated on `node_id` still matching the
+            // current selection: `NodePropertySet`'s refetch-after-save is
+            // async, so if the user has since selected a different node, a
+            // stale response must not stomp that node's Properties/Annotation
+            // buffers. See `fe-ui/src/AGENTS.md` §gis-query-ui
+            // annotation-save-fix.
+            DbResult::NodePropertiesLoaded { ref node_id, ref properties } => {
+                if !is_for_selected_node(&node_mgr, node_id) {
+                    continue;
+                }
                 inspector.node_properties = properties.clone();
                 inspector.node_properties_loading = false;
                 // Annotation card buffers derive from the same properties object.
@@ -407,22 +417,45 @@ pub(super) fn apply_db_results(
                 inspector.annotation_color_buf = color;
             }
             DbResult::NodePropertySet { ref node_id, key: _ } => {
+                if !is_for_selected_node(&node_mgr, node_id) {
+                    continue;
+                }
                 // Re-fetch properties for the node to refresh UI
                 inspector.node_properties_loading = true;
                 let _ = db_sender.0.send(DbCommand::GetNodeProperties {
                     node_id: node_id.clone(),
                 });
             }
-            DbResult::NodePropertyDeleted { node_id: _, ref key } => {
+            DbResult::NodePropertyDeleted { ref node_id, ref key } => {
+                if !is_for_selected_node(&node_mgr, node_id) {
+                    continue;
+                }
                 // Remove the key locally for immediate UI feedback
                 if let Some(obj) = inspector.node_properties.as_object_mut() {
                     obj.remove(key.as_str());
                 }
-                let (title, body, color) =
-                    crate::actions::node_props::annotation_fields_from_properties(&inspector.node_properties);
-                inspector.annotation_title_buf = title;
-                inspector.annotation_body_buf = body;
-                inspector.annotation_color_buf = color;
+                // Update only the buffer for the deleted key rather than
+                // re-deriving all three from `inspector.node_properties` —
+                // a single "Save Annotation" click emits one action per
+                // field (Set for non-empty, Delete for empty), and that
+                // cache may still be missing a sibling field's just-Set
+                // value (its own NodePropertySet→refetch round-trip hasn't
+                // resolved yet) when this Delete result lands. Re-deriving
+                // from the stale cache would visibly revert the sibling
+                // field to blank even though its write already landed in
+                // the DB — this was the annotation-save bug.
+                match crate::actions::node_props::annotation_field_for_key(key) {
+                    Some(crate::actions::node_props::AnnotationField::Title) => {
+                        inspector.annotation_title_buf.clear();
+                    }
+                    Some(crate::actions::node_props::AnnotationField::Body) => {
+                        inspector.annotation_body_buf.clear();
+                    }
+                    Some(crate::actions::node_props::AnnotationField::Color) => {
+                        inspector.annotation_color_buf.clear();
+                    }
+                    None => {}
+                }
             }
 
             // --- Field definition results ---
@@ -475,6 +508,14 @@ pub(super) fn apply_db_results(
     }
 }
 
+/// `true` when `node_id` is still the currently-selected node — guards
+/// async property-load/set/delete results against stomping a different
+/// node's buffers after the user has switched selection mid-round-trip. See
+/// `fe-ui/src/AGENTS.md` §gis-query-ui annotation-save-fix.
+fn is_for_selected_node(node_mgr: &crate::node_manager::NodeManager, node_id: &str) -> bool {
+    node_mgr.selected.as_ref().is_some_and(|s| s.node_id == node_id)
+}
+
 /// Convert ApiTokenInfo list to UI-displayable ApiTokenEntry list.
 fn tokens_to_entries(tokens: &[fe_runtime::messages::ApiTokenInfo]) -> Vec<ApiTokenEntry> {
     tokens.iter().map(|t| ApiTokenEntry {
@@ -509,5 +550,36 @@ fn refresh_inspector_tokens(
         }).is_err() {
             bevy::log::error!("db_sender channel closed during scoped token list refresh — DB thread may have crashed");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node_manager::NodeManager;
+    use bevy::prelude::Entity;
+
+    fn mgr_selected(node_id: &str) -> NodeManager {
+        let mut mgr = NodeManager::default();
+        mgr.select(Entity::from_bits(1), node_id);
+        mgr
+    }
+
+    #[test]
+    fn is_for_selected_node_true_when_matching() {
+        let mgr = mgr_selected("node-1");
+        assert!(is_for_selected_node(&mgr, "node-1"));
+    }
+
+    #[test]
+    fn is_for_selected_node_false_when_different_node() {
+        let mgr = mgr_selected("node-1");
+        assert!(!is_for_selected_node(&mgr, "node-2"));
+    }
+
+    #[test]
+    fn is_for_selected_node_false_when_nothing_selected() {
+        let mgr = NodeManager::default();
+        assert!(!is_for_selected_node(&mgr, "node-1"));
     }
 }

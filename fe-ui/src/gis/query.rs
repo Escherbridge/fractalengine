@@ -7,10 +7,11 @@ use std::collections::HashMap;
 
 use super::GisResultRow;
 
-/// Reserved annotation-title property key (mirrors `actions::node_props`,
+/// Reserved annotation-title/color property keys (mirrors `actions::node_props`,
 /// duplicated here rather than pulled in as a dependency to keep this module
 /// import-free of the `actions` layer — see AGENTS.md).
 const ANNOTATION_TITLE_KEY: &str = "gis.annotation.title";
+const ANNOTATION_COLOR_KEY: &str = "gis.annotation.color";
 
 // ---------------------------------------------------------------------------
 // Query builders (pure). Single SELECT, no `;`, no banned keywords — see
@@ -20,12 +21,15 @@ const ANNOTATION_TITLE_KEY: &str = "gis.annotation.title";
 // ---------------------------------------------------------------------------
 
 /// Builds the "nodes with annotations" query for a petal: every node whose
-/// `gis.annotation.title` property is set.
+/// `gis.annotation.title` property is set. Also selects the annotation color
+/// (may be `NONE`) for the Annotations tab's swatch.
 pub(crate) fn annotation_query(petal_id: &str) -> (String, HashMap<String, serde_json::Value>) {
     let sql = format!(
-        "SELECT node_id, display_name, position, elevation, properties[\"{key}\"] AS annotation_title \
-         FROM node WHERE petal_id = $petal_id AND properties[\"{key}\"] != NONE",
-        key = ANNOTATION_TITLE_KEY,
+        "SELECT node_id, display_name, position, elevation, properties[\"{title_key}\"] AS annotation_title, \
+         properties[\"{color_key}\"] AS annotation_color \
+         FROM node WHERE petal_id = $petal_id AND properties[\"{title_key}\"] != NONE",
+        title_key = ANNOTATION_TITLE_KEY,
+        color_key = ANNOTATION_COLOR_KEY,
     );
     let mut vars = HashMap::new();
     vars.insert("petal_id".to_string(), serde_json::Value::String(petal_id.to_string()));
@@ -92,7 +96,8 @@ fn parse_gis_row(v: &serde_json::Value) -> Option<GisResultRow> {
         .and_then(|a| a.as_str())
         .or_else(|| v.get("matched_value").and_then(|a| a.as_str()))
         .map(str::to_string);
-    Some(GisResultRow { node_id, name, position: [x, elevation, z], annotation_title })
+    let annotation_color = v.get("annotation_color").and_then(|a| a.as_str()).map(str::to_string);
+    Some(GisResultRow { node_id, name, position: [x, elevation, z], annotation_title, annotation_color })
 }
 
 /// Extracts `(x, z)` from a node's `position` field. Handles both the
@@ -184,6 +189,7 @@ mod tests {
             "position": { "type": "Point", "coordinates": [10.0, 20.0] },
             "elevation": 5.0,
             "annotation_title": "Start",
+            "annotation_color": "#ff8800",
         }]);
         let rows = parse_gis_rows(data.as_array().unwrap());
         assert_eq!(rows.len(), 1);
@@ -191,6 +197,25 @@ mod tests {
         assert_eq!(rows[0].name, "Trailhead");
         assert_eq!(rows[0].position, [10.0, 5.0, 20.0]);
         assert_eq!(rows[0].annotation_title.as_deref(), Some("Start"));
+        assert_eq!(rows[0].annotation_color.as_deref(), Some("#ff8800"));
+    }
+
+    #[test]
+    fn parse_gis_rows_annotation_color_absent_yields_none() {
+        let data = serde_json::json!([{
+            "node_id": "n1",
+            "position": [0.0, 0.0],
+            "annotation_title": "Start",
+        }]);
+        let rows = parse_gis_rows(data.as_array().unwrap());
+        assert!(rows[0].annotation_color.is_none());
+    }
+
+    #[test]
+    fn annotation_query_selects_color_field() {
+        let (sql, _) = annotation_query("petal-1");
+        assert!(sql.contains("annotation_color"));
+        assert!(sql.contains("gis.annotation.color"));
     }
 
     #[test]

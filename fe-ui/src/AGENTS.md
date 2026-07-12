@@ -15,7 +15,8 @@ see each module's own doc-comment for the "what"; this file is the "why".
 | `dialogs` | `ActiveDialog` (mutual-exclusion enum) + one render function per floating dialog/window. |
 | `terrain_map` | Petal-map state (`PetalMapState`), the hexon registry op queue (`HexonOp`/`PendingHexonOps`), Hexon Manager DTOs, the petal manifest type, and tileset-event draining. |
 | `asset_ops` | Node-asset download op queue (`AssetOp`/`PendingAssetOps`) + the result-status resource (`AssetDownloadStatus`) the main binary writes back to. See §asset-download. |
-| `gis` | `GisPanelState` (GIS Query panel resource) + pure query-building/row-parsing/bbox-filter/layer-JSON logic backing the GIS Query & Layer Manager panel. See §gis-query-ui. |
+| `gis` | `GisPanelState` (GIS Query panel resource, incl. `GisPanelTab`) + pure query-building/row-parsing/bbox-filter/layer-JSON/view-mode logic backing the GIS Query, Annotations & Layer Manager panel. See §gis-query-ui. |
+| `gpx_ops` | GPX track import op queue (`GpxOp`/`PendingGpxOps`) + the result-status resource (`GpxImportStatus`) the main binary writes back to. See §gpx-import. |
 | `panels` | The top-level egui shell (`gardener_console`) + one file per panel (toolbar, status bar, sidebar tree, inspector tabs, query tab, portal toolbar). |
 | `node_manager` | `NodeManager` (single source of truth for selection) + gimbal interaction/hover/pick, viewport click-to-select, transform broadcast, inspector sync — one file per concern. |
 | `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. |
@@ -234,3 +235,89 @@ currently mapped to a `LayerType` in `fe-terrain::petal_binding` (see
 checkboxes are shown **disabled with a tooltip** explaining they're inert —
 tracked as a residual per FR-3, not wired to any config since fe-ui must
 not couple to fe-terrain's layer-name mapping.
+
+### Round 2 additions (GIS Round-2 worker W-A)
+
+**Annotation-save fix.** The Annotation card's Save button was landing
+writes in the DB (proven by the Annotated query finding titled nodes) but
+visibly reverting the just-typed field to blank in the same frame. Root
+cause: a single Save click emits one `UiAction` per field — `SetNodeProperty`
+for non-empty (post-trim) fields, `DeleteNodeProperty` for empty ones (an
+annotation with, say, only a title set is the common case, so a Delete for
+the still-empty body/color fields fires in the *same* batch as the title's
+Set). `DbResult::NodePropertyDeleted`'s handler used to re-derive **all
+three** Annotation buffers from `inspector.node_properties` — but that cache
+can still be missing the sibling Set's value, because `NodePropertySet`'s
+own refresh (`GetNodeProperties` → `NodePropertiesLoaded`) is a separate
+async round-trip that usually resolves a frame or more *after* the Delete
+result for the sibling field. The Delete handler was overwriting the
+just-typed sibling buffer back to blank before its own confirmation arrived.
+Fixed in `verse_manager/db_results.rs`: `NodePropertyDeleted` now clears only
+the one buffer matching the deleted key (via `actions::node_props::annotation_field_for_key`)
+instead of re-deriving all three. A secondary hardening: `NodePropertiesLoaded`/
+`NodePropertySet`/`NodePropertyDeleted` are now gated on `node_id` still
+matching `NodeManager.selected` (`db_results::is_for_selected_node`) — without
+this, a stale in-flight property fetch (e.g. triggered by the old node's
+post-Save refresh) could land after the user switched to a different node and
+stomp that node's buffers. The Save button's action-emission itself was
+extracted into a pure `panels::annotation_card::annotation_save_actions` for
+direct unit testing.
+
+**Color picker.** The Annotation card's hex swatch (previously a static
+painted rect) is now `egui::widgets::color_picker::color_edit_button_srgb`
+(egui 0.33 via bevy_egui 0.39), bound to a `[u8; 3]` derived from
+`parse_hex_color`/formatted back via the new `annotation_card::rgb_to_hex`.
+The hex `TextEdit` stays alongside it — the stored value is still a plain
+hex string per the `gis.annotation.color` contract; only the widget changed.
+
+**GIS panel tabs.** `panels::gis_panel` is now tab-strip'd (`GisPanelTab`:
+Query / Annotations / Layers, mirroring `inspector.rs`'s tab-bar idiom) —
+previously the Query section and Layer Manager were both always visible
+stacked in one window. **Annotations tab** reuses the exact
+`GisQueryMode::Annotated` query flow (`run_query`/`gis_state.results`) behind
+a dedicated Refresh button rather than inventing a second results channel —
+`DbResult::QueryResult`'s untagged-reply routing (see the residual note
+above) is fragile enough already without a third claimant. Rows show a color
+swatch (parsed from the query's new `annotation_color` column via
+`GisResultRow.annotation_color`), title, and node name; click-to-select
+reuses the same `pending_sidebar_select`/`CameraFocusTarget` mechanism as
+Query-tab results. GPX-imported waypoints get `gis.annotation.title` set
+from the waypoint name by the GPX bridge (another worker), so they surface
+here automatically.
+
+**Splat view mode.** Layers tab gained a Mesh/Splats/Hybrid selector
+(`panels::layer_manager_card::render_view_mode_row`), persisted as an
+additive `"view_mode": "mesh"|"splats"|"hybrid"` field on the petal terrain
+JSON via `gis::set_view_mode_field`/`view_mode_from_terrain_json` (same
+mutate-and-round-trip idiom as `set_layer_field`, new `UiAction::GisSetViewMode`
+→ `actions::gis::set_view_mode`). The renderer side consuming this field is
+owned by another track — the field name/values are a fixed contract, do not
+rename.
+
+## §gpx-import — integration contract for the main binary
+
+`panels::gpx_import_card` (embedded in the GIS panel's Query tab) is
+UI-only: an "Import GPX..." button opens an `rfd::FileDialog` filtered to
+`.gpx` (same idiom as `dialogs::gltf_import`'s Browse button) and, on a
+picked file, pushes `UiAction::GpxImportFile { petal_id, path }`.
+`process_ui_actions` drains that into `gpx_ops::PendingGpxOps` exactly like
+`UiAction::DownloadNodeAsset` drains into `asset_ops::PendingAssetOps` — fe-ui
+never parses a GPX file or touches the DB itself.
+
+Integration contract for `fractalengine` (main binary, not owned by this
+worker; contract reconciled with the GPX-bridge worker mid-track):
+1. Each frame (or on a timer), drain `Res<PendingGpxOps>` (mirrors the
+   `asset_ops`/`terrain_bridge.rs` drain pattern), resolve
+   `GpxOp::ImportFile { petal_id, path }` by parsing the GPX file and
+   creating nodes/tracks for the petal. Imported waypoints get
+   `gis.annotation.title` set from the waypoint name so they surface in the
+   GIS panel's Annotations tab automatically — no fe-ui-side filtering needed.
+2. Write the outcome into `ResMut<GpxImportStatus>`: `petal_id` +
+   `track_count`/`waypoint_count` on success, or `petal_id` + `error` on
+   failure. **Note the status shape is counts, not a single imported-track
+   name** — a GPX file may contain multiple tracks/waypoints, and the
+   success toast/status row read like "Imported N track(s), M waypoint(s)".
+3. `gpx_ops::surface_gpx_import_status` (registered in `plugin.rs`) surfaces
+   the outcome as a toast; `gpx_import_card::gpx_import_section` additionally
+   renders a persistent status row gated on `petal_id` matching the active
+   petal (mirrors `asset_card`'s FR-3 status row).

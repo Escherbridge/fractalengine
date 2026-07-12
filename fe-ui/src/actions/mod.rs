@@ -4,6 +4,7 @@
 
 mod asset;
 pub(crate) mod gis;
+mod gpx;
 mod hexon;
 pub(crate) mod node_props;
 pub(crate) mod portal;
@@ -70,6 +71,12 @@ pub enum UiAction {
         visible: Option<bool>,
         opacity: Option<f32>,
     },
+    /// Set the active petal's splat view mode (`"mesh"|"splats"|"hybrid"`).
+    GisSetViewMode { petal_id: String, view_mode: String },
+    /// Queue a GPX track file for import into the given petal. Resolved by
+    /// the main binary — see `crate::gpx_ops` for the pending-ops/status
+    /// contract (mirrors `DownloadNodeAsset`/`asset_ops`).
+    GpxImportFile { petal_id: String, path: PathBuf },
 }
 
 /// Centralized UI state resource.
@@ -181,6 +188,7 @@ pub(crate) fn process_ui_actions(
     nav: Res<crate::navigation_manager::NavigationManager>,
     time: Res<Time>,
     mut gis_panel: ResMut<crate::gis::GisPanelState>,
+    mut gpx_ops: ResMut<crate::gpx_ops::PendingGpxOps>,
 ) {
     // egui reads toast time from the same Bevy clock (bevy_egui feeds
     // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
@@ -297,6 +305,12 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::GisSetLayer { petal_id, layer_name, visible, opacity } => {
                 gis::set_layer(&db_sender, &mut petal_map, petal_id, layer_name, visible, opacity);
+            }
+            UiAction::GisSetViewMode { petal_id, view_mode } => {
+                gis::set_view_mode(&db_sender, &mut petal_map, petal_id, view_mode);
+            }
+            UiAction::GpxImportFile { petal_id, path } => {
+                gpx::request_import(&mut gpx_ops, petal_id, path);
             }
         }
     }

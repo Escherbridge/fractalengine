@@ -6,7 +6,11 @@
 - `db_results.rs` — `apply_db_results`, the large `DbResult` match that
   updates the in-memory tree, dialog state, and inspector state in response
   to every DB thread reply. Also owns `tokens_to_entries` /
-  `refresh_inspector_tokens` (API token list bookkeeping).
+  `refresh_inspector_tokens` (API token list bookkeeping) and
+  `is_for_selected_node` — the `NodePropertiesLoaded`/`NodePropertySet`/
+  `NodePropertyDeleted` arms gate on this (dropping stale results for a
+  node that's no longer selected) as part of the annotation-save fix; see
+  root `AGENTS.md` §gis-query-ui.
 - `spawn.rs` — GLTF-backed scene spawning (`spawn_node_entity`) and the
   fallback placard sign for asset-less nodes (`spawn_fallback_sign` +
   `FallbackSign` marker component). Shared by both `db_results.rs` (spawn on

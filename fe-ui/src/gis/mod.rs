@@ -6,7 +6,10 @@
 mod layers;
 mod query;
 
-pub(crate) use layers::{layer_entries_from_terrain_json, set_layer_field, LayerUiEntry};
+pub(crate) use layers::{
+    layer_entries_from_terrain_json, set_layer_field, set_view_mode_field,
+    view_mode_from_terrain_json, LayerUiEntry, ViewMode,
+};
 pub(crate) use query::{
     annotation_query, bbox_contains, parse_bbox_fields, parse_filter_value, parse_gis_rows,
     property_filter_query,
@@ -23,6 +26,15 @@ pub enum GisQueryMode {
     Bbox,
 }
 
+/// Which top-level tab the GIS panel is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GisPanelTab {
+    #[default]
+    Query,
+    Annotations,
+    Layers,
+}
+
 /// A single query result row: enough to display and to select+focus the node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GisResultRow {
@@ -30,6 +42,9 @@ pub struct GisResultRow {
     pub name: String,
     pub position: [f32; 3],
     pub annotation_title: Option<String>,
+    /// `gis.annotation.color` hex string, when the row came from the
+    /// annotated-nodes query — used for the Annotations tab's swatch.
+    pub annotation_color: Option<String>,
 }
 
 /// GIS Query & Layer Manager panel state — an independent floating window,
@@ -39,6 +54,7 @@ pub struct GisResultRow {
 #[derive(Resource)]
 pub struct GisPanelState {
     pub open: bool,
+    pub active_tab: GisPanelTab,
     pub mode: GisQueryMode,
     // Property-filter mode
     pub filter_key_buf: String,
@@ -62,6 +78,7 @@ impl Default for GisPanelState {
     fn default() -> Self {
         Self {
             open: false,
+            active_tab: GisPanelTab::default(),
             mode: GisQueryMode::default(),
             filter_key_buf: String::new(),
             filter_value_buf: String::new(),
@@ -97,6 +114,7 @@ mod tests {
     fn default_state_is_closed_with_origin_bbox() {
         let gis = GisPanelState::default();
         assert!(!gis.open);
+        assert_eq!(gis.active_tab, GisPanelTab::Query);
         assert_eq!(gis.mode, GisQueryMode::Annotated);
         assert_eq!(parse_bbox_fields(&gis.bbox_min), Some([-50.0, -50.0]));
         assert_eq!(parse_bbox_fields(&gis.bbox_max), Some([50.0, 50.0]));
