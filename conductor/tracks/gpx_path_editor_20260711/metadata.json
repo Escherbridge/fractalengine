@@ -9,5 +9,5 @@
   "depends_on": ["gpx_pipeline_20260711"],
   "blocks": [],
   "archived": false,
-  "notes": "Persisting trackpoints (gpx_points flat property) also fixes the gpx_pipeline session-scoped-render residual: a load-time materializer rebuilds TrackRouteMap + GpxTrackLine from persisted paths."
+  "notes": "Persisting trackpoints (gpx_points flat property) also fixes the gpx_pipeline session-scoped-render residual: a load-time materializer rebuilds TrackRouteMap + GpxTrackLine from persisted paths. Phase 1 (FR-1..FR-5, list-panel editor) shipped 2026-07-12. User feedback: list panel doesn't match the 'drawing tool' vision — phase 2 (FR-6..FR-11, spec updated 2026-07-12) adds click-to-place/drag/annotate in the viewport plus per-track line styling and a real ribbon-mesh line renderer."
 }
