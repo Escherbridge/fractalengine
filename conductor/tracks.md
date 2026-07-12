@@ -272,6 +272,14 @@ _Depends on: Terrain Scale Controls | Blocks: none_
 _Scope: One splat per elevation texel (position from tile geo + elevation, color from satellite, slope-aware anisotropy) rendered via instanced quads; `TerrainViewMode { Mesh, Splats, Hybrid }` toggle persisted per petal; phase 2 pre-bakes quantized splat buffers into hexon archives (additive entry type + `splat_ready` flag) with a gis-tile-etl bake stage. Photogrammetric 3DGS training is explicitly out of scope (single orthographic view)._
 _Status: pending — queued behind terrain_lod_hardening_20260711 (same crates; user gated "if easy and convenient")_
 
+## [ ] Track: Hexon Scale Orchestration + Rulers — Real-World Scale in the GIS Data Layer
+
+_Link: [./tracks/hexon_scale_orchestration_20260712/](./tracks/hexon_scale_orchestration_20260712/)_
+_Depends on: Terrain Scale Controls (done) | Coordinate with: Terrain LOD Hardening (in-flight, same crates) | Blocks: none_
+_Scope: Push real-world scale into the **existing** hexon format (`TilesetMeta` in fe-format — additive serde fields `native_scale`/`ground_sample_distance_m`/`crs`/`scale_bounds` + Web-Mercator backfill so already-installed hexons upgrade on load, NOT a parallel format). Hexon-authoritative scale: `apply_terrain_assignments` sets `world_scale` from the hexon (mirroring the elevation-encoding override) and the per-petal user slider becomes a clamped nudge within hexon-declared bounds. `CompositeTileSource` carries per-source `TilesetMeta` and reconciles mixed-GSD sources into one common metric frame for LOD selection. Then a `fe-terrain::ruler` pure-math module + `RulerPlugin`: scale-bar HUD, measurement tools (tape/area/bearing + GPX path length), adaptive world grid graticule, and dimensioned annotations. fe-ui stays free of a fe-terrain dep (clamp bounds travel via terrain JSON)._
+_Non-goals: 3DGS scale ingestion, DataFusion/GeoParquet, CRS reprojection beyond WGS84/Mercator (crs recorded, not reprojected), any edit to `fe-hexon/src/manifest.rs`._
+_Status: pending — spec + plan ready (6 data-layer-first phases)_
+
 ## [ ] Track: Terrain LOD Hardening — Seams, Clipping, Close-Range Quality
 
 _Link: [./tracks/terrain_lod_hardening_20260711/](./tracks/terrain_lod_hardening_20260711/)_
