@@ -34,9 +34,20 @@ pub(crate) async fn set_entity_property_handler(
     }
     query = query.bind(("key", key.to_string()));
     query = query.bind(("val", value.clone()));
-    query
+    // `.check()` + matched-row assertion: transport success alone hides both
+    // statement errors and the zero-rows-matched silent no-op — see AGENTS.md §gis.
+    let mut res = query
         .await
-        .map_err(|e| anyhow::anyhow!("SetNodeProperty DB query failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("SetNodeProperty DB query failed: {e}"))?
+        .check()
+        .map_err(|e| anyhow::anyhow!("SetNodeProperty statement failed: {e}"))?;
+    let updated: Vec<serde_json::Value> = res
+        .take(0)
+        .map_err(|e| anyhow::anyhow!("SetNodeProperty take failed: {e}"))?;
+    if updated.is_empty() {
+        anyhow::bail!("SetNodeProperty matched no node with node_id = {node_id}");
+    }
+    tracing::info!(node_id, key, rows = updated.len(), "SetNodeProperty persisted");
 
     // Write op_log entry
     let entry = OpLogEntry {
@@ -80,6 +91,9 @@ pub(crate) async fn get_entity_properties_handler(
         .take(0)
         .map_err(|e| anyhow::anyhow!("GetNodeProperties take failed: {e}"))?;
 
+    if rows.is_empty() {
+        tracing::warn!(node_id, "GetNodeProperties matched no node — id mismatch?");
+    }
     let properties = rows
         .first()
         .and_then(|r| r.get("properties"))
@@ -114,9 +128,17 @@ pub(crate) async fn delete_entity_property_handler(
         query = query.bind((name.clone(), val.clone()));
     }
     query = query.bind(("key", key.to_string()));
-    query
+    let mut res = query
         .await
-        .map_err(|e| anyhow::anyhow!("DeleteNodeProperty DB query failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("DeleteNodeProperty DB query failed: {e}"))?
+        .check()
+        .map_err(|e| anyhow::anyhow!("DeleteNodeProperty statement failed: {e}"))?;
+    let updated: Vec<serde_json::Value> = res
+        .take(0)
+        .map_err(|e| anyhow::anyhow!("DeleteNodeProperty take failed: {e}"))?;
+    if updated.is_empty() {
+        anyhow::bail!("DeleteNodeProperty matched no node with node_id = {node_id}");
+    }
 
     // Write op_log entry
     let entry = OpLogEntry {

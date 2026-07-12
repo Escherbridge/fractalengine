@@ -1,0 +1,13 @@
+{
+  "id": "gpx_path_editor_20260711",
+  "description": "In-app GPX path editor: create/edit/annotate paths on terrain, persist trackpoints, export .gpx — planning tool for paths and processes in the domains",
+  "type": "feature",
+  "created_at": "2026-07-11T00:00:00Z",
+  "status": "in-progress",
+  "execution_wave": 0,
+  "wave_rationale": "User 2026-07-11: 'a gpx editor as a tool for planning defining and annotating paths and processes in the domains'. GIS round-3 fleet (W-E UI + W-F persistence/bridge).",
+  "depends_on": ["gpx_pipeline_20260711"],
+  "blocks": [],
+  "archived": false,
+  "notes": "Persisting trackpoints (gpx_points flat property) also fixes the gpx_pipeline session-scoped-render residual: a load-time materializer rebuilds TrackRouteMap + GpxTrackLine from persisted paths."
+}
