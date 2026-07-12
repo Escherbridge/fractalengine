@@ -15,6 +15,7 @@ mod gpx_import_card;
 mod layer_manager_card;
 mod path_editor_card;
 mod portal_toolbar;
+mod track_style_card;
 
 use bevy_egui::egui;
 

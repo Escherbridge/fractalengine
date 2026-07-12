@@ -19,6 +19,9 @@ pub enum PathOp {
     AppendPoint { track_node_id: String, position: [f32; 3], time_seconds: Option<f64> },
     /// Remove the point at `index` from `track_node_id`'s point list.
     RemovePoint { track_node_id: String, index: usize },
+    /// Move the point at `index` to `position` (petal-local meters) in place —
+    /// preferred over remove+append for viewport drags: no index churn.
+    MovePoint { track_node_id: String, index: usize, position: [f32; 3] },
     /// Create a waypoint annotation node at the position of point `index` in
     /// `track_node_id`'s list, via the existing `gis.annotation.*` property
     /// contract (see `crate::actions::node_props`).

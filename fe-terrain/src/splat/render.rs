@@ -9,8 +9,10 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
 use crate::layers::LayerStack;
+use crate::lod_ring::{covering_tiles, splat_desired_zoom};
 use crate::petal_binding::{ActivePetalTerrain, ActiveTileSource};
-use crate::scale::scaled_tile_size;
+use crate::projection::Projection;
+use crate::scale::{scale_local, scaled_tile_size, world_to_real_height};
 use crate::splat::synth::{synthesize_splats, SplatBuffer, TileSatellite};
 use crate::splat::view_mode::TerrainViewMode;
 use crate::terrain_plugin::{tile_world_size_m, LayerEntity, TerrainChunk};
@@ -19,7 +21,7 @@ use crate::tiles::{
     TileCoord,
 };
 
-/// Max splat chunks baked per frame so a full ring fills without a hitch.
+/// Max splat sub-tile meshes baked per frame so a full ring / zoom-in fills without a hitch.
 const MAX_SPLAT_SPAWNS_PER_FRAME: usize = 16;
 /// Edge length (texels) of the shared soft-disc alpha texture.
 const DISC_TEX_SIZE: u32 = 64;
@@ -77,10 +79,14 @@ impl Default for SplatConfig {
 }
 
 /// Marks a baked splat chunk entity; shadows a [`TerrainChunk`] by tile coords.
+/// Owns its higher-zoom splat sub-tiles as child mesh entities (FR-2), so one mesh
+/// chunk can map to many splat sub-meshes rather than 1:1.
 #[derive(Component)]
 pub struct SplatChunk {
     /// Tile coordinates (zoom, x, y) of the shadowed mesh chunk.
     pub coords: (u8, u32, u32),
+    /// Splat-specific zoom the child sub-tiles were baked at (FR-1); may exceed `coords.0`.
+    pub splat_zoom: u8,
 }
 
 /// Build the shared soft-disc texture + splat material once at startup.
@@ -122,6 +128,7 @@ fn reconcile_splat_chunks(
     view_mode: Res<TerrainViewMode>,
     splat_cfg: Res<SplatConfig>,
     assets: Option<Res<SplatAssets>>,
+    camera: Query<&GlobalTransform, With<Camera>>,
     terrain_chunks: Query<(&TerrainChunk, &Transform), Without<SplatChunk>>,
     splat_chunks: Query<(Entity, &SplatChunk)>,
     mut commands: Commands,
@@ -142,42 +149,110 @@ fn reconcile_splat_chunks(
     let Some(composite) = tile_source.composite.as_ref() else {
         return;
     };
+    let Some(projection) = tile_source.projection.as_ref() else {
+        return;
+    };
+
+    let scale = config.effective_world_scale();
+    let cam_real_height = camera
+        .single()
+        .ok()
+        .map(|t| world_to_real_height(t.translation().y as f64, scale) as f32)
+        .unwrap_or(f32::MAX);
 
     let terrain_set: HashSet<(u8, u32, u32)> =
         terrain_chunks.iter().map(|(c, _)| c.tile_coords).collect();
-    let splat_set: HashSet<(u8, u32, u32)> = splat_chunks.iter().map(|(_, s)| s.coords).collect();
 
-    // Despawn splats whose mesh chunk is gone (LOD despawn / revision reset).
+    // Per mesh chunk, the splat zoom the camera currently wants (FR-1/FR-5 clamped).
+    let wanted_zoom = |mesh_zoom: u8| {
+        splat_desired_zoom(cam_real_height, mesh_zoom, config.min_zoom, config.max_zoom)
+    };
+
+    // Despawn splats whose mesh chunk is gone, or whose baked splat zoom is now stale (FR-4).
+    let mut existing: HashSet<(u8, u32, u32)> = HashSet::new();
     for (e, s) in splat_chunks.iter() {
-        if !terrain_set.contains(&s.coords) {
+        if !terrain_set.contains(&s.coords) || s.splat_zoom != wanted_zoom(s.coords.0) {
             commands.entity(e).despawn();
+        } else {
+            existing.insert(s.coords);
         }
     }
 
-    // Shadow-spawn splats for mesh chunks lacking one; reuse the chunk's SW-corner
-    // anchor transform so splats align 1:1 with the mesh.
+    // Shadow-spawn splats for mesh chunks lacking a current-zoom one; each chunk owns a Vec
+    // of higher-zoom sub-tile child meshes (FR-2/FR-3) anchored within the parent transform.
     let mut spawned = 0usize;
     for (chunk, transform) in terrain_chunks.iter() {
         if spawned >= MAX_SPLAT_SPAWNS_PER_FRAME {
             break;
         }
-        if splat_set.contains(&chunk.tile_coords) {
+        if existing.contains(&chunk.tile_coords) {
             continue;
         }
-        if let Some(mesh) =
-            build_tile_splat_mesh(chunk.tile_coords, config, composite, splat_cfg.stride)
-        {
-            commands.spawn((
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(assets.material.clone()),
+        let target_zoom = wanted_zoom(chunk.tile_coords.0);
+        let parent = TileCoord::new(chunk.tile_coords.1, chunk.tile_coords.2, chunk.tile_coords.0);
+
+        // Build every covering sub-tile mesh first; only commit the chunk if at least one
+        // baked (hole-free per chunk — a stale chunk already despawned, so a bare frame is
+        // acceptable, but an empty chunk entity is not).
+        let mut children: Vec<(Handle<Mesh>, Vec3)> = Vec::new();
+        for (sz, sx, sy) in covering_tiles(parent, target_zoom) {
+            let sub = TileCoord::new(sx, sy, sz);
+            let Some(mesh) =
+                build_tile_splat_mesh((sz, sx, sy), target_zoom, config, composite, splat_cfg.stride)
+            else {
+                continue;
+            };
+            let Some(offset) = sub_tile_local_offset(sub, transform.translation, projection, scale)
+            else {
+                continue;
+            };
+            children.push((meshes.add(mesh), offset));
+        }
+        if children.is_empty() {
+            continue;
+        }
+        spawned += children.len();
+
+        let parent_entity = commands
+            .spawn((
                 *transform,
+                Visibility::default(),
                 SplatChunk {
                     coords: chunk.tile_coords,
+                    splat_zoom: target_zoom,
                 },
+            ))
+            .id();
+        for (mesh, offset) in children {
+            commands.spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(assets.material.clone()),
+                Transform::from_translation(offset),
+                ChildOf(parent_entity),
             ));
-            spawned += 1;
         }
     }
+}
+
+/// Local offset of a sub-tile's SW corner within its parent chunk's transform frame.
+/// `parent_world` is the parent chunk's world anchor; sub-tile meshes are baked in tile-local
+/// space, so this offset re-anchors each sub-tile to its true corner.
+fn sub_tile_local_offset(
+    sub: TileCoord,
+    parent_world: Vec3,
+    projection: &Projection,
+    scale: f64,
+) -> Option<Vec3> {
+    // South-west corner lat/lon of the sub-tile (NW of the tile one row south).
+    let (_nw_lat, nw_lon) = sub.to_lat_lon();
+    let (s_lat, _) = TileCoord::new(sub.x, sub.y.saturating_add(1), sub.zoom).to_lat_lon();
+    let anchor = projection.wgs84_to_local(s_lat, nw_lon, 0.0).ok()?;
+    let a = scale_local(anchor, scale);
+    Some(Vec3::new(
+        a[0] as f32 - parent_world.x,
+        a[1] as f32 - parent_world.y,
+        a[2] as f32 - parent_world.z,
+    ))
 }
 
 /// Drive mesh + splat entity [`Visibility`] from the view mode; Hybrid switches by distance.
@@ -255,6 +330,7 @@ fn set_vis(mut vis: Mut<Visibility>, show: bool) {
 /// Re-fetch a tile's data and bake all its splats into one mesh; `None` when unusable.
 fn build_tile_splat_mesh(
     coords: (u8, u32, u32),
+    requested_zoom: u8,
     config: &TerrainConfig,
     composite: &CompositeTileSource,
     stride: usize,
@@ -305,6 +381,13 @@ fn build_tile_splat_mesh(
     if buffer.is_empty() {
         return None;
     }
+    // Past the tileset max_zoom ceiling, log-fill density instead of holding flat (splat_marching_squares track).
+    let buffer = crate::splat::interpolate::augment_splat_buffer_if_needed(
+        &buffer,
+        requested_zoom,
+        coords.0,
+    )
+    .unwrap_or(buffer);
     Some(bake_splat_mesh(&buffer))
 }
 

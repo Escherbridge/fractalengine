@@ -60,6 +60,30 @@ pub struct GpxTrackLine {
     pub track_node_id: String,
 }
 
+/// Optional per-track ribbon styling (FR-10/FR-11). Attached alongside
+/// `GpxTrackLine` by the bridge from the track node's `gis.track.*` flat
+/// properties; absent means the render default (cyan, visible) applies.
+/// `line_style` is carried for parity with the persisted property but only
+/// `"solid"` renders distinctly in phase 2 (dashed no-ops to solid — see
+/// track spec out-of-scope).
+#[derive(Component, Clone)]
+pub struct GpxTrackStyle {
+    /// Linear RGBA used as the ribbon's base + emissive color.
+    pub color: [f32; 4],
+    pub line_style: String,
+    pub visible: bool,
+}
+
+impl Default for GpxTrackStyle {
+    fn default() -> Self {
+        Self {
+            color: [0.0, 0.8, 1.0, 1.0],
+            line_style: "solid".to_string(),
+            visible: true,
+        }
+    }
+}
+
 /// Marker component for GeoJSON overlay source entities.
 #[derive(Component, Clone)]
 pub struct GeoJsonOverlay {
@@ -504,51 +528,73 @@ fn decode_satellite_image(bytes: &[u8]) -> Option<Image> {
     }
 }
 
-/// Render GPX track overlays as line meshes; skips non-finite points.
+/// Ribbon width in world units for rendered GPX track lines (FR-11).
+const GPX_RIBBON_WIDTH: f32 = 0.4;
+/// Slight up-offset so the ribbon sits above terrain instead of z-fighting it.
+const GPX_RIBBON_Y_OFFSET: f32 = 0.08;
+
+/// Render GPX track overlays as ribbon meshes (FR-11); skips non-finite
+/// points. Per-track color/style comes from an optional [`GpxTrackStyle`]
+/// (FR-10) the bridge attaches; absent falls back to the style default.
 fn render_gpx_tracks(
-    track_query: Query<(Entity, &GpxTrackLine), Without<Mesh3d>>,
+    track_query: Query<(Entity, &GpxTrackLine, Option<&GpxTrackStyle>), Without<Mesh3d>>,
     route_map: Res<TrackRouteMap>,
     layer_stack: Res<LayerStack>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (entity, track) in track_query.iter() {
+    for (entity, track, style) in track_query.iter() {
         let Some(route) = route_map.routes.get(&track.track_node_id) else {
             continue;
         };
 
-        let positions: Vec<Vec3> = route
+        let positions: Vec<[f32; 3]> = route
             .points
             .iter()
-            .map(|p| {
-                Vec3::new(
-                    p.position[0] as f32,
-                    p.position[1] as f32,
-                    p.position[2] as f32,
-                )
-            })
-            .filter(|v| v.is_finite())
+            .map(|p| [p.position[0] as f32, p.position[1] as f32, p.position[2] as f32])
+            .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
             .collect();
 
         if positions.len() < 2 {
             continue;
         }
 
+        let ribbon = crate::gpx::ribbon::build_ribbon(
+            &positions,
+            GPX_RIBBON_WIDTH,
+            GPX_RIBBON_Y_OFFSET,
+        );
+        if ribbon.indices.is_empty() {
+            continue;
+        }
+
         let mut line_mesh = Mesh::new(
-            bevy::render::render_resource::PrimitiveTopology::LineStrip,
+            bevy::render::render_resource::PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         );
-        line_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        line_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, ribbon.positions);
+        line_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, ribbon.normals);
+        line_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, ribbon.uvs);
+        line_mesh.insert_indices(bevy::mesh::Indices::U32(ribbon.indices));
 
+        let default_style = GpxTrackStyle::default();
+        let style = style.unwrap_or(&default_style);
+        let c = style.color;
+        let color = Color::linear_rgba(c[0], c[1], c[2], c[3]);
         let handle = meshes.add(line_mesh);
         let material = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.0, 0.8, 1.0),
+            base_color: color,
+            emissive: LinearRgba::new(c[0], c[1], c[2], c[3]),
+            unlit: true,
             ..default()
         });
 
         let mut e = commands.entity(entity);
         e.insert((Mesh3d(handle), MeshMaterial3d(material)));
+        if !style.visible {
+            e.insert(Visibility::Hidden);
+        }
 
         let layer_id = find_layer(&layer_stack, |t| {
             matches!(t, LayerType::GpxTrack { node_id, .. } if node_id == &track.track_node_id)

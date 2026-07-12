@@ -1,0 +1,13 @@
+{
+  "id": "splat_marching_squares_20260712",
+  "description": "Marching-squares-style splat interpolation/upscaling beyond a tileset's native max zoom, as a density fallback once splat_lod_zoom_20260712's zoom ceiling is reached",
+  "type": "feature",
+  "created_at": "2026-07-12T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 0,
+  "wave_rationale": "User 2026-07-12: explicitly deferred this in favor of splat_lod_zoom_20260712 as the first fix, but then asked to build it in parallel anyway rather than wait for the zoom ceiling to actually be hit.",
+  "depends_on": ["splat_lod_zoom_20260712"],
+  "blocks": [],
+  "archived": false,
+  "notes": "Dispatched as a parallel worker alongside splat_lod_zoom_20260712 rather than sequenced after it, per direct user request. Interpolation logic is independent of the zoom-selection plumbing (FR-1..FR-5 of the sibling track) so file overlap risk is low, but the two tracks will eventually need to compose: splat_lod_zoom picks the best real tile zoom available; this track kicks in only when that zoom is still below the tileset's max_zoom ceiling need. Coordinator must reconcile SplatChunk shape changes from both tracks at integration time."
+}

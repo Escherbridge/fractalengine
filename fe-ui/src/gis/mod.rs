@@ -139,6 +139,20 @@ pub struct PathEditorState {
     /// `gpx_points` (see FR-2/FR-3 in the track spec).
     pub points: Vec<PathPointRow>,
     pub last_error: Option<String>,
+    /// Point index whose annotation form is currently open (FR-9), if any.
+    /// Set by a modifier-click on a point marker or the list "Annotate" flow;
+    /// drives the inline title/body/color form in `path_editor_card`.
+    pub annotating_index: Option<usize>,
+    /// Inline annotation form buffers for `annotating_index`.
+    pub annotate_title_buf: String,
+    pub annotate_body_buf: String,
+    pub annotate_color_buf: String,
+    /// FR-10 per-track style edit buffers for the currently-edited track.
+    /// `#rrggbb` hex; empty means "unset" so render defaults apply.
+    pub style_color_buf: String,
+    /// `"solid"` or `"dashed"` (dashed no-ops to solid in phase 2).
+    pub style_line_style: String,
+    pub style_visible: bool,
 }
 
 impl PathEditorState {
@@ -148,11 +162,31 @@ impl PathEditorState {
     pub(crate) fn start_editing(&mut self, track_node_id: String) {
         self.editing_track_id = Some(track_node_id);
         self.points.clear();
+        self.style_color_buf = String::new();
+        self.style_line_style = "solid".to_string();
+        self.style_visible = true;
     }
 
     pub(crate) fn stop_editing(&mut self) {
         self.editing_track_id = None;
         self.points.clear();
+        self.close_annotate_form();
+    }
+
+    /// Opens the inline annotation form for point `index`, seeding the title
+    /// buffer with the v1 placeholder (`"Waypoint {index}"`).
+    pub(crate) fn open_annotate_form(&mut self, index: usize) {
+        self.annotating_index = Some(index);
+        self.annotate_title_buf = format!("Waypoint {index}");
+        self.annotate_body_buf.clear();
+        self.annotate_color_buf.clear();
+    }
+
+    pub(crate) fn close_annotate_form(&mut self) {
+        self.annotating_index = None;
+        self.annotate_title_buf.clear();
+        self.annotate_body_buf.clear();
+        self.annotate_color_buf.clear();
     }
 }
 

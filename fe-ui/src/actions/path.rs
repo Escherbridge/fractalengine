@@ -77,6 +77,23 @@ pub(crate) fn remove_point(
     path_ops.0.push(PathOp::RemovePoint { track_node_id, index });
 }
 
+/// Moves point `index` to `position` in both the local buffer and the op
+/// queue. Out-of-range index still queues the op (bridge is source of truth).
+pub(crate) fn move_point(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    track_node_id: String,
+    index: usize,
+    position: [f32; 3],
+) {
+    if let Some(row) = path_state.points.get_mut(index) {
+        row.position = position;
+    } else {
+        bevy::log::warn!("Paths: move_point index {index} out of range for local buffer");
+    }
+    path_ops.0.push(PathOp::MovePoint { track_node_id, index, position });
+}
+
 pub(crate) fn annotate_point(
     path_ops: &mut PendingPathOps,
     track_node_id: String,

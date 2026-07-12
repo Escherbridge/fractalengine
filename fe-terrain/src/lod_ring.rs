@@ -68,6 +68,26 @@ pub fn ring_offsets(radius: u32) -> Vec<(i64, i64)> {
     v
 }
 
+/// Extra zoom steps a close camera may over-fetch splats beyond the mesh zoom.
+pub const SPLAT_CLOSE_ZOOM_BONUS: u8 = 2;
+
+/// Splat-specific desired zoom: like `desired_zoom` but may exceed `mesh_zoom` by up to
+/// [`SPLAT_CLOSE_ZOOM_BONUS`] when the camera is close, and never exceeds it when far.
+/// Clamped into `[min_zoom, max_zoom]` (FR-5 graceful ceiling — no error past the tileset max).
+pub fn splat_desired_zoom(cam_height_m: f32, mesh_zoom: u8, min_zoom: u8, max_zoom: u8) -> u8 {
+    let (min_zoom, max_zoom) = if min_zoom <= max_zoom {
+        (min_zoom, max_zoom)
+    } else {
+        (max_zoom, min_zoom)
+    };
+    let h = f64::from(cam_height_m.max(1.0));
+    // Extra zoom-in steps as the camera descends below the base height (each halving → +1).
+    let bonus = (ZOOM_BASE_HEIGHT_M / h).max(1.0).log2().floor() as i64;
+    let bonus = bonus.clamp(0, SPLAT_CLOSE_ZOOM_BONUS as i64);
+    let z = mesh_zoom as i64 + bonus;
+    z.clamp(min_zoom as i64, max_zoom as i64) as u8
+}
+
 /// Tiles at `target_zoom` that fully cover `coord`'s footprint (self, children, or parent).
 pub fn covering_tiles(coord: TileCoord, target_zoom: u8) -> Vec<(u8, u32, u32)> {
     use std::cmp::Ordering;
@@ -187,6 +207,38 @@ mod tests {
         let corner_idx = offs.iter().position(|&o| o == (1, 1)).unwrap();
         let edge_idx = offs.iter().position(|&o| o == (1, 0)).unwrap();
         assert!(center_idx < edge_idx && edge_idx < corner_idx);
+    }
+
+    #[test]
+    fn splat_desired_zoom_monotonic_in_height() {
+        // Lower camera (closer) must never request a lower zoom than a higher camera.
+        let mut prev = 0u8;
+        let mut h = 1.0f32;
+        let mut heights = vec![];
+        while h <= 100_000.0 {
+            heights.push(h);
+            h *= 2.0;
+        }
+        // Iterate from far (high) to near (low): zoom must be non-decreasing.
+        for &hh in heights.iter().rev() {
+            let z = splat_desired_zoom(hh, 12, 0, 20);
+            assert!(z >= prev, "closer camera at {hh}m gave lower zoom {z} < {prev}");
+            prev = z;
+        }
+    }
+
+    #[test]
+    fn splat_desired_zoom_clamped_to_range() {
+        // Very close camera would exceed max_zoom → clamped (FR-5 ceiling).
+        assert_eq!(splat_desired_zoom(1.0, 14, 0, 14), 14);
+        // Far camera never exceeds mesh_zoom.
+        assert_eq!(splat_desired_zoom(100_000.0, 10, 0, 20), 10);
+        // Close camera adds the bonus, capped by SPLAT_CLOSE_ZOOM_BONUS.
+        assert_eq!(splat_desired_zoom(1.0, 10, 0, 20), 10 + SPLAT_CLOSE_ZOOM_BONUS);
+        // Result never drops below min_zoom.
+        assert!(splat_desired_zoom(1.0, 2, 5, 20) >= 5);
+        // Inverted min/max is normalized, not panicked.
+        assert_eq!(splat_desired_zoom(100_000.0, 10, 20, 0), 10);
     }
 
     #[test]
