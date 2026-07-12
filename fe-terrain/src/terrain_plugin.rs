@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::prelude::Projection as CameraProjection;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -473,7 +474,7 @@ fn decode_satellite_image(bytes: &[u8]) -> Option<Image> {
         Ok(img) => {
             let rgba = img.flipv().to_rgba8();
             let (w, h) = rgba.dimensions();
-            Some(Image::new(
+            let mut image = Image::new(
                 Extent3d {
                     width: w,
                     height: h,
@@ -483,7 +484,18 @@ fn decode_satellite_image(bytes: &[u8]) -> Option<Image> {
                 rgba.into_raw(),
                 TextureFormat::Rgba8UnormSrgb,
                 RenderAssetUsages::default(),
-            ))
+            );
+            // Clamp-to-edge + linear so tile borders don't wrap-bleed into dark seams; see `src/AGENTS.md` §terrain_plugin.
+            image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::ClampToEdge,
+                address_mode_v: ImageAddressMode::ClampToEdge,
+                address_mode_w: ImageAddressMode::ClampToEdge,
+                mag_filter: ImageFilterMode::Linear,
+                min_filter: ImageFilterMode::Linear,
+                mipmap_filter: ImageFilterMode::Linear,
+                ..default()
+            });
+            Some(image)
         }
         Err(err) => {
             tracing::warn!(error = %err, "failed to decode satellite tile image");

@@ -24,11 +24,16 @@ per frame and, in one pass:
    `tile_source_mode`, a `DiskTileCache` rooted at `config.cache_dir`
    (512 MB budget; skipped with a warn when the dir string is empty), and
    `projection = config.origin`. A `None`/disabled config clears both fields.
-3. Rebuilds the `LayerStack` from `config.layers` by name: `"satellite"` →
-   `LayerType::Satellite`, `"terrain"` → `LayerType::Terrain`, anything else
-   is skipped with a warn (honest minimal mapping — GPX/GeoJSON layers are
-   driven by their own entities, not petal config). `z_order` = config index,
-   opacity defaults to 1.0.
+3. Rebuilds the `LayerStack` from `config.layers` via the pure
+   `layers::layer_type_from_config_name(name, source_url)`: `"satellite"` →
+   `Satellite`, `"terrain"` → `Terrain`, `"gpx_track"` → `GpxTrack { node_id, .. }`,
+   `"geojson_overlay"` → `GeoJsonOverlay { source_path }`, anything else warns and
+   skips. The identifier-bearing variants take their `node_id` / `source_path` from
+   the config's `source_url` (empty when absent) so the layer entry binds to the
+   matching track/overlay entity in `render_gpx_tracks` / `render_geojson_overlays`
+   — this is what lets fe-ui's GPX/GeoJSON visibility checkboxes drive those layers
+   (previously they were disabled because no `LayerStack` entry existed). `z_order`
+   = config index, opacity defaults to 1.0.
 4. Despawns every `TerrainChunk`, `GpxTrackLine`, `GeoJsonOverlay`, and
    `GeoJsonProcessed` entity so content respawns under the new config.
 
@@ -119,19 +124,49 @@ runs first so the frame's assignment is visible to everything downstream.
 `lod_ring.rs` (no `bevy`, always compiled + unit-tested) and `mesh/skirt.rs`
 + `mesh/interp.rs` (pure grid helpers under the non-gated `mesh` module):
 
-1. **Seams (thin black lines between tiles).** `terrain_mesh` now grows
-   **downward skirt walls** around each tile's four edges (`mesh/skirt.rs`).
-   Edge vertices are duplicated and dropped by `skirt_depth = SKIRT_TEXELS ×
-   cell_size` (world units — the cell size is already scaled, so the skirt
-   scales with the tile). Each wall segment is emitted with **both windings**
-   (two-sided) so it never culls to the background regardless of view angle;
-   skirt UVs copy the edge UV so the satellite texture / terrain colour
-   continues down the wall. This hides both float-precision gaps at
-   `scaled_tile_size` edges and small edge-height disagreements between
-   adjacent tiles (which decode their borders from separate tiles). Skirt
-   vertices/indices are appended **after** the base normals are finalised so
-   base lighting is unaffected. Base normals are still computed only over base
-   indices.
+1. **Seams (thin black lines between tiles).** `terrain_mesh` grows skirt walls
+   around each tile's four edges (`mesh/skirt.rs`). Edge vertices are duplicated;
+   the copy drops by `depth` **and flares outward** (away from the tile centre)
+   by `overlap` in the XZ plane. Each wall segment is emitted with **both
+   windings** (two-sided) so it never culls to the background; skirt UVs copy the
+   edge UV so the satellite texture / terrain colour continues down the wall.
+   Skirt vertices/indices are appended **after** the base normals are finalised,
+   and base normals are computed only over base indices, so base lighting is
+   unaffected.
+
+   **Actual high-altitude seam cause (round-2, `terrain_seams_hi_alt_20260711`).**
+   Round-1's straight-down skirt only covers *vertical* elevation-step seams. The
+   residual thin dark lines seen zoomed-out were **horizontal XZ gaps**: each tile
+   is anchored at its true projected SW corner (`FlatProjection`, cosine at the
+   *origin* latitude) but meshed as a square of side `tile_world_size_m` (mercator,
+   cosine at the *tile* latitude). Those two formulas disagree away from the origin
+   latitude, so neighbour tiles don't perfectly abut — a sub-tile sliver of dark
+   background shows between them, growing with latitude offset and tile size (low
+   zoom / altitude), and a **vertical** skirt cannot cover a **horizontal** gap.
+   Fixes:
+   - **Outward flare (`SKIRT_OVERLAP_FRACTION` = 2% of tile size).** The skirt
+     bottom is pushed outward so the wall becomes a down+outward apron that laps
+     over the gap onto the neighbour. Where the neighbour surface exists it
+     occludes the apron from above (no fringe); through the gap the apron fills
+     the background. This is the primary residual-seam fix.
+   - **Depth floor (`SKIRT_MIN_FRACTION` = 1.5% of tile size).** `skirt_depth`
+     now returns `max(SKIRT_TEXELS × cell_size, SKIRT_MIN_FRACTION × tile_size)`.
+     A 256-wide tile's texel-based depth is only ~0.78% of the tile; the floor
+     keeps low-zoom skirts visually significant versus edge-height disagreements.
+   - **Satellite sampler clamp-to-edge + linear** (`decode_satellite_image`). Set
+     explicitly on the `Image` so a tile's UV 0/1 borders can never wrap-bleed into
+     the opposite edge under minification — a classic thin dark tile-border line at
+     distance — regardless of the app's global default sampler.
+
+   Both `depth` and `overlap` are fractions of the **already-scaled** tile size, so
+   they scale with the tile and 1:1 behaviour is unchanged (the base mesh, and thus
+   the world-Y = `(ele − origin_ele) × scale` invariant, is untouched — the skirt
+   only appends geometry below the edges). **Hypothesis 2 (decoded-edge harmonisation
+   cache)** was weighed and **deferred**: the apron + depth floor cover the visible
+   defect without a stateful per-`(z,x,y)` border cache and its spawn-order coupling.
+   **Hypothesis 4 (cross-zoom T-junctions)** is covered — skirts are built for every
+   tile regardless of zoom, and the deeper/flared skirt on the *coarser* tile (the
+   one that matters during a LOD transition) spans the finer neighbours.
 
 2. **Zoom-out clipping / holes.** The fetch ring is no longer a fixed 3×3:
    - **Adaptive radius.** `view_radius_world(cam_height_world, far_world,
