@@ -9,7 +9,8 @@
 - `gimbal_interaction.rs` — hover detection, axis pick → drag → commit, and
   the gizmo draw system. The largest submodule; keep pure geometry helpers
   (`pick_axis`, `segment_dist_2d`, etc.) private to this file.
-- `viewport_pick.rs` — 3-D viewport click → nearest-node select/deselect.
+- `viewport_pick.rs` — 3-D viewport click → nearest-node select/deselect via a
+  precise ray/AABB raycast (see §glb-mesh-picking).
 - `path_point_interaction.rs` — path-point viewport editor (see §path-points).
 - `router.rs` — per-frame left-click arbitration (see §input-router).
 - `inspector_sync.rs` — `NodeManager` → `InspectorFormState` display sync
@@ -104,6 +105,42 @@ has an `editing_track_id`. Design notes:
 Per-track line styling (color/line-style/visibility, "FR-10") is NOT part
 of this port — it depends on `fe_terrain::terrain_plugin::GpxTrackStyle`,
 which lives outside the current tree's scope.
+
+## §glb-mesh-picking — precise ray/AABB node selection (`viewport_pick.rs`)
+
+`handle_viewport_click` picks the node under the cursor ray by intersecting the
+ray with each `SpawnedNodeMarker`'s bounding volume, replacing the old
+distance-to-origin sphere test (which missed clicks on a glb surface far from
+the node origin and false-positived on empty space near it —
+`glb_mesh_picking_20260713`).
+
+- **AABB, not mesh-triangle.** `bevy::picking::mesh_picking::MeshRayCast` IS
+  available under this workspace's feature set (`mesh_picking` is enabled), but
+  the AABB slab test was chosen deliberately: it's a pure, unit-testable math
+  helper (`ray_aabb_hit`), it iterates only node roots so it never false-hits
+  the terrain plane / path-point marker spheres / gimbal, and the active-petal
+  filter applies cleanly per-root. Mesh-triangle picking would need an
+  ancestry-filter closure during the cast to achieve the same scoping. Upgrade
+  to `MeshRayCast` only if per-triangle precision is later required.
+- **Child-Aabb walk (FR-2).** glTF scenes attach the mesh + `Aabb` to a CHILD
+  of the `SceneRoot`, not the root marker entity. `pick_node_aabb` mirrors
+  `gimbal.rs`'s `gimbal_center` walk — try the root's own `Aabb`, then scan
+  immediate children — but slab-tests each candidate instead of centering, and
+  keeps the nearest entry `t`. Whatever child geometry is hit, selection always
+  resolves to the ROOT `entity` carrying `SpawnedNodeMarker` (its
+  `node_id`/`petal_id`), exactly as the old proximity path did.
+- **The math (`ray_aabb_hit`).** An `Aabb` is axis-aligned in the entity's
+  LOCAL space. Rather than transform 8 corners to world space for an OBB test,
+  the world ray is transformed INTO local space via `GlobalTransform::affine()`
+  inverse (`transform_point3` for the origin, `transform_vector3` for the
+  direction — the direction is left un-normalized so the parametric `t` stays
+  identical to the along-world-ray distance and is comparable across entities).
+  A standard 3-slab test then yields the entry `t`; boxes entirely behind the
+  origin miss, and an origin already inside the box returns `t = 0`.
+- **FR-4 (path-point markers) untouched.** `path_point_interaction.rs`'s
+  `pick_marker` keeps its along-ray + `PICK_RADIUS` sphere test — correct for
+  small fixed-size gizmo spheres and explicitly out of scope. No shared helper
+  was extracted; the two picks are independent.
 
 ## §input-router — per-frame left-click arbitration (`router.rs`)
 
