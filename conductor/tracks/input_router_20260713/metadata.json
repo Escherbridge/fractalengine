@@ -3,11 +3,11 @@
   "description": "General pointer/click arbitration Resource (ClickArbiter/PointerRouter) for fe-ui node_manager: priority-ordered consumer registration (Gimbal > PathMarker > PathPlace > NodePick), full press/drag/release/hover dispatch, replacing the is_dragging()/path_edit_capturing ad-hoc flag racing across viewport_pick.rs, gimbal_interaction.rs, and path_point_interaction.rs",
   "type": "feature",
   "created_at": "2026-07-13T00:00:00Z",
-  "status": "pending",
+  "status": "done",
   "execution_wave": 0,
   "wave_rationale": "Foundational subsystem with no dependency on not-yet-existing APIs; should land before glb_mesh_picking_20260713 so that unit can register as a router consumer instead of adding another ad-hoc flag.",
   "depends_on": [],
   "blocks": ["glb_mesh_picking_20260713", "node_placement_z_axis_20260713", "path_asset_picker_20260713"],
   "archived": false,
-  "notes": "Motivated by the pen-tool regression fixed at commit ab9c53c (path_edit_capturing was un-gated, stealing model-selection clicks in Select mode; fixed by gating on Tool::Pen). Spec + metadata only, no code written."
+  "notes": "Motivated by the pen-tool regression fixed at commit ab9c53c (path_edit_capturing was un-gated, stealing model-selection clicks in Select mode; fixed by gating on Tool::Pen). IMPLEMENTED 2026-07-13 (commit 9e734fa): ClickArbiter Resource + resolve_pointer_frame system in fe-ui/src/node_manager/router.rs; 3 consumers migrated off is_dragging()/path_edit_capturing to a first-claim-wins priority model; path_edit_capturing fully removed; ab9c53c behavior now structural. fe-ui 207 tests green at land. Pending in-app verification."
 }
