@@ -8,6 +8,7 @@ use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
 
 use crate::gis::{self, PathEditorState, PathPointRow};
+use crate::node_manager::curve::{self, PenMode};
 use crate::path_ops::{PathOp, PendingPathOps};
 
 /// Runs the "track nodes" query for `petal_id`, routed through
@@ -122,6 +123,65 @@ pub(crate) fn annotate_point(
 
 pub(crate) fn export_gpx(path_ops: &mut PendingPathOps, track_node_id: String) {
     path_ops.0.push(PathOp::ExportGpx { track_node_id });
+}
+
+/// Replaces the currently-edited track's points with `new_points` via the
+/// existing Remove/Append ops (clear-then-append), keeping the local buffer and
+/// the op queue in lock-step. No-op (with a warn) if no track is being edited.
+/// Pure enough to test through `PathEditorState` + `PendingPathOps` alone; the
+/// gpx-bridge's `in_flight_points` path applies the ops without a schema change.
+pub(crate) fn replace_points(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    new_points: Vec<[f32; 3]>,
+) {
+    let Some(track_node_id) = path_state.editing_track_id.clone() else {
+        bevy::log::warn!("Paths: replace_points with no track being edited — ignored");
+        return;
+    };
+    // Remove existing points high→low so each RemovePoint index stays valid.
+    let existing = path_state.points.len();
+    for index in (0..existing).rev() {
+        remove_point(path_ops, path_state, track_node_id.clone(), index);
+    }
+    // Append the new list in order.
+    for position in new_points {
+        append_point(path_ops, path_state, track_node_id.clone(), position);
+    }
+}
+
+/// Resamples the currently-edited track's control points via
+/// `curve::resample` and replaces the track's points with the result. No-op if
+/// no track is being edited or the track has `< 2` points (nothing to smooth).
+pub(crate) fn smooth_current(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    mode: PenMode,
+    tension: f32,
+    samples_per_segment: usize,
+) {
+    if path_state.editing_track_id.is_none() || path_state.points.len() < 2 {
+        return;
+    }
+    let control: Vec<[f32; 3]> = path_state.points.iter().map(|p| p.position).collect();
+    let smoothed = curve::resample(&control, mode, tension, samples_per_segment);
+    replace_points(path_ops, path_state, smoothed);
+}
+
+/// Appends pre-generated `shape_points` (from `curve::ellipse`/`circle`/…) to
+/// the currently-edited track. No-op if no track is being edited.
+pub(crate) fn append_shape(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    shape_points: Vec<[f32; 3]>,
+) {
+    let Some(track_node_id) = path_state.editing_track_id.clone() else {
+        bevy::log::warn!("Paths: append_shape with no track being edited — ignored");
+        return;
+    };
+    for position in shape_points {
+        append_point(path_ops, path_state, track_node_id.clone(), position);
+    }
 }
 
 /// Applies parsed track rows from a `DbResult::QueryResult` reply into
@@ -282,6 +342,95 @@ mod tests {
         delete_track(&mut ops, "track-1".to_string());
         assert_eq!(ops.0.len(), 1);
         assert!(matches!(ops.0[0], PathOp::DeleteTrack { .. }));
+    }
+
+    #[test]
+    fn replace_points_clears_then_appends_and_syncs_buffer() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [0.0, 0.0, 0.0]);
+        append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
+        ops.0.clear(); // isolate the replace ops below
+        replace_points(&mut ops, &mut state, vec![[5.0, 0.0, 5.0], [6.0, 0.0, 6.0], [7.0, 0.0, 7.0]]);
+        // Local buffer reflects the new list exactly.
+        assert_eq!(state.points.len(), 3);
+        assert_eq!(state.points[0].position, [5.0, 0.0, 5.0]);
+        assert_eq!(state.points[2].position, [7.0, 0.0, 7.0]);
+        // 2 removes (high→low) + 3 appends.
+        assert_eq!(ops.0.len(), 5);
+        assert!(matches!(ops.0[0], PathOp::RemovePoint { index: 1, .. }));
+        assert!(matches!(ops.0[1], PathOp::RemovePoint { index: 0, .. }));
+        assert!(matches!(ops.0[2], PathOp::AppendPoint { .. }));
+    }
+
+    #[test]
+    fn replace_points_no_track_is_noop() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        replace_points(&mut ops, &mut state, vec![[1.0, 0.0, 1.0]]);
+        assert!(ops.0.is_empty());
+        assert!(state.points.is_empty());
+    }
+
+    #[test]
+    fn smooth_current_resamples_and_replaces() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [0.0, 0.0, 0.0]);
+        append_point(&mut ops, &mut state, "track-1".to_string(), [2.0, 0.0, 0.0]);
+        smooth_current(&mut ops, &mut state, PenMode::CatmullRom, 0.5, 4);
+        // Catmull with 1 segment * 4 samples + 1 start = 5 resampled points.
+        assert_eq!(state.points.len(), 5);
+        // First and last preserved (curve passes through control endpoints).
+        assert_eq!(state.points[0].position, [0.0, 0.0, 0.0]);
+        assert_eq!(state.points.last().unwrap().position, [2.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn smooth_current_polyline_is_identity_length() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [0.0, 0.0, 0.0]);
+        append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
+        append_point(&mut ops, &mut state, "track-1".to_string(), [2.0, 0.0, 0.0]);
+        smooth_current(&mut ops, &mut state, PenMode::Polyline, 0.5, 8);
+        assert_eq!(state.points.len(), 3, "polyline resample preserves point count");
+    }
+
+    #[test]
+    fn smooth_current_under_two_points_is_noop() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [0.0, 0.0, 0.0]);
+        ops.0.clear();
+        smooth_current(&mut ops, &mut state, PenMode::CatmullRom, 0.5, 8);
+        assert_eq!(state.points.len(), 1, "one point can't be smoothed");
+        assert!(ops.0.is_empty());
+    }
+
+    #[test]
+    fn append_shape_appends_all_points() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        let ring = curve::circle([0.0, 0.0, 0.0], 3.0, 8);
+        append_shape(&mut ops, &mut state, ring.clone());
+        assert_eq!(state.points.len(), 8);
+        assert_eq!(ops.0.len(), 8);
+        assert_eq!(state.points[0].position, ring[0]);
+    }
+
+    #[test]
+    fn append_shape_no_track_is_noop() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        append_shape(&mut ops, &mut state, vec![[1.0, 0.0, 1.0]]);
+        assert!(ops.0.is_empty());
+        assert!(state.points.is_empty());
     }
 
     #[test]

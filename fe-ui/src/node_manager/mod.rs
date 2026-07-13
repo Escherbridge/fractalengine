@@ -11,6 +11,8 @@
 //!
 //! See `fe-ui/src/node_manager/AGENTS.md` for the submodule map.
 
+/// Pure curve + shape math for the pen tool (phase 2). See AGENTS.md §pen-tool.
+pub(crate) mod curve;
 mod gimbal_interaction;
 mod inspector_sync;
 mod path_point_interaction;

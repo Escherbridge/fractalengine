@@ -12,6 +12,7 @@
 //! See `fe-ui/src/verse_manager/AGENTS.md` for the submodule map.
 
 mod db_results;
+mod path_asset_reconcile;
 mod petal_respawn;
 mod primitive_reconcile;
 mod spawn;
@@ -20,6 +21,7 @@ use bevy::prelude::*;
 
 use crate::plugin::UiSet;
 
+pub use path_asset_reconcile::PathAssetApplied;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
 pub use spawn::{build_primitive_mesh, PrimitiveNode};
 
@@ -153,12 +155,14 @@ impl Plugin for VerseManagerPlugin {
         app.init_resource::<VerseManager>();
         app.init_resource::<TextureRegistryRes>();
         app.init_resource::<PrimitiveMaterialAssets>();
+        app.init_resource::<PathAssetApplied>();
         app.add_systems(
             Update,
             (
                 db_results::apply_db_results,
                 petal_respawn::respawn_on_petal_change,
                 primitive_reconcile::reconcile_selected_primitive,
+                path_asset_reconcile::reconcile_path_asset,
             )
                 .before(UiSet::ProcessActions),
         );

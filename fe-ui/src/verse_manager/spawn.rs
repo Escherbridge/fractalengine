@@ -37,6 +37,55 @@ pub(super) fn spawn_node_entity(
 #[derive(Component, Debug)]
 pub struct FallbackSign;
 
+/// Marker component for a single path-asset stamp instance, carrying the
+/// source track id + petal so the reconcile system can despawn/rebuild the
+/// whole stamped group when the descriptor or `gpx_points` change. See
+/// `fe-ui/src/verse_manager/AGENTS.md` §path-asset-stamp.
+#[derive(Component, Debug, Clone)]
+pub struct PathAssetInstance {
+    pub source_track_id: String,
+    pub petal_id: String,
+}
+
+/// Spawn one path-asset stamp instance: a GLTF `SceneRoot` at a full
+/// `Transform` (so the caller can bake in the tangent rotation), tagged with a
+/// [`PathAssetInstance`] marker keyed to its source track. Additive sibling of
+/// [`spawn_node_entity`] that lets the caller supply rotation/scale rather
+/// than translation-only. See `fe-ui/src/verse_manager/AGENTS.md`
+/// §path-asset-stamp.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn spawn_stamped_entity(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    node_id: &str,
+    source_track_id: &str,
+    petal_id: &str,
+    name: &str,
+    transform: Transform,
+    asset_path: &str,
+) {
+    let handle: Handle<Scene> = asset_server.load(format!("{}#Scene0", asset_path));
+    let entity = commands
+        .spawn((
+            SceneRoot(handle),
+            transform,
+            Name::new(name.to_string()),
+            SpawnedNodeMarker {
+                node_id: node_id.to_string(),
+                petal_id: petal_id.to_string(),
+            },
+            PathAssetInstance {
+                source_track_id: source_track_id.to_string(),
+                petal_id: petal_id.to_string(),
+            },
+        ))
+        .id();
+    bevy::log::debug!(
+        "Spawned path-asset stamp '{}' entity={:?} (track={} petal={})",
+        name, entity, source_track_id, petal_id
+    );
+}
+
 /// Marker component for primitive entities, carrying the descriptor that
 /// produced the current mesh/material so the reconcile system (FR-2) can
 /// detect changes without re-parsing the property bag every frame.

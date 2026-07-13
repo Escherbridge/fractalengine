@@ -9,6 +9,7 @@
 //! | Module | Purpose |
 //! |--------|---------|
 //! | [`node`] | [`NodeSnapshot`] — read-only view of a node |
+//! | [`path_asset`] | [`PathAssetDescriptor`] — repeated-model path stamping |
 //! | [`property`] | [`PropertyValue`], [`PropertyBag`] — typed properties |
 //! | [`scene`] | [`SceneChange`], [`SceneChangeBatch`] — scene mutations |
 //! | [`transaction`] | [`PluginTransaction`] trait — batched writes |
@@ -22,6 +23,7 @@ pub mod api;
 pub mod context;
 pub mod events;
 pub mod node;
+pub mod path_asset;
 pub mod primitive;
 pub mod property;
 pub mod query;
@@ -36,6 +38,7 @@ pub use api::{ApiExtensionHandle, ExtensionRoute, HttpMethod};
 pub use context::PluginContext;
 pub use events::{EventSubscription, PluginEvent};
 pub use node::NodeSnapshot;
+pub use path_asset::{PathAssetDescriptor, SpacingMode, PATH_ASSET_PROPERTY_KEY};
 pub use primitive::{PrimitiveDescriptor, PrimitiveKind, PRIMITIVE_PROPERTY_KEY};
 pub use property::{PropertyBag, PropertyValue};
 pub use query::{is_select_only, ExtensionQueryApi, QueryError, CAP_QUERY_SELECT};

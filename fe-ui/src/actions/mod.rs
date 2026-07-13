@@ -109,6 +109,29 @@ pub enum UiAction {
     /// Queue a GPX export for a track node. Resolved by the main binary —
     /// see `crate::path_ops` for the pending-ops/status contract.
     PathExportGpx { track_node_id: String },
+    /// Write a path-asset stamp descriptor to a track node's `path_asset`
+    /// property (via `SetNodeProperty`). The `reconcile_path_asset` system
+    /// then stamps the model along the track's `gpx_points`. See
+    /// `fe-ui/src/verse_manager/AGENTS.md` §path-asset-stamp.
+    PathAssetApply {
+        track_node_id: String,
+        descriptor: fe_sdk::path_asset::PathAssetDescriptor,
+    },
+    // Pen-tool phase-2 actions (curves + shapes) — see
+    // `node_manager/AGENTS.md` §pen-tool. Both re-express the result as
+    // existing Remove/Append `PathOp`s so no gpx-bridge change is needed.
+    /// Resample the currently-edited track's control points via
+    /// `node_manager::curve::resample` and REPLACE the track's points with the
+    /// result (clear-then-append). No-op if no track is being edited.
+    PathSmoothCurrent {
+        mode: crate::node_manager::curve::PenMode,
+        tension: f32,
+        samples_per_segment: usize,
+    },
+    /// Append pre-generated shape points (ellipse/circle/rectangle from
+    /// `node_manager::curve`) to the currently-edited track. No-op if no track
+    /// is being edited. Shape math runs panel-side; this only carries points.
+    PathAppendShape { points: Vec<[f32; 3]> },
 }
 
 /// Centralized UI state resource.
@@ -233,8 +256,14 @@ pub(crate) fn process_ui_actions(
     nav: Res<crate::navigation_manager::NavigationManager>,
     time: Res<Time>,
     gis: GisPathParams,
+    mut tool_panel: ResMut<crate::panels::tool_panel::ToolPanelState>,
 ) {
     let GisPathParams { mut gis_panel, mut gpx_ops, mut path_state, mut path_ops } = gis;
+    // Fold pen-tool actions queued by `render_tool_panel` into the main queue
+    // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
+    for pen_action in tool_panel.drain_pending() {
+        ui_mgr.push_action(pen_action);
+    }
     // egui reads toast time from the same Bevy clock (bevy_egui feeds
     // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
     let now_secs = time.elapsed_secs_f64();
@@ -393,6 +422,22 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PathExportGpx { track_node_id } => {
                 path::export_gpx(&mut path_ops, track_node_id);
+            }
+            UiAction::PathAssetApply { track_node_id, descriptor } => {
+                // Persist the descriptor on the track node; `reconcile_path_asset`
+                // (verse_manager) stamps the model on the resulting property load.
+                node_props::set(
+                    &db_sender,
+                    track_node_id,
+                    fe_sdk::path_asset::PATH_ASSET_PROPERTY_KEY.to_string(),
+                    descriptor.to_json(),
+                );
+            }
+            UiAction::PathSmoothCurrent { mode, tension, samples_per_segment } => {
+                path::smooth_current(&mut path_ops, &mut path_state, mode, tension, samples_per_segment);
+            }
+            UiAction::PathAppendShape { points } => {
+                path::append_shape(&mut path_ops, &mut path_state, points);
             }
         }
     }
