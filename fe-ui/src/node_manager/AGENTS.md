@@ -49,24 +49,28 @@ resamples them into curves and generates shape rings.
   selection wins in Select mode) — see §input-router.
 - **No new action.** Reuses `UiAction::PathAppendPoint` unchanged; the pen
   tool only changes *when* a click is allowed to emit it.
-- **Auto-create on the first click** (`pen_autocreate_track_20260713`). A Pen
-  empty-click with `PathEditorState.editing_track_id == None` no longer no-ops:
-  it claims `PathPlace` (so `NodePick` still yields), then — because the new
-  track's `node_id` doesn't exist until the DB round-trips — stashes the click's
-  Y=0 world position in `PathEditorState.pending_pen_first_point` and queues
-  `UiAction::PathCreateTrack { petal_id, "New Path" }`. The petal is the active
-  one, sourced from `NavigationManager.active_petal_id` exactly like
-  `viewport_pick`; no active petal → keep the no-op (one-line log hint). A second
-  click before the create resolves is suppressed by the `has_pending_pen_first_point()`
-  guard. The deferred append lands in `verse_manager::db_results` on the track's
-  `DbResult::NodeCreated`: guarded on `pending_pen_first_point.is_some()` + same
-  active petal + `!has_asset` (a track node carries no glb), it calls
-  `start_editing(new_id)` and pushes the stashed point as the track's first
-  `PathAppendPoint`, then `take_*` clears the flag so it can't replay onto a
-  later node-create. The pen path is the ONLY writer of the flag and queues
-  exactly one create, which is what makes that guard sound. Subsequent clicks
-  see `editing_track_id == Some` and append through the normal branch — no
-  further special-casing.
+- **Auto-create on the first click** (`pen_autocreate_track_20260713` +
+  HIGH-1/HIGH-2 correlation-id hardening). A Pen empty-click with
+  `PathEditorState.editing_track_id == None` no longer no-ops: it claims
+  `PathPlace` (so `NodePick` still yields), then — because the new track's
+  `node_id` doesn't exist until the DB round-trips — generates a fe-ui-side
+  correlation id (`gis::next_pen_correlation_id`), stashes
+  `PathEditorState.pending_pen_create` (that id + the click's Y=0 world position)
+  and queues `UiAction::PathCreateTrack { petal_id, "New Path", correlation_id:
+  Some(id) }`. The petal is the active one, sourced from
+  `NavigationManager.active_petal_id` exactly like `viewport_pick`; no active
+  petal → keep the no-op (one-line log hint). A second click before the create
+  resolves is suppressed by the `has_pending_pen_create()` guard. The deferred
+  append lands in `verse_manager::db_results` on the track's
+  `DbResult::NodeCreated`, matched by the **echoed correlation id**
+  (`take_pending_pen_create_if(cid)`) — NOT the old `!has_asset && active-petal`
+  content heuristic, which a concurrent GPX-import/dialog create could hijack. On
+  a match it calls `start_editing(new_id)` and pushes the stashed point as the
+  track's first `PathAppendPoint`. The full id threading + the `DbResult::Error`
+  cleanup (a failed create clears the pending state so the pen can't go dead) are
+  documented in `fe-ui/src/AGENTS.md` §path-editor. Subsequent clicks see
+  `editing_track_id == Some` and append through the normal branch — no further
+  special-casing.
 - **UI entry point.** `panels/path_editor_card.rs`'s edit view no longer has
   an "Append from cursor" button (removed — it placed points anywhere the
   3-D cursor happened to be, independent of tool mode, which made accidental
@@ -154,6 +158,16 @@ selection `.chain()`) because facing is orientation-only and order-independent
 of position edits. Applied to path-point markers and the single-point track
 node — the latter keeps its `Mesh3d`/`Aabb` so §glb-mesh-picking still selects
 it. See `fe-ui/src/AGENTS.md` §data-icons for the panel-glyph + overlay halves.
+
+**MEDIUM-1 (selected node exclusion).** The single-point track node is a
+`Billboard` that is *also* selectable and gimbal-rotatable (Rotate/Move/Scale).
+Since `billboard_face_camera` writes `Transform.rotation` every frame, it would
+overwrite a gimbal-Rotate on that node each frame. Fix: the system reads
+`Res<NodeManager>` and **skips `node_mgr.selected_entity()`** — while a node is
+selected its gimbal owns its transform. Every other billboard keeps facing the
+camera. Skipping the whole selected entity (not just Rotate mode) is the simple
+robust choice: a selected marker not perfectly camera-facing is harmless, a
+stomped gimbal is not.
 
 ## §glb-mesh-picking — precise ray/AABB node selection (`viewport_pick.rs`)
 

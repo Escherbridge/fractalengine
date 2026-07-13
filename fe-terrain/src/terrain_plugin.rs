@@ -511,9 +511,12 @@ fn decode_satellite_image(bytes: &[u8]) -> Option<Image> {
 ///
 /// One-shot build for entities `Without<Mesh3d>` — a live restyle re-enters this
 /// path via the gpx bridge despawning+respawning the `GpxTrackLine` (the same
-/// `force_line_redraw` discipline point-edits use). Color/width are baked into
-/// the ribbon at build time; visibility flips `Visibility` so a hidden→visible
-/// toggle needs no rebuild churn once the mesh exists. See `src/AGENTS.md`
+/// `force_line_redraw` discipline point-edits use). Color, width AND visibility
+/// are all applied here at build time: there is no separate visibility fast
+/// path — a `gis.track.visible` toggle persists like any other style prop and so
+/// takes the same `SetNodeProperty` → bridge despawn/respawn → rebuild round-trip
+/// as a color/width change. `Visibility::Hidden`/`Inherited` is just the value
+/// this build writes based on the current style. See `src/AGENTS.md`
 /// §track-styling.
 fn render_gpx_tracks(
     track_query: Query<(Entity, &GpxTrackLine), Without<Mesh3d>>,
@@ -565,9 +568,10 @@ fn render_gpx_tracks(
 
         let mut e = commands.entity(entity);
         e.insert((Mesh3d(handle), MeshMaterial3d(material)));
-        // FR-3 visibility: keep the entity + mesh; just hide it so a later
-        // visible=true toggle (which despawns+respawns via the bridge) or a
-        // Visibility flip re-shows it without any rebuild churn.
+        // FR-3 visibility: apply the current visible flag at build time. A later
+        // toggle isn't a cheap in-place `Visibility` flip — it persists the
+        // `gis.track.visible` prop, which despawns+respawns the `GpxTrackLine`
+        // via the bridge and re-runs this build, same as a color/width change.
         e.insert(if style.visible { Visibility::Inherited } else { Visibility::Hidden });
 
         let layer_id = find_layer(&layer_stack, |t| {

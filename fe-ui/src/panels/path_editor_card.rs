@@ -66,7 +66,13 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
         );
         if ui.add(egui::Button::new("New Path").fill(theme::BG_SAVE)).clicked() {
             let name = std::mem::take(&mut path_state.new_track_name_buf);
-            ui_mgr.push_action(UiAction::PathCreateTrack { petal_id: petal_id.to_string(), name });
+            // Manual create: correlation_id None — this isn't a pen auto-create,
+            // so the bridge generates its own id and nothing flushes a pen point.
+            ui_mgr.push_action(UiAction::PathCreateTrack {
+                petal_id: petal_id.to_string(),
+                name,
+                correlation_id: None,
+            });
         }
     });
 
@@ -285,7 +291,17 @@ fn render_edit_view(
 /// for the edited track, mutating `style` in place for immediate UI feedback.
 /// Returns `Some((color?, width?, visible?))` with ONLY the field that changed
 /// set, so the caller emits a focused `PathSetStyle` (untouched props aren't
-/// clobbered). `None` when nothing changed this frame.
+/// clobbered). `None` when nothing needs persisting this frame.
+///
+/// MEDIUM-2 (persist on release, not per-frame): a color-picker/slider drag
+/// fires `.changed()` every frame, and each `PathSetStyle` triggers a
+/// `SetNodeProperty` → refetch → despawn/respawn/ribbon-rebuild round-trip in
+/// the gpx bridge — dozens of full mesh rebuilds per drag. So `style` is still
+/// mutated live every frame (the picker/slider shows the value immediately),
+/// but the returned persist signal only fires when the widget's drag *ends*
+/// (`drag_stopped`) or a settled non-drag change lands (keyboard / step click /
+/// checkbox toggle). Live visual feedback is preserved; the DB write happens
+/// once at release. See `fe-ui/src/AGENTS.md` §path-editor.
 #[allow(clippy::type_complexity)]
 fn render_style_controls(
     ui: &mut egui::Ui,
@@ -311,29 +327,49 @@ fn render_style_controls(
             (style.color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
             (style.color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
         );
-        if egui::color_picker::color_edit_button_srgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-            let new = [
+        let resp =
+            egui::color_picker::color_edit_button_srgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque);
+        if resp.changed() {
+            // Live feedback: mirror the picked value into `style` every frame so
+            // the swatch/preview tracks the drag.
+            style.color = [
                 rgba.r() as f32 / 255.0,
                 rgba.g() as f32 / 255.0,
                 rgba.b() as f32 / 255.0,
                 rgba.a() as f32 / 255.0,
             ];
-            style.color = new;
-            changed_color = Some(new);
+        }
+        // Persist only when the color change has settled — i.e. a `.changed()`
+        // observed while the primary pointer is NOT held down. The button
+        // response doesn't reflect the popup's internal slider drag, so we can't
+        // use `drag_stopped()` here; keying off "changed while pointer released"
+        // suppresses every mid-drag frame (pointer down) and fires on the commit
+        // frame after the user lets go (pointer up). Keyboard/hex edits (no
+        // pointer) also land here immediately, which is fine — they're discrete.
+        if resp.changed() && ui.input(|i| !i.pointer.primary_down()) {
+            changed_color = Some(style.color);
         }
     });
 
     ui.horizontal(|ui| {
         ui.label("Thickness");
         let mut w = style.width;
-        if ui.add(egui::Slider::new(&mut w, 0.5..=20.0).step_by(0.5)).changed() {
+        let resp = ui.add(egui::Slider::new(&mut w, 0.5..=20.0).step_by(0.5));
+        if resp.changed() {
+            // Live feedback every frame; persist only on release below.
             style.width = w;
-            changed_width = Some(w);
+        }
+        // Persist on drag-release, or on a settled non-drag change (keyboard /
+        // single step click that never entered a drag).
+        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+            changed_width = Some(style.width);
         }
     });
 
     ui.horizontal(|ui| {
         let mut v = style.visible;
+        // A checkbox is a single click — no per-frame drag churn — so persist
+        // immediately on change.
         if ui.add(egui::Checkbox::new(&mut v, "Visible")).changed() {
             style.visible = v;
             changed_visible = Some(v);

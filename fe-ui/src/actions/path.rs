@@ -42,9 +42,17 @@ pub(crate) fn select_track(db_sender: &DbCommandSender, path_state: &mut PathEdi
 
 /// Queues `CreateTrack` and clears the name buffer. Pure validation split
 /// out as `validate_track_name` so it's testable without a queue.
-pub(crate) fn create_track(path_ops: &mut PendingPathOps, petal_id: String, name: String) -> Result<(), &'static str> {
+/// `correlation_id` is `Some` for the Pen auto-create (threaded to the bridge
+/// so its `NodeCreated` echo is matched by the deferred pen flush), `None` for
+/// the manual "New Path" button.
+pub(crate) fn create_track(
+    path_ops: &mut PendingPathOps,
+    petal_id: String,
+    name: String,
+    correlation_id: Option<String>,
+) -> Result<(), &'static str> {
     let name = validate_track_name(&name)?;
-    path_ops.0.push(PathOp::CreateTrack { petal_id, name });
+    path_ops.0.push(PathOp::CreateTrack { petal_id, name, correlation_id });
     Ok(())
 }
 
@@ -269,14 +277,37 @@ mod tests {
 
     #[test]
     fn create_track_pushes_op_on_valid_name() {
+        // Manual "New Path" button path: correlation_id None (bridge generates
+        // its own id, unchanged behavior).
         let mut ops = PendingPathOps::default();
-        let result = create_track(&mut ops, "petal-1".to_string(), "Ridge Loop".to_string());
+        let result = create_track(&mut ops, "petal-1".to_string(), "Ridge Loop".to_string(), None);
         assert!(result.is_ok());
         assert_eq!(ops.0.len(), 1);
         match &ops.0[0] {
-            PathOp::CreateTrack { petal_id, name } => {
+            PathOp::CreateTrack { petal_id, name, correlation_id } => {
                 assert_eq!(petal_id, "petal-1");
                 assert_eq!(name, "Ridge Loop");
+                assert!(correlation_id.is_none(), "manual create carries no correlation id");
+            }
+            other => panic!("expected CreateTrack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_track_threads_pen_correlation_id() {
+        // Pen auto-create path: the fe-ui id rides through to the PathOp so the
+        // bridge echoes it back and the deferred flush can match by it.
+        let mut ops = PendingPathOps::default();
+        let result = create_track(
+            &mut ops,
+            "petal-1".to_string(),
+            "New Path".to_string(),
+            Some("pen-track:5".to_string()),
+        );
+        assert!(result.is_ok());
+        match &ops.0[0] {
+            PathOp::CreateTrack { correlation_id, .. } => {
+                assert_eq!(correlation_id.as_deref(), Some("pen-track:5"));
             }
             other => panic!("expected CreateTrack, got {other:?}"),
         }
@@ -285,7 +316,7 @@ mod tests {
     #[test]
     fn create_track_rejects_empty_name_without_queuing() {
         let mut ops = PendingPathOps::default();
-        let result = create_track(&mut ops, "petal-1".to_string(), "  ".to_string());
+        let result = create_track(&mut ops, "petal-1".to_string(), "  ".to_string(), None);
         assert!(result.is_err());
         assert!(ops.0.is_empty());
     }

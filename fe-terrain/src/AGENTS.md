@@ -126,12 +126,19 @@ width-aware ribbon via `mesh::track::track_mesh(points, style.width,
 ColorMode::Solid(color))` instead of a 1px `LineStrip`, so thickness is real;
 the material is `base_color: WHITE, unlit, cull_mode: None` because the solid
 color is baked into the mesh's vertex colors (same idiom as `splat/render.rs`).
-Visibility flips `Visibility::Hidden`/`Inherited`. Absent style ⇒
-`TrackStyle::default()` reproduces the historic cyan look exactly, so untouched
-tracks are unchanged. The map is populated by the fractalengine gpx bridge
-(`advance_path_materialization`) from `gis.track.*` node props; live restyle is
-a despawn+respawn of the `GpxTrackLine` (same `force_line_redraw` discipline
-point-edits use — see `fractalengine/src/AGENTS.md`).
+Visibility is applied at build time as `Visibility::Hidden`/`Inherited` (there
+is no separate in-place visibility fast path — a `gis.track.visible` toggle
+persists and re-runs the whole build, see `terrain_plugin.rs`). **LOW-1 accuracy
+note:** absent style ⇒ `TrackStyle::default()` — so the default *style values*
+(cyan `#00ccff`, `width 2.0`, visible) match the historic look, but the
+**rendering changed intentionally**: every track — even one with no persisted
+`gis.track.*` props — is now an unlit width-`2.0` ribbon, NOT the old lit 1-px
+`LineStrip`. So there is a deliberate visual delta on pre-existing tracks; the
+values are historic, the geometry/material are new. The map is populated by the
+fractalengine gpx bridge (`advance_path_materialization`) from `gis.track.*`
+node props; live restyle is a despawn+respawn of the `GpxTrackLine` (same
+`force_line_redraw` discipline point-edits use — see
+`fractalengine/src/AGENTS.md`).
 - `sync_layer_visibility` ran every frame; now gated on
   `layer_stack.is_changed()`, and opacity < 1.0 also sets
   `AlphaMode::Blend` (alpha alone doesn't blend on `StandardMaterial`).

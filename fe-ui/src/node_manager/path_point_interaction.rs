@@ -303,19 +303,28 @@ pub(super) fn handle_path_point_interaction(
             track_node_id: track_id,
             position: [hit.x, hit.y, hit.z],
         });
-    } else if !path_state.has_pending_pen_first_point() {
+    } else if !path_state.has_pending_pen_create() {
         // No track yet → auto-create one in the active petal and stash this
-        // click's world position; the append is deferred until the new track's
-        // `NodeCreated` arrives (`pen_autocreate_track_20260713`, FR-1/FR-2).
-        // Guarded on `!has_pending_pen_first_point()` so a rapid second click
-        // before the create round-trips doesn't queue a second track.
+        // click's world position under a fe-ui-generated correlation id; the
+        // append is deferred until the new track's `NodeCreated` echoes that id
+        // (`pen_autocreate_track_20260713`, FR-1/FR-2). Guarded on
+        // `!has_pending_pen_create()` so a rapid second click before the create
+        // round-trips doesn't queue a second track.
         let Some(petal_id) = nav.active_petal_id.clone() else {
             // No active petal → nowhere to put a track; keep the no-op (FR-4).
             bevy::log::info!("Pen: no active petal — select a petal before drawing a path");
             return;
         };
-        path_state.pending_pen_first_point = Some([hit.x, hit.y, hit.z]);
-        ui_mgr.push_action(UiAction::PathCreateTrack { petal_id, name: AUTO_TRACK_NAME.to_string() });
+        let correlation_id = crate::gis::next_pen_correlation_id();
+        path_state.pending_pen_create = Some(crate::gis::PendingPenCreate {
+            correlation_id: correlation_id.clone(),
+            first_point: [hit.x, hit.y, hit.z],
+        });
+        ui_mgr.push_action(UiAction::PathCreateTrack {
+            petal_id,
+            name: AUTO_TRACK_NAME.to_string(),
+            correlation_id: Some(correlation_id),
+        });
     }
 }
 
