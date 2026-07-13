@@ -400,6 +400,53 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::sync::Arc;
+    use fe_runtime::blob_store::{BlobStore, BlobHash};
+
+    struct TestFsBlobStore {
+        dir: Arc<tempfile::TempDir>,
+    }
+
+    impl TestFsBlobStore {
+        fn new() -> Self {
+            Self {
+                dir: Arc::new(tempfile::tempdir().unwrap()),
+            }
+        }
+    }
+
+    impl BlobStore for TestFsBlobStore {
+        fn add_blob(&self, bytes: &[u8]) -> anyhow::Result<BlobHash> {
+            let hash = *blake3::hash(bytes).as_bytes();
+            let hex = hex::encode(hash);
+            let path = self.dir.path().join(hex);
+            std::fs::write(path, bytes)?;
+            Ok(hash)
+        }
+
+        fn get_blob_path(&self, hash: &BlobHash) -> Option<std::path::PathBuf> {
+            let hex = hex::encode(hash);
+            let path = self.dir.path().join(hex);
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
+        }
+
+        fn has_blob(&self, hash: &BlobHash) -> bool {
+            let hex = hex::encode(hash);
+            self.dir.path().join(hex).exists()
+        }
+
+        fn remove_blob(&self, hash: &BlobHash) -> anyhow::Result<()> {
+            let hex = hex::encode(hash);
+            let path = self.dir.path().join(hex);
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+            Ok(())
+        }
+    }
 
     /// Same in-memory SurrealDB + schema bootstrap pattern used in `rest.rs` tests.
     async fn setup_test_db() -> surrealdb::Surreal<surrealdb::engine::local::Db> {
@@ -428,7 +475,7 @@ mod tests {
         let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
         let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
         let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap();
-        let blob_store: BlobStoreHandle = Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let blob_store: BlobStoreHandle = Arc::new(TestFsBlobStore::new());
 
         Arc::new(ApiState {
             api_cmd_tx,
@@ -535,7 +582,7 @@ mod tests {
     async fn get_node_asset_round_trips_bytes_and_headers() {
         let db = setup_test_db().await;
         let bytes = b"hello glb bytes".to_vec();
-        let blob_store: BlobStoreHandle = Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let blob_store: BlobStoreHandle = Arc::new(TestFsBlobStore::new());
         let (node_id, _asset_id, _hash) =
             seed_node_with_asset(&db, &blob_store, &bytes, "model.glb", "model/gltf-binary").await;
 
@@ -619,7 +666,7 @@ mod tests {
     async fn get_asset_by_id_round_trips_and_resolves_scope() {
         let db = setup_test_db().await;
         let bytes = b"asset-by-id bytes".to_vec();
-        let blob_store: BlobStoreHandle = Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let blob_store: BlobStoreHandle = Arc::new(TestFsBlobStore::new());
         let (_node_id, asset_id, _hash) =
             seed_node_with_asset(&db, &blob_store, &bytes, "texture.png", "image/png").await;
 
@@ -671,7 +718,7 @@ mod tests {
     #[tokio::test]
     async fn directory_placeholder_content_type_returns_501() {
         let db = setup_test_db().await;
-        let blob_store: BlobStoreHandle = Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let blob_store: BlobStoreHandle = Arc::new(TestFsBlobStore::new());
         let (node_id, _asset_id, _hash) = seed_node_with_asset(
             &db,
             &blob_store,

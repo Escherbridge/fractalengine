@@ -91,6 +91,7 @@ pub async fn import_gpx(
                 petal_id: petal_id.clone(),
                 name: cmd.name.clone(),
                 position: cmd.position,
+                correlation_id: None,
             },
             reply_tx,
         };
