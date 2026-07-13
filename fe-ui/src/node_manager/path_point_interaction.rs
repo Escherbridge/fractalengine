@@ -20,10 +20,37 @@ const MARKER_SIZE: f32 = 0.35;
 /// Manual ray/marker hit radius (world units) — see AGENTS.md §path-points.
 const PICK_RADIUS: f32 = 0.7;
 
-/// In-progress drag of a path-point marker: `(index, plane_y)`, `None` when idle.
+/// In-progress drag of a path-point marker, `None` when idle. See
+/// `node_manager/AGENTS.md` §path-points for the two drag modes (horizontal
+/// ray-plane vs. Ctrl-held vertical height).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PathPointDragState {
+    /// Index of the dragged marker in the edited track's point list.
+    pub index: usize,
+    /// Height (Bevy Y) of the horizontal drag plane, captured at drag-start.
+    pub plane_y: f32,
+    /// Live marker height (Bevy Y): equals `plane_y` for a horizontal drag,
+    /// raised/lowered by the Ctrl-held vertical mode (FR-1a).
+    pub height_y: f32,
+    /// Cursor screen-Y last frame, for the Ctrl-held vertical delta; `None`
+    /// until the first Ctrl-hold frame so no jump is applied on modifier press.
+    pub last_cursor_y: Option<f32>,
+}
+
+/// World-units of height (Bevy Y) per pixel of vertical cursor motion in the
+/// Ctrl-held mode — matches `gimbal_interaction.rs`'s `* 0.01` feel.
+const HEIGHT_DRAG_SENSITIVITY: f32 = 0.01;
+
+/// Height (Bevy Y) delta for a Ctrl-held vertical drag: screen-Y grows
+/// downward, so upward cursor motion (`cur < prev`) raises the point (+Y).
+fn height_delta_from_cursor(prev_cursor_y: f32, cur_cursor_y: f32, sensitivity: f32) -> f32 {
+    (prev_cursor_y - cur_cursor_y) * sensitivity
+}
+
+/// The in-progress path-point drag, `None` when idle.
 #[derive(Resource, Default)]
 pub struct PathPointDrag {
-    pub active: Option<(usize, f32)>,
+    pub active: Option<PathPointDragState>,
 }
 
 /// Keeps one `PathPointMarker` sphere per edited-track point; despawns all when
@@ -114,9 +141,10 @@ fn ray_plane_y(ray: &Ray3d, plane_y: f32) -> Option<Vec3> {
     Some(ray.origin + *ray.direction * t)
 }
 
-/// Path-point interaction: Pen-tool click-to-place, drag-to-move, modifier-
-/// click-to-annotate. Claims `PathMarker` on marker pick and `PathPlace` on
-/// pen append. See `node_manager/AGENTS.md` §pen-tool.
+/// Path-point interaction: Pen-tool click-to-place, drag-to-move (Ctrl-held →
+/// vertical height, FR-1a), modifier-click-to-annotate. Claims `PathMarker` on
+/// marker pick and `PathPlace` on pen append. See `node_manager/AGENTS.md`
+/// §pen-tool.
 pub(super) fn handle_path_point_interaction(
     mouse_button: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -146,14 +174,16 @@ pub(super) fn handle_path_point_interaction(
     let cursor = window.cursor_position();
     let Ok((camera, cam_tx)) = cameras.single() else { return };
 
-    // Release → commit the drag as a MovePoint (no index churn).
+    // Release → commit the drag as a MovePoint (no index churn). The committed
+    // y is read from the marker `Transform`, so a Ctrl-raised height flows
+    // through automatically (FR-1a).
     if mouse_button.just_released(MouseButton::Left) {
-        if let Some((index, _)) = drag.active.take() {
-            if let Some((tx, _)) = marker_tx.iter().find(|(_, m)| m.index == index) {
+        if let Some(state) = drag.active.take() {
+            if let Some((tx, _)) = marker_tx.iter().find(|(_, m)| m.index == state.index) {
                 let p = tx.translation;
                 ui_mgr.push_action(UiAction::PathMovePoint {
                     track_node_id: track_id.clone(),
-                    index,
+                    index: state.index,
                     position: [p.x, p.y, p.z],
                 });
             }
@@ -161,18 +191,41 @@ pub(super) fn handle_path_point_interaction(
         return;
     }
 
-    // Hold → update the dragged marker's world position on its own y-plane.
+    // Hold → update the dragged marker. Ctrl-held: raise/lower height (Bevy Y)
+    // by vertical cursor delta, decoupled from the ray-plane hit (FR-1a).
+    // Otherwise: reproject through the horizontal `plane_y` (existing behavior).
     if mouse_button.pressed(MouseButton::Left) {
-        if let Some((index, plane_y)) = drag.active {
+        if let Some(mut state) = drag.active {
             let Some(cursor_pos) = cursor else { return };
-            let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else { return };
-            if let Some(hit) = ray_plane_y(&ray, plane_y) {
+            let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+            if ctrl {
+                if let Some(prev_y) = state.last_cursor_y {
+                    state.height_y +=
+                        height_delta_from_cursor(prev_y, cursor_pos.y, HEIGHT_DRAG_SENSITIVITY);
+                }
+                state.last_cursor_y = Some(cursor_pos.y);
                 for (mut tx, marker) in marker_tx.iter_mut() {
-                    if marker.index == index {
-                        tx.translation = hit;
+                    if marker.index == state.index {
+                        tx.translation.y = state.height_y;
+                    }
+                }
+            } else {
+                // Reset the vertical anchor so re-pressing Ctrl doesn't apply a
+                // stale delta accumulated across the gap.
+                state.last_cursor_y = None;
+                let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else { return };
+                if let Some(hit) = ray_plane_y(&ray, state.plane_y) {
+                    for (mut tx, marker) in marker_tx.iter_mut() {
+                        if marker.index == state.index {
+                            // Keep any Ctrl-raised height; only x/z track the ray.
+                            tx.translation.x = hit.x;
+                            tx.translation.z = hit.z;
+                            tx.translation.y = state.height_y;
+                        }
                     }
                 }
             }
+            drag.active = Some(state);
             return;
         }
     }
@@ -199,12 +252,13 @@ pub(super) fn handle_path_point_interaction(
             path_state.open_annotate_form(index);
         } else {
             // Plain click → begin dragging this point on its current y-plane.
+            // Hold Ctrl during the drag to raise/lower height instead (FR-1a).
             let plane_y = marker_pick
                 .iter()
                 .find(|(_, m)| m.index == index)
                 .map(|(g, _)| g.translation().y)
                 .unwrap_or(0.0);
-            drag.active = Some((index, plane_y));
+            drag.active = Some(PathPointDragState { index, plane_y, height_y: plane_y, last_cursor_y: None });
         }
         return;
     }
@@ -223,5 +277,40 @@ pub(super) fn handle_path_point_interaction(
             track_node_id: track_id,
             position: [hit.x, hit.y, hit.z],
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upward_cursor_motion_raises_height() {
+        // Screen-Y grows downward, so a smaller cur than prev is upward → +Y.
+        let d = height_delta_from_cursor(200.0, 150.0, HEIGHT_DRAG_SENSITIVITY);
+        assert!(d > 0.0, "upward drag should raise height, got {d}");
+        assert!((d - 0.5).abs() < 1e-6, "50px * 0.01 = 0.5, got {d}");
+    }
+
+    #[test]
+    fn downward_cursor_motion_lowers_height() {
+        let d = height_delta_from_cursor(150.0, 200.0, HEIGHT_DRAG_SENSITIVITY);
+        assert!(d < 0.0, "downward drag should lower height, got {d}");
+        assert!((d + 0.5).abs() < 1e-6, "-50px * 0.01 = -0.5, got {d}");
+    }
+
+    #[test]
+    fn zero_cursor_motion_is_no_height_change() {
+        assert_eq!(height_delta_from_cursor(120.0, 120.0, HEIGHT_DRAG_SENSITIVITY), 0.0);
+    }
+
+    #[test]
+    fn accumulated_height_matches_summed_deltas() {
+        // Two upward steps accumulate onto the starting plane_y.
+        let mut state = PathPointDragState { index: 0, plane_y: 2.0, height_y: 2.0, last_cursor_y: Some(300.0) };
+        state.height_y += height_delta_from_cursor(300.0, 250.0, HEIGHT_DRAG_SENSITIVITY);
+        state.height_y += height_delta_from_cursor(250.0, 200.0, HEIGHT_DRAG_SENSITIVITY);
+        // 2.0 + 0.5 + 0.5 = 3.0.
+        assert!((state.height_y - 3.0).abs() < 1e-6, "got {}", state.height_y);
     }
 }

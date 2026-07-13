@@ -164,7 +164,7 @@ fn render_edit_view(
     }
 
     ui.label(
-        egui::RichText::new("Pen tool: click terrain to add \u{2022} drag markers to move \u{2022} Shift/Alt+click a marker to annotate")
+        egui::RichText::new("Pen tool: click terrain to add \u{2022} drag markers to move \u{2022} Ctrl+drag a marker to raise/lower height \u{2022} edit Height (Y) below \u{2022} Shift/Alt+click a marker to annotate")
             .small()
             .color(theme::TEXT_MUTED)
             .italics(),
@@ -173,6 +173,10 @@ fn render_edit_view(
 
     let mut to_remove: Option<usize> = None;
     let mut to_annotate: Option<usize> = None;
+    // FR-1b: a numeric Height (Y, the user's "z-axis") edit on a point row.
+    // Reuses `UiAction::PathMovePoint` (no new action) — it flows through
+    // `PathOp::MovePoint` generically over all 3 position components.
+    let mut to_move: Option<(usize, [f32; 3])> = None;
     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
         for (i, point) in path_state.points.iter().enumerate() {
             egui::Frame::NONE
@@ -195,6 +199,14 @@ fn render_edit_view(
                             if ui.small_button("Annotate").clicked() {
                                 to_annotate = Some(i);
                             }
+                            // Numeric height (Bevy Y) field for this point.
+                            let mut new_y = point.position[1];
+                            let resp = ui.add(
+                                egui::DragValue::new(&mut new_y).speed(0.05).prefix("Y "),
+                            );
+                            if resp.changed() {
+                                to_move = Some((i, [point.position[0], new_y, point.position[2]]));
+                            }
                         });
                     });
                 });
@@ -207,6 +219,9 @@ fn render_edit_view(
         if path_state.annotating_index == Some(index) {
             path_state.close_annotate_form();
         }
+    }
+    if let Some((index, position)) = to_move {
+        ui_mgr.push_action(UiAction::PathMovePoint { track_node_id: track_id.to_string(), index, position });
     }
     if let Some(index) = to_annotate {
         path_state.open_annotate_form(index);
