@@ -465,6 +465,10 @@ pub(super) fn apply_db_results(
                         .get("gpx_points")
                         .map(crate::gis::decode_gpx_points)
                         .unwrap_or_default();
+                    // track_styling_20260713: seed the Paths-tab style controls
+                    // from the same property bag (default when absent/invalid).
+                    path_state.edited_track_style =
+                        crate::gis::TrackStyleFields::from_properties(properties);
                     path_state.points_pending = false;
                 }
                 if !is_for_selected_node(&node_mgr, node_id) {

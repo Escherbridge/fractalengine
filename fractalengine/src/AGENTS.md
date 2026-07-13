@@ -259,6 +259,34 @@ and the import path — both guarantee it). The user's "z-axis" height edits (FR
 persist through the unchanged `[x, y, z, time]` `gpx_points` encoding — no format
 change (FR-2).
 
+**§track-styling (track_styling_20260713).** Per-track color / thickness /
+visibility, edited in the Paths tab, persisted as `gis.track.*` node props
+(`gis.track.color` = `#rrggbbaa` hex, `gis.track.width` = number,
+`gis.track.visible` = bool). `style_from_properties(&Value) -> TrackStyle` (pure,
+unit-tested) parses them field-by-field, each falling back to its default on
+missing/invalid input (FR-4, never panics). `advance_path_materialization` now
+also threads `ResMut<TrackStyleMap>` + `Res<DbCommandSender>`:
+
+- On a track's `NodePropertiesLoaded`, it refreshes `TrackStyleMap[node_id]`
+  from the style props BEFORE reconciling. If the style actually changed and a
+  `GpxTrackLine` already exists, it despawns that line so the reconcile
+  respawns it `Without<Mesh3d>` and `render_gpx_tracks` rebuilds the ribbon with
+  the new color/width (its build is gated on `Without<Mesh3d>` — same
+  force-redraw mechanism the point-edit path uses).
+- A live style edit lands as `NodePropertySet { key }` (no property bag), so a
+  `gis.track.*` key triggers a `GetNodeProperties` re-read → the arm above fires
+  with the fresh values. Non-style keys don't trigger the round trip.
+- `NodeDeleted` also drops the `TrackStyleMap` entry.
+
+fe-ui side: `UiAction::PathSetStyle { track_node_id, color?, width?, visible? }`
+writes the changed keys via `SetNodeProperty` directly (mirrors
+`PathAssetApply`; `actions::path::style_property_writes` is the pure, tested
+`(key,value)` builder — only `Some` fields write, so an untouched control never
+clobbers a stored value). The Paths-tab edit view seeds its controls from
+`PathEditorState::edited_track_style` (a fe-ui-local `TrackStyleFields` mirror —
+fe-ui must not depend on fe-terrain), populated at the same
+`NodePropertiesLoaded` seam that seeds `points`.
+
 **INTEGRATION_REQUEST (gpx_pipeline_20260711, coordinator-owned `main.rs`):**
 Register two new systems and one resource, mirroring the asset-bridge
 wiring: `app.init_resource::<gpx_bridge::PendingGpxImports>();` and

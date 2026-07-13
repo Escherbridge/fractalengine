@@ -9,7 +9,8 @@ use bevy::prelude::Projection as CameraProjection;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
-use crate::iot::TrackRouteMap;
+use crate::iot::{TrackRouteMap, TrackStyleMap};
+use crate::mesh::track::{track_mesh, ColorMode as TrackColorMode};
 use crate::layers::{LayerId, LayerStack, LayerType};
 use crate::lod_ring::{
     max_ring_radius_for_budget, ring_offsets, ring_radius_tiles, spawn_despawn_radii,
@@ -121,6 +122,7 @@ impl Plugin for TerrainPlugin {
         app.init_resource::<TerrainLodConfig>()
             .init_resource::<WaypointMarkerConfig>()
             .init_resource::<TrackRouteMap>()
+            .init_resource::<TrackStyleMap>()
             .init_resource::<ActivePetalTerrain>()
             .init_resource::<ActiveTileSource>()
             .init_resource::<FailedTiles>()
@@ -504,10 +506,19 @@ fn decode_satellite_image(bytes: &[u8]) -> Option<Image> {
     }
 }
 
-/// Render GPX track overlays as line meshes; skips non-finite points.
+/// Render GPX track overlays as width-aware ribbon meshes honoring each track's
+/// per-track [`TrackStyle`] (color, width, visibility); skips non-finite points.
+///
+/// One-shot build for entities `Without<Mesh3d>` — a live restyle re-enters this
+/// path via the gpx bridge despawning+respawning the `GpxTrackLine` (the same
+/// `force_line_redraw` discipline point-edits use). Color/width are baked into
+/// the ribbon at build time; visibility flips `Visibility` so a hidden→visible
+/// toggle needs no rebuild churn once the mesh exists. See `src/AGENTS.md`
+/// §track-styling.
 fn render_gpx_tracks(
     track_query: Query<(Entity, &GpxTrackLine), Without<Mesh3d>>,
     route_map: Res<TrackRouteMap>,
+    style_map: Res<TrackStyleMap>,
     layer_stack: Res<LayerStack>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -518,37 +529,46 @@ fn render_gpx_tracks(
             continue;
         };
 
-        let positions: Vec<Vec3> = route
+        let positions: Vec<[f32; 3]> = route
             .points
             .iter()
-            .map(|p| {
-                Vec3::new(
-                    p.position[0] as f32,
-                    p.position[1] as f32,
-                    p.position[2] as f32,
-                )
-            })
-            .filter(|v| v.is_finite())
+            .map(|p| [p.position[0] as f32, p.position[1] as f32, p.position[2] as f32])
+            .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
             .collect();
 
         if positions.len() < 2 {
             continue;
         }
 
-        let mut line_mesh = Mesh::new(
-            bevy::render::render_resource::PrimitiveTopology::LineStrip,
-            RenderAssetUsages::default(),
-        );
-        line_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        // FR-3/FR-4: default style reproduces the historic cyan look for tracks
+        // with no persisted `gis.track.*` props.
+        let style = style_map.style_for(&track.track_node_id);
 
-        let handle = meshes.add(line_mesh);
+        // FR-3 thickness: the ribbon builder extrudes a width-aware triangle
+        // strip and bakes the solid color into vertex colors — so the material
+        // is WHITE + unlit (vertex colors tint it) rather than a base_color.
+        let color = Color::srgba_u8(
+            style.color_u8()[0],
+            style.color_u8()[1],
+            style.color_u8()[2],
+            style.color_u8()[3],
+        );
+        let ribbon = track_mesh(&positions, style.width.max(0.01), TrackColorMode::Solid(color));
+
+        let handle = meshes.add(ribbon);
         let material = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.0, 0.8, 1.0),
+            base_color: Color::WHITE,
+            unlit: true,
+            cull_mode: None,
             ..default()
         });
 
         let mut e = commands.entity(entity);
         e.insert((Mesh3d(handle), MeshMaterial3d(material)));
+        // FR-3 visibility: keep the entity + mesh; just hide it so a later
+        // visible=true toggle (which despawns+respawns via the bridge) or a
+        // Visibility flip re-shows it without any rebuild churn.
+        e.insert(if style.visible { Visibility::Inherited } else { Visibility::Hidden });
 
         let layer_id = find_layer(&layer_stack, |t| {
             matches!(t, LayerType::GpxTrack { node_id, .. } if node_id == &track.track_node_id)

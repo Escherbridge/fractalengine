@@ -171,6 +171,20 @@ fn render_edit_view(
         }
     });
 
+    // track_styling_20260713: per-track style controls (color / thickness /
+    // visibility). Bound to `edited_track_style` (seeded from the track's
+    // `gis.track.*` props on select); each change emits a focused `PathSetStyle`
+    // via the deferred-push idiom so the borrow on `path_state` ends first.
+    let to_style = render_style_controls(ui, &mut path_state.edited_track_style);
+    if let Some((color, width, visible)) = to_style {
+        ui_mgr.push_action(UiAction::PathSetStyle {
+            track_node_id: track_id.to_string(),
+            color,
+            width,
+            visible,
+        });
+    }
+
     if path_status.track_node_id.as_deref() == Some(track_id) {
         ui.add_space(4.0);
         if let Some(err) = &path_status.error {
@@ -264,6 +278,72 @@ fn render_edit_view(
     // `gis.annotation.*` contract once the bridge creates the waypoint node.
     if let Some(index) = path_state.annotating_index {
         render_annotate_form(ui, path_state, ui_mgr, track_id, index);
+    }
+}
+
+/// track_styling_20260713: renders the color / thickness / visibility controls
+/// for the edited track, mutating `style` in place for immediate UI feedback.
+/// Returns `Some((color?, width?, visible?))` with ONLY the field that changed
+/// set, so the caller emits a focused `PathSetStyle` (untouched props aren't
+/// clobbered). `None` when nothing changed this frame.
+#[allow(clippy::type_complexity)]
+fn render_style_controls(
+    ui: &mut egui::Ui,
+    style: &mut crate::gis::TrackStyleFields,
+) -> Option<(Option<[f32; 4]>, Option<f32>, Option<bool>)> {
+    let mut changed_color: Option<[f32; 4]> = None;
+    let mut changed_width: Option<f32> = None;
+    let mut changed_visible: Option<bool> = None;
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Style").strong().color(theme::TEXT_SECTION));
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label("Color");
+        // egui's picker works in sRGB `Color32` (unmultiplied). Convert to/from
+        // our `[f32; 4]` sRGB representation.
+        let mut rgba = egui::Color32::from_rgba_unmultiplied(
+            (style.color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (style.color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (style.color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (style.color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+        );
+        if egui::color_picker::color_edit_button_srgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
+            let new = [
+                rgba.r() as f32 / 255.0,
+                rgba.g() as f32 / 255.0,
+                rgba.b() as f32 / 255.0,
+                rgba.a() as f32 / 255.0,
+            ];
+            style.color = new;
+            changed_color = Some(new);
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Thickness");
+        let mut w = style.width;
+        if ui.add(egui::Slider::new(&mut w, 0.5..=20.0).step_by(0.5)).changed() {
+            style.width = w;
+            changed_width = Some(w);
+        }
+    });
+
+    ui.horizontal(|ui| {
+        let mut v = style.visible;
+        if ui.add(egui::Checkbox::new(&mut v, "Visible")).changed() {
+            style.visible = v;
+            changed_visible = Some(v);
+        }
+    });
+
+    if changed_color.is_some() || changed_width.is_some() || changed_visible.is_some() {
+        Some((changed_color, changed_width, changed_visible))
+    } else {
+        None
     }
 }
 
