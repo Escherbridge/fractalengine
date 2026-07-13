@@ -304,9 +304,10 @@ pub struct SinglePointTrackNode {
     pub track_node_id: String,
 }
 
-/// Marker mesh radius (world units) for a single-point track node — matches the
-/// yellow path-point markers so it reads as a placed point.
-const SINGLE_POINT_NODE_SIZE: f32 = 0.4;
+/// Marker icon-quad edge length (world units) for a single-point track node —
+/// matches the path-point markers so it reads as a placed point. Billboarded
+/// flat quad (data_icons_20260713).
+const SINGLE_POINT_NODE_SIZE: f32 = 0.8;
 
 /// FR-3: what a track's point count should materialize as. Pure so the
 /// point-count → spawn-decision branching is unit-testable without a Bevy App.
@@ -331,7 +332,10 @@ pub fn materialization_kind(len: usize) -> MaterializationKind {
 
 /// FR-3: spawn a visible, selectable node for a single-point track at `position`.
 /// Tags it with `SinglePointTrackNode` (reconcile) + `fe_ui::plugin::SpawnedNodeMarker`
-/// (so the glb-mesh-picking AABB test selects it; `Mesh3d` supplies the `Aabb`).
+/// (so the glb-mesh-picking AABB test selects it; `Mesh3d` supplies the `Aabb`)
+/// + `fe_ui::plugin::Billboard` (data_icons_20260713 — fe-ui's
+/// `billboard_face_camera` turns the flat icon quad to face the viewport).
+/// The mesh stays a `Mesh3d`, so the AABB mesh-pick keeps selecting it.
 /// Crate-local because `fe-ui`'s node-spawn helpers are `pub(super)`.
 fn spawn_single_point_node(
     commands: &mut Commands,
@@ -341,10 +345,14 @@ fn spawn_single_point_node(
     petal_id: &str,
     position: [f32; 3],
 ) {
-    let mesh = meshes.add(Sphere::new(SINGLE_POINT_NODE_SIZE));
+    // Flat icon quad (Rectangle) instead of a solid sphere — still a `Mesh3d`
+    // so it yields an `Aabb` for the mesh-pick; double-sided + unlit so it reads
+    // at any angle before the first billboard-face frame.
+    let mesh = meshes.add(Rectangle::new(SINGLE_POINT_NODE_SIZE, SINGLE_POINT_NODE_SIZE));
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 0.7, 1.0),
         unlit: true,
+        cull_mode: None,
         ..default()
     });
     let entity = commands
@@ -354,6 +362,7 @@ fn spawn_single_point_node(
             Transform::from_xyz(position[0], position[1], position[2]),
             Name::new(format!("SinglePointTrack {track_node_id}")),
             fe_ui::plugin::SpawnedNodeMarker { node_id: track_node_id.to_string(), petal_id: petal_id.to_string() },
+            fe_ui::plugin::Billboard,
             SinglePointTrackNode { track_node_id: track_node_id.to_string() },
         ))
         .id();

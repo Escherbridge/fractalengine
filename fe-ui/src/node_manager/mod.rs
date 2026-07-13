@@ -13,6 +13,7 @@
 
 /// Pure curve + shape math for the pen tool (phase 2). See AGENTS.md §pen-tool.
 pub(crate) mod curve;
+mod billboard;
 mod gimbal_interaction;
 mod inspector_sync;
 mod path_point_interaction;
@@ -129,6 +130,10 @@ impl Plugin for NodeManagerPlugin {
                 .chain()
                 .in_set(UiSet::Selection),
         );
+        // Billboard facing is orientation-only and order-independent of the
+        // selection chain above, so it runs as a standalone per-frame system
+        // (data_icons_20260713).
+        app.add_systems(Update, billboard::billboard_face_camera);
     }
 }
 

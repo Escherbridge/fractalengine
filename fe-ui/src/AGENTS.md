@@ -444,3 +444,45 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    writer of the flag and queues exactly one create, so the first matching
    `NodeCreated` is unambiguously the auto-created track. This is the deferred
    analogue of the §gpx-import `pending_*` correlation, without a schema change.
+
+## §data-icons — type icons on three surfaces (`data_icons_20260713`)
+
+"Icons for the data": path points and single-point track nodes read as bare
+spheres and panels list plain text, with no type legibility. Three surfaces,
+each independent:
+
+- **Panel row glyphs (FR-1, `panels/path_editor_card.rs`).** Track rows and
+  point rows get a recolorable geometric glyph prepended. egui recolors plain
+  `\u{25xx}`/`\u{27xx}` codepoints reliably (color emoji do NOT — they render
+  in their own palette), so `type_glyph`/`GLYPH_*` are single-scalar geometric
+  shapes: `\u{29BF}` (track), `\u{25CF}`/`\u{25CB}` (timed/untimed point),
+  `\u{25C6}` (waypoint), tinted by `theme::ICON_TRACK`/`ICON_POINT`/
+  `ICON_WAYPOINT`. `type_glyph(gpx_type)` is the pure `gpx_type → glyph` map,
+  `pub(crate)` and shared with FR-3; its module is `pub(crate)` only so
+  `viewport_labels` can reuse it. Mirrors the `sidebar.rs:306` `◆`/`●`
+  precedent.
+- **3-D billboard markers (FR-2).** A `Billboard` marker component
+  (`plugin.rs`, `pub`, constructable from both fe-ui and
+  `fractalengine::gpx_bridge`) + `node_manager::billboard::billboard_face_camera`
+  — a standalone per-frame system that copies the `OrbitCameraController`
+  camera's world rotation onto every `Billboard` `Transform`, so a flat
+  `Rectangle` icon quad stays parallel to the camera plane (a quad lies in
+  local XY, +Z normal; matching the camera's +Z points the face at the viewer).
+  Path-point markers (`path_point_interaction::sync_path_point_markers`) and
+  single-point track nodes (`gpx_bridge::spawn_single_point_node`) spawn a
+  double-sided (`cull_mode: None`) unlit quad instead of a sphere. **Picking is
+  preserved**: the single-point node keeps its `Mesh3d`, so it still yields an
+  `Aabb` for §glb-mesh-picking. The quad's local AABB is thin in Z, but
+  billboarding keeps it presented head-on, so the ray/slab test always crosses
+  it cleanly. Rotation is orientation-only, so the system runs outside the
+  selection `.chain()`.
+- **3-D floating labels (FR-3, `viewport_labels.rs`).** An egui screen-space
+  overlay — NOT in-world text meshes (`bevy_text`/`Text2d` are not enabled).
+  `draw_viewport_point_labels` runs in `EguiPrimaryContextPass` after
+  `gardener_ui_system` (so it reads the same-frame `ViewportRect`), projects
+  each edited-track point via `Camera::world_to_viewport` (viewport coords ==
+  egui screen coords for the fullscreen CentralPanel, same basis the gimbal
+  uses), and paints a translucent `glyph + index` label via `layer_painter` in
+  `theme::TEXT_VIEWPORT_HINT`. Gated to `editing_track_id.is_some()` so labels
+  only appear while drawing a path, and clipped to `ViewportRect` so a label
+  that projects under a side panel is dropped.

@@ -48,3 +48,10 @@ pub const BG_INVITE_LINK: Color32 = Color32::from_rgb(35, 35, 50);
 pub const ICON_GEAR: Color32 = Color32::from_rgb(140, 140, 170);
 pub const ICON_ONLINE: Color32 = Color32::from_rgb(80, 180, 80);
 pub const ICON_OFFLINE: Color32 = Color32::from_rgb(100, 100, 120);
+
+// Data icons (data_icons_20260713): recolorable geometric glyphs prepended to
+// Paths-tab rows + used as the billboard/overlay type marker. See
+// `fe-ui/src/AGENTS.md` §data-icons.
+pub const ICON_TRACK: Color32 = Color32::from_rgb(120, 190, 240);
+pub const ICON_POINT: Color32 = Color32::from_rgb(240, 210, 90);
+pub const ICON_WAYPOINT: Color32 = Color32::from_rgb(200, 150, 240);

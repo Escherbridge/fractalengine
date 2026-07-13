@@ -8,7 +8,7 @@ use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 use crate::panels::toolbar::Tool;
-use crate::plugin::ToolState;
+use crate::plugin::{Billboard, ToolState};
 
 /// Default name for a track auto-created by the first Pen click when none is
 /// being edited (`pen_autocreate_track_20260713`). Renameable in the Paths tab.
@@ -20,8 +20,10 @@ pub struct PathPointMarker {
     pub index: usize,
 }
 
-/// Marker sphere radius (world units).
-const MARKER_SIZE: f32 = 0.35;
+/// Marker icon-quad edge length (world units). Billboarded flat quad (FR-2,
+/// data_icons_20260713) reads as an icon vs. the old solid sphere; sized to
+/// span roughly the old `Sphere(0.35)` diameter so pick feel is unchanged.
+const MARKER_QUAD_SIZE: f32 = 0.7;
 /// Manual ray/marker hit radius (world units) — see AGENTS.md §path-points.
 const PICK_RADIUS: f32 = 0.7;
 
@@ -87,14 +89,19 @@ pub(super) fn sync_path_point_markers(
         return;
     }
 
+    // FR-2 (data_icons_20260713): a flat, camera-facing icon quad instead of a
+    // solid sphere. `Rectangle` lies in local XY (+Z normal); the `Billboard`
+    // tag + `billboard_face_camera` keep it turned toward the viewport. Unlit +
+    // double-sided so it reads at any orbit angle before the first face frame.
     let mesh = mesh_handle
-        .get_or_insert_with(|| meshes.add(Sphere::new(MARKER_SIZE)))
+        .get_or_insert_with(|| meshes.add(Rectangle::new(MARKER_QUAD_SIZE, MARKER_QUAD_SIZE)))
         .clone();
     let material = mat_handle
         .get_or_insert_with(|| {
             materials.add(StandardMaterial {
                 base_color: Color::srgb(1.0, 0.85, 0.2),
                 unlit: true,
+                cull_mode: None,
                 ..default()
             })
         })
@@ -107,6 +114,7 @@ pub(super) fn sync_path_point_markers(
             Transform::from_xyz(point.position[0], point.position[1], point.position[2]),
             Name::new(format!("PathPoint {i}")),
             PathPointMarker { index: i },
+            Billboard,
         ));
     }
 }
