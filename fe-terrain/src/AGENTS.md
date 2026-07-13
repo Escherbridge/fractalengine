@@ -115,6 +115,23 @@ runs first so the frame's assignment is visible to everything downstream.
   pipeline above.
 - `render_gpx_tracks` skips non-finite points and attaches `LayerEntity` for
   a matching `LayerType::GpxTrack` (by `node_id`).
+
+**§track-styling (track_styling_20260713).** Per-track color / thickness /
+visibility. `TrackStyle { color:[f32;4], width, visible }` (plain struct, no
+Bevy dep — `iot/animation.rs`) + `TrackStyleMap` resource (render-only, keyed
+by track node id) live next to `TrackRouteMap`; `parse_track_color_hex` /
+`track_color_to_hex` handle the `#rrggbbaa` persistence format (invalid → the
+caller's default, never panics — FR-4). `render_gpx_tracks` now builds the
+width-aware ribbon via `mesh::track::track_mesh(points, style.width,
+ColorMode::Solid(color))` instead of a 1px `LineStrip`, so thickness is real;
+the material is `base_color: WHITE, unlit, cull_mode: None` because the solid
+color is baked into the mesh's vertex colors (same idiom as `splat/render.rs`).
+Visibility flips `Visibility::Hidden`/`Inherited`. Absent style ⇒
+`TrackStyle::default()` reproduces the historic cyan look exactly, so untouched
+tracks are unchanged. The map is populated by the fractalengine gpx bridge
+(`advance_path_materialization`) from `gis.track.*` node props; live restyle is
+a despawn+respawn of the `GpxTrackLine` (same `force_line_redraw` discipline
+point-edits use — see `fractalengine/src/AGENTS.md`).
 - `sync_layer_visibility` ran every frame; now gated on
   `layer_stack.is_changed()`, and opacity < 1.0 also sets
   `AlphaMode::Blend` (alpha alone doesn't blend on `StandardMaterial`).

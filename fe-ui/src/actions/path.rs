@@ -125,6 +125,66 @@ pub(crate) fn export_gpx(path_ops: &mut PendingPathOps, track_node_id: String) {
     path_ops.0.push(PathOp::ExportGpx { track_node_id });
 }
 
+/// track_styling_20260713 per-track style node-property keys. Kept as a fe-ui
+/// local copy (fe-ui must NOT depend on fe-terrain — see
+/// `fe-ui/src/verse_manager/AGENTS.md`); the canonical contract lives in
+/// `fractalengine/src/gpx_bridge.rs`. Color persists as `#rrggbbaa` hex.
+pub(crate) const TRACK_COLOR_KEY: &str = "gis.track.color";
+pub(crate) const TRACK_WIDTH_KEY: &str = "gis.track.width";
+pub(crate) const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
+
+/// Encode an sRGB `[f32; 4]` color as a `#rrggbbaa` hex string matching
+/// `fe_terrain::iot::parse_track_color_hex`'s reader. Local to avoid an
+/// fe-terrain dependency.
+pub(crate) fn track_color_to_hex(color: [f32; 4]) -> String {
+    let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}{:02x}", c(color[0]), c(color[1]), c(color[2]), c(color[3]))
+}
+
+/// Pure builder: the `(key, value)` `SetNodeProperty` writes for a style edit.
+/// Only the `Some` fields produce a write, so an untouched control doesn't
+/// clobber a stored value. Testable without a `DbCommandSender`.
+pub(crate) fn style_property_writes(
+    color: Option<[f32; 4]>,
+    width: Option<f32>,
+    visible: Option<bool>,
+) -> Vec<(&'static str, serde_json::Value)> {
+    let mut writes = Vec::new();
+    if let Some(color) = color {
+        writes.push((TRACK_COLOR_KEY, serde_json::Value::String(track_color_to_hex(color))));
+    }
+    if let Some(width) = width {
+        writes.push((TRACK_WIDTH_KEY, serde_json::json!(width)));
+    }
+    if let Some(visible) = visible {
+        writes.push((TRACK_VISIBLE_KEY, serde_json::Value::Bool(visible)));
+    }
+    writes
+}
+
+/// Dispatches the `SetNodeProperty` writes for a per-track style edit directly
+/// (mirrors `PathAssetApply`'s direct property write in `actions::mod`). The
+/// gpx bridge's `NodePropertySet` arm re-reads the node and restyles the ribbon
+/// live, so no `PathOp`/render round-trip is needed here.
+pub(crate) fn set_style(
+    db_sender: &DbCommandSender,
+    track_node_id: String,
+    color: Option<[f32; 4]>,
+    width: Option<f32>,
+    visible: Option<bool>,
+) {
+    for (key, value) in style_property_writes(color, width, visible) {
+        if db_sender
+            .0
+            .send(DbCommand::SetNodeProperty { node_id: track_node_id.clone(), key: key.to_string(), value })
+            .is_err()
+        {
+            bevy::log::warn!("db_sender channel closed — track-style SetNodeProperty not dispatched");
+            return;
+        }
+    }
+}
+
 /// Replaces the currently-edited track's points with `new_points` via the
 /// existing Remove/Append ops (clear-then-append), keeping the local buffer and
 /// the op queue in lock-step. No-op (with a warn) if no track is being edited.
@@ -342,6 +402,59 @@ mod tests {
         delete_track(&mut ops, "track-1".to_string());
         assert_eq!(ops.0.len(), 1);
         assert!(matches!(ops.0[0], PathOp::DeleteTrack { .. }));
+    }
+
+    #[test]
+    fn track_color_to_hex_emits_rrggbbaa() {
+        assert_eq!(track_color_to_hex([1.0, 0.0, 0.0, 1.0]), "#ff0000ff");
+        assert_eq!(track_color_to_hex([0.0, 0.8, 1.0, 1.0]), "#00ccffff");
+        // Clamps out-of-range channels.
+        assert_eq!(track_color_to_hex([2.0, -1.0, 0.5019608, 1.0]), "#ff0080ff");
+    }
+
+    #[test]
+    fn style_property_writes_only_includes_changed_fields() {
+        // Only the width is set → exactly one write, for the width key.
+        let writes = style_property_writes(None, Some(3.5), None);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, TRACK_WIDTH_KEY);
+        assert_eq!(writes[0].1, serde_json::json!(3.5));
+    }
+
+    #[test]
+    fn style_property_writes_maps_all_three_keys_and_types() {
+        let writes = style_property_writes(Some([0.0, 0.8, 1.0, 1.0]), Some(4.0), Some(false));
+        assert_eq!(writes.len(), 3);
+        // Color → hex string.
+        assert_eq!(writes[0], (TRACK_COLOR_KEY, serde_json::Value::String("#00ccffff".to_string())));
+        // Width → number.
+        assert_eq!(writes[1], (TRACK_WIDTH_KEY, serde_json::json!(4.0)));
+        // Visible → bool.
+        assert_eq!(writes[2], (TRACK_VISIBLE_KEY, serde_json::Value::Bool(false)));
+    }
+
+    #[test]
+    fn style_property_writes_empty_when_nothing_changed() {
+        assert!(style_property_writes(None, None, None).is_empty());
+    }
+
+    #[test]
+    fn set_style_dispatches_one_command_per_changed_field() {
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        let db_sender = DbCommandSender(tx);
+        set_style(&db_sender, "track-1".to_string(), Some([1.0, 0.0, 0.0, 1.0]), Some(2.0), None);
+        // Two writes: color + width (visible is None).
+        let mut keys = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                DbCommand::SetNodeProperty { node_id, key, .. } => {
+                    assert_eq!(node_id, "track-1");
+                    keys.push(key);
+                }
+                other => panic!("expected SetNodeProperty, got {other:?}"),
+            }
+        }
+        assert_eq!(keys, vec![TRACK_COLOR_KEY.to_string(), TRACK_WIDTH_KEY.to_string()]);
     }
 
     #[test]

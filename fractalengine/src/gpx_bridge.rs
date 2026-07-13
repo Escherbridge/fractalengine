@@ -11,7 +11,7 @@ use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::{DbCommand, DbResult};
 use fe_terrain::gpx::{compute_stats, parse_gpx_bytes, scene_nodes_to_gpx, GpxData, TrackStats};
 use fe_terrain::iot::animation::{TimestampedRoutePoint, TrackRoute};
-use fe_terrain::iot::TrackRouteMap;
+use fe_terrain::iot::{parse_track_color_hex, TrackRouteMap, TrackStyle, TrackStyleMap};
 use fe_terrain::petal_binding::ActivePetalTerrain;
 use fe_terrain::projection::Projection;
 use fe_terrain::terrain_plugin::GpxTrackLine;
@@ -36,6 +36,33 @@ const TRACK_NAME_KEY: &str = "gis.track.name";
 /// JSON array of `[x, y, z, time_seconds]` in petal-local meters. See
 /// `src/AGENTS.md` §path-editor.
 const GPX_POINTS_KEY: &str = "gpx_points";
+/// Per-track style properties (track_styling_20260713): a hex color string
+/// (`#rrggbbaa`), a numeric ribbon width (meters), and a bool visibility. Read
+/// into `TrackStyleMap` by `advance_path_materialization`; written by the Paths
+/// tab via `SetNodeProperty`. Absent/invalid → `TrackStyle::default()` (FR-4).
+const TRACK_COLOR_KEY: &str = "gis.track.color";
+const TRACK_WIDTH_KEY: &str = "gis.track.width";
+const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
+
+/// Parse a track's `gis.track.*` properties into a [`TrackStyle`]. Any
+/// missing/invalid field falls back to that field's default (FR-4) — this
+/// never panics. Pure so it's unit-testable without a Bevy App. Takes the
+/// same `serde_json::Value` property bag `NodePropertiesLoaded` carries.
+fn style_from_properties(properties: &serde_json::Value) -> TrackStyle {
+    let mut style = TrackStyle::default();
+    if let Some(color) = properties.get(TRACK_COLOR_KEY).and_then(|v| v.as_str()).and_then(parse_track_color_hex) {
+        style.color = color;
+    }
+    if let Some(width) = properties.get(TRACK_WIDTH_KEY).and_then(|v| v.as_f64()) {
+        if width.is_finite() && width > 0.0 {
+            style.width = width as f32;
+        }
+    }
+    if let Some(visible) = properties.get(TRACK_VISIBLE_KEY).and_then(|v| v.as_bool()) {
+        style.visible = visible;
+    }
+    style
+}
 
 /// FR-4: process-unique id for the authored-`CreateTrack` path so its
 /// `NodeCreated` result is disambiguated by an explicit correlation id rather
@@ -1349,7 +1376,9 @@ pub fn request_petal_gpx_materialization(
 #[allow(clippy::too_many_arguments)]
 pub fn advance_path_materialization(
     mut db_results: MessageReader<DbResult>,
+    db_tx: Res<DbCommandSender>,
     mut route_map: ResMut<TrackRouteMap>,
+    mut style_map: ResMut<TrackStyleMap>,
     active_terrain: Res<ActivePetalTerrain>,
     track_lines: Query<(Entity, &GpxTrackLine)>,
     single_nodes: Query<(Entity, &SinglePointTrackNode)>,
@@ -1364,25 +1393,57 @@ pub fn advance_path_materialization(
                 if !is_track {
                     continue;
                 }
+                // track_styling_20260713: refresh this track's style from its
+                // `gis.track.*` props (FR-3/FR-4: default when absent/invalid)
+                // BEFORE reconciling the render entity, so a fresh spawn reads
+                // the current style. If the style actually changed for an
+                // already-rendered line, despawn it so the reconcile below
+                // respawns it `Without<Mesh3d>` and `render_gpx_tracks` rebuilds
+                // the ribbon with the new color/width (its build is gated on
+                // `Without<Mesh3d>`, mirroring the point-edit force-redraw).
+                let new_style = style_from_properties(properties);
+                let style_changed = style_map.styles.get(node_id).copied() != Some(new_style);
+                style_map.styles.insert(node_id.clone(), new_style);
+                let mut force_line_redraw = false;
+                if style_changed {
+                    if let Some((entity, _)) = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id) {
+                        commands.entity(entity).despawn();
+                        // The line no longer exists for the reconcile below, so
+                        // it will respawn from scratch — force it even though
+                        // petal-load normally passes `false`.
+                        force_line_redraw = true;
+                    }
+                }
                 let Some(points_json) = properties.get(GPX_POINTS_KEY) else { continue };
                 let points = json_to_route_points(points_json);
                 // FR-3: reconcile the render entity against the point count via
                 // the SAME helper the live-edit path uses, so editing 1↔2↔1
                 // never leaks entities regardless of which path fired. Petal-load
                 // runs once per batch, so a matching existing line is left alone
-                // (`force_line_redraw = false`). Best-effort petal id mirrors
-                // AnnotatePoint / resolve_projection (selection only needs node_id).
+                // (`force_line_redraw = false`) unless the style just changed.
+                // Best-effort petal id mirrors AnnotatePoint / resolve_projection.
                 let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
                 reconcile_track_render(
                     &mut route_map, &mut commands, &mut meshes, &mut materials, &track_lines, &single_nodes,
-                    &petal_id, node_id, points, false,
+                    &petal_id, node_id, points, force_line_redraw,
                 );
+            }
+            DbResult::NodePropertySet { node_id, key } => {
+                // track_styling_20260713: a live style edit lands as
+                // `NodePropertySet` (no property bag) — re-read the node so the
+                // `NodePropertiesLoaded` arm above refreshes `TrackStyleMap` and
+                // forces the ribbon rebuild. Only for the three style keys so an
+                // unrelated property write doesn't trigger a spurious round trip.
+                if key == TRACK_COLOR_KEY || key == TRACK_WIDTH_KEY || key == TRACK_VISIBLE_KEY {
+                    db_tx.0.send(DbCommand::GetNodeProperties { node_id: node_id.clone() }).ok();
+                }
             }
             DbResult::NodeDeleted { node_id, .. } => {
                 // Projection teardown: despawn both a rendered line and a
                 // single-point node for the deleted id, covering deletes that
                 // bypass PathOp::DeleteTrack's own optimistic cleanup.
                 route_map.routes.remove(node_id);
+                style_map.styles.remove(node_id);
                 if let Some((entity, _)) = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id) {
                     commands.entity(entity).despawn();
                 }
@@ -1446,6 +1507,43 @@ mod tests {
         assert_eq!(materialization_kind(1), MaterializationKind::Node);
         assert_eq!(materialization_kind(2), MaterializationKind::Line);
         assert_eq!(materialization_kind(50), MaterializationKind::Line);
+    }
+
+    #[test]
+    fn style_from_properties_defaults_when_absent() {
+        // track_styling_20260713 FR-4: no style props → the historic default.
+        let props = serde_json::json!({ "gpx_type": "track" });
+        let style = style_from_properties(&props);
+        assert_eq!(style, TrackStyle::default());
+    }
+
+    #[test]
+    fn style_from_properties_reads_all_three_keys() {
+        let props = serde_json::json!({
+            "gis.track.color": "#ff0000ff",
+            "gis.track.width": 5.5,
+            "gis.track.visible": false,
+        });
+        let style = style_from_properties(&props);
+        assert_eq!(style.color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(style.width, 5.5);
+        assert!(!style.visible);
+    }
+
+    #[test]
+    fn style_from_properties_invalid_fields_fall_back_per_field() {
+        // FR-4: a bad color / non-positive width / wrong-typed visible each
+        // fall back to that field's default without dropping the good ones.
+        let props = serde_json::json!({
+            "gis.track.color": "not-a-color",
+            "gis.track.width": -3.0,
+            "gis.track.visible": "yes",
+        });
+        let style = style_from_properties(&props);
+        let d = TrackStyle::default();
+        assert_eq!(style.color, d.color);
+        assert_eq!(style.width, d.width);
+        assert_eq!(style.visible, d.visible);
     }
 
     #[test]

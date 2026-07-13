@@ -109,6 +109,16 @@ pub enum UiAction {
     /// Queue a GPX export for a track node. Resolved by the main binary —
     /// see `crate::path_ops` for the pending-ops/status contract.
     PathExportGpx { track_node_id: String },
+    /// track_styling_20260713: set per-track render style. Each `Some` field is
+    /// written to its `gis.track.*` node property via `SetNodeProperty`; the
+    /// gpx bridge re-reads and restyles the ribbon live. `None` fields are left
+    /// unchanged (only the control the user touched writes).
+    PathSetStyle {
+        track_node_id: String,
+        color: Option<[f32; 4]>,
+        width: Option<f32>,
+        visible: Option<bool>,
+    },
     /// Write a path-asset stamp descriptor to a track node's `path_asset`
     /// property (via `SetNodeProperty`). The `reconcile_path_asset` system
     /// then stamps the model along the track's `gpx_points`. See
@@ -422,6 +432,9 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PathExportGpx { track_node_id } => {
                 path::export_gpx(&mut path_ops, track_node_id);
+            }
+            UiAction::PathSetStyle { track_node_id, color, width, visible } => {
+                path::set_style(&db_sender, track_node_id, color, width, visible);
             }
             UiAction::PathAssetApply { track_node_id, descriptor } => {
                 // Persist the descriptor on the track node; `reconcile_path_asset`

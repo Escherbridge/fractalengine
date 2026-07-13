@@ -160,6 +160,73 @@ pub struct PathEditorState {
     /// is the ONLY writer, which is what makes the deferred flush's guard sound
     /// — see `pen_autocreate_track_20260713` + `fe-ui/src/AGENTS.md` §path-editor.
     pub pending_pen_first_point: Option<[f32; 3]>,
+    /// track_styling_20260713: the edited track's current per-track style,
+    /// seeded from its loaded `gis.track.*` node props when a track is selected
+    /// (see `verse_manager::db_results`) and bound to the Paths-tab controls.
+    /// Stored as raw fields (not `fe_terrain::TrackStyle`) since fe-ui must not
+    /// depend on fe-terrain. Default reproduces the historic cyan look.
+    pub edited_track_style: TrackStyleFields,
+}
+
+/// track_styling_20260713: the Paths-tab style-control state — a fe-ui-local
+/// mirror of `fe_terrain::iot::TrackStyle` (fe-ui must not depend on
+/// fe-terrain). `color` is sRGB `0.0..=1.0` RGBA. Default = the historic cyan
+/// look so a track with no persisted style shows the picker at its real value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackStyleFields {
+    pub color: [f32; 4],
+    pub width: f32,
+    pub visible: bool,
+}
+
+impl Default for TrackStyleFields {
+    fn default() -> Self {
+        Self { color: [0.0, 0.8, 1.0, 1.0], width: 2.0, visible: true }
+    }
+}
+
+impl TrackStyleFields {
+    /// Seed the fields from a loaded node-property bag. Missing/invalid values
+    /// fall back to that field's default (never panics) — mirrors the bridge's
+    /// `style_from_properties`. `#rrggbb`/`#rrggbbaa` (with or without `#`).
+    pub(crate) fn from_properties(props: &serde_json::Value) -> Self {
+        let mut s = Self::default();
+        if let Some(color) = props.get("gis.track.color").and_then(|v| v.as_str()).and_then(parse_hex_color) {
+            s.color = color;
+        }
+        if let Some(width) = props.get("gis.track.width").and_then(|v| v.as_f64()) {
+            if width.is_finite() && width > 0.0 {
+                s.width = width as f32;
+            }
+        }
+        if let Some(visible) = props.get("gis.track.visible").and_then(|v| v.as_bool()) {
+            s.visible = visible;
+        }
+        s
+    }
+}
+
+/// Parse a `#rrggbb` / `#rrggbbaa` (optional `#`) hex color into sRGB
+/// `[f32; 4]` in `0.0..=1.0`. `None` on malformed input (caller keeps the
+/// default). fe-ui-local twin of `fe_terrain::iot::parse_track_color_hex`.
+pub(crate) fn parse_hex_color(hex: &str) -> Option<[f32; 4]> {
+    let s = hex.trim().strip_prefix('#').unwrap_or(hex.trim());
+    let (r, g, b, a) = match s.len() {
+        6 => (
+            u8::from_str_radix(&s[0..2], 16).ok()?,
+            u8::from_str_radix(&s[2..4], 16).ok()?,
+            u8::from_str_radix(&s[4..6], 16).ok()?,
+            255u8,
+        ),
+        8 => (
+            u8::from_str_radix(&s[0..2], 16).ok()?,
+            u8::from_str_radix(&s[2..4], 16).ok()?,
+            u8::from_str_radix(&s[4..6], 16).ok()?,
+            u8::from_str_radix(&s[6..8], 16).ok()?,
+        ),
+        _ => return None,
+    };
+    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
 }
 
 impl PathEditorState {
@@ -172,6 +239,9 @@ impl PathEditorState {
     pub(crate) fn start_editing(&mut self, track_node_id: String) {
         self.editing_track_id = Some(track_node_id);
         self.points.clear();
+        // Reset to defaults; the real style is seeded when the track's props
+        // load (verse_manager::db_results), same seam as `points`.
+        self.edited_track_style = TrackStyleFields::default();
     }
 
     pub(crate) fn stop_editing(&mut self) {
@@ -179,6 +249,7 @@ impl PathEditorState {
         self.points.clear();
         self.points_pending = false;
         self.pending_pen_first_point = None;
+        self.edited_track_style = TrackStyleFields::default();
         self.close_annotate_form();
     }
 
@@ -267,6 +338,56 @@ mod tests {
         let s = PathEditorState::default();
         assert!(s.pending_pen_first_point.is_none());
         assert!(!s.has_pending_pen_first_point());
+    }
+
+    #[test]
+    fn track_style_fields_default_is_cyan_visible() {
+        let s = TrackStyleFields::default();
+        assert_eq!(s.color, [0.0, 0.8, 1.0, 1.0]);
+        assert_eq!(s.width, 2.0);
+        assert!(s.visible);
+    }
+
+    #[test]
+    fn track_style_fields_from_properties_reads_all_and_defaults_missing() {
+        let props = serde_json::json!({
+            "gis.track.color": "#ff0000",
+            "gis.track.width": 6.0,
+            // visible absent → default true
+        });
+        let s = TrackStyleFields::from_properties(&props);
+        assert_eq!(s.color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(s.width, 6.0);
+        assert!(s.visible);
+    }
+
+    #[test]
+    fn track_style_fields_from_properties_falls_back_on_invalid() {
+        let props = serde_json::json!({
+            "gis.track.color": "bad",
+            "gis.track.width": 0.0, // non-positive → default
+            "gis.track.visible": false,
+        });
+        let s = TrackStyleFields::from_properties(&props);
+        assert_eq!(s.color, TrackStyleFields::default().color);
+        assert_eq!(s.width, TrackStyleFields::default().width);
+        assert!(!s.visible);
+    }
+
+    #[test]
+    fn parse_hex_color_valid_and_invalid() {
+        assert_eq!(parse_hex_color("#00ccff"), Some([0.0, 204.0 / 255.0, 1.0, 1.0]));
+        assert_eq!(parse_hex_color("00ccffff"), Some([0.0, 204.0 / 255.0, 1.0, 1.0]));
+        assert_eq!(parse_hex_color("#fff"), None);
+        assert_eq!(parse_hex_color(""), None);
+    }
+
+    #[test]
+    fn start_editing_resets_style_to_default() {
+        let mut s = PathEditorState::default();
+        s.edited_track_style = TrackStyleFields { color: [1.0, 0.0, 0.0, 1.0], width: 9.0, visible: false };
+        s.start_editing("track-1".to_string());
+        assert_eq!(s.edited_track_style, TrackStyleFields::default());
     }
 
     #[test]
