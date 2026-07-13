@@ -428,3 +428,19 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    file (`path_ops.rs`) is the authoritative definition per FR-2 ("fe-ui does
    no persistence I/O" implies fe-ui also owns the intent vocabulary) — the
    bridge should conform to this shape rather than the reverse.
+8. **Pen auto-create + deferred first-point flush**
+   (`pen_autocreate_track_20260713`). The Pen tool no longer requires a track
+   to be pre-selected. A Pen empty-click with `editing_track_id == None`
+   (`node_manager/path_point_interaction.rs`, see `node_manager/AGENTS.md`
+   §pen-tool) queues `UiAction::PathCreateTrack { petal_id, "New Path" }` for
+   `NavigationManager.active_petal_id` and stashes the click's world position in
+   `PathEditorState.pending_pen_first_point` — the append **cannot** be
+   synchronous because the track's `node_id` doesn't exist until the
+   `CreateTrack` round-trips. `verse_manager::db_results`' `DbResult::NodeCreated`
+   arm flushes it: guarded on `has_pending_pen_first_point()` + same active
+   petal + `!has_asset` (a track node is asset-less), it `start_editing(new_id)`
+   + pushes the point as the track's first `PathAppendPoint`, and `take_*` clears
+   the flag so it can't replay onto a later create. The pen path is the sole
+   writer of the flag and queues exactly one create, so the first matching
+   `NodeCreated` is unambiguously the auto-created track. This is the deferred
+   analogue of the §gpx-import `pending_*` correlation, without a schema change.

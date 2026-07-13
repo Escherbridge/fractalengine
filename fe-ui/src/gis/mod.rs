@@ -153,6 +153,13 @@ pub struct PathEditorState {
     pub annotate_title_buf: String,
     pub annotate_body_buf: String,
     pub annotate_color_buf: String,
+    /// World position of the first Pen point, stashed while the auto-created
+    /// track's `node_id` is in flight. `Some` only between a no-track Pen click
+    /// (queues `PathCreateTrack`) and the matching `DbResult::NodeCreated` that
+    /// flushes it as the track's first `PathAppendPoint`. The auto-create path
+    /// is the ONLY writer, which is what makes the deferred flush's guard sound
+    /// — see `pen_autocreate_track_20260713` + `fe-ui/src/AGENTS.md` §path-editor.
+    pub pending_pen_first_point: Option<[f32; 3]>,
 }
 
 impl PathEditorState {
@@ -171,6 +178,7 @@ impl PathEditorState {
         self.editing_track_id = None;
         self.points.clear();
         self.points_pending = false;
+        self.pending_pen_first_point = None;
         self.close_annotate_form();
     }
 
@@ -188,6 +196,20 @@ impl PathEditorState {
         self.annotate_title_buf.clear();
         self.annotate_body_buf.clear();
         self.annotate_color_buf.clear();
+    }
+
+    /// `true` while a Pen auto-create's first point is stashed awaiting the new
+    /// track's `NodeCreated`. Gates the pen system so a second click before the
+    /// create round-trips can't queue a second track.
+    pub(crate) fn has_pending_pen_first_point(&self) -> bool {
+        self.pending_pen_first_point.is_some()
+    }
+
+    /// Consumes the stashed Pen first-point (clearing the flag), if any. Called
+    /// from the `NodeCreated` flush so the pending point can't be replayed onto
+    /// a later, unrelated node-create. See `pen_autocreate_track_20260713`.
+    pub(crate) fn take_pending_pen_first_point(&mut self) -> Option<[f32; 3]> {
+        self.pending_pen_first_point.take()
     }
 }
 
@@ -238,5 +260,48 @@ mod tests {
         s.stop_editing();
         assert!(s.editing_track_id.is_none());
         assert!(s.points.is_empty());
+    }
+
+    #[test]
+    fn pending_pen_first_point_defaults_none() {
+        let s = PathEditorState::default();
+        assert!(s.pending_pen_first_point.is_none());
+        assert!(!s.has_pending_pen_first_point());
+    }
+
+    #[test]
+    fn pending_pen_first_point_set_then_take_clears_flag() {
+        // Mirrors the auto-create → NodeCreated flush: stash on the no-track
+        // Pen click, take on the deferred flush.
+        let mut s = PathEditorState::default();
+        s.pending_pen_first_point = Some([3.0, 0.0, 4.0]);
+        assert!(s.has_pending_pen_first_point());
+        assert_eq!(s.take_pending_pen_first_point(), Some([3.0, 0.0, 4.0]));
+        assert!(!s.has_pending_pen_first_point(), "take clears the flag");
+        assert_eq!(s.take_pending_pen_first_point(), None, "second take yields None");
+    }
+
+    #[test]
+    fn start_editing_then_flush_leaves_track_and_clears_pending() {
+        // The NodeCreated flush sequence: start_editing(new_id) + take the
+        // pending point. After it, the track is active and no pending remains.
+        let mut s = PathEditorState::default();
+        s.pending_pen_first_point = Some([1.0, 0.0, 1.0]);
+        let pending = s.take_pending_pen_first_point();
+        s.start_editing("auto-track".to_string());
+        assert_eq!(pending, Some([1.0, 0.0, 1.0]));
+        assert_eq!(s.editing_track_id.as_deref(), Some("auto-track"));
+        assert!(!s.has_pending_pen_first_point());
+        assert!(s.points.is_empty(), "start_editing seeds an empty buffer for the flushed append");
+    }
+
+    #[test]
+    fn stop_editing_clears_pending_pen_first_point() {
+        // Leaving the editor mid-flight must not strand a stale pending point.
+        let mut s = PathEditorState::default();
+        s.start_editing("track-1".to_string());
+        s.pending_pen_first_point = Some([2.0, 0.0, 2.0]);
+        s.stop_editing();
+        assert!(!s.has_pending_pen_first_point());
     }
 }

@@ -46,6 +46,24 @@ resamples them into curves and generates shape rings.
   selection wins in Select mode) — see §input-router.
 - **No new action.** Reuses `UiAction::PathAppendPoint` unchanged; the pen
   tool only changes *when* a click is allowed to emit it.
+- **Auto-create on the first click** (`pen_autocreate_track_20260713`). A Pen
+  empty-click with `PathEditorState.editing_track_id == None` no longer no-ops:
+  it claims `PathPlace` (so `NodePick` still yields), then — because the new
+  track's `node_id` doesn't exist until the DB round-trips — stashes the click's
+  Y=0 world position in `PathEditorState.pending_pen_first_point` and queues
+  `UiAction::PathCreateTrack { petal_id, "New Path" }`. The petal is the active
+  one, sourced from `NavigationManager.active_petal_id` exactly like
+  `viewport_pick`; no active petal → keep the no-op (one-line log hint). A second
+  click before the create resolves is suppressed by the `has_pending_pen_first_point()`
+  guard. The deferred append lands in `verse_manager::db_results` on the track's
+  `DbResult::NodeCreated`: guarded on `pending_pen_first_point.is_some()` + same
+  active petal + `!has_asset` (a track node carries no glb), it calls
+  `start_editing(new_id)` and pushes the stashed point as the track's first
+  `PathAppendPoint`, then `take_*` clears the flag so it can't replay onto a
+  later node-create. The pen path is the ONLY writer of the flag and queues
+  exactly one create, which is what makes that guard sound. Subsequent clicks
+  see `editing_track_id == Some` and append through the normal branch — no
+  further special-casing.
 - **UI entry point.** `panels/path_editor_card.rs`'s edit view no longer has
   an "Append from cursor" button (removed — it placed points anywhere the
   3-D cursor happened to be, independent of tool mode, which made accidental
