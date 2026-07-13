@@ -149,10 +149,28 @@ pub(super) fn apply_db_results(
                         asset_path: None,
                     });
                 }
+                let in_active_petal = nav.active_petal_id.as_deref() == Some(petal_id.as_str());
+                // Pen auto-create flush (`pen_autocreate_track_20260713`, FR-2):
+                // a no-track Pen click stashed `pending_pen_first_point` and
+                // queued a single `PathCreateTrack`; this is that track's
+                // node_id arriving. Guard: pending set + same active petal +
+                // asset-less (a track node has no glb). The pen path is the
+                // ONLY writer of the pending flag and queues exactly one create,
+                // so the first matching `NodeCreated` is the auto-created track.
+                // `take_*` clears the flag so it can't replay onto a later node.
+                if in_active_petal && !*has_asset && path_state.has_pending_pen_first_point() {
+                    if let Some(position) = path_state.take_pending_pen_first_point() {
+                        path_state.start_editing(id.clone());
+                        ui_mgr.push_action(crate::actions::UiAction::PathAppendPoint {
+                            track_node_id: id.clone(),
+                            position,
+                        });
+                    }
+                }
                 // FR-3: any node create in the active petal may be a track —
                 // re-run the Paths tab query rather than relying on the
                 // manual Refresh button as the only sync path.
-                if nav.active_petal_id.as_deref() == Some(petal_id.as_str()) {
+                if in_active_petal {
                     crate::actions::path::query_tracks(&db_sender, &mut path_state, petal_id.clone());
                 }
             }

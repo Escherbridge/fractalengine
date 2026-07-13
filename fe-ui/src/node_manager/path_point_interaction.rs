@@ -6,8 +6,13 @@ use bevy::prelude::*;
 use super::router::{ClickArbiter, ClickPriority};
 use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
+use crate::navigation_manager::NavigationManager;
 use crate::panels::toolbar::Tool;
 use crate::plugin::ToolState;
+
+/// Default name for a track auto-created by the first Pen click when none is
+/// being edited (`pen_autocreate_track_20260713`). Renameable in the Paths tab.
+const AUTO_TRACK_NAME: &str = "New Path";
 
 /// Marker sphere for point `index` in the currently-edited track's point list.
 #[derive(Component, Debug)]
@@ -153,22 +158,25 @@ pub(super) fn handle_path_point_interaction(
     mut path_state: ResMut<PathEditorState>,
     mut drag: ResMut<PathPointDrag>,
     tool: Res<ToolState>,
+    nav: Res<NavigationManager>,
     mut ui_mgr: ResMut<UiManager>,
     mut marker_tx: Query<(&mut Transform, &PathPointMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
-    let Some(track_id) = path_state.editing_track_id.clone() else {
-        drag.active = None;
-        return;
-    };
-    // Only act while the Pen tool is active (new-point placement) or a marker
-    // drag is in flight. In Select/Move/Rotate/Scale mode with no active drag,
-    // node selection + gimbal keep the click. See `AGENTS.md` §pen-tool.
+    // Only act while the Pen tool is active (new-point placement, incl. the
+    // no-track auto-create case) or a marker drag is in flight. In
+    // Select/Move/Rotate/Scale with no active drag, node selection + gimbal
+    // keep the click. See `AGENTS.md` §pen-tool.
     let pen_active = tool.active_tool == Tool::Pen;
     if !pen_active && drag.active.is_none() {
+        drag.active = None;
         return;
     }
+    // `None` while no track is being edited — the Pen no-track branch below
+    // auto-creates one (`pen_autocreate_track_20260713`); marker drag/annotate
+    // and the append branch use `track_id` only when it's `Some`.
+    let editing_track_id = path_state.editing_track_id.clone();
 
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
@@ -179,10 +187,14 @@ pub(super) fn handle_path_point_interaction(
     // through automatically (FR-1a).
     if mouse_button.just_released(MouseButton::Left) {
         if let Some(state) = drag.active.take() {
-            if let Some((tx, _)) = marker_tx.iter().find(|(_, m)| m.index == state.index) {
+            // A drag can only start while editing a track, so `editing_track_id`
+            // is `Some` here.
+            if let (Some(track_id), Some((tx, _))) =
+                (editing_track_id.clone(), marker_tx.iter().find(|(_, m)| m.index == state.index))
+            {
                 let p = tx.translation;
                 ui_mgr.push_action(UiAction::PathMovePoint {
-                    track_node_id: track_id.clone(),
+                    track_node_id: track_id,
                     index: state.index,
                     position: [p.x, p.y, p.z],
                 });
@@ -271,14 +283,31 @@ pub(super) fn handle_path_point_interaction(
     if tool.active_tool != Tool::Pen {
         return;
     }
+    // Claim `PathPlace` first (even in the no-track auto-create case) so
+    // `viewport_pick`'s `NodePick` doesn't also fire on this frame's click.
     if !arbiter.claim(ClickPriority::PathPlace) {
         return;
     }
-    if let Some(hit) = ray_plane_y(&ray, 0.0) {
+    let Some(hit) = ray_plane_y(&ray, 0.0) else { return };
+    if let Some(track_id) = editing_track_id {
+        // A track is being edited → append normally.
         ui_mgr.push_action(UiAction::PathAppendPoint {
             track_node_id: track_id,
             position: [hit.x, hit.y, hit.z],
         });
+    } else if !path_state.has_pending_pen_first_point() {
+        // No track yet → auto-create one in the active petal and stash this
+        // click's world position; the append is deferred until the new track's
+        // `NodeCreated` arrives (`pen_autocreate_track_20260713`, FR-1/FR-2).
+        // Guarded on `!has_pending_pen_first_point()` so a rapid second click
+        // before the create round-trips doesn't queue a second track.
+        let Some(petal_id) = nav.active_petal_id.clone() else {
+            // No active petal → nowhere to put a track; keep the no-op (FR-4).
+            bevy::log::info!("Pen: no active petal — select a petal before drawing a path");
+            return;
+        };
+        path_state.pending_pen_first_point = Some([hit.x, hit.y, hit.z]);
+        ui_mgr.push_action(UiAction::PathCreateTrack { petal_id, name: AUTO_TRACK_NAME.to_string() });
     }
 }
 
