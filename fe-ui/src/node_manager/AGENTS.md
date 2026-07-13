@@ -11,6 +11,7 @@
   (`pick_axis`, `segment_dist_2d`, etc.) private to this file.
 - `viewport_pick.rs` — 3-D viewport click → nearest-node select/deselect.
 - `path_point_interaction.rs` — path-point viewport editor (see §path-points).
+- `router.rs` — per-frame left-click arbitration (see §input-router).
 - `inspector_sync.rs` — `NodeManager` → `InspectorFormState` display sync
   (transform strings + per-node URL/property load on selection change; also
   clears the Annotation card's title/body/color buffers here since the
@@ -32,12 +33,13 @@ resamples them into curves and generates shape rings.
 
 - **Gating, not a separate system.** Pen behavior is folded into the
   existing `handle_path_point_interaction` (no new system/registration).
-  The system takes `Res<ToolState>` and gates the "empty click on terrain →
-  `PathAppendPoint`" branch on `tool.active_tool == Tool::Pen`. Marker
-  drag-to-move and Shift/Alt+click-to-annotate stay ungated (they only fire
-  when a marker is actually picked under the cursor), so switching to
-  Select still lets you reposition/annotate existing points — only new-
-  point placement requires the Pen tool.
+  The empty-click-on-terrain → `PathAppendPoint` branch claims the router's
+  `PathPlace` priority only when `tool.active_tool == Tool::Pen`; a marker
+  pick claims `PathMarker` regardless of tool. Because `PathPlace` outranks
+  `NodePick`, a Pen-mode empty click wins the frame and node-pick yields;
+  in Select mode path-point declines to claim `PathPlace`, so `NodePick`
+  gets the click. This structurally reproduces the ab9c53c fix (node
+  selection wins in Select mode) — see §input-router.
 - **No new action.** Reuses `UiAction::PathAppendPoint` unchanged; the pen
   tool only changes *when* a click is allowed to emit it.
 - **UI entry point.** `panels/path_editor_card.rs`'s edit view no longer has
@@ -77,15 +79,14 @@ has an `editing_track_id`. Design notes:
   changes (counts are small, so a full rebuild is cheaper than tracking
   per-index moves), and lets the drag system write live positions straight
   into each marker `Transform` between count changes.
-- **Why `path_edit_capturing`.** The editor and `viewport_pick`/gimbal all
-  want the same left-click. `handle_path_point_interaction` sets
-  `NodeManager.path_edit_capturing = true` every frame a track is being
-  edited; `viewport_pick::handle_viewport_click` early-returns on that flag
-  (mirroring its existing `is_dragging()` guard) so node selection yields to
-  point editing. The flag is cleared the frame editing stops.
-- **Ordering.** Registered in `mod.rs`'s `.chain()` after the gimbal systems
-  and BEFORE `viewport_pick::handle_viewport_click`, so the capture flag is
-  set before node-pick reads it in the same frame.
+- **Who gets the click.** The editor, `viewport_pick`, and gimbal all want
+  the same left-click. Ownership is arbitrated by `router.rs` (§input-router),
+  not ad-hoc flags: `handle_path_point_interaction` claims `PathMarker` when it
+  picks an existing marker and `PathPlace` on a Pen-mode empty click; because
+  both outrank `NodePick`, `viewport_pick` yields the frame automatically.
+- **Ordering.** Registered in `mod.rs`'s `.chain()` after `resolve_pointer_frame`
+  and the gimbal systems, BEFORE `viewport_pick::handle_viewport_click`, so a
+  path-point claim lands before node-pick tries to claim in the same frame.
 - **Interaction model.** Empty click on terrain (Y=0 plane) while `Tool::Pen`
   is active → queue `PathAppendPoint` (see §pen-tool). Plain click on a
   marker → begin a drag on that marker's current y-plane, regardless of
@@ -103,3 +104,42 @@ has an `editing_track_id`. Design notes:
 Per-track line styling (color/line-style/visibility, "FR-10") is NOT part
 of this port — it depends on `fe_terrain::terrain_plugin::GpxTrackStyle`,
 which lives outside the current tree's scope.
+
+## §input-router — per-frame left-click arbitration (`router.rs`)
+
+`router.rs` centralizes "who gets this frame's left-click" so consumers claim
+ownership instead of racing ad-hoc booleans (replaces the old
+`path_edit_capturing` flag). `ClickArbiter` is a `Resource`;
+`resolve_pointer_frame` is the FIRST system in the `.chain()`.
+
+- **Priority table** (highest first — mirrors the old implicit `.chain()`
+  order, now explicit):
+
+  | Priority     | Consumer system                     | Claims when                          |
+  | ------------ | ----------------------------------- | ------------------------------------ |
+  | `Gimbal`     | `handle_gimbal_interaction`         | press hits a gimbal axis             |
+  | `PathMarker` | `handle_path_point_interaction`     | press picks an existing marker (any tool) |
+  | `PathPlace`  | `handle_path_point_interaction`     | Pen-mode empty click on terrain      |
+  | `NodePick`   | `handle_viewport_click`             | any remaining fresh press            |
+
+- **How it works.** `resolve_pointer_frame` runs first: it clears `owner` to
+  `None`, resolves the pointer `phase` (press/hold/release/hover), applies the
+  egui pointer-capture + `ViewportRect` gating ONCE (setting `available`), and
+  computes the shared cursor/`Ray3d`. Consumers no longer hold `EguiContexts`.
+  Because consumers run highest-priority-first, `claim(who)` is first-claim-wins:
+  it succeeds iff `available && owner.is_none()`. A consumer that declines to
+  claim (e.g. a gimbal press that misses every axis, or path-point in Select
+  mode) leaves the frame for the next consumer down the chain.
+- **ab9c53c fix, structurally.** In Select mode path-point does NOT claim
+  `PathPlace` on an empty click, so `NodePick` wins (model selection). In Pen
+  mode path-point claims `PathPlace`, which outranks `NodePick`, so placement
+  wins. No per-system flag bookkeeping needed.
+- **Adding a consumer.** Register a `ClickPriority` variant at the right rank,
+  add the system to the `.chain()` after `resolve_pointer_frame` in priority
+  order, and have it `claim` its priority + read `arbiter.ray()`/`cursor()`.
+  No edits to the other consumer systems (this is what unblocks
+  `glb_mesh_picking_20260713`).
+- **What stays.** Gimbal keeps its own drag hold/release state machine
+  (`NodeSelection.drag` / `is_dragging()`) and path-point keeps `PathPointDrag`;
+  the router only arbitrates the PRESS-time ownership contest. Hover detection
+  (`update_hovered_axis`) is ambient and claims nothing.

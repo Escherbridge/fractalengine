@@ -1,52 +1,29 @@
-//! Viewport click → select / deselect nearest spawned node.
+//! Viewport click → select / deselect nearest spawned node. Claims `NodePick`.
 
 use bevy::prelude::*;
-use bevy_egui::EguiContexts;
 
+use super::router::{ClickArbiter, ClickPriority};
 use super::NodeManager;
 use crate::navigation_manager::NavigationManager;
-use crate::plugin::{SpawnedNodeMarker, ViewportRect};
+use crate::plugin::SpawnedNodeMarker;
 
 pub(super) fn handle_viewport_click(
-    mouse_button: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
     node_query: Query<(Entity, &GlobalTransform, &SpawnedNodeMarker)>,
     mut manager: ResMut<NodeManager>,
     nav: Res<NavigationManager>,
-    viewport_rect: Res<ViewportRect>,
-    mut egui_ctx: EguiContexts,
+    mut arbiter: ResMut<ClickArbiter>,
 ) {
-    // If a drag was just started this frame (by handle_gimbal_interaction), skip.
-    if manager.is_dragging() {
+    // Only act on a fresh left-press that reached the viewport (egui/rect gating
+    // already applied by `resolve_pointer_frame`).
+    if !arbiter.is_fresh_press() {
         return;
     }
-    // Path-edit mode owns viewport clicks (place / drag / annotate points).
-    if manager.path_edit_capturing {
+    // Yield if a higher-priority consumer (gimbal / path-point) already claimed
+    // this frame's click.
+    if !arbiter.claim(ClickPriority::NodePick) {
         return;
     }
-    if !mouse_button.just_pressed(MouseButton::Left) {
-        return;
-    }
-
-    // Guard against egui-owned pointer (panel resize, button hold, etc.)
-    let egui_using = egui_ctx
-        .ctx_mut()
-        .map(|ctx| ctx.is_using_pointer())
-        .unwrap_or(false);
-    if egui_using {
-        return;
-    }
-
-    let Ok(window) = windows.single() else { return };
-    let Some(cursor) = window.cursor_position() else { return };
-
-    if !viewport_rect.0.contains(bevy_egui::egui::pos2(cursor.x, cursor.y)) {
-        return;
-    }
-
-    let Ok((camera, cam_tx)) = cameras.single() else { return };
-    let Ok(ray) = camera.viewport_to_world(cam_tx, cursor) else { return };
+    let Some(ray) = arbiter.ray() else { return };
 
     let active_petal = nav.active_petal_id.as_deref();
     const PICK_RADIUS: f32 = 1.5;
