@@ -237,6 +237,71 @@ fn spawn_track_route(
     commands.spawn(GpxTrackLine { track_node_id: track_node_id.to_string() });
 }
 
+/// FR-3: marker for a single-point track rendered as a plain, selectable node
+/// (spawned when `gpx_points.len() == 1`). Mirrors the `GpxTrackLine` marker so
+/// `advance_path_materialization` can reconcile 1↔2-point transitions and
+/// tear the node down on delete. See `src/AGENTS.md` §path-editor.
+#[derive(Component, Debug)]
+pub struct SinglePointTrackNode {
+    pub track_node_id: String,
+}
+
+/// Marker mesh radius (world units) for a single-point track node — matches the
+/// yellow path-point markers so it reads as a placed point.
+const SINGLE_POINT_NODE_SIZE: f32 = 0.4;
+
+/// FR-3: what a track's point count should materialize as. Pure so the
+/// point-count → spawn-decision branching is unit-testable without a Bevy App.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializationKind {
+    /// Zero points: render nothing.
+    None,
+    /// Exactly one point: a plain, visible, selectable node.
+    Node,
+    /// Two or more points: the polyline track route.
+    Line,
+}
+
+/// Map a track's `gpx_points` length to its render kind (FR-3 threshold).
+pub fn materialization_kind(len: usize) -> MaterializationKind {
+    match len {
+        0 => MaterializationKind::None,
+        1 => MaterializationKind::Node,
+        _ => MaterializationKind::Line,
+    }
+}
+
+/// FR-3: spawn a visible, selectable node for a single-point track at `position`.
+/// Tags it with `SinglePointTrackNode` (reconcile) + `fe_ui::plugin::SpawnedNodeMarker`
+/// (so the glb-mesh-picking AABB test selects it; `Mesh3d` supplies the `Aabb`).
+/// Crate-local because `fe-ui`'s node-spawn helpers are `pub(super)`.
+fn spawn_single_point_node(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    track_node_id: &str,
+    petal_id: &str,
+    position: [f32; 3],
+) {
+    let mesh = meshes.add(Sphere::new(SINGLE_POINT_NODE_SIZE));
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.2, 0.7, 1.0),
+        unlit: true,
+        ..default()
+    });
+    let entity = commands
+        .spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::from_xyz(position[0], position[1], position[2]),
+            Name::new(format!("SinglePointTrack {track_node_id}")),
+            fe_ui::plugin::SpawnedNodeMarker { node_id: track_node_id.to_string(), petal_id: petal_id.to_string() },
+            SinglePointTrackNode { track_node_id: track_node_id.to_string() },
+        ))
+        .id();
+    bevy::log::debug!("Spawned single-point track node '{}' entity={:?} (petal={})", track_node_id, entity, petal_id);
+}
+
 /// Build one draft per `<wpt>` in the file. Out-of-range coordinates are
 /// silently skipped (mirrors `fe_terrain::gpx::convert`'s precedent).
 /// `gpx_track_id` is NOT included here — it's only known once the track's
@@ -1175,10 +1240,15 @@ pub fn request_petal_gpx_materialization(
 /// `request_petal_gpx_materialization` and live edits/deletes from the
 /// path editor and GIS panel, through one system instead of per-op
 /// hand-updates of a subset of sinks.
+#[allow(clippy::too_many_arguments)]
 pub fn advance_path_materialization(
     mut db_results: MessageReader<DbResult>,
     mut route_map: ResMut<TrackRouteMap>,
+    active_terrain: Res<ActivePetalTerrain>,
     track_lines: Query<(Entity, &GpxTrackLine)>,
+    single_nodes: Query<(Entity, &SinglePointTrackNode)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
 ) {
     for result in db_results.read() {
@@ -1190,25 +1260,61 @@ pub fn advance_path_materialization(
                 }
                 let Some(points_json) = properties.get(GPX_POINTS_KEY) else { continue };
                 let points = json_to_route_points(points_json);
-                if points.len() < 2 {
-                    continue;
-                }
-                let existing = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
-                // Only respawn if this track isn't already rendered
-                // (materialization fires once per petal-load batch, not on
-                // every unrelated property read) — avoids despawn/respawn
-                // churn for tracks already live.
-                if existing.is_none() {
-                    spawn_track_route(&mut route_map, &mut commands, node_id, points.clone(), None);
+                let line = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
+                let node = single_nodes.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
+                // FR-3: reconcile the render entity against the point count so
+                // editing 1↔2↔1 doesn't leak entities. `>=2` → polyline; `==1`
+                // → plain node; `0` → nothing. Materialization fires once per
+                // petal-load batch, so a matching existing entity is left alone.
+                match materialization_kind(points.len()) {
+                    MaterializationKind::Line => {
+                        // Transitioning up from a single-point node → drop it.
+                        if let Some(entity) = node {
+                            commands.entity(entity).despawn();
+                        }
+                        if line.is_none() {
+                            spawn_track_route(&mut route_map, &mut commands, node_id, points.clone(), None);
+                        }
+                    }
+                    MaterializationKind::Node => {
+                        // Transitioning down from a line → drop it + its route.
+                        if let Some(entity) = line {
+                            route_map.routes.remove(node_id);
+                            commands.entity(entity).despawn();
+                        }
+                        if node.is_none() {
+                            // Best-effort petal (mirrors AnnotatePoint / resolve_projection):
+                            // the bridge has no node→petal map without a hierarchy round trip;
+                            // selection only needs node_id, so the active petal is sufficient.
+                            let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
+                            let p = points[0].position;
+                            let position = [p[0] as f32, p[1] as f32, p[2] as f32];
+                            spawn_single_point_node(
+                                &mut commands, &mut meshes, &mut materials, node_id, &petal_id, position,
+                            );
+                        }
+                    }
+                    MaterializationKind::None => {
+                        // Empty track: tear down whatever render entity remains.
+                        if let Some(entity) = line {
+                            route_map.routes.remove(node_id);
+                            commands.entity(entity).despawn();
+                        }
+                        if let Some(entity) = node {
+                            commands.entity(entity).despawn();
+                        }
+                    }
                 }
             }
             DbResult::NodeDeleted { node_id, .. } => {
-                // Projection teardown: any deleted node that happened to be
-                // a rendered track line gets despawned here too, covering
-                // deletes that bypass PathOp::DeleteTrack's own optimistic
-                // cleanup (e.g. a future delete path added elsewhere).
+                // Projection teardown: despawn both a rendered line and a
+                // single-point node for the deleted id, covering deletes that
+                // bypass PathOp::DeleteTrack's own optimistic cleanup.
                 route_map.routes.remove(node_id);
                 if let Some((entity, _)) = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id) {
+                    commands.entity(entity).despawn();
+                }
+                if let Some((entity, _)) = single_nodes.iter().find(|(_, t)| t.track_node_id == *node_id) {
                     commands.entity(entity).despawn();
                 }
             }
@@ -1259,6 +1365,15 @@ mod tests {
             .find(|(k, _)| k == key)
             .map(|(_, v)| v)
             .unwrap_or_else(|| panic!("expected property {key:?} on draft {draft:?}"))
+    }
+
+    #[test]
+    fn materialization_kind_thresholds() {
+        // FR-3: 0 → nothing, 1 → node, ≥2 → line.
+        assert_eq!(materialization_kind(0), MaterializationKind::None);
+        assert_eq!(materialization_kind(1), MaterializationKind::Node);
+        assert_eq!(materialization_kind(2), MaterializationKind::Line);
+        assert_eq!(materialization_kind(50), MaterializationKind::Line);
     }
 
     #[test]

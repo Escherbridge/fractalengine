@@ -92,7 +92,13 @@ has an `editing_track_id`. Design notes:
   is active → queue `PathAppendPoint` (see §pen-tool). Plain click on a
   marker → begin a drag on that marker's current y-plane, regardless of
   active tool; release commits a single `PathMovePoint` (no remove+append
-  index churn). Shift/Alt+click on a marker → open the inline
+  index churn). Holding **Ctrl** during the drag switches to vertical mode
+  (FR-1a, `node_placement_z_axis_20260713`): vertical cursor motion raises/
+  lowers the point's height (Bevy Y, the user's "z-axis") by
+  `height_delta_from_cursor` at `HEIGHT_DRAG_SENSITIVITY` (0.01 world-units/px,
+  same feel as gimbal rotate), decoupled from the ray-plane hit; x/z still
+  track the ray, and the raised Y is preserved on release through the same
+  `PathMovePoint`. Shift/Alt+click on a marker → open the inline
   annotation form (`PathEditorState::open_annotate_form`, rendered by
   `panels/path_editor_card.rs`). All hit tests are the same manual
   along-ray + radius test `viewport_pick` uses (no Bevy picking backend).

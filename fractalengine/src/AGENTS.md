@@ -212,6 +212,23 @@ layer wiring are **out of scope here** (per `metadata.json`, that's W-B's
   the *active* petal's terrain — reusing it here for a possibly-different
   target petal would hijack the viewport's active terrain as a side effect.
 
+**FR-3 point-count materialization (`node_placement_z_axis_20260713`).**
+`advance_path_materialization` maps a track's `gpx_points` length to a render
+kind via the pure `materialization_kind(len)`: `0` → `None` (render nothing),
+`1` → `Node` (a plain, visible, selectable node), `≥2` → `Line` (the
+`GpxTrackLine` polyline). A single point spawns `spawn_single_point_node` — a
+small unlit `Sphere` tagged with both `SinglePointTrackNode { track_node_id }`
+(reconcile key, mirrors `GpxTrackLine`) and `fe_ui::plugin::SpawnedNodeMarker`
+(so the glb-mesh-picking AABB test selects it; `Mesh3d` auto-supplies the
+`Aabb`). `petal_id` for the marker is best-effort from `ActivePetalTerrain`
+(same assumption as AnnotatePoint / `resolve_projection` — selection only needs
+`node_id`). The system reconciles transitions so editing 1↔2↔1 never leaks:
+on each `NodePropertiesLoaded` it despawns the *other* kind's entity if present
+before spawning the current one (and clears the `TrackRouteMap` route when a
+line is torn down); `NodeDeleted` despawns both a line and a single-point node
+for the id. The user's "z-axis" height edits (FR-1) persist through the
+unchanged `[x, y, z, time]` `gpx_points` encoding — no format change (FR-2).
+
 **INTEGRATION_REQUEST (gpx_pipeline_20260711, coordinator-owned `main.rs`):**
 Register two new systems and one resource, mirroring the asset-bridge
 wiring: `app.init_resource::<gpx_bridge::PendingGpxImports>();` and
