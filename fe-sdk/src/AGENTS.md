@@ -48,6 +48,50 @@ before delegating); this module just provides the one canonical implementation.
 grant strings. They live in `fe-sdk` so the host (`fe-plugin` capability tokens),
 the mock (`fe-plugin-test`), and extension authors all reference one spelling.
 
+## §primitive (`bim_primitives_on_paths_20260712`, FR-1/FR-2/C5)
+
+`primitive.rs` defines [`PrimitiveDescriptor`]/[`PrimitiveKind`] — the
+`{kind, dims, texture_ref}` shape a node's `primitive` property carries as
+JSON. This is the single canonical descriptor shape; `fe-runtime`'s
+`SharedNode::PropertyValue::Json` carries the serialized form (C5 — see
+`fe-runtime/src/shared_node.rs` §property-bridge), and `fe-ui`'s render
+branch (`fe-ui/src/verse_manager/spawn.rs`) parses it via `from_json`. No
+second descriptor type exists anywhere in the workspace — extend this one.
+
+## §primitive-wall (FR-5, C3, `bim_primitives_on_paths_20260712` P3)
+
+A **wall** is a fifth [`PrimitiveKind`] (`Wall`) that reuses the same
+`PrimitiveDescriptor` shape rather than forking a second descriptor type
+(there is exactly one descriptor type in the workspace — extend it, never
+fork). Two conventions make a wall path-driven instead of dims-driven:
+
+- `dims = [height]` — the single extrusion height in world units. All other
+  polyline geometry comes from the source path, not `dims`.
+- `source_path: Option<String>` — the `gpx_points`-carrying **track node_id**
+  whose polyline drives the wall's shape (C3, the GPX merge). `None` for every
+  non-wall kind. It is `#[serde(default, skip_serializing_if = "Option::is_none")]`
+  so (a) pre-Wall descriptors that predate this field still parse, and (b)
+  non-wall descriptors serialize byte-identically to their old form (no
+  spurious `source_path: null`). This is why the field is an object key on the
+  JSON descriptor and not a positional `dims` slot — objects round-trip
+  losslessly through the untagged `fe-runtime` `PropertyValue::Json` (C5),
+  whereas overloading `dims` would collide with the per-kind `dims` semantics.
+
+The render/reconcile half lives in `fe-ui` (`spawn.rs::build_wall_mesh` +
+`primitive_reconcile.rs::{promote_selected_wall, wall_reconcile}`); see
+`fe-ui/src/verse_manager/AGENTS.md` §wall. `fe-sdk` stays bevy-free — it only
+owns the descriptor shape.
+
+## §texture (FR-4, C6)
+
+`texture.rs` defines [`TextureRegistry`]/[`TextureEntry`] — copy-adapted from
+[`ui::UiExtensionRegistry`] (`register`/`unregister_all(plugin_id)`/`get`).
+Entries reference a content-addressed `blob_hash` already installed via a
+hexon package; v1 never accepts raw texture bytes from a plugin (C6). The
+engine wraps this in a Bevy `Resource` newtype at the call site (`fe-ui`)
+since this crate must stay bevy-free — see
+`fe-ui/src/verse_manager/AGENTS.md` §primitives.
+
 ## Traits vs. structs (context/transaction)
 
 `context.rs` and `transaction.rs` define **object-safe traits** — the

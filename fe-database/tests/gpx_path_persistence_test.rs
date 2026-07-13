@@ -79,7 +79,7 @@ fn seed_hierarchy(db: &TestDb) -> String {
 /// Create a node in `petal_id` at local `position` and return its node ID.
 fn create_node(db: &TestDb, petal_id: &str, name: &str, position: [f32; 3]) -> String {
     db.cmd_tx
-        .send(DbCommand::CreateNode { petal_id: petal_id.to_string(), name: name.to_string(), position })
+        .send(DbCommand::CreateNode { petal_id: petal_id.to_string(), name: name.to_string(), position, correlation_id: None })
         .unwrap();
     match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateNode result") {
         DbResult::NodeCreated { id, .. } => id,

@@ -78,6 +78,16 @@ pub(crate) fn render_gis_panel(
                     crate::panels::layer_manager_card::layer_manager_section(ui, petal_map, ui_mgr, &petal_id);
                 }
                 GisPanelTab::Paths => {
+                    // Auto-populate the track list on first view (empty + idle +
+                    // not editing) so persisted tracks show without a manual
+                    // Refresh; the pending flag prevents a per-frame query loop.
+                    if path_state.editing_track_id.is_none()
+                        && path_state.tracks.is_empty()
+                        && !path_state.tracks_pending
+                        && path_state.last_error.is_none()
+                    {
+                        ui_mgr.push_action(UiAction::PathQueryTracks { petal_id: petal_id.clone() });
+                    }
                     crate::panels::path_editor_card::path_editor_section(
                         ui, path_state, path_status, ui_mgr, cursor_world, &petal_id,
                     );

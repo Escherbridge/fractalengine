@@ -24,6 +24,8 @@ rand = "0.8"
 crossbeam = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 ulid = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+dirs = "5"
 
 # Optional (feature `remote`)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }

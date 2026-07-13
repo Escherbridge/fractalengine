@@ -191,6 +191,7 @@ fn config_serde_roundtrip() {
         tileset_hexon_uris: vec![],
         tile_source_mode: fe_terrain::config::TileSourceMode::Hybrid,
         world_scale: 0.01,
+        scale_bounds: None,
     };
 
     let json = serde_json::to_string(&config).unwrap();

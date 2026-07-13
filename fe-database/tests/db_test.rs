@@ -230,6 +230,7 @@ fn create_node(
             petal_id: petal_id.to_string(),
             name: "test-node".to_string(),
             position: [1.0, 2.0, 3.0],
+            correlation_id: None,
         })
         .unwrap();
     match res_rx.recv_timeout(Duration::from_secs(5)).expect("CreateNode result") {
@@ -252,6 +253,7 @@ fn test_create_node_emits_scene_change() {
             petal_id: petal_id.clone(),
             name: "emit-test-node".to_string(),
             position: [10.0, 20.0, 30.0],
+            correlation_id: None,
         })
         .unwrap();
 

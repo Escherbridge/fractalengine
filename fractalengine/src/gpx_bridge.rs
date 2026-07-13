@@ -37,6 +37,17 @@ const TRACK_NAME_KEY: &str = "gis.track.name";
 /// `src/AGENTS.md` §path-editor.
 const GPX_POINTS_KEY: &str = "gpx_points";
 
+/// FR-4: process-unique id for the authored-`CreateTrack` path so its
+/// `NodeCreated` result is disambiguated by an explicit correlation id rather
+/// than the ambiguous `(petal_id, name)` tuple the GPX-import path also uses —
+/// which could otherwise let a same-named import steal the authored result.
+/// See `src/AGENTS.md` §path-editor.
+fn next_authored_track_correlation_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!("authored-track:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
 // ---------------------------------------------------------------------------
 // Pure mapping: GpxData -> node drafts (no Bevy/DB — unit tested directly)
 // ---------------------------------------------------------------------------
@@ -333,6 +344,7 @@ pub fn drain_gpx_ops(
                             petal_id: petal_id.clone(),
                             name: track.draft.name.clone(),
                             position: track.draft.position,
+                            correlation_id: None,
                         })
                         .ok();
                     pending.tracks.entry(key).or_default().push_back(PendingTrackImport {
@@ -351,6 +363,7 @@ pub fn drain_gpx_ops(
                             petal_id: petal_id.clone(),
                             name: wp.name.clone(),
                             position: wp.position,
+                            correlation_id: None,
                         })
                         .ok();
                     pending.waypoints.entry(key).or_default().push_back(PendingWaypointImport {
@@ -395,9 +408,16 @@ pub fn advance_gpx_imports(
     }
 
     for result in db_results.read() {
-        let DbResult::NodeCreated { id, petal_id, name, .. } = result else {
+        let DbResult::NodeCreated { id, petal_id, name, correlation_id, .. } = result else {
             continue;
         };
+        // FR-4: the GPX-import path only owns results with no correlation id.
+        // A `Some(_)` id belongs to the authored-`CreateTrack` path
+        // (`advance_path_edits`), which matches by that id — skip so a
+        // same-named authored track can't steal this system's `NodeCreated`.
+        if correlation_id.is_some() {
+            continue;
+        }
         let key = (petal_id.clone(), name.clone());
 
         if let Some(queue) = pending.tracks.get_mut(&key) {
@@ -419,6 +439,7 @@ pub fn advance_gpx_imports(
                             petal_id: track.petal_id.clone(),
                             name: wp.name.clone(),
                             position: wp.position,
+                            correlation_id: None,
                         })
                         .ok();
                     pending.waypoints.entry(wp_key).or_default().push_back(PendingWaypointImport {
@@ -491,6 +512,7 @@ pub fn advance_gpx_imports(
 enum PendingPathRead {
     AppendPoint { position: [f32; 3], time_seconds: Option<f64> },
     RemovePoint { index: usize },
+    MovePoint { index: usize, position: [f32; 3] },
     AnnotatePoint { index: usize, title: String, body: String, color: String },
     ExportGpx { save_path: std::path::PathBuf },
 }
@@ -499,6 +521,14 @@ enum PendingPathRead {
 /// mark it as an (empty) track. No extra fields needed — the properties to
 /// set are fixed (`gpx_type = "track"`, `gpx_points = []`).
 struct PendingTrackCreate;
+
+/// FR-4: tracks which of a just-created track's identity `SetNodeProperty`
+/// keys have confirmed via `DbResult::NodePropertySet`. `PathEditStatus` is
+/// only flipped to success once this set is empty — replaces the old
+/// optimistic "success on NodeCreated" behavior (gpx_bridge.rs:714 prior to
+/// this track) that could report success even if a property write silently
+/// failed downstream.
+type PendingPropertyConfirms = std::collections::HashSet<&'static str>;
 
 /// An `AnnotatePoint` waypoint's `CreateNode` was sent; once `NodeCreated`
 /// arrives, set its type/title/body/color annotation properties.
@@ -514,16 +544,35 @@ struct PendingAnnotateCreate {
 #[derive(Resource, Default)]
 pub struct PendingPathEdits {
     reads: HashMap<String, VecDeque<PendingPathRead>>,
-    creates: HashMap<(String, String), VecDeque<PendingTrackCreate>>,
+    /// FR-4: authored-`CreateTrack` waiters keyed by a process-unique
+    /// correlation id (not `(petal_id, name)`) so a same-named GPX import in
+    /// the same window can never steal this path's `NodeCreated` — the tuple
+    /// was the ambiguity that FR-4 closes. One waiter per id (unique ⇒ no FIFO).
+    creates: HashMap<String, PendingTrackCreate>,
     annotate_creates: HashMap<(String, String), VecDeque<PendingAnnotateCreate>>,
+    /// FR-4: node_id -> still-unconfirmed property keys for a just-created track.
+    track_property_confirms: HashMap<String, PendingPropertyConfirms>,
+    /// FR-5: authoritative in-flight point list per track, once seeded from
+    /// the first `GetNodeProperties` read. Subsequent `AppendPoint` ops for
+    /// the same track mutate this directly and flush one `SetNodeProperty`
+    /// per settle instead of re-issuing `GetNodeProperties` per op — kills
+    /// the read-modify-write race where two overlapping reads both start
+    /// from the same stale base and the second write clobbers the first
+    /// append.
+    in_flight_points: HashMap<String, Vec<TimestampedRoutePoint>>,
+    /// FR-5: tracks that have a seed `GetNodeProperties` outstanding but not
+    /// yet resolved into `in_flight_points`. A second `AppendPoint` arriving in
+    /// this window enqueues onto `reads` without issuing a redundant seed read,
+    /// so overlapping appends serialize against one read instead of racing two.
+    seed_pending: std::collections::HashSet<String>,
 }
 
 /// Drains `PendingPathOps` each frame. Ops needing the current point list
 /// (`AppendPoint`, `RemovePoint`, `AnnotatePoint`, `ExportGpx`) issue a
 /// `GetNodeProperties` and defer their mutation to `advance_path_edits`;
 /// `CreateTrack` issues `CreateNode` and defers to the same system;
-/// `DeleteTrack` (no `DbCommand::DeleteNode` exists — see AGENTS.md §gpx) is
-/// handled inline as a best-effort clear of `gpx_points`/`gpx_type`.
+/// `DeleteTrack` sends `DbCommand::DeleteNode` (FR-1/FR-2 — see AGENTS.md
+/// §gpx) which cascades the node row + waypoints DB-side.
 pub fn drain_path_ops(
     mut ops: ResMut<PendingPathOps>,
     db_tx: Res<DbCommandSender>,
@@ -540,22 +589,34 @@ pub fn drain_path_ops(
     for op in ops.0.drain(..) {
         match op {
             PathOp::CreateTrack { petal_id, name } => {
-                let key = (petal_id.clone(), name.clone());
+                // FR-4: tag this authored create with a process-unique id and
+                // key the waiter by it, so `advance_path_edits` matches the
+                // eventual `NodeCreated` by id — not the `(petal_id, name)`
+                // tuple a concurrent same-named GPX import also uses.
+                let correlation_id = next_authored_track_correlation_id();
                 db_tx
                     .0
-                    .send(DbCommand::CreateNode { petal_id: petal_id.clone(), name: name.clone(), position: [0.0; 3] })
+                    .send(DbCommand::CreateNode {
+                        petal_id: petal_id.clone(),
+                        name: name.clone(),
+                        position: [0.0; 3],
+                        correlation_id: Some(correlation_id.clone()),
+                    })
                     .ok();
-                pending.creates.entry(key).or_default().push_back(PendingTrackCreate);
+                pending.creates.insert(correlation_id, PendingTrackCreate);
             }
             PathOp::DeleteTrack { track_node_id } => {
-                db_tx
-                    .0
-                    .send(DbCommand::DeleteNodeProperty { node_id: track_node_id.clone(), key: GPX_POINTS_KEY.to_string() })
-                    .ok();
-                db_tx
-                    .0
-                    .send(DbCommand::DeleteNodeProperty { node_id: track_node_id.clone(), key: GPX_TYPE_KEY.to_string() })
-                    .ok();
+                // FR-2: use the real DeleteNode primitive (FR-1) instead of
+                // clearing two properties — that left the node row,
+                // gis.track.name (→ reappeared in the Paths tab), and all
+                // waypoint child nodes alive. DeleteNode cascades all of
+                // that DB-side; the render-side sinks below (TrackRouteMap,
+                // GpxTrackLine) are cleared optimistically here, and the
+                // left panel + Paths tab sync via DbResult::NodeDeleted
+                // (FR-3, fe-ui/src/verse_manager/db_results.rs).
+                db_tx.0.send(DbCommand::DeleteNode { node_id: track_node_id.clone() }).ok();
+                pending.in_flight_points.remove(&track_node_id);
+                pending.seed_pending.remove(&track_node_id);
                 route_map.routes.remove(&track_node_id);
                 if let Some((entity, _)) = track_lines.iter().find(|(_, t)| t.track_node_id == track_node_id) {
                     commands.entity(entity).despawn();
@@ -567,16 +628,94 @@ pub fn drain_path_ops(
                 };
             }
             PathOp::AppendPoint { track_node_id, position, time_seconds } => {
-                db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
-                pending
-                    .reads
-                    .entry(track_node_id)
-                    .or_default()
-                    .push_back(PendingPathRead::AppendPoint { position, time_seconds });
+                // FR-5: if we already have an authoritative in-flight list
+                // for this track (seeded by an earlier AppendPoint's read),
+                // mutate it directly and flush — no GetNodeProperties
+                // round-trip, so no read-modify-write race with a
+                // still-in-flight sibling append.
+                if let Some(points) = pending.in_flight_points.get_mut(&track_node_id) {
+                    points.push(TimestampedRoutePoint {
+                        position: [position[0] as f64, position[1] as f64, position[2] as f64],
+                        time_seconds: time_seconds.unwrap_or(0.0),
+                    });
+                    let points = points.clone();
+                    persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, &track_node_id, points);
+                    *status = PathEditStatus {
+                        track_node_id: Some(track_node_id),
+                        message: Some("Point added".to_string()),
+                        error: None,
+                    };
+                } else {
+                    // FR-5: only issue a seed read if one isn't already
+                    // outstanding for this track — a second append while the
+                    // seed is in flight just queues, so both apply to the one
+                    // authoritative buffer the seed produces (no double-read
+                    // race that could lose the first append).
+                    if pending.seed_pending.insert(track_node_id.clone()) {
+                        db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
+                    }
+                    pending
+                        .reads
+                        .entry(track_node_id)
+                        .or_default()
+                        .push_back(PendingPathRead::AppendPoint { position, time_seconds });
+                }
             }
             PathOp::RemovePoint { track_node_id, index } => {
-                db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
-                pending.reads.entry(track_node_id).or_default().push_back(PendingPathRead::RemovePoint { index });
+                // FR-5/HIGH-2: if an authoritative in-flight buffer exists for
+                // this track, mutate IT and flush — re-reading the DB here
+                // would start from a base missing any not-yet-committed
+                // AppendPoint and clobber it. Only fall back to the DB-read
+                // path when no in-flight buffer exists.
+                if let Some(points) = pending.in_flight_points.get_mut(&track_node_id) {
+                    if index < points.len() {
+                        points.remove(index);
+                        let points = points.clone();
+                        persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, &track_node_id, points);
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: Some("Point removed".to_string()),
+                            error: None,
+                        };
+                    } else {
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some(format!("point index {index} out of range")),
+                        };
+                    }
+                } else {
+                    db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
+                    pending.reads.entry(track_node_id).or_default().push_back(PendingPathRead::RemovePoint { index });
+                }
+            }
+            PathOp::MovePoint { track_node_id, index, position } => {
+                // FR-5: like RemovePoint, mutate the authoritative in-flight
+                // buffer in place when it exists (a DB re-read would start from
+                // a base missing any not-yet-committed AppendPoint and clobber
+                // it). Only fall back to the DB-read path when no buffer exists.
+                if let Some(points) = pending.in_flight_points.get_mut(&track_node_id) {
+                    if let Some(point) = points.get_mut(index) {
+                        // Reposition only; preserve the existing timestamp (no index churn).
+                        point.position = [position[0] as f64, position[1] as f64, position[2] as f64];
+                        let points = points.clone();
+                        persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, &track_node_id, points);
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: Some("Point moved".to_string()),
+                            error: None,
+                        };
+                    } else {
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some(format!("point index {index} out of range")),
+                        };
+                    }
+                } else {
+                    db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
+                    pending.reads.entry(track_node_id).or_default().push_back(PendingPathRead::MovePoint { index, position });
+                }
             }
             PathOp::AnnotatePoint { track_node_id, index, title, body, color } => {
                 db_tx.0.send(DbCommand::GetNodeProperties { node_id: track_node_id.clone() }).ok();
@@ -627,13 +766,61 @@ pub fn advance_path_edits(
     mut status: ResMut<PathEditStatus>,
     mut commands: Commands,
 ) {
-    if pending.reads.is_empty() && pending.creates.is_empty() && pending.annotate_creates.is_empty() {
+    if pending.reads.is_empty()
+        && pending.creates.is_empty()
+        && pending.annotate_creates.is_empty()
+        && pending.track_property_confirms.is_empty()
+    {
         return;
     }
 
     for result in db_results.read() {
         match result {
-            DbResult::NodeCreated { id, petal_id, name, .. } => {
+            DbResult::NodeCreated { id, petal_id, name, correlation_id, .. } => {
+                // FR-4: authored `CreateTrack` results carry the unique id set
+                // in `drain_path_ops`; match them by that id so a same-named
+                // GPX import can't consume this result (and vice versa). The
+                // annotate-waypoint path below still uses `(petal_id, name)`
+                // but only for results with no correlation id.
+                if let Some(cid) = correlation_id {
+                    let Some(_create) = pending.creates.remove(cid) else { continue };
+                    // FR-4: don't report success yet — wait for all three
+                    // SetNodeProperty confirms (NodePropertySet) below before
+                    // flipping PathEditStatus, so a silently-failed property
+                    // write surfaces as an error instead of a false "created".
+                    pending.track_property_confirms.insert(
+                        id.clone(),
+                        [GPX_TYPE_KEY, GPX_POINTS_KEY, TRACK_NAME_KEY].into_iter().collect(),
+                    );
+                    db_tx
+                        .0
+                        .send(DbCommand::SetNodeProperty {
+                            node_id: id.clone(),
+                            key: GPX_TYPE_KEY.to_string(),
+                            value: serde_json::json!("track"),
+                        })
+                        .ok();
+                    db_tx
+                        .0
+                        .send(DbCommand::SetNodeProperty {
+                            node_id: id.clone(),
+                            key: GPX_POINTS_KEY.to_string(),
+                            value: serde_json::Value::Array(vec![]),
+                        })
+                        .ok();
+                    db_tx
+                        .0
+                        .send(DbCommand::SetNodeProperty {
+                            node_id: id.clone(),
+                            key: TRACK_NAME_KEY.to_string(),
+                            value: serde_json::json!(name.clone()),
+                        })
+                        .ok();
+                    // Status is set once all three property confirms land — see
+                    // the `DbResult::NodePropertySet` arm below.
+                    continue;
+                }
+
                 let annotate_key = (petal_id.clone(), name.clone());
                 if let Some(queue) = pending.annotate_creates.get_mut(&annotate_key) {
                     if let Some(annotate) = queue.pop_front() {
@@ -681,52 +868,46 @@ pub fn advance_path_edits(
                     }
                 }
 
-                let key = (petal_id.clone(), name.clone());
-                let Some(queue) = pending.creates.get_mut(&key) else { continue };
-                let Some(_create) = queue.pop_front() else { continue };
-                if queue.is_empty() {
-                    pending.creates.remove(&key);
+                // Non-authored (`correlation_id: None`) results with no
+                // matching annotate waiter fall through — the import path
+                // (`advance_gpx_imports`) or materialization handles them.
+            }
+            DbResult::NodePropertySet { node_id, key } => {
+                // FR-4: gate CreateTrack's success status on the actual
+                // property confirms instead of the optimistic set that used
+                // to happen on NodeCreated above.
+                if let Some(pending_keys) = pending.track_property_confirms.get_mut(node_id) {
+                    pending_keys.remove(key.as_str());
+                    if pending_keys.is_empty() {
+                        pending.track_property_confirms.remove(node_id);
+                        *status = PathEditStatus {
+                            track_node_id: Some(node_id.clone()),
+                            message: Some("Track created".to_string()),
+                            error: None,
+                        };
+                    }
                 }
-                db_tx
-                    .0
-                    .send(DbCommand::SetNodeProperty {
-                        node_id: id.clone(),
-                        key: GPX_TYPE_KEY.to_string(),
-                        value: serde_json::json!("track"),
-                    })
-                    .ok();
-                db_tx
-                    .0
-                    .send(DbCommand::SetNodeProperty {
-                        node_id: id.clone(),
-                        key: GPX_POINTS_KEY.to_string(),
-                        value: serde_json::Value::Array(vec![]),
-                    })
-                    .ok();
-                db_tx
-                    .0
-                    .send(DbCommand::SetNodeProperty {
-                        node_id: id.clone(),
-                        key: TRACK_NAME_KEY.to_string(),
-                        value: serde_json::json!(name.clone()),
-                    })
-                    .ok();
-                *status = PathEditStatus {
-                    track_node_id: Some(id.clone()),
-                    message: Some("Track created".to_string()),
-                    error: None,
-                };
             }
             DbResult::NodePropertiesLoaded { node_id, properties } => {
                 let Some(queue) = pending.reads.get_mut(node_id) else { continue };
                 let Some(action) = queue.pop_front() else { continue };
-                if queue.is_empty() {
-                    pending.reads.remove(node_id);
-                }
-                let mut points = properties
-                    .get(GPX_POINTS_KEY)
-                    .map(json_to_route_points)
-                    .unwrap_or_default();
+                // FR-5: the seed read for this track has now resolved. Any
+                // further appends queued while it was outstanding will be
+                // drained below, so this track is no longer "seed pending".
+                pending.seed_pending.remove(node_id);
+                // FR-5: honor an already-seeded authoritative buffer. If two
+                // appends overlapped one in-flight read, the first
+                // NodePropertiesLoaded seeds `in_flight_points`; a second read
+                // reply (or the queued sibling appends) must extend THAT buffer
+                // rather than rebuild from this (now-stale) read snapshot, which
+                // would silently drop the first append.
+                let mut points = match pending.in_flight_points.get(node_id) {
+                    Some(buf) => buf.clone(),
+                    None => properties
+                        .get(GPX_POINTS_KEY)
+                        .map(json_to_route_points)
+                        .unwrap_or_default(),
+                };
 
                 match action {
                     PendingPathRead::AppendPoint { position, time_seconds } => {
@@ -734,16 +915,46 @@ pub fn advance_path_edits(
                             position: [position[0] as f64, position[1] as f64, position[2] as f64],
                             time_seconds: time_seconds.unwrap_or(0.0),
                         });
+                        // FR-5: this is the seed read — hand off authority to
+                        // in_flight_points so any AppendPoint queued while
+                        // this read was outstanding (or arriving after) uses
+                        // the direct-mutate path instead of another
+                        // GetNodeProperties race.
+                        // Drain any appends that piggy-backed on this one seed
+                        // read (dedup in drain suppressed their own reads), so
+                        // no confirmed append is lost when several overlap.
+                        if let Some(queue) = pending.reads.get_mut(node_id) {
+                            while let Some(PendingPathRead::AppendPoint { .. }) = queue.front() {
+                                if let Some(PendingPathRead::AppendPoint { position, time_seconds }) = queue.pop_front() {
+                                    points.push(TimestampedRoutePoint {
+                                        position: [position[0] as f64, position[1] as f64, position[2] as f64],
+                                        time_seconds: time_seconds.unwrap_or(0.0),
+                                    });
+                                }
+                            }
+                        }
+                        pending.in_flight_points.insert(node_id.clone(), points.clone());
+                        if pending.reads.get(node_id).map(|q| q.is_empty()).unwrap_or(true) {
+                            pending.reads.remove(node_id);
+                        }
                         persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
                         *status = PathEditStatus {
                             track_node_id: Some(node_id.clone()),
                             message: Some("Point added".to_string()),
                             error: None,
                         };
+                        continue;
                     }
                     PendingPathRead::RemovePoint { index } => {
+                        if pending.reads.get(node_id).map(|q| q.is_empty()).unwrap_or(true) {
+                            pending.reads.remove(node_id);
+                        }
                         if index < points.len() {
                             points.remove(index);
+                            // Keep FR-5's authoritative buffer in sync so a
+                            // subsequent AppendPoint doesn't resurrect the
+                            // just-removed point from a stale in_flight_points.
+                            pending.in_flight_points.insert(node_id.clone(), points.clone());
                             persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
@@ -758,7 +969,34 @@ pub fn advance_path_edits(
                             };
                         }
                     }
+                    PendingPathRead::MovePoint { index, position } => {
+                        if pending.reads.get(node_id).map(|q| q.is_empty()).unwrap_or(true) {
+                            pending.reads.remove(node_id);
+                        }
+                        if let Some(point) = points.get_mut(index) {
+                            // Reposition only; preserve the existing timestamp (no index churn).
+                            point.position = [position[0] as f64, position[1] as f64, position[2] as f64];
+                            // Keep FR-5's authoritative buffer in sync so a later
+                            // AppendPoint doesn't rebuild from a stale in_flight_points.
+                            pending.in_flight_points.insert(node_id.clone(), points.clone());
+                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                            *status = PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: Some("Point moved".to_string()),
+                                error: None,
+                            };
+                        } else {
+                            *status = PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: None,
+                                error: Some(format!("point index {index} out of range")),
+                            };
+                        }
+                    }
                     PendingPathRead::AnnotatePoint { index, title, body, color } => {
+                        if pending.reads.get(node_id).map(|q| q.is_empty()).unwrap_or(true) {
+                            pending.reads.remove(node_id);
+                        }
                         let Some(point) = points.get(index) else {
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
@@ -786,7 +1024,7 @@ pub fn advance_path_edits(
                         let key = (petal_id.clone(), title.clone());
                         db_tx
                             .0
-                            .send(DbCommand::CreateNode { petal_id, name: title.clone(), position })
+                            .send(DbCommand::CreateNode { petal_id, name: title.clone(), position, correlation_id: None })
                             .ok();
                         pending
                             .annotate_creates
@@ -795,6 +1033,9 @@ pub fn advance_path_edits(
                             .push_back(PendingAnnotateCreate { title, body, color });
                     }
                     PendingPathRead::ExportGpx { save_path } => {
+                        if pending.reads.get(node_id).map(|q| q.is_empty()).unwrap_or(true) {
+                            pending.reads.remove(node_id);
+                        }
                         let export_node = ExportNode {
                             node_id: node_id.clone(),
                             name: node_id.clone(),
@@ -827,6 +1068,23 @@ pub fn advance_path_edits(
                             }
                         }
                     }
+                }
+            }
+            DbResult::Error(msg) if msg.starts_with("Set node property failed") => {
+                // FR-4: surface the entity_property.rs "matched no node"
+                // failure (or any other SetNodeProperty error) against
+                // whichever track is still awaiting its property confirms —
+                // `Error` carries no node_id to correlate precisely, so this
+                // is a best-effort match consistent with the existing
+                // untagged-error routing idiom in db_results.rs.
+                if let Some((node_id, _)) = pending.track_property_confirms.iter().next() {
+                    let node_id = node_id.clone();
+                    pending.track_property_confirms.remove(&node_id);
+                    *status = PathEditStatus {
+                        track_node_id: Some(node_id),
+                        message: None,
+                        error: Some(msg.clone()),
+                    };
                 }
             }
             _ => {}
@@ -887,12 +1145,20 @@ pub fn request_petal_gpx_materialization(
     active_terrain: Res<ActivePetalTerrain>,
     verse_mgr: Res<VerseManager>,
     db_tx: Res<DbCommandSender>,
+    mut pending: ResMut<PendingPathEdits>,
     mut last_revision: Local<u64>,
 ) {
     if !active_terrain.is_changed() || active_terrain.revision == *last_revision {
         return;
     }
     *last_revision = active_terrain.revision;
+    // FR-5/MEDIUM-2: drop stale in-flight append buffers on petal switch /
+    // reload. A buffer seeded against the previous petal's DB base (or before
+    // a P2P-sync remote write) must not fast-path a later append — clearing
+    // here forces the next append to re-seed fresh, and prevents unbounded
+    // growth across petal switches.
+    pending.in_flight_points.clear();
+    pending.seed_pending.clear();
     let Some(petal_id) = &active_terrain.petal_id else { return };
     let Some(petal) = verse_mgr.find_petal(petal_id) else { return };
 
@@ -901,13 +1167,14 @@ pub fn request_petal_gpx_materialization(
     }
 }
 
-/// Consumes `NodePropertiesLoaded` results looking for `gpx_type == "track"`
-/// nodes carrying `gpx_points`, and (re)materializes their `TrackRouteMap`
-/// entry + `GpxTrackLine` entity. Runs unconditionally (cheap match against
-/// whatever `DbResult`s already flowed this frame) rather than maintaining
-/// its own pending-set, since `request_petal_gpx_materialization` fires a
-/// broad, uncorrelated batch of `GetNodeProperties` — there's nothing to
-/// dequeue per-result, just a type-tag check.
+/// FR-6: the single projection path from DB events to render state
+/// (`TrackRouteMap` + `GpxTrackLine`). Treats the DB node row as the sole
+/// source of truth: any `NodePropertiesLoaded` carrying a track's current
+/// `gpx_points` (re)materializes its render entity, and any `NodeDeleted`
+/// tears it down — covering both the petal-load batch from
+/// `request_petal_gpx_materialization` and live edits/deletes from the
+/// path editor and GIS panel, through one system instead of per-op
+/// hand-updates of a subset of sinks.
 pub fn advance_path_materialization(
     mut db_results: MessageReader<DbResult>,
     mut route_map: ResMut<TrackRouteMap>,
@@ -915,22 +1182,37 @@ pub fn advance_path_materialization(
     mut commands: Commands,
 ) {
     for result in db_results.read() {
-        let DbResult::NodePropertiesLoaded { node_id, properties } = result else { continue };
-        let is_track = properties.get(GPX_TYPE_KEY).and_then(|v| v.as_str()) == Some("track");
-        if !is_track {
-            continue;
-        }
-        let Some(points_json) = properties.get(GPX_POINTS_KEY) else { continue };
-        let points = json_to_route_points(points_json);
-        if points.len() < 2 {
-            continue;
-        }
-        let existing = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
-        // Only respawn if this track isn't already rendered (materialization
-        // fires once per petal-load batch, not on every unrelated property
-        // read) — avoids despawn/respawn churn for tracks already live.
-        if existing.is_none() {
-            spawn_track_route(&mut route_map, &mut commands, node_id, points, None);
+        match result {
+            DbResult::NodePropertiesLoaded { node_id, properties } => {
+                let is_track = properties.get(GPX_TYPE_KEY).and_then(|v| v.as_str()) == Some("track");
+                if !is_track {
+                    continue;
+                }
+                let Some(points_json) = properties.get(GPX_POINTS_KEY) else { continue };
+                let points = json_to_route_points(points_json);
+                if points.len() < 2 {
+                    continue;
+                }
+                let existing = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
+                // Only respawn if this track isn't already rendered
+                // (materialization fires once per petal-load batch, not on
+                // every unrelated property read) — avoids despawn/respawn
+                // churn for tracks already live.
+                if existing.is_none() {
+                    spawn_track_route(&mut route_map, &mut commands, node_id, points.clone(), None);
+                }
+            }
+            DbResult::NodeDeleted { node_id, .. } => {
+                // Projection teardown: any deleted node that happened to be
+                // a rendered track line gets despawned here too, covering
+                // deletes that bypass PathOp::DeleteTrack's own optimistic
+                // cleanup (e.g. a future delete path added elsewhere).
+                route_map.routes.remove(node_id);
+                if let Some((entity, _)) = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id) {
+                    commands.entity(entity).despawn();
+                }
+            }
+            _ => {}
         }
     }
 }

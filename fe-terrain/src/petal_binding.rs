@@ -63,6 +63,8 @@ pub fn config_for_tileset(info: &crate::tiles::TilesetInfo) -> TerrainConfig {
         ],
         tileset_hexon_uris: vec![info.tileset_id.clone()],
         tile_source_mode: TileSourceMode::Hybrid,
+        world_scale: info.native_scale.unwrap_or(1.0),
+        scale_bounds: info.scale_bounds,
         ..TerrainConfig::default()
     }
 }
@@ -139,6 +141,7 @@ mod render_support {
             Some(mut config) => {
                 let mut composite = CompositeTileSource::new();
                 let mut hexon_encoding: Option<ElevationEncoding> = None;
+                let mut hexon_scale_bounds: Option<[f64; 2]> = None;
                 for uri in &config.tileset_hexon_uris {
                     let Some(reg) = registry.as_ref() else {
                         tracing::warn!(uri = %uri, "no SharedTilesetRegistry resource; cannot load tileset");
@@ -147,12 +150,26 @@ mod render_support {
                     match reg.0.store().load_tileset(uri) {
                         Ok(src) => {
                             hexon_encoding.get_or_insert(src.tileset_meta.elevation_encoding.clone());
+                            if let Some(bounds) = src.tileset_meta.scale_bounds {
+                                hexon_scale_bounds.get_or_insert(bounds);
+                            }
                             composite.add_hexon_source(src);
                         }
                         Err(err) => {
                             tracing::warn!(uri = %uri, error = %err, "failed to load tileset for terrain assignment");
                         }
                     }
+                }
+                // Loaded hexons are authoritative for scale (C1): the stored
+                // config's world_scale is a clamped nudge within hexon bounds.
+                if hexon_scale_bounds.is_some() {
+                    config.scale_bounds = hexon_scale_bounds;
+                }
+                if config.scale_bounds.is_some() {
+                    config.world_scale = crate::scale::clamp_world_scale_to_bounds(
+                        config.world_scale,
+                        config.scale_bounds,
+                    );
                 }
                 // Loaded hexons are authoritative for decoding — the stored
                 // config may guess wrong (fe-ui emits terrain_rgb; see AGENTS.md).
@@ -270,6 +287,8 @@ mod tests {
             tile_count: 4,
             seeding: false,
             elevation_encoding: Some(ElevationEncoding::TerrainRgb),
+            native_scale: None,
+            scale_bounds: None,
         }
     }
 
@@ -322,5 +341,33 @@ mod tests {
         i.elevation_encoding = None;
         let cfg = config_for_tileset(&i);
         assert_eq!(cfg.elevation_source, ElevationSourceKind::None);
+    }
+
+    #[test]
+    fn config_for_tileset_sets_world_scale_from_native_scale() {
+        let mut i = info();
+        i.native_scale = Some(0.001);
+        i.scale_bounds = Some([0.0001, 0.01]);
+        let cfg = config_for_tileset(&i);
+        assert_eq!(cfg.world_scale, 0.001);
+        assert_eq!(cfg.scale_bounds, Some([0.0001, 0.01]));
+    }
+
+    #[test]
+    fn config_for_tileset_without_native_scale_defaults_to_human_scale() {
+        let cfg = config_for_tileset(&info());
+        assert_eq!(cfg.world_scale, 1.0);
+        assert!(cfg.scale_bounds.is_none());
+    }
+
+    #[test]
+    fn user_world_scale_outside_bounds_is_clamped_via_effective_world_scale() {
+        let mut i = info();
+        i.native_scale = Some(0.001);
+        i.scale_bounds = Some([0.0001, 0.01]);
+        let mut cfg = config_for_tileset(&i);
+        // Simulate a user nudge outside hexon bounds.
+        cfg.world_scale = 5.0;
+        assert_eq!(cfg.effective_world_scale(), 0.01);
     }
 }

@@ -151,7 +151,10 @@ pub(crate) fn set_petal_map(
 ) {
     // Carry over the petal's current world scale when (re)assigning a map.
     let world_scale = petal_map.world_scale;
-    let terrain = tileset.as_ref().map(|ts| tileset_to_terrain_json(ts, world_scale));
+    let scale_bounds = petal_map.scale_bounds;
+    let terrain = tileset
+        .as_ref()
+        .map(|ts| tileset_to_terrain_json(ts, world_scale, scale_bounds));
     let tileset_ids = tileset.as_ref().map(|ts| vec![ts.hexon_id.clone()]).unwrap_or_default();
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
@@ -173,6 +176,11 @@ pub(crate) fn set_petal_map(
 /// Persist a new world scale on the active petal's map (rebuilds terrain JSON).
 /// Live-apply is free: SetPetalTerrain → PetalTerrainLoaded → apply_terrain_assignments
 /// respawns chunks; the camera adapts via the CameraScaleSettings sync system.
+///
+/// FR-6: `world_scale` is clamped into `petal_map.scale_bounds` (the hexon's
+/// declared bounds, surfaced via `terrain_json["scale_bounds"]`) before being
+/// persisted or applied locally — the clamped value is what gets surfaced
+/// back to the caller via `petal_map.world_scale` (clamp + feedback, OQ-2).
 pub(crate) fn set_petal_map_scale(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
@@ -180,7 +188,8 @@ pub(crate) fn set_petal_map_scale(
     tileset: InstalledTilesetDto,
     world_scale: f64,
 ) {
-    let terrain = tileset_to_terrain_json(&tileset, world_scale);
+    let clamped_scale = clamp_to_bounds(world_scale, petal_map.scale_bounds);
+    let terrain = tileset_to_terrain_json(&tileset, clamped_scale, petal_map.scale_bounds);
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain),
@@ -188,13 +197,25 @@ pub(crate) fn set_petal_map_scale(
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);
             petal_map.tileset_ids = vec![tileset.hexon_id];
-            petal_map.world_scale = world_scale;
+            petal_map.world_scale = clamped_scale;
         }
         Err(_) => {
             bevy::log::warn!(
                 "db_sender channel closed — SetPetalTerrain (scale) not dispatched; local map state unchanged"
             );
         }
+    }
+}
+
+/// Clamp a world scale into `[min, max]` bounds (FR-6); no fe-terrain dep —
+/// fe-ui owns this trivial clamp locally per the layering boundary (C6).
+fn clamp_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
+    let sanitized = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    match bounds {
+        Some([min, max]) if min.is_finite() && max.is_finite() && min > 0.0 && max >= min => {
+            sanitized.clamp(min, max)
+        }
+        _ => sanitized,
     }
 }
 

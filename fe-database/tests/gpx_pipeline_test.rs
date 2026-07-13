@@ -95,6 +95,7 @@ fn create_node(db: &TestDb, petal_id: &str, name: &str, position: [f32; 3]) -> S
             petal_id: petal_id.to_string(),
             name: name.to_string(),
             position,
+            correlation_id: None,
         })
         .unwrap();
     match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateNode result") {

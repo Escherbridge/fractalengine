@@ -12,6 +12,8 @@ fe-runtime = { path = "../fe-runtime" }
 fe-renderer = { path = "../fe-renderer" }
 fe-sync = { path = "../fe-sync" }
 fe-webview = { path = "../fe-webview" }
+fe-sdk = { path = "../fe-sdk" }
+fe-hexon = { path = "../fe-hexon" }
 url = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

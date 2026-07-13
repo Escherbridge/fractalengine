@@ -365,6 +365,15 @@ fn render_scale_controls(
     actions: &mut Vec<UiAction>,
     petal_id: &str,
 ) {
+    // FR-6: the hexon's declared scale_bounds (surfaced via terrain_json) win
+    // over the generic slider range when present — the slider cannot exceed
+    // the hexon-authoritative clamp (C1).
+    let (slider_min, slider_max) = petal_map
+        .scale_bounds
+        .filter(|[min, max]| min.is_finite() && max.is_finite() && *min > 0.0 && max >= min)
+        .map(|[min, max]| (min, max))
+        .unwrap_or((SCALE_MIN, SCALE_MAX));
+
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Terrain scale").color(theme::TEXT_SECTION).strong());
         let ratio = if petal_map.world_scale > 0.0 {
@@ -378,27 +387,35 @@ fn render_scale_controls(
                 .color(theme::TEXT_MUTED),
         )
         .on_hover_text("World units per real meter (region ↔ human scale of space)");
+        if petal_map.scale_bounds.is_some() {
+            ui.label(
+                egui::RichText::new("(hexon-bounded)")
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
+        }
     });
 
     ui.horizontal(|ui| {
         for (label, preset) in SCALE_PRESETS {
-            let selected = (petal_map.world_scale - *preset).abs() < 1e-9;
+            let clamped_preset = preset.clamp(slider_min, slider_max);
+            let selected = (petal_map.world_scale - clamped_preset).abs() < 1e-9;
             let fill = if selected { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON };
             if ui.add(egui::Button::new(*label).fill(fill)).clicked() {
-                petal_map.world_scale = *preset;
+                petal_map.world_scale = clamped_preset;
                 actions.push(UiAction::PetalSetMapScale {
                     petal_id: petal_id.to_string(),
                     tileset: active_ts.clone(),
-                    world_scale: *preset,
+                    world_scale: clamped_preset,
                 });
             }
         }
     });
 
     // Log slider: live-preview the camera on drag; persist terrain on release.
-    let mut scale = petal_map.world_scale.clamp(SCALE_MIN, SCALE_MAX);
+    let mut scale = petal_map.world_scale.clamp(slider_min, slider_max);
     let resp = ui.add(
-        egui::Slider::new(&mut scale, SCALE_MIN..=SCALE_MAX)
+        egui::Slider::new(&mut scale, slider_min..=slider_max)
             .logarithmic(true)
             .custom_formatter(|v, _| format!("1:{}", (1.0 / v).round() as i64))
             .text("scale"),

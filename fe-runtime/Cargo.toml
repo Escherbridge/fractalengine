@@ -14,3 +14,4 @@ anyhow = { workspace = true }
 hex = "0.4"
 blake3 = { workspace = true }
 fe-identity = { path = "../fe-identity" }
+fe-sdk = { path = "../fe-sdk" }

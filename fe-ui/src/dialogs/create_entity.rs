@@ -124,6 +124,7 @@ pub fn apply_create(
                     petal_id: parent_id.to_string(),
                     name: name.to_string(),
                     position: [0.0, 0.0, 0.0],
+                    correlation_id: None,
                 })
                 .ok();
         }

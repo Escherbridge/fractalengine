@@ -2550,6 +2550,15 @@ checksum = "597bb81c80a54b6a4381b23faba8d7774b144c94cbd1d6fe3f1329bd776554ab"
 
 [[package]]
 name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "bincode"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
@@ -5302,6 +5311,7 @@ dependencies = [
  "blake3",
  "chrono",
  "crossbeam",
+ "dirs 5.0.1",
  "ed25519-dalek",
  "fe-format",
  "fe-hexon-registry",
@@ -5456,6 +5466,7 @@ dependencies = [
  "blake3",
  "crossbeam",
  "fe-identity",
+ "fe-sdk",
  "hex",
  "serde",
  "serde_json",
@@ -5502,6 +5513,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bevy",
+ "bincode 1.3.3",
  "blake3",
  "chrono",
  "dirs 5.0.1",
@@ -5521,6 +5533,7 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -5531,8 +5544,10 @@ dependencies = [
  "bevy_egui",
  "crossbeam",
  "fe-database",
+ "fe-hexon",
  "fe-renderer",
  "fe-runtime",
+ "fe-sdk",
  "fe-sync",
  "fe-webview",
  "rfd",
@@ -13799,7 +13814,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6508449a7d1379a92a51ba49391b48ccab0b60dd11a4277c0dda965d8c99dbff"
 dependencies = [
  "arc-swap",
- "bincode",
+ "bincode 2.0.1",
  "bytes",
  "crossbeam-deque",
  "crossbeam-queue",
