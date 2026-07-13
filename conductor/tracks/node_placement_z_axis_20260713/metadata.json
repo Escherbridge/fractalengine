@@ -1,0 +1,13 @@
+{
+  "id": "node_placement_z_axis_20260713",
+  "description": "Allow placed nodes/path points to move along the vertical (Bevy Y / user \"z\"/height) axis instead of the hardcoded y=0 plane, and make a single-point GPX track default to a plain node instead of dropping out of rendering",
+  "type": "feature",
+  "created_at": "2026-07-13T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 1,
+  "wave_rationale": "Touches interaction (fe-ui path_point_interaction/plugin.rs) and rendering-decision code (fractalengine/gpx_bridge advance_path_materialization) that isn't gated on any not-yet-existing API; soft dependency on input_router_20260713 only for FR-1's height-modifier drag routing, not a hard blocker.",
+  "depends_on": ["input_router_20260713"],
+  "blocks": [],
+  "archived": false,
+  "notes": "User terminology: 'z-axis' = vertical/height = Bevy Y (Bevy is Y-up in this engine), not Bevy's own Z axis. FR-1 presents 3 options (height-modifier drag, numeric height field, terrain-height snapping) without deciding; recommends the height-modifier drag as lightest. FR-2 confirms gpx_points [x,y,z,t] + PathPointRow [f32;3] already support full 3D, no format change needed. FR-3 verified advance_path_materialization already gates polyline spawn on points.len() < 2, but currently does nothing for the 1-point case (silently invisible) rather than spawning a node — that gap is the actual FR-3 target."
+}
