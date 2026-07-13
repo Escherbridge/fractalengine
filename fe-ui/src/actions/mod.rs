@@ -89,7 +89,10 @@ pub enum UiAction {
     /// via `GetNodeProperties`/`NodePropertiesLoaded`.
     PathSelectTrack { track_node_id: String },
     /// Create a new (empty) track node named `name` under `petal_id`.
-    PathCreateTrack { petal_id: String, name: String },
+    /// `correlation_id` is `Some` only for the Pen auto-create (so its deferred
+    /// `NodeCreated` flush can match by id); the manual "New Path" button sends
+    /// `None`. See `crate::path_ops::PathOp::CreateTrack`.
+    PathCreateTrack { petal_id: String, name: String, correlation_id: Option<String> },
     /// Delete a track node and its persisted points.
     PathDeleteTrack { track_node_id: String },
     /// Append a point at the current 3D cursor world position.
@@ -405,8 +408,8 @@ pub(crate) fn process_ui_actions(
             UiAction::PathSelectTrack { track_node_id } => {
                 path::select_track(&db_sender, &mut path_state, track_node_id);
             }
-            UiAction::PathCreateTrack { petal_id, name } => {
-                if let Err(err) = path::create_track(&mut path_ops, petal_id, name) {
+            UiAction::PathCreateTrack { petal_id, name, correlation_id } => {
+                if let Err(err) = path::create_track(&mut path_ops, petal_id, name, correlation_id) {
                     path_state.last_error = Some(err.to_string());
                 } else {
                     path_state.last_error = None;

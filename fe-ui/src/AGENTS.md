@@ -428,22 +428,50 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    file (`path_ops.rs`) is the authoritative definition per FR-2 ("fe-ui does
    no persistence I/O" implies fe-ui also owns the intent vocabulary) — the
    bridge should conform to this shape rather than the reverse.
-8. **Pen auto-create + deferred first-point flush**
-   (`pen_autocreate_track_20260713`). The Pen tool no longer requires a track
-   to be pre-selected. A Pen empty-click with `editing_track_id == None`
-   (`node_manager/path_point_interaction.rs`, see `node_manager/AGENTS.md`
-   §pen-tool) queues `UiAction::PathCreateTrack { petal_id, "New Path" }` for
-   `NavigationManager.active_petal_id` and stashes the click's world position in
-   `PathEditorState.pending_pen_first_point` — the append **cannot** be
-   synchronous because the track's `node_id` doesn't exist until the
-   `CreateTrack` round-trips. `verse_manager::db_results`' `DbResult::NodeCreated`
-   arm flushes it: guarded on `has_pending_pen_first_point()` + same active
-   petal + `!has_asset` (a track node is asset-less), it `start_editing(new_id)`
-   + pushes the point as the track's first `PathAppendPoint`, and `take_*` clears
-   the flag so it can't replay onto a later create. The pen path is the sole
-   writer of the flag and queues exactly one create, so the first matching
-   `NodeCreated` is unambiguously the auto-created track. This is the deferred
-   analogue of the §gpx-import `pending_*` correlation, without a schema change.
+8. **Pen auto-create + deferred first-point flush** (correlation-id matched;
+   `pen_autocreate_track_20260713` + HIGH-1/HIGH-2 hardening). The Pen tool no
+   longer requires a track to be pre-selected. A Pen empty-click with
+   `editing_track_id == None` (`node_manager/path_point_interaction.rs`, see
+   `node_manager/AGENTS.md` §pen-tool) generates a **fe-ui-side correlation id**
+   (`gis::next_pen_correlation_id`, a monotonic `pen-track:{n}` counter — no
+   `rand`/`uuid` dep), stashes `PathEditorState.pending_pen_create` (that id +
+   the click's world position), and queues `UiAction::PathCreateTrack { petal_id,
+   "New Path", correlation_id: Some(id) }` for `NavigationManager.active_petal_id`.
+   The append **cannot** be synchronous because the track's `node_id` doesn't
+   exist until the `CreateTrack` round-trips.
+
+   The id threads end-to-end: `UiAction::PathCreateTrack` → `PathOp::CreateTrack
+   { correlation_id }` → the gpx bridge's `drain_path_ops`, which — when the op
+   carries an id — reuses it verbatim on `DbCommand::CreateNode { correlation_id }`
+   (only the manual "New Path" button leaves it `None`, for which the bridge
+   generates its own id, unchanged). The DB echoes that id back on
+   `DbResult::NodeCreated { correlation_id }`. `verse_manager::db_results`' arm
+   flushes the pen point **only when the echoed id matches** the pending create
+   (`take_pending_pen_create_if(cid)`), then `start_editing(new_id)` + pushes the
+   first `PathAppendPoint`. Because the match is on the id — **not** a content
+   heuristic (`!has_asset && in_active_petal`) — a concurrent foreign create (a
+   GPX-import track/waypoint node, the create-entity dialog) carries a different
+   id (or `None`) and can **never** hijack the flush (HIGH-1, the old heuristic's
+   bug). **HIGH-2:** `PathCreateTrack` failure surfaces as `DbResult::Error`
+   (never `NodeCreated`), and `Error` carries only a message — no node/correlation
+   id — so `db_results` clears `pending_pen_create` best-effort on **any** `Error`
+   while a pen create is pending (with a `warn!`); otherwise a failed create would
+   strand the pending state and leave the pen permanently dead. The next Pen click
+   simply starts a fresh auto-create.
+9. **Per-track style controls persist on release, not per-frame** (MEDIUM-2,
+   `track_styling_20260713`). `path_editor_card::render_style_controls` binds the
+   color picker / thickness slider / visibility checkbox to
+   `PathEditorState.edited_track_style`. A drag fires egui `.changed()` every
+   frame, and each `PathSetStyle` → `SetNodeProperty` → refetch →
+   despawn/respawn/ribbon-rebuild round-trip in the gpx bridge is expensive
+   (dozens of full mesh rebuilds per drag). So `edited_track_style` is still
+   mutated live every frame (the widget shows the value immediately), but the
+   returned persist signal only fires on the **settle**: the slider on
+   `drag_stopped()` (or a non-drag `.changed()` for keyboard/step); the color on
+   a `.changed()` observed while the primary pointer is released (the button
+   response can't see the popup's internal slider drag, so `drag_stopped()` is
+   unusable there); the checkbox immediately (a single click, no drag churn).
+   Live visual feedback is preserved; exactly one DB write lands at release.
 
 ## §data-icons — type icons on three surfaces (`data_icons_20260713`)
 

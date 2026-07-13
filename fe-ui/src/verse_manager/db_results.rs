@@ -138,7 +138,7 @@ pub(super) fn apply_db_results(
                 }
             }
 
-            DbResult::NodeCreated { id, petal_id, name, has_asset, .. } => {
+            DbResult::NodeCreated { id, petal_id, name, has_asset, correlation_id } => {
                 if let Some(petal) = verse_mgr.find_petal_mut(petal_id) {
                     petal.nodes.push(NodeEntry {
                         id: id.clone(),
@@ -150,16 +150,17 @@ pub(super) fn apply_db_results(
                     });
                 }
                 let in_active_petal = nav.active_petal_id.as_deref() == Some(petal_id.as_str());
-                // Pen auto-create flush (`pen_autocreate_track_20260713`, FR-2):
-                // a no-track Pen click stashed `pending_pen_first_point` and
-                // queued a single `PathCreateTrack`; this is that track's
-                // node_id arriving. Guard: pending set + same active petal +
-                // asset-less (a track node has no glb). The pen path is the
-                // ONLY writer of the pending flag and queues exactly one create,
-                // so the first matching `NodeCreated` is the auto-created track.
-                // `take_*` clears the flag so it can't replay onto a later node.
-                if in_active_petal && !*has_asset && path_state.has_pending_pen_first_point() {
-                    if let Some(position) = path_state.take_pending_pen_first_point() {
+                // Pen auto-create flush (`pen_autocreate_track_20260713`, FR-2 +
+                // HIGH-1 correlation-id fix): a no-track Pen click stashed
+                // `pending_pen_create` (its fe-ui-generated `correlation_id` +
+                // first point) and queued a single `PathCreateTrack` carrying
+                // that id. The bridge echoes the id back here on `NodeCreated`,
+                // so we flush the first point ONLY when the echoed id matches
+                // the pending create — NOT on a content heuristic. A concurrent
+                // foreign create (GPX import / create-entity dialog) carries a
+                // different id (or `None`), so it can never hijack the pen flush.
+                if let Some(cid) = correlation_id {
+                    if let Some(position) = path_state.take_pending_pen_create_if(cid) {
                         path_state.start_editing(id.clone());
                         ui_mgr.push_action(crate::actions::UiAction::PathAppendPoint {
                             track_node_id: id.clone(),
@@ -250,6 +251,21 @@ pub(super) fn apply_db_results(
 
             DbResult::Error(msg) => {
                 bevy::log::error!("DB error: {msg}");
+                // HIGH-2: `DbResult::Error` carries only a message — no node id
+                // or correlation id — so a failed `PathCreateTrack` (the DB
+                // emits `Error`, never `NodeCreated`) can't be matched precisely.
+                // A stranded `pending_pen_create` would leave the pen
+                // permanently dead AND let a much-later unrelated create's echo
+                // (if ids ever collided) flush onto the wrong node, so clear it
+                // best-effort on ANY error while a pen create is in flight: a
+                // failed create is the likely cause and leaving it stuck is
+                // worse. The next Pen click simply starts a fresh auto-create.
+                if path_state.clear_pending_pen_create() {
+                    bevy::log::warn!(
+                        "Pen auto-create likely failed (DB error while a pen create was pending) — \
+                         cleared pending pen state; click again to retry: {msg}"
+                    );
+                }
                 // GIS panel queries take priority over the ad-hoc Query tab
                 // when both happen to be in flight — see `DbResult::QueryResult`
                 // below for why these two share one untagged result channel.

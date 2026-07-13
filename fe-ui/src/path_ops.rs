@@ -10,7 +10,12 @@ use bevy::prelude::*;
 #[derive(Debug, Clone)]
 pub enum PathOp {
     /// Create a new (empty) track node named `name` under `petal_id`.
-    CreateTrack { petal_id: String, name: String },
+    /// `correlation_id` is `Some` only for the Pen auto-create path, which
+    /// generates a fe-ui-side id (`gis::next_pen_correlation_id`) so the bridge
+    /// echoes it back on `NodeCreated` and the deferred pen flush can match on
+    /// it — see `fe-ui/src/AGENTS.md` §path-editor. The manual Paths-tab "New
+    /// Path" button passes `None` (bridge generates its own id, unchanged).
+    CreateTrack { petal_id: String, name: String, correlation_id: Option<String> },
     /// Delete the track node `track_node_id` (and its `gpx_points`).
     DeleteTrack { track_node_id: String },
     /// Append a point (petal-local meters) at the end of `track_node_id`'s

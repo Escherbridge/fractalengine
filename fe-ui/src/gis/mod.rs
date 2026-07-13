@@ -153,13 +153,15 @@ pub struct PathEditorState {
     pub annotate_title_buf: String,
     pub annotate_body_buf: String,
     pub annotate_color_buf: String,
-    /// World position of the first Pen point, stashed while the auto-created
-    /// track's `node_id` is in flight. `Some` only between a no-track Pen click
-    /// (queues `PathCreateTrack`) and the matching `DbResult::NodeCreated` that
-    /// flushes it as the track's first `PathAppendPoint`. The auto-create path
-    /// is the ONLY writer, which is what makes the deferred flush's guard sound
-    /// — see `pen_autocreate_track_20260713` + `fe-ui/src/AGENTS.md` §path-editor.
-    pub pending_pen_first_point: Option<[f32; 3]>,
+    /// The in-flight Pen auto-create, stashed while the new track's `node_id`
+    /// is in flight. `Some` only between a no-track Pen click (queues
+    /// `PathCreateTrack` carrying `correlation_id`) and the matching
+    /// `DbResult::NodeCreated` whose echoed `correlation_id` flushes the first
+    /// point as a `PathAppendPoint`. The flush matches on `correlation_id`
+    /// (NOT a content heuristic), so a concurrent foreign create — a GPX import
+    /// or the create-entity dialog — can never hijack it. See
+    /// `pen_autocreate_track_20260713` + `fe-ui/src/AGENTS.md` §path-editor.
+    pub pending_pen_create: Option<PendingPenCreate>,
     /// track_styling_20260713: the edited track's current per-track style,
     /// seeded from its loaded `gis.track.*` node props when a track is selected
     /// (see `verse_manager::db_results`) and bound to the Paths-tab controls.
@@ -248,7 +250,7 @@ impl PathEditorState {
         self.editing_track_id = None;
         self.points.clear();
         self.points_pending = false;
-        self.pending_pen_first_point = None;
+        self.pending_pen_create = None;
         self.edited_track_style = TrackStyleFields::default();
         self.close_annotate_form();
     }
@@ -269,19 +271,55 @@ impl PathEditorState {
         self.annotate_color_buf.clear();
     }
 
-    /// `true` while a Pen auto-create's first point is stashed awaiting the new
-    /// track's `NodeCreated`. Gates the pen system so a second click before the
-    /// create round-trips can't queue a second track.
-    pub(crate) fn has_pending_pen_first_point(&self) -> bool {
-        self.pending_pen_first_point.is_some()
+    /// `true` while a Pen auto-create is in flight awaiting the new track's
+    /// `NodeCreated`. Gates the pen system so a second click before the create
+    /// round-trips can't queue a second track.
+    pub(crate) fn has_pending_pen_create(&self) -> bool {
+        self.pending_pen_create.is_some()
     }
 
-    /// Consumes the stashed Pen first-point (clearing the flag), if any. Called
-    /// from the `NodeCreated` flush so the pending point can't be replayed onto
-    /// a later, unrelated node-create. See `pen_autocreate_track_20260713`.
-    pub(crate) fn take_pending_pen_first_point(&mut self) -> Option<[f32; 3]> {
-        self.pending_pen_first_point.take()
+    /// If a Pen auto-create is pending AND `correlation_id` matches it, consume
+    /// it (clearing the flag) and return its stashed first point. Returns `None`
+    /// on a mismatch or when nothing is pending — so a foreign `NodeCreated`
+    /// (GPX import, create-entity dialog) can never flush the pen point onto the
+    /// wrong node. See `pen_autocreate_track_20260713` + AGENTS.md §path-editor.
+    pub(crate) fn take_pending_pen_create_if(&mut self, correlation_id: &str) -> Option<[f32; 3]> {
+        match &self.pending_pen_create {
+            Some(p) if p.correlation_id == correlation_id => {
+                self.pending_pen_create.take().map(|p| p.first_point)
+            }
+            _ => None,
+        }
     }
+
+    /// Clears the pending Pen auto-create unconditionally, returning `true` if
+    /// one was in flight. Called on the pen's own `PathCreateTrack` failure so a
+    /// dead create can't leave the pen permanently stuck (HIGH-2).
+    pub(crate) fn clear_pending_pen_create(&mut self) -> bool {
+        self.pending_pen_create.take().is_some()
+    }
+}
+
+/// An in-flight Pen auto-create: the fe-ui-generated `correlation_id` the
+/// `PathCreateTrack` carries end-to-end (fe-ui → `PathOp` → gpx bridge →
+/// `CreateNode` → echoed on `NodeCreated`) plus the first click's world
+/// position to flush once the track's `node_id` arrives. Matching the flush on
+/// `correlation_id` — not on node content — is what makes the deferred flush
+/// hijack-proof. See `fe-ui/src/AGENTS.md` §path-editor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingPenCreate {
+    pub correlation_id: String,
+    pub first_point: [f32; 3],
+}
+
+/// Process-unique correlation id for a Pen auto-created track. fe-ui-side twin
+/// of the bridge's `next_authored_track_correlation_id` (which fe-ui never sees,
+/// so it can't match on it); the `pen-track:` prefix keeps the two id spaces
+/// disjoint. Monotonic `AtomicU64`, no `rand`/`uuid` dep needed.
+pub(crate) fn next_pen_correlation_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!("pen-track:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 #[cfg(test)]
@@ -334,10 +372,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_pen_first_point_defaults_none() {
+    fn pending_pen_create_defaults_none() {
         let s = PathEditorState::default();
-        assert!(s.pending_pen_first_point.is_none());
-        assert!(!s.has_pending_pen_first_point());
+        assert!(s.pending_pen_create.is_none());
+        assert!(!s.has_pending_pen_create());
     }
 
     #[test]
@@ -391,38 +429,85 @@ mod tests {
     }
 
     #[test]
-    fn pending_pen_first_point_set_then_take_clears_flag() {
-        // Mirrors the auto-create → NodeCreated flush: stash on the no-track
-        // Pen click, take on the deferred flush.
+    fn pending_pen_create_ids_are_unique_and_prefixed() {
+        let a = next_pen_correlation_id();
+        let b = next_pen_correlation_id();
+        assert!(a.starts_with("pen-track:"), "got {a}");
+        assert_ne!(a, b, "each call yields a distinct id");
+    }
+
+    #[test]
+    fn take_pending_pen_create_if_matching_flushes_and_clears() {
+        // Mirrors the NodeCreated flush: the echoed correlation_id matches the
+        // pending create → take the stashed first point and clear the flag.
         let mut s = PathEditorState::default();
-        s.pending_pen_first_point = Some([3.0, 0.0, 4.0]);
-        assert!(s.has_pending_pen_first_point());
-        assert_eq!(s.take_pending_pen_first_point(), Some([3.0, 0.0, 4.0]));
-        assert!(!s.has_pending_pen_first_point(), "take clears the flag");
-        assert_eq!(s.take_pending_pen_first_point(), None, "second take yields None");
+        s.pending_pen_create = Some(PendingPenCreate {
+            correlation_id: "pen-track:7".to_string(),
+            first_point: [3.0, 0.0, 4.0],
+        });
+        assert!(s.has_pending_pen_create());
+        assert_eq!(s.take_pending_pen_create_if("pen-track:7"), Some([3.0, 0.0, 4.0]));
+        assert!(!s.has_pending_pen_create(), "match clears the flag");
+        assert_eq!(s.take_pending_pen_create_if("pen-track:7"), None, "second take yields None");
+    }
+
+    #[test]
+    fn take_pending_pen_create_if_mismatch_does_not_clear() {
+        // HIGH-1: a foreign create (GPX import / dialog) carries a different
+        // correlation_id (or None → the caller never calls this), so the pen
+        // point must NOT be flushed and the pending create must remain intact.
+        let mut s = PathEditorState::default();
+        s.pending_pen_create = Some(PendingPenCreate {
+            correlation_id: "pen-track:2".to_string(),
+            first_point: [1.0, 0.0, 1.0],
+        });
+        assert_eq!(s.take_pending_pen_create_if("authored-track:0"), None, "mismatch never flushes");
+        assert!(s.has_pending_pen_create(), "mismatch leaves the pending create untouched");
+        // The correct id still flushes it afterwards.
+        assert_eq!(s.take_pending_pen_create_if("pen-track:2"), Some([1.0, 0.0, 1.0]));
     }
 
     #[test]
     fn start_editing_then_flush_leaves_track_and_clears_pending() {
-        // The NodeCreated flush sequence: start_editing(new_id) + take the
-        // pending point. After it, the track is active and no pending remains.
+        // The NodeCreated flush sequence: match+take the pending point, then
+        // start_editing(new_id). After it, the track is active, no pending left.
         let mut s = PathEditorState::default();
-        s.pending_pen_first_point = Some([1.0, 0.0, 1.0]);
-        let pending = s.take_pending_pen_first_point();
+        s.pending_pen_create = Some(PendingPenCreate {
+            correlation_id: "pen-track:0".to_string(),
+            first_point: [1.0, 0.0, 1.0],
+        });
+        let flushed = s.take_pending_pen_create_if("pen-track:0");
         s.start_editing("auto-track".to_string());
-        assert_eq!(pending, Some([1.0, 0.0, 1.0]));
+        assert_eq!(flushed, Some([1.0, 0.0, 1.0]));
         assert_eq!(s.editing_track_id.as_deref(), Some("auto-track"));
-        assert!(!s.has_pending_pen_first_point());
+        assert!(!s.has_pending_pen_create());
         assert!(s.points.is_empty(), "start_editing seeds an empty buffer for the flushed append");
     }
 
     #[test]
-    fn stop_editing_clears_pending_pen_first_point() {
-        // Leaving the editor mid-flight must not strand a stale pending point.
+    fn clear_pending_pen_create_reports_and_clears() {
+        // HIGH-2: a failed PathCreateTrack (DbResult::Error) must clear the
+        // pending create so the pen isn't left permanently stuck.
+        let mut s = PathEditorState::default();
+        assert!(!s.clear_pending_pen_create(), "nothing pending → false");
+        s.pending_pen_create = Some(PendingPenCreate {
+            correlation_id: "pen-track:1".to_string(),
+            first_point: [2.0, 0.0, 2.0],
+        });
+        assert!(s.clear_pending_pen_create(), "pending → cleared, reports true");
+        assert!(!s.has_pending_pen_create());
+    }
+
+    #[test]
+    fn stop_editing_clears_pending_pen_create() {
+        // Leaving the editor mid-flight must not strand a stale pending create.
         let mut s = PathEditorState::default();
         s.start_editing("track-1".to_string());
-        s.pending_pen_first_point = Some([2.0, 0.0, 2.0]);
+        s.pending_pen_create = Some(PendingPenCreate {
+            correlation_id: "pen-track:3".to_string(),
+            first_point: [2.0, 0.0, 2.0],
+        });
         s.stop_editing();
-        assert!(!s.has_pending_pen_first_point());
+        assert!(!s.has_pending_pen_create());
     }
 }

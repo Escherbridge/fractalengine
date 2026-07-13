@@ -186,16 +186,22 @@ layer wiring are **out of scope here** (per `metadata.json`, that's W-B's
   steal the other's result. `DbCommand::CreateNode` / `DbResult::NodeCreated`
   now carry an optional `correlation_id: Option<String>` echoed unchanged by
   the DB dispatch (`fe-database/src/lib.rs`). The authored-`CreateTrack` path
-  (`drain_path_ops`) tags its command with a process-unique id
-  (`next_authored_track_correlation_id`, an atomic counter — no new crate dep)
-  and keys `PendingPathEdits::creates` by that id, so `advance_path_edits`
-  matches by id, never by tuple. The import/annotate paths send
-  `correlation_id: None`; `advance_gpx_imports` ignores any `Some(_)` result
-  and `advance_path_edits`'s annotate branch only handles `None` — so the two
-  streams are partitioned and can never cross-consume. Duplicate-name import
-  waypoints still FIFO-disambiguate via `(petal_id, name)` as before (that
-  path is not the racing one). The id is optional/additive: every other
-  `CreateNode` sender passes `None` and keeps the legacy content correlation.
+  (`drain_path_ops`) keys `PendingPathEdits::creates` by the op's
+  `correlation_id`, so `advance_path_edits` matches by id, never by tuple.
+  **The id source depends on the caller** (HIGH-1/HIGH-2): the `PathOp::CreateTrack`
+  now carries `correlation_id: Option<String>` — the fe-ui **Pen auto-create**
+  supplies its own (`gis::next_pen_correlation_id`, `pen-track:{n}`) so fe-ui's
+  own deferred flush can match the echoed id (see `fe-ui/src/AGENTS.md`
+  §path-editor); the manual "New Path" button leaves it `None`, for which the
+  bridge generates a `next_authored_track_correlation_id` (`authored-track:{n}`,
+  an atomic counter — no new crate dep) exactly as before. Either way the command
+  goes out with a `Some(id)`. The import/annotate paths send `correlation_id:
+  None`; `advance_gpx_imports` ignores any `Some(_)` result and
+  `advance_path_edits`'s annotate branch only handles `None` — so the two streams
+  are partitioned and can never cross-consume. Duplicate-name import waypoints
+  still FIFO-disambiguate via `(petal_id, name)` as before (that path is not the
+  racing one). The id is optional/additive: every non-track `CreateNode` sender
+  passes `None` and keeps the legacy content correlation.
 - **Projection (petal terrain origin).** Per spec, points project through
   the *petal's* terrain origin, not an arbitrary bbox-center. The only
   already-resident state carrying a resolved terrain origin is

@@ -753,12 +753,18 @@ pub fn drain_path_ops(
 
     for op in ops.0.drain(..) {
         match op {
-            PathOp::CreateTrack { petal_id, name } => {
+            PathOp::CreateTrack { petal_id, name, correlation_id } => {
                 // FR-4: tag this authored create with a process-unique id and
                 // key the waiter by it, so `advance_path_edits` matches the
                 // eventual `NodeCreated` by id — not the `(petal_id, name)`
                 // tuple a concurrent same-named GPX import also uses.
-                let correlation_id = next_authored_track_correlation_id();
+                //
+                // HIGH-1/HIGH-2 (pen_autocreate correlation-id fix): reuse the
+                // fe-ui-supplied id when present (the Pen auto-create needs the
+                // SAME id echoed back so fe-ui's deferred flush can match it);
+                // only the manual "New Path" button leaves it `None`, for which
+                // we generate a bridge-side id exactly as before.
+                let correlation_id = correlation_id.unwrap_or_else(next_authored_track_correlation_id);
                 db_tx
                     .0
                     .send(DbCommand::CreateNode {
