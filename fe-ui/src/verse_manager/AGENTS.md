@@ -28,6 +28,9 @@
   FR-2 live reconcile) and `resolve_primitive_material` (FR-3 texture
   resolution via `fe_hexon::handlers::material::resolve_material_textures` +
   `FsBlobStore`). `PrimitiveMaterialAssets` holds the shared default material.
+- `path_asset_reconcile.rs` — `reconcile_path_asset` (stamps a hexon model
+  along a track's GPX path) + the fe-ui-local arc-length sampler. See
+  §path-asset-stamp.
 
 `find_petal_mut` on `VerseManager` stays private (not `pub(super)`) — Rust's
 privacy rule already makes private items of a module visible to all of its
@@ -49,3 +52,44 @@ a future pass once `db_results.rs`'s `NodeEntry` construction sites can be
 touched. `TextureRegistryRes` wraps the engine-decoupled
 `fe_sdk::TextureRegistry` as a Bevy `Resource` (the SDK type itself has no
 bevy dependency by design).
+
+## §path-asset-stamp (`hexon_path_asset_stamp_20260713`)
+
+Stamps a hexon's model asset repeatedly along a **track** node's GPX path —
+the core "hexon-as-path-asset" feature. A `path_asset` descriptor
+(`fe_sdk::path_asset::PathAssetDescriptor`, see `fe-sdk/src/AGENTS.md`
+§path-asset) rides the track node's property bag; the Tools panel writes it
+via `UiAction::PathAssetApply` → `SetNodeProperty`.
+
+`reconcile_path_asset` is the consuming system. Like
+`reconcile_selected_primitive`, it reads the descriptor **and** the persisted
+`gpx_points` off the **selected** node's loaded properties
+(`InspectorFormState.node_properties`) — the only currently-wired
+per-node-property source in owned files. It therefore stamps the currently
+selected track, and only for the active petal (`nav.active_petal_id`),
+matching the selected-node/active-petal gating the primitive reconcile uses.
+
+The stamp is a per-instance `SceneRoot` (one shared `Handle<Scene>` across all
+instances — cheap) spawned by `spawn::spawn_stamped_entity`, an additive
+sibling of `spawn_node_entity` that takes a full `Transform` (so the tangent
+rotation bakes in) and tags each entity with a `PathAssetInstance` marker
+carrying the source track id + petal. That marker lets the system despawn and
+rebuild the whole stamped group as a unit.
+
+Change-gating: `PathAssetApplied` (a `Resource`) records the last-applied
+`(track_id, descriptor, points-fingerprint)`. `points_fingerprint` is an
+FNV-1a hash over the bit-cast coordinates + length (order-sensitive), so a
+changed path or descriptor re-stamps and an unchanged one is a no-op — the
+same equality-gate discipline as the primitive reconcile's `descriptor ==`
+check. The system runs each frame in the `.before(UiSet::ProcessActions)`
+group in `VerseManagerPlugin::build`, gated by the cheap `matches()` check.
+
+The arc-length sampler is a focused, `[f32;3]`-based port of
+`fe_terrain::iot::PathTracker` (fe-ui must **not** depend on fe-terrain):
+`cumulative_distances` / `position_at_progress` / `sample_progresses` /
+`tangent_yaw`. `FixedSpacing` places instances every `spacing_value`
+world-units (guarding non-positive spacing → endpoints only, no
+div-by-zero); `FixedCount` distributes `count` instances evenly (count 0 →
+none, 1 → start only). `tangent_yaw` returns the `Quat::from_rotation_y`
+angle (`atan2(dx, dz)`, aiming the model's -Z forward down the path) applied
+only when `descriptor.tangent_align`.

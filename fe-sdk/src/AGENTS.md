@@ -58,6 +58,30 @@ JSON. This is the single canonical descriptor shape; `fe-runtime`'s
 branch (`fe-ui/src/verse_manager/spawn.rs`) parses it via `from_json`. No
 second descriptor type exists anywhere in the workspace — extend this one.
 
+## §path-asset (`hexon_path_asset_stamp_20260713`)
+
+`path_asset.rs` defines [`PathAssetDescriptor`]/[`SpacingMode`] — the
+`{asset_path, spacing_mode, spacing_value, count, tangent_align}` shape a
+**track** node's `path_asset` property carries as JSON. It rides the property
+bag as `PropertyValue::Json` exactly like [`PrimitiveDescriptor`] (§primitive),
+so it round-trips losslessly through `SetNodeProperty`/`NodePropertiesLoaded`.
+
+The descriptor names a single model asset (`asset_path`, a `blob://{hash}.glb`
+URI or asset ref) that `fe-ui` stamps repeatedly along the track's persisted
+`gpx_points` — one scene instance per arc-length sample point. `spacing_mode`
+selects the sampling policy: `FixedSpacing` places instances every
+`spacing_value` world-units of arc length; `FixedCount` distributes `count`
+instances evenly across the whole path. `tangent_align` rotates each instance
+to face the local path tangent. The consuming reconcile system + the
+fe-ui-local arc-length sampler live in
+`fe-ui/src/verse_manager/path_asset_reconcile.rs` (see that crate's
+`AGENTS.md` §path-asset-stamp) — this crate stays engine-free and owns only
+the serde shape.
+
+All fields except `asset_path` are `#[serde(default)]`-tolerant so partial
+descriptors written by older/other tools still parse; `asset_path` is required
+(a stamp with no model is meaningless) and its absence is a parse error.
+
 ## §texture (FR-4, C6)
 
 `texture.rs` defines [`TextureRegistry`]/[`TextureEntry`] — copy-adapted from

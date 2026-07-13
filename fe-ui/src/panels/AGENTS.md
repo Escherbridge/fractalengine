@@ -51,20 +51,42 @@
 ## §tool-panel
 
 - `tool_panel.rs` — Tools panel: an independent floating window (like
-  `gis_panel`, not part of `ActiveDialog`) that will host hexon-path-asset
-  controls. State lives in `ToolPanelState` (`open`, `selected_hexon_ref`,
-  `spacing_mode: SpacingMode`, `spacing_value`, `count_value`,
-  `tangent_align`); `SpacingMode` is `FixedSpacing | FixedCount`. This pass
-  ships the shell + a "Path Asset" section with the repetition/pattern
-  controls (spacing-mode radio, spacing/count `DragValue`, tangent-align
-  checkbox) rendering over a "(hexon picker — coming soon)" placeholder, plus
-  a stubbed "Terrain Tools" section. The hexon picker (reusing
-  `hexon_manager.rs`'s list/select UX) and the `UiAction` wiring that turns
-  these fields into a stamped path asset are deferred to the stamp unit.
-  `gardener_console`'s signature grew a trailing
-  `tool_panel: &mut crate::panels::tool_panel::ToolPanelState` param — the
-  caller (`plugin.rs`) must register the `ToolPanelState` resource and pass
-  it through.
+  `gis_panel`, not part of `ActiveDialog`) that hosts the hexon-path-asset
+  stamping controls. State lives in `ToolPanelState` (`open`,
+  `selected_hexon_ref`, `spacing_mode: SpacingMode`, `spacing_value`,
+  `count_value`, `tangent_align`); the panel-local `SpacingMode`
+  (`FixedSpacing | FixedCount`) maps to `fe_sdk::path_asset::SpacingMode` via
+  `to_sdk()` at emit time (panel state stays SDK-free). The "Path Asset"
+  section renders the repetition/pattern controls (spacing-mode radio,
+  spacing/count `DragValue`, tangent-align checkbox) plus a **"Stamp along
+  path"** button and, for v1, a plain asset-reference text field
+  (`selected_hexon_ref` doubles as the `blob://{hash}.glb` buffer until a real
+  hexon picker reusing `hexon_manager.rs`'s list UX lands — the emit path
+  won't change when it does).
+
+  The stamp target is the track being edited in the Paths tab
+  (`PathEditorState.editing_track_id`). On click the panel emits
+  `UiAction::PathAssetApply { track_node_id, descriptor }` (built by
+  `build_descriptor`), which `actions::process_ui_actions` routes to
+  `node_props::set` → `SetNodeProperty(path_asset, ...)`. The
+  `verse_manager::path_asset_reconcile` system then stamps the model along the
+  track's `gpx_points` (see `fe-ui/src/verse_manager/AGENTS.md`
+  §path-asset-stamp). The button is disabled until both a track is selected
+  and an asset reference is entered.
+
+  `render_tool_panel` now takes `ui_mgr: &mut UiManager` (to queue the action)
+  and `path_state: &PathEditorState` (to read the edit target). Both were
+  already `gardener_console` parameters, so **no `gardener_console` signature
+  change** — only the internal `render_tool_panel` call was widened.
+
+  The panel also hosts a **Pen** section (curve mode radio, sensitivity/tension
+  slider, "Smooth path", and shape buttons) whose buttons queue pen actions
+  into `ToolPanelState.pending_actions` (drained in `process_ui_actions`, since
+  the panel has no `ui_mgr` for those). The pen curve/shape math + action
+  contract live in `fe-ui/src/node_manager/AGENTS.md` §pen-tool (phase 2).
+  `gardener_console` retains its trailing
+  `tool_panel: &mut crate::panels::tool_panel::ToolPanelState` param from the
+  shell pass (the caller `plugin.rs` still registers `ToolPanelState`).
 
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.

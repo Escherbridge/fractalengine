@@ -23,12 +23,12 @@ System functions are `pub(super)` (visible to `mod.rs`'s plugin
 registration only) — this module's public surface is just `NodeManager`
 itself; nothing outside `fe-ui` should call the per-frame systems directly.
 
-## §pen-tool — polyline pen (phase 1)
+## §pen-tool — pen (phase 1 polyline + phase 2 curves/shapes)
 
 `Tool::Pen` (`panels/toolbar.rs`, hotkey `P` via `shortcuts.rs`) is the
-click-to-place tool for drawing a track's polyline. Phase 1 scope only:
-straight-segment polylines appended point-by-point. Curves, ellipses, and
-other parametric shapes are a later phase — not built here.
+click-to-place tool for drawing a track's polyline. Phase 1 places straight-
+segment control points; phase 2 (`curve.rs` + the Tools-panel Pen section)
+resamples them into curves and generates shape rings.
 
 - **Gating, not a separate system.** Pen behavior is folded into the
   existing `handle_path_point_interaction` (no new system/registration).
@@ -48,6 +48,20 @@ other parametric shapes are a later phase — not built here.
   spawn/despawn (yellow `Sphere(0.35)`); the connecting polyline renders via
   `fe_terrain`'s `render_gpx_tracks` off the same `gpx_points`. No separate
   pen-preview mesh in phase 1.
+
+### phase 2 — curves + shapes (`curve.rs`)
+
+`curve.rs` is pure `[f32;3]` math (XZ plane, Y carried through), no Bevy
+systems. `PenMode` (Polyline/CatmullRom/Bezier) + `resample()` turn placed
+control points into a denser sampled polyline; `catmull_rom`'s `tension` is
+the "sharp ↔ smooth" sensitivity (1.0 ≈ straight, 0.0 ≈ round). `ellipse`/
+`circle`/`rectangle` generate closed point rings. The Tools-panel Pen section
+(`panels/tool_panel.rs`) exposes a mode radio, tension slider, and shape
+buttons; its buttons queue `UiAction::PathSmoothCurrent` / `PathAppendShape`
+into `ToolPanelState.pending_actions`, drained in `process_ui_actions` (the
+panel has no `ui_mgr` handle). Both actions re-express their result as the
+existing `RemovePoint`/`AppendPoint` `PathOp`s, so no gpx-bridge change is
+needed — smooth = resample-then-replace, shape = append the generated ring.
 
 ## §path-points — viewport path-point editor
 

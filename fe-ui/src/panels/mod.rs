@@ -116,9 +116,10 @@ pub fn gardener_console(
     );
 
     // Tools panel (independent floating window, hosts hexon-path-asset
-    // stamping controls; hexon picker + action wiring deferred — see
+    // stamping controls; the "Stamp along path" button emits
+    // `UiAction::PathAssetApply` for the Paths-tab track being edited — see
     // panels/AGENTS.md §tool-panel).
-    tool_panel::render_tool_panel(ctx, tool_panel);
+    tool_panel::render_tool_panel(ctx, tool_panel, ui_mgr, path_state);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);
