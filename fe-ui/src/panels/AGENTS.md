@@ -53,31 +53,53 @@
 - `tool_panel.rs` — Tools panel: an independent floating window (like
   `gis_panel`, not part of `ActiveDialog`) that hosts the hexon-path-asset
   stamping controls. State lives in `ToolPanelState` (`open`,
-  `selected_hexon_ref`, `spacing_mode: SpacingMode`, `spacing_value`,
-  `count_value`, `tangent_align`); the panel-local `SpacingMode`
-  (`FixedSpacing | FixedCount`) maps to `fe_sdk::path_asset::SpacingMode` via
-  `to_sdk()` at emit time (panel state stays SDK-free). The "Path Asset"
-  section renders the repetition/pattern controls (spacing-mode radio,
-  spacing/count `DragValue`, tangent-align checkbox) plus a **"Stamp along
-  path"** button and, for v1, a plain asset-reference text field
-  (`selected_hexon_ref` doubles as the `blob://{hash}.glb` buffer until a real
-  hexon picker reusing `hexon_manager.rs`'s list UX lands — the emit path
-  won't change when it does).
+  `selected_hexon_ref`, `asset_filter`, `spacing_mode: SpacingMode`,
+  `spacing_value`, `count_value`, `tangent_align`); the panel-local
+  `SpacingMode` (`FixedSpacing | FixedCount`) maps to
+  `fe_sdk::path_asset::SpacingMode` via `to_sdk()` at emit time (panel state
+  stays SDK-free). The "Path Asset" section renders a real **asset picker**
+  plus the repetition/pattern controls (spacing-mode radio, spacing/count
+  `DragValue`, tangent-align checkbox) and the **"Stamp along path"** button.
+
+  **Asset picker (FR-1b, `path_asset_picker_20260713`).** The picker
+  (`render_asset_picker`) lists already-installed, re-stampable models sourced
+  from `VerseManager` — every node with a set `asset_path`, collected by the
+  pure `installed_assets(verse_mgr)` helper (dedup by `asset_path`, name-falls-
+  back-to-path, case-insensitive name sort) and filtered by `filter_assets`
+  against the `asset_filter` buffer. Row click sets
+  `selected_hexon_ref = Some(asset_path)`. This source is deliberately
+  **quarantine-free**: an installed node's `blob://{hash}.glb` already exists,
+  so the picker needs no `DbCommand::ImportGltf` (that dispatch lives in the
+  quarantined `fe-database/src/lib.rs`). Browsing-and-ingesting a brand-new
+  `.glb` (FR-1a) is deferred, gated on that quarantine lift. A collapsible
+  "Or paste a blob:// path" fallback retains manual entry for power users; the
+  list is the primary UX.
 
   The stamp target is the track being edited in the Paths tab
-  (`PathEditorState.editing_track_id`). On click the panel emits
+  (`PathEditorState.editing_track_id`). The panel now **names** that target
+  ("Stamping onto: <name>", resolved from `PathEditorState.tracks` by
+  `track_display_name`, id fallback) so multi-track editors know what Stamp
+  hits (FR-4.1). On click the panel emits
   `UiAction::PathAssetApply { track_node_id, descriptor }` (built by
   `build_descriptor`), which `actions::process_ui_actions` routes to
   `node_props::set` → `SetNodeProperty(path_asset, ...)`. The
   `verse_manager::path_asset_reconcile` system then stamps the model along the
   track's `gpx_points` (see `fe-ui/src/verse_manager/AGENTS.md`
   §path-asset-stamp). The button is disabled until both a track is selected
-  and an asset reference is entered.
+  and an asset reference is set. **The emit path is unchanged by the picker** —
+  the picker's only job is to populate `selected_hexon_ref`.
 
-  `render_tool_panel` now takes `ui_mgr: &mut UiManager` (to queue the action)
-  and `path_state: &PathEditorState` (to read the edit target). Both were
-  already `gardener_console` parameters, so **no `gardener_console` signature
-  change** — only the internal `render_tool_panel` call was widened.
+  `render_tool_panel` takes `ui_mgr: &mut UiManager` (to queue the action),
+  `path_state: &PathEditorState` (edit target + track names), and
+  `verse_mgr: &VerseManager` (picker source). All three are already
+  `gardener_console` parameters, so **no `gardener_console` signature change** —
+  only the internal `render_tool_panel` call was widened.
+
+  **Reachability (FR-4.2).** `ToolPanelState.open` is toggled by a
+  **"🔧 Tools"** button in `top_toolbar` (right cluster, beside GIS/Hexons);
+  `top_toolbar` gained a trailing `tool_panel: &mut ToolPanelState` param for
+  it. Previously `.open` had no UI toggle (a discoverability gap) — the panel
+  was only openable via code/default.
 
   The panel also hosts a **Pen** section (curve mode radio, sensitivity/tension
   slider, "Smooth path", and shape buttons) whose buttons queue pen actions

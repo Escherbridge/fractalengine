@@ -56,7 +56,7 @@ pub fn gardener_console(
     path_status: &crate::path_ops::PathEditStatus,
     tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
 ) -> egui::Rect {
-    toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr, gis_panel);
+    toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr, gis_panel, tool_panel);
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
     sidebar::left_sidebar(
         ctx,
@@ -119,7 +119,7 @@ pub fn gardener_console(
     // stamping controls; the "Stamp along path" button emits
     // `UiAction::PathAssetApply` for the Paths-tab track being edited — see
     // panels/AGENTS.md §tool-panel).
-    tool_panel::render_tool_panel(ctx, tool_panel, ui_mgr, path_state);
+    tool_panel::render_tool_panel(ctx, tool_panel, ui_mgr, path_state, hierarchy);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);
