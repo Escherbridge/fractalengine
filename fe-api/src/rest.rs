@@ -2024,7 +2024,7 @@ mod tests {
         println!("DEBUG: Reading response body for first query");
         let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(body_json["success"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
+        assert!(body_json["ok"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
         let data = body_json["data"]["data"].as_array().unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0]["asset_id"], "asset-1");
@@ -2042,7 +2042,7 @@ mod tests {
         println!("DEBUG: Reading response body for second query");
         let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(body_json["success"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
+        assert!(body_json["ok"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
         let data = body_json["data"]["data"].as_array().unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0]["hexon_uri"], "hexon://test-uri");
@@ -2058,7 +2058,10 @@ mod tests {
         let response = res.into_response();
         let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(!body_json["success"].as_bool().unwrap_or(false));
-        assert!(body_json["error"].as_str().unwrap().contains("not allowed"));
+        assert!(!body_json["ok"].as_bool().unwrap_or(false));
+        // `DELETE …` is rejected by the SELECT-only guard ("only SELECT
+        // statements are allowed"); the blocked-keyword path says "… is not
+        // allowed in queries". Both contain "allowed", so match on that.
+        assert!(body_json["error"].as_str().unwrap().contains("allowed"));
     }
 }
