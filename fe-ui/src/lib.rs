@@ -20,3 +20,4 @@ pub mod terrain_map;
 pub mod theme;
 pub mod verse_manager;
 pub mod viewport;
+pub mod viewport_labels;

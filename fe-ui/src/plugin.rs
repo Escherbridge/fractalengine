@@ -30,6 +30,15 @@ pub struct SpawnedNodeMarker {
     pub petal_id: String,
 }
 
+/// Marker for entities that should always face the viewport camera — a flat
+/// icon quad reads as an "icon", not a solid, when kept parallel to the camera
+/// plane. `billboard_face_camera` (fe-ui `node_manager`) rewrites their
+/// `Transform.rotation` each frame. Constructable from both fe-ui and
+/// `fractalengine::gpx_bridge` (single-point track nodes). See
+/// `fe-ui/src/AGENTS.md` §data-icons. `data_icons_20260713`.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct Billboard;
+
 /// Sidebar visibility and search state.
 #[derive(Resource)]
 pub struct SidebarState {
@@ -292,6 +301,13 @@ impl Plugin for GardenerConsolePlugin {
         // twice is idempotent.
         app.add_message::<fe_webview::ipc::BrowserCommand>();
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
+        // FR-3 (data_icons_20260713): floating point labels over the viewport.
+        // After `gardener_ui_system` so it reads the same-frame `ViewportRect`
+        // that system writes (no one-frame lag in the panel-edge gating).
+        app.add_systems(
+            EguiPrimaryContextPass,
+            crate::viewport_labels::draw_viewport_point_labels.after(gardener_ui_system),
+        );
         app.configure_sets(
             Update,
             (UiSet::ProcessActions, UiSet::Selection, UiSet::PostSelection).chain(),

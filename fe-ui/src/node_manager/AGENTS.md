@@ -12,6 +12,9 @@
 - `viewport_pick.rs` — 3-D viewport click → nearest-node select/deselect via a
   precise ray/AABB raycast (see §glb-mesh-picking).
 - `path_point_interaction.rs` — path-point viewport editor (see §path-points).
+- `billboard.rs` — `billboard_face_camera`, the per-frame face-camera system
+  for `Billboard`-tagged icon quads (see §data-icons + `fe-ui/src/AGENTS.md`
+  §data-icons).
 - `router.rs` — per-frame left-click arbitration (see §input-router).
 - `inspector_sync.rs` — `NodeManager` → `InspectorFormState` display sync
   (transform strings + per-node URL/property load on selection change; also
@@ -137,6 +140,20 @@ has an `editing_track_id`. Design notes:
 Per-track line styling (color/line-style/visibility, "FR-10") is NOT part
 of this port — it depends on `fe_terrain::terrain_plugin::GpxTrackStyle`,
 which lives outside the current tree's scope.
+
+## §data-icons — billboard face-camera system (`billboard.rs`)
+
+`billboard_face_camera` (`data_icons_20260713`) keeps every entity carrying the
+`fe_ui::plugin::Billboard` marker turned toward the viewport. It copies the
+`OrbitCameraController` camera's world `rotation()` onto each billboard
+`Transform.rotation` — a flat `Rectangle` icon quad (local XY plane, +Z normal)
+kept parallel to the camera image plane reads as a 2-D icon instead of a solid.
+Cheap by construction: one camera lookup + a rotation write over the
+billboard-only set. Registered as a **standalone** `Update` system (not in the
+selection `.chain()`) because facing is orientation-only and order-independent
+of position edits. Applied to path-point markers and the single-point track
+node — the latter keeps its `Mesh3d`/`Aabb` so §glb-mesh-picking still selects
+it. See `fe-ui/src/AGENTS.md` §data-icons for the panel-glyph + overlay halves.
 
 ## §glb-mesh-picking — precise ray/AABB node selection (`viewport_pick.rs`)
 

@@ -14,7 +14,9 @@ mod annotation_card;
 mod asset_card;
 mod gpx_import_card;
 mod layer_manager_card;
-mod path_editor_card;
+// `pub(crate)` so `crate::viewport_labels` can reuse `type_glyph` (FR-3,
+// data_icons_20260713); everything else in it is still crate-internal.
+pub(crate) mod path_editor_card;
 mod portal_toolbar;
 
 use bevy_egui::egui;

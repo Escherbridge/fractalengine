@@ -13,6 +13,32 @@ use crate::path_ops::PathEditStatus;
 use crate::plugin::ViewportCursorWorld;
 use crate::theme;
 
+// FR-1 (data_icons_20260713): recolorable geometric glyphs for the Paths tab.
+// Plain `\u{25xx}`/`\u{27xx}` codepoints that egui recolors reliably (color
+// emoji do not) — see `sidebar.rs:306` precedent. `type_glyph` maps a
+// `gpx_type` discriminant to its glyph for the 3D overlay (FR-3) too.
+/// Route/path glyph for a track row (`\u{29BF}`, circled dot in a ring).
+const GLYPH_TRACK: &str = "\u{29BF}";
+/// Filled circle for a timestamped/plain path point (`\u{25CF}`).
+const GLYPH_POINT: &str = "\u{25CF}";
+/// Hollow circle for a point with no timestamp (`\u{25CB}`) — authored via the
+/// Pen tool with no GPX time, vs. an imported trackpoint that carries one.
+const GLYPH_POINT_UNTIMED: &str = "\u{25CB}";
+/// Diamond for a waypoint (`\u{25C6}`) — matches the annotated-node marker feel.
+const GLYPH_WAYPOINT: &str = "\u{25C6}";
+
+/// Map a `gpx_type` property value to its type glyph. Pure so it's shared by
+/// the panel rows (FR-1) and the 3D overlay labels (FR-3) and unit-testable
+/// without egui. Unknown types fall back to the point glyph.
+pub(crate) fn type_glyph(gpx_type: &str) -> &'static str {
+    match gpx_type {
+        "track" => GLYPH_TRACK,
+        "waypoint" => GLYPH_WAYPOINT,
+        "trackpoint" => GLYPH_POINT,
+        _ => GLYPH_POINT,
+    }
+}
+
 pub(crate) fn path_editor_section(
     ui: &mut egui::Ui,
     path_state: &mut PathEditorState,
@@ -82,6 +108,8 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
                 .corner_radius(2.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // FR-1: type glyph before the track name (recolored, small).
+                        ui.label(egui::RichText::new(GLYPH_TRACK).small().color(theme::ICON_TRACK));
                         let label = egui::RichText::new(row.annotation_title.as_deref().unwrap_or(&row.name))
                             .color(theme::TEXT_BRIGHT);
                         if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
@@ -185,6 +213,10 @@ fn render_edit_view(
                 .corner_radius(2.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // FR-1: point glyph — filled when the point carries a GPX
+                        // timestamp, hollow when authored via the Pen (no time).
+                        let glyph = if point.time_seconds.is_some() { GLYPH_POINT } else { GLYPH_POINT_UNTIMED };
+                        ui.label(egui::RichText::new(glyph).small().color(theme::ICON_POINT));
                         ui.label(
                             egui::RichText::new(format!(
                                 "{i}: ({:.1}, {:.1}, {:.1})",
@@ -289,4 +321,31 @@ fn render_annotate_form(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_glyph_maps_known_types() {
+        assert_eq!(type_glyph("track"), GLYPH_TRACK);
+        assert_eq!(type_glyph("waypoint"), GLYPH_WAYPOINT);
+        assert_eq!(type_glyph("trackpoint"), GLYPH_POINT);
+    }
+
+    #[test]
+    fn type_glyph_unknown_falls_back_to_point() {
+        assert_eq!(type_glyph("mystery"), GLYPH_POINT);
+        assert_eq!(type_glyph(""), GLYPH_POINT);
+    }
+
+    #[test]
+    fn glyphs_are_single_recolorable_codepoints() {
+        // Each glyph is exactly one Unicode scalar in the geometric-shapes /
+        // dingbats range egui recolors reliably (no color-emoji fallback).
+        for g in [GLYPH_TRACK, GLYPH_POINT, GLYPH_POINT_UNTIMED, GLYPH_WAYPOINT] {
+            assert_eq!(g.chars().count(), 1, "glyph {g:?} must be one codepoint");
+        }
+    }
 }
