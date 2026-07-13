@@ -138,8 +138,15 @@ pub(super) fn handle_path_point_interaction(
         drag.active = None;
         return;
     };
-    // While a track is being edited, path interaction owns viewport clicks.
-    manager.path_edit_capturing = true;
+    // Path interaction only owns viewport clicks while the Pen tool is active
+    // (or mid-drag). In Select/Move/Rotate/Scale mode, node selection + gimbal
+    // keep the click even with a track open — otherwise glTF models can't be
+    // picked while editing a path. See `node_manager/AGENTS.md` §pen-tool.
+    let pen_active = tool.active_tool == Tool::Pen;
+    manager.path_edit_capturing = pen_active || drag.active.is_some();
+    if !pen_active && drag.active.is_none() {
+        return;
+    }
 
     let egui_using = egui_ctx
         .ctx_mut()
