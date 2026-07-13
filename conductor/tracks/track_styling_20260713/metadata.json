@@ -1,0 +1,13 @@
+{
+  "id": "track_styling_20260713",
+  "description": "Per-track color + thickness + visibility controls in the Paths tab, persisted as node properties, wired into render_gpx_tracks (currently hardcoded cyan LineStrip) via a TrackStyleMap and the existing fe-terrain track_mesh(width, ColorMode) ribbon path",
+  "type": "feature",
+  "created_at": "2026-07-13T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 1,
+  "wave_rationale": "Builds the deferred FR-10 (per-track line styling) flagged in node_manager/AGENTS.md. Spans fe-ui (Paths-tab controls) + fe-terrain (render_gpx_tracks + TrackStyle) + fractalengine (populate style map from node props). Independent of the other two but shares path_editor_card.rs, so batch sequentially.",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "User: 'control track color thickness and visibility'. Decision: per-track, in the Paths tab, persisted as node props (gis.track.color/width/visible). render_gpx_tracks hardcodes srgb(0,0.8,1) + LineStrip (1px, no width). Thickness needs switching to the ribbon track_mesh (mesh/track.rs:27). Add TrackStyle{color,width,visible} + TrackStyleMap in fe-terrain (next to TrackRouteMap in iot/animation.rs), populated by the gpx bridge from NodePropertiesLoaded. SetNodeProperty persist path is NOT quarantined."
+}
