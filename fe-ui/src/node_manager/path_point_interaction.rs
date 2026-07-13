@@ -2,13 +2,12 @@
 //! points. See `fe-ui/src/node_manager/AGENTS.md` §path-points.
 
 use bevy::prelude::*;
-use bevy_egui::EguiContexts;
 
-use super::NodeManager;
+use super::router::{ClickArbiter, ClickPriority};
 use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
 use crate::panels::toolbar::Tool;
-use crate::plugin::{ToolState, ViewportRect};
+use crate::plugin::ToolState;
 
 /// Marker sphere for point `index` in the currently-edited track's point list.
 #[derive(Component, Debug)]
@@ -116,42 +115,32 @@ fn ray_plane_y(ray: &Ray3d, plane_y: f32) -> Option<Vec3> {
 }
 
 /// Path-point interaction: Pen-tool click-to-place, drag-to-move, modifier-
-/// click-to-annotate. Sets `manager.path_edit_capturing` so node-pick yields
-/// while editing. See `node_manager/AGENTS.md` §pen-tool.
+/// click-to-annotate. Claims `PathMarker` on marker pick and `PathPlace` on
+/// pen append. See `node_manager/AGENTS.md` §pen-tool.
 pub(super) fn handle_path_point_interaction(
     mouse_button: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
-    mut manager: ResMut<NodeManager>,
     mut path_state: ResMut<PathEditorState>,
     mut drag: ResMut<PathPointDrag>,
-    viewport_rect: Res<ViewportRect>,
     tool: Res<ToolState>,
     mut ui_mgr: ResMut<UiManager>,
     mut marker_tx: Query<(&mut Transform, &PathPointMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
-    mut egui_ctx: EguiContexts,
+    mut arbiter: ResMut<ClickArbiter>,
 ) {
     let Some(track_id) = path_state.editing_track_id.clone() else {
-        manager.path_edit_capturing = false;
         drag.active = None;
         return;
     };
-    // Path interaction only owns viewport clicks while the Pen tool is active
-    // (or mid-drag). In Select/Move/Rotate/Scale mode, node selection + gimbal
-    // keep the click even with a track open — otherwise glTF models can't be
-    // picked while editing a path. See `node_manager/AGENTS.md` §pen-tool.
+    // Only act while the Pen tool is active (new-point placement) or a marker
+    // drag is in flight. In Select/Move/Rotate/Scale mode with no active drag,
+    // node selection + gimbal keep the click. See `AGENTS.md` §pen-tool.
     let pen_active = tool.active_tool == Tool::Pen;
-    manager.path_edit_capturing = pen_active || drag.active.is_some();
     if !pen_active && drag.active.is_none() {
         return;
     }
-
-    let egui_using = egui_ctx
-        .ctx_mut()
-        .map(|ctx| ctx.is_using_pointer())
-        .unwrap_or(false);
 
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
@@ -188,17 +177,19 @@ pub(super) fn handle_path_point_interaction(
         }
     }
 
-    // Press → pick a marker (drag / annotate) or place a new point.
-    if !mouse_button.just_pressed(MouseButton::Left) || egui_using {
+    // Press → pick a marker (drag / annotate) or place a new point. The arbiter
+    // has already applied egui + viewport gating and computed the ray.
+    if !arbiter.is_fresh_press() || !arbiter.is_available() {
         return;
     }
-    let Some(cursor_pos) = cursor else { return };
-    if !viewport_rect.0.contains(bevy_egui::egui::pos2(cursor_pos.x, cursor_pos.y)) {
-        return;
-    }
-    let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else { return };
+    let Some(ray) = arbiter.ray() else { return };
 
     if let Some((index, _)) = pick_marker(&ray, &marker_pick) {
+        // A marker pick claims `PathMarker` regardless of active tool, so
+        // dragging / annotating existing points works even outside Pen mode.
+        if !arbiter.claim(ClickPriority::PathMarker) {
+            return;
+        }
         let modifier = keys.pressed(KeyCode::ShiftLeft)
             || keys.pressed(KeyCode::ShiftRight)
             || keys.pressed(KeyCode::AltLeft)
@@ -219,9 +210,12 @@ pub(super) fn handle_path_point_interaction(
     }
 
     // Empty click on terrain while the Pen tool is active → append a point at
-    // the Y=0 plane. Gated on Tool::Pen so Select-mode clicks (marker pick,
-    // node selection) don't also grow the polyline — see AGENTS.md §pen-tool.
+    // the Y=0 plane. Claims `PathPlace` only in Pen mode, so Select-mode empty
+    // clicks yield to node selection — see AGENTS.md §pen-tool.
     if tool.active_tool != Tool::Pen {
+        return;
+    }
+    if !arbiter.claim(ClickPriority::PathPlace) {
         return;
     }
     if let Some(hit) = ray_plane_y(&ray, 0.0) {

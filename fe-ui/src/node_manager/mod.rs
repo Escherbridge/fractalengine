@@ -16,6 +16,7 @@ pub(crate) mod curve;
 mod gimbal_interaction;
 mod inspector_sync;
 mod path_point_interaction;
+mod router;
 mod shortcuts;
 mod sidebar_sync;
 mod transform_broadcast;
@@ -39,11 +40,6 @@ pub struct NodeManager {
     pub pending_sidebar_select: Option<String>,
     /// Which axis the cursor is hovering over (for highlight feedback).
     pub hovered_axis: Option<GimbalAxis>,
-    /// Set each frame by the path-point interaction system while a track is in
-    /// edit mode, so viewport node-pick / gimbal yield to path-point
-    /// clicks/drags (mirrors the `is_dragging()` guard idiom). See
-    /// `node_manager/path_point_interaction.rs`.
-    pub path_edit_capturing: bool,
 }
 
 /// A currently selected node and its optional in-progress drag session.
@@ -111,6 +107,7 @@ impl Plugin for NodeManagerPlugin {
     fn build(&self, app: &mut App) {
         app.init_gizmo_group::<crate::gimbal::GimbalGizmoGroup>();
         app.init_resource::<NodeManager>();
+        app.init_resource::<router::ClickArbiter>();
         app.init_resource::<path_point_interaction::PathPointDrag>();
         app.add_systems(Startup, crate::gimbal::configure_gimbal_gizmos);
         app.add_systems(
@@ -118,11 +115,12 @@ impl Plugin for NodeManagerPlugin {
             (
                 shortcuts::handle_tool_shortcuts,
                 sidebar_sync::sync_sidebar_to_manager,
+                router::resolve_pointer_frame, // arbitrate left-click ownership for this frame (first)
                 gimbal_interaction::update_hovered_axis, // hover detection (before interaction)
-                gimbal_interaction::handle_gimbal_interaction, // axis pick + drag (before viewport click)
+                gimbal_interaction::handle_gimbal_interaction, // claims Gimbal on axis pick + drag
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
-                path_point_interaction::handle_path_point_interaction, // place / drag / annotate (before node pick)
-                viewport_pick::handle_viewport_click,      // entity pick / deselect
+                path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
+                viewport_pick::handle_viewport_click,      // claims NodePick — entity pick / deselect
                 inspector_sync::sync_manager_to_inspector,
                 gimbal_interaction::draw_gimbal_system,
                 transform_broadcast::broadcast_transform,

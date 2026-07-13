@@ -2,8 +2,8 @@
 //! delegating the visual draw to `crate::gimbal`.
 
 use bevy::prelude::*;
-use bevy_egui::EguiContexts;
 
+use super::router::{ClickArbiter, ClickPriority};
 use super::{AxisDrag, NodeManager};
 use crate::gimbal::{draw_gimbal, gimbal_center, ring_points, GimbalAxis, GimbalGizmoGroup, GIMBAL_LEN};
 use crate::panels::toolbar::Tool;
@@ -140,8 +140,7 @@ pub(super) fn handle_gimbal_interaction(
     mut transform_query: Query<(&mut Transform, &GlobalTransform)>,
     aabb_query: Query<&bevy::camera::primitives::Aabb>,
     children_query: Query<&Children>,
-    mut egui_ctx: EguiContexts,
-    viewport_rect: Res<ViewportRect>,
+    mut arbiter: ResMut<ClickArbiter>,
 ) {
     if tool.active_tool == Tool::Select {
         return;
@@ -150,11 +149,6 @@ pub(super) fn handle_gimbal_interaction(
         return;
     };
     let entity = sel.entity;
-
-    let egui_using = egui_ctx
-        .ctx_mut()
-        .map(|ctx| ctx.is_using_pointer())
-        .unwrap_or(false);
 
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
@@ -206,18 +200,18 @@ pub(super) fn handle_gimbal_interaction(
         }
     }
 
-    // Pick axis on press
-    let in_viewport = cursor
-        .map(|c| viewport_rect.0.contains(bevy_egui::egui::pos2(c.x, c.y)))
-        .unwrap_or(false);
-
-    if mouse_button.just_pressed(MouseButton::Left) && !egui_using && in_viewport {
+    // Pick axis on press — claim `Gimbal` only when an axis is actually grabbed,
+    // so a press that misses the gimbal yields to lower-priority consumers.
+    if arbiter.is_fresh_press() && arbiter.is_available() {
         let Some(cursor_pos) = cursor else { return };
         let Ok((t, g_tx)) = transform_query.get(entity) else { return };
         let center_3d = compute_gimbal_center_inline(entity, g_tx, &aabb_query, &children_query, &transform_query);
         let Ok(center_screen) = camera.world_to_viewport(cam_tx, center_3d) else { return };
 
         if let Some(axis) = pick_axis(tool.active_tool, cursor_pos, center_3d, camera, cam_tx) {
+            if !arbiter.claim(ClickPriority::Gimbal) {
+                return;
+            }
             let tip_3d = center_3d + axis_vec(axis) * GIMBAL_LEN;
             let tip_screen = camera
                 .world_to_viewport(cam_tx, tip_3d)
