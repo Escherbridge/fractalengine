@@ -12,6 +12,48 @@ use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
 use crate::node_manager::curve::{self, PenMode};
 use crate::theme;
+use crate::verse_manager::VerseManager;
+
+/// A row in the path-asset picker: an installed model the user can re-stamp.
+/// Sourced from `VerseManager` nodes carrying a resolvable `asset_path`
+/// (`blob://{hash}.glb` or a local model path) — see `panels/AGENTS.md`
+/// §tool-panel for why this needs no quarantine backend.
+#[derive(Clone, PartialEq)]
+pub struct AssetPickRow {
+    pub name: String,
+    pub asset_path: String,
+}
+
+/// Collect the installed, re-stampable assets from the loaded hierarchy:
+/// every node whose `asset_path` is set, de-duplicated by `asset_path` so a
+/// model re-used across nodes appears once. Pure — no ECS/egui — so it is
+/// unit-testable without a Bevy `App`.
+pub fn installed_assets(verse_mgr: &VerseManager) -> Vec<AssetPickRow> {
+    let mut rows: Vec<AssetPickRow> = Vec::new();
+    for node in verse_mgr.all_nodes() {
+        let Some(path) = node.asset_path.as_ref() else { continue };
+        if path.trim().is_empty() || rows.iter().any(|r| &r.asset_path == path) {
+            continue;
+        }
+        let name = if node.name.trim().is_empty() { path.clone() } else { node.name.clone() };
+        rows.push(AssetPickRow { name, asset_path: path.clone() });
+    }
+    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rows
+}
+
+/// Case-insensitive filter of picker rows by name or asset path. An empty
+/// filter matches everything. Pure helper for the picker's filter field.
+pub fn filter_assets<'a>(rows: &'a [AssetPickRow], filter: &str) -> Vec<&'a AssetPickRow> {
+    let needle = filter.trim().to_lowercase();
+    rows.iter()
+        .filter(|r| {
+            needle.is_empty()
+                || r.name.to_lowercase().contains(&needle)
+                || r.asset_path.to_lowercase().contains(&needle)
+        })
+        .collect()
+}
 
 /// How repeated instances along a path are spaced. Mirrors
 /// `fe_sdk::path_asset::SpacingMode`; kept as a local egui-facing enum so the
@@ -34,13 +76,16 @@ impl SpacingMode {
 }
 
 /// Persistent state for the Tools panel (open flag + path-asset stamp
-/// controls). `selected_hexon_ref` doubles as the v1 asset-path text buffer
-/// (`blob://{hash}.glb`) until a real hexon picker lands.
+/// controls). `selected_hexon_ref` holds the picked asset's `asset_path`
+/// (`blob://{hash}.glb`); the picker (FR-1b) or the collapsible manual-entry
+/// fallback populate it. See `panels/AGENTS.md` §tool-panel.
 #[derive(Resource, Default)]
 pub struct ToolPanelState {
     pub open: bool,
     // --- W4 path-asset stamp controls (owned by the gis_tool_panel track) ---
     pub selected_hexon_ref: Option<String>,
+    /// Filter-text buffer for the path-asset picker list.
+    pub asset_filter: String,
     pub spacing_mode: SpacingMode,
     pub spacing_value: f32,
     pub count_value: u32,
@@ -81,6 +126,7 @@ pub fn render_tool_panel(
     state: &mut ToolPanelState,
     ui_mgr: &mut UiManager,
     path_state: &PathEditorState,
+    verse_mgr: &VerseManager,
 ) {
     if !state.open {
         return;
@@ -100,7 +146,7 @@ pub fn render_tool_panel(
                 .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
-            render_path_asset_section(ui, state, ui_mgr, path_state);
+            render_path_asset_section(ui, state, ui_mgr, path_state, verse_mgr);
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
@@ -121,22 +167,12 @@ fn render_path_asset_section(
     state: &mut ToolPanelState,
     ui_mgr: &mut UiManager,
     path_state: &PathEditorState,
+    verse_mgr: &VerseManager,
 ) {
     ui.label(egui::RichText::new("Path Asset").strong().color(theme::TEXT_SECTION));
     ui.add_space(4.0);
 
-    // v1 hexon reference: a plain asset-path field (`blob://{hash}.glb`).
-    // A real hexon picker replaces this later without touching the emit path.
-    let mut asset_buf = state.selected_hexon_ref.clone().unwrap_or_default();
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Asset").small().color(theme::TEXT_DIM));
-        if ui
-            .add(egui::TextEdit::singleline(&mut asset_buf).hint_text("blob://<hash>.glb"))
-            .changed()
-        {
-            state.selected_hexon_ref = if asset_buf.trim().is_empty() { None } else { Some(asset_buf.clone()) };
-        }
-    });
+    render_asset_picker(ui, state, verse_mgr);
     ui.add_space(6.0);
 
     ui.horizontal(|ui| {
@@ -169,6 +205,17 @@ fn render_path_asset_section(
     let asset_ref = state.selected_hexon_ref.clone().unwrap_or_default();
     let can_stamp = target_track.is_some() && !asset_ref.trim().is_empty();
 
+    // FR-4.1: name the target track so multi-track editors know what Stamp hits.
+    if let Some(track_id) = target_track.as_deref() {
+        let label = track_display_name(path_state, track_id);
+        ui.label(
+            egui::RichText::new(format!("Stamping onto: {label}"))
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add_space(4.0);
+    }
+
     let resp = ui.add_enabled(can_stamp, egui::Button::new("Stamp along path"));
     if resp.clicked() {
         if let Some(track_node_id) = target_track.clone() {
@@ -186,12 +233,103 @@ fn render_path_asset_section(
         );
     } else if asset_ref.trim().is_empty() {
         ui.label(
-            egui::RichText::new("Enter an asset reference to stamp.")
+            egui::RichText::new("Pick an asset above to stamp.")
                 .small()
                 .color(theme::TEXT_MUTED)
                 .italics(),
         );
     }
+}
+
+/// Resolve an edited track's display name from the Paths-tab track list,
+/// falling back to the raw node id when no matching row is loaded.
+fn track_display_name(path_state: &PathEditorState, track_id: &str) -> String {
+    path_state
+        .tracks
+        .iter()
+        .find(|t| t.node_id == track_id)
+        .filter(|t| !t.name.trim().is_empty())
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| track_id.to_string())
+}
+
+/// FR-1(b) picker: a filterable, scrollable list of already-installed
+/// re-stampable assets (from `VerseManager`), plus a collapsible manual
+/// `blob://` entry fallback for power users. Row click sets
+/// `state.selected_hexon_ref`; the emit path (`build_descriptor` + the Stamp
+/// button) is untouched. See `panels/AGENTS.md` §tool-panel.
+fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr: &VerseManager) {
+    // Currently-selected asset readout (clone out first so the closure can
+    // mutate `selected_hexon_ref` on Clear without a borrow conflict).
+    let selected = state.selected_hexon_ref.clone().filter(|s| !s.trim().is_empty());
+    match selected {
+        Some(sel) => {
+            let mut clear = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Selected").small().color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(&sel).small().monospace().color(theme::TEXT_BRIGHT));
+                if ui.small_button("\u{2715}").on_hover_text("Clear selection").clicked() {
+                    clear = true;
+                }
+            });
+            if clear {
+                state.selected_hexon_ref = None;
+            }
+        }
+        None => {
+            ui.label(egui::RichText::new("No asset selected").small().color(theme::TEXT_MUTED).italics());
+        }
+    }
+    ui.add_space(4.0);
+
+    let rows = installed_assets(verse_mgr);
+    if rows.is_empty() {
+        ui.label(
+            egui::RichText::new("No installed models found. Add a glb node, or paste a path below.")
+                .small()
+                .color(theme::TEXT_MUTED),
+        );
+    } else {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Filter").small().color(theme::TEXT_DIM));
+            ui.add(egui::TextEdit::singleline(&mut state.asset_filter).desired_width(180.0).hint_text("name or path"));
+        });
+        ui.add_space(2.0);
+
+        let filtered = filter_assets(&rows, &state.asset_filter);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .max_height(140.0)
+            .show(ui, |ui| {
+                if filtered.is_empty() {
+                    ui.label(egui::RichText::new("No assets match the filter.").small().color(theme::TEXT_MUTED));
+                }
+                for row in filtered {
+                    let selected = state.selected_hexon_ref.as_deref() == Some(row.asset_path.as_str());
+                    let resp = ui
+                        .selectable_label(selected, egui::RichText::new(&row.name).small())
+                        .on_hover_text(&row.asset_path);
+                    if resp.clicked() {
+                        state.selected_hexon_ref = Some(row.asset_path.clone());
+                    }
+                }
+            });
+    }
+    ui.add_space(4.0);
+
+    // Secondary affordance: manual `blob://` entry for power users / paths not
+    // yet surfaced as hierarchy nodes. The list above is the primary UX.
+    egui::CollapsingHeader::new(egui::RichText::new("Or paste a blob:// path").small().color(theme::TEXT_DIM))
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut asset_buf = state.selected_hexon_ref.clone().unwrap_or_default();
+            if ui
+                .add(egui::TextEdit::singleline(&mut asset_buf).hint_text("blob://<hash>.glb"))
+                .changed()
+            {
+                state.selected_hexon_ref = if asset_buf.trim().is_empty() { None } else { Some(asset_buf) };
+            }
+        });
 }
 
 /// Build the SDK path-asset descriptor from the panel's control state.
@@ -325,6 +463,81 @@ fn render_terrain_tools_section(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
+
+    /// Build a one-verse hierarchy from `(node_name, asset_path)` pairs.
+    fn verse_with_nodes(nodes: &[(&str, Option<&str>)]) -> VerseManager {
+        let node_entries = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, (name, path))| NodeEntry {
+                id: format!("node-{i}"),
+                name: (*name).to_string(),
+                has_asset: path.is_some(),
+                position: [0.0, 0.0, 0.0],
+                webpage_url: None,
+                asset_path: path.map(|p| p.to_string()),
+            })
+            .collect();
+        let petal = PetalEntry {
+            id: "petal-1".to_string(),
+            name: "Petal".to_string(),
+            expanded: true,
+            nodes: node_entries,
+        };
+        let fractal = FractalEntry {
+            id: "fractal-1".to_string(),
+            name: "Fractal".to_string(),
+            expanded: true,
+            petals: vec![petal],
+        };
+        let verse = VerseEntry {
+            id: "verse-1".to_string(),
+            name: "Verse".to_string(),
+            namespace_id: None,
+            expanded: true,
+            fractals: vec![fractal],
+        };
+        VerseManager { verses: vec![verse] }
+    }
+
+    #[test]
+    fn installed_assets_skips_pathless_dedups_and_sorts() {
+        let vm = verse_with_nodes(&[
+            ("Tree", Some("blob://tree.glb")),
+            ("No model", None),
+            ("Bench", Some("blob://bench.glb")),
+            ("Tree copy", Some("blob://tree.glb")), // dupe path collapses
+            ("Blank path", Some("   ")),             // whitespace-only skipped
+        ]);
+        let rows = installed_assets(&vm);
+        // tree + bench only, deduped, sorted case-insensitively by name.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "Bench");
+        assert_eq!(rows[0].asset_path, "blob://bench.glb");
+        assert_eq!(rows[1].name, "Tree");
+        assert_eq!(rows[1].asset_path, "blob://tree.glb");
+    }
+
+    #[test]
+    fn installed_assets_falls_back_to_path_for_unnamed_node() {
+        let vm = verse_with_nodes(&[("", Some("blob://anon.glb"))]);
+        let rows = installed_assets(&vm);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "blob://anon.glb");
+    }
+
+    #[test]
+    fn filter_assets_matches_name_or_path_case_insensitively() {
+        let rows = vec![
+            AssetPickRow { name: "Oak Tree".to_string(), asset_path: "blob://oak.glb".to_string() },
+            AssetPickRow { name: "Park Bench".to_string(), asset_path: "blob://bench.glb".to_string() },
+        ];
+        assert_eq!(filter_assets(&rows, "").len(), 2); // empty matches all
+        assert_eq!(filter_assets(&rows, "tree").len(), 1); // by name
+        assert_eq!(filter_assets(&rows, "BENCH").len(), 1); // by path, case-insensitive
+        assert_eq!(filter_assets(&rows, "nope").len(), 0);
+    }
 
     #[test]
     fn build_descriptor_maps_all_controls() {

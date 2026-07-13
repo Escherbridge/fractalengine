@@ -27,6 +27,7 @@ pub(crate) fn top_toolbar(
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     gis_panel: &mut crate::gis::GisPanelState,
+    tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
 ) {
     egui::TopBottomPanel::top("toolbar")
         .exact_height(40.0)
@@ -99,6 +100,17 @@ pub(crate) fn top_toolbar(
                         .clicked()
                     {
                         gis_panel.open = !gis_panel.open;
+                    }
+
+                    if ui
+                        .add(
+                            egui::Button::new("\u{1F527} Tools")
+                                .fill(if tool_panel.open { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON }),
+                        )
+                        .on_hover_text("Path-asset stamp, pen curves, and shape tools")
+                        .clicked()
+                    {
+                        tool_panel.open = !tool_panel.open;
                     }
 
                     if ui
