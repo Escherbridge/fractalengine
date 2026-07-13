@@ -3,11 +3,11 @@
   "description": "Icons for the data on 3 surfaces: (B) panel row glyphs in the Paths tab / node lists, (A) 3D billboard camera-facing markers replacing bare spheres, (C) 3D floating type/label overlays via egui world->viewport projection",
   "type": "feature",
   "created_at": "2026-07-13T00:00:00Z",
-  "status": "pending",
+  "status": "done",
   "execution_wave": 1,
   "wave_rationale": "UI/render enhancement. Surface B is trivial (extend existing sidebar glyph pattern); A needs a new ~15-line billboard system (no face-camera code exists today); C is an egui screen-space overlay. Independent of pen_autocreate but shares path_editor_card.rs + path_point_interaction.rs, so batch sequentially.",
   "depends_on": [],
   "blocks": [],
   "archived": false,
-  "notes": "User: 'we should have icons for the data' — chose all 3 surfaces. Recon 2026-07-13: no billboard system exists; egui renders monochrome recolorable unicode glyphs (sidebar.rs:306 diamond/circle precedent); TEXT_VIEWPORT_HINT is the overlay-text precedent for C; type discriminants = GPX_TYPE_KEY (track/waypoint/trackpoint), has_asset, time_seconds, materialization_kind. Single-point node must stay AABB-pickable (keep a Mesh3d for its Aabb)."
+  "notes": "User: 'we should have icons for the data' — chose all 3 surfaces. Recon 2026-07-13: no billboard system exists; egui renders monochrome recolorable unicode glyphs (sidebar.rs:306 diamond/circle precedent); TEXT_VIEWPORT_HINT is the overlay-text precedent for C; type discriminants = GPX_TYPE_KEY (track/waypoint/trackpoint), has_asset, time_seconds, materialization_kind. Single-point node must stay AABB-pickable (keep a Mesh3d for its Aabb). IMPLEMENTED 2026-07-13 (commit 40e020b + review fix b1a981f): (B) type_glyph + tinted row glyphs; (A) Billboard component + billboard_face_camera system (skips the gimbal-selected entity per MEDIUM-1), markers + single-point node now flat camera-facing Rectangle quads (still Mesh3d/pickable); (C) viewport_labels egui overlay via world_to_viewport, gated to editing + clipped to ViewportRect. fe-ui 228 (at land) tests green. Pending in-app verify."
 }
