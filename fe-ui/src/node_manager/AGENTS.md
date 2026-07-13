@@ -23,6 +23,32 @@ System functions are `pub(super)` (visible to `mod.rs`'s plugin
 registration only) — this module's public surface is just `NodeManager`
 itself; nothing outside `fe-ui` should call the per-frame systems directly.
 
+## §pen-tool — polyline pen (phase 1)
+
+`Tool::Pen` (`panels/toolbar.rs`, hotkey `P` via `shortcuts.rs`) is the
+click-to-place tool for drawing a track's polyline. Phase 1 scope only:
+straight-segment polylines appended point-by-point. Curves, ellipses, and
+other parametric shapes are a later phase — not built here.
+
+- **Gating, not a separate system.** Pen behavior is folded into the
+  existing `handle_path_point_interaction` (no new system/registration).
+  The system takes `Res<ToolState>` and gates the "empty click on terrain →
+  `PathAppendPoint`" branch on `tool.active_tool == Tool::Pen`. Marker
+  drag-to-move and Shift/Alt+click-to-annotate stay ungated (they only fire
+  when a marker is actually picked under the cursor), so switching to
+  Select still lets you reposition/annotate existing points — only new-
+  point placement requires the Pen tool.
+- **No new action.** Reuses `UiAction::PathAppendPoint` unchanged; the pen
+  tool only changes *when* a click is allowed to emit it.
+- **UI entry point.** `panels/path_editor_card.rs`'s edit view no longer has
+  an "Append from cursor" button (removed — it placed points anywhere the
+  3-D cursor happened to be, independent of tool mode, which made accidental
+  placement easy). It now shows a one-line hint pointing at the Pen tool.
+- **Preview.** Placed points render via the existing `sync_path_point_markers`
+  spawn/despawn (yellow `Sphere(0.35)`); the connecting polyline renders via
+  `fe_terrain`'s `render_gpx_tracks` off the same `gpx_points`. No separate
+  pen-preview mesh in phase 1.
+
 ## §path-points — viewport path-point editor
 
 `path_point_interaction.rs` is the "click-in-the-viewport to place / drag /
@@ -46,10 +72,11 @@ has an `editing_track_id`. Design notes:
 - **Ordering.** Registered in `mod.rs`'s `.chain()` after the gimbal systems
   and BEFORE `viewport_pick::handle_viewport_click`, so the capture flag is
   set before node-pick reads it in the same frame.
-- **Interaction model.** Empty click on terrain (Y=0 plane) → queue
-  `PathAppendPoint`. Plain click on a marker → begin a drag on that marker's
-  current y-plane; release commits a single `PathMovePoint` (no
-  remove+append index churn). Shift/Alt+click on a marker → open the inline
+- **Interaction model.** Empty click on terrain (Y=0 plane) while `Tool::Pen`
+  is active → queue `PathAppendPoint` (see §pen-tool). Plain click on a
+  marker → begin a drag on that marker's current y-plane, regardless of
+  active tool; release commits a single `PathMovePoint` (no remove+append
+  index churn). Shift/Alt+click on a marker → open the inline
   annotation form (`PathEditorState::open_annotate_form`, rendered by
   `panels/path_editor_card.rs`). All hit tests are the same manual
   along-ray + radius test `viewport_pick` uses (no Bevy picking backend).

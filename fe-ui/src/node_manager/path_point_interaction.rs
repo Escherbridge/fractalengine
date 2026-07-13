@@ -7,7 +7,8 @@ use bevy_egui::EguiContexts;
 use super::NodeManager;
 use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
-use crate::plugin::ViewportRect;
+use crate::panels::toolbar::Tool;
+use crate::plugin::{ToolState, ViewportRect};
 
 /// Marker sphere for point `index` in the currently-edited track's point list.
 #[derive(Component, Debug)]
@@ -114,8 +115,9 @@ fn ray_plane_y(ray: &Ray3d, plane_y: f32) -> Option<Vec3> {
     Some(ray.origin + *ray.direction * t)
 }
 
-/// Path-point interaction: click-to-place, drag-to-move, modifier-click-to-
-/// annotate. Sets `manager.path_edit_capturing` so node-pick yields while editing.
+/// Path-point interaction: Pen-tool click-to-place, drag-to-move, modifier-
+/// click-to-annotate. Sets `manager.path_edit_capturing` so node-pick yields
+/// while editing. See `node_manager/AGENTS.md` §pen-tool.
 pub(super) fn handle_path_point_interaction(
     mouse_button: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -125,6 +127,7 @@ pub(super) fn handle_path_point_interaction(
     mut path_state: ResMut<PathEditorState>,
     mut drag: ResMut<PathPointDrag>,
     viewport_rect: Res<ViewportRect>,
+    tool: Res<ToolState>,
     mut ui_mgr: ResMut<UiManager>,
     mut marker_tx: Query<(&mut Transform, &PathPointMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
@@ -208,7 +211,12 @@ pub(super) fn handle_path_point_interaction(
         return;
     }
 
-    // Empty click on terrain while editing → append a point at the Y=0 plane.
+    // Empty click on terrain while the Pen tool is active → append a point at
+    // the Y=0 plane. Gated on Tool::Pen so Select-mode clicks (marker pick,
+    // node selection) don't also grow the polyline — see AGENTS.md §pen-tool.
+    if tool.active_tool != Tool::Pen {
+        return;
+    }
     if let Some(hit) = ray_plane_y(&ray, 0.0) {
         ui_mgr.push_action(UiAction::PathAppendPoint {
             track_node_id: track_id,

@@ -1,8 +1,9 @@
 //! Paths tab: list the active petal's track nodes, create/select/delete
-//! tracks, and edit the selected track's point list (append from cursor,
+//! tracks, and edit the selected track's point list (Pen-tool click-to-place,
 //! remove, annotate, export). fe-ui queues intent only — see
-//! `crate::path_ops` for the op-queue/status contract and
-//! `fe-ui/src/AGENTS.md` §path-editor for the end-to-end design.
+//! `crate::path_ops` for the op-queue/status contract, `node_manager/AGENTS.md`
+//! §pen-tool for the Pen tool, and `fe-ui/src/AGENTS.md` §path-editor for the
+//! end-to-end design.
 
 use bevy_egui::egui;
 
@@ -98,7 +99,7 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
     });
 
     if let Some(node_id) = selected {
-        path_state.start_editing(node_id);
+        ui_mgr.push_action(UiAction::PathSelectTrack { track_node_id: node_id });
     }
     if let Some(node_id) = to_delete {
         ui_mgr.push_action(UiAction::PathDeleteTrack { track_node_id: node_id });
@@ -110,7 +111,9 @@ fn render_edit_view(
     path_state: &mut PathEditorState,
     path_status: &PathEditStatus,
     ui_mgr: &mut UiManager,
-    cursor_world: &ViewportCursorWorld,
+    // Kept for signature parity with the panel-caller contract (mod.rs); no
+    // longer read here now that append is Pen-tool-driven, not cursor-driven.
+    _cursor_world: &ViewportCursorWorld,
     track_id: &str,
     petal_id: &str,
 ) {
@@ -127,16 +130,14 @@ fn render_edit_view(
     }
     ui.add_space(4.0);
 
+    ui.label(
+        egui::RichText::new("Select the Pen tool (P) and click the viewport to draw the path.")
+            .small()
+            .color(theme::TEXT_MUTED)
+            .italics(),
+    );
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let has_cursor = cursor_world.pos.is_some();
-        if ui
-            .add_enabled(has_cursor, egui::Button::new("Append from cursor").fill(theme::BG_BUTTON))
-            .clicked()
-        {
-            if let Some(pos) = cursor_world.pos {
-                ui_mgr.push_action(UiAction::PathAppendPoint { track_node_id: track_id.to_string(), position: pos });
-            }
-        }
         if ui.add(egui::Button::new("Export GPX").fill(theme::BG_SAVE)).clicked() {
             ui_mgr.push_action(UiAction::PathExportGpx { track_node_id: track_id.to_string() });
         }
@@ -158,12 +159,12 @@ fn render_edit_view(
     ui.add_space(4.0);
 
     if path_state.points.is_empty() {
-        ui.label(egui::RichText::new("No points yet — append one from the 3D cursor.").small().color(theme::TEXT_MUTED).italics());
+        ui.label(egui::RichText::new("No points yet — select the Pen tool (P) and click the viewport.").small().color(theme::TEXT_MUTED).italics());
         return;
     }
 
     ui.label(
-        egui::RichText::new("Click terrain to add \u{2022} drag markers to move \u{2022} Shift/Alt+click a marker to annotate")
+        egui::RichText::new("Pen tool: click terrain to add \u{2022} drag markers to move \u{2022} Shift/Alt+click a marker to annotate")
             .small()
             .color(theme::TEXT_MUTED)
             .italics(),

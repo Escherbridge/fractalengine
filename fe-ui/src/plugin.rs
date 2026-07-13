@@ -283,6 +283,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::gpx_ops::PendingGpxOps>();
         app.init_resource::<crate::gpx_ops::GpxImportStatus>();
         app.init_resource::<crate::gis::PathEditorState>();
+        app.init_resource::<crate::panels::tool_panel::ToolPanelState>();
         app.init_resource::<crate::path_ops::PendingPathOps>();
         app.init_resource::<crate::path_ops::PathEditStatus>();
         app.init_resource::<fe_sync::TilesetEventBuffer>();
@@ -352,6 +353,7 @@ struct MiscUiParams<'w> {
     gpx_status: Res<'w, crate::gpx_ops::GpxImportStatus>,
     path_state: ResMut<'w, crate::gis::PathEditorState>,
     path_status: Res<'w, crate::path_ops::PathEditStatus>,
+    tool_panel: ResMut<'w, crate::panels::tool_panel::ToolPanelState>,
 }
 
 fn gardener_ui_system(
@@ -394,6 +396,7 @@ fn gardener_ui_system(
         &misc.gpx_status,
         &mut misc.path_state,
         &misc.path_status,
+        &mut misc.tool_panel,
     );
     viewport_rect.0 = rect;
 

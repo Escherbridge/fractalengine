@@ -1,0 +1,13 @@
+{
+  "id": "hexon_path_asset_20260713",
+  "description": "Stamp a hexon's model asset repeated along a GPX path (both spacing modes + tangent), built on new glb-render + PetalHexon op-store + multi-asset platform pieces; replaces path-wall extrusion",
+  "type": "feature",
+  "created_at": "2026-07-13T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 1,
+  "wave_rationale": "Depends on not-yet-existing APIs (glb spawn-into-scene, PetalHexon type). Built sequentially on the parallel wave's green boundary. Ultrapilot work units W3/W4/W5.",
+  "depends_on": ["gis_tool_panel_20260713", "gpx_path_persistence_fix_20260713"],
+  "blocks": [],
+  "archived": false,
+  "notes": "USER CHOSE MAXIMAL SCOPE 2026-07-13: full petal-hexon op-store + real glb rendering this session (not placeholder). Recon confirmed 3 net-new platform pieces: glb->visible-mesh (fe-renderer load_to_bevy is a stub), PetalHexon bake (no type; node_log/op_log already record writes), multi-asset-per-node (node.asset_id single-asset; x-fe-directory seam returns 501). Sequential W3->W4->W5; stop at last green boundary + handoff if long. Descriptor rides PropertyValue::Json (lossless). Arc-length via fe-terrain PathTracker (linear). Mirrors P1/P2 reconcile, not the deleted wall_reconcile."
+}

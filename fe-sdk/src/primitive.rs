@@ -15,10 +15,6 @@ pub enum PrimitiveKind {
     Plane,
     Cylinder,
     Sphere,
-    /// FR-5: a path-driven vertical wall — shape comes from a `source_path`
-    /// track's `gpx_points` polyline, not from `dims`. See `fe-sdk/src/AGENTS.md`
-    /// §primitive-wall.
-    Wall,
 }
 
 /// A first-party BIM primitive descriptor: shape kind, dimensions, and an
@@ -29,18 +25,12 @@ pub enum PrimitiveKind {
 /// - `Plane`: `[width, depth]`
 /// - `Cylinder`: `[radius, height]`
 /// - `Sphere`: `[radius]`
-/// - `Wall`: `[height]` — the polyline shape comes from `source_path`, not `dims`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrimitiveDescriptor {
     pub kind: PrimitiveKind,
     pub dims: Vec<f32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub texture_ref: Option<String>,
-    /// FR-5: for [`PrimitiveKind::Wall`], the `gpx_points`-carrying track
-    /// node_id whose polyline drives the wall's shape. `None` for all other
-    /// kinds. Serde-default so pre-Wall descriptors still parse.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub source_path: Option<String>,
 }
 
 impl PrimitiveDescriptor {
@@ -66,31 +56,21 @@ mod tests {
                 kind: PrimitiveKind::Cube,
                 dims: vec![1.0, 2.0, 3.0],
                 texture_ref: None,
-                source_path: None,
             },
             PrimitiveDescriptor {
                 kind: PrimitiveKind::Plane,
                 dims: vec![5.0, 5.0],
                 texture_ref: Some("tex-albedo-abc123".to_string()),
-                source_path: None,
             },
             PrimitiveDescriptor {
                 kind: PrimitiveKind::Cylinder,
                 dims: vec![0.5, 2.0],
                 texture_ref: None,
-                source_path: None,
             },
             PrimitiveDescriptor {
                 kind: PrimitiveKind::Sphere,
                 dims: vec![1.5],
                 texture_ref: None,
-                source_path: None,
-            },
-            PrimitiveDescriptor {
-                kind: PrimitiveKind::Wall,
-                dims: vec![3.0],
-                texture_ref: Some("brick-albedo".to_string()),
-                source_path: Some("track-node-xyz".to_string()),
             },
         ];
         for desc in cases {
@@ -124,42 +104,5 @@ mod tests {
     fn descriptor_rejects_unknown_kind() {
         let json = serde_json::json!({"kind": "torus", "dims": [1.0]});
         assert!(PrimitiveDescriptor::from_json(&json).is_err());
-    }
-
-    #[test]
-    fn wall_descriptor_carries_source_path() {
-        let json = serde_json::json!({
-            "kind": "wall",
-            "dims": [3.0],
-            "source_path": "track-abc"
-        });
-        let desc = PrimitiveDescriptor::from_json(&json).expect("wall parses");
-        assert_eq!(desc.kind, PrimitiveKind::Wall);
-        assert_eq!(desc.dims, vec![3.0]);
-        assert_eq!(desc.source_path.as_deref(), Some("track-abc"));
-        assert_eq!(desc.texture_ref, None);
-    }
-
-    #[test]
-    fn source_path_defaults_to_none_when_absent() {
-        // Pre-Wall descriptors (no `source_path` key) must still parse — the
-        // serde default is what keeps existing JSON forward-compatible (C5).
-        let json = serde_json::json!({"kind": "cube", "dims": [1.0, 1.0, 1.0]});
-        let desc = PrimitiveDescriptor::from_json(&json).expect("parses");
-        assert_eq!(desc.source_path, None);
-    }
-
-    #[test]
-    fn source_path_omitted_from_serialized_when_none() {
-        // `skip_serializing_if` keeps non-wall descriptors byte-identical to
-        // their pre-Wall serialized form (no spurious `source_path: null`).
-        let desc = PrimitiveDescriptor {
-            kind: PrimitiveKind::Sphere,
-            dims: vec![1.0],
-            texture_ref: None,
-            source_path: None,
-        };
-        let json = desc.to_json();
-        assert!(json.get("source_path").is_none(), "source_path must be omitted when None: {json}");
     }
 }

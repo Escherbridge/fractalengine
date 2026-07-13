@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use crate::plugin::UiSet;
 
 pub use primitive_reconcile::PrimitiveMaterialAssets;
-pub use spawn::{build_primitive_mesh, build_wall_mesh, PrimitiveNode, WallNode};
+pub use spawn::{build_primitive_mesh, PrimitiveNode};
 
 // ---------------------------------------------------------------------------
 // Hierarchy tree types
@@ -159,12 +159,6 @@ impl Plugin for VerseManagerPlugin {
                 db_results::apply_db_results,
                 petal_respawn::respawn_on_petal_change,
                 primitive_reconcile::reconcile_selected_primitive,
-                // FR-5: wall promotion + path-driven re-projection. `wall_reconcile`
-                // reads the same `DbResult` stream Track 1 emits (own cursor —
-                // Bevy messages broadcast to every reader independently), so it
-                // needs no new notification path and no `gpx_bridge` edit.
-                primitive_reconcile::promote_selected_wall,
-                primitive_reconcile::wall_reconcile,
             )
                 .before(UiSet::ProcessActions),
         );

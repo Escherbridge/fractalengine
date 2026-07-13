@@ -94,7 +94,8 @@ pub fn draw_gimbal(
     let cz = if highlight == Some(GimbalAxis::Z) { COLOR_HOVER } else { COLOR_Z };
 
     match tool {
-        Tool::Select => {}
+        // Pen is a path-drawing mode, not a transform gizmo — draw nothing.
+        Tool::Select | Tool::Pen => {}
         Tool::Move => {
             draw_move_handle(&mut gizmos, center, Vec3::X, cx);
             draw_move_handle(&mut gizmos, center, Vec3::Y, cy);

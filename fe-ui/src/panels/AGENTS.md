@@ -48,5 +48,23 @@
   persistent status row, queues `UiAction::GpxImportFile`. See root
   `AGENTS.md` §gpx-import.
 
+## §tool-panel
+
+- `tool_panel.rs` — Tools panel: an independent floating window (like
+  `gis_panel`, not part of `ActiveDialog`) that will host hexon-path-asset
+  controls. State lives in `ToolPanelState` (`open`, `selected_hexon_ref`,
+  `spacing_mode: SpacingMode`, `spacing_value`, `count_value`,
+  `tangent_align`); `SpacingMode` is `FixedSpacing | FixedCount`. This pass
+  ships the shell + a "Path Asset" section with the repetition/pattern
+  controls (spacing-mode radio, spacing/count `DragValue`, tangent-align
+  checkbox) rendering over a "(hexon picker — coming soon)" placeholder, plus
+  a stubbed "Terrain Tools" section. The hexon picker (reusing
+  `hexon_manager.rs`'s list/select UX) and the `UiAction` wiring that turns
+  these fields into a stamped path asset are deferred to the stamp unit.
+  `gardener_console`'s signature grew a trailing
+  `tool_panel: &mut crate::panels::tool_panel::ToolPanelState` param — the
+  caller (`plugin.rs`) must register the `ToolPanelState` resource and pass
+  it through.
+
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.
