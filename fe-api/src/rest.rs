@@ -201,6 +201,7 @@ pub async fn create_node(
             petal_id,
             name: req.name,
             position,
+            correlation_id: None,
         },
         reply_tx,
     };
@@ -256,6 +257,7 @@ pub async fn create_node_legacy(
             petal_id,
             name: req.name,
             position,
+            correlation_id: None,
         },
         reply_tx,
     };
@@ -787,12 +789,10 @@ pub async fn execute_query(
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
 
-    println!("DEBUG: Inside execute_query - checking role");
     if let Err(_) = require_role(&claims, "viewer") {
         return Json(ApiResponse::<QueryResultDto>::error("insufficient permissions"));
     }
 
-    println!("DEBUG: Inside execute_query - acquiring rate limiter lock");
     // Rate limiting: 10 queries/sec per user (keyed by sub/DID, not jti, so
     // creating multiple tokens doesn't bypass the limit).
     {
@@ -898,25 +898,22 @@ pub async fn execute_query(
         query_builder = query_builder.bind((key.clone(), value.clone()));
     }
 
-    println!("DEBUG: Inside execute_query - executing query: {}", final_sql);
     // Execute with timeout
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         async { query_builder.await },
     )
     .await;
-    println!("DEBUG: Inside execute_query - query execution finished");
 
     match result {
         Ok(Ok(mut response)) => {
             // Collect all statement results
             let mut data = Vec::new();
-            let mut idx = 0usize;
-            loop {
+            let num = response.num_statements();
+            for idx in 0..num {
                 match response.take::<Vec<serde_json::Value>>(idx) {
                     Ok(rows) => {
                         data.extend(rows);
-                        idx += 1;
                     }
                     Err(_) => break,
                 }
@@ -1027,12 +1024,11 @@ pub async fn execute_elevated_query(
     match result {
         Ok(Ok(mut response)) => {
             let mut data = Vec::new();
-            let mut idx = 0usize;
-            loop {
+            let num = response.num_statements();
+            for idx in 0..num {
                 match response.take::<Vec<serde_json::Value>>(idx) {
                     Ok(rows) => {
                         data.extend(rows);
-                        idx += 1;
                     }
                     Err(_) => break,
                 }
@@ -1402,6 +1398,7 @@ async fn create_waypoint_with_position(
             petal_id: petal_id.to_string(),
             name: req.name.clone(),
             position,
+            correlation_id: None,
         },
         reply_tx,
     };

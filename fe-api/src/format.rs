@@ -186,6 +186,7 @@ pub async fn import_petal(
                 petal_id: petal_id.clone(),
                 name: node.name.clone(),
                 position: node.position,
+                correlation_id: None,
             },
             reply_tx,
         };

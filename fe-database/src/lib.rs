@@ -322,7 +322,7 @@ pub fn spawn_db_thread_with_sync(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create petal failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::CreateNode { petal_id, name, position }) => {
+                    Ok(DbCommand::CreateNode { petal_id, name, position, correlation_id }) => {
                         match handlers::crud::create_node_handler(&db, &petal_id, &name, position).await {
                             Ok(id) => {
                                 if let Some(ref ect) = entity_change_tx {
@@ -346,7 +346,7 @@ pub fn spawn_db_thread_with_sync(
                                 ).await {
                                     tracing::warn!("node_log append failed for {id}: {e}");
                                 }
-                                send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false });
+                                send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false, correlation_id });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create node failed: {e}"))),
                         }
@@ -622,6 +622,25 @@ pub fn spawn_db_thread_with_sync(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Delete node property failed: {e}"))),
                         }
                     }
+                    Ok(DbCommand::DeleteNode { node_id }) => {
+                        match handlers::crud::delete_node_handler(&db, &node_id).await {
+                            Ok(petal_id) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeRemoved {
+                                        node_id: node_id.clone(),
+                                    });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &node_id, "deleted", &local_did,
+                                    &serde_json::json!({"petal_id": petal_id}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {node_id}: {e}");
+                                }
+                                send_result(&tx, DbResult::NodeDeleted { node_id, petal_id });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Delete node failed: {e}"))),
+                        }
+                    }
                     Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {
                         match handlers::petal_terrain::set_petal_terrain_handler(&db, &petal_id, terrain.as_ref()).await {
                             Ok(()) => send_result(&tx, DbResult::PetalTerrainLoaded { petal_id, terrain }),
@@ -704,12 +723,11 @@ pub fn spawn_db_thread_with_sync(
                             match query_builder.await {
                                 Ok(mut response) => {
                                     let mut data = Vec::new();
-                                    let mut idx = 0usize;
-                                    loop {
+                                    let num = response.num_statements();
+                                    for idx in 0..num {
                                         match response.take::<Vec<serde_json::Value>>(idx) {
                                             Ok(rows) => {
                                                 data.extend(rows);
-                                                idx += 1;
                                             }
                                             Err(_) => break,
                                         }

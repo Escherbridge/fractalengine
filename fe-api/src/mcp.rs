@@ -367,6 +367,7 @@ async fn handle_tool_call(
                     petal_id,
                     name,
                     position,
+                    correlation_id: None,
                 },
                 reply_tx,
             });
