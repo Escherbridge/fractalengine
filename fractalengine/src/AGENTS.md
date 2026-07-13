@@ -222,12 +222,42 @@ small unlit `Sphere` tagged with both `SinglePointTrackNode { track_node_id }`
 (so the glb-mesh-picking AABB test selects it; `Mesh3d` auto-supplies the
 `Aabb`). `petal_id` for the marker is best-effort from `ActivePetalTerrain`
 (same assumption as AnnotatePoint / `resolve_projection` — selection only needs
-`node_id`). The system reconciles transitions so editing 1↔2↔1 never leaks:
-on each `NodePropertiesLoaded` it despawns the *other* kind's entity if present
-before spawning the current one (and clears the `TrackRouteMap` route when a
-line is torn down); `NodeDeleted` despawns both a line and a single-point node
-for the id. The user's "z-axis" height edits (FR-1) persist through the
-unchanged `[x, y, z, time]` `gpx_points` encoding — no format change (FR-2).
+`node_id`). The `None`/`Node`/`Line` reconcile is factored into ONE helper,
+`reconcile_track_render`, called by BOTH render paths so their spawn decisions
+can never diverge:
+
+- **Petal-load path** — `advance_path_materialization` calls it on each
+  `NodePropertiesLoaded` with `force_line_redraw = false` (a matching line from
+  earlier in the same batch is left alone); `NodeDeleted` despawns both a line
+  and a single-point node for the id.
+- **Live-edit path** — `persist_and_render_points` (driven by Pen append /
+  remove / move / Ctrl-height, via `drain_path_ops` and `advance_path_edits`)
+  calls it with `force_line_redraw = true` (an existing `GpxTrackLine` is
+  despawned + respawned to force `render_gpx_tracks`, which only rebuilds meshes
+  `Without<Mesh3d>`, to redraw). This is HIGH-1's fix: previously the live path
+  went through `spawn_track_route` alone, which only handled the `Line`/`None`
+  cases and never touched the single-point node — so 0→1 didn't render live,
+  2→1 vanished the track, and 1→2 leaked a stale node. All four now reconcile
+  live: 0→1 spawns the node, 1→0 despawns it, 2→1 tears the line down + spawns
+  the node, 1→2 despawns the node before spawning the line (no duplicate).
+
+Because `advance_path_edits` reconciles to the post-edit count while
+`advance_path_materialization` may also see the same seed-read
+`NodePropertiesLoaded` (pre-edit count, differing by ≤1), the shared helper's
+`is_none()` spawn guards + `force_line_redraw = false` on the petal-load side
+keep the double-processing idempotent (neither double-spawns; deferred
+`Commands` from one aren't visible to the other in-frame, but the count-kind
+boundaries never collide on a "spawn-absent" decision). To thread the reconcile
+into the live path, `drain_path_ops` / `advance_path_edits` gained the
+`single_nodes: Query<(Entity, &SinglePointTrackNode)>`, `ResMut<Assets<Mesh>>`,
+`ResMut<Assets<StandardMaterial>>`, and (for `drain_path_ops`)
+`Res<ActivePetalTerrain>` params the reconcile needs; all four path systems live
+in one `Update` tuple so Bevy serializes them on the shared `Assets`/`TrackRouteMap`
+`ResMut` access (a scheduling constraint, not a conflict). `spawn_track_route`
+now assumes `points.len() >= 2` (its only callers — the `Line` arm of the helper
+and the import path — both guarantee it). The user's "z-axis" height edits (FR-1)
+persist through the unchanged `[x, y, z, time]` `gpx_points` encoding — no format
+change (FR-2).
 
 **INTEGRATION_REQUEST (gpx_pipeline_20260711, coordinator-owned `main.rs`):**
 Register two new systems and one resource, mirroring the asset-bridge

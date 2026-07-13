@@ -204,12 +204,13 @@ fn json_to_route_points(value: &serde_json::Value) -> Vec<TimestampedRoutePoint>
         .unwrap_or_default()
 }
 
-/// Shared render half: (re)populate `TrackRouteMap` for `track_node_id` and
-/// ensure a `GpxTrackLine` entity exists for it. Reused by import, live path
-/// edits (FR-3), and petal-load materialization (FR-4) so the spawn/update
-/// logic isn't duplicated three times.
+/// Populate `TrackRouteMap` for `track_node_id` and (re)spawn its
+/// `GpxTrackLine` entity. Used only by the import path, which never has a
+/// pre-existing render entity (`existing_entity` is always `None` there); live
+/// edits and petal-load both go through `reconcile_track_render` instead so the
+/// single-point-node reconcile stays in one place. Callers guarantee
+/// `points.len() >= 2` — the `< 2` cases (`None`/`Node`) are `reconcile_track_render`'s.
 ///
-/// `existing_entity` is the track's current `GpxTrackLine` entity, if any —
 /// `render_gpx_tracks` (fe-terrain, not owned here) only (re)builds the mesh
 /// for entities `Without<Mesh3d>`, so a live edit must despawn + respawn the
 /// entity to force a redraw rather than just mutating `TrackRouteMap`.
@@ -220,13 +221,6 @@ fn spawn_track_route(
     points: Vec<TimestampedRoutePoint>,
     existing_entity: Option<Entity>,
 ) {
-    if points.len() < 2 {
-        route_map.routes.remove(track_node_id);
-        if let Some(entity) = existing_entity {
-            commands.entity(entity).despawn();
-        }
-        return;
-    }
     let total = points.last().map(|p| p.time_seconds).unwrap_or(0.0);
     route_map
         .routes
@@ -235,6 +229,70 @@ fn spawn_track_route(
         commands.entity(entity).despawn();
     }
     commands.spawn(GpxTrackLine { track_node_id: track_node_id.to_string() });
+}
+
+/// FR-3 single source of truth: reconcile a track's render entity against its
+/// current point count. Shared by BOTH the live-edit path
+/// (`persist_and_render_points`, driven by Pen append / remove / move / height
+/// edits) and the petal-load path (`advance_path_materialization`) so the
+/// `None`/`Node`/`Line` decision never diverges between them — the divergence
+/// that let a live edit leak a stale single-point node (1→2) or drop a track to
+/// nothing (2→1). Fully idempotent: an already-correct state is left alone.
+///
+/// `force_line_redraw` = `true` for live edits, which must despawn+respawn an
+/// existing `GpxTrackLine` to force `render_gpx_tracks` to rebuild the mesh (it
+/// only rebuilds entities `Without<Mesh3d>`). Petal-load passes `false` so a
+/// matching line spawned earlier in the same batch is left untouched.
+#[allow(clippy::too_many_arguments)]
+fn reconcile_track_render(
+    route_map: &mut TrackRouteMap,
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    track_lines: &Query<(Entity, &GpxTrackLine)>,
+    single_nodes: &Query<(Entity, &SinglePointTrackNode)>,
+    active_petal_id: &str,
+    track_node_id: &str,
+    points: Vec<TimestampedRoutePoint>,
+    force_line_redraw: bool,
+) {
+    let line = track_lines.iter().find(|(_, t)| t.track_node_id.as_str() == track_node_id).map(|(e, _)| e);
+    let node = single_nodes.iter().find(|(_, t)| t.track_node_id.as_str() == track_node_id).map(|(e, _)| e);
+    match materialization_kind(points.len()) {
+        MaterializationKind::Line => {
+            // ≥2 points: drop any single-point node from a prior 1-point state,
+            // then (re)spawn the polyline. `spawn_track_route` handles the
+            // existing-line despawn+respawn so a live edit forces a redraw.
+            if let Some(entity) = node {
+                commands.entity(entity).despawn();
+            }
+            if force_line_redraw || line.is_none() {
+                spawn_track_route(route_map, commands, track_node_id, points, line);
+            }
+        }
+        MaterializationKind::Node => {
+            // Exactly 1 point: drop any line + its route, spawn the node if absent.
+            if let Some(entity) = line {
+                route_map.routes.remove(track_node_id);
+                commands.entity(entity).despawn();
+            }
+            if node.is_none() {
+                let p = points[0].position;
+                let position = [p[0] as f32, p[1] as f32, p[2] as f32];
+                spawn_single_point_node(commands, meshes, materials, track_node_id, active_petal_id, position);
+            }
+        }
+        MaterializationKind::None => {
+            // Empty track: tear down whatever render entity remains.
+            if let Some(entity) = line {
+                route_map.routes.remove(track_node_id);
+                commands.entity(entity).despawn();
+            }
+            if let Some(entity) = node {
+                commands.entity(entity).despawn();
+            }
+        }
+    }
 }
 
 /// FR-3: marker for a single-point track rendered as a plain, selectable node
@@ -638,18 +696,24 @@ pub struct PendingPathEdits {
 /// `CreateTrack` issues `CreateNode` and defers to the same system;
 /// `DeleteTrack` sends `DbCommand::DeleteNode` (FR-1/FR-2 — see AGENTS.md
 /// §gpx) which cascades the node row + waypoints DB-side.
+#[allow(clippy::too_many_arguments)]
 pub fn drain_path_ops(
     mut ops: ResMut<PendingPathOps>,
     db_tx: Res<DbCommandSender>,
     mut pending: ResMut<PendingPathEdits>,
     mut route_map: ResMut<TrackRouteMap>,
+    active_terrain: Res<ActivePetalTerrain>,
     track_lines: Query<(Entity, &GpxTrackLine)>,
+    single_nodes: Query<(Entity, &SinglePointTrackNode)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut status: ResMut<PathEditStatus>,
     mut commands: Commands,
 ) {
     if ops.0.is_empty() {
         return;
     }
+    let active_petal_id = active_terrain.petal_id.clone().unwrap_or_default();
 
     for op in ops.0.drain(..) {
         match op {
@@ -704,7 +768,10 @@ pub fn drain_path_ops(
                         time_seconds: time_seconds.unwrap_or(0.0),
                     });
                     let points = points.clone();
-                    persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, &track_node_id, points);
+                    persist_and_render_points(
+                        &db_tx, &mut route_map, &mut meshes, &mut materials, &track_lines, &single_nodes,
+                        &active_petal_id, &mut commands, &track_node_id, points,
+                    );
                     *status = PathEditStatus {
                         track_node_id: Some(track_node_id),
                         message: Some("Point added".to_string()),
@@ -736,7 +803,10 @@ pub fn drain_path_ops(
                     if index < points.len() {
                         points.remove(index);
                         let points = points.clone();
-                        persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, &track_node_id, points);
+                        persist_and_render_points(
+                            &db_tx, &mut route_map, &mut meshes, &mut materials, &track_lines, &single_nodes,
+                            &active_petal_id, &mut commands, &track_node_id, points,
+                        );
                         *status = PathEditStatus {
                             track_node_id: Some(track_node_id),
                             message: Some("Point removed".to_string()),
@@ -764,7 +834,10 @@ pub fn drain_path_ops(
                         // Reposition only; preserve the existing timestamp (no index churn).
                         point.position = [position[0] as f64, position[1] as f64, position[2] as f64];
                         let points = points.clone();
-                        persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, &track_node_id, points);
+                        persist_and_render_points(
+                            &db_tx, &mut route_map, &mut meshes, &mut materials, &track_lines, &single_nodes,
+                            &active_petal_id, &mut commands, &track_node_id, points,
+                        );
                         *status = PathEditStatus {
                             track_node_id: Some(track_node_id),
                             message: Some("Point moved".to_string()),
@@ -821,6 +894,7 @@ fn prompt_gpx_save_path(track_node_id: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Advances pending path-editor DB round trips as their results arrive.
+#[allow(clippy::too_many_arguments)]
 pub fn advance_path_edits(
     mut db_results: MessageReader<DbResult>,
     db_tx: Res<DbCommandSender>,
@@ -828,6 +902,9 @@ pub fn advance_path_edits(
     mut route_map: ResMut<TrackRouteMap>,
     active_terrain: Res<ActivePetalTerrain>,
     track_lines: Query<(Entity, &GpxTrackLine)>,
+    single_nodes: Query<(Entity, &SinglePointTrackNode)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut status: ResMut<PathEditStatus>,
     mut commands: Commands,
 ) {
@@ -838,6 +915,7 @@ pub fn advance_path_edits(
     {
         return;
     }
+    let active_petal_id = active_terrain.petal_id.clone().unwrap_or_default();
 
     for result in db_results.read() {
         match result {
@@ -1002,7 +1080,10 @@ pub fn advance_path_edits(
                         if pending.reads.get(node_id).map(|q| q.is_empty()).unwrap_or(true) {
                             pending.reads.remove(node_id);
                         }
-                        persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                        persist_and_render_points(
+                            &db_tx, &mut route_map, &mut meshes, &mut materials, &track_lines, &single_nodes,
+                            &active_petal_id, &mut commands, node_id, points,
+                        );
                         *status = PathEditStatus {
                             track_node_id: Some(node_id.clone()),
                             message: Some("Point added".to_string()),
@@ -1020,7 +1101,10 @@ pub fn advance_path_edits(
                             // subsequent AppendPoint doesn't resurrect the
                             // just-removed point from a stale in_flight_points.
                             pending.in_flight_points.insert(node_id.clone(), points.clone());
-                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                            persist_and_render_points(
+                                &db_tx, &mut route_map, &mut meshes, &mut materials, &track_lines, &single_nodes,
+                                &active_petal_id, &mut commands, node_id, points,
+                            );
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: Some("Point removed".to_string()),
@@ -1044,7 +1128,10 @@ pub fn advance_path_edits(
                             // Keep FR-5's authoritative buffer in sync so a later
                             // AppendPoint doesn't rebuild from a stale in_flight_points.
                             pending.in_flight_points.insert(node_id.clone(), points.clone());
-                            persist_and_render_points(&db_tx, &mut route_map, &track_lines, &mut commands, node_id, points);
+                            persist_and_render_points(
+                                &db_tx, &mut route_map, &mut meshes, &mut materials, &track_lines, &single_nodes,
+                                &active_petal_id, &mut commands, node_id, points,
+                            );
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: Some("Point moved".to_string()),
@@ -1158,11 +1245,20 @@ pub fn advance_path_edits(
 }
 
 /// Persist `points` as `gpx_points` and update the render half in one step —
-/// the FR-3 "live edits update immediately" requirement.
+/// the FR-3 "live edits update immediately" requirement. Routes through the
+/// shared `reconcile_track_render` (with `force_line_redraw = true`) so a live
+/// edit reconciles the single-point node the same way petal-load does: 0→1
+/// spawns the node, 2→1 tears down the line + spawns the node, 1→2 despawns the
+/// stale node before spawning the line (no duplicate leak), 1→0 despawns it.
+#[allow(clippy::too_many_arguments)]
 fn persist_and_render_points(
     db_tx: &DbCommandSender,
     route_map: &mut TrackRouteMap,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
     track_lines: &Query<(Entity, &GpxTrackLine)>,
+    single_nodes: &Query<(Entity, &SinglePointTrackNode)>,
+    active_petal_id: &str,
     commands: &mut Commands,
     track_node_id: &str,
     points: Vec<TimestampedRoutePoint>,
@@ -1175,8 +1271,9 @@ fn persist_and_render_points(
             value: route_points_to_json(&points),
         })
         .ok();
-    let existing = track_lines.iter().find(|(_, t)| t.track_node_id.as_str() == track_node_id).map(|(e, _)| e);
-    spawn_track_route(route_map, commands, track_node_id, points, existing);
+    reconcile_track_render(
+        route_map, commands, meshes, materials, track_lines, single_nodes, active_petal_id, track_node_id, points, true,
+    );
 }
 
 /// Wrap route points as the `segment` > `trackpoint` child hierarchy
@@ -1260,51 +1357,17 @@ pub fn advance_path_materialization(
                 }
                 let Some(points_json) = properties.get(GPX_POINTS_KEY) else { continue };
                 let points = json_to_route_points(points_json);
-                let line = track_lines.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
-                let node = single_nodes.iter().find(|(_, t)| t.track_node_id == *node_id).map(|(e, _)| e);
-                // FR-3: reconcile the render entity against the point count so
-                // editing 1↔2↔1 doesn't leak entities. `>=2` → polyline; `==1`
-                // → plain node; `0` → nothing. Materialization fires once per
-                // petal-load batch, so a matching existing entity is left alone.
-                match materialization_kind(points.len()) {
-                    MaterializationKind::Line => {
-                        // Transitioning up from a single-point node → drop it.
-                        if let Some(entity) = node {
-                            commands.entity(entity).despawn();
-                        }
-                        if line.is_none() {
-                            spawn_track_route(&mut route_map, &mut commands, node_id, points.clone(), None);
-                        }
-                    }
-                    MaterializationKind::Node => {
-                        // Transitioning down from a line → drop it + its route.
-                        if let Some(entity) = line {
-                            route_map.routes.remove(node_id);
-                            commands.entity(entity).despawn();
-                        }
-                        if node.is_none() {
-                            // Best-effort petal (mirrors AnnotatePoint / resolve_projection):
-                            // the bridge has no node→petal map without a hierarchy round trip;
-                            // selection only needs node_id, so the active petal is sufficient.
-                            let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
-                            let p = points[0].position;
-                            let position = [p[0] as f32, p[1] as f32, p[2] as f32];
-                            spawn_single_point_node(
-                                &mut commands, &mut meshes, &mut materials, node_id, &petal_id, position,
-                            );
-                        }
-                    }
-                    MaterializationKind::None => {
-                        // Empty track: tear down whatever render entity remains.
-                        if let Some(entity) = line {
-                            route_map.routes.remove(node_id);
-                            commands.entity(entity).despawn();
-                        }
-                        if let Some(entity) = node {
-                            commands.entity(entity).despawn();
-                        }
-                    }
-                }
+                // FR-3: reconcile the render entity against the point count via
+                // the SAME helper the live-edit path uses, so editing 1↔2↔1
+                // never leaks entities regardless of which path fired. Petal-load
+                // runs once per batch, so a matching existing line is left alone
+                // (`force_line_redraw = false`). Best-effort petal id mirrors
+                // AnnotatePoint / resolve_projection (selection only needs node_id).
+                let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
+                reconcile_track_render(
+                    &mut route_map, &mut commands, &mut meshes, &mut materials, &track_lines, &single_nodes,
+                    &petal_id, node_id, points, false,
+                );
             }
             DbResult::NodeDeleted { node_id, .. } => {
                 // Projection teardown: despawn both a rendered line and a
@@ -1374,6 +1437,23 @@ mod tests {
         assert_eq!(materialization_kind(1), MaterializationKind::Node);
         assert_eq!(materialization_kind(2), MaterializationKind::Line);
         assert_eq!(materialization_kind(50), MaterializationKind::Line);
+    }
+
+    #[test]
+    fn materialization_kind_covers_every_high1_transition() {
+        // HIGH-1: the four live-edit transitions `reconcile_track_render` must
+        // handle. The spawn/despawn itself needs `Commands` (not unit-testable),
+        // but the pure kind decision at each end of a transition is — assert the
+        // (before, after) kind pairs so a threshold regression is caught here.
+        let kind = materialization_kind;
+        // 0→1: None → Node (spawn the single-point node live).
+        assert_eq!((kind(0), kind(1)), (MaterializationKind::None, MaterializationKind::Node));
+        // 1→0: Node → None (despawn the node).
+        assert_eq!((kind(1), kind(0)), (MaterializationKind::Node, MaterializationKind::None));
+        // 1→2: Node → Line (despawn the stale node, spawn the polyline — no leak).
+        assert_eq!((kind(1), kind(2)), (MaterializationKind::Node, MaterializationKind::Line));
+        // 2→1: Line → Node (tear the line down, spawn the node — track stays visible).
+        assert_eq!((kind(2), kind(1)), (MaterializationKind::Line, MaterializationKind::Node));
     }
 
     #[test]

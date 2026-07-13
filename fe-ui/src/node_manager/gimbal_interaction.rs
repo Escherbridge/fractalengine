@@ -142,7 +142,12 @@ pub(super) fn handle_gimbal_interaction(
     children_query: Query<&Children>,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
-    if tool.active_tool == Tool::Select {
+    // Only the transform gizmo tools run the gimbal. Select has no gizmo; Pen
+    // draws paths — running here would let `pick_axis` claim `Gimbal` (highest
+    // priority) on a press near a projected axis and start a no-op drag that
+    // steals a click meant for PathPlace (pen append). The Pen drag branch below
+    // is already a no-op, so early-returning loses nothing. See AGENTS.md §pen-tool.
+    if matches!(tool.active_tool, Tool::Select | Tool::Pen) {
         return;
     }
     let Some(sel) = manager.selected.as_mut() else {

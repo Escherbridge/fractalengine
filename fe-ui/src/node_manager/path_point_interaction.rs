@@ -238,8 +238,10 @@ pub(super) fn handle_path_point_interaction(
     let Some(ray) = arbiter.ray() else { return };
 
     if let Some((index, _)) = pick_marker(&ray, &marker_pick) {
-        // A marker pick claims `PathMarker` regardless of active tool, so
-        // dragging / annotating existing points works even outside Pen mode.
+        // A marker pick claims `PathMarker`, but only reachable in Pen mode (or
+        // while a drag is already active) — the guard above returns before this
+        // in Select/Move/Rotate/Scale with no active drag, so node selection +
+        // gimbal keep the click there.
         if !arbiter.claim(ClickPriority::PathMarker) {
             return;
         }

@@ -36,7 +36,10 @@ resamples them into curves and generates shape rings.
   existing `handle_path_point_interaction` (no new system/registration).
   The empty-click-on-terrain → `PathAppendPoint` branch claims the router's
   `PathPlace` priority only when `tool.active_tool == Tool::Pen`; a marker
-  pick claims `PathMarker` regardless of tool. Because `PathPlace` outranks
+  pick claims `PathMarker`, but only in Pen mode (or while a drag is already
+  active) — the system's `if !pen_active && drag.active.is_none() { return; }`
+  guard returns before `pick_marker` runs in Select/Move/Rotate/Scale.
+  Because `PathPlace` outranks
   `NodePick`, a Pen-mode empty click wins the frame and node-pick yields;
   in Select mode path-point declines to claim `PathPlace`, so `NodePick`
   gets the click. This structurally reproduces the ab9c53c fix (node
@@ -85,14 +88,19 @@ has an `editing_track_id`. Design notes:
   not ad-hoc flags: `handle_path_point_interaction` claims `PathMarker` when it
   picks an existing marker and `PathPlace` on a Pen-mode empty click; because
   both outrank `NodePick`, `viewport_pick` yields the frame automatically.
+  `handle_gimbal_interaction` early-returns for `Tool::Select | Tool::Pen`
+  (only Move/Rotate/Scale run it) — otherwise a Pen-mode press near a projected
+  axis would let `pick_axis` claim `Gimbal` (top priority) and start a no-op
+  drag that swallows the PathPlace click. The Pen drag branch is already a
+  no-op, so the early return costs nothing.
 - **Ordering.** Registered in `mod.rs`'s `.chain()` after `resolve_pointer_frame`
   and the gimbal systems, BEFORE `viewport_pick::handle_viewport_click`, so a
   path-point claim lands before node-pick tries to claim in the same frame.
 - **Interaction model.** Empty click on terrain (Y=0 plane) while `Tool::Pen`
   is active → queue `PathAppendPoint` (see §pen-tool). Plain click on a
-  marker → begin a drag on that marker's current y-plane, regardless of
-  active tool; release commits a single `PathMovePoint` (no remove+append
-  index churn). Holding **Ctrl** during the drag switches to vertical mode
+  marker → begin a drag on that marker's current y-plane (Pen mode, or while a
+  drag is already active — the `pen_active || drag.active` guard gates it);
+  release commits a single `PathMovePoint` (no remove+append index churn). Holding **Ctrl** during the drag switches to vertical mode
   (FR-1a, `node_placement_z_axis_20260713`): vertical cursor motion raises/
   lowers the point's height (Bevy Y, the user's "z-axis") by
   `height_delta_from_cursor` at `HEIGHT_DRAG_SENSITIVITY` (0.01 world-units/px,
@@ -161,7 +169,7 @@ ownership instead of racing ad-hoc booleans (replaces the old
   | Priority     | Consumer system                     | Claims when                          |
   | ------------ | ----------------------------------- | ------------------------------------ |
   | `Gimbal`     | `handle_gimbal_interaction`         | press hits a gimbal axis             |
-  | `PathMarker` | `handle_path_point_interaction`     | press picks an existing marker (any tool) |
+  | `PathMarker` | `handle_path_point_interaction`     | press picks an existing marker (Pen mode, or while a drag is already active) |
   | `PathPlace`  | `handle_path_point_interaction`     | Pen-mode empty click on terrain      |
   | `NodePick`   | `handle_viewport_click`             | any remaining fresh press            |
 
