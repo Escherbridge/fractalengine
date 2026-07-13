@@ -3,7 +3,7 @@
   "description": "Precompute dense splat coverage at hexon/tileset build time and store it in the hexon file; load it at runtime with no live per-frame fill",
   "type": "feature",
   "created_at": "2026-07-12T00:00:00Z",
-  "status": "pending",
+  "status": "in-progress",
   "execution_wave": 0,
   "wave_rationale": "User 2026-07-12: the live splat coverage hole-fill (splat_lod_zoom_20260712) crashed the app because it ran O(n^2) per sub-tile every frame in reconcile_splat_chunks. User's chosen fix: offload the fill to build time — bake it into the hexon file once, load cheaply.",
   "depends_on": ["terrain_splat_view_20260711"],

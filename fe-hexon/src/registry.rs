@@ -73,6 +73,19 @@ impl FsBlobStore {
     fn blob_path(&self, hash: &str) -> PathBuf {
         self.base_dir.join(hash)
     }
+
+    /// Default hexon blob store location: `{dirs::data_local_dir()}/fractalengine/hexon_blobs/`.
+    pub fn default_path() -> PathBuf {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("fractalengine")
+            .join("hexon_blobs")
+    }
+
+    /// Convenience constructor using [`Self::default_path`].
+    pub fn open_default() -> Self {
+        Self::new(Self::default_path())
+    }
 }
 
 /// Local hexon crate registry.

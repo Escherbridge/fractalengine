@@ -9,6 +9,19 @@ pub fn sanitize_world_scale(scale: f64) -> f64 {
     }
 }
 
+/// Clamp a sanitized world scale into hexon-declared `[min, max]` bounds
+/// (C1/OQ-2: clamp silently, but the caller surfaces the returned value back
+/// to the user rather than rejecting).
+pub fn clamp_world_scale_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
+    let sanitized = sanitize_world_scale(scale);
+    match bounds {
+        Some([min, max]) if min.is_finite() && max.is_finite() && min > 0.0 && max >= min => {
+            sanitized.clamp(min, max)
+        }
+        _ => sanitized,
+    }
+}
+
 /// World-space edge length of a tile: real meters × scale.
 pub fn scaled_tile_size(tile_world_size_m: f64, scale: f64) -> f64 {
     tile_world_size_m * scale
@@ -69,6 +82,25 @@ mod tests {
     fn scale_elevations_scales_each_sample() {
         let out = scale_elevations(&[0.0, 100.0, 150.0], 0.001);
         assert_eq!(out, vec![0.0, 0.1, 0.15]);
+    }
+
+    #[test]
+    fn clamp_world_scale_to_bounds_clamps_into_range() {
+        assert_eq!(clamp_world_scale_to_bounds(0.5, Some([0.001, 0.1])), 0.1);
+        assert_eq!(clamp_world_scale_to_bounds(0.00001, Some([0.001, 0.1])), 0.001);
+        assert_eq!(clamp_world_scale_to_bounds(0.05, Some([0.001, 0.1])), 0.05);
+    }
+
+    #[test]
+    fn clamp_world_scale_to_bounds_passthrough_when_no_bounds() {
+        assert_eq!(clamp_world_scale_to_bounds(0.5, None), 0.5);
+        assert_eq!(clamp_world_scale_to_bounds(-1.0, None), 1.0);
+    }
+
+    #[test]
+    fn clamp_world_scale_to_bounds_ignores_malformed_bounds() {
+        // max < min is malformed — treat as no bounds.
+        assert_eq!(clamp_world_scale_to_bounds(0.5, Some([0.5, 0.1])), 0.5);
     }
 
     #[test]

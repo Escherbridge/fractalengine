@@ -457,3 +457,64 @@ impl HexonArchive {
         })
     }
 }
+
+#[cfg(test)]
+mod scale_roundtrip_tests {
+    use super::*;
+    use crate::manifest::{ElevationEncoding, HexonType, TilesetMeta};
+
+    fn manifest() -> HexonManifest {
+        HexonManifest {
+            schema_version: "1.0.0".into(),
+            hexon_id: "scale-test".into(),
+            hexon_type: HexonType::TerrainTileset,
+            publisher_did: "did:key:z6Mktest".into(),
+            publisher_name: None,
+            version: "0.1.0".into(),
+            build_id: None,
+            name: "Scale Test".into(),
+            description: None,
+            tags: vec![],
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            source_peer_did: None,
+            approx_size_bytes: None,
+            min_engine_version: None,
+            homepage_url: None,
+            dependencies: vec![],
+            platforms: vec![],
+            address: None,
+            signature: None,
+        }
+    }
+
+    /// FR-1 acceptance: scale fields survive export → import via `export_tileset`.
+    #[test]
+    fn tileset_meta_scale_fields_survive_export_import() {
+        let meta = TilesetMeta {
+            bounds: [45.0, -122.0, 46.0, -121.0],
+            min_zoom: 10,
+            max_zoom: 12,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            has_satellite: false,
+            tile_count: 1,
+            satellite_tile_count: 0,
+            region_name: "Scale Region".into(),
+            parent_tileset: None,
+            chunk_index: None,
+            native_scale: Some(0.001),
+            ground_sample_distance_m: Some(4.77),
+            crs: Some("EPSG:4326".into()),
+            scale_bounds: Some([0.0001, 0.01]),
+        };
+        let bytes =
+            HexonArchive::export_tileset(manifest(), &meta, &[], &[], None).expect("export failed");
+        let data = HexonArchive::import(&bytes).expect("import failed");
+        let round_tripped = data.tileset_meta.expect("tileset_meta must be present");
+        assert_eq!(round_tripped.native_scale, Some(0.001));
+        assert_eq!(round_tripped.ground_sample_distance_m, Some(4.77));
+        assert_eq!(round_tripped.crs.as_deref(), Some("EPSG:4326"));
+        assert_eq!(round_tripped.scale_bounds, Some([0.0001, 0.01]));
+    }
+}

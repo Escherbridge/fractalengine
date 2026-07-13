@@ -97,7 +97,8 @@ layer wiring are **out of scope here** (per `metadata.json`, that's W-B's
   bullet) — `gpx_bridge.rs` does its own mapping instead of reusing it.
 - `fe-api/src/gpx.rs`'s `import_gpx` HTTP handler calls
   `gpx_to_scene_commands` and then creates nodes via the *real*
-  `fe_runtime::messages::DbCommand::CreateNode { petal_id, name, position }`
+  `fe_runtime::messages::DbCommand::CreateNode { petal_id, name, position,
+  correlation_id }` (FR-4: `correlation_id: Option<String>`, `None` here)
   — which has no `properties` or `parent_node_id` field. The handler only
   ever forwards `cmd.name`/`cmd.position`; `cmd.properties` and
   `cmd.parent_node_id` are silently dropped. **This means the shipped HTTP
@@ -177,12 +178,24 @@ layer wiring are **out of scope here** (per `metadata.json`, that's W-B's
   with **no per-command concurrency**, so results for a given caller's
   commands arrive in the same relative order they were sent — the
   `VecDeque` per key correctly disambiguates duplicate names (e.g. two
-  waypoints both literally named "Camp") in FIFO order. The residual risk:
-  an unrelated `CreateNode` elsewhere in the app with an identical
-  `(petal_id, name)` racing the same frame window would be misattributed —
-  acceptable for a desktop single-user import flow, documented rather than
-  solved (solving it properly needs a real request-id channel, which is a
-  `fe_runtime`/`fe-database` change out of this track's scope).
+  waypoints both literally named "Camp") in FIFO order.
+- **FR-4 correlation id (closes the authored-track vs. import race).** The
+  original `(petal_id, name)` content match had a residual risk: an authored
+  `PathOp::CreateTrack` and a same-named GPX import created in the same frame
+  window both consumed the one `DbResult::NodeCreated` stream, so either could
+  steal the other's result. `DbCommand::CreateNode` / `DbResult::NodeCreated`
+  now carry an optional `correlation_id: Option<String>` echoed unchanged by
+  the DB dispatch (`fe-database/src/lib.rs`). The authored-`CreateTrack` path
+  (`drain_path_ops`) tags its command with a process-unique id
+  (`next_authored_track_correlation_id`, an atomic counter — no new crate dep)
+  and keys `PendingPathEdits::creates` by that id, so `advance_path_edits`
+  matches by id, never by tuple. The import/annotate paths send
+  `correlation_id: None`; `advance_gpx_imports` ignores any `Some(_)` result
+  and `advance_path_edits`'s annotate branch only handles `None` — so the two
+  streams are partitioned and can never cross-consume. Duplicate-name import
+  waypoints still FIFO-disambiguate via `(petal_id, name)` as before (that
+  path is not the racing one). The id is optional/additive: every other
+  `CreateNode` sender passes `None` and keeps the legacy content correlation.
 - **Projection (petal terrain origin).** Per spec, points project through
   the *petal's* terrain origin, not an arbitrary bbox-center. The only
   already-resident state carrying a resolved terrain origin is

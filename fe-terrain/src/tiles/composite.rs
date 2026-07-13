@@ -8,6 +8,24 @@ use super::cache::DiskTileCache;
 use super::hexon_source::HexonTileSource;
 use super::source::TileCoord;
 
+/// Reconciled real-meter metric frame across all composite sources (FR-4).
+///
+/// `finest_gsd_m` is the smallest (highest-resolution) per-source GSD, used
+/// as the common frame's reference resolution; `native_scale` mirrors the
+/// source that contributed it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReconciledMetricFrame {
+    pub finest_gsd_m: f64,
+    pub native_scale: f64,
+}
+
+/// Per-source LOD/zoom pick derived from GSD rather than blind `covers()` order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceLodPick {
+    pub source_index: usize,
+    pub zoom: u8,
+}
+
 /// Ordered fallback tile source.
 ///
 /// Lookup order:
@@ -20,6 +38,19 @@ pub struct CompositeTileSource {
     #[cfg(feature = "fetch")]
     online_sources: Vec<Box<dyn super::source::TileSource>>,
     tile_source_mode: crate::config::TileSourceMode,
+}
+
+/// Resolve `(gsd_m, native_scale)` for a source's meta, deriving from
+/// bounds+zoom (Web-Mercator) when the meta lacks declared scale fields.
+fn resolved_gsd_and_scale(meta: &fe_format::manifest::TilesetMeta) -> (f64, f64) {
+    match (meta.ground_sample_distance_m, meta.native_scale) {
+        (Some(gsd), Some(scale)) => (gsd, scale),
+        _ => fe_format::manifest::derive_scale_from_bounds(
+            meta.bounds,
+            meta.max_zoom,
+            meta.tile_size,
+        ),
+    }
 }
 
 impl CompositeTileSource {
@@ -53,6 +84,63 @@ impl CompositeTileSource {
     /// Set the disk cache layer.
     pub fn set_cache(&mut self, cache: DiskTileCache) {
         self.cache = Some(cache);
+    }
+
+    /// Read-only access to each source's [`fe_format::manifest::TilesetMeta`],
+    /// retained per-source for FR-4 reconciliation (in source-add order).
+    pub fn source_metas(&self) -> Vec<&fe_format::manifest::TilesetMeta> {
+        self.hexon_sources.iter().map(|s| &s.tileset_meta).collect()
+    }
+
+    /// Baked splat coverage buffer for a tile, if any covering hexon source carries one (FR-4).
+    pub fn get_baked_splats_sync(
+        &self,
+        coord: TileCoord,
+    ) -> Option<&crate::splat::format::BakedSplatBuffer> {
+        self.hexon_sources
+            .iter()
+            .find_map(|src| src.covers(coord).then(|| src.get_baked_splats(coord)).flatten())
+    }
+
+    /// Reconcile all hexon sources into one common real-meter metric frame
+    /// (FR-4): the finest (smallest) GSD across sources, backfilling any
+    /// source missing scale fields via `derive_scale_from_bounds`. Returns
+    /// `None` if no sources are present.
+    pub fn reconcile_metric_frame(&self) -> Option<ReconciledMetricFrame> {
+        self.hexon_sources
+            .iter()
+            .map(|s| resolved_gsd_and_scale(&s.tileset_meta))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(gsd, scale)| ReconciledMetricFrame {
+                finest_gsd_m: gsd,
+                native_scale: scale,
+            })
+    }
+
+    /// Select each source's zoom level from its own GSD rather than blindly
+    /// taking the first `covers()` hit (FR-4): the source whose native zoom
+    /// range's max level yields the closest-to-target GSD is picked.
+    ///
+    /// `target_gsd_m` is the desired ground-sample-distance (meters/pixel);
+    /// smaller means higher resolution requested.
+    pub fn select_source_lods(&self, target_gsd_m: f64) -> Vec<SourceLodPick> {
+        self.hexon_sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let meta = &source.tileset_meta;
+                let (native_gsd, _) = resolved_gsd_and_scale(meta);
+                // Approximate GSD doubles per zoom level down from max_zoom.
+                let zoom = if target_gsd_m <= native_gsd {
+                    meta.max_zoom
+                } else {
+                    let levels_down = (target_gsd_m / native_gsd).log2().floor().max(0.0) as i32;
+                    let candidate = meta.max_zoom as i32 - levels_down;
+                    candidate.clamp(meta.min_zoom as i32, meta.max_zoom as i32) as u8
+                };
+                SourceLodPick { source_index: index, zoom }
+            })
+            .collect()
     }
 
     /// Add an online tile source (checked last; results written to cache).
@@ -257,10 +345,19 @@ mod tests {
         tiles: Vec<(String, Vec<u8>)>,
         satellite: Vec<(String, Vec<u8>)>,
     ) -> HexonTileSource {
+        make_hexon_source_with_zoom(tiles, satellite, 10, 12)
+    }
+
+    fn make_hexon_source_with_zoom(
+        tiles: Vec<(String, Vec<u8>)>,
+        satellite: Vec<(String, Vec<u8>)>,
+        min_zoom: u8,
+        max_zoom: u8,
+    ) -> HexonTileSource {
         let meta = TilesetMeta {
             bounds: [45.0, -122.0, 46.0, -121.0],
-            min_zoom: 10,
-            max_zoom: 12,
+            min_zoom,
+            max_zoom,
             tile_size: 256,
             elevation_encoding: ElevationEncoding::TerrainRgb,
             has_satellite: !satellite.is_empty(),
@@ -269,6 +366,10 @@ mod tests {
             region_name: "Test".into(),
             parent_tileset: None,
             chunk_index: None,
+            native_scale: None,
+            ground_sample_distance_m: None,
+            crs: None,
+            scale_bounds: None,
         };
         let manifest = HexonManifest {
             schema_version: "1.0.0".into(),
@@ -342,5 +443,53 @@ mod tests {
         composite.set_tile_source_mode(crate::config::TileSourceMode::Offline);
 
         assert_eq!(composite.get_satellite_tile_sync(coord).unwrap(), vec![9u8; 4]);
+    }
+
+    #[test]
+    fn reconcile_metric_frame_picks_finest_gsd_across_mixed_sources() {
+        // Coarser source: max_zoom 10 → larger tile → larger GSD.
+        let coarse = make_hexon_source_with_zoom(vec![], vec![], 5, 10);
+        // Finer source: max_zoom 16 → smaller tile → smaller GSD.
+        let fine = make_hexon_source_with_zoom(vec![], vec![], 12, 16);
+
+        let coarse_gsd = resolved_gsd_and_scale(&coarse.tileset_meta).0;
+        let fine_gsd = resolved_gsd_and_scale(&fine.tileset_meta).0;
+        assert!(fine_gsd < coarse_gsd, "finer source must have smaller GSD");
+
+        let mut composite = CompositeTileSource::new();
+        composite.add_hexon_source(coarse);
+        composite.add_hexon_source(fine);
+
+        let frame = composite.reconcile_metric_frame().expect("frame present");
+        assert!((frame.finest_gsd_m - fine_gsd).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reconcile_metric_frame_none_when_empty() {
+        let composite = CompositeTileSource::new();
+        assert!(composite.reconcile_metric_frame().is_none());
+    }
+
+    #[test]
+    fn select_source_lods_differ_by_gsd_for_high_resolution_target() {
+        let coarse = make_hexon_source_with_zoom(vec![], vec![], 5, 10);
+        let fine = make_hexon_source_with_zoom(vec![], vec![], 12, 16);
+        let coarse_gsd = resolved_gsd_and_scale(&coarse.tileset_meta).0;
+
+        let mut composite = CompositeTileSource::new();
+        composite.add_hexon_source(coarse);
+        composite.add_hexon_source(fine);
+
+        // Ask for a resolution much finer than the coarse source's native GSD;
+        // the coarse source should be clamped to its own max_zoom, the fine
+        // source can actually satisfy it at (or near) its max_zoom.
+        let target = coarse_gsd / 8.0;
+        let picks = composite.select_source_lods(target);
+        assert_eq!(picks.len(), 2);
+        assert_ne!(picks[0].zoom, 0);
+        // Coarse source clamped at its own max_zoom since it cannot go finer.
+        assert_eq!(picks[0].zoom, 10);
+        // Fine source should pick a higher zoom than the coarse source did.
+        assert!(picks[1].zoom >= picks[0].zoom);
     }
 }

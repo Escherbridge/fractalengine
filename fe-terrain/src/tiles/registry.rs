@@ -31,6 +31,13 @@ pub struct TilesetInfo {
     /// Elevation encoding from the tileset meta, when the tileset is loaded in memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation_encoding: Option<ElevationEncoding>,
+    /// Hexon-declared world units per real meter (FR-5), when the tileset is
+    /// loaded in memory (backfilled per FR-3 if the archive predates it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scale: Option<f64>,
+    /// Hexon-declared `[min, max]` world-scale clamp bounds (FR-5/FR-6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_bounds: Option<[f64; 2]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +140,10 @@ impl TilesetRegistry {
             .list_installed()
             .into_iter()
             .map(|t| {
-                let elevation_encoding = sources
-                    .get(&t.hexon_id)
-                    .map(|src| src.tileset_meta.elevation_encoding.clone());
+                let meta = sources.get(&t.hexon_id).map(|src| &src.tileset_meta);
+                let elevation_encoding = meta.map(|m| m.elevation_encoding.clone());
+                let native_scale = meta.and_then(|m| m.native_scale);
+                let scale_bounds = meta.and_then(|m| m.scale_bounds);
                 TilesetInfo {
                     tileset_id: t.hexon_id,
                     region_name: t.region_name,
@@ -144,6 +152,8 @@ impl TilesetRegistry {
                     tile_count: t.tile_count,
                     seeding: t.seeding_enabled,
                     elevation_encoding,
+                    native_scale,
+                    scale_bounds,
                 }
             })
             .collect()

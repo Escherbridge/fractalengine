@@ -101,7 +101,10 @@ impl SharedNode {
 /// Flexible property storage for node properties.
 ///
 /// Uses `#[serde(untagged)]` to allow direct serialization/deserialization
-/// of variant values without a tag field.
+/// of variant values without a tag field. Round-trip is lossless for JSON
+/// objects; scalar/array `Json` payloads normalize to the corresponding
+/// scalar/`Array` variant on deserialization (variant-order fallthrough of
+/// untagged deser). Store geometry/primitive descriptors as JSON objects.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum PropertyValue {
@@ -109,6 +112,8 @@ pub enum PropertyValue {
     Number(f64),
     Boolean(bool),
     Array(Vec<PropertyValue>),
+    /// Arbitrary JSON for complex/nested data (e.g. primitive descriptors, C5).
+    Json(serde_json::Value),
 }
 
 impl PropertyValue {
@@ -141,6 +146,51 @@ impl PropertyValue {
         match self {
             PropertyValue::Array(arr) => Some(arr),
             _ => None,
+        }
+    }
+
+    /// Get a JSON value if this is a Json variant.
+    pub fn as_json(&self) -> Option<&serde_json::Value> {
+        match self {
+            PropertyValue::Json(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// fe-sdk PropertyValue convertibility (C5)
+// ============================================================================
+//
+// The `fe-runtime` PropertyValue (above) is the Tauri↔Bevy bridge's
+// authoritative shape; `fe_sdk::property::PropertyValue` is the
+// extension-facing mirror. See `fe-runtime/src/AGENTS.md` §property-bridge
+// for the rationale — keep these two convertible, never fork geometry
+// semantics across them.
+
+impl From<fe_sdk::property::PropertyValue> for PropertyValue {
+    fn from(v: fe_sdk::property::PropertyValue) -> Self {
+        match v {
+            fe_sdk::property::PropertyValue::String(s) => PropertyValue::String(s),
+            fe_sdk::property::PropertyValue::Number(n) => PropertyValue::Number(n),
+            fe_sdk::property::PropertyValue::Bool(b) => PropertyValue::Boolean(b),
+            fe_sdk::property::PropertyValue::Json(j) => PropertyValue::Json(j),
+        }
+    }
+}
+
+impl From<PropertyValue> for fe_sdk::property::PropertyValue {
+    fn from(v: PropertyValue) -> Self {
+        match v {
+            PropertyValue::String(s) => fe_sdk::property::PropertyValue::String(s),
+            PropertyValue::Number(n) => fe_sdk::property::PropertyValue::Number(n),
+            PropertyValue::Boolean(b) => fe_sdk::property::PropertyValue::Bool(b),
+            // The SDK mirror has no Array variant; fold it into Json losslessly.
+            PropertyValue::Array(arr) => {
+                let json = serde_json::to_value(arr).unwrap_or(serde_json::Value::Null);
+                fe_sdk::property::PropertyValue::Json(json)
+            }
+            PropertyValue::Json(j) => fe_sdk::property::PropertyValue::Json(j),
         }
     }
 }

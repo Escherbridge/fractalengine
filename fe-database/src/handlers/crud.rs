@@ -202,6 +202,69 @@ pub(crate) async fn create_node_handler(
     Ok(node_id)
 }
 
+/// Delete a node and cascade to its child waypoint rows.
+///
+/// Returns the node's `petal_id` (needed by the caller to scope the
+/// `SceneChange::NodeRemoved` event). Bails if no node row matched — see
+/// AGENTS.md §gis for the matched-rows-assertion convention.
+#[instrument(skip(db))]
+pub(crate) async fn delete_node_handler(db: &Db, node_id: &str) -> anyhow::Result<String> {
+    // An absent `node` table means no nodes exist at all — treat it as
+    // "matched no node" rather than a hard error, so the missing-node contract
+    // holds on a fresh/empty DB too (see AGENTS.md §gis).
+    let petal_id = {
+        let lookup = db
+            .query("SELECT petal_id FROM node WHERE node_id = $node_id")
+            .bind(("node_id", node_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("DeleteNode lookup query failed: {e}"))?
+            .check();
+        let rows: Vec<serde_json::Value> = match lookup {
+            Ok(mut res) => res
+                .take(0)
+                .map_err(|e| anyhow::anyhow!("DeleteNode lookup take failed: {e}"))?,
+            Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+            Err(e) => return Err(anyhow::anyhow!("DeleteNode lookup statement failed: {e}")),
+        };
+        rows.first()
+            .and_then(|r| r.get("petal_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("DeleteNode matched no node with node_id = {node_id}"))?
+    };
+
+    // Atomic cascade: delete the parent node row AND its waypoint children
+    // (`properties.gpx_track_id == <this node_id>`, see
+    // fractalengine/src/AGENTS.md §gpx) in one statement so a crash can't leave
+    // a parent with its waypoints gone (inverse orphan). `RETURN BEFORE` on the
+    // parent-matching predicate lets the matched-no-node bail still fire.
+    let mut node_res = db
+        .query(
+            "DELETE node WHERE node_id = $node_id OR properties.gpx_track_id = $node_id \
+             RETURN BEFORE",
+        )
+        .bind(("node_id", node_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("DeleteNode cascade query failed: {e}"))?
+        .check()
+        .map_err(|e| anyhow::anyhow!("DeleteNode cascade statement failed: {e}"))?;
+    let deleted: Vec<serde_json::Value> = node_res
+        .take(0)
+        .map_err(|e| anyhow::anyhow!("DeleteNode take failed: {e}"))?;
+    // The parent node existed (the petal_id lookup above matched it), so if the
+    // combined delete returned nothing the row vanished between lookup and
+    // delete — preserve the matched-no-node contract.
+    let parent_deleted = deleted.iter().any(|row| {
+        row.get("node_id").and_then(|v| v.as_str()) == Some(node_id)
+    });
+    if !parent_deleted {
+        anyhow::bail!("DeleteNode matched no node with node_id = {node_id}");
+    }
+
+    tracing::info!("Deleted node {node_id} (petal {petal_id}), cascaded waypoints");
+    Ok(petal_id)
+}
+
 // ---------------------------------------------------------------------------
 // Import GLTF
 // ---------------------------------------------------------------------------
@@ -761,5 +824,86 @@ pub(crate) async fn resolve_node_scope_handler(
         return Ok(None);
     };
     resolve_petal_scope_handler(db, petal_id).await
+}
+
+// ---------------------------------------------------------------------------
+// FR-1 tests: DeleteNode cascade
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod delete_node_tests {
+    use super::*;
+
+    /// In-memory SurrealDB, no DDL — `node` is written schemaless via
+    /// `CREATE ... CONTENT {}` (mirrors production; see `create_node_handler`).
+    async fn setup_mem_db() -> Db {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        db
+    }
+
+    #[tokio::test]
+    async fn delete_node_removes_row_and_cascades_waypoints() {
+        let db = setup_mem_db().await;
+        let track_id = create_node_handler(&db, "petal-1", "track", [0.0, 0.0, 0.0])
+            .await
+            .expect("create track node");
+        let wp_id = create_node_handler(&db, "petal-1", "wp", [1.0, 0.0, 1.0])
+            .await
+            .expect("create waypoint node");
+
+        // Tag the waypoint as a child of the track, mirroring gpx_bridge's
+        // property shape (properties.gpx_track_id == track node_id).
+        set_entity_property_helper(&db, &wp_id, "gpx_track_id", serde_json::json!(track_id))
+            .await;
+
+        let petal_id = delete_node_handler(&db, &track_id)
+            .await
+            .expect("delete_node_handler should succeed");
+        assert_eq!(petal_id, "petal-1");
+
+        let mut res = db
+            .query("SELECT node_id FROM node WHERE node_id = $nid")
+            .bind(("nid", track_id.clone()))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        assert!(rows.is_empty(), "track node row should be gone");
+
+        let mut res2 = db
+            .query("SELECT node_id FROM node WHERE node_id = $nid")
+            .bind(("nid", wp_id.clone()))
+            .await
+            .unwrap();
+        let rows2: Vec<serde_json::Value> = res2.take(0).unwrap();
+        assert!(rows2.is_empty(), "cascaded waypoint node row should be gone");
+    }
+
+    #[tokio::test]
+    async fn delete_node_bails_on_missing_node() {
+        let db = setup_mem_db().await;
+        let err = delete_node_handler(&db, "does-not-exist")
+            .await
+            .expect_err("deleting a non-existent node must error, not silently no-op");
+        assert!(
+            err.to_string().contains("matched no node"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    /// Minimal property-set helper mirroring `set_entity_property_handler`'s
+    /// shape without pulling in the fe-query builder (keeps this test local).
+    async fn set_entity_property_helper(db: &Db, node_id: &str, key: &str, value: serde_json::Value) {
+        db.query("UPDATE node SET properties[$key] = $val WHERE node_id = $nid")
+            .bind(("key", key.to_string()))
+            .bind(("val", value))
+            .bind(("nid", node_id.to_string()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
 }
 

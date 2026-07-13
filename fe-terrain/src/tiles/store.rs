@@ -47,6 +47,19 @@ pub struct InstalledTileset {
     pub last_served: Option<DateTime<Utc>>,
 }
 
+/// Backfill missing `native_scale`/`ground_sample_distance_m` on a loaded
+/// [`TilesetMeta`] via [`fe_format::manifest::derive_scale_from_bounds`]
+/// (FR-3). Idempotent: already-populated fields are untouched.
+pub fn backfill_scale_fields(meta: &mut TilesetMeta) {
+    if meta.native_scale.is_some() && meta.ground_sample_distance_m.is_some() {
+        return;
+    }
+    let (gsd, native_scale) =
+        fe_format::manifest::derive_scale_from_bounds(meta.bounds, meta.max_zoom, meta.tile_size);
+    meta.ground_sample_distance_m.get_or_insert(gsd);
+    meta.native_scale.get_or_insert(native_scale);
+}
+
 // ---------------------------------------------------------------------------
 // Private registry
 // ---------------------------------------------------------------------------
@@ -204,13 +217,18 @@ impl HexonStore {
     }
 
     /// Load a tileset from disk into a `HexonTileSource` (in-memory tile map).
+    ///
+    /// Backfills missing scale fields (FR-3) via [`backfill_scale_fields`];
+    /// idempotent — already-populated fields are left untouched.
     pub fn load_tileset(&self, hexon_id: &str) -> Result<super::hexon_source::HexonTileSource> {
         let hexon_path = self.hexon_path(hexon_id);
         let bytes = std::fs::read(&hexon_path).with_context(|| {
             format!("failed to read hexon file: {}", hexon_path.display())
         })?;
-        super::hexon_source::HexonTileSource::from_archive(&bytes)
-            .with_context(|| format!("failed to load tileset '{hexon_id}'"))
+        let mut source = super::hexon_source::HexonTileSource::from_archive(&bytes)
+            .with_context(|| format!("failed to load tileset '{hexon_id}'"))?;
+        backfill_scale_fields(&mut source.tileset_meta);
+        Ok(source)
     }
 
     /// Sum all `.hexon` file sizes in the base directory.
@@ -324,6 +342,10 @@ mod tests {
             region_name: "Test Region".into(),
             parent_tileset: None,
             chunk_index: None,
+            native_scale: None,
+            ground_sample_distance_m: None,
+            crs: None,
+            scale_bounds: None,
         }
     }
 
@@ -473,6 +495,43 @@ mod tests {
 
         let list = store.list_installed();
         assert!(list[0].last_served.is_some());
+    }
+
+    #[test]
+    fn test_load_tileset_backfills_missing_scale_fields() {
+        let (store, _dir) = temp_store();
+        let bytes = make_hexon_bytes("tileset-backfill");
+        store.install_tileset(&bytes).expect("install failed");
+
+        let source = store.load_tileset("tileset-backfill").expect("load failed");
+        assert!(source.tileset_meta.native_scale.is_some());
+        assert!(source.tileset_meta.ground_sample_distance_m.is_some());
+        assert_ne!(source.tileset_meta.native_scale, Some(1.0));
+    }
+
+    #[test]
+    fn test_backfill_is_idempotent_on_reload() {
+        let (store, _dir) = temp_store();
+        let bytes = make_hexon_bytes("tileset-idempotent");
+        store.install_tileset(&bytes).expect("install failed");
+
+        let first = store.load_tileset("tileset-idempotent").expect("load failed");
+        let first_scale = first.tileset_meta.native_scale;
+        let first_gsd = first.tileset_meta.ground_sample_distance_m;
+
+        let second = store.load_tileset("tileset-idempotent").expect("reload failed");
+        assert_eq!(second.tileset_meta.native_scale, first_scale);
+        assert_eq!(second.tileset_meta.ground_sample_distance_m, first_gsd);
+    }
+
+    #[test]
+    fn test_backfill_scale_fields_leaves_populated_fields_untouched() {
+        let mut meta = make_meta();
+        meta.native_scale = Some(0.5);
+        meta.ground_sample_distance_m = Some(9.9);
+        backfill_scale_fields(&mut meta);
+        assert_eq!(meta.native_scale, Some(0.5));
+        assert_eq!(meta.ground_sample_distance_m, Some(9.9));
     }
 
     #[test]

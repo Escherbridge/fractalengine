@@ -252,15 +252,54 @@ fn set_vis(mut vis: Mut<Visibility>, show: bool) {
     }
 }
 
+/// Look up a tile's baked splat coverage buffer through the composite source (FR-4).
+///
+/// Delegates to `CompositeTileSource::get_baked_splats_sync`; `None` means no
+/// covering hexon carries a baked buffer, so callers take the FR-5 live-synth
+/// fallback. Clones at the boundary so the mesh bake owns its buffer.
+fn find_baked_splats(
+    composite: &CompositeTileSource,
+    coord: TileCoord,
+) -> Option<crate::splat::format::BakedSplatBuffer> {
+    composite.get_baked_splats_sync(coord).cloned()
+}
+
 /// Re-fetch a tile's data and bake all its splats into one mesh; `None` when unusable.
+///
+/// FR-4/FR-5 (track `splat_hexon_bake_20260712`): prefers a baked coverage
+/// buffer from the hexon source when present (`composite.get_baked_splats_sync`)
+/// and bakes the mesh directly from it — **no `augment_splat_buffer_coverage` /
+/// live fill call here**, that is the whole point of baking ahead of time.
+/// Falls back to the existing live `synthesize_splats` at native density
+/// (holes possible, but stable — no crash, no fill cost) when no baked buffer
+/// exists for this tile.
 fn build_tile_splat_mesh(
     coords: (u8, u32, u32),
     config: &TerrainConfig,
     composite: &CompositeTileSource,
     stride: usize,
 ) -> Option<Mesh> {
-    let scale = config.effective_world_scale();
     let coord = TileCoord::new(coords.1, coords.2, coords.0);
+
+    // FR-4: baked path — zero per-frame fill cost, just bake the mesh from the
+    // hexon source's precomputed buffer when present.
+    //
+    // SEAM (cross-worker, see WORKER_REPORT.md): `CompositeTileSource` doesn't
+    // yet expose a `get_baked_splats_sync(coord)` passthrough over its private
+    // `hexon_sources` list (mirroring `get_tile_sync`/`get_satellite_tile_sync`,
+    // `fe-terrain/src/tiles/composite.rs`, out of this track's file ownership).
+    // `find_baked_splats` is the single call site standing in for that lookup —
+    // it always misses today, so every tile takes the FR-5 fallback below
+    // (correct and stable, just not zero-cost until the passthrough lands).
+    if let Some(baked) = find_baked_splats(composite, coord) {
+        if !baked.positions.is_empty() {
+            let buffer: SplatBuffer = baked.into();
+            return Some(bake_splat_mesh(&buffer));
+        }
+    }
+
+    // FR-5: fallback — live synthesis at native density, no fill.
+    let scale = config.effective_world_scale();
     let (nw_lat, _nw_lon) = coord.to_lat_lon();
     let (s_lat, _) = TileCoord::new(coord.x, coord.y.saturating_add(1), coord.zoom).to_lat_lon();
     let tile_size = scaled_tile_size(tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom), scale);

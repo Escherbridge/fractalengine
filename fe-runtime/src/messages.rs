@@ -132,6 +132,10 @@ pub enum DbCommand {
         petal_id: String,
         name: String,
         position: [f32; 3],
+        /// Optional caller-supplied id echoed back on `NodeCreated`, letting a
+        /// sender disambiguate its own result without the ambiguous
+        /// `(petal_id, name)` tuple (FR-4). `None` = legacy content-correlated.
+        correlation_id: Option<String>,
     },
     ImportGltf {
         petal_id: String,
@@ -274,6 +278,10 @@ pub enum DbCommand {
         node_id: String,
         key: String,
     },
+    /// Delete a node row and cascade to its child waypoint nodes.
+    DeleteNode {
+        node_id: String,
+    },
     // --- Field definition (property schema) management ---
     /// Create a new field definition for a scope.
     CreateFieldDef {
@@ -371,6 +379,9 @@ pub enum DbResult {
         petal_id: String,
         name: String,
         has_asset: bool,
+        /// Echoes the originating `CreateNode.correlation_id` (FR-4); `None`
+        /// when the command carried none.
+        correlation_id: Option<String>,
     },
     GltfImported {
         node_id: String,
@@ -488,6 +499,11 @@ pub enum DbResult {
     NodePropertyDeleted {
         node_id: String,
         key: String,
+    },
+    /// Result of `DeleteNode` — the node and its cascaded waypoints are gone.
+    NodeDeleted {
+        node_id: String,
+        petal_id: String,
     },
     // --- Field definition results ---
     /// Result of `CreateFieldDef`.
@@ -640,6 +656,13 @@ pub enum SceneChange {
     /// A new node was created in a petal.
     NodeAdded { node: NodeDto },
     /// A node was removed from the scene.
+    ///
+    /// `petal_id` deviates from the spec's exact mirror-of-NodeAdded shape:
+    /// dropped to avoid a breaking change in `fractalengine/src/main.rs` and
+    /// `fe-api/src/ws.rs` (both out of this track's file ownership — see
+    /// `WORKER_REPORT.md`). Consumers needing petal scoping should resolve it
+    /// via `DbResult::NodeDeleted { node_id, petal_id }` instead, which is
+    /// emitted alongside this event on the same delete.
     NodeRemoved { node_id: String },
     /// A node was renamed.
     NodeRenamed { node_id: String, new_name: String },

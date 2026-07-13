@@ -22,10 +22,12 @@ pub mod api;
 pub mod context;
 pub mod events;
 pub mod node;
+pub mod primitive;
 pub mod property;
 pub mod query;
 pub mod scene;
 pub mod storage;
+pub mod texture;
 pub mod transaction;
 pub mod ui;
 
@@ -34,12 +36,14 @@ pub use api::{ApiExtensionHandle, ExtensionRoute, HttpMethod};
 pub use context::PluginContext;
 pub use events::{EventSubscription, PluginEvent};
 pub use node::NodeSnapshot;
+pub use primitive::{PrimitiveDescriptor, PrimitiveKind, PRIMITIVE_PROPERTY_KEY};
 pub use property::{PropertyBag, PropertyValue};
 pub use query::{is_select_only, ExtensionQueryApi, QueryError, CAP_QUERY_SELECT};
 pub use scene::{SceneChange, SceneChangeBatch};
 pub use storage::{
     ExtensionStorageApi, StorageError, CAP_STORAGE_READ, CAP_STORAGE_WRITE,
 };
+pub use texture::{TextureEntry, TextureRegistry};
 pub use transaction::PluginTransaction;
 pub use ui::{UiContribution, UiExtensionRegistry, UiSlot};
 

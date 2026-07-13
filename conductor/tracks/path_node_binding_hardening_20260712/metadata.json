@@ -3,7 +3,7 @@
   "description": "Two-way data binding for track/path nodes: single source of truth (DB row) with a change-notification backbone so DB, ECS render state, the GIS Paths tab, and the left-hand node panel stay 1:1 — plus the missing DeleteNode primitive",
   "type": "feature",
   "created_at": "2026-07-12T00:00:00Z",
-  "status": "pending",
+  "status": "in-progress",
   "execution_wave": 0,
   "wave_rationale": "User 2026-07-12: path editor persistence + delete are broken. Two confirmed bugs — (1) create/edit did not persist, (2) deleting a track left orphans (DB node, gis.track.name property [so it reappears in Paths tab], waypoints, left-hand node panel entry, GIS cache all survived). Root cause is architectural: no single source of truth and NO DeleteNode primitive exists in the platform. Must harden before cherry-picking the reverted phase-2 editor on top.",
   "depends_on": ["gpx_path_editor_20260711"],

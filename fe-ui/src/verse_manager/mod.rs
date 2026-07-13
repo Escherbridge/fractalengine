@@ -13,11 +13,15 @@
 
 mod db_results;
 mod petal_respawn;
+mod primitive_reconcile;
 mod spawn;
 
 use bevy::prelude::*;
 
 use crate::plugin::UiSet;
+
+pub use primitive_reconcile::PrimitiveMaterialAssets;
+pub use spawn::{build_primitive_mesh, build_wall_mesh, PrimitiveNode, WallNode};
 
 // ---------------------------------------------------------------------------
 // Hierarchy tree types
@@ -132,6 +136,12 @@ impl VerseManager {
     }
 }
 
+/// Bevy [`Resource`] wrapper around [`fe_sdk::TextureRegistry`] (FR-4) — the
+/// SDK type stays engine-decoupled (no bevy dep), so the ECS registration
+/// lives here.
+#[derive(Resource, Default)]
+pub struct TextureRegistryRes(pub fe_sdk::TextureRegistry);
+
 // ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
@@ -141,9 +151,22 @@ pub struct VerseManagerPlugin;
 impl Plugin for VerseManagerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VerseManager>();
+        app.init_resource::<TextureRegistryRes>();
+        app.init_resource::<PrimitiveMaterialAssets>();
         app.add_systems(
             Update,
-            (db_results::apply_db_results, petal_respawn::respawn_on_petal_change).before(UiSet::ProcessActions),
+            (
+                db_results::apply_db_results,
+                petal_respawn::respawn_on_petal_change,
+                primitive_reconcile::reconcile_selected_primitive,
+                // FR-5: wall promotion + path-driven re-projection. `wall_reconcile`
+                // reads the same `DbResult` stream Track 1 emits (own cursor —
+                // Bevy messages broadcast to every reader independently), so it
+                // needs no new notification path and no `gpx_bridge` edit.
+                primitive_reconcile::promote_selected_wall,
+                primitive_reconcile::wall_reconcile,
+            )
+                .before(UiSet::ProcessActions),
         );
     }
 }

@@ -138,7 +138,7 @@ pub(super) fn apply_db_results(
                 }
             }
 
-            DbResult::NodeCreated { id, petal_id, name, has_asset } => {
+            DbResult::NodeCreated { id, petal_id, name, has_asset, .. } => {
                 if let Some(petal) = verse_mgr.find_petal_mut(petal_id) {
                     petal.nodes.push(NodeEntry {
                         id: id.clone(),
@@ -149,6 +149,29 @@ pub(super) fn apply_db_results(
                         asset_path: None,
                     });
                 }
+                // FR-3: any node create in the active petal may be a track —
+                // re-run the Paths tab query rather than relying on the
+                // manual Refresh button as the only sync path.
+                if nav.active_petal_id.as_deref() == Some(petal_id.as_str()) {
+                    crate::actions::path::query_tracks(&db_sender, &mut path_state, petal_id.clone());
+                }
+            }
+
+            // FR-1/FR-3: generic node-delete lifecycle event. Fixes the
+            // left-panel orphan for all node deletes, not just tracks, and
+            // re-runs the Paths tab query so a deleted track vanishes
+            // without requiring the manual Refresh button.
+            DbResult::NodeDeleted { node_id, petal_id } => {
+                if let Some(petal) = verse_mgr.find_petal_mut(petal_id) {
+                    petal.nodes.retain(|n| n.id != *node_id);
+                }
+                if path_state.editing_track_id.as_deref() == Some(node_id.as_str()) {
+                    path_state.stop_editing();
+                }
+                if nav.active_petal_id.as_deref() == Some(petal_id.as_str()) {
+                    crate::actions::path::query_tracks(&db_sender, &mut path_state, petal_id.clone());
+                }
+                bevy::log::info!("Deleted node {node_id} (petal {petal_id})");
             }
 
             DbResult::VerseCreated { id, name } => {
@@ -422,7 +445,16 @@ pub(super) fn apply_db_results(
                 inspector.annotation_body_buf = body;
                 inspector.annotation_color_buf = color;
             }
-            DbResult::NodePropertySet { ref node_id, key: _ } => {
+            DbResult::NodePropertySet { ref node_id, ref key } => {
+                // FR-3: a track-identity property landing anywhere (not just
+                // the currently-selected node) means the Paths tab's track
+                // list may now be stale — re-run the query unconditionally
+                // for that one key, independent of the selection guard below.
+                if key == "gis.track.name" {
+                    if let Some(petal_id) = nav.active_petal_id.clone() {
+                        crate::actions::path::query_tracks(&db_sender, &mut path_state, petal_id);
+                    }
+                }
                 if !is_for_selected_node(&node_mgr, node_id) {
                     continue;
                 }
@@ -498,6 +530,11 @@ pub(super) fn apply_db_results(
                         .and_then(|v| v.as_f64())
                         .filter(|s| s.is_finite() && *s > 0.0)
                         .unwrap_or(1.0);
+                    // Hexon-authoritative clamp bounds (scale orchestration track); see fe-ui/src/verse_manager/AGENTS.md.
+                    petal_map.scale_bounds = terrain
+                        .as_ref()
+                        .and_then(|t| t.get("scale_bounds"))
+                        .and_then(|v| serde_json::from_value::<[f64; 2]>(v.clone()).ok());
                     // Keep the raw doc for the GIS Layer Manager's mutate-and-round-trip flow.
                     petal_map.terrain_json = terrain.clone();
                     petal_map.loaded = true;

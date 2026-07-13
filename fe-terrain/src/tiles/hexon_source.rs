@@ -11,6 +11,8 @@ use anyhow::{Context, Result};
 use fe_format::manifest::TilesetMeta;
 use fe_format::HexonArchive;
 
+use crate::splat::format::{read_baked_splats_from_archive, BakedSplatBuffer};
+
 use super::source::TileCoord;
 
 /// Offline tile source loaded from a `.hexon` archive.
@@ -23,6 +25,11 @@ pub struct HexonTileSource {
     pub tiles: HashMap<String, Vec<u8>>,
     /// Satellite tiles: cache_key → JPG bytes.
     pub satellite: HashMap<String, Vec<u8>>,
+    /// Baked splat coverage buffers (track `splat_hexon_bake_20260712`, FR-2/FR-4):
+    /// cache_key → dense splat buffer, precomputed at build time. Absent for
+    /// tiles/hexons built before this track or for tiles the bake step skipped
+    /// — callers fall back to live `synthesize_splats` (FR-5).
+    pub baked_splats: HashMap<String, BakedSplatBuffer>,
 }
 
 impl HexonTileSource {
@@ -35,11 +42,19 @@ impl HexonTileSource {
 
         let tiles: HashMap<String, Vec<u8>> = data.elevation_tiles.into_iter().collect();
         let satellite: HashMap<String, Vec<u8>> = data.satellite_tiles.into_iter().collect();
+        // Best-effort: a malformed/absent splats section never fails the whole
+        // hexon load (FR-5) — read_baked_splats_from_archive already degrades
+        // to an empty vec on any error.
+        let baked_splats: HashMap<String, BakedSplatBuffer> = read_baked_splats_from_archive(bytes)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         Ok(Self {
             tileset_meta,
             tiles,
             satellite,
+            baked_splats,
         })
     }
 
@@ -75,6 +90,9 @@ impl HexonTileSource {
             tileset_meta,
             tiles,
             satellite,
+            // Directory layout is dev-only pre-packaging; no baked-splats
+            // convention there yet — falls back to live synthesis (FR-5).
+            baked_splats: HashMap::new(),
         })
     }
 
@@ -91,6 +109,13 @@ impl HexonTileSource {
     /// Check if an elevation tile exists for the given coordinate.
     pub fn has_tile(&self, coord: TileCoord) -> bool {
         self.tiles.contains_key(&coord.cache_key())
+    }
+
+    /// Baked splat coverage buffer for a tile, if the hexon carries one
+    /// (FR-4). `None` means the runtime should fall back to live
+    /// `synthesize_splats` at native density (FR-5).
+    pub fn get_baked_splats(&self, coord: TileCoord) -> Option<&BakedSplatBuffer> {
+        self.baked_splats.get(&coord.cache_key())
     }
 
     /// Geographic bounding box `[min_lat, min_lon, max_lat, max_lon]`.
@@ -211,6 +236,10 @@ mod tests {
             region_name: "Test Region".into(),
             parent_tileset: None,
             chunk_index: None,
+            native_scale: None,
+            ground_sample_distance_m: None,
+            crs: None,
+            scale_bounds: None,
         }
     }
 
@@ -259,6 +288,42 @@ mod tests {
 
         let data = source.get_tile(TileCoord::new(512, 340, 10)).unwrap();
         assert_eq!(data.len(), 64);
+    }
+
+    #[test]
+    fn loads_baked_splats_when_present() {
+        use crate::splat::format::{append_baked_splats_to_archive, encode_baked_splats};
+
+        let meta = test_tileset_meta();
+        let elevation = vec![("10/512/340".to_string(), vec![0u8; 64])];
+        let base = HexonArchive::export_tileset(test_manifest(), &meta, &elevation, &[], None)
+            .expect("export failed");
+
+        let baked = BakedSplatBuffer {
+            version: 1,
+            positions: vec![[1.0, 2.0, 3.0]],
+            colors: vec![[1.0, 1.0, 1.0, 1.0]],
+            scales: vec![[1.0, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]],
+        };
+        let entries = vec![("10/512/340".to_string(), encode_baked_splats(&baked).unwrap())];
+        let augmented = append_baked_splats_to_archive(&base, &entries).unwrap();
+
+        let source = HexonTileSource::from_archive(&augmented).expect("from_archive failed");
+        let coord = TileCoord::new(512, 340, 10);
+        let loaded = source.get_baked_splats(coord).expect("baked splats should load");
+        assert_eq!(loaded.positions, baked.positions);
+        assert!(source.get_baked_splats(TileCoord::new(0, 0, 10)).is_none());
+    }
+
+    #[test]
+    fn no_baked_splats_falls_back_to_empty_map() {
+        let meta = test_tileset_meta();
+        let archive_bytes =
+            HexonArchive::export_tileset(test_manifest(), &meta, &[], &[], None).unwrap();
+        let source = HexonTileSource::from_archive(&archive_bytes).unwrap();
+        assert!(source.baked_splats.is_empty());
+        assert!(source.get_baked_splats(TileCoord::new(512, 340, 10)).is_none());
     }
 
     #[test]

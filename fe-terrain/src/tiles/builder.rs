@@ -15,7 +15,21 @@ mod inner {
     use fe_format::license::License;
     use fe_format::HexonArchive;
 
+    use crate::splat::bake::bake_splat_coverage;
+    use crate::splat::format::{
+        append_baked_splats_to_archive, encode_baked_splats, tile_world_size_m, BakedSplatBuffer,
+    };
+    use crate::splat::synth::synthesize_splats;
+    use crate::tiles::elevation::{decode_png_pixels, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder};
     use crate::tiles::source::{TileCoord, TileSource};
+
+    use super::parse_cache_key;
+
+    /// Decimation stride used when synthesizing the native splat field the
+    /// bake step densifies (FR-1/FR-3). Build-time only — no per-frame budget
+    /// constraint, so a denser starting field than the runtime default (see
+    /// `render::SplatConfig::stride`) is fine and gives the fill less work.
+    const BAKE_SPLAT_STRIDE: usize = 1;
 
     /// Result of a tileset build operation.
     #[derive(Debug, Clone)]
@@ -137,6 +151,65 @@ mod inner {
             ))
         }
 
+        /// Bake coverage-filled splat buffers for every downloaded elevation
+        /// tile (FR-3). Runs the FR-1 hole fill once per tile at build time;
+        /// tiles that fail to decode or synthesize no splats are simply
+        /// skipped (they fall back to live synthesis at runtime, FR-5).
+        /// Build-time budget is unconstrained (offline) — tiles are baked
+        /// sequentially, no per-frame limit applies here.
+        fn bake_splat_tiles(&self, tiles: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
+            let decoder: Option<Box<dyn ElevationDecoder>> = match self.elevation_encoding {
+                ElevationEncoding::TerrainRgb => Some(Box::new(TerrainRgbDecoder)),
+                ElevationEncoding::Terrarium => Some(Box::new(TerrariumDecoder)),
+                // Raw16 tiles aren't PNG-encoded pixel-triplets like the other
+                // two encodings; baking isn't wired for this format yet — skip
+                // (every tile falls back to live synthesis at runtime, FR-5).
+                ElevationEncoding::Raw16 => None,
+            };
+            let Some(decoder) = decoder else {
+                return Vec::new();
+            };
+
+            let mut out = Vec::new();
+            for (cache_key, png_bytes) in tiles {
+                let Some(coord) = parse_cache_key(cache_key) else {
+                    continue;
+                };
+                let Ok((pixels, w, h)) = decode_png_pixels(png_bytes) else {
+                    continue;
+                };
+                if w < 2 || h < 2 {
+                    continue;
+                }
+                let elevations = decoder.decode(&pixels, w, h);
+
+                let (nw_lat, _) = coord.to_lat_lon();
+                let (s_lat, _) =
+                    TileCoord::new(coord.x, coord.y.saturating_add(1), coord.zoom).to_lat_lon();
+                let tile_size = tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom);
+
+                let native = synthesize_splats(
+                    &elevations,
+                    w as usize,
+                    h as usize,
+                    None,
+                    tile_size,
+                    1.0,
+                    BAKE_SPLAT_STRIDE,
+                );
+                if native.is_empty() {
+                    continue;
+                }
+                let baked = bake_splat_coverage(&native).unwrap_or(native);
+                let record: BakedSplatBuffer = (&baked).into();
+                let Ok(bytes) = encode_baked_splats(&record) else {
+                    continue;
+                };
+                out.push((cache_key.clone(), bytes));
+            }
+            out
+        }
+
         /// Download tiles and package into a single `.hexon` archive.
         pub async fn package_hexon(
             &self,
@@ -189,9 +262,21 @@ mod inner {
                 region_name: self.region_name.clone(),
                 parent_tileset: None,
                 chunk_index: None,
+                native_scale: None,
+                ground_sample_distance_m: None,
+                crs: None,
+                scale_bounds: None,
             };
 
-            HexonArchive::export_tileset(manifest, &meta, &tiles, &[], Some(License::default()))
+            let archive_bytes =
+                HexonArchive::export_tileset(manifest, &meta, &tiles, &[], Some(License::default()))?;
+
+            // FR-3: bake coverage-filled splat buffers and embed them alongside
+            // the tiles. Baking is best-effort — if every tile fails to bake
+            // (e.g. unsupported encoding) the archive still exports fine and
+            // the runtime falls back to live synthesis (FR-5).
+            let splat_entries = self.bake_splat_tiles(&tiles);
+            crate::splat::format::append_baked_splats_to_archive(&archive_bytes, &splat_entries)
         }
 
         /// Download tiles and package into multiple `.hexon` chunk archives.
@@ -284,15 +369,21 @@ mod inner {
                         total_chunks,
                         chunk_bounds: self.bounds,
                     }),
+                    native_scale: None,
+                    ground_sample_distance_m: None,
+                    crs: None,
+                    scale_bounds: None,
                 };
 
-                let archive = HexonArchive::export_tileset(
+                let archive_bytes = HexonArchive::export_tileset(
                     manifest,
                     &meta,
                     &chunk_tiles,
                     &[],
                     Some(License::default()),
                 )?;
+                let splat_entries = self.bake_splat_tiles(&chunk_tiles);
+                let archive = append_baked_splats_to_archive(&archive_bytes, &splat_entries)?;
                 archives.push(archive);
             }
 
@@ -300,6 +391,25 @@ mod inner {
         }
     }
 }
+
+#[cfg(feature = "fetch")]
+mod cache_key_parse {
+    use crate::tiles::source::TileCoord;
+
+    /// Parse a `{zoom}/{x}/{y}` cache key back into a [`TileCoord`] (inverse of
+    /// `TileCoord::cache_key`) for the bake step, which needs the coordinate to
+    /// compute tile world size.
+    pub(super) fn parse_cache_key(key: &str) -> Option<TileCoord> {
+        let mut parts = key.splitn(3, '/');
+        let zoom: u8 = parts.next()?.parse().ok()?;
+        let x: u32 = parts.next()?.parse().ok()?;
+        let y: u32 = parts.next()?.parse().ok()?;
+        Some(TileCoord::new(x, y, zoom))
+    }
+}
+
+#[cfg(feature = "fetch")]
+use cache_key_parse::parse_cache_key;
 
 #[cfg(feature = "fetch")]
 pub use inner::*;

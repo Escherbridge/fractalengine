@@ -139,3 +139,66 @@ alone (no layer binding in v1).
   (a `gis-tile-etl` concern, same as the mesh).
 - **Phase 2 (`splat_ready` precomputed buffers) is out of scope here** — FR-1
   runtime synthesis is the fallback that phase 2's install path will defer to.
+
+## §bake (`bake.rs`) — SpatialGrid k-NN correctness
+
+`nearest_neighbors_grid` cannot stop at the query point's fixed 3x3 cell block:
+for edge/corner points (or any locally-sparse region) the true k-th nearest
+neighbor can sit outside that block even though more distant points inside it
+get counted. Symptom is silent divergence from brute force, not a crash — the
+neighbor set is just wrong, breaking hole-fill pairing.
+
+Fix is a classic expanding-ring guarantee: grow the search ring (`nearby_ring`,
+generalizes the old fixed `nearby`/3x3) until we have `>= k` candidates **and**
+the k-th nearest distance found is `<= ring * cell_size` — the radius that ring
+of cells is provably guaranteed to cover. Below that bound a nearer point could
+still be hiding one ring further out. Amortized O(1) per query in the common
+case (ring 1 almost always suffices at the grid's designed density); only
+pathologically sparse regions pay for extra rings, and the loop always
+terminates once a ring has swept every remaining point (`n - 1` candidates).
+
+Second, independent bug: equal-distance ties. `HashMap` bucket iteration order
+is unspecified, so sorting candidates by distance alone let a k-th-place tie
+resolve to a different winner than brute force's stable sort over `0..n`.
+Fixed by tie-breaking on index (ascending) in the same sort, matching brute
+force's natural tie order exactly.
+
+### Build-time O(n²) elimination (coordinator fix)
+
+The bake runs offline, but at the builder's real stride (`BAKE_SPLAT_STRIDE=1`,
+~65k splats per 256×256 tile, ×hundreds of tiles built sequentially) any O(n²)
+term turns a "some constant offline cost is fine" step into an hours-long hang —
+the exact failure class this track exists to remove. Two hot spots survived the
+first port because the largest test fixture is only 576 splats:
+
+- **This-pass cluster guard was O(m²).** `push_midpoint`'s second rejection test
+  scanned `self.positions` linearly (`.iter().any(...)`) — a full sweep over
+  every midpoint emitted so far *this pass*. The pass-start `SpatialGrid` indexes
+  only `src` (the pass-start buffer), not this-pass emissions, so it couldn't
+  cover them. In a sparse tile with big holes `one_pass` emits O(m) midpoints, so
+  the guard was O(m²) per pass. Fixed with `InsertGrid`: an incremental XZ index
+  of this-pass emissions whose cell size **is** `min_sep`, so any prior emission
+  within `min_sep` of a candidate lands in the candidate's 3×3 block. Each
+  accepted midpoint is inserted as it's committed; the check is O(1) amortized.
+  The rejection semantics (same `min_sep2` threshold, same accept/reject
+  decision) are identical to the linear scan, so the baked output is unchanged —
+  a pure performance fix. `src` is still checked via the pass-start grid.
+
+- **k-NN tail did a full sort per ring + could sweep O(n).** `nearest_neighbors_grid`
+  re-`sort`ed the whole candidate list on every ring expansion. Replaced with
+  `select_nth_unstable_by` at `k-1` (partial selection, O(m) not O(m·log m)) to
+  test the covered-radius condition, then sorts only the leading k for the
+  ordered return. The expanding-ring correctness condition is untouched — the
+  ring still grows until `≥ k` candidates AND the k-th nearest distance is
+  `≤ ring · cell_size`, with the `(dist2, index)` tie-break preserved so the
+  result still matches brute force.
+
+Grid reuse across passes (FIX 3) was intentionally **skipped**: the per-pass
+`SpatialGrid` cell size is `spacing · EDGE_SPACING_TOLERANCE` and `spacing`
+(median neighbor distance) shrinks every pass as the field densifies. Appending
+to a stale grid would leave cells sized for the previous, coarser spacing,
+breaking the "3×3 block covers the search radius" invariant that both the k-NN
+query and the `src` cluster guard depend on — silent neighbor-set divergence.
+Rebuilding is O(n) per pass and passes are capped at `MAX_INTERPOLATION_PASSES`
+(8), so total grid-build cost is O(8n) = O(n) — no asymptotic term to remove.
+Correctness beats a constant-factor win that isn't even asymptotic.

@@ -55,6 +55,32 @@ pub struct TilesetMeta {
     /// into relay-friendly chunks, each chunk carries its sequence number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_index: Option<ChunkIndex>,
+    /// Hexon-declared world units per real meter; authoritative render scale.
+    /// `None` on legacy archives — see `src/AGENTS.md` §scale for backfill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scale: Option<f64>,
+    /// Ground sample distance in meters/pixel at the tileset's native zoom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ground_sample_distance_m: Option<f64>,
+    /// Coordinate reference system identifier; recorded, not reprojected.
+    /// `None` on legacy archives and stays absent on re-serialize (see `crs_or_default`).
+    #[serde(default = "default_crs", skip_serializing_if = "Option::is_none")]
+    pub crs: Option<String>,
+    /// `[min, max]` world-scale bounds a user nudge may clamp within.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_bounds: Option<[f64; 2]>,
+}
+
+/// Default CRS for tilesets predating the `crs` field.
+fn default_crs() -> Option<String> {
+    Some("EPSG:4326".to_string())
+}
+
+impl TilesetMeta {
+    /// Effective CRS, defaulting absent (legacy) values to EPSG:4326.
+    pub fn crs_or_default(&self) -> &str {
+        self.crs.as_deref().unwrap_or("EPSG:4326")
+    }
 }
 
 /// Elevation tile encoding format.
@@ -84,6 +110,37 @@ pub struct ChunkIndex {
     pub total_chunks: u32,
     /// Bounds of this specific chunk [min_lat, min_lon, max_lat, max_lon].
     pub chunk_bounds: [f64; 4],
+}
+
+/// Web-Mercator equatorial circumference in meters (mirrors `fe-terrain::tile_world_size_m`).
+const WEB_MERCATOR_EQUATOR_M: f64 = 40_075_016.686;
+
+/// Derive `(ground_sample_distance_m, native_scale)` from bounds + zoom via
+/// Web-Mercator when a legacy tileset has no declared scale fields.
+///
+/// `native_scale` assumes 1 tile == `tile_size` world units at native zoom
+/// (i.e. world units per real meter = `tile_size / tile_world_size_m`).
+pub fn derive_scale_from_bounds(
+    bounds: [f64; 4],
+    max_zoom: u8,
+    tile_size: u16,
+) -> (f64, f64) {
+    /// Clamp latitude to the standard Web-Mercator limit so `cos(lat)` never hits 0.
+    const MAX_ABS_LAT: f64 = 85.0;
+    let center_lat = ((bounds[0] + bounds[2]) / 2.0).clamp(-MAX_ABS_LAT, MAX_ABS_LAT);
+    let tile_world_size_m =
+        WEB_MERCATOR_EQUATOR_M * center_lat.to_radians().cos() / 2f64.powi(max_zoom as i32);
+    let gsd = if tile_size > 0 {
+        tile_world_size_m / tile_size as f64
+    } else {
+        tile_world_size_m
+    };
+    let native_scale = if tile_world_size_m > 0.0 {
+        tile_size as f64 / tile_world_size_m
+    } else {
+        1.0
+    };
+    (gsd, native_scale)
 }
 
 /// A dependency on another hexon package, referenced by URI.
@@ -147,4 +204,81 @@ pub struct HexonManifest {
     pub address: Option<HexonAddress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+}
+
+#[cfg(test)]
+mod scale_field_tests {
+    use super::*;
+
+    /// A legacy `.hexon` tileset_meta.json blob predating scale fields.
+    fn legacy_tileset_meta_json() -> serde_json::Value {
+        serde_json::json!({
+            "bounds": [45.0, -122.0, 46.0, -121.0],
+            "min_zoom": 10,
+            "max_zoom": 12,
+            "tile_size": 256,
+            "elevation_encoding": "terrain_rgb",
+            "has_satellite": false,
+            "tile_count": 4,
+            "satellite_tile_count": 0,
+            "region_name": "Legacy Region"
+        })
+    }
+
+    #[test]
+    fn legacy_tileset_meta_deserializes_with_defaults() {
+        let meta: TilesetMeta =
+            serde_json::from_value(legacy_tileset_meta_json()).expect("legacy blob must parse");
+        assert!(meta.native_scale.is_none());
+        assert!(meta.ground_sample_distance_m.is_none());
+        assert_eq!(meta.crs.as_deref(), Some("EPSG:4326"));
+        assert!(meta.scale_bounds.is_none());
+    }
+
+    #[test]
+    fn scale_fields_roundtrip_through_serde() {
+        let meta = TilesetMeta {
+            bounds: [45.0, -122.0, 46.0, -121.0],
+            min_zoom: 10,
+            max_zoom: 12,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            has_satellite: false,
+            tile_count: 4,
+            satellite_tile_count: 0,
+            region_name: "Test".into(),
+            parent_tileset: None,
+            chunk_index: None,
+            native_scale: Some(0.001),
+            ground_sample_distance_m: Some(2.5),
+            crs: Some("EPSG:3857".into()),
+            scale_bounds: Some([0.0001, 1.0]),
+        };
+        let json = serde_json::to_value(&meta).unwrap();
+        let parsed: TilesetMeta = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.native_scale, Some(0.001));
+        assert_eq!(parsed.ground_sample_distance_m, Some(2.5));
+        assert_eq!(parsed.crs.as_deref(), Some("EPSG:3857"));
+        assert_eq!(parsed.scale_bounds, Some([0.0001, 1.0]));
+    }
+
+    #[test]
+    fn derive_scale_matches_web_mercator_tile_size_at_center_lat() {
+        let bounds = [45.0, -122.0, 46.0, -121.0];
+        let center_lat = (bounds[0] + bounds[2]) / 2.0;
+        let max_zoom = 12u8;
+        let tile_size = 256u16;
+
+        let expected_tile_world_size_m =
+            WEB_MERCATOR_EQUATOR_M * center_lat.to_radians().cos() / 2f64.powi(max_zoom as i32);
+
+        let (gsd, native_scale) = derive_scale_from_bounds(bounds, max_zoom, tile_size);
+
+        // GSD * tile_size reconstructs the tile's real-meter edge length.
+        assert!((gsd * tile_size as f64 - expected_tile_world_size_m).abs() < 1e-6);
+        // native_scale is the inverse relationship (world units per meter).
+        assert!((native_scale * expected_tile_world_size_m - tile_size as f64).abs() < 1e-6);
+        assert!(gsd > 0.0 && gsd != 1.0);
+        assert!(native_scale > 0.0 && native_scale != 1.0);
+    }
 }

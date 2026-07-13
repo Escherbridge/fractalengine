@@ -8,6 +8,7 @@ pub mod lod_ring;
 pub mod mesh;
 pub mod petal_binding;
 pub mod projection;
+pub mod ruler;
 pub mod scale;
 pub mod simplify;
 pub mod splat;

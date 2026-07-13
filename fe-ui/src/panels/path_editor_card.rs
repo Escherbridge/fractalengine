@@ -47,6 +47,9 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("Tracks ({})", path_state.tracks.len())).strong().color(theme::TEXT_SECTION));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // FR-3: this button is now a manual override, not the only sync
+            // path — `db_results::apply_db_results` auto re-runs the query
+            // on NodeCreated/NodeDeleted/`gis.track.name` property changes.
             let label = if path_state.tracks_pending { "Refreshing..." } else { "Refresh" };
             if ui
                 .add_enabled(!path_state.tracks_pending, egui::Button::new(label).fill(theme::BG_BUTTON))
@@ -159,6 +162,14 @@ fn render_edit_view(
         return;
     }
 
+    ui.label(
+        egui::RichText::new("Click terrain to add \u{2022} drag markers to move \u{2022} Shift/Alt+click a marker to annotate")
+            .small()
+            .color(theme::TEXT_MUTED)
+            .italics(),
+    );
+    ui.add_space(4.0);
+
     let mut to_remove: Option<usize> = None;
     let mut to_annotate: Option<usize> = None;
     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
@@ -192,19 +203,74 @@ fn render_edit_view(
 
     if let Some(index) = to_remove {
         ui_mgr.push_action(UiAction::PathRemovePoint { track_node_id: track_id.to_string(), index });
+        if path_state.annotating_index == Some(index) {
+            path_state.close_annotate_form();
+        }
     }
     if let Some(index) = to_annotate {
-        // v1: annotate with a placeholder title derived from the index —
-        // out of scope to add a per-point annotation form in this pass
-        // (no dedicated buffer for it); reuses the same reserved
-        // `gis.annotation.*` contract as the Annotation card once the
-        // bridge creates the waypoint node. See AGENTS.md §path-editor.
-        ui_mgr.push_action(UiAction::PathAnnotatePoint {
-            track_node_id: track_id.to_string(),
-            index,
-            title: format!("Waypoint {index}"),
-            body: String::new(),
-            color: String::new(),
-        });
+        path_state.open_annotate_form(index);
     }
+
+    // Inline annotation form for the point set by a list "Annotate" click or a
+    // Shift/Alt+click on the point's viewport marker. Reuses the
+    // `gis.annotation.*` contract once the bridge creates the waypoint node.
+    if let Some(index) = path_state.annotating_index {
+        render_annotate_form(ui, path_state, ui_mgr, track_id, index);
+    }
+}
+
+/// Inline title/body/color form for annotating point `index`. Emits a
+/// `PathAnnotatePoint` on Save and closes the form on Save/Cancel.
+fn render_annotate_form(
+    ui: &mut egui::Ui,
+    path_state: &mut PathEditorState,
+    ui_mgr: &mut UiManager,
+    track_id: &str,
+    index: usize,
+) {
+    ui.add_space(6.0);
+    egui::Frame::NONE
+        .fill(theme::BG_PEER_ROW_EVEN)
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(3.0)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("Annotate point {index}"))
+                    .strong()
+                    .color(theme::TEXT_SECTION),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Title");
+                ui.add(egui::TextEdit::singleline(&mut path_state.annotate_title_buf).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Body ");
+                ui.add(egui::TextEdit::singleline(&mut path_state.annotate_body_buf).desired_width(200.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Color");
+                ui.add(
+                    egui::TextEdit::singleline(&mut path_state.annotate_color_buf)
+                        .hint_text("#00ff00")
+                        .desired_width(120.0),
+                );
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new("Save").fill(theme::BG_SAVE)).clicked() {
+                    ui_mgr.push_action(UiAction::PathAnnotatePoint {
+                        track_node_id: track_id.to_string(),
+                        index,
+                        title: path_state.annotate_title_buf.clone(),
+                        body: path_state.annotate_body_buf.clone(),
+                        color: path_state.annotate_color_buf.clone(),
+                    });
+                    path_state.close_annotate_form();
+                }
+                if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).clicked() {
+                    path_state.close_annotate_form();
+                }
+            });
+        });
 }

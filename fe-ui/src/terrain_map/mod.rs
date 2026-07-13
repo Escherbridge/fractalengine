@@ -23,6 +23,9 @@ pub struct PetalMapState {
     pub loaded: bool,
     /// World units per real meter for the active map (`1.0` = human scale).
     pub world_scale: f64,
+    /// Hexon-declared `[min, max]` clamp bounds for `world_scale` (FR-6),
+    /// read back from `terrain_json["scale_bounds"]`. `None` = unbounded.
+    pub scale_bounds: Option<[f64; 2]>,
     /// The raw, last-loaded petal terrain JSON (fe-terrain's `TerrainConfig`
     /// serde shape). Kept verbatim (not just the derived fields above) so the
     /// GIS Layer Manager (`crate::gis`) can mutate a single field (e.g. one
@@ -38,6 +41,7 @@ impl Default for PetalMapState {
             tileset_ids: Vec::new(),
             loaded: false,
             world_scale: 1.0,
+            scale_bounds: None,
             terrain_json: None,
         }
     }
@@ -70,6 +74,7 @@ pub(crate) fn load_petal_terrain_on_nav_change(
     petal_map.loaded = false;
     // Reset to human scale pending the load; PetalTerrainLoaded restores the stored value.
     petal_map.world_scale = 1.0;
+    petal_map.scale_bounds = None;
     petal_map.terrain_json = None;
     if let Some(petal_id) = nav.active_petal_id.clone() {
         if db_sender
@@ -100,7 +105,15 @@ pub(crate) fn sync_camera_scale_from_petal_map(
 /// Bounds are `[min_lat, min_lon, max_lat, max_lon]`; origin = bounds center.
 /// `world_scale` is world units per real meter (`1.0` = human scale). fe-ui builds
 /// this via `serde_json` only — it must not depend on fe-terrain (boundary rule).
-pub(crate) fn tileset_to_terrain_json(ts: &InstalledTilesetDto, world_scale: f64) -> serde_json::Value {
+///
+/// `scale_bounds` (FR-6) is the hexon-declared `[min, max]` clamp range, carried
+/// through verbatim as the `scale_bounds` JSON key so `TerrainConfig` (fe-terrain)
+/// can clamp; `None` omits the key (unbounded).
+pub(crate) fn tileset_to_terrain_json(
+    ts: &InstalledTilesetDto,
+    world_scale: f64,
+    scale_bounds: Option<[f64; 2]>,
+) -> serde_json::Value {
     if ts.bounds == [0.0, 0.0, 0.0, 0.0] {
         bevy::log::warn!(
             "tileset {} has unpopulated bounds; origin will default to (0,0) (Gulf of Guinea)",
@@ -112,7 +125,7 @@ pub(crate) fn tileset_to_terrain_json(ts: &InstalledTilesetDto, world_scale: f64
     } else {
         1.0
     };
-    serde_json::json!({
+    let mut json = serde_json::json!({
         "enabled": true,
         "origin": {
             "origin_lat": (ts.bounds[0] + ts.bounds[2]) / 2.0,
@@ -131,7 +144,11 @@ pub(crate) fn tileset_to_terrain_json(ts: &InstalledTilesetDto, world_scale: f64
         "tileset_hexon_uris": [ts.hexon_id],
         "tile_source_mode": "hybrid",
         "world_scale": world_scale,
-    })
+    });
+    if let Some(bounds) = scale_bounds {
+        json["scale_bounds"] = serde_json::json!(bounds);
+    }
+    json
 }
 
 #[cfg(test)]
@@ -154,23 +171,37 @@ mod tests {
 
     #[test]
     fn terrain_json_carries_world_scale() {
-        let v = tileset_to_terrain_json(&dto(), 0.001);
+        let v = tileset_to_terrain_json(&dto(), 0.001, None);
         assert_eq!(v["world_scale"], serde_json::json!(0.001));
         assert_eq!(v["tileset_hexon_uris"], serde_json::json!(["ts-1"]));
     }
 
     #[test]
     fn terrain_json_sanitizes_bad_scale() {
-        assert_eq!(tileset_to_terrain_json(&dto(), 0.0)["world_scale"], serde_json::json!(1.0));
-        assert_eq!(tileset_to_terrain_json(&dto(), -3.0)["world_scale"], serde_json::json!(1.0));
+        assert_eq!(tileset_to_terrain_json(&dto(), 0.0, None)["world_scale"], serde_json::json!(1.0));
+        assert_eq!(tileset_to_terrain_json(&dto(), -3.0, None)["world_scale"], serde_json::json!(1.0));
         assert_eq!(
-            tileset_to_terrain_json(&dto(), f64::NAN)["world_scale"],
+            tileset_to_terrain_json(&dto(), f64::NAN, None)["world_scale"],
             serde_json::json!(1.0)
         );
     }
 
     #[test]
+    fn terrain_json_carries_scale_bounds_when_present() {
+        let v = tileset_to_terrain_json(&dto(), 0.001, Some([0.0001, 0.01]));
+        assert_eq!(v["scale_bounds"], serde_json::json!([0.0001, 0.01]));
+    }
+
+    #[test]
+    fn terrain_json_omits_scale_bounds_when_absent() {
+        let v = tileset_to_terrain_json(&dto(), 0.001, None);
+        assert!(v.get("scale_bounds").is_none());
+    }
+
+    #[test]
     fn petal_map_state_defaults_to_human_scale() {
-        assert_eq!(PetalMapState::default().world_scale, 1.0);
+        let state = PetalMapState::default();
+        assert_eq!(state.world_scale, 1.0);
+        assert!(state.scale_bounds.is_none());
     }
 }

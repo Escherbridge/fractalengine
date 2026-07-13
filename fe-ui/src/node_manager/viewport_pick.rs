@@ -21,6 +21,10 @@ pub(super) fn handle_viewport_click(
     if manager.is_dragging() {
         return;
     }
+    // Path-edit mode owns viewport clicks (place / drag / annotate points).
+    if manager.path_edit_capturing {
+        return;
+    }
     if !mouse_button.just_pressed(MouseButton::Left) {
         return;
     }

@@ -48,6 +48,10 @@ fn make_meta(tile_count: u32) -> TilesetMeta {
         region_name: "QA Region".into(),
         parent_tileset: None,
         chunk_index: None,
+        native_scale: None,
+        ground_sample_distance_m: None,
+        crs: None,
+        scale_bounds: None,
     }
 }
 
@@ -287,6 +291,10 @@ fn check3_builder_equivalent_roundtrip() {
         region_name: region.into(),
         parent_tileset: None,
         chunk_index: None,
+        native_scale: None,
+        ground_sample_distance_m: None,
+        crs: None,
+        scale_bounds: None,
     };
 
     let archive = HexonArchive::export_tileset(manifest.clone(), &meta, &tiles, &[], None)
@@ -403,6 +411,10 @@ fn check5_chunk_index_sequential() {
                 total_chunks,
                 chunk_bounds: bounds,
             }),
+            native_scale: None,
+            ground_sample_distance_m: None,
+            crs: None,
+            scale_bounds: None,
         };
         let manifest = make_manifest(&format!("{tileset_id}-chunk-{seq}"));
         let archive = HexonArchive::export_tileset(manifest, &meta, &chunk_tiles, &[], None)
@@ -452,6 +464,10 @@ fn check6_full_roundtrip_elevation_and_satellite() {
         region_name: "Roundtrip Test".into(),
         parent_tileset: None,
         chunk_index: None,
+        native_scale: None,
+        ground_sample_distance_m: None,
+        crs: None,
+        scale_bounds: None,
     };
 
     let archive = HexonArchive::export_tileset(

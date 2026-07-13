@@ -77,6 +77,23 @@ pub(crate) fn remove_point(
     path_ops.0.push(PathOp::RemovePoint { track_node_id, index });
 }
 
+/// Moves point `index` to `position` in both the local buffer and the op
+/// queue. Out-of-range index still queues the op (bridge is source of truth).
+pub(crate) fn move_point(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    track_node_id: String,
+    index: usize,
+    position: [f32; 3],
+) {
+    if let Some(row) = path_state.points.get_mut(index) {
+        row.position = position;
+    } else {
+        bevy::log::warn!("Paths: move_point index {index} out of range for local buffer");
+    }
+    path_ops.0.push(PathOp::MovePoint { track_node_id, index, position });
+}
+
 pub(crate) fn annotate_point(
     path_ops: &mut PendingPathOps,
     track_node_id: String,
@@ -180,6 +197,36 @@ mod tests {
         assert!(state.points.is_empty());
         assert_eq!(ops.0.len(), 1);
         assert!(matches!(ops.0[0], PathOp::RemovePoint { index: 5, .. }));
+    }
+
+    #[test]
+    fn move_point_updates_local_buffer_and_queues_op() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
+        move_point(&mut ops, &mut state, "track-1".to_string(), 0, [5.0, 0.0, 5.0]);
+        assert_eq!(state.points[0].position, [5.0, 0.0, 5.0]);
+        assert_eq!(ops.0.len(), 2);
+        match &ops.0[1] {
+            PathOp::MovePoint { track_node_id, index, position } => {
+                assert_eq!(track_node_id, "track-1");
+                assert_eq!(*index, 0);
+                assert_eq!(*position, [5.0, 0.0, 5.0]);
+            }
+            other => panic!("expected MovePoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn move_point_out_of_range_still_queues_op() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        move_point(&mut ops, &mut state, "track-1".to_string(), 9, [5.0, 0.0, 5.0]);
+        assert!(state.points.is_empty());
+        assert_eq!(ops.0.len(), 1);
+        assert!(matches!(ops.0[0], PathOp::MovePoint { index: 9, .. }));
     }
 
     #[test]

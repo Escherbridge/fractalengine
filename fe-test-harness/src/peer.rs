@@ -196,6 +196,7 @@ impl TestPeer {
                             petal_id,
                             name,
                             position,
+                            correlation_id,
                         }) => {
                             match create_node(&db, &petal_id, &name, position).await {
                                 Ok(id) => {
@@ -205,6 +206,7 @@ impl TestPeer {
                                             petal_id,
                                             name,
                                             has_asset: false,
+                                            correlation_id,
                                         })
                                         .ok();
                                 }
@@ -530,6 +532,30 @@ impl TestPeer {
                         }
                         Ok(DbCommand::DeleteNodeProperty { node_id, key }) => {
                             db_result_tx.send(DbResult::NodePropertyDeleted { node_id, key }).ok();
+                        }
+                        Ok(DbCommand::DeleteNode { node_id }) => {
+                            // Mirror the real handler: look up petal_id, delete the node +
+                            // its cascade, echo NodeDeleted. Best-effort in the harness.
+                            let petal_id = db
+                                .query("SELECT petal_id FROM node WHERE node_id = $node_id")
+                                .bind(("node_id", node_id.clone()))
+                                .await
+                                .ok()
+                                .and_then(|mut r| r.take::<Vec<serde_json::Value>>(0).ok())
+                                .and_then(|rows| {
+                                    rows.first()
+                                        .and_then(|v| v.get("petal_id"))
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from)
+                                })
+                                .unwrap_or_default();
+                            db.query(
+                                "DELETE node WHERE node_id = $node_id OR properties.gpx_track_id = $node_id",
+                            )
+                            .bind(("node_id", node_id.clone()))
+                            .await
+                            .ok();
+                            db_result_tx.send(DbResult::NodeDeleted { node_id, petal_id }).ok();
                         }
                         Ok(DbCommand::RawQuery { sql, vars }) => {
                             let mut query_builder = db.query(&sql);

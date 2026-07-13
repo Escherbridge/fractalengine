@@ -72,12 +72,17 @@ pub struct TerrainConfig {
     /// World units per real meter (`0.001` → 1 unit per km); see `src/AGENTS.md` §scale.
     #[serde(default = "default_world_scale")]
     pub world_scale: f64,
+    /// Hexon-declared `[min, max]` world-scale bounds (C1); user nudges of
+    /// `world_scale` are clamped into this range. `None` = unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_bounds: Option<[f64; 2]>,
 }
 
 impl TerrainConfig {
-    /// Sanitized world scale (finite, > 0); falls back to `1.0` on bad JSON.
+    /// Sanitized, hexon-bound-clamped world scale (FR-5); falls back to
+    /// `1.0` on bad JSON, clamps into `scale_bounds` when present.
     pub fn effective_world_scale(&self) -> f64 {
-        crate::scale::sanitize_world_scale(self.world_scale)
+        crate::scale::clamp_world_scale_to_bounds(self.world_scale, self.scale_bounds)
     }
 }
 
@@ -112,6 +117,7 @@ impl Default for TerrainConfig {
             tileset_hexon_uris: vec![],
             tile_source_mode: TileSourceMode::default(),
             world_scale: default_world_scale(),
+            scale_bounds: None,
         }
     }
 }
@@ -157,5 +163,15 @@ mod tests {
         assert_eq!(cfg.effective_world_scale(), 1.0);
         cfg.world_scale = f64::NAN;
         assert_eq!(cfg.effective_world_scale(), 1.0);
+    }
+
+    #[test]
+    fn effective_world_scale_clamps_to_hexon_scale_bounds() {
+        let cfg = TerrainConfig {
+            world_scale: 5.0,
+            scale_bounds: Some([0.001, 0.1]),
+            ..TerrainConfig::default()
+        };
+        assert_eq!(cfg.effective_world_scale(), 0.1);
     }
 }

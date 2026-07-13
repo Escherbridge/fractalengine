@@ -4,6 +4,34 @@ use std::io::{Cursor, Read, Write};
 use crate::manifest::{AssetEntry, HexonManifest, License};
 use crate::signature;
 use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
+
+/// Baked splat coverage buffer for one terrain tile (track
+/// `splat_hexon_bake_20260712`, FR-2). Optional/versioned: an absent field on
+/// a `TerrainTileset` hexon means the runtime falls back to live
+/// `synthesize_splats` at native density (no crash, no live fill — see
+/// `fe-terrain/src/splat/format.rs`, which owns the actual
+/// `terrain/splats/{cache_key}.bin` on-disk shape embedded in the tileset ZIP
+/// via `fe_terrain::splat::format::{append,read}_baked_splats_to_archive`).
+/// Mirrored here (not re-exported, `fe-terrain` is not a dependency of this
+/// crate) so hexon-format consumers outside `fe-terrain` have a canonical
+/// serde description of the per-tile record without a crate-graph edge back
+/// into `fe-terrain`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BakedSplatTileRecord {
+    /// Format version; bump on any incompatible field/encoding change.
+    pub version: u16,
+    /// Tile cache key, `{z}/{x}/{y}`.
+    pub cache_key: String,
+    pub positions: Vec<[f32; 3]>,
+    pub colors: Vec<[f32; 4]>,
+    pub scales: Vec<[f32; 2]>,
+    pub normals: Vec<[f32; 3]>,
+}
+
+/// Current on-disk format version for [`BakedSplatTileRecord`]; kept in lockstep
+/// with `fe_terrain::splat::format::BAKED_SPLAT_FORMAT_VERSION`.
+pub const BAKED_SPLAT_TILE_RECORD_VERSION: u16 = 1;
 
 /// In-memory representation of a fully parsed .fecrate package.
 #[derive(Debug, Clone)]
@@ -635,6 +663,33 @@ mod tests {
         assert_eq!(pkg2.license.license_type, LicenseType::Paid);
         assert!(pkg2.license.payment_provider.is_some());
         assert!(pkg2.signature_valid());
+    }
+
+    #[test]
+    fn test_baked_splat_tile_record_json_roundtrip() {
+        let record = BakedSplatTileRecord {
+            version: BAKED_SPLAT_TILE_RECORD_VERSION,
+            cache_key: "10/512/340".to_string(),
+            positions: vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            colors: vec![[1.0, 0.0, 0.0, 1.0]; 2],
+            scales: vec![[0.5, 0.4]; 2],
+            normals: vec![[0.0, 1.0, 0.0]; 2],
+        };
+        let json = serde_json::to_string(&record).expect("serialize should succeed");
+        let back: BakedSplatTileRecord = serde_json::from_str(&json).expect("deserialize should succeed");
+        assert_eq!(back.cache_key, record.cache_key);
+        assert_eq!(back.positions, record.positions);
+        assert_eq!(back.colors, record.colors);
+        assert_eq!(back.scales, record.scales);
+        assert_eq!(back.normals, record.normals);
+        assert_eq!(back.version, record.version);
+    }
+
+    #[test]
+    fn test_baked_splat_tile_record_defaults_empty() {
+        let record = BakedSplatTileRecord::default();
+        assert!(record.positions.is_empty());
+        assert!(record.cache_key.is_empty());
     }
 
     #[test]

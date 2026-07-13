@@ -93,6 +93,8 @@ pub enum UiAction {
     PathAppendPoint { track_node_id: String, position: [f32; 3] },
     /// Remove the point at `index` from a track's point list.
     PathRemovePoint { track_node_id: String, index: usize },
+    /// Move the point at `index` to a new world position (viewport drag commit).
+    PathMovePoint { track_node_id: String, index: usize, position: [f32; 3] },
     /// Create a waypoint annotation at point `index`'s position.
     PathAnnotatePoint {
         track_node_id: String,
@@ -376,6 +378,9 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PathRemovePoint { track_node_id, index } => {
                 path::remove_point(&mut path_ops, &mut path_state, track_node_id, index);
+            }
+            UiAction::PathMovePoint { track_node_id, index, position } => {
+                path::move_point(&mut path_ops, &mut path_state, track_node_id, index, position);
             }
             UiAction::PathAnnotatePoint { track_node_id, index, title, body, color } => {
                 path::annotate_point(&mut path_ops, track_node_id, index, title, body, color);

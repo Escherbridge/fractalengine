@@ -26,6 +26,8 @@ dirs = "5"
 tracing = { workspace = true }
 fe-format = { path = "../fe-format" }
 fe-sdk = { path = "../fe-sdk" }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+bincode = "1"
 
 # Optional
 bevy = { workspace = true, optional = true }
