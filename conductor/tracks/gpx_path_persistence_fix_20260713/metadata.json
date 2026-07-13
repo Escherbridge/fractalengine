@@ -1,0 +1,13 @@
+{
+  "id": "gpx_path_persistence_fix_20260713",
+  "description": "Fix GPX paths not reloading on leave/return: read persisted gpx_points back into the editor buffer via a PathSelectTrack UiAction + GetNodeProperties round-trip",
+  "type": "bugfix",
+  "created_at": "2026-07-13T00:00:00Z",
+  "status": "in-progress",
+  "execution_wave": 0,
+  "wave_rationale": "Smallest unit, unblocks in-app testing of the whole GPX reorient. Ultrapilot work unit W1.",
+  "depends_on": ["gpx_path_editor_20260711"],
+  "blocks": [],
+  "archived": false,
+  "notes": "Reuses Track-1 hardening's NodePropertiesLoaded/NodeDeleted change-notification backbone. Root cause is the deliberate points.clear() in start_editing (documented no-read-back v1 limitation). No new message types."
+}

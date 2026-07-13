@@ -383,17 +383,28 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    top of `GisPanelState.query_pending`/the inspector's ad-hoc Query tab (see
    the existing residual note above); checked after `gis_panel.query_pending`,
    before the inspector fallback.
-3. **Point-list editing is local-only in v1** — `PathEditorState.points`
-   (`Vec<PathPointRow>`, `{ position, time_seconds }`) is populated purely by
-   queuing `AppendPoint`/`RemovePoint` ops (`actions::path::append_point`/
-   `remove_point`), never read back from the DB. Re-selecting an
-   already-edited track (`PathEditorState::start_editing`) always starts
-   from an empty local buffer — there is no `GetNodeProperties`-style
-   round-trip to repopulate `gpx_points` client-side. This is an accepted v1
-   gap (out of scope per the track spec's "no drag-gizmo... list-based
-   move/remove suffices"): if a user navigates away from the Paths tab
-   mid-edit and returns, their in-progress point list is gone (the queued
-   ops already landed at the bridge, only the *UI's echo* is lost).
+3. **Point-list editing reads back persisted `gpx_points` on track select.**
+   Track-row clicks in `path_editor_card::render_track_list` push
+   `UiAction::PathSelectTrack { track_node_id }` (selection bypasses the
+   panel's own `db_sender`, so it must route through the action pipeline
+   rather than calling `PathEditorState::start_editing` directly — mirrors
+   why every other Paths op is a `UiAction`). The handler
+   (`actions::path::select_track`) calls `start_editing` (clears the local
+   buffer), sets `PathEditorState.points_pending = true`, and sends
+   `DbCommand::GetNodeProperties { node_id: track_node_id }`. The reply lands
+   in `verse_manager::db_results`' `DbResult::NodePropertiesLoaded` arm,
+   gated on `path_state.editing_track_id.as_deref() == Some(node_id)` AND
+   `points_pending` — a **separate claimant from the inspector's
+   `is_for_selected_node` guard** on the same (uncorrelated, broadcast)
+   result type, since the inspector may have its own `GetNodeProperties` in
+   flight concurrently. On match, `properties.get("gpx_points")` is decoded
+   via `gis::query::decode_gpx_points` (mirrors the bridge's
+   `json_to_route_points` in `fractalengine/src/gpx_bridge.rs`: JSON array
+   of `[x, y, z, time_seconds]`, best-effort-skipping malformed/short
+   entries) into `PathEditorState.points`, then `points_pending` clears.
+   After this, further edits within the session still build up purely via
+   queued `PathOp`s (`actions::path::append_point`/`remove_point`/etc.) —
+   only the *initial* load on track-select is a DB round-trip.
 4. **Append from cursor** reuses `plugin::ViewportCursorWorld` (the same
    resource the context-menu GLB-import flow uses) — the button is disabled
    when `cursor_world.pos` is `None` (cursor not over the viewport / no

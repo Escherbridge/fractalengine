@@ -7,6 +7,7 @@ pub(crate) mod inspector;
 pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
+pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
 
 mod annotation_card;
@@ -53,6 +54,7 @@ pub fn gardener_console(
     gpx_status: &crate::gpx_ops::GpxImportStatus,
     path_state: &mut crate::gis::PathEditorState,
     path_status: &crate::path_ops::PathEditStatus,
+    tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
 ) -> egui::Rect {
     toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr, gis_panel);
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
@@ -112,6 +114,11 @@ pub fn gardener_console(
         ctx, gis_panel, node_mgr, hierarchy, nav, petal_map, ui_mgr, camera_focus, gpx_status, path_state,
         path_status, cursor_world,
     );
+
+    // Tools panel (independent floating window, hosts hexon-path-asset
+    // stamping controls; hexon picker + action wiring deferred — see
+    // panels/AGENTS.md §tool-panel).
+    tool_panel::render_tool_panel(ctx, tool_panel);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);

@@ -199,7 +199,8 @@ pub(super) fn handle_gimbal_interaction(
                     transform.rotation =
                         Quat::from_axis_angle(axis_dir, movement * 0.01) * drag.start_rot;
                 }
-                Tool::Select => {}
+                // Pen is a path-drawing mode, not a transform gizmo — no drag.
+                Tool::Select | Tool::Pen => {}
             }
             return;
         }

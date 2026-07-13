@@ -85,6 +85,9 @@ pub enum UiAction {
     // Path editor actions — see AGENTS.md §path-editor.
     /// Run the "track nodes" query for a petal (Paths tab track list).
     PathQueryTracks { petal_id: String },
+    /// Select a track for editing and read back its persisted `gpx_points`
+    /// via `GetNodeProperties`/`NodePropertiesLoaded`.
+    PathSelectTrack { track_node_id: String },
     /// Create a new (empty) track node named `name` under `petal_id`.
     PathCreateTrack { petal_id: String, name: String },
     /// Delete a track node and its persisted points.
@@ -359,6 +362,9 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PathQueryTracks { petal_id } => {
                 path::query_tracks(&db_sender, &mut path_state, petal_id);
+            }
+            UiAction::PathSelectTrack { track_node_id } => {
+                path::select_track(&db_sender, &mut path_state, track_node_id);
             }
             UiAction::PathCreateTrack { petal_id, name } => {
                 if let Err(err) = path::create_track(&mut path_ops, petal_id, name) {

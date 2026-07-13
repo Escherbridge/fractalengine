@@ -433,6 +433,22 @@ pub(super) fn apply_db_results(
             // buffers. See `fe-ui/src/AGENTS.md` §gis-query-ui
             // annotation-save-fix.
             DbResult::NodePropertiesLoaded { ref node_id, ref properties } => {
+                // Path editor's `gpx_points` read-back (PathSelectTrack): a
+                // DIFFERENT claimant from the inspector's `is_for_selected_node`
+                // guard below — `NodePropertiesLoaded` has no correlation id
+                // and is broadcast to every reader, so the inspector's own
+                // GetNodeProperties reply must not stomp this buffer and vice
+                // versa. Gated on `editing_track_id` still matching (guards a
+                // stale reply after the user picked a different track or left
+                // the editor) + `points_pending` (only the read-back we asked
+                // for, not e.g. a later unrelated load). See AGENTS.md §path-editor.
+                if path_state.editing_track_id.as_deref() == Some(node_id.as_str()) && path_state.points_pending {
+                    path_state.points = properties
+                        .get("gpx_points")
+                        .map(crate::gis::decode_gpx_points)
+                        .unwrap_or_default();
+                    path_state.points_pending = false;
+                }
                 if !is_for_selected_node(&node_mgr, node_id) {
                     continue;
                 }

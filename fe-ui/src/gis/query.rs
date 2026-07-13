@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::GisResultRow;
+use super::{GisResultRow, PathPointRow};
 
 /// Reserved annotation-title/color property keys (mirrors `actions::node_props`,
 /// duplicated here rather than pulled in as a dependency to keep this module
@@ -136,6 +136,33 @@ fn extract_xz(pos: Option<&serde_json::Value>) -> (f32, f32) {
         return (x, z);
     }
     (0.0, 0.0)
+}
+
+// ---------------------------------------------------------------------------
+// Path-editor read-back decoding (pure) — mirrors the GPX bridge's
+// `json_to_route_points` (fractalengine/src/gpx_bridge.rs), decode-only,
+// no persistence I/O. See AGENTS.md §path-editor.
+// ---------------------------------------------------------------------------
+
+/// Decodes a node's persisted `gpx_points` property (JSON array of
+/// `[x, y, z, time_seconds]`) into local editor point rows, skipping
+/// malformed/short entries best-effort.
+pub(crate) fn decode_gpx_points(value: &serde_json::Value) -> Vec<PathPointRow> {
+    value
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let a = entry.as_array()?;
+                    let x = a.first()?.as_f64()? as f32;
+                    let y = a.get(1)?.as_f64()? as f32;
+                    let z = a.get(2)?.as_f64()? as f32;
+                    let t = a.get(3).and_then(|v| v.as_f64());
+                    Some(PathPointRow { position: [x, y, z], time_seconds: t })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -285,5 +312,44 @@ mod tests {
     fn parse_bbox_fields_valid_and_invalid() {
         assert_eq!(parse_bbox_fields(&["1.5".into(), "-2.0".into()]), Some([1.5, -2.0]));
         assert_eq!(parse_bbox_fields(&["abc".into(), "1.0".into()]), None);
+    }
+
+    #[test]
+    fn decode_gpx_points_full_entries() {
+        let value = serde_json::json!([[1.0, 2.0, 3.0, 10.5], [4.0, 5.0, 6.0, 20.0]]);
+        let points = decode_gpx_points(&value);
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].position, [1.0, 2.0, 3.0]);
+        assert_eq!(points[0].time_seconds, Some(10.5));
+        assert_eq!(points[1].position, [4.0, 5.0, 6.0]);
+        assert_eq!(points[1].time_seconds, Some(20.0));
+    }
+
+    #[test]
+    fn decode_gpx_points_missing_timestamp_yields_none() {
+        let value = serde_json::json!([[1.0, 2.0, 3.0]]);
+        let points = decode_gpx_points(&value);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].position, [1.0, 2.0, 3.0]);
+        assert!(points[0].time_seconds.is_none());
+    }
+
+    #[test]
+    fn decode_gpx_points_skips_malformed_entries() {
+        let value = serde_json::json!([[1.0, 2.0], [1.0, 2.0, 3.0, 4.0], "not-an-array"]);
+        let points = decode_gpx_points(&value);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].position, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn decode_gpx_points_non_array_value_yields_empty() {
+        assert!(decode_gpx_points(&serde_json::json!(null)).is_empty());
+        assert!(decode_gpx_points(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn decode_gpx_points_empty_array_yields_empty() {
+        assert!(decode_gpx_points(&serde_json::json!([])).is_empty());
     }
 }

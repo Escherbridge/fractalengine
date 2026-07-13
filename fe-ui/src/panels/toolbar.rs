@@ -16,6 +16,8 @@ pub enum Tool {
     Move,
     Rotate,
     Scale,
+    /// Click-to-place polyline pen for path editing; see `node_manager/AGENTS.md` §pen-tool.
+    Pen,
 }
 
 pub(crate) fn top_toolbar(
@@ -58,6 +60,7 @@ pub(crate) fn top_toolbar(
                         "Rotate selected object (R)",
                     ),
                     (Tool::Scale, "\u{2921} Scale", "Scale selected object (X)"),
+                    (Tool::Pen, "\u{270E} Pen", "Draw a path: click the viewport to add points (P)"),
                 ] {
                     let active = tool.active_tool == t;
                     let btn = egui::Button::new(label).fill(if active {

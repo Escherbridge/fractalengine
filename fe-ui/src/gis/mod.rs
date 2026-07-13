@@ -11,8 +11,8 @@ pub(crate) use layers::{
     view_mode_from_terrain_json, ViewMode,
 };
 pub(crate) use query::{
-    annotation_query, bbox_contains, parse_bbox_fields, parse_filter_value, parse_gis_rows,
-    property_filter_query, track_query,
+    annotation_query, bbox_contains, decode_gpx_points, parse_bbox_fields, parse_filter_value,
+    parse_gis_rows, property_filter_query, track_query,
 };
 
 use bevy::prelude::*;
@@ -133,11 +133,17 @@ pub struct PathEditorState {
     pub new_track_name_buf: String,
     /// The track node currently selected for editing, if any.
     pub editing_track_id: Option<String>,
-    /// Local point-list buffer for `editing_track_id`. fe-ui builds this up
-    /// purely from queued `PathOp`s (Append/Remove) — there is no read-back
-    /// from the DB in v1, since the bridge is the only reader/writer of
-    /// `gpx_points` (see FR-2/FR-3 in the track spec).
+    /// Local point-list buffer for `editing_track_id`, seeded by a
+    /// `PathSelectTrack` read-back (`GetNodeProperties` → `NodePropertiesLoaded`)
+    /// and then built up further purely from queued `PathOp`s (Append/Remove).
+    /// See `fe-ui/src/AGENTS.md` §path-editor.
     pub points: Vec<PathPointRow>,
+    /// `true` while the `GetNodeProperties` round-trip issued by
+    /// `PathSelectTrack` is in flight — gates `verse_manager::db_results`'
+    /// `NodePropertiesLoaded` handling so it repopulates `points` instead of
+    /// being swallowed by (or stomping) the inspector's own property-load
+    /// guard. Same idiom as `tracks_pending`.
+    pub points_pending: bool,
     pub last_error: Option<String>,
     /// Point index whose annotation form is currently open, if any. Set by a
     /// modifier-click on a point marker or the list "Annotate" flow; drives the
@@ -150,9 +156,12 @@ pub struct PathEditorState {
 }
 
 impl PathEditorState {
-    /// Starts editing `track_node_id` with a fresh (empty) point buffer —
-    /// v1 has no read-back of persisted `gpx_points`, so re-selecting an
-    /// existing track always starts from an empty local list.
+    /// Starts editing `track_node_id` with an empty point buffer. Callers
+    /// that want the persisted `gpx_points` read back (the normal
+    /// track-selection path) should route through `UiAction::PathSelectTrack`
+    /// instead of calling this directly — it also sets `points_pending` and
+    /// issues the `GetNodeProperties` round-trip that repopulates `points`.
+    /// See `fe-ui/src/AGENTS.md` §path-editor.
     pub(crate) fn start_editing(&mut self, track_node_id: String) {
         self.editing_track_id = Some(track_node_id);
         self.points.clear();
@@ -161,6 +170,7 @@ impl PathEditorState {
     pub(crate) fn stop_editing(&mut self) {
         self.editing_track_id = None;
         self.points.clear();
+        self.points_pending = false;
         self.close_annotate_form();
     }
 

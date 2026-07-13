@@ -29,6 +29,8 @@ pub(super) fn handle_tool_shortcuts(
         tool.active_tool = Tool::Rotate;
     } else if keyboard.just_pressed(KeyCode::KeyX) {
         tool.active_tool = Tool::Scale;
+    } else if keyboard.just_pressed(KeyCode::KeyP) {
+        tool.active_tool = Tool::Pen;
     } else if keyboard.just_pressed(KeyCode::Escape) {
         manager.deselect();
     }

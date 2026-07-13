@@ -24,6 +24,21 @@ pub(crate) fn query_tracks(db_sender: &DbCommandSender, path_state: &mut PathEdi
     }
 }
 
+/// Starts editing `track_node_id` and kicks off the `gpx_points` read-back:
+/// sets `points_pending` and issues `GetNodeProperties`. The reply is picked
+/// up in `verse_manager::db_results`, gated on `editing_track_id` +
+/// `points_pending` (see `fe-ui/src/AGENTS.md` §path-editor) so the
+/// inspector's own `GetNodeProperties` replies can't stomp this buffer.
+pub(crate) fn select_track(db_sender: &DbCommandSender, path_state: &mut PathEditorState, track_node_id: String) {
+    path_state.start_editing(track_node_id.clone());
+    path_state.points_pending = true;
+    if db_sender.0.send(DbCommand::GetNodeProperties { node_id: track_node_id }).is_err() {
+        bevy::log::warn!("db_sender channel closed — Paths gpx_points read-back not dispatched");
+        path_state.points_pending = false;
+        path_state.last_error = Some("DB channel closed".to_string());
+    }
+}
+
 /// Queues `CreateTrack` and clears the name buffer. Pure validation split
 /// out as `validate_track_name` so it's testable without a queue.
 pub(crate) fn create_track(path_ops: &mut PendingPathOps, petal_id: String, name: String) -> Result<(), &'static str> {
@@ -267,5 +282,21 @@ mod tests {
         delete_track(&mut ops, "track-1".to_string());
         assert_eq!(ops.0.len(), 1);
         assert!(matches!(ops.0[0], PathOp::DeleteTrack { .. }));
+    }
+
+    #[test]
+    fn select_track_starts_editing_and_sets_points_pending() {
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        let db_sender = DbCommandSender(tx);
+        let mut state = PathEditorState::default();
+        state.points.push(PathPointRow { position: [9.0, 0.0, 9.0], time_seconds: None });
+        select_track(&db_sender, &mut state, "track-1".to_string());
+        assert_eq!(state.editing_track_id.as_deref(), Some("track-1"));
+        assert!(state.points.is_empty(), "start_editing clears the stale local buffer");
+        assert!(state.points_pending);
+        match rx.try_recv() {
+            Ok(DbCommand::GetNodeProperties { node_id }) => assert_eq!(node_id, "track-1"),
+            other => panic!("expected GetNodeProperties, got {other:?}"),
+        }
     }
 }
