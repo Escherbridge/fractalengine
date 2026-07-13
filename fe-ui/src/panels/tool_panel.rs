@@ -298,6 +298,10 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
             let pts = curve::circle([0.0, 0.0, 0.0], state.shape_radius, state.shape_segments.max(3));
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
+        if ui.button("Add Rectangle").on_hover_text("Append a rectangle (Radius X \u{00d7} Radius Z) to the edited track").clicked() {
+            let pts = curve::rectangle([0.0, 0.0, 0.0], state.shape_radius * 2.0, state.shape_radius_z * 2.0);
+            state.queue_action(UiAction::PathAppendShape { points: pts });
+        }
     });
     ui.label(
         egui::RichText::new("Shapes append at the origin; drag points to reposition.")
