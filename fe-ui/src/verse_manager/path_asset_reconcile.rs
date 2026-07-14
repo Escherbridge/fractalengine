@@ -8,12 +8,11 @@
 //! `fe-ui/src/verse_manager/AGENTS.md` §path-asset-stamp.
 
 use bevy::prelude::*;
-use fe_sdk::path_asset::{PathAssetDescriptor, SpacingMode, PATH_ASSET_PROPERTY_KEY};
+use fe_sdk::path_asset::{PathAssetDescriptor, SpacingMode};
 
 use super::spawn::{spawn_stamped_entity, PathAssetInstance};
+use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
-use crate::node_manager::NodeManager;
-use crate::plugin::InspectorFormState;
 
 // ---------------------------------------------------------------------------
 // Applied-state gate
@@ -49,35 +48,29 @@ impl PathAssetApplied {
 // Reconcile system
 // ---------------------------------------------------------------------------
 
-/// Stamp the selected track's `path_asset` model along its `gpx_points`.
+/// Stamp the edited track's `path_asset` model along its path points.
 ///
-/// The descriptor + points are read from the selected node's loaded
-/// properties (`InspectorFormState.node_properties`) — the same
-/// selected-node-only property source `reconcile_selected_primitive` uses.
-/// Only runs for the active petal. Change-gated via [`PathAssetApplied`]: a
-/// no-op when nothing changed, a full despawn-and-restamp of the group when
-/// the descriptor or path changed.
+/// Keyed on the **Paths-tab** selection (`PathEditorState.editing_track_id`),
+/// NOT the viewport/tree selection — the Tools panel stamps the Paths-tab
+/// track, so gating on `NodeManager` silently dropped stamps when the two
+/// selections diverged. The descriptor is `PathEditorState.edited_track_path_asset`
+/// (seeded/refreshed by `verse_manager::db_results`) and the points come
+/// straight from `PathEditorState.points`. Only runs for the active petal.
+/// Change-gated via [`PathAssetApplied`]: a no-op when nothing changed, a full
+/// despawn-and-restamp of the group when the descriptor or path changed.
 pub(super) fn reconcile_path_asset(
-    node_mgr: Res<NodeManager>,
     nav: Res<NavigationManager>,
-    inspector: Res<InspectorFormState>,
+    path_state: Res<PathEditorState>,
     asset_server: Res<AssetServer>,
     mut applied: ResMut<PathAssetApplied>,
     mut commands: Commands,
     existing: Query<(Entity, &PathAssetInstance)>,
 ) {
-    let Some(ref sel) = node_mgr.selected else { return };
     let Some(petal_id) = nav.active_petal_id.as_deref() else { return };
-    let track_id = sel.node_id.as_str();
+    let Some(track_id) = path_state.editing_track_id.as_deref() else { return };
+    let Some(descriptor) = path_state.edited_track_path_asset.clone() else { return };
 
-    let Some(raw) = inspector.node_properties.get(PATH_ASSET_PROPERTY_KEY) else { return };
-    let Ok(descriptor) = PathAssetDescriptor::from_json(raw) else { return };
-
-    let points: Vec<[f32; 3]> = inspector
-        .node_properties
-        .get("gpx_points")
-        .map(|v| crate::gis::decode_gpx_points(v).into_iter().map(|p| p.position).collect())
-        .unwrap_or_default();
+    let points: Vec<[f32; 3]> = path_state.points.iter().map(|p| p.position).collect();
 
     let fingerprint = points_fingerprint(&points);
     if applied.matches(track_id, &descriptor, fingerprint) {

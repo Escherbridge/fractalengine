@@ -122,6 +122,7 @@ impl Plugin for NodeManagerPlugin {
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
                 path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
                 viewport_pick::handle_viewport_click,      // claims NodePick — entity pick / deselect
+                viewport_pick::open_track_on_select,       // clicking a track ribbon opens it for editing
                 inspector_sync::sync_manager_to_inspector,
                 gimbal_interaction::draw_gimbal_system,
                 transform_broadcast::broadcast_transform,

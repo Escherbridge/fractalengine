@@ -16,6 +16,7 @@ pub(crate) use query::{
 };
 
 use bevy::prelude::*;
+use fe_sdk::path_asset::PathAssetDescriptor;
 
 /// Which query mode the GIS panel is currently building.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -168,6 +169,14 @@ pub struct PathEditorState {
     /// Stored as raw fields (not `fe_terrain::TrackStyle`) since fe-ui must not
     /// depend on fe-terrain. Default reproduces the historic cyan look.
     pub edited_track_style: TrackStyleFields,
+    /// The edited track's `path_asset` stamp descriptor, seeded from its loaded
+    /// `path_asset` node prop when a track is selected (see
+    /// `verse_manager::db_results`) and refreshed after a `PathAssetApply`
+    /// write round-trips. Drives `verse_manager::reconcile_path_asset`, which
+    /// keys off the Paths-tab selection (`editing_track_id`) rather than the
+    /// viewport/tree selection. `None` when the track has no stamp. Same
+    /// load/reset seam as `edited_track_style`.
+    pub edited_track_path_asset: Option<PathAssetDescriptor>,
 }
 
 /// track_styling_20260713: the Paths-tab style-control state — a fe-ui-local
@@ -244,6 +253,8 @@ impl PathEditorState {
         // Reset to defaults; the real style is seeded when the track's props
         // load (verse_manager::db_results), same seam as `points`.
         self.edited_track_style = TrackStyleFields::default();
+        // Clear the stamp descriptor too; re-seeded from the loaded props.
+        self.edited_track_path_asset = None;
     }
 
     pub(crate) fn stop_editing(&mut self) {
@@ -252,6 +263,7 @@ impl PathEditorState {
         self.points_pending = false;
         self.pending_pen_create = None;
         self.edited_track_style = TrackStyleFields::default();
+        self.edited_track_path_asset = None;
         self.close_annotate_form();
     }
 
@@ -426,6 +438,33 @@ mod tests {
         s.edited_track_style = TrackStyleFields { color: [1.0, 0.0, 0.0, 1.0], width: 9.0, visible: false };
         s.start_editing("track-1".to_string());
         assert_eq!(s.edited_track_style, TrackStyleFields::default());
+    }
+
+    fn sample_descriptor() -> PathAssetDescriptor {
+        PathAssetDescriptor {
+            asset_path: "blob://x.glb".to_string(),
+            spacing_mode: fe_sdk::path_asset::SpacingMode::FixedCount,
+            spacing_value: 0.0,
+            count: 3,
+            tangent_align: true,
+        }
+    }
+
+    #[test]
+    fn start_editing_clears_path_asset_descriptor() {
+        let mut s = PathEditorState::default();
+        s.edited_track_path_asset = Some(sample_descriptor());
+        s.start_editing("track-1".to_string());
+        assert!(s.edited_track_path_asset.is_none(), "start_editing must clear the stale descriptor");
+    }
+
+    #[test]
+    fn stop_editing_clears_path_asset_descriptor() {
+        let mut s = PathEditorState::default();
+        s.start_editing("track-1".to_string());
+        s.edited_track_path_asset = Some(sample_descriptor());
+        s.stop_editing();
+        assert!(s.edited_track_path_asset.is_none(), "stop_editing must clear the descriptor");
     }
 
     #[test]
