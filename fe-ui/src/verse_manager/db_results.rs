@@ -485,6 +485,12 @@ pub(super) fn apply_db_results(
                     // from the same property bag (default when absent/invalid).
                     path_state.edited_track_style =
                         crate::gis::TrackStyleFields::from_properties(properties);
+                    // path-asset-stamp: seed the stamp descriptor from the same
+                    // bag so `reconcile_path_asset` (keyed on `editing_track_id`)
+                    // can spawn the models. `None` when absent/invalid.
+                    path_state.edited_track_path_asset = properties
+                        .get(fe_sdk::path_asset::PATH_ASSET_PROPERTY_KEY)
+                        .and_then(|raw| fe_sdk::path_asset::PathAssetDescriptor::from_json(raw).ok());
                     path_state.points_pending = false;
                 }
                 if !is_for_selected_node(&node_mgr, node_id) {
@@ -509,14 +515,31 @@ pub(super) fn apply_db_results(
                         crate::actions::path::query_tracks(&db_sender, &mut path_state, petal_id);
                     }
                 }
-                if !is_for_selected_node(&node_mgr, node_id) {
+                // path-asset-stamp: a property write on the track currently open
+                // in the Paths tab (e.g. a `PathAssetApply` writing `path_asset`)
+                // may have changed the points/style/stamp descriptor the Paths
+                // tab keys off — refresh them independent of the viewport/tree
+                // selection guard below. Setting `points_pending` re-arms the
+                // `NodePropertiesLoaded` arm to repopulate `points` +
+                // `edited_track_style` + `edited_track_path_asset`. Mirrors
+                // `select_track`'s round-trip.
+                let refresh_editing_track =
+                    path_state.editing_track_id.as_deref() == Some(node_id.as_str());
+                if refresh_editing_track {
+                    path_state.points_pending = true;
+                }
+                let for_selected = is_for_selected_node(&node_mgr, node_id);
+                if for_selected {
+                    // Re-fetch properties for the node to refresh the inspector UI.
+                    inspector.node_properties_loading = true;
+                }
+                // Issue the read once when either consumer needs it (idempotent).
+                if refresh_editing_track || for_selected {
+                    let _ = db_sender.0.send(DbCommand::GetNodeProperties { node_id: node_id.clone() });
+                }
+                if !for_selected {
                     continue;
                 }
-                // Re-fetch properties for the node to refresh UI
-                inspector.node_properties_loading = true;
-                let _ = db_sender.0.send(DbCommand::GetNodeProperties {
-                    node_id: node_id.clone(),
-                });
             }
             DbResult::NodePropertyDeleted { ref node_id, ref key } => {
                 if !is_for_selected_node(&node_mgr, node_id) {

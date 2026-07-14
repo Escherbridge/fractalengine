@@ -396,6 +396,30 @@ fn spawn_single_point_node(
     bevy::log::debug!("Spawned single-point track node '{}' entity={:?} (petal={})", track_node_id, entity, petal_id);
 }
 
+/// Make rendered track ribbons viewport-selectable by tagging them with
+/// `fe_ui::plugin::SpawnedNodeMarker` (the component the viewport picker
+/// iterates). `render_gpx_tracks` (fe-terrain) can't attach it — fe-terrain
+/// must not depend on fe-ui — so this crate, which sees both `GpxTrackLine`
+/// and `SpawnedNodeMarker`, tags them here. Runs the frame after the ribbon
+/// mesh appears; `Without<SpawnedNodeMarker>` makes it idempotent. See
+/// `src/AGENTS.md` §gpx track-picking.
+pub fn tag_track_lines_selectable(
+    lines: Query<(Entity, &GpxTrackLine), (With<Mesh3d>, Without<fe_ui::plugin::SpawnedNodeMarker>)>,
+    active_terrain: Res<ActivePetalTerrain>,
+    mut commands: Commands,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
+    for (entity, line) in lines.iter() {
+        commands.entity(entity).insert(fe_ui::plugin::SpawnedNodeMarker {
+            node_id: line.track_node_id.clone(),
+            petal_id: petal_id.clone(),
+        });
+    }
+}
+
 /// Build one draft per `<wpt>` in the file. Out-of-range coordinates are
 /// silently skipped (mirrors `fe_terrain::gpx::convert`'s precedent).
 /// `gpx_track_id` is NOT included here — it's only known once the track's

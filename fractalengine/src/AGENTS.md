@@ -293,6 +293,20 @@ clobbers a stored value). The Paths-tab edit view seeds its controls from
 fe-ui must not depend on fe-terrain), populated at the same
 `NodePropertiesLoaded` seam that seeds `points`.
 
+**§track-picking (in-app fix).** A rendered track ribbon
+(`fe_terrain::terrain_plugin::GpxTrackLine` + `Mesh3d`) wasn't viewport-selectable:
+the fe-ui picker only iterates `SpawnedNodeMarker`, which `render_gpx_tracks`
+can't attach (fe-terrain must not depend on fe-ui). `tag_track_lines_selectable`
+(this crate — it sees both `GpxTrackLine` and `fe_ui::plugin::SpawnedNodeMarker`)
+closes the gap: it queries ribbons `(With<Mesh3d>, Without<SpawnedNodeMarker>)`
+and inserts a `SpawnedNodeMarker { node_id: track_node_id, petal_id }`, sourcing
+`petal_id` from `ActivePetalTerrain` (the same pattern `spawn_single_point_node`
+uses). Idempotent — the `Without<SpawnedNodeMarker>` guard means it tags each
+ribbon once, the frame after `render_gpx_tracks` adds its mesh. Registered in
+the same `Update` tuple as `advance_path_materialization`. The fe-ui side
+(`viewport_pick::open_track_on_select`) then turns that selection into a Paths-tab
+open — see `fe-ui/src/node_manager/AGENTS.md` §track-picking.
+
 **INTEGRATION_REQUEST (gpx_pipeline_20260711, coordinator-owned `main.rs`):**
 Register two new systems and one resource, mirroring the asset-bridge
 wiring: `app.init_resource::<gpx_bridge::PendingGpxImports>();` and

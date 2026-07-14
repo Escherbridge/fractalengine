@@ -61,13 +61,25 @@ the core "hexon-as-path-asset" feature. A `path_asset` descriptor
 §path-asset) rides the track node's property bag; the Tools panel writes it
 via `UiAction::PathAssetApply` → `SetNodeProperty`.
 
-`reconcile_path_asset` is the consuming system. Like
-`reconcile_selected_primitive`, it reads the descriptor **and** the persisted
-`gpx_points` off the **selected** node's loaded properties
-(`InspectorFormState.node_properties`) — the only currently-wired
-per-node-property source in owned files. It therefore stamps the currently
-selected track, and only for the active petal (`nav.active_petal_id`),
-matching the selected-node/active-petal gating the primitive reconcile uses.
+`reconcile_path_asset` is the consuming system. It keys off the **Paths-tab**
+selection — `PathEditorState.editing_track_id` — NOT the viewport/tree
+selection (`NodeManager.selected`). The Tools panel stamps the Paths-tab
+track, so the original gating on `NodeManager` + `InspectorFormState.node_properties`
+silently dropped every stamp whenever the two selections diverged (the common
+case: stamp from the Paths tab without also viewport-selecting the ribbon).
+It now reads the descriptor from `PathEditorState.edited_track_path_asset` and
+the points from `PathEditorState.points` directly — both seeded by the
+`PathSelectTrack` read-back and refreshed after a `PathAssetApply` write (see
+below). Still active-petal-gated (`nav.active_petal_id`).
+
+`edited_track_path_asset` is populated in `db_results`'s `NodePropertiesLoaded`
+arm alongside `points`/`edited_track_style` (parsed from the `path_asset` prop
+via `PathAssetDescriptor::from_json`), and reset in `start_editing`/`stop_editing`.
+After a `PathAssetApply` writes the property, `db_results`'s `NodePropertySet`
+arm — when the written node is the editing track — re-arms `points_pending` and
+re-issues `GetNodeProperties`, so the fresh descriptor flows back through
+`NodePropertiesLoaded` and drives the next reconcile (`hexon_path_asset_stamp_20260713`
+in-app fix).
 
 The stamp is a per-instance `SceneRoot` (one shared `Handle<Scene>` across all
 instances — cheap) spawned by `spawn::spawn_stamped_entity`, an additive

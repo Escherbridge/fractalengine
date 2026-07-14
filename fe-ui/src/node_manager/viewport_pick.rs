@@ -62,6 +62,47 @@ pub(super) fn handle_viewport_click(
     }
 }
 
+/// Open a track for editing when it becomes the viewport selection.
+///
+/// The viewport picker (`handle_viewport_click`) only touches `NodeManager`;
+/// the Paths tab's `editing_track_id` is independent. So when the newly
+/// selected node is one of the Paths-tab tracks (`PathEditorState.tracks`),
+/// dispatch `PathSelectTrack` so clicking a rendered ribbon also opens it for
+/// editing. fe-ui can't see fe-terrain's `GpxTrackLine`, so membership in the
+/// track list is the crate-visible "is this a track?" test. A `Local`
+/// remembers the last selection so this only fires on a *change* (not every
+/// frame), and it skips when that track is already being edited so it never
+/// clobbers the in-flight point buffer. See `node_manager/AGENTS.md`
+/// §track-picking.
+pub(super) fn open_track_on_select(
+    manager: Res<NodeManager>,
+    path_state: Res<crate::gis::PathEditorState>,
+    mut ui_mgr: ResMut<crate::actions::UiManager>,
+    mut last_selected: Local<Option<String>>,
+) {
+    let current = manager.selected.as_ref().map(|s| s.node_id.clone());
+    if current == *last_selected {
+        return; // selection unchanged this frame
+    }
+    *last_selected = current.clone();
+
+    let Some(node_id) = current else { return };
+    if !track_to_open(&node_id, &path_state) {
+        return;
+    }
+    ui_mgr.push_action(crate::actions::UiAction::PathSelectTrack { track_node_id: node_id });
+}
+
+/// `true` when `node_id` names a Paths-tab track that isn't already the one
+/// being edited — i.e. selecting it should open it for editing. Pure so the
+/// membership/guard logic is unit-testable without a Bevy App.
+fn track_to_open(node_id: &str, path_state: &crate::gis::PathEditorState) -> bool {
+    if path_state.editing_track_id.as_deref() == Some(node_id) {
+        return false; // already editing this track — don't re-open (clobbers buffer)
+    }
+    path_state.tracks.iter().any(|t| t.node_id == node_id)
+}
+
 /// Nearest along-ray hit `t` for a node's geometry Aabb, or `None` on a miss.
 ///
 /// Tries the root `entity`'s own `Aabb` first, then scans immediate children
@@ -170,10 +211,54 @@ fn ray_aabb_hit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gis::{GisResultRow, PathEditorState};
 
     /// A unit box centered at the origin in identity local space.
     fn unit_box() -> (Affine3A, Vec3, Vec3) {
         (Affine3A::IDENTITY, Vec3::ZERO, Vec3::splat(0.5))
+    }
+
+    fn track_row(node_id: &str) -> GisResultRow {
+        GisResultRow {
+            node_id: node_id.to_string(),
+            name: node_id.to_string(),
+            position: [0.0, 0.0, 0.0],
+            annotation_title: None,
+            annotation_color: None,
+        }
+    }
+
+    #[test]
+    fn track_to_open_true_for_listed_track() {
+        let mut state = PathEditorState::default();
+        state.tracks = vec![track_row("track-a"), track_row("track-b")];
+        assert!(track_to_open("track-a", &state));
+        assert!(track_to_open("track-b", &state));
+    }
+
+    #[test]
+    fn track_to_open_false_for_unlisted_node() {
+        let mut state = PathEditorState::default();
+        state.tracks = vec![track_row("track-a")];
+        assert!(!track_to_open("some-plain-node", &state));
+    }
+
+    #[test]
+    fn track_to_open_false_when_already_editing_that_track() {
+        let mut state = PathEditorState::default();
+        state.tracks = vec![track_row("track-a")];
+        state.editing_track_id = Some("track-a".to_string());
+        // Already editing it — re-opening would clobber the point buffer.
+        assert!(!track_to_open("track-a", &state));
+    }
+
+    #[test]
+    fn track_to_open_true_when_editing_a_different_track() {
+        let mut state = PathEditorState::default();
+        state.tracks = vec![track_row("track-a"), track_row("track-b")];
+        state.editing_track_id = Some("track-a".to_string());
+        // Switching to a different listed track should open it.
+        assert!(track_to_open("track-b", &state));
     }
 
     #[test]

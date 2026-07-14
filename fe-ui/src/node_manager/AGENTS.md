@@ -205,6 +205,27 @@ the node origin and false-positived on empty space near it —
   small fixed-size gizmo spheres and explicitly out of scope. No shared helper
   was extracted; the two picks are independent.
 
+## §track-picking — clicking a track ribbon opens it for editing (`viewport_pick.rs`)
+
+Track ribbons render in fe-terrain (`GpxTrackLine` + `Mesh3d`), which can't
+attach fe-ui's `SpawnedNodeMarker` (no fe-terrain → fe-ui dep). The
+`fractalengine` binary bridges that gap: `gpx_bridge::tag_track_lines_selectable`
+tags each rendered ribbon with `SpawnedNodeMarker` a frame after the mesh
+appears (idempotent via `Without<SpawnedNodeMarker>`), so `handle_viewport_click`
+can then AABB-pick it like any node.
+
+Selecting a track in the viewport must ALSO open it in the Paths tab, but
+`NodeManager.selected` (viewport/tree selection) and `PathEditorState.editing_track_id`
+(Paths-tab selection) are independent. `open_track_on_select` closes the loop:
+it watches for a *change* in `NodeManager.selected` (a `Local<Option<String>>`
+remembers the last one so it fires once per selection, not per frame) and, when
+the newly selected `node_id` is a Paths-tab track, dispatches
+`UiAction::PathSelectTrack`. fe-ui can't see `GpxTrackLine`, so "is this a
+track?" is decided by membership in `PathEditorState.tracks` — the pure
+`track_to_open` helper. It skips a track that's already being edited so it never
+re-issues the `GetNodeProperties` round-trip that would clobber the in-flight
+point buffer.
+
 ## §input-router — per-frame left-click arbitration (`router.rs`)
 
 `router.rs` centralizes "who gets this frame's left-click" so consumers claim

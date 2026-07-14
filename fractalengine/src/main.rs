@@ -360,6 +360,9 @@ fn main() {
             gpx_bridge::advance_path_edits,
             gpx_bridge::request_petal_gpx_materialization,
             gpx_bridge::advance_path_materialization,
+            // Tag rendered track ribbons selectable (bridges fe-terrain's
+            // GpxTrackLine → fe-ui's SpawnedNodeMarker for the viewport picker).
+            gpx_bridge::tag_track_lines_selectable,
         ),
     );
     // WebView portal: inline wry overlay + petal portal lifecycle systems.
