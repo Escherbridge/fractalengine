@@ -5,7 +5,17 @@
   "created_at": "2026-07-12T00:00:00Z",
   "status": "in-progress",
   "execution_wave": 2,
-  "depends_on": ["path_node_binding_hardening_20260712"],
-  "coordinate_with": ["hexon_scale_orchestration_20260712"],
-  "blocks": []
+  "depends_on": [
+    "path_node_binding_hardening_20260712"
+  ],
+  "coordinate_with": [
+    "hexon_scale_orchestration_20260712"
+  ],
+  "blocks": [],
+  "alignment": {
+    "verdict": "PLATFORM-KEEP",
+    "priority": "P2",
+    "rationale": "3D-authoring base; FR-8 stats is an analytics seam. De-scope to primitives+FR-8; defer P3(superseded)/P4.",
+    "assessed": "2026-07-14"
+  }
 }

@@ -24,5 +24,11 @@
       "status": "pending",
       "tasks": 7
     }
-  ]
+  ],
+  "alignment": {
+    "verdict": "ENABLING-HARDENING",
+    "priority": "P2",
+    "rationale": "Docker relay image = shipping vehicle for the analytics backend. Sequence after headless_relay.",
+    "assessed": "2026-07-14"
+  }
 }

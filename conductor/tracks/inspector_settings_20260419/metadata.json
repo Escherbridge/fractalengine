@@ -6,5 +6,11 @@
   "status": "pending",
   "execution_wave": 4,
   "wave_rationale": "Backlog UI track; P4 needs PeerRegistry (exists).",
-  "notes": "verified 2026-07-10: inspector shipped with a different tab set (Properties/ApiAccess/Query) than specced (Info/Settings/Access + hierarchy inspection)"
+  "notes": "verified 2026-07-10: inspector shipped with a different tab set (Properties/ApiAccess/Query) than specced (Info/Settings/Access + hierarchy inspection)",
+  "alignment": {
+    "verdict": "PLATFORM-KEEP",
+    "priority": "P2",
+    "rationale": "FR-1 portal-URL gap + FR-4 Access/RBAC UI align w/ hardening; UX track absorbs presentation.",
+    "assessed": "2026-07-14"
+  }
 }

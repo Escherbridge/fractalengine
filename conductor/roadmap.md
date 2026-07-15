@@ -110,6 +110,52 @@ closed foundry + official registry + marketplace as a separate product.
    pipeline can prototype in `gis-tile-etl`.
 4. **User-driven:** UX track after the user's QA review (initiative 3).
 
-See also project memory: [[gis-tile-etl-repo]], [[hexon-scale-orchestration-track]],
-[[hexon-p2p-commons-decisions]], [[platform-vision-directives]],
-[[track-selection-two-concepts]].
+## Go-forward slate (2026-07-14 alignment pass — ordered critical path)
+
+Every open track was classified against this roadmap (verdict + priority stored
+in each track's `metadata.json` `alignment` field). The critical path to the
+analytics-engine goal:
+
+**P0 — do next, in order:**
+1. **`analytics_egress_20260714`** (NEW) — the BI last-mile + killer feature:
+   finish GeoParquet (stub today), add a BI-consumable egress (DuckDB-attach +
+   parquet/CSV, OData fast-follow), copy-paste query/URL/connection-string UX,
+   plus query-cost limits + CRS correctness + RBAC-on-results.
+2. **`hexon_scale_orchestration_20260712`** (FR-1..5 first) — scale/GSD/CRS spine
+   so reported numbers are metrically correct; land before egress GA.
+3. **`auth_policy_pattern_20260710`** (promote spec→impl, minimal slice) — unify
+   RoleLevelPolicy + enforce RBAC on query results.
+
+**P1 — parallel / immediately behind:**
+4. **`iot_spatial_reporting_20260714`** (NEW) — IoT → queryable spatial rows; the
+   IoT half of the primary goal.
+5. **`p2p_unblock_now_20260711`** — 4 small local fixes; FR-2 (node_log cap) feeds
+   #4. Ship first, independent.
+6. **`headless_relay_20260429`** — GPU-less relay = the analytics-serving backend
+   (FR-4/5 scene+asset delivery).
+7. **`code_review_cleanup_20260419` FR-1** — the SSRF fix in the wry nav handler.
+   Non-negotiable security, small.
+
+**Foundry project (separate; specs kept here as reference):**
+`hexon_delta_format_20260710`, `hexon_p2p_bucket_20260710`,
+`verse_services_20260711` (+ `p2p_mycelium_completion_20260701` is
+foundry-adjacent). Open format + reference tooling here; closed foundry +
+registry + marketplace + the P2P-commons machinery as the separate product.
+
+**Deferred / off-strategy** (see each track's `alignment` field): terrain_splat_view,
+light_box, build_size_mobile_prep, profile_manager, tauri_host_shell_spike,
+drag_drop_placement (→ UX track). **Verified-then-archived** (backbone shipped):
+petal_seed, seedling_onboarding.
+
+**Hardening gaps no track fully owns** (folded into `analytics_egress` unless
+noted): (1) per-query cost/complexity/row/timeout limits; (2) RBAC row/column
+filtering on results (coordinates w/ auth_policy); (3) CRS correctness at every
+egress path (local-meters↔lat/lon); (4) export-time provenance (as-of HLC +
+authored-by DID) — candidate future `egress_provenance` track.
+
+**UX:** the user will spec a dedicated UX track after their own QA review — do
+not pre-empt; capture QA findings for it.
+
+See also project memory: [[strategic-roadmap-20260714]], [[gis-tile-etl-repo]],
+[[hexon-scale-orchestration-track]], [[hexon-p2p-commons-decisions]],
+[[platform-vision-directives]], [[track-selection-two-concepts]].

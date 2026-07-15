@@ -5,5 +5,13 @@
   "created_at": "2026-03-27T00:00:00Z",
   "status": "pending",
   "execution_wave": 4,
-  "wave_rationale": "Backlog onboarding wizard; no blocking deps."
+  "wave_rationale": "Backlog onboarding wizard; no blocking deps.",
+  "alignment": {
+    "verdict": "OFF-STRATEGY / VERIFY-THEN-ARCHIVE",
+    "priority": "P3",
+    "rationale": "CRUD backbone likely shipped; wizard UX belongs to the user's UX track. Verify+archive CRUD parts.",
+    "assessed": "2026-07-14"
+  },
+  "archived": true,
+  "notes": "| 2026-07-14 ALIGNMENT: VERIFY-THEN-ARCHIVE — Entity-CRUD + DbCommand-extension backbone shipped (CreateVerse/CreateNode/DeleteNode/CreatePetal/CreateFractal present). Only the onboarding-wizard UX remains — off-strategy, belongs to the user's future UX track. Archived (backbone done); residual UX deferred to the user's QA-driven UX track."
 }
