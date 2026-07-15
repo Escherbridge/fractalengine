@@ -5210,6 +5210,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-extra",
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "crossbeam",
@@ -5262,6 +5263,7 @@ dependencies = [
  "crossbeam",
  "ed25519-dalek",
  "fe-identity",
+ "fe-policy",
  "fe-query",
  "fe-runtime",
  "hex",
@@ -5316,6 +5318,7 @@ dependencies = [
  "fe-format",
  "fe-hexon-registry",
  "fe-identity",
+ "fe-policy",
  "fe-runtime",
  "fe-terrain",
  "image",
@@ -5403,6 +5406,7 @@ dependencies = [
  "bevy",
  "blake3",
  "crossbeam",
+ "fe-policy",
  "fe-runtime",
  "fe-sdk",
  "rhai",
@@ -5426,6 +5430,15 @@ dependencies = [
  "serde",
  "serde_json",
  "ulid",
+]
+
+[[package]]
+name = "fe-policy"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -5495,6 +5508,7 @@ dependencies = [
  "dirs 5.0.1",
  "fe-database",
  "fe-network",
+ "fe-policy",
  "fe-runtime",
  "hex",
  "iroh",
@@ -5567,6 +5581,7 @@ dependencies = [
  "anyhow",
  "bevy",
  "fe-database",
+ "fe-policy",
  "fe-runtime",
  "ipnet",
  "raw-window-handle",

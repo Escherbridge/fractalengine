@@ -48,6 +48,32 @@
   persistent status row, queues `UiAction::GpxImportFile`. See root
   `AGENTS.md` §gpx-import.
 
+## §egress-card
+
+- `egress_card.rs` — GIS panel **Export** tab: the "Copy for BI" card
+  (`analytics_egress_20260714` Phase 4). Renders one-click-copy rows for the
+  egress SQL, the `/api/v1/query` POST endpoint, the
+  `export.parquet`/`export.csv` GET URLs, and a DuckDB
+  `read_parquet('<export-url>')` snippet, plus a "Shareable link" section.
+  **All string building is pure and unit-tested** in
+  `crate::gis::egress_strings` (SQL builders per source, RFC-3986 percent
+  encoding, URL/snippet/curl assembly) — the card must never inline-format
+  these strings. Copy goes through egui's builtin `ctx.copy_text` (no
+  clipboard dep) + the shared toast.
+- Query-context sources are **panel-local** (`EgressCardState` on
+  `GisPanelState.egress`): Petal (active petal), Node (id buffer filled only
+  by an explicit "Use viewport selection" click — never implicitly from
+  `NodeManager.selected`, per project memory track-selection-two-concepts),
+  and Bbox (reuses the Query tab's bbox buffers).
+- Shareable link: fe-ui has **no HTTP-client seam** to fe-api, so minting is
+  a displayed, copyable `curl.exe` command against the Phase-3 contract
+  (`POST /api/v1/query/share`, body `sql`+`format`+`ttl_secs`); wiring a real
+  in-app mint call is a recorded follow-up on the track. The bbox SQL filters
+  on `position.coordinates[0|1]` (the `[x, z]` GeoJSON point contract from
+  `gis::query::extract_xz`); validate against the live guard/DB in Phase 6.
+- Route/URL shapes implement the plan contract (Phases 2–3), not fe-api's
+  current code — endpoints are being built concurrently to the same contract.
+
 ## §tool-panel
 
 - `tool_panel.rs` — Tools panel: an independent floating window (like

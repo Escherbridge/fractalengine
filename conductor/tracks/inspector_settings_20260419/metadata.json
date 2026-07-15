@@ -7,7 +7,7 @@
   "execution_wave": 4,
   "wave_rationale": "Backlog UI track; P4 needs PeerRegistry (exists).",
   "depends_on": ["shared_peer_infra_20260419"],
-  "notes": "verified 2026-07-10: inspector shipped with a different tab set (Properties/ApiAccess/Query) than specced (Info/Settings/Access + hierarchy inspection). 2026-07-14: FR-1 (URL round-trip) ~90% delivered via other tracks (inspector_sync.rs, actions/portal.rs); remaining scope is FR-1 residue + FR-3 + FR-4. Phase-4 dependency shared_peer_infra_20260419 is archived/satisfied.",
+  "notes": "FR-1 residue + FR-2 reconcile done; FR-3 (hierarchy inspection) and FR-4 (Access tab RBAC UI) remain. 2026-07-15: SaveUrl now enforces is_url_allowed (SaveUrlOutcome in actions/portal.rs, toast on Blocked) + restart round-trip test in node_manager/inspector_sync.rs. FR-2 FOLDED to shipped tab set {Properties, ApiAccess, Query} — spec Phase 2 rewritten as-built; active_tab persists across selections by design (only per-tab sensitive state resets via inspector_sync). FR-4 Access = new fourth InspectorTab variant. Phase-4 dependency shared_peer_infra_20260419 is archived/satisfied.",
   "alignment": {
     "verdict": "PLATFORM-KEEP",
     "priority": "P2",

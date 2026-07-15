@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 fe-runtime = { path = "../fe-runtime" }
 fe-sdk = { path = "../fe-sdk" }
+fe-policy = { path = "../fe-policy" }
 rhai = "1.19"
 wasmtime = { version = "29", features = ["async"] }
 blake3 = { workspace = true }

@@ -41,6 +41,8 @@ pub struct ApiState {
     pub hexon_registry: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::registry::HexonRegistry>>>,
     /// P2P announcement store for peer-discovered crates.
     pub announcement_store: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
+    /// Ed25519 keypair signing shareable query URLs (see AGENTS.md §share).
+    pub share_signer: Arc<fe_identity::NodeKeypair>,
 }
 
 /// Build the complete axum [`Router`] for the API server.
@@ -130,7 +132,10 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route(
             "/api/v1/tilesets/{tileset_id}/meta",
             get(crate::terrain::get_tileset_meta),
-        );
+        )
+        // Shared-URL redemption: no session — the ed25519 signature IS the
+        // credential and the token's scope ceiling bounds the result set.
+        .route("/api/v1/shared/{token}", get(crate::share::redeem_share_url));
 
     // Authenticated routes — Bearer JWT required.
     let authenticated = Router::new()
@@ -248,6 +253,17 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         // Query endpoints (scope-guarded SurrealQL)
         .route("/api/v1/query", post(crate::rest::execute_query))
         .route("/api/v1/query/elevated", post(crate::rest::execute_elevated_query))
+        // BI egress: parquet/CSV downloads (same guard pipeline as /query)
+        .route(
+            "/api/v1/petals/{petal_id}/export.parquet",
+            get(crate::export::export_parquet),
+        )
+        .route(
+            "/api/v1/petals/{petal_id}/export.csv",
+            get(crate::export::export_csv),
+        )
+        // Shareable signed query URLs (mint; redemption is public)
+        .route("/api/v1/query/share", post(crate::share::issue_share_url))
         // Analytics (DataFusion columnar queries over EntityStore)
         .route("/api/v1/analytics/query", post(crate::rest::execute_analytics_query))
         // Hexon tileset management

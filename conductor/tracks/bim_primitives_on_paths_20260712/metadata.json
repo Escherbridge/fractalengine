@@ -4,6 +4,7 @@
   "type": "feature",
   "created_at": "2026-07-12T00:00:00Z",
   "status": "in_progress",
+  "notes": "FR-1 closed; FR-8 remains (analytics seam). P1/P2 implemented; P3 (FR-5/6) SUPERSEDED by GPX rip-walls (1b39af3); P4 (FR-7/9) DEFERRED on fe-plugin/src/lib.rs:294 transaction stub. Updated 2026-07-15.",
   "execution_wave": 2,
   "depends_on": [
     "path_node_binding_hardening_20260712"

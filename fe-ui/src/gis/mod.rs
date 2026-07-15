@@ -3,6 +3,7 @@
 //! `crate::actions::gis` for the I/O (DbCommand submission) that drives this
 //! state from `UiAction`.
 
+pub(crate) mod egress_strings;
 mod layers;
 mod query;
 
@@ -35,6 +36,7 @@ pub enum GisPanelTab {
     Annotations,
     Layers,
     Paths,
+    Export,
 }
 
 /// A single query result row: enough to display and to select+focus the node.
@@ -74,6 +76,8 @@ pub struct GisPanelState {
     /// request-id to correlate against instead.
     pub query_pending: bool,
     pub last_error: Option<String>,
+    /// Export-tab "Copy for BI" card state (analytics_egress_20260714).
+    pub(crate) egress: egress_strings::EgressCardState,
 }
 
 impl Default for GisPanelState {
@@ -90,6 +94,7 @@ impl Default for GisPanelState {
             results: Vec::new(),
             query_pending: false,
             last_error: None,
+            egress: egress_strings::EgressCardState::default(),
         }
     }
 }

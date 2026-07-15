@@ -25,6 +25,8 @@ ulid = { workspace = true }
 ed25519-dalek = { workspace = true }
 surrealdb = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
+# Share-token encoding (already in-tree via jsonwebtoken's dep graph)
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

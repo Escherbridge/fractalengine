@@ -1,12 +1,19 @@
 //! Respawns scene entities in-place when the active petal changes, without a
 //! DB round-trip (spawns directly from the in-memory `VerseManager` tree).
+//! Primitive-bearing nodes take the third branch via the descriptor cache —
+//! see `fe-ui/src/verse_manager/AGENTS.md` §primitives.
 
 use bevy::prelude::*;
+use fe_runtime::app::DbCommandSender;
+use fe_runtime::messages::DbCommand;
 
-use super::VerseManager;
+use super::primitive_materialize::{spawn_branch, PrimitiveDescriptorCache, SpawnBranch};
+use super::primitive_reconcile::{resolve_primitive_material, PrimitiveMaterialAssets};
+use super::{TextureRegistryRes, VerseManager};
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn respawn_on_petal_change(
     nav: Res<NavigationManager>,
     verse_mgr: Res<VerseManager>,
@@ -17,6 +24,11 @@ pub(super) fn respawn_on_petal_change(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut primitive_cache: ResMut<PrimitiveDescriptorCache>,
+    texture_registry: Res<TextureRegistryRes>,
+    mat_assets: Res<PrimitiveMaterialAssets>,
+    db_sender: Res<DbCommandSender>,
 ) {
     if !*initialized {
         *last = nav.active_petal_id.clone();
@@ -54,7 +66,8 @@ pub(super) fn respawn_on_petal_change(
         }
     }
 
-    // Spawn entities for the new petal directly from in-memory data — no DB round-trip.
+    // Spawn entities for the new petal directly from in-memory data — no DB round-trip
+    // for the entities themselves (only cache-miss primitive descriptors fetch async).
     if let Some(ref pid) = new_petal {
         if let Some(petal) = verse_mgr.find_petal(pid) {
             for node in &petal.nodes {
@@ -62,26 +75,61 @@ pub(super) fn respawn_on_petal_change(
                 if kept_node_ids.contains(node.id.as_str()) {
                     continue;
                 }
-                if let Some(ref ap) = node.asset_path {
-                    super::spawn::spawn_node_entity(
-                        &mut commands,
-                        &asset_server,
-                        &node.id,
-                        pid,
-                        &node.name,
-                        node.position,
-                        ap,
-                    );
-                } else {
-                    super::spawn::spawn_fallback_sign(
-                        &mut commands,
-                        &mut meshes,
-                        &mut materials,
-                        &node.id,
-                        pid,
-                        &node.name,
-                        node.position,
-                    );
+                match spawn_branch(node, &primitive_cache) {
+                    SpawnBranch::Gltf(asset_path) => {
+                        super::spawn::spawn_node_entity(
+                            &mut commands,
+                            &asset_server,
+                            &node.id,
+                            pid,
+                            &node.name,
+                            node.position,
+                            &asset_path,
+                        );
+                    }
+                    SpawnBranch::Primitive(descriptor) => {
+                        // FR-1 third branch: warm cache → materialize immediately.
+                        let material = resolve_primitive_material(
+                            descriptor.texture_ref.as_deref(),
+                            &texture_registry,
+                            &mat_assets,
+                            &mut materials,
+                            &mut images,
+                        );
+                        super::spawn::spawn_primitive_entity(
+                            &mut commands,
+                            &mut meshes,
+                            &node.id,
+                            pid,
+                            &node.name,
+                            node.position,
+                            descriptor,
+                            material,
+                        );
+                    }
+                    SpawnBranch::Fallback => {
+                        super::spawn::spawn_fallback_sign(
+                            &mut commands,
+                            &mut meshes,
+                            &mut materials,
+                            &node.id,
+                            pid,
+                            &node.name,
+                            node.position,
+                        );
+                        // Cold cache: fetch the property bag once; a primitive
+                        // result promotes the sign via `materialize_cached_primitives`.
+                        if primitive_cache.mark_requested(&node.id)
+                            && db_sender
+                                .0
+                                .send(DbCommand::GetNodeProperties { node_id: node.id.clone() })
+                                .is_err()
+                        {
+                            bevy::log::error!(
+                                "db_sender channel closed during petal respawn — DB thread may have crashed"
+                            );
+                        }
+                    }
                 }
             }
         }

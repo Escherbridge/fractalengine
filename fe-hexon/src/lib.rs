@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod authz;
 pub mod handlers;
 pub mod manifest;
 pub mod p2p;

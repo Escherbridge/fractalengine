@@ -69,10 +69,30 @@ pub fn write_nodes_parquet_with_meta(
     snapshots: &[EntitySnapshot],
     meta: &GeoParquetMeta,
 ) -> Result<usize> {
-    let schema = Arc::new(codec::nodes_schema(&meta.primary_geometry_column));
-    let batch = codec::snapshots_to_batch(schema.clone(), snapshots)?;
     let file =
         File::create(path).with_context(|| format!("creating parquet file {}", path.display()))?;
+    write_nodes_to(file, snapshots, meta)?;
+    Ok(snapshots.len())
+}
+
+/// Write entity snapshots to an in-memory GeoParquet buffer (HTTP-egress shim for fe-api).
+pub fn write_nodes_parquet_bytes(
+    snapshots: &[EntitySnapshot],
+    meta: &GeoParquetMeta,
+) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    write_nodes_to(&mut buf, snapshots, meta)?;
+    Ok(buf)
+}
+
+/// Shared writer core over any `Write` sink.
+fn write_nodes_to<W: std::io::Write + Send>(
+    sink: W,
+    snapshots: &[EntitySnapshot],
+    meta: &GeoParquetMeta,
+) -> Result<()> {
+    let schema = Arc::new(codec::nodes_schema(&meta.primary_geometry_column));
+    let batch = codec::snapshots_to_batch(schema.clone(), snapshots)?;
     let props = WriterProperties::builder()
         .set_key_value_metadata(Some(vec![KeyValue::new(
             GEO_KEY.to_string(),
@@ -80,10 +100,10 @@ pub fn write_nodes_parquet_with_meta(
         )]))
         .build();
     let mut writer =
-        ArrowWriter::try_new(file, schema, Some(props)).context("opening parquet writer")?;
+        ArrowWriter::try_new(sink, schema, Some(props)).context("opening parquet writer")?;
     writer.write(&batch).context("writing record batch")?;
     writer.close().context("closing parquet writer")?;
-    Ok(snapshots.len())
+    Ok(())
 }
 
 /// Read entity snapshots back from a GeoParquet file.
@@ -217,6 +237,20 @@ mod tests {
         std::fs::write(&path, b"definitely not a parquet file").unwrap();
         assert!(read_nodes_parquet(&path).is_err());
         assert!(read_geo_metadata(&path).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bytes_writer_matches_file_writer_round_trip() {
+        let path = tmp("bytes");
+        let snaps = vec![snap("n1", [1.0, 2.0, 3.0], None, 42)];
+        let bytes = write_nodes_parquet_bytes(&snaps, &GeoParquetMeta::default()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let back = read_nodes_parquet(&path).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].node_id, "n1");
+        assert_eq!(back[0].position, [1.0, 2.0, 3.0]);
+        assert!(read_geo_metadata(&path).unwrap().is_some());
         let _ = std::fs::remove_file(&path);
     }
 

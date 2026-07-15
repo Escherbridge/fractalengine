@@ -224,25 +224,23 @@ mod tests {
     use std::sync::Arc;
 
     fn verse_with_node(node: NodeEntry) -> VerseManager {
-        VerseManager {
-            verses: vec![VerseEntry {
-                id: "v1".to_string(),
-                name: "V1".to_string(),
-                namespace_id: None,
+        VerseManager::from_verses(vec![VerseEntry {
+            id: "v1".to_string(),
+            name: "V1".to_string(),
+            namespace_id: None,
+            expanded: true,
+            fractals: vec![FractalEntry {
+                id: "f1".to_string(),
+                name: "F1".to_string(),
                 expanded: true,
-                fractals: vec![FractalEntry {
-                    id: "f1".to_string(),
-                    name: "F1".to_string(),
+                petals: vec![PetalEntry {
+                    id: "p1".to_string(),
+                    name: "P1".to_string(),
                     expanded: true,
-                    petals: vec![PetalEntry {
-                        id: "p1".to_string(),
-                        name: "P1".to_string(),
-                        expanded: true,
-                        nodes: vec![node],
-                    }],
+                    nodes: vec![node],
                 }],
             }],
-        }
+        }])
     }
 
     /// FR-1 root-cause evidence: a node whose `asset_path` points at a blob

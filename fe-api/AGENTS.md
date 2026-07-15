@@ -126,6 +126,96 @@ when `content_type` is the directory sentinel, falling through to today's
 single-blob behavior otherwise) — no route or RBAC changes needed, only that
 one branch grows.
 
+## §query-guard + §limits
+
+`src/query_guard.rs` is the single guard pipeline for every read-only SQL
+egress path: `/api/v1/query`, both export routes, and shared-URL redemption.
+It was factored **verbatim** out of `rest.rs::execute_query` (error strings
+preserved) so new egress handlers cannot bypass a guard by construction:
+`guard_and_prepare_query` = rate limit (1s sliding window, keyed string) →
+`validate_select_sql` (semicolon reject, SELECT-only, keyword blocklist,
+table whitelist) → `build_scope_filter`/`inject_scope_filter` (petal-scoped
+tokens get `petal_id = '…'` injected into node-table queries). Execution goes
+through `run_guarded_query`, which owns the pre-existing **5s statement
+timeout** (do NOT add another) and the FR-4 **row cap**. The row-cap policy is
+**error, not truncate**: exceeding it returns `row cap exceeded (limit N rows…)`
+so a BI tool never silently sees partial data. `enforce_byte_ceiling` guards
+serialized response size the same way.
+
+`src/limits.rs` holds every cost knob as a named constant (plan D4):
+`/query` 10 000 rows / 8 MiB; exports 500 000 rows / 128 MiB; rate limits
+10/s per DID (`/query`, exports) and per token (share redemption); share TTL
+default 1h / max 24h. Change limits there, nowhere else.
+
+## §export
+
+`src/export.rs` — `GET /api/v1/petals/:petal_id/export.parquet|export.csv`
+(`?query=<urlencoded SELECT>&coords=local|latlon`), the FR-2 BI egress. Flow:
+Viewer+ role → valid ULID → petal scope coverage (`resolve_petal_scope`,
+deny-by-default, real HTTP statuses per the §assets precedent) → shared guard
+pipeline → **forced petal pre-filter** (`petal_id = :path_petal` injected
+regardless of the query text — FR-6 export pre-filtering) → rows mapped to
+`EntitySnapshot` → fe-query's GeoParquet writer (`write_nodes_parquet_bytes`,
+in-memory; no temp files) or local CSV serialization.
+
+- Export queries are **node-table-only** (400 otherwise): the output schema is
+  the snapshot/GeoParquet nodes table; other tables belong to `/query`.
+- Parquet responses ship `Content-Type: application/vnd.apache.parquet`,
+  `Content-Length` (axum), and `Accept-Ranges: bytes` so DuckDB httpfs can
+  `read_parquet('<url>')` (plan D1).
+- CSV is RFC-4180 with a leading `# crs=<label>` comment line (documented
+  choice: comment line + `X-FE-CRS` header; a sidecar column would bloat every
+  row) and **properties as one JSON-string column** (flattening arbitrary keys
+  would make the header schema query-dependent).
+- `coords=latlon` converts through the petal `Projection` at the API layer
+  (never in fe-query/fe-database); position becomes `[lon, lat, ele]`
+  (GeoParquet EPSG:4326 axis order) / `lon,lat,ele_m` CSV columns. 400 when
+  the petal has no terrain origin. Precision note: parquet positions pass
+  through `EntitySnapshot`'s `f32` (≈1 m at mid-latitudes) — acceptable v1,
+  revisit if survey-grade egress is needed.
+- Status mapping: 400 bad query/coords, 403 role/scope, 404 unknown petal,
+  413 row-cap/byte-ceiling, 429 rate limit, 502 query transport, 503 no
+  db_reader, 504 statement timeout.
+
+## §share
+
+`src/share.rs` — FR-2/FR-6 signed shareable query URLs (plan D2: signed scoped
+URL, NOT an embedded bearer JWT). Token = `b64url(payload).b64url(sig)` where
+payload is `{v, sql, scope, fmt, exp, sub}` and sig is **ed25519** over the
+exact payload bytes, verified with `verify_strict` (repo standard; chosen over
+HMAC because the identity stack is already ed25519 — no new secret type).
+
+- `POST /api/v1/query/share` (authed, Viewer+): body `{sql, format, ttl_secs}`
+  (the fe-ui egress-card contract). Every static guard runs at mint (fail
+  fast); TTL default 1h, max 24h; **scope ceiling = the issuer's token scope
+  at signing time**, embedded verbatim.
+- `GET /api/v1/shared/{token}` (public route): the signature is the
+  credential. Verification failure → 401, expiry → 410. Redemption re-runs the
+  full guard pipeline with the token's scope ceiling substituted for live
+  claims scope, rate-limited per token fingerprint. `fmt=json` returns the
+  `/query` envelope (incl. `crs`); `fmt=parquet|csv` reuses the §export
+  pipeline and therefore requires a petal-scoped ceiling (400 otherwise —
+  enforced at mint too).
+- **Key lifetime**: the signing keypair (`ApiState.share_signer`) is generated
+  per process in `run_server` — restarts invalidate outstanding links, which
+  is acceptable at ≤24h TTL. Wiring the node's persistent keypair through
+  `ApiConfig` is a one-line integration in `main.rs` left as an integration
+  request (outside `fe-api/**`).
+
+## §crs
+
+`src/crs.rs` — FR-5/D3 egress CRS resolution. `resolve_petal_crs` walks the
+three branches: (1) petal terrain config references an installed hexon tileset
+→ label carries the hexon's `crs`/`native_scale` (`TilesetMeta` from
+`hexon_scale_orchestration_20260712`) as `datum=`/`native_scale=` suffixes;
+(2) terrain origin only → `PETAL-LOCAL:meters;origin=<lat>,<lon>,<ele>`;
+(3) neither → documented placeholder `PETAL-LOCAL:meters;origin=unset`
+(matches fe-query's GeoParquet default — a local-meters export is **never**
+silently labeled EPSG:4326; only `coords=latlon` output gets `EPSG:4326`).
+The `/query` JSON envelope gains an optional `crs` field: petal-scoped tokens
+resolve their petal, broader scopes get the `origin=per-petal` marker because
+one response can mix petals with different origins.
+
 **Integration requests** (would require edits outside `fe-api/**`, so left as
 requests rather than done here):
 - `fractalengine/src/main.rs` currently passes `blob_store: None` into
@@ -140,3 +230,6 @@ requests rather than done here):
   would let these endpoints work over the crossbeam channel when no
   `db_reader` is configured (e.g. a future relay-only deployment). Today they
   return 503 in that case, same as `blob_store` being absent.
+- Share-URL signing key persistence (§share): pass the node's `NodeKeypair`
+  into `ApiConfig`/`run_server` from `fractalengine/src/main.rs` so shareable
+  links survive a restart; today the key is ephemeral per process.

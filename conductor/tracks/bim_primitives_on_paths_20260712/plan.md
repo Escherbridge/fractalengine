@@ -7,6 +7,18 @@ resource: ./spec.md
 
 # Implementation Plan: BIM Primitives on Paths
 
+## Phase status (2026-07-14 alignment, recorded 2026-07-15)
+
+- **P1 — IMPLEMENTED** (FR-1 closed petal-wide via `PrimitiveDescriptorCache` +
+  `materialize_cached_primitives` + third `spawn_branch` in `petal_respawn.rs`; FR-2 live
+  reconcile in place).
+- **P2 — IMPLEMENTED** (FR-3 loader + FR-4 `TextureRegistry` landed).
+- **P3 — SUPERSEDED** — GPX rip-walls landed separately in commit `1b39af3`; path→wall
+  extrusion here is redundant. Do not execute.
+- **P4 — DEFERRED** — blocked on the placeholder plugin transaction handlers
+  (`fe-plugin/src/lib.rs:294` stub); FR-7/FR-9 park with it.
+- **FR-8 stays OPEN** as the analytics seam (feeds the iot/analytics + BI-egress roadmap work).
+
 ## Overview
 
 First-party-first, four phases. Geometry + the texture area land as engine code (P1–P2)
@@ -35,7 +47,7 @@ cargo test -j 2 --no-fail-fast -p fe-query -p fe-database -p fe-terrain -F fe-te
   -p fe-renderer -p fractalengine -p fe-sdk -p fe-plugin -p fe-hexon
 ```
 
-## Phase 1 — First-party primitives (FR-1, FR-2)
+## Phase 1 — First-party primitives (FR-1, FR-2) — DONE
 
 - **P1.1** Define the primitive descriptor: a `{kind, dims, texture_ref}` shape serialized as
   `PropertyValue::Json` on the `fe-runtime` bridge struct (`shared_node.rs:107`, per C5).
@@ -52,7 +64,7 @@ cargo test -j 2 --no-fail-fast -p fe-query -p fe-database -p fe-terrain -F fe-te
   dims/kind changes re-mesh without respawn stutter. Test: changing `dims` updates the mesh.
 - `[checkpoint marker]`
 
-## Phase 2 — Texture area (FR-3, FR-4)
+## Phase 2 — Texture area (FR-3, FR-4) — DONE
 
 - **P2.1** `MaterialHandle` → `StandardMaterial` loader near `fe-hexon/src/handlers/material.rs`:
   resolve role→blob-hash, load blobs from `FsBlobStore` into Bevy `Image`s, assemble a
@@ -65,7 +77,7 @@ cargo test -j 2 --no-fail-fast -p fe-query -p fe-database -p fe-terrain -F fe-te
   material. Test: a primitive with a `texture_ref` renders with the loaded material.
 - `[checkpoint marker]`
 
-## Phase 3 — Path → wall (GPX merge; REQUIRES Track 1 landed + verified) (FR-5, FR-6)
+## Phase 3 — Path → wall (FR-5, FR-6) — SUPERSEDED by GPX rip-walls (commit `1b39af3`)
 
 - **P3.1** Wall mesh builder: extrude a `gpx_points` polyline into a quad-strip wall of a given
   height (`bake_splat_mesh` at `splat/render.rs:313` is the raw-mesh reference). Pure function,
@@ -79,7 +91,7 @@ cargo test -j 2 --no-fail-fast -p fe-query -p fe-database -p fe-terrain -F fe-te
   entities.
 - `[checkpoint marker]`
 
-## Phase 4 — API-first extension surface (FR-7, FR-8, FR-9)
+## Phase 4 — API-first extension surface (FR-7, FR-8, FR-9) — DEFERRED (except FR-8, open as the analytics seam; see `fe-plugin/src/lib.rs:294` stub)
 
 - **P4.1** Finish the stubbed plugin transaction handlers at `fe-plugin/src/lib.rs:285-380` so
   create/delete/set-property/commit forward to the DB thread. Test: a transaction actually

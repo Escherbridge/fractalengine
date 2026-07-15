@@ -232,13 +232,25 @@ The `fe-api` crate provides an axum-based HTTP/WebSocket API on port 8765.
 After connecting, the server sends `auth_required`. The client must respond with
 an `auth` message containing a valid API token within 5 seconds.
 
-**Scene streaming** (thin client flow):
-1. Client sends `scene_subscribe { petal_id }`.
-2. Server responds with `scene_snapshot { petal_id, version, nodes }`.
-3. On CUD mutations, server pushes `scene_delta { petal_id, version, changes }`.
+**Thin client connection flow**:
+1. Connect to `/ws`; server sends `auth_required`.
+2. Client sends `auth { access_token }` (Bearer API token) → `auth_ok`.
+3. Client sends `scene_subscribe { petal_id }` (scope-checked against the token).
+4. Server responds with `scene_snapshot { petal_id, version, nodes }`.
+5. On CUD mutations, server pushes `scene_delta { petal_id, version, changes }`
+   where each change is a `SceneChange` (`node_added` / `node_removed` /
+   `node_renamed` / `node_transform` / `property_changed`).
+
+**Entity commands** (CUD over WS, editor role required):
+Client sends `entity_command { request_id, command }` where `command` is one of
+`create_node`, `delete_node`, `set_node_property`, `delete_node_property`
+(tagged by `op`). Server replies with
+`entity_command_result { request_id, ok, data?, error? }` echoing the request id;
+the resulting `scene_delta` is broadcast to all scene subscribers.
 
 **Transform streaming**: Subscribe to a petal channel, then receive real-time
-`transform_update` messages as other clients modify node positions.
+`transform_update` messages as other clients modify node positions. Failed
+persists are rolled back via `transform_rollback`.
 
 ---
 

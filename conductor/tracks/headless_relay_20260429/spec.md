@@ -5,7 +5,7 @@ type: Track Spec
 # Track: Headless Relay — Build Split, SecretStore Trait, Thin Client Surface
 
 **Created:** 2026-04-29
-**Status:** In Progress
+**Status:** Done (2026-07-15 — pending session-end sweep)
 **Priority:** P1
 **Depends on:** Realtime API Gateway (complete)
 **Blocks:** Web Client SDK, IoT Integration, Docker Deployment, Mobile Client
@@ -141,8 +141,8 @@ Thin clients need more than transforms. New WS message types:
 | `SceneSubscribe` | client -> server | Request scene state for a petal |
 | `SceneSnapshot` | server -> client | Full node list + asset manifest |
 | `SceneDelta` | server -> client | Incremental changes (add/remove/rename) |
-| `EntityCommand` | client -> server | CUD operations over WS (not just REST) |
-| `EntityCommandResult` | server -> client | Response to EntityCommand |
+| `EntityCommand` | client -> server | CUD operations over WS (not just REST) — implemented 2026-07-15 (create_node / delete_node / set_node_property / delete_node_property) |
+| `EntityCommandResult` | server -> client | Response to EntityCommand, echoes `request_id` — implemented 2026-07-15 |
 
 New REST endpoint: `GET /api/v1/assets/:content_hash` — serves blob store content with immutable cache headers.
 

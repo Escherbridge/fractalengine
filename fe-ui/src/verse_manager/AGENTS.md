@@ -15,11 +15,15 @@
   `primitive_reconcile.rs`.
 - `petal_respawn.rs` — despawns/respawns scene entities in-place when
   `NavigationManager::active_petal_id` changes, using the in-memory tree
-  directly (no DB round-trip). `NodeEntry` carries no `properties` field
-  (adding one would break `db_results.rs`'s explicit-field `NodeEntry`
-  construction, which is out of this crate's edit scope — see §primitives),
-  so per-petal-switch materialization still spawns primitive nodes as
-  fallback signs; `primitive_reconcile.rs` promotes them once selected.
+  directly (no DB round-trip for the entities). Branches per node via
+  `primitive_materialize::spawn_branch`: GLTF asset → primitive (warm
+  descriptor cache) → fallback sign; cache-miss asset-less nodes get one
+  async `GetNodeProperties` fetch. See §primitives.
+- `primitive_materialize.rs` — `PrimitiveDescriptorCache` (node_id →
+  `PrimitiveDescriptor`, fed by every `NodePropertiesLoaded` broadcast) +
+  `materialize_cached_primitives` (petal-wide FR-1: promotes fallback signs /
+  spawns fresh / reconciles drift as cached descriptors arrive — no selection
+  required). See §primitives.
 - `primitive_reconcile.rs` — `reconcile_selected_primitive` (FR-1 promotion +
   FR-2 live reconcile) and `resolve_primitive_material` (FR-3 texture
   resolution via `fe_hexon::handlers::material::resolve_material_textures` +
@@ -89,18 +93,34 @@ outside `node_index.rs`.
 ## §primitives (FR-1..FR-4, `bim_primitives_on_paths_20260712`)
 
 A primitive descriptor (`fe_sdk::primitive::PrimitiveDescriptor`) rides on a
-node's `primitive` property as `PropertyValue::Json` (C5). The **only**
-currently-wired source of per-node properties in owned files is
-`InspectorFormState.node_properties` — populated for the **selected** node
-via the existing `NodePropertiesLoaded` DB round-trip (owned by
-`db_results.rs`, read-only here). `reconcile_selected_primitive` therefore
-drives both materialization (FR-1) and live-edit reconcile (FR-2) off the
-selected node only; petal-wide materialization for *all* primitive nodes on
-petal switch requires `NodeEntry` to carry `properties`, which is fenced to
-a future pass once `db_results.rs`'s `NodeEntry` construction sites can be
-touched. `TextureRegistryRes` wraps the engine-decoupled
-`fe_sdk::TextureRegistry` as a Bevy `Resource` (the SDK type itself has no
-bevy dependency by design).
+node's `primitive` property as `PropertyValue::Json` (C5). The hierarchy
+payload (`NodeHierarchyData`, fe-runtime — outside this crate's edit scope)
+carries no properties, so petal-wide FR-1 runs on a fe-ui-local
+**`PrimitiveDescriptorCache`** (`primitive_materialize.rs`) instead of a
+`NodeEntry.properties` field:
+
+- **Feed**: every `NodePropertiesLoaded` broadcast calls
+  `cache.note_properties` in `db_results/properties.rs` — *before* the
+  inspector's selection gate, so unselected results still land. A
+  `NodePropertySet`/`Deleted` on the `primitive` key invalidates the entry
+  (and `Set` re-issues `GetNodeProperties` regardless of selection);
+  `DatabaseReset` clears the cache.
+- **Petal (re)spawn** (`petal_respawn.rs`): `spawn_branch` picks GLTF →
+  cached primitive → fallback sign. Warm cache materializes immediately; a
+  cold asset-less node spawns its sign and sends one deduped
+  `GetNodeProperties` (`mark_requested`).
+- **Promotion**: `materialize_cached_primitives` (chained after
+  `apply_db_results` + `respawn_on_petal_change`; the chain's sync points
+  make their deferred spawns visible) walks the active petal on cache
+  change: reconciles descriptor drift on spawned `PrimitiveNode`s, promotes
+  `FallbackSign`s (undoing the +0.5 hover offset), or spawns fresh from the
+  tree position. No selection involved.
+- `reconcile_selected_primitive` remains the **inspector-driven update path**
+  (FR-2 live edits off `InspectorFormState.node_properties` for the selected
+  node, plus legacy FR-1 promotion).
+
+`TextureRegistryRes` wraps the engine-decoupled `fe_sdk::TextureRegistry` as
+a Bevy `Resource` (the SDK type itself has no bevy dependency by design).
 
 ## §path-asset-stamp (`hexon_path_asset_stamp_20260713`)
 

@@ -441,7 +441,7 @@ fn row_to_track(row: &Value) -> GisTrackDto {
 /// Run a read-only SELECT, preferring the direct `db_reader` and falling back
 /// to the `DbCommand::RawQuery` gateway channel. Returns the first statement's
 /// rows, or `None` on any transport/query error.
-async fn run_select(
+pub(crate) async fn run_select(
     state: &ApiState,
     sql: &str,
     vars: Vec<(String, Value)>,

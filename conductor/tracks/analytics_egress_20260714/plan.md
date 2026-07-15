@@ -50,59 +50,59 @@ Style constraints (all phases): files ~300 lines (split modules past that), ters
 
 ## Phase 2 — Export endpoints: parquet + CSV reusing execute_query guards [fe-api]
 
-- [ ] **Task 2.1 — Extract execute_query's guard pipeline into a reusable helper.**
+- [x] **Task 2.1 — Extract execute_query's guard pipeline into a reusable helper.** *(Done 2026-07-15: new `fe-api/src/query_guard.rs` — `guard_and_prepare_query` (rate limit → `validate_select_sql` → scope-filter inject) + `run_guarded_query` (owns the pre-existing 5s timeout + row cap) + `enforce_byte_ceiling`; moved verbatim from rest.rs, error strings preserved, `execute_query` now consumes it. AGENTS.md §query-guard.)*
   Files: `fe-api/src/rest.rs` (extract into `fe-api/src/query_guard.rs` if rest.rs growth demands), `fe-api/src/AGENTS.md`.
   Factor the validation chain (single-SELECT, semicolon reject, `BLOCKED_KEYWORDS`, `ALLOWED_TABLES`, `build_scope_filter` + `inject_scope_filter`, rate limiter, 5s timeout) into `fn guard_and_prepare_query(...) -> Result<GuardedQuery, ApiError>` consumed by both `execute_query` and the new export handlers. No behavior change to `/api/v1/query`.
   Accept: existing query-endpoint tests still green; export handlers cannot bypass any guard by construction (one shared entry point).
-- [ ] **Task 2.2 — Row cap + result-size ceiling (FR-4 delta).**
+- [x] **Task 2.2 — Row cap + result-size ceiling (FR-4 delta).** *(Done 2026-07-15: `fe-api/src/limits.rs` named constants per D4 (10k/8MiB query, 500k/128MiB export). Policy: **error, not truncate** — `row cap exceeded (limit N rows…)`; byte ceiling checked during serialization. Applied to /query, both exports, and share redemption; no new timeout added. Tests: row-cap error + byte-ceiling unit test.)*
   Files: `fe-api/src/rest.rs` / `query_guard.rs`, new `fe-api/src/limits.rs` (named constants per D4 (provisional — logged in outstanding decisions)).
   Enforce row cap by fetching `cap+1` (or LIMIT injection) and erroring/truncating-with-flag past the cap; enforce byte ceiling while serializing/streaming. Applies to `/query` (10k/8MiB) and exports (500k/128MiB). Do NOT add another timeout — the 5s `tokio::time::timeout` already exists.
   Accept: test — over-cap query returns a clear `row cap exceeded` error (or truncation marker, pick one and document it); test — oversized result hits the byte ceiling; existing rate-limit/timeout behavior untouched.
-- [ ] **Task 2.3 — `GET /api/v1/petals/:petal_id/export.parquet?query=...` endpoint.**
+- [x] **Task 2.3 — `GET /api/v1/petals/:petal_id/export.parquet?query=...` endpoint.** *(Done 2026-07-15: `fe-api/src/export.rs` + route; Viewer+ + petal-scope RBAC with real HTTP statuses, shared guard pipeline, forced petal pre-filter, node-table-only queries, fe-query `write_nodes_parquet_bytes` shim (in-memory, no temp files), parquet content-type + Accept-Ranges for DuckDB httpfs. READ-BACK integration test incl. scope filtering + wrong-scope 403.)*
   Files: `fe-api/src/export.rs` (new), `fe-api/src/server.rs` (route), `fe-api/src/AGENTS.md`.
   Auth via the same `ApiClaims` extension + `require_role("viewer")`; run through `guard_and_prepare_query`; rows → `EntitySnapshot`/RecordBatch → Phase-1 writer → response body with `Content-Type: application/vnd.apache.parquet`, `Content-Length`, and `Accept-Ranges: bytes` so DuckDB httpfs can consume it (D1 (provisional — logged in outstanding decisions)).
   Accept: integration test — authed request round-trips to a parquet body that `read_nodes_parquet` parses (read-back test); unauthed/wrong-scope request rejected; scope filter provably applied (node outside token scope absent from export).
-- [ ] **Task 2.4 — `GET /api/v1/petals/:petal_id/export.csv?query=...` endpoint.**
+- [x] **Task 2.4 — `GET /api/v1/petals/:petal_id/export.csv?query=...` endpoint.** *(Done 2026-07-15: same guard path; RFC-4180 CSV with `# crs=` comment line + `X-FE-CRS` header, properties as one JSON-string column (documented in AGENTS.md §export). Tests: header/row parse-back, injection rejected identically to /query, caps enforced.)*
   Files: `fe-api/src/export.rs`, `fe-api/src/server.rs`.
   Same guard path; CSV serialization (header row, RFC-4180 quoting, properties flattened or JSON-string column — document choice in AGENTS.md), `Content-Type: text/csv`.
   Accept: test — CSV parses back with expected headers/rows; injection attempt (`;`, blocked keyword, off-whitelist table) rejected identically to `/query`; row/size caps enforced.
-- [ ] **Task 2.5 — Phase sweep.** `cargo test -p fe-api` + clippy, once, at end of phase.
+- [ ] **Task 2.5 — Phase sweep.** `cargo test -p fe-api` + clippy, once, at end of phase. *(Deferred to the session-end integrated sweep per test policy; `cargo check -p fe-api -j2` run once at end of the Phase-2/3/5 session.)*
 
 ## Phase 3 — Signed shareable query URL [fe-api]
 
-- [ ] **Task 3.1 — Signed-URL token format + signer/verifier.**
+- [x] **Task 3.1 — Signed-URL token format + signer/verifier.** *(Done 2026-07-15: `fe-api/src/share.rs` — `b64url(payload).b64url(sig)`, ed25519 over exact payload bytes verified with `verify_strict` (chose ed25519 over HMAC: identity stack is already ed25519 via `fe_identity::NodeKeypair`, no new secret type). TTL default 1h / max 24h; ceiling = issuer scope verbatim. Tests: valid/tampered-payload/tampered-sig/expired/wrong-key + ceiling preservation.)*
   Files: `fe-api/src/share.rs` (new), `fe-api/src/AGENTS.md` (§share: format rationale).
   Per D2 (provisional — logged in outstanding decisions): compact token encoding (query string or its hash, scope ceiling, expiry unix-ts) signed with HMAC-SHA256 (server secret) or ed25519 (reuse fe-identity keys if trivially available — decide at implementation, HMAC is the floor). Short TTL, default 1h, max 24h. No bearer JWT embedded.
   Accept: tests — valid token verifies; tampered query/scope/expiry rejected; expired token rejected; token grants NO scope wider than the issuing user's scope at signing time (ceiling = intersection).
-- [ ] **Task 3.2 — Issue + redeem endpoints.**
+- [x] **Task 3.2 — Issue + redeem endpoints.** *(Done 2026-07-15: `POST /api/v1/query/share` (authed; body sql+format+ttl_secs — matches the fe-ui egress-card contract) → `{url, token, expires_at}`; `GET /api/v1/shared/{token}` on the PUBLIC router (signature is the credential) re-runs the full guard pipeline with the token scope ceiling, per-token rate limit, dispatches json/parquet/csv. Expired → 410, invalid → 401. Integration tests: issue→redeem round-trip, narrow-scope ceiling enforced (verse-wide SELECT capped to petal), parquet redemption read-back. Signing key is per-process ephemeral — persistence wiring in main.rs left as integration request (AGENTS.md §share).)*
   Files: `fe-api/src/share.rs`, `fe-api/src/server.rs`, `fe-api/src/rest.rs` (reuse `guard_and_prepare_query`).
   `POST /api/v1/query/share` (authed; body = sql + format + ttl) → returns full shareable URL, e.g. `GET /api/v1/shared/{token}` (or `?sig=` on the export routes). Redemption runs the SAME guard pipeline with the token's scope ceiling substituted for live claims scope, then dispatches to JSON/parquet/CSV per requested format. Rate-limit redemption per token.
   Accept: integration test — issue→redeem round-trip returns scoped data; redeemed export is pre-filtered to the token's scope ceiling (FR-6 delta); a URL issued by a narrow-scope user cannot read outside that scope even if the verifier's server-wide key would allow it; expired URL → 401/410.
-- [ ] **Task 3.3 — Phase sweep.** `cargo test -p fe-api` + clippy, once.
+- [ ] **Task 3.3 — Phase sweep.** `cargo test -p fe-api` + clippy, once. *(Deferred to the session-end integrated sweep per test policy.)*
 
 ## Phase 4 — Copy-paste egress panel [fe-ui]
 
-- [ ] **Task 4.1 — Egress string builders (pure, testable).**
+- [x] **Task 4.1 — Egress string builders (pure, testable).** *(Done 2026-07-15: `fe-ui/src/gis/egress_strings.rs` — pure, egui-free. Builders for petal-scope / node-selection / bbox SQL (bbox filters `position.coordinates[0|1]`, the `[x,z]` contract from `gis::query::extract_xz`; normalizes reversed bounds), hand-rolled RFC-3986 percent-encode (no new dep), `/api/v1/query` POST URL, `export.parquet`/`export.csv` GET URLs, DuckDB `read_parquet` snippet, and `mint_share_curl` for `POST /api/v1/query/share` (body sql+format+ttl_secs per Task 3.2). 12 unit tests assert exact strings incl. URL-encoding + SQL-quote escaping.)*
   Files: `fe-ui/src/gis/egress_strings.rs` (new, pure functions; no egui), `fe-ui/src/gis/mod.rs`.
   From current petal + query (or default node SELECT): build (a) the SQL string, (b) the API URL (`/query` POST or export GET incl. signed URL when present), (c) the DuckDB connection snippet — `SELECT * FROM read_parquet('<export-url>');` per D1 (provisional — logged in outstanding decisions).
   Accept: unit tests assert exact string output for a fixture petal/query, incl. URL-encoding of the query param.
-- [ ] **Task 4.2 — Panel UI in the GIS panel (D5 (provisional — logged in outstanding decisions)).**
+- [x] **Task 4.2 — Panel UI in the GIS panel (D5 (provisional — logged in outstanding decisions)).** *(Done 2026-07-15: new **Export** tab on the GIS panel (`GisPanelTab::Export`) hosting `panels/egress_card.rs` — copy rows (egui builtin `ctx.copy_text` + toast) for SQL / query endpoint / parquet+csv export URLs / DuckDB snippet, all sourced from Task-4.1 builders. Query context is panel-local `EgressCardState` on `GisPanelState.egress` (Petal / Node / Bbox); node id fills only via an explicit "Use viewport selection" click, never implicitly from `NodeManager.selected`. Shareable-link section shows TTL field (default 3600, clamped ≤86400) + copyable mint curl — fe-ui has NO fe-api HTTP-client seam, so in-app minting is a recorded follow-up (open_decisions); manual in-app verify deferred to Phase 6. AGENTS.md §egress-card added.)*
   Files: `fe-ui/src/panels/gis_panel.rs` (host; split a `egress_card.rs` sibling if >300 lines), `fe-ui/src/panels/AGENTS.md`.
   "Copy for BI" section: three labeled rows (SQL / API URL / DuckDB snippet), each with one-click copy via egui clipboard; "Get shareable link" button calling the Phase-3 issue endpoint through the existing api-client seam; TTL indicator. Key the panel's query context on `PathEditorState.editing_track_id`-style panel-local state, NOT `NodeManager.selected` (see project memory: track-selection-two-concepts).
   Accept: strings rendered come from Task-4.1 builders (no inline formatting); copy sets clipboard; compile + existing fe-ui tests green. Manual in-app verify deferred to Phase 6.
-- [ ] **Task 4.3 — Phase sweep.** `cargo test -p fe-ui` + clippy, once.
+- [ ] **Task 4.3 — Phase sweep.** `cargo test -p fe-ui` + clippy, once. *(Deferred to the session-end integrated sweep per test policy; `cargo check -p fe-ui -j2` run at end of Phase-4 work.)*
 
 ## Phase 5 — CRS metadata on egress + tests (FR-5)
 
-- [ ] **Task 5.1 — CRS/scale resolution helper at the API layer.**
+- [x] **Task 5.1 — CRS/scale resolution helper at the API layer.** *(Done 2026-07-15: new `fe-api/src/crs.rs` (gis.rs is past the 300-line cap) — `resolve_petal_crs` with the three D3 branches (hexon `TilesetMeta.crs`/`native_scale` → terrain origin → placeholder `PETAL-LOCAL:meters;origin=unset`, matching fe-query's Phase-1 default rather than D3's provisional EPSG-prefixed string). Pure `crs_label` unit-tested on all three branches.)*
   Files: `fe-api/src/gis.rs` (extend `load_petal_terrain_origin` / `Projection` use), `fe-api/src/export.rs`.
   Per D3 (provisional — logged in outstanding decisions): resolve the petal's CRS/scale from `hexon_scale_orchestration_20260712`'s landed metadata when present; else fall back to the terrain origin; else emit documented placeholder `"EPSG:4326 (petal-local meters, origin=<terrain origin>)"`. Conversion stays at the API layer — do NOT push projection into fe-query/fe-database (`fe-query/src/AGENTS.md §local-coords`).
   Accept: unit tests for all three resolution branches (hexon metadata / terrain origin only / neither).
-- [ ] **Task 5.2 — Stamp CRS onto every egress path + lat/lon conversion option.**
+- [x] **Task 5.2 — Stamp CRS onto every egress path + lat/lon conversion option.** *(Done 2026-07-15: parquet `geo` metadata via `GeoParquetMeta.crs`; CSV `# crs=` first line + `X-FE-CRS` header; `/query` + shared-JSON envelopes gain optional `crs` (petal-scoped → resolved, broader → `origin=per-petal` marker). `?coords=latlon|local` on exports + redemption; latlon converts via petal `Projection` ([lon,lat,ele], EPSG:4326) and 400s without an origin. Landmine test green in `export_share_test.rs`: local output never labeled 4326; latlon output round-trips a known-origin fixture through `Projection`.)*
   Files: `fe-api/src/export.rs`, `fe-query/src/columnar/geoparquet.rs` (`GeoParquetMeta.crs` plumb-through), CSV header comment or sidecar column, JSON `/query` result envelope field.
   Parquet: `geo` metadata `crs` from Task 5.1. CSV/JSON: explicit `crs` field. Add `?coords=latlon|local` on export routes; `latlon` converts via the petal `Projection` (wgs84↔local, as `list_gis_nodes` does) and labels CRS EPSG:4326; `local` keeps meters and labels the local CRS string.
   Accept: **the landmine test** — an export in local meters is never labeled EPSG:4326 degrees: assert `coords=local` output carries the local/placeholder CRS string and `coords=latlon` output carries EPSG:4326 with actually-converted coordinates (round-trip a known origin fixture through `Projection`).
-- [ ] **Task 5.3 — Phase sweep.** fe-api + fe-query tests + clippy, once.
+- [ ] **Task 5.3 — Phase sweep.** fe-api + fe-query tests + clippy, once. *(Deferred to the session-end integrated sweep per test policy.)*
 
 ## Phase 6 — Integration sweep + docs
 

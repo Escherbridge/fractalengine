@@ -84,3 +84,13 @@ and target to keep symlinks inside the petal asset dir.
 (`<workspace>/fe-webview`); the workspace root is one `.parent()` up. The
 nested `--workspace` check and `--list` tests are `#[ignore]`d (log-only,
 expensive); run them explicitly with `cargo test -p fe-webview -- --ignored`.
+
+## §tab-policy (auth_policy_pattern_20260710)
+
+`petal_portal.rs::TabVisibilityFilter::can_view_config()` no longer compares
+roles locally: the local `Role` enum maps onto `fe_policy::RoleLevel`
+(Admin→Owner, Editor→Editor, Viewer→Viewer) and the Config tab is evaluated
+as `Action::Manage` on scope `UI#config-tab` against the shared
+`RoleLevelPolicy::standard()` engine. Same observable behavior (only Admin
+sees Config), but the decision + its log come from the engine. The `Role`
+enum itself stays until fe-auth exposes the canonical session role.

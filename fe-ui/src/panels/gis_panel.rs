@@ -92,6 +92,9 @@ pub(crate) fn render_gis_panel(
                         ui, path_state, path_status, ui_mgr, cursor_world, &petal_id,
                     );
                 }
+                GisPanelTab::Export => {
+                    crate::panels::egress_card::egress_section(ui, gis_state, node_mgr, ui_mgr, &petal_id);
+                }
             }
         });
 
@@ -107,6 +110,7 @@ fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
             (GisPanelTab::Annotations, "Annotations"),
             (GisPanelTab::Layers, "Layers"),
             (GisPanelTab::Paths, "Paths"),
+            (GisPanelTab::Export, "Export"),
         ] {
             let active = gis_state.active_tab == tab;
             let btn = egui::Button::new(

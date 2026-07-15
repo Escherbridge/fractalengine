@@ -32,13 +32,17 @@ pub(super) fn apply_db_results(
     mut gis_panel: ResMut<crate::gis::GisPanelState>,
     mut path_state: ResMut<crate::gis::PathEditorState>,
     node_mgr: Res<crate::node_manager::NodeManager>,
+    mut primitive_cache: ResMut<super::PrimitiveDescriptorCache>,
 ) {
     for result in reader.read() {
         match result {
             DbResult::Seeded { .. } => hierarchy::handle_seeded(&db_sender),
             DbResult::HierarchyLoaded { verses } => hierarchy::handle_hierarchy_loaded(verses, &mut verse_mgr, &mut nav, &mut commands, &asset_server, &mut pending_api),
             DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
-            DbResult::DatabaseReset { .. } => hierarchy::handle_database_reset(&mut verse_mgr, &db_sender),
+            DbResult::DatabaseReset { .. } => {
+                primitive_cache.clear();
+                hierarchy::handle_database_reset(&mut verse_mgr, &db_sender);
+            }
             DbResult::VerseCreated { id, name } => hierarchy::handle_verse_created(id, name, &mut verse_mgr),
             DbResult::FractalCreated { id, verse_id, name } => hierarchy::handle_fractal_created(id, verse_id, name, &mut verse_mgr),
             DbResult::PetalCreated { id, fractal_id, name } => hierarchy::handle_petal_created(id, fractal_id, name, &mut verse_mgr),
@@ -62,9 +66,9 @@ pub(super) fn apply_db_results(
             DbResult::QueryResult { data } => query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector),
             DbResult::Error(msg) => query::handle_error(msg, &mut gis_panel, &mut path_state, &mut inspector),
             // Property handlers return `false` to skip `try_deliver` for stale/unselected results.
-            DbResult::NodePropertiesLoaded { node_id, properties } => { if !properties::handle_node_properties_loaded(node_id, properties, &mut path_state, &node_mgr, &mut inspector) { continue; } }
-            DbResult::NodePropertySet { node_id, key } => { if !properties::handle_node_property_set(node_id, key, &nav, &db_sender, &mut path_state, &node_mgr, &mut inspector) { continue; } }
-            DbResult::NodePropertyDeleted { node_id, key } => { if !properties::handle_node_property_deleted(node_id, key, &node_mgr, &mut inspector) { continue; } }
+            DbResult::NodePropertiesLoaded { node_id, properties } => { if !properties::handle_node_properties_loaded(node_id, properties, &mut path_state, &node_mgr, &mut inspector, &mut primitive_cache) { continue; } }
+            DbResult::NodePropertySet { node_id, key } => { if !properties::handle_node_property_set(node_id, key, &nav, &db_sender, &mut path_state, &node_mgr, &mut inspector, &mut primitive_cache) { continue; } }
+            DbResult::NodePropertyDeleted { node_id, key } => { if !properties::handle_node_property_deleted(node_id, key, &node_mgr, &mut inspector, &mut primitive_cache) { continue; } }
             DbResult::FieldDefsListed { field_defs, .. } => fields::handle_field_defs_listed(field_defs, &mut inspector),
             // Field-def mutations only need a re-list, which the panel re-sends itself.
             DbResult::FieldDefCreated { .. } | DbResult::FieldDefUpdated { .. } | DbResult::FieldDefDeleted { .. } => {}
@@ -312,10 +316,55 @@ mod tests {
     fn properties_loaded_skips_delivery_when_not_selected() {
         let mut path_state = PathEditorState::default();
         let mut ins = InspectorFormState::default();
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
         let delivered = properties::handle_node_properties_loaded(
-            "n1", &json!({}), &mut path_state, &NodeManager::default(), &mut ins,
+            "n1", &json!({}), &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
         );
         assert!(!delivered, "unselected result must continue (skip try_deliver)");
+    }
+
+    #[test]
+    fn properties_loaded_feeds_primitive_cache_even_when_unselected() {
+        let mut path_state = PathEditorState::default();
+        let mut ins = InspectorFormState::default();
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
+        let props = json!({"primitive": {"kind": "cube", "dims": [1.0, 1.0, 1.0]}});
+        let delivered = properties::handle_node_properties_loaded(
+            "n1", &props, &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
+        );
+        assert!(!delivered, "selection gate unchanged");
+        assert!(cache.get("n1").is_some(), "FR-1: cache fed without selection");
+    }
+
+    #[test]
+    fn primitive_property_set_invalidates_cache_and_issues_readback_unselected() {
+        let (tx, rx) = sender();
+        let nav = NavigationManager::default();
+        let mut path_state = PathEditorState::default();
+        let mut ins = InspectorFormState::default();
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
+        cache.note_properties("n1", &json!({"primitive": {"kind": "sphere", "dims": [1.0]}}));
+        let for_selected = properties::handle_node_property_set(
+            "n1", "primitive", &nav, &tx, &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
+        );
+        assert!(!for_selected);
+        assert!(cache.get("n1").is_none(), "stale descriptor must be evicted");
+        assert!(
+            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id }) if node_id == "n1"),
+            "primitive write must re-fetch even when unselected"
+        );
+    }
+
+    #[test]
+    fn primitive_property_deleted_evicts_cache_even_when_unselected() {
+        let mut ins = InspectorFormState::default();
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
+        cache.note_properties("n1", &json!({"primitive": {"kind": "sphere", "dims": [1.0]}}));
+        let delivered = properties::handle_node_property_deleted(
+            "n1", "primitive", &NodeManager::default(), &mut ins, &mut cache,
+        );
+        assert!(!delivered);
+        assert!(cache.get("n1").is_none(), "delete must evict before the selection gate");
     }
 
     #[test]
@@ -323,8 +372,9 @@ mod tests {
         let mut path_state = PathEditorState::default();
         let mut ins = InspectorFormState::default();
         let props = json!({"gis.annotation.title": "T", "gis.annotation.body": "B"});
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
         let delivered = properties::handle_node_properties_loaded(
-            "n1", &props, &mut path_state, &mgr_selected("n1"), &mut ins,
+            "n1", &props, &mut path_state, &mgr_selected("n1"), &mut ins, &mut cache,
         );
         assert!(delivered);
         assert_eq!(ins.node_properties, props);
@@ -340,8 +390,9 @@ mod tests {
         let nav = NavigationManager::default();
         let mut path_state = PathEditorState::default();
         let mut ins = InspectorFormState::default();
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
         let for_selected = properties::handle_node_property_set(
-            "n1", "some.key", &nav, &tx, &mut path_state, &mgr_selected("n1"), &mut ins,
+            "n1", "some.key", &nav, &tx, &mut path_state, &mgr_selected("n1"), &mut ins, &mut cache,
         );
         assert!(for_selected);
         assert!(ins.node_properties_loading);
@@ -354,8 +405,9 @@ mod tests {
         let nav = NavigationManager::default();
         let mut path_state = PathEditorState::default();
         let mut ins = InspectorFormState::default();
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
         let for_selected = properties::handle_node_property_set(
-            "n1", "some.key", &nav, &tx, &mut path_state, &NodeManager::default(), &mut ins,
+            "n1", "some.key", &nav, &tx, &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
         );
         assert!(!for_selected);
         assert!(rx.try_recv().is_err());
@@ -367,8 +419,9 @@ mod tests {
         ins.node_properties = json!({"gis.annotation.title": "T", "gis.annotation.body": "B"});
         ins.annotation_title_buf = "T".into();
         ins.annotation_body_buf = "B".into();
+        let mut cache = super::super::PrimitiveDescriptorCache::default();
         let delivered = properties::handle_node_property_deleted(
-            "n1", "gis.annotation.title", &mgr_selected("n1"), &mut ins,
+            "n1", "gis.annotation.title", &mgr_selected("n1"), &mut ins, &mut cache,
         );
         assert!(delivered);
         assert!(ins.annotation_title_buf.is_empty());

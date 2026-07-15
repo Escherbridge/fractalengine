@@ -106,6 +106,11 @@ pub fn spawn_sync_thread(
             // Phase F.5: tileset download tracker
             let mut download_tracker = TilesetDownloadTracker::new();
 
+            // §D1: policy gate for replica row writes. Defaults to migration
+            // mode (warn-logs would-be denies) until peer roles are plumbed —
+            // see AGENTS.md §write-policy.
+            let write_policy = crate::write_policy::PolicyHandle::default();
+
             // Command loop
             loop {
                 match cmd_rx.recv() {
@@ -156,6 +161,8 @@ pub fn spawn_sync_thread(
                         handle_write_row_entry(
                             &replicas,
                             &blob_store,
+                            &write_policy,
+                            &local_did,
                             &verse_id,
                             &table,
                             &record_id,
@@ -341,14 +348,24 @@ fn handle_close_verse_replica(
 }
 
 /// Handle [`SyncCommand::WriteRowEntry`] (blob read off-loaded via spawn_blocking).
+#[allow(clippy::too_many_arguments)]
 async fn handle_write_row_entry(
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
     blob_store: &BlobStoreHandle,
+    write_policy: &crate::write_policy::PolicyHandle,
+    author_did: &str,
     verse_id: &str,
     table: &str,
     record_id: &str,
     content_hash: &fe_runtime::blob_store::BlobHash,
 ) {
+    // §D1 gate: no row applies to a replica without a Policy::evaluate decision.
+    // Role is not plumbed to this thread yet (None) — enforcement flips with
+    // the strict PolicyHandle once it is. See AGENTS.md §write-policy.
+    if !write_policy.allow_write(author_did, None, verse_id) {
+        return;
+    }
+
     let Some(repl) = replicas.get(verse_id) else {
         tracing::warn!(
             verse_id,

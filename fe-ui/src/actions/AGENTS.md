@@ -6,6 +6,19 @@
   functions (`compute_open_portal`, `should_auto_close`, `compute_save_url`)
   are unit-tested directly; see `fe-ui/src/AGENTS.md` §portal for the full
   save/open chain this drives.
+
+  §save-url-validation: `compute_save_url` enforces
+  `fe_webview::security::is_url_allowed` *before persistence* (FR-1 of the
+  `inspector_settings_20260419` track) — previously only `OpenPortal`
+  validated, so a blocked URL (e.g. `http://192.168.1.1`) could be saved to
+  SurrealDB and later opened by any path that trusted stored URLs. The
+  outcome enum (`Persist`/`Blocked`/`NoSelection`) keeps the decision pure;
+  the `mod.rs` dispatcher maps `Blocked` to a `warn!` (security event) plus a
+  user-visible toast. Empty buffer still normalizes to `None` (clears the
+  URL) and is not treated as a validation failure. The restart round-trip
+  test (persist → DB-hydrated `VerseManager` → reload → still-validated)
+  lives in `node_manager/inspector_sync.rs`, next to the reload path it
+  exercises.
 - `node_props.rs` — custom node property load/set/delete (`DbCommand`
   fire-and-forget with a `warn!` on channel-closed). Also owns the reserved
   `gis.annotation.{title,body,color}` key constants + pure

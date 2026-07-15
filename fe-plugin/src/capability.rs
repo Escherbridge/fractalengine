@@ -95,6 +95,14 @@ impl CapabilityToken {
     pub fn has_capability(&self, capability: &str) -> bool {
         self.capabilities.iter().any(|c| c == capability)
     }
+
+    /// Bridge to the shared policy engine (see fe-plugin/src/AGENTS.md §capability-policy).
+    pub fn to_auth_context(&self) -> fe_policy::AuthContext {
+        fe_policy::AuthContext::Capability {
+            plugin_id: self.plugin_id.clone(),
+            capabilities: self.capabilities.clone(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +300,18 @@ mod tests {
         assert!(token.has_capability(fe_sdk::CAP_STORAGE_READ));
         assert!(token.has_capability(fe_sdk::CAP_QUERY_SELECT));
         assert!(!token.has_capability(fe_sdk::CAP_STORAGE_WRITE));
+    }
+
+    #[test]
+    fn auth_context_bridge_mirrors_token_grants() {
+        let token = CapabilityToken::mint(
+            "test-plugin",
+            &CapabilityManifest::from_json(r#"{"capabilities": ["storage.read"]}"#).unwrap(),
+        );
+        let subject = token.to_auth_context();
+        assert!(subject.has_capability("storage.read"));
+        assert!(!subject.has_capability("storage.write"));
+        assert_eq!(subject.subject_label(), "plugin:test-plugin");
     }
 
     #[test]

@@ -42,6 +42,12 @@ pub enum WsClientMsg {
         #[serde(skip_serializing_if = "Option::is_none")]
         last_known_version: Option<u64>,
     },
+    /// CUD operation over WS (requires editor role). The server replies with
+    /// an `EntityCommandResult` echoing `request_id`.
+    EntityCommand {
+        request_id: String,
+        command: crate::types::EntityCommand,
+    },
     /// Latency probe.
     Ping { timestamp_ms: u64 },
 }
@@ -94,6 +100,15 @@ pub enum WsServerMsg {
         position: [f32; 3],
         rotation: [f32; 3],
         scale: [f32; 3],
+    },
+    /// Response to an `EntityCommand`, echoing its `request_id`.
+    EntityCommandResult {
+        request_id: String,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Error message.
     Error { code: String, message: String },
@@ -282,6 +297,17 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             nodes,
                         }).await;
                     }
+                    Some(WsClientMsg::EntityCommand { request_id, command }) => {
+                        let msg = match handle_entity_command(&state, &claims, command).await {
+                            Ok(data) => WsServerMsg::EntityCommandResult {
+                                request_id, ok: true, data: Some(data), error: None,
+                            },
+                            Err(e) => WsServerMsg::EntityCommandResult {
+                                request_id, ok: false, data: None, error: Some(e),
+                            },
+                        };
+                        send_msg(&mut socket, &msg).await;
+                    }
                     Some(WsClientMsg::Auth { .. }) => {
                         // Already authenticated; ignore re-auth
                     }
@@ -442,6 +468,86 @@ async fn load_petal_nodes(
     }
 }
 
+/// Execute one `EntityCommand`: role + scope enforcement, then a `DbRequest`
+/// round-trip. Ok(json) on success; Err(client-safe message) otherwise.
+/// Scene deltas reach subscribers via the DB thread's entity-change broadcast.
+async fn handle_entity_command(
+    state: &ApiState,
+    claims: &ApiClaims,
+    command: crate::types::EntityCommand,
+) -> Result<serde_json::Value, String> {
+    use crate::types::EntityCommand as Ec;
+
+    // All CUD ops require editor role — mirrors the REST/TransformUpdate policy.
+    let role = fe_database::RoleLevel::from(claims.max_role.as_str());
+    if !role.can_edit() {
+        return Err("editor role required for entity commands".into());
+    }
+
+    // Resolve the target's scope and enforce it against the token scope.
+    let scope = match &command {
+        Ec::CreateNode { petal_id, .. } => resolve_petal_scope_ws(state, petal_id).await,
+        Ec::DeleteNode { node_id }
+        | Ec::SetNodeProperty { node_id, .. }
+        | Ec::DeleteNodeProperty { node_id, .. } => {
+            if !crate::types::is_valid_ulid(node_id) {
+                return Err("invalid node_id".into());
+            }
+            crate::rest::resolve_node_scope(state, node_id).await
+        }
+    };
+    let Some(scope) = scope else {
+        return Err("could not resolve target scope".into());
+    };
+    if !fe_database::scope_contains(&claims.scope, &scope) {
+        return Err("insufficient scope".into());
+    }
+
+    let db_cmd = match command {
+        Ec::CreateNode { petal_id, name, position } => DbCommand::CreateNode {
+            petal_id,
+            name,
+            position: position.unwrap_or([0.0, 0.0, 0.0]),
+            correlation_id: None,
+        },
+        Ec::DeleteNode { node_id } => DbCommand::DeleteNode { node_id },
+        Ec::SetNodeProperty { node_id, key, value } => {
+            DbCommand::SetNodeProperty { node_id, key, value }
+        }
+        Ec::DeleteNodeProperty { node_id, key } => {
+            DbCommand::DeleteNodeProperty { node_id, key }
+        }
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest { cmd: db_cmd, reply_tx })
+        .map_err(|_| "internal channel closed".to_string())?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+        Ok(Ok(DbResult::NodeCreated { id, name, petal_id, .. })) => Ok(serde_json::json!({
+            "node_id": id, "name": name, "petal_id": petal_id,
+        })),
+        Ok(Ok(DbResult::NodeDeleted { node_id, petal_id })) => Ok(serde_json::json!({
+            "node_id": node_id, "petal_id": petal_id,
+        })),
+        Ok(Ok(DbResult::NodePropertySet { node_id, key })) => Ok(serde_json::json!({
+            "node_id": node_id, "key": key,
+        })),
+        Ok(Ok(DbResult::NodePropertyDeleted { node_id, key })) => Ok(serde_json::json!({
+            "node_id": node_id, "key": key,
+        })),
+        Ok(Ok(DbResult::Error(e))) => {
+            tracing::error!("WS entity command failed: {e}");
+            Err("operation failed".into())
+        }
+        Ok(Ok(_)) => Err("unexpected response".into()),
+        Ok(Err(_)) => Err("request cancelled".into()),
+        Err(_) => Err("request timed out".into()),
+    }
+}
+
 /// Resolve a petal_id to its full scope string.
 ///
 /// Uses a direct DB query when `db_reader` is available, falling back to the
@@ -503,6 +609,97 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn entity_command_serde() {
+        let json = r#"{"type":"entity_command","request_id":"r1",
+            "command":{"op":"create_node","petal_id":"p1","name":"n","position":[1.0,2.0,3.0]}}"#;
+        let msg: WsClientMsg = serde_json::from_str(json).unwrap();
+        match msg {
+            WsClientMsg::EntityCommand { request_id, command } => {
+                assert_eq!(request_id, "r1");
+                match command {
+                    crate::types::EntityCommand::CreateNode { petal_id, name, position } => {
+                        assert_eq!(petal_id, "p1");
+                        assert_eq!(name, "n");
+                        assert_eq!(position, Some([1.0, 2.0, 3.0]));
+                    }
+                    other => panic!("expected CreateNode, got {other:?}"),
+                }
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn entity_command_position_optional() {
+        let json = r#"{"type":"entity_command","request_id":"r2",
+            "command":{"op":"create_node","petal_id":"p1","name":"n"}}"#;
+        let msg: WsClientMsg = serde_json::from_str(json).unwrap();
+        match msg {
+            WsClientMsg::EntityCommand { command, .. } => match command {
+                crate::types::EntityCommand::CreateNode { position, .. } => {
+                    assert_eq!(position, None);
+                }
+                other => panic!("expected CreateNode, got {other:?}"),
+            },
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn entity_command_delete_and_property_ops_serde() {
+        let del: WsClientMsg = serde_json::from_str(
+            r#"{"type":"entity_command","request_id":"r3",
+                "command":{"op":"delete_node","node_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}}"#,
+        ).unwrap();
+        assert!(matches!(
+            del,
+            WsClientMsg::EntityCommand { command: crate::types::EntityCommand::DeleteNode { .. }, .. }
+        ));
+        let set: WsClientMsg = serde_json::from_str(
+            r#"{"type":"entity_command","request_id":"r4",
+                "command":{"op":"set_node_property","node_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","key":"opacity","value":0.5}}"#,
+        ).unwrap();
+        assert!(matches!(
+            set,
+            WsClientMsg::EntityCommand { command: crate::types::EntityCommand::SetNodeProperty { .. }, .. }
+        ));
+        let delp: WsClientMsg = serde_json::from_str(
+            r#"{"type":"entity_command","request_id":"r5",
+                "command":{"op":"delete_node_property","node_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","key":"opacity"}}"#,
+        ).unwrap();
+        assert!(matches!(
+            delp,
+            WsClientMsg::EntityCommand { command: crate::types::EntityCommand::DeleteNodeProperty { .. }, .. }
+        ));
+    }
+
+    #[test]
+    fn entity_command_result_serde() {
+        let ok = WsServerMsg::EntityCommandResult {
+            request_id: "r1".into(),
+            ok: true,
+            data: Some(serde_json::json!({"node_id": "n1"})),
+            error: None,
+        };
+        let json = serde_json::to_string(&ok).unwrap();
+        assert!(json.contains("\"entity_command_result\""));
+        assert!(json.contains("\"request_id\":\"r1\""));
+        assert!(json.contains("\"node_id\":\"n1\""));
+        assert!(!json.contains("\"error\""), "error field must be omitted when None");
+
+        let err = WsServerMsg::EntityCommandResult {
+            request_id: "r2".into(),
+            ok: false,
+            data: None,
+            error: Some("insufficient scope".into()),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains("\"ok\":false"));
+        assert!(json.contains("insufficient scope"));
+        assert!(!json.contains("\"data\""), "data field must be omitted when None");
     }
 
     #[test]

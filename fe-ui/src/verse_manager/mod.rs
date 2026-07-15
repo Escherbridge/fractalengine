@@ -15,6 +15,7 @@ mod db_results;
 mod node_index;
 mod path_asset_reconcile;
 mod petal_respawn;
+mod primitive_materialize;
 mod primitive_reconcile;
 mod spawn;
 
@@ -23,6 +24,7 @@ use bevy::prelude::*;
 use crate::plugin::UiSet;
 
 pub use path_asset_reconcile::PathAssetApplied;
+pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
 pub use spawn::{build_primitive_mesh, PrimitiveNode};
 
@@ -82,6 +84,13 @@ pub struct VerseManager {
 }
 
 impl VerseManager {
+    /// Build a manager from a verse tree with the node index pre-populated.
+    pub fn from_verses(verses: Vec<VerseEntry>) -> Self {
+        let mut mgr = Self { verses, node_index: Default::default() };
+        mgr.rebuild_node_index();
+        mgr
+    }
+
     /// Iterate every node in every petal of every fractal in every verse.
     pub fn all_nodes(&self) -> impl Iterator<Item = &NodeEntry> {
         self.verses
@@ -132,14 +141,19 @@ impl Plugin for VerseManagerPlugin {
         app.init_resource::<TextureRegistryRes>();
         app.init_resource::<PrimitiveMaterialAssets>();
         app.init_resource::<PathAssetApplied>();
+        app.init_resource::<PrimitiveDescriptorCache>();
+        // Chained: materialize must observe entities spawned via Commands by
+        // the earlier systems (chain inserts the needed sync points).
         app.add_systems(
             Update,
             (
                 db_results::apply_db_results,
                 petal_respawn::respawn_on_petal_change,
+                primitive_materialize::materialize_cached_primitives,
                 primitive_reconcile::reconcile_selected_primitive,
                 path_asset_reconcile::reconcile_path_asset,
             )
+                .chain()
                 .before(UiSet::ProcessActions),
         );
     }
