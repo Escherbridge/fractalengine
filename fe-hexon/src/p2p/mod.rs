@@ -11,5 +11,5 @@ pub mod fetch;
 
 pub use announce::{AnnouncementStore, CrateInventory, HexonAnnouncement};
 pub use config::{P2pConfig, PeerCandidate, PeerPriority};
-pub use discover::{HexonSearchResult, SearchQuery, search_announcements};
-pub use fetch::{FetchError, FetchManifestResult, FetchStrategy, verify_fetched_manifest};
+pub use discover::{search_announcements, HexonSearchResult, SearchQuery};
+pub use fetch::{verify_fetched_manifest, FetchError, FetchManifestResult, FetchStrategy};

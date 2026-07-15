@@ -66,7 +66,10 @@ impl SceneChangeBatch {
 
     /// Total number of changes across all categories.
     pub fn len(&self) -> usize {
-        self.added.len() + self.removed.len() + self.property_changes.len() + self.transform_changes.len()
+        self.added.len()
+            + self.removed.len()
+            + self.property_changes.len()
+            + self.transform_changes.len()
     }
 
     /// Whether the batch contains no changes.

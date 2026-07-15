@@ -9,6 +9,17 @@ use fe_sdk::primitive::{PrimitiveDescriptor, PrimitiveKind};
 
 use crate::plugin::SpawnedNodeMarker;
 
+/// Resolve an asset path to a loadable scene path: append `#Scene0` only for
+/// gltf/glb assets that don't already carry a label; pass anything else through.
+fn scene_asset_path(asset_path: &str) -> String {
+    let is_gltf = asset_path.ends_with(".gltf") || asset_path.ends_with(".glb");
+    if is_gltf && !asset_path.contains('#') {
+        format!("{}#Scene0", asset_path)
+    } else {
+        asset_path.to_string()
+    }
+}
+
 pub(super) fn spawn_node_entity(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -18,7 +29,7 @@ pub(super) fn spawn_node_entity(
     position: [f32; 3],
     asset_path: &str,
 ) {
-    let handle: Handle<Scene> = asset_server.load(format!("{}#Scene0", asset_path));
+    let handle: Handle<Scene> = asset_server.load(scene_asset_path(asset_path));
     let entity = commands
         .spawn((
             SceneRoot(handle),
@@ -30,7 +41,12 @@ pub(super) fn spawn_node_entity(
             },
         ))
         .id();
-    bevy::log::debug!("Spawned '{}' entity={:?} (petal={})", name, entity, petal_id);
+    bevy::log::debug!(
+        "Spawned '{}' entity={:?} (petal={})",
+        name,
+        entity,
+        petal_id
+    );
 }
 
 /// Marker component for fallback sign entities (nodes without geometry).
@@ -64,7 +80,7 @@ pub(super) fn spawn_stamped_entity(
     transform: Transform,
     asset_path: &str,
 ) {
-    let handle: Handle<Scene> = asset_server.load(format!("{}#Scene0", asset_path));
+    let handle: Handle<Scene> = asset_server.load(scene_asset_path(asset_path));
     let entity = commands
         .spawn((
             SceneRoot(handle),
@@ -82,7 +98,10 @@ pub(super) fn spawn_stamped_entity(
         .id();
     bevy::log::debug!(
         "Spawned path-asset stamp '{}' entity={:?} (track={} petal={})",
-        name, entity, source_track_id, petal_id
+        name,
+        entity,
+        source_track_id,
+        petal_id
     );
 }
 
@@ -102,11 +121,7 @@ pub fn build_primitive_mesh(desc: &PrimitiveDescriptor) -> Mesh {
     let d = &desc.dims;
     match desc.kind {
         PrimitiveKind::Cube => {
-            let (w, h, dp) = (
-                dim_or(d, 0, 1.0),
-                dim_or(d, 1, 1.0),
-                dim_or(d, 2, 1.0),
-            );
+            let (w, h, dp) = (dim_or(d, 0, 1.0), dim_or(d, 1, 1.0), dim_or(d, 2, 1.0));
             Mesh::from(Cuboid::new(w, h, dp))
         }
         PrimitiveKind::Plane => {
@@ -163,7 +178,9 @@ pub(super) fn spawn_primitive_entity(
         .id();
     bevy::log::debug!(
         "Spawned primitive '{}' entity={:?} (petal={})",
-        name, entity, petal_id
+        name,
+        entity,
+        petal_id
     );
     entity
 }
@@ -205,6 +222,8 @@ pub(super) fn spawn_fallback_sign(
         .id();
     bevy::log::debug!(
         "Spawned fallback sign '{}' entity={:?} (petal={})",
-        name, entity, petal_id
+        name,
+        entity,
+        petal_id
     );
 }

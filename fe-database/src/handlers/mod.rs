@@ -13,6 +13,7 @@
 //! - `admin` — Database reset
 //! - `crate_registry` — Hexon crate registry install/uninstall
 //! - `petal_terrain` — Per-petal terrain config get/set
+//! - `iot_reading` — Append-only IoT sensor-reading ingestion
 
 pub mod admin;
 pub mod api_token;
@@ -22,6 +23,7 @@ pub mod entity;
 pub mod entity_property;
 pub mod field_def;
 pub mod invite;
+pub mod iot_reading;
 pub mod node_log;
 pub mod petal_terrain;
 pub mod rbac;

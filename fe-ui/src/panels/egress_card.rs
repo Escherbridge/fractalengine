@@ -17,7 +17,11 @@ pub(crate) fn egress_section(
     ui_mgr: &mut UiManager,
     petal_id: &str,
 ) {
-    ui.label(egui::RichText::new("Copy for BI").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Copy for BI")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.label(
         egui::RichText::new("Paste these into PowerBI, DuckDB, or a spreadsheet.")
             .small()
@@ -29,10 +33,12 @@ pub(crate) fn egress_section(
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("API base").small().color(theme::TEXT_DIM));
-        ui.add(
-            egui::TextEdit::singleline(&mut gis_state.egress.base_url_buf).desired_width(200.0),
+        ui.label(
+            egui::RichText::new("API base")
+                .small()
+                .color(theme::TEXT_DIM),
         );
+        ui.add(egui::TextEdit::singleline(&mut gis_state.egress.base_url_buf).desired_width(200.0));
     });
     ui.add_space(6.0);
 
@@ -53,7 +59,12 @@ pub(crate) fn egress_section(
     copy_row(ui, ui_mgr, "Query endpoint", &es::query_post_url(&base));
     copy_row(ui, ui_mgr, "Export URL (parquet)", &parquet_url);
     copy_row(ui, ui_mgr, "Export URL (csv)", &csv_url);
-    copy_row(ui, ui_mgr, "DuckDB snippet", &es::duckdb_snippet(&parquet_url));
+    copy_row(
+        ui,
+        ui_mgr,
+        "DuckDB snippet",
+        &es::duckdb_snippet(&parquet_url),
+    );
 
     ui.add_space(6.0);
     ui.separator();
@@ -61,7 +72,11 @@ pub(crate) fn egress_section(
     render_share_section(ui, gis_state, ui_mgr, &base, &sql);
 }
 
-fn render_source_selector(ui: &mut egui::Ui, gis_state: &mut GisPanelState, node_mgr: &NodeManager) {
+fn render_source_selector(
+    ui: &mut egui::Ui,
+    gis_state: &mut GisPanelState,
+    node_mgr: &NodeManager,
+) {
     ui.horizontal(|ui| {
         for (source, label) in [
             (EgressSource::Petal, "Petal"),
@@ -69,8 +84,11 @@ fn render_source_selector(ui: &mut egui::Ui, gis_state: &mut GisPanelState, node
             (EgressSource::Bbox, "Bbox"),
         ] {
             let active = gis_state.egress.source == source;
-            let btn = egui::Button::new(label)
-                .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+            let btn = egui::Button::new(label).fill(if active {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            });
             if ui.add(btn).clicked() {
                 gis_state.egress.source = source;
             }
@@ -142,10 +160,19 @@ fn copy_row(ui: &mut egui::Ui, ui_mgr: &mut UiManager, label: &str, value: &str)
         .show(ui, |ui| {
             ui.set_max_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(label).small().strong().color(theme::TEXT_SECTION));
+                ui.label(
+                    egui::RichText::new(label)
+                        .small()
+                        .strong()
+                        .color(theme::TEXT_SECTION),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(egui::Button::new("\u{1F4CB}").fill(egui::Color32::TRANSPARENT).small())
+                        .add(
+                            egui::Button::new("\u{1F4CB}")
+                                .fill(egui::Color32::TRANSPARENT)
+                                .small(),
+                        )
                         .on_hover_text("Copy to clipboard")
                         .clicked()
                     {
@@ -178,9 +205,17 @@ fn render_share_section(
     base: &str,
     sql: &str,
 ) {
-    ui.label(egui::RichText::new("Shareable link").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Shareable link")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("TTL (s)").small().color(theme::TEXT_DIM));
+        ui.label(
+            egui::RichText::new("TTL (s)")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
         ui.add(egui::TextEdit::singleline(&mut gis_state.egress.ttl_buf).desired_width(70.0));
         ui.label(
             egui::RichText::new("default 3600, max 86400")
@@ -198,10 +233,8 @@ fn render_share_section(
     let curl = es::mint_share_curl(base, sql, ExportFormat::Parquet, ttl);
     copy_row(ui, ui_mgr, "Mint via curl", &curl);
     ui.label(
-        egui::RichText::new(
-            "Run with your API token; the response contains the signed URL.",
-        )
-        .small()
-        .color(theme::TEXT_MUTED),
+        egui::RichText::new("Run with your API token; the response contains the signed URL.")
+            .small()
+            .color(theme::TEXT_MUTED),
     );
 }

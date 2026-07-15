@@ -15,18 +15,30 @@ pub enum PathOp {
     /// echoes it back on `NodeCreated` and the deferred pen flush can match on
     /// it — see `fe-ui/src/AGENTS.md` §path-editor. The manual Paths-tab "New
     /// Path" button passes `None` (bridge generates its own id, unchanged).
-    CreateTrack { petal_id: String, name: String, correlation_id: Option<String> },
+    CreateTrack {
+        petal_id: String,
+        name: String,
+        correlation_id: Option<String>,
+    },
     /// Delete the track node `track_node_id` (and its `gpx_points`).
     DeleteTrack { track_node_id: String },
     /// Append a point (petal-local meters) at the end of `track_node_id`'s
     /// point list. `time_seconds` is `None` for authored (non-imported)
     /// points — the bridge stores `[x, y, z, time_seconds.unwrap_or(0.0)]`.
-    AppendPoint { track_node_id: String, position: [f32; 3], time_seconds: Option<f64> },
+    AppendPoint {
+        track_node_id: String,
+        position: [f32; 3],
+        time_seconds: Option<f64>,
+    },
     /// Remove the point at `index` from `track_node_id`'s point list.
     RemovePoint { track_node_id: String, index: usize },
     /// Move the point at `index` to `position` (petal-local meters) in place —
     /// preferred over remove+append for viewport drags: no index churn.
-    MovePoint { track_node_id: String, index: usize, position: [f32; 3] },
+    MovePoint {
+        track_node_id: String,
+        index: usize,
+        position: [f32; 3],
+    },
     /// Create a waypoint annotation node at the position of point `index` in
     /// `track_node_id`'s list, via the existing `gis.annotation.*` property
     /// contract (see `crate::actions::node_props`).

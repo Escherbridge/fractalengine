@@ -276,10 +276,7 @@ mod tests {
         let parts = SelectParts {
             fields: vec!["*".into()],
             table: "node".into(),
-            filters: vec![
-                Filter::eq("petal_id", "p1"),
-                Filter::gt("edit_seq", 5i64),
-            ],
+            filters: vec![Filter::eq("petal_id", "p1"), Filter::gt("edit_seq", 5i64)],
             group_by: vec![],
             group_all: false,
             order_by: vec![("created_at".into(), SortDir::Asc)],

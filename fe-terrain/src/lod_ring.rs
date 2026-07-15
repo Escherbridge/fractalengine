@@ -32,12 +32,17 @@ pub fn spawn_despawn_radii(view_radius_world: f64, tile_world: f64, hysteresis: 
 }
 
 /// Ring radius in tiles covering `view_radius_world`, clamped to `[1, max_radius]`.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the early-out branch
 pub fn ring_radius_tiles(view_radius_world: f64, scaled_tile_size: f64, max_radius: u32) -> u32 {
     if !(scaled_tile_size > 0.0) {
         return 1;
     }
     let r = (view_radius_world / scaled_tile_size).ceil();
-    let r = if r.is_finite() && r >= 1.0 { r as u32 } else { 1 };
+    let r = if r.is_finite() && r >= 1.0 {
+        r as u32
+    } else {
+        1
+    };
     r.clamp(1, max_radius.max(1))
 }
 
@@ -152,7 +157,10 @@ mod tests {
     fn hysteresis_despawn_strictly_greater_than_spawn() {
         let (spawn, despawn) = spawn_despawn_radii(300.0, 50.0, DESPAWN_HYSTERESIS);
         assert_eq!(spawn, 300.0);
-        assert!(despawn > spawn, "despawn {despawn} must exceed spawn {spawn}");
+        assert!(
+            despawn > spawn,
+            "despawn {despawn} must exceed spawn {spawn}"
+        );
         // Two-tile floor applies when the view radius is tiny.
         let (spawn, despawn) = spawn_despawn_radii(10.0, 50.0, DESPAWN_HYSTERESIS);
         assert_eq!(spawn, 100.0);
@@ -165,7 +173,7 @@ mod tests {
         assert_eq!(ring_radius_tiles(50.0, 100.0, 8), 1); // < 1 tile → floor 1
         assert_eq!(ring_radius_tiles(250.0, 100.0, 8), 3); // ceil(2.5)
         assert_eq!(ring_radius_tiles(5000.0, 100.0, 7), 7); // clamped to budget max
-        // Bad tile size falls back to 1.
+                                                            // Bad tile size falls back to 1.
         assert_eq!(ring_radius_tiles(500.0, 0.0, 8), 1);
     }
 
@@ -182,7 +190,7 @@ mod tests {
         let offs = ring_offsets(1);
         assert_eq!(offs.len(), 9);
         assert_eq!(offs[0], (0, 0)); // center first
-        // First ring (dist 1) before corners (dist 2).
+                                     // First ring (dist 1) before corners (dist 2).
         let center_idx = offs.iter().position(|&o| o == (0, 0)).unwrap();
         let corner_idx = offs.iter().position(|&o| o == (1, 1)).unwrap();
         let edge_idx = offs.iter().position(|&o| o == (1, 0)).unwrap();
@@ -206,7 +214,7 @@ mod tests {
     fn wrong_zoom_replacement_gate() {
         let mut existing = HashSet::new();
         let chunk = TileCoord::new(2, 3, 9); // coarse tile
-        // Same zoom is never "wrong".
+                                             // Same zoom is never "wrong".
         assert!(!wrong_zoom_replacement_present(chunk, 9, &existing));
         // Desired one level finer → needs all 4 children present.
         assert!(!wrong_zoom_replacement_present(chunk, 10, &existing));
@@ -215,7 +223,11 @@ mod tests {
         }
         assert!(wrong_zoom_replacement_present(chunk, 10, &existing));
         // Excessive child span is not attempted (returns false → linger, no hole).
-        assert!(!wrong_zoom_replacement_present(chunk, 9 + MAX_COVER_DZ + 1, &existing));
+        assert!(!wrong_zoom_replacement_present(
+            chunk,
+            9 + MAX_COVER_DZ + 1,
+            &existing
+        ));
     }
 
     #[test]
@@ -236,7 +248,7 @@ mod tests {
         assert_eq!(upsample_factor_for_height(100.0, 200.0, 4), 2);
         assert_eq!(upsample_factor_for_height(50.0, 200.0, 4), 4);
         assert_eq!(upsample_factor_for_height(10.0, 200.0, 4), 4); // cap holds
-        // Cap of 1 disables upsampling.
+                                                                   // Cap of 1 disables upsampling.
         assert_eq!(upsample_factor_for_height(10.0, 200.0, 1), 1);
     }
 

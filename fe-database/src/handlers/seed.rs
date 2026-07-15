@@ -5,8 +5,8 @@ use fe_query::{Filter, QueryBuilder};
 use crate::query_helpers::exec_query;
 use crate::repo::{Db, Repo};
 use crate::schema::{Asset, Fractal, Role, Verse, VerseMemberRow};
-use crate::{hash_to_hex, BlobStoreHandle};
 use crate::types::NodeId;
+use crate::{hash_to_hex, BlobStoreHandle};
 
 /// Returns `(asset_id_for_name)` map seeded from files in `assets/models/`.
 /// Each GLB is written to the blob store and its BLAKE3 content hash is
@@ -58,14 +58,18 @@ pub(crate) async fn seed_assets(
         let content_hash = hash_to_hex(&hash);
         let asset_id = ulid::Ulid::new().to_string();
 
-        Repo::<Asset>::create_raw(db, serde_json::json!({
-            "asset_id": asset_id,
-            "name": file_name,
-            "content_type": content_type,
-            "size_bytes": size_bytes,
-            "content_hash": content_hash,
-            "created_at": now,
-        })).await?;
+        Repo::<Asset>::create_raw(
+            db,
+            serde_json::json!({
+                "asset_id": asset_id,
+                "name": file_name,
+                "content_type": content_type,
+                "size_bytes": size_bytes,
+                "content_hash": content_hash,
+                "created_at": now,
+            }),
+        )
+        .await?;
         tracing::info!("Seeded asset: {file_name} ({size_bytes} bytes → asset_id={asset_id}, hash={content_hash})");
         id_map.insert(file_name, asset_id);
     }
@@ -118,14 +122,18 @@ pub async fn seed_default_data(
 
     // --- Verse ---
     let verse_id = ulid::Ulid::new().to_string();
-    Repo::<Verse>::create(db, &Verse {
-        verse_id: verse_id.clone(),
-        name: "Genesis Verse".to_string(),
-        created_by: local_did.clone(),
-        created_at: now.clone(),
-        namespace_id: None,
-        default_access: "viewer".to_string(),
-    }).await?;
+    Repo::<Verse>::create(
+        db,
+        &Verse {
+            verse_id: verse_id.clone(),
+            name: "Genesis Verse".to_string(),
+            created_by: local_did.clone(),
+            created_at: now.clone(),
+            namespace_id: None,
+            default_access: "viewer".to_string(),
+        },
+    )
+    .await?;
     tracing::info!("Seeded verse: Genesis Verse ({verse_id})");
 
     let invite_payload = format!("{}:{}:{}:{}", verse_id, local_did, local_did, now);
@@ -133,27 +141,35 @@ pub async fn seed_default_data(
     let invite_sig = hex::encode(invite_sig_bytes.to_bytes());
 
     let member_id = ulid::Ulid::new().to_string();
-    Repo::<VerseMemberRow>::create_raw(db, serde_json::json!({
-        "member_id": member_id,
-        "verse_id": verse_id,
-        "peer_did": local_did,
-        "status": "active",
-        "invited_by": local_did,
-        "invite_sig": invite_sig,
-        "invite_timestamp": now,
-    })).await?;
+    Repo::<VerseMemberRow>::create_raw(
+        db,
+        serde_json::json!({
+            "member_id": member_id,
+            "verse_id": verse_id,
+            "peer_did": local_did,
+            "status": "active",
+            "invited_by": local_did,
+            "invite_sig": invite_sig,
+            "invite_timestamp": now,
+        }),
+    )
+    .await?;
     tracing::info!("Seeded verse_member: {local_did}");
 
     // --- Fractal ---
     let fractal_id = ulid::Ulid::new().to_string();
-    Repo::<Fractal>::create(db, &Fractal {
-        fractal_id: fractal_id.clone(),
-        verse_id: verse_id.clone(),
-        owner_did: local_did.clone(),
-        name: "Genesis Fractal".to_string(),
-        description: Some(format!("The seed fractal for {local_did}")),
-        created_at: now.clone(),
-    }).await?;
+    Repo::<Fractal>::create(
+        db,
+        &Fractal {
+            fractal_id: fractal_id.clone(),
+            verse_id: verse_id.clone(),
+            owner_did: local_did.clone(),
+            name: "Genesis Fractal".to_string(),
+            description: Some(format!("The seed fractal for {local_did}")),
+            created_at: now.clone(),
+        },
+    )
+    .await?;
     tracing::info!("Seeded fractal: Genesis Fractal ({fractal_id})");
 
     // --- Petal ---
@@ -178,11 +194,15 @@ pub async fn seed_default_data(
     .map_err(|e| anyhow::anyhow!("seed UPDATE petal fractal_id failed: {e}"))?;
     tracing::info!("Seeded petal: {petal_name} ({})", petal_id.0);
 
-    Repo::<Role>::create(db, &Role {
-        peer_did: node_id.0.clone(),
-        scope:    format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0.to_string()),
-        role:     "owner".to_string(),
-    }).await?;
+    Repo::<Role>::create(
+        db,
+        &Role {
+            peer_did: node_id.0.clone(),
+            scope: format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0.to_string()),
+            role: "owner".to_string(),
+        },
+    )
+    .await?;
     tracing::info!("Assigned owner role to {}", node_id.0);
 
     for room_name in &room_names {

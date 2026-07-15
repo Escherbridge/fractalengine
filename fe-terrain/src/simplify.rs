@@ -1,7 +1,7 @@
-/// Ramer-Douglas-Peucker polyline simplification for 3D points.
-///
-/// Removes points that deviate less than `epsilon` (meters) from the simplified
-/// line, reducing vertex count while preserving the overall shape.
+//! Ramer-Douglas-Peucker polyline simplification for 3D points.
+//!
+//! Removes points that deviate less than `epsilon` (meters) from the simplified
+//! line, reducing vertex count while preserving the overall shape.
 
 /// Simplify a 3D polyline using Ramer-Douglas-Peucker.
 ///
@@ -33,8 +33,8 @@ fn rdp_recursive(points: &[[f32; 3]], start: usize, end: usize, epsilon: f32, ke
     let a = points[start];
     let b = points[end];
 
-    for i in (start + 1)..end {
-        let d = point_to_line_dist(points[i], a, b);
+    for (i, p) in points.iter().enumerate().take(end).skip(start + 1) {
+        let d = point_to_line_dist(*p, a, b);
         if d > max_dist {
             max_dist = d;
             max_idx = i;
@@ -89,9 +89,7 @@ mod tests {
     #[test]
     fn test_collinear_points_simplified() {
         // Points along a straight line — middle points should be removed
-        let pts: Vec<[f32; 3]> = (0..100)
-            .map(|i| [i as f32, 0.0, 0.0])
-            .collect();
+        let pts: Vec<[f32; 3]> = (0..100).map(|i| [i as f32, 0.0, 0.0]).collect();
         let result = rdp_simplify(&pts, 0.1);
         assert_eq!(result.len(), 2); // only start and end
     }
@@ -112,11 +110,7 @@ mod tests {
 
     #[test]
     fn test_endpoints_always_kept() {
-        let pts = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.001, 0.0],
-            [2.0, 0.0, 0.0],
-        ];
+        let pts = vec![[0.0, 0.0, 0.0], [1.0, 0.001, 0.0], [2.0, 0.0, 0.0]];
         let result = rdp_simplify(&pts, 0.01);
         assert_eq!(result[0], [0.0, 0.0, 0.0]);
         assert_eq!(*result.last().unwrap(), [2.0, 0.0, 0.0]);

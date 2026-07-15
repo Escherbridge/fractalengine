@@ -41,15 +41,15 @@ pub(crate) fn drain_tileset_events(
                 } = ui_mgr.active_dialog
                 {
                     for ad in ads {
-                        let Some(tileset_id) = ad.get("tileset_id").and_then(|v| v.as_str())
-                        else {
+                        let Some(tileset_id) = ad.get("tileset_id").and_then(|v| v.as_str()) else {
                             continue;
                         };
                         // Skip if we already have it in available list
                         if available_tilesets.iter().any(|t| t.hexon_id == tileset_id) {
                             // Increment peer count
-                            if let Some(existing) =
-                                available_tilesets.iter_mut().find(|t| t.hexon_id == tileset_id)
+                            if let Some(existing) = available_tilesets
+                                .iter_mut()
+                                .find(|t| t.hexon_id == tileset_id)
                             {
                                 existing.peer_count += 1;
                             }
@@ -169,8 +169,10 @@ pub(crate) fn drain_tileset_events(
                 } = ui_mgr.active_dialog
                 {
                     if let Some(dl) = download_progress.get_mut(&tileset_id) {
-                        dl.status =
-                            DownloadStatus::Failed(format!("Chunk {} failed: {}", chunk_seq, reason));
+                        dl.status = DownloadStatus::Failed(format!(
+                            "Chunk {} failed: {}",
+                            chunk_seq, reason
+                        ));
                     }
                 }
             }

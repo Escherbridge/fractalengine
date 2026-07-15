@@ -76,6 +76,7 @@ pub(crate) async fn list_field_defs_handler(
 /// Fetch a single field definition by its ID.
 ///
 /// Returns `None` if no matching row exists.
+#[allow(dead_code)] // not yet wired to a DbCommand — planned single-fetch API
 #[instrument(skip(db))]
 pub(crate) async fn get_field_def_handler(
     db: &Db,
@@ -110,8 +111,7 @@ pub(crate) async fn update_field_def_handler(
     // Build the SET clause manually via raw query to handle the Option<Value>
     // default_val — UpdateBuilder::set() requires a concrete QueryValue impl
     // and does not accept Option<&Value> directly.
-    let default_json = serde_json::to_string(&default_val)
-        .unwrap_or_else(|_| "null".to_string());
+    let default_json = serde_json::to_string(&default_val).unwrap_or_else(|_| "null".to_string());
     let sql = format!(
         "UPDATE field_def SET value_type = $vt, default_val = {} WHERE field_def_id = $id",
         default_json,
@@ -127,10 +127,7 @@ pub(crate) async fn update_field_def_handler(
 
 /// Delete a field definition by its ID.
 #[instrument(skip(db))]
-pub(crate) async fn delete_field_def_handler(
-    db: &Db,
-    field_def_id: &str,
-) -> anyhow::Result<()> {
+pub(crate) async fn delete_field_def_handler(db: &Db, field_def_id: &str) -> anyhow::Result<()> {
     let q = DeleteBuilder::delete_from("field_def")
         .where_clause(Filter::eq("field_def_id", field_def_id))
         .build();

@@ -22,7 +22,11 @@ struct TestDb {
 
 fn spawn_test_db() -> TestDb {
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir for test DB");
-    let db_path = tmp_dir.path().join("entity_property_test.db").to_string_lossy().to_string();
+    let db_path = tmp_dir
+        .path()
+        .join("entity_property_test.db")
+        .to_string_lossy()
+        .to_string();
 
     let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(256);
     let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(256);
@@ -42,9 +46,16 @@ fn spawn_test_db() -> TestDb {
     let started = res_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("entity_property test DB did not start within 30s");
-    assert!(matches!(started, DbResult::Started), "expected DbResult::Started, got {started:?}");
+    assert!(
+        matches!(started, DbResult::Started),
+        "expected DbResult::Started, got {started:?}"
+    );
 
-    TestDb { cmd_tx, res_rx, _tmp_dir: tmp_dir }
+    TestDb {
+        cmd_tx,
+        res_rx,
+        _tmp_dir: tmp_dir,
+    }
 }
 
 #[test]
@@ -59,7 +70,10 @@ fn set_node_property_on_nonexistent_node_returns_error() {
         })
         .unwrap();
 
-    let res = db.res_rx.recv_timeout(CMD_TIMEOUT).expect("SetNodeProperty result");
+    let res = db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("SetNodeProperty result");
     match res {
         DbResult::Error(msg) => {
             assert!(
@@ -82,7 +96,10 @@ fn delete_node_property_on_nonexistent_node_returns_error() {
         })
         .unwrap();
 
-    let res = db.res_rx.recv_timeout(CMD_TIMEOUT).expect("DeleteNodeProperty result");
+    let res = db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("DeleteNodeProperty result");
     match res {
         DbResult::Error(msg) => {
             assert!(

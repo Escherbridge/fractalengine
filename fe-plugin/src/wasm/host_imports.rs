@@ -6,9 +6,9 @@
 
 use wasmtime::{AsContext, AsContextMut, Caller, Linker};
 
+use crate::wasm::PluginStoreData;
 use crate::LogLevel;
 use crate::PluginCommand;
-use crate::wasm::PluginStoreData;
 
 /// Register all host import functions into a wasmtime [`Linker`].
 ///
@@ -55,17 +55,20 @@ pub fn register_host_imports(
         namespace,
         "set_property",
         |mut caller: Caller<'_, PluginStoreData>,
-         node_id_ptr: i32, node_id_len: i32,
-         key_ptr: i32, key_len: i32,
-         value_ptr: i32, value_len: i32| {
+         node_id_ptr: i32,
+         node_id_len: i32,
+         key_ptr: i32,
+         key_len: i32,
+         value_ptr: i32,
+         value_len: i32| {
             let node_id = read_string_from_memory(&mut caller, node_id_ptr, node_id_len);
             let key = read_string_from_memory(&mut caller, key_ptr, key_len);
             let value_str = read_string_from_memory(&mut caller, value_ptr, value_len);
             let plugin_id = caller.data().ctx.plugin_id().to_string();
             let tx = caller.data().ctx.tx.clone();
 
-            let value: serde_json::Value = serde_json::from_str(&value_str)
-                .unwrap_or(serde_json::Value::String(value_str));
+            let value: serde_json::Value =
+                serde_json::from_str(&value_str).unwrap_or(serde_json::Value::String(value_str));
 
             let _ = tx.send(PluginCommand::SetProperty {
                 plugin_id,
@@ -81,8 +84,11 @@ pub fn register_host_imports(
         namespace,
         "query_nodes",
         |mut caller: Caller<'_, PluginStoreData>,
-         petal_id_ptr: i32, petal_id_len: i32,
-         filter_ptr: i32, filter_len: i32| -> i32 {
+         petal_id_ptr: i32,
+         petal_id_len: i32,
+         filter_ptr: i32,
+         filter_len: i32|
+         -> i32 {
             let petal_id = read_string_from_memory(&mut caller, petal_id_ptr, petal_id_len);
             let _filter = read_string_from_memory(&mut caller, filter_ptr, filter_len);
             let plugin_id = caller.data().ctx.plugin_id().to_string();
@@ -104,8 +110,11 @@ pub fn register_host_imports(
         namespace,
         "create_node",
         |mut caller: Caller<'_, PluginStoreData>,
-         petal_id_ptr: i32, petal_id_len: i32,
-         name_ptr: i32, name_len: i32| -> i32 {
+         petal_id_ptr: i32,
+         petal_id_len: i32,
+         name_ptr: i32,
+         name_len: i32|
+         -> i32 {
             let petal_id = read_string_from_memory(&mut caller, petal_id_ptr, petal_id_len);
             let name = read_string_from_memory(&mut caller, name_ptr, name_len);
             let plugin_id = caller.data().ctx.plugin_id().to_string();
@@ -195,16 +204,21 @@ fn register_storage_query_imports(
         namespace,
         "node_set_property",
         |mut caller: Caller<'_, PluginStoreData>,
-         node_id_ptr: i32, node_id_len: i32,
-         key_ptr: i32, key_len: i32,
-         value_ptr: i32, value_len: i32| {
+         node_id_ptr: i32,
+         node_id_len: i32,
+         key_ptr: i32,
+         key_len: i32,
+         value_ptr: i32,
+         value_len: i32| {
             let node_id = read_string_from_memory(&mut caller, node_id_ptr, node_id_len);
             let key = read_string_from_memory(&mut caller, key_ptr, key_len);
             let value_str = read_string_from_memory(&mut caller, value_ptr, value_len);
             let value = json_str_to_property(&value_str);
             let ctx = caller.data();
             if let Err(e) =
-                ctx.ctx.host().node_set_property(&ctx.ctx.capabilities, &node_id, &key, value)
+                ctx.ctx
+                    .host()
+                    .node_set_property(&ctx.ctx.capabilities, &node_id, &key, value)
             {
                 tracing::warn!(func = "node_set_property", error = %e, "wasm host API call failed");
             }
@@ -216,21 +230,25 @@ fn register_storage_query_imports(
         namespace,
         "query_select",
         |mut caller: Caller<'_, PluginStoreData>,
-         sql_ptr: i32, sql_len: i32,
-         params_ptr: i32, params_len: i32| -> i32 {
+         sql_ptr: i32,
+         sql_len: i32,
+         params_ptr: i32,
+         params_len: i32|
+         -> i32 {
             let sql = read_string_from_memory(&mut caller, sql_ptr, sql_len);
             let params_str = read_string_from_memory(&mut caller, params_ptr, params_len);
             let params: std::collections::HashMap<String, serde_json::Value> =
                 serde_json::from_str(&params_str).unwrap_or_default();
             let result = {
                 let data = caller.data();
-                data.ctx.host().query_select(&data.ctx.capabilities, &sql, params)
+                data.ctx
+                    .host()
+                    .query_select(&data.ctx.capabilities, &sql, params)
             };
             match result {
-                Ok(rows) => write_string_to_memory(
-                    &mut caller,
-                    &serde_json::Value::Array(rows).to_string(),
-                ),
+                Ok(rows) => {
+                    write_string_to_memory(&mut caller, &serde_json::Value::Array(rows).to_string())
+                }
                 Err(e) => {
                     tracing::warn!(func = "query_select", error = %e, "wasm host API call failed");
                     -1
@@ -271,14 +289,20 @@ fn register_storage_query_imports(
         namespace,
         "ext_storage_set",
         |mut caller: Caller<'_, PluginStoreData>,
-         key_ptr: i32, key_len: i32,
-         value_ptr: i32, value_len: i32| {
+         key_ptr: i32,
+         key_len: i32,
+         value_ptr: i32,
+         value_len: i32| {
             let key = read_string_from_memory(&mut caller, key_ptr, key_len);
             let value_str = read_string_from_memory(&mut caller, value_ptr, value_len);
             let value = json_str_to_property(&value_str);
             let ctx = caller.data();
             let ns = ctx.ctx.plugin_id().to_string();
-            if let Err(e) = ctx.ctx.host().storage_set(&ctx.ctx.capabilities, &ns, &key, value) {
+            if let Err(e) = ctx
+                .ctx
+                .host()
+                .storage_set(&ctx.ctx.capabilities, &ns, &key, value)
+            {
                 tracing::warn!(func = "ext_storage_set", error = %e, "wasm host API call failed");
             }
         },
@@ -346,11 +370,7 @@ fn register_log_func(
 ///
 /// Uses the memory export named "memory" (conventional for WASI/wasm modules).
 /// If the module doesn't export memory, returns an empty string.
-fn read_string_from_memory(
-    caller: &mut Caller<'_, PluginStoreData>,
-    ptr: i32,
-    len: i32,
-) -> String {
+fn read_string_from_memory(caller: &mut Caller<'_, PluginStoreData>, ptr: i32, len: i32) -> String {
     if ptr < 0 || len <= 0 {
         return String::new();
     }
@@ -365,7 +385,10 @@ fn read_string_from_memory(
     let len = len as usize;
 
     if ptr + len > data.len() {
-        tracing::warn!("Host import read out of bounds: ptr={ptr}, len={len}, mem_size={}", data.len());
+        tracing::warn!(
+            "Host import read out of bounds: ptr={ptr}, len={len}, mem_size={}",
+            data.len()
+        );
         return String::new();
     }
 
@@ -376,10 +399,7 @@ fn read_string_from_memory(
 ///
 /// This is a simplified approach that writes to a pre-allocated buffer area.
 /// In production, this would use a proper allocator or shared buffer protocol.
-fn write_string_to_memory(
-    caller: &mut Caller<'_, PluginStoreData>,
-    value: &str,
-) -> i32 {
+fn write_string_to_memory(caller: &mut Caller<'_, PluginStoreData>, value: &str) -> i32 {
     let bytes = value.as_bytes();
 
     let memory = match caller.get_export("memory") {
@@ -391,7 +411,11 @@ fn write_string_to_memory(
     let mem_len = data.len();
 
     if bytes.len() > mem_len {
-        tracing::warn!("Host import write exceeds memory: bytes={}, mem_size={}", bytes.len(), mem_len);
+        tracing::warn!(
+            "Host import write exceeds memory: bytes={}, mem_size={}",
+            bytes.len(),
+            mem_len
+        );
         return -1;
     }
 

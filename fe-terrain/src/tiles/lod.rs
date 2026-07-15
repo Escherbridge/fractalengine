@@ -65,7 +65,11 @@ impl TileLodManager {
         }
 
         // Sort by distance (closest first)
-        requests.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+        requests.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         requests
     }
 

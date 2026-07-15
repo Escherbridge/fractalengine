@@ -62,7 +62,10 @@ pub async fn require_write_role(db: &Db, peer_did: &str, scope: &str) -> anyhow:
 }
 
 /// Get all peer roles for a given scope.
-pub async fn get_all_roles_for_scope(db: &Db, scope: &str) -> anyhow::Result<Vec<(String, String)>> {
+pub async fn get_all_roles_for_scope(
+    db: &Db,
+    scope: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
     let q = QueryBuilder::new()
         .select(&["peer_did", "role"])
         .from("role")

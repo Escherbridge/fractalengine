@@ -49,10 +49,16 @@ pub(crate) fn left_sidebar(
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
                 let reset_btn = egui::Button::new(
-                    egui::RichText::new("Reset Database").small().color(theme::TEXT_DIM),
+                    egui::RichText::new("Reset Database")
+                        .small()
+                        .color(theme::TEXT_DIM),
                 )
                 .fill(theme::BG_BUTTON_ALT);
-                if ui.add(reset_btn).on_hover_text("Wipe all data and re-seed defaults").clicked() {
+                if ui
+                    .add(reset_btn)
+                    .on_hover_text("Wipe all data and re-seed defaults")
+                    .clicked()
+                {
                     db_tx.send(DbCommand::ResetDatabase).ok();
                 }
                 ui.add_space(4.0);
@@ -236,14 +242,23 @@ fn render_petals(
             .id_salt(format!("petal_{}_{}", fractal_id, petal_id))
             .default_open(true)
             .show(ui, |ui| {
-                render_nodes(ui, &mut petals[pi].nodes, camera_focus, node_mgr, ui_mgr, is_active);
+                render_nodes(
+                    ui,
+                    &mut petals[pi].nodes,
+                    camera_focus,
+                    node_mgr,
+                    ui_mgr,
+                    is_active,
+                );
                 ui.horizontal(|ui| {
                     // [+] Add Node inside the petal collapse
                     add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, ui_mgr);
                     if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new("Manifest").small(),
-                        ).fill(theme::BG_BUTTON).small())
+                        .add(
+                            egui::Button::new(egui::RichText::new("Manifest").small())
+                                .fill(theme::BG_BUTTON)
+                                .small(),
+                        )
                         .on_hover_text("Edit petal hexon manifest")
                         .clicked()
                     {
@@ -276,14 +291,14 @@ fn render_nodes(
     let mut node_click: Option<(String, [f32; 3])> = None;
     let mut node_alt_click: Option<(String, String, String)> = None;
 
-    let node_count = nodes.len();
-    for i in 0..node_count {
-        let node_id = nodes[i].id.clone();
-        let node_name = nodes[i].name.clone();
-        let has_asset = nodes[i].has_asset;
-        let position = nodes[i].position;
-        let webpage_url = nodes[i].webpage_url.clone().unwrap_or_default();
-        let is_selected = node_mgr.selected.as_ref().map(|s| s.node_id.as_str()) == Some(node_id.as_str());
+    for (i, node) in nodes.iter().enumerate() {
+        let node_id = node.id.clone();
+        let node_name = node.name.clone();
+        let has_asset = node.has_asset;
+        let position = node.position;
+        let webpage_url = node.webpage_url.clone().unwrap_or_default();
+        let is_selected =
+            node_mgr.selected.as_ref().map(|s| s.node_id.as_str()) == Some(node_id.as_str());
         let is_being_dragged = dragging_idx == Some(i);
 
         let bg = if is_selected {
@@ -304,19 +319,21 @@ fn render_nodes(
                             .color(theme::TEXT_DIM),
                     );
                     let icon = if has_asset { "\u{25C6}" } else { "\u{25CF}" };
-                    ui.label(egui::RichText::new(icon).small().color(theme::TREE_NODE_ICON));
+                    ui.label(
+                        egui::RichText::new(icon)
+                            .small()
+                            .color(theme::TREE_NODE_ICON),
+                    );
                     ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&node_name).small().color(
-                                if !is_active_petal {
-                                    theme::TEXT_MUTED
-                                } else if is_selected {
-                                    theme::TEXT_BRIGHT
-                                } else {
-                                    theme::TEXT_SECTION
-                                },
-                            ),
-                        )
+                        egui::Label::new(egui::RichText::new(&node_name).small().color(
+                            if !is_active_petal {
+                                theme::TEXT_MUTED
+                            } else if is_selected {
+                                theme::TEXT_BRIGHT
+                            } else {
+                                theme::TEXT_SECTION
+                            },
+                        ))
                         .sense(if is_active_petal {
                             egui::Sense::click()
                         } else {
@@ -345,16 +362,20 @@ fn render_nodes(
             ui.ctx().data_mut(|d| d.insert_temp::<usize>(drag_id, i));
         }
 
-        if dragging_idx.is_some() && drag_resp.hovered() {
-            if ui.input(|inp| inp.pointer.primary_released()) {
-                drop_target_idx = Some(i);
-            }
+        if dragging_idx.is_some()
+            && drag_resp.hovered()
+            && ui.input(|inp| inp.pointer.primary_released())
+        {
+            drop_target_idx = Some(i);
         }
 
         // Show drop indicator when dragging over this item
         if dragging_idx.is_some() && drag_resp.hovered() {
-            ui.painter()
-                .hline(row.response.rect.x_range(), row.response.rect.top(), egui::Stroke::new(2.0, theme::BG_BUTTON_ACTIVE));
+            ui.painter().hline(
+                row.response.rect.x_range(),
+                row.response.rect.top(),
+                egui::Stroke::new(2.0, theme::BG_BUTTON_ACTIVE),
+            );
         }
     }
 

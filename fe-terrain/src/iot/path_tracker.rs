@@ -185,11 +185,7 @@ fn euclidean_distance_3d(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 /// Find the nearest point on the line segment AB to point P.
 ///
 /// Returns (nearest_point, distance_squared).
-fn nearest_point_on_segment(
-    p: [f64; 3],
-    a: [f64; 3],
-    b: [f64; 3],
-) -> ([f64; 3], f64) {
+fn nearest_point_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> ([f64; 3], f64) {
     let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
 
@@ -203,11 +199,7 @@ fn nearest_point_on_segment(
         0.0
     };
 
-    let nearest = [
-        a[0] + ab[0] * t,
-        a[1] + ab[1] * t,
-        a[2] + ab[2] * t,
-    ];
+    let nearest = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
 
     (nearest, euclidean_distance_sq_3d(&p, &nearest))
 }
@@ -235,11 +227,7 @@ mod tests {
     #[test]
     fn test_snap_to_segment() {
         // Route: (0,0,0) → (10,0,0) → (10,10,0)
-        let tracker = PathTracker::new(vec![
-            [0.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
-            [10.0, 10.0, 0.0],
-        ]);
+        let tracker = PathTracker::new(vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]]);
 
         // Snap to point near middle of first segment
         let result = tracker.snap_to_route([5.0, 0.5, 0.0]);
@@ -252,10 +240,7 @@ mod tests {
 
     #[test]
     fn test_snap_beyond_endpoint() {
-        let tracker = PathTracker::new(vec![
-            [0.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
-        ]);
+        let tracker = PathTracker::new(vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]);
 
         // Point beyond the end
         let result = tracker.snap_to_route([15.0, 0.0, 0.0]);
@@ -267,11 +252,7 @@ mod tests {
 
     #[test]
     fn test_position_at_progress() {
-        let tracker = PathTracker::new(vec![
-            [0.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
-            [10.0, 10.0, 0.0],
-        ]);
+        let tracker = PathTracker::new(vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]]);
 
         let p0 = tracker.position_at_progress(0.0);
         assert_eq!(p0, [0.0, 0.0, 0.0]);
@@ -292,10 +273,7 @@ mod tests {
 
     #[test]
     fn test_deviation_alert_threshold() {
-        let tracker = PathTracker::new(vec![
-            [0.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
-        ]);
+        let tracker = PathTracker::new(vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]);
 
         // Point 60m away from route
         let result = tracker.snap_to_route([5.0, 60.0, 0.0]);

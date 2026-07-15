@@ -229,7 +229,10 @@ mod tests {
     fn polygon_area_degenerate_returns_zero() {
         assert_eq!(polygon_area_m2(&[], 1.0), 0.0);
         assert_eq!(polygon_area_m2(&[[0.0, 0.0, 0.0]], 1.0), 0.0);
-        assert_eq!(polygon_area_m2(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 1.0), 0.0);
+        assert_eq!(
+            polygon_area_m2(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 1.0),
+            0.0
+        );
     }
 
     #[test]

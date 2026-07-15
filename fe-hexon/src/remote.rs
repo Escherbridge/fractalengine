@@ -119,6 +119,7 @@ impl RemoteRegistryClient {
                 env.error.unwrap_or_else(|| "unknown".into())
             ));
         }
-        env.data.ok_or_else(|| anyhow!("registry response missing data"))
+        env.data
+            .ok_or_else(|| anyhow!("registry response missing data"))
     }
 }

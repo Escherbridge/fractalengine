@@ -19,7 +19,10 @@ use crate::plugin::InspectorFormState;
 /// async property-load/set/delete results against stomping a different
 /// node's buffers after the user has switched selection mid-round-trip.
 pub(super) fn is_for_selected_node(node_mgr: &NodeManager, node_id: &str) -> bool {
-    node_mgr.selected.as_ref().is_some_and(|s| s.node_id == node_id)
+    node_mgr
+        .selected
+        .as_ref()
+        .is_some_and(|s| s.node_id == node_id)
 }
 
 /// `NodePropertiesLoaded`: feed the Paths-tab read-back, then the inspector.
@@ -50,8 +53,7 @@ pub(super) fn handle_node_properties_loaded(
             .unwrap_or_default();
         // track_styling_20260713: seed the Paths-tab style controls
         // from the same property bag (default when absent/invalid).
-        path_state.edited_track_style =
-            crate::gis::TrackStyleFields::from_properties(properties);
+        path_state.edited_track_style = crate::gis::TrackStyleFields::from_properties(properties);
         // path-asset-stamp: seed the stamp descriptor from the same
         // bag so `reconcile_path_asset` (keyed on `editing_track_id`)
         // can spawn the models. `None` when absent/invalid.
@@ -121,7 +123,9 @@ pub(super) fn handle_node_property_set(
     }
     // Issue the read once when any consumer needs it (idempotent).
     if refresh_editing_track || for_selected || primitive_write {
-        let _ = db_sender.0.send(DbCommand::GetNodeProperties { node_id: node_id.to_string() });
+        let _ = db_sender.0.send(DbCommand::GetNodeProperties {
+            node_id: node_id.to_string(),
+        });
     }
     for_selected
 }

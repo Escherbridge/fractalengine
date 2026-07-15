@@ -19,15 +19,25 @@ pub(crate) fn gpx_import_section(
     gpx_status: &GpxImportStatus,
     petal_id: &str,
 ) {
-    ui.label(egui::RichText::new("GPX Import").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("GPX Import")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
-    if ui.add(egui::Button::new("\u{1F4C1} Import GPX...").fill(theme::BG_BUTTON)).clicked() {
+    if ui
+        .add(egui::Button::new("\u{1F4C1} Import GPX...").fill(theme::BG_BUTTON))
+        .clicked()
+    {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("GPX Tracks", &["gpx"])
             .add_filter("All Files", &["*"])
             .pick_file()
         {
-            ui_mgr.push_action(UiAction::GpxImportFile { petal_id: petal_id.to_string(), path });
+            ui_mgr.push_action(UiAction::GpxImportFile {
+                petal_id: petal_id.to_string(),
+                path,
+            });
         }
     }
 
@@ -38,7 +48,9 @@ pub(crate) fn gpx_import_section(
         ui.add_space(4.0);
         if let Some(err) = &gpx_status.error {
             ui.label(
-                egui::RichText::new(format!("\u{2717} {err}")).small().color(theme::STATUS_OFFLINE),
+                egui::RichText::new(format!("\u{2717} {err}"))
+                    .small()
+                    .color(theme::STATUS_OFFLINE),
             );
         } else {
             ui.label(

@@ -21,7 +21,9 @@ pub fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     2.0 * EARTH_RADIUS_M * a.sqrt().asin()
 }
 
-fn st_distance_impl(args: &[ColumnarValue]) -> Result<ColumnarValue, datafusion::error::DataFusionError> {
+fn st_distance_impl(
+    args: &[ColumnarValue],
+) -> Result<ColumnarValue, datafusion::error::DataFusionError> {
     if args.len() != 4 {
         return Err(datafusion::error::DataFusionError::Plan(
             "st_distance requires 4 arguments: x1, y1, x2, y2".into(),
@@ -36,18 +38,30 @@ fn st_distance_impl(args: &[ColumnarValue]) -> Result<ColumnarValue, datafusion:
         })
         .collect::<Result<_, _>>()?;
 
-    let x1 = arrays[0].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_distance: x1 must be Float64".into())
-    })?;
-    let y1 = arrays[1].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_distance: y1 must be Float64".into())
-    })?;
-    let x2 = arrays[2].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_distance: x2 must be Float64".into())
-    })?;
-    let y2 = arrays[3].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_distance: y2 must be Float64".into())
-    })?;
+    let x1 = arrays[0]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_distance: x1 must be Float64".into())
+        })?;
+    let y1 = arrays[1]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_distance: y1 must be Float64".into())
+        })?;
+    let x2 = arrays[2]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_distance: x2 must be Float64".into())
+        })?;
+    let y2 = arrays[3]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_distance: y2 must be Float64".into())
+        })?;
 
     let len = x1.len();
     let mut results = Vec::with_capacity(len);
@@ -55,14 +69,21 @@ fn st_distance_impl(args: &[ColumnarValue]) -> Result<ColumnarValue, datafusion:
         if x1.is_null(i) || y1.is_null(i) || x2.is_null(i) || y2.is_null(i) {
             results.push(f64::NAN);
         } else {
-            results.push(haversine(x1.value(i), y1.value(i), x2.value(i), y2.value(i)));
+            results.push(haversine(
+                x1.value(i),
+                y1.value(i),
+                x2.value(i),
+                y2.value(i),
+            ));
         }
     }
 
     Ok(ColumnarValue::Array(Arc::new(Float64Array::from(results))))
 }
 
-fn st_dwithin_impl(args: &[ColumnarValue]) -> Result<ColumnarValue, datafusion::error::DataFusionError> {
+fn st_dwithin_impl(
+    args: &[ColumnarValue],
+) -> Result<ColumnarValue, datafusion::error::DataFusionError> {
     if args.len() != 5 {
         return Err(datafusion::error::DataFusionError::Plan(
             "st_dwithin requires 5 arguments: x1, y1, x2, y2, distance_m".into(),
@@ -77,21 +98,38 @@ fn st_dwithin_impl(args: &[ColumnarValue]) -> Result<ColumnarValue, datafusion::
         })
         .collect::<Result<_, _>>()?;
 
-    let x1 = arrays[0].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_dwithin: x1 must be Float64".into())
-    })?;
-    let y1 = arrays[1].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_dwithin: y1 must be Float64".into())
-    })?;
-    let x2 = arrays[2].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_dwithin: x2 must be Float64".into())
-    })?;
-    let y2 = arrays[3].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_dwithin: y2 must be Float64".into())
-    })?;
-    let dist = arrays[4].as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-        datafusion::error::DataFusionError::Plan("st_dwithin: distance_m must be Float64".into())
-    })?;
+    let x1 = arrays[0]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_dwithin: x1 must be Float64".into())
+        })?;
+    let y1 = arrays[1]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_dwithin: y1 must be Float64".into())
+        })?;
+    let x2 = arrays[2]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_dwithin: x2 must be Float64".into())
+        })?;
+    let y2 = arrays[3]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan("st_dwithin: y2 must be Float64".into())
+        })?;
+    let dist = arrays[4]
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            datafusion::error::DataFusionError::Plan(
+                "st_dwithin: distance_m must be Float64".into(),
+            )
+        })?;
 
     let len = x1.len();
     let mut results = Vec::with_capacity(len);
@@ -129,16 +167,25 @@ impl datafusion::logical_expr::ScalarUDFImpl for StDistanceUdf {
     }
 
     fn signature(&self) -> &datafusion::logical_expr::Signature {
-        static SIG: std::sync::OnceLock<datafusion::logical_expr::Signature> = std::sync::OnceLock::new();
+        static SIG: std::sync::OnceLock<datafusion::logical_expr::Signature> =
+            std::sync::OnceLock::new();
         SIG.get_or_init(|| {
             datafusion::logical_expr::Signature::exact(
-                vec![DataType::Float64, DataType::Float64, DataType::Float64, DataType::Float64],
+                vec![
+                    DataType::Float64,
+                    DataType::Float64,
+                    DataType::Float64,
+                    DataType::Float64,
+                ],
                 Volatility::Immutable,
             )
         })
     }
 
-    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType, datafusion::error::DataFusionError> {
+    fn return_type(
+        &self,
+        _arg_types: &[DataType],
+    ) -> Result<DataType, datafusion::error::DataFusionError> {
         Ok(DataType::Float64)
     }
 
@@ -164,7 +211,8 @@ impl datafusion::logical_expr::ScalarUDFImpl for StDwithinUdf {
     }
 
     fn signature(&self) -> &datafusion::logical_expr::Signature {
-        static SIG: std::sync::OnceLock<datafusion::logical_expr::Signature> = std::sync::OnceLock::new();
+        static SIG: std::sync::OnceLock<datafusion::logical_expr::Signature> =
+            std::sync::OnceLock::new();
         SIG.get_or_init(|| {
             datafusion::logical_expr::Signature::exact(
                 vec![
@@ -179,7 +227,10 @@ impl datafusion::logical_expr::ScalarUDFImpl for StDwithinUdf {
         })
     }
 
-    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType, datafusion::error::DataFusionError> {
+    fn return_type(
+        &self,
+        _arg_types: &[DataType],
+    ) -> Result<DataType, datafusion::error::DataFusionError> {
         Ok(DataType::Boolean)
     }
 

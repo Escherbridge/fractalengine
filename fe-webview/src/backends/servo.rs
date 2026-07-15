@@ -27,7 +27,10 @@ impl WebViewBackend for ServoBackend {
         tracing::warn!(
             "ServoBackend::create called (stub) — geometry: x={} y={} w={} h={}. \
              Servo embedding not yet implemented; URL will open in system browser.",
-            geometry.x, geometry.y, geometry.width, geometry.height
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height
         );
         anyhow::bail!("ServoBackend not yet implemented — URL opened in system browser as fallback")
     }

@@ -11,9 +11,9 @@ use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, Position};
 
 use fe_sdk::node::NodeSnapshot;
 use fe_sdk::property::PropertyValue;
+use fe_sdk::query::ExtensionQueryApi;
 use fe_sdk::scene::SceneChange;
 use fe_sdk::storage::ExtensionStorageApi;
-use fe_sdk::query::ExtensionQueryApi;
 
 use crate::mock_host::MockHostEnv;
 
@@ -161,7 +161,7 @@ impl RhaiTestRunner {
                         .nodes
                         .values()
                         .filter(|n| n.petal_id == petal_id)
-                        .map(|n| snapshot_to_dynamic(n))
+                        .map(snapshot_to_dynamic)
                         .collect();
                     matching
                 },
@@ -174,9 +174,7 @@ impl RhaiTestRunner {
             let level = level_name.to_string();
             engine.register_fn(*level_name, move |msg: &str| {
                 let mut host = h.lock().unwrap();
-                host.spy
-                    .log_messages
-                    .push((level.clone(), msg.to_string()));
+                host.spy.log_messages.push((level.clone(), msg.to_string()));
             });
         }
 
@@ -265,7 +263,9 @@ impl RhaiTestRunner {
                         .storage
                         .storage_get(TEST_EXT_NAMESPACE, key)
                         .map_err(to_script_error)?;
-                    Ok(value.map(|v| property_to_dynamic(&v)).unwrap_or(Dynamic::UNIT))
+                    Ok(value
+                        .map(|v| property_to_dynamic(&v))
+                        .unwrap_or(Dynamic::UNIT))
                 },
             );
         }
@@ -390,7 +390,10 @@ fn dynamic_to_json(value: &Dynamic) -> serde_json::Value {
     } else if let Ok(s) = value.clone().into_string() {
         serde_json::Value::String(s)
     } else if value.is_array() {
-        let arr = value.clone().into_typed_array::<Dynamic>().unwrap_or_default();
+        let arr = value
+            .clone()
+            .into_typed_array::<Dynamic>()
+            .unwrap_or_default();
         serde_json::Value::Array(arr.iter().map(dynamic_to_json).collect())
     } else if value.is_map() {
         let map = value.clone().cast::<Map>();
@@ -471,9 +474,7 @@ mod tests {
         );
 
         let runner = RhaiTestRunner::new(host);
-        runner
-            .eval_script(r#"let node = get_node("n1");"#)
-            .unwrap();
+        runner.eval_script(r#"let node = get_node("n1");"#).unwrap();
 
         let host = runner.host();
         assert!(host.spy().was_called("get_node"));
@@ -492,8 +493,7 @@ mod tests {
         let host = runner.host();
         assert_property_set(&host, "n1", "color", "red").unwrap();
         assert_eq!(
-            host.properties
-                .get(&("n1".into(), "color".into())),
+            host.properties.get(&("n1".into(), "color".into())),
             Some(&"red".to_string())
         );
     }
@@ -647,6 +647,9 @@ mod tests {
         let runner = RhaiTestRunner::new(host);
 
         let result = runner.eval_script(r#"let rows = query_select("DELETE node", #{});"#);
-        assert!(result.is_err(), "non-SELECT query should raise a script error");
+        assert!(
+            result.is_err(),
+            "non-SELECT query should raise a script error"
+        );
     }
 }

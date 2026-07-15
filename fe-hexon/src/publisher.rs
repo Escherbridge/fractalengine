@@ -162,7 +162,11 @@ impl HexonBuilder {
         self
     }
 
-    pub fn dependency(mut self, hexon_uri: impl Into<String>, version_req: impl Into<String>) -> Self {
+    pub fn dependency(
+        mut self,
+        hexon_uri: impl Into<String>,
+        version_req: impl Into<String>,
+    ) -> Self {
         self.dependencies.push(CrateDep {
             hexon_uri: hexon_uri.into(),
             version_req: version_req.into(),
@@ -385,7 +389,13 @@ mod tests {
             .tag("test")
             .tag("model")
             .license(LicenseType::Free)
-            .add_entry_with_file("model_001", EntryKind::Model, "glb", "Main Model", model_data)
+            .add_entry_with_file(
+                "model_001",
+                EntryKind::Model,
+                "glb",
+                "Main Model",
+                model_data,
+            )
             .readme("# Test Model\nBuilt with HexonBuilder")
             .build(&keypair)
             .expect("build should succeed");
@@ -426,9 +436,7 @@ mod tests {
             is_private: false,
             preview_image: None,
             metadata: None,
-            sub_assets: Some(HashMap::from([
-                ("normal".to_string(), normal_hash.clone()),
-            ])),
+            sub_assets: Some(HashMap::from([("normal".to_string(), normal_hash.clone())])),
         };
 
         let mut builder = HexonBuilder::new("test-mat-v1", &did)

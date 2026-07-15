@@ -47,30 +47,22 @@ fn main() {
 
     println!("\n=== FractalEngine P2P Mycelium Test Harness ===\n");
 
-    let scenarios: Vec<(&str, fn() -> Result<TestResult>)> = vec![
+    type Scenario = (&'static str, fn() -> Result<TestResult>);
+    let scenarios: Vec<Scenario> = vec![
         ("Blob Store Roundtrip", scenarios::blob_roundtrip::run),
         ("Legacy Migration", scenarios::migration::run),
         ("Invite Flow", scenarios::invite_flow::run),
-        (
-            "Verse Sync Infrastructure",
-            scenarios::verse_sync::run,
-        ),
+        ("Verse Sync Infrastructure", scenarios::verse_sync::run),
         (
             "Two-Peer Blob Exchange",
             scenarios::two_peer_blob_exchange::run,
         ),
-        (
-            "Two-Peer Verse Join",
-            scenarios::two_peer_verse_join::run,
-        ),
+        ("Two-Peer Verse Join", scenarios::two_peer_verse_join::run),
         (
             "Two-Peer Sync Pipeline",
             scenarios::two_peer_sync_pipeline::run,
         ),
-        (
-            "API Token Flow",
-            scenarios::api_token_flow::run,
-        ),
+        ("API Token Flow", scenarios::api_token_flow::run),
         (
             "API Token Edge Cases",
             scenarios::api_token_flow::run_edge_cases,

@@ -68,11 +68,7 @@ pub fn assert_no_writes(host: &MockHostEnv) -> Result<(), String> {
 }
 
 /// Assert that a log message at the given level containing the substring was recorded.
-pub fn assert_logged(
-    host: &MockHostEnv,
-    level: &str,
-    contains: &str,
-) -> Result<(), String> {
+pub fn assert_logged(host: &MockHostEnv, level: &str, contains: &str) -> Result<(), String> {
     let logs = &host.spy().log_messages;
     for (lvl, msg) in logs {
         if lvl == level && msg.contains(contains) {

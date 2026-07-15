@@ -44,7 +44,11 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 ///
 /// Returns the resampled polyline. For `< 2` control points the input is
 /// returned unchanged (nothing to interpolate).
-pub fn catmull_rom(control: &[[f32; 3]], samples_per_segment: usize, tension: f32) -> Vec<[f32; 3]> {
+pub fn catmull_rom(
+    control: &[[f32; 3]],
+    samples_per_segment: usize,
+    tension: f32,
+) -> Vec<[f32; 3]> {
     if control.len() < 2 {
         return control.to_vec();
     }
@@ -286,11 +290,11 @@ mod tests {
         let samples = 4; // finer sampling so tension-sensitive points are hit.
         let sharp = catmull_rom(&control, samples, 1.0); // straight-ish
         let round = catmull_rom(&control, samples, 0.0); // fully round
-        // The two curves share their control-point samples (tension only scales
-        // the *tangents*, so on-control samples coincide) but must diverge at
-        // some interior sample. Assert the polylines are not pointwise-equal
-        // rather than cherry-picking one index that may be tension-invariant for
-        // a symmetric zig-zag.
+                                                         // The two curves share their control-point samples (tension only scales
+                                                         // the *tangents*, so on-control samples coincide) but must diverge at
+                                                         // some interior sample. Assert the polylines are not pointwise-equal
+                                                         // rather than cherry-picking one index that may be tension-invariant for
+                                                         // a symmetric zig-zag.
         assert_eq!(sharp.len(), round.len());
         let differs = sharp
             .iter()

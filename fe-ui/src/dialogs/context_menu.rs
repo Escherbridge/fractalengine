@@ -7,7 +7,11 @@ use crate::actions::UiManager;
 use crate::theme;
 
 pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
-    let ActiveDialog::ContextMenu { screen_pos, world_pos } = ui_mgr.active_dialog else {
+    let ActiveDialog::ContextMenu {
+        screen_pos,
+        world_pos,
+    } = ui_mgr.active_dialog
+    else {
         return;
     };
 

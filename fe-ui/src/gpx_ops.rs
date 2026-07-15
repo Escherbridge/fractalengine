@@ -7,7 +7,10 @@ use bevy::prelude::*;
 #[derive(Debug, Clone)]
 pub enum GpxOp {
     /// Import the GPX file at `path` into `petal_id`.
-    ImportFile { petal_id: String, path: std::path::PathBuf },
+    ImportFile {
+        petal_id: String,
+        path: std::path::PathBuf,
+    },
 }
 
 /// Queue of pending GPX ops (fe-ui has no file-parsing/DB access).
@@ -48,10 +51,14 @@ pub fn surface_gpx_import_status(
     } else {
         bevy::log::info!(
             "GPX imported: {} track(s), {} waypoint(s)",
-            status.track_count, status.waypoint_count
+            status.track_count,
+            status.waypoint_count
         );
         ui_mgr.show_toast(
-            format!("GPX imported: {} track(s), {} waypoint(s)", status.track_count, status.waypoint_count),
+            format!(
+                "GPX imported: {} track(s), {} waypoint(s)",
+                status.track_count, status.waypoint_count
+            ),
             now,
         );
     }

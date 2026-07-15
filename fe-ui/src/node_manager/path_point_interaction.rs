@@ -133,7 +133,7 @@ fn pick_marker(
             continue;
         }
         let closest = ray.origin + *ray.direction * along;
-        if (pos - closest).length() < PICK_RADIUS && best.map_or(true, |b| along < b.1) {
+        if (pos - closest).length() < PICK_RADIUS && best.is_none_or(|b| along < b.1) {
             best = Some((marker.index, along));
         }
     }
@@ -188,7 +188,9 @@ pub(super) fn handle_path_point_interaction(
 
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
-    let Ok((camera, cam_tx)) = cameras.single() else { return };
+    let Ok((camera, cam_tx)) = cameras.single() else {
+        return;
+    };
 
     // Release → commit the drag as a MovePoint (no index churn). The committed
     // y is read from the marker `Transform`, so a Ctrl-raised height flows
@@ -197,9 +199,10 @@ pub(super) fn handle_path_point_interaction(
         if let Some(state) = drag.active.take() {
             // A drag can only start while editing a track, so `editing_track_id`
             // is `Some` here.
-            if let (Some(track_id), Some((tx, _))) =
-                (editing_track_id.clone(), marker_tx.iter().find(|(_, m)| m.index == state.index))
-            {
+            if let (Some(track_id), Some((tx, _))) = (
+                editing_track_id.clone(),
+                marker_tx.iter().find(|(_, m)| m.index == state.index),
+            ) {
                 let p = tx.translation;
                 ui_mgr.push_action(UiAction::PathMovePoint {
                     track_node_id: track_id,
@@ -233,7 +236,9 @@ pub(super) fn handle_path_point_interaction(
                 // Reset the vertical anchor so re-pressing Ctrl doesn't apply a
                 // stale delta accumulated across the gap.
                 state.last_cursor_y = None;
-                let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else { return };
+                let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else {
+                    return;
+                };
                 if let Some(hit) = ray_plane_y(&ray, state.plane_y) {
                     for (mut tx, marker) in marker_tx.iter_mut() {
                         if marker.index == state.index {
@@ -280,7 +285,12 @@ pub(super) fn handle_path_point_interaction(
                 .find(|(_, m)| m.index == index)
                 .map(|(g, _)| g.translation().y)
                 .unwrap_or(0.0);
-            drag.active = Some(PathPointDragState { index, plane_y, height_y: plane_y, last_cursor_y: None });
+            drag.active = Some(PathPointDragState {
+                index,
+                plane_y,
+                height_y: plane_y,
+                last_cursor_y: None,
+            });
         }
         return;
     }
@@ -296,7 +306,9 @@ pub(super) fn handle_path_point_interaction(
     if !arbiter.claim(ClickPriority::PathPlace) {
         return;
     }
-    let Some(hit) = ray_plane_y(&ray, 0.0) else { return };
+    let Some(hit) = ray_plane_y(&ray, 0.0) else {
+        return;
+    };
     if let Some(track_id) = editing_track_id {
         // A track is being edited → append normally.
         ui_mgr.push_action(UiAction::PathAppendPoint {
@@ -349,16 +361,28 @@ mod tests {
 
     #[test]
     fn zero_cursor_motion_is_no_height_change() {
-        assert_eq!(height_delta_from_cursor(120.0, 120.0, HEIGHT_DRAG_SENSITIVITY), 0.0);
+        assert_eq!(
+            height_delta_from_cursor(120.0, 120.0, HEIGHT_DRAG_SENSITIVITY),
+            0.0
+        );
     }
 
     #[test]
     fn accumulated_height_matches_summed_deltas() {
         // Two upward steps accumulate onto the starting plane_y.
-        let mut state = PathPointDragState { index: 0, plane_y: 2.0, height_y: 2.0, last_cursor_y: Some(300.0) };
+        let mut state = PathPointDragState {
+            index: 0,
+            plane_y: 2.0,
+            height_y: 2.0,
+            last_cursor_y: Some(300.0),
+        };
         state.height_y += height_delta_from_cursor(300.0, 250.0, HEIGHT_DRAG_SENSITIVITY);
         state.height_y += height_delta_from_cursor(250.0, 200.0, HEIGHT_DRAG_SENSITIVITY);
         // 2.0 + 0.5 + 0.5 = 3.0.
-        assert!((state.height_y - 3.0).abs() < 1e-6, "got {}", state.height_y);
+        assert!(
+            (state.height_y - 3.0).abs() < 1e-6,
+            "got {}",
+            state.height_y
+        );
     }
 }

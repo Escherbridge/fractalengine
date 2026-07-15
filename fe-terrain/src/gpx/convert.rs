@@ -35,14 +35,9 @@ pub fn gpx_to_scene_commands(
         let track_node_id = format!("track-{ti}");
 
         // Center the track node at the bounding box center
-        let center_lat =
-            (stats.bounding_box.min_lat + stats.bounding_box.max_lat) / 2.0;
-        let center_lon =
-            (stats.bounding_box.min_lon + stats.bounding_box.max_lon) / 2.0;
-        let center_ele = stats
-            .bounding_box
-            .min_ele
-            .unwrap_or(0.0);
+        let center_lat = (stats.bounding_box.min_lat + stats.bounding_box.max_lat) / 2.0;
+        let center_lon = (stats.bounding_box.min_lon + stats.bounding_box.max_lon) / 2.0;
+        let center_ele = stats.bounding_box.min_ele.unwrap_or(0.0);
         let pos = match projection.wgs84_to_local(center_lat, center_lon, center_ele) {
             Ok(p) => p,
             Err(_) => continue, // skip tracks with out-of-range coordinates
@@ -87,14 +82,12 @@ pub fn gpx_to_scene_commands(
 
             // Trackpoints
             for (pi, point) in segment.points.iter().enumerate() {
-                let local = match projection.wgs84_to_local(
-                    point.lat,
-                    point.lon,
-                    point.ele.unwrap_or(0.0),
-                ) {
-                    Ok(p) => p,
-                    Err(_) => continue, // skip out-of-range trackpoints
-                };
+                let local =
+                    match projection.wgs84_to_local(point.lat, point.lon, point.ele.unwrap_or(0.0))
+                    {
+                        Ok(p) => p,
+                        Err(_) => continue, // skip out-of-range trackpoints
+                    };
 
                 let mut props = serde_json::json!({
                     "gpx_type": "trackpoint",

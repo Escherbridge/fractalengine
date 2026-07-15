@@ -43,12 +43,12 @@ use crate::transaction::PendingOp;
 // maintains parallel definitions; see fe-plugin/src/AGENTS.md §type-unification.
 // ---------------------------------------------------------------------------
 
+pub use crate::host_env::{HostApiError, HostEnv};
 pub use fe_sdk::node::NodeSnapshot;
 pub use fe_sdk::property::{PropertyBag, PropertyValue};
+pub use fe_sdk::query::{ExtensionQueryApi, QueryError};
 pub use fe_sdk::scene::{SceneChange, SceneChangeBatch};
 pub use fe_sdk::storage::{ExtensionStorageApi, StorageError};
-pub use fe_sdk::query::{ExtensionQueryApi, QueryError};
-pub use crate::host_env::{HostApiError, HostEnv};
 
 // ---------------------------------------------------------------------------
 // Channel message types
@@ -63,10 +63,7 @@ pub enum PluginCommand {
         ops: Vec<PendingOp>,
     },
     /// Request a node snapshot (placeholder for request-reply in Phase 9A.2).
-    GetNode {
-        plugin_id: String,
-        node_id: String,
-    },
+    GetNode { plugin_id: String, node_id: String },
     /// Set a property on a node.
     SetProperty {
         plugin_id: String,
@@ -75,10 +72,7 @@ pub enum PluginCommand {
         value: serde_json::Value,
     },
     /// Query nodes in a petal.
-    QueryNodes {
-        plugin_id: String,
-        petal_id: String,
-    },
+    QueryNodes { plugin_id: String, petal_id: String },
     /// Create a new node.
     CreateNode {
         plugin_id: String,
@@ -107,10 +101,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PluginResult {
     /// Transaction was committed successfully.
-    TransactionCommitted {
-        plugin_id: String,
-        op_count: usize,
-    },
+    TransactionCommitted { plugin_id: String, op_count: usize },
     /// A requested node snapshot.
     NodeSnapshot {
         plugin_id: String,
@@ -118,10 +109,7 @@ pub enum PluginResult {
         data: serde_json::Value,
     },
     /// An error occurred processing a plugin command.
-    Error {
-        plugin_id: String,
-        message: String,
-    },
+    Error { plugin_id: String, message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -263,10 +251,7 @@ impl Plugin for PluginHostPlugin {
 
 /// The plugin thread's main loop. Receives commands from Bevy and dispatches
 /// them, sending results back.
-async fn plugin_thread_loop(
-    cmd_rx: Receiver<PluginCommand>,
-    result_tx: Sender<PluginResult>,
-) {
+async fn plugin_thread_loop(cmd_rx: Receiver<PluginCommand>, result_tx: Sender<PluginResult>) {
     loop {
         match cmd_rx.recv() {
             Ok(cmd) => {
@@ -297,7 +282,10 @@ fn handle_plugin_command(cmd: PluginCommand, result_tx: &Sender<PluginResult>) {
                 tracing::debug!(plugin = %plugin_id, op = ?op, "Pending op");
             }
             result_tx
-                .send(PluginResult::TransactionCommitted { plugin_id, op_count })
+                .send(PluginResult::TransactionCommitted {
+                    plugin_id,
+                    op_count,
+                })
                 .ok();
         }
         PluginCommand::GetNode { plugin_id, node_id } => {
@@ -368,36 +356,36 @@ fn handle_plugin_command(cmd: PluginCommand, result_tx: &Sender<PluginResult>) {
             plugin_id,
             level,
             message,
-        } => {
-            match level {
-                LogLevel::Debug => tracing::debug!(plugin = %plugin_id, "{}", message),
-                LogLevel::Info => tracing::info!(plugin = %plugin_id, "{}", message),
-                LogLevel::Warn => tracing::warn!(plugin = %plugin_id, "{}", message),
-                LogLevel::Error => tracing::error!(plugin = %plugin_id, "{}", message),
-            }
-        }
+        } => match level {
+            LogLevel::Debug => tracing::debug!(plugin = %plugin_id, "{}", message),
+            LogLevel::Info => tracing::info!(plugin = %plugin_id, "{}", message),
+            LogLevel::Warn => tracing::warn!(plugin = %plugin_id, "{}", message),
+            LogLevel::Error => tracing::error!(plugin = %plugin_id, "{}", message),
+        },
     }
 }
 
 /// Bevy system: drain plugin results from the crossbeam channel each frame.
 ///
 /// Processes up to 64 results per frame to avoid stalling the main loop.
-fn drain_plugin_results(
-    receiver: Res<PluginResultReceiver>,
-    mut registry: ResMut<PluginRegistry>,
-) {
+fn drain_plugin_results(receiver: Res<PluginResultReceiver>, mut registry: ResMut<PluginRegistry>) {
     let rx = receiver.0.lock().unwrap();
     let mut count = 0;
     while let Ok(result) = rx.try_recv() {
         match &result {
-            PluginResult::TransactionCommitted { plugin_id, op_count } => {
+            PluginResult::TransactionCommitted {
+                plugin_id,
+                op_count,
+            } => {
                 tracing::trace!(
                     plugin = %plugin_id,
                     ops = op_count,
                     "Plugin transaction committed"
                 );
             }
-            PluginResult::NodeSnapshot { plugin_id, node_id, .. } => {
+            PluginResult::NodeSnapshot {
+                plugin_id, node_id, ..
+            } => {
                 tracing::trace!(
                     plugin = %plugin_id,
                     node = %node_id,

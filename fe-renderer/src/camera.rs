@@ -508,7 +508,10 @@ mod tests {
     fn scaled_max_distance_grows_as_scale_shrinks() {
         let human = scaled_max_distance(BASE_MAX_DISTANCE, 1.0);
         let region = scaled_max_distance(BASE_MAX_DISTANCE, 0.001);
-        assert!(region > human, "region scale must allow pulling back further");
+        assert!(
+            region > human,
+            "region scale must allow pulling back further"
+        );
         // Clamped so depth precision stays sane.
         assert!(region <= MAX_SCALE_DISTANCE + EPSILON);
     }
@@ -516,7 +519,9 @@ mod tests {
     #[test]
     fn scaled_max_distance_guards_bad_scale() {
         assert!((scaled_max_distance(BASE_MAX_DISTANCE, 0.0) - BASE_MAX_DISTANCE).abs() < EPSILON);
-        assert!((scaled_max_distance(BASE_MAX_DISTANCE, f32::NAN) - BASE_MAX_DISTANCE).abs() < EPSILON);
+        assert!(
+            (scaled_max_distance(BASE_MAX_DISTANCE, f32::NAN) - BASE_MAX_DISTANCE).abs() < EPSILON
+        );
     }
 
     #[test]
@@ -529,7 +534,10 @@ mod tests {
     fn scaled_far_plane_clears_zoom_out_at_region_scale() {
         let max_d = scaled_max_distance(BASE_MAX_DISTANCE, 0.001);
         let far = scaled_far_plane(BASE_FAR, max_d, 0.001);
-        assert!(far > max_d, "far plane must clear the farthest zoom-out distance");
+        assert!(
+            far > max_d,
+            "far plane must clear the farthest zoom-out distance"
+        );
         assert!(far > BASE_FAR);
     }
 

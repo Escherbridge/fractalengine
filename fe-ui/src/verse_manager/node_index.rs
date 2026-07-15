@@ -134,7 +134,12 @@ mod tests {
     }
 
     fn petal(id: &str, nodes: Vec<NodeEntry>) -> PetalEntry {
-        PetalEntry { id: id.to_string(), name: id.to_string(), expanded: true, nodes }
+        PetalEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            expanded: true,
+            nodes,
+        }
     }
 
     /// Two verses / three petals, index rebuilt — mirrors post-`HierarchyLoaded` state.
@@ -197,7 +202,11 @@ mod tests {
         let mut mgr = make_tree();
         mgr.update_node_position("does-not-exist", [0.0, 0.0, 0.0]);
         let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();
-        assert_eq!(node.position, [1.0, 2.0, 3.0], "existing node must be unaffected");
+        assert_eq!(
+            node.position,
+            [1.0, 2.0, 3.0],
+            "existing node must be unaffected"
+        );
         assert!(!mgr.node_index.contains_key("does-not-exist"));
     }
 
@@ -219,7 +228,11 @@ mod tests {
         mgr.update_node_position("node-2", [4.0, 5.0, 6.0]);
         let node = mgr.all_nodes().find(|n| n.id == "node-2").unwrap();
         assert_eq!(node.position, [4.0, 5.0, 6.0]);
-        assert_eq!(mgr.node_index.get("node-2"), Some(&(0, 0, 1)), "index must self-heal");
+        assert_eq!(
+            mgr.node_index.get("node-2"),
+            Some(&(0, 0, 1)),
+            "index must self-heal"
+        );
     }
 
     #[test]

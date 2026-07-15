@@ -5,6 +5,7 @@ use crate::backend::WindowGeometry;
 
 #[cfg(target_os = "windows")]
 pub(crate) mod win32 {
+    #![allow(clippy::upper_case_acronyms)] // Win32 API type names kept verbatim
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
@@ -59,15 +60,29 @@ pub(crate) mod win32 {
 
     extern "system" {
         fn CreateWindowExW(
-            dw_ex_style: DWORD, lp_class_name: LPCWSTR, lp_window_name: LPCWSTR,
-            dw_style: DWORD, x: i32, y: i32, n_width: i32, n_height: i32,
-            h_wnd_parent: HWND, h_menu: HMENU, h_instance: HINSTANCE, lp_param: LPVOID,
+            dw_ex_style: DWORD,
+            lp_class_name: LPCWSTR,
+            lp_window_name: LPCWSTR,
+            dw_style: DWORD,
+            x: i32,
+            y: i32,
+            n_width: i32,
+            n_height: i32,
+            h_wnd_parent: HWND,
+            h_menu: HMENU,
+            h_instance: HINSTANCE,
+            lp_param: LPVOID,
         ) -> HWND;
         fn DestroyWindow(h_wnd: HWND) -> BOOL;
         fn ShowWindow(h_wnd: HWND, n_cmd_show: i32) -> BOOL;
         fn IsWindow(h_wnd: HWND) -> BOOL;
         fn SetWindowPos(
-            h_wnd: HWND, h_wnd_insert_after: HWND, x: i32, y: i32, cx: i32, cy: i32,
+            h_wnd: HWND,
+            h_wnd_insert_after: HWND,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
             u_flags: UINT,
         ) -> BOOL;
         fn GetModuleHandleW(lp_module_name: LPCWSTR) -> HINSTANCE;
@@ -77,20 +92,23 @@ pub(crate) mod win32 {
     }
 
     unsafe extern "system" fn wnd_proc(
-        h_wnd: HWND, msg: UINT, w_param: WPARAM, l_param: LPARAM,
+        h_wnd: HWND,
+        msg: UINT,
+        w_param: WPARAM,
+        l_param: LPARAM,
     ) -> LRESULT {
         unsafe { DefWindowProcW(h_wnd, msg, w_param, l_param) }
     }
 
     fn wide_string(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     /// Creates a borderless popup window owned by `parent`, created visible and fronted so WebView2 can init.
-    pub(crate) fn create_popup(
-        parent: HWND,
-        geometry: &WindowGeometry,
-    ) -> anyhow::Result<HWND> {
+    pub(crate) fn create_popup(parent: HWND, geometry: &WindowGeometry) -> anyhow::Result<HWND> {
         let class_name = wide_string("FE_Portal");
         let h_instance = unsafe { GetModuleHandleW(ptr::null()) };
 
@@ -117,7 +135,10 @@ pub(crate) mod win32 {
 
         tracing::info!(
             "win32::create_popup — parent={parent:#x} x={} y={} w={} h={}",
-            geometry.x, geometry.y, geometry.width, geometry.height
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height
         );
 
         let hwnd = unsafe {
@@ -140,9 +161,7 @@ pub(crate) mod win32 {
 
         if hwnd == 0 {
             let err = unsafe { GetLastError() };
-            anyhow::bail!(
-                "CreateWindowExW failed for portal popup (GetLastError={err})"
-            );
+            anyhow::bail!("CreateWindowExW failed for portal popup (GetLastError={err})");
         }
 
         tracing::info!("win32::create_popup — hwnd={hwnd:#x} created and visible");
@@ -151,13 +170,21 @@ pub(crate) mod win32 {
         // then drop back to NOTOPMOST so it doesn't stay always-on-top.
         unsafe {
             SetWindowPos(
-                hwnd, HWND_TOPMOST,
-                0, 0, 0, 0,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW | 0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/,
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW | 0x0001 /*SWP_NOSIZE*/ | 0x0002, /*SWP_NOMOVE*/
             );
             SetWindowPos(
-                hwnd, HWND_NOTOPMOST,
-                0, 0, 0, 0,
+                hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
                 SWP_NOACTIVATE | SWP_SHOWWINDOW | 0x0001 | 0x0002,
             );
         }
@@ -171,15 +198,21 @@ pub(crate) mod win32 {
             // Place at top of z-order (above Bevy window) without being
             // always-on-top above other applications.
             SetWindowPos(
-                hwnd, HWND_TOP,
-                0, 0, 0, 0,
-                SWP_NOACTIVATE | 0x0001 /*SWP_NOSIZE*/ | 0x0002 /*SWP_NOMOVE*/,
+                hwnd,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | 0x0001 /*SWP_NOSIZE*/ | 0x0002, /*SWP_NOMOVE*/
             );
         }
     }
 
     pub(crate) fn hide(hwnd: HWND) {
-        unsafe { ShowWindow(hwnd, SW_HIDE); }
+        unsafe {
+            ShowWindow(hwnd, SW_HIDE);
+        }
     }
 
     pub(crate) fn move_window(hwnd: HWND, geometry: &WindowGeometry) {
@@ -188,16 +221,21 @@ pub(crate) mod win32 {
         const SWP_NOZORDER: UINT = 0x0004;
         unsafe {
             SetWindowPos(
-                hwnd, 0,
-                geometry.x, geometry.y,
-                geometry.width as i32, geometry.height as i32,
+                hwnd,
+                0,
+                geometry.x,
+                geometry.y,
+                geometry.width as i32,
+                geometry.height as i32,
                 SWP_NOACTIVATE | SWP_NOZORDER,
             );
         }
     }
 
     pub(crate) fn destroy(hwnd: HWND) {
-        unsafe { DestroyWindow(hwnd); }
+        unsafe {
+            DestroyWindow(hwnd);
+        }
     }
 
     pub(crate) fn is_window(hwnd: HWND) -> bool {
@@ -215,8 +253,7 @@ impl raw_window_handle::HasWindowHandle for PopupHandle {
         &self,
     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
         let h = raw_window_handle::Win32WindowHandle::new(
-            std::num::NonZeroIsize::new(self.0)
-                .expect("popup HWND must be non-zero"),
+            std::num::NonZeroIsize::new(self.0).expect("popup HWND must be non-zero"),
         );
         // SAFETY: the HWND is valid — we just created it.
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(h.into()) })

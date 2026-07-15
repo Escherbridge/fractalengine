@@ -1,4 +1,4 @@
-use fe_terrain::gpx::{parse_gpx_bytes, compute_stats, gpx_to_scene_commands, scene_nodes_to_gpx};
+use fe_terrain::gpx::{compute_stats, gpx_to_scene_commands, parse_gpx_bytes, scene_nodes_to_gpx};
 use fe_terrain::projection::Projection;
 use fe_terrain::ExportNode;
 
@@ -25,7 +25,10 @@ fn parse_sample_gpx() {
     assert!(data.metadata.is_some());
     let meta = data.metadata.as_ref().unwrap();
     assert_eq!(meta.name.as_deref(), Some("Test Trail"));
-    assert_eq!(meta.description.as_deref(), Some("A sample GPX for unit tests"));
+    assert_eq!(
+        meta.description.as_deref(),
+        Some("A sample GPX for unit tests")
+    );
 }
 
 #[test]
@@ -78,14 +81,14 @@ fn convert_gpx_to_commands() {
     assert_eq!(seg_props["gpx_type"], "segment");
 
     // Points 3-7 should be trackpoints
-    for i in 2..7 {
-        let pt_props = commands[i].properties.as_ref().unwrap();
+    for cmd in &commands[2..7] {
+        let pt_props = cmd.properties.as_ref().unwrap();
         assert_eq!(pt_props["gpx_type"], "trackpoint");
     }
 
     // Last 2 should be waypoints
-    for i in 7..9 {
-        let wp_props = commands[i].properties.as_ref().unwrap();
+    for cmd in &commands[7..9] {
+        let wp_props = cmd.properties.as_ref().unwrap();
         assert_eq!(wp_props["gpx_type"], "waypoint");
     }
 }
@@ -159,11 +162,7 @@ fn projection_inverse() {
         "inverse lon: {} vs -122.3350",
         lon
     );
-    assert!(
-        (ele - 62.0).abs() < 0.01,
-        "inverse ele: {} vs 62.0",
-        ele
-    );
+    assert!((ele - 62.0).abs() < 0.01, "inverse ele: {} vs 62.0", ele);
 }
 
 #[test]
@@ -342,10 +341,9 @@ fn hexon_terrain_roundtrip() {
             .expect("terrain export failed");
 
     // Import
-    let bundle =
-        fe_format::HexonArchive::import_terrain_data(&zip_bytes)
-            .expect("terrain import failed")
-            .expect("no terrain data found");
+    let bundle = fe_format::HexonArchive::import_terrain_data(&zip_bytes)
+        .expect("terrain import failed")
+        .expect("no terrain data found");
 
     assert_eq!(bundle.config.crs, "EPSG:4326");
     assert_eq!(bundle.config.tile_size, 256);
@@ -389,10 +387,9 @@ fn build_export_tree(commands: &[fe_terrain::DbCommand]) -> Vec<ExportNode> {
     };
 
     // Trackpoints
-    for i in 2..7 {
-        let pt_cmd = &commands[i];
+    for (i, pt_cmd) in commands[2..7].iter().enumerate() {
         seg_node.children.push(ExportNode {
-            node_id: format!("pt-{}", i - 2),
+            node_id: format!("pt-{}", i),
             name: pt_cmd.name.clone(),
             position: pt_cmd.position,
             properties: pt_cmd.properties.clone(),
@@ -403,10 +400,9 @@ fn build_export_tree(commands: &[fe_terrain::DbCommand]) -> Vec<ExportNode> {
     export_nodes.push(track_node);
 
     // Waypoints
-    for i in 7..9 {
-        let wp_cmd = &commands[i];
+    for (i, wp_cmd) in commands[7..9].iter().enumerate() {
         export_nodes.push(ExportNode {
-            node_id: format!("wp-{}", i - 7),
+            node_id: format!("wp-{}", i),
             name: wp_cmd.name.clone(),
             position: wp_cmd.position,
             properties: wp_cmd.properties.clone(),

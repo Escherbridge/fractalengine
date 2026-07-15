@@ -30,8 +30,8 @@ pub trait PluginTransaction: Send {
 
 #[cfg(test)]
 mod object_safety_tests {
-    use crate::transaction::PluginTransaction;
     use crate::context::PluginContext;
+    use crate::transaction::PluginTransaction;
 
     fn _assert_transaction_object_safe(_x: Box<dyn PluginTransaction>) {}
     fn _assert_context_object_safe(_x: &dyn PluginContext) {}

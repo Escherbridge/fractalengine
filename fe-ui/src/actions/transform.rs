@@ -51,12 +51,16 @@ pub(crate) fn apply(
     node_mgr: &mut NodeManager,
     transform_query: &mut Query<&mut Transform>,
 ) {
-    let Some(sel) = node_mgr.selected.as_mut() else { return };
+    let Some(sel) = node_mgr.selected.as_mut() else {
+        return;
+    };
     let Some(parsed) = parse_inspector_transform(inspector) else {
         bevy::log::warn!("ApplyNodeTransform: could not parse one or more transform fields");
         return;
     };
-    let Ok(mut transform) = transform_query.get_mut(sel.entity) else { return };
+    let Ok(mut transform) = transform_query.get_mut(sel.entity) else {
+        return;
+    };
 
     transform.translation = parsed.position;
     transform.rotation = Quat::from_euler(
@@ -72,6 +76,7 @@ pub(crate) fn apply(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
 
     #[test]

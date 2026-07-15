@@ -7,9 +7,9 @@
 
 #[cfg(test)]
 mod tests {
-    use url::Url;
     use raw_window_handle::RawWindowHandle;
-    
+    use url::Url;
+
     // Import the backend types
     use fe_webview::backend::{BackendEvent, WindowGeometry};
     #[cfg(feature = "backend-tauri")]
@@ -24,7 +24,7 @@ mod tests {
             width: 800,
             height: 600,
         };
-        
+
         assert_eq!(geo.x, 100);
         assert_eq!(geo.y, 200);
         assert_eq!(geo.width, 800);
@@ -40,7 +40,7 @@ mod tests {
             width: 800,
             height: 600,
         };
-        
+
         let geo_clone = geo;
         assert_eq!(geo.x, geo_clone.x);
     }
@@ -49,19 +49,19 @@ mod tests {
     #[test]
     fn test_backend_event_variants() {
         let url = Url::parse("https://example.com").unwrap();
-        
+
         // Test UrlChanged variant
         let event = BackendEvent::UrlChanged(url.clone());
         assert!(matches!(event, BackendEvent::UrlChanged(u) if u == url));
-        
+
         // Test LoadComplete variant
         let event = BackendEvent::LoadComplete;
         assert!(matches!(event, BackendEvent::LoadComplete));
-        
+
         // Test Error variant
         let event = BackendEvent::Error("test error".to_string());
         assert!(matches!(event, BackendEvent::Error(e) if e == "test error"));
-        
+
         // Test WindowClosed variant
         let event = BackendEvent::WindowClosed;
         assert!(matches!(event, BackendEvent::WindowClosed));
@@ -100,7 +100,7 @@ mod tests {
             width: 0,
             height: 0,
         };
-        
+
         assert_eq!(geo.x, 0);
         assert_eq!(geo.y, 0);
         assert_eq!(geo.width, 0);
@@ -116,7 +116,7 @@ mod tests {
             width: 1920,
             height: 1080,
         };
-        
+
         // Simulate moving window to different position
         let repositioned = WindowGeometry {
             x: 100,
@@ -124,7 +124,7 @@ mod tests {
             width: 1280,
             height: 720,
         };
-        
+
         assert_ne!(initial.x, repositioned.x);
         assert_ne!(initial.y, repositioned.y);
         assert_ne!(initial.width, repositioned.width);
@@ -147,7 +147,7 @@ mod tests {
         // This test verifies the feature flag system works
         // When backend-tauri is not enabled, TauriBackend shouldn't be accessible
         // via the ActiveBackend type
-        
+
         #[cfg(not(feature = "backend-tauri"))]
         {
             // Without the feature, we should get stub or another backend
@@ -162,14 +162,14 @@ mod tests {
         // HTTPS URLs
         assert!(Url::parse("https://example.com").is_ok());
         assert!(Url::parse("https://sub.example.com/path").is_ok());
-        
+
         // HTTP URLs (commonly used in development)
         assert!(Url::parse("http://localhost:8080").is_ok());
         assert!(Url::parse("http://127.0.0.1:3000").is_ok());
-        
+
         // Data URLs
         assert!(Url::parse("data:text/html,<h1>Test</h1>").is_ok());
-        
+
         // File URLs
         assert!(Url::parse("file:///path/to/file.html").is_ok());
     }
@@ -182,14 +182,14 @@ mod tests {
             BackendEvent::LoadComplete,
             BackendEvent::UrlChanged(Url::parse("https://example.com").unwrap()),
         ];
-        
+
         // Drain the events
-        let drained: Vec<BackendEvent> = events.drain(..).collect();
-        
+        let drained: Vec<BackendEvent> = std::mem::take(&mut events);
+
         // Verify events were drained
         assert_eq!(drained.len(), 2);
         assert!(events.is_empty());
-        
+
         // Verify event types
         assert!(matches!(drained[0], BackendEvent::LoadComplete));
     }

@@ -70,7 +70,11 @@ pub(crate) async fn generate_scoped_invite_handler(
     let role_level = RoleLevel::from(role);
     let expiry_secs = (expiry_hours as u64) * 3600;
     let invite = crate::scoped_invite::generate_scoped_invite(
-        keypair, local_did, scope, role_level, expiry_secs,
+        keypair,
+        local_did,
+        scope,
+        role_level,
+        expiry_secs,
     )?;
     Ok(invite.to_invite_link())
 }

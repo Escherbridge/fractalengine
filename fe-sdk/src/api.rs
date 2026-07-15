@@ -48,7 +48,12 @@ impl ApiExtensionHandle {
     }
 
     /// Add a route to this handle.
-    pub fn route(mut self, method: HttpMethod, path: impl Into<String>, handler_id: impl Into<String>) -> Self {
+    pub fn route(
+        mut self,
+        method: HttpMethod,
+        path: impl Into<String>,
+        handler_id: impl Into<String>,
+    ) -> Self {
         self.routes.push(ExtensionRoute {
             method,
             path: path.into(),
@@ -65,7 +70,11 @@ mod tests {
     #[test]
     fn api_extension_handle_builder() {
         let handle = ApiExtensionHandle::new("terrain")
-            .route(HttpMethod::Get, "/elevation-profile/:track_id", "get_elevation_profile")
+            .route(
+                HttpMethod::Get,
+                "/elevation-profile/:track_id",
+                "get_elevation_profile",
+            )
             .route(HttpMethod::Get, "/stats/:track_id", "get_track_stats");
 
         assert_eq!(handle.base_path, "terrain");
@@ -78,8 +87,8 @@ mod tests {
 
     #[test]
     fn api_extension_handle_serde_roundtrip() {
-        let handle = ApiExtensionHandle::new("terrain")
-            .route(HttpMethod::Post, "/import", "import_data");
+        let handle =
+            ApiExtensionHandle::new("terrain").route(HttpMethod::Post, "/import", "import_data");
 
         let json = serde_json::to_string(&handle).unwrap();
         let roundtripped: ApiExtensionHandle = serde_json::from_str(&json).unwrap();

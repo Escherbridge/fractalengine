@@ -73,10 +73,7 @@ impl Default for PortalPanelRect {
 
 /// Convert `PortalPanelRect` (logical) to screen-space `WindowGeometry`.
 #[cfg(feature = "winit")]
-fn portal_rect_to_geometry(
-    rect: &PortalPanelRect,
-    win: &winit::window::Window,
-) -> WindowGeometry {
+fn portal_rect_to_geometry(rect: &PortalPanelRect, win: &winit::window::Window) -> WindowGeometry {
     let scale = win.scale_factor();
     let inner_pos = win.inner_position().unwrap_or_default();
 
@@ -128,11 +125,14 @@ fn init_backend(world: &mut bevy::prelude::World) {
                 Some(w) => w,
                 None => return None,
             };
-            let inner: &winit::window::Window = &**winit_wrapper;
+            let inner: &winit::window::Window = winit_wrapper;
             let geometry = portal_rect_to_geometry(&portal_rect, inner);
             bevy::log::info!(
                 "Portal: init_backend: geometry x={} y={} w={} h={} scale={}",
-                geometry.x, geometry.y, geometry.width, geometry.height,
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
                 inner.scale_factor()
             );
 
@@ -156,7 +156,10 @@ fn init_backend(world: &mut bevy::prelude::World) {
 
         match result {
             Ok(backend) => {
-                bevy::log::info!("Portal: backend initialized OK: {}", std::any::type_name::<ActiveBackend>());
+                bevy::log::info!(
+                    "Portal: backend initialized OK: {}",
+                    std::any::type_name::<ActiveBackend>()
+                );
                 world.insert_non_send_resource(WebViewBackendRes {
                     backend: Some(backend),
                     lost: false,
@@ -164,7 +167,10 @@ fn init_backend(world: &mut bevy::prelude::World) {
             }
             Err(e) => {
                 bevy::log::error!("Portal: backend init FAILED: {e}");
-                world.insert_non_send_resource(WebViewBackendRes { backend: None, lost: false });
+                world.insert_non_send_resource(WebViewBackendRes {
+                    backend: None,
+                    lost: false,
+                });
             }
         }
     }
@@ -172,7 +178,10 @@ fn init_backend(world: &mut bevy::prelude::World) {
     #[cfg(not(feature = "winit"))]
     {
         bevy::log::warn!("WebView backend requires winit feature");
-        world.insert_non_send_resource(WebViewBackendRes { backend: None, lost: false });
+        world.insert_non_send_resource(WebViewBackendRes {
+            backend: None,
+            lost: false,
+        });
     }
 }
 
@@ -189,11 +198,17 @@ fn dispatch_commands(
     }
 
     let Some(mut res) = backend_res else {
-        bevy::log::warn!("Portal: received {} cmd(s) but WebViewBackendRes not available", cmds.len());
+        bevy::log::warn!(
+            "Portal: received {} cmd(s) but WebViewBackendRes not available",
+            cmds.len()
+        );
         return;
     };
     let Some(backend) = res.backend.as_mut() else {
-        bevy::log::warn!("Portal: received {} cmd(s) but backend is None (init failed?)", cmds.len());
+        bevy::log::warn!(
+            "Portal: received {} cmd(s) but backend is None (init failed?)",
+            cmds.len()
+        );
         return;
     };
 
@@ -228,10 +243,11 @@ fn dispatch_commands(
                 // Inline the SwitchTab(Config) guard that was previously in
                 // tab_switch_guard_system. This avoids the guard/flush echo
                 // loop that duplicated Navigate commands every frame.
-                if matches!(tab, crate::ipc::BrowserTab::Config)
-                    && !tab_filter.can_view_config()
-                {
-                    bevy::log::warn!("Unauthorized SwitchTab(Config) blocked — role={:?}", tab_filter.role);
+                if matches!(tab, crate::ipc::BrowserTab::Config) && !tab_filter.can_view_config() {
+                    bevy::log::warn!(
+                        "Unauthorized SwitchTab(Config) blocked — role={:?}",
+                        tab_filter.role
+                    );
                     continue;
                 }
                 events.write(BrowserEvent::TabChanged { tab: *tab });
@@ -246,7 +262,9 @@ fn drain_backend_events(
     mut events: bevy::prelude::MessageWriter<BrowserEvent>,
 ) {
     let Some(mut res) = backend_res else { return };
-    let Some(backend) = res.backend.as_mut() else { return };
+    let Some(backend) = res.backend.as_mut() else {
+        return;
+    };
 
     let drained = backend.drain_events();
     let mut window_closed = false;
@@ -262,7 +280,9 @@ fn drain_backend_events(
             }
             BackendEvent::Error(ref message) => {
                 bevy::log::error!("Portal: backend error: {message}");
-                events.write(BrowserEvent::Error { message: message.clone() });
+                events.write(BrowserEvent::Error {
+                    message: message.clone(),
+                });
             }
             BackendEvent::WindowClosed => {
                 bevy::log::warn!("Portal: backend window was closed by OS — scheduling recreate");
@@ -280,23 +300,27 @@ fn drain_backend_events(
 fn sync_portal_position(
     backend_res: Option<bevy::ecs::system::NonSendMut<WebViewBackendRes>>,
     portal_rect: bevy::prelude::Res<PortalPanelRect>,
-    #[cfg(feature = "winit")]
-    primary_window: bevy::prelude::Query<
+    #[cfg(feature = "winit")] primary_window: bevy::prelude::Query<
         bevy::prelude::Entity,
         bevy::prelude::With<bevy::window::PrimaryWindow>,
     >,
-    #[cfg(feature = "winit")]
-    mut last_geometry: bevy::prelude::Local<Option<WindowGeometry>>,
+    #[cfg(feature = "winit")] mut last_geometry: bevy::prelude::Local<Option<WindowGeometry>>,
 ) {
     let Some(mut res) = backend_res else { return };
 
     #[cfg(feature = "winit")]
     {
-        let Some(backend) = res.backend.as_mut() else { return };
-        let Ok(entity) = primary_window.single() else { return };
+        let Some(backend) = res.backend.as_mut() else {
+            return;
+        };
+        let Ok(entity) = primary_window.single() else {
+            return;
+        };
         bevy::winit::WINIT_WINDOWS.with_borrow(|winit_windows| {
-            let Some(wrapper) = winit_windows.get_window(entity) else { return };
-            let inner: &winit::window::Window = &**wrapper;
+            let Some(wrapper) = winit_windows.get_window(entity) else {
+                return;
+            };
+            let inner: &winit::window::Window = wrapper;
             let geometry = portal_rect_to_geometry(&portal_rect, inner);
             // Skip the SetWindowPos/set_bounds round-trip when nothing moved.
             if *last_geometry == Some(geometry) {

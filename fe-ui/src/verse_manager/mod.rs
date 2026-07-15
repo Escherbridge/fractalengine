@@ -86,7 +86,10 @@ pub struct VerseManager {
 impl VerseManager {
     /// Build a manager from a verse tree with the node index pre-populated.
     pub fn from_verses(verses: Vec<VerseEntry>) -> Self {
-        let mut mgr = Self { verses, node_index: Default::default() };
+        let mut mgr = Self {
+            verses,
+            node_index: Default::default(),
+        };
         mgr.rebuild_node_index();
         mgr
     }
@@ -120,7 +123,6 @@ impl VerseManager {
             .flat_map(|f| &mut f.petals)
             .find(|p| p.id == petal_id)
     }
-
 }
 
 /// Bevy [`Resource`] wrapper around [`fe_sdk::TextureRegistry`] (FR-4) — the
@@ -195,7 +197,10 @@ mod tests {
             expanded: true,
             fractals: vec![fractal],
         };
-        VerseManager { verses: vec![verse], ..Default::default() }
+        VerseManager {
+            verses: vec![verse],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -227,12 +232,15 @@ mod tests {
         });
         assert_eq!(mgr.verses.len(), 1);
 
-        mgr.find_verse_mut("v1").unwrap().fractals.push(FractalEntry {
-            id: "f1".to_string(),
-            name: "F1".to_string(),
-            expanded: true,
-            petals: vec![],
-        });
+        mgr.find_verse_mut("v1")
+            .unwrap()
+            .fractals
+            .push(FractalEntry {
+                id: "f1".to_string(),
+                name: "F1".to_string(),
+                expanded: true,
+                petals: vec![],
+            });
         assert_eq!(mgr.verses[0].fractals.len(), 1);
 
         mgr.verses[0].fractals[0].petals.push(PetalEntry {

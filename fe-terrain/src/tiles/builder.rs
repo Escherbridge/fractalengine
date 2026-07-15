@@ -11,8 +11,8 @@ mod inner {
     use anyhow::{Context, Result};
     use tokio::sync::Mutex;
 
-    use fe_format::manifest::{ElevationEncoding, HexonManifest, HexonType, TilesetMeta};
     use fe_format::license::License;
+    use fe_format::manifest::{ElevationEncoding, HexonManifest, HexonType, TilesetMeta};
     use fe_format::HexonArchive;
 
     use crate::splat::bake::bake_splat_coverage;
@@ -20,7 +20,9 @@ mod inner {
         append_baked_splats_to_archive, encode_baked_splats, tile_world_size_m, BakedSplatBuffer,
     };
     use crate::splat::synth::synthesize_splats;
-    use crate::tiles::elevation::{decode_png_pixels, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder};
+    use crate::tiles::elevation::{
+        decode_png_pixels, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder,
+    };
     use crate::tiles::source::{TileCoord, TileSource};
 
     use super::parse_cache_key;
@@ -220,7 +222,10 @@ mod inner {
 
             let mut manifest = HexonManifest {
                 schema_version: "1.0.0".into(),
-                hexon_id: format!("tileset-{}", self.region_name.to_lowercase().replace(' ', "-")),
+                hexon_id: format!(
+                    "tileset-{}",
+                    self.region_name.to_lowercase().replace(' ', "-")
+                ),
                 hexon_type: HexonType::TerrainTileset,
                 publisher_did: publisher_did.into(),
                 publisher_name: None,
@@ -268,8 +273,13 @@ mod inner {
                 scale_bounds: None,
             };
 
-            let archive_bytes =
-                HexonArchive::export_tileset(manifest, &meta, &tiles, &[], Some(License::default()))?;
+            let archive_bytes = HexonArchive::export_tileset(
+                manifest,
+                &meta,
+                &tiles,
+                &[],
+                Some(License::default()),
+            )?;
 
             // FR-3: bake coverage-filled splat buffers and embed them alongside
             // the tiles. Baking is best-effort — if every tile fails to bake
@@ -311,7 +321,10 @@ mod inner {
             }
 
             let total_chunks = chunks.len() as u32;
-            let tileset_id = format!("tileset-{}", self.region_name.to_lowercase().replace(' ', "-"));
+            let tileset_id = format!(
+                "tileset-{}",
+                self.region_name.to_lowercase().replace(' ', "-")
+            );
 
             let mut archives = Vec::with_capacity(chunks.len());
             for (seq, chunk_tiles) in chunks.into_iter().enumerate() {

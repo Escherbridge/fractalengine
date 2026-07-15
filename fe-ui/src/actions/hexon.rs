@@ -124,7 +124,10 @@ pub(crate) fn refresh_list(
 }
 
 pub(crate) fn open_storage_dir(ui_mgr: &UiManager) {
-    if let ActiveDialog::HexonManager { ref storage_info, .. } = ui_mgr.active_dialog {
+    if let ActiveDialog::HexonManager {
+        ref storage_info, ..
+    } = ui_mgr.active_dialog
+    {
         let dir = &storage_info.base_dir;
         if !dir.is_empty() {
             #[cfg(target_os = "windows")]
@@ -155,7 +158,10 @@ pub(crate) fn set_petal_map(
     let terrain = tileset
         .as_ref()
         .map(|ts| tileset_to_terrain_json(ts, world_scale, scale_bounds));
-    let tileset_ids = tileset.as_ref().map(|ts| vec![ts.hexon_id.clone()]).unwrap_or_default();
+    let tileset_ids = tileset
+        .as_ref()
+        .map(|ts| vec![ts.hexon_id.clone()])
+        .unwrap_or_default();
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain,
@@ -210,7 +216,11 @@ pub(crate) fn set_petal_map_scale(
 /// Clamp a world scale into `[min, max]` bounds (FR-6); no fe-terrain dep —
 /// fe-ui owns this trivial clamp locally per the layering boundary (C6).
 fn clamp_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
-    let sanitized = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let sanitized = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     match bounds {
         Some([min, max]) if min.is_finite() && max.is_finite() && min > 0.0 && max >= min => {
             sanitized.clamp(min, max)

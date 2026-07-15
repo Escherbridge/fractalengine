@@ -4,7 +4,7 @@
 //! They enable node data queries, interaction notifications, and asset resolution.
 
 #[cfg(feature = "backend-tauri")]
-use fe_runtime::shared_node::{SharedNode, WebViewInteraction, validate_asset_path};
+use fe_runtime::shared_node::{validate_asset_path, SharedNode, WebViewInteraction};
 #[cfg(feature = "backend-tauri")]
 use tauri::Manager;
 
@@ -19,10 +19,13 @@ pub fn get_node_data(node_id: String) -> Result<SharedNode, String> {
     // verse_manager.find_node(&node_id)
     //     .map(|node| SharedNode::from_node_entry(...))
     //     .ok_or_else(|| format!("Node {} not found", node_id))
-    
+
     // For now, return a placeholder that indicates this needs to be connected to VerseManager
-    tracing::warn!("get_node_data called with node_id: {} - needs VerseManager integration", node_id);
-    
+    tracing::warn!(
+        "get_node_data called with node_id: {} - needs VerseManager integration",
+        node_id
+    );
+
     // Return a minimal node for testing purposes
     Ok(SharedNode {
         node_id,
@@ -46,14 +49,14 @@ pub fn get_node_data(node_id: String) -> Result<SharedNode, String> {
 #[tauri::command]
 pub fn notify_interaction(interaction: WebViewInteraction) -> Result<(), String> {
     tracing::debug!("Received webview interaction: {:?}", interaction);
-    
+
     // In a full implementation, this would:
     // 1. Convert WebViewInteraction to a Bevy event
     // 2. Send it through the event system
-    // 
+    //
     // Example:
     // events.send(WebViewInteractionEvent(interaction));
-    
+
     match &interaction {
         WebViewInteraction::NodeSelected { node } => {
             tracing::info!("Node selected in webview: {}", node.node_id);
@@ -61,20 +64,37 @@ pub fn notify_interaction(interaction: WebViewInteraction) -> Result<(), String>
         WebViewInteraction::NodeDeselected { node_id } => {
             tracing::info!("Node deselected in webview: {}", node_id);
         }
-        WebViewInteraction::TransformChanged { node_id, position, rotation, scale } => {
+        WebViewInteraction::TransformChanged {
+            node_id,
+            position,
+            rotation,
+            scale,
+        } => {
             tracing::info!(
                 "Transform changed for node {}: pos={:?}, rot={:?}, scale={:?}",
-                node_id, position, rotation, scale
+                node_id,
+                position,
+                rotation,
+                scale
             );
         }
-        WebViewInteraction::PropertyChanged { node_id, key, value } => {
-            tracing::info!("Property changed for node {}: {} = {:?}", node_id, key, value);
+        WebViewInteraction::PropertyChanged {
+            node_id,
+            key,
+            value,
+        } => {
+            tracing::info!(
+                "Property changed for node {}: {} = {:?}",
+                node_id,
+                key,
+                value
+            );
         }
         WebViewInteraction::UrlChanged { node_id, url } => {
             tracing::info!("URL changed for node {}: {}", node_id, url);
         }
     }
-    
+
     Ok(())
 }
 
@@ -85,11 +105,11 @@ pub fn notify_interaction(interaction: WebViewInteraction) -> Result<(), String>
 #[tauri::command]
 pub fn list_nodes_for_petal(petal_id: String) -> Result<Vec<SharedNode>, String> {
     tracing::debug!("Listing nodes for petal: {}", petal_id);
-    
+
     // In a full implementation, this would query VerseManager for all nodes in the petal
     // verse_manager.find_petal(&petal_id)
     //     .map(|petal| petal.nodes.iter().map(|n| SharedNode::from_node_entry(...)).collect())
-    
+
     // Return empty list for now
     Ok(vec![])
 }
@@ -100,27 +120,30 @@ pub fn list_nodes_for_petal(petal_id: String) -> Result<Vec<SharedNode>, String>
 /// from the petal's asset directory with path traversal protection.
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
-pub fn resolve_asset(petal_id: String, asset_path: String, app: tauri::AppHandle) -> Result<Vec<u8>, String> {
+pub fn resolve_asset(
+    petal_id: String,
+    asset_path: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<u8>, String> {
     // First-line defense: lexical traversal checks (no filesystem access)
     validate_asset_path(&petal_id, &asset_path)?;
 
     // Get the app data directory
-    let data_dir = app.path().app_data_dir()
+    let data_dir = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data directory: {}", e))?;
 
     // Build the full path: {data_dir}/verses/{petal_id}/assets/{asset_path}
-    let base = data_dir
-        .join("verses")
-        .join(&petal_id)
-        .join("assets");
+    let base = data_dir.join("verses").join(&petal_id).join("assets");
 
     let resolved = base.join(&asset_path);
 
     // Canonicalize both paths so symlinks cannot escape the base dir
-    let canonical_base = std::fs::canonicalize(&base)
-        .map_err(|e| format!("Failed to resolve asset base: {e}"))?;
-    let canonical_resolved = std::fs::canonicalize(&resolved)
-        .map_err(|e| format!("Failed to resolve asset: {e}"))?;
+    let canonical_base =
+        std::fs::canonicalize(&base).map_err(|e| format!("Failed to resolve asset base: {e}"))?;
+    let canonical_resolved =
+        std::fs::canonicalize(&resolved).map_err(|e| format!("Failed to resolve asset: {e}"))?;
     if !canonical_resolved.starts_with(&canonical_base) {
         return Err("Path traversal blocked".to_string());
     }
@@ -134,11 +157,13 @@ pub fn resolve_asset(petal_id: String, asset_path: String, app: tauri::AppHandle
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
 pub fn get_asset_base_url(app: tauri::AppHandle) -> Result<String, String> {
-    let data_dir = app.path().app_data_dir()
+    let data_dir = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-    
+
     let base = data_dir.join("verses");
-    
+
     Ok(base.to_string_lossy().to_string())
 }
 
@@ -155,15 +180,18 @@ pub fn update_node_transform(
 ) -> Result<(), String> {
     tracing::info!(
         "Update transform for node {}: pos={:?}, rot={:?}, scale={:?}",
-        node_id, position, rotation, scale
+        node_id,
+        position,
+        rotation,
+        scale
     );
-    
+
     // In a full implementation, this would:
     // 1. Find the node in VerseManager
     // 2. Update its transform
     // 3. Emit a DbCommand to persist the change
     // 4. Broadcast to P2P
-    
+
     Ok(())
 }
 
@@ -172,9 +200,9 @@ pub fn update_node_transform(
 #[tauri::command]
 pub fn update_node_url(node_id: String, url: String) -> Result<(), String> {
     tracing::info!("Update URL for node {}: {}", node_id, url);
-    
+
     // In a full implementation, this would update the node's webpage_url in VerseManager
-    
+
     Ok(())
 }
 

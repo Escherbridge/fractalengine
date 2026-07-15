@@ -22,9 +22,10 @@ impl RegistryConfig {
             dir: std::env::var("FE_REGISTRY_DIR")
                 .unwrap_or_else(|_| "/data/hexons".to_string())
                 .into(),
-            bind: std::env::var("FE_REGISTRY_BIND")
-                .unwrap_or_else(|_| "0.0.0.0:8790".to_string()),
-            token: std::env::var("FE_REGISTRY_TOKEN").ok().filter(|t| !t.is_empty()),
+            bind: std::env::var("FE_REGISTRY_BIND").unwrap_or_else(|_| "0.0.0.0:8790".to_string()),
+            token: std::env::var("FE_REGISTRY_TOKEN")
+                .ok()
+                .filter(|t| !t.is_empty()),
             readonly: std::env::var("FE_REGISTRY_READONLY")
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false),

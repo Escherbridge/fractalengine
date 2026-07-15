@@ -41,31 +41,19 @@ pub fn scene_nodes_to_gpx(nodes: &[ExportNode], projection: &Projection) -> Stri
 
 fn write_waypoint(xml: &mut String, node: &ExportNode, projection: &Projection) {
     let (lat, lon, ele) = extract_coords(node, projection);
-    xml.push_str(&format!(
-        "  <wpt lat=\"{:.7}\" lon=\"{:.7}\">\n",
-        lat, lon
-    ));
+    xml.push_str(&format!("  <wpt lat=\"{:.7}\" lon=\"{:.7}\">\n", lat, lon));
     if let Some(e) = ele {
         xml.push_str(&format!("    <ele>{:.1}</ele>\n", e));
     }
     if let Some(props) = &node.properties {
         if let Some(name) = props["name"].as_str() {
-            xml.push_str(&format!(
-                "    <name>{}</name>\n",
-                xml_escape(name)
-            ));
+            xml.push_str(&format!("    <name>{}</name>\n", xml_escape(name)));
         }
         if let Some(desc) = props["desc"].as_str() {
-            xml.push_str(&format!(
-                "    <desc>{}</desc>\n",
-                xml_escape(desc)
-            ));
+            xml.push_str(&format!("    <desc>{}</desc>\n", xml_escape(desc)));
         }
         if let Some(sym) = props["symbol"].as_str() {
-            xml.push_str(&format!(
-                "    <sym>{}</sym>\n",
-                xml_escape(sym)
-            ));
+            xml.push_str(&format!("    <sym>{}</sym>\n", xml_escape(sym)));
         }
     }
     xml.push_str("  </wpt>\n");
@@ -76,10 +64,7 @@ fn write_track(xml: &mut String, node: &ExportNode, projection: &Projection) {
 
     // Track name
     let name = &node.name;
-    xml.push_str(&format!(
-        "    <name>{}</name>\n",
-        xml_escape(name)
-    ));
+    xml.push_str(&format!("    <name>{}</name>\n", xml_escape(name)));
 
     // Segments are children
     for child in &node.children {
@@ -137,16 +122,10 @@ fn write_trackpoint(xml: &mut String, node: &ExportNode, projection: &Projection
             xml.push_str("        <extensions>\n");
             xml.push_str("          <gpxtpx:TrackPointExtension>\n");
             if let Some(hr) = hr {
-                xml.push_str(&format!(
-                    "            <gpxtpx:hr>{}</gpxtpx:hr>\n",
-                    hr
-                ));
+                xml.push_str(&format!("            <gpxtpx:hr>{}</gpxtpx:hr>\n", hr));
             }
             if let Some(cad) = cad {
-                xml.push_str(&format!(
-                    "            <gpxtpx:cad>{}</gpxtpx:cad>\n",
-                    cad
-                ));
+                xml.push_str(&format!("            <gpxtpx:cad>{}</gpxtpx:cad>\n", cad));
             }
             if let Some(power) = power {
                 xml.push_str(&format!(
@@ -164,10 +143,7 @@ fn write_trackpoint(xml: &mut String, node: &ExportNode, projection: &Projection
 /// Extract WGS84 coordinates from a node.
 /// Prefers stored lat/lon properties for round-trip accuracy.
 /// Falls back to inverse projection from local position.
-fn extract_coords(
-    node: &ExportNode,
-    projection: &Projection,
-) -> (f64, f64, Option<f64>) {
+fn extract_coords(node: &ExportNode, projection: &Projection) -> (f64, f64, Option<f64>) {
     if let Some(props) = &node.properties {
         let lat = props["lat"].as_f64();
         let lon = props["lon"].as_f64();

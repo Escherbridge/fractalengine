@@ -26,7 +26,11 @@ pub(crate) fn layer_manager_section(
     ui_mgr: &mut UiManager,
     petal_id: &str,
 ) {
-    ui.label(egui::RichText::new("Layers").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Layers")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
 
     if petal_map.terrain_json.is_none() {
@@ -83,15 +87,22 @@ fn render_view_mode_row(
         .unwrap_or_default();
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("View mode").small().color(theme::TEXT_DIM));
+        ui.label(
+            egui::RichText::new("View mode")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
         for (mode, label) in [
             (gis::ViewMode::Mesh, "Mesh"),
             (gis::ViewMode::Splats, "Splats"),
             (gis::ViewMode::Hybrid, "Hybrid"),
         ] {
             let active = current == mode;
-            let btn = egui::Button::new(label)
-                .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+            let btn = egui::Button::new(label).fill(if active {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            });
             if ui.add(btn).clicked() && !active {
                 if let Some(current_doc) = &petal_map.terrain_json {
                     petal_map.terrain_json = Some(gis::set_view_mode_field(current_doc, mode));
@@ -138,7 +149,11 @@ fn render_honored_layer_row(
         }
     });
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Opacity").small().color(theme::TEXT_DIM));
+        ui.label(
+            egui::RichText::new("Opacity")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
         let resp = ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0));
         if resp.changed() {
             preview_layer_edit(petal_map, name, None, Some(opacity));
@@ -157,7 +172,12 @@ fn render_honored_layer_row(
 
 /// Local-only mutation of the stored terrain JSON for immediate slider/checkbox
 /// feedback, ahead of the `UiAction` round-trip that actually persists it.
-fn preview_layer_edit(petal_map: &mut PetalMapState, name: &str, visible: Option<bool>, opacity: Option<f32>) {
+fn preview_layer_edit(
+    petal_map: &mut PetalMapState,
+    name: &str,
+    visible: Option<bool>,
+    opacity: Option<f32>,
+) {
     if let Some(current) = &petal_map.terrain_json {
         petal_map.terrain_json = Some(gis::set_layer_field(current, name, visible, opacity));
     }

@@ -1,9 +1,9 @@
 pub mod backend;
 pub mod backends;
 pub mod ipc;
-#[cfg(feature = "backend-tauri")]
-pub mod tauri_commands;
 pub mod overlay;
 pub mod petal_portal;
 pub mod plugin;
 pub mod security;
+#[cfg(feature = "backend-tauri")]
+pub mod tauri_commands;

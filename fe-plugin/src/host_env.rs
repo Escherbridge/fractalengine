@@ -65,7 +65,10 @@ impl HostEnv {
     ) -> Result<HashMap<String, PropertyValue>, HostApiError> {
         require(token, CAP_STORAGE_READ)?;
         storage::validate_node_id(node_id)?;
-        let api = self.storage.as_ref().ok_or(HostApiError::NotAvailable("storage"))?;
+        let api = self
+            .storage
+            .as_ref()
+            .ok_or(HostApiError::NotAvailable("storage"))?;
         Ok(api.node_get_properties(node_id)?)
     }
 
@@ -80,7 +83,10 @@ impl HostEnv {
         require(token, CAP_STORAGE_WRITE)?;
         storage::validate_node_id(node_id)?;
         storage::validate_key(key)?;
-        let api = self.storage.as_ref().ok_or(HostApiError::NotAvailable("storage"))?;
+        let api = self
+            .storage
+            .as_ref()
+            .ok_or(HostApiError::NotAvailable("storage"))?;
         Ok(api.node_set_property(node_id, key, value)?)
     }
 
@@ -94,7 +100,10 @@ impl HostEnv {
     ) -> Result<Option<PropertyValue>, HostApiError> {
         require(token, CAP_STORAGE_READ)?;
         storage::validate_key(key)?;
-        let api = self.storage.as_ref().ok_or(HostApiError::NotAvailable("storage"))?;
+        let api = self
+            .storage
+            .as_ref()
+            .ok_or(HostApiError::NotAvailable("storage"))?;
         Ok(api.storage_get(namespace, key)?)
     }
 
@@ -109,7 +118,10 @@ impl HostEnv {
     ) -> Result<(), HostApiError> {
         require(token, CAP_STORAGE_WRITE)?;
         storage::validate_key(key)?;
-        let api = self.storage.as_ref().ok_or(HostApiError::NotAvailable("storage"))?;
+        let api = self
+            .storage
+            .as_ref()
+            .ok_or(HostApiError::NotAvailable("storage"))?;
         Ok(api.storage_set(namespace, key, value)?)
     }
 
@@ -128,7 +140,10 @@ impl HostEnv {
         if !query::is_select_only(sql) {
             return Err(HostApiError::NotSelectOnly);
         }
-        let api = self.query.as_ref().ok_or(HostApiError::NotAvailable("query"))?;
+        let api = self
+            .query
+            .as_ref()
+            .ok_or(HostApiError::NotAvailable("query"))?;
         let mut rows = api.query_select(sql, params)?;
         rows.truncate(MAX_RESULT_ROWS);
         Ok(rows)

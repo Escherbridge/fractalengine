@@ -169,11 +169,7 @@ impl super::source::TileSource for HexonTileSource {
 }
 
 /// Walk a `{z}/{x}/{y}.{ext}` directory tree, collecting tiles into the map.
-fn walk_tiles(
-    base: &Path,
-    ext: &str,
-    out: &mut HashMap<String, Vec<u8>>,
-) -> Result<()> {
+fn walk_tiles(base: &Path, ext: &str, out: &mut HashMap<String, Vec<u8>>) -> Result<()> {
     let z_entries = std::fs::read_dir(base).context("failed to read tiles directory")?;
     for z_entry in z_entries.flatten() {
         let z_path = z_entry.path();
@@ -278,8 +274,7 @@ mod tests {
             HexonArchive::export_tileset(test_manifest(), &meta, &elevation, &satellite, None)
                 .expect("export failed");
 
-        let source =
-            HexonTileSource::from_archive(&archive_bytes).expect("from_archive failed");
+        let source = HexonTileSource::from_archive(&archive_bytes).expect("from_archive failed");
 
         assert_eq!(source.bounds(), [45.0, -122.0, 46.0, -121.0]);
         assert_eq!(source.zoom_range(), (10, 12));
@@ -306,12 +301,17 @@ mod tests {
             scales: vec![[1.0, 1.0]],
             normals: vec![[0.0, 1.0, 0.0]],
         };
-        let entries = vec![("10/512/340".to_string(), encode_baked_splats(&baked).unwrap())];
+        let entries = vec![(
+            "10/512/340".to_string(),
+            encode_baked_splats(&baked).unwrap(),
+        )];
         let augmented = append_baked_splats_to_archive(&base, &entries).unwrap();
 
         let source = HexonTileSource::from_archive(&augmented).expect("from_archive failed");
         let coord = TileCoord::new(512, 340, 10);
-        let loaded = source.get_baked_splats(coord).expect("baked splats should load");
+        let loaded = source
+            .get_baked_splats(coord)
+            .expect("baked splats should load");
         assert_eq!(loaded.positions, baked.positions);
         assert!(source.get_baked_splats(TileCoord::new(0, 0, 10)).is_none());
     }
@@ -323,7 +323,9 @@ mod tests {
             HexonArchive::export_tileset(test_manifest(), &meta, &[], &[], None).unwrap();
         let source = HexonTileSource::from_archive(&archive_bytes).unwrap();
         assert!(source.baked_splats.is_empty());
-        assert!(source.get_baked_splats(TileCoord::new(512, 340, 10)).is_none());
+        assert!(source
+            .get_baked_splats(TileCoord::new(512, 340, 10))
+            .is_none());
     }
 
     #[test]

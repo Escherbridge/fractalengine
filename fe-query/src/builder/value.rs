@@ -101,8 +101,8 @@ mod tests {
 
     #[test]
     fn float_conversion() {
-        let v: QueryValue = 3.14f64.into();
-        assert_eq!(v.to_bind_value(), serde_json::json!(3.14));
+        let v: QueryValue = 2.5f64.into();
+        assert_eq!(v.to_bind_value(), serde_json::json!(2.5));
     }
 
     #[test]

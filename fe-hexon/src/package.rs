@@ -67,6 +67,7 @@ impl HexonPackage {
     /// Build a .fecrate ZIP from a manifest, entries, assets directory, and signing key.
     ///
     /// Returns the raw ZIP bytes.
+    #[allow(clippy::too_many_arguments)] // package builder — params mirror archive sections
     pub fn build(
         manifest: HexonManifest,
         entries: Vec<AssetEntry>,
@@ -91,8 +92,8 @@ impl HexonPackage {
 
         // Build ZIP in memory
         let mut zip_writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let options = zip::write::FileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         // manifest.json
         zip_writer.start_file("manifest.json", options)?;
@@ -118,13 +119,13 @@ impl HexonPackage {
 
         // preview/* (optional)
         for (name, bytes) in &previews {
-            zip_writer.start_file(&format!("preview/{}", name), options)?;
+            zip_writer.start_file(format!("preview/{}", name), options)?;
             zip_writer.write_all(bytes)?;
         }
 
         // assets/{hash}
         for (hash, bytes) in &assets {
-            zip_writer.start_file(&format!("assets/{}", hash), options)?;
+            zip_writer.start_file(format!("assets/{}", hash), options)?;
             zip_writer.write_all(bytes)?;
         }
 
@@ -152,7 +153,8 @@ impl HexonPackage {
 
         // Read manifest.json (keep raw bytes for signature verification)
         let (manifest, manifest_raw): (HexonManifest, Vec<u8>) = {
-            let mut file = archive.by_name("manifest.json")
+            let mut file = archive
+                .by_name("manifest.json")
                 .map_err(|e| anyhow::anyhow!("missing manifest.json: {}", e))?;
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)?;
@@ -163,7 +165,8 @@ impl HexonPackage {
 
         // Read entries.json
         let entries: Vec<AssetEntry> = {
-            let mut file = archive.by_name("entries.json")
+            let mut file = archive
+                .by_name("entries.json")
                 .map_err(|e| anyhow::anyhow!("missing entries.json: {}", e))?;
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)?;
@@ -173,7 +176,8 @@ impl HexonPackage {
 
         // Read license.json
         let license: License = {
-            let mut file = archive.by_name("license.json")
+            let mut file = archive
+                .by_name("license.json")
                 .map_err(|e| anyhow::anyhow!("missing license.json: {}", e))?;
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)?;
@@ -183,7 +187,8 @@ impl HexonPackage {
 
         // Read optional signature.txt
         let signature = {
-            let mut file = archive.by_name("signature.txt")
+            let mut file = archive
+                .by_name("signature.txt")
                 .map_err(|e| anyhow::anyhow!("missing signature.txt: {}", e))?;
             let mut buf = String::new();
             file.read_to_string(&mut buf)?;
@@ -202,7 +207,9 @@ impl HexonPackage {
         for i in 0..archive.len() {
             let name = {
                 let file = archive.by_index(i)?;
-                file.enclosed_name().and_then(|p| p.to_str()).map(|s| s.to_string())
+                file.enclosed_name()
+                    .and_then(|p| p.to_str())
+                    .map(|s| s.to_string())
             };
             if let Some(name) = name {
                 if name.starts_with("preview/") && name != "preview/" {
@@ -220,7 +227,9 @@ impl HexonPackage {
         for i in 0..archive.len() {
             let name = {
                 let file = archive.by_index(i)?;
-                file.enclosed_name().and_then(|p| p.to_str()).map(|s| s.to_string())
+                file.enclosed_name()
+                    .and_then(|p| p.to_str())
+                    .map(|s| s.to_string())
             };
             if let Some(name) = name {
                 if name.starts_with("assets/") && name != "assets/" {
@@ -248,7 +257,8 @@ impl HexonPackage {
         });
 
         // Verify signature against raw manifest bytes (not re-serialized)
-        let sig_valid = signature::verify_manifest(&manifest_raw, &signature, &manifest.publisher_did)?;
+        let sig_valid =
+            signature::verify_manifest(&manifest_raw, &signature, &manifest.publisher_did)?;
 
         let mut signed_manifest = manifest.clone();
         signed_manifest.signature = signature;
@@ -280,9 +290,7 @@ mod tests {
     use rand::rngs::OsRng;
     use std::collections::HashMap;
 
-    use crate::manifest::{
-        AssetEntry, EntryKind, HexonKind, HexonManifest, License, LicenseType,
-    };
+    use crate::manifest::{AssetEntry, EntryKind, HexonKind, HexonManifest, License, LicenseType};
 
     fn test_signing_key() -> SigningKey {
         SigningKey::generate(&mut OsRng)
@@ -433,14 +441,25 @@ mod tests {
         assets.insert(entries[1].asset_hash.clone(), b"fake png bytes".to_vec());
 
         let zip_bytes = HexonPackage::build(
-            manifest, entries.clone(), license, assets, None, HashMap::new(), None, None, &keypair,
-        ).unwrap();
+            manifest,
+            entries.clone(),
+            license,
+            assets,
+            None,
+            HashMap::new(),
+            None,
+            None,
+            &keypair,
+        )
+        .unwrap();
 
         let package = HexonPackage::open(&zip_bytes).unwrap();
 
         // Verify every entry's asset_hash matches BLAKE3 of the actual blob
         for entry in &package.entries {
-            let blob = package.assets.get(&entry.asset_hash)
+            let blob = package
+                .assets
+                .get(&entry.asset_hash)
                 .expect("asset blob must exist for entry");
             let computed = crate::signature::asset_hash(blob);
             assert_eq!(
@@ -477,8 +496,14 @@ mod tests {
                 preview_image: None,
                 metadata: Some(serde_json::json!({"shader": "standard"})),
                 sub_assets: Some(HashMap::from([
-                    ("normal".to_string(), crate::signature::asset_hash(normal_data)),
-                    ("roughness".to_string(), crate::signature::asset_hash(roughness_data)),
+                    (
+                        "normal".to_string(),
+                        crate::signature::asset_hash(normal_data),
+                    ),
+                    (
+                        "roughness".to_string(),
+                        crate::signature::asset_hash(roughness_data),
+                    ),
                 ])),
             },
             AssetEntry {
@@ -521,13 +546,31 @@ mod tests {
         };
 
         let mut assets = HashMap::new();
-        assets.insert(crate::signature::asset_hash(albedo_data), albedo_data.to_vec());
-        assets.insert(crate::signature::asset_hash(normal_data), normal_data.to_vec());
-        assets.insert(crate::signature::asset_hash(roughness_data), roughness_data.to_vec());
+        assets.insert(
+            crate::signature::asset_hash(albedo_data),
+            albedo_data.to_vec(),
+        );
+        assets.insert(
+            crate::signature::asset_hash(normal_data),
+            normal_data.to_vec(),
+        );
+        assets.insert(
+            crate::signature::asset_hash(roughness_data),
+            roughness_data.to_vec(),
+        );
 
         let zip_bytes = HexonPackage::build(
-            manifest, entries.clone(), license.clone(), assets, None, HashMap::new(), None, None, &keypair,
-        ).unwrap();
+            manifest,
+            entries.clone(),
+            license.clone(),
+            assets,
+            None,
+            HashMap::new(),
+            None,
+            None,
+            &keypair,
+        )
+        .unwrap();
 
         let package = HexonPackage::open(&zip_bytes).unwrap();
 
@@ -538,7 +581,11 @@ mod tests {
         assert_eq!(package.license.free_entries, vec!["mat_pbr"]);
 
         // Verify sub_assets are preserved
-        let mat = package.entries.iter().find(|e| e.entry_id == "mat_pbr").unwrap();
+        let mat = package
+            .entries
+            .iter()
+            .find(|e| e.entry_id == "mat_pbr")
+            .unwrap();
         let sub = mat.sub_assets.as_ref().unwrap();
         assert!(sub.contains_key("normal"));
         assert!(sub.contains_key("roughness"));
@@ -577,7 +624,9 @@ mod tests {
                 is_placeable: true,
                 is_private: false,
                 preview_image: None,
-                metadata: Some(serde_json::json!({"zoom_min": 5, "zoom_max": 14, "bounds": [5.9, 45.8, 10.5, 47.8]})),
+                metadata: Some(
+                    serde_json::json!({"zoom_min": 5, "zoom_max": 14, "bounds": [5.9, 45.8, 10.5, 47.8]}),
+                ),
                 sub_assets: None,
             },
             AssetEntry {
@@ -610,8 +659,17 @@ mod tests {
         assets.insert(crate::signature::asset_hash(gpx_data), gpx_data.to_vec());
 
         let zip_bytes = HexonPackage::build(
-            terrain_manifest, entries.clone(), license, assets, None, HashMap::new(), None, None, &keypair,
-        ).unwrap();
+            terrain_manifest,
+            entries.clone(),
+            license,
+            assets,
+            None,
+            HashMap::new(),
+            None,
+            None,
+            &keypair,
+        )
+        .unwrap();
 
         let package = HexonPackage::open(&zip_bytes).unwrap();
         assert_eq!(package.manifest.hexon_type, HexonKind::Terrain);
@@ -655,8 +713,17 @@ mod tests {
         };
 
         let zip2 = HexonPackage::build(
-            skybox_manifest, skybox_entries, license2, skybox_assets, None, HashMap::new(), None, None, &keypair,
-        ).unwrap();
+            skybox_manifest,
+            skybox_entries,
+            license2,
+            skybox_assets,
+            None,
+            HashMap::new(),
+            None,
+            None,
+            &keypair,
+        )
+        .unwrap();
 
         let pkg2 = HexonPackage::open(&zip2).unwrap();
         assert_eq!(pkg2.manifest.hexon_type, HexonKind::Skybox);
@@ -676,7 +743,8 @@ mod tests {
             normals: vec![[0.0, 1.0, 0.0]; 2],
         };
         let json = serde_json::to_string(&record).expect("serialize should succeed");
-        let back: BakedSplatTileRecord = serde_json::from_str(&json).expect("deserialize should succeed");
+        let back: BakedSplatTileRecord =
+            serde_json::from_str(&json).expect("deserialize should succeed");
         assert_eq!(back.cache_key, record.cache_key);
         assert_eq!(back.positions, record.positions);
         assert_eq!(back.colors, record.colors);
@@ -725,7 +793,10 @@ mod tests {
         let result = HexonPackage::open(&tampered);
         // Either the ZIP is corrupt and open fails, or the signature is invalid
         if let Ok(pkg) = result {
-            assert!(!pkg.signature_valid(), "tampered package should fail signature");
+            assert!(
+                !pkg.signature_valid(),
+                "tampered package should fail signature"
+            );
         }
         // If open fails due to corruption, that's also acceptable
     }

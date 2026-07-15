@@ -3,17 +3,17 @@
 //! Provides the `.hexon` ZIP archive format: manifest, entries catalog,
 //! licensing, Ed25519 signing, and archive read/write.
 
-pub mod manifest;
+mod archive;
 pub mod entries;
 pub mod license;
+pub mod manifest;
 pub mod signature;
-mod archive;
 
 // Re-exports for convenience
-pub use manifest::*;
+pub use archive::*;
 pub use entries::*;
 pub use license::*;
-pub use archive::*;
+pub use manifest::*;
 pub use signature::{sign_manifest, verify_manifest, verifying_key_to_did};
 
 use serde::{Deserialize, Serialize};
@@ -160,13 +160,9 @@ mod tests {
         let assets = vec![("abc123".to_string(), b"fake-blob".to_vec())];
         let manifest = test_manifest(HexonType::Scene);
 
-        let zip_bytes = HexonArchive::export_scene(
-            nodes.clone(),
-            field_defs.clone(),
-            assets.clone(),
-            manifest,
-        )
-        .expect("export failed");
+        let zip_bytes =
+            HexonArchive::export_scene(nodes.clone(), field_defs.clone(), assets.clone(), manifest)
+                .expect("export failed");
 
         let data = HexonArchive::import(&zip_bytes).expect("import failed");
 
@@ -263,8 +259,7 @@ mod tests {
     fn unknown_fields_ignored_on_import() {
         // Export normally, then re-import — verifies serde(deny_unknown_fields) is NOT set
         let manifest = test_manifest(HexonType::Scene);
-        let zip_bytes =
-            HexonArchive::export_scene(vec![], vec![], vec![], manifest).unwrap();
+        let zip_bytes = HexonArchive::export_scene(vec![], vec![], vec![], manifest).unwrap();
         let data = HexonArchive::import(&zip_bytes).unwrap();
         assert!(data.nodes.is_empty());
     }

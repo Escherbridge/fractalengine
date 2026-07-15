@@ -22,12 +22,7 @@ const SKIRT_OVERLAP_FRACTION: f32 = 0.02;
 /// Returns a triangle-list mesh with positions, normals, UVs, and downward edge
 /// skirts (see `src/AGENTS.md` §terrain_plugin) so seams between adjacent tiles
 /// never reveal the background.
-pub fn terrain_mesh(
-    elevations: &[f32],
-    width: u32,
-    height: u32,
-    tile_world_size: f64,
-) -> Mesh {
+pub fn terrain_mesh(elevations: &[f32], width: u32, height: u32, tile_world_size: f64) -> Mesh {
     assert_eq!(
         elevations.len(),
         (width * height) as usize,
@@ -99,7 +94,13 @@ pub fn terrain_mesh(
     // background. Both depth and flare scale with the (already-scaled) tile size.
     let base = positions.len() as u32;
     let tile_size = tile_world_size as f32;
-    let depth = skirt_depth(cell_size_x, cell_size_z, SKIRT_TEXELS, tile_size, SKIRT_MIN_FRACTION);
+    let depth = skirt_depth(
+        cell_size_x,
+        cell_size_z,
+        SKIRT_TEXELS,
+        tile_size,
+        SKIRT_MIN_FRACTION,
+    );
     let overlap = tile_size.abs() * SKIRT_OVERLAP_FRACTION;
     let skirt = build_skirt(&positions, &uvs, &normals, w, h, depth, overlap, base);
     positions.extend(skirt.positions);
@@ -107,7 +108,10 @@ pub fn terrain_mesh(
     uvs.extend(skirt.uvs);
     indices.extend(skirt.indices);
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
@@ -131,7 +135,10 @@ mod tests {
             mesh.count_vertices()
         );
         let idx_len = mesh.indices().map(|i| i.len()).unwrap_or(0);
-        assert!(idx_len > 24, "expected skirt indices beyond the 24 base, got {idx_len}");
+        assert!(
+            idx_len > 24,
+            "expected skirt indices beyond the 24 base, got {idx_len}"
+        );
     }
 
     #[test]

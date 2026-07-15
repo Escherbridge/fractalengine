@@ -34,10 +34,7 @@ impl AnalyticsContext {
         table_name: &str,
         petal_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let table = EntityStoreTable::new(
-            Arc::clone(&self.store),
-            petal_id.map(|s| s.to_string()),
-        );
+        let table = EntityStoreTable::new(Arc::clone(&self.store), petal_id.map(|s| s.to_string()));
         self.ctx
             .register_table(table_name, Arc::new(table))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -52,10 +49,7 @@ impl AnalyticsContext {
     }
 
     /// Execute a SQL query and return results as JSON values.
-    pub async fn execute_to_json(
-        &self,
-        sql: &str,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub async fn execute_to_json(&self, sql: &str) -> anyhow::Result<Vec<serde_json::Value>> {
         let batches = self.execute(sql).await?;
         batches_to_json(&batches)
     }
@@ -100,7 +94,10 @@ mod tests {
         let ctx = AnalyticsContext::new(Arc::clone(&store));
         ctx.register_node_table("nodes", None).unwrap();
 
-        let batches = ctx.execute("SELECT node_id, pos_x FROM nodes ORDER BY pos_x").await.unwrap();
+        let batches = ctx
+            .execute("SELECT node_id, pos_x FROM nodes ORDER BY pos_x")
+            .await
+            .unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 2);
     }
@@ -115,7 +112,10 @@ mod tests {
         let ctx = AnalyticsContext::new(Arc::clone(&store));
         ctx.register_node_table("nodes", Some("p1")).unwrap();
 
-        let rows = ctx.execute_to_json("SELECT COUNT(*) AS cnt FROM nodes").await.unwrap();
+        let rows = ctx
+            .execute_to_json("SELECT COUNT(*) AS cnt FROM nodes")
+            .await
+            .unwrap();
         let cnt = rows[0]["cnt"].as_i64().unwrap();
         assert_eq!(cnt, 2);
     }
@@ -128,7 +128,10 @@ mod tests {
         let ctx = AnalyticsContext::new(Arc::clone(&store));
         ctx.register_node_table("nodes", None).unwrap();
 
-        let rows = ctx.execute_to_json("SELECT node_id, pos_x FROM nodes").await.unwrap();
+        let rows = ctx
+            .execute_to_json("SELECT node_id, pos_x FROM nodes")
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["node_id"], "n1");
     }

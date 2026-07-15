@@ -38,7 +38,12 @@ pub fn manifest(
 }
 
 /// Build an asset entry + content-addressed blob pair for `bytes`.
-pub fn asset_entry(entry_id: &str, kind: EntryKind, format: &str, bytes: &[u8]) -> (AssetEntry, (String, Vec<u8>)) {
+pub fn asset_entry(
+    entry_id: &str,
+    kind: EntryKind,
+    format: &str,
+    bytes: &[u8],
+) -> (AssetEntry, (String, Vec<u8>)) {
     let hash = blake3::hash(bytes).to_hex().to_string();
     let entry = AssetEntry {
         entry_id: entry_id.into(),
@@ -62,6 +67,7 @@ pub fn asset_entry(entry_id: &str, kind: EntryKind, format: &str, bytes: &[u8]) 
 }
 
 /// Build one `.hexon` archive with a single asset entry.
+#[allow(clippy::too_many_arguments)] // test fixture — params mirror manifest fields
 pub fn build_hexon(
     id: &str,
     version: &str,
@@ -141,6 +147,7 @@ pub fn write_fixture_set(dir: &Path) {
         ),
     ];
     for (id, version, bytes) in fixtures {
-        std::fs::write(dir.join(format!("{id}@{version}.hexon")), bytes).expect("fixture write failed");
+        std::fs::write(dir.join(format!("{id}@{version}.hexon")), bytes)
+            .expect("fixture write failed");
     }
 }

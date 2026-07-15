@@ -97,7 +97,11 @@ fn now_secs() -> u64 {
 
 /// Structured JSON error with a real HTTP status.
 fn err(status: StatusCode, msg: &str) -> Response {
-    (status, Json(serde_json::json!({ "ok": false, "error": msg }))).into_response()
+    (
+        status,
+        Json(serde_json::json!({ "ok": false, "error": msg })),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +129,10 @@ pub async fn issue_share_url(
         return err(StatusCode::FORBIDDEN, "insufficient permissions");
     }
     if !matches!(req.format.as_str(), "json" | "parquet" | "csv") {
-        return err(StatusCode::BAD_REQUEST, "format must be one of: json, parquet, csv");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "format must be one of: json, parquet, csv",
+        );
     }
     if let Err(e) = query_guard::validate_select_sql(&req.sql) {
         return err(StatusCode::BAD_REQUEST, &e);
@@ -135,7 +142,10 @@ pub async fn issue_share_url(
         // for CRS resolution (see export.rs / AGENTS.md §share).
         let upper = req.sql.trim().to_uppercase();
         if query_guard::from_table(&upper).as_deref() != Some("NODE") {
-            return err(StatusCode::BAD_REQUEST, "export queries must target the node table");
+            return err(
+                StatusCode::BAD_REQUEST,
+                "export queries must target the node table",
+            );
         }
         let petal_scoped = fe_database::parse_scope(&claims.scope)
             .map(|p| p.petal_id.is_some())
@@ -151,7 +161,10 @@ pub async fn issue_share_url(
     if ttl == 0 || ttl > limits::SHARE_MAX_TTL_SECS {
         return err(
             StatusCode::BAD_REQUEST,
-            &format!("ttl_secs must be 1..={} (24h max)", limits::SHARE_MAX_TTL_SECS),
+            &format!(
+                "ttl_secs must be 1..={} (24h max)",
+                limits::SHARE_MAX_TTL_SECS
+            ),
         );
     }
 
@@ -203,7 +216,8 @@ pub async fn redeem_share_url(
     Path(token): Path<String>,
     Query(params): Query<RedeemParams>,
 ) -> Response {
-    let payload = match verify_share_token(&state.share_signer.verifying_key(), &token, now_secs()) {
+    let payload = match verify_share_token(&state.share_signer.verifying_key(), &token, now_secs())
+    {
         Ok(p) => p,
         Err(ShareVerifyError::Expired) => {
             tracing::warn!("share redemption rejected: expired token");
@@ -234,7 +248,10 @@ pub async fn redeem_share_url(
                 Err(e) => return share_query_err(e),
             };
             let Some(ref db) = state.db_reader else {
-                return err(StatusCode::SERVICE_UNAVAILABLE, "shared query not available (no db_reader)");
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shared query not available (no db_reader)",
+                );
             };
             let vars = std::collections::HashMap::new();
             match query_guard::run_guarded_query(db, &guarded, &vars, limits::QUERY_ROW_CAP).await {
@@ -249,7 +266,10 @@ pub async fn redeem_share_url(
                     let crs = crate::crs::scope_crs(&state, &payload.scope).await;
                     (
                         StatusCode::OK,
-                        Json(ApiResponse::success(QueryResultDto { data, crs: Some(crs) })),
+                        Json(ApiResponse::success(QueryResultDto {
+                            data,
+                            crs: Some(crs),
+                        })),
                     )
                         .into_response()
                 }

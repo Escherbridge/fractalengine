@@ -85,8 +85,16 @@ pub fn drain_sync_events(
             }
             // Peer transform updates — applying to local nodes is deferred.
             // TODO(iroh-0.35): apply peer NodeTransformed to the local ECS/world.
-            SyncEvent::NodeTransformed { ref node_id, ref verse_id, .. } => {
-                tracing::debug!(node_id, verse_id, "Received peer NodeTransformed (not yet applied)");
+            SyncEvent::NodeTransformed {
+                ref node_id,
+                ref verse_id,
+                ..
+            } => {
+                tracing::debug!(
+                    node_id,
+                    verse_id,
+                    "Received peer NodeTransformed (not yet applied)"
+                );
             }
         }
     }

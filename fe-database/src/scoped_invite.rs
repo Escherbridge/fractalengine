@@ -277,12 +277,10 @@ mod tests {
             3600,
         );
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("cannot create invite with Owner role")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot create invite with Owner role"));
     }
 
     #[test]
@@ -322,12 +320,10 @@ mod tests {
         invite.scope = build_scope("tampered", None, None);
         let result = validate_scoped_invite(&invite);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("signature verification failed")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("signature verification failed"));
     }
 
     #[test]

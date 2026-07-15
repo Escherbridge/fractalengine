@@ -43,7 +43,11 @@ pub async fn get_asset(
     Path(content_hash): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref blob_store) = state.blob_store else {
-        return (StatusCode::SERVICE_UNAVAILABLE, HeaderMap::new(), Vec::new());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            HeaderMap::new(),
+            Vec::new(),
+        );
     };
 
     let hash = match fe_runtime::blob_store::hash_from_hex(&content_hash) {
@@ -73,7 +77,11 @@ pub async fn get_asset(
             );
             (StatusCode::OK, headers, data)
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, HeaderMap::new(), Vec::new()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            HeaderMap::new(),
+            Vec::new(),
+        ),
     }
 }
 
@@ -247,7 +255,10 @@ async fn serve_asset_by_id(db: &Db, blob_store: &BlobStoreHandle, asset_id: &str
     let data = match read_blob_capped(&path) {
         Ok(d) => d,
         Err(BlobReadError::TooLarge(len)) => {
-            tracing::warn!("asset_id={} blob too large to serve ({len} bytes)", meta.asset_id);
+            tracing::warn!(
+                "asset_id={} blob too large to serve ({len} bytes)",
+                meta.asset_id
+            );
             return error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "asset exceeds maximum servable size",
@@ -255,7 +266,10 @@ async fn serve_asset_by_id(db: &Db, blob_store: &BlobStoreHandle, asset_id: &str
         }
         Err(BlobReadError::Io(e)) => {
             tracing::error!("failed reading blob for asset_id={}: {e}", meta.asset_id);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to read asset blob");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to read asset blob",
+            );
         }
     };
 
@@ -343,7 +357,9 @@ async fn direct_resolve_node_asset_id(db: &Db, node_id: &str) -> anyhow::Result<
         .bind(("nid", node_id.to_string()))
         .await
         .map_err(|e| anyhow::anyhow!("query failed: {e}"))?;
-    let rows: Vec<serde_json::Value> = res.take(0).map_err(|e| anyhow::anyhow!("take failed: {e}"))?;
+    let rows: Vec<serde_json::Value> = res
+        .take(0)
+        .map_err(|e| anyhow::anyhow!("take failed: {e}"))?;
     let Some(row) = rows.first() else {
         return Ok(NodeAssetLookup::NodeNotFound);
     };
@@ -362,7 +378,9 @@ async fn direct_load_asset_meta(db: &Db, asset_id: &str) -> anyhow::Result<Optio
         .bind(("aid", asset_id.to_string()))
         .await
         .map_err(|e| anyhow::anyhow!("query failed: {e}"))?;
-    let rows: Vec<serde_json::Value> = res.take(0).map_err(|e| anyhow::anyhow!("take failed: {e}"))?;
+    let rows: Vec<serde_json::Value> = res
+        .take(0)
+        .map_err(|e| anyhow::anyhow!("take failed: {e}"))?;
     let Some(row) = rows.first() else {
         return Ok(None);
     };
@@ -398,9 +416,9 @@ async fn direct_resolve_asset_scope(db: &Db, asset_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fe_runtime::blob_store::{BlobHash, BlobStore};
     use std::collections::HashSet;
     use std::sync::Arc;
-    use fe_runtime::blob_store::{BlobStore, BlobHash};
 
     struct TestFsBlobStore {
         dir: Arc<tempfile::TempDir>,
@@ -454,7 +472,9 @@ mod tests {
             .await
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
-        fe_database::schema::apply_all(&db).await.expect("apply schema");
+        fe_database::schema::apply_all(&db)
+            .await
+            .expect("apply schema");
         db
     }
 
@@ -609,26 +629,23 @@ mod tests {
         });
 
         let claims = test_claims("VERSE#v1");
-        let resp = get_node_asset(
-            State(state),
-            Extension(claims),
-            Path(node_id),
-        )
-        .await;
+        let resp = get_node_asset(State(state), Extension(claims), Path(node_id)).await;
 
         assert_eq!(resp.status(), StatusCode::OK);
         let headers = resp.headers().clone();
-        assert_eq!(
-            headers.get(CONTENT_TYPE).unwrap(),
-            "model/gltf-binary"
-        );
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "model/gltf-binary");
         assert_eq!(
             headers.get(CONTENT_DISPOSITION).unwrap(),
             "attachment; filename=\"model.glb\""
         );
-        assert_eq!(headers.get(CONTENT_LENGTH).unwrap(), &bytes.len().to_string());
+        assert_eq!(
+            headers.get(CONTENT_LENGTH).unwrap(),
+            &bytes.len().to_string()
+        );
 
-        let body = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         assert_eq!(body.as_ref(), bytes.as_slice(), "byte-for-byte round trip");
     }
 
@@ -698,7 +715,9 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers().get(CONTENT_TYPE).unwrap(), "image/png");
-        let body = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
         assert_eq!(body.as_ref(), bytes.as_slice());
     }
 

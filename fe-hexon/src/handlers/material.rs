@@ -147,7 +147,9 @@ pub struct ResolvedMaterial {
 fn load_decoded(blob_store: &FsBlobStore, hash: &str) -> Result<DecodedTexture, RegistryError> {
     let bytes = blob_store.load(hash)?;
     let img = image::load_from_memory(&bytes)
-        .map_err(|e| RegistryError::Package(anyhow::anyhow!("texture decode failed for {hash}: {e}")))?
+        .map_err(|e| {
+            RegistryError::Package(anyhow::anyhow!("texture decode failed for {hash}: {e}"))
+        })?
         .to_rgba8();
     Ok(DecodedTexture {
         width: img.width(),
@@ -172,7 +174,10 @@ pub fn resolve_material_textures(
             Err(e) => {
                 tracing::warn!(
                     "MaterialHandle {} role={} hash={}: {}",
-                    handle.entry_id, role, hash, e
+                    handle.entry_id,
+                    role,
+                    hash,
+                    e
                 );
                 None
             }

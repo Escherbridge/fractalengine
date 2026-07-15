@@ -26,7 +26,8 @@ fn test_db_ping_pong_roundtrip() {
 
     let t0 = Instant::now();
     db.cmd_tx.send(DbCommand::Ping).unwrap();
-    let result = db.res_rx
+    let result = db
+        .res_rx
         .recv_timeout(Duration::from_millis(500))
         .expect("No Pong received");
     let elapsed = t0.elapsed();
@@ -95,8 +96,8 @@ fn blob_store_handle_is_accepted_and_released() {
 /// Uses a dedicated temp directory to avoid file-lock conflicts with the
 /// production `data/fractalengine.db`.
 struct SharedSceneDb {
-    cmd_tx:   crossbeam::channel::Sender<DbCommand>,
-    res_rx:   crossbeam::channel::Receiver<DbResult>,
+    cmd_tx: crossbeam::channel::Sender<DbCommand>,
+    res_rx: crossbeam::channel::Receiver<DbResult>,
     scene_tx: tokio::sync::broadcast::Sender<SceneChange>,
     _tmp_dir: tempfile::TempDir, // kept alive so the directory isn't deleted
 }
@@ -111,7 +112,10 @@ static SHARED_SCENE_DB: std::sync::OnceLock<SharedSceneDb> = std::sync::OnceLock
 static DB_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 fn db_lock() -> std::sync::MutexGuard<'static, ()> {
-    DB_LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    DB_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// Return a reference to the shared DB state, initialising it on first call.
@@ -149,7 +153,12 @@ fn shared_scene_db() -> &'static SharedSceneDb {
         );
         // Intentionally leak the JoinHandle — the DB thread runs for
         // the process lifetime and exits when the binary terminates.
-        SharedSceneDb { cmd_tx, res_rx, scene_tx, _tmp_dir: tmp_dir }
+        SharedSceneDb {
+            cmd_tx,
+            res_rx,
+            scene_tx,
+            _tmp_dir: tmp_dir,
+        }
     })
 }
 
@@ -165,9 +174,7 @@ fn recv_broadcast(
             Ok(change) => return change,
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                 if Instant::now() >= deadline {
-                    panic!(
-                        "timed out after {timeout:?} waiting for a SceneChange broadcast event"
-                    );
+                    panic!("timed out after {timeout:?} waiting for a SceneChange broadcast event");
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -189,9 +196,14 @@ fn seed_hierarchy(
     let cmd_timeout = Duration::from_secs(5);
 
     cmd_tx
-        .send(DbCommand::CreateVerse { name: "test-verse".to_string() })
+        .send(DbCommand::CreateVerse {
+            name: "test-verse".to_string(),
+        })
         .unwrap();
-    let verse_id = match res_rx.recv_timeout(cmd_timeout).expect("CreateVerse result") {
+    let verse_id = match res_rx
+        .recv_timeout(cmd_timeout)
+        .expect("CreateVerse result")
+    {
         DbResult::VerseCreated { id, .. } => id,
         other => panic!("expected VerseCreated, got {other:?}"),
     };
@@ -202,7 +214,10 @@ fn seed_hierarchy(
             name: "test-fractal".to_string(),
         })
         .unwrap();
-    let fractal_id = match res_rx.recv_timeout(cmd_timeout).expect("CreateFractal result") {
+    let fractal_id = match res_rx
+        .recv_timeout(cmd_timeout)
+        .expect("CreateFractal result")
+    {
         DbResult::FractalCreated { id, .. } => id,
         other => panic!("expected FractalCreated, got {other:?}"),
     };
@@ -213,7 +228,10 @@ fn seed_hierarchy(
             name: "test-petal".to_string(),
         })
         .unwrap();
-    match res_rx.recv_timeout(cmd_timeout).expect("CreatePetal result") {
+    match res_rx
+        .recv_timeout(cmd_timeout)
+        .expect("CreatePetal result")
+    {
         DbResult::PetalCreated { id, .. } => id,
         other => panic!("expected PetalCreated, got {other:?}"),
     }
@@ -233,7 +251,10 @@ fn create_node(
             correlation_id: None,
         })
         .unwrap();
-    match res_rx.recv_timeout(Duration::from_secs(5)).expect("CreateNode result") {
+    match res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("CreateNode result")
+    {
         DbResult::NodeCreated { id, .. } => id,
         other => panic!("expected NodeCreated, got {other:?}"),
     }
@@ -259,7 +280,11 @@ fn test_create_node_emits_scene_change() {
 
     // The result channel carries the NodeCreated ack — receive it first so we
     // know the command completed, then check the broadcast.
-    let node_id = match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("CreateNode result") {
+    let node_id = match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("CreateNode result")
+    {
         DbResult::NodeCreated { id, .. } => id,
         other => panic!("expected NodeCreated, got {other:?}"),
     };
@@ -270,8 +295,15 @@ fn test_create_node_emits_scene_change() {
             assert_eq!(node.node_id, node_id, "NodeAdded.node_id mismatch");
             assert_eq!(node.petal_id, petal_id, "NodeAdded.petal_id mismatch");
             assert_eq!(node.name, "emit-test-node", "NodeAdded.name mismatch");
-            assert_eq!(node.position, [10.0, 20.0, 30.0], "NodeAdded.position mismatch");
-            assert!(!node.has_asset, "NodeAdded.has_asset should be false for plain node");
+            assert_eq!(
+                node.position,
+                [10.0, 20.0, 30.0],
+                "NodeAdded.position mismatch"
+            );
+            assert!(
+                !node.has_asset,
+                "NodeAdded.has_asset should be false for plain node"
+            );
         }
         other => panic!("expected SceneChange::NodeAdded, got {other:?}"),
     }
@@ -297,7 +329,11 @@ fn test_created_node_is_persisted_with_geometry() {
         })
         .unwrap();
 
-    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("RawQuery result") {
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("RawQuery result")
+    {
         DbResult::QueryResult { data } => {
             assert_eq!(data.len(), 1, "created node must exist in DB, got {data:?}");
             assert!(
@@ -341,7 +377,12 @@ fn test_update_transform_emits_scene_change() {
     // broadcast channel.
     let change = recv_broadcast(&mut ecr, Duration::from_secs(5));
     match change {
-        SceneChange::NodeTransform { node_id: nid, position, rotation, scale } => {
+        SceneChange::NodeTransform {
+            node_id: nid,
+            position,
+            rotation,
+            scale,
+        } => {
             assert_eq!(nid, node_id, "NodeTransform.node_id mismatch");
             assert_eq!(position, new_pos, "NodeTransform.position mismatch");
             assert_eq!(rotation, new_rot, "NodeTransform.rotation mismatch");
@@ -376,7 +417,11 @@ fn test_set_property_emits_scene_change() {
         .unwrap();
 
     // The result channel carries a NodePropertySet ack.
-    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("SetNodeProperty result") {
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("SetNodeProperty result")
+    {
         DbResult::NodePropertySet { node_id: nid, key } => {
             assert_eq!(nid, node_id);
             assert_eq!(key, prop_key);
@@ -386,7 +431,11 @@ fn test_set_property_emits_scene_change() {
 
     let change = recv_broadcast(&mut ecr, Duration::from_secs(5));
     match change {
-        SceneChange::PropertyChanged { node_id: nid, key, value } => {
+        SceneChange::PropertyChanged {
+            node_id: nid,
+            key,
+            value,
+        } => {
             assert_eq!(nid, node_id, "PropertyChanged.node_id mismatch");
             assert_eq!(key, prop_key, "PropertyChanged.key mismatch");
             assert_eq!(value, prop_val, "PropertyChanged.value mismatch");
@@ -430,7 +479,11 @@ fn test_delete_property_emits_scene_change() {
         })
         .unwrap();
 
-    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("DeleteNodeProperty result") {
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("DeleteNodeProperty result")
+    {
         DbResult::NodePropertyDeleted { node_id: nid, key } => {
             assert_eq!(nid, node_id);
             assert_eq!(key, prop_key);
@@ -440,7 +493,11 @@ fn test_delete_property_emits_scene_change() {
 
     let change = recv_broadcast(&mut ecr, Duration::from_secs(5));
     match change {
-        SceneChange::PropertyChanged { node_id: nid, key, value } => {
+        SceneChange::PropertyChanged {
+            node_id: nid,
+            key,
+            value,
+        } => {
             assert_eq!(nid, node_id, "PropertyChanged.node_id mismatch");
             assert_eq!(key, prop_key, "PropertyChanged.key mismatch");
             assert_eq!(
@@ -474,8 +531,16 @@ fn test_rename_entity_emits_scene_change() {
         })
         .unwrap();
 
-    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("RenameEntity result") {
-        DbResult::EntityRenamed { entity_id, new_name, .. } => {
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("RenameEntity result")
+    {
+        DbResult::EntityRenamed {
+            entity_id,
+            new_name,
+            ..
+        } => {
             assert_eq!(entity_id, petal_id, "EntityRenamed.entity_id mismatch");
             assert_eq!(new_name, "renamed-petal", "EntityRenamed.new_name mismatch");
         }
@@ -500,12 +565,22 @@ fn test_rename_entity_emits_scene_change() {
             vars,
         })
         .unwrap();
-    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("RawQuery result") {
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("RawQuery result")
+    {
         DbResult::QueryResult { data } => {
-            assert_eq!(data.len(), 1, "renamed petal must exist in DB, got {data:?}");
             assert_eq!(
-                data[0]["name"], serde_json::json!("renamed-petal"),
-                "petal.name must persist the rename, got {:?}", data[0]
+                data.len(),
+                1,
+                "renamed petal must exist in DB, got {data:?}"
+            );
+            assert_eq!(
+                data[0]["name"],
+                serde_json::json!("renamed-petal"),
+                "petal.name must persist the rename, got {:?}",
+                data[0]
             );
         }
         other => panic!("expected QueryResult, got {other:?}"),

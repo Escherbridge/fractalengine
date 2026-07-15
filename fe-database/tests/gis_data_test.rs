@@ -25,7 +25,11 @@ struct TestDb {
 
 fn spawn_test_db() -> TestDb {
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir for test DB");
-    let db_path = tmp_dir.path().join("gis_test.db").to_string_lossy().to_string();
+    let db_path = tmp_dir
+        .path()
+        .join("gis_test.db")
+        .to_string_lossy()
+        .to_string();
 
     let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(256);
     let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(256);
@@ -45,33 +49,60 @@ fn spawn_test_db() -> TestDb {
     let started = res_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("gis test DB did not start within 30s");
-    assert!(matches!(started, DbResult::Started), "expected DbResult::Started, got {started:?}");
+    assert!(
+        matches!(started, DbResult::Started),
+        "expected DbResult::Started, got {started:?}"
+    );
 
-    TestDb { cmd_tx, res_rx, _tmp_dir: tmp_dir }
+    TestDb {
+        cmd_tx,
+        res_rx,
+        _tmp_dir: tmp_dir,
+    }
 }
 
 /// Build the minimal verse -> fractal -> petal hierarchy and return the petal ID.
 fn seed_hierarchy(db: &TestDb) -> String {
     db.cmd_tx
-        .send(DbCommand::CreateVerse { name: "gis-test-verse".to_string() })
+        .send(DbCommand::CreateVerse {
+            name: "gis-test-verse".to_string(),
+        })
         .unwrap();
-    let verse_id = match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateVerse result") {
+    let verse_id = match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateVerse result")
+    {
         DbResult::VerseCreated { id, .. } => id,
         other => panic!("expected VerseCreated, got {other:?}"),
     };
 
     db.cmd_tx
-        .send(DbCommand::CreateFractal { verse_id, name: "gis-test-fractal".to_string() })
+        .send(DbCommand::CreateFractal {
+            verse_id,
+            name: "gis-test-fractal".to_string(),
+        })
         .unwrap();
-    let fractal_id = match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateFractal result") {
+    let fractal_id = match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateFractal result")
+    {
         DbResult::FractalCreated { id, .. } => id,
         other => panic!("expected FractalCreated, got {other:?}"),
     };
 
     db.cmd_tx
-        .send(DbCommand::CreatePetal { fractal_id, name: "gis-test-petal".to_string() })
+        .send(DbCommand::CreatePetal {
+            fractal_id,
+            name: "gis-test-petal".to_string(),
+        })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreatePetal result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreatePetal result")
+    {
         DbResult::PetalCreated { id, .. } => id,
         other => panic!("expected PetalCreated, got {other:?}"),
     }
@@ -88,7 +119,11 @@ fn create_node(db: &TestDb, petal_id: &str, name: &str, position: [f32; 3]) -> S
             correlation_id: None,
         })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateNode result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateNode result")
+    {
         DbResult::NodeCreated { id, .. } => id,
         other => panic!("expected NodeCreated, got {other:?}"),
     }
@@ -103,7 +138,11 @@ fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value)
             value,
         })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("SetNodeProperty result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("SetNodeProperty result")
+    {
         DbResult::NodePropertySet { .. } => {}
         other => panic!("expected NodePropertySet, got {other:?}"),
     }
@@ -114,9 +153,16 @@ fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value)
 fn run_gis_query(db: &TestDb, query: fe_query::BuiltQuery) -> Vec<serde_json::Value> {
     let vars: HashMap<String, serde_json::Value> = query.params.into_iter().collect();
     db.cmd_tx
-        .send(DbCommand::RawQuery { sql: query.sql, vars })
+        .send(DbCommand::RawQuery {
+            sql: query.sql,
+            vars,
+        })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("RawQuery result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("RawQuery result")
+    {
         DbResult::QueryResult { data } => data,
         other => panic!("expected QueryResult, got {other:?}"),
     }
@@ -124,7 +170,11 @@ fn run_gis_query(db: &TestDb, query: fe_query::BuiltQuery) -> Vec<serde_json::Va
 
 fn node_ids(rows: &[serde_json::Value]) -> Vec<String> {
     rows.iter()
-        .filter_map(|r| r.get("node_id").and_then(|v| v.as_str()).map(str::to_string))
+        .filter_map(|r| {
+            r.get("node_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
         .collect()
 }
 
@@ -147,8 +197,14 @@ fn nodes_in_bbox_includes_inside_and_excludes_just_outside() {
     let rows = run_gis_query(&db, q);
     let ids = node_ids(&rows);
 
-    assert!(ids.contains(&inside_id), "inside node missing from bbox result: {ids:?}");
-    assert!(!ids.contains(&outside_id), "just-outside node must be excluded: {ids:?}");
+    assert!(
+        ids.contains(&inside_id),
+        "inside node missing from bbox result: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&outside_id),
+        "just-outside node must be excluded: {ids:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +226,10 @@ fn nodes_within_radius_includes_near_and_excludes_far() {
     let rows = run_gis_query(&db, q);
     let ids = node_ids(&rows);
 
-    assert!(ids.contains(&near_id), "near node missing from radius result: {ids:?}");
+    assert!(
+        ids.contains(&near_id),
+        "near node missing from radius result: {ids:?}"
+    );
     assert!(!ids.contains(&far_id), "far node must be excluded: {ids:?}");
 }
 
@@ -184,9 +243,24 @@ fn annotated_nodes_returns_only_nodes_with_gis_annotation_properties() {
     let petal_id = seed_hierarchy(&db);
 
     let annotated_id = create_node(&db, &petal_id, "annotated", [3.0, 1.0, 3.0]);
-    set_property(&db, &annotated_id, "gis.annotation.title", serde_json::json!("Base Camp"));
-    set_property(&db, &annotated_id, "gis.annotation.body", serde_json::json!("Trailhead marker"));
-    set_property(&db, &annotated_id, "gis.annotation.color", serde_json::json!("#ff8800"));
+    set_property(
+        &db,
+        &annotated_id,
+        "gis.annotation.title",
+        serde_json::json!("Base Camp"),
+    );
+    set_property(
+        &db,
+        &annotated_id,
+        "gis.annotation.body",
+        serde_json::json!("Trailhead marker"),
+    );
+    set_property(
+        &db,
+        &annotated_id,
+        "gis.annotation.color",
+        serde_json::json!("#ff8800"),
+    );
 
     // A plain node with no properties at all -- negative case (properties IS NONE).
     let plain_id = create_node(&db, &petal_id, "plain", [4.0, 1.0, 4.0]);
@@ -201,8 +275,14 @@ fn annotated_nodes_returns_only_nodes_with_gis_annotation_properties() {
     let rows = run_gis_query(&db, q);
     let ids = node_ids(&rows);
 
-    assert!(ids.contains(&annotated_id), "annotated node missing: {ids:?}");
-    assert!(!ids.contains(&plain_id), "plain node (no properties) must be excluded: {ids:?}");
+    assert!(
+        ids.contains(&annotated_id),
+        "annotated node missing: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&plain_id),
+        "plain node (no properties) must be excluded: {ids:?}"
+    );
     assert!(
         !ids.contains(&other_prop_id),
         "node with unrelated property must be excluded: {ids:?}"

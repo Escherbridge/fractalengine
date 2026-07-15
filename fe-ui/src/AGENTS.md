@@ -514,3 +514,12 @@ each independent:
   `theme::TEXT_VIEWPORT_HINT`. Gated to `editing_track_id.is_some()` so labels
   only appear while drawing a path, and clipped to `ViewportRect` so a label
   that projects under a side panel is dropped.
+
+## §logging
+
+Convention (issue #16, clippy-quality track): ECS/Bevy code (all of `fe-ui`,
+`fe-webview/src/plugin.rs`) logs via `bevy::log::{debug,info,warn,error}` so
+output routes through Bevy's `LogPlugin`. Non-ECS code (webview backends, DB /
+sync / network threads) logs via `tracing::` directly. Do not mix the two
+within a single module; silent `.ok()` swallowing of errors that deserve a log
+line should become a `warn!`/`error!` when touched.

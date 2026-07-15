@@ -105,3 +105,24 @@ footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
   converting to lat/lon and only then labeling EPSG:4326 (track Phase 5). A
   string in `crs` deviates from strict GeoParquet-1.0 PROJJSON; that is a
   deliberate trade — honest-but-nonstandard beats standard-but-wrong.
+
+## §timeseries (iot_spatial_reporting_20260714)
+
+`builder/timeseries.rs` shapes the IoT reporting queries over `iot_reading`
+(table defined in fe-database `schema.rs`; rows carry NO geometry):
+
+- **Latest-per-anchor uses a correlated `$parent` max-subquery** rather than
+  GROUP BY, because SurrealQL has no ordered arg-max aggregate — GROUP BY can
+  give the newest timestamp per anchor but not the value that goes with it.
+  The correlated form re-scans per row; acceptable at reporting cardinalities
+  and backed by the `idx_iot_reading_series (node_id, metric, recorded_at_ms)`
+  index.
+- **Windows are half-open `[start_ms, end_ms)`** on `recorded_at_ms` (epoch
+  ms, the canonical query timestamp) so adjacent windows tile without
+  double-counting.
+- **Spatial predicates join through the anchor node**: `anchors_within`
+  renders `node_id IN (SELECT VALUE node_id FROM node WHERE geo::distance(...))`
+  via the new `QueryBuilder::select_value` projection. Keeping geometry off
+  the reading row keeps IoT-frequency inserts on the cheap non-geometry path
+  and preserves the single source of truth for position (local-meters
+  convention unchanged — see §local-coords).

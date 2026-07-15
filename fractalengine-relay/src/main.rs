@@ -1,13 +1,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bevy::prelude::PluginGroup;
 use fe_runtime::app::{
     ApiCommandReceiver, ApiCommandSender, BevyHandles, PendingApiRequests,
     RevocationBroadcastSender, TransformBroadcastSender,
 };
 use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
-use bevy::prelude::PluginGroup;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> anyhow::Result<()> {
@@ -32,8 +32,7 @@ fn main() -> anyhow::Result<()> {
         Arc::new(fe_sync::FsBlobStore::open_default().expect("open blob store"));
 
     // Relay uses EnvBackend — secrets come from environment variables
-    let secret_store: Arc<dyn fe_identity::SecretStore> =
-        Arc::new(fe_identity::EnvBackend::new());
+    let secret_store: Arc<dyn fe_identity::SecretStore> = Arc::new(fe_identity::EnvBackend::new());
 
     let node_kp = match fe_identity::load_or_generate_keypair(&secret_store, "node_keypair") {
         Ok(kp) => kp,
@@ -106,9 +105,11 @@ fn main() -> anyhow::Result<()> {
 
     // Build headless Bevy app
     let mut app = bevy::app::App::new();
-    app.add_plugins(bevy::MinimalPlugins.set(
-        bevy::app::ScheduleRunnerPlugin::run_loop(Duration::from_millis(50)),
-    ));
+    app.add_plugins(
+        bevy::MinimalPlugins.set(bevy::app::ScheduleRunnerPlugin::run_loop(
+            Duration::from_millis(50),
+        )),
+    );
 
     fe_runtime::app::setup_core_systems(
         &mut app,
@@ -166,7 +167,8 @@ fn main() -> anyhow::Result<()> {
             .build()
             .expect("api_db_reader runtime");
         match rt.block_on(async {
-            let db = surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(&db_path).await?;
+            let db =
+                surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(&db_path).await?;
             db.use_ns("fractalengine").use_db("fractalengine").await?;
             Ok::<_, surrealdb::Error>(db)
         }) {
@@ -216,13 +218,9 @@ fn main() -> anyhow::Result<()> {
     app.insert_resource(ApiCommandSender(api_cmd_tx));
     app.insert_resource(TransformBroadcastSender(transform_broadcast_tx));
     app.init_resource::<PendingApiRequests>();
-    app.add_systems(
-        bevy::prelude::Update,
-        fe_runtime::app::drain_api_commands,
-    );
+    app.add_systems(bevy::prelude::Update, fe_runtime::app::drain_api_commands);
 
     tracing::info!("Relay ready -- entering headless event loop");
     app.run();
     Ok(())
 }
-

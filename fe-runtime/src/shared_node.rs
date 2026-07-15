@@ -80,7 +80,10 @@ impl SharedNode {
             + self.rotation[3].powi(2))
         .sqrt();
         if (rot_len - 1.0).abs() > 0.001 {
-            return Err(format!("Rotation quaternion not normalized: length = {}", rot_len));
+            return Err(format!(
+                "Rotation quaternion not normalized: length = {}",
+                rot_len
+            ));
         }
 
         // Check scale is positive
@@ -277,8 +280,7 @@ mod tests {
         assert!(json.contains("verse-456"));
 
         // Deserialize back
-        let deserialized: SharedNode =
-            serde_json::from_str(&json).expect("Failed to deserialize");
+        let deserialized: SharedNode = serde_json::from_str(&json).expect("Failed to deserialize");
         assert_eq!(deserialized.node_id, "node-123");
         assert_eq!(deserialized.verse_id, "verse-456");
     }
@@ -387,13 +389,11 @@ mod tests {
 
         // Boolean variant
         let pv_bool = PropertyValue::Boolean(true);
-        assert!(matches!(pv_bool, PropertyValue::Boolean(b) if b == true));
+        assert!(matches!(pv_bool, PropertyValue::Boolean(b) if b));
 
         // Array variant
-        let pv_array = PropertyValue::Array(vec![
-            PropertyValue::Number(1.0),
-            PropertyValue::Number(2.0),
-        ]);
+        let pv_array =
+            PropertyValue::Array(vec![PropertyValue::Number(1.0), PropertyValue::Number(2.0)]);
         assert!(matches!(pv_array, PropertyValue::Array(arr) if arr.len() == 2));
     }
 
@@ -402,7 +402,7 @@ mod tests {
     fn test_property_value_serialization() {
         let values = vec![
             PropertyValue::String("test".to_string()),
-            PropertyValue::Number(3.14),
+            PropertyValue::Number(2.5),
             PropertyValue::Boolean(false),
             PropertyValue::Array(vec![PropertyValue::Number(1.0)]),
         ];
@@ -422,7 +422,10 @@ mod tests {
         let interaction = WebViewInteraction::NodeSelected {
             node: create_test_node(),
         };
-        assert!(matches!(interaction, WebViewInteraction::NodeSelected { .. }));
+        assert!(matches!(
+            interaction,
+            WebViewInteraction::NodeSelected { .. }
+        ));
 
         // NodeDeselected variant
         let interaction = WebViewInteraction::NodeDeselected {
@@ -440,7 +443,10 @@ mod tests {
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0, 1.0, 1.0],
         };
-        assert!(matches!(interaction, WebViewInteraction::TransformChanged { .. }));
+        assert!(matches!(
+            interaction,
+            WebViewInteraction::TransformChanged { .. }
+        ));
 
         // PropertyChanged variant
         let interaction = WebViewInteraction::PropertyChanged {
@@ -448,7 +454,10 @@ mod tests {
             key: "color".to_string(),
             value: PropertyValue::String("#FF0000".to_string()),
         };
-        assert!(matches!(interaction, WebViewInteraction::PropertyChanged { .. }));
+        assert!(matches!(
+            interaction,
+            WebViewInteraction::PropertyChanged { .. }
+        ));
 
         // UrlChanged variant
         let interaction = WebViewInteraction::UrlChanged {

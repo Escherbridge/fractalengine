@@ -36,7 +36,11 @@ pub(crate) enum Coords {
 
 /// Structured JSON error with a real HTTP status (assets/gis precedent).
 fn err(status: StatusCode, msg: &str) -> Response {
-    (status, Json(serde_json::json!({ "ok": false, "error": msg }))).into_response()
+    (
+        status,
+        Json(serde_json::json!({ "ok": false, "error": msg })),
+    )
+        .into_response()
 }
 
 /// Map guard/execution error strings onto HTTP statuses.
@@ -53,6 +57,7 @@ fn query_err_response(e: String) -> Response {
 }
 
 /// Parse the `coords` param (`local` default).
+#[allow(clippy::result_large_err)] // Err is the axum error Response itself
 pub(crate) fn parse_coords(raw: Option<&str>) -> Result<Coords, Response> {
     match raw {
         None | Some("local") => Ok(Coords::Local),
@@ -103,9 +108,13 @@ pub(crate) async fn prepare_export(
     sql: &str,
     coords: Coords,
 ) -> Result<ExportOutput, Response> {
-    if let Err(e) =
-        query_guard::check_rate_limit(state, rate_key, limits::EXPORT_RATE_PER_SEC, "10 export requests/sec")
-            .await
+    if let Err(e) = query_guard::check_rate_limit(
+        state,
+        rate_key,
+        limits::EXPORT_RATE_PER_SEC,
+        "10 export requests/sec",
+    )
+    .await
     {
         return Err(err(StatusCode::TOO_MANY_REQUESTS, &e));
     }
@@ -115,7 +124,10 @@ pub(crate) async fn prepare_export(
     // Exports map rows onto the node/EntitySnapshot shape — other tables are /query territory.
     let upper = sql.trim().to_uppercase();
     if query_guard::from_table(&upper).as_deref() != Some("NODE") {
-        return Err(err(StatusCode::BAD_REQUEST, "export queries must target the node table"));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "export queries must target the node table",
+        ));
     }
 
     // FR-6: pre-filter to the authorized petal regardless of the query text.
@@ -125,7 +137,10 @@ pub(crate) async fn prepare_export(
     };
 
     let Some(ref db) = state.db_reader else {
-        return Err(err(StatusCode::SERVICE_UNAVAILABLE, "export endpoint not available (no db_reader)"));
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "export endpoint not available (no db_reader)",
+        ));
     };
     let vars = std::collections::HashMap::new();
     let rows = query_guard::run_guarded_query(db, &guarded, &vars, limits::EXPORT_ROW_CAP)
@@ -135,7 +150,10 @@ pub(crate) async fn prepare_export(
     // FR-5: resolve the petal CRS; latlon requires a configured terrain origin.
     let crs = resolve_petal_crs(state, petal_id).await;
     let (snapshots, crs_label) = match coords {
-        Coords::Local => (rows.iter().map(|r| row_to_snapshot(r, None)).collect(), crs.label),
+        Coords::Local => (
+            rows.iter().map(|r| row_to_snapshot(r, None)).collect(),
+            crs.label,
+        ),
         Coords::LatLon => {
             let Some(proj) = crs.projection else {
                 return Err(err(
@@ -144,13 +162,19 @@ pub(crate) async fn prepare_export(
                 ));
             };
             (
-                rows.iter().map(|r| row_to_snapshot(r, Some(&proj))).collect(),
+                rows.iter()
+                    .map(|r| row_to_snapshot(r, Some(&proj)))
+                    .collect(),
                 CRS_EPSG_4326.to_string(),
             )
         }
     };
 
-    Ok(ExportOutput { snapshots, crs_label, coords })
+    Ok(ExportOutput {
+        snapshots,
+        crs_label,
+        coords,
+    })
 }
 
 /// GET /api/v1/petals/:petal_id/export.parquet?query=...&coords=local|latlon
@@ -205,21 +229,35 @@ pub async fn export_csv(
 
 /// Serialize an export to a parquet HTTP response (DuckDB-httpfs-friendly headers).
 pub(crate) fn parquet_response(out: &ExportOutput, filename: &str) -> Response {
-    let meta = GeoParquetMeta { crs: out.crs_label.clone(), ..Default::default() };
+    let meta = GeoParquetMeta {
+        crs: out.crs_label.clone(),
+        ..Default::default()
+    };
     let bytes = match write_nodes_parquet_bytes(&out.snapshots, &meta) {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(error = %e, "parquet export serialization failed");
-            return err(StatusCode::INTERNAL_SERVER_ERROR, "parquet serialization failed");
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "parquet serialization failed",
+            );
         }
     };
     if bytes.len() > limits::EXPORT_MAX_BYTES {
         return err(
             StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("export exceeds size ceiling ({})", limits::EXPORT_MAX_BYTES_LABEL),
+            &format!(
+                "export exceeds size ceiling ({})",
+                limits::EXPORT_MAX_BYTES_LABEL
+            ),
         );
     }
-    body_response(bytes, "application/vnd.apache.parquet", &out.crs_label, filename)
+    body_response(
+        bytes,
+        "application/vnd.apache.parquet",
+        &out.crs_label,
+        filename,
+    )
 }
 
 /// Serialize an export to a CSV HTTP response.
@@ -228,10 +266,18 @@ pub(crate) fn csv_response(out: &ExportOutput, filename: &str) -> Response {
     if csv.len() > limits::EXPORT_MAX_BYTES {
         return err(
             StatusCode::PAYLOAD_TOO_LARGE,
-            &format!("export exceeds size ceiling ({})", limits::EXPORT_MAX_BYTES_LABEL),
+            &format!(
+                "export exceeds size ceiling ({})",
+                limits::EXPORT_MAX_BYTES_LABEL
+            ),
         );
     }
-    body_response(csv.into_bytes(), "text/csv; charset=utf-8", &out.crs_label, filename)
+    body_response(
+        csv.into_bytes(),
+        "text/csv; charset=utf-8",
+        &out.crs_label,
+        filename,
+    )
 }
 
 /// Assemble the download response with content-type/CRS/range headers.
@@ -242,7 +288,10 @@ fn body_response(bytes: Vec<u8>, content_type: &str, crs_label: &str, filename: 
         headers.insert(header::CONTENT_TYPE, v);
     }
     // Advertise range support so DuckDB httpfs can consume the URL (plan D1).
-    headers.insert(header::ACCEPT_RANGES, header::HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::ACCEPT_RANGES,
+        header::HeaderValue::from_static("bytes"),
+    );
     if let Ok(v) = header::HeaderValue::from_str(crs_label) {
         headers.insert("x-fe-crs", v);
     }
@@ -301,7 +350,11 @@ pub(crate) fn row_to_snapshot(
 
 /// RFC-4180 CSV with a leading `# crs=` comment line; properties as one JSON
 /// string column (choice documented in `fe-api/AGENTS.md` §export).
-pub(crate) fn snapshots_to_csv(snapshots: &[EntitySnapshot], coords: Coords, crs_label: &str) -> String {
+pub(crate) fn snapshots_to_csv(
+    snapshots: &[EntitySnapshot],
+    coords: Coords,
+    crs_label: &str,
+) -> String {
     let position_headers = match coords {
         Coords::Local => "x_m,y_m,z_m",
         // row_to_snapshot stores [lon, lat, ele] in latlon mode.
@@ -377,10 +430,16 @@ mod tests {
         let mut lines = csv.lines();
         assert_eq!(lines.next(), Some("# crs=PETAL-LOCAL:meters;origin=unset"));
         let header = lines.next().unwrap();
-        assert!(header.starts_with("node_id,petal_id,x_m,y_m,z_m,"), "{header}");
+        assert!(
+            header.starts_with("node_id,petal_id,x_m,y_m,z_m,"),
+            "{header}"
+        );
         let row = lines.next().unwrap();
         assert!(row.starts_with("n1,p1,1,2,3,"), "{row}");
-        assert!(row.contains("\"{\"\"k\"\":\"\"v,with,commas\"\"}\""), "{row}");
+        assert!(
+            row.contains("\"{\"\"k\"\":\"\"v,with,commas\"\"}\""),
+            "{row}"
+        );
     }
 
     #[test]

@@ -54,9 +54,11 @@ pub(super) fn sync_manager_to_inspector(
             inspector.annotation_title_buf.clear();
             inspector.annotation_body_buf.clear();
             inspector.annotation_color_buf.clear();
-            let _ = db_sender.0.send(fe_runtime::messages::DbCommand::GetNodeProperties {
-                node_id: sel.node_id.clone(),
-            });
+            let _ = db_sender
+                .0
+                .send(fe_runtime::messages::DbCommand::GetNodeProperties {
+                    node_id: sel.node_id.clone(),
+                });
         }
         // Reset API token tab state for the new selection
         inspector.generated_api_token = None;
@@ -71,7 +73,9 @@ pub(super) fn sync_manager_to_inspector(
         let Ok(t) = all_query.get(entity) else { return };
         t
     } else {
-        let Ok(t) = changed_query.get(entity) else { return };
+        let Ok(t) = changed_query.get(entity) else {
+            return;
+        };
         t
     };
     let (rx, ry, rz) = t.rotation.to_euler(EulerRot::XYZ);
@@ -95,6 +99,7 @@ pub(super) fn sync_manager_to_inspector(
 // FR-1 restart round-trip: save decision → DB-hydrated VerseManager → reload → still-validated.
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
     use crate::actions::portal::{compute_save_url, SaveUrlOutcome};
     use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};

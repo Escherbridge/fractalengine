@@ -22,8 +22,7 @@ pub use replicator::{
     PetalReplicator, RowChange, VerseReplicator,
 };
 pub use status::{
-    drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus,
-    TilesetEventBuffer,
+    drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus, TilesetEventBuffer,
 };
 pub use sync_thread::spawn_sync_thread;
 pub use verse_peers::VersePeers;

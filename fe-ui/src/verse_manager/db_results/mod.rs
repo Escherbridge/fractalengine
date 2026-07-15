@@ -37,42 +37,207 @@ pub(super) fn apply_db_results(
     for result in reader.read() {
         match result {
             DbResult::Seeded { .. } => hierarchy::handle_seeded(&db_sender),
-            DbResult::HierarchyLoaded { verses } => hierarchy::handle_hierarchy_loaded(verses, &mut verse_mgr, &mut nav, &mut commands, &asset_server, &mut pending_api),
+            DbResult::HierarchyLoaded { verses } => hierarchy::handle_hierarchy_loaded(
+                verses,
+                &mut verse_mgr,
+                &mut nav,
+                &mut commands,
+                &asset_server,
+                &mut pending_api,
+            ),
             DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
             DbResult::DatabaseReset { .. } => {
                 primitive_cache.clear();
                 hierarchy::handle_database_reset(&mut verse_mgr, &db_sender);
             }
-            DbResult::VerseCreated { id, name } => hierarchy::handle_verse_created(id, name, &mut verse_mgr),
-            DbResult::FractalCreated { id, verse_id, name } => hierarchy::handle_fractal_created(id, verse_id, name, &mut verse_mgr),
-            DbResult::PetalCreated { id, fractal_id, name } => hierarchy::handle_petal_created(id, fractal_id, name, &mut verse_mgr),
-            DbResult::EntityRenamed { entity_type, entity_id, new_name } => hierarchy::handle_entity_renamed(entity_type, entity_id, new_name, &mut verse_mgr, &mut nav),
-            DbResult::EntityDeleted { entity_type, entity_id } => hierarchy::handle_entity_deleted(entity_type, entity_id, &mut verse_mgr, &mut nav, &mut ui_mgr),
-            DbResult::GltfImported { node_id, name, petal_id, asset_path, position, .. } => nodes::handle_gltf_imported(node_id, name, petal_id, asset_path, *position, &mut verse_mgr, &nav, &mut commands, &asset_server),
-            DbResult::NodeCreated { id, petal_id, name, has_asset, correlation_id } => nodes::handle_node_created(id, petal_id, name, *has_asset, correlation_id.as_deref(), &mut verse_mgr, &nav, &mut ui_mgr, &mut path_state, &db_sender),
-            DbResult::NodeDeleted { node_id, petal_id } => nodes::handle_node_deleted(node_id, petal_id, &mut verse_mgr, &nav, &mut path_state, &db_sender),
-            DbResult::VerseInviteGenerated { invite_string, .. } => roles::handle_verse_invite_generated(invite_string, &mut ui_mgr),
-            DbResult::PeerRolesResolved { scope, roles } => roles::handle_peer_roles_resolved(scope, roles, &mut ui_mgr),
-            DbResult::RoleAssigned { peer_did, scope, role } => roles::handle_role_assigned(peer_did, scope, role, &mut ui_mgr),
-            DbResult::RoleRevoked { peer_did, scope } => roles::handle_role_revoked(peer_did, scope, &mut ui_mgr),
-            DbResult::ScopedInviteGenerated { invite_link } => roles::handle_scoped_invite_generated(invite_link, &mut ui_mgr),
-            DbResult::LocalRoleResolved { scope, role } => roles::handle_local_role_resolved(scope, role, &mut local_role),
-            DbResult::VerseDefaultAccessSet { verse_id, default_access } => roles::handle_verse_default_access_set(verse_id, default_access),
-            DbResult::FractalDescriptionUpdated { fractal_id, description } => roles::handle_fractal_description_updated(fractal_id, description),
-            DbResult::ApiTokenMinted { token, jti, scope, max_role, .. } => tokens::handle_api_token_minted(token, jti, scope, max_role, &mut ui_mgr, &mut inspector, &db_sender),
-            DbResult::ApiTokenRevoked { jti } => tokens::handle_api_token_revoked(jti, revocation_tx.as_deref(), &inspector, &db_sender),
-            DbResult::ApiTokensListed { tokens, total } => tokens::handle_api_tokens_listed(tokens, *total, &mut ui_mgr, &mut inspector),
-            DbResult::ScopedApiTokensListed { tokens, total } => tokens::handle_scoped_api_tokens_listed(tokens, *total, &mut ui_mgr, &mut inspector),
-            DbResult::QueryResult { data } => query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector),
-            DbResult::Error(msg) => query::handle_error(msg, &mut gis_panel, &mut path_state, &mut inspector),
+            DbResult::VerseCreated { id, name } => {
+                hierarchy::handle_verse_created(id, name, &mut verse_mgr)
+            }
+            DbResult::FractalCreated { id, verse_id, name } => {
+                hierarchy::handle_fractal_created(id, verse_id, name, &mut verse_mgr)
+            }
+            DbResult::PetalCreated {
+                id,
+                fractal_id,
+                name,
+            } => hierarchy::handle_petal_created(id, fractal_id, name, &mut verse_mgr),
+            DbResult::EntityRenamed {
+                entity_type,
+                entity_id,
+                new_name,
+            } => hierarchy::handle_entity_renamed(
+                entity_type,
+                entity_id,
+                new_name,
+                &mut verse_mgr,
+                &mut nav,
+            ),
+            DbResult::EntityDeleted {
+                entity_type,
+                entity_id,
+            } => hierarchy::handle_entity_deleted(
+                entity_type,
+                entity_id,
+                &mut verse_mgr,
+                &mut nav,
+                &mut ui_mgr,
+            ),
+            DbResult::GltfImported {
+                node_id,
+                name,
+                petal_id,
+                asset_path,
+                position,
+                ..
+            } => nodes::handle_gltf_imported(
+                node_id,
+                name,
+                petal_id,
+                asset_path,
+                *position,
+                &mut verse_mgr,
+                &nav,
+                &mut commands,
+                &asset_server,
+            ),
+            DbResult::NodeCreated {
+                id,
+                petal_id,
+                name,
+                has_asset,
+                correlation_id,
+            } => nodes::handle_node_created(
+                id,
+                petal_id,
+                name,
+                *has_asset,
+                correlation_id.as_deref(),
+                &mut verse_mgr,
+                &nav,
+                &mut ui_mgr,
+                &mut path_state,
+                &db_sender,
+            ),
+            DbResult::NodeDeleted { node_id, petal_id } => nodes::handle_node_deleted(
+                node_id,
+                petal_id,
+                &mut verse_mgr,
+                &nav,
+                &mut path_state,
+                &db_sender,
+            ),
+            DbResult::VerseInviteGenerated { invite_string, .. } => {
+                roles::handle_verse_invite_generated(invite_string, &mut ui_mgr)
+            }
+            DbResult::PeerRolesResolved { scope, roles } => {
+                roles::handle_peer_roles_resolved(scope, roles, &mut ui_mgr)
+            }
+            DbResult::RoleAssigned {
+                peer_did,
+                scope,
+                role,
+            } => roles::handle_role_assigned(peer_did, scope, role, &mut ui_mgr),
+            DbResult::RoleRevoked { peer_did, scope } => {
+                roles::handle_role_revoked(peer_did, scope, &mut ui_mgr)
+            }
+            DbResult::ScopedInviteGenerated { invite_link } => {
+                roles::handle_scoped_invite_generated(invite_link, &mut ui_mgr)
+            }
+            DbResult::LocalRoleResolved { scope, role } => {
+                roles::handle_local_role_resolved(scope, role, &mut local_role)
+            }
+            DbResult::VerseDefaultAccessSet {
+                verse_id,
+                default_access,
+            } => roles::handle_verse_default_access_set(verse_id, default_access),
+            DbResult::FractalDescriptionUpdated {
+                fractal_id,
+                description,
+            } => roles::handle_fractal_description_updated(fractal_id, description),
+            DbResult::ApiTokenMinted {
+                token,
+                jti,
+                scope,
+                max_role,
+                ..
+            } => tokens::handle_api_token_minted(
+                token,
+                jti,
+                scope,
+                max_role,
+                &mut ui_mgr,
+                &mut inspector,
+                &db_sender,
+            ),
+            DbResult::ApiTokenRevoked { jti } => tokens::handle_api_token_revoked(
+                jti,
+                revocation_tx.as_deref(),
+                &inspector,
+                &db_sender,
+            ),
+            DbResult::ApiTokensListed { tokens, total } => {
+                tokens::handle_api_tokens_listed(tokens, *total, &mut ui_mgr, &mut inspector)
+            }
+            DbResult::ScopedApiTokensListed { tokens, total } => {
+                tokens::handle_scoped_api_tokens_listed(tokens, *total, &mut ui_mgr, &mut inspector)
+            }
+            DbResult::QueryResult { data } => {
+                query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector)
+            }
+            DbResult::Error(msg) => {
+                query::handle_error(msg, &mut gis_panel, &mut path_state, &mut inspector)
+            }
             // Property handlers return `false` to skip `try_deliver` for stale/unselected results.
-            DbResult::NodePropertiesLoaded { node_id, properties } => { if !properties::handle_node_properties_loaded(node_id, properties, &mut path_state, &node_mgr, &mut inspector, &mut primitive_cache) { continue; } }
-            DbResult::NodePropertySet { node_id, key } => { if !properties::handle_node_property_set(node_id, key, &nav, &db_sender, &mut path_state, &node_mgr, &mut inspector, &mut primitive_cache) { continue; } }
-            DbResult::NodePropertyDeleted { node_id, key } => { if !properties::handle_node_property_deleted(node_id, key, &node_mgr, &mut inspector, &mut primitive_cache) { continue; } }
-            DbResult::FieldDefsListed { field_defs, .. } => fields::handle_field_defs_listed(field_defs, &mut inspector),
+            DbResult::NodePropertiesLoaded {
+                node_id,
+                properties,
+            } => {
+                if !properties::handle_node_properties_loaded(
+                    node_id,
+                    properties,
+                    &mut path_state,
+                    &node_mgr,
+                    &mut inspector,
+                    &mut primitive_cache,
+                ) {
+                    continue;
+                }
+            }
+            DbResult::NodePropertySet { node_id, key } => {
+                if !properties::handle_node_property_set(
+                    node_id,
+                    key,
+                    &nav,
+                    &db_sender,
+                    &mut path_state,
+                    &node_mgr,
+                    &mut inspector,
+                    &mut primitive_cache,
+                ) {
+                    continue;
+                }
+            }
+            DbResult::NodePropertyDeleted { node_id, key } => {
+                if !properties::handle_node_property_deleted(
+                    node_id,
+                    key,
+                    &node_mgr,
+                    &mut inspector,
+                    &mut primitive_cache,
+                ) {
+                    continue;
+                }
+            }
+            DbResult::FieldDefsListed { field_defs, .. } => {
+                fields::handle_field_defs_listed(field_defs, &mut inspector)
+            }
             // Field-def mutations only need a re-list, which the panel re-sends itself.
-            DbResult::FieldDefCreated { .. } | DbResult::FieldDefUpdated { .. } | DbResult::FieldDefDeleted { .. } => {}
-            DbResult::PetalTerrainLoaded { petal_id, terrain } => terrain::handle_petal_terrain_loaded(petal_id, terrain, &nav, &mut petal_map),
+            DbResult::FieldDefCreated { .. }
+            | DbResult::FieldDefUpdated { .. }
+            | DbResult::FieldDefDeleted { .. } => {}
+            DbResult::PetalTerrainLoaded { petal_id, terrain } => {
+                terrain::handle_petal_terrain_loaded(petal_id, terrain, &nav, &mut petal_map)
+            }
             _ => {}
         }
 
@@ -85,6 +250,7 @@ pub(super) fn apply_db_results(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::super::{FractalEntry, NodeEntry, PetalEntry, VerseEntry, VerseManager};
     use super::*;
     use crate::actions::UiManager;
@@ -144,17 +310,26 @@ mod tests {
 
     #[test]
     fn is_for_selected_node_true_when_matching() {
-        assert!(properties::is_for_selected_node(&mgr_selected("node-1"), "node-1"));
+        assert!(properties::is_for_selected_node(
+            &mgr_selected("node-1"),
+            "node-1"
+        ));
     }
 
     #[test]
     fn is_for_selected_node_false_when_different_node() {
-        assert!(!properties::is_for_selected_node(&mgr_selected("node-1"), "node-2"));
+        assert!(!properties::is_for_selected_node(
+            &mgr_selected("node-1"),
+            "node-2"
+        ));
     }
 
     #[test]
     fn is_for_selected_node_false_when_nothing_selected() {
-        assert!(!properties::is_for_selected_node(&NodeManager::default(), "node-1"));
+        assert!(!properties::is_for_selected_node(
+            &NodeManager::default(),
+            "node-1"
+        ));
     }
 
     // --- hierarchy handlers ---
@@ -207,7 +382,10 @@ mod tests {
         ui.open_dialog(ActiveDialog::PeerDebug);
         hierarchy::handle_entity_deleted(&EntityType::Verse, "v1", &mut mgr, &mut nav, &mut ui);
         assert!(mgr.verses.is_empty());
-        assert!(mgr.node_index.is_empty(), "index must be rebuilt after structural delete");
+        assert!(
+            mgr.node_index.is_empty(),
+            "index must be rebuilt after structural delete"
+        );
         assert!(matches!(ui.active_dialog, ActiveDialog::None));
     }
 
@@ -220,10 +398,24 @@ mod tests {
         let nav = NavigationManager::default(); // no active petal → no Paths re-query
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
-        nodes::handle_node_created("n2", "p1", "New", false, None, &mut mgr, &nav, &mut ui, &mut path_state, &tx);
+        nodes::handle_node_created(
+            "n2",
+            "p1",
+            "New",
+            false,
+            None,
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+        );
         assert!(mgr.all_nodes().any(|n| n.id == "n2"));
         assert!(mgr.node_index.contains_key("n2"));
-        assert!(rx.try_recv().is_err(), "inactive petal must not re-query tracks");
+        assert!(
+            rx.try_recv().is_err(),
+            "inactive petal must not re-query tracks"
+        );
     }
 
     #[test]
@@ -234,8 +426,22 @@ mod tests {
         nav.active_petal_id = Some("p1".into());
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
-        nodes::handle_node_created("n2", "p1", "New", false, None, &mut mgr, &nav, &mut ui, &mut path_state, &tx);
-        assert!(rx.try_recv().is_ok(), "active-petal create must re-run the Paths query");
+        nodes::handle_node_created(
+            "n2",
+            "p1",
+            "New",
+            false,
+            None,
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "active-petal create must re-run the Paths query"
+        );
     }
 
     #[test]
@@ -258,7 +464,11 @@ mod tests {
         let mut ui = UiManager::default();
         roles::handle_verse_invite_generated("fractal://invite", &mut ui);
         match &ui.active_dialog {
-            ActiveDialog::InviteDialog { invite_string, include_write_cap, expiry_hours } => {
+            ActiveDialog::InviteDialog {
+                invite_string,
+                include_write_cap,
+                expiry_hours,
+            } => {
                 assert_eq!(invite_string, "fractal://invite");
                 assert!(!include_write_cap);
                 assert_eq!(*expiry_hours, 24);
@@ -279,21 +489,30 @@ mod tests {
     #[test]
     fn error_routes_by_claim_priority() {
         // gis panel first
-        let (mut gis, mut path, mut ins) =
-            (GisPanelState::default(), PathEditorState::default(), InspectorFormState::default());
+        let (mut gis, mut path, mut ins) = (
+            GisPanelState::default(),
+            PathEditorState::default(),
+            InspectorFormState::default(),
+        );
         gis.query_pending = true;
         query::handle_error("boom", &mut gis, &mut path, &mut ins);
         assert_eq!(gis.last_error.as_deref(), Some("boom"));
         assert!(!gis.query_pending);
         // then paths tab
-        let (mut gis, mut path, mut ins) =
-            (GisPanelState::default(), PathEditorState::default(), InspectorFormState::default());
+        let (mut gis, mut path, mut ins) = (
+            GisPanelState::default(),
+            PathEditorState::default(),
+            InspectorFormState::default(),
+        );
         path.tracks_pending = true;
         query::handle_error("boom", &mut gis, &mut path, &mut ins);
         assert_eq!(path.last_error.as_deref(), Some("boom"));
         // then ad-hoc query tab
-        let (mut gis, mut path, mut ins) =
-            (GisPanelState::default(), PathEditorState::default(), InspectorFormState::default());
+        let (mut gis, mut path, mut ins) = (
+            GisPanelState::default(),
+            PathEditorState::default(),
+            InspectorFormState::default(),
+        );
         ins.query_loading = true;
         query::handle_error("boom", &mut gis, &mut path, &mut ins);
         assert_eq!(ins.query_result.as_deref(), Some("Error: boom"));
@@ -302,11 +521,17 @@ mod tests {
 
     #[test]
     fn query_result_falls_back_to_inspector_buffer() {
-        let (mut gis, mut path, mut ins) =
-            (GisPanelState::default(), PathEditorState::default(), InspectorFormState::default());
+        let (mut gis, mut path, mut ins) = (
+            GisPanelState::default(),
+            PathEditorState::default(),
+            InspectorFormState::default(),
+        );
         ins.query_loading = true;
         query::handle_query_result(&[json!({"a": 1})], &mut gis, &mut path, &mut ins);
-        assert!(ins.query_result.as_deref().is_some_and(|s| s.contains("\"a\": 1")));
+        assert!(ins
+            .query_result
+            .as_deref()
+            .is_some_and(|s| s.contains("\"a\": 1")));
         assert!(!ins.query_loading);
     }
 
@@ -318,9 +543,17 @@ mod tests {
         let mut ins = InspectorFormState::default();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
         let delivered = properties::handle_node_properties_loaded(
-            "n1", &json!({}), &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
+            "n1",
+            &json!({}),
+            &mut path_state,
+            &NodeManager::default(),
+            &mut ins,
+            &mut cache,
         );
-        assert!(!delivered, "unselected result must continue (skip try_deliver)");
+        assert!(
+            !delivered,
+            "unselected result must continue (skip try_deliver)"
+        );
     }
 
     #[test]
@@ -330,10 +563,18 @@ mod tests {
         let mut cache = super::super::PrimitiveDescriptorCache::default();
         let props = json!({"primitive": {"kind": "cube", "dims": [1.0, 1.0, 1.0]}});
         let delivered = properties::handle_node_properties_loaded(
-            "n1", &props, &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
+            "n1",
+            &props,
+            &mut path_state,
+            &NodeManager::default(),
+            &mut ins,
+            &mut cache,
         );
         assert!(!delivered, "selection gate unchanged");
-        assert!(cache.get("n1").is_some(), "FR-1: cache fed without selection");
+        assert!(
+            cache.get("n1").is_some(),
+            "FR-1: cache fed without selection"
+        );
     }
 
     #[test]
@@ -343,12 +584,25 @@ mod tests {
         let mut path_state = PathEditorState::default();
         let mut ins = InspectorFormState::default();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
-        cache.note_properties("n1", &json!({"primitive": {"kind": "sphere", "dims": [1.0]}}));
+        cache.note_properties(
+            "n1",
+            &json!({"primitive": {"kind": "sphere", "dims": [1.0]}}),
+        );
         let for_selected = properties::handle_node_property_set(
-            "n1", "primitive", &nav, &tx, &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
+            "n1",
+            "primitive",
+            &nav,
+            &tx,
+            &mut path_state,
+            &NodeManager::default(),
+            &mut ins,
+            &mut cache,
         );
         assert!(!for_selected);
-        assert!(cache.get("n1").is_none(), "stale descriptor must be evicted");
+        assert!(
+            cache.get("n1").is_none(),
+            "stale descriptor must be evicted"
+        );
         assert!(
             matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id }) if node_id == "n1"),
             "primitive write must re-fetch even when unselected"
@@ -359,12 +613,22 @@ mod tests {
     fn primitive_property_deleted_evicts_cache_even_when_unselected() {
         let mut ins = InspectorFormState::default();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
-        cache.note_properties("n1", &json!({"primitive": {"kind": "sphere", "dims": [1.0]}}));
+        cache.note_properties(
+            "n1",
+            &json!({"primitive": {"kind": "sphere", "dims": [1.0]}}),
+        );
         let delivered = properties::handle_node_property_deleted(
-            "n1", "primitive", &NodeManager::default(), &mut ins, &mut cache,
+            "n1",
+            "primitive",
+            &NodeManager::default(),
+            &mut ins,
+            &mut cache,
         );
         assert!(!delivered);
-        assert!(cache.get("n1").is_none(), "delete must evict before the selection gate");
+        assert!(
+            cache.get("n1").is_none(),
+            "delete must evict before the selection gate"
+        );
     }
 
     #[test]
@@ -374,7 +638,12 @@ mod tests {
         let props = json!({"gis.annotation.title": "T", "gis.annotation.body": "B"});
         let mut cache = super::super::PrimitiveDescriptorCache::default();
         let delivered = properties::handle_node_properties_loaded(
-            "n1", &props, &mut path_state, &mgr_selected("n1"), &mut ins, &mut cache,
+            "n1",
+            &props,
+            &mut path_state,
+            &mgr_selected("n1"),
+            &mut ins,
+            &mut cache,
         );
         assert!(delivered);
         assert_eq!(ins.node_properties, props);
@@ -392,11 +661,20 @@ mod tests {
         let mut ins = InspectorFormState::default();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
         let for_selected = properties::handle_node_property_set(
-            "n1", "some.key", &nav, &tx, &mut path_state, &mgr_selected("n1"), &mut ins, &mut cache,
+            "n1",
+            "some.key",
+            &nav,
+            &tx,
+            &mut path_state,
+            &mgr_selected("n1"),
+            &mut ins,
+            &mut cache,
         );
         assert!(for_selected);
         assert!(ins.node_properties_loading);
-        assert!(matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id }) if node_id == "n1"));
+        assert!(
+            matches!(rx.try_recv(), Ok(DbCommand::GetNodeProperties { node_id }) if node_id == "n1")
+        );
     }
 
     #[test]
@@ -407,7 +685,14 @@ mod tests {
         let mut ins = InspectorFormState::default();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
         let for_selected = properties::handle_node_property_set(
-            "n1", "some.key", &nav, &tx, &mut path_state, &NodeManager::default(), &mut ins, &mut cache,
+            "n1",
+            "some.key",
+            &nav,
+            &tx,
+            &mut path_state,
+            &NodeManager::default(),
+            &mut ins,
+            &mut cache,
         );
         assert!(!for_selected);
         assert!(rx.try_recv().is_err());
@@ -421,7 +706,11 @@ mod tests {
         ins.annotation_body_buf = "B".into();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
         let delivered = properties::handle_node_property_deleted(
-            "n1", "gis.annotation.title", &mgr_selected("n1"), &mut ins, &mut cache,
+            "n1",
+            "gis.annotation.title",
+            &mgr_selected("n1"),
+            &mut ins,
+            &mut cache,
         );
         assert!(delivered);
         assert!(ins.annotation_title_buf.is_empty());

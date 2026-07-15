@@ -32,7 +32,13 @@ async fn get(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
         .await
         .unwrap();
     let status = resp.status();
-    let body = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     (status, body)
 }
 
@@ -189,8 +195,14 @@ async fn download_roundtrips_through_import() {
     assert_eq!(data.assets[0].1, fixtures::ALPINE_V12_BLOB);
 }
 
-async fn post_publish(router: &Router, bytes: Vec<u8>, token: Option<&str>) -> (StatusCode, Vec<u8>) {
-    let mut builder = Request::builder().method("POST").uri("/api/v1/hexons/publish");
+async fn post_publish(
+    router: &Router,
+    bytes: Vec<u8>,
+    token: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/hexons/publish");
     if let Some(t) = token {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
     }
@@ -200,7 +212,13 @@ async fn post_publish(router: &Router, bytes: Vec<u8>, token: Option<&str>) -> (
         .await
         .unwrap();
     let status = resp.status();
-    let body = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     (status, body)
 }
 

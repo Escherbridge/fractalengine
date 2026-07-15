@@ -157,8 +157,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("fe_query_geoparquet_{name}_{}.parquet", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "fe_query_geoparquet_{name}_{}.parquet",
+            std::process::id()
+        ))
     }
 
     fn snap(id: &str, pos: [f32; 3], props: Option<serde_json::Value>, ts: u64) -> EntitySnapshot {
@@ -212,13 +214,18 @@ mod tests {
             assert!(b.node_log.is_empty());
         }
 
-        let raw = read_geo_metadata(&path).unwrap().expect("geo metadata present");
+        let raw = read_geo_metadata(&path)
+            .unwrap()
+            .expect("geo metadata present");
         let geo: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(geo["version"], "1.0.0");
         assert_eq!(geo["primary_column"], "position");
         assert_eq!(geo["columns"]["position"]["encoding"], "WKB");
         assert_eq!(geo["columns"]["position"]["geometry_types"][0], "Point Z");
-        assert!(geo["columns"]["position"]["crs"].as_str().unwrap().contains("PETAL-LOCAL"));
+        assert!(geo["columns"]["position"]["crs"]
+            .as_str()
+            .unwrap()
+            .contains("PETAL-LOCAL"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -263,7 +270,9 @@ mod tests {
         };
         write_nodes_parquet_with_meta(&path, &[snap("n1", [0.0, 0.0, 0.0], None, 1)], &meta)
             .unwrap();
-        let raw = read_geo_metadata(&path).unwrap().expect("geo metadata present");
+        let raw = read_geo_metadata(&path)
+            .unwrap()
+            .expect("geo metadata present");
         let geo: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert!(geo["columns"]["position"]["crs"]
             .as_str()

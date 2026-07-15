@@ -15,15 +15,26 @@ pub struct GuardedQuery {
 
 /// Keywords rejected anywhere in a read-only query (whole-word match).
 const BLOCKED_KEYWORDS: &[&str] = &[
-    "CREATE", "UPDATE", "DELETE", "DEFINE", "REMOVE", "RELATE", "INSERT",
-    "LET", "RETURN", "INFO", "FOR", "THROW", "SLEEP", "BREAK", "LIVE", "KILL",
-    "IF", "BEGIN", "COMMIT", "CANCEL",
+    "CREATE", "UPDATE", "DELETE", "DEFINE", "REMOVE", "RELATE", "INSERT", "LET", "RETURN", "INFO",
+    "FOR", "THROW", "SLEEP", "BREAK", "LIVE", "KILL", "IF", "BEGIN", "COMMIT", "CANCEL",
 ];
 
 /// Tables a read-only query may target.
 const ALLOWED_TABLES: &[&str] = &[
-    "NODE", "VERSE", "FRACTAL", "PETAL", "NODE_LOG", "FIELD_DEF",
-    "ASSET", "MODEL", "ROLE", "ROOM", "CRATE_REGISTRY", "CRATE_ENTRY", "VERSE_MEMBER",
+    "NODE",
+    "VERSE",
+    "FRACTAL",
+    "PETAL",
+    "NODE_LOG",
+    "FIELD_DEF",
+    "ASSET",
+    "MODEL",
+    "ROLE",
+    "ROOM",
+    "CRATE_REGISTRY",
+    "CRATE_ENTRY",
+    "VERSE_MEMBER",
+    "IOT_READING",
 ];
 
 /// Sliding 1s-window rate limit keyed by caller; `label` names the limit in the error.
@@ -125,15 +136,15 @@ pub fn build_scope_filter(scope: &str) -> String {
     }
 }
 
-/// Inject scope filter into SQL that queries the `node` table.
-/// Simple heuristic: if the query touches `FROM node` and we have a scope filter,
-/// append/inject a WHERE clause.
+/// Inject scope filter into SQL that queries a petal_id-carrying table
+/// (`node`, `iot_reading`). Simple heuristic: if the query touches such a
+/// FROM target and we have a scope filter, append/inject a WHERE clause.
 pub fn inject_scope_filter(sql: &str, scope_filter: &str) -> String {
     if scope_filter.is_empty() {
         return sql.to_string();
     }
     let sql_upper = sql.to_uppercase();
-    if !sql_upper.contains("FROM NODE") {
+    if !sql_upper.contains("FROM NODE") && !sql_upper.contains("FROM IOT_READING") {
         return sql.to_string();
     }
     // If there's already a WHERE, add AND; otherwise add WHERE
@@ -173,10 +184,9 @@ pub async fn run_guarded_query(
         query_builder = query_builder.bind((key.clone(), value.clone()));
     }
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        async { query_builder.await },
-    )
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        query_builder.await
+    })
     .await;
 
     match result {
@@ -251,12 +261,37 @@ mod tests {
     #[test]
     fn off_whitelist_table_rejected() {
         let err = validate_select_sql("SELECT * FROM secrets").unwrap_err();
-        assert!(err.contains("'SECRETS'") && err.contains("not allowed"), "{err}");
+        assert!(
+            err.contains("'SECRETS'") && err.contains("not allowed"),
+            "{err}"
+        );
     }
 
     #[test]
     fn whitelisted_table_allowed() {
         assert!(validate_select_sql("SELECT * FROM node WHERE petal_id = 'p1'").is_ok());
+    }
+
+    #[test]
+    fn iot_reading_table_whitelisted() {
+        assert!(
+            validate_select_sql("SELECT * FROM iot_reading WHERE metric = 'temperature_c'").is_ok()
+        );
+    }
+
+    #[test]
+    fn inject_covers_iot_reading_table() {
+        assert_eq!(
+            inject_scope_filter("SELECT * FROM iot_reading", "petal_id = 'p1'"),
+            "SELECT * FROM iot_reading WHERE petal_id = 'p1'"
+        );
+        assert_eq!(
+            inject_scope_filter(
+                "SELECT * FROM iot_reading WHERE metric = 'co2_ppm'",
+                "petal_id = 'p1'"
+            ),
+            "SELECT * FROM iot_reading WHERE metric = 'co2_ppm' AND petal_id = 'p1'"
+        );
     }
 
     #[test]
@@ -286,8 +321,9 @@ mod tests {
 
     #[test]
     fn byte_ceiling_enforced() {
-        let rows: Vec<serde_json::Value> =
-            (0..10).map(|i| serde_json::json!({ "k": format!("row-{i}") })).collect();
+        let rows: Vec<serde_json::Value> = (0..10)
+            .map(|i| serde_json::json!({ "k": format!("row-{i}") }))
+            .collect();
         assert!(enforce_byte_ceiling(&rows, 1024, "1 KiB").is_ok());
         let err = enforce_byte_ceiling(&rows, 32, "32 B").unwrap_err();
         assert!(err.contains("result size exceeds ceiling (32 B)"), "{err}");
@@ -295,7 +331,10 @@ mod tests {
 
     #[test]
     fn from_table_extracts_first_target() {
-        assert_eq!(from_table("SELECT * FROM NODE WHERE X = 1").as_deref(), Some("NODE"));
+        assert_eq!(
+            from_table("SELECT * FROM NODE WHERE X = 1").as_deref(),
+            Some("NODE")
+        );
         assert_eq!(from_table("SELECT 1").as_deref(), None);
     }
 }

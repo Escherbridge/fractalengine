@@ -28,6 +28,7 @@ pub fn skirt_depth(
 /// Bottoms drop by `depth` and flare outward by `overlap` (XZ); `base` is the
 /// existing vertex count so emitted indices reference `base + local`.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN depth must take the early-out branch
 pub fn build_skirt(
     positions: &[[f32; 3]],
     uvs: &[[f32; 2]],
@@ -56,10 +57,10 @@ pub fn build_skirt(
 
     // Outward XZ unit direction per edge (rows grow +z, cols grow +x).
     for (edge, outward) in [
-        (top, [0.0f32, -1.0]),   // row 0 → -z
-        (bottom, [0.0, 1.0]),    // row h-1 → +z
-        (left, [-1.0, 0.0]),     // col 0 → -x
-        (right, [1.0, 0.0]),     // col w-1 → +x
+        (top, [0.0f32, -1.0]), // row 0 → -z
+        (bottom, [0.0, 1.0]),  // row h-1 → +z
+        (left, [-1.0, 0.0]),   // col 0 → -x
+        (right, [1.0, 0.0]),   // col w-1 → +x
     ] {
         append_edge_skirt(
             &mut out, positions, uvs, normals, &edge, depth, overlap, outward, base,
@@ -105,7 +106,7 @@ fn append_edge_skirt(
         let b0 = t0 + 1; // bottom i
         let t1 = t0 + 2; // top i+1
         let b1 = t0 + 3; // bottom i+1
-        // Two-sided wall: front and reversed windings so it never culls to black.
+                         // Two-sided wall: front and reversed windings so it never culls to black.
         out.indices.extend_from_slice(&[t0, b0, t1, t1, b0, b1]);
         out.indices.extend_from_slice(&[t0, t1, b0, t1, b1, b0]);
     }
@@ -177,7 +178,7 @@ mod tests {
             assert_eq!(pair[1][2], pair[0][2]);
         }
         // Indices are all offset by base and within the appended range.
-        assert!(s.indices.iter().all(|&i| i >= 100 && i < 100 + 16));
+        assert!(s.indices.iter().all(|&i| (100..100 + 16).contains(&i)));
     }
 
     #[test]

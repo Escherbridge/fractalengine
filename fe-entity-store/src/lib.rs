@@ -63,9 +63,16 @@ pub enum NodeLogOp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum SceneChange {
-    NodeAdded { node: NodeSnapshot },
-    NodeRemoved { node_id: String },
-    NodeRenamed { node_id: String, new_name: String },
+    NodeAdded {
+        node: NodeSnapshot,
+    },
+    NodeRemoved {
+        node_id: String,
+    },
+    NodeRenamed {
+        node_id: String,
+        new_name: String,
+    },
     NodeTransform {
         node_id: String,
         position: [f32; 3],
@@ -208,16 +215,30 @@ impl EntityStore {
     }
 
     /// Append a log entry to a node (last-K window). Returns the assigned row_version.
-    pub fn append_log(&self, node_id: &str, op: NodeLogOp, source_did: &str, hlc_timestamp: u64, payload: serde_json::Value) -> Option<u64> {
+    pub fn append_log(
+        &self,
+        node_id: &str,
+        op: NodeLogOp,
+        source_did: &str,
+        hlc_timestamp: u64,
+        payload: serde_json::Value,
+    ) -> Option<u64> {
         let mut snapshot = self.get(node_id)?;
-        let row_version = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-        self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
-            hlc_timestamp,
-            op,
-            source_did: source_did.to_string(),
-            payload,
-            row_version,
-        });
+        let row_version = snapshot
+            .node_log
+            .last()
+            .map(|e| e.row_version + 1)
+            .unwrap_or(1);
+        self.push_log_capped(
+            &mut snapshot.node_log,
+            NodeLogEntry {
+                hlc_timestamp,
+                op,
+                source_did: source_did.to_string(),
+                payload,
+                row_version,
+            },
+        );
         self.upsert(snapshot);
         Some(row_version)
     }
@@ -229,7 +250,11 @@ impl EntityStore {
             return vec![];
         };
         match after_version {
-            Some(v) => snapshot.node_log.into_iter().filter(|e| e.row_version > v).collect(),
+            Some(v) => snapshot
+                .node_log
+                .into_iter()
+                .filter(|e| e.row_version > v)
+                .collect(),
             None => snapshot.node_log,
         }
     }
@@ -256,16 +281,19 @@ impl EntityStore {
                     node_log: vec![],
                 };
                 // Seed the log with the creation event
-                self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
-                    hlc_timestamp: hlc,
-                    op: NodeLogOp::Created,
-                    source_did: String::new(),
-                    payload: serde_json::json!({
-                        "position": node.position,
-                        "name": node.name,
-                    }),
-                    row_version: 1,
-                });
+                self.push_log_capped(
+                    &mut snapshot.node_log,
+                    NodeLogEntry {
+                        hlc_timestamp: hlc,
+                        op: NodeLogOp::Created,
+                        source_did: String::new(),
+                        payload: serde_json::json!({
+                            "position": node.position,
+                            "name": node.name,
+                        }),
+                        row_version: 1,
+                    },
+                );
                 self.upsert(snapshot);
             }
             SceneChange::NodeRemoved { node_id } => {
@@ -282,18 +310,25 @@ impl EntityStore {
                     snapshot.rotation = *rotation;
                     snapshot.scale = *scale;
                     snapshot.updated_at_ms = timestamp_ms;
-                    let rv = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-                    self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
-                        hlc_timestamp: hlc,
-                        op: NodeLogOp::TransformUpdate,
-                        source_did: String::new(),
-                        payload: serde_json::json!({
-                            "position": position,
-                            "rotation": rotation,
-                            "scale": scale,
-                        }),
-                        row_version: rv,
-                    });
+                    let rv = snapshot
+                        .node_log
+                        .last()
+                        .map(|e| e.row_version + 1)
+                        .unwrap_or(1);
+                    self.push_log_capped(
+                        &mut snapshot.node_log,
+                        NodeLogEntry {
+                            hlc_timestamp: hlc,
+                            op: NodeLogOp::TransformUpdate,
+                            source_did: String::new(),
+                            payload: serde_json::json!({
+                                "position": position,
+                                "rotation": rotation,
+                                "scale": scale,
+                            }),
+                            row_version: rv,
+                        },
+                    );
                     self.upsert(snapshot);
                 }
             }
@@ -325,30 +360,44 @@ impl EntityStore {
                         obj.insert(key.clone(), value.clone());
                     }
                     snapshot.updated_at_ms = timestamp_ms;
-                    let rv = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-                    self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
-                        hlc_timestamp: hlc,
-                        op: NodeLogOp::PropertySet,
-                        source_did: String::new(),
-                        payload: serde_json::json!({
-                            "key": key,
-                            "value": value,
-                        }),
-                        row_version: rv,
-                    });
+                    let rv = snapshot
+                        .node_log
+                        .last()
+                        .map(|e| e.row_version + 1)
+                        .unwrap_or(1);
+                    self.push_log_capped(
+                        &mut snapshot.node_log,
+                        NodeLogEntry {
+                            hlc_timestamp: hlc,
+                            op: NodeLogOp::PropertySet,
+                            source_did: String::new(),
+                            payload: serde_json::json!({
+                                "key": key,
+                                "value": value,
+                            }),
+                            row_version: rv,
+                        },
+                    );
                     self.upsert(snapshot);
                 }
             }
             SceneChange::NodeRenamed { node_id, new_name } => {
                 if let Some(mut snapshot) = self.get(node_id) {
-                    let rv = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-                    self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
-                        hlc_timestamp: hlc,
-                        op: NodeLogOp::Renamed,
-                        source_did: String::new(),
-                        payload: serde_json::json!({ "new_name": new_name }),
-                        row_version: rv,
-                    });
+                    let rv = snapshot
+                        .node_log
+                        .last()
+                        .map(|e| e.row_version + 1)
+                        .unwrap_or(1);
+                    self.push_log_capped(
+                        &mut snapshot.node_log,
+                        NodeLogEntry {
+                            hlc_timestamp: hlc,
+                            op: NodeLogOp::Renamed,
+                            source_did: String::new(),
+                            payload: serde_json::json!({ "new_name": new_name }),
+                            row_version: rv,
+                        },
+                    );
                     snapshot.updated_at_ms = timestamp_ms;
                     self.upsert(snapshot);
                 }
@@ -480,7 +529,9 @@ mod tests {
     fn apply_node_removed() {
         let store = EntityStore::new();
         store.upsert(make_snapshot("n1", "p1"));
-        let change = SceneChange::NodeRemoved { node_id: "n1".into() };
+        let change = SceneChange::NodeRemoved {
+            node_id: "n1".into(),
+        };
         store.apply_scene_change(&change, 4000);
         assert!(store.get("n1").is_none());
     }
@@ -603,8 +654,20 @@ mod tests {
         let store = EntityStore::new();
         store.upsert(make_snapshot("n1", "p1"));
 
-        store.append_log("n1", NodeLogOp::PropertySet, "", 1 << 16, serde_json::json!({}));
-        store.append_log("n1", NodeLogOp::TransformUpdate, "", 2 << 16, serde_json::json!({}));
+        store.append_log(
+            "n1",
+            NodeLogOp::PropertySet,
+            "",
+            1 << 16,
+            serde_json::json!({}),
+        );
+        store.append_log(
+            "n1",
+            NodeLogOp::TransformUpdate,
+            "",
+            2 << 16,
+            serde_json::json!({}),
+        );
         store.append_log("n1", NodeLogOp::Renamed, "", 3 << 16, serde_json::json!({}));
 
         let all = store.get_node_log("n1", None);
@@ -678,7 +741,13 @@ mod tests {
         let versions: Vec<u64> = snap.node_log.iter().map(|e| e.row_version).collect();
         assert_eq!(versions, vec![7, 8, 9, 10]);
         // row_version stays monotonic even after trimming.
-        let rv = store.append_log("n1", NodeLogOp::Renamed, "", 11 << 16, serde_json::json!({}));
+        let rv = store.append_log(
+            "n1",
+            NodeLogOp::Renamed,
+            "",
+            11 << 16,
+            serde_json::json!({}),
+        );
         assert_eq!(rv, Some(11));
         assert_eq!(store.get("n1").unwrap().node_log.len(), 4);
     }

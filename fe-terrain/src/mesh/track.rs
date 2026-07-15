@@ -26,7 +26,10 @@ pub enum ColorMode {
 /// with a small Y offset to prevent z-fighting with terrain.
 pub fn track_mesh(points: &[[f32; 3]], width: f32, color_mode: ColorMode) -> Mesh {
     if points.len() < 2 {
-        return Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        return Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
     }
 
     // Simplify large tracks using RDP to keep rendering fast
@@ -108,9 +111,7 @@ pub fn track_mesh(points: &[[f32; 3]], width: f32, color_mode: ColorMode) -> Mes
                 let frac = (points[i][1] - min_ele) / ele_range;
                 [frac, 1.0 - frac, 0.2, 1.0]
             }
-            ColorMode::SpeedGradient | ColorMode::TimeGradient => {
-                [t, 0.2, 1.0 - t, 1.0]
-            }
+            ColorMode::SpeedGradient | ColorMode::TimeGradient => [t, 0.2, 1.0 - t, 1.0],
         };
         colors.push(rgba);
         colors.push(rgba);
@@ -128,7 +129,10 @@ pub fn track_mesh(points: &[[f32; 3]], width: f32, color_mode: ColorMode) -> Mes
         indices.push(base + 3);
     }
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);

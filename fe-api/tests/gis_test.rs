@@ -31,7 +31,9 @@ async fn setup_test_db() -> Db {
         .await
         .expect("in-memory SurrealDB");
     db.use_ns("test").use_db("test").await.expect("ns/db");
-    fe_database::schema::apply_all(&db).await.expect("apply schema");
+    fe_database::schema::apply_all(&db)
+        .await
+        .expect("apply schema");
     db
 }
 
@@ -118,6 +120,7 @@ async fn seed_hierarchy(db: &Db, petal_id: &str, terrain: Option<serde_json::Val
 /// Seed a node with a geometry position + optional properties object. When
 /// `properties` is `None` the field is omitted entirely (NONE), matching how
 /// `CreateNode` writes a fresh node — avoids binding JSON null to `option<object>`.
+#[allow(clippy::too_many_arguments)] // test fixture — params mirror node columns
 async fn seed_node(
     db: &Db,
     petal_id: &str,
@@ -510,9 +513,29 @@ async fn nodes_bbox_ll_converts_via_terrain_origin() {
     seed_hierarchy(&db, &petal_id, Some(terrain)).await;
 
     let origin_node = ulid();
-    seed_node(&db, &petal_id, &origin_node, "AtOrigin", 0.0, 0.0, 0.0, None).await;
+    seed_node(
+        &db,
+        &petal_id,
+        &origin_node,
+        "AtOrigin",
+        0.0,
+        0.0,
+        0.0,
+        None,
+    )
+    .await;
     // ~500 km NE of origin — far outside a ~0.2 degree lat/lon box.
-    seed_node(&db, &petal_id, &ulid(), "FarAway", 500_000.0, 500_000.0, 0.0, None).await;
+    seed_node(
+        &db,
+        &petal_id,
+        &ulid(),
+        "FarAway",
+        500_000.0,
+        500_000.0,
+        0.0,
+        None,
+    )
+    .await;
 
     let state = test_state(db);
     let claims = test_claims("VERSE#v1", "viewer");

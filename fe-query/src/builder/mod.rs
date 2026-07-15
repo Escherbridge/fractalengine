@@ -1,10 +1,13 @@
 pub mod filter;
 pub mod render;
 pub mod schema;
+pub mod timeseries;
 pub mod value;
 
 use filter::Filter;
-use render::{BuiltQuery, DeleteParts, InsertParts, ReturnClause, SelectParts, SortDir, UpdateParts};
+use render::{
+    BuiltQuery, DeleteParts, InsertParts, ReturnClause, SelectParts, SortDir, UpdateParts,
+};
 use value::QueryValue;
 
 // ── Typestate markers ──
@@ -56,6 +59,15 @@ impl QueryBuilder<Initial> {
     /// Select specific fields. Pass `&["*"]` for all fields.
     pub fn select(mut self, fields: &[&str]) -> QueryBuilder<Selecting> {
         self.parts.fields = fields.iter().map(|f| f.to_string()).collect();
+        QueryBuilder {
+            parts: self.parts,
+            _state: std::marker::PhantomData,
+        }
+    }
+
+    /// SELECT VALUE <expr> — bare values per row (subquery-friendly IN lists).
+    pub fn select_value(mut self, field: &str) -> QueryBuilder<Selecting> {
+        self.parts.fields = vec![format!("VALUE {field}")];
         QueryBuilder {
             parts: self.parts,
             _state: std::marker::PhantomData,
@@ -191,7 +203,9 @@ impl UpdateBuilder {
     ///
     /// Example: `.set_expr("edit_seq", "edit_seq + 1")` renders as `edit_seq = edit_seq + 1`.
     pub fn set_expr(mut self, field: &str, expr: &str) -> Self {
-        self.parts.set_exprs.push((field.to_string(), expr.to_string()));
+        self.parts
+            .set_exprs
+            .push((field.to_string(), expr.to_string()));
         self
     }
 
@@ -287,11 +301,19 @@ mod tests {
     }
 
     #[test]
-    fn select_all_no_filters() {
+    fn select_value_renders_bare_value_projection() {
         let q = QueryBuilder::new()
-            .select(&["*"])
-            .from("node_log")
+            .select_value("node_id")
+            .from("node")
+            .filter(Filter::eq("petal_id", "p1"))
             .build();
+        assert_eq!(q.sql, "SELECT VALUE node_id FROM node WHERE petal_id = $p0");
+        assert_eq!(q.params[0].1, serde_json::json!("p1"));
+    }
+
+    #[test]
+    fn select_all_no_filters() {
+        let q = QueryBuilder::new().select(&["*"]).from("node_log").build();
         assert_eq!(q.sql, "SELECT * FROM node_log");
         assert!(q.params.is_empty());
     }
@@ -320,7 +342,9 @@ mod tests {
             .limit(50)
             .build();
 
-        assert!(q.sql.contains("(petal_id = $p0 AND (edit_seq > $p1 OR asset_id IS NOT NONE))"));
+        assert!(q
+            .sql
+            .contains("(petal_id = $p0 AND (edit_seq > $p1 OR asset_id IS NOT NONE))"));
     }
 
     #[test]
@@ -387,7 +411,9 @@ mod tests {
             .order_by("row_version", SortDir::Asc)
             .build();
 
-        assert!(q.sql.contains("ORDER BY hlc_timestamp DESC, row_version ASC"));
+        assert!(q
+            .sql
+            .contains("ORDER BY hlc_timestamp DESC, row_version ASC"));
     }
 
     #[test]
@@ -599,10 +625,7 @@ mod tests {
 
     #[test]
     fn built_query_sql_method() {
-        let q = QueryBuilder::new()
-            .select(&["*"])
-            .from("node")
-            .build();
+        let q = QueryBuilder::new().select(&["*"]).from("node").build();
         assert_eq!(q.sql(), "SELECT * FROM node");
     }
 

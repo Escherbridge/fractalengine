@@ -4,7 +4,7 @@
 //! serialisation, and sign / verify round-trips as defined in the Hexon v1.0.0
 //! spec (`docs/hexon-format-spec.md`).
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};

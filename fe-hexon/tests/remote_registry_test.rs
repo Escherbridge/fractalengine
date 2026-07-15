@@ -150,7 +150,10 @@ async fn search_download_verify_roundtrip() {
     // Search by q, tags, type.
     let hits = client.search(Some("alpine"), None, None).await.unwrap();
     assert_eq!(hits.len(), 2);
-    let hits = client.search(None, Some("gpx,running"), None).await.unwrap();
+    let hits = client
+        .search(None, Some("gpx,running"), None)
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].hexon_id, "morning-run");
     let hits = client.search(None, None, Some("terrain")).await.unwrap();

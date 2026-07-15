@@ -11,9 +11,9 @@
 //!
 //! See `fe-ui/src/node_manager/AGENTS.md` for the submodule map.
 
+mod billboard;
 /// Pure curve + shape math for the pen tool (phase 2). See AGENTS.md §pen-tool.
 pub(crate) mod curve;
-mod billboard;
 mod gimbal_interaction;
 mod inspector_sync;
 mod path_point_interaction;
@@ -44,6 +44,7 @@ pub struct NodeManager {
 }
 
 /// A currently selected node and its optional in-progress drag session.
+#[derive(Debug)]
 pub struct NodeSelection {
     pub entity: Entity,
     pub node_id: String,
@@ -55,6 +56,7 @@ pub struct NodeSelection {
 }
 
 /// An in-progress gimbal axis drag.
+#[derive(Debug)]
 pub struct AxisDrag {
     pub axis: GimbalAxis,
     pub start_cursor: Vec2,
@@ -74,7 +76,7 @@ impl NodeManager {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.selected.as_ref().map_or(false, |s| s.drag.is_some())
+        self.selected.as_ref().is_some_and(|s| s.drag.is_some())
     }
 
     /// Select a node. If the same entity is already selected the drag state
@@ -121,8 +123,8 @@ impl Plugin for NodeManagerPlugin {
                 gimbal_interaction::handle_gimbal_interaction, // claims Gimbal on axis pick + drag
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
                 path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
-                viewport_pick::handle_viewport_click,      // claims NodePick — entity pick / deselect
-                viewport_pick::open_track_on_select,       // clicking a track ribbon opens it for editing
+                viewport_pick::handle_viewport_click, // claims NodePick — entity pick / deselect
+                viewport_pick::open_track_on_select, // clicking a track ribbon opens it for editing
                 inspector_sync::sync_manager_to_inspector,
                 gimbal_interaction::draw_gimbal_system,
                 transform_broadcast::broadcast_transform,
@@ -168,7 +170,10 @@ mod tests {
         }
         mgr.select(entity(1), "node-1");
         assert!(
-            mgr.selected.as_ref().map(|s| s.drag_committed).unwrap_or(false),
+            mgr.selected
+                .as_ref()
+                .map(|s| s.drag_committed)
+                .unwrap_or(false),
             "drag_committed should be preserved when re-selecting same entity"
         );
     }
@@ -183,11 +188,17 @@ mod tests {
         mgr.select(entity(2), "node-2");
         assert_eq!(mgr.selected_entity(), Some(entity(2)));
         assert!(
-            !mgr.selected.as_ref().map(|s| s.drag_committed).unwrap_or(true),
+            !mgr.selected
+                .as_ref()
+                .map(|s| s.drag_committed)
+                .unwrap_or(true),
             "drag_committed should be false after selecting a new entity"
         );
         assert!(
-            mgr.selected.as_ref().and_then(|s| s.drag.as_ref()).is_none(),
+            mgr.selected
+                .as_ref()
+                .and_then(|s| s.drag.as_ref())
+                .is_none(),
             "drag should be None after selecting a new entity"
         );
     }

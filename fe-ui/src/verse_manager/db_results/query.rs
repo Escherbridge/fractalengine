@@ -21,7 +21,8 @@ pub(super) fn handle_query_result(
     } else if path_state.tracks_pending {
         crate::actions::path::apply_track_rows(path_state, crate::gis::parse_gis_rows(data));
     } else {
-        let formatted = serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"));
+        let formatted =
+            serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"));
         inspector.query_result = Some(formatted);
         inspector.query_loading = false;
     }

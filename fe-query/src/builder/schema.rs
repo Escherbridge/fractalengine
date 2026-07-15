@@ -93,9 +93,27 @@ impl SchemaObject for VerseTable {
         TableDef {
             name: "verse",
             fields: vec![
-                FieldSchema { name: "verse_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "display_name", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "created_at", surreal_type: "datetime", nullable: false, default: Some("time::now()"), flexible: false },
+                FieldSchema {
+                    name: "verse_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "display_name",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "created_at",
+                    surreal_type: "datetime",
+                    nullable: false,
+                    default: Some("time::now()"),
+                    flexible: false,
+                },
             ],
         }
     }
@@ -118,18 +136,52 @@ impl SchemaObject for FractalTable {
         TableDef {
             name: "fractal",
             fields: vec![
-                FieldSchema { name: "fractal_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "verse_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "display_name", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "created_at", surreal_type: "datetime", nullable: false, default: Some("time::now()"), flexible: false },
+                FieldSchema {
+                    name: "fractal_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "verse_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "display_name",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "created_at",
+                    surreal_type: "datetime",
+                    nullable: false,
+                    default: Some("time::now()"),
+                    flexible: false,
+                },
             ],
         }
     }
 
     fn indexes() -> Vec<IndexDef> {
         vec![
-            IndexDef { name: "idx_fractal_id", table: "fractal", fields: vec!["fractal_id"], unique: true },
-            IndexDef { name: "idx_fractal_verse", table: "fractal", fields: vec!["verse_id"], unique: false },
+            IndexDef {
+                name: "idx_fractal_id",
+                table: "fractal",
+                fields: vec!["fractal_id"],
+                unique: true,
+            },
+            IndexDef {
+                name: "idx_fractal_verse",
+                table: "fractal",
+                fields: vec!["verse_id"],
+                unique: false,
+            },
         ]
     }
 }
@@ -142,18 +194,52 @@ impl SchemaObject for PetalTable {
         TableDef {
             name: "petal",
             fields: vec![
-                FieldSchema { name: "petal_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "fractal_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "display_name", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "created_at", surreal_type: "datetime", nullable: false, default: Some("time::now()"), flexible: false },
+                FieldSchema {
+                    name: "petal_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "fractal_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "display_name",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "created_at",
+                    surreal_type: "datetime",
+                    nullable: false,
+                    default: Some("time::now()"),
+                    flexible: false,
+                },
             ],
         }
     }
 
     fn indexes() -> Vec<IndexDef> {
         vec![
-            IndexDef { name: "idx_petal_id", table: "petal", fields: vec!["petal_id"], unique: true },
-            IndexDef { name: "idx_petal_fractal", table: "petal", fields: vec!["fractal_id"], unique: false },
+            IndexDef {
+                name: "idx_petal_id",
+                table: "petal",
+                fields: vec!["petal_id"],
+                unique: true,
+            },
+            IndexDef {
+                name: "idx_petal_fractal",
+                table: "petal",
+                fields: vec!["fractal_id"],
+                unique: false,
+            },
         ]
     }
 }
@@ -166,26 +252,108 @@ impl SchemaObject for NodeTable {
         TableDef {
             name: "node",
             fields: vec![
-                FieldSchema { name: "node_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "petal_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "display_name", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "asset_id", surreal_type: "string", nullable: true, default: None, flexible: false },
-                FieldSchema { name: "position", surreal_type: "geometry<point>", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "elevation", surreal_type: "float", nullable: false, default: Some("0.0"), flexible: false },
-                FieldSchema { name: "rotation", surreal_type: "array<float, 3>", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "scale", surreal_type: "array<float, 3>", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "interactive", surreal_type: "bool", nullable: false, default: Some("true"), flexible: false },
-                FieldSchema { name: "created_at", surreal_type: "datetime", nullable: false, default: Some("time::now()"), flexible: false },
-                FieldSchema { name: "edit_seq", surreal_type: "int", nullable: false, default: Some("0"), flexible: false },
-                FieldSchema { name: "properties", surreal_type: "object", nullable: true, default: None, flexible: true },
+                FieldSchema {
+                    name: "node_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "petal_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "display_name",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "asset_id",
+                    surreal_type: "string",
+                    nullable: true,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "position",
+                    surreal_type: "geometry<point>",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "elevation",
+                    surreal_type: "float",
+                    nullable: false,
+                    default: Some("0.0"),
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "rotation",
+                    surreal_type: "array<float, 3>",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "scale",
+                    surreal_type: "array<float, 3>",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "interactive",
+                    surreal_type: "bool",
+                    nullable: false,
+                    default: Some("true"),
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "created_at",
+                    surreal_type: "datetime",
+                    nullable: false,
+                    default: Some("time::now()"),
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "edit_seq",
+                    surreal_type: "int",
+                    nullable: false,
+                    default: Some("0"),
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "properties",
+                    surreal_type: "object",
+                    nullable: true,
+                    default: None,
+                    flexible: true,
+                },
             ],
         }
     }
 
     fn indexes() -> Vec<IndexDef> {
         vec![
-            IndexDef { name: "idx_node_id", table: "node", fields: vec!["node_id"], unique: true },
-            IndexDef { name: "idx_node_petal", table: "node", fields: vec!["petal_id"], unique: false },
+            IndexDef {
+                name: "idx_node_id",
+                table: "node",
+                fields: vec!["node_id"],
+                unique: true,
+            },
+            IndexDef {
+                name: "idx_node_petal",
+                table: "node",
+                fields: vec!["petal_id"],
+                unique: false,
+            },
         ]
     }
 }
@@ -198,23 +366,86 @@ impl SchemaObject for NodeLogTable {
         TableDef {
             name: "node_log",
             fields: vec![
-                FieldSchema { name: "log_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "node_id", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "hlc_timestamp", surreal_type: "int", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "op", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "source_did", surreal_type: "string", nullable: false, default: None, flexible: false },
-                FieldSchema { name: "payload", surreal_type: "object", nullable: true, default: None, flexible: true },
-                FieldSchema { name: "row_version", surreal_type: "int", nullable: false, default: Some("0"), flexible: false },
-                FieldSchema { name: "created_at", surreal_type: "datetime", nullable: false, default: Some("time::now()"), flexible: false },
+                FieldSchema {
+                    name: "log_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "node_id",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "hlc_timestamp",
+                    surreal_type: "int",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "op",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "source_did",
+                    surreal_type: "string",
+                    nullable: false,
+                    default: None,
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "payload",
+                    surreal_type: "object",
+                    nullable: true,
+                    default: None,
+                    flexible: true,
+                },
+                FieldSchema {
+                    name: "row_version",
+                    surreal_type: "int",
+                    nullable: false,
+                    default: Some("0"),
+                    flexible: false,
+                },
+                FieldSchema {
+                    name: "created_at",
+                    surreal_type: "datetime",
+                    nullable: false,
+                    default: Some("time::now()"),
+                    flexible: false,
+                },
             ],
         }
     }
 
     fn indexes() -> Vec<IndexDef> {
         vec![
-            IndexDef { name: "idx_node_log_id", table: "node_log", fields: vec!["log_id"], unique: true },
-            IndexDef { name: "idx_node_log_node", table: "node_log", fields: vec!["node_id"], unique: false },
-            IndexDef { name: "idx_node_log_hlc", table: "node_log", fields: vec!["node_id", "hlc_timestamp"], unique: false },
+            IndexDef {
+                name: "idx_node_log_id",
+                table: "node_log",
+                fields: vec!["log_id"],
+                unique: true,
+            },
+            IndexDef {
+                name: "idx_node_log_node",
+                table: "node_log",
+                fields: vec!["node_id"],
+                unique: false,
+            },
+            IndexDef {
+                name: "idx_node_log_hlc",
+                table: "node_log",
+                fields: vec!["node_id", "hlc_timestamp"],
+                unique: false,
+            },
         ]
     }
 }
@@ -231,10 +462,18 @@ mod tests {
         assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS petal_id ON node TYPE string;"));
         assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS asset_id ON node TYPE option<string>;"));
         assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS position ON node TYPE geometry<point>;"));
-        assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS elevation ON node TYPE float DEFAULT 0.0;"));
-        assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS interactive ON node TYPE bool DEFAULT true;"));
-        assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS properties ON node FLEXIBLE TYPE option<object>;"));
-        assert!(ddl.contains("DEFINE INDEX IF NOT EXISTS idx_node_id ON node FIELDS node_id UNIQUE;"));
+        assert!(
+            ddl.contains("DEFINE FIELD IF NOT EXISTS elevation ON node TYPE float DEFAULT 0.0;")
+        );
+        assert!(
+            ddl.contains("DEFINE FIELD IF NOT EXISTS interactive ON node TYPE bool DEFAULT true;")
+        );
+        assert!(ddl.contains(
+            "DEFINE FIELD IF NOT EXISTS properties ON node FLEXIBLE TYPE option<object>;"
+        ));
+        assert!(
+            ddl.contains("DEFINE INDEX IF NOT EXISTS idx_node_id ON node FIELDS node_id UNIQUE;")
+        );
         assert!(ddl.contains("DEFINE INDEX IF NOT EXISTS idx_node_petal ON node FIELDS petal_id;"));
     }
 
@@ -242,8 +481,12 @@ mod tests {
     fn node_log_table_ddl() {
         let ddl = NodeLogTable::ddl();
         assert!(ddl.contains("DEFINE TABLE IF NOT EXISTS node_log SCHEMAFULL;"));
-        assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS payload ON node_log FLEXIBLE TYPE option<object>;"));
-        assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS row_version ON node_log TYPE int DEFAULT 0;"));
+        assert!(ddl.contains(
+            "DEFINE FIELD IF NOT EXISTS payload ON node_log FLEXIBLE TYPE option<object>;"
+        ));
+        assert!(
+            ddl.contains("DEFINE FIELD IF NOT EXISTS row_version ON node_log TYPE int DEFAULT 0;")
+        );
         assert!(ddl.contains("DEFINE INDEX IF NOT EXISTS idx_node_log_hlc ON node_log FIELDS node_id, hlc_timestamp;"));
     }
 
@@ -252,8 +495,11 @@ mod tests {
         let ddl = VerseTable::ddl();
         assert!(ddl.contains("DEFINE TABLE IF NOT EXISTS verse SCHEMAFULL;"));
         assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS verse_id ON verse TYPE string;"));
-        assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS created_at ON verse TYPE datetime DEFAULT time::now();"));
-        assert!(ddl.contains("DEFINE INDEX IF NOT EXISTS idx_verse_id ON verse FIELDS verse_id UNIQUE;"));
+        assert!(ddl.contains(
+            "DEFINE FIELD IF NOT EXISTS created_at ON verse TYPE datetime DEFAULT time::now();"
+        ));
+        assert!(ddl
+            .contains("DEFINE INDEX IF NOT EXISTS idx_verse_id ON verse FIELDS verse_id UNIQUE;"));
     }
 
     #[test]
@@ -261,7 +507,8 @@ mod tests {
         let ddl = FractalTable::ddl();
         assert!(ddl.contains("DEFINE TABLE IF NOT EXISTS fractal SCHEMAFULL;"));
         assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS verse_id ON fractal TYPE string;"));
-        assert!(ddl.contains("DEFINE INDEX IF NOT EXISTS idx_fractal_verse ON fractal FIELDS verse_id;"));
+        assert!(ddl
+            .contains("DEFINE INDEX IF NOT EXISTS idx_fractal_verse ON fractal FIELDS verse_id;"));
     }
 
     #[test]
@@ -269,7 +516,8 @@ mod tests {
         let ddl = PetalTable::ddl();
         assert!(ddl.contains("DEFINE TABLE IF NOT EXISTS petal SCHEMAFULL;"));
         assert!(ddl.contains("DEFINE FIELD IF NOT EXISTS fractal_id ON petal TYPE string;"));
-        assert!(ddl.contains("DEFINE INDEX IF NOT EXISTS idx_petal_fractal ON petal FIELDS fractal_id;"));
+        assert!(ddl
+            .contains("DEFINE INDEX IF NOT EXISTS idx_petal_fractal ON petal FIELDS fractal_id;"));
     }
 
     #[test]

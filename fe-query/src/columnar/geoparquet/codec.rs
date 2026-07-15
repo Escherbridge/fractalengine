@@ -37,13 +37,21 @@ pub(super) fn snapshots_to_batch(
     snapshots: &[EntitySnapshot],
 ) -> Result<RecordBatch> {
     let node_ids: StringArray = snapshots.iter().map(|s| Some(s.node_id.as_str())).collect();
-    let petal_ids: StringArray = snapshots.iter().map(|s| Some(s.petal_id.as_str())).collect();
-    let wkb: BinaryArray = snapshots.iter().map(|s| Some(point_z_to_wkb(s.position))).collect();
+    let petal_ids: StringArray = snapshots
+        .iter()
+        .map(|s| Some(s.petal_id.as_str()))
+        .collect();
+    let wkb: BinaryArray = snapshots
+        .iter()
+        .map(|s| Some(point_z_to_wkb(s.position)))
+        .collect();
     let f32_values = |get: &dyn Fn(&EntitySnapshot) -> f32| -> ArrayRef {
         Arc::new(Float32Array::from_iter_values(snapshots.iter().map(get)))
     };
-    let props: StringArray =
-        snapshots.iter().map(|s| s.properties.as_ref().map(|v| v.to_string())).collect();
+    let props: StringArray = snapshots
+        .iter()
+        .map(|s| s.properties.as_ref().map(|v| v.to_string()))
+        .collect();
     let updated = UInt64Array::from_iter_values(snapshots.iter().map(|s| s.updated_at_ms));
     RecordBatch::try_new(
         schema,
@@ -83,8 +91,11 @@ pub(super) fn batch_to_snapshots(
         f32_col(batch, "rotation_y")?,
         f32_col(batch, "rotation_z")?,
     ];
-    let scale =
-        [f32_col(batch, "scale_x")?, f32_col(batch, "scale_y")?, f32_col(batch, "scale_z")?];
+    let scale = [
+        f32_col(batch, "scale_x")?,
+        f32_col(batch, "scale_y")?,
+        f32_col(batch, "scale_z")?,
+    ];
     let props = str_col(batch, "properties")?;
     let updated = batch
         .column_by_name("updated_at_ms")
@@ -149,7 +160,10 @@ fn wkb_to_point_z(wkb: &[u8]) -> Result<[f32; 3]> {
         bail!("WKB length {} != expected {WKB_POINT_Z_LEN}", wkb.len());
     }
     if wkb[0] != 1 {
-        bail!("only little-endian WKB is supported (byte order marker {})", wkb[0]);
+        bail!(
+            "only little-endian WKB is supported (byte order marker {})",
+            wkb[0]
+        );
     }
     let geom_type = u32::from_le_bytes(wkb[1..5].try_into().context("WKB type bytes")?);
     if geom_type != WKB_POINT_Z {
@@ -158,7 +172,11 @@ fn wkb_to_point_z(wkb: &[u8]) -> Result<[f32; 3]> {
     let mut position = [0f32; 3];
     for (i, slot) in position.iter_mut().enumerate() {
         let start = 5 + i * 8;
-        let raw = f64::from_le_bytes(wkb[start..start + 8].try_into().context("WKB coord bytes")?);
+        let raw = f64::from_le_bytes(
+            wkb[start..start + 8]
+                .try_into()
+                .context("WKB coord bytes")?,
+        );
         *slot = raw as f32;
     }
     Ok(position)

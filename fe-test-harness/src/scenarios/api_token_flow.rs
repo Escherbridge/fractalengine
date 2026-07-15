@@ -38,7 +38,14 @@ pub fn run() -> Result<TestResult> {
     )?;
 
     let (token, jti) = match &mint_result {
-        DbResult::ApiTokenMinted { token, jti, scope, max_role, label, .. } => {
+        DbResult::ApiTokenMinted {
+            token,
+            jti,
+            scope,
+            max_role,
+            label,
+            ..
+        } => {
             assert_eq!(scope, "VERSE#test-verse-1", "scope mismatch");
             assert_eq!(max_role, "editor", "max_role mismatch");
             assert_eq!(label.as_deref(), Some("Test Token"), "label mismatch");
@@ -50,10 +57,7 @@ pub fn run() -> Result<TestResult> {
     };
 
     // 3. Verify the JWT is valid by decoding with Alice's public key
-    let claims = fe_identity::api_token::verify_api_token(
-        &token,
-        &alice.keypair.verifying_key(),
-    )?;
+    let claims = fe_identity::api_token::verify_api_token(&token, &alice.keypair.verifying_key())?;
     assert_eq!(claims.token_type, "api", "token_type should be 'api'");
     assert_eq!(claims.scope, "VERSE#test-verse-1");
     assert_eq!(claims.max_role, "editor");
@@ -62,7 +66,10 @@ pub fn run() -> Result<TestResult> {
     assert_eq!(claims.exp - claims.iat, 24 * 3600, "TTL should be 24 hours");
 
     // 4. List tokens — should contain our minted token
-    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
+    alice.send(DbCommand::ListApiTokens {
+        offset: 0,
+        limit: 100,
+    });
     let list_result = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(30),
@@ -83,7 +90,10 @@ pub fn run() -> Result<TestResult> {
 
     // 5. Revoke the token
     let alice_sub = alice.keypair.to_did_key();
-    alice.send(DbCommand::RevokeApiToken { jti: jti.clone(), sub: alice_sub.clone() });
+    alice.send(DbCommand::RevokeApiToken {
+        jti: jti.clone(),
+        sub: alice_sub.clone(),
+    });
     let revoke_result = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenRevoked { .. }),
         std::time::Duration::from_secs(30),
@@ -97,7 +107,10 @@ pub fn run() -> Result<TestResult> {
     }
 
     // 6. List tokens — revoked token should no longer appear (list_active_tokens filters)
-    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
+    alice.send(DbCommand::ListApiTokens {
+        offset: 0,
+        limit: 100,
+    });
     let list_after = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(30),
@@ -106,7 +119,10 @@ pub fn run() -> Result<TestResult> {
     match &list_after {
         DbResult::ApiTokensListed { tokens, .. } => {
             let found = tokens.iter().find(|t| t.jti == jti);
-            assert!(found.is_none(), "revoked token should not appear in active list");
+            assert!(
+                found.is_none(),
+                "revoked token should not appear in active list"
+            );
         }
         other => anyhow::bail!("Expected ApiTokensListed, got: {other:?}"),
     }
@@ -123,7 +139,12 @@ pub fn run() -> Result<TestResult> {
         std::time::Duration::from_secs(30),
     )?;
     let jti2 = match &mint2 {
-        DbResult::ApiTokenMinted { jti, max_role, label, .. } => {
+        DbResult::ApiTokenMinted {
+            jti,
+            max_role,
+            label,
+            ..
+        } => {
             assert_eq!(max_role, "viewer");
             assert!(label.is_none(), "label should be None");
             jti.clone()
@@ -132,7 +153,10 @@ pub fn run() -> Result<TestResult> {
     };
 
     // 8. List should show exactly 1 active token (the second one; first was revoked)
-    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
+    alice.send(DbCommand::ListApiTokens {
+        offset: 0,
+        limit: 100,
+    });
     let list_multi = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(30),
@@ -165,7 +189,9 @@ pub fn run_edge_cases() -> Result<TestResult> {
         sub: alice.keypair.to_did_key(),
     });
     // Should get an Error result
-    let revoke_bad = alice.db_result_rx.recv_timeout(std::time::Duration::from_secs(10))?;
+    let revoke_bad = alice
+        .db_result_rx
+        .recv_timeout(std::time::Duration::from_secs(10))?;
     match &revoke_bad {
         DbResult::Error(msg) => {
             assert!(
@@ -183,7 +209,9 @@ pub fn run_edge_cases() -> Result<TestResult> {
         ttl_hours: 1,
         label: None,
     });
-    let empty_scope = alice.db_result_rx.recv_timeout(std::time::Duration::from_secs(10))?;
+    let empty_scope = alice
+        .db_result_rx
+        .recv_timeout(std::time::Duration::from_secs(10))?;
     match &empty_scope {
         DbResult::Error(msg) => {
             assert!(
@@ -201,7 +229,9 @@ pub fn run_edge_cases() -> Result<TestResult> {
         ttl_hours: 31 * 24, // 31 days > 30 day max
         label: None,
     });
-    let excess_ttl = alice.db_result_rx.recv_timeout(std::time::Duration::from_secs(10))?;
+    let excess_ttl = alice
+        .db_result_rx
+        .recv_timeout(std::time::Duration::from_secs(10))?;
     match &excess_ttl {
         DbResult::Error(msg) => {
             assert!(
@@ -214,7 +244,10 @@ pub fn run_edge_cases() -> Result<TestResult> {
 
     // Edge case 4: List tokens when none exist should return empty list
     // (Alice has no valid tokens — the previous mints all failed)
-    alice.send(DbCommand::ListApiTokens { offset: 0, limit: 100 });
+    alice.send(DbCommand::ListApiTokens {
+        offset: 0,
+        limit: 100,
+    });
     let list_empty = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokensListed { .. }),
         std::time::Duration::from_secs(10),
@@ -243,7 +276,10 @@ pub fn run_edge_cases() -> Result<TestResult> {
     };
 
     // First revoke should succeed
-    alice.send(DbCommand::RevokeApiToken { jti: double_jti.clone(), sub: alice.keypair.to_did_key() });
+    alice.send(DbCommand::RevokeApiToken {
+        jti: double_jti.clone(),
+        sub: alice.keypair.to_did_key(),
+    });
     let first_revoke = alice.wait_for(
         |r| matches!(r, DbResult::ApiTokenRevoked { .. }),
         std::time::Duration::from_secs(10),
@@ -253,14 +289,21 @@ pub fn run_edge_cases() -> Result<TestResult> {
     // Second revoke — the token is already revoked, but the UPDATE still matches
     // (it sets revoked=true on an already-revoked row), so it returns Ok(true).
     // This is acceptable idempotent behavior.
-    alice.send(DbCommand::RevokeApiToken { jti: double_jti.clone(), sub: alice.keypair.to_did_key() });
-    let second_revoke = alice.db_result_rx.recv_timeout(std::time::Duration::from_secs(10))?;
+    alice.send(DbCommand::RevokeApiToken {
+        jti: double_jti.clone(),
+        sub: alice.keypair.to_did_key(),
+    });
+    let second_revoke = alice
+        .db_result_rx
+        .recv_timeout(std::time::Duration::from_secs(10))?;
     // Accept either ApiTokenRevoked (idempotent) or Error — both are valid
     match &second_revoke {
         DbResult::ApiTokenRevoked { .. } | DbResult::Error(_) => {
             // Both behaviors are acceptable
         }
-        other => anyhow::bail!("Expected ApiTokenRevoked or Error for double revoke, got: {other:?}"),
+        other => {
+            anyhow::bail!("Expected ApiTokenRevoked or Error for double revoke, got: {other:?}")
+        }
     }
 
     // Edge case 6: Token verification with wrong key should fail
@@ -281,18 +324,20 @@ pub fn run_edge_cases() -> Result<TestResult> {
     };
 
     // Verify with Bob's key should fail
-    let wrong_verify = fe_identity::api_token::verify_api_token(
-        &wrong_key_token,
-        &bob_kp.verifying_key(),
+    let wrong_verify =
+        fe_identity::api_token::verify_api_token(&wrong_key_token, &bob_kp.verifying_key());
+    assert!(
+        wrong_verify.is_err(),
+        "Verification with wrong key should fail"
     );
-    assert!(wrong_verify.is_err(), "Verification with wrong key should fail");
 
     // Verify with Alice's key should succeed
-    let right_verify = fe_identity::api_token::verify_api_token(
-        &wrong_key_token,
-        &alice.keypair.verifying_key(),
+    let right_verify =
+        fe_identity::api_token::verify_api_token(&wrong_key_token, &alice.keypair.verifying_key());
+    assert!(
+        right_verify.is_ok(),
+        "Verification with correct key should succeed"
     );
-    assert!(right_verify.is_ok(), "Verification with correct key should succeed");
 
     Ok(TestResult::pass("API Token Edge Cases"))
 }

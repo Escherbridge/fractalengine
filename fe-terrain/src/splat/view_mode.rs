@@ -55,20 +55,35 @@ mod tests {
 
     #[test]
     fn parses_known_modes_case_insensitively() {
-        assert_eq!(TerrainViewMode::from_str_or_default("mesh"), TerrainViewMode::Mesh);
-        assert_eq!(TerrainViewMode::from_str_or_default("Splats"), TerrainViewMode::Splats);
-        assert_eq!(TerrainViewMode::from_str_or_default(" HYBRID "), TerrainViewMode::Hybrid);
+        assert_eq!(
+            TerrainViewMode::from_str_or_default("mesh"),
+            TerrainViewMode::Mesh
+        );
+        assert_eq!(
+            TerrainViewMode::from_str_or_default("Splats"),
+            TerrainViewMode::Splats
+        );
+        assert_eq!(
+            TerrainViewMode::from_str_or_default(" HYBRID "),
+            TerrainViewMode::Hybrid
+        );
     }
 
     #[test]
     fn unknown_string_falls_back_to_mesh() {
-        assert_eq!(TerrainViewMode::from_str_or_default("wireframe"), TerrainViewMode::Mesh);
+        assert_eq!(
+            TerrainViewMode::from_str_or_default("wireframe"),
+            TerrainViewMode::Mesh
+        );
     }
 
     #[test]
     fn json_field_extracted() {
         let v = serde_json::json!({ "enabled": true, "view_mode": "hybrid" });
-        assert_eq!(view_mode_from_terrain_json(Some(&v)), TerrainViewMode::Hybrid);
+        assert_eq!(
+            view_mode_from_terrain_json(Some(&v)),
+            TerrainViewMode::Hybrid
+        );
     }
 
     #[test]

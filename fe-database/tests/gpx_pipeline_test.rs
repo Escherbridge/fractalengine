@@ -18,11 +18,13 @@ fn mock_blob_store() -> BlobStoreHandle {
 const CMD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Mirrors `fe-api/src/gis.rs`'s `list_gis_tracks` SELECT verbatim.
-const TRACKS_SQL: &str = "SELECT node_id, display_name, position, elevation, properties, created_at \
+const TRACKS_SQL: &str =
+    "SELECT node_id, display_name, position, elevation, properties, created_at \
     FROM node WHERE petal_id = $pid AND properties.gpx_type = 'track' ORDER BY created_at ASC";
 
 /// Same shape, filtered for waypoints instead (mirrors the `gis/nodes` read pattern).
-const WAYPOINTS_SQL: &str = "SELECT node_id, display_name, position, elevation, properties, created_at \
+const WAYPOINTS_SQL: &str =
+    "SELECT node_id, display_name, position, elevation, properties, created_at \
     FROM node WHERE petal_id = $pid AND properties.gpx_type = 'waypoint' ORDER BY created_at ASC";
 
 /// An isolated DB thread backed by a unique temp directory — no shared
@@ -35,7 +37,11 @@ struct TestDb {
 
 fn spawn_test_db() -> TestDb {
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir for test DB");
-    let db_path = tmp_dir.path().join("gpx_pipeline_test.db").to_string_lossy().to_string();
+    let db_path = tmp_dir
+        .path()
+        .join("gpx_pipeline_test.db")
+        .to_string_lossy()
+        .to_string();
 
     let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(256);
     let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(256);
@@ -55,33 +61,60 @@ fn spawn_test_db() -> TestDb {
     let started = res_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("gpx pipeline test DB did not start within 30s");
-    assert!(matches!(started, DbResult::Started), "expected DbResult::Started, got {started:?}");
+    assert!(
+        matches!(started, DbResult::Started),
+        "expected DbResult::Started, got {started:?}"
+    );
 
-    TestDb { cmd_tx, res_rx, _tmp_dir: tmp_dir }
+    TestDb {
+        cmd_tx,
+        res_rx,
+        _tmp_dir: tmp_dir,
+    }
 }
 
 /// Build the minimal verse -> fractal -> petal hierarchy and return the petal ID.
 fn seed_hierarchy(db: &TestDb) -> String {
     db.cmd_tx
-        .send(DbCommand::CreateVerse { name: "gpx-test-verse".to_string() })
+        .send(DbCommand::CreateVerse {
+            name: "gpx-test-verse".to_string(),
+        })
         .unwrap();
-    let verse_id = match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateVerse result") {
+    let verse_id = match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateVerse result")
+    {
         DbResult::VerseCreated { id, .. } => id,
         other => panic!("expected VerseCreated, got {other:?}"),
     };
 
     db.cmd_tx
-        .send(DbCommand::CreateFractal { verse_id, name: "gpx-test-fractal".to_string() })
+        .send(DbCommand::CreateFractal {
+            verse_id,
+            name: "gpx-test-fractal".to_string(),
+        })
         .unwrap();
-    let fractal_id = match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateFractal result") {
+    let fractal_id = match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateFractal result")
+    {
         DbResult::FractalCreated { id, .. } => id,
         other => panic!("expected FractalCreated, got {other:?}"),
     };
 
     db.cmd_tx
-        .send(DbCommand::CreatePetal { fractal_id, name: "gpx-test-petal".to_string() })
+        .send(DbCommand::CreatePetal {
+            fractal_id,
+            name: "gpx-test-petal".to_string(),
+        })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreatePetal result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreatePetal result")
+    {
         DbResult::PetalCreated { id, .. } => id,
         other => panic!("expected PetalCreated, got {other:?}"),
     }
@@ -98,7 +131,11 @@ fn create_node(db: &TestDb, petal_id: &str, name: &str, position: [f32; 3]) -> S
             correlation_id: None,
         })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateNode result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateNode result")
+    {
         DbResult::NodeCreated { id, .. } => id,
         other => panic!("expected NodeCreated, got {other:?}"),
     }
@@ -114,18 +151,33 @@ fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value)
             value,
         })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("SetNodeProperty result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("SetNodeProperty result")
+    {
         DbResult::NodePropertySet { .. } => {}
         other => panic!("expected NodePropertySet, got {other:?}"),
     }
 }
 
 /// Run a raw SELECT through the real `DbCommand::RawQuery` gateway.
-fn run_query(db: &TestDb, sql: &str, vars: HashMap<String, serde_json::Value>) -> Vec<serde_json::Value> {
+fn run_query(
+    db: &TestDb,
+    sql: &str,
+    vars: HashMap<String, serde_json::Value>,
+) -> Vec<serde_json::Value> {
     db.cmd_tx
-        .send(DbCommand::RawQuery { sql: sql.to_string(), vars })
+        .send(DbCommand::RawQuery {
+            sql: sql.to_string(),
+            vars,
+        })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("RawQuery result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("RawQuery result")
+    {
         DbResult::QueryResult { data } => data,
         other => panic!("expected QueryResult, got {other:?}"),
     }
@@ -149,7 +201,12 @@ fn gpx_track_and_waypoint_round_trip_through_gis_tracks_select() {
     // --- Track node: mirrors gpx_bridge's build_track_draft + advance_gpx_imports ---
     let track_id = create_node(&db, &petal_id, "Test Hike", [0.0, 0.0, 0.0]);
     set_property(&db, &track_id, "gpx_type", serde_json::json!("track"));
-    set_property(&db, &track_id, "total_distance_m", serde_json::json!(1234.5));
+    set_property(
+        &db,
+        &track_id,
+        "total_distance_m",
+        serde_json::json!(1234.5),
+    );
     set_property(&db, &track_id, "elevation_gain_m", serde_json::json!(56.0));
     set_property(&db, &track_id, "elevation_loss_m", serde_json::json!(12.0));
     set_property(&db, &track_id, "duration_s", serde_json::json!(3600.0));
@@ -170,30 +227,69 @@ fn gpx_track_and_waypoint_round_trip_through_gis_tracks_select() {
     // --- Waypoint "child": mirrors gpx_bridge's build_waypoint_drafts + advance_gpx_imports ---
     let wp_id = create_node(&db, &petal_id, "Camp", [5.0, 1.0, 5.0]);
     set_property(&db, &wp_id, "gpx_type", serde_json::json!("waypoint"));
-    set_property(&db, &wp_id, "gis.annotation.title", serde_json::json!("Camp"));
-    set_property(&db, &wp_id, "gpx_track_id", serde_json::json!(track_id.clone()));
+    set_property(
+        &db,
+        &wp_id,
+        "gis.annotation.title",
+        serde_json::json!("Camp"),
+    );
+    set_property(
+        &db,
+        &wp_id,
+        "gpx_track_id",
+        serde_json::json!(track_id.clone()),
+    );
 
     // A non-GPX control node must not leak into either query.
     let _other = create_node(&db, &petal_id, "Unrelated", [0.0, 0.0, 0.0]);
 
     let track_rows = run_query(&db, TRACKS_SQL, pid_vars(&petal_id));
-    assert_eq!(track_rows.len(), 1, "exactly one track row expected: {track_rows:?}");
+    assert_eq!(
+        track_rows.len(),
+        1,
+        "exactly one track row expected: {track_rows:?}"
+    );
     let track_row = &track_rows[0];
     assert_eq!(track_row["node_id"], serde_json::json!(track_id));
     assert_eq!(track_row["display_name"], serde_json::json!("Test Hike"));
-    assert_eq!(track_row["properties"]["gpx_type"], serde_json::json!("track"));
-    assert_eq!(track_row["properties"]["total_distance_m"], serde_json::json!(1234.5));
-    assert_eq!(track_row["properties"]["elevation_gain_m"], serde_json::json!(56.0));
-    assert_eq!(track_row["properties"]["duration_s"], serde_json::json!(3600.0));
-    assert_eq!(track_row["properties"]["bounding_box"]["min_lat"], serde_json::json!(45.0));
-    assert_eq!(track_row["properties"]["bounding_box"]["max_lon"], serde_json::json!(-122.0));
+    assert_eq!(
+        track_row["properties"]["gpx_type"],
+        serde_json::json!("track")
+    );
+    assert_eq!(
+        track_row["properties"]["total_distance_m"],
+        serde_json::json!(1234.5)
+    );
+    assert_eq!(
+        track_row["properties"]["elevation_gain_m"],
+        serde_json::json!(56.0)
+    );
+    assert_eq!(
+        track_row["properties"]["duration_s"],
+        serde_json::json!(3600.0)
+    );
+    assert_eq!(
+        track_row["properties"]["bounding_box"]["min_lat"],
+        serde_json::json!(45.0)
+    );
+    assert_eq!(
+        track_row["properties"]["bounding_box"]["max_lon"],
+        serde_json::json!(-122.0)
+    );
 
     let wp_rows = run_query(&db, WAYPOINTS_SQL, pid_vars(&petal_id));
-    assert_eq!(wp_rows.len(), 1, "exactly one waypoint row expected: {wp_rows:?}");
+    assert_eq!(
+        wp_rows.len(),
+        1,
+        "exactly one waypoint row expected: {wp_rows:?}"
+    );
     let wp_row = &wp_rows[0];
     assert_eq!(wp_row["node_id"], serde_json::json!(wp_id));
     assert_eq!(wp_row["display_name"], serde_json::json!("Camp"));
-    assert_eq!(wp_row["properties"]["gis.annotation.title"], serde_json::json!("Camp"));
+    assert_eq!(
+        wp_row["properties"]["gis.annotation.title"],
+        serde_json::json!("Camp")
+    );
     assert_eq!(
         wp_row["properties"]["gpx_track_id"],
         serde_json::json!(track_id),
@@ -213,17 +309,28 @@ fn standalone_waypoint_without_track_persists_and_has_no_track_link() {
 
     let wp_id = create_node(&db, &petal_id, "Lone Marker", [1.0, 0.0, 1.0]);
     set_property(&db, &wp_id, "gpx_type", serde_json::json!("waypoint"));
-    set_property(&db, &wp_id, "gis.annotation.title", serde_json::json!("Lone Marker"));
+    set_property(
+        &db,
+        &wp_id,
+        "gis.annotation.title",
+        serde_json::json!("Lone Marker"),
+    );
 
     let wp_rows = run_query(&db, WAYPOINTS_SQL, pid_vars(&petal_id));
     assert_eq!(wp_rows.len(), 1);
     let wp_row = &wp_rows[0];
-    assert_eq!(wp_row["properties"]["gis.annotation.title"], serde_json::json!("Lone Marker"));
+    assert_eq!(
+        wp_row["properties"]["gis.annotation.title"],
+        serde_json::json!("Lone Marker")
+    );
     assert!(
         wp_row["properties"].get("gpx_track_id").is_none(),
         "standalone waypoint must not carry a gpx_track_id: {wp_row:?}"
     );
 
     let track_rows = run_query(&db, TRACKS_SQL, pid_vars(&petal_id));
-    assert!(track_rows.is_empty(), "no track node should exist: {track_rows:?}");
+    assert!(
+        track_rows.is_empty(),
+        "no track node should exist: {track_rows:?}"
+    );
 }

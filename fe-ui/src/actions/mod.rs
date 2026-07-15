@@ -28,7 +28,9 @@ use crate::terrain_map::{InstalledTilesetDto, PendingHexonOps, PetalManifest, Pe
 #[derive(Debug, Clone)]
 pub enum UiAction {
     /// Open the portal webview for the given URL (replaces WebViewOpenRequest.url).
-    OpenPortal { url: String },
+    OpenPortal {
+        url: String,
+    },
     /// Close the portal webview (replaces PortalPanelState.close).
     ClosePortal,
     /// Navigate back in portal history (replaces PortalPanelState.go_back).
@@ -39,13 +41,25 @@ pub enum UiAction {
     /// selected node's `Transform`. See AGENTS.md §inspector-transform.
     ApplyNodeTransform,
     /// Submit a SurrealQL query via the API gateway.
-    SubmitQuery { sql: String, scope: String },
+    SubmitQuery {
+        sql: String,
+        scope: String,
+    },
     /// Request loading properties for selected node.
-    LoadNodeProperties { node_id: String },
+    LoadNodeProperties {
+        node_id: String,
+    },
     /// Set a property value on a node.
-    SetNodeProperty { node_id: String, key: String, value: serde_json::Value },
+    SetNodeProperty {
+        node_id: String,
+        key: String,
+        value: serde_json::Value,
+    },
     /// Delete a property from a node.
-    DeleteNodeProperty { node_id: String, key: String },
+    DeleteNodeProperty {
+        node_id: String,
+        key: String,
+    },
     // Hexon Manager actions
     HexonInstallFromFile(PathBuf),
     HexonRemoveTileset(String),
@@ -55,20 +69,41 @@ pub enum UiAction {
     HexonRefreshList,
     HexonOpenStorageDir,
     /// Set (Some) or clear (None) the active petal's map tileset. See AGENTS.md §terrain-map.
-    PetalSetMap { petal_id: String, tileset: Option<InstalledTilesetDto> },
+    PetalSetMap {
+        petal_id: String,
+        tileset: Option<InstalledTilesetDto>,
+    },
     /// Set the active petal's map world scale (world units per real meter). See AGENTS.md §terrain-map.
-    PetalSetMapScale { petal_id: String, tileset: InstalledTilesetDto, world_scale: f64 },
+    PetalSetMapScale {
+        petal_id: String,
+        tileset: InstalledTilesetDto,
+        world_scale: f64,
+    },
     // Petal Manifest actions
-    PetalManifestSave { petal_id: String, manifest: PetalManifest },
-    PetalManifestOpen { petal_id: String, petal_name: String },
+    PetalManifestSave {
+        petal_id: String,
+        manifest: PetalManifest,
+    },
+    PetalManifestOpen {
+        petal_id: String,
+        petal_name: String,
+    },
     /// Download the given node's asset. Queued for the main binary; see
     /// `crate::asset_ops` for the pending-ops/result-status contract.
-    DownloadNodeAsset { node_id: String },
+    DownloadNodeAsset {
+        node_id: String,
+    },
     // GIS query panel + layer manager actions — see AGENTS.md §gis-query-ui.
     /// Run the "nodes with annotations" query for a petal.
-    GisQueryAnnotated { petal_id: String },
+    GisQueryAnnotated {
+        petal_id: String,
+    },
     /// Run the property key/value filter query for a petal.
-    GisQueryPropertyFilter { petal_id: String, key: String, value: serde_json::Value },
+    GisQueryPropertyFilter {
+        petal_id: String,
+        key: String,
+        value: serde_json::Value,
+    },
     /// Toggle a terrain layer's visibility/opacity on the active petal's map.
     GisSetLayer {
         petal_id: String,
@@ -77,30 +112,56 @@ pub enum UiAction {
         opacity: Option<f32>,
     },
     /// Set the active petal's splat view mode (`"mesh"|"splats"|"hybrid"`).
-    GisSetViewMode { petal_id: String, view_mode: String },
+    GisSetViewMode {
+        petal_id: String,
+        view_mode: String,
+    },
     /// Queue a GPX track file for import into the given petal. Resolved by
     /// the main binary — see `crate::gpx_ops` for the pending-ops/status
     /// contract (mirrors `DownloadNodeAsset`/`asset_ops`).
-    GpxImportFile { petal_id: String, path: PathBuf },
+    GpxImportFile {
+        petal_id: String,
+        path: PathBuf,
+    },
     // Path editor actions — see AGENTS.md §path-editor.
     /// Run the "track nodes" query for a petal (Paths tab track list).
-    PathQueryTracks { petal_id: String },
+    PathQueryTracks {
+        petal_id: String,
+    },
     /// Select a track for editing and read back its persisted `gpx_points`
     /// via `GetNodeProperties`/`NodePropertiesLoaded`.
-    PathSelectTrack { track_node_id: String },
+    PathSelectTrack {
+        track_node_id: String,
+    },
     /// Create a new (empty) track node named `name` under `petal_id`.
     /// `correlation_id` is `Some` only for the Pen auto-create (so its deferred
     /// `NodeCreated` flush can match by id); the manual "New Path" button sends
     /// `None`. See `crate::path_ops::PathOp::CreateTrack`.
-    PathCreateTrack { petal_id: String, name: String, correlation_id: Option<String> },
+    PathCreateTrack {
+        petal_id: String,
+        name: String,
+        correlation_id: Option<String>,
+    },
     /// Delete a track node and its persisted points.
-    PathDeleteTrack { track_node_id: String },
+    PathDeleteTrack {
+        track_node_id: String,
+    },
     /// Append a point at the current 3D cursor world position.
-    PathAppendPoint { track_node_id: String, position: [f32; 3] },
+    PathAppendPoint {
+        track_node_id: String,
+        position: [f32; 3],
+    },
     /// Remove the point at `index` from a track's point list.
-    PathRemovePoint { track_node_id: String, index: usize },
+    PathRemovePoint {
+        track_node_id: String,
+        index: usize,
+    },
     /// Move the point at `index` to a new world position (viewport drag commit).
-    PathMovePoint { track_node_id: String, index: usize, position: [f32; 3] },
+    PathMovePoint {
+        track_node_id: String,
+        index: usize,
+        position: [f32; 3],
+    },
     /// Create a waypoint annotation at point `index`'s position.
     PathAnnotatePoint {
         track_node_id: String,
@@ -111,7 +172,9 @@ pub enum UiAction {
     },
     /// Queue a GPX export for a track node. Resolved by the main binary —
     /// see `crate::path_ops` for the pending-ops/status contract.
-    PathExportGpx { track_node_id: String },
+    PathExportGpx {
+        track_node_id: String,
+    },
     /// track_styling_20260713: set per-track render style. Each `Some` field is
     /// written to its `gis.track.*` node property via `SetNodeProperty`; the
     /// gpx bridge re-reads and restyles the ribbon live. `None` fields are left
@@ -144,7 +207,9 @@ pub enum UiAction {
     /// Append pre-generated shape points (ellipse/circle/rectangle from
     /// `node_manager::curve`) to the currently-edited track. No-op if no track
     /// is being edited. Shape math runs panel-side; this only carries points.
-    PathAppendShape { points: Vec<[f32; 3]> },
+    PathAppendShape {
+        points: Vec<[f32; 3]>,
+    },
 }
 
 /// Centralized UI state resource.
@@ -199,7 +264,9 @@ impl UiManager {
 
     pub fn portal_hostname(&self) -> &str {
         match &self.portal {
-            PortalState::Open { cached_hostname, .. } => cached_hostname,
+            PortalState::Open {
+                cached_hostname, ..
+            } => cached_hostname,
             PortalState::Closed => "",
         }
     }
@@ -271,7 +338,12 @@ pub(crate) fn process_ui_actions(
     gis: GisPathParams,
     mut tool_panel: ResMut<crate::panels::tool_panel::ToolPanelState>,
 ) {
-    let GisPathParams { mut gis_panel, mut gpx_ops, mut path_state, mut path_ops } = gis;
+    let GisPathParams {
+        mut gis_panel,
+        mut gpx_ops,
+        mut path_state,
+        mut path_ops,
+    } = gis;
     // Fold pen-tool actions queued by `render_tool_panel` into the main queue
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
     for pen_action in tool_panel.drain_pending() {
@@ -319,7 +391,9 @@ pub(crate) fn process_ui_actions(
                             .send(fe_runtime::messages::DbCommand::UpdateNodeUrl { node_id, url })
                             .is_err()
                         {
-                            bevy::log::warn!("db_sender channel closed — UpdateNodeUrl not persisted");
+                            bevy::log::warn!(
+                                "db_sender channel closed — UpdateNodeUrl not persisted"
+                            );
                         } else {
                             ui_mgr.show_toast("URL saved", now_secs);
                         }
@@ -342,7 +416,11 @@ pub(crate) fn process_ui_actions(
             UiAction::LoadNodeProperties { node_id } => {
                 node_props::load(&db_sender, node_id);
             }
-            UiAction::SetNodeProperty { node_id, key, value } => {
+            UiAction::SetNodeProperty {
+                node_id,
+                key,
+                value,
+            } => {
                 node_props::set(&db_sender, node_id, key, value);
             }
             UiAction::DeleteNodeProperty { node_id, key } => {
@@ -370,7 +448,11 @@ pub(crate) fn process_ui_actions(
                 hexon::cancel_download(&mut ui_mgr, sync_sender.as_deref(), id);
             }
             UiAction::HexonRefreshList => {
-                hexon::refresh_list(&mut hexon_ops, sync_sender.as_deref(), nav.active_verse_id.as_deref());
+                hexon::refresh_list(
+                    &mut hexon_ops,
+                    sync_sender.as_deref(),
+                    nav.active_verse_id.as_deref(),
+                );
             }
             UiAction::HexonOpenStorageDir => {
                 hexon::open_storage_dir(&ui_mgr);
@@ -378,13 +460,26 @@ pub(crate) fn process_ui_actions(
             UiAction::PetalSetMap { petal_id, tileset } => {
                 hexon::set_petal_map(&db_sender, &mut petal_map, petal_id, tileset);
             }
-            UiAction::PetalSetMapScale { petal_id, tileset, world_scale } => {
-                hexon::set_petal_map_scale(&db_sender, &mut petal_map, petal_id, tileset, world_scale);
+            UiAction::PetalSetMapScale {
+                petal_id,
+                tileset,
+                world_scale,
+            } => {
+                hexon::set_petal_map_scale(
+                    &db_sender,
+                    &mut petal_map,
+                    petal_id,
+                    tileset,
+                    world_scale,
+                );
             }
             UiAction::PetalManifestSave { petal_id, manifest } => {
                 hexon::manifest_save(petal_id, manifest);
             }
-            UiAction::PetalManifestOpen { petal_id, petal_name } => {
+            UiAction::PetalManifestOpen {
+                petal_id,
+                petal_name,
+            } => {
                 hexon::manifest_open(&mut ui_mgr, petal_id, petal_name);
             }
             UiAction::DownloadNodeAsset { node_id } => {
@@ -393,13 +488,32 @@ pub(crate) fn process_ui_actions(
             UiAction::GisQueryAnnotated { petal_id } => {
                 gis::query_annotated(&db_sender, &mut gis_panel, petal_id);
             }
-            UiAction::GisQueryPropertyFilter { petal_id, key, value } => {
+            UiAction::GisQueryPropertyFilter {
+                petal_id,
+                key,
+                value,
+            } => {
                 gis::query_property_filter(&db_sender, &mut gis_panel, petal_id, key, value);
             }
-            UiAction::GisSetLayer { petal_id, layer_name, visible, opacity } => {
-                gis::set_layer(&db_sender, &mut petal_map, petal_id, layer_name, visible, opacity);
+            UiAction::GisSetLayer {
+                petal_id,
+                layer_name,
+                visible,
+                opacity,
+            } => {
+                gis::set_layer(
+                    &db_sender,
+                    &mut petal_map,
+                    petal_id,
+                    layer_name,
+                    visible,
+                    opacity,
+                );
             }
-            UiAction::GisSetViewMode { petal_id, view_mode } => {
+            UiAction::GisSetViewMode {
+                petal_id,
+                view_mode,
+            } => {
                 gis::set_view_mode(&db_sender, &mut petal_map, petal_id, view_mode);
             }
             UiAction::GpxImportFile { petal_id, path } => {
@@ -411,8 +525,13 @@ pub(crate) fn process_ui_actions(
             UiAction::PathSelectTrack { track_node_id } => {
                 path::select_track(&db_sender, &mut path_state, track_node_id);
             }
-            UiAction::PathCreateTrack { petal_id, name, correlation_id } => {
-                if let Err(err) = path::create_track(&mut path_ops, petal_id, name, correlation_id) {
+            UiAction::PathCreateTrack {
+                petal_id,
+                name,
+                correlation_id,
+            } => {
+                if let Err(err) = path::create_track(&mut path_ops, petal_id, name, correlation_id)
+                {
                     path_state.last_error = Some(err.to_string());
                 } else {
                     path_state.last_error = None;
@@ -424,25 +543,55 @@ pub(crate) fn process_ui_actions(
                 }
                 path::delete_track(&mut path_ops, track_node_id);
             }
-            UiAction::PathAppendPoint { track_node_id, position } => {
+            UiAction::PathAppendPoint {
+                track_node_id,
+                position,
+            } => {
                 path::append_point(&mut path_ops, &mut path_state, track_node_id, position);
             }
-            UiAction::PathRemovePoint { track_node_id, index } => {
+            UiAction::PathRemovePoint {
+                track_node_id,
+                index,
+            } => {
                 path::remove_point(&mut path_ops, &mut path_state, track_node_id, index);
             }
-            UiAction::PathMovePoint { track_node_id, index, position } => {
-                path::move_point(&mut path_ops, &mut path_state, track_node_id, index, position);
+            UiAction::PathMovePoint {
+                track_node_id,
+                index,
+                position,
+            } => {
+                path::move_point(
+                    &mut path_ops,
+                    &mut path_state,
+                    track_node_id,
+                    index,
+                    position,
+                );
             }
-            UiAction::PathAnnotatePoint { track_node_id, index, title, body, color } => {
+            UiAction::PathAnnotatePoint {
+                track_node_id,
+                index,
+                title,
+                body,
+                color,
+            } => {
                 path::annotate_point(&mut path_ops, track_node_id, index, title, body, color);
             }
             UiAction::PathExportGpx { track_node_id } => {
                 path::export_gpx(&mut path_ops, track_node_id);
             }
-            UiAction::PathSetStyle { track_node_id, color, width, visible } => {
+            UiAction::PathSetStyle {
+                track_node_id,
+                color,
+                width,
+                visible,
+            } => {
                 path::set_style(&db_sender, track_node_id, color, width, visible);
             }
-            UiAction::PathAssetApply { track_node_id, descriptor } => {
+            UiAction::PathAssetApply {
+                track_node_id,
+                descriptor,
+            } => {
                 // Persist the descriptor on the track node; `reconcile_path_asset`
                 // (verse_manager) stamps the model on the resulting property load.
                 node_props::set(
@@ -452,8 +601,18 @@ pub(crate) fn process_ui_actions(
                     descriptor.to_json(),
                 );
             }
-            UiAction::PathSmoothCurrent { mode, tension, samples_per_segment } => {
-                path::smooth_current(&mut path_ops, &mut path_state, mode, tension, samples_per_segment);
+            UiAction::PathSmoothCurrent {
+                mode,
+                tension,
+                samples_per_segment,
+            } => {
+                path::smooth_current(
+                    &mut path_ops,
+                    &mut path_state,
+                    mode,
+                    tension,
+                    samples_per_segment,
+                );
             }
             UiAction::PathAppendShape { points } => {
                 path::append_shape(&mut path_ops, &mut path_state, points);
@@ -575,7 +734,10 @@ mod tests {
             scoped_tokens_loading: false,
         });
         assert!(mgr.any_dialog_open());
-        assert!(matches!(mgr.active_dialog, ActiveDialog::EntitySettings { .. }));
+        assert!(matches!(
+            mgr.active_dialog,
+            ActiveDialog::EntitySettings { .. }
+        ));
         mgr.close_dialog();
         assert!(!mgr.any_dialog_open());
     }

@@ -49,7 +49,9 @@ pub fn is_select_only(sql: &str) -> bool {
     let sql_upper = sql_trimmed.to_uppercase();
     let blocked = sql_trimmed.contains(';')
         || !sql_upper.starts_with("SELECT")
-        || BLOCKED_KEYWORDS.iter().any(|kw| contains_keyword(&sql_upper, kw));
+        || BLOCKED_KEYWORDS
+            .iter()
+            .any(|kw| contains_keyword(&sql_upper, kw));
     !blocked
 }
 

@@ -29,7 +29,9 @@ pub fn draw_viewport_point_labels(
     if path_state.editing_track_id.is_none() || path_state.points.is_empty() {
         return;
     }
-    let Ok((camera, cam_tx)) = cameras.single() else { return };
+    let Ok((camera, cam_tx)) = cameras.single() else {
+        return;
+    };
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
     // A trackpoint carries a GPX timestamp; a Pen-authored point does not — use
@@ -42,7 +44,9 @@ pub fn draw_viewport_point_labels(
 
     for (i, point) in path_state.points.iter().enumerate() {
         let world = Vec3::new(point.position[0], point.position[1], point.position[2]);
-        let Ok(screen) = camera.world_to_viewport(cam_tx, world) else { continue };
+        let Ok(screen) = camera.world_to_viewport(cam_tx, world) else {
+            continue;
+        };
         let pos = egui::pos2(screen.x, screen.y + LABEL_OFFSET_Y);
         // Reject labels that project outside the 3-D viewport panel (e.g. behind
         // a side panel) — mirrors the gimbal's `ViewportRect` gating.

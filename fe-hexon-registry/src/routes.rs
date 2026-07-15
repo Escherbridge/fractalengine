@@ -31,11 +31,19 @@ pub struct ApiResponse<T: Serialize> {
 
 impl<T: Serialize> ApiResponse<T> {
     pub fn success(data: T) -> Self {
-        Self { ok: true, data: Some(data), error: None }
+        Self {
+            ok: true,
+            data: Some(data),
+            error: None,
+        }
     }
 
     pub fn error(msg: impl Into<String>) -> Self {
-        Self { ok: false, data: None, error: Some(msg.into()) }
+        Self {
+            ok: false,
+            data: None,
+            error: Some(msg.into()),
+        }
     }
 }
 
@@ -54,7 +62,12 @@ impl RegistryState {
         readonly: bool,
         entries: Vec<HexonIndexEntry>,
     ) -> Self {
-        Self { dir, token, readonly, index: tokio::sync::RwLock::new(entries) }
+        Self {
+            dir,
+            token,
+            readonly,
+            index: tokio::sync::RwLock::new(entries),
+        }
     }
 }
 
@@ -104,8 +117,10 @@ fn json_err(status: StatusCode, msg: impl Into<String>) -> Response {
 
 async fn health(State(state): State<Arc<RegistryState>>) -> Response {
     let count = state.index.read().await.len();
-    Json(ApiResponse::success(serde_json::json!({ "status": "ok", "indexed": count })))
-        .into_response()
+    Json(ApiResponse::success(
+        serde_json::json!({ "status": "ok", "indexed": count }),
+    ))
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,7 +140,12 @@ async fn search(
     let tags: Vec<String> = params
         .tags
         .as_deref()
-        .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .map(|t| {
+            t.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     let index = state.index.read().await;
@@ -135,11 +155,20 @@ async fn search(
             q.as_deref().is_none_or(|q| {
                 e.hexon_id.to_lowercase().contains(q)
                     || e.name.to_lowercase().contains(q)
-                    || e.description.as_deref().unwrap_or("").to_lowercase().contains(q)
+                    || e.description
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(q)
             })
         })
         .filter(|e| tags.iter().all(|t| e.tags.contains(t)))
-        .filter(|e| params.hexon_type.as_deref().is_none_or(|t| e.hexon_type == t))
+        .filter(|e| {
+            params
+                .hexon_type
+                .as_deref()
+                .is_none_or(|t| e.hexon_type == t)
+        })
         .cloned()
         .collect();
     Json(ApiResponse::success(hits)).into_response()
@@ -193,14 +222,18 @@ async fn asset(
         .get("entries")
         .and_then(|e| e.as_array())
         .and_then(|arr| {
-            arr.iter().find(|e| e.get("entry_id").and_then(|i| i.as_str()) == Some(&entry_id))
+            arr.iter()
+                .find(|e| e.get("entry_id").and_then(|i| i.as_str()) == Some(&entry_id))
         })
         .and_then(|e| e.get("asset_hash"))
         .and_then(|h| h.as_str())
         .filter(|h| !h.is_empty())
         .map(str::to_string);
     let Some(hash) = hash else {
-        return json_err(StatusCode::NOT_FOUND, format!("entry not found or has no asset: {entry_id}"));
+        return json_err(
+            StatusCode::NOT_FOUND,
+            format!("entry not found or has no asset: {entry_id}"),
+        );
     };
 
     let path = entry.path.clone();
@@ -212,7 +245,10 @@ async fn asset(
             Bytes::from(bytes),
         )
             .into_response(),
-        Ok(Err(_)) => json_err(StatusCode::NOT_FOUND, format!("blob missing for entry: {entry_id}")),
+        Ok(Err(_)) => json_err(
+            StatusCode::NOT_FOUND,
+            format!("blob missing for entry: {entry_id}"),
+        ),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -241,7 +277,9 @@ async fn download(State(state): State<Arc<RegistryState>>, Path(uri): Path<Strin
 /// Chars allowed in on-disk package names (spec `hexon_id` charset + `+` for semver build meta).
 fn safe_component(s: &str, extra: &[char]) -> bool {
     !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || extra.contains(&c))
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || extra.contains(&c)
+        })
 }
 
 /// POST /api/v1/hexons/publish — validate, persist as `{id}@{version}.hexon`, reindex.
@@ -271,13 +309,22 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
 
     let field = |k: &str| manifest.get(k).and_then(|v| v.as_str()).map(str::to_string);
     let (Some(id), Some(version)) = (field("hexon_id"), field("version")) else {
-        return json_err(StatusCode::BAD_REQUEST, "manifest missing hexon_id or version");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "manifest missing hexon_id or version",
+        );
     };
     if field("hexon_type").is_none() || field("publisher_did").is_none() {
-        return json_err(StatusCode::BAD_REQUEST, "manifest missing hexon_type or publisher_did");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "manifest missing hexon_type or publisher_did",
+        );
     }
     if !safe_component(&id, &[]) || !safe_component(&version, &['+']) {
-        return json_err(StatusCode::BAD_REQUEST, "invalid hexon_id or version characters");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid hexon_id or version characters",
+        );
     }
 
     let dest = state.dir.join(format!("{id}@{version}.hexon"));
@@ -289,10 +336,16 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
             .iter()
             .any(|e| e.hexon_id == id && e.version == version);
     if duplicate {
-        return json_err(StatusCode::CONFLICT, format!("already published: {id}@{version}"));
+        return json_err(
+            StatusCode::CONFLICT,
+            format!("already published: {id}@{version}"),
+        );
     }
     if let Err(e) = tokio::fs::write(&dest, &body).await {
-        return json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}"));
+        return json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write failed: {e}"),
+        );
     }
 
     // Full rescan keeps the index consistent with the directory contents.

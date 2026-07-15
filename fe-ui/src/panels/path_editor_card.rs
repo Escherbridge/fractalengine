@@ -48,14 +48,31 @@ pub(crate) fn path_editor_section(
     petal_id: &str,
 ) {
     if let Some(track_id) = path_state.editing_track_id.clone() {
-        render_edit_view(ui, path_state, path_status, ui_mgr, cursor_world, &track_id, petal_id);
+        render_edit_view(
+            ui,
+            path_state,
+            path_status,
+            ui_mgr,
+            cursor_world,
+            &track_id,
+            petal_id,
+        );
     } else {
         render_track_list(ui, path_state, ui_mgr, petal_id);
     }
 }
 
-fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr: &mut UiManager, petal_id: &str) {
-    ui.label(egui::RichText::new("Paths").strong().color(theme::TEXT_SECTION));
+fn render_track_list(
+    ui: &mut egui::Ui,
+    path_state: &mut PathEditorState,
+    ui_mgr: &mut UiManager,
+    petal_id: &str,
+) {
+    ui.label(
+        egui::RichText::new("Paths")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
@@ -64,7 +81,10 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
                 .hint_text("New path name")
                 .desired_width(180.0),
         );
-        if ui.add(egui::Button::new("New Path").fill(theme::BG_SAVE)).clicked() {
+        if ui
+            .add(egui::Button::new("New Path").fill(theme::BG_SAVE))
+            .clicked()
+        {
             let name = std::mem::take(&mut path_state.new_track_name_buf);
             // Manual create: correlation_id None — this isn't a pen auto-create,
             // so the bridge generates its own id and nothing flushes a pen point.
@@ -78,65 +98,105 @@ fn render_track_list(ui: &mut egui::Ui, path_state: &mut PathEditorState, ui_mgr
 
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("Tracks ({})", path_state.tracks.len())).strong().color(theme::TEXT_SECTION));
+        ui.label(
+            egui::RichText::new(format!("Tracks ({})", path_state.tracks.len()))
+                .strong()
+                .color(theme::TEXT_SECTION),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // FR-3: this button is now a manual override, not the only sync
             // path — `db_results::apply_db_results` auto re-runs the query
             // on NodeCreated/NodeDeleted/`gis.track.name` property changes.
-            let label = if path_state.tracks_pending { "Refreshing..." } else { "Refresh" };
+            let label = if path_state.tracks_pending {
+                "Refreshing..."
+            } else {
+                "Refresh"
+            };
             if ui
-                .add_enabled(!path_state.tracks_pending, egui::Button::new(label).fill(theme::BG_BUTTON))
+                .add_enabled(
+                    !path_state.tracks_pending,
+                    egui::Button::new(label).fill(theme::BG_BUTTON),
+                )
                 .clicked()
             {
-                ui_mgr.push_action(UiAction::PathQueryTracks { petal_id: petal_id.to_string() });
+                ui_mgr.push_action(UiAction::PathQueryTracks {
+                    petal_id: petal_id.to_string(),
+                });
             }
         });
     });
     ui.add_space(4.0);
 
     if let Some(err) = &path_state.last_error {
-        ui.label(egui::RichText::new(err).small().color(theme::STATUS_OFFLINE));
+        ui.label(
+            egui::RichText::new(err)
+                .small()
+                .color(theme::STATUS_OFFLINE),
+        );
         ui.add_space(4.0);
     }
 
     if path_state.tracks.is_empty() {
-        ui.label(egui::RichText::new("No paths yet.").small().color(theme::TEXT_MUTED).italics());
+        ui.label(
+            egui::RichText::new("No paths yet.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
         return;
     }
 
     let mut selected: Option<String> = None;
     let mut to_delete: Option<String> = None;
-    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-        for row in &path_state.tracks {
-            egui::Frame::NONE
-                .fill(theme::BG_PEER_ROW_EVEN)
-                .inner_margin(egui::Margin::symmetric(6, 4))
-                .corner_radius(2.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // FR-1: type glyph before the track name (recolored, small).
-                        ui.label(egui::RichText::new(GLYPH_TRACK).small().color(theme::ICON_TRACK));
-                        let label = egui::RichText::new(row.annotation_title.as_deref().unwrap_or(&row.name))
+    egui::ScrollArea::vertical()
+        .max_height(220.0)
+        .show(ui, |ui| {
+            for row in &path_state.tracks {
+                egui::Frame::NONE
+                    .fill(theme::BG_PEER_ROW_EVEN)
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .corner_radius(2.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // FR-1: type glyph before the track name (recolored, small).
+                            ui.label(
+                                egui::RichText::new(GLYPH_TRACK)
+                                    .small()
+                                    .color(theme::ICON_TRACK),
+                            );
+                            let label = egui::RichText::new(
+                                row.annotation_title.as_deref().unwrap_or(&row.name),
+                            )
                             .color(theme::TEXT_BRIGHT);
-                        if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
-                            selected = Some(row.node_id.clone());
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Delete").clicked() {
-                                to_delete = Some(row.node_id.clone());
+                            if ui
+                                .add(egui::Label::new(label).sense(egui::Sense::click()))
+                                .clicked()
+                            {
+                                selected = Some(row.node_id.clone());
                             }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("Delete").clicked() {
+                                        to_delete = Some(row.node_id.clone());
+                                    }
+                                },
+                            );
                         });
                     });
-                });
-            ui.add_space(1.0);
-        }
-    });
+                ui.add_space(1.0);
+            }
+        });
 
     if let Some(node_id) = selected {
-        ui_mgr.push_action(UiAction::PathSelectTrack { track_node_id: node_id });
+        ui_mgr.push_action(UiAction::PathSelectTrack {
+            track_node_id: node_id,
+        });
     }
     if let Some(node_id) = to_delete {
-        ui_mgr.push_action(UiAction::PathDeleteTrack { track_node_id: node_id });
+        ui_mgr.push_action(UiAction::PathDeleteTrack {
+            track_node_id: node_id,
+        });
     }
 }
 
@@ -154,10 +214,16 @@ fn render_edit_view(
     ui.horizontal(|ui| {
         if ui.small_button("\u{2190} Back").clicked() {
             path_state.stop_editing();
-            ui_mgr.push_action(UiAction::PathQueryTracks { petal_id: petal_id.to_string() });
+            ui_mgr.push_action(UiAction::PathQueryTracks {
+                petal_id: petal_id.to_string(),
+            });
             return;
         }
-        ui.label(egui::RichText::new("Editing path").strong().color(theme::TEXT_SECTION));
+        ui.label(
+            egui::RichText::new("Editing path")
+                .strong()
+                .color(theme::TEXT_SECTION),
+        );
     });
     if path_state.editing_track_id.is_none() {
         return;
@@ -172,8 +238,13 @@ fn render_edit_view(
     );
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.add(egui::Button::new("Export GPX").fill(theme::BG_SAVE)).clicked() {
-            ui_mgr.push_action(UiAction::PathExportGpx { track_node_id: track_id.to_string() });
+        if ui
+            .add(egui::Button::new("Export GPX").fill(theme::BG_SAVE))
+            .clicked()
+        {
+            ui_mgr.push_action(UiAction::PathExportGpx {
+                track_node_id: track_id.to_string(),
+            });
         }
     });
 
@@ -194,20 +265,37 @@ fn render_edit_view(
     if path_status.track_node_id.as_deref() == Some(track_id) {
         ui.add_space(4.0);
         if let Some(err) = &path_status.error {
-            ui.label(egui::RichText::new(format!("\u{2717} {err}")).small().color(theme::STATUS_OFFLINE));
+            ui.label(
+                egui::RichText::new(format!("\u{2717} {err}"))
+                    .small()
+                    .color(theme::STATUS_OFFLINE),
+            );
         } else if let Some(msg) = &path_status.message {
-            ui.label(egui::RichText::new(format!("\u{2713} {msg}")).small().color(theme::STATUS_ONLINE));
+            ui.label(
+                egui::RichText::new(format!("\u{2713} {msg}"))
+                    .small()
+                    .color(theme::STATUS_ONLINE),
+            );
         }
     }
 
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(format!("Points ({})", path_state.points.len())).strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new(format!("Points ({})", path_state.points.len()))
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
 
     if path_state.points.is_empty() {
-        ui.label(egui::RichText::new("No points yet — select the Pen tool (P) and click the viewport.").small().color(theme::TEXT_MUTED).italics());
+        ui.label(
+            egui::RichText::new("No points yet — select the Pen tool (P) and click the viewport.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
         return;
     }
 
@@ -225,55 +313,74 @@ fn render_edit_view(
     // Reuses `UiAction::PathMovePoint` (no new action) — it flows through
     // `PathOp::MovePoint` generically over all 3 position components.
     let mut to_move: Option<(usize, [f32; 3])> = None;
-    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-        for (i, point) in path_state.points.iter().enumerate() {
-            egui::Frame::NONE
-                .fill(theme::BG_PEER_ROW_EVEN)
-                .inner_margin(egui::Margin::symmetric(6, 4))
-                .corner_radius(2.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // FR-1: point glyph — filled when the point carries a GPX
-                        // timestamp, hollow when authored via the Pen (no time).
-                        let glyph = if point.time_seconds.is_some() { GLYPH_POINT } else { GLYPH_POINT_UNTIMED };
-                        ui.label(egui::RichText::new(glyph).small().color(theme::ICON_POINT));
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{i}: ({:.1}, {:.1}, {:.1})",
-                                point.position[0], point.position[1], point.position[2]
-                            ))
-                            .color(theme::TEXT_BRIGHT),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Remove").clicked() {
-                                to_remove = Some(i);
-                            }
-                            if ui.small_button("Annotate").clicked() {
-                                to_annotate = Some(i);
-                            }
-                            // Numeric height (Bevy Y) field for this point.
-                            let mut new_y = point.position[1];
-                            let resp = ui.add(
-                                egui::DragValue::new(&mut new_y).speed(0.05).prefix("Y "),
+    egui::ScrollArea::vertical()
+        .max_height(240.0)
+        .show(ui, |ui| {
+            for (i, point) in path_state.points.iter().enumerate() {
+                egui::Frame::NONE
+                    .fill(theme::BG_PEER_ROW_EVEN)
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .corner_radius(2.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // FR-1: point glyph — filled when the point carries a GPX
+                            // timestamp, hollow when authored via the Pen (no time).
+                            let glyph = if point.time_seconds.is_some() {
+                                GLYPH_POINT
+                            } else {
+                                GLYPH_POINT_UNTIMED
+                            };
+                            ui.label(egui::RichText::new(glyph).small().color(theme::ICON_POINT));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{i}: ({:.1}, {:.1}, {:.1})",
+                                    point.position[0], point.position[1], point.position[2]
+                                ))
+                                .color(theme::TEXT_BRIGHT),
                             );
-                            if resp.changed() {
-                                to_move = Some((i, [point.position[0], new_y, point.position[2]]));
-                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("Remove").clicked() {
+                                        to_remove = Some(i);
+                                    }
+                                    if ui.small_button("Annotate").clicked() {
+                                        to_annotate = Some(i);
+                                    }
+                                    // Numeric height (Bevy Y) field for this point.
+                                    let mut new_y = point.position[1];
+                                    let resp = ui.add(
+                                        egui::DragValue::new(&mut new_y).speed(0.05).prefix("Y "),
+                                    );
+                                    if resp.changed() {
+                                        to_move = Some((
+                                            i,
+                                            [point.position[0], new_y, point.position[2]],
+                                        ));
+                                    }
+                                },
+                            );
                         });
                     });
-                });
-            ui.add_space(1.0);
-        }
-    });
+                ui.add_space(1.0);
+            }
+        });
 
     if let Some(index) = to_remove {
-        ui_mgr.push_action(UiAction::PathRemovePoint { track_node_id: track_id.to_string(), index });
+        ui_mgr.push_action(UiAction::PathRemovePoint {
+            track_node_id: track_id.to_string(),
+            index,
+        });
         if path_state.annotating_index == Some(index) {
             path_state.close_annotate_form();
         }
     }
     if let Some((index, position)) = to_move {
-        ui_mgr.push_action(UiAction::PathMovePoint { track_node_id: track_id.to_string(), index, position });
+        ui_mgr.push_action(UiAction::PathMovePoint {
+            track_node_id: track_id.to_string(),
+            index,
+            position,
+        });
     }
     if let Some(index) = to_annotate {
         path_state.open_annotate_form(index);
@@ -314,7 +421,11 @@ fn render_style_controls(
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Style").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Style")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
@@ -327,8 +438,11 @@ fn render_style_controls(
             (style.color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
             (style.color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
         );
-        let resp =
-            egui::color_picker::color_edit_button_srgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque);
+        let resp = egui::color_picker::color_edit_button_srgba(
+            ui,
+            &mut rgba,
+            egui::color_picker::Alpha::Opaque,
+        );
         if resp.changed() {
             // Live feedback: mirror the picked value into `style` every frame so
             // the swatch/preview tracks the drag.
@@ -406,11 +520,17 @@ fn render_annotate_form(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label("Title");
-                ui.add(egui::TextEdit::singleline(&mut path_state.annotate_title_buf).desired_width(200.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut path_state.annotate_title_buf)
+                        .desired_width(200.0),
+                );
             });
             ui.horizontal(|ui| {
                 ui.label("Body ");
-                ui.add(egui::TextEdit::singleline(&mut path_state.annotate_body_buf).desired_width(200.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut path_state.annotate_body_buf)
+                        .desired_width(200.0),
+                );
             });
             ui.horizontal(|ui| {
                 ui.label("Color");
@@ -422,7 +542,10 @@ fn render_annotate_form(
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new("Save").fill(theme::BG_SAVE)).clicked() {
+                if ui
+                    .add(egui::Button::new("Save").fill(theme::BG_SAVE))
+                    .clicked()
+                {
                     ui_mgr.push_action(UiAction::PathAnnotatePoint {
                         track_node_id: track_id.to_string(),
                         index,
@@ -432,7 +555,10 @@ fn render_annotate_form(
                     });
                     path_state.close_annotate_form();
                 }
-                if ui.add(egui::Button::new("Cancel").fill(theme::BG_BUTTON)).clicked() {
+                if ui
+                    .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                    .clicked()
+                {
                     path_state.close_annotate_form();
                 }
             });
@@ -460,7 +586,12 @@ mod tests {
     fn glyphs_are_single_recolorable_codepoints() {
         // Each glyph is exactly one Unicode scalar in the geometric-shapes /
         // dingbats range egui recolors reliably (no color-emoji fallback).
-        for g in [GLYPH_TRACK, GLYPH_POINT, GLYPH_POINT_UNTIMED, GLYPH_WAYPOINT] {
+        for g in [
+            GLYPH_TRACK,
+            GLYPH_POINT,
+            GLYPH_POINT_UNTIMED,
+            GLYPH_WAYPOINT,
+        ] {
             assert_eq!(g.chars().count(), 1, "glyph {g:?} must be one codepoint");
         }
     }

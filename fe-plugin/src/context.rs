@@ -83,7 +83,10 @@ impl PluginContext {
     }
 
     /// Send a raw command to the plugin host.
-    pub fn send_command(&self, cmd: PluginCommand) -> Result<(), crossbeam::channel::SendError<PluginCommand>> {
+    pub fn send_command(
+        &self,
+        cmd: PluginCommand,
+    ) -> Result<(), crossbeam::channel::SendError<PluginCommand>> {
         self.tx.send(cmd)
     }
 }

@@ -211,6 +211,14 @@ and the research report's measured numbers. Binding on the implementation track:
   erasure = key destruction (crypto-shred) + local tombstones. No GDPR-hard
   erasure promise for openly-swarmed content.
 
+## Scope note (2026-07-15)
+
+- **Inherited from `hexon_path_asset_20260713`:** finishing the
+  `fe-renderer::load_to_bevy` loader stub (`fe-renderer/src/loader.rs:6-12`)
+  and wiring P2P blob fetch is formally handed off to this track (covered by
+  FR-3 placeholder contract + FR-5 pull-through); the shipped stamp path
+  bypasses the loader via direct `asset_server.load` in fe-ui.
+
 ## Out of Scope (this spec)
 
 - Implementation of any of the above — a future track once reviewed.

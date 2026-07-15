@@ -795,7 +795,9 @@ mod scene_change_tests {
 
     #[test]
     fn scene_change_node_removed_serde_roundtrip() {
-        let change = SceneChange::NodeRemoved { node_id: "n1".into() };
+        let change = SceneChange::NodeRemoved {
+            node_id: "n1".into(),
+        };
         let json = serde_json::to_string(&change).unwrap();
         assert!(json.contains("\"op\":\"node_removed\""));
         let deserialized: SceneChange = serde_json::from_str(&json).unwrap();
@@ -807,7 +809,10 @@ mod scene_change_tests {
 
     #[test]
     fn scene_change_node_renamed_serde_roundtrip() {
-        let change = SceneChange::NodeRenamed { node_id: "n1".into(), new_name: "New Name".into() };
+        let change = SceneChange::NodeRenamed {
+            node_id: "n1".into(),
+            new_name: "New Name".into(),
+        };
         let json = serde_json::to_string(&change).unwrap();
         assert!(json.contains("\"op\":\"node_renamed\""));
         let _: SceneChange = serde_json::from_str(&json).unwrap();
@@ -829,7 +834,9 @@ mod scene_change_tests {
     #[test]
     fn scene_change_broadcast_send_recv() {
         let (tx, mut rx) = tokio::sync::broadcast::channel::<SceneChange>(16);
-        let change = SceneChange::NodeRemoved { node_id: "test".into() };
+        let change = SceneChange::NodeRemoved {
+            node_id: "test".into(),
+        };
         tx.send(change.clone()).unwrap();
         let received = rx.try_recv().unwrap();
         match received {

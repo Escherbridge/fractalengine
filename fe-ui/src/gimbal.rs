@@ -67,8 +67,7 @@ pub fn gimbal_center(
     }
     if let Ok(children) = children_query.get(entity) {
         for child in children.iter() {
-            if let (Ok(child_gtx), Ok(aabb)) =
-                (g_transform_query.get(child), aabb_query.get(child))
+            if let (Ok(child_gtx), Ok(aabb)) = (g_transform_query.get(child), aabb_query.get(child))
             {
                 return Some(child_gtx.transform_point(aabb.center.into()));
             }
@@ -89,9 +88,21 @@ pub fn draw_gimbal(
         return;
     }
 
-    let cx = if highlight == Some(GimbalAxis::X) { COLOR_HOVER } else { COLOR_X };
-    let cy = if highlight == Some(GimbalAxis::Y) { COLOR_HOVER } else { COLOR_Y };
-    let cz = if highlight == Some(GimbalAxis::Z) { COLOR_HOVER } else { COLOR_Z };
+    let cx = if highlight == Some(GimbalAxis::X) {
+        COLOR_HOVER
+    } else {
+        COLOR_X
+    };
+    let cy = if highlight == Some(GimbalAxis::Y) {
+        COLOR_HOVER
+    } else {
+        COLOR_Y
+    };
+    let cz = if highlight == Some(GimbalAxis::Z) {
+        COLOR_HOVER
+    } else {
+        COLOR_Z
+    };
 
     match tool {
         // Pen is a path-drawing mode, not a transform gizmo — draw nothing.
@@ -212,14 +223,22 @@ mod tests {
 
     #[test]
     fn ring_points_buf_matches_vec_variant() {
-        for axis in [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.3, 0.8, 0.5).normalize()] {
+        for axis in [
+            Vec3::X,
+            Vec3::Y,
+            Vec3::Z,
+            Vec3::new(0.3, 0.8, 0.5).normalize(),
+        ] {
             let center = Vec3::new(1.0, -2.0, 3.0);
             let expected = ring_points(center, axis, RING_SEGMENTS);
             let mut buf = [Vec3::ZERO; RING_SEGMENTS];
             ring_points_buf(center, axis, &mut buf);
             assert_eq!(expected.len(), RING_SEGMENTS);
             for (a, b) in expected.iter().zip(buf.iter()) {
-                assert!((*a - *b).length() < 1e-6, "buf variant diverged: {a:?} vs {b:?}");
+                assert!(
+                    (*a - *b).length() < 1e-6,
+                    "buf variant diverged: {a:?} vs {b:?}"
+                );
             }
         }
     }
@@ -231,7 +250,10 @@ mod tests {
         ring_points_buf(center, Vec3::Y, &mut buf);
         for p in &buf {
             assert!(((*p - center).length() - GIMBAL_LEN).abs() < 1e-5);
-            assert!((p.y - center.y).abs() < 1e-5, "Y-axis ring must stay in the XZ plane");
+            assert!(
+                (p.y - center.y).abs() < 1e-5,
+                "Y-axis ring must stay in the XZ plane"
+            );
         }
     }
 }

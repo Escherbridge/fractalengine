@@ -2,8 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use fe_identity::NodeIdentity;
 use fe_runtime::app::{
-    ApiCommandReceiver, ApiCommandSender, BevyHandles, PendingApiRequests,
-    TransformBroadcastSender,
+    ApiCommandReceiver, ApiCommandSender, BevyHandles, PendingApiRequests, TransformBroadcastSender,
 };
 use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
@@ -51,7 +50,9 @@ fn main() {
     let node_kp = match fe_identity::load_or_generate_keypair(&secret_store, "node_keypair") {
         Ok(kp) => kp,
         Err(e) => {
-            tracing::warn!("Could not load/store keypair in secret store, generating ephemeral: {e}");
+            tracing::warn!(
+                "Could not load/store keypair in secret store, generating ephemeral: {e}"
+            );
             fe_identity::NodeKeypair::generate()
         }
     };
@@ -103,8 +104,13 @@ fn main() {
         "Starting sync thread"
     );
 
-    let _sync_thread =
-        fe_sync::spawn_sync_thread(iroh_secret, blob_store.clone(), sync_cmd_rx, sync_evt_tx, local_did);
+    let _sync_thread = fe_sync::spawn_sync_thread(
+        iroh_secret,
+        blob_store.clone(),
+        sync_cmd_rx,
+        sync_evt_tx,
+        local_did,
+    );
 
     // Phase E: bridge replication events from DB thread to sync thread.
     // try_send + drop counter so a stalled sync thread never blocks this hop
@@ -198,7 +204,8 @@ fn main() {
             .build()
             .expect("api_db_reader runtime");
         match rt.block_on(async {
-            let db = surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(DB_PATH).await?;
+            let db =
+                surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(DB_PATH).await?;
             db.use_ns("fractalengine").use_db("fractalengine").await?;
             Ok::<_, surrealdb::Error>(db)
         }) {
@@ -262,15 +269,13 @@ fn main() {
                 tracing::info!("Scene change bridge started — feeding EntityStore");
                 loop {
                     match entity_change_rx.recv().await {
-                        Ok(change) => {
-                            match scene_change_tx_bevy.try_send(change) {
-                                Ok(()) => {}
-                                Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                    tracing::warn!("Scene change bridge: channel full — dropping");
-                                }
-                                Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
+                        Ok(change) => match scene_change_tx_bevy.try_send(change) {
+                            Ok(()) => {}
+                            Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                tracing::warn!("Scene change bridge: channel full — dropping");
                             }
-                        }
+                            Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
+                        },
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!("Scene change bridge lagged by {n}");
                         }
@@ -289,7 +294,8 @@ fn main() {
 
     // Bridge: tokio broadcast → crossbeam channel so Bevy can poll inbound
     // API transform updates without a tokio runtime.
-    let (inbound_tx, inbound_rx) = crossbeam::channel::bounded::<fe_runtime::messages::TransformUpdate>(256);
+    let (inbound_tx, inbound_rx) =
+        crossbeam::channel::bounded::<fe_runtime::messages::TransformUpdate>(256);
     {
         let mut rx = transform_broadcast_tx.subscribe();
         std::thread::spawn(move || {
@@ -332,7 +338,10 @@ fn main() {
     app.init_resource::<PendingApiRequests>();
     app.add_systems(
         bevy::prelude::Update,
-        (fe_runtime::app::drain_api_commands, drain_scene_changes_to_store),
+        (
+            fe_runtime::app::drain_api_commands,
+            drain_scene_changes_to_store,
+        ),
     );
 
     // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
@@ -343,11 +352,16 @@ fn main() {
     // Splat view: synthesized terrain splats + Mesh/Splats/Hybrid view modes.
     app.add_plugins(fe_terrain::splat::SplatPlugin);
     if let Some(ref registry) = tileset_registry {
-        app.insert_resource(fe_terrain::petal_binding::SharedTilesetRegistry(registry.clone()));
+        app.insert_resource(fe_terrain::petal_binding::SharedTilesetRegistry(
+            registry.clone(),
+        ));
     }
     app.add_systems(
         bevy::prelude::Update,
-        (terrain_bridge::bridge_petal_terrain, terrain_bridge::drain_hexon_ops),
+        (
+            terrain_bridge::bridge_petal_terrain,
+            terrain_bridge::drain_hexon_ops,
+        ),
     );
     // Asset-download bridge: drains fe-ui's queued node-asset downloads, copying
     // resolved blobs into the user's downloads folder. See src/AGENTS.md §assets.
@@ -459,4 +473,3 @@ fn drain_scene_changes_to_store(
         store.apply_scene_change(&store_change, now_ms);
     }
 }
-

@@ -88,7 +88,8 @@ fn translate_ilike(sql: &str) -> String {
         // Walk backward from ILIKE to find the column identifier.
         let before = &sql[cursor..pos];
         let trimmed = before.trim_end();
-        let col_start = trimmed.rfind(|c: char| !c.is_alphanumeric() && c != '_')
+        let col_start = trimmed
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
             .map(|i| i + 1)
             .unwrap_or(0);
         let col = &trimmed[col_start..];
@@ -178,7 +179,8 @@ fn translate_comments(sql: &str) -> String {
             in_single_quote = false;
             result.push(chars[i]);
             i += 1;
-        } else if !in_single_quote && i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '/' {
+        } else if !in_single_quote && i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '/'
+        {
             result.push_str("--");
             i += 2;
         } else {
@@ -207,8 +209,7 @@ fn find_keyword_at(haystack: &str, keyword: &str, from: usize) -> Option<usize> 
     while pos + kw_len <= bytes.len() {
         if let Some(idx) = haystack[pos..].find(keyword) {
             let abs = pos + idx;
-            let before_ok =
-                abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
+            let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
             let after_ok =
                 abs + kw_len >= bytes.len() || !bytes[abs + kw_len].is_ascii_alphanumeric();
             if before_ok && after_ok {
@@ -262,7 +263,10 @@ mod tests {
             !out.contains("EXCLUDE"),
             "EXCLUDE clause should be removed, got: {out}"
         );
-        assert!(out.contains("column exclusion stripped"), "should leave a comment");
+        assert!(
+            out.contains("column exclusion stripped"),
+            "should leave a comment"
+        );
         assert!(out.contains("SELECT *"));
         assert!(out.contains("FROM nodes"));
     }
@@ -310,7 +314,10 @@ mod tests {
         let input = "SELECT * FROM nodes WHERE name ILIKE '%foo%'";
         let out = translate(input);
         assert!(!out.to_uppercase().contains("ILIKE"), "got: {out}");
-        assert!(out.contains("lower(name) LIKE lower('%foo%')"), "got: {out}");
+        assert!(
+            out.contains("lower(name) LIKE lower('%foo%')"),
+            "got: {out}"
+        );
     }
 
     #[test]
@@ -336,8 +343,7 @@ mod tests {
 
     #[test]
     fn translate_combined() {
-        let input =
-            "SELECT * EXCLUDE (petal_id) FROM nodes WHERE name ILIKE '%test%' // filter";
+        let input = "SELECT * EXCLUDE (petal_id) FROM nodes WHERE name ILIKE '%test%' // filter";
         let out = translate(input);
         assert!(!out.to_uppercase().contains(" ILIKE "), "got: {out}");
         assert!(!out.contains("//"), "got: {out}");

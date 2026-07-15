@@ -109,3 +109,31 @@ track's acceptance criteria. `role_level.rs` is now a re-export shim: the
 canonical `RoleLevel` moved to `fe-policy` (see fe-policy/AGENTS.md §role-level)
 to avoid a dependency cycle; `fe_database::RoleLevel` paths still resolve to
 the same type.
+
+## §iot-readings (iot_spatial_reporting_20260714)
+
+`iot_reading` is the first real sensor-reading store (fe-terrain's "IoT"
+modules are path-tracking/animation only). Design decisions:
+
+- **No geometry on the reading row.** Position joins through the anchor
+  `node_id` — spatial queries filter
+  `node_id IN (SELECT VALUE node_id FROM node WHERE <spatial predicate>)`
+  (see fe-query `builder/timeseries.rs`). This keeps IoT-frequency inserts
+  on the cheap `InsertBuilder` path; §geometry-inserts does not apply.
+- **`petal_id` is denormalized onto every row** so fe-api's
+  `build_scope_filter`/`inject_scope_filter` scope guard applies to
+  `FROM iot_reading` exactly as it does to `FROM node`.
+- **Three timestamps.** `recorded_at` (RFC-3339 UTC, sensor time, humans),
+  `recorded_at_ms` (epoch-ms i64 — the canonical range/window filter column,
+  indexed via `idx_iot_reading_series`), `hlc_timestamp` (packed HLC,
+  ingestion order / distributed merge, same convention as `node_log`).
+- **Append-only, no derived counters.** Unlike `node_log.row_version`, no
+  row derives state from prior rows, so `handlers::iot_reading::insert_readings`
+  is safe to call from *any* runtime — including fe-api's multi-thread tokio
+  via `db_reader` — without the DB-thread single-writer invariant. The batch
+  is all-or-nothing at the validation level (every anchor checked against the
+  petal, every timestamp parsed, before the first insert); a mid-batch DB
+  error can still leave a partial batch (acceptable: rows are independent
+  facts, and the caller gets an error to retry idempotently-enough).
+- Errors are typed (`IotIngestError`, thiserror) so fe-api maps real HTTP
+  statuses instead of string-sniffing.

@@ -286,7 +286,11 @@ impl IrohDocsReplicator {
 impl VerseReplicator for IrohDocsReplicator {
     fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()> {
         // TODO(iroh-0.35): route through the real iroh-docs Doc when available.
-        let backend = if self.engine_holder.is_available() { "iroh-docs" } else { "mock fallback" };
+        let backend = if self.engine_holder.is_available() {
+            "iroh-docs"
+        } else {
+            "mock fallback"
+        };
         tracing::debug!(ns = %self.namespace_id, key = %format!("{table}/{record_id}"), backend, "IrohDocsReplicator::write_row");
         self.inner.write_row(table, record_id, data)
     }
@@ -541,7 +545,8 @@ mod tests {
                 "local-author".to_string(),
             );
             let mut rx = repl.subscribe().unwrap();
-            repl.write_row("node", "n1", b"{\"name\":\"test\"}").unwrap();
+            repl.write_row("node", "n1", b"{\"name\":\"test\"}")
+                .unwrap();
             let change = rx.try_recv().unwrap();
             assert_eq!(change.table, "node");
             assert_eq!(change.record_id, "n1");
@@ -570,11 +575,19 @@ mod tests {
     #[test]
     fn hlc_conflict_resolution() {
         // Remote is newer — apply
-        assert!(IrohPetalReplicator::should_apply_remote(200, 100, "author-b", "author-a"));
+        assert!(IrohPetalReplicator::should_apply_remote(
+            200, 100, "author-b", "author-a"
+        ));
         // Remote is older — discard
-        assert!(!IrohPetalReplicator::should_apply_remote(50, 100, "author-b", "author-a"));
+        assert!(!IrohPetalReplicator::should_apply_remote(
+            50, 100, "author-b", "author-a"
+        ));
         // Equal HLC, higher author wins
-        assert!(IrohPetalReplicator::should_apply_remote(100, 100, "author-b", "author-a"));
-        assert!(!IrohPetalReplicator::should_apply_remote(100, 100, "author-a", "author-b"));
+        assert!(IrohPetalReplicator::should_apply_remote(
+            100, 100, "author-b", "author-a"
+        ));
+        assert!(!IrohPetalReplicator::should_apply_remote(
+            100, 100, "author-a", "author-b"
+        ));
     }
 }

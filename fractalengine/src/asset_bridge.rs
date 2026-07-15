@@ -1,9 +1,9 @@
 //! Bridges fe-ui's queued node-asset download ops into the local blob store.
 //! See src/AGENTS.md §assets for the resolve → dialog → copy → status-writeback contract.
 
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 
 use bevy::prelude::*;
 
@@ -167,7 +167,11 @@ fn sanitized_file_name(node_name: &str, hash_hex: &str, ext: &str) -> String {
         })
         .collect();
     let trimmed = sanitized.trim().trim_matches('.').trim();
-    let base = if trimmed.is_empty() { hash_hex } else { trimmed };
+    let base = if trimmed.is_empty() {
+        hash_hex
+    } else {
+        trimmed
+    };
     if ext.is_empty() {
         base.to_string()
     } else {
@@ -185,7 +189,10 @@ fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
         return candidate;
     }
     let path = Path::new(file_name);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(file_name);
     let ext = path.extension().and_then(|s| s.to_str());
     for n in 1..10_000 {
         let name = match ext {

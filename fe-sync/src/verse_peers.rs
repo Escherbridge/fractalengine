@@ -90,14 +90,8 @@ impl VersePeers {
     }
 
     /// Iterate over all connected peer DIDs for the given verse.
-    pub fn iter_verse<'a>(
-        &'a self,
-        verse_id: &str,
-    ) -> impl Iterator<Item = &'a String> {
-        self.peers
-            .get(verse_id)
-            .into_iter()
-            .flat_map(|s| s.iter())
+    pub fn iter_verse<'a>(&'a self, verse_id: &str) -> impl Iterator<Item = &'a String> {
+        self.peers.get(verse_id).into_iter().flat_map(|s| s.iter())
     }
 
     /// Check if no peers are connected to the given verse.

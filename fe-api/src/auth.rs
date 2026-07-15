@@ -23,8 +23,8 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     };
 
-    let claims = verify_api_token(token, &state.verifying_key)
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let claims =
+        verify_api_token(token, &state.verifying_key).map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     // Check revocation cache
     {

@@ -79,10 +79,7 @@ pub fn mint_api_token(
 /// Verify an API token and extract its claims.
 ///
 /// Checks signature, expiration, and that `token_type == "api"`.
-pub fn verify_api_token(
-    token: &str,
-    issuer_pub_key: &VerifyingKey,
-) -> anyhow::Result<ApiClaims> {
+pub fn verify_api_token(token: &str, issuer_pub_key: &VerifyingKey) -> anyhow::Result<ApiClaims> {
     ensure_crypto_provider();
     let raw = issuer_pub_key.to_bytes().to_vec();
     let decoding_key = DecodingKey::from_ed_der(&raw);

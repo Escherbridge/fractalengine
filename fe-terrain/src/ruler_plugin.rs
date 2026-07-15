@@ -27,7 +27,9 @@ pub struct RulerSettings {
 
 impl Default for RulerSettings {
     fn default() -> Self {
-        Self { show_scale_bar: true }
+        Self {
+            show_scale_bar: true,
+        }
     }
 }
 

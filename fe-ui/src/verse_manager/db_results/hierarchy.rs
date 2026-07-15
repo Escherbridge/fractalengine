@@ -18,7 +18,9 @@ pub(super) fn handle_seeded(db_sender: &DbCommandSender) {
 /// `VerseJoined`: reload the hierarchy to pick up the joined verse.
 pub(super) fn handle_verse_joined(db_sender: &DbCommandSender) {
     if db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
-        bevy::log::error!("db_sender channel closed after VerseJoined — DB thread may have crashed");
+        bevy::log::error!(
+            "db_sender channel closed after VerseJoined — DB thread may have crashed"
+        );
     }
 }
 
@@ -28,7 +30,9 @@ pub(super) fn handle_database_reset(verse_mgr: &mut VerseManager, db_sender: &Db
     verse_mgr.verses.clear();
     verse_mgr.rebuild_node_index();
     if db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
-        bevy::log::error!("db_sender channel closed after DatabaseReset — DB thread may have crashed");
+        bevy::log::error!(
+            "db_sender channel closed after DatabaseReset — DB thread may have crashed"
+        );
     }
 }
 
@@ -60,7 +64,8 @@ pub(super) fn handle_hierarchy_loaded(
                         nav.active_petal_id = Some(p.id.clone());
                         bevy::log::info!(
                             "Auto-navigated to first populated petal: {}/{}",
-                            f.name, p.name
+                            f.name,
+                            p.name
                         );
                         break 'find_petal;
                     }
@@ -78,39 +83,51 @@ pub(super) fn handle_hierarchy_loaded(
             name: v.name.clone(),
             namespace_id: v.namespace_id.clone(),
             expanded: true,
-            fractals: v.fractals.iter().map(|f| FractalEntry {
-                id: f.id.clone(),
-                name: f.name.clone(),
-                expanded: true,
-                petals: f.petals.iter().map(|p| PetalEntry {
-                    id: p.id.clone(),
-                    name: p.name.clone(),
+            fractals: v
+                .fractals
+                .iter()
+                .map(|f| FractalEntry {
+                    id: f.id.clone(),
+                    name: f.name.clone(),
                     expanded: true,
-                    nodes: p.nodes.iter().map(|n| {
-                        if active_petal.as_deref() == Some(n.petal_id.as_str()) {
-                            if let Some(ref ap) = n.asset_path {
-                                super::super::spawn::spawn_node_entity(
-                                    commands,
-                                    asset_server,
-                                    &n.id,
-                                    &n.petal_id,
-                                    &n.name,
-                                    n.position,
-                                    ap,
-                                );
-                            }
-                        }
-                        NodeEntry {
-                            id: n.id.clone(),
-                            name: n.name.clone(),
-                            has_asset: n.has_asset,
-                            position: n.position,
-                            webpage_url: n.webpage_url.clone(),
-                            asset_path: n.asset_path.clone(),
-                        }
-                    }).collect(),
-                }).collect(),
-            }).collect(),
+                    petals: f
+                        .petals
+                        .iter()
+                        .map(|p| PetalEntry {
+                            id: p.id.clone(),
+                            name: p.name.clone(),
+                            expanded: true,
+                            nodes: p
+                                .nodes
+                                .iter()
+                                .map(|n| {
+                                    if active_petal.as_deref() == Some(n.petal_id.as_str()) {
+                                        if let Some(ref ap) = n.asset_path {
+                                            super::super::spawn::spawn_node_entity(
+                                                commands,
+                                                asset_server,
+                                                &n.id,
+                                                &n.petal_id,
+                                                &n.name,
+                                                n.position,
+                                                ap,
+                                            );
+                                        }
+                                    }
+                                    NodeEntry {
+                                        id: n.id.clone(),
+                                        name: n.name.clone(),
+                                        has_asset: n.has_asset,
+                                        position: n.position,
+                                        webpage_url: n.webpage_url.clone(),
+                                        asset_path: n.asset_path.clone(),
+                                    }
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
         })
         .collect();
     verse_mgr.rebuild_node_index();
@@ -139,7 +156,12 @@ pub(super) fn handle_verse_created(id: &str, name: &str, verse_mgr: &mut VerseMa
 }
 
 /// `FractalCreated`: append an empty fractal under its verse.
-pub(super) fn handle_fractal_created(id: &str, verse_id: &str, name: &str, verse_mgr: &mut VerseManager) {
+pub(super) fn handle_fractal_created(
+    id: &str,
+    verse_id: &str,
+    name: &str,
+    verse_mgr: &mut VerseManager,
+) {
     if let Some(verse) = verse_mgr.find_verse_mut(verse_id) {
         verse.fractals.push(FractalEntry {
             id: id.to_string(),
@@ -151,7 +173,12 @@ pub(super) fn handle_fractal_created(id: &str, verse_id: &str, name: &str, verse
 }
 
 /// `PetalCreated`: append an empty petal under its fractal.
-pub(super) fn handle_petal_created(id: &str, fractal_id: &str, name: &str, verse_mgr: &mut VerseManager) {
+pub(super) fn handle_petal_created(
+    id: &str,
+    fractal_id: &str,
+    name: &str,
+    verse_mgr: &mut VerseManager,
+) {
     for verse in verse_mgr.verses.iter_mut() {
         if let Some(f) = verse.fractals.iter_mut().find(|f| f.id == fractal_id) {
             f.petals.push(PetalEntry {

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use axum_extra::extract::Multipart;
 use axum::extract::{Path, Query, State};
 use axum::Extension;
 use axum::Json;
+use axum_extra::extract::Multipart;
 use fe_hexon::manifest::HexonKind;
 use fe_hexon::package::HexonPackage;
 use fe_identity::api_token::ApiClaims;
@@ -11,8 +11,8 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::auth::require_role;
-use crate::types::ApiResponse;
 use crate::server::ApiState;
+use crate::types::ApiResponse;
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -145,7 +145,9 @@ fn to_installed_dto(ic: &fe_hexon::manifest::InstalledCrate) -> InstalledCrateDt
 // State access
 // ---------------------------------------------------------------------------
 
-fn get_registry(state: &ApiState) -> Option<Arc<std::sync::Mutex<fe_hexon::registry::HexonRegistry>>> {
+fn get_registry(
+    state: &ApiState,
+) -> Option<Arc<std::sync::Mutex<fe_hexon::registry::HexonRegistry>>> {
     state.hexon_registry.clone()
 }
 
@@ -298,12 +300,16 @@ pub async fn search_crates(
         return err("hexon registry not configured");
     };
 
-    let tags: Vec<&str> = query.tags
+    let tags: Vec<&str> = query
+        .tags
         .as_ref()
         .map(|t| t.split(',').collect::<Vec<_>>())
         .unwrap_or_default();
 
-    let kind = query.kind.as_ref().and_then(|k| k.parse::<HexonKind>().ok());
+    let kind = query
+        .kind
+        .as_ref()
+        .and_then(|k| k.parse::<HexonKind>().ok());
 
     let reg = registry.lock().unwrap();
     let manifests = reg.search_local(&query.q, &tags, kind);
@@ -401,23 +407,25 @@ pub async fn get_crate_asset(
     };
 
     let Some(entry) = installed.entries.iter().find(|e| e.entry_id == entry_id) else {
-        return err(&format!("entry {} not found in crate {}", entry_id, hexon_uri));
+        return err(&format!(
+            "entry {} not found in crate {}",
+            entry_id, hexon_uri
+        ));
     };
 
     // Check if blob exists in store
     match reg.get_blob_path(&entry.asset_hash) {
-        Some(path) => {
-            ok(serde_json::json!({
-                "entry_id": entry_id,
-                "asset_hash": entry.asset_hash,
-                "format": entry.format,
-                "blob_path": path.to_string_lossy(),
-                "available": true
-            }))
-        }
-        None => {
-            err(&format!("asset blob {} not available in store", entry.asset_hash))
-        }
+        Some(path) => ok(serde_json::json!({
+            "entry_id": entry_id,
+            "asset_hash": entry.asset_hash,
+            "format": entry.format,
+            "blob_path": path.to_string_lossy(),
+            "available": true
+        })),
+        None => err(&format!(
+            "asset blob {} not available in store",
+            entry.asset_hash
+        )),
     }
 }
 
@@ -448,12 +456,16 @@ pub async fn available_crates(
         return err("hexon registry not configured");
     };
 
-    let tags: Vec<&str> = query.tags
+    let tags: Vec<&str> = query
+        .tags
         .as_ref()
         .map(|t| t.split(',').collect::<Vec<_>>())
         .unwrap_or_default();
 
-    let kind = query.kind.as_ref().and_then(|k| k.parse::<HexonKind>().ok());
+    let kind = query
+        .kind
+        .as_ref()
+        .and_then(|k| k.parse::<HexonKind>().ok());
 
     let reg = registry.lock().unwrap();
 
@@ -461,7 +473,7 @@ pub async fn available_crates(
     let local_manifests = reg.search_local(&query.q, &tags, kind);
     let installed_uris: std::collections::HashSet<String> = local_manifests
         .iter()
-        .map(|m| fe_hexon::package::hexon_uri(m))
+        .map(fe_hexon::package::hexon_uri)
         .collect();
 
     let mut results: Vec<AvailableCrateDto> = local_manifests
@@ -477,7 +489,11 @@ pub async fn available_crates(
     if let Some(ref announcement_store) = state.announcement_store {
         let store = announcement_store.lock().unwrap();
         let search_query = fe_hexon::p2p::SearchQuery {
-            query: if query.q.is_empty() { None } else { Some(query.q.clone()) },
+            query: if query.q.is_empty() {
+                None
+            } else {
+                Some(query.q.clone())
+            },
             tags: tags.iter().map(|t| t.to_string()).collect(),
             kind,
         };

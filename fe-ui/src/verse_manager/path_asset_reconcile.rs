@@ -66,9 +66,15 @@ pub(super) fn reconcile_path_asset(
     mut commands: Commands,
     existing: Query<(Entity, &PathAssetInstance)>,
 ) {
-    let Some(petal_id) = nav.active_petal_id.as_deref() else { return };
-    let Some(track_id) = path_state.editing_track_id.as_deref() else { return };
-    let Some(descriptor) = path_state.edited_track_path_asset.clone() else { return };
+    let Some(petal_id) = nav.active_petal_id.as_deref() else {
+        return;
+    };
+    let Some(track_id) = path_state.editing_track_id.as_deref() else {
+        return;
+    };
+    let Some(descriptor) = path_state.edited_track_path_asset.clone() else {
+        return;
+    };
 
     let points: Vec<[f32; 3]> = path_state.points.iter().map(|p| p.position).collect();
 
@@ -106,7 +112,10 @@ pub(super) fn reconcile_path_asset(
 
     bevy::log::debug!(
         "Stamped {} instances of '{}' along track {} (petal {})",
-        stamped, descriptor.asset_path, track_id, petal_id
+        stamped,
+        descriptor.asset_path,
+        track_id,
+        petal_id
     );
     applied.remember(track_id, descriptor, fingerprint);
 }
@@ -149,7 +158,12 @@ fn cumulative_distances(points: &[[f32; 3]]) -> (Vec<f32>, f32) {
 
 /// Interpolated position at `progress` (clamped 0..1) along the path by
 /// arc length. Empty → origin; single point → that point.
-fn position_at_progress(points: &[[f32; 3]], cumdist: &[f32], total: f32, progress: f32) -> [f32; 3] {
+fn position_at_progress(
+    points: &[[f32; 3]],
+    cumdist: &[f32],
+    total: f32,
+    progress: f32,
+) -> [f32; 3] {
     match points.len() {
         0 => return [0.0, 0.0, 0.0],
         1 => return points[0],
@@ -168,7 +182,11 @@ fn position_at_progress(points: &[[f32; 3]], cumdist: &[f32], total: f32, progre
     let seg_start = cumdist[seg];
     let seg_end = cumdist[seg + 1];
     let seg_len = seg_end - seg_start;
-    let t = if seg_len > 1e-9 { (target - seg_start) / seg_len } else { 0.0 };
+    let t = if seg_len > 1e-9 {
+        (target - seg_start) / seg_len
+    } else {
+        0.0
+    };
 
     let a = &points[seg];
     let b = &points[seg + 1];
@@ -188,7 +206,12 @@ const MAX_STAMPS: usize = 4096;
 /// `FixedCount`: `count` values evenly across the path. Guards degenerate
 /// inputs (empty path, non-positive spacing, count 0/1) without dividing by
 /// zero, and saturates at [`MAX_STAMPS`].
-fn sample_progresses(points: &[[f32; 3]], descriptor: &PathAssetDescriptor, total: f32) -> Vec<f32> {
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN spacing/total must take the degenerate branch
+fn sample_progresses(
+    points: &[[f32; 3]],
+    descriptor: &PathAssetDescriptor,
+    total: f32,
+) -> Vec<f32> {
     if points.is_empty() {
         return Vec::new();
     }
@@ -223,6 +246,7 @@ fn sample_progresses(points: &[[f32; 3]], descriptor: &PathAssetDescriptor, tota
 /// `Quat::from_rotation_y`. Uses the tangent from `progress` toward a point
 /// slightly ahead so the model's -Z forward (glTF convention) points down the
 /// path. Returns 0.0 for degenerate paths.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN total must take the degenerate branch
 fn tangent_yaw(points: &[[f32; 3]], cumdist: &[f32], total: f32, progress: f32) -> f32 {
     if points.len() < 2 || !(total > 0.0) {
         return 0.0;
@@ -254,7 +278,10 @@ fn tangent_yaw(points: &[[f32; 3]], cumdist: &[f32], total: f32, progress: f32) 
 
 /// The full set of `(position, yaw)` stamp transforms for a descriptor over a
 /// path. `yaw` is meaningful only when `descriptor.tangent_align`.
-fn sample_transforms(points: &[[f32; 3]], descriptor: &PathAssetDescriptor) -> Vec<([f32; 3], f32)> {
+fn sample_transforms(
+    points: &[[f32; 3]],
+    descriptor: &PathAssetDescriptor,
+) -> Vec<([f32; 3], f32)> {
     let (cumdist, total) = cumulative_distances(points);
     sample_progresses(points, descriptor, total)
         .into_iter()
@@ -322,7 +349,10 @@ mod tests {
         assert_eq!(position_at_progress(&p, &cum, total, 0.0), [0.0, 0.0, 0.0]);
         assert_eq!(position_at_progress(&p, &cum, total, 1.0), [20.0, 0.0, 0.0]);
         let mid = position_at_progress(&p, &cum, total, 0.5);
-        assert!((mid[0] - 10.0).abs() < 1e-4, "50% of 20 = 10 along X, got {mid:?}");
+        assert!(
+            (mid[0] - 10.0).abs() < 1e-4,
+            "50% of 20 = 10 along X, got {mid:?}"
+        );
     }
 
     #[test]
@@ -330,7 +360,10 @@ mod tests {
         assert_eq!(position_at_progress(&[], &[], 0.0, 0.5), [0.0, 0.0, 0.0]);
         let single = [[5.0, 6.0, 7.0]];
         let (cum, total) = cumulative_distances(&single);
-        assert_eq!(position_at_progress(&single, &cum, total, 0.3), [5.0, 6.0, 7.0]);
+        assert_eq!(
+            position_at_progress(&single, &cum, total, 0.3),
+            [5.0, 6.0, 7.0]
+        );
     }
 
     #[test]
@@ -357,7 +390,11 @@ mod tests {
     fn fixed_spacing_zero_spacing_returns_endpoints() {
         let d = desc(SpacingMode::FixedSpacing, 0.0, 0, false);
         let out = sample_transforms(&straight_path(), &d);
-        assert_eq!(out.len(), 2, "zero spacing must not divide-by-zero; endpoints only");
+        assert_eq!(
+            out.len(),
+            2,
+            "zero spacing must not divide-by-zero; endpoints only"
+        );
         assert_eq!(out[0].0, [0.0, 0.0, 0.0]);
         assert_eq!(out[1].0, [20.0, 0.0, 0.0]);
     }
@@ -431,7 +468,10 @@ mod tests {
         let p = straight_path();
         let (cum, total) = cumulative_distances(&p);
         let yaw = tangent_yaw(&p, &cum, total, 0.0);
-        assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "got {yaw}");
+        assert!(
+            (yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "got {yaw}"
+        );
     }
 
     #[test]
@@ -441,7 +481,10 @@ mod tests {
         let (cum, total) = cumulative_distances(&p);
         let yaw_start = tangent_yaw(&p, &cum, total, 0.0);
         let yaw_end = tangent_yaw(&p, &cum, total, 1.0);
-        assert!((yaw_start - std::f32::consts::FRAC_PI_2).abs() < 1e-2, "start heads +X, got {yaw_start}");
+        assert!(
+            (yaw_start - std::f32::consts::FRAC_PI_2).abs() < 1e-2,
+            "start heads +X, got {yaw_start}"
+        );
         assert!(yaw_end.abs() < 1e-2, "end heads +Z (yaw~0), got {yaw_end}");
     }
 
@@ -458,7 +501,10 @@ mod tests {
     fn fingerprint_sensitive_to_order() {
         let mut reversed = straight_path();
         reversed.reverse();
-        assert_ne!(points_fingerprint(&straight_path()), points_fingerprint(&reversed));
+        assert_ne!(
+            points_fingerprint(&straight_path()),
+            points_fingerprint(&reversed)
+        );
     }
 
     #[test]
@@ -466,13 +512,25 @@ mod tests {
         let d = desc(SpacingMode::FixedSpacing, 5.0, 0, true);
         let fp = points_fingerprint(&straight_path());
         let mut applied = PathAssetApplied::default();
-        assert!(!applied.matches("track-1", &d, fp), "empty gate never matches");
+        assert!(
+            !applied.matches("track-1", &d, fp),
+            "empty gate never matches"
+        );
         applied.remember("track-1", d.clone(), fp);
         assert!(applied.matches("track-1", &d, fp), "identical inputs match");
-        assert!(!applied.matches("track-2", &d, fp), "different track re-stamps");
+        assert!(
+            !applied.matches("track-2", &d, fp),
+            "different track re-stamps"
+        );
         let mut d2 = d.clone();
         d2.spacing_value = 6.0;
-        assert!(!applied.matches("track-1", &d2, fp), "changed descriptor re-stamps");
-        assert!(!applied.matches("track-1", &d, fp ^ 1), "changed points re-stamp");
+        assert!(
+            !applied.matches("track-1", &d2, fp),
+            "changed descriptor re-stamps"
+        );
+        assert!(
+            !applied.matches("track-1", &d, fp ^ 1),
+            "changed points re-stamp"
+        );
     }
 }

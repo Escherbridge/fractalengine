@@ -18,19 +18,11 @@ pub enum LayerType {
     /// Satellite imagery texture layer.
     Satellite,
     /// GPX track overlay.
-    GpxTrack {
-        node_id: String,
-        color_mode: String,
-    },
+    GpxTrack { node_id: String, color_mode: String },
     /// GeoJSON feature overlay.
-    GeoJsonOverlay {
-        source_path: String,
-    },
+    GeoJsonOverlay { source_path: String },
     /// Kernel-density heatmap.
-    Heatmap {
-        radius_m: f32,
-        color_ramp: String,
-    },
+    Heatmap { radius_m: f32, color_ramp: String },
     /// Waypoint marker collection.
     Waypoints,
 }
@@ -149,11 +141,7 @@ impl LayerStack {
 
     /// Get all visible layers sorted by z-order (lowest first).
     pub fn get_visible_layers(&self) -> Vec<&MapLayer> {
-        let mut visible: Vec<&MapLayer> = self
-            .layers
-            .iter()
-            .filter(|l| l.visible)
-            .collect();
+        let mut visible: Vec<&MapLayer> = self.layers.iter().filter(|l| l.visible).collect();
         visible.sort_by_key(|l| l.z_order);
         visible
     }

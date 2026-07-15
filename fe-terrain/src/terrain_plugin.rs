@@ -4,13 +4,12 @@ use std::collections::HashSet;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::prelude::*;
 use bevy::prelude::Projection as CameraProjection;
+use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
 use crate::iot::{TrackRouteMap, TrackStyleMap};
-use crate::mesh::track::{track_mesh, ColorMode as TrackColorMode};
 use crate::layers::{LayerId, LayerStack, LayerType};
 use crate::lod_ring::{
     max_ring_radius_for_budget, ring_offsets, ring_radius_tiles, spawn_despawn_radii,
@@ -19,6 +18,7 @@ use crate::lod_ring::{
 };
 use crate::mesh::interp::upsample_bilinear;
 use crate::mesh::terrain::terrain_mesh;
+use crate::mesh::track::{track_mesh, ColorMode as TrackColorMode};
 use crate::petal_binding::{
     apply_terrain_assignments, ActivePetalTerrain, ActiveTileSource, TerrainAssignmentMsg,
 };
@@ -222,9 +222,13 @@ fn update_terrain_lod(
 
     for (entity, chunk, chunk_transform) in chunk_query.iter() {
         let too_far = (cam_pos.distance(chunk_transform.translation()) as f64) > despawn_r;
-        let coord = TileCoord::new(chunk.tile_coords.1, chunk.tile_coords.2, chunk.tile_coords.0);
-        let stale_zoom = desired
-            .is_some_and(|z| wrong_zoom_replacement_present(coord, z, &existing));
+        let coord = TileCoord::new(
+            chunk.tile_coords.1,
+            chunk.tile_coords.2,
+            chunk.tile_coords.0,
+        );
+        let stale_zoom =
+            desired.is_some_and(|z| wrong_zoom_replacement_present(coord, z, &existing));
         if too_far || stale_zoom {
             commands.entity(entity).despawn();
         }
@@ -536,7 +540,13 @@ fn render_gpx_tracks(
         let positions: Vec<[f32; 3]> = route
             .points
             .iter()
-            .map(|p| [p.position[0] as f32, p.position[1] as f32, p.position[2] as f32])
+            .map(|p| {
+                [
+                    p.position[0] as f32,
+                    p.position[1] as f32,
+                    p.position[2] as f32,
+                ]
+            })
             .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
             .collect();
 
@@ -557,7 +567,11 @@ fn render_gpx_tracks(
             style.color_u8()[2],
             style.color_u8()[3],
         );
-        let ribbon = track_mesh(&positions, style.width.max(0.01), TrackColorMode::Solid(color));
+        let ribbon = track_mesh(
+            &positions,
+            style.width.max(0.01),
+            TrackColorMode::Solid(color),
+        );
 
         let handle = meshes.add(ribbon);
         let material = materials.add(StandardMaterial {
@@ -573,11 +587,16 @@ fn render_gpx_tracks(
         // toggle isn't a cheap in-place `Visibility` flip — it persists the
         // `gis.track.visible` prop, which despawns+respawns the `GpxTrackLine`
         // via the bridge and re-runs this build, same as a color/width change.
-        e.insert(if style.visible { Visibility::Inherited } else { Visibility::Hidden });
-
-        let layer_id = find_layer(&layer_stack, |t| {
-            matches!(t, LayerType::GpxTrack { node_id, .. } if node_id == &track.track_node_id)
+        e.insert(if style.visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
         });
+
+        let layer_id = find_layer(
+            &layer_stack,
+            |t| matches!(t, LayerType::GpxTrack { node_id, .. } if node_id == &track.track_node_id),
+        );
         if let Some(layer_id) = layer_id {
             e.insert(LayerEntity { layer_id });
         }
@@ -645,9 +664,10 @@ fn render_geojson_overlays(
             }
         };
 
-        let layer_id = find_layer(&layer_stack, |t| {
-            matches!(t, LayerType::GeoJsonOverlay { source_path } if source_path == &overlay.source_path)
-        });
+        let layer_id = find_layer(
+            &layer_stack,
+            |t| matches!(t, LayerType::GeoJsonOverlay { source_path } if source_path == &overlay.source_path),
+        );
 
         for polygon in &result.polygon_meshes {
             let mut mesh = Mesh::new(
@@ -666,7 +686,11 @@ fn render_geojson_overlays(
                 ..default()
             });
 
-            let mut child = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat), GeoJsonProcessed));
+            let mut child = commands.spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(mat),
+                GeoJsonProcessed,
+            ));
             if let Some(layer_id) = layer_id {
                 child.insert(LayerEntity { layer_id });
             }
@@ -689,7 +713,11 @@ fn render_geojson_overlays(
                 ..default()
             });
 
-            let mut child = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat), GeoJsonProcessed));
+            let mut child = commands.spawn((
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(mat),
+                GeoJsonProcessed,
+            ));
             if let Some(layer_id) = layer_id {
                 child.insert(LayerEntity { layer_id });
             }
@@ -707,11 +735,7 @@ fn render_geojson_overlays(
             let mut child = commands.spawn((
                 Mesh3d(marker_mesh),
                 MeshMaterial3d(marker_mat),
-                Transform::from_xyz(
-                    marker.position[0],
-                    marker.position[1],
-                    marker.position[2],
-                ),
+                Transform::from_xyz(marker.position[0], marker.position[1], marker.position[2]),
                 Pickable::default(),
                 GeoJsonProcessed,
             ));
@@ -820,6 +844,9 @@ mod tests {
         assert!((real - 500_000.0).abs() < 1e-3);
         let z_scaled = desired_zoom(real as f32, 8, 15);
         let z_unscaled = desired_zoom(world_y as f32, 8, 15);
-        assert!(z_scaled < z_unscaled, "inverting scale must pick a lower zoom");
+        assert!(
+            z_scaled < z_unscaled,
+            "inverting scale must pick a lower zoom"
+        );
     }
 }
