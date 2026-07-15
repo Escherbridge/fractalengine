@@ -5,7 +5,10 @@ use surrealdb::engine::local::SurrealKv;
 #[derive(Debug)]
 pub enum DbInitError {
     RuntimeBuild(std::io::Error),
-    SurrealOpen { path: String, source: surrealdb::Error },
+    SurrealOpen {
+        path: String,
+        source: surrealdb::Error,
+    },
     SurrealNsDb(surrealdb::Error),
     SchemaApply(String),
     ApiTokenSchemaApply(String),
@@ -18,9 +21,13 @@ impl std::fmt::Display for DbInitError {
             DbInitError::SurrealOpen { path, source } => {
                 write!(f, "Failed to open SurrealDB at {path}: {source}")
             }
-            DbInitError::SurrealNsDb(e) => write!(f, "Failed to set SurrealDB namespace/database: {e}"),
+            DbInitError::SurrealNsDb(e) => {
+                write!(f, "Failed to set SurrealDB namespace/database: {e}")
+            }
             DbInitError::SchemaApply(e) => write!(f, "Schema application failed: {e}"),
-            DbInitError::ApiTokenSchemaApply(e) => write!(f, "API token schema application failed: {e}"),
+            DbInitError::ApiTokenSchemaApply(e) => {
+                write!(f, "API token schema application failed: {e}")
+            }
         }
     }
 }
@@ -49,17 +56,17 @@ pub mod atlas;
 pub mod handlers;
 pub mod invite;
 pub mod model_url_meta;
-pub mod reconcile;
 pub mod op_log;
 pub mod queries;
 pub(crate) mod query_helpers;
 pub mod rbac;
+pub mod reconcile;
 pub mod repo;
 pub mod role_level;
 pub mod role_manager;
+pub mod schema;
 pub mod scope;
 pub mod scoped_invite;
-pub mod schema;
 pub mod space_manager;
 pub mod types;
 pub mod verse;
@@ -68,7 +75,7 @@ pub use atlas::*;
 pub use handlers::seed::seed_default_data;
 pub use model_url_meta::ModelUrlMeta;
 pub use role_level::RoleLevel;
-pub use scope::{build_scope, parse_scope, parent_scope, scope_contains, ScopeParts};
+pub use scope::{build_scope, parent_scope, parse_scope, scope_contains, ScopeParts};
 pub use types::*;
 
 /// Subdirectory under `fractalengine/assets/` where imported GLTF/GLB files are written.
@@ -134,7 +141,9 @@ pub fn replicate_row(
     record_id: &str,
     row_json: &[u8],
 ) {
-    replicate_row_with_petal(repl_tx, blob_store, verse_id, table, record_id, row_json, None)
+    replicate_row_with_petal(
+        repl_tx, blob_store, verse_id, table, record_id, row_json, None,
+    )
 }
 
 /// Like [`replicate_row`] but allows attaching a `petal_id` to the event
@@ -171,8 +180,7 @@ pub fn replicate_row_with_petal(
     }) {
         Ok(()) => {}
         Err(crossbeam::channel::TrySendError::Full(_)) => {
-            let dropped =
-                REPLICATION_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let dropped = REPLICATION_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             tracing::warn!(
                 table,
                 record_id,
@@ -184,6 +192,7 @@ pub fn replicate_row_with_petal(
     }
 }
 
+#[allow(clippy::result_large_err)] // DbInitError is large only on the rare init-failure path
 pub fn spawn_db_thread(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
@@ -196,6 +205,7 @@ pub fn spawn_db_thread(
 /// entity-change broadcast for scene streaming, and custom DB path.
 ///
 /// If `db_path` is `None`, defaults to `"data/fractalengine.db"`.
+#[allow(clippy::too_many_arguments, clippy::result_large_err)] // thread-spawn seam; see spawn_db_thread
 pub fn spawn_db_thread_with_sync(
     rx: crossbeam::channel::Receiver<DbCommand>,
     tx: crossbeam::channel::Sender<DbResult>,
@@ -807,13 +817,11 @@ pub fn spawn_db_thread_with_sync(
             send_result(&tx, DbResult::Stopped);
         });
     });
-    startup_rx
-        .recv()
-        .map_err(|_| DbInitError::RuntimeBuild(std::io::Error::new(
-            std::io::ErrorKind::Other,
+    startup_rx.recv().map_err(|_| {
+        DbInitError::RuntimeBuild(std::io::Error::other(
             "DB thread startup channel closed (thread may have panicked)",
-        )))?
-        .map_err(|e| e)?;
+        ))
+    })??;
     Ok(handle)
 }
 
@@ -837,10 +845,7 @@ pub fn get_namespace_secret(
     match store.get(&service, "fractalengine") {
         Ok(Some(secret_hex)) => {
             if secret_hex.len() != 64 {
-                anyhow::bail!(
-                    "Namespace secret has invalid length: {}",
-                    secret_hex.len()
-                );
+                anyhow::bail!("Namespace secret has invalid length: {}", secret_hex.len());
             }
             hex::decode(&secret_hex)
                 .map_err(|e| anyhow::anyhow!("Namespace secret is not valid hex: {e}"))?;
@@ -980,14 +985,17 @@ mod migration_tests {
     /// Seed one legacy asset row with base64 data and no content_hash.
     async fn seed_legacy_asset(db: &Db, asset_id: &str, raw_bytes: &[u8]) {
         let b64 = base64::engine::general_purpose::STANDARD.encode(raw_bytes);
-        Repo::<Asset>::create_raw(db, serde_json::json!({
-            "asset_id":     asset_id,
-            "name":         "test-asset",
-            "content_type": "model/gltf-binary",
-            "size_bytes":   raw_bytes.len(),
-            "data":         b64,
-            "created_at":   "2025-01-01T00:00:00Z",
-        }))
+        Repo::<Asset>::create_raw(
+            db,
+            serde_json::json!({
+                "asset_id":     asset_id,
+                "name":         "test-asset",
+                "content_type": "model/gltf-binary",
+                "size_bytes":   raw_bytes.len(),
+                "data":         b64,
+                "created_at":   "2025-01-01T00:00:00Z",
+            }),
+        )
         .await
         .expect("seed legacy asset");
     }

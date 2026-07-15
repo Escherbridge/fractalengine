@@ -124,17 +124,13 @@ impl HexonStore {
     /// 4. Append an entry to `registry.json`.
     pub fn install_tileset(&self, bytes: &[u8]) -> Result<InstalledTileset> {
         // Import and validate
-        let data =
-            HexonArchive::import(bytes).context("failed to import hexon archive")?;
+        let data = HexonArchive::import(bytes).context("failed to import hexon archive")?;
 
         let manifest = &data.manifest;
 
         match manifest.hexon_type {
             HexonType::TerrainTileset => {}
-            ref other => bail!(
-                "expected TerrainTileset hexon, got {:?}",
-                other
-            ),
+            ref other => bail!("expected TerrainTileset hexon, got {:?}", other),
         }
 
         let hexon_id = manifest.hexon_id.clone();
@@ -145,17 +141,15 @@ impl HexonStore {
 
         // Persist raw bytes
         let hexon_path = self.hexon_path(&hexon_id);
-        std::fs::write(&hexon_path, bytes).with_context(|| {
-            format!("failed to write hexon file: {}", hexon_path.display())
-        })?;
+        std::fs::write(&hexon_path, bytes)
+            .with_context(|| format!("failed to write hexon file: {}", hexon_path.display()))?;
 
         // Persist extracted meta
         let meta_json = serde_json::to_string_pretty(&tileset_meta)
             .context("failed to serialize TilesetMeta")?;
         let meta_path = self.meta_path(&hexon_id);
-        std::fs::write(&meta_path, &meta_json).with_context(|| {
-            format!("failed to write meta file: {}", meta_path.display())
-        })?;
+        std::fs::write(&meta_path, &meta_json)
+            .with_context(|| format!("failed to write meta file: {}", meta_path.display()))?;
 
         let size_bytes = std::fs::metadata(&hexon_path)
             .map(|m| m.len())
@@ -197,9 +191,8 @@ impl HexonStore {
             })?;
         }
         if meta_path.exists() {
-            std::fs::remove_file(&meta_path).with_context(|| {
-                format!("failed to remove meta file: {}", meta_path.display())
-            })?;
+            std::fs::remove_file(&meta_path)
+                .with_context(|| format!("failed to remove meta file: {}", meta_path.display()))?;
         }
 
         let mut reg = self.load_registry();
@@ -222,9 +215,8 @@ impl HexonStore {
     /// idempotent — already-populated fields are left untouched.
     pub fn load_tileset(&self, hexon_id: &str) -> Result<super::hexon_source::HexonTileSource> {
         let hexon_path = self.hexon_path(hexon_id);
-        let bytes = std::fs::read(&hexon_path).with_context(|| {
-            format!("failed to read hexon file: {}", hexon_path.display())
-        })?;
+        let bytes = std::fs::read(&hexon_path)
+            .with_context(|| format!("failed to read hexon file: {}", hexon_path.display()))?;
         let mut source = super::hexon_source::HexonTileSource::from_archive(&bytes)
             .with_context(|| format!("failed to load tileset '{hexon_id}'"))?;
         backfill_scale_fields(&mut source.tileset_meta);
@@ -401,7 +393,9 @@ mod tests {
         let (store, dir) = temp_store();
 
         let bytes = make_hexon_bytes("tileset-abc");
-        let entry = store.install_tileset(&bytes).expect("install_tileset failed");
+        let entry = store
+            .install_tileset(&bytes)
+            .expect("install_tileset failed");
 
         assert_eq!(entry.hexon_id, "tileset-abc");
         assert_eq!(entry.region_name, "Test Region");
@@ -447,12 +441,16 @@ mod tests {
         assert!(!list[0].seeding_enabled);
 
         // Enable
-        store.set_seeding("tileset-seed", true).expect("set_seeding failed");
+        store
+            .set_seeding("tileset-seed", true)
+            .expect("set_seeding failed");
         let list = store.list_installed();
         assert!(list[0].seeding_enabled);
 
         // Disable again
-        store.set_seeding("tileset-seed", false).expect("set_seeding failed");
+        store
+            .set_seeding("tileset-seed", false)
+            .expect("set_seeding failed");
         let list = store.list_installed();
         assert!(!list[0].seeding_enabled);
     }
@@ -491,7 +489,9 @@ mod tests {
         let list = store.list_installed();
         assert!(list[0].last_served.is_none());
 
-        store.update_last_served("tileset-ls").expect("update_last_served failed");
+        store
+            .update_last_served("tileset-ls")
+            .expect("update_last_served failed");
 
         let list = store.list_installed();
         assert!(list[0].last_served.is_some());
@@ -515,11 +515,15 @@ mod tests {
         let bytes = make_hexon_bytes("tileset-idempotent");
         store.install_tileset(&bytes).expect("install failed");
 
-        let first = store.load_tileset("tileset-idempotent").expect("load failed");
+        let first = store
+            .load_tileset("tileset-idempotent")
+            .expect("load failed");
         let first_scale = first.tileset_meta.native_scale;
         let first_gsd = first.tileset_meta.ground_sample_distance_m;
 
-        let second = store.load_tileset("tileset-idempotent").expect("reload failed");
+        let second = store
+            .load_tileset("tileset-idempotent")
+            .expect("reload failed");
         assert_eq!(second.tileset_meta.native_scale, first_scale);
         assert_eq!(second.tileset_meta.ground_sample_distance_m, first_gsd);
     }

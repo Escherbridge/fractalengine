@@ -123,9 +123,9 @@ impl XyzTileSource {
     }
 
     fn get_semaphore(&self) -> Arc<tokio::sync::Semaphore> {
-        self.semaphore.clone().unwrap_or_else(|| {
-            Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_fetches))
-        })
+        self.semaphore
+            .clone()
+            .unwrap_or_else(|| Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_fetches)))
     }
 }
 
@@ -139,7 +139,10 @@ impl TileSource for XyzTileSource {
             .replace("{x}", &coord.x.to_string())
             .replace("{y}", &coord.y.to_string());
 
-        let _permit = self.get_semaphore().acquire_owned().await
+        let _permit = self
+            .get_semaphore()
+            .acquire_owned()
+            .await
             .map_err(|_| anyhow::anyhow!("semaphore closed"))?;
         let resp = self.get_client().get(&url).send().await?;
         if !resp.status().is_success() {
@@ -202,9 +205,9 @@ impl TmsTileSource {
     }
 
     fn get_semaphore(&self) -> Arc<tokio::sync::Semaphore> {
-        self.semaphore.clone().unwrap_or_else(|| {
-            Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_fetches))
-        })
+        self.semaphore
+            .clone()
+            .unwrap_or_else(|| Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_fetches)))
     }
 }
 
@@ -219,7 +222,10 @@ impl TileSource for TmsTileSource {
             .replace("{x}", &coord.x.to_string())
             .replace("{y}", &flipped_y.to_string());
 
-        let _permit = self.get_semaphore().acquire_owned().await
+        let _permit = self
+            .get_semaphore()
+            .acquire_owned()
+            .await
             .map_err(|_| anyhow::anyhow!("semaphore closed"))?;
         let resp = self.get_client().get(&url).send().await?;
         if !resp.status().is_success() {

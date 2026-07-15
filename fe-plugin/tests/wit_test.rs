@@ -4,11 +4,7 @@
 #[test]
 fn wit_file_exists_and_has_expected_content() {
     let wit_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wit/hexon-plugin.wit");
-    assert!(
-        wit_path.exists(),
-        "WIT file should exist at {:?}",
-        wit_path
-    );
+    assert!(wit_path.exists(), "WIT file should exist at {:?}", wit_path);
 
     let content = std::fs::read_to_string(&wit_path).expect("Should be able to read WIT file");
 
@@ -120,10 +116,7 @@ fn wit_file_exists_and_has_expected_content() {
         "ext-storage-get:",
         "ext-storage-set:",
     ] {
-        assert!(
-            content.contains(func),
-            "query-api should declare {func}"
-        );
+        assert!(content.contains(func), "query-api should declare {func}");
     }
 
     // Verify world

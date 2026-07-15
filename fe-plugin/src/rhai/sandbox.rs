@@ -58,8 +58,10 @@ mod tests {
         assert!(result.is_err(), "Infinite loop should be terminated");
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
-            err_msg.contains("exceeded") || err_msg.contains("progress")
-                || err_msg.contains("terminated") || err_msg.contains("limit"),
+            err_msg.contains("exceeded")
+                || err_msg.contains("progress")
+                || err_msg.contains("terminated")
+                || err_msg.contains("limit"),
             "Error should mention operation limit, got: {err_msg}"
         );
     }

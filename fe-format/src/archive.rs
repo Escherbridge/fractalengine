@@ -90,8 +90,8 @@ impl HexonArchive {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
         let mut zip = zip::ZipWriter::new(cursor);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         // manifest.json
         zip.start_file("manifest.json", options)?;
@@ -145,8 +145,8 @@ impl HexonArchive {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
         let mut zip = zip::ZipWriter::new(cursor);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         // manifest.json
         zip.start_file("manifest.json", options)?;
@@ -207,10 +207,10 @@ impl HexonArchive {
         let cursor = Cursor::new(buf);
         let mut zip = zip::ZipWriter::new(cursor);
         // Use Stored (no compression) for tile images — they're already compressed
-        let stored_opts = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        let deflate_opts = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let stored_opts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let deflate_opts =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         // manifest.json
         zip.start_file("manifest.json", deflate_opts)?;
@@ -254,8 +254,7 @@ impl HexonArchive {
     /// `schema.json`) default to empty/None if missing.
     pub fn import(bytes: &[u8]) -> Result<HexonArchiveData> {
         let cursor = Cursor::new(bytes);
-        let mut archive =
-            zip::ZipArchive::new(cursor).context("failed to open ZIP archive")?;
+        let mut archive = zip::ZipArchive::new(cursor).context("failed to open ZIP archive")?;
 
         // manifest.json (required)
         let manifest: HexonManifest = {
@@ -296,9 +295,7 @@ impl HexonArchive {
                 file.read_to_string(&mut buf)?;
                 serde_json::from_str(&buf).context("invalid schema.json")?
             }
-            Err(_) => SchemaDefinition {
-                field_defs: vec![],
-            },
+            Err(_) => SchemaDefinition { field_defs: vec![] },
         };
 
         // entities/nodes.json (optional — scene type only)
@@ -312,30 +309,25 @@ impl HexonArchive {
         };
 
         // entities/field_defs.json (optional — scene type only)
-        let field_defs: Vec<FieldDef> =
-            match archive.by_name("entities/field_defs.json") {
-                Ok(mut file) => {
-                    let mut buf = String::new();
-                    file.read_to_string(&mut buf)?;
-                    serde_json::from_str(&buf)
-                        .context("invalid entities/field_defs.json")?
-                }
-                Err(_) => vec![],
-            };
+        let field_defs: Vec<FieldDef> = match archive.by_name("entities/field_defs.json") {
+            Ok(mut file) => {
+                let mut buf = String::new();
+                file.read_to_string(&mut buf)?;
+                serde_json::from_str(&buf).context("invalid entities/field_defs.json")?
+            }
+            Err(_) => vec![],
+        };
 
         // terrain/config.json (optional)
-        let terrain_config: Option<serde_json::Value> =
-            match archive.by_name("terrain/config.json") {
-                Ok(mut file) => {
-                    let mut buf = String::new();
-                    file.read_to_string(&mut buf)?;
-                    Some(
-                        serde_json::from_str(&buf)
-                            .context("invalid terrain/config.json")?,
-                    )
-                }
-                Err(_) => None,
-            };
+        let terrain_config: Option<serde_json::Value> = match archive.by_name("terrain/config.json")
+        {
+            Ok(mut file) => {
+                let mut buf = String::new();
+                file.read_to_string(&mut buf)?;
+                Some(serde_json::from_str(&buf).context("invalid terrain/config.json")?)
+            }
+            Err(_) => None,
+        };
 
         // Collect file names for pattern-based extraction.
         // We need to collect names first because we can't borrow archive
@@ -349,14 +341,12 @@ impl HexonArchive {
 
         // assets/*
         let mut assets = Vec::new();
-        for name in all_names.iter().filter(|n| {
-            n.starts_with("assets/") && n.len() > "assets/".len()
-        }) {
+        for name in all_names
+            .iter()
+            .filter(|n| n.starts_with("assets/") && n.len() > "assets/".len())
+        {
             let mut file = archive.by_name(name)?;
-            let hash = name
-                .strip_prefix("assets/")
-                .unwrap_or(name)
-                .to_string();
+            let hash = name.strip_prefix("assets/").unwrap_or(name).to_string();
             let mut data = Vec::new();
             file.read_to_end(&mut data)?;
             assets.push((hash, data));
@@ -364,9 +354,10 @@ impl HexonArchive {
 
         // terrain/tracks/*.gpx
         let mut gpx_files = Vec::new();
-        for name in all_names.iter().filter(|n| {
-            n.starts_with("terrain/tracks/") && n.ends_with(".gpx")
-        }) {
+        for name in all_names
+            .iter()
+            .filter(|n| n.starts_with("terrain/tracks/") && n.ends_with(".gpx"))
+        {
             let mut file = archive.by_name(name)?;
             let filename = name
                 .strip_prefix("terrain/tracks/")
@@ -379,9 +370,10 @@ impl HexonArchive {
 
         // terrain/overlays/*.geojson
         let mut geojson_overlays = Vec::new();
-        for name in all_names.iter().filter(|n| {
-            n.starts_with("terrain/overlays/") && n.ends_with(".geojson")
-        }) {
+        for name in all_names
+            .iter()
+            .filter(|n| n.starts_with("terrain/overlays/") && n.ends_with(".geojson"))
+        {
             let mut file = archive.by_name(name)?;
             let filename = name
                 .strip_prefix("terrain/overlays/")
@@ -398,19 +390,17 @@ impl HexonArchive {
                 Ok(mut file) => {
                     let mut buf = String::new();
                     file.read_to_string(&mut buf)?;
-                    Some(
-                        serde_json::from_str(&buf)
-                            .context("invalid terrain/tileset_meta.json")?,
-                    )
+                    Some(serde_json::from_str(&buf).context("invalid terrain/tileset_meta.json")?)
                 }
                 Err(_) => None,
             };
 
         // terrain/tiles/{z}/{x}/{y}.png (elevation tiles)
         let mut elevation_tiles = Vec::new();
-        for name in all_names.iter().filter(|n| {
-            n.starts_with("terrain/tiles/") && n.ends_with(".png")
-        }) {
+        for name in all_names
+            .iter()
+            .filter(|n| n.starts_with("terrain/tiles/") && n.ends_with(".png"))
+        {
             let mut file = archive.by_name(name)?;
             let cache_key = name
                 .strip_prefix("terrain/tiles/")
@@ -425,9 +415,10 @@ impl HexonArchive {
 
         // terrain/satellite/{z}/{x}/{y}.jpg (satellite imagery tiles)
         let mut satellite_tiles = Vec::new();
-        for name in all_names.iter().filter(|n| {
-            n.starts_with("terrain/satellite/") && n.ends_with(".jpg")
-        }) {
+        for name in all_names
+            .iter()
+            .filter(|n| n.starts_with("terrain/satellite/") && n.ends_with(".jpg"))
+        {
             let mut file = archive.by_name(name)?;
             let cache_key = name
                 .strip_prefix("terrain/satellite/")

@@ -22,21 +22,16 @@ use crate::TestResult;
 pub fn run() -> Result<TestResult> {
     let tmp = tempfile::tempdir()?;
     let blob_dir = tmp.path().join("blobs");
-    let blob_store: BlobStoreHandle =
-        Arc::new(FsBlobStore::new(blob_dir)?);
+    let blob_store: BlobStoreHandle = Arc::new(FsBlobStore::new(blob_dir)?);
 
     // Simulate a legacy base64-encoded asset
     let original_bytes = b"This is fake GLB content for migration testing";
-    let base64_encoded = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        original_bytes,
-    );
+    let base64_encoded =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, original_bytes);
 
     // Step 1: Decode base64 (simulating what migration does)
-    let decoded = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &base64_encoded,
-    )?;
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &base64_encoded)?;
 
     // Step 2: Write decoded bytes to blob store
     let hash = blob_store.add_blob(&decoded)?;

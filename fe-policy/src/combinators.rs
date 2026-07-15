@@ -135,7 +135,8 @@ mod tests {
 
     #[test]
     fn any_of_one_allow_suffices() {
-        let d = AnyOf::new(vec![deny(), allow()]).evaluate(&subject(), &Action::Read, &Scope::global());
+        let d =
+            AnyOf::new(vec![deny(), allow()]).evaluate(&subject(), &Action::Read, &Scope::global());
         assert!(d.is_allow());
     }
 
@@ -147,13 +148,18 @@ mod tests {
 
     #[test]
     fn all_of_one_deny_denies() {
-        let d = AllOf::new(vec![allow(), deny()]).evaluate(&subject(), &Action::Read, &Scope::global());
+        let d =
+            AllOf::new(vec![allow(), deny()]).evaluate(&subject(), &Action::Read, &Scope::global());
         assert!(!d.is_allow());
     }
 
     #[test]
     fn all_of_all_allow_allows() {
-        let d = AllOf::new(vec![allow(), allow()]).evaluate(&subject(), &Action::Read, &Scope::global());
+        let d = AllOf::new(vec![allow(), allow()]).evaluate(
+            &subject(),
+            &Action::Read,
+            &Scope::global(),
+        );
         assert!(d.is_allow());
     }
 
@@ -161,12 +167,17 @@ mod tests {
     fn permissive_migration_converts_deny_to_allow() {
         let p = PermissiveMigrationPolicy::new(deny());
         let d = p.evaluate(&subject(), &Action::Write, &Scope::new("VERSE#v1"));
-        assert!(d.is_allow(), "migration mode must allow (and warn-log) would-be denials");
+        assert!(
+            d.is_allow(),
+            "migration mode must allow (and warn-log) would-be denials"
+        );
     }
 
     #[test]
     fn permissive_migration_passes_allow_through() {
         let p = PermissiveMigrationPolicy::new(allow());
-        assert!(p.evaluate(&subject(), &Action::Write, &Scope::global()).is_allow());
+        assert!(p
+            .evaluate(&subject(), &Action::Write, &Scope::global())
+            .is_allow());
     }
 }

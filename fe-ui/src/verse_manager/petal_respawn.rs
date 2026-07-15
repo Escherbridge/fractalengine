@@ -42,7 +42,8 @@ pub(super) fn respawn_on_petal_change(
     let new_petal = nav.active_petal_id.clone();
     bevy::log::info!(
         "Petal changed {:?} → {:?} — respawning entities",
-        *last, new_petal
+        *last,
+        new_petal
     );
 
     // Collect which node_ids are staying alive (kept entities) before issuing any despawns.
@@ -51,7 +52,12 @@ pub(super) fn respawn_on_petal_change(
     // despawn commands have been issued.
     let kept_node_ids: std::collections::HashSet<&str> = spawned
         .iter()
-        .filter(|(_, m)| new_petal.as_deref().map(|pid| pid == m.petal_id.as_str()).unwrap_or(false))
+        .filter(|(_, m)| {
+            new_petal
+                .as_deref()
+                .map(|pid| pid == m.petal_id.as_str())
+                .unwrap_or(false)
+        })
         .map(|(_, m)| m.node_id.as_str())
         .collect();
 
@@ -122,7 +128,9 @@ pub(super) fn respawn_on_petal_change(
                         if primitive_cache.mark_requested(&node.id)
                             && db_sender
                                 .0
-                                .send(DbCommand::GetNodeProperties { node_id: node.id.clone() })
+                                .send(DbCommand::GetNodeProperties {
+                                    node_id: node.id.clone(),
+                                })
                                 .is_err()
                         {
                             bevy::log::error!(

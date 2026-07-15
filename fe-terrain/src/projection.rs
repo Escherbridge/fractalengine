@@ -47,7 +47,12 @@ impl Projection {
     /// - z = northing (meters)
     ///
     /// Returns error if lat or lon are out of WGS84 bounds.
-    pub fn wgs84_to_local(&self, lat: f64, lon: f64, ele: f64) -> Result<[f64; 3], ProjectionError> {
+    pub fn wgs84_to_local(
+        &self,
+        lat: f64,
+        lon: f64,
+        ele: f64,
+    ) -> Result<[f64; 3], ProjectionError> {
         Self::validate(lat, lon)?;
 
         let proj = FlatProjection::new(self.origin_lon, self.origin_lat);

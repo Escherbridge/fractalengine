@@ -48,10 +48,7 @@ pub enum SyncCommand {
         advertisements_json: String,
     },
     /// Request tileset metadata from a specific peer.
-    RequestTilesetMeta {
-        peer_id: String,
-        tileset_id: String,
-    },
+    RequestTilesetMeta { peer_id: String, tileset_id: String },
     /// Request a single chunk from a specific peer.
     RequestChunk {
         peer_id: String,
@@ -59,9 +56,7 @@ pub enum SyncCommand {
         chunk_seq: u32,
     },
     /// Cancel an in-progress tileset download.
-    CancelTilesetDownload {
-        tileset_id: String,
-    },
+    CancelTilesetDownload { tileset_id: String },
     /// Gracefully shut down the sync thread.
     Shutdown,
     /// Broadcast a node transform change to peers in real time.
@@ -383,7 +378,11 @@ mod tests {
             chunk_bytes: vec![0u8; 64],
         };
         match &ev {
-            SyncEvent::ChunkReceived { tileset_id, chunk_seq, chunk_bytes } => {
+            SyncEvent::ChunkReceived {
+                tileset_id,
+                chunk_seq,
+                chunk_bytes,
+            } => {
                 assert_eq!(tileset_id, "ts-001");
                 assert_eq!(*chunk_seq, 2);
                 assert_eq!(chunk_bytes.len(), 64);
@@ -405,7 +404,10 @@ mod tests {
         .unwrap();
         match rx.recv().unwrap() {
             SyncCommand::SubmitComputeTask {
-                task_id, query, petal_scope, requester_did,
+                task_id,
+                query,
+                petal_scope,
+                requester_did,
             } => {
                 assert_eq!(task_id, "task-rt");
                 assert_eq!(query, "SELECT * FROM node");

@@ -53,9 +53,7 @@ pub async fn store_api_token(db: &Db, record: &ApiTokenRecord) -> anyhow::Result
             map.remove("label");
         }
     }
-    let q = InsertBuilder::insert_into("api_token")
-        .values(val)
-        .build();
+    let q = InsertBuilder::insert_into("api_token").values(val).build();
     // exec_query already calls `.check()` internally — no redundant re-check.
     exec_query(db, &q).await?;
     Ok(())
@@ -171,8 +169,8 @@ pub async fn list_tokens_by_scope(
     let prefix_dash = format!("{}-", scope_prefix);
 
     // Compound scope filter: (scope = $prefix OR string::starts_with(scope, $prefix_dash))
-    let scope_filter = Filter::eq("scope", scope_prefix)
-        .or(Filter::starts_with("scope", prefix_dash.as_str()));
+    let scope_filter =
+        Filter::eq("scope", scope_prefix).or(Filter::starts_with("scope", prefix_dash.as_str()));
 
     // Count total matching
     let count_q = QueryBuilder::new()
@@ -192,8 +190,8 @@ pub async fn list_tokens_by_scope(
         .unwrap_or(0);
 
     // Rebuild scope_filter for the page query (consumed by count_q build)
-    let scope_filter2 = Filter::eq("scope", scope_prefix)
-        .or(Filter::starts_with("scope", prefix_dash.as_str()));
+    let scope_filter2 =
+        Filter::eq("scope", scope_prefix).or(Filter::starts_with("scope", prefix_dash.as_str()));
 
     // Fetch page
     let q = QueryBuilder::new()

@@ -4,19 +4,15 @@ use serde::{Deserialize, Serialize};
 /// Elevation data source kind.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ElevationSourceKind {
     /// Mapbox Terrain-RGB tiles.
     TerrainRgb,
     /// Mapzen Terrarium tiles.
     Terrarium,
     /// No elevation data — flat terrain.
+    #[default]
     None,
-}
-
-impl Default for ElevationSourceKind {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Layer configuration within a terrain.

@@ -100,9 +100,9 @@ impl AotCache {
         // Compile and cache
         tracing::debug!(hash, "AOT cache miss, compiling");
         let module = wasmtime::Module::new(engine, wasm_bytes)?;
-        let compiled = module.serialize().map_err(|e| {
-            crate::wasm::WasmError::PrecompileError(e.to_string())
-        })?;
+        let compiled = module
+            .serialize()
+            .map_err(|e| crate::wasm::WasmError::PrecompileError(e.to_string()))?;
 
         // Write to cache
         std::fs::write(&path, &compiled).map_err(|e| {

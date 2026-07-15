@@ -51,9 +51,8 @@ impl TestPeer {
             .with_context(|| format!("create peer dir: {}", peer_dir.display()))?;
 
         let blob_dir = peer_dir.join("blobs");
-        let blob_store: BlobStoreHandle = Arc::new(
-            FsBlobStore::new(blob_dir).context("create blob store")?,
-        );
+        let blob_store: BlobStoreHandle =
+            Arc::new(FsBlobStore::new(blob_dir).context("create blob store")?);
 
         let keypair = NodeKeypair::generate();
         let local_did = keypair.to_did_key();
@@ -83,8 +82,8 @@ impl TestPeer {
         // Spawn DB thread with in-memory SurrealDB
         let db_blob_store = blob_store.clone();
         let _db_keypair = NodeKeypair::generate(); // separate keypair for DB invite ops
-        // We actually want to use the SAME keypair for invite generation,
-        // so clone the seed bytes.
+                                                   // We actually want to use the SAME keypair for invite generation,
+                                                   // so clone the seed bytes.
         let kp_seed = keypair.seed_bytes();
         let db_local_did = local_did.clone();
         let db_handle = std::thread::spawn(move || {
@@ -647,9 +646,7 @@ impl TestPeer {
             .context("timeout waiting for Sync Started")?;
         match &sync_started {
             SyncEvent::Started { online } => {
-                tracing::info!(
-                    "Peer '{name}' sync started (online={online})"
-                );
+                tracing::info!("Peer '{name}' sync started (online={online})");
             }
             other => {
                 tracing::warn!("Unexpected sync event on start: {other:?}");
@@ -698,35 +695,22 @@ impl TestPeer {
                 .checked_duration_since(std::time::Instant::now())
                 .unwrap_or(Duration::ZERO);
             if remaining.is_zero() {
-                anyhow::bail!(
-                    "Timeout waiting for DB result on peer '{}'",
-                    self.name
-                );
+                anyhow::bail!("Timeout waiting for DB result on peer '{}'", self.name);
             }
             match self.db_result_rx.recv_timeout(remaining) {
                 Ok(result) => {
                     // Check for errors first
                     if let DbResult::Error(ref e) = result {
-                        anyhow::bail!(
-                            "DB error on peer '{}': {e}",
-                            self.name
-                        );
+                        anyhow::bail!("DB error on peer '{}': {e}", self.name);
                     }
                     if predicate(&result) {
                         return Ok(result);
                     }
                     // Not our result, keep draining
-                    tracing::debug!(
-                        "Peer '{}' skipping result: {:?}",
-                        self.name,
-                        result
-                    );
+                    tracing::debug!("Peer '{}' skipping result: {:?}", self.name, result);
                 }
                 Err(_) => {
-                    anyhow::bail!(
-                        "Timeout waiting for DB result on peer '{}'",
-                        self.name
-                    );
+                    anyhow::bail!("Timeout waiting for DB result on peer '{}'", self.name);
                 }
             }
         }
@@ -877,8 +861,7 @@ async fn create_verse(
     // Store namespace secret in a thread-local map instead of OS keyring
     // (tests should not touch the real keyring).
     NS_SECRETS.with(|m| {
-        m.borrow_mut()
-            .insert(verse_id.clone(), ns_secret_hex);
+        m.borrow_mut().insert(verse_id.clone(), ns_secret_hex);
     });
 
     Ok(verse_id)
@@ -1034,9 +1017,7 @@ async fn import_gltf(
     Ok((node_id, asset_id, asset_path))
 }
 
-async fn load_hierarchy(
-    db: &surrealdb::Surreal<Db>,
-) -> anyhow::Result<Vec<VerseHierarchyData>> {
+async fn load_hierarchy(db: &surrealdb::Surreal<Db>) -> anyhow::Result<Vec<VerseHierarchyData>> {
     // Load all verses
     let mut vr: surrealdb::IndexedResults = db
         .query("SELECT verse_id, name, namespace_id FROM verse")
@@ -1083,10 +1064,7 @@ async fn load_hierarchy(
                 let mut nodes = Vec::new();
                 for nrow in &node_rows {
                     let nid = nrow["node_id"].as_str().unwrap_or("").to_string();
-                    let nname = nrow["display_name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    let nname = nrow["display_name"].as_str().unwrap_or("").to_string();
                     let has_asset = nrow["asset_id"].as_str().is_some();
 
                     nodes.push(NodeHierarchyData {

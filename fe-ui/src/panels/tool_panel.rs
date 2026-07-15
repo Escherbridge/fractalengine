@@ -31,12 +31,21 @@ pub struct AssetPickRow {
 pub fn installed_assets(verse_mgr: &VerseManager) -> Vec<AssetPickRow> {
     let mut rows: Vec<AssetPickRow> = Vec::new();
     for node in verse_mgr.all_nodes() {
-        let Some(path) = node.asset_path.as_ref() else { continue };
+        let Some(path) = node.asset_path.as_ref() else {
+            continue;
+        };
         if path.trim().is_empty() || rows.iter().any(|r| &r.asset_path == path) {
             continue;
         }
-        let name = if node.name.trim().is_empty() { path.clone() } else { node.name.clone() };
-        rows.push(AssetPickRow { name, asset_path: path.clone() });
+        let name = if node.name.trim().is_empty() {
+            path.clone()
+        } else {
+            node.name.clone()
+        };
+        rows.push(AssetPickRow {
+            name,
+            asset_path: path.clone(),
+        });
     }
     rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     rows
@@ -169,23 +178,43 @@ fn render_path_asset_section(
     path_state: &PathEditorState,
     verse_mgr: &VerseManager,
 ) {
-    ui.label(egui::RichText::new("Path Asset").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Path Asset")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
 
     render_asset_picker(ui, state, verse_mgr);
     ui.add_space(6.0);
 
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.spacing_mode, SpacingMode::FixedSpacing, "Fixed spacing");
-        ui.selectable_value(&mut state.spacing_mode, SpacingMode::FixedCount, "Fixed count");
+        ui.selectable_value(
+            &mut state.spacing_mode,
+            SpacingMode::FixedSpacing,
+            "Fixed spacing",
+        );
+        ui.selectable_value(
+            &mut state.spacing_mode,
+            SpacingMode::FixedCount,
+            "Fixed count",
+        );
     });
     ui.add_space(4.0);
 
     match state.spacing_mode {
         SpacingMode::FixedSpacing => {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Spacing").small().color(theme::TEXT_DIM));
-                ui.add(egui::DragValue::new(&mut state.spacing_value).speed(0.1).range(0.0..=f32::MAX));
+                ui.label(
+                    egui::RichText::new("Spacing")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut state.spacing_value)
+                        .speed(0.1)
+                        .range(0.0..=f32::MAX),
+                );
             });
         }
         SpacingMode::FixedCount => {
@@ -220,7 +249,10 @@ fn render_path_asset_section(
     if resp.clicked() {
         if let Some(track_node_id) = target_track.clone() {
             let descriptor = build_descriptor(state, asset_ref.clone());
-            ui_mgr.push_action(UiAction::PathAssetApply { track_node_id, descriptor });
+            ui_mgr.push_action(UiAction::PathAssetApply {
+                track_node_id,
+                descriptor,
+            });
         }
     }
 
@@ -261,14 +293,30 @@ fn track_display_name(path_state: &PathEditorState, track_id: &str) -> String {
 fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr: &VerseManager) {
     // Currently-selected asset readout (clone out first so the closure can
     // mutate `selected_hexon_ref` on Clear without a borrow conflict).
-    let selected = state.selected_hexon_ref.clone().filter(|s| !s.trim().is_empty());
+    let selected = state
+        .selected_hexon_ref
+        .clone()
+        .filter(|s| !s.trim().is_empty());
     match selected {
         Some(sel) => {
             let mut clear = false;
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Selected").small().color(theme::TEXT_DIM));
-                ui.label(egui::RichText::new(&sel).small().monospace().color(theme::TEXT_BRIGHT));
-                if ui.small_button("\u{2715}").on_hover_text("Clear selection").clicked() {
+                ui.label(
+                    egui::RichText::new("Selected")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.label(
+                    egui::RichText::new(&sel)
+                        .small()
+                        .monospace()
+                        .color(theme::TEXT_BRIGHT),
+                );
+                if ui
+                    .small_button("\u{2715}")
+                    .on_hover_text("Clear selection")
+                    .clicked()
+                {
                     clear = true;
                 }
             });
@@ -277,7 +325,12 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
             }
         }
         None => {
-            ui.label(egui::RichText::new("No asset selected").small().color(theme::TEXT_MUTED).italics());
+            ui.label(
+                egui::RichText::new("No asset selected")
+                    .small()
+                    .color(theme::TEXT_MUTED)
+                    .italics(),
+            );
         }
     }
     ui.add_space(4.0);
@@ -285,14 +338,20 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
     let rows = installed_assets(verse_mgr);
     if rows.is_empty() {
         ui.label(
-            egui::RichText::new("No installed models found. Add a glb node, or paste a path below.")
-                .small()
-                .color(theme::TEXT_MUTED),
+            egui::RichText::new(
+                "No installed models found. Add a glb node, or paste a path below.",
+            )
+            .small()
+            .color(theme::TEXT_MUTED),
         );
     } else {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Filter").small().color(theme::TEXT_DIM));
-            ui.add(egui::TextEdit::singleline(&mut state.asset_filter).desired_width(180.0).hint_text("name or path"));
+            ui.add(
+                egui::TextEdit::singleline(&mut state.asset_filter)
+                    .desired_width(180.0)
+                    .hint_text("name or path"),
+            );
         });
         ui.add_space(2.0);
 
@@ -302,10 +361,15 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
             .max_height(140.0)
             .show(ui, |ui| {
                 if filtered.is_empty() {
-                    ui.label(egui::RichText::new("No assets match the filter.").small().color(theme::TEXT_MUTED));
+                    ui.label(
+                        egui::RichText::new("No assets match the filter.")
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                    );
                 }
                 for row in filtered {
-                    let selected = state.selected_hexon_ref.as_deref() == Some(row.asset_path.as_str());
+                    let selected =
+                        state.selected_hexon_ref.as_deref() == Some(row.asset_path.as_str());
                     let resp = ui
                         .selectable_label(selected, egui::RichText::new(&row.name).small())
                         .on_hover_text(&row.asset_path);
@@ -319,21 +383,32 @@ fn render_asset_picker(ui: &mut egui::Ui, state: &mut ToolPanelState, verse_mgr:
 
     // Secondary affordance: manual `blob://` entry for power users / paths not
     // yet surfaced as hierarchy nodes. The list above is the primary UX.
-    egui::CollapsingHeader::new(egui::RichText::new("Or paste a blob:// path").small().color(theme::TEXT_DIM))
-        .default_open(false)
-        .show(ui, |ui| {
-            let mut asset_buf = state.selected_hexon_ref.clone().unwrap_or_default();
-            if ui
-                .add(egui::TextEdit::singleline(&mut asset_buf).hint_text("blob://<hash>.glb"))
-                .changed()
-            {
-                state.selected_hexon_ref = if asset_buf.trim().is_empty() { None } else { Some(asset_buf) };
-            }
-        });
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Or paste a blob:// path")
+            .small()
+            .color(theme::TEXT_DIM),
+    )
+    .default_open(false)
+    .show(ui, |ui| {
+        let mut asset_buf = state.selected_hexon_ref.clone().unwrap_or_default();
+        if ui
+            .add(egui::TextEdit::singleline(&mut asset_buf).hint_text("blob://<hash>.glb"))
+            .changed()
+        {
+            state.selected_hexon_ref = if asset_buf.trim().is_empty() {
+                None
+            } else {
+                Some(asset_buf)
+            };
+        }
+    });
 }
 
 /// Build the SDK path-asset descriptor from the panel's control state.
-fn build_descriptor(state: &ToolPanelState, asset_path: String) -> fe_sdk::path_asset::PathAssetDescriptor {
+fn build_descriptor(
+    state: &ToolPanelState,
+    asset_path: String,
+) -> fe_sdk::path_asset::PathAssetDescriptor {
     fe_sdk::path_asset::PathAssetDescriptor {
         asset_path,
         spacing_mode: state.spacing_mode.to_sdk(),
@@ -364,14 +439,34 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
         state.shape_segments = 24;
     }
 
-    ui.label(egui::RichText::new("Pen").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Pen")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
 
-    ui.label(egui::RichText::new("Curve mode").small().color(theme::TEXT_DIM));
+    ui.label(
+        egui::RichText::new("Curve mode")
+            .small()
+            .color(theme::TEXT_DIM),
+    );
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.pen_mode, PenMode::Polyline, PenMode::Polyline.label());
-        ui.selectable_value(&mut state.pen_mode, PenMode::CatmullRom, PenMode::CatmullRom.label());
-        ui.selectable_value(&mut state.pen_mode, PenMode::Bezier, PenMode::Bezier.label());
+        ui.selectable_value(
+            &mut state.pen_mode,
+            PenMode::Polyline,
+            PenMode::Polyline.label(),
+        );
+        ui.selectable_value(
+            &mut state.pen_mode,
+            PenMode::CatmullRom,
+            PenMode::CatmullRom.label(),
+        );
+        ui.selectable_value(
+            &mut state.pen_mode,
+            PenMode::Bezier,
+            PenMode::Bezier.label(),
+        );
     });
     ui.add_space(4.0);
 
@@ -384,9 +479,16 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Samples/segment").small().color(theme::TEXT_DIM));
+        ui.label(
+            egui::RichText::new("Samples/segment")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
         let mut samples = state.pen_samples_per_segment as u32;
-        if ui.add(egui::DragValue::new(&mut samples).range(1..=128)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut samples).range(1..=128))
+            .changed()
+        {
             state.pen_samples_per_segment = samples as usize;
         }
     });
@@ -410,20 +512,47 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     ui.add_space(8.0);
     ui.label(egui::RichText::new("Shapes").small().color(theme::TEXT_DIM));
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Radius X").small().color(theme::TEXT_DIM));
-        ui.add(egui::DragValue::new(&mut state.shape_radius).speed(0.1).range(0.01..=f32::MAX));
-        ui.label(egui::RichText::new("Radius Z").small().color(theme::TEXT_DIM));
-        ui.add(egui::DragValue::new(&mut state.shape_radius_z).speed(0.1).range(0.01..=f32::MAX));
+        ui.label(
+            egui::RichText::new("Radius X")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add(
+            egui::DragValue::new(&mut state.shape_radius)
+                .speed(0.1)
+                .range(0.01..=f32::MAX),
+        );
+        ui.label(
+            egui::RichText::new("Radius Z")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add(
+            egui::DragValue::new(&mut state.shape_radius_z)
+                .speed(0.1)
+                .range(0.01..=f32::MAX),
+        );
     });
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Segments").small().color(theme::TEXT_DIM));
+        ui.label(
+            egui::RichText::new("Segments")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
         let mut segs = state.shape_segments.max(3) as u32;
-        if ui.add(egui::DragValue::new(&mut segs).range(3..=256)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut segs).range(3..=256))
+            .changed()
+        {
             state.shape_segments = segs as usize;
         }
     });
     ui.horizontal(|ui| {
-        if ui.button("Add Ellipse").on_hover_text("Append an ellipse ring to the edited track").clicked() {
+        if ui
+            .button("Add Ellipse")
+            .on_hover_text("Append an ellipse ring to the edited track")
+            .clicked()
+        {
             let pts = curve::ellipse(
                 [0.0, 0.0, 0.0],
                 state.shape_radius,
@@ -432,12 +561,28 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
             );
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
-        if ui.button("Add Circle").on_hover_text("Append a circle ring to the edited track").clicked() {
-            let pts = curve::circle([0.0, 0.0, 0.0], state.shape_radius, state.shape_segments.max(3));
+        if ui
+            .button("Add Circle")
+            .on_hover_text("Append a circle ring to the edited track")
+            .clicked()
+        {
+            let pts = curve::circle(
+                [0.0, 0.0, 0.0],
+                state.shape_radius,
+                state.shape_segments.max(3),
+            );
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
-        if ui.button("Add Rectangle").on_hover_text("Append a rectangle (Radius X \u{00d7} Radius Z) to the edited track").clicked() {
-            let pts = curve::rectangle([0.0, 0.0, 0.0], state.shape_radius * 2.0, state.shape_radius_z * 2.0);
+        if ui
+            .button("Add Rectangle")
+            .on_hover_text("Append a rectangle (Radius X \u{00d7} Radius Z) to the edited track")
+            .clicked()
+        {
+            let pts = curve::rectangle(
+                [0.0, 0.0, 0.0],
+                state.shape_radius * 2.0,
+                state.shape_radius_z * 2.0,
+            );
             state.queue_action(UiAction::PathAppendShape { points: pts });
         }
     });
@@ -450,7 +595,11 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
 }
 
 fn render_terrain_tools_section(ui: &mut egui::Ui) {
-    ui.label(egui::RichText::new("Terrain Tools").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Terrain Tools")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new("(placeholder — future terrain tools)")
@@ -498,7 +647,10 @@ mod tests {
             expanded: true,
             fractals: vec![fractal],
         };
-        VerseManager { verses: vec![verse], ..Default::default() }
+        VerseManager {
+            verses: vec![verse],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -508,7 +660,7 @@ mod tests {
             ("No model", None),
             ("Bench", Some("blob://bench.glb")),
             ("Tree copy", Some("blob://tree.glb")), // dupe path collapses
-            ("Blank path", Some("   ")),             // whitespace-only skipped
+            ("Blank path", Some("   ")),            // whitespace-only skipped
         ]);
         let rows = installed_assets(&vm);
         // tree + bench only, deduped, sorted case-insensitively by name.
@@ -530,8 +682,14 @@ mod tests {
     #[test]
     fn filter_assets_matches_name_or_path_case_insensitively() {
         let rows = vec![
-            AssetPickRow { name: "Oak Tree".to_string(), asset_path: "blob://oak.glb".to_string() },
-            AssetPickRow { name: "Park Bench".to_string(), asset_path: "blob://bench.glb".to_string() },
+            AssetPickRow {
+                name: "Oak Tree".to_string(),
+                asset_path: "blob://oak.glb".to_string(),
+            },
+            AssetPickRow {
+                name: "Park Bench".to_string(),
+                asset_path: "blob://bench.glb".to_string(),
+            },
         ];
         assert_eq!(filter_assets(&rows, "").len(), 2); // empty matches all
         assert_eq!(filter_assets(&rows, "tree").len(), 1); // by name
@@ -552,7 +710,10 @@ mod tests {
         };
         let desc = build_descriptor(&state, "blob://model.glb".to_string());
         assert_eq!(desc.asset_path, "blob://model.glb");
-        assert_eq!(desc.spacing_mode, fe_sdk::path_asset::SpacingMode::FixedCount);
+        assert_eq!(
+            desc.spacing_mode,
+            fe_sdk::path_asset::SpacingMode::FixedCount
+        );
         assert_eq!(desc.spacing_value, 2.5);
         assert_eq!(desc.count, 7);
         assert!(desc.tangent_align);
@@ -560,7 +721,13 @@ mod tests {
 
     #[test]
     fn spacing_mode_to_sdk_roundtrips_both_variants() {
-        assert_eq!(SpacingMode::FixedSpacing.to_sdk(), fe_sdk::path_asset::SpacingMode::FixedSpacing);
-        assert_eq!(SpacingMode::FixedCount.to_sdk(), fe_sdk::path_asset::SpacingMode::FixedCount);
+        assert_eq!(
+            SpacingMode::FixedSpacing.to_sdk(),
+            fe_sdk::path_asset::SpacingMode::FixedSpacing
+        );
+        assert_eq!(
+            SpacingMode::FixedCount.to_sdk(),
+            fe_sdk::path_asset::SpacingMode::FixedCount
+        );
     }
 }

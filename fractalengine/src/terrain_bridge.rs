@@ -8,7 +8,9 @@ use fe_terrain::petal_binding::{
     TerrainAssignmentMsg,
 };
 use fe_terrain::splat::{view_mode_from_terrain_json, TerrainViewModeMsg};
-use fe_ui::plugin::{ActiveDialog, HexonOp, InstalledTilesetDto, PendingHexonOps, StorageInfoDto, UiManager};
+use fe_ui::plugin::{
+    ActiveDialog, HexonOp, InstalledTilesetDto, PendingHexonOps, StorageInfoDto, UiManager,
+};
 
 /// Forwards `DbResult::PetalTerrainLoaded` to the terrain runtime as an assignment.
 pub fn bridge_petal_terrain(
@@ -24,7 +26,9 @@ pub fn bridge_petal_terrain(
                 config,
             }));
             // view_mode is an additive JSON field TerrainConfig drops — forward raw.
-            view_modes.write(TerrainViewModeMsg(view_mode_from_terrain_json(terrain.as_ref())));
+            view_modes.write(TerrainViewModeMsg(view_mode_from_terrain_json(
+                terrain.as_ref(),
+            )));
         }
     }
 }

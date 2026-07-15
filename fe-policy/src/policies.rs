@@ -12,7 +12,9 @@ pub struct RoleLevelPolicy {
 impl RoleLevelPolicy {
     /// Empty rule set (denies everything until `require` rules are added).
     pub fn new() -> Self {
-        Self { min_roles: Vec::new() }
+        Self {
+            min_roles: Vec::new(),
+        }
     }
 
     /// Add a minimum-role rule for an action.
@@ -115,18 +117,30 @@ mod tests {
     fn role_level_allows_at_or_above_minimum() {
         let policy = RoleLevelPolicy::standard();
         let scope = Scope::new("PETAL#p1");
-        assert!(policy.evaluate(&did(RoleLevel::Editor), &Action::Write, &scope).is_allow());
-        assert!(policy.evaluate(&did(RoleLevel::Owner), &Action::Write, &scope).is_allow());
-        assert!(policy.evaluate(&did(RoleLevel::Viewer), &Action::Read, &scope).is_allow());
+        assert!(policy
+            .evaluate(&did(RoleLevel::Editor), &Action::Write, &scope)
+            .is_allow());
+        assert!(policy
+            .evaluate(&did(RoleLevel::Owner), &Action::Write, &scope)
+            .is_allow());
+        assert!(policy
+            .evaluate(&did(RoleLevel::Viewer), &Action::Read, &scope)
+            .is_allow());
     }
 
     #[test]
     fn role_level_denies_below_minimum() {
         let policy = RoleLevelPolicy::standard();
         let scope = Scope::new("PETAL#p1");
-        assert!(!policy.evaluate(&did(RoleLevel::Viewer), &Action::Write, &scope).is_allow());
-        assert!(!policy.evaluate(&did(RoleLevel::Editor), &Action::Manage, &scope).is_allow());
-        assert!(!policy.evaluate(&did(RoleLevel::None), &Action::Read, &scope).is_allow());
+        assert!(!policy
+            .evaluate(&did(RoleLevel::Viewer), &Action::Write, &scope)
+            .is_allow());
+        assert!(!policy
+            .evaluate(&did(RoleLevel::Editor), &Action::Manage, &scope)
+            .is_allow());
+        assert!(!policy
+            .evaluate(&did(RoleLevel::None), &Action::Read, &scope)
+            .is_allow());
     }
 
     #[test]
@@ -165,16 +179,30 @@ mod tests {
         };
         let policy = CapabilityPolicy;
         assert!(policy
-            .evaluate(&subject, &Action::Custom("storage.read".into()), &Scope::global())
+            .evaluate(
+                &subject,
+                &Action::Custom("storage.read".into()),
+                &Scope::global()
+            )
             .is_allow());
         assert!(!policy
-            .evaluate(&subject, &Action::Custom("storage.write".into()), &Scope::global())
+            .evaluate(
+                &subject,
+                &Action::Custom("storage.write".into()),
+                &Scope::global()
+            )
             .is_allow());
         // Non-capability subjects fail closed.
         assert!(!policy
-            .evaluate(&did(RoleLevel::Owner), &Action::Custom("storage.read".into()), &Scope::global())
+            .evaluate(
+                &did(RoleLevel::Owner),
+                &Action::Custom("storage.read".into()),
+                &Scope::global()
+            )
             .is_allow());
         // Non-custom actions fail closed.
-        assert!(!policy.evaluate(&subject, &Action::Read, &Scope::global()).is_allow());
+        assert!(!policy
+            .evaluate(&subject, &Action::Read, &Scope::global())
+            .is_allow());
     }
 }

@@ -19,9 +19,18 @@ use crate::repo::Db;
 
 /// Ordered list of rule names. Append-only.
 const RULES: &[(&str, &str)] = &[
-    ("local_node_placeholder", "Replace 'local-node' placeholders with real node DID"),
-    ("verse_default_access",   "Backfill default_access='viewer' on verses missing the field"),
-    ("orphaned_creator",       "Claim locally-created verses with no other peers"),
+    (
+        "local_node_placeholder",
+        "Replace 'local-node' placeholders with real node DID",
+    ),
+    (
+        "verse_default_access",
+        "Backfill default_access='viewer' on verses missing the field",
+    ),
+    (
+        "orphaned_creator",
+        "Claim locally-created verses with no other peers",
+    ),
 ];
 
 /// Run all reconciliation rules. Called on every startup after schema apply.
@@ -65,8 +74,8 @@ pub async fn reconcile(db: &Db, local_did: &str) -> anyhow::Result<usize> {
 async fn check_rule(db: &Db, name: &str, local_did: &str) -> anyhow::Result<usize> {
     match name {
         "local_node_placeholder" => check_local_node_refs(db).await,
-        "verse_default_access"   => check_missing_default_access(db).await,
-        "orphaned_creator"       => check_orphaned_creators(db, local_did).await,
+        "verse_default_access" => check_missing_default_access(db).await,
+        "orphaned_creator" => check_orphaned_creators(db, local_did).await,
         _ => Ok(0),
     }
 }
@@ -74,8 +83,8 @@ async fn check_rule(db: &Db, name: &str, local_did: &str) -> anyhow::Result<usiz
 async fn fix_rule(db: &Db, name: &str, local_did: &str) -> anyhow::Result<()> {
     match name {
         "local_node_placeholder" => fix_local_node_refs(db, local_did).await,
-        "verse_default_access"   => fix_missing_default_access(db).await,
-        "orphaned_creator"       => fix_orphaned_creators(db, local_did).await,
+        "verse_default_access" => fix_missing_default_access(db).await,
+        "orphaned_creator" => fix_orphaned_creators(db, local_did).await,
         _ => Ok(()),
     }
 }
@@ -96,15 +105,20 @@ async fn check_local_node_refs(db: &Db) -> anyhow::Result<usize> {
 async fn fix_local_node_refs(db: &Db, local_did: &str) -> anyhow::Result<()> {
     let did = local_did.to_string();
     db.query("UPDATE verse SET created_by = $did WHERE created_by = 'local-node'")
-        .bind(("did", did.clone())).await?;
+        .bind(("did", did.clone()))
+        .await?;
     db.query("UPDATE fractal SET owner_did = $did WHERE owner_did = 'local-node'")
-        .bind(("did", did.clone())).await?;
+        .bind(("did", did.clone()))
+        .await?;
     db.query("UPDATE petal SET node_id = $did WHERE node_id = 'local-node'")
-        .bind(("did", did.clone())).await?;
+        .bind(("did", did.clone()))
+        .await?;
     db.query("UPDATE verse_member SET peer_did = $did WHERE peer_did = 'local-node'")
-        .bind(("did", did.clone())).await?;
+        .bind(("did", did.clone()))
+        .await?;
     db.query("UPDATE role SET peer_did = $did WHERE peer_did = 'local-node'")
-        .bind(("did", did.clone())).await?;
+        .bind(("did", did.clone()))
+        .await?;
     Ok(())
 }
 
@@ -117,7 +131,8 @@ async fn check_missing_default_access(db: &Db) -> anyhow::Result<usize> {
 }
 
 async fn fix_missing_default_access(db: &Db) -> anyhow::Result<()> {
-    db.query("UPDATE verse SET default_access = 'viewer' WHERE default_access IS NONE").await?;
+    db.query("UPDATE verse SET default_access = 'viewer' WHERE default_access IS NONE")
+        .await?;
     Ok(())
 }
 
@@ -155,7 +170,7 @@ async fn fix_orphaned_creators(db: &Db, local_did: &str) -> anyhow::Result<()> {
             .query(
                 "SELECT count() AS c FROM verse_member \
                  WHERE verse_id = $vid AND peer_did != $old AND peer_did != $did \
-                 GROUP ALL"
+                 GROUP ALL",
             )
             .bind(("vid", verse_id.to_string()))
             .bind(("old", old_did.to_string()))
@@ -166,7 +181,12 @@ async fn fix_orphaned_creators(db: &Db, local_did: &str) -> anyhow::Result<()> {
             continue; // Has real peers — skip
         }
 
-        tracing::info!("Claiming verse {} from {} → {}", verse_id, old_did, local_did);
+        tracing::info!(
+            "Claiming verse {} from {} → {}",
+            verse_id,
+            old_did,
+            local_did
+        );
 
         db.query("UPDATE verse SET created_by = $did WHERE verse_id = $vid")
             .bind(("did", did.clone()))
@@ -177,11 +197,13 @@ async fn fix_orphaned_creators(db: &Db, local_did: &str) -> anyhow::Result<()> {
             .bind(("vid", verse_id.to_string()))
             .bind(("old", old_did.to_string()))
             .await?;
-        db.query("UPDATE verse_member SET peer_did = $did WHERE verse_id = $vid AND peer_did = $old")
-            .bind(("did", did.clone()))
-            .bind(("vid", verse_id.to_string()))
-            .bind(("old", old_did.to_string()))
-            .await?;
+        db.query(
+            "UPDATE verse_member SET peer_did = $did WHERE verse_id = $vid AND peer_did = $old",
+        )
+        .bind(("did", did.clone()))
+        .bind(("vid", verse_id.to_string()))
+        .bind(("old", old_did.to_string()))
+        .await?;
     }
 
     Ok(())

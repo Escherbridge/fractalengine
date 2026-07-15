@@ -170,9 +170,18 @@ mod tests {
             signature: "sig2".to_string(),
         };
 
-        store.record(AnnouncementStore::from_manifest(&manifest1, "did:key:peerA"));
-        store.record(AnnouncementStore::from_manifest(&manifest1, "did:key:peerB"));
-        store.record(AnnouncementStore::from_manifest(&manifest2, "did:key:peerA"));
+        store.record(AnnouncementStore::from_manifest(
+            &manifest1,
+            "did:key:peerA",
+        ));
+        store.record(AnnouncementStore::from_manifest(
+            &manifest1,
+            "did:key:peerB",
+        ));
+        store.record(AnnouncementStore::from_manifest(
+            &manifest2,
+            "did:key:peerA",
+        ));
 
         store
     }

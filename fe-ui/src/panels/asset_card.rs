@@ -22,20 +22,29 @@ pub(crate) fn asset_card_section(
     ui_mgr: &mut UiManager,
     status: &AssetDownloadStatus,
 ) {
-    let Some(sel) = node_mgr.selected.as_ref() else { return };
+    let Some(sel) = node_mgr.selected.as_ref() else {
+        return;
+    };
     let node = verse_mgr.all_nodes().find(|n| n.id == sel.node_id);
     let has_asset = node.map(|n| n.has_asset).unwrap_or(false);
     let asset_label = node.and_then(|n| n.asset_path.as_deref());
 
     egui::CollapsingHeader::new(
-        egui::RichText::new("Asset").strong().color(theme::TEXT_SECTION),
+        egui::RichText::new("Asset")
+            .strong()
+            .color(theme::TEXT_SECTION),
     )
     .default_open(true)
     .show(ui, |ui| {
         ui.add_space(4.0);
         match asset_label {
             Some(path) => {
-                ui.label(egui::RichText::new(path).small().monospace().color(theme::TEXT_DIM));
+                ui.label(
+                    egui::RichText::new(path)
+                        .small()
+                        .monospace()
+                        .color(theme::TEXT_DIM),
+                );
             }
             None if has_asset => {
                 ui.label(
@@ -55,7 +64,11 @@ pub(crate) fn asset_card_section(
 
         ui.add_space(6.0);
         let btn = egui::Button::new("\u{2B07} Download asset")
-            .fill(if has_asset { theme::BG_SAVE } else { theme::BG_BUTTON })
+            .fill(if has_asset {
+                theme::BG_SAVE
+            } else {
+                theme::BG_BUTTON
+            })
             .min_size(egui::vec2(ui.available_width(), 26.0));
         let resp = ui.add_enabled(has_asset, btn);
         if resp.clicked() {

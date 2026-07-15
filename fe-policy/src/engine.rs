@@ -53,7 +53,10 @@ impl PolicyEngine {
                 Decision::Deny(reason) => reasons.push(format!("{}: {reason}", policy.name())),
             }
         }
-        Decision::deny(format!("deny-by-default: no policy allowed [{}]", reasons.join("; ")))
+        Decision::deny(format!(
+            "deny-by-default: no policy allowed [{}]",
+            reasons.join("; ")
+        ))
     }
 }
 
@@ -131,7 +134,10 @@ mod tests {
         let engine = PolicyEngine::new();
         let decision = engine.evaluate(&subject(), &Action::Read, &Scope::global());
         assert!(!decision.is_allow(), "empty policy set must deny");
-        assert!(decision.reason().unwrap_or_default().contains("deny-by-default"));
+        assert!(decision
+            .reason()
+            .unwrap_or_default()
+            .contains("deny-by-default"));
     }
 
     #[test]

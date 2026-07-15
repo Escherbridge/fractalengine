@@ -18,7 +18,11 @@ pub(super) fn handle_petal_terrain_loaded(
         .as_ref()
         .and_then(|t| t.get("tileset_hexon_uris"))
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     // Restore the stored world scale (drives the settings slider + camera).
     petal_map.world_scale = terrain

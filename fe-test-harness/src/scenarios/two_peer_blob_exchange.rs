@@ -72,9 +72,7 @@ pub fn run() -> Result<TestResult> {
     let alice_hash_hex = alice_asset_path
         .strip_prefix("blob://")
         .and_then(|s| s.strip_suffix(".glb"))
-        .ok_or_else(|| {
-            anyhow::anyhow!("Unexpected asset_path format: {}", alice_asset_path)
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("Unexpected asset_path format: {}", alice_asset_path))?;
 
     let alice_hash = fe_database::hash_from_hex(alice_hash_hex)?;
 

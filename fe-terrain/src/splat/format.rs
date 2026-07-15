@@ -117,12 +117,13 @@ pub fn append_baked_splats_to_archive(
         return Ok(archive_bytes.to_vec());
     }
     let reader = Cursor::new(archive_bytes);
-    let mut src = zip::ZipArchive::new(reader).context("failed to open hexon archive for splat append")?;
+    let mut src =
+        zip::ZipArchive::new(reader).context("failed to open hexon archive for splat append")?;
 
     let out_buf = Vec::new();
     let mut writer = zip::ZipWriter::new(Cursor::new(out_buf));
-    let stored = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     // Copy every existing entry through unchanged.
     for i in 0..src.len() {
@@ -136,11 +137,16 @@ pub fn append_baked_splats_to_archive(
 
     // Append the baked splat buffers.
     for (cache_key, data) in entries {
-        writer.start_file(format!("{SPLATS_ZIP_PREFIX}{cache_key}{SPLATS_ZIP_SUFFIX}"), stored)?;
+        writer.start_file(
+            format!("{SPLATS_ZIP_PREFIX}{cache_key}{SPLATS_ZIP_SUFFIX}"),
+            stored,
+        )?;
         writer.write_all(data)?;
     }
 
-    let cursor = writer.finish().context("failed to finalize splat-augmented hexon archive")?;
+    let cursor = writer
+        .finish()
+        .context("failed to finalize splat-augmented hexon archive")?;
     Ok(cursor.into_inner())
 }
 
@@ -148,7 +154,9 @@ pub fn append_baked_splats_to_archive(
 /// returning `(cache_key, decoded_buffer)` pairs. Absent entries or a whole
 /// archive with no splats section both yield an empty vec — never an error —
 /// so callers can treat "no baked splats" as the normal FR-5 fallback case.
-pub fn read_baked_splats_from_archive(archive_bytes: &[u8]) -> Result<Vec<(String, BakedSplatBuffer)>> {
+pub fn read_baked_splats_from_archive(
+    archive_bytes: &[u8],
+) -> Result<Vec<(String, BakedSplatBuffer)>> {
     let reader = Cursor::new(archive_bytes);
     let mut archive = match zip::ZipArchive::new(reader) {
         Ok(a) => a,
@@ -161,7 +169,9 @@ pub fn read_baked_splats_from_archive(archive_bytes: &[u8]) -> Result<Vec<(Strin
 
     let mut out = Vec::new();
     for name in names.iter().filter(|n| {
-        n.starts_with(SPLATS_ZIP_PREFIX) && n.ends_with(SPLATS_ZIP_SUFFIX) && n.len() > SPLATS_ZIP_PREFIX.len() + SPLATS_ZIP_SUFFIX.len()
+        n.starts_with(SPLATS_ZIP_PREFIX)
+            && n.ends_with(SPLATS_ZIP_SUFFIX)
+            && n.len() > SPLATS_ZIP_PREFIX.len() + SPLATS_ZIP_SUFFIX.len()
     }) {
         let mut file = archive.by_name(name)?;
         let mut data = Vec::new();
@@ -244,8 +254,14 @@ mod tests {
         let buf_a = sample_buf(4);
         let buf_b = sample_buf(2);
         let entries = vec![
-            ("10/512/340".to_string(), encode_baked_splats(&buf_a).unwrap()),
-            ("10/513/340".to_string(), encode_baked_splats(&buf_b).unwrap()),
+            (
+                "10/512/340".to_string(),
+                encode_baked_splats(&buf_a).unwrap(),
+            ),
+            (
+                "10/513/340".to_string(),
+                encode_baked_splats(&buf_b).unwrap(),
+            ),
         ];
         let augmented = append_baked_splats_to_archive(&base, &entries).unwrap();
 

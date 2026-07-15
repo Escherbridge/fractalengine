@@ -56,18 +56,32 @@ impl Default for InMemoryBackend {
 
 impl SecretStore for InMemoryBackend {
     fn get(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
-        let map = self.map.read().map_err(|e| SecretStoreError::Backend(e.to_string()))?;
-        Ok(map.get(&(service.to_string(), account.to_string())).cloned())
+        let map = self
+            .map
+            .read()
+            .map_err(|e| SecretStoreError::Backend(e.to_string()))?;
+        Ok(map
+            .get(&(service.to_string(), account.to_string()))
+            .cloned())
     }
 
     fn set(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError> {
-        let mut map = self.map.write().map_err(|e| SecretStoreError::Backend(e.to_string()))?;
-        map.insert((service.to_string(), account.to_string()), value.to_string());
+        let mut map = self
+            .map
+            .write()
+            .map_err(|e| SecretStoreError::Backend(e.to_string()))?;
+        map.insert(
+            (service.to_string(), account.to_string()),
+            value.to_string(),
+        );
         Ok(())
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
-        let mut map = self.map.write().map_err(|e| SecretStoreError::Backend(e.to_string()))?;
+        let mut map = self
+            .map
+            .write()
+            .map_err(|e| SecretStoreError::Backend(e.to_string()))?;
         map.remove(&(service.to_string(), account.to_string()));
         Ok(())
     }
@@ -107,13 +121,23 @@ impl EnvBackend {
     /// Normalize a key component: uppercase, replace non-alphanumeric with `_`.
     fn normalize(s: &str) -> String {
         s.chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
             .collect()
     }
 
     /// Build the env var name for a `(service, account)` pair.
     fn env_var_name(service: &str, account: &str) -> String {
-        format!("FE_SECRET_{}_{}", Self::normalize(service), Self::normalize(account))
+        format!(
+            "FE_SECRET_{}_{}",
+            Self::normalize(service),
+            Self::normalize(account)
+        )
     }
 }
 
@@ -129,18 +153,32 @@ impl SecretStore for EnvBackend {
         if let Ok(val) = std::env::var(&var_name) {
             return Ok(Some(val));
         }
-        let map = self.overrides.read().map_err(|e| SecretStoreError::Backend(e.to_string()))?;
-        Ok(map.get(&(service.to_string(), account.to_string())).cloned())
+        let map = self
+            .overrides
+            .read()
+            .map_err(|e| SecretStoreError::Backend(e.to_string()))?;
+        Ok(map
+            .get(&(service.to_string(), account.to_string()))
+            .cloned())
     }
 
     fn set(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError> {
-        let mut map = self.overrides.write().map_err(|e| SecretStoreError::Backend(e.to_string()))?;
-        map.insert((service.to_string(), account.to_string()), value.to_string());
+        let mut map = self
+            .overrides
+            .write()
+            .map_err(|e| SecretStoreError::Backend(e.to_string()))?;
+        map.insert(
+            (service.to_string(), account.to_string()),
+            value.to_string(),
+        );
         Ok(())
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
-        let mut map = self.overrides.write().map_err(|e| SecretStoreError::Backend(e.to_string()))?;
+        let mut map = self
+            .overrides
+            .write()
+            .map_err(|e| SecretStoreError::Backend(e.to_string()))?;
         map.remove(&(service.to_string(), account.to_string()));
         Ok(())
     }
@@ -166,7 +204,10 @@ mod tests {
     fn in_memory_set_then_get() {
         let store = InMemoryBackend::new();
         store.set("svc", "acct", "secret123").unwrap();
-        assert_eq!(store.get("svc", "acct").unwrap(), Some("secret123".to_string()));
+        assert_eq!(
+            store.get("svc", "acct").unwrap(),
+            Some("secret123".to_string())
+        );
     }
 
     #[test]
@@ -207,7 +248,10 @@ mod tests {
         let var_name = EnvBackend::env_var_name(&unique, "acct");
         std::env::set_var(&var_name, "from_env");
         let store = EnvBackend::new();
-        assert_eq!(store.get(&unique, "acct").unwrap(), Some("from_env".to_string()));
+        assert_eq!(
+            store.get(&unique, "acct").unwrap(),
+            Some("from_env".to_string())
+        );
         std::env::remove_var(&var_name);
     }
 
@@ -218,7 +262,10 @@ mod tests {
         std::env::set_var(&var_name, "env_wins");
         let store = EnvBackend::new();
         store.set(&unique, "acct", "runtime_value").unwrap();
-        assert_eq!(store.get(&unique, "acct").unwrap(), Some("env_wins".to_string()));
+        assert_eq!(
+            store.get(&unique, "acct").unwrap(),
+            Some("env_wins".to_string())
+        );
         std::env::remove_var(&var_name);
     }
 
@@ -244,6 +291,9 @@ mod tests {
     fn trait_object_works() {
         let store: std::sync::Arc<dyn SecretStore> = std::sync::Arc::new(InMemoryBackend::new());
         store.set("svc", "acct", "via_trait").unwrap();
-        assert_eq!(store.get("svc", "acct").unwrap(), Some("via_trait".to_string()));
+        assert_eq!(
+            store.get("svc", "acct").unwrap(),
+            Some("via_trait".to_string())
+        );
     }
 }

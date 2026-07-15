@@ -56,7 +56,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "get_hierarchy".into(),
-            description: "Get the full verse/fractal/petal/node hierarchy (filtered by token scope)".into(),
+            description:
+                "Get the full verse/fractal/petal/node hierarchy (filtered by token scope)".into(),
             input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         },
         ToolDefinition {
@@ -82,7 +83,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "create_petal".into(),
-            description: "Create a petal in a fractal (requires editor role + fractal scope)".into(),
+            description: "Create a petal in a fractal (requires editor role + fractal scope)"
+                .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -115,7 +117,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "update_transform".into(),
-            description: "Update a node's position, rotation, and scale (requires editor role)".into(),
+            description: "Update a node's position, rotation, and scale (requires editor role)"
+                .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -258,9 +261,10 @@ async fn handle_tool_call(
                 reply_tx,
             });
             match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-                Ok(Ok(DbResult::VerseCreated { id: vid, name: vname })) => {
-                    tool_result(id, serde_json::json!({ "id": vid, "name": vname }))
-                }
+                Ok(Ok(DbResult::VerseCreated {
+                    id: vid,
+                    name: vname,
+                })) => tool_result(id, serde_json::json!({ "id": vid, "name": vname })),
                 Ok(Ok(DbResult::Error(e))) => {
                     tracing::error!("create_verse MCP failed: {e}");
                     tool_error(id, "operation failed")
@@ -287,9 +291,11 @@ async fn handle_tool_call(
                 reply_tx,
             });
             match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-                Ok(Ok(DbResult::FractalCreated { id: fid, name: fname, .. })) => {
-                    tool_result(id, serde_json::json!({ "id": fid, "name": fname }))
-                }
+                Ok(Ok(DbResult::FractalCreated {
+                    id: fid,
+                    name: fname,
+                    ..
+                })) => tool_result(id, serde_json::json!({ "id": fid, "name": fname })),
                 Ok(Ok(DbResult::Error(e))) => {
                     tracing::error!("create_fractal MCP failed: {e}");
                     tool_error(id, "operation failed")
@@ -321,9 +327,11 @@ async fn handle_tool_call(
                 reply_tx,
             });
             match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-                Ok(Ok(DbResult::PetalCreated { id: pid, name: pname, .. })) => {
-                    tool_result(id, serde_json::json!({ "id": pid, "name": pname }))
-                }
+                Ok(Ok(DbResult::PetalCreated {
+                    id: pid,
+                    name: pname,
+                    ..
+                })) => tool_result(id, serde_json::json!({ "id": pid, "name": pname })),
                 Ok(Ok(DbResult::Error(e))) => {
                     tracing::error!("create_petal MCP failed: {e}");
                     tool_error(id, "operation failed")
@@ -372,9 +380,11 @@ async fn handle_tool_call(
                 reply_tx,
             });
             match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-                Ok(Ok(DbResult::NodeCreated { id: nid, name: nname, .. })) => {
-                    tool_result(id, serde_json::json!({ "id": nid, "name": nname }))
-                }
+                Ok(Ok(DbResult::NodeCreated {
+                    id: nid,
+                    name: nname,
+                    ..
+                })) => tool_result(id, serde_json::json!({ "id": nid, "name": nname })),
                 Ok(Ok(DbResult::Error(e))) => {
                     tracing::error!("create_node MCP failed: {e}");
                     tool_error(id, "operation failed")

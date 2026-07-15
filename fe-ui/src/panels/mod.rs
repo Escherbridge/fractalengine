@@ -25,7 +25,10 @@ use bevy_egui::egui;
 use crate::actions::UiManager;
 use crate::asset_ops::AssetDownloadStatus;
 use crate::navigation_manager::NavigationManager;
-use crate::plugin::{CameraFocusTarget, InspectorFormState, LocalUserRole, SidebarState, ToolState, ViewportCursorWorld};
+use crate::plugin::{
+    CameraFocusTarget, InspectorFormState, LocalUserRole, SidebarState, ToolState,
+    ViewportCursorWorld,
+};
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
 
@@ -36,6 +39,8 @@ use fe_runtime::messages::DbCommand;
 /// Renders the full UI shell: toolbar -> status bar -> sidebar -> inspector -> viewport.
 /// Returns the screen-space rect of the 3-D viewport (CentralPanel) so the
 /// caller can store it for viewport-click gating in the gimbal system.
+// NOTE: wide param list accepted (plain egui fn, not a Bevy system); group new
+// params into the caller's SystemParam bundles before adding more here.
 pub fn gardener_console(
     ctx: &egui::Context,
     sidebar: &mut SidebarState,
@@ -81,24 +86,35 @@ pub fn gardener_console(
     if ui_mgr.portal_is_open() {
         portal_toolbar::right_portal_toolbar(ctx, ui_mgr);
     } else {
-        inspector::right_inspector(ctx, inspector, node_mgr, hierarchy, ui_mgr, local_role, db_tx, nav, asset_status);
+        inspector::right_inspector(
+            ctx,
+            inspector,
+            node_mgr,
+            hierarchy,
+            ui_mgr,
+            local_role,
+            db_tx,
+            nav,
+            asset_status,
+        );
     }
 
-    let viewport_response = egui::CentralPanel::default()
-        .frame(egui::Frame::NONE)
-        .show(ctx, |ui| {
-            crate::viewport::viewport_overlay(
-                ui,
-                nav,
-                node_mgr,
-                hierarchy,
-                db_tx,
-                dashboard,
-                cursor_world,
-                ui_mgr,
-                local_role,
-            );
-        });
+    let viewport_response =
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                crate::viewport::viewport_overlay(
+                    ui,
+                    nav,
+                    node_mgr,
+                    hierarchy,
+                    db_tx,
+                    dashboard,
+                    cursor_world,
+                    ui_mgr,
+                    local_role,
+                );
+            });
 
     // Floating dialogs / menus (rendered after panels so they layer on top)
     crate::dialogs::render_context_menu(ctx, ui_mgr);
@@ -114,8 +130,18 @@ pub fn gardener_console(
     // GIS query & layer-manager panel (independent floating window, not part
     // of the mutual-exclusion `ActiveDialog` set — see panels/AGENTS.md §gis).
     gis_panel::render_gis_panel(
-        ctx, gis_panel, node_mgr, hierarchy, nav, petal_map, ui_mgr, camera_focus, gpx_status, path_state,
-        path_status, cursor_world,
+        ctx,
+        gis_panel,
+        node_mgr,
+        hierarchy,
+        nav,
+        petal_map,
+        ui_mgr,
+        camera_focus,
+        gpx_status,
+        path_state,
+        path_status,
+        cursor_world,
     );
 
     // Tools panel (independent floating window, hosts hexon-path-asset
@@ -132,7 +158,9 @@ pub fn gardener_console(
 
 fn render_toast(ctx: &egui::Context, ui_mgr: &UiManager) {
     let now = ctx.input(|i| i.time);
-    let Some((msg, alpha)) = ui_mgr.active_toast(now) else { return };
+    let Some((msg, alpha)) = ui_mgr.active_toast(now) else {
+        return;
+    };
 
     let bg = egui::Color32::from_rgba_unmultiplied(30, 30, 40, (alpha * 220.0) as u8);
     let text_color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, (alpha * 255.0) as u8);

@@ -129,7 +129,7 @@ pub fn parse_geojson(
         let (fill, stroke, stroke_width) = feature
             .properties
             .as_ref()
-            .map(|p| extract_style(p))
+            .map(extract_style)
             .unwrap_or((DEFAULT_FILL, DEFAULT_STROKE, DEFAULT_STROKE_WIDTH));
 
         let geometry = match &feature.geometry {
@@ -165,7 +165,8 @@ pub fn parse_geojson(
 
                 let mut positions = Vec::with_capacity(indices.len());
                 for &idx in &indices {
-                    let (x, z) = projection_fn(vertices[idx as usize][0], vertices[idx as usize][1]);
+                    let (x, z) =
+                        projection_fn(vertices[idx as usize][0], vertices[idx as usize][1]);
                     positions.push([x, 0.0, z]);
                 }
 
@@ -317,10 +318,8 @@ mod tests {
                 "properties": { "name": "test", "fill": "#ff0000" }
             }]
         }"##;
-        let result = parse_geojson(json, |lon, lat| {
-            (lon as f32 * 100.0, lat as f32 * 100.0)
-        })
-        .unwrap();
+        let result =
+            parse_geojson(json, |lon, lat| (lon as f32 * 100.0, lat as f32 * 100.0)).unwrap();
         assert_eq!(result.marker_positions.len(), 1);
         assert_eq!(result.marker_positions[0].label, "test");
         assert_eq!(result.polygon_meshes.len(), 0);
@@ -340,10 +339,7 @@ mod tests {
                 "properties": { "stroke": "#00ff00", "stroke-width": 2.0 }
             }]
         }"##;
-        let result = parse_geojson(json, |lon, lat| {
-            (lon as f32, lat as f32)
-        })
-        .unwrap();
+        let result = parse_geojson(json, |lon, lat| (lon as f32, lat as f32)).unwrap();
         assert_eq!(result.polyline_meshes.len(), 1);
         assert_eq!(result.polyline_meshes[0].positions.len(), 2);
         assert!((result.polyline_meshes[0].stroke_color[1] - 1.0).abs() < 1e-6);
@@ -362,10 +358,7 @@ mod tests {
                 "properties": {}
             }]
         }"##;
-        let result = parse_geojson(json, |lon, lat| {
-            (lon as f32, lat as f32)
-        })
-        .unwrap();
+        let result = parse_geojson(json, |lon, lat| (lon as f32, lat as f32)).unwrap();
         assert_eq!(result.polygon_meshes.len(), 1);
         // Quad (5 verts including closing) triangulates to 2 triangles = 6 vertices
         assert_eq!(result.polygon_meshes[0].positions.len(), 6);

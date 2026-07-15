@@ -8,8 +8,7 @@
 use fe_terrain::tiles::HexonStore;
 
 fn main() -> anyhow::Result<()> {
-    let mut sources: Vec<std::path::PathBuf> =
-        std::env::args().skip(1).map(Into::into).collect();
+    let mut sources: Vec<std::path::PathBuf> = std::env::args().skip(1).map(Into::into).collect();
     if sources.is_empty() {
         let dist = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -34,7 +33,11 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         } else {
-            anyhow::ensure!(src.is_file(), "no such file or directory: {}", src.display());
+            anyhow::ensure!(
+                src.is_file(),
+                "no such file or directory: {}",
+                src.display()
+            );
             files.push(src);
         }
     }

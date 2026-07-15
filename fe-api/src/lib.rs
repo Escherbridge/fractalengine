@@ -6,6 +6,7 @@ pub mod format;
 pub mod gis;
 pub mod gpx;
 pub mod hexon;
+pub mod iot;
 pub mod limits;
 pub mod mcp;
 pub mod query_guard;
@@ -44,7 +45,8 @@ pub struct ApiConfig {
     /// Hexon crate registry for package install/uninstall.
     pub hexon_registry: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::registry::HexonRegistry>>>,
     /// P2P announcement store for peer-discovered crates.
-    pub announcement_store: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
+    pub announcement_store:
+        Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and

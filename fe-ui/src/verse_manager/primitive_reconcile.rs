@@ -9,11 +9,12 @@ use fe_hexon::handlers::material::{resolve_material_textures, MaterialHandle};
 use fe_hexon::registry::FsBlobStore;
 use fe_sdk::primitive::{PrimitiveDescriptor, PRIMITIVE_PROPERTY_KEY};
 
-use super::spawn::{build_primitive_mesh, spawn_primitive_entity, FallbackSign, PrimitiveNode};
+use super::primitive_materialize::{FallbackSignQuery, PrimitiveEntityQuery};
+use super::spawn::{build_primitive_mesh, spawn_primitive_entity};
 use super::TextureRegistryRes;
-use crate::node_manager::NodeManager;
 use crate::navigation_manager::NavigationManager;
-use crate::plugin::{InspectorFormState, SpawnedNodeMarker};
+use crate::node_manager::NodeManager;
+use crate::plugin::InspectorFormState;
 
 /// Shared default material used when a primitive has no `texture_ref` (FR-3).
 #[derive(Resource)]
@@ -47,13 +48,21 @@ pub(super) fn reconcile_selected_primitive(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
-    mut primitives: Query<(&SpawnedNodeMarker, &mut PrimitiveNode, &mut Mesh3d, &mut MeshMaterial3d<StandardMaterial>)>,
-    fallback_signs: Query<(Entity, &SpawnedNodeMarker, &Transform), (With<FallbackSign>, Without<PrimitiveNode>)>,
+    mut primitives: PrimitiveEntityQuery,
+    fallback_signs: FallbackSignQuery,
 ) {
-    let Some(ref sel) = node_mgr.selected else { return };
-    let Some(petal_id) = nav.active_petal_id.as_deref() else { return };
-    let Some(raw) = inspector.node_properties.get(PRIMITIVE_PROPERTY_KEY) else { return };
-    let Ok(descriptor) = PrimitiveDescriptor::from_json(raw) else { return };
+    let Some(ref sel) = node_mgr.selected else {
+        return;
+    };
+    let Some(petal_id) = nav.active_petal_id.as_deref() else {
+        return;
+    };
+    let Some(raw) = inspector.node_properties.get(PRIMITIVE_PROPERTY_KEY) else {
+        return;
+    };
+    let Ok(descriptor) = PrimitiveDescriptor::from_json(raw) else {
+        return;
+    };
 
     // Already-spawned primitive → reconcile in place (FR-2).
     let mut found = false;
@@ -79,7 +88,10 @@ pub(super) fn reconcile_selected_primitive(
         }
 
         prim.descriptor = descriptor.clone();
-        bevy::log::debug!("Reconciled primitive node={} in place (FR-2)", marker.node_id);
+        bevy::log::debug!(
+            "Reconciled primitive node={} in place (FR-2)",
+            marker.node_id
+        );
     }
     if found {
         return;
@@ -88,12 +100,17 @@ pub(super) fn reconcile_selected_primitive(
     // Not yet materialized as a primitive — promote from its fallback sign
     // (FR-1 selection path). Petal-wide coverage without selection lives in
     // `primitive_materialize::materialize_cached_primitives`.
-    if let Some((entity, marker, transform)) =
-        fallback_signs.iter().find(|(_, m, _)| m.node_id == sel.node_id && m.petal_id == petal_id)
+    if let Some((entity, marker, transform)) = fallback_signs
+        .iter()
+        .find(|(_, m, _)| m.node_id == sel.node_id && m.petal_id == petal_id)
     {
         // The fallback sign hovers 0.5 above the node's real Y (see
         // `spawn_fallback_sign`) — undo that offset for the primitive.
-        let pos = [transform.translation.x, transform.translation.y - 0.5, transform.translation.z];
+        let pos = [
+            transform.translation.x,
+            transform.translation.y - 0.5,
+            transform.translation.z,
+        ];
         let node_id = marker.node_id.clone();
         commands.entity(entity).despawn();
         let material = resolve_primitive_material(
@@ -131,7 +148,10 @@ pub fn resolve_primitive_material(
         return default_assets.default_material.clone();
     };
     let Some(entry) = registry.0.get(id) else {
-        bevy::log::warn!("texture_ref '{}' not found in TextureRegistry — using default", id);
+        bevy::log::warn!(
+            "texture_ref '{}' not found in TextureRegistry — using default",
+            id
+        );
         return default_assets.default_material.clone();
     };
 
@@ -148,7 +168,10 @@ pub fn resolve_primitive_material(
     let resolved = resolve_material_textures(&handle, &blob_store);
 
     let Some(albedo) = resolved.albedo else {
-        bevy::log::warn!("texture_ref '{}' albedo blob unresolvable — using default", id);
+        bevy::log::warn!(
+            "texture_ref '{}' albedo blob unresolvable — using default",
+            id
+        );
         return default_assets.default_material.clone();
     };
 
@@ -184,7 +207,10 @@ mod tests {
             texture_ref: None,
         };
         let b = a.clone();
-        assert_eq!(a, b, "identical descriptors must compare equal so reconcile skips a no-op remesh");
+        assert_eq!(
+            a, b,
+            "identical descriptors must compare equal so reconcile skips a no-op remesh"
+        );
 
         let mut c = a.clone();
         c.dims[0] = 2.0;

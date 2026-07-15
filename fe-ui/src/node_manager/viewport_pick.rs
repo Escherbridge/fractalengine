@@ -46,11 +46,16 @@ pub(super) fn handle_viewport_click(
         // the root marker entity — mirror `gimbal_center`'s entity-then-children
         // walk (`gimbal.rs`), but slab-test instead of centering. Whatever child
         // we hit, selection resolves to this root `entity` (FR-2).
-        let Some(t) = pick_node_aabb(entity, &ray, &g_transform_query, &aabb_query, &children_query)
-        else {
+        let Some(t) = pick_node_aabb(
+            entity,
+            &ray,
+            &g_transform_query,
+            &aabb_query,
+            &children_query,
+        ) else {
             continue;
         };
-        if best.as_ref().map_or(true, |b| t < b.1) {
+        if best.as_ref().is_none_or(|b| t < b.1) {
             best = Some((entity, t, marker.node_id.clone()));
         }
     }
@@ -90,7 +95,9 @@ pub(super) fn open_track_on_select(
     if !track_to_open(&node_id, &path_state) {
         return;
     }
-    ui_mgr.push_action(crate::actions::UiAction::PathSelectTrack { track_node_id: node_id });
+    ui_mgr.push_action(crate::actions::UiAction::PathSelectTrack {
+        track_node_id: node_id,
+    });
 }
 
 /// `true` when `node_id` names a Paths-tab track that isn't already the one
@@ -127,7 +134,7 @@ fn pick_node_aabb(
                 Vec3::from(aabb.center),
                 Vec3::from(aabb.half_extents),
             ) {
-                if best.map_or(true, |b| t < b) {
+                if best.is_none_or(|b| t < b) {
                     best = Some(t);
                 }
             }
@@ -210,6 +217,7 @@ fn ray_aabb_hit(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
     use crate::gis::{GisResultRow, PathEditorState};
 
@@ -309,7 +317,13 @@ mod tests {
         // A 10× scaled unit box spans x ∈ [-5, 5]; ray from x=+20 toward -x
         // enters at x = 5, i.e. 15 units along the ray.
         let aff = Affine3A::from_scale(Vec3::splat(10.0));
-        let t = ray_aabb_hit(Vec3::new(20.0, 0.0, 0.0), -Vec3::X, aff, Vec3::ZERO, Vec3::splat(0.5));
+        let t = ray_aabb_hit(
+            Vec3::new(20.0, 0.0, 0.0),
+            -Vec3::X,
+            aff,
+            Vec3::ZERO,
+            Vec3::splat(0.5),
+        );
         assert!(t.is_some());
         assert!((t.unwrap() - 15.0).abs() < 1e-3, "t = {:?}", t);
     }

@@ -14,7 +14,11 @@ use crate::path_ops::{PathOp, PendingPathOps};
 /// Runs the "track nodes" query for `petal_id`, routed through
 /// `PathEditorState.tracks_pending` (not `GisPanelState.query_pending` —
 /// see `PathEditorState`'s doc comment on why this is a separate flag).
-pub(crate) fn query_tracks(db_sender: &DbCommandSender, path_state: &mut PathEditorState, petal_id: String) {
+pub(crate) fn query_tracks(
+    db_sender: &DbCommandSender,
+    path_state: &mut PathEditorState,
+    petal_id: String,
+) {
     let (sql, vars) = gis::track_query(&petal_id);
     path_state.tracks_pending = true;
     path_state.last_error = None;
@@ -30,10 +34,20 @@ pub(crate) fn query_tracks(db_sender: &DbCommandSender, path_state: &mut PathEdi
 /// up in `verse_manager::db_results`, gated on `editing_track_id` +
 /// `points_pending` (see `fe-ui/src/AGENTS.md` §path-editor) so the
 /// inspector's own `GetNodeProperties` replies can't stomp this buffer.
-pub(crate) fn select_track(db_sender: &DbCommandSender, path_state: &mut PathEditorState, track_node_id: String) {
+pub(crate) fn select_track(
+    db_sender: &DbCommandSender,
+    path_state: &mut PathEditorState,
+    track_node_id: String,
+) {
     path_state.start_editing(track_node_id.clone());
     path_state.points_pending = true;
-    if db_sender.0.send(DbCommand::GetNodeProperties { node_id: track_node_id }).is_err() {
+    if db_sender
+        .0
+        .send(DbCommand::GetNodeProperties {
+            node_id: track_node_id,
+        })
+        .is_err()
+    {
         bevy::log::warn!("db_sender channel closed — Paths gpx_points read-back not dispatched");
         path_state.points_pending = false;
         path_state.last_error = Some("DB channel closed".to_string());
@@ -52,7 +66,11 @@ pub(crate) fn create_track(
     correlation_id: Option<String>,
 ) -> Result<(), &'static str> {
     let name = validate_track_name(&name)?;
-    path_ops.0.push(PathOp::CreateTrack { petal_id, name, correlation_id });
+    path_ops.0.push(PathOp::CreateTrack {
+        petal_id,
+        name,
+        correlation_id,
+    });
     Ok(())
 }
 
@@ -79,8 +97,15 @@ pub(crate) fn append_point(
     track_node_id: String,
     position: [f32; 3],
 ) {
-    path_state.points.push(PathPointRow { position, time_seconds: None });
-    path_ops.0.push(PathOp::AppendPoint { track_node_id, position, time_seconds: None });
+    path_state.points.push(PathPointRow {
+        position,
+        time_seconds: None,
+    });
+    path_ops.0.push(PathOp::AppendPoint {
+        track_node_id,
+        position,
+        time_seconds: None,
+    });
 }
 
 /// Removes point `index` from both the local buffer and queues the op.
@@ -98,7 +123,10 @@ pub(crate) fn remove_point(
     } else {
         bevy::log::warn!("Paths: remove_point index {index} out of range for local buffer");
     }
-    path_ops.0.push(PathOp::RemovePoint { track_node_id, index });
+    path_ops.0.push(PathOp::RemovePoint {
+        track_node_id,
+        index,
+    });
 }
 
 /// Moves point `index` to `position` in both the local buffer and the op
@@ -115,7 +143,11 @@ pub(crate) fn move_point(
     } else {
         bevy::log::warn!("Paths: move_point index {index} out of range for local buffer");
     }
-    path_ops.0.push(PathOp::MovePoint { track_node_id, index, position });
+    path_ops.0.push(PathOp::MovePoint {
+        track_node_id,
+        index,
+        position,
+    });
 }
 
 pub(crate) fn annotate_point(
@@ -126,7 +158,13 @@ pub(crate) fn annotate_point(
     body: String,
     color: String,
 ) {
-    path_ops.0.push(PathOp::AnnotatePoint { track_node_id, index, title, body, color });
+    path_ops.0.push(PathOp::AnnotatePoint {
+        track_node_id,
+        index,
+        title,
+        body,
+        color,
+    });
 }
 
 pub(crate) fn export_gpx(path_ops: &mut PendingPathOps, track_node_id: String) {
@@ -146,7 +184,13 @@ pub(crate) const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
 /// fe-terrain dependency.
 pub(crate) fn track_color_to_hex(color: [f32; 4]) -> String {
     let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    format!("#{:02x}{:02x}{:02x}{:02x}", c(color[0]), c(color[1]), c(color[2]), c(color[3]))
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        c(color[0]),
+        c(color[1]),
+        c(color[2]),
+        c(color[3])
+    )
 }
 
 /// Pure builder: the `(key, value)` `SetNodeProperty` writes for a style edit.
@@ -159,7 +203,10 @@ pub(crate) fn style_property_writes(
 ) -> Vec<(&'static str, serde_json::Value)> {
     let mut writes = Vec::new();
     if let Some(color) = color {
-        writes.push((TRACK_COLOR_KEY, serde_json::Value::String(track_color_to_hex(color))));
+        writes.push((
+            TRACK_COLOR_KEY,
+            serde_json::Value::String(track_color_to_hex(color)),
+        ));
     }
     if let Some(width) = width {
         writes.push((TRACK_WIDTH_KEY, serde_json::json!(width)));
@@ -184,10 +231,16 @@ pub(crate) fn set_style(
     for (key, value) in style_property_writes(color, width, visible) {
         if db_sender
             .0
-            .send(DbCommand::SetNodeProperty { node_id: track_node_id.clone(), key: key.to_string(), value })
+            .send(DbCommand::SetNodeProperty {
+                node_id: track_node_id.clone(),
+                key: key.to_string(),
+                value,
+            })
             .is_err()
         {
-            bevy::log::warn!("db_sender channel closed — track-style SetNodeProperty not dispatched");
+            bevy::log::warn!(
+                "db_sender channel closed — track-style SetNodeProperty not dispatched"
+            );
             return;
         }
     }
@@ -255,7 +308,10 @@ pub(crate) fn append_shape(
 /// Applies parsed track rows from a `DbResult::QueryResult` reply into
 /// `PathEditorState.tracks` — pure enough to test via `gis::parse_gis_rows`
 /// directly; this just assigns + clears the pending flag.
-pub(crate) fn apply_track_rows(path_state: &mut PathEditorState, rows: Vec<crate::gis::GisResultRow>) {
+pub(crate) fn apply_track_rows(
+    path_state: &mut PathEditorState,
+    rows: Vec<crate::gis::GisResultRow>,
+) {
     path_state.tracks = rows;
     path_state.tracks_pending = false;
 }
@@ -266,13 +322,22 @@ mod tests {
 
     #[test]
     fn validate_track_name_rejects_empty() {
-        assert_eq!(validate_track_name(""), Err("Enter a name for the new path"));
-        assert_eq!(validate_track_name("   "), Err("Enter a name for the new path"));
+        assert_eq!(
+            validate_track_name(""),
+            Err("Enter a name for the new path")
+        );
+        assert_eq!(
+            validate_track_name("   "),
+            Err("Enter a name for the new path")
+        );
     }
 
     #[test]
     fn validate_track_name_trims() {
-        assert_eq!(validate_track_name("  Ridge Loop  "), Ok("Ridge Loop".to_string()));
+        assert_eq!(
+            validate_track_name("  Ridge Loop  "),
+            Ok("Ridge Loop".to_string())
+        );
     }
 
     #[test]
@@ -280,14 +345,26 @@ mod tests {
         // Manual "New Path" button path: correlation_id None (bridge generates
         // its own id, unchanged behavior).
         let mut ops = PendingPathOps::default();
-        let result = create_track(&mut ops, "petal-1".to_string(), "Ridge Loop".to_string(), None);
+        let result = create_track(
+            &mut ops,
+            "petal-1".to_string(),
+            "Ridge Loop".to_string(),
+            None,
+        );
         assert!(result.is_ok());
         assert_eq!(ops.0.len(), 1);
         match &ops.0[0] {
-            PathOp::CreateTrack { petal_id, name, correlation_id } => {
+            PathOp::CreateTrack {
+                petal_id,
+                name,
+                correlation_id,
+            } => {
                 assert_eq!(petal_id, "petal-1");
                 assert_eq!(name, "Ridge Loop");
-                assert!(correlation_id.is_none(), "manual create carries no correlation id");
+                assert!(
+                    correlation_id.is_none(),
+                    "manual create carries no correlation id"
+                );
             }
             other => panic!("expected CreateTrack, got {other:?}"),
         }
@@ -331,7 +408,11 @@ mod tests {
         assert_eq!(state.points[0].position, [1.0, 2.0, 3.0]);
         assert_eq!(ops.0.len(), 1);
         match &ops.0[0] {
-            PathOp::AppendPoint { track_node_id, position, time_seconds } => {
+            PathOp::AppendPoint {
+                track_node_id,
+                position,
+                time_seconds,
+            } => {
                 assert_eq!(track_node_id, "track-1");
                 assert_eq!(*position, [1.0, 2.0, 3.0]);
                 assert!(time_seconds.is_none());
@@ -371,11 +452,21 @@ mod tests {
         let mut state = PathEditorState::default();
         state.start_editing("track-1".to_string());
         append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
-        move_point(&mut ops, &mut state, "track-1".to_string(), 0, [5.0, 0.0, 5.0]);
+        move_point(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            0,
+            [5.0, 0.0, 5.0],
+        );
         assert_eq!(state.points[0].position, [5.0, 0.0, 5.0]);
         assert_eq!(ops.0.len(), 2);
         match &ops.0[1] {
-            PathOp::MovePoint { track_node_id, index, position } => {
+            PathOp::MovePoint {
+                track_node_id,
+                index,
+                position,
+            } => {
                 assert_eq!(track_node_id, "track-1");
                 assert_eq!(*index, 0);
                 assert_eq!(*position, [5.0, 0.0, 5.0]);
@@ -389,7 +480,13 @@ mod tests {
         let mut ops = PendingPathOps::default();
         let mut state = PathEditorState::default();
         state.start_editing("track-1".to_string());
-        move_point(&mut ops, &mut state, "track-1".to_string(), 9, [5.0, 0.0, 5.0]);
+        move_point(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            9,
+            [5.0, 0.0, 5.0],
+        );
         assert!(state.points.is_empty());
         assert_eq!(ops.0.len(), 1);
         assert!(matches!(ops.0[0], PathOp::MovePoint { index: 9, .. }));
@@ -416,7 +513,13 @@ mod tests {
         );
         assert_eq!(ops.0.len(), 1);
         match &ops.0[0] {
-            PathOp::AnnotatePoint { track_node_id, index, title, body, color } => {
+            PathOp::AnnotatePoint {
+                track_node_id,
+                index,
+                title,
+                body,
+                color,
+            } => {
                 assert_eq!(track_node_id, "track-1");
                 assert_eq!(*index, 2);
                 assert_eq!(title, "Camp");
@@ -457,11 +560,20 @@ mod tests {
         let writes = style_property_writes(Some([0.0, 0.8, 1.0, 1.0]), Some(4.0), Some(false));
         assert_eq!(writes.len(), 3);
         // Color → hex string.
-        assert_eq!(writes[0], (TRACK_COLOR_KEY, serde_json::Value::String("#00ccffff".to_string())));
+        assert_eq!(
+            writes[0],
+            (
+                TRACK_COLOR_KEY,
+                serde_json::Value::String("#00ccffff".to_string())
+            )
+        );
         // Width → number.
         assert_eq!(writes[1], (TRACK_WIDTH_KEY, serde_json::json!(4.0)));
         // Visible → bool.
-        assert_eq!(writes[2], (TRACK_VISIBLE_KEY, serde_json::Value::Bool(false)));
+        assert_eq!(
+            writes[2],
+            (TRACK_VISIBLE_KEY, serde_json::Value::Bool(false))
+        );
     }
 
     #[test]
@@ -473,7 +585,13 @@ mod tests {
     fn set_style_dispatches_one_command_per_changed_field() {
         let (tx, rx) = crossbeam::channel::bounded(8);
         let db_sender = DbCommandSender(tx);
-        set_style(&db_sender, "track-1".to_string(), Some([1.0, 0.0, 0.0, 1.0]), Some(2.0), None);
+        set_style(
+            &db_sender,
+            "track-1".to_string(),
+            Some([1.0, 0.0, 0.0, 1.0]),
+            Some(2.0),
+            None,
+        );
         // Two writes: color + width (visible is None).
         let mut keys = Vec::new();
         while let Ok(cmd) = rx.try_recv() {
@@ -485,7 +603,10 @@ mod tests {
                 other => panic!("expected SetNodeProperty, got {other:?}"),
             }
         }
-        assert_eq!(keys, vec![TRACK_COLOR_KEY.to_string(), TRACK_WIDTH_KEY.to_string()]);
+        assert_eq!(
+            keys,
+            vec![TRACK_COLOR_KEY.to_string(), TRACK_WIDTH_KEY.to_string()]
+        );
     }
 
     #[test]
@@ -496,7 +617,11 @@ mod tests {
         append_point(&mut ops, &mut state, "track-1".to_string(), [0.0, 0.0, 0.0]);
         append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
         ops.0.clear(); // isolate the replace ops below
-        replace_points(&mut ops, &mut state, vec![[5.0, 0.0, 5.0], [6.0, 0.0, 6.0], [7.0, 0.0, 7.0]]);
+        replace_points(
+            &mut ops,
+            &mut state,
+            vec![[5.0, 0.0, 5.0], [6.0, 0.0, 6.0], [7.0, 0.0, 7.0]],
+        );
         // Local buffer reflects the new list exactly.
         assert_eq!(state.points.len(), 3);
         assert_eq!(state.points[0].position, [5.0, 0.0, 5.0]);
@@ -541,7 +666,11 @@ mod tests {
         append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
         append_point(&mut ops, &mut state, "track-1".to_string(), [2.0, 0.0, 0.0]);
         smooth_current(&mut ops, &mut state, PenMode::Polyline, 0.5, 8);
-        assert_eq!(state.points.len(), 3, "polyline resample preserves point count");
+        assert_eq!(
+            state.points.len(),
+            3,
+            "polyline resample preserves point count"
+        );
     }
 
     #[test]
@@ -582,10 +711,16 @@ mod tests {
         let (tx, rx) = crossbeam::channel::bounded(8);
         let db_sender = DbCommandSender(tx);
         let mut state = PathEditorState::default();
-        state.points.push(PathPointRow { position: [9.0, 0.0, 9.0], time_seconds: None });
+        state.points.push(PathPointRow {
+            position: [9.0, 0.0, 9.0],
+            time_seconds: None,
+        });
         select_track(&db_sender, &mut state, "track-1".to_string());
         assert_eq!(state.editing_track_id.as_deref(), Some("track-1"));
-        assert!(state.points.is_empty(), "start_editing clears the stale local buffer");
+        assert!(
+            state.points.is_empty(),
+            "start_editing clears the stale local buffer"
+        );
         assert!(state.points_pending);
         match rx.try_recv() {
             Ok(DbCommand::GetNodeProperties { node_id }) => assert_eq!(node_id, "track-1"),

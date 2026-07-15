@@ -69,8 +69,9 @@ pub async fn resolve_petal_crs(state: &ApiState, petal_id: &str) -> EgressCrs {
                 .find_map(|uri| registry.get_meta(uri))
         });
 
-    let tileset_crs: Option<String> =
-        tileset_meta.as_ref().map(|m| m.crs_or_default().to_string());
+    let tileset_crs: Option<String> = tileset_meta
+        .as_ref()
+        .map(|m| m.crs_or_default().to_string());
     let label = crs_label(
         origin,
         tileset_crs.as_deref(),

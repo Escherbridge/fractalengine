@@ -3,9 +3,9 @@ use fe_query::{Filter, QueryBuilder, UpdateBuilder};
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::role_level::RoleLevel;
-use crate::scope::{parse_scope, parent_scope};
-use crate::{op_log, rbac};
+use crate::scope::{parent_scope, parse_scope};
 use crate::types::{NodeId, OpLogEntry, OpType};
+use crate::{op_log, rbac};
 
 /// Verse-level metadata needed for role resolution.
 struct VerseInfo {
@@ -157,10 +157,7 @@ pub async fn revoke_role_checked(
 /// Returns `(peer_did, RoleLevel)` pairs. Currently only includes roles
 /// explicitly assigned at this exact scope; inherited members from parent
 /// scopes will be added in a future enhancement.
-pub async fn get_scope_members(
-    db: &Db,
-    scope: &str,
-) -> anyhow::Result<Vec<(String, RoleLevel)>> {
+pub async fn get_scope_members(db: &Db, scope: &str) -> anyhow::Result<Vec<(String, RoleLevel)>> {
     let explicit = rbac::get_all_roles_for_scope(db, scope).await?;
     let members: Vec<(String, RoleLevel)> = explicit
         .into_iter()
@@ -277,13 +274,21 @@ mod tests {
         let role = super::resolve_role(&db, random_peer, &scope)
             .await
             .expect("resolve_role");
-        assert_eq!(role, RoleLevel::None, "peer with no role on default_access=none verse should get None");
+        assert_eq!(
+            role,
+            RoleLevel::None,
+            "peer with no role on default_access=none verse should get None"
+        );
 
         // The owner should still get Owner regardless of default_access
         let owner_role = super::resolve_role(&db, owner_did, &scope)
             .await
             .expect("resolve_role for owner");
-        assert_eq!(owner_role, RoleLevel::Owner, "verse owner should always resolve to Owner");
+        assert_eq!(
+            owner_role,
+            RoleLevel::Owner,
+            "verse owner should always resolve to Owner"
+        );
 
         // Now change default_access to "viewer"
         super::set_default_access(&db, verse_id, "viewer")
@@ -294,6 +299,10 @@ mod tests {
         let role2 = super::resolve_role(&db, random_peer, &scope)
             .await
             .expect("resolve_role after change");
-        assert_eq!(role2, RoleLevel::Viewer, "peer with no role on default_access=viewer verse should get Viewer");
+        assert_eq!(
+            role2,
+            RoleLevel::Viewer,
+            "peer with no role on default_access=viewer verse should get Viewer"
+        );
     }
 }

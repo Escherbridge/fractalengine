@@ -89,7 +89,7 @@ impl DiskTileCache {
         let mut entries: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
 
         for path in walkdir(self.base_dir.as_path()) {
-            if path.extension().map_or(false, |e| e == "tile") {
+            if path.extension().is_some_and(|e| e == "tile") {
                 if let Ok(meta) = std::fs::metadata(&path) {
                     let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
                     entries.push((path, meta.len(), mtime));

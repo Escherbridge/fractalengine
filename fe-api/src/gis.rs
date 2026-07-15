@@ -349,7 +349,10 @@ async fn build_spatial_filter(
         ));
     };
     if !(r.is_finite() && r >= 0.0) {
-        return Err(err(StatusCode::BAD_REQUEST, "radius must be finite and non-negative"));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "radius must be finite and non-negative",
+        ));
     }
     Ok(Some(SpatialFilter::Radius { cx, cz, r }))
 }
@@ -365,7 +368,10 @@ async fn load_petal_terrain_origin(state: &ApiState, petal_id: &str) -> Option<P
     let origin = terrain.get("origin")?;
     let lat = origin.get("origin_lat")?.as_f64()?;
     let lon = origin.get("origin_lon")?.as_f64()?;
-    let ele = origin.get("origin_ele").and_then(Value::as_f64).unwrap_or(0.0);
+    let ele = origin
+        .get("origin_ele")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     Some(Projection::new(lat, lon, ele))
 }
 
@@ -383,7 +389,10 @@ fn row_position(row: &Value) -> (f64, f64, f64) {
 }
 
 fn str_field(row: &Value, key: &str) -> String {
-    row.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    row.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Pull the `gis.annotation.*` bundle out of a node's `properties` object.
@@ -451,18 +460,18 @@ pub(crate) async fn run_select(
         for (k, v) in &vars {
             q = q.bind((k.clone(), v.clone()));
         }
-        let mut res = match tokio::time::timeout(Duration::from_secs(5), async move { q.await }).await
-        {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, sql, "gis direct read failed");
-                return None;
-            }
-            Err(_) => {
-                tracing::warn!(sql, "gis direct read timed out");
-                return None;
-            }
-        };
+        let mut res =
+            match tokio::time::timeout(Duration::from_secs(5), async move { q.await }).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, sql, "gis direct read failed");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(sql, "gis direct read timed out");
+                    return None;
+                }
+            };
         return match res.take::<Vec<Value>>(0) {
             Ok(rows) => Some(rows),
             Err(e) => {
@@ -521,9 +530,5 @@ fn ok(payload: Value) -> Response {
 }
 
 fn err(status: StatusCode, msg: &str) -> Response {
-    (
-        status,
-        Json(ApiResponse::<Value>::error(msg.to_string())),
-    )
-        .into_response()
+    (status, Json(ApiResponse::<Value>::error(msg.to_string()))).into_response()
 }

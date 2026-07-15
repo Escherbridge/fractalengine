@@ -28,7 +28,9 @@ pub(super) fn billboard_face_camera(
     node_mgr: Res<NodeManager>,
     mut billboards: Query<(Entity, &mut Transform), With<Billboard>>,
 ) {
-    let Ok(cam_gtx) = cameras.single() else { return };
+    let Ok(cam_gtx) = cameras.single() else {
+        return;
+    };
     let face = cam_gtx.rotation();
     let selected = node_mgr.selected_entity();
     for (entity, mut transform) in billboards.iter_mut() {

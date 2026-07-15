@@ -24,14 +24,9 @@ pub enum PendingOp {
         value: serde_json::Value,
     },
     /// Create a new node in a petal.
-    CreateNode {
-        petal_id: String,
-        name: String,
-    },
+    CreateNode { petal_id: String, name: String },
     /// Delete a node by ID.
-    DeleteNode {
-        node_id: String,
-    },
+    DeleteNode { node_id: String },
 }
 
 // ---------------------------------------------------------------------------

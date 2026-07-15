@@ -233,3 +233,31 @@ requests rather than done here):
 - Share-URL signing key persistence (§share): pass the node's `NodeKeypair`
   into `ApiConfig`/`run_server` from `fractalengine/src/main.rs` so shareable
   links survive a restart; today the key is ephemeral per process.
+
+## §iot-ingest (iot_spatial_reporting_20260714)
+
+`iot.rs` — `POST /api/v1/petals/:petal_id/iot/readings`, the minimal-v1
+external ingestion hook (batch JSON; webhook-able; a poll connector catalog is
+future work). Design notes:
+
+- **Guard order mirrors export.rs**: `require_role("editor")` (writes need
+  Editor+, unlike the Viewer+ read endpoints) → ULID check →
+  `resolve_petal_scope` → `require_scope` → per-DID rate limit
+  (`limits::IOT_INGEST_RATE_PER_SEC`) → batch cap
+  (`limits::IOT_INGEST_MAX_READINGS`, 413 past it).
+- **The write goes straight to `db_reader`** via
+  `fe_database::handlers::iot_reading::insert_readings`, not through a
+  `DbCommand` round-trip: readings are append-only facts with no derived
+  counters, so the DB-thread single-writer invariant doesn't apply (rationale
+  in fe-database `src/AGENTS.md` §iot-readings), and IoT-frequency batches
+  must not queue behind the render loop's channel.
+- **Validation failures map to real statuses**: unknown/foreign-petal anchor,
+  bad RFC-3339 timestamp, or empty metric → 422 (typed `IotIngestError`, no
+  string-sniffing); DB failure → 502; empty batch → 400.
+- **Egress seam (FR-5)**: `iot_reading` is whitelisted in
+  `query_guard::ALLOWED_TABLES` and `inject_scope_filter` injects the petal
+  filter on `FROM iot_reading` (rows carry a denormalized `petal_id`), so
+  `/api/v1/query` + shared-URL redemption serve IoT rows scope-guarded today.
+  Reading-shaped `export.parquet`/`export.csv` (flat reading rows + optional
+  anchor-position join) is the remaining FR-5 polish — `prepare_export` is
+  still node-table-only.

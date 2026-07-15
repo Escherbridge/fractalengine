@@ -12,7 +12,7 @@ use surrealdb::engine::local::Db;
 
 use crate::auth::{require_role, require_scope};
 
-use crate::types::{ApiResponse, is_valid_ulid};
+use crate::types::{is_valid_ulid, ApiResponse};
 
 /// GET /api/v1/petals/:petal_id/export — export a petal as a `.hexon` ZIP.
 ///
@@ -23,11 +23,7 @@ pub async fn export_petal(
     Path(petal_id): Path<String>,
 ) -> Response {
     if require_role(&claims, "viewer").is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            "insufficient permissions",
-        )
-            .into_response();
+        return (StatusCode::FORBIDDEN, "insufficient permissions").into_response();
     }
     if !is_valid_ulid(&petal_id) {
         return (StatusCode::BAD_REQUEST, "invalid petal_id").into_response();
@@ -35,11 +31,7 @@ pub async fn export_petal(
 
     // Resolve petal scope for enforcement
     let Some(scope) = resolve_petal_scope_for_export(&state, &petal_id).await else {
-        return (
-            StatusCode::NOT_FOUND,
-            "could not resolve petal scope",
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, "could not resolve petal scope").into_response();
     };
     if require_scope(&claims, &scope).is_err() {
         return (StatusCode::FORBIDDEN, "insufficient scope").into_response();
@@ -61,10 +53,9 @@ pub async fn export_petal(
             return (StatusCode::INTERNAL_SERVER_ERROR, "channel closed").into_response();
         }
         match tokio::time::timeout(std::time::Duration::from_secs(10), reply_rx).await {
-            Ok(Ok(DbResult::NodesLoaded { nodes, .. })) => nodes
-                .into_iter()
-                .map(fe_format::ExportNode::from)
-                .collect(),
+            Ok(Ok(DbResult::NodesLoaded { nodes, .. })) => {
+                nodes.into_iter().map(fe_format::ExportNode::from).collect()
+            }
             _ => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "failed to load nodes").into_response();
             }
@@ -140,7 +131,9 @@ pub async fn import_petal(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return axum::Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&petal_id) {
         return axum::Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
@@ -153,7 +146,9 @@ pub async fn import_petal(
         ));
     };
     if require_scope(&claims, &scope).is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error("insufficient scope"));
+        return axum::Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient scope",
+        ));
     }
 
     // Read the uploaded file
@@ -296,10 +291,7 @@ async fn load_export_nodes(
 }
 
 /// Load field_defs scoped to a petal (or global scope).
-async fn load_field_defs(
-    db: &surrealdb::Surreal<Db>,
-    petal_id: &str,
-) -> Vec<fe_format::FieldDef> {
+async fn load_field_defs(db: &surrealdb::Surreal<Db>, petal_id: &str) -> Vec<fe_format::FieldDef> {
     let scope_pattern = format!("%PETAL#{}%", petal_id);
     let mut res = match db
         .query(
@@ -317,7 +309,8 @@ async fn load_field_defs(
         .filter_map(|r| {
             let key = r["key"].as_str()?.to_string();
             let vt = r["value_type"].as_str().unwrap_or("string");
-            let property_type = serde_json::from_value(serde_json::json!(vt)).unwrap_or(fe_format::PropertyType::String);
+            let property_type = serde_json::from_value(serde_json::json!(vt))
+                .unwrap_or(fe_format::PropertyType::String);
             Some(fe_format::FieldDef {
                 key,
                 property_type,

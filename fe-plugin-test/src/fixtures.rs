@@ -92,10 +92,7 @@ pub fn basic_terrain() -> SceneFixture {
         let lat = 47.0 + (i as f64) * 0.01;
         let lon = -122.0 + (i as f64) * 0.01;
 
-        props.insert(
-            "elevation".to_string(),
-            PropertyValue::Number(elevation),
-        );
+        props.insert("elevation".to_string(), PropertyValue::Number(elevation));
         props.insert("lat".to_string(), PropertyValue::Number(lat));
         props.insert("lon".to_string(), PropertyValue::Number(lon));
         props.insert(
@@ -146,14 +143,8 @@ pub fn sensor_network() -> SceneFixture {
             PropertyValue::Number(temperature),
         );
         props.insert("humidity".to_string(), PropertyValue::Number(humidity));
-        props.insert(
-            "status".to_string(),
-            PropertyValue::String(status.into()),
-        );
-        props.insert(
-            "type".to_string(),
-            PropertyValue::String("sensor".into()),
-        );
+        props.insert("status".to_string(), PropertyValue::String(status.into()));
+        props.insert("type".to_string(), PropertyValue::String("sensor".into()));
         props.insert(
             "sensor_id".to_string(),
             PropertyValue::String(format!("SN-{:04}", i)),
@@ -180,10 +171,7 @@ pub fn sensor_network() -> SceneFixture {
             (node_id.clone(), "humidity".to_string()),
             humidity.to_string(),
         );
-        properties.insert(
-            (node_id.clone(), "status".to_string()),
-            status.to_string(),
-        );
+        properties.insert((node_id.clone(), "status".to_string()), status.to_string());
 
         nodes.push(snapshot);
     }

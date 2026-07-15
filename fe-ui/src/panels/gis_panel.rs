@@ -69,13 +69,32 @@ pub(crate) fn render_gis_panel(
 
             match gis_state.active_tab {
                 GisPanelTab::Query => {
-                    render_query_section(ui, gis_state, node_mgr, verse_mgr, ui_mgr, camera_focus, &petal_id, gpx_status);
+                    render_query_section(
+                        ui,
+                        gis_state,
+                        node_mgr,
+                        verse_mgr,
+                        ui_mgr,
+                        camera_focus,
+                        &petal_id,
+                        gpx_status,
+                    );
                 }
                 GisPanelTab::Annotations => {
-                    render_annotations_tab(ui, gis_state, node_mgr, verse_mgr, ui_mgr, camera_focus, &petal_id);
+                    render_annotations_tab(
+                        ui,
+                        gis_state,
+                        node_mgr,
+                        verse_mgr,
+                        ui_mgr,
+                        camera_focus,
+                        &petal_id,
+                    );
                 }
                 GisPanelTab::Layers => {
-                    crate::panels::layer_manager_card::layer_manager_section(ui, petal_map, ui_mgr, &petal_id);
+                    crate::panels::layer_manager_card::layer_manager_section(
+                        ui, petal_map, ui_mgr, &petal_id,
+                    );
                 }
                 GisPanelTab::Paths => {
                     // Auto-populate the track list on first view (empty + idle +
@@ -86,14 +105,23 @@ pub(crate) fn render_gis_panel(
                         && !path_state.tracks_pending
                         && path_state.last_error.is_none()
                     {
-                        ui_mgr.push_action(UiAction::PathQueryTracks { petal_id: petal_id.clone() });
+                        ui_mgr.push_action(UiAction::PathQueryTracks {
+                            petal_id: petal_id.clone(),
+                        });
                     }
                     crate::panels::path_editor_card::path_editor_section(
-                        ui, path_state, path_status, ui_mgr, cursor_world, &petal_id,
+                        ui,
+                        path_state,
+                        path_status,
+                        ui_mgr,
+                        cursor_world,
+                        &petal_id,
                     );
                 }
                 GisPanelTab::Export => {
-                    crate::panels::egress_card::egress_section(ui, gis_state, node_mgr, ui_mgr, &petal_id);
+                    crate::panels::egress_card::egress_section(
+                        ui, gis_state, node_mgr, ui_mgr, &petal_id,
+                    );
                 }
             }
         });
@@ -113,12 +141,16 @@ fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
             (GisPanelTab::Export, "Export"),
         ] {
             let active = gis_state.active_tab == tab;
-            let btn = egui::Button::new(
-                egui::RichText::new(label)
-                    .small()
-                    .color(if active { theme::TEXT_BRIGHT } else { theme::TEXT_DIM }),
-            )
-            .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+            let btn = egui::Button::new(egui::RichText::new(label).small().color(if active {
+                theme::TEXT_BRIGHT
+            } else {
+                theme::TEXT_DIM
+            }))
+            .fill(if active {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            });
             if ui.add(btn).clicked() {
                 gis_state.active_tab = tab;
             }
@@ -140,11 +172,22 @@ fn render_annotations_tab(
     petal_id: &str,
 ) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Annotated Nodes").strong().color(theme::TEXT_SECTION));
+        ui.label(
+            egui::RichText::new("Annotated Nodes")
+                .strong()
+                .color(theme::TEXT_SECTION),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let label = if gis_state.query_pending { "Refreshing..." } else { "Refresh" };
+            let label = if gis_state.query_pending {
+                "Refreshing..."
+            } else {
+                "Refresh"
+            };
             if ui
-                .add_enabled(!gis_state.query_pending, egui::Button::new(label).fill(theme::BG_BUTTON))
+                .add_enabled(
+                    !gis_state.query_pending,
+                    egui::Button::new(label).fill(theme::BG_BUTTON),
+                )
                 .clicked()
             {
                 gis_state.mode = GisQueryMode::Annotated;
@@ -155,7 +198,11 @@ fn render_annotations_tab(
     ui.add_space(4.0);
 
     if let Some(err) = &gis_state.last_error {
-        ui.label(egui::RichText::new(err).small().color(theme::STATUS_OFFLINE));
+        ui.label(
+            egui::RichText::new(err)
+                .small()
+                .color(theme::STATUS_OFFLINE),
+        );
         ui.add_space(4.0);
     }
 
@@ -172,7 +219,11 @@ fn render_query_section(
     petal_id: &str,
     gpx_status: &GpxImportStatus,
 ) {
-    ui.label(egui::RichText::new("Query").strong().color(theme::TEXT_SECTION));
+    ui.label(
+        egui::RichText::new("Query")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
@@ -182,8 +233,11 @@ fn render_query_section(
             (GisQueryMode::Bbox, "Bbox"),
         ] {
             let active = gis_state.mode == mode;
-            let btn = egui::Button::new(label)
-                .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+            let btn = egui::Button::new(label).fill(if active {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            });
             if ui.add(btn).clicked() {
                 gis_state.mode = mode;
             }
@@ -216,19 +270,31 @@ fn render_query_section(
                     .width(70.0)
                     .show_ui(ui, |ui| {
                         for t in ["string", "number", "bool"] {
-                            ui.selectable_value(&mut gis_state.filter_value_type_buf, t.to_string(), t);
+                            ui.selectable_value(
+                                &mut gis_state.filter_value_type_buf,
+                                t.to_string(),
+                                t,
+                            );
                         }
                     });
             });
         }
         GisQueryMode::Bbox => {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Min (x,z)").small().color(theme::TEXT_DIM));
+                ui.label(
+                    egui::RichText::new("Min (x,z)")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
                 ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[0]).desired_width(50.0));
                 ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_min[1]).desired_width(50.0));
             });
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Max (x,z)").small().color(theme::TEXT_DIM));
+                ui.label(
+                    egui::RichText::new("Max (x,z)")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
                 ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[0]).desired_width(50.0));
                 ui.add(egui::TextEdit::singleline(&mut gis_state.bbox_max[1]).desired_width(50.0));
             });
@@ -250,7 +316,11 @@ fn render_query_section(
     }
 
     ui.add_space(6.0);
-    let run_label = if gis_state.query_pending { "Running..." } else { "Run Query" };
+    let run_label = if gis_state.query_pending {
+        "Running..."
+    } else {
+        "Run Query"
+    };
     let can_run = !gis_state.query_pending;
     if ui
         .add_enabled(can_run, egui::Button::new(run_label).fill(theme::BG_SAVE))
@@ -261,7 +331,11 @@ fn render_query_section(
 
     if let Some(err) = &gis_state.last_error {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(err).small().color(theme::STATUS_OFFLINE));
+        ui.label(
+            egui::RichText::new(err)
+                .small()
+                .color(theme::STATUS_OFFLINE),
+        );
     }
 
     ui.add_space(6.0);
@@ -289,7 +363,9 @@ fn run_query(
     gis_state.last_error = None;
     match gis_state.mode {
         GisQueryMode::Annotated => {
-            ui_mgr.push_action(UiAction::GisQueryAnnotated { petal_id: petal_id.to_string() });
+            ui_mgr.push_action(UiAction::GisQueryAnnotated {
+                petal_id: petal_id.to_string(),
+            });
         }
         GisQueryMode::PropertyFilter => {
             let key = gis_state.filter_key_buf.trim().to_string();
@@ -297,7 +373,10 @@ fn run_query(
                 gis_state.last_error = Some("Enter a property key".to_string());
                 return;
             }
-            let value = gis::parse_filter_value(&gis_state.filter_value_type_buf, gis_state.filter_value_buf.trim());
+            let value = gis::parse_filter_value(
+                &gis_state.filter_value_type_buf,
+                gis_state.filter_value_buf.trim(),
+            );
             ui_mgr.push_action(UiAction::GisQueryPropertyFilter {
                 petal_id: petal_id.to_string(),
                 key,
@@ -305,13 +384,16 @@ fn run_query(
             });
         }
         GisQueryMode::Bbox => {
-            let (Some(min), Some(max)) =
-                (gis::parse_bbox_fields(&gis_state.bbox_min), gis::parse_bbox_fields(&gis_state.bbox_max))
-            else {
+            let (Some(min), Some(max)) = (
+                gis::parse_bbox_fields(&gis_state.bbox_min),
+                gis::parse_bbox_fields(&gis_state.bbox_max),
+            ) else {
                 gis_state.last_error = Some("Bbox fields must be numbers".to_string());
                 return;
             };
-            let Some(petal) = verse_mgr.find_petal(petal_id) else { return };
+            let Some(petal) = verse_mgr.find_petal(petal_id) else {
+                return;
+            };
             gis_state.results = petal
                 .nodes
                 .iter()
@@ -342,50 +424,69 @@ fn render_results(
     ui.add_space(4.0);
 
     if gis_state.results.is_empty() {
-        ui.label(egui::RichText::new("No results yet.").small().color(theme::TEXT_MUTED).italics());
+        ui.label(
+            egui::RichText::new("No results yet.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
         return;
     }
 
     let mut clicked_row: Option<(String, [f32; 3])> = None;
-    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-        for row in &gis_state.results {
-            egui::Frame::NONE
-                .fill(theme::BG_PEER_ROW_EVEN)
-                .inner_margin(egui::Margin::symmetric(6, 4))
-                .corner_radius(2.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if let Some((r, g, b)) = row
-                            .annotation_color
-                            .as_deref()
-                            .and_then(crate::panels::annotation_card::parse_hex_color)
-                        {
-                            let (rect, _) =
-                                ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
-                        }
-                        let label = egui::RichText::new(&row.name).color(theme::TEXT_BRIGHT);
-                        if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
-                            clicked_row = Some((row.node_id.clone(), row.position));
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "({:.1}, {:.1}, {:.1})",
-                                    row.position[0], row.position[1], row.position[2]
-                                ))
-                                .small()
-                                .color(theme::TEXT_DIM),
+    egui::ScrollArea::vertical()
+        .max_height(220.0)
+        .show(ui, |ui| {
+            for row in &gis_state.results {
+                egui::Frame::NONE
+                    .fill(theme::BG_PEER_ROW_EVEN)
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .corner_radius(2.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some((r, g, b)) = row
+                                .annotation_color
+                                .as_deref()
+                                .and_then(crate::panels::annotation_card::parse_hex_color)
+                            {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(12.0, 12.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(
+                                    rect,
+                                    2.0,
+                                    egui::Color32::from_rgb(r, g, b),
+                                );
+                            }
+                            let label = egui::RichText::new(&row.name).color(theme::TEXT_BRIGHT);
+                            if ui
+                                .add(egui::Label::new(label).sense(egui::Sense::click()))
+                                .clicked()
+                            {
+                                clicked_row = Some((row.node_id.clone(), row.position));
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "({:.1}, {:.1}, {:.1})",
+                                            row.position[0], row.position[1], row.position[2]
+                                        ))
+                                        .small()
+                                        .color(theme::TEXT_DIM),
+                                    );
+                                },
                             );
                         });
+                        if let Some(title) = &row.annotation_title {
+                            ui.label(egui::RichText::new(title).small().color(theme::TEXT_MUTED));
+                        }
                     });
-                    if let Some(title) = &row.annotation_title {
-                        ui.label(egui::RichText::new(title).small().color(theme::TEXT_MUTED));
-                    }
-                });
-            ui.add_space(1.0);
-        }
-    });
+                ui.add_space(1.0);
+            }
+        });
 
     // Reuse the existing sidebar-click selection mechanism (NodeManager's
     // pending_sidebar_select resolves to an Entity next frame) + the

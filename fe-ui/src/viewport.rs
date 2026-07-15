@@ -54,15 +54,7 @@ pub fn viewport_overlay(
     } else {
         // === NO VERSE: Peer discovery / verse browser ===
         viewport_verse_browser(
-            ui,
-            nav,
-            hierarchy,
-            db_tx,
-            dashboard,
-            rect,
-            center,
-            ui_mgr,
-            local_role,
+            ui, nav, hierarchy, db_tx, dashboard, rect, center, ui_mgr, local_role,
         );
     }
 }
@@ -94,12 +86,16 @@ pub fn viewport_petal_space(
     );
 
     // Breadcrumb: verse / fractal / petal with IDs (top-left)
-    if let (Some(ref vid), Some(ref fid), Some(ref pid)) =
-        (&nav.active_verse_id, &nav.active_fractal_id, &nav.active_petal_id)
-    {
+    if let (Some(ref vid), Some(ref fid), Some(ref pid)) = (
+        &nav.active_verse_id,
+        &nav.active_fractal_id,
+        &nav.active_petal_id,
+    ) {
         let crumb = format!(
             "v:{} / f:{} / p:{}",
-            truncate_id(vid), truncate_id(fid), truncate_id(pid),
+            truncate_id(vid),
+            truncate_id(fid),
+            truncate_id(pid),
         );
         ui.painter().text(
             egui::pos2(rect.min.x + 10.0, rect.min.y + 10.0),
@@ -621,8 +617,10 @@ pub fn viewport_petal_browser(
     if let (Some(ref vid), Some(ref fid)) = (&nav.active_verse_id, &nav.active_fractal_id) {
         let crumb = format!(
             "verse: {} ({}) / fractal: {} ({})",
-            nav.active_verse_name, truncate_id(vid),
-            nav.active_fractal_name, truncate_id(fid),
+            nav.active_verse_name,
+            truncate_id(vid),
+            nav.active_fractal_name,
+            truncate_id(fid),
         );
         ui.painter().text(
             egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0),

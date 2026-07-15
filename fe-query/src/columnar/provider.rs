@@ -1,9 +1,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{
-    Float32Array, RecordBatch, StringBuilder, UInt64Array,
-};
+use datafusion::arrow::array::{Float32Array, RecordBatch, StringBuilder, UInt64Array};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::datasource::memory::MemTable;
@@ -46,9 +44,7 @@ impl EntityStoreTable {
         match &self.petal_id {
             Some(pid) => {
                 let ids = self.store.get_by_petal(pid);
-                ids.iter()
-                    .filter_map(|id| self.store.get(id))
-                    .collect()
+                ids.iter().filter_map(|id| self.store.get(id)).collect()
             }
             None => self.store.all_snapshots(),
         }
@@ -198,10 +194,7 @@ mod tests {
     #[test]
     fn snapshots_to_batch_roundtrip() {
         let schema = entity_schema();
-        let snaps = vec![
-            make_snap("n1", "p1", 1.0),
-            make_snap("n2", "p1", 2.0),
-        ];
+        let snaps = vec![make_snap("n1", "p1", 1.0), make_snap("n2", "p1", 2.0)];
         let batch = snapshots_to_batch(&snaps, &schema).unwrap();
         assert_eq!(batch.num_rows(), 2);
 

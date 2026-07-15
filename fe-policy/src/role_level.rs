@@ -45,7 +45,10 @@ impl RoleLevel {
 
     /// Returns `true` for Owner, Manager, and Editor.
     pub fn can_edit(&self) -> bool {
-        matches!(self, RoleLevel::Owner | RoleLevel::Manager | RoleLevel::Editor)
+        matches!(
+            self,
+            RoleLevel::Owner | RoleLevel::Manager | RoleLevel::Editor
+        )
     }
 
     /// Returns `true` for Owner, Manager, Editor, and Viewer.

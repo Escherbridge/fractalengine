@@ -170,8 +170,13 @@ mod tests {
     #[test]
     fn bbox_renders_expected_sql_and_params() {
         let q = nodes_in_bbox("p1", 0.0, 1.0, 10.0, 11.0).unwrap();
-        assert!(q.sql.starts_with("SELECT * FROM node WHERE petal_id = $petal_id"));
-        assert!(!q.sql.contains("geo::"), "spatial filters must not use geo::* on local meters");
+        assert!(q
+            .sql
+            .starts_with("SELECT * FROM node WHERE petal_id = $petal_id"));
+        assert!(
+            !q.sql.contains("geo::"),
+            "spatial filters must not use geo::* on local meters"
+        );
         assert!(q.sql.contains("position.coordinates[0] >= $min_x"));
         assert!(q.sql.contains("position.coordinates[0] <= $max_x"));
         assert!(q.sql.contains("position.coordinates[1] >= $min_z"));
@@ -219,8 +224,13 @@ mod tests {
     #[test]
     fn radius_renders_expected_sql_and_params() {
         let q = nodes_within_radius("p1", 1.5, 2.5, 100.0).unwrap();
-        assert!(q.sql.starts_with("SELECT * FROM node WHERE petal_id = $petal_id"));
-        assert!(!q.sql.contains("geo::"), "spatial filters must not use geo::* on local meters");
+        assert!(q
+            .sql
+            .starts_with("SELECT * FROM node WHERE petal_id = $petal_id"));
+        assert!(
+            !q.sql.contains("geo::"),
+            "spatial filters must not use geo::* on local meters"
+        );
         assert!(q.sql.contains("(position.coordinates[0] - $cx)"));
         assert!(q.sql.contains("(position.coordinates[1] - $cz)"));
         assert!(q.sql.contains("<= $r2"));
@@ -257,7 +267,9 @@ mod tests {
     #[test]
     fn annotated_renders_all_reserved_keys() {
         let q = annotated_nodes("p1").unwrap();
-        assert!(q.sql.starts_with("SELECT * FROM node WHERE petal_id = $petal_id"));
+        assert!(q
+            .sql
+            .starts_with("SELECT * FROM node WHERE petal_id = $petal_id"));
         assert!(q.sql.contains(ANNOTATION_TITLE_KEY));
         assert!(q.sql.contains(ANNOTATION_BODY_KEY));
         assert!(q.sql.contains(ANNOTATION_COLOR_KEY));
@@ -282,12 +294,15 @@ mod tests {
     // trips the filter, RawQuery would reject every request at runtime.
     fn assert_rawquery_compatible(sql: &str) {
         let upper = sql.to_uppercase();
-        assert!(upper.trim_start().starts_with("SELECT"), "must start with SELECT: {sql}");
+        assert!(
+            upper.trim_start().starts_with("SELECT"),
+            "must start with SELECT: {sql}"
+        );
         assert!(!sql.contains(';'), "must not contain ';': {sql}");
         let blocked = [
-            "CREATE", "UPDATE", "DELETE", "DEFINE", "REMOVE", "RELATE", "INSERT", "LET",
-            "RETURN", "INFO", "FOR", "THROW", "SLEEP", "BREAK", "LIVE", "KILL", "IF", "BEGIN",
-            "COMMIT", "CANCEL",
+            "CREATE", "UPDATE", "DELETE", "DEFINE", "REMOVE", "RELATE", "INSERT", "LET", "RETURN",
+            "INFO", "FOR", "THROW", "SLEEP", "BREAK", "LIVE", "KILL", "IF", "BEGIN", "COMMIT",
+            "CANCEL",
         ];
         for kw in blocked {
             for (idx, _) in upper.match_indices(kw) {

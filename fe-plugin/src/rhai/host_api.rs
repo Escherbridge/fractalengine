@@ -37,30 +37,36 @@ pub fn register_host_api(engine: &mut Engine, ctx: Arc<Mutex<PluginContext>>) {
     // ---- set_property(node_id: String, key: String, value: Dynamic) ----
     {
         let ctx = ctx.clone();
-        engine.register_fn("set_property", move |node_id: &str, key: &str, value: Dynamic| {
-            let ctx = ctx.lock().unwrap();
-            let json_value = dynamic_to_json(&value);
-            let _ = ctx.send_command(PluginCommand::SetProperty {
-                plugin_id: ctx.plugin_id().to_string(),
-                node_id: node_id.to_string(),
-                key: key.to_string(),
-                value: json_value,
-            });
-        });
+        engine.register_fn(
+            "set_property",
+            move |node_id: &str, key: &str, value: Dynamic| {
+                let ctx = ctx.lock().unwrap();
+                let json_value = dynamic_to_json(&value);
+                let _ = ctx.send_command(PluginCommand::SetProperty {
+                    plugin_id: ctx.plugin_id().to_string(),
+                    node_id: node_id.to_string(),
+                    key: key.to_string(),
+                    value: json_value,
+                });
+            },
+        );
     }
 
     // ---- query_nodes(petal_id: String, filter: String) -> Array ----
     {
         let ctx = ctx.clone();
-        engine.register_fn("query_nodes", move |petal_id: &str, _filter: &str| -> rhai::Array {
-            let ctx = ctx.lock().unwrap();
-            let _ = ctx.send_command(PluginCommand::QueryNodes {
-                plugin_id: ctx.plugin_id().to_string(),
-                petal_id: petal_id.to_string(),
-            });
-            // Placeholder: return empty array. Phase 9A.2 adds request-reply.
-            rhai::Array::new()
-        });
+        engine.register_fn(
+            "query_nodes",
+            move |petal_id: &str, _filter: &str| -> rhai::Array {
+                let ctx = ctx.lock().unwrap();
+                let _ = ctx.send_command(PluginCommand::QueryNodes {
+                    plugin_id: ctx.plugin_id().to_string(),
+                    petal_id: petal_id.to_string(),
+                });
+                // Placeholder: return empty array. Phase 9A.2 adds request-reply.
+                rhai::Array::new()
+            },
+        );
     }
 
     // ---- create_node(petal_id: String, name: String) -> String ----
@@ -122,7 +128,10 @@ pub(crate) fn dynamic_to_json(value: &Dynamic) -> serde_json::Value {
     } else if let Ok(s) = value.clone().into_string() {
         serde_json::Value::String(s)
     } else if value.is_array() {
-        let arr = value.clone().into_typed_array::<Dynamic>().unwrap_or_default();
+        let arr = value
+            .clone()
+            .into_typed_array::<Dynamic>()
+            .unwrap_or_default();
         serde_json::Value::Array(arr.iter().map(dynamic_to_json).collect())
     } else if value.is_map() {
         let map = value.clone().cast::<Map>();

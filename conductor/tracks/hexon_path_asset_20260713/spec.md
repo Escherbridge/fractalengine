@@ -50,9 +50,13 @@ Three net-new platform pieces the feature sits on, none of which exist today:
 
 - **FR-1 (W3):** A node referencing a `.glb` asset spawns the real glTF mesh
   into the Bevy scene (finish the Sprint-5B loader TODO).
-- **FR-2 (W4):** A path-asset descriptor rides `PropertyValue::Json`:
-  `{ hexon_ref, source_path (track node), spacing_mode, spacing_value,
-  count_value, tangent_align }`. Objects round-trip losslessly.
+- **FR-2 (W4, as-built 2026-07-15):** The shipped `PathAssetDescriptor`
+  (`fe-sdk/src/path_asset.rs`) rides `PropertyValue::Json` under the
+  `path_asset` property key **on the track node itself** (no separate
+  `source_path` reference): `{ asset_path, spacing_mode, spacing_value,
+  count, tangent_align }`. Objects round-trip losslessly (tested). The
+  spec's original `{ hexon_ref, source_path, count_value }` shape never
+  landed — see Open Questions.
 - **FR-3 (W4):** Reconcile system reads the source path's `gpx_points`, stamps
   the hexon's model at arc-length-spaced transforms (reuse `PathTracker`),
   rotating to tangent when enabled; re-projects on `NodePropertiesLoaded` /
@@ -69,3 +73,37 @@ Three net-new platform pieces the feature sits on, none of which exist today:
 W3 → W4 → W5, each landing green before the next. Stop at last green boundary
 if runway runs out; hand off the remainder. Highest-risk platform work; do NOT
 bundle into the parallel wave (depends on not-yet-existing APIs).
+
+## As-built notes (reconciled 2026-07-15)
+
+- **FR-1..FR-4 shipped** (commits 35956dd, aad5542, 0be9628). The shipped
+  render path loads scenes via `asset_server.load("{path}#Scene0")` in
+  `fe-ui/src/verse_manager/spawn.rs` — it does **not** go through
+  `fe-renderer::load_to_bevy`, which remains the placeholder stub
+  (`fe-renderer/src/loader.rs:6-12`), and P2P blob fetch remains unwired.
+  The Reality-gap claim "nothing renders until load_to_bevy exists" is
+  therefore obsolete.
+- **DECISION (2026-07-15): the `load_to_bevy` loader finish + P2P blob
+  fetch are formally HANDED OFF to `hexon_p2p_bucket_20260710`** (its FR-3
+  placeholder-rendering contract and FR-5 pull-through-fetch cover exactly
+  this residual). This track will not touch `fe-renderer/src/loader.rs` or
+  `fe-network/src/iroh_blobs.rs` further.
+- **FR-3 as-built:** reconcile is `reconcile_path_asset`
+  (`fe-ui/src/verse_manager/path_asset_reconcile.rs`), a per-frame
+  change-gated system keyed on `PathEditorState.editing_track_id` + a
+  points fingerprint — NOT event-driven on
+  `NodePropertiesLoaded`/`NodeDeleted` as originally specced. This is the
+  intended as-built behavior, not missing wiring.
+- **Remaining scope:** FR-5 (PetalHexon bake) + FR-6 (multi-asset) — see
+  `plan.md`.
+
+## Open Questions
+
+1. **`hexon_ref` semantics (from the original FR-2 shape):** should stamping
+   be *stamp-from-hexon* (descriptor references a hexon that carries the
+   model asset, per the Vision's "hexon carries asset-model data") or the
+   shipped *stamp-from-asset-node* (`asset_path` points straight at a
+   `blob://{hash}.glb`)? The shipped shape skips the hexon indirection.
+   Decide when FR-5/FR-6 give hexons a real asset-carrying story — if
+   stamp-from-hexon is still wanted, it is a follow-up descriptor field,
+   not a rewrite.

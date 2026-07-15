@@ -130,7 +130,7 @@ fn check1_hexon_tile_source_satellite() {
     let bytes = HexonArchive::export_tileset(
         make_manifest("qa-sat"),
         &meta,
-        &[],       // no elevation
+        &[],        // no elevation
         &sat_tiles, // satellite
         None,
     )
@@ -217,9 +217,7 @@ fn check2_composite_hexon_before_cache() {
 
     // Put a DIFFERENT value in cache for the same key
     let first_key = &tiles[0].0;
-    cache
-        .put("composite", first_key, b"from-cache")
-        .unwrap();
+    cache.put("composite", first_key, b"from-cache").unwrap();
 
     let mut composite = CompositeTileSource::new();
     composite.add_hexon_source(source);
@@ -303,7 +301,10 @@ fn check3_builder_equivalent_roundtrip() {
     // Import and verify
     let data = HexonArchive::import(&archive).expect("import");
     assert_eq!(data.manifest.hexon_id, "tileset-qa-test");
-    assert!(matches!(data.manifest.hexon_type, HexonType::TerrainTileset));
+    assert!(matches!(
+        data.manifest.hexon_type,
+        HexonType::TerrainTileset
+    ));
 
     let imported_meta = data.tileset_meta.expect("should have tileset_meta");
     assert_eq!(imported_meta.bounds, bounds);
@@ -371,12 +372,24 @@ fn check4_pnw_covers_seattle_and_portland() {
     let [min_lat, min_lon, max_lat, max_lon] = NA_PACIFIC_NORTHWEST.bounds;
 
     // Seattle: 47.6, -122.3
-    assert!(47.6 >= min_lat && 47.6 <= max_lat, "PNW doesn't cover Seattle lat");
-    assert!(-122.3 >= min_lon && -122.3 <= max_lon, "PNW doesn't cover Seattle lon");
+    assert!(
+        47.6 >= min_lat && 47.6 <= max_lat,
+        "PNW doesn't cover Seattle lat"
+    );
+    assert!(
+        -122.3 >= min_lon && -122.3 <= max_lon,
+        "PNW doesn't cover Seattle lon"
+    );
 
     // Portland: 45.5, -122.7
-    assert!(45.5 >= min_lat && 45.5 <= max_lat, "PNW doesn't cover Portland lat");
-    assert!(-122.7 >= min_lon && -122.7 <= max_lon, "PNW doesn't cover Portland lon");
+    assert!(
+        45.5 >= min_lat && 45.5 <= max_lat,
+        "PNW doesn't cover Portland lat"
+    );
+    assert!(
+        -122.7 >= min_lon && -122.7 <= max_lon,
+        "PNW doesn't cover Portland lon"
+    );
 }
 
 // =========================================================================
@@ -430,11 +443,18 @@ fn check5_chunk_index_sequential() {
 
         assert_eq!(ci.tileset_id, tileset_id, "chunk {seq}: wrong tileset_id");
         assert_eq!(ci.chunk_seq, seq as u32, "chunk {seq}: wrong chunk_seq");
-        assert_eq!(ci.total_chunks, total_chunks, "chunk {seq}: wrong total_chunks");
+        assert_eq!(
+            ci.total_chunks, total_chunks,
+            "chunk {seq}: wrong total_chunks"
+        );
         assert_eq!(ci.chunk_bounds, bounds, "chunk {seq}: wrong bounds");
 
         // Each chunk should have exactly 1 tile
-        assert_eq!(data.elevation_tiles.len(), 1, "chunk {seq}: wrong tile count");
+        assert_eq!(
+            data.elevation_tiles.len(),
+            1,
+            "chunk {seq}: wrong tile count"
+        );
         assert_eq!(data.elevation_tiles[0].1, vec![seq as u8; 16]);
     }
 }
@@ -449,9 +469,7 @@ fn check6_full_roundtrip_elevation_and_satellite() {
         ("5/10/20".into(), vec![0xAAu8; 64]),
         ("6/20/40".into(), vec![0xBBu8; 128]),
     ];
-    let satellite = vec![
-        ("5/10/20".into(), vec![0xCCu8; 256]),
-    ];
+    let satellite = vec![("5/10/20".into(), vec![0xCCu8; 256])];
     let meta = TilesetMeta {
         bounds: [40.0, -120.0, 50.0, -110.0],
         min_zoom: 5,
@@ -486,15 +504,22 @@ fn check6_full_roundtrip_elevation_and_satellite() {
     assert_eq!(imported_meta.bounds, meta.bounds);
     assert_eq!(imported_meta.min_zoom, 5);
     assert_eq!(imported_meta.max_zoom, 10);
-    assert!(matches!(imported_meta.elevation_encoding, ElevationEncoding::Terrarium));
-    assert_eq!(imported_meta.has_satellite, true);
+    assert!(matches!(
+        imported_meta.elevation_encoding,
+        ElevationEncoding::Terrarium
+    ));
+    assert!(imported_meta.has_satellite);
     assert_eq!(imported_meta.tile_count, 2);
     assert_eq!(imported_meta.satellite_tile_count, 1);
     assert_eq!(imported_meta.region_name, "Roundtrip Test");
 
     // elevation_tiles survive
     assert_eq!(data.elevation_tiles.len(), 2);
-    let elev_keys: Vec<&str> = data.elevation_tiles.iter().map(|(k, _)| k.as_str()).collect();
+    let elev_keys: Vec<&str> = data
+        .elevation_tiles
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
     assert!(elev_keys.contains(&"5/10/20"));
     assert!(elev_keys.contains(&"6/20/40"));
 
@@ -516,8 +541,16 @@ fn check6_hexon_source_from_roundtripped_archive() {
     let re_exported = HexonArchive::export_tileset(
         make_manifest("re-export"),
         &source.tileset_meta,
-        &source.tiles.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>(),
-        &source.satellite.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>(),
+        &source
+            .tiles
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<Vec<_>>(),
+        &source
+            .satellite
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<Vec<_>>(),
         None,
     )
     .expect("re-export");

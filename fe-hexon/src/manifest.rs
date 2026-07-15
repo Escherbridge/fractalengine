@@ -49,7 +49,9 @@ mod tests {
             is_placeable: false,
             is_private: true,
             preview_image: Some("preview.png".to_string()),
-            metadata: Some(serde_json::json!({ "dimensions": [2048, 2048], "color_space": "sRGB" })),
+            metadata: Some(
+                serde_json::json!({ "dimensions": [2048, 2048], "color_space": "sRGB" }),
+            ),
             sub_assets: None,
         };
 
@@ -77,7 +79,10 @@ mod tests {
 
         assert_eq!(license.license_type, deserialized.license_type);
         if let Some(attrib1) = &license.attribution {
-            assert_eq!(&attrib1[..], deserialized.attribution.as_ref().map_or("", |s| s.as_str()));
+            assert_eq!(
+                &attrib1[..],
+                deserialized.attribution.as_ref().map_or("", |s| s.as_str())
+            );
         }
     }
 }
@@ -106,7 +111,7 @@ pub struct HexonManifest {
     pub description: String,
     /// Optional tags for discovery and filtering
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-pub tags: Vec<String>,
+    pub tags: Vec<String>,
     /// Type of hexon content (model, material, terrain, etc.)
     pub hexon_type: HexonKind,
     /// ISO 8601 timestamp when the manifest was first created
@@ -115,15 +120,15 @@ pub tags: Vec<String>,
     pub updated_at: String,
     /// Approximate size in bytes (for bandwidth estimation)
     #[serde(default, skip_serializing_if = "is_zero")]
-pub approx_size_bytes: u64,
+    pub approx_size_bytes: u64,
     /// Minimum Bevy/Fe engine version required to load this hexon
     pub min_engine_version: String,
     /// Optional homepage or documentation URL
     #[serde(default, skip_serializing_if = "Option::is_none")]
-pub homepage_url: Option<String>,
+    pub homepage_url: Option<String>,
     /// List of other hexons that must be installed before using this one
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-pub dependencies: Vec<CrateDep>,
+    pub dependencies: Vec<CrateDep>,
     /// Cryptographic signature to verify manifest integrity (from publisher)
     pub signature: String,
 }
@@ -194,36 +199,36 @@ pub struct AssetEntry {
     /// Unique identifier for this entry within its parent manifest
     pub entry_id: String,
     /// The kind of asset (texture, model mesh, gpx file, etc.)
-pub kind: EntryKind,
+    pub kind: EntryKind,
     /// BLAKE3 hash of the actual asset content
     pub asset_hash: String,
     /// File format or MIME type hint
     #[serde(default, skip_serializing_if = "String::is_empty")]
-pub format: String,
+    pub format: String,
     /// Human-readable label for this entry (e.g., "Main Diffuse" or "Mountain Texture")
     #[serde(default, skip_serializing_if = "String::is_empty")]
-pub label: String,
+    pub label: String,
     /// Optional tags for filtering and search
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-pub tags: Vec<String>,
+    pub tags: Vec<String>,
     /// Description of what this asset does
     #[serde(default, skip_serializing_if = "String::is_empty")]
-pub description: String,
+    pub description: String,
     /// Whether this asset can be placed/used as a runtime resource (e.g., terrain tile, texture)
     #[serde(default)]
-pub is_placeable: bool,
+    pub is_placeable: bool,
     /// Whether this entry is private and requires authentication to access
     #[serde(default)]
-pub is_private: bool,
+    pub is_private: bool,
     /// Optional URL or path to preview image in the UI
     #[serde(default, skip_serializing_if = "Option::is_none")]
-pub preview_image: Option<String>,
+    pub preview_image: Option<String>,
     /// Arbitrary metadata that can be serialized JSON
     #[serde(skip_serializing_if = "Option::is_none", default)]
-pub metadata: Option<serde_json::Value>,
+    pub metadata: Option<serde_json::Value>,
     /// Optional sub-assets (e.g., separate textures for a material)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-pub sub_assets: Option<HashMap<String, String>>,
+    pub sub_assets: Option<HashMap<String, String>>,
 }
 
 /// The kind of asset entry this represents
@@ -285,19 +290,19 @@ pub struct License {
     pub license_type: LicenseType,
     /// Optional text describing required attribution
     #[serde(default, skip_serializing_if = "Option::is_none")]
-pub attribution: Option<String>,
+    pub attribution: Option<String>,
     /// Optional payment provider ID for monetized hexons
     #[serde(default, skip_serializing_if = "Option::is_none")]
-pub payment_provider: Option<String>,
+    pub payment_provider: Option<String>,
     /// URL where users can verify they have paid or unlocked this hexon
     #[serde(default, skip_serializing_if = "Option::is_none")]
-pub payment_verification_url: Option<String>,
+    pub payment_verification_url: Option<String>,
     /// IDs of entries that are free to use even within a paid hexon
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-pub free_entries: Vec<String>,
+    pub free_entries: Vec<String>,
     /// Optional encrypted key for signing operations (not stored in plain text)
     #[serde(skip_serializing_if = "Option::is_none", default)]
-pub encrypted_key: Option<String>,
+    pub encrypted_key: Option<String>,
 }
 
 /// The type of license this hexon uses
@@ -334,8 +339,6 @@ impl std::str::FromStr for LicenseType {
     }
 }
 
-
-
 /// A manifest entry that has been downloaded and verified, ready to be installed
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledCrate {
@@ -345,12 +348,12 @@ pub struct InstalledCrate {
     pub manifest: HexonManifest,
     /// All assets included in this installation
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-pub entries: Vec<AssetEntry>,
+    pub entries: Vec<AssetEntry>,
     /// When this crate was installed (ISO 8601)
     pub installed_at: String,
     /// The Petal ID that owns/hosts this installed crate
     pub petal_id: String,
     /// Whether the manifest's signature verifies successfully against publisher_did
     #[serde(default)]
-pub signature_valid: bool,
+    pub signature_valid: bool,
 }

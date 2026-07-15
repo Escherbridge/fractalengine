@@ -32,7 +32,8 @@ pub struct ApiState {
     /// When `Some`, read handlers bypass the crossbeam→DB-thread round-trip.
     pub db_reader: Option<std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
     /// Per-token query rate limiter (jti → (count, window_start)).
-    pub query_rate_limiter: tokio::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
+    pub query_rate_limiter:
+        tokio::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
     /// In-memory entity store for DataFusion analytics queries.
     pub entity_store: Option<std::sync::Arc<fe_entity_store::EntityStore>>,
     /// Tileset registry for hexon tile serving and management.
@@ -40,7 +41,8 @@ pub struct ApiState {
     /// Hexon crate registry for package install/uninstall.
     pub hexon_registry: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::registry::HexonRegistry>>>,
     /// P2P announcement store for peer-discovered crates.
-    pub announcement_store: Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
+    pub announcement_store:
+        Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
     /// Ed25519 keypair signing shareable query URLs (see AGENTS.md §share).
     pub share_signer: Arc<fe_identity::NodeKeypair>,
 }
@@ -96,7 +98,13 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
     let cors = if state.cors_origins.iter().any(|o| o == "*") {
         CorsLayer::new()
             .allow_origin(AllowOrigin::any())
-            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
             .allow_headers(tower_http::cors::Any)
     } else {
         let origins: Vec<HeaderValue> = state
@@ -106,7 +114,13 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             .collect();
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(origins))
-            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
             .allow_headers(tower_http::cors::Any)
     };
 
@@ -128,14 +142,20 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/tiles/satellite/{tileset_id}/{z}/{x}/{y_jpg}",
             get(crate::terrain::get_satellite_tile),
         )
-        .route("/api/v1/tilesets", get(crate::terrain::list_available_tilesets))
+        .route(
+            "/api/v1/tilesets",
+            get(crate::terrain::list_available_tilesets),
+        )
         .route(
             "/api/v1/tilesets/{tileset_id}/meta",
             get(crate::terrain::get_tileset_meta),
         )
         // Shared-URL redemption: no session — the ed25519 signature IS the
         // credential and the token's scope ceiling bounds the result set.
-        .route("/api/v1/shared/{token}", get(crate::share::redeem_share_url));
+        .route(
+            "/api/v1/shared/{token}",
+            get(crate::share::redeem_share_url),
+        );
 
     // Authenticated routes — Bearer JWT required.
     let authenticated = Router::new()
@@ -252,7 +272,10 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/nodes", post(crate::rest::create_node_legacy))
         // Query endpoints (scope-guarded SurrealQL)
         .route("/api/v1/query", post(crate::rest::execute_query))
-        .route("/api/v1/query/elevated", post(crate::rest::execute_elevated_query))
+        .route(
+            "/api/v1/query/elevated",
+            post(crate::rest::execute_elevated_query),
+        )
         // BI egress: parquet/CSV downloads (same guard pipeline as /query)
         .route(
             "/api/v1/petals/{petal_id}/export.parquet",
@@ -262,10 +285,18 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/petals/{petal_id}/export.csv",
             get(crate::export::export_csv),
         )
+        // IoT reading ingestion (batch, petal-scoped)
+        .route(
+            "/api/v1/petals/{petal_id}/iot/readings",
+            post(crate::iot::ingest_readings),
+        )
         // Shareable signed query URLs (mint; redemption is public)
         .route("/api/v1/query/share", post(crate::share::issue_share_url))
         // Analytics (DataFusion columnar queries over EntityStore)
-        .route("/api/v1/analytics/query", post(crate::rest::execute_analytics_query))
+        .route(
+            "/api/v1/analytics/query",
+            post(crate::rest::execute_analytics_query),
+        )
         // Hexon tileset management
         .route(
             "/api/v1/hexons/tilesets/install",
@@ -288,10 +319,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             get(crate::terrain::get_storage_info),
         )
         // Hexon crate registry (Phase 8)
-        .route(
-            "/api/v1/crates/publish",
-            post(crate::hexon::publish_crate),
-        )
+        .route("/api/v1/crates/publish", post(crate::hexon::publish_crate))
         .route(
             "/api/v1/crates/{hexon_uri}/install",
             post(crate::hexon::install_crate),
@@ -300,10 +328,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/crates/{hexon_uri}/uninstall",
             delete(crate::hexon::uninstall_crate),
         )
-        .route(
-            "/api/v1/crates/search",
-            get(crate::hexon::search_crates),
-        )
+        .route("/api/v1/crates/search", get(crate::hexon::search_crates))
         .route(
             "/api/v1/crates/installed",
             get(crate::hexon::list_installed),
@@ -346,11 +371,7 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
 async fn ready_handler(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
     if let Some(ref db) = state.db_reader {
         // Direct DB ping — bypass the crossbeam channel
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            db.query("RETURN true"),
-        )
-        .await
+        match tokio::time::timeout(std::time::Duration::from_secs(2), db.query("RETURN true")).await
         {
             Ok(Ok(_)) => (
                 StatusCode::OK,
@@ -389,4 +410,3 @@ async fn ready_handler(State(state): State<Arc<ApiState>>) -> impl IntoResponse 
         }
     }
 }
-

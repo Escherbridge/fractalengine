@@ -21,18 +21,26 @@ pub(super) fn handle_gltf_imported(
     commands: &mut Commands,
     asset_server: &AssetServer,
 ) {
-    verse_mgr.add_node(petal_id, NodeEntry {
-        id: node_id.to_string(),
-        name: name.to_string(),
-        has_asset: true,
-        position,
-        webpage_url: None,
-        asset_path: Some(asset_path.to_string()),
-    });
+    verse_mgr.add_node(
+        petal_id,
+        NodeEntry {
+            id: node_id.to_string(),
+            name: name.to_string(),
+            has_asset: true,
+            position,
+            webpage_url: None,
+            asset_path: Some(asset_path.to_string()),
+        },
+    );
     if nav.active_petal_id.as_deref() == Some(petal_id) {
         super::super::spawn::spawn_node_entity(
-            commands, asset_server,
-            node_id, petal_id, name, position, asset_path,
+            commands,
+            asset_server,
+            node_id,
+            petal_id,
+            name,
+            position,
+            asset_path,
         );
     }
 }
@@ -51,14 +59,17 @@ pub(super) fn handle_node_created(
     path_state: &mut PathEditorState,
     db_sender: &DbCommandSender,
 ) {
-    verse_mgr.add_node(petal_id, NodeEntry {
-        id: id.to_string(),
-        name: name.to_string(),
-        has_asset,
-        position: [0.0; 3],
-        webpage_url: None,
-        asset_path: None,
-    });
+    verse_mgr.add_node(
+        petal_id,
+        NodeEntry {
+            id: id.to_string(),
+            name: name.to_string(),
+            has_asset,
+            position: [0.0; 3],
+            webpage_url: None,
+            asset_path: None,
+        },
+    );
     let in_active_petal = nav.active_petal_id.as_deref() == Some(petal_id);
     // Pen auto-create flush (`pen_autocreate_track_20260713`, FR-2 +
     // HIGH-1 correlation-id fix): a no-track Pen click stashed

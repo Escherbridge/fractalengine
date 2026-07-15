@@ -93,34 +93,43 @@ impl PeerRegistry {
 
     /// Update online status for a peer, creating an entry if absent.
     pub fn set_online(&mut self, peer_did: &str, online: bool) {
-        let entry = self.peers.entry(peer_did.to_string()).or_insert_with(|| PeerEntry {
-            peer_did: peer_did.to_string(),
-            role: None,
-            display_name: None,
-            is_online: false,
-        });
+        let entry = self
+            .peers
+            .entry(peer_did.to_string())
+            .or_insert_with(|| PeerEntry {
+                peer_did: peer_did.to_string(),
+                role: None,
+                display_name: None,
+                is_online: false,
+            });
         entry.is_online = online;
     }
 
     /// Update role for a peer, creating an entry if absent.
     pub fn set_role(&mut self, peer_did: &str, role: Option<String>) {
-        let entry = self.peers.entry(peer_did.to_string()).or_insert_with(|| PeerEntry {
-            peer_did: peer_did.to_string(),
-            role: None,
-            display_name: None,
-            is_online: false,
-        });
+        let entry = self
+            .peers
+            .entry(peer_did.to_string())
+            .or_insert_with(|| PeerEntry {
+                peer_did: peer_did.to_string(),
+                role: None,
+                display_name: None,
+                is_online: false,
+            });
         entry.role = role;
     }
 
     /// Update display name for a peer, creating an entry if absent.
     pub fn set_display_name(&mut self, peer_did: &str, name: Option<String>) {
-        let entry = self.peers.entry(peer_did.to_string()).or_insert_with(|| PeerEntry {
-            peer_did: peer_did.to_string(),
-            role: None,
-            display_name: None,
-            is_online: false,
-        });
+        let entry = self
+            .peers
+            .entry(peer_did.to_string())
+            .or_insert_with(|| PeerEntry {
+                peer_did: peer_did.to_string(),
+                role: None,
+                display_name: None,
+                is_online: false,
+            });
         entry.display_name = name;
     }
 
@@ -231,7 +240,10 @@ mod tests {
         registry.set_online("did:key:existing", true);
         assert!(registry.get("did:key:existing").unwrap().is_online);
         // Other fields should be preserved
-        assert_eq!(registry.get("did:key:existing").unwrap().role, Some("admin".to_string()));
+        assert_eq!(
+            registry.get("did:key:existing").unwrap().role,
+            Some("admin".to_string())
+        );
     }
 
     #[test]

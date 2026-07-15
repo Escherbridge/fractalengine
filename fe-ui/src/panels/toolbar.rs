@@ -49,7 +49,11 @@ pub(crate) fn top_toolbar(
                         "Rotate selected object (R)",
                     ),
                     (Tool::Scale, "\u{2921} Scale", "Scale selected object (X)"),
-                    (Tool::Pen, "\u{270E} Pen", "Draw a path: click the viewport to add points (P)"),
+                    (
+                        Tool::Pen,
+                        "\u{270E} Pen",
+                        "Draw a path: click the viewport to add points (P)",
+                    ),
                 ] {
                     let active = tool.active_tool == t;
                     let btn = egui::Button::new(label).fill(if active {
@@ -80,10 +84,11 @@ pub(crate) fn top_toolbar(
                     );
 
                     if ui
-                        .add(
-                            egui::Button::new("\u{1F5FA} GIS")
-                                .fill(if gis_panel.open { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON }),
-                        )
+                        .add(egui::Button::new("\u{1F5FA} GIS").fill(if gis_panel.open {
+                            theme::BG_BUTTON_ACTIVE
+                        } else {
+                            theme::BG_BUTTON
+                        }))
                         .on_hover_text("Query nodes, annotations, and terrain layers")
                         .clicked()
                     {
@@ -92,8 +97,11 @@ pub(crate) fn top_toolbar(
 
                     if ui
                         .add(
-                            egui::Button::new("\u{1F527} Tools")
-                                .fill(if tool_panel.open { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON }),
+                            egui::Button::new("\u{1F527} Tools").fill(if tool_panel.open {
+                                theme::BG_BUTTON_ACTIVE
+                            } else {
+                                theme::BG_BUTTON
+                            }),
                         )
                         .on_hover_text("Path-asset stamp, pen curves, and shape tools")
                         .clicked()

@@ -86,10 +86,7 @@ pub fn run() -> Result<TestResult> {
 
     let invite_string = match &invite_result {
         DbResult::VerseInviteGenerated { invite_string, .. } => {
-            tracing::info!(
-                "Alice generated invite ({} chars)",
-                invite_string.len()
-            );
+            tracing::info!("Alice generated invite ({} chars)", invite_string.len());
             invite_string.clone()
         }
         _ => unreachable!(),

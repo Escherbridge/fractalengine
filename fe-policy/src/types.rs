@@ -175,6 +175,9 @@ mod tests {
     #[test]
     fn action_display() {
         assert_eq!(Action::Write.to_string(), "write");
-        assert_eq!(Action::Custom("query.select".into()).to_string(), "query.select");
+        assert_eq!(
+            Action::Custom("query.select".into()).to_string(),
+            "query.select"
+        );
     }
 }

@@ -120,11 +120,7 @@ const WEB_MERCATOR_EQUATOR_M: f64 = 40_075_016.686;
 ///
 /// `native_scale` assumes 1 tile == `tile_size` world units at native zoom
 /// (i.e. world units per real meter = `tile_size / tile_world_size_m`).
-pub fn derive_scale_from_bounds(
-    bounds: [f64; 4],
-    max_zoom: u8,
-    tile_size: u16,
-) -> (f64, f64) {
+pub fn derive_scale_from_bounds(bounds: [f64; 4], max_zoom: u8, tile_size: u16) -> (f64, f64) {
     /// Clamp latitude to the standard Web-Mercator limit so `cos(lat)` never hits 0.
     const MAX_ABS_LAT: f64 = 85.0;
     let center_lat = ((bounds[0] + bounds[2]) / 2.0).clamp(-MAX_ABS_LAT, MAX_ABS_LAT);

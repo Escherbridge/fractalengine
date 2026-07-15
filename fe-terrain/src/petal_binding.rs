@@ -29,11 +29,7 @@ pub fn terrain_config_from_petal_json(value: &serde_json::Value) -> Option<Terra
 pub fn config_for_tileset(info: &crate::tiles::TilesetInfo) -> TerrainConfig {
     // bounds = [min_lat, min_lon, max_lat, max_lon] (see hexon_source.rs covers()).
     let [min_lat, min_lon, max_lat, max_lon] = info.bounds;
-    let origin = Projection::new(
-        (min_lat + max_lat) / 2.0,
-        (min_lon + max_lon) / 2.0,
-        0.0,
-    );
+    let origin = Projection::new((min_lat + max_lat) / 2.0, (min_lon + max_lon) / 2.0, 0.0);
     let elevation_source = match info.elevation_encoding {
         Some(ElevationEncoding::TerrainRgb) => ElevationSourceKind::TerrainRgb,
         Some(ElevationEncoding::Terrarium) => ElevationSourceKind::Terrarium,
@@ -78,8 +74,8 @@ mod render_support {
     use crate::layers::{layer_type_from_config_name, LayerStack, MapLayer};
     use crate::terrain_plugin::{GeoJsonOverlay, GeoJsonProcessed, GpxTrackLine, TerrainChunk};
     use crate::tiles::{
-        decode_png_pixels, CompositeTileSource, DiskTileCache, ElevationDecoder,
-        TerrainRgbDecoder, TerrariumDecoder, TileCoord, TilesetRegistry,
+        decode_png_pixels, CompositeTileSource, DiskTileCache, ElevationDecoder, TerrainRgbDecoder,
+        TerrariumDecoder, TileCoord, TilesetRegistry,
     };
     use fe_format::manifest::ElevationEncoding;
 
@@ -110,6 +106,19 @@ mod render_support {
         pub projection: Option<crate::projection::Projection>,
     }
 
+    /// All terrain-derived scene entities that a re-assignment must despawn.
+    type SpawnedTerrainQuery<'w, 's> = Query<
+        'w,
+        's,
+        Entity,
+        Or<(
+            With<TerrainChunk>,
+            With<GpxTrackLine>,
+            With<GeoJsonOverlay>,
+            With<GeoJsonProcessed>,
+        )>,
+    >;
+
     /// Applies the last queued assignment: state, tile source, layer stack, entity reset.
     pub fn apply_terrain_assignments(
         mut reader: MessageReader<TerrainAssignmentMsg>,
@@ -118,15 +127,7 @@ mod render_support {
         mut tile_source: ResMut<ActiveTileSource>,
         mut layer_stack: ResMut<LayerStack>,
         mut commands: Commands,
-        spawned: Query<
-            Entity,
-            Or<(
-                With<TerrainChunk>,
-                With<GpxTrackLine>,
-                With<GeoJsonOverlay>,
-                With<GeoJsonProcessed>,
-            )>,
-        >,
+        spawned: SpawnedTerrainQuery,
     ) {
         // Only the last assignment per frame wins.
         let Some(TerrainAssignmentMsg(assignment)) = reader.read().last().cloned() else {
@@ -149,7 +150,8 @@ mod render_support {
                     };
                     match reg.0.store().load_tileset(uri) {
                         Ok(src) => {
-                            hexon_encoding.get_or_insert(src.tileset_meta.elevation_encoding.clone());
+                            hexon_encoding
+                                .get_or_insert(src.tileset_meta.elevation_encoding.clone());
                             if let Some(bounds) = src.tileset_meta.scale_bounds {
                                 hexon_scale_bounds.get_or_insert(bounds);
                             }
@@ -202,7 +204,10 @@ mod render_support {
                 // above the camera (and past the far plane).
                 if config.origin.origin_ele == 0.0 {
                     if let Some(ele) = sample_center_elevation(&composite, &config) {
-                        tracing::info!(origin_ele = ele, "grounded terrain origin from center-tile elevation");
+                        tracing::info!(
+                            origin_ele = ele,
+                            "grounded terrain origin from center-tile elevation"
+                        );
                         config.origin.origin_ele = ele;
                     }
                 }
@@ -212,9 +217,10 @@ mod render_support {
                 layer_stack.clear();
                 for (index, layer) in config.layers.iter().enumerate() {
                     // `source_url` = GPX node_id / GeoJSON path; see `src/AGENTS.md` §petal_binding.
-                    let Some(layer_type) =
-                        layer_type_from_config_name(layer.name.as_str(), layer.source_url.as_deref())
-                    else {
+                    let Some(layer_type) = layer_type_from_config_name(
+                        layer.name.as_str(),
+                        layer.source_url.as_deref(),
+                    ) else {
                         tracing::warn!(layer = %layer.name, "unknown terrain layer name; skipping");
                         continue;
                     };

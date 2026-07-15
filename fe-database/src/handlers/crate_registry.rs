@@ -2,10 +2,11 @@
 //!
 //! Handles persisting and removing crate registry entries in SurrealDB.
 
-use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
+use surrealdb::Surreal;
 
 /// Insert a crate_registry row for an installed hexon.
+#[allow(clippy::too_many_arguments)] // flat DB row writer — params mirror columns
 pub async fn install_crate(
     db: &Surreal<Db>,
     hexon_uri: &str,
@@ -52,6 +53,7 @@ pub async fn install_crate(
 }
 
 /// Insert a crate_entry row for a single asset within an installed hexon.
+#[allow(clippy::too_many_arguments)] // flat DB row writer — params mirror columns
 pub async fn install_crate_entry(
     db: &Surreal<Db>,
     entry_id: &str,
@@ -89,10 +91,7 @@ pub async fn install_crate_entry(
 }
 
 /// Remove a crate and all its entries from the registry.
-pub async fn uninstall_crate(
-    db: &Surreal<Db>,
-    hexon_uri: &str,
-) -> Result<(), anyhow::Error> {
+pub async fn uninstall_crate(db: &Surreal<Db>, hexon_uri: &str) -> Result<(), anyhow::Error> {
     // Delete entries first (foreign key relationship)
     db.query("DELETE FROM crate_entry WHERE hexon_uri = $hexon_uri")
         .bind(("hexon_uri", hexon_uri.to_string()))

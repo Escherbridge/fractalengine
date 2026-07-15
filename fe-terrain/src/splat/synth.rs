@@ -2,8 +2,8 @@
 
 /// Fraction of the decimated texel spacing a splat's minor radius covers.
 /// >0.5 means neighboring splats overlap rather than exactly tile — this is what
-/// breaks up the dot-grid/moiré look (target overlap ratio ~1.4-1.8x spacing,
-/// see `overlap_ratio_within_target` test).
+/// > breaks up the dot-grid/moiré look (target overlap ratio ~1.4-1.8x spacing,
+/// > see `overlap_ratio_within_target` test).
 const SPLAT_COVERAGE: f32 = 0.8;
 /// Cap on along-slope elongation so near-vertical cliffs don't spawn giant quads.
 const MAX_ELONGATION: f32 = 4.0;
@@ -116,7 +116,8 @@ pub fn synthesize_splats(
             let elong = (1.0 + g * g).sqrt().min(MAX_ELONGATION);
             // Deterministic per-splat radius variation (±RADIUS_VARIATION_FRACTION)
             // breaks up the uniform-size moiré pattern.
-            let radius_jitter = 1.0 + hash_signed(dr as u32, dc as u32, 0x1234) * RADIUS_VARIATION_FRACTION;
+            let radius_jitter =
+                1.0 + hash_signed(dr as u32, dc as u32, 0x1234) * RADIUS_VARIATION_FRACTION;
             let minor = SPLAT_COVERAGE * spacing * radius_jitter;
             let major = minor * elong;
 
@@ -191,7 +192,10 @@ mod tests {
             assert!(n[0].abs() < 1e-5 && n[2].abs() < 1e-5);
         }
         for s in &buf.scales {
-            assert!((s[0] - s[1]).abs() < 1e-5, "flat splat not isotropic: {s:?}");
+            assert!(
+                (s[0] - s[1]).abs() < 1e-5,
+                "flat splat not isotropic: {s:?}"
+            );
         }
     }
 
@@ -209,7 +213,7 @@ mod tests {
         }
         let buf = synthesize_splats(&ele, w, h, None, 100.0, 1.0, 1);
         // Interior sample (row 1, col 1) index in output = row-major of full grid.
-        let idx = 1 * w + 1;
+        let idx = w + 1;
         let n = buf.normals[idx];
         assert!(n[0] < -1e-3, "normal should tilt away from +x, got {n:?}");
         assert!(n[1] > 0.0);
@@ -225,12 +229,12 @@ mod tests {
         let scale = 0.5f32;
         let tile = 200.0f64;
         let mut ele = vec![0.0f32; w * h];
-        ele[0 * w + 2] = 80.0; // north-east texel (row 0 = north)
+        ele[2] = 80.0; // north-east texel (row 0 = north, col 2)
         let buf = synthesize_splats(&ele, w, h, None, tile, scale, 1);
         let cell = (tile / (w - 1) as f64) as f32;
-        let ne = buf.positions[0 * w + 2];
-        // Jitter offsets x/z by up to JITTER_FRACTION * spacing; bound the tolerance
-        // to that instead of asserting exact grid alignment.
+        let ne = buf.positions[2]; // row 0, col 2
+                                   // Jitter offsets x/z by up to JITTER_FRACTION * spacing; bound the tolerance
+                                   // to that instead of asserting exact grid alignment.
         let spacing = 1.0 * cell; // stride=1, cell_x==cell_z here
         let jitter_bound = JITTER_FRACTION * spacing + 1e-3;
         assert!((ne[0] - 2.0 * cell).abs() < jitter_bound); // col 2 → east
@@ -285,7 +289,10 @@ mod tests {
         for a in 0..20u32 {
             for b in 0..20u32 {
                 let v = hash01(a, b);
-                assert!((0.0..1.0).contains(&v), "hash01({a},{b}) = {v} out of range");
+                assert!(
+                    (0.0..1.0).contains(&v),
+                    "hash01({a},{b}) = {v} out of range"
+                );
             }
         }
     }
@@ -339,7 +346,10 @@ mod tests {
         let lo = base_minor * (1.0 - RADIUS_VARIATION_FRACTION) - 1e-4;
         let hi = base_minor * (1.0 + RADIUS_VARIATION_FRACTION) + 1e-4;
         for s in &buf.scales {
-            assert!(s[1] >= lo && s[1] <= hi, "radius out of bound: {s:?} not in [{lo},{hi}]");
+            assert!(
+                s[1] >= lo && s[1] <= hi,
+                "radius out of bound: {s:?} not in [{lo},{hi}]"
+            );
         }
     }
 

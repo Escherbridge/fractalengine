@@ -57,7 +57,9 @@ pub trait ExtensionStorageApi: Send + Sync {
 /// Validate a node id at the host boundary. Fails closed on empty/oversized ids.
 pub fn validate_node_id(node_id: &str) -> Result<(), StorageError> {
     if node_id.is_empty() {
-        return Err(StorageError::InvalidInput("node_id must not be empty".into()));
+        return Err(StorageError::InvalidInput(
+            "node_id must not be empty".into(),
+        ));
     }
     if node_id.len() > MAX_NODE_ID_LEN {
         return Err(StorageError::InvalidInput(format!(

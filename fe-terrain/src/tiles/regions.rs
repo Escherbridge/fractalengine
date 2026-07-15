@@ -73,8 +73,16 @@ mod tests {
             let [min_lat, min_lon, max_lat, max_lon] = p.bounds;
             assert!(min_lat < max_lat, "{}: min_lat >= max_lat", p.name);
             assert!(min_lon < max_lon, "{}: min_lon >= max_lon", p.name);
-            assert!(min_lat >= -90.0 && max_lat <= 90.0, "{}: lat out of range", p.name);
-            assert!(min_lon >= -180.0 && max_lon <= 180.0, "{}: lon out of range", p.name);
+            assert!(
+                min_lat >= -90.0 && max_lat <= 90.0,
+                "{}: lat out of range",
+                p.name
+            );
+            assert!(
+                min_lon >= -180.0 && max_lon <= 180.0,
+                "{}: lon out of range",
+                p.name
+            );
             let (min_z, max_z) = p.recommended_zoom;
             assert!(min_z <= max_z, "{}: min_zoom > max_zoom", p.name);
         }

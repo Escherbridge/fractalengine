@@ -16,7 +16,9 @@ use crate::{atlas::DashboardState, panels, panels::toolbar::Tool, role_chip};
 
 pub use crate::actions::{UiAction, UiManager};
 pub use crate::dialogs::ActiveDialog;
-pub use crate::terrain_map::{HexonOp, InstalledTilesetDto, PendingHexonOps, PetalMapState, StorageInfoDto};
+pub use crate::terrain_map::{
+    HexonOp, InstalledTilesetDto, PendingHexonOps, PetalMapState, StorageInfoDto,
+};
 
 // ---------------------------------------------------------------------------
 // UI-only resources (form buffers, tool state, role cache).
@@ -171,12 +173,12 @@ pub struct LocalUserRole {
 impl LocalUserRole {
     /// Check if the local user can manage (assign roles, create entities).
     pub fn can_manage(&self) -> bool {
-        self.role.map_or(false, |r| r.can_manage())
+        self.role.is_some_and(|r| r.can_manage())
     }
 
     /// Check if the local user can edit content.
     pub fn can_edit(&self) -> bool {
-        self.role.map_or(false, |r| r.can_edit())
+        self.role.is_some_and(|r| r.can_edit())
     }
 }
 
@@ -306,11 +308,22 @@ impl Plugin for GardenerConsolePlugin {
         );
         app.configure_sets(
             Update,
-            (UiSet::ProcessActions, UiSet::Selection, UiSet::PostSelection).chain(),
+            (
+                UiSet::ProcessActions,
+                UiSet::Selection,
+                UiSet::PostSelection,
+            )
+                .chain(),
         );
 
-        app.add_systems(Update, crate::actions::process_ui_actions.in_set(UiSet::ProcessActions));
-        app.add_systems(Update, resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions));
+        app.add_systems(
+            Update,
+            crate::actions::process_ui_actions.in_set(UiSet::ProcessActions),
+        );
+        app.add_systems(
+            Update,
+            resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions),
+        );
         // Surface asset-download outcomes (written by the main binary's bridge) as toasts.
         app.add_systems(Update, crate::asset_ops::surface_asset_download_status);
         // Surface GPX-import outcomes (written by the main binary's bridge) as toasts.
@@ -323,7 +336,10 @@ impl Plugin for GardenerConsolePlugin {
                 .before(crate::actions::process_ui_actions)
                 .in_set(UiSet::ProcessActions),
         );
-        app.add_systems(Update, crate::terrain_map::drain_tileset_events.in_set(UiSet::ProcessActions));
+        app.add_systems(
+            Update,
+            crate::terrain_map::drain_tileset_events.in_set(UiSet::ProcessActions),
+        );
         // Mirror the active petal's world scale into the renderer's camera settings.
         app.add_systems(
             Update,
@@ -350,7 +366,6 @@ struct P2pDialogParams<'w> {
     node_mgr: ResMut<'w, crate::node_manager::NodeManager>,
     ui_mgr: ResMut<'w, UiManager>,
     portal_rect: ResMut<'w, fe_webview::plugin::PortalPanelRect>,
-    peer_registry: Res<'w, fe_runtime::PeerRegistry>,
     // TODO: add node_identity once fe-identity is a dependency of fe-ui
     // node_identity: Res<'w, fe_identity::NodeIdentity>,
 }
@@ -533,6 +548,9 @@ fn resolve_local_role_on_nav_change(
     *last_scope = current_scope.clone();
 
     if let Some(scope) = current_scope {
-        db_sender.0.send(fe_runtime::messages::DbCommand::ResolveLocalRole { scope }).ok();
+        db_sender
+            .0
+            .send(fe_runtime::messages::DbCommand::ResolveLocalRole { scope })
+            .ok();
     }
 }

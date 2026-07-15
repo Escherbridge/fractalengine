@@ -1,7 +1,7 @@
 use tracing::instrument;
 
-use crate::BlobStoreHandle;
 use crate::repo::Db;
+use crate::BlobStoreHandle;
 
 /// Wipe all tables, re-apply schema, and re-seed default data.
 #[instrument(skip(db, blob_store))]

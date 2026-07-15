@@ -6,10 +6,7 @@ use fe_identity::did_key::public_key_from_did_key;
 /// Sign a manifest JSON blob with the publisher's ed25519 key.
 ///
 /// Returns a base64-encoded signature string.
-pub fn sign_manifest(
-    manifest_json: &[u8],
-    keypair: &SigningKey,
-) -> Result<String, anyhow::Error> {
+pub fn sign_manifest(manifest_json: &[u8], keypair: &SigningKey) -> Result<String, anyhow::Error> {
     let sig: Signature = keypair.sign(manifest_json);
     Ok(STANDARD.encode(sig.to_bytes()))
 }
@@ -74,8 +71,8 @@ mod tests {
         });
 
         let sig = sign_manifest(manifest, &keypair).expect("signing should succeed");
-        let valid = verify_manifest(manifest, &sig, &publisher_did)
-            .expect("verification should not error");
+        let valid =
+            verify_manifest(manifest, &sig, &publisher_did).expect("verification should not error");
         assert!(valid, "signature should be valid");
     }
 
@@ -96,8 +93,8 @@ mod tests {
 
         let sig = sign_manifest(manifest, &keypair).expect("signing should succeed");
         let tampered = br#"{"name":"test","version":"2.0.0"}"#;
-        let valid = verify_manifest(tampered, &sig, &publisher_did)
-            .expect("verification should not error");
+        let valid =
+            verify_manifest(tampered, &sig, &publisher_did).expect("verification should not error");
         assert!(!valid, "tampered manifest should fail verification");
     }
 
@@ -119,8 +116,8 @@ mod tests {
         });
 
         let sig = sign_manifest(manifest, &keypair).expect("signing should succeed");
-        let valid = verify_manifest(manifest, &sig, &wrong_did)
-            .expect("verification should not error");
+        let valid =
+            verify_manifest(manifest, &sig, &wrong_did).expect("verification should not error");
         assert!(!valid, "wrong publisher should fail verification");
     }
 

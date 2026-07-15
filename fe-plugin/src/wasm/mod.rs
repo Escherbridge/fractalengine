@@ -69,16 +69,14 @@ impl WasmEngine {
             .max_tables_per_module(4)
             .total_tables(256)
             .table_elements(65_536);
-        config
-            .allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(
-                pooling_config,
-            ));
+        config.allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(
+            pooling_config,
+        ));
 
         let engine = wasmtime::Engine::new(&config)?;
 
         // Build the linker with host imports
-        let mut linker: wasmtime::Linker<PluginStoreData> =
-            wasmtime::Linker::new(&engine);
+        let mut linker: wasmtime::Linker<PluginStoreData> = wasmtime::Linker::new(&engine);
         host_imports::register_host_imports(&mut linker)?;
 
         Ok(Self { engine, linker })
@@ -93,11 +91,7 @@ impl WasmEngine {
     ///
     /// The bytes are compiled into a [`wasmtime::Module`] and wrapped
     /// with a generated plugin ID (from the provided ULID string).
-    pub fn load_module(
-        &self,
-        wasm_bytes: &[u8],
-        plugin_id: &str,
-    ) -> Result<WasmPlugin, WasmError> {
+    pub fn load_module(&self, wasm_bytes: &[u8], plugin_id: &str) -> Result<WasmPlugin, WasmError> {
         let module = wasmtime::Module::new(&self.engine, wasm_bytes)?;
         Ok(WasmPlugin {
             plugin_id: plugin_id.to_string(),
@@ -127,8 +121,7 @@ impl WasmEngine {
         plugin: &WasmPlugin,
         ctx: PluginContext,
         fuel_budget: fuel::FuelBudget,
-    ) -> Result<(wasmtime::Store<PluginStoreData>, wasmtime::Instance), WasmError>
-    {
+    ) -> Result<(wasmtime::Store<PluginStoreData>, wasmtime::Instance), WasmError> {
         let store_data = PluginStoreData {
             ctx,
             fuel_budget,
@@ -186,9 +179,7 @@ impl WasmEngine {
     }
 
     /// Refuel a store for the next tick based on its budget.
-    pub fn refuel_for_tick(
-        store: &mut wasmtime::Store<PluginStoreData>,
-    ) -> Result<(), WasmError> {
+    pub fn refuel_for_tick(store: &mut wasmtime::Store<PluginStoreData>) -> Result<(), WasmError> {
         let budget = store.data().fuel_budget.per_tick;
         store.set_fuel(budget)?;
         Ok(())
@@ -271,7 +262,10 @@ mod tests {
     use crate::capability::{CapabilityManifest, CapabilityToken};
 
     fn make_test_context() -> PluginContext {
-        let manifest = CapabilityManifest::from_json(r#"{"property_scope": ["*"], "verse_scope": ["*"], "petal_scope": ["*"]}"#).unwrap();
+        let manifest = CapabilityManifest::from_json(
+            r#"{"property_scope": ["*"], "verse_scope": ["*"], "petal_scope": ["*"]}"#,
+        )
+        .unwrap();
         let token = CapabilityToken::mint("test-plugin", &manifest);
         let (tx, _rx) = crossbeam::channel::unbounded();
         PluginContext::new("test-plugin".into(), "test-petal".into(), token, tx)
@@ -383,13 +377,7 @@ mod tests {
             .unwrap();
 
         // Call the burn function — it will exhaust the 10 fuel
-        let result = rt.block_on(engine.call_export(
-            &mut store,
-            &instance,
-            "burn",
-            &[],
-            &mut [],
-        ));
+        let result = rt.block_on(engine.call_export(&mut store, &instance, "burn", &[], &mut []));
 
         // Should fail with fuel exhausted
         assert!(
@@ -397,7 +385,10 @@ mod tests {
             "Fuel exhaustion should produce an error, got: {:?}",
             result
         );
-        assert!(WasmEngine::is_degraded(&store), "Plugin should be marked degraded");
+        assert!(
+            WasmEngine::is_degraded(&store),
+            "Plugin should be marked degraded"
+        );
     }
 
     #[test]

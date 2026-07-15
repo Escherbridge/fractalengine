@@ -162,7 +162,10 @@ impl ExtensionStorageApi for MockStorage {
     ) -> Result<Option<PropertyValue>, StorageError> {
         storage::validate_key(key)?;
         let state = self.state.lock().unwrap();
-        Ok(state.kv.get(&(namespace.to_string(), key.to_string())).cloned())
+        Ok(state
+            .kv
+            .get(&(namespace.to_string(), key.to_string()))
+            .cloned())
     }
 
     fn storage_set(
@@ -217,7 +220,10 @@ mod tests {
         );
         assert_eq!(store.property_sets().len(), 1);
         let props = store.node_get_properties("n1").unwrap();
-        assert_eq!(props.get("color"), Some(&PropertyValue::String("red".into())));
+        assert_eq!(
+            props.get("color"),
+            Some(&PropertyValue::String("red".into()))
+        );
     }
 
     #[test]

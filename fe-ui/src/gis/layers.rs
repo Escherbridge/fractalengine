@@ -15,7 +15,9 @@ pub struct LayerUiEntry {
 
 /// Extracts the `layers` array of a petal terrain JSON doc for display.
 /// Returns an empty vec for a missing/malformed `layers` field.
-pub(crate) fn layer_entries_from_terrain_json(terrain_json: &serde_json::Value) -> Vec<LayerUiEntry> {
+pub(crate) fn layer_entries_from_terrain_json(
+    terrain_json: &serde_json::Value,
+) -> Vec<LayerUiEntry> {
     terrain_json
         .get("layers")
         .and_then(|l| l.as_array())
@@ -25,7 +27,11 @@ pub(crate) fn layer_entries_from_terrain_json(terrain_json: &serde_json::Value) 
                     let name = l.get("name")?.as_str()?.to_string();
                     let visible = l.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
                     let opacity = l.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0) as f32;
-                    Some(LayerUiEntry { name, visible, opacity })
+                    Some(LayerUiEntry {
+                        name,
+                        visible,
+                        opacity,
+                    })
                 })
                 .collect()
         })
@@ -46,11 +52,15 @@ pub(crate) fn set_layer_field(
     opacity: Option<f32>,
 ) -> serde_json::Value {
     let mut doc = terrain_json.clone();
-    let Some(obj) = doc.as_object_mut() else { return doc };
+    let Some(obj) = doc.as_object_mut() else {
+        return doc;
+    };
     let layers = obj
         .entry("layers".to_string())
         .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-    let Some(arr) = layers.as_array_mut() else { return doc };
+    let Some(arr) = layers.as_array_mut() else {
+        return doc;
+    };
 
     let existing = arr
         .iter_mut()
@@ -108,6 +118,7 @@ impl ViewMode {
         }
     }
 
+    #[cfg(test)] // only exercised by the round-trip test below
     pub(crate) const ALL: [ViewMode; 3] = [ViewMode::Mesh, ViewMode::Splats, ViewMode::Hybrid];
 }
 
@@ -125,10 +136,18 @@ pub(crate) fn view_mode_from_terrain_json(terrain_json: &serde_json::Value) -> V
 /// Returns a mutated clone of `terrain_json` with `"view_mode"` set,
 /// preserving every other field — same "mutate one field, round-trip"
 /// idiom as `set_layer_field`.
-pub(crate) fn set_view_mode_field(terrain_json: &serde_json::Value, mode: ViewMode) -> serde_json::Value {
+pub(crate) fn set_view_mode_field(
+    terrain_json: &serde_json::Value,
+    mode: ViewMode,
+) -> serde_json::Value {
     let mut doc = terrain_json.clone();
-    let Some(obj) = doc.as_object_mut() else { return doc };
-    obj.insert("view_mode".to_string(), serde_json::Value::String(mode.as_str().to_string()));
+    let Some(obj) = doc.as_object_mut() else {
+        return doc;
+    };
+    obj.insert(
+        "view_mode".to_string(),
+        serde_json::Value::String(mode.as_str().to_string()),
+    );
     doc
 }
 
@@ -151,8 +170,22 @@ mod tests {
     fn layer_entries_extracts_defaults() {
         let entries = layer_entries_from_terrain_json(&sample_doc());
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0], LayerUiEntry { name: "satellite".into(), visible: true, opacity: 1.0 });
-        assert_eq!(entries[1], LayerUiEntry { name: "terrain".into(), visible: true, opacity: 0.8 });
+        assert_eq!(
+            entries[0],
+            LayerUiEntry {
+                name: "satellite".into(),
+                visible: true,
+                opacity: 1.0
+            }
+        );
+        assert_eq!(
+            entries[1],
+            LayerUiEntry {
+                name: "terrain".into(),
+                visible: true,
+                opacity: 0.8
+            }
+        );
     }
 
     #[test]
@@ -176,7 +209,10 @@ mod tests {
         let updated = set_layer_field(&sample_doc(), "terrain", None, Some(0.3));
         let entries = layer_entries_from_terrain_json(&updated);
         assert_eq!(entries[1].opacity, 0.3);
-        assert!(entries[1].visible, "visible must be untouched when only opacity is set");
+        assert!(
+            entries[1].visible,
+            "visible must be untouched when only opacity is set"
+        );
     }
 
     #[test]

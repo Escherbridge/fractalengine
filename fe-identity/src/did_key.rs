@@ -28,7 +28,7 @@ pub fn pub_key_to_did_key(pub_key: &VerifyingKey) -> String {
 pub fn public_key_from_did_key(did: &str) -> anyhow::Result<VerifyingKey> {
     let encoded = did
         .strip_prefix("did:key:")
-        .ok_or_else(|| anyhow::anyhow!("invalid did:key: must start with 'did:key:'"  ))?;
+        .ok_or_else(|| anyhow::anyhow!("invalid did:key: must start with 'did:key:'"))?;
 
     let (base, bytes) = multibase::decode(encoded)
         .map_err(|e| anyhow::anyhow!("multibase decode failed: {}", e))?;
@@ -41,9 +41,12 @@ pub fn public_key_from_did_key(did: &str) -> anyhow::Result<VerifyingKey> {
         anyhow::bail!("invalid multicodec prefix: expected 0xed 0x01 for Ed25519");
     }
 
-    let key_bytes: [u8; 32] = bytes[2..]
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("invalid key length: expected 32 bytes, got {}", bytes.len() - 2))?;
+    let key_bytes: [u8; 32] = bytes[2..].try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "invalid key length: expected 32 bytes, got {}",
+            bytes.len() - 2
+        )
+    })?;
 
     Ok(VerifyingKey::from_bytes(&key_bytes)?)
 }

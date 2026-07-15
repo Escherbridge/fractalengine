@@ -126,9 +126,8 @@ impl PluginManager {
 
         // Deserialize the compiled module to verify it's valid
         // SAFETY: compiled bytes come from wasmtime::Module::serialize on the same engine
-        let module = unsafe {
-            wasmtime::Module::deserialize(self.engine.engine(), &compiled)
-        }.map_err(|e| LifecycleError::WasmError(e.to_string()))?;
+        let module = unsafe { wasmtime::Module::deserialize(self.engine.engine(), &compiled) }
+            .map_err(|e| LifecycleError::WasmError(e.to_string()))?;
 
         let plugin = WasmPlugin {
             plugin_id: plugin_id.to_string(),
@@ -139,8 +138,12 @@ impl PluginManager {
         // Step 3: Register in registry
         {
             let mut reg = self.registry.lock().unwrap();
-            reg.register(plugin_id, &format!("wasm:{}", actual_hash), PluginTier::Wasm)
-                .map_err(|e| LifecycleError::RegistryError(e.to_string()))?;
+            reg.register(
+                plugin_id,
+                &format!("wasm:{}", actual_hash),
+                PluginTier::Wasm,
+            )
+            .map_err(|e| LifecycleError::RegistryError(e.to_string()))?;
         }
 
         // Store the plugin for later activation
@@ -173,9 +176,9 @@ impl PluginManager {
         // Check the plugin is in Installed or Deactivated state
         {
             let reg = self.registry.lock().unwrap();
-            let state = reg.get_state(_plugin_id).ok_or_else(|| {
-                LifecycleError::PluginNotFound(_plugin_id.to_string())
-            })?;
+            let state = reg
+                .get_state(_plugin_id)
+                .ok_or_else(|| LifecycleError::PluginNotFound(_plugin_id.to_string()))?;
             if !matches!(
                 state,
                 PluginState::Installed | PluginState::Deactivated | PluginState::Degraded(_)
@@ -212,9 +215,8 @@ impl PluginManager {
             .map_err(|e| LifecycleError::AotCompileError(e.to_string()))?;
 
         // SAFETY: compiled bytes come from wasmtime::Module::serialize on the same engine
-        let module = unsafe {
-            wasmtime::Module::deserialize(self.engine.engine(), &compiled)
-        }.map_err(|e| LifecycleError::WasmError(e.to_string()))?;
+        let module = unsafe { wasmtime::Module::deserialize(self.engine.engine(), &compiled) }
+            .map_err(|e| LifecycleError::WasmError(e.to_string()))?;
 
         let plugin = WasmPlugin {
             plugin_id: plugin_id.to_string(),
@@ -273,10 +275,7 @@ impl PluginManager {
     /// 1. Calls the `on_deactivate` export if present.
     /// 2. Removes the instance from the installed map.
     /// 3. Transitions the registry state to `Deactivated`.
-    pub async fn deactivate_plugin(
-        &mut self,
-        plugin_id: &str,
-    ) -> Result<(), LifecycleError> {
+    pub async fn deactivate_plugin(&mut self, plugin_id: &str) -> Result<(), LifecycleError> {
         // Try to call on_deactivate if the plugin is running
         if let Some(installed) = self.installed.get_mut(plugin_id) {
             if installed
@@ -367,10 +366,7 @@ impl PluginManager {
     }
 
     /// Get a reference to an installed plugin's store.
-    pub fn get_store(
-        &self,
-        plugin_id: &str,
-    ) -> Option<&wasmtime::Store<PluginStoreData>> {
+    pub fn get_store(&self, plugin_id: &str) -> Option<&wasmtime::Store<PluginStoreData>> {
         self.installed.get(plugin_id).map(|p| &p.store)
     }
 
@@ -446,13 +442,7 @@ mod tests {
         let registry = Arc::new(std::sync::Mutex::new(PluginRegistry::new()));
         let (tx, _rx) = crossbeam::channel::unbounded();
 
-        let manager = PluginManager::new(
-            engine,
-            tmp.path().join("plugins"),
-            registry,
-            tx,
-        )
-        .unwrap();
+        let manager = PluginManager::new(engine, tmp.path().join("plugins"), registry, tx).unwrap();
 
         (manager, tmp)
     }
@@ -463,10 +453,7 @@ mod tests {
 
         let wat = r#"(module)"#;
         let bytes = wat::parse_str(wat).unwrap();
-        let manifest = CapabilityManifest::from_json(
-            r#"{"property_scope": ["*"]}"#,
-        )
-        .unwrap();
+        let manifest = CapabilityManifest::from_json(r#"{"property_scope": ["*"]}"#).unwrap();
 
         let result = manager.install_plugin("test-plugin", &bytes, &manifest, None);
         assert!(result.is_ok());
@@ -474,10 +461,7 @@ mod tests {
         // Check registry
         let reg = manager.registry.lock().unwrap();
         assert!(reg.get("test-plugin").is_some());
-        assert_eq!(
-            reg.get_state("test-plugin"),
-            Some(&PluginState::Installed)
-        );
+        assert_eq!(reg.get_state("test-plugin"), Some(&PluginState::Installed));
     }
 
     #[test]
@@ -529,7 +513,10 @@ mod tests {
             .install_plugin("uninstall-test", &bytes, &manifest, None)
             .unwrap();
 
-        manager.uninstall_plugin("uninstall-test", &bytes).await.unwrap();
+        manager
+            .uninstall_plugin("uninstall-test", &bytes)
+            .await
+            .unwrap();
 
         // Registry should not have it anymore
         let reg = manager.registry.lock().unwrap();

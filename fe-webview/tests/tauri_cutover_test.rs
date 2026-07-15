@@ -133,8 +133,7 @@ mod tests {
     fn test_backend_priority_order() {
         let mod_path = crate_root().join("src").join("backends").join("mod.rs");
 
-        let content = std::fs::read_to_string(&mod_path)
-            .expect("Failed to read backends/mod.rs");
+        let content = std::fs::read_to_string(&mod_path).expect("Failed to read backends/mod.rs");
 
         // Verify Servo has priority when both features enabled
         assert!(
@@ -171,8 +170,7 @@ mod documentation_tests {
             "AGENTS.md should exist at workspace root"
         );
 
-        let content = fs::read_to_string(&agents_md)
-            .expect("Failed to read AGENTS.md");
+        let content = fs::read_to_string(&agents_md).expect("Failed to read AGENTS.md");
 
         // Should mention webview or PetalPortal
         assert!(
@@ -199,8 +197,7 @@ mod documentation_tests {
 
         // BUILDING.md may not exist in all projects, so this is a soft check
         if building_md.exists() {
-            let content = fs::read_to_string(&building_md)
-                .expect("Failed to read BUILDING.md");
+            let content = fs::read_to_string(&building_md).expect("Failed to read BUILDING.md");
 
             // If it exists, it should mention system dependencies
             // (but we don't require it to exist)
@@ -215,8 +212,7 @@ mod documentation_tests {
     fn test_lib_docs_exist() {
         let lib_path = crate_root().join("src").join("lib.rs");
 
-        let content = fs::read_to_string(&lib_path)
-            .expect("Failed to read lib.rs");
+        let content = fs::read_to_string(&lib_path).expect("Failed to read lib.rs");
 
         // Should have module declarations for backends
         assert!(
@@ -242,8 +238,7 @@ mod system_dependency_tests {
 
         #[cfg(target_os = "windows")]
         {
-            // On Windows, we'd check differently
-            assert!(cfg!(target_os = "windows"));
+            // On Windows the platform is selected at compile time — nothing to probe.
         }
 
         #[cfg(target_os = "macos")]
@@ -281,15 +276,10 @@ mod system_dependency_tests {
     #[cfg(target_os = "linux")]
     fn test_tauri_linux_deps() {
         // Check for common Tauri Linux dependencies
-        let deps = vec![
-            "pkg-config",
-            "libssl-dev",
-        ];
+        let deps = vec!["pkg-config", "libssl-dev"];
 
         for dep in deps {
-            let result = Command::new("which")
-                .arg(dep)
-                .output();
+            let result = Command::new("which").arg(dep).output();
 
             match result {
                 Ok(output) => {

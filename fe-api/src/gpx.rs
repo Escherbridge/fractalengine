@@ -8,11 +8,11 @@ use axum::Extension;
 use axum_extra::extract::Multipart;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
-use fe_terrain::gpx::{compute_stats, parse_gpx_bytes, gpx_to_scene_commands, scene_nodes_to_gpx};
+use fe_terrain::gpx::{compute_stats, gpx_to_scene_commands, parse_gpx_bytes, scene_nodes_to_gpx};
 use fe_terrain::projection::Projection;
 
 use crate::auth::{require_role, require_scope};
-use crate::types::{ApiResponse, is_valid_ulid};
+use crate::types::{is_valid_ulid, ApiResponse};
 
 /// POST /api/v1/petals/:petal_id/import/gpx
 ///
@@ -27,7 +27,9 @@ pub async fn import_gpx(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return axum::Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&petal_id) {
         return axum::Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
@@ -40,7 +42,9 @@ pub async fn import_gpx(
         ));
     };
     if require_scope(&claims, &scope).is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error("insufficient scope"));
+        return axum::Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient scope",
+        ));
     }
 
     // Read the uploaded GPX file
@@ -171,7 +175,9 @@ pub async fn export_gpx(
             format!("attachment; filename=\"{petal_id}.gpx\""),
         )
         .body(Body::from(gpx_xml))
-        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "response build failed").into_response())
+        .unwrap_or_else(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "response build failed").into_response()
+        })
 }
 
 /// Load nodes with gpx_type property and reconstruct the hierarchy for GPX export.
@@ -284,10 +290,7 @@ async fn read_multipart_field(multipart: &mut Multipart, field_name: &str) -> Op
     None
 }
 
-async fn resolve_petal_scope(
-    state: &crate::server::ApiState,
-    petal_id: &str,
-) -> Option<String> {
+async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
     if let Some(ref db) = state.db_reader {
         return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
     }

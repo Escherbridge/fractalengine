@@ -29,11 +29,12 @@ pub mod duckdb_compat;
 pub use builder::filter::Filter;
 pub use builder::render::{BuiltQuery, ReturnClause, SortDir};
 pub use builder::schema::{
-    FieldSchema, IndexDef, SchemaObject, TableDef,
-    FractalTable, NodeLogTable, NodeTable, PetalTable, VerseTable,
+    FieldSchema, FractalTable, IndexDef, NodeLogTable, NodeTable, PetalTable, SchemaObject,
+    TableDef, VerseTable,
 };
+pub use builder::timeseries;
 pub use builder::value::QueryValue;
 pub use builder::{DeleteBuilder, InsertBuilder, QueryBuilder, UpdateBuilder};
 
-pub use geo::{CRS, GeoPoint, GeoPolygon};
 pub use geo::validate::GeoValidationError;
+pub use geo::{GeoPoint, GeoPolygon, CRS};

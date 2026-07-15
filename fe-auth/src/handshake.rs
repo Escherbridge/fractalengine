@@ -15,7 +15,7 @@ pub async fn connect(
     // Migration bridge: handshake only has petal_id context.
     // Full hierarchical scope will be used once verse/fractal context is available here.
     let scope = format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id_str);
-    let role: RoleId = fe_database::rbac::get_role(&*db_handle.0, &peer_did, &scope)
+    let role: RoleId = fe_database::rbac::get_role(&db_handle.0, &peer_did, &scope)
         .await
         .unwrap_or_else(|_| RoleId("public".to_string()));
     let token = fe_identity::jwt::mint_session_token(node_keypair, &petal_id_str, &role.0, 300)?;

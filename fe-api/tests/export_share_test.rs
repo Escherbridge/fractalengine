@@ -13,7 +13,9 @@ use axum::{Extension, Json};
 
 use fe_api::export::{export_csv, export_parquet, ExportParams};
 use fe_api::server::ApiState;
-use fe_api::share::{issue_share_url, mint_share_token, redeem_share_url, RedeemParams, SharePayload, ShareRequest};
+use fe_api::share::{
+    issue_share_url, mint_share_token, redeem_share_url, RedeemParams, SharePayload, ShareRequest,
+};
 use fe_identity::api_token::ApiClaims;
 use fe_terrain::projection::Projection;
 
@@ -32,7 +34,9 @@ async fn setup_test_db() -> Db {
         .await
         .expect("in-memory SurrealDB");
     db.use_ns("test").use_db("test").await.expect("ns/db");
-    fe_database::schema::apply_all(&db).await.expect("apply schema");
+    fe_database::schema::apply_all(&db)
+        .await
+        .expect("apply schema");
     db
 }
 
@@ -84,12 +88,19 @@ async fn seed_petal(db: &Db, petal_id: &str, with_origin: bool) {
         .query("CREATE fractal CONTENT { fractal_id: 'f1', verse_id: 'v1', owner_did: 'did:key:z6MkOwner', name: 'F', created_at: $now }")
         .bind(("now", now.clone()))
         .await;
-    let terrain_clause = if with_origin { ", terrain: $terrain" } else { "" };
+    let terrain_clause = if with_origin {
+        ", terrain: $terrain"
+    } else {
+        ""
+    };
     let sql = format!(
         "CREATE petal CONTENT {{ petal_id: $pid, fractal_id: 'f1', name: 'P', \
          node_id: 'anchor-node', created_at: $now{terrain_clause} }}"
     );
-    let mut q = db.query(sql).bind(("pid", petal_id.to_string())).bind(("now", now));
+    let mut q = db
+        .query(sql)
+        .bind(("pid", petal_id.to_string()))
+        .bind(("now", now));
     if with_origin {
         q = q.bind((
             "terrain",
@@ -133,7 +144,10 @@ fn ulid() -> String {
 }
 
 async fn body_bytes(resp: Response) -> Vec<u8> {
-    axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec()
+    axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
 }
 
 async fn body_json(resp: Response) -> serde_json::Value {
@@ -167,7 +181,9 @@ fn read_parquet_geo_meta(bytes: &[u8]) -> serde_json::Value {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("export.parquet");
     std::fs::write(&path, bytes).unwrap();
-    let raw = fe_query::columnar::geoparquet::read_geo_metadata(&path).unwrap().expect("geo meta");
+    let raw = fe_query::columnar::geoparquet::read_geo_metadata(&path)
+        .unwrap()
+        .expect("geo meta");
     serde_json::from_str(&raw).unwrap()
 }
 
@@ -194,7 +210,10 @@ async fn export_parquet_round_trips_and_is_scope_filtered() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(header_str(&resp, "content-type"), "application/vnd.apache.parquet");
+    assert_eq!(
+        header_str(&resp, "content-type"),
+        "application/vnd.apache.parquet"
+    );
     assert_eq!(header_str(&resp, "accept-ranges"), "bytes");
     let crs_header = header_str(&resp, "x-fe-crs");
     assert!(crs_header.contains("PETAL-LOCAL"), "{crs_header}");
@@ -257,7 +276,11 @@ async fn export_rejects_bad_role_scope_and_injection() {
             Query(params(Some(bad), None)),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "should reject: {bad}");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "should reject: {bad}"
+        );
     }
 
     // Unknown petal → 404.
@@ -291,10 +314,22 @@ async fn export_csv_local_vs_latlon_landmine() {
     assert_eq!(resp.status(), StatusCode::OK);
     let csv = String::from_utf8(body_bytes(resp).await).unwrap();
     let first = csv.lines().next().unwrap();
-    assert!(first.starts_with("# crs=PETAL-LOCAL:meters;origin=47.6062"), "{first}");
-    assert!(!first.contains("4326"), "local meters labeled as degrees: {first}");
+    assert!(
+        first.starts_with("# crs=PETAL-LOCAL:meters;origin=47.6062"),
+        "{first}"
+    );
+    assert!(
+        !first.contains("4326"),
+        "local meters labeled as degrees: {first}"
+    );
     assert!(csv.lines().nth(1).unwrap().contains("x_m,y_m,z_m"));
-    assert!(csv.lines().nth(2).unwrap().starts_with(&format!("n1,{pa},100,10,0")), "{csv}");
+    assert!(
+        csv.lines()
+            .nth(2)
+            .unwrap()
+            .starts_with(&format!("n1,{pa},100,10,0")),
+        "{csv}"
+    );
 
     // coords=latlon: labeled EPSG:4326 with actually-converted coordinates.
     let resp = export_csv(
@@ -310,15 +345,20 @@ async fn export_csv_local_vs_latlon_landmine() {
     assert!(csv.lines().next().unwrap().starts_with("# crs=EPSG:4326"));
     assert!(csv.lines().nth(1).unwrap().contains("lon,lat,ele_m"));
     let row: Vec<&str> = csv.lines().nth(2).unwrap().split(',').collect();
-    let (lon, lat, ele): (f64, f64, f64) =
-        (row[2].parse().unwrap(), row[3].parse().unwrap(), row[4].parse().unwrap());
+    let (lon, lat, ele): (f64, f64, f64) = (
+        row[2].parse().unwrap(),
+        row[3].parse().unwrap(),
+        row[4].parse().unwrap(),
+    );
     let proj = Projection::new(ORIGIN_LAT, ORIGIN_LON, ORIGIN_ELE);
     let (exp_lat, exp_lon, exp_ele) = proj.local_to_wgs84(100.0, 10.0, 0.0);
     assert!((lat - exp_lat).abs() < 1e-4, "lat {lat} vs {exp_lat}");
     assert!((lon - exp_lon).abs() < 1e-4, "lon {lon} vs {exp_lon}");
     assert!((ele - exp_ele).abs() < 1e-2, "ele {ele} vs {exp_ele}");
-    assert!((lat - ORIGIN_LAT).abs() > 1e-7 || (lon - ORIGIN_LON).abs() > 1e-7,
-        "coordinates were not actually converted");
+    assert!(
+        (lat - ORIGIN_LAT).abs() > 1e-7 || (lon - ORIGIN_LON).abs() > 1e-7,
+        "coordinates were not actually converted"
+    );
 
     // Parquet latlon carries EPSG:4326 geo metadata.
     let resp = export_parquet(
@@ -372,7 +412,9 @@ async fn row_cap_produces_clear_error() {
         seed_node(&db, &pa, &format!("n{i}"), i as f64, 0.0, 0.0).await;
     }
     let db = Arc::new(db);
-    let guarded = fe_api::query_guard::GuardedQuery { sql: "SELECT * FROM node".into() };
+    let guarded = fe_api::query_guard::GuardedQuery {
+        sql: "SELECT * FROM node".into(),
+    };
     let vars = std::collections::HashMap::new();
 
     // Under the cap: fine.
@@ -380,7 +422,9 @@ async fn row_cap_produces_clear_error() {
     assert_eq!(ok.unwrap().len(), 3);
 
     // Over the cap: clear error (documented choice: error, not truncate).
-    let err = fe_api::query_guard::run_guarded_query(&db, &guarded, &vars, 2).await.unwrap_err();
+    let err = fe_api::query_guard::run_guarded_query(&db, &guarded, &vars, 2)
+        .await
+        .unwrap_err();
     assert!(err.contains("row cap exceeded (limit 2 rows"), "{err}");
 }
 
@@ -406,7 +450,9 @@ async fn query_envelope_carries_resolved_crs() {
         .into_response();
     let body = body_json(resp).await;
     assert!(body["ok"].as_bool().unwrap(), "{body}");
-    let crs = body["data"]["crs"].as_str().expect("crs field on /query envelope");
+    let crs = body["data"]["crs"]
+        .as_str()
+        .expect("crs field on /query envelope");
     assert!(crs.contains("origin=47.6062"), "{crs}");
     assert_eq!(body["data"]["data"].as_array().unwrap().len(), 1);
 }
@@ -416,7 +462,11 @@ async fn query_envelope_carries_resolved_crs() {
 // ---------------------------------------------------------------------------
 
 fn share_req(sql: &str, format: &str, ttl: Option<u64>) -> ShareRequest {
-    ShareRequest { sql: sql.to_string(), format: format.to_string(), ttl_secs: ttl }
+    ShareRequest {
+        sql: sql.to_string(),
+        format: format.to_string(),
+        ttl_secs: ttl,
+    }
 }
 
 #[tokio::test]
@@ -444,16 +494,32 @@ async fn share_issue_redeem_round_trip_enforces_scope_ceiling() {
     let url = body["data"]["url"].as_str().unwrap();
     assert!(url.starts_with("/api/v1/shared/"), "{url}");
     let token = body["data"]["token"].as_str().unwrap().to_string();
-    assert_eq!(body["data"]["scope"].as_str().unwrap(), claims.scope, "ceiling = issuer scope");
+    assert_eq!(
+        body["data"]["scope"].as_str().unwrap(),
+        claims.scope,
+        "ceiling = issuer scope"
+    );
 
     // Redeem WITHOUT any session: scope ceiling caps the result to petal A.
-    let resp = redeem_share_url(State(state.clone()), Path(token.clone()), Query(RedeemParams::default())).await;
+    let resp = redeem_share_url(
+        State(state.clone()),
+        Path(token.clone()),
+        Query(RedeemParams::default()),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     let rows = body["data"]["data"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "narrow-scope URL must not read outside its scope: {body}");
+    assert_eq!(
+        rows.len(),
+        1,
+        "narrow-scope URL must not read outside its scope: {body}"
+    );
     assert_eq!(rows[0]["node_id"], "node-in-a");
-    assert!(body["data"]["crs"].as_str().is_some(), "shared JSON carries CRS");
+    assert!(
+        body["data"]["crs"].as_str().is_some(),
+        "shared JSON carries CRS"
+    );
 
     // Parquet share link: redeemed export is pre-filtered to the ceiling.
     let resp = issue_share_url(
@@ -463,10 +529,16 @@ async fn share_issue_redeem_round_trip_enforces_scope_ceiling() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let token = body_json(resp).await["data"]["token"].as_str().unwrap().to_string();
+    let token = body_json(resp).await["data"]["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let resp = redeem_share_url(State(state), Path(token), Query(RedeemParams::default())).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(header_str(&resp, "content-type"), "application/vnd.apache.parquet");
+    assert_eq!(
+        header_str(&resp, "content-type"),
+        "application/vnd.apache.parquet"
+    );
     let snaps = read_parquet_back(&body_bytes(resp).await);
     assert_eq!(snaps.len(), 1);
     assert_eq!(snaps[0].node_id, "node-in-a");
@@ -489,7 +561,12 @@ async fn share_expired_tampered_and_invalid_rejected() {
         sub: "did:key:z6MkIssuer".into(),
     };
     let token = mint_share_token(&state.share_signer, &expired).unwrap();
-    let resp = redeem_share_url(State(state.clone()), Path(token), Query(RedeemParams::default())).await;
+    let resp = redeem_share_url(
+        State(state.clone()),
+        Path(token),
+        Query(RedeemParams::default()),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::GONE);
 
     // Token signed by a DIFFERENT key (i.e. tampered/forged) → 401.
@@ -497,11 +574,21 @@ async fn share_expired_tampered_and_invalid_rejected() {
     valid.exp = u64::MAX;
     let foreign = fe_identity::NodeKeypair::generate();
     let forged = mint_share_token(&foreign, &valid).unwrap();
-    let resp = redeem_share_url(State(state.clone()), Path(forged), Query(RedeemParams::default())).await;
+    let resp = redeem_share_url(
+        State(state.clone()),
+        Path(forged),
+        Query(RedeemParams::default()),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
     // Garbage token → 401.
-    let resp = redeem_share_url(State(state.clone()), Path("garbage".into()), Query(RedeemParams::default())).await;
+    let resp = redeem_share_url(
+        State(state.clone()),
+        Path("garbage".into()),
+        Query(RedeemParams::default()),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
     // Issue-time validation: bad format / bad ttl / injection → 400.
@@ -518,7 +605,11 @@ async fn share_expired_tampered_and_invalid_rejected() {
             Json(share_req(sql, fmt, ttl)),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{sql} / {fmt} / {ttl:?}");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{sql} / {fmt} / {ttl:?}"
+        );
     }
 
     // Verse-scoped issuer cannot mint parquet/csv links (no petal for CRS).

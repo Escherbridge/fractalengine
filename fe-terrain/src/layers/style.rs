@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ColorMode {
-    Solid { color: [u8; 4] },
+    Solid {
+        color: [u8; 4],
+    },
     ElevationGradient {
         min_color: [f32; 4],
         max_color: [f32; 4],
@@ -192,6 +194,7 @@ pub struct HeatmapMesh {
 /// * `color_ramp` — optional color ramp function; defaults to viridis.
 /// * `grid_resolution` — world units per grid cell (lower = finer).
 /// * `elevation` — base Y value for the heatmap mesh (typically terrain height).
+#[allow(clippy::too_many_arguments)] // geometry helper — explicit bbox params beat a struct
 pub fn compute_heatmap<F>(
     points: &[[f32; 2]],
     min_x: f32,
@@ -223,7 +226,8 @@ where
                 let dz = pz - cz;
                 let dist_sq = dx * dx + dz * dz;
                 // Gaussian kernel
-                density[gz * width + gx] += inv_2pi / radius_sq * (-0.5 * dist_sq / radius_sq).exp();
+                density[gz * width + gx] +=
+                    inv_2pi / radius_sq * (-0.5 * dist_sq / radius_sq).exp();
             }
         }
     }
@@ -259,14 +263,20 @@ where
             let c11 = color_ramp(d11);
 
             // Triangle 1: bottom-left → bottom-right → top-left
-            positions.push([x0, y, z0]); colors.push(c00);
-            positions.push([x1, y, z0]); colors.push(c10);
-            positions.push([x0, y, z1]); colors.push(c01);
+            positions.push([x0, y, z0]);
+            colors.push(c00);
+            positions.push([x1, y, z0]);
+            colors.push(c10);
+            positions.push([x0, y, z1]);
+            colors.push(c01);
 
             // Triangle 2: bottom-right → top-right → top-left
-            positions.push([x1, y, z0]); colors.push(c10);
-            positions.push([x1, y, z1]); colors.push(c11);
-            positions.push([x0, y, z1]); colors.push(c01);
+            positions.push([x1, y, z0]);
+            colors.push(c10);
+            positions.push([x1, y, z1]);
+            colors.push(c11);
+            positions.push([x0, y, z1]);
+            colors.push(c01);
         }
     }
 

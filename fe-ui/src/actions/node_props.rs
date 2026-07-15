@@ -23,9 +23,21 @@ pub const TRACK_NAME_KEY: &str = "gis.track.name";
 
 /// Extract the Annotation card's (title, body, color) text buffers from a
 /// node's loaded `properties` object. Missing/non-string values become "".
-pub(crate) fn annotation_fields_from_properties(props: &serde_json::Value) -> (String, String, String) {
-    let get = |k: &str| props.get(k).and_then(|v| v.as_str()).map(str::to_string).unwrap_or_default();
-    (get(ANNOTATION_TITLE_KEY), get(ANNOTATION_BODY_KEY), get(ANNOTATION_COLOR_KEY))
+pub(crate) fn annotation_fields_from_properties(
+    props: &serde_json::Value,
+) -> (String, String, String) {
+    let get = |k: &str| {
+        props
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_default()
+    };
+    (
+        get(ANNOTATION_TITLE_KEY),
+        get(ANNOTATION_BODY_KEY),
+        get(ANNOTATION_COLOR_KEY),
+    )
 }
 
 /// Which Annotation-card buffer a property key corresponds to, if any.
@@ -60,10 +72,19 @@ pub(crate) fn load(db_sender: &DbCommandSender, node_id: String) {
     }
 }
 
-pub(crate) fn set(db_sender: &DbCommandSender, node_id: String, key: String, value: serde_json::Value) {
+pub(crate) fn set(
+    db_sender: &DbCommandSender,
+    node_id: String,
+    key: String,
+    value: serde_json::Value,
+) {
     if db_sender
         .0
-        .send(DbCommand::SetNodeProperty { node_id, key, value })
+        .send(DbCommand::SetNodeProperty {
+            node_id,
+            key,
+            value,
+        })
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — SetNodeProperty not dispatched");
@@ -116,9 +137,18 @@ mod tests {
 
     #[test]
     fn annotation_field_for_key_maps_all_three() {
-        assert_eq!(annotation_field_for_key(ANNOTATION_TITLE_KEY), Some(AnnotationField::Title));
-        assert_eq!(annotation_field_for_key(ANNOTATION_BODY_KEY), Some(AnnotationField::Body));
-        assert_eq!(annotation_field_for_key(ANNOTATION_COLOR_KEY), Some(AnnotationField::Color));
+        assert_eq!(
+            annotation_field_for_key(ANNOTATION_TITLE_KEY),
+            Some(AnnotationField::Title)
+        );
+        assert_eq!(
+            annotation_field_for_key(ANNOTATION_BODY_KEY),
+            Some(AnnotationField::Body)
+        );
+        assert_eq!(
+            annotation_field_for_key(ANNOTATION_COLOR_KEY),
+            Some(AnnotationField::Color)
+        );
     }
 
     #[test]

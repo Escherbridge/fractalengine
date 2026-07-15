@@ -53,6 +53,12 @@ fn resolved_gsd_and_scale(meta: &fe_format::manifest::TilesetMeta) -> (f64, f64)
     }
 }
 
+impl Default for CompositeTileSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CompositeTileSource {
     pub fn new() -> Self {
         Self {
@@ -97,9 +103,11 @@ impl CompositeTileSource {
         &self,
         coord: TileCoord,
     ) -> Option<&crate::splat::format::BakedSplatBuffer> {
-        self.hexon_sources
-            .iter()
-            .find_map(|src| src.covers(coord).then(|| src.get_baked_splats(coord)).flatten())
+        self.hexon_sources.iter().find_map(|src| {
+            src.covers(coord)
+                .then(|| src.get_baked_splats(coord))
+                .flatten()
+        })
     }
 
     /// Reconcile all hexon sources into one common real-meter metric frame
@@ -138,7 +146,10 @@ impl CompositeTileSource {
                     let candidate = meta.max_zoom as i32 - levels_down;
                     candidate.clamp(meta.min_zoom as i32, meta.max_zoom as i32) as u8
                 };
-                SourceLodPick { source_index: index, zoom }
+                SourceLodPick {
+                    source_index: index,
+                    zoom,
+                }
             })
             .collect()
     }
@@ -428,7 +439,10 @@ mod tests {
         let mut composite = CompositeTileSource::new();
         composite.add_hexon_source(source);
 
-        assert_eq!(composite.get_satellite_tile_sync(coord).unwrap(), vec![7u8; 8]);
+        assert_eq!(
+            composite.get_satellite_tile_sync(coord).unwrap(),
+            vec![7u8; 8]
+        );
         // Elevation lookup must not see satellite tiles.
         assert!(composite.get_tile_sync(coord).is_none());
     }
@@ -442,7 +456,10 @@ mod tests {
         composite.add_hexon_source(source);
         composite.set_tile_source_mode(crate::config::TileSourceMode::Offline);
 
-        assert_eq!(composite.get_satellite_tile_sync(coord).unwrap(), vec![9u8; 4]);
+        assert_eq!(
+            composite.get_satellite_tile_sync(coord).unwrap(),
+            vec![9u8; 4]
+        );
     }
 
     #[test]

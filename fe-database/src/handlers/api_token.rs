@@ -131,7 +131,8 @@ pub(crate) async fn list_api_tokens_handler(
     limit: u32,
 ) -> anyhow::Result<(Vec<ApiTokenInfo>, u64)> {
     let now = now_rfc3339();
-    let (records, total) = api_token_store::list_active_tokens(db, local_did, &now, offset, limit).await?;
+    let (records, total) =
+        api_token_store::list_active_tokens(db, local_did, &now, offset, limit).await?;
     Ok((records_to_info(records), total))
 }
 

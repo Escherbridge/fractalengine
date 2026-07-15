@@ -178,8 +178,14 @@ mod tests {
 
     #[test]
     fn terrain_json_sanitizes_bad_scale() {
-        assert_eq!(tileset_to_terrain_json(&dto(), 0.0, None)["world_scale"], serde_json::json!(1.0));
-        assert_eq!(tileset_to_terrain_json(&dto(), -3.0, None)["world_scale"], serde_json::json!(1.0));
+        assert_eq!(
+            tileset_to_terrain_json(&dto(), 0.0, None)["world_scale"],
+            serde_json::json!(1.0)
+        );
+        assert_eq!(
+            tileset_to_terrain_json(&dto(), -3.0, None)["world_scale"],
+            serde_json::json!(1.0)
+        );
         assert_eq!(
             tileset_to_terrain_json(&dto(), f64::NAN, None)["world_scale"],
             serde_json::json!(1.0)

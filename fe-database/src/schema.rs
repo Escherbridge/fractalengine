@@ -254,6 +254,23 @@ define_table! {
 }
 
 define_table! {
+    /// One IoT sensor reading anchored to a node — no geometry on the row;
+    /// position joins through the anchor node (see AGENTS.md §iot-readings).
+    table "iot_reading" => IotReading (id: reading_id) {
+        reading_id:     String => "TYPE string",
+        node_id:        String => "TYPE string",
+        petal_id:       String => "TYPE string",
+        metric:         String => "TYPE string",
+        value:          f64    => "TYPE float",
+        units:          String => "TYPE string DEFAULT ''",
+        recorded_at:    String => "TYPE string",
+        recorded_at_ms: i64    => "TYPE int",
+        hlc_timestamp:  i64    => "TYPE int",
+        source_did:     String => "TYPE string DEFAULT ''"
+    }
+}
+
+define_table! {
     /// Schema definition for user-defined custom properties on entities.
     table "field_def" => FieldDef (id: field_def_id) {
         field_def_id: String                    => "TYPE string",
@@ -320,26 +337,51 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     // any pre-existing node with edit_seq = NONE fails schema coercion on
     // every future UPDATE (including SetNodeProperty) until backfilled once.
     db.query("UPDATE node SET edit_seq = 0 WHERE edit_seq = NONE")
-        .await?.check().map_err(|e| anyhow::anyhow!("edit_seq backfill: {e}"))?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("edit_seq backfill: {e}"))?;
     Repo::<Asset>::apply_schema(db).await?;
     Repo::<FieldDef>::apply_schema(db).await?;
     Repo::<NodeLog>::apply_schema(db).await?;
+    Repo::<IotReading>::apply_schema(db).await?;
     Repo::<CrateRegistry>::apply_schema(db).await?;
     Repo::<CrateEntry>::apply_schema(db).await?;
 
     // Critical indexes for query performance
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
-        .await?.check().map_err(|e| anyhow::anyhow!("idx_node_petal: {e}"))?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("idx_node_petal: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_petal_fractal ON TABLE petal FIELDS fractal_id")
-        .await?.check().map_err(|e| anyhow::anyhow!("idx_petal_fractal: {e}"))?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("idx_petal_fractal: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_fractal_verse ON TABLE fractal FIELDS verse_id")
-        .await?.check().map_err(|e| anyhow::anyhow!("idx_fractal_verse: {e}"))?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("idx_fractal_verse: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_role_scope ON TABLE role FIELDS scope")
-        .await?.check().map_err(|e| anyhow::anyhow!("idx_role_scope: {e}"))?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("idx_role_scope: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_node ON TABLE node_log FIELDS node_id")
-        .await?.check().map_err(|e| anyhow::anyhow!("idx_node_log_node: {e}"))?;
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("idx_node_log_node: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_log_hlc ON TABLE node_log FIELDS node_id, hlc_timestamp")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_node_log_hlc: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_iot_reading_node ON TABLE iot_reading FIELDS node_id")
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("idx_iot_reading_node: {e}"))?;
+    db.query(
+        "DEFINE INDEX IF NOT EXISTS idx_iot_reading_petal ON TABLE iot_reading FIELDS petal_id",
+    )
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("idx_iot_reading_petal: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_iot_reading_series ON TABLE iot_reading FIELDS node_id, metric, recorded_at_ms")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_iot_reading_series: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_crate_registry_hexon_uri ON TABLE crate_registry FIELDS hexon_uri")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_crate_registry_hexon_uri: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_crate_entry_hexon_uri ON TABLE crate_entry FIELDS hexon_uri")
@@ -362,6 +404,7 @@ pub const ALL_TABLE_NAMES: &[&str] = &[
     Asset::TABLE_NAME,
     FieldDef::TABLE_NAME,
     NodeLog::TABLE_NAME,
+    IotReading::TABLE_NAME,
     CrateRegistry::TABLE_NAME,
     CrateEntry::TABLE_NAME,
 ];
@@ -476,7 +519,8 @@ mod tests {
 
     #[test]
     fn fractal_schema_contains_verse_id_field() {
-        assert!(Fractal::schema().contains("DEFINE FIELD IF NOT EXISTS verse_id ON TABLE fractal TYPE string"));
+        assert!(Fractal::schema()
+            .contains("DEFINE FIELD IF NOT EXISTS verse_id ON TABLE fractal TYPE string"));
     }
 
     // --- Node schema ---
@@ -519,9 +563,37 @@ mod tests {
 
     // --- Table trait conformance ---
 
+    // --- IotReading schema ---
+
+    #[test]
+    fn iot_reading_schema_core_fields() {
+        let s = IotReading::schema();
+        assert!(s.contains("DEFINE TABLE IF NOT EXISTS iot_reading SCHEMAFULL"));
+        assert!(s.contains("node_id ON TABLE iot_reading TYPE string"));
+        assert!(s.contains("petal_id ON TABLE iot_reading TYPE string"));
+        assert!(s.contains("metric ON TABLE iot_reading TYPE string"));
+        assert!(s.contains("value ON TABLE iot_reading TYPE float"));
+        assert!(s.contains("units ON TABLE iot_reading TYPE string DEFAULT ''"));
+    }
+
+    #[test]
+    fn iot_reading_schema_timestamp_fields() {
+        let s = IotReading::schema();
+        assert!(s.contains("recorded_at ON TABLE iot_reading TYPE string"));
+        assert!(s.contains("recorded_at_ms ON TABLE iot_reading TYPE int"));
+        assert!(s.contains("hlc_timestamp ON TABLE iot_reading TYPE int"));
+    }
+
+    #[test]
+    fn iot_reading_has_no_geometry_column() {
+        // Position joins through the anchor node — see AGENTS.md §iot-readings.
+        assert!(!IotReading::schema().contains("geometry"));
+    }
+
     #[test]
     fn all_table_names_are_present() {
-        assert_eq!(ALL_TABLE_NAMES.len(), 14);
+        assert_eq!(ALL_TABLE_NAMES.len(), 15);
+        assert!(ALL_TABLE_NAMES.contains(&"iot_reading"));
         assert!(ALL_TABLE_NAMES.contains(&"petal"));
         assert!(ALL_TABLE_NAMES.contains(&"verse_member"));
         assert!(ALL_TABLE_NAMES.contains(&"asset"));

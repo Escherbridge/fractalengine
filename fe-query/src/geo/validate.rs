@@ -13,21 +13,25 @@ pub enum GeoValidationError {
     /// A polygon ring intersects itself.
     SelfIntersecting,
     /// A polygon ring has fewer than 4 points (3 vertices + closing point).
-    TooFewPoints {
-        ring_index: usize,
-        count: usize,
-    },
+    TooFewPoints { ring_index: usize, count: usize },
     /// A polygon ring is not closed (first point != last point).
-    UnclosedRing {
-        ring_index: usize,
-    },
+    UnclosedRing { ring_index: usize },
 }
 
 impl std::fmt::Display for GeoValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GeoValidationError::OutOfBounds { field, value, min, max } => {
-                write!(f, "{} value {} is out of bounds [{}, {}]", field, value, min, max)
+            GeoValidationError::OutOfBounds {
+                field,
+                value,
+                min,
+                max,
+            } => {
+                write!(
+                    f,
+                    "{} value {} is out of bounds [{}, {}]",
+                    field, value, min, max
+                )
             }
             GeoValidationError::SelfIntersecting => {
                 write!(f, "polygon ring is self-intersecting")
@@ -36,7 +40,11 @@ impl std::fmt::Display for GeoValidationError {
                 write!(f, "ring {} has {} points, minimum is 4", ring_index, count)
             }
             GeoValidationError::UnclosedRing { ring_index } => {
-                write!(f, "ring {} is not closed (first point != last point)", ring_index)
+                write!(
+                    f,
+                    "ring {} is not closed (first point != last point)",
+                    ring_index
+                )
             }
         }
     }
@@ -62,7 +70,7 @@ const MERCATOR_MAX: f64 = 20_037_508.34;
 pub fn validate_point(crs: CRS, x: f64, y: f64) -> Result<(), GeoValidationError> {
     match crs {
         CRS::Epsg4326 => {
-            if x < WGS84_LON_MIN || x > WGS84_LON_MAX {
+            if !(WGS84_LON_MIN..=WGS84_LON_MAX).contains(&x) {
                 return Err(GeoValidationError::OutOfBounds {
                     field: "x (longitude)".into(),
                     value: x,
@@ -70,7 +78,7 @@ pub fn validate_point(crs: CRS, x: f64, y: f64) -> Result<(), GeoValidationError
                     max: WGS84_LON_MAX,
                 });
             }
-            if y < WGS84_LAT_MIN || y > WGS84_LAT_MAX {
+            if !(WGS84_LAT_MIN..=WGS84_LAT_MAX).contains(&y) {
                 return Err(GeoValidationError::OutOfBounds {
                     field: "y (latitude)".into(),
                     value: y,
@@ -81,7 +89,7 @@ pub fn validate_point(crs: CRS, x: f64, y: f64) -> Result<(), GeoValidationError
             Ok(())
         }
         CRS::Epsg3857 => {
-            if x < MERCATOR_MIN || x > MERCATOR_MAX {
+            if !(MERCATOR_MIN..=MERCATOR_MAX).contains(&x) {
                 return Err(GeoValidationError::OutOfBounds {
                     field: "x".into(),
                     value: x,
@@ -89,7 +97,7 @@ pub fn validate_point(crs: CRS, x: f64, y: f64) -> Result<(), GeoValidationError
                     max: MERCATOR_MAX,
                 });
             }
-            if y < MERCATOR_MIN || y > MERCATOR_MAX {
+            if !(MERCATOR_MIN..=MERCATOR_MAX).contains(&y) {
                 return Err(GeoValidationError::OutOfBounds {
                     field: "y".into(),
                     value: y,
@@ -109,10 +117,7 @@ pub fn validate_point(crs: CRS, x: f64, y: f64) -> Result<(), GeoValidationError
 /// 1. Have at least 4 points (3 vertices + closing duplicate)
 /// 2. Be closed (first point == last point)
 /// 3. Have all coordinates within CRS bounds
-pub fn validate_polygon(
-    crs: CRS,
-    rings: &[Vec<[f64; 2]>],
-) -> Result<(), GeoValidationError> {
+pub fn validate_polygon(crs: CRS, rings: &[Vec<[f64; 2]>]) -> Result<(), GeoValidationError> {
     for (ring_idx, ring) in rings.iter().enumerate() {
         // Minimum 4 points (triangle + closing point)
         if ring.len() < 4 {
@@ -125,9 +130,7 @@ pub fn validate_polygon(
         // Ring must be closed
         let first = ring.first().unwrap();
         let last = ring.last().unwrap();
-        if (first[0] - last[0]).abs() > f64::EPSILON
-            || (first[1] - last[1]).abs() > f64::EPSILON
-        {
+        if (first[0] - last[0]).abs() > f64::EPSILON || (first[1] - last[1]).abs() > f64::EPSILON {
             return Err(GeoValidationError::UnclosedRing {
                 ring_index: ring_idx,
             });
@@ -207,22 +210,13 @@ mod tests {
 
     #[test]
     fn valid_polygon() {
-        let rings = vec![vec![
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
-            [0.0, 0.0],
-        ]];
+        let rings = vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]];
         assert!(validate_polygon(CRS::Epsg4326, &rings).is_ok());
     }
 
     #[test]
     fn polygon_too_few_points() {
-        let rings = vec![vec![
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 0.0],
-        ]];
+        let rings = vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]]];
         let err = validate_polygon(CRS::Epsg4326, &rings).unwrap_err();
         match err {
             GeoValidationError::TooFewPoints { ring_index, count } => {
@@ -266,19 +260,9 @@ mod tests {
     fn polygon_with_hole() {
         let rings = vec![
             // Exterior ring
-            vec![
-                [-10.0, -10.0],
-                [10.0, -10.0],
-                [10.0, 10.0],
-                [-10.0, -10.0],
-            ],
+            vec![[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, -10.0]],
             // Interior hole
-            vec![
-                [-1.0, -1.0],
-                [1.0, -1.0],
-                [1.0, 1.0],
-                [-1.0, -1.0],
-            ],
+            vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, -1.0]],
         ];
         assert!(validate_polygon(CRS::Epsg4326, &rings).is_ok());
     }

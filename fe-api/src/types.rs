@@ -202,9 +202,7 @@ pub struct CreatedEntityDto {
 // ---------------------------------------------------------------------------
 
 /// Convert a slice of internal hierarchy data snapshots into API DTOs.
-pub fn hierarchy_to_dto(
-    data: &[fe_runtime::messages::VerseHierarchyData],
-) -> Vec<VerseDto> {
+pub fn hierarchy_to_dto(data: &[fe_runtime::messages::VerseHierarchyData]) -> Vec<VerseDto> {
     data.iter()
         .map(|v| VerseDto {
             id: v.id.clone(),

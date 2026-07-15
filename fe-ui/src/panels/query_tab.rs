@@ -44,7 +44,11 @@ pub(crate) fn inspector_query_section(
                 ui.add_space(4.0);
             }
 
-            ui.label(egui::RichText::new("Only SELECT and RETURN statements are allowed.").small().color(theme::TEXT_MUTED));
+            ui.label(
+                egui::RichText::new("Only SELECT and RETURN statements are allowed.")
+                    .small()
+                    .color(theme::TEXT_MUTED),
+            );
             ui.add_space(4.0);
 
             // SQL text area
@@ -61,8 +65,16 @@ pub(crate) fn inspector_query_section(
             // Submit button
             let can_submit = !inspector.query_sql_buf.trim().is_empty() && !inspector.query_loading;
             ui.horizontal(|ui| {
-                let btn = egui::Button::new(if inspector.query_loading { "Running..." } else { "Run Query" })
-                    .fill(if can_submit { theme::BG_SAVE } else { theme::BG_BUTTON });
+                let btn = egui::Button::new(if inspector.query_loading {
+                    "Running..."
+                } else {
+                    "Run Query"
+                })
+                .fill(if can_submit {
+                    theme::BG_SAVE
+                } else {
+                    theme::BG_BUTTON
+                });
                 let submit_clicked = ui.add_enabled(can_submit, btn).clicked();
                 let ctrl_enter = response.has_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl);
@@ -76,22 +88,33 @@ pub(crate) fn inspector_query_section(
                     });
                 }
 
-                if inspector.query_result.is_some() {
-                    if ui.add(egui::Button::new("Clear").fill(theme::BG_BUTTON)).clicked() {
-                        inspector.query_result = None;
-                    }
+                if inspector.query_result.is_some()
+                    && ui
+                        .add(egui::Button::new("Clear").fill(theme::BG_BUTTON))
+                        .clicked()
+                {
+                    inspector.query_result = None;
                 }
             });
 
             ui.add_space(2.0);
-            ui.label(egui::RichText::new("Ctrl+Enter to submit").small().color(theme::TEXT_DIM));
+            ui.label(
+                egui::RichText::new("Ctrl+Enter to submit")
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
 
             // Results display
             if let Some(ref result) = inspector.query_result {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("Result").small().strong().color(theme::TEXT_SECTION));
+                ui.label(
+                    egui::RichText::new("Result")
+                        .small()
+                        .strong()
+                        .color(theme::TEXT_SECTION),
+                );
                 ui.add_space(2.0);
 
                 egui::ScrollArea::vertical()

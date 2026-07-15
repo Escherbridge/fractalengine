@@ -9,11 +9,11 @@ use wry::{PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::backend::{BackendEvent, WebViewBackend, WindowGeometry};
 
-#[cfg(target_os = "windows")]
-use super::win32_popup::{win32, PopupHandle};
+use super::win32_popup::webview_fill_rect;
 #[cfg(not(target_os = "windows"))]
 use super::win32_popup::ParentHandle;
-use super::win32_popup::webview_fill_rect;
+#[cfg(target_os = "windows")]
+use super::win32_popup::{win32, PopupHandle};
 
 /// Tauri-powered webview backend; on Windows it lives in a borderless popup owned by the Bevy window.
 pub struct TauriBackend {
@@ -62,7 +62,10 @@ impl WebViewBackend for TauriBackend {
     ) -> anyhow::Result<Self> {
         tracing::info!(
             "TauriBackend::create — geometry: x={} y={} w={} h={}",
-            geometry.x, geometry.y, geometry.width, geometry.height
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height
         );
 
         let events: Rc<RefCell<Vec<BackendEvent>>> = Rc::new(RefCell::new(Vec::new()));
@@ -96,7 +99,7 @@ impl WebViewBackend for TauriBackend {
         #[cfg(target_os = "windows")]
         let (webview, popup_hwnd) = {
             let parent_hwnd = match parent_handle {
-                RawWindowHandle::Win32(h) => h.hwnd.get() as isize,
+                RawWindowHandle::Win32(h) => h.hwnd.get(),
                 _ => anyhow::bail!("TauriBackend on Windows requires a Win32 window handle"),
             };
 
@@ -107,13 +110,11 @@ impl WebViewBackend for TauriBackend {
 
             let popup = PopupHandle(popup_hwnd);
             tracing::debug!("TauriBackend: calling build_as_child...");
-            let webview = builder
-                .build_as_child(&popup)
-                .map_err(|e| {
-                    tracing::error!("TauriBackend: build_as_child FAILED: {e}");
-                    win32::destroy(popup_hwnd);
-                    anyhow::anyhow!("TauriBackend: build_as_child failed: {e}")
-                })?;
+            let webview = builder.build_as_child(&popup).map_err(|e| {
+                tracing::error!("TauriBackend: build_as_child FAILED: {e}");
+                win32::destroy(popup_hwnd);
+                anyhow::anyhow!("TauriBackend: build_as_child failed: {e}")
+            })?;
 
             tracing::info!("TauriBackend: webview built OK — hiding popup until navigate()");
             win32::hide(popup_hwnd);

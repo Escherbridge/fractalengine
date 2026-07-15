@@ -43,9 +43,7 @@ pub use primitive::{PrimitiveDescriptor, PrimitiveKind, PRIMITIVE_PROPERTY_KEY};
 pub use property::{PropertyBag, PropertyValue};
 pub use query::{is_select_only, ExtensionQueryApi, QueryError, CAP_QUERY_SELECT};
 pub use scene::{SceneChange, SceneChangeBatch};
-pub use storage::{
-    ExtensionStorageApi, StorageError, CAP_STORAGE_READ, CAP_STORAGE_WRITE,
-};
+pub use storage::{ExtensionStorageApi, StorageError, CAP_STORAGE_READ, CAP_STORAGE_WRITE};
 pub use texture::{TextureEntry, TextureRegistry};
 pub use transaction::PluginTransaction;
 pub use ui::{UiContribution, UiExtensionRegistry, UiSlot};

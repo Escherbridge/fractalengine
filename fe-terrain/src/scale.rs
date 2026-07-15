@@ -87,7 +87,10 @@ mod tests {
     #[test]
     fn clamp_world_scale_to_bounds_clamps_into_range() {
         assert_eq!(clamp_world_scale_to_bounds(0.5, Some([0.001, 0.1])), 0.1);
-        assert_eq!(clamp_world_scale_to_bounds(0.00001, Some([0.001, 0.1])), 0.001);
+        assert_eq!(
+            clamp_world_scale_to_bounds(0.00001, Some([0.001, 0.1])),
+            0.001
+        );
         assert_eq!(clamp_world_scale_to_bounds(0.05, Some([0.001, 0.1])), 0.05);
     }
 

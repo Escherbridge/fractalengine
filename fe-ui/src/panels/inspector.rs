@@ -71,12 +71,17 @@ pub(crate) fn right_inspector(
                     (InspectorTab::Query, "Query"),
                 ] {
                     let active = inspector.active_tab == tab;
-                    let btn = egui::Button::new(
-                        egui::RichText::new(label).small().color(
-                            if active { theme::TEXT_BRIGHT } else { theme::TEXT_DIM }
-                        ),
-                    )
-                    .fill(if active { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON });
+                    let btn =
+                        egui::Button::new(egui::RichText::new(label).small().color(if active {
+                            theme::TEXT_BRIGHT
+                        } else {
+                            theme::TEXT_DIM
+                        }))
+                        .fill(if active {
+                            theme::BG_BUTTON_ACTIVE
+                        } else {
+                            theme::BG_BUTTON
+                        });
                     if ui.add(btn).clicked() {
                         let prev_tab = inspector.active_tab;
                         inspector.active_tab = tab;
@@ -94,11 +99,13 @@ pub(crate) fn right_inspector(
                             }
                             let scope = inspector.api_token_scope_buf.clone();
                             if !scope.is_empty() {
-                                db_tx.send(DbCommand::ListApiTokensByScope {
-                                    scope_prefix: scope,
-                                    offset: 0,
-                                    limit: API_TOKEN_PAGE_SIZE,
-                                }).ok();
+                                db_tx
+                                    .send(DbCommand::ListApiTokensByScope {
+                                        scope_prefix: scope,
+                                        offset: 0,
+                                        limit: API_TOKEN_PAGE_SIZE,
+                                    })
+                                    .ok();
                             }
                         }
                     }
@@ -108,32 +115,42 @@ pub(crate) fn right_inspector(
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    match inspector.active_tab {
-                        InspectorTab::Properties => {
-                            ui.add_space(4.0);
-                            inspector_entity_section(ui, node_mgr);
-                            ui.add_space(2.0);
-                            crate::panels::asset_card::asset_card_section(ui, node_mgr, hierarchy, ui_mgr, asset_status);
-                            ui.add_space(2.0);
-                            crate::panels::annotation_card::annotation_card_section(ui, inspector, node_mgr, ui_mgr);
-                            ui.add_space(2.0);
-                            inspector_transform_section(ui, inspector, ui_mgr);
-                            ui.add_space(2.0);
-                            inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
-                            ui.add_space(2.0);
-                            inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
-                            ui.add_space(2.0);
-                            inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav);
-                        }
-                        InspectorTab::ApiAccess => {
-                            ui.add_space(4.0);
-                            inspector_api_access_section(ui, inspector, node_mgr, db_tx, local_role, ui_mgr);
-                        }
-                        InspectorTab::Query => {
-                            ui.add_space(4.0);
-                            crate::panels::query_tab::inspector_query_section(ui, inspector, nav, ui_mgr);
-                        }
+                .show(ui, |ui| match inspector.active_tab {
+                    InspectorTab::Properties => {
+                        ui.add_space(4.0);
+                        inspector_entity_section(ui, node_mgr);
+                        ui.add_space(2.0);
+                        crate::panels::asset_card::asset_card_section(
+                            ui,
+                            node_mgr,
+                            hierarchy,
+                            ui_mgr,
+                            asset_status,
+                        );
+                        ui.add_space(2.0);
+                        crate::panels::annotation_card::annotation_card_section(
+                            ui, inspector, node_mgr, ui_mgr,
+                        );
+                        ui.add_space(2.0);
+                        inspector_transform_section(ui, inspector, ui_mgr);
+                        ui.add_space(2.0);
+                        inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
+                        ui.add_space(2.0);
+                        inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
+                        ui.add_space(2.0);
+                        inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav);
+                    }
+                    InspectorTab::ApiAccess => {
+                        ui.add_space(4.0);
+                        inspector_api_access_section(
+                            ui, inspector, node_mgr, db_tx, local_role, ui_mgr,
+                        );
+                    }
+                    InspectorTab::Query => {
+                        ui.add_space(4.0);
+                        crate::panels::query_tab::inspector_query_section(
+                            ui, inspector, nav, ui_mgr,
+                        );
                     }
                 });
         });
@@ -141,7 +158,11 @@ pub(crate) fn right_inspector(
 
 /// Build a scope string from the current navigation state.
 pub(crate) fn build_nav_scope(nav: &NavigationManager) -> String {
-    match (&nav.active_verse_id, &nav.active_fractal_id, &nav.active_petal_id) {
+    match (
+        &nav.active_verse_id,
+        &nav.active_fractal_id,
+        &nav.active_petal_id,
+    ) {
         (Some(v), Some(f), Some(p)) => fe_database::build_scope(v, Some(f), Some(p)),
         (Some(v), Some(f), None) => fe_database::build_scope(v, Some(f), None),
         (Some(v), None, _) => fe_database::build_scope(v, None, None),
@@ -163,14 +184,14 @@ fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::N
                 .num_columns(2)
                 .spacing([8.0, 4.0])
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("Node ID").small().color(theme::TEXT_DIM));
+                    ui.label(
+                        egui::RichText::new("Node ID")
+                            .small()
+                            .color(theme::TEXT_DIM),
+                    );
                     let id_label = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&sel.node_id)
-                                .monospace()
-                                .small(),
-                        )
-                        .sense(egui::Sense::click()),
+                        egui::Label::new(egui::RichText::new(&sel.node_id).monospace().small())
+                            .sense(egui::Sense::click()),
                     );
                     if id_label.clicked() {
                         ui.ctx().copy_text(sel.node_id.clone());
@@ -213,10 +234,7 @@ fn inspector_transform_section(
                 const AXIS_W: f32 = 10.0; // "X" / "Y" / "Z"
                 let spacing = ui.spacing().item_spacing.x;
                 // total = LABEL_W + gap + 3*(AXIS_W + gap + input_w + gap)
-                let input_w = ((ui.available_width()
-                    - LABEL_W
-                    - spacing * 7.0
-                    - AXIS_W * 3.0)
+                let input_w = ((ui.available_width() - LABEL_W - spacing * 7.0 - AXIS_W * 3.0)
                     / 3.0)
                     .max(32.0);
 
@@ -310,12 +328,21 @@ fn inspector_url_meta_section(
 
         let has_url = !inspector.external_url.trim().is_empty();
         let btn = egui::Button::new("\u{1F310} Open Portal")
-            .fill(if has_url { theme::BG_BUTTON_ACTIVE } else { theme::BG_BUTTON })
+            .fill(if has_url {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
+            })
             .min_size(egui::vec2(ui.available_width(), 28.0));
         let resp = ui.add_enabled(has_url, btn);
         if resp.clicked() {
-            bevy::log::info!("Portal: 'Open Portal' clicked — URL: {}", inspector.external_url);
-            ui_mgr.push_action(UiAction::OpenPortal { url: inspector.external_url.clone() });
+            bevy::log::info!(
+                "Portal: 'Open Portal' clicked — URL: {}",
+                inspector.external_url
+            );
+            ui_mgr.push_action(UiAction::OpenPortal {
+                url: inspector.external_url.clone(),
+            });
         }
         if !has_url {
             resp.on_hover_text("Set a Portal URL above to open the webview");
@@ -687,22 +714,22 @@ fn inspector_api_access_section(
 }
 
 /// Send a scoped, paginated token list request.
-fn send_scoped_token_list(
-    db_tx: &crossbeam::channel::Sender<DbCommand>,
-    scope: &str,
-    page: u32,
-) {
+fn send_scoped_token_list(db_tx: &crossbeam::channel::Sender<DbCommand>, scope: &str, page: u32) {
     if scope.is_empty() {
-        db_tx.send(DbCommand::ListApiTokens {
-            offset: page * API_TOKEN_PAGE_SIZE,
-            limit: API_TOKEN_PAGE_SIZE,
-        }).ok();
+        db_tx
+            .send(DbCommand::ListApiTokens {
+                offset: page * API_TOKEN_PAGE_SIZE,
+                limit: API_TOKEN_PAGE_SIZE,
+            })
+            .ok();
     } else {
-        db_tx.send(DbCommand::ListApiTokensByScope {
-            scope_prefix: scope.to_string(),
-            offset: page * API_TOKEN_PAGE_SIZE,
-            limit: API_TOKEN_PAGE_SIZE,
-        }).ok();
+        db_tx
+            .send(DbCommand::ListApiTokensByScope {
+                scope_prefix: scope.to_string(),
+                offset: page * API_TOKEN_PAGE_SIZE,
+                limit: API_TOKEN_PAGE_SIZE,
+            })
+            .ok();
     }
 }
 
@@ -711,9 +738,17 @@ fn send_scoped_token_list(
 // ---------------------------------------------------------------------------
 
 const PROPERTY_TYPES: &[&str] = &[
-    "string", "number", "bool", "datetime",
-    "geometry_point", "geometry_polygon",
-    "blob_ref", "hexon_ref", "address", "array", "object",
+    "string",
+    "number",
+    "bool",
+    "datetime",
+    "geometry_point",
+    "geometry_polygon",
+    "blob_ref",
+    "hexon_ref",
+    "address",
+    "array",
+    "object",
 ];
 
 // ---------------------------------------------------------------------------
@@ -789,11 +824,9 @@ fn inspector_properties_section(
                             );
                             if ui
                                 .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("\u{2715}").small(),
-                                    )
-                                    .fill(theme::BG_DANGER)
-                                    .small(),
+                                    egui::Button::new(egui::RichText::new("\u{2715}").small())
+                                        .fill(theme::BG_DANGER)
+                                        .small(),
                                 )
                                 .on_hover_text("Delete property")
                                 .clicked()
@@ -852,7 +885,11 @@ fn inspector_properties_section(
             && !inspector.prop_add_value_buf.trim().is_empty();
 
         let btn = egui::Button::new("Add")
-            .fill(if can_add { theme::BG_SAVE } else { theme::BG_BUTTON })
+            .fill(if can_add {
+                theme::BG_SAVE
+            } else {
+                theme::BG_BUTTON
+            })
             .min_size(egui::vec2(ui.available_width(), 24.0));
 
         if ui.add_enabled(can_add, btn).clicked() {
@@ -861,7 +898,7 @@ fn inspector_properties_section(
             let value = match inspector.prop_add_type_buf.as_str() {
                 "number" => raw
                     .parse::<f64>()
-                    .map(|n| serde_json::Value::from(n))
+                    .map(serde_json::Value::from)
                     .unwrap_or_else(|_| serde_json::Value::String(raw.clone())),
                 "bool" => match raw.to_lowercase().as_str() {
                     "true" | "1" | "yes" => serde_json::Value::Bool(true),
@@ -940,9 +977,24 @@ fn inspector_schema_section(
                 .spacing([6.0, 3.0])
                 .show(ui, |ui| {
                     // Header
-                    ui.label(egui::RichText::new("Key").small().strong().color(theme::TEXT_DIM));
-                    ui.label(egui::RichText::new("Type").small().strong().color(theme::TEXT_DIM));
-                    ui.label(egui::RichText::new("Req").small().strong().color(theme::TEXT_DIM));
+                    ui.label(
+                        egui::RichText::new("Key")
+                            .small()
+                            .strong()
+                            .color(theme::TEXT_DIM),
+                    );
+                    ui.label(
+                        egui::RichText::new("Type")
+                            .small()
+                            .strong()
+                            .color(theme::TEXT_DIM),
+                    );
+                    ui.label(
+                        egui::RichText::new("Req")
+                            .small()
+                            .strong()
+                            .color(theme::TEXT_DIM),
+                    );
                     ui.label(egui::RichText::new("").small());
                     ui.end_row();
 
@@ -959,14 +1011,16 @@ fn inspector_schema_section(
                                 .color(theme::TEXT_AXIS),
                         );
                         let req_label = if fd.required { "\u{2713}" } else { "\u{2014}" };
-                        ui.label(egui::RichText::new(req_label).small().color(theme::TEXT_DIM));
+                        ui.label(
+                            egui::RichText::new(req_label)
+                                .small()
+                                .color(theme::TEXT_DIM),
+                        );
                         if ui
                             .add(
-                                egui::Button::new(
-                                    egui::RichText::new("\u{2715}").small(),
-                                )
-                                .fill(theme::BG_DANGER)
-                                .small(),
+                                egui::Button::new(egui::RichText::new("\u{2715}").small())
+                                    .fill(theme::BG_DANGER)
+                                    .small(),
                             )
                             .on_hover_text(format!("Delete field def '{}'", fd.key))
                             .clicked()
@@ -980,9 +1034,11 @@ fn inspector_schema_section(
 
         if let Some(idx) = delete_idx {
             let fd = inspector.field_defs.remove(idx);
-            db_tx.send(DbCommand::DeleteFieldDef {
-                field_def_id: fd.field_def_id,
-            }).ok();
+            db_tx
+                .send(DbCommand::DeleteFieldDef {
+                    field_def_id: fd.field_def_id,
+                })
+                .ok();
         }
 
         ui.add_space(6.0);
@@ -1029,7 +1085,11 @@ fn inspector_schema_section(
 
         let can_add = !inspector.field_def_add_key_buf.trim().is_empty();
         let btn = egui::Button::new("Add Field")
-            .fill(if can_add { theme::BG_SAVE } else { theme::BG_BUTTON })
+            .fill(if can_add {
+                theme::BG_SAVE
+            } else {
+                theme::BG_BUTTON
+            })
             .min_size(egui::vec2(ui.available_width(), 24.0));
 
         if ui.add_enabled(can_add, btn).clicked() {
@@ -1038,13 +1098,15 @@ fn inspector_schema_section(
             let scope = build_nav_scope(nav);
 
             // Send DbCommand to persist
-            db_tx.send(DbCommand::CreateFieldDef {
-                scope: scope.clone(),
-                entity_type: "node".to_string(),
-                key: key.clone(),
-                value_type: value_type.clone(),
-                default_val: None,
-            }).ok();
+            db_tx
+                .send(DbCommand::CreateFieldDef {
+                    scope: scope.clone(),
+                    entity_type: "node".to_string(),
+                    key: key.clone(),
+                    value_type: value_type.clone(),
+                    default_val: None,
+                })
+                .ok();
 
             // Add locally for immediate feedback
             let entry = crate::plugin::FieldDefEntry {

@@ -26,7 +26,11 @@ fn submit_query(
 }
 
 /// Runs the "nodes with annotations" query for `petal_id`.
-pub(crate) fn query_annotated(db_sender: &DbCommandSender, gis_state: &mut GisPanelState, petal_id: String) {
+pub(crate) fn query_annotated(
+    db_sender: &DbCommandSender,
+    gis_state: &mut GisPanelState,
+    petal_id: String,
+) {
     let (sql, vars) = gis::annotation_query(&petal_id);
     submit_query(db_sender, gis_state, sql, vars);
 }
@@ -108,7 +112,9 @@ pub(crate) fn set_view_mode(
             petal_map.terrain_json = Some(updated);
         }
         Err(_) => {
-            bevy::log::warn!("db_sender channel closed — SetPetalTerrain (view_mode) not dispatched");
+            bevy::log::warn!(
+                "db_sender channel closed — SetPetalTerrain (view_mode) not dispatched"
+            );
         }
     }
 }

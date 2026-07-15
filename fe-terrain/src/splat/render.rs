@@ -195,7 +195,10 @@ fn apply_view_mode_visibility(
         (&GlobalTransform, Option<&LayerEntity>, &mut Visibility),
         (With<TerrainChunk>, Without<SplatChunk>),
     >,
-    mut splat_chunks: Query<(&GlobalTransform, &mut Visibility), (With<SplatChunk>, Without<TerrainChunk>)>,
+    mut splat_chunks: Query<
+        (&GlobalTransform, &mut Visibility),
+        (With<SplatChunk>, Without<TerrainChunk>),
+    >,
 ) {
     let scale = active
         .config
@@ -393,7 +396,10 @@ pub fn bake_splat_mesh(buf: &SplatBuffer) -> Mesh {
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
@@ -465,7 +471,10 @@ mod tests {
         let size = 16usize;
         let center = ((size / 2) * size + size / 2) * 4;
         let corner = 0usize;
-        assert!(data[center + 3] > data[corner + 3], "center alpha must exceed corner");
+        assert!(
+            data[center + 3] > data[corner + 3],
+            "center alpha must exceed corner"
+        );
         assert_eq!(data.len(), size * size * 4);
     }
 }

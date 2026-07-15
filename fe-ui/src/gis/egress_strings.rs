@@ -67,7 +67,10 @@ fn escape_sql_str(s: &str) -> String {
 
 /// Default petal-scope node SELECT.
 pub(crate) fn petal_scope_sql(petal_id: &str) -> String {
-    format!("SELECT * FROM node WHERE petal_id = '{}'", escape_sql_str(petal_id))
+    format!(
+        "SELECT * FROM node WHERE petal_id = '{}'",
+        escape_sql_str(petal_id)
+    )
 }
 
 /// Single-node SELECT within a petal.
@@ -153,7 +156,12 @@ fn escape_json_str(s: &str) -> String {
 /// curl command minting a shareable signed URL via `POST /api/v1/query/share`
 /// (plan Task 3.2 contract: body = sql + format + ttl). Displayed for manual
 /// use until fe-ui grows an HTTP-client seam — see track open_decisions.
-pub(crate) fn mint_share_curl(base: &str, sql: &str, format: ExportFormat, ttl_secs: u64) -> String {
+pub(crate) fn mint_share_curl(
+    base: &str,
+    sql: &str,
+    format: ExportFormat,
+    ttl_secs: u64,
+) -> String {
     let body = format!(
         r#"{{"sql":"{}","format":"{}","ttl_secs":{}}}"#,
         escape_json_str(sql),
@@ -173,12 +181,18 @@ mod tests {
 
     #[test]
     fn petal_scope_sql_exact() {
-        assert_eq!(petal_scope_sql("petal-1"), "SELECT * FROM node WHERE petal_id = 'petal-1'");
+        assert_eq!(
+            petal_scope_sql("petal-1"),
+            "SELECT * FROM node WHERE petal_id = 'petal-1'"
+        );
     }
 
     #[test]
     fn petal_scope_sql_escapes_single_quote() {
-        assert_eq!(petal_scope_sql("pe'tal"), "SELECT * FROM node WHERE petal_id = 'pe''tal'");
+        assert_eq!(
+            petal_scope_sql("pe'tal"),
+            "SELECT * FROM node WHERE petal_id = 'pe''tal'"
+        );
     }
 
     #[test]
@@ -195,7 +209,11 @@ mod tests {
                       AND position.coordinates[0] >= -50 AND position.coordinates[0] <= 50 \
                       AND position.coordinates[1] >= -50 AND position.coordinates[1] <= 50";
         assert_eq!(bbox_sql("petal-1", [-50.0, -50.0], [50.0, 50.0]), expect);
-        assert_eq!(bbox_sql("petal-1", [50.0, 50.0], [-50.0, -50.0]), expect, "reversed bounds normalize");
+        assert_eq!(
+            bbox_sql("petal-1", [50.0, 50.0], [-50.0, -50.0]),
+            expect,
+            "reversed bounds normalize"
+        );
     }
 
     #[test]
@@ -206,7 +224,10 @@ mod tests {
 
     #[test]
     fn query_post_url_trims_trailing_slash() {
-        assert_eq!(query_post_url("http://localhost:8765/"), "http://localhost:8765/api/v1/query");
+        assert_eq!(
+            query_post_url("http://localhost:8765/"),
+            "http://localhost:8765/api/v1/query"
+        );
     }
 
     #[test]
@@ -221,8 +242,16 @@ mod tests {
 
     #[test]
     fn export_url_csv_variant_and_encoded_petal_segment() {
-        let url = export_url(DEFAULT_API_BASE, "petal 1", "SELECT * FROM node", ExportFormat::Csv);
-        assert!(url.contains("/api/v1/petals/petal%201/export.csv?query="), "got {url}");
+        let url = export_url(
+            DEFAULT_API_BASE,
+            "petal 1",
+            "SELECT * FROM node",
+            ExportFormat::Csv,
+        );
+        assert!(
+            url.contains("/api/v1/petals/petal%201/export.csv?query="),
+            "got {url}"
+        );
     }
 
     #[test]
@@ -235,7 +264,12 @@ mod tests {
 
     #[test]
     fn mint_share_curl_exact() {
-        let cmd = mint_share_curl(DEFAULT_API_BASE, "SELECT * FROM node WHERE petal_id = 'p'", ExportFormat::Parquet, 3600);
+        let cmd = mint_share_curl(
+            DEFAULT_API_BASE,
+            "SELECT * FROM node WHERE petal_id = 'p'",
+            ExportFormat::Parquet,
+            3600,
+        );
         assert_eq!(
             cmd,
             "curl.exe -s -X POST http://localhost:8765/api/v1/query/share \

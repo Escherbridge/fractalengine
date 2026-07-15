@@ -58,10 +58,7 @@ pub struct TimestampedRoutePoint {
 /// Requires a route map that maps track node IDs to route points.
 #[cfg(feature = "render")]
 pub fn advance_track_animations(
-    mut query: bevy::ecs::system::Query<(
-        &mut TrackAnimator,
-        &mut bevy::prelude::Transform,
-    )>,
+    mut query: bevy::ecs::system::Query<(&mut TrackAnimator, &mut bevy::prelude::Transform)>,
     route_map: bevy::ecs::system::Res<TrackRouteMap>,
     time: bevy::ecs::system::Res<bevy::prelude::Time>,
 ) {
@@ -92,7 +89,8 @@ pub fn advance_track_animations(
 
         // Interpolate position
         let pos = interpolate_route(&route.points, progress);
-        transform.translation = bevy::prelude::Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
+        transform.translation =
+            bevy::prelude::Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
 
         // Loop or stop
         if animator.current_time >= total_duration {
@@ -126,7 +124,11 @@ impl Default for TrackStyle {
     fn default() -> Self {
         // Matches the pre-styling hardcoded look (`Color::srgb(0.0, 0.8, 1.0)`),
         // a 2 m ribbon, always visible — so untouched tracks are unchanged.
-        Self { color: [0.0, 0.8, 1.0, 1.0], width: 2.0, visible: true }
+        Self {
+            color: [0.0, 0.8, 1.0, 1.0],
+            width: 2.0,
+            visible: true,
+        }
     }
 }
 
@@ -164,13 +166,24 @@ pub fn parse_track_color_hex(hex: &str) -> Option<[f32; 4]> {
         ),
         _ => return None,
     };
-    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
+    Some([
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+        a as f32 / 255.0,
+    ])
 }
 
 /// Encode a `[f32; 4]` RGBA color as a `#rrggbbaa` hex string for persistence.
 pub fn track_color_to_hex(color: [f32; 4]) -> String {
     let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    format!("#{:02x}{:02x}{:02x}{:02x}", c(color[0]), c(color[1]), c(color[2]), c(color[3]))
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        c(color[0]),
+        c(color[1]),
+        c(color[2]),
+        c(color[3])
+    )
 }
 
 /// Per-track style lookup keyed by track node id. Populated from persisted
@@ -263,9 +276,15 @@ mod tests {
         assert_eq!(parse_track_color_hex("#ff0000"), Some([1.0, 0.0, 0.0, 1.0]));
         assert_eq!(parse_track_color_hex("00ff00"), Some([0.0, 1.0, 0.0, 1.0]));
         // Alpha honored when present.
-        assert_eq!(parse_track_color_hex("#0000ff80"), Some([0.0, 0.0, 1.0, 128.0 / 255.0]));
+        assert_eq!(
+            parse_track_color_hex("#0000ff80"),
+            Some([0.0, 0.0, 1.0, 128.0 / 255.0])
+        );
         // Leading/trailing whitespace tolerated.
-        assert_eq!(parse_track_color_hex("  #ffffff  "), Some([1.0, 1.0, 1.0, 1.0]));
+        assert_eq!(
+            parse_track_color_hex("  #ffffff  "),
+            Some([1.0, 1.0, 1.0, 1.0])
+        );
     }
 
     #[test]
@@ -282,12 +301,18 @@ mod tests {
     fn track_color_roundtrips_through_hex() {
         let hex = track_color_to_hex([1.0, 0.5019608, 0.0, 1.0]);
         assert_eq!(hex, "#ff8000ff");
-        assert_eq!(parse_track_color_hex(&hex), Some([1.0, 128.0 / 255.0, 0.0, 1.0]));
+        assert_eq!(
+            parse_track_color_hex(&hex),
+            Some([1.0, 128.0 / 255.0, 0.0, 1.0])
+        );
     }
 
     #[test]
     fn track_style_color_u8_clamps_and_rounds() {
-        let s = TrackStyle { color: [0.0, 0.8, 1.0, 1.0], ..TrackStyle::default() };
+        let s = TrackStyle {
+            color: [0.0, 0.8, 1.0, 1.0],
+            ..TrackStyle::default()
+        };
         assert_eq!(s.color_u8(), [0, 204, 255, 255]);
     }
 }

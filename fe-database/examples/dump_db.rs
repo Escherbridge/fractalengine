@@ -27,7 +27,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("\n=== NODES ===");
-    let mut r = db.query("SELECT node_id, petal_id, display_name, asset_id, position, elevation FROM node").await?;
+    let mut r = db
+        .query("SELECT node_id, petal_id, display_name, asset_id, position, elevation FROM node")
+        .await?;
     let rows: Vec<serde_json::Value> = r.take(0)?;
     for n in &rows {
         println!(

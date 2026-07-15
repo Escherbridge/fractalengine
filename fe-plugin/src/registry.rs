@@ -98,11 +98,12 @@ impl PluginRegistry {
     /// Activate a registered plugin. Only transitions from `Installed` or
     /// `Deactivated`.
     pub fn activate(&mut self, plugin_id: &str) -> Result<(), RegistryError> {
-        let entry = self.plugins.get_mut(plugin_id).ok_or_else(|| {
-            RegistryError::NotFound {
+        let entry = self
+            .plugins
+            .get_mut(plugin_id)
+            .ok_or_else(|| RegistryError::NotFound {
                 plugin_id: plugin_id.to_string(),
-            }
-        })?;
+            })?;
         match &entry.state {
             PluginState::Installed | PluginState::Deactivated => {
                 entry.state = PluginState::Active;
@@ -123,11 +124,12 @@ impl PluginRegistry {
 
     /// Deactivate a running plugin.
     pub fn deactivate(&mut self, plugin_id: &str) -> Result<(), RegistryError> {
-        let entry = self.plugins.get_mut(plugin_id).ok_or_else(|| {
-            RegistryError::NotFound {
+        let entry = self
+            .plugins
+            .get_mut(plugin_id)
+            .ok_or_else(|| RegistryError::NotFound {
                 plugin_id: plugin_id.to_string(),
-            }
-        })?;
+            })?;
         match &entry.state {
             PluginState::Active | PluginState::Degraded(_) => {
                 entry.state = PluginState::Deactivated;
@@ -172,11 +174,11 @@ impl PluginRegistry {
 
     /// Remove a plugin from the registry entirely.
     pub fn unregister(&mut self, plugin_id: &str) -> Result<PluginEntry, RegistryError> {
-        self.plugins.remove(plugin_id).ok_or_else(|| {
-            RegistryError::NotFound {
+        self.plugins
+            .remove(plugin_id)
+            .ok_or_else(|| RegistryError::NotFound {
                 plugin_id: plugin_id.to_string(),
-            }
-        })
+            })
     }
 
     /// Total number of registered plugins.
@@ -220,7 +222,8 @@ mod tests {
     #[test]
     fn register_and_get_state() {
         let mut reg = PluginRegistry::new();
-        reg.register("p1", "manifest://test", PluginTier::Rhai).unwrap();
+        reg.register("p1", "manifest://test", PluginTier::Rhai)
+            .unwrap();
         assert_eq!(reg.get_state("p1"), Some(&PluginState::Installed));
         assert_eq!(reg.len(), 1);
     }
@@ -228,8 +231,11 @@ mod tests {
     #[test]
     fn register_duplicate_fails() {
         let mut reg = PluginRegistry::new();
-        reg.register("p1", "manifest://test", PluginTier::Rhai).unwrap();
-        assert!(reg.register("p1", "manifest://test2", PluginTier::Native).is_err());
+        reg.register("p1", "manifest://test", PluginTier::Rhai)
+            .unwrap();
+        assert!(reg
+            .register("p1", "manifest://test2", PluginTier::Native)
+            .is_err());
     }
 
     #[test]

@@ -9,11 +9,10 @@ use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
 
 use crate::auth::{require_role, require_role_and_scope, require_scope};
 use crate::types::{
-    ApiResponse, CreatedEntityDto, CreateFractalRequest, CreateNodeRequest,
-    CreatePetalRequest, CreateVerseRequest, PropertiesDto, PropertySetDto,
-    SetPropertyRequest, UpdateTransformRequest, VerseDto,
-    CreateFieldDefRequest, UpdateFieldDefRequest, FieldDefDto,
-    hierarchy_to_dto, is_valid_ulid, is_valid_scope,
+    hierarchy_to_dto, is_valid_scope, is_valid_ulid, ApiResponse, CreateFieldDefRequest,
+    CreateFractalRequest, CreateNodeRequest, CreatePetalRequest, CreateVerseRequest,
+    CreatedEntityDto, FieldDefDto, PropertiesDto, PropertySetDto, SetPropertyRequest,
+    UpdateFieldDefRequest, UpdateTransformRequest, VerseDto,
 };
 
 // ---------------------------------------------------------------------------
@@ -40,14 +39,18 @@ pub async fn get_hierarchy(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<Vec<VerseDto>>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<Vec<VerseDto>>::error(
+            "insufficient permissions",
+        ));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let cmd = ApiCommand::GetHierarchy { reply_tx };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<Vec<VerseDto>>::error("internal channel closed"));
+        return Json(ApiResponse::<Vec<VerseDto>>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(data)) => {
@@ -67,8 +70,10 @@ pub async fn create_verse(
     Extension(claims): Extension<ApiClaims>,
     Json(req): Json<CreateVerseRequest>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "manager") {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient permissions"));
+    if require_role(&claims, "manager").is_err() {
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "insufficient permissions",
+        ));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -77,7 +82,9 @@ pub async fn create_verse(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("internal channel closed"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::VerseCreated { id, name })) => {
@@ -87,7 +94,9 @@ pub async fn create_verse(
             tracing::error!("create_verse failed: {_e}");
             Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
         }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error("unexpected response")),
+        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
+            "unexpected response",
+        )),
         Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
     }
@@ -101,8 +110,10 @@ pub async fn create_fractal(
     Json(req): Json<CreateFractalRequest>,
 ) -> impl IntoResponse {
     let scope = fe_database::build_scope(&verse_id, None, None);
-    if let Err(_) = require_role_and_scope(&claims, "editor", &scope) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient permissions or scope"));
+    if require_role_and_scope(&claims, "editor", &scope).is_err() {
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "insufficient permissions or scope",
+        ));
     }
 
     if !is_valid_ulid(&verse_id) {
@@ -118,7 +129,9 @@ pub async fn create_fractal(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("internal channel closed"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::FractalCreated { id, name, .. })) => {
@@ -128,7 +141,9 @@ pub async fn create_fractal(
             tracing::error!("create_fractal failed: {_e}");
             Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
         }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error("unexpected response")),
+        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
+            "unexpected response",
+        )),
         Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
     }
@@ -142,12 +157,16 @@ pub async fn create_petal(
     Json(req): Json<CreatePetalRequest>,
 ) -> impl IntoResponse {
     let scope = fe_database::build_scope(&verse_id, Some(&fractal_id), None);
-    if let Err(_) = require_role_and_scope(&claims, "editor", &scope) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient permissions or scope"));
+    if require_role_and_scope(&claims, "editor", &scope).is_err() {
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "insufficient permissions or scope",
+        ));
     }
 
     if !is_valid_ulid(&verse_id) || !is_valid_ulid(&fractal_id) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("invalid verse_id or fractal_id"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "invalid verse_id or fractal_id",
+        ));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -159,7 +178,9 @@ pub async fn create_petal(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("internal channel closed"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::PetalCreated { id, name, .. })) => {
@@ -169,7 +190,9 @@ pub async fn create_petal(
             tracing::error!("create_petal failed: {_e}");
             Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
         }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error("unexpected response")),
+        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
+            "unexpected response",
+        )),
         Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
     }
@@ -186,8 +209,10 @@ pub async fn create_node(
     Json(req): Json<CreateNodeRequest>,
 ) -> impl IntoResponse {
     let scope = fe_database::build_scope(&verse_id, Some(&fractal_id), Some(&petal_id));
-    if let Err(_) = require_role_and_scope(&claims, "editor", &scope) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient permissions or scope"));
+    if require_role_and_scope(&claims, "editor", &scope).is_err() {
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "insufficient permissions or scope",
+        ));
     }
 
     if !is_valid_ulid(&petal_id) {
@@ -206,7 +231,9 @@ pub async fn create_node(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("internal channel closed"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::NodeCreated { id, name, .. })) => {
@@ -216,7 +243,9 @@ pub async fn create_node(
             tracing::error!("create_node failed: {_e}");
             Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
         }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error("unexpected response")),
+        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
+            "unexpected response",
+        )),
         Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
     }
@@ -233,8 +262,10 @@ pub async fn create_node_legacy(
     Extension(claims): Extension<ApiClaims>,
     Json(req): Json<CreateNodeRequest>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "editor") {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient permissions"));
+    if require_role(&claims, "editor").is_err() {
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "insufficient permissions",
+        ));
     }
 
     let petal_id = req.petal_id.clone().unwrap_or_default();
@@ -244,7 +275,9 @@ pub async fn create_node_legacy(
 
     // Resolve petal scope for enforcement
     let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
-        return Json(ApiResponse::<CreatedEntityDto>::error("could not resolve petal scope"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "could not resolve petal scope",
+        ));
     };
     if require_scope(&claims, &scope).is_err() {
         return Json(ApiResponse::<CreatedEntityDto>::error("insufficient scope"));
@@ -262,7 +295,9 @@ pub async fn create_node_legacy(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("internal channel closed"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::NodeCreated { id, name, .. })) => {
@@ -272,7 +307,9 @@ pub async fn create_node_legacy(
             tracing::error!("create_node failed: {_e}");
             Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
         }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error("unexpected response")),
+        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
+            "unexpected response",
+        )),
         Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
     }
@@ -288,7 +325,7 @@ pub async fn update_transform(
     Path(node_id): Path<String>,
     Json(req): Json<UpdateTransformRequest>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "editor") {
+    if require_role(&claims, "editor").is_err() {
         return Json(ApiResponse::error("insufficient permissions"));
     }
 
@@ -306,15 +343,18 @@ pub async fn update_transform(
 
     // Optimistic broadcast: push transform to WS subscribers + Bevy bridge
     // immediately, BEFORE the DB persist completes.
-    let broadcast_receivers = state.transform_broadcast_tx.send(TransformUpdate {
-        node_id: node_id.clone(),
-        petal_id: String::new(),
-        position: req.position,
-        rotation: req.rotation,
-        scale: req.scale,
-        timestamp_ms: now_ms(),
-        source_did: claims.sub,
-    }).unwrap_or(0);
+    let broadcast_receivers = state
+        .transform_broadcast_tx
+        .send(TransformUpdate {
+            node_id: node_id.clone(),
+            petal_id: String::new(),
+            position: req.position,
+            rotation: req.rotation,
+            scale: req.scale,
+            timestamp_ms: now_ms(),
+            source_did: claims.sub,
+        })
+        .unwrap_or(0);
 
     // Fire-and-forget DB persist via TransformPersist (bypasses PendingApiRequests).
     // On failure the DB thread emits SceneChange::TransformFailed so WS subscribers
@@ -357,8 +397,10 @@ pub async fn get_transform(
 ) -> impl IntoResponse {
     use crate::types::TransformDto;
 
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<TransformDto>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<TransformDto>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&node_id) {
         return Json(ApiResponse::<TransformDto>::error("invalid node_id"));
@@ -366,7 +408,9 @@ pub async fn get_transform(
 
     // Resolve node scope for enforcement
     let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::<TransformDto>::error("could not resolve node scope"));
+        return Json(ApiResponse::<TransformDto>::error(
+            "could not resolve node scope",
+        ));
     };
     if require_scope(&claims, &scope).is_err() {
         return Json(ApiResponse::<TransformDto>::error("insufficient scope"));
@@ -382,23 +426,36 @@ pub async fn get_transform(
         {
             Ok(Ok(Some(transform))) => Json(ApiResponse::success(transform)),
             Ok(Ok(None)) => Json(ApiResponse::<TransformDto>::error("node not found")),
-            Ok(Err(e)) => Json(ApiResponse::<TransformDto>::error(format!("query failed: {e}"))),
+            Ok(Err(e)) => Json(ApiResponse::<TransformDto>::error(format!(
+                "query failed: {e}"
+            ))),
             Err(_) => Json(ApiResponse::<TransformDto>::error("request timed out")),
         }
     } else {
         // Fallback: channel-based query
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let cmd = ApiCommand::DbRequest {
-            cmd: DbCommand::GetNodeTransform { node_id: node_id.clone() },
+            cmd: DbCommand::GetNodeTransform {
+                node_id: node_id.clone(),
+            },
             reply_tx,
         };
         if state.api_cmd_tx.send(cmd).is_err() {
-            return Json(ApiResponse::<TransformDto>::error("internal channel closed"));
+            return Json(ApiResponse::<TransformDto>::error(
+                "internal channel closed",
+            ));
         }
         match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-            Ok(Ok(DbResult::NodeTransformLoaded { position, rotation, scale, .. })) => {
-                Json(ApiResponse::success(TransformDto { position, rotation, scale }))
-            }
+            Ok(Ok(DbResult::NodeTransformLoaded {
+                position,
+                rotation,
+                scale,
+                ..
+            })) => Json(ApiResponse::success(TransformDto {
+                position,
+                rotation,
+                scale,
+            })),
             Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<TransformDto>::error(e)),
             Ok(Ok(_)) => Json(ApiResponse::<TransformDto>::error("unexpected response")),
             Ok(Err(_)) => Json(ApiResponse::<TransformDto>::error("request cancelled")),
@@ -416,8 +473,10 @@ pub async fn set_node_property(
     Path(node_id): Path<String>,
     Json(req): Json<SetPropertyRequest>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "editor") {
-        return Json(ApiResponse::<PropertySetDto>::error("insufficient permissions"));
+    if require_role(&claims, "editor").is_err() {
+        return Json(ApiResponse::<PropertySetDto>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&node_id) {
         return Json(ApiResponse::<PropertySetDto>::error("invalid node_id"));
@@ -425,7 +484,9 @@ pub async fn set_node_property(
 
     // Resolve node scope for enforcement — deny if resolution fails
     let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::<PropertySetDto>::error("could not resolve node scope"));
+        return Json(ApiResponse::<PropertySetDto>::error(
+            "could not resolve node scope",
+        ));
     };
     if require_scope(&claims, &scope).is_err() {
         return Json(ApiResponse::<PropertySetDto>::error("insufficient scope"));
@@ -441,7 +502,9 @@ pub async fn set_node_property(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error("internal channel closed"));
+        return Json(ApiResponse::<PropertySetDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::NodePropertySet { node_id, key })) => {
@@ -462,8 +525,10 @@ pub async fn get_node_properties(
     Extension(claims): Extension<ApiClaims>,
     Path(node_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<PropertiesDto>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<PropertiesDto>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&node_id) {
         return Json(ApiResponse::<PropertiesDto>::error("invalid node_id"));
@@ -471,7 +536,9 @@ pub async fn get_node_properties(
 
     // Resolve node scope for enforcement — deny if resolution fails
     let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::<PropertiesDto>::error("could not resolve node scope"));
+        return Json(ApiResponse::<PropertiesDto>::error(
+            "could not resolve node scope",
+        ));
     };
     if require_scope(&claims, &scope).is_err() {
         return Json(ApiResponse::<PropertiesDto>::error("insufficient scope"));
@@ -479,16 +546,24 @@ pub async fn get_node_properties(
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::GetNodeProperties { node_id: node_id.clone() },
+        cmd: DbCommand::GetNodeProperties {
+            node_id: node_id.clone(),
+        },
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<PropertiesDto>::error("internal channel closed"));
+        return Json(ApiResponse::<PropertiesDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodePropertiesLoaded { node_id, properties })) => {
-            Json(ApiResponse::success(PropertiesDto { node_id, properties }))
-        }
+        Ok(Ok(DbResult::NodePropertiesLoaded {
+            node_id,
+            properties,
+        })) => Json(ApiResponse::success(PropertiesDto {
+            node_id,
+            properties,
+        })),
         Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<PropertiesDto>::error(e)),
         Ok(Ok(_)) => Json(ApiResponse::<PropertiesDto>::error("unexpected response")),
         Ok(Err(_)) => Json(ApiResponse::<PropertiesDto>::error("request cancelled")),
@@ -504,8 +579,10 @@ pub async fn delete_node_property(
     Extension(claims): Extension<ApiClaims>,
     Path((node_id, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "editor") {
-        return Json(ApiResponse::<PropertySetDto>::error("insufficient permissions"));
+    if require_role(&claims, "editor").is_err() {
+        return Json(ApiResponse::<PropertySetDto>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&node_id) {
         return Json(ApiResponse::<PropertySetDto>::error("invalid node_id"));
@@ -513,7 +590,9 @@ pub async fn delete_node_property(
 
     // Resolve node scope for enforcement — deny if resolution fails
     let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::<PropertySetDto>::error("could not resolve node scope"));
+        return Json(ApiResponse::<PropertySetDto>::error(
+            "could not resolve node scope",
+        ));
     };
     if require_scope(&claims, &scope).is_err() {
         return Json(ApiResponse::<PropertySetDto>::error("insufficient scope"));
@@ -528,7 +607,9 @@ pub async fn delete_node_property(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error("internal channel closed"));
+        return Json(ApiResponse::<PropertySetDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::NodePropertyDeleted { .. })) => {
@@ -549,16 +630,24 @@ pub async fn delete_node_property(
 ///
 /// Uses a direct DB query when `db_reader` is available, falling back to the
 /// crossbeam channel otherwise.
-pub(crate) async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
+pub(crate) async fn resolve_petal_scope(
+    state: &crate::server::ApiState,
+    petal_id: &str,
+) -> Option<String> {
     if let Some(ref db) = state.db_reader {
         return direct_resolve_petal_scope(db, petal_id).await;
     }
     // Fallback: channel-based resolution
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state.api_cmd_tx.send(ApiCommand::DbRequest {
-        cmd: DbCommand::ResolvePetalScope { petal_id: petal_id.to_string() },
-        reply_tx,
-    }).ok()?;
+    state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest {
+            cmd: DbCommand::ResolvePetalScope {
+                petal_id: petal_id.to_string(),
+            },
+            reply_tx,
+        })
+        .ok()?;
     match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
         Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
         _ => None,
@@ -570,16 +659,24 @@ pub(crate) async fn resolve_petal_scope(state: &crate::server::ApiState, petal_i
 /// Uses a direct DB query when `db_reader` is available, falling back to the
 /// crossbeam channel otherwise. `pub(crate)` so other REST modules (e.g.
 /// `assets`) can reuse the same RBAC scope resolution for node-scoped routes.
-pub(crate) async fn resolve_node_scope(state: &crate::server::ApiState, node_id: &str) -> Option<String> {
+pub(crate) async fn resolve_node_scope(
+    state: &crate::server::ApiState,
+    node_id: &str,
+) -> Option<String> {
     if let Some(ref db) = state.db_reader {
         return direct_resolve_node_scope(db, node_id).await;
     }
     // Fallback: channel-based resolution
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state.api_cmd_tx.send(ApiCommand::DbRequest {
-        cmd: DbCommand::ResolveNodeScope { node_id: node_id.to_string() },
-        reply_tx,
-    }).ok()?;
+    state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest {
+            cmd: DbCommand::ResolveNodeScope {
+                node_id: node_id.to_string(),
+            },
+            reply_tx,
+        })
+        .ok()?;
     match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
         Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
         _ => None,
@@ -613,26 +710,30 @@ pub fn filter_hierarchy_by_scope(verses: Vec<VerseDto>, token_scope: &str) -> Ve
             };
 
             // Token is fractal-scoped: filter to only that fractal
-            let fractals: Vec<_> = v.fractals.into_iter().filter_map(|f| {
-                if f.id != *fid {
-                    return None;
-                }
+            let fractals: Vec<_> = v
+                .fractals
+                .into_iter()
+                .filter_map(|f| {
+                    if f.id != *fid {
+                        return None;
+                    }
 
-                let Some(ref pid) = parts.petal_id else {
-                    return Some(f);
-                };
+                    let Some(ref pid) = parts.petal_id else {
+                        return Some(f);
+                    };
 
-                // Token is petal-scoped: filter to only that petal
-                let petals: Vec<_> = f.petals.into_iter().filter(|p| p.id == *pid).collect();
-                if petals.is_empty() {
-                    return None;
-                }
-                Some(crate::types::FractalDto {
-                    id: f.id,
-                    name: f.name,
-                    petals,
+                    // Token is petal-scoped: filter to only that petal
+                    let petals: Vec<_> = f.petals.into_iter().filter(|p| p.id == *pid).collect();
+                    if petals.is_empty() {
+                        return None;
+                    }
+                    Some(crate::types::FractalDto {
+                        id: f.id,
+                        name: f.name,
+                        petals,
+                    })
                 })
-            }).collect();
+                .collect();
 
             if fractals.is_empty() {
                 return None;
@@ -706,7 +807,11 @@ pub(crate) async fn direct_resolve_petal_scope(db: &Db, petal_id: &str) -> Optio
     let rows2: Vec<serde_json::Value> = res2.take(0).ok()?;
     let verse_id = rows2.first()?.get("verse_id")?.as_str()?;
 
-    Some(fe_database::build_scope(verse_id, Some(&fractal_id), Some(petal_id)))
+    Some(fe_database::build_scope(
+        verse_id,
+        Some(&fractal_id),
+        Some(petal_id),
+    ))
 }
 
 /// Resolve a node's full scope string via direct DB queries.
@@ -722,10 +827,7 @@ pub(crate) async fn direct_resolve_node_scope(db: &Db, node_id: &str) -> Option<
 }
 
 /// Load all nodes for a petal via direct DB query.
-pub(crate) async fn direct_load_petal_nodes(
-    db: &Db,
-    petal_id: &str,
-) -> Vec<crate::types::NodeDto> {
+pub(crate) async fn direct_load_petal_nodes(db: &Db, petal_id: &str) -> Vec<crate::types::NodeDto> {
     let query_result = db
         .query("SELECT * FROM node WHERE petal_id = $pid ORDER BY created_at ASC")
         .bind(("pid", petal_id.to_string()))
@@ -765,9 +867,15 @@ pub(crate) async fn direct_load_petal_nodes(
 pub(crate) fn parse_f32_array3(val: &serde_json::Value, default: f32) -> [f32; 3] {
     if let Some(arr) = val.as_array() {
         [
-            arr.first().and_then(|v| v.as_f64()).unwrap_or(default as f64) as f32,
-            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(default as f64) as f32,
-            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(default as f64) as f32,
+            arr.first()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(default as f64) as f32,
+            arr.get(1)
+                .and_then(|v| v.as_f64())
+                .unwrap_or(default as f64) as f32,
+            arr.get(2)
+                .and_then(|v| v.as_f64())
+                .unwrap_or(default as f64) as f32,
         ]
     } else {
         [default, default, default]
@@ -790,8 +898,10 @@ pub async fn execute_query(
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
 
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<QueryResultDto>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<QueryResultDto>::error(
+            "insufficient permissions",
+        ));
     }
 
     // Rate limit keyed by sub/DID (not jti) so creating multiple tokens doesn't
@@ -835,7 +945,10 @@ pub async fn execute_query(
             }
             // FR-5: stamp the egress CRS resolved from the token's scope.
             let crs = crate::crs::scope_crs(&state, &claims.scope).await;
-            Json(ApiResponse::success(QueryResultDto { data, crs: Some(crs) }))
+            Json(ApiResponse::success(QueryResultDto {
+                data,
+                crs: Some(crs),
+            }))
         }
         Err(e) => Json(ApiResponse::<QueryResultDto>::error(e)),
     }
@@ -860,8 +973,10 @@ pub async fn execute_elevated_query(
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
 
-    if let Err(_) = require_role(&claims, "manager") {
-        return Json(ApiResponse::<QueryResultDto>::error("insufficient permissions (manager+ required)"));
+    if require_role(&claims, "manager").is_err() {
+        return Json(ApiResponse::<QueryResultDto>::error(
+            "insufficient permissions (manager+ required)",
+        ));
     }
 
     // Rate limiting: 5 queries/sec for elevated queries
@@ -876,7 +991,9 @@ pub async fn execute_elevated_query(
         } else {
             entry.0 += 1;
             if entry.0 > 5 {
-                return Json(ApiResponse::<QueryResultDto>::error("rate limit exceeded (5 elevated queries/sec)"));
+                return Json(ApiResponse::<QueryResultDto>::error(
+                    "rate limit exceeded (5 elevated queries/sec)",
+                ));
             }
         }
     }
@@ -886,9 +1003,16 @@ pub async fn execute_elevated_query(
 
     // Block system-level DDL that could alter the core schema
     const BLOCKED_DDL: &[&str] = &[
-        "DEFINE TABLE", "DEFINE FIELD", "DEFINE INDEX", "DEFINE EVENT",
-        "REMOVE TABLE", "REMOVE FIELD", "REMOVE INDEX",
-        "INFO", "SLEEP", "KILL",
+        "DEFINE TABLE",
+        "DEFINE FIELD",
+        "DEFINE INDEX",
+        "DEFINE EVENT",
+        "REMOVE TABLE",
+        "REMOVE FIELD",
+        "REMOVE INDEX",
+        "INFO",
+        "SLEEP",
+        "KILL",
     ];
     for ddl in BLOCKED_DDL {
         if sql_upper.contains(ddl) {
@@ -900,8 +1024,19 @@ pub async fn execute_elevated_query(
 
     // Allowed tables for mutations
     const ELEVATED_TABLES: &[&str] = &[
-        "NODE", "NODE_LOG", "VERSE", "FRACTAL", "PETAL", "FIELD_DEF",
-        "MODEL", "ASSET", "ROLE", "ROOM", "CRATE_REGISTRY", "CRATE_ENTRY", "VERSE_MEMBER",
+        "NODE",
+        "NODE_LOG",
+        "VERSE",
+        "FRACTAL",
+        "PETAL",
+        "FIELD_DEF",
+        "MODEL",
+        "ASSET",
+        "ROLE",
+        "ROOM",
+        "CRATE_REGISTRY",
+        "CRATE_ENTRY",
+        "VERSE_MEMBER",
     ];
 
     // Check that any FROM/INTO/UPDATE targets are in the allowed list
@@ -931,10 +1066,9 @@ pub async fn execute_elevated_query(
         query_builder = query_builder.bind((key.clone(), value.clone()));
     }
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        async { query_builder.await },
-    )
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        query_builder.await
+    })
     .await;
 
     match result {
@@ -951,8 +1085,12 @@ pub async fn execute_elevated_query(
             }
             Json(ApiResponse::success(QueryResultDto { data, crs: None }))
         }
-        Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!("query failed: {e}"))),
-        Err(_) => Json(ApiResponse::<QueryResultDto>::error("query timed out (10s)")),
+        Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!(
+            "query failed: {e}"
+        ))),
+        Err(_) => Json(ApiResponse::<QueryResultDto>::error(
+            "query timed out (10s)",
+        )),
     }
 }
 
@@ -970,8 +1108,10 @@ pub async fn execute_analytics_query(
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
 
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<QueryResultDto>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<QueryResultDto>::error(
+            "insufficient permissions",
+        ));
     }
 
     // Rate limiting (shared bucket with /query)
@@ -986,7 +1126,9 @@ pub async fn execute_analytics_query(
         } else {
             entry.0 += 1;
             if entry.0 > 10 {
-                return Json(ApiResponse::<QueryResultDto>::error("rate limit exceeded (10 analytics queries/sec)"));
+                return Json(ApiResponse::<QueryResultDto>::error(
+                    "rate limit exceeded (10 analytics queries/sec)",
+                ));
             }
         }
     }
@@ -1024,8 +1166,12 @@ pub async fn execute_analytics_query(
     .await
     {
         Ok(Ok(data)) => Json(ApiResponse::success(QueryResultDto { data, crs: None })),
-        Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!("analytics query failed: {e}"))),
-        Err(_) => Json(ApiResponse::<QueryResultDto>::error("analytics query timed out (10s)")),
+        Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!(
+            "analytics query failed: {e}"
+        ))),
+        Err(_) => Json(ApiResponse::<QueryResultDto>::error(
+            "analytics query timed out (10s)",
+        )),
     }
 }
 
@@ -1041,8 +1187,10 @@ pub async fn create_field_def(
     Extension(claims): Extension<ApiClaims>,
     Json(req): Json<CreateFieldDefRequest>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "manager") {
-        return Json(ApiResponse::<FieldDefDto>::error("insufficient permissions"));
+    if require_role(&claims, "manager").is_err() {
+        return Json(ApiResponse::<FieldDefDto>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_scope(&req.scope) {
         return Json(ApiResponse::<FieldDefDto>::error("invalid scope"));
@@ -1066,18 +1214,20 @@ pub async fn create_field_def(
         return Json(ApiResponse::<FieldDefDto>::error("internal channel closed"));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::FieldDefCreated { field_def_id, scope, key })) => {
-            Json(ApiResponse::success(FieldDefDto {
-                field_def_id,
-                scope,
-                entity_type: req.entity_type,
-                key,
-                value_type: req.value_type,
-                default_val: req.default_val,
-                created_by: claims.sub,
-                created_at: String::new(),
-            }))
-        }
+        Ok(Ok(DbResult::FieldDefCreated {
+            field_def_id,
+            scope,
+            key,
+        })) => Json(ApiResponse::success(FieldDefDto {
+            field_def_id,
+            scope,
+            entity_type: req.entity_type,
+            key,
+            value_type: req.value_type,
+            default_val: req.default_val,
+            created_by: claims.sub,
+            created_at: String::new(),
+        })),
         Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<FieldDefDto>::error(e)),
         Ok(Ok(_)) => Json(ApiResponse::<FieldDefDto>::error("unexpected response")),
         Ok(Err(_)) => Json(ApiResponse::<FieldDefDto>::error("request cancelled")),
@@ -1093,34 +1243,45 @@ pub async fn list_field_defs(
     Extension(claims): Extension<ApiClaims>,
     Path(scope): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<Vec<FieldDefDto>>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<Vec<FieldDefDto>>::error(
+            "insufficient permissions",
+        ));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::ListFieldDefs { scope: scope.clone() },
+        cmd: DbCommand::ListFieldDefs {
+            scope: scope.clone(),
+        },
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<Vec<FieldDefDto>>::error("internal channel closed"));
+        return Json(ApiResponse::<Vec<FieldDefDto>>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::FieldDefsListed { field_defs, .. })) => {
-            let dtos: Vec<FieldDefDto> = field_defs.into_iter().map(|f| FieldDefDto {
-                field_def_id: f.field_def_id,
-                scope: f.scope,
-                entity_type: f.entity_type,
-                key: f.key,
-                value_type: f.value_type,
-                default_val: f.default_val,
-                created_by: f.created_by,
-                created_at: f.created_at,
-            }).collect();
+            let dtos: Vec<FieldDefDto> = field_defs
+                .into_iter()
+                .map(|f| FieldDefDto {
+                    field_def_id: f.field_def_id,
+                    scope: f.scope,
+                    entity_type: f.entity_type,
+                    key: f.key,
+                    value_type: f.value_type,
+                    default_val: f.default_val,
+                    created_by: f.created_by,
+                    created_at: f.created_at,
+                })
+                .collect();
             Json(ApiResponse::success(dtos))
         }
         Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<Vec<FieldDefDto>>::error(e)),
-        Ok(Ok(_)) => Json(ApiResponse::<Vec<FieldDefDto>>::error("unexpected response")),
+        Ok(Ok(_)) => Json(ApiResponse::<Vec<FieldDefDto>>::error(
+            "unexpected response",
+        )),
         Ok(Err(_)) => Json(ApiResponse::<Vec<FieldDefDto>>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<Vec<FieldDefDto>>::error("request timed out")),
     }
@@ -1135,8 +1296,10 @@ pub async fn update_field_def(
     Path(field_def_id): Path<String>,
     Json(req): Json<UpdateFieldDefRequest>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "manager") {
-        return Json(ApiResponse::<FieldDefDto>::error("insufficient permissions"));
+    if require_role(&claims, "manager").is_err() {
+        return Json(ApiResponse::<FieldDefDto>::error(
+            "insufficient permissions",
+        ));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -1179,8 +1342,10 @@ pub async fn delete_field_def(
     Extension(claims): Extension<ApiClaims>,
     Path(field_def_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "manager") {
-        return Json(ApiResponse::<FieldDefDto>::error("insufficient permissions"));
+    if require_role(&claims, "manager").is_err() {
+        return Json(ApiResponse::<FieldDefDto>::error(
+            "insufficient permissions",
+        ));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -1228,8 +1393,10 @@ pub async fn create_waypoint(
     Json(req): Json<crate::types::CreateWaypointRequest>,
 ) -> impl IntoResponse {
     let scope = fe_database::build_scope("", None, Some(&petal_id));
-    if let Err(_) = require_role_and_scope(&claims, "editor", &scope) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient permissions or scope"));
+    if require_role_and_scope(&claims, "editor", &scope).is_err() {
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "insufficient permissions or scope",
+        ));
     }
 
     if !is_valid_ulid(&petal_id) {
@@ -1286,7 +1453,9 @@ async fn create_waypoint_with_position(
         reply_tx,
     };
     if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("internal channel closed"));
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "internal channel closed",
+        ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(DbResult::NodeCreated { id, name, .. })) => {
@@ -1310,7 +1479,9 @@ async fn create_waypoint_with_position(
             tracing::error!("create_waypoint failed: {e}");
             Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
         }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error("unexpected response")),
+        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
+            "unexpected response",
+        )),
         Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
     }
@@ -1326,7 +1497,7 @@ pub async fn move_waypoint(
     Path(waypoint_id): Path<String>,
     Json(req): Json<crate::types::MoveWaypointRequest>,
 ) -> impl IntoResponse {
-    if let Err(_) = require_role(&claims, "editor") {
+    if require_role(&claims, "editor").is_err() {
         return Json(ApiResponse::error("insufficient permissions"));
     }
     if !is_valid_ulid(&waypoint_id) {
@@ -1347,7 +1518,7 @@ pub async fn move_waypoint(
     };
 
     // Get current elevation if not provided
-    let ele = req.ele.unwrap_or_else(|| {
+    let ele = req.ele.unwrap_or({
         // Try to get existing elevation from node properties
         0.0
     });
@@ -1403,12 +1574,14 @@ pub async fn move_waypoint(
         let _ = rx.await;
     }
 
-    Json(ApiResponse::<serde_json::Value>::success(serde_json::json!({
-        "node_id": waypoint_id,
-        "lat": req.lat,
-        "lon": req.lon,
-        "ele": ele,
-    })))
+    Json(ApiResponse::<serde_json::Value>::success(
+        serde_json::json!({
+            "node_id": waypoint_id,
+            "lat": req.lat,
+            "lon": req.lon,
+            "ele": ele,
+        }),
+    ))
 }
 
 /// GET /api/v1/nodes/:track_id/elevation-profile — elevation profile for a track.
@@ -1422,19 +1595,27 @@ pub async fn get_elevation_profile(
 ) -> impl IntoResponse {
     use crate::types::ElevationPointDto;
 
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<Vec<ElevationPointDto>>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<Vec<ElevationPointDto>>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&track_id) {
-        return Json(ApiResponse::<Vec<ElevationPointDto>>::error("invalid track_id"));
+        return Json(ApiResponse::<Vec<ElevationPointDto>>::error(
+            "invalid track_id",
+        ));
     }
 
     // Resolve node scope
     let Some(scope) = resolve_node_scope(&state, &track_id).await else {
-        return Json(ApiResponse::<Vec<ElevationPointDto>>::error("could not resolve node scope"));
+        return Json(ApiResponse::<Vec<ElevationPointDto>>::error(
+            "could not resolve node scope",
+        ));
     };
     if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<Vec<ElevationPointDto>>::error("insufficient scope"));
+        return Json(ApiResponse::<Vec<ElevationPointDto>>::error(
+            "insufficient scope",
+        ));
     }
 
     // Try direct DB query first
@@ -1447,10 +1628,14 @@ pub async fn get_elevation_profile(
         {
             Ok(Ok(profile)) => return Json(ApiResponse::success(profile)),
             Ok(Err(e)) => {
-                return Json(ApiResponse::<Vec<ElevationPointDto>>::error(format!("query failed: {e}")))
+                return Json(ApiResponse::<Vec<ElevationPointDto>>::error(format!(
+                    "query failed: {e}"
+                )))
             }
             Err(_) => {
-                return Json(ApiResponse::<Vec<ElevationPointDto>>::error("request timed out"))
+                return Json(ApiResponse::<Vec<ElevationPointDto>>::error(
+                    "request timed out",
+                ))
             }
         }
     }
@@ -1470,15 +1655,19 @@ pub async fn get_track_stats(
 ) -> impl IntoResponse {
     use crate::types::TrackStatsDto;
 
-    if let Err(_) = require_role(&claims, "viewer") {
-        return Json(ApiResponse::<TrackStatsDto>::error("insufficient permissions"));
+    if require_role(&claims, "viewer").is_err() {
+        return Json(ApiResponse::<TrackStatsDto>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&track_id) {
         return Json(ApiResponse::<TrackStatsDto>::error("invalid track_id"));
     }
 
     let Some(scope) = resolve_node_scope(&state, &track_id).await else {
-        return Json(ApiResponse::<TrackStatsDto>::error("could not resolve node scope"));
+        return Json(ApiResponse::<TrackStatsDto>::error(
+            "could not resolve node scope",
+        ));
     };
     if require_scope(&claims, &scope).is_err() {
         return Json(ApiResponse::<TrackStatsDto>::error("insufficient scope"));
@@ -1494,11 +1683,11 @@ pub async fn get_track_stats(
         {
             Ok(Ok(stats)) => return Json(ApiResponse::success(stats)),
             Ok(Err(e)) => {
-                return Json(ApiResponse::<TrackStatsDto>::error(format!("query failed: {e}")))
+                return Json(ApiResponse::<TrackStatsDto>::error(format!(
+                    "query failed: {e}"
+                )))
             }
-            Err(_) => {
-                return Json(ApiResponse::<TrackStatsDto>::error("request timed out"))
-            }
+            Err(_) => return Json(ApiResponse::<TrackStatsDto>::error("request timed out")),
         }
     }
 
@@ -1550,7 +1739,10 @@ async fn load_petal_projection(
         Ok(Ok(DbResult::NodePropertiesLoaded { properties, .. })) => {
             let lat = properties.get("origin_lat")?.as_f64()?;
             let lon = properties.get("origin_lon")?.as_f64()?;
-            let ele = properties.get("origin_ele").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let ele = properties
+                .get("origin_ele")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             Some(fe_terrain::projection::Projection::new(lat, lon, ele))
         }
         _ => None,
@@ -1695,8 +1887,16 @@ async fn direct_get_track_stats(
 
     Ok(crate::types::TrackStatsDto {
         total_distance_m: total_distance,
-        min_elevation_m: if min_elevation == f64::MAX { 0.0 } else { min_elevation },
-        max_elevation_m: if max_elevation == f64::MIN { 0.0 } else { max_elevation },
+        min_elevation_m: if min_elevation == f64::MAX {
+            0.0
+        } else {
+            min_elevation
+        },
+        max_elevation_m: if max_elevation == f64::MIN {
+            0.0
+        } else {
+            max_elevation
+        },
         avg_speed_kmh: avg_speed,
         duration_seconds: duration,
     })
@@ -1729,7 +1929,9 @@ async fn check_tracking_and_alert(
     let props = &row["properties"];
 
     let tracking_route_id = props["tracking_route_id"].as_str().map(String::from);
-    let Some(route_id) = tracking_route_id else { return };
+    let Some(route_id) = tracking_route_id else {
+        return;
+    };
 
     // Read the route node's route_points
     let route_res = db
@@ -1744,7 +1946,9 @@ async fn check_tracking_and_alert(
     let route_props = &route_row["properties"];
 
     let route_points_json = route_props["route_points"].as_array();
-    let Some(points) = route_points_json else { return };
+    let Some(points) = route_points_json else {
+        return;
+    };
 
     // Build route points array from JSON
     let route_pts: Vec<[f64; 3]> = points
@@ -1757,7 +1961,9 @@ async fn check_tracking_and_alert(
         })
         .collect();
 
-    if route_pts.len() < 2 { return }
+    if route_pts.len() < 2 {
+        return;
+    }
 
     let tracker = fe_terrain::iot::PathTracker::new(route_pts);
 
@@ -1768,9 +1974,15 @@ async fn check_tracking_and_alert(
     // Emit route progress properties via SceneChange::PropertyChanged
     let metrics = [
         ("route_progress", serde_json::json!(snap.route_progress)),
-        ("distance_remaining_m", serde_json::json!(snap.distance_remaining_m)),
+        (
+            "distance_remaining_m",
+            serde_json::json!(snap.distance_remaining_m),
+        ),
         ("deviation_m", serde_json::json!(snap.deviation_m)),
-        ("nearest_segment_index", serde_json::json!(snap.segment_index)),
+        (
+            "nearest_segment_index",
+            serde_json::json!(snap.segment_index),
+        ),
     ];
     for (key, value) in metrics {
         // Fire-and-forget: persist property to DB
@@ -1790,7 +2002,9 @@ async fn check_tracking_and_alert(
     if snap.deviation_m > threshold {
         let alert_value = serde_json::json!("off_route");
         tracing::warn!(
-            node_id, deviation_m = snap.deviation_m, threshold,
+            node_id,
+            deviation_m = snap.deviation_m,
+            threshold,
             "tracking alert: off_route"
         );
         let (tx, _rx) = tokio::sync::oneshot::channel();
@@ -1808,22 +2022,24 @@ async fn check_tracking_and_alert(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::ApiState;
+    use crate::types::QueryRequest;
+    use axum::extract::State;
+    use axum::response::IntoResponse;
+    use axum::Extension;
+    use axum::Json;
+    use fe_identity::api_token::ApiClaims;
     use std::collections::HashSet;
     use std::sync::Arc;
-    use axum::Json;
-    use axum::extract::State;
-    use axum::Extension;
-    use axum::response::IntoResponse;
-    use fe_identity::api_token::ApiClaims;
-    use crate::types::QueryRequest;
-    use crate::server::ApiState;
 
     async fn setup_test_db() -> surrealdb::Surreal<surrealdb::engine::local::Db> {
         let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .expect("in-memory SurrealDB");
         db.use_ns("test").use_db("test").await.expect("ns/db");
-        fe_database::schema::apply_all(&db).await.expect("apply schema");
+        fe_database::schema::apply_all(&db)
+            .await
+            .expect("apply schema");
         db
     }
 
@@ -1833,21 +2049,29 @@ mod tests {
         println!("DEBUG: Setting up test DB");
         let db = setup_test_db().await;
         println!("DEBUG: DB setup complete");
-        
+
         let now = chrono::Utc::now().to_rfc3339();
         println!("DEBUG: Creating asset record");
-        db.query("CREATE asset CONTENT {
+        db.query(
+            "CREATE asset CONTENT {
             asset_id: 'asset-1',
             name: 'test-model',
             content_type: 'model/gltf-binary',
             size_bytes: 1024,
             created_at: $now,
             content_hash: 'abc123hash'
-        }").bind(("now", serde_json::json!(now))).await.unwrap().check().unwrap();
+        }",
+        )
+        .bind(("now", serde_json::json!(now)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
         println!("DEBUG: Asset record created");
 
         println!("DEBUG: Creating crate_registry record");
-        db.query("CREATE crate_registry CONTENT {
+        db.query(
+            "CREATE crate_registry CONTENT {
             hexon_uri: 'hexon://test-uri',
             manifest_hash: 'manifest-hash-val',
             publisher_did: 'did:key:z6MkPub',
@@ -1859,7 +2083,13 @@ mod tests {
             size_bytes: 4096,
             installed_at: $now,
             signature_valid: true
-        }").bind(("now", serde_json::json!(now))).await.unwrap().check().unwrap();
+        }",
+        )
+        .bind(("now", serde_json::json!(now)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
         println!("DEBUG: Crate registry record created");
 
         let (api_cmd_tx, _) = crossbeam::channel::bounded(1);
@@ -1904,11 +2134,17 @@ mod tests {
         println!("DEBUG: First query returned");
         let response = res.into_response();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        
+
         println!("DEBUG: Reading response body for first query");
-        let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), 10000)
+            .await
+            .unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(body_json["ok"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
+        assert!(
+            body_json["ok"].as_bool().unwrap_or(false),
+            "query failed: {:?}",
+            body_json
+        );
         let data = body_json["data"]["data"].as_array().unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0]["asset_id"], "asset-1");
@@ -1924,9 +2160,15 @@ mod tests {
         let response = res.into_response();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         println!("DEBUG: Reading response body for second query");
-        let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), 10000)
+            .await
+            .unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(body_json["ok"].as_bool().unwrap_or(false), "query failed: {:?}", body_json);
+        assert!(
+            body_json["ok"].as_bool().unwrap_or(false),
+            "query failed: {:?}",
+            body_json
+        );
         let data = body_json["data"]["data"].as_array().unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0]["hexon_uri"], "hexon://test-uri");
@@ -1940,7 +2182,9 @@ mod tests {
         let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;
         println!("DEBUG: Third query returned");
         let response = res.into_response();
-        let body_bytes = axum::body::to_bytes(response.into_body(), 10000).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), 10000)
+            .await
+            .unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert!(!body_json["ok"].as_bool().unwrap_or(false));
         // `DELETE …` is rejected by the SELECT-only guard ("only SELECT

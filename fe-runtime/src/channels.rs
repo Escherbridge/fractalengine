@@ -1,4 +1,6 @@
-use crate::messages::{ApiCommand, DbCommand, DbResult, NetworkCommand, NetworkEvent, SceneChange, TransformUpdate};
+use crate::messages::{
+    ApiCommand, DbCommand, DbResult, NetworkCommand, NetworkEvent, SceneChange, TransformUpdate,
+};
 
 /// Buffer size for all bounded crossbeam channels.
 pub const CHANNEL_BUFFER: usize = 256;
@@ -25,10 +27,14 @@ impl ChannelHandles {
         let (db_cmd_tx, db_cmd_rx) = crossbeam::channel::bounded(CHANNEL_BUFFER);
         let (db_res_tx, db_res_rx) = crossbeam::channel::bounded(CHANNEL_BUFFER);
         Self {
-            net_cmd_tx, net_cmd_rx,
-            net_evt_tx, net_evt_rx,
-            db_cmd_tx, db_cmd_rx,
-            db_res_tx, db_res_rx,
+            net_cmd_tx,
+            net_cmd_rx,
+            net_evt_tx,
+            net_evt_rx,
+            db_cmd_tx,
+            db_cmd_rx,
+            db_res_tx,
+            db_res_rx,
         }
     }
 }

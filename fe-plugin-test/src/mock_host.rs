@@ -120,7 +120,8 @@ mod tests {
         host.insert_property("node_01", "temperature", "25.5");
 
         assert_eq!(
-            host.properties.get(&("node_01".into(), "temperature".into())),
+            host.properties
+                .get(&("node_01".into(), "temperature".into())),
             Some(&"25.5".to_string())
         );
     }

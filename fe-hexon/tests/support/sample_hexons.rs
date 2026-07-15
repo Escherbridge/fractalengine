@@ -87,7 +87,13 @@ pub fn build_alpine_demo_terrain(root: &Path) -> Result<Vec<u8>> {
     meta.satellite_tile_count = satellite.len() as u32;
     meta.has_satellite = !satellite.is_empty();
 
-    HexonArchive::export_tileset(manifest, &meta, &elevation, &satellite, Some(License::default()))
+    HexonArchive::export_tileset(
+        manifest,
+        &meta,
+        &elevation,
+        &satellite,
+        Some(License::default()),
+    )
 }
 
 /// Build `morning-run-gpx.hexon` — GPX collection with terrain config, via `export`.
@@ -115,7 +121,9 @@ pub fn build_morning_run_gpx(root: &Path) -> Result<Vec<u8>> {
         extents: None,
         sub_assets: None,
         address: None,
-        metadata: Some(serde_json::json!({ "path": "terrain/tracks/morning_run.gpx", "points": 30 })),
+        metadata: Some(
+            serde_json::json!({ "path": "terrain/tracks/morning_run.gpx", "points": 30 }),
+        ),
     };
 
     HexonArchive::export(

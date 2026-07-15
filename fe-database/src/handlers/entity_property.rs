@@ -47,7 +47,12 @@ pub(crate) async fn set_entity_property_handler(
     if updated.is_empty() {
         anyhow::bail!("SetNodeProperty matched no node with node_id = {node_id}");
     }
-    tracing::info!(node_id, key, rows = updated.len(), "SetNodeProperty persisted");
+    tracing::info!(
+        node_id,
+        key,
+        rows = updated.len(),
+        "SetNodeProperty persisted"
+    );
 
     // Write op_log entry
     let entry = OpLogEntry {

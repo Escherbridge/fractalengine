@@ -65,7 +65,9 @@ pub fn register_storage_query_api(engine: &mut Engine, ctx: Arc<Mutex<PluginCont
                         .host()
                         .storage_get(&ctx.capabilities, &namespace, key)
                         .map_err(|e| to_script_error(&ctx, "ext_storage_get", e))?;
-                    Ok(value.map(|v| property_to_dynamic(&v)).unwrap_or(Dynamic::UNIT))
+                    Ok(value
+                        .map(|v| property_to_dynamic(&v))
+                        .unwrap_or(Dynamic::UNIT))
                 },
             );
         }

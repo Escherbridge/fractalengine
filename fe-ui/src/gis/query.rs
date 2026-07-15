@@ -35,7 +35,10 @@ pub(crate) fn annotation_query(petal_id: &str) -> (String, HashMap<String, serde
         color_key = ANNOTATION_COLOR_KEY,
     );
     let mut vars = HashMap::new();
-    vars.insert("petal_id".to_string(), serde_json::Value::String(petal_id.to_string()));
+    vars.insert(
+        "petal_id".to_string(),
+        serde_json::Value::String(petal_id.to_string()),
+    );
     (sql, vars)
 }
 
@@ -50,7 +53,10 @@ pub(crate) fn track_query(petal_id: &str) -> (String, HashMap<String, serde_json
         name_key = TRACK_NAME_KEY,
     );
     let mut vars = HashMap::new();
-    vars.insert("petal_id".to_string(), serde_json::Value::String(petal_id.to_string()));
+    vars.insert(
+        "petal_id".to_string(),
+        serde_json::Value::String(petal_id.to_string()),
+    );
     (sql, vars)
 }
 
@@ -65,8 +71,14 @@ pub(crate) fn property_filter_query(
                FROM node WHERE petal_id = $petal_id AND properties[$prop_key] = $prop_val"
         .to_string();
     let mut vars = HashMap::new();
-    vars.insert("petal_id".to_string(), serde_json::Value::String(petal_id.to_string()));
-    vars.insert("prop_key".to_string(), serde_json::Value::String(key.to_string()));
+    vars.insert(
+        "petal_id".to_string(),
+        serde_json::Value::String(petal_id.to_string()),
+    );
+    vars.insert(
+        "prop_key".to_string(),
+        serde_json::Value::String(key.to_string()),
+    );
     vars.insert("prop_val".to_string(), value);
     (sql, vars)
 }
@@ -114,8 +126,17 @@ fn parse_gis_row(v: &serde_json::Value) -> Option<GisResultRow> {
         .and_then(|a| a.as_str())
         .or_else(|| v.get("matched_value").and_then(|a| a.as_str()))
         .map(str::to_string);
-    let annotation_color = v.get("annotation_color").and_then(|a| a.as_str()).map(str::to_string);
-    Some(GisResultRow { node_id, name, position: [x, elevation, z], annotation_title, annotation_color })
+    let annotation_color = v
+        .get("annotation_color")
+        .and_then(|a| a.as_str())
+        .map(str::to_string);
+    Some(GisResultRow {
+        node_id,
+        name,
+        position: [x, elevation, z],
+        annotation_title,
+        annotation_color,
+    })
 }
 
 /// Extracts `(x, z)` from a node's `position` field. Handles both the
@@ -158,7 +179,10 @@ pub(crate) fn decode_gpx_points(value: &serde_json::Value) -> Vec<PathPointRow> 
                     let y = a.get(1)?.as_f64()? as f32;
                     let z = a.get(2)?.as_f64()? as f32;
                     let t = a.get(3).and_then(|v| v.as_f64());
-                    Some(PathPointRow { position: [x, y, z], time_seconds: t })
+                    Some(PathPointRow {
+                        position: [x, y, z],
+                        time_seconds: t,
+                    })
                 })
                 .collect()
         })
@@ -196,7 +220,10 @@ mod tests {
         assert!(sql.starts_with("SELECT"));
         assert!(!sql.contains(';'));
         assert!(sql.contains("petal_id = $petal_id"));
-        assert_eq!(vars.get("petal_id"), Some(&serde_json::Value::String("petal-1".into())));
+        assert_eq!(
+            vars.get("petal_id"),
+            Some(&serde_json::Value::String("petal-1".into()))
+        );
     }
 
     #[test]
@@ -204,15 +231,27 @@ mod tests {
         let (sql, vars) = property_filter_query("petal-1", "status", serde_json::json!("open"));
         assert!(sql.starts_with("SELECT"));
         assert!(!sql.contains(';'));
-        assert_eq!(vars.get("petal_id"), Some(&serde_json::Value::String("petal-1".into())));
-        assert_eq!(vars.get("prop_key"), Some(&serde_json::Value::String("status".into())));
+        assert_eq!(
+            vars.get("petal_id"),
+            Some(&serde_json::Value::String("petal-1".into()))
+        );
+        assert_eq!(
+            vars.get("prop_key"),
+            Some(&serde_json::Value::String("status".into()))
+        );
         assert_eq!(vars.get("prop_val"), Some(&serde_json::json!("open")));
     }
 
     #[test]
     fn parse_filter_value_number() {
-        assert_eq!(parse_filter_value("number", "42.5"), serde_json::json!(42.5));
-        assert_eq!(parse_filter_value("number", "nope"), serde_json::json!("nope"));
+        assert_eq!(
+            parse_filter_value("number", "42.5"),
+            serde_json::json!(42.5)
+        );
+        assert_eq!(
+            parse_filter_value("number", "nope"),
+            serde_json::json!("nope")
+        );
     }
 
     #[test]
@@ -223,7 +262,10 @@ mod tests {
 
     #[test]
     fn parse_filter_value_string_default() {
-        assert_eq!(parse_filter_value("string", "hello"), serde_json::json!("hello"));
+        assert_eq!(
+            parse_filter_value("string", "hello"),
+            serde_json::json!("hello")
+        );
     }
 
     #[test]
@@ -262,7 +304,10 @@ mod tests {
         assert!(sql.starts_with("SELECT"));
         assert!(!sql.contains(';'));
         assert!(sql.contains("gis.track.name"));
-        assert_eq!(vars.get("petal_id"), Some(&serde_json::Value::String("petal-1".into())));
+        assert_eq!(
+            vars.get("petal_id"),
+            Some(&serde_json::Value::String("petal-1".into()))
+        );
     }
 
     #[test]
@@ -281,7 +326,10 @@ mod tests {
         }]);
         let rows = parse_gis_rows(data.as_array().unwrap());
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name, "n2", "falls back to node_id when display_name is absent");
+        assert_eq!(
+            rows[0].name, "n2",
+            "falls back to node_id when display_name is absent"
+        );
         assert_eq!(rows[0].position, [1.0, 0.0, 2.0]);
         assert!(rows[0].annotation_title.is_none());
     }
@@ -310,7 +358,10 @@ mod tests {
 
     #[test]
     fn parse_bbox_fields_valid_and_invalid() {
-        assert_eq!(parse_bbox_fields(&["1.5".into(), "-2.0".into()]), Some([1.5, -2.0]));
+        assert_eq!(
+            parse_bbox_fields(&["1.5".into(), "-2.0".into()]),
+            Some([1.5, -2.0])
+        );
         assert_eq!(parse_bbox_fields(&["abc".into(), "1.0".into()]), None);
     }
 

@@ -277,6 +277,7 @@ impl InsertGrid {
 /// sized to bridge that specific gap. Passes repeat until no pair leaves an
 /// uncovered gap or no admissible midpoint remains; the pass count is only a
 /// degenerate-input backstop. Fill radii shrink logarithmically on their own.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN spacing must take the early-out branch
 fn interpolate_density(baked: &SplatBuffer, seam: TileFootprint) -> SplatBuffer {
     let mut out = baked.clone();
     let base_spacing = median_neighbor_spacing(&out);
@@ -591,7 +592,8 @@ mod tests {
                     .push([c as f32 * spacing, 0.0, r as f32 * spacing]);
                 buf.normals.push([0.0, 1.0, 0.0]);
                 buf.colors.push([0.5, 0.5, 0.5, 1.0]);
-                buf.scales.push([spacing * cover_frac, spacing * cover_frac]);
+                buf.scales
+                    .push([spacing * cover_frac, spacing * cover_frac]);
             }
         }
         buf
@@ -617,7 +619,12 @@ mod tests {
         let buf = grid_buffer_cover(5, 5, 10.0, 0.35);
         let before = buf.len();
         let aug = bake_splat_coverage(&buf).expect("should fill holes");
-        assert!(aug.len() > before, "density should increase: {} -> {}", before, aug.len());
+        assert!(
+            aug.len() > before,
+            "density should increase: {} -> {}",
+            before,
+            aug.len()
+        );
         assert_eq!(aug.positions.len(), aug.colors.len());
         assert_eq!(aug.positions.len(), aug.scales.len());
         assert_eq!(aug.positions.len(), aug.normals.len());
@@ -648,7 +655,10 @@ mod tests {
         for i in native..aug.len() {
             let m = aug.scales[i][1];
             assert!(m > floor, "fill radius {m} below coverage floor {floor}");
-            assert!(m <= ceiling, "fill radius {m} exceeds largest-gap ceiling {ceiling}");
+            assert!(
+                m <= ceiling,
+                "fill radius {m} exceeds largest-gap ceiling {ceiling}"
+            );
         }
     }
 

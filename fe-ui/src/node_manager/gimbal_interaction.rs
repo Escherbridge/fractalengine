@@ -5,7 +5,10 @@ use bevy::prelude::*;
 
 use super::router::{ClickArbiter, ClickPriority};
 use super::{AxisDrag, NodeManager};
-use crate::gimbal::{draw_gimbal, gimbal_center, ring_points_buf, GimbalAxis, GimbalGizmoGroup, GIMBAL_LEN, RING_SEGMENTS};
+use crate::gimbal::{
+    draw_gimbal, gimbal_center, ring_points_buf, GimbalAxis, GimbalGizmoGroup, GIMBAL_LEN,
+    RING_SEGMENTS,
+};
 use crate::panels::toolbar::Tool;
 use crate::plugin::{ToolState, ViewportRect};
 
@@ -31,7 +34,9 @@ pub(super) fn update_hovered_axis(
     if tool.active_tool == Tool::Select {
         return;
     }
-    let Some(ref sel) = manager.selected else { return };
+    let Some(ref sel) = manager.selected else {
+        return;
+    };
     // Don't update hover while dragging — keep the dragged axis highlighted.
     if sel.drag.is_some() {
         return;
@@ -39,11 +44,18 @@ pub(super) fn update_hovered_axis(
 
     let entity = sel.entity;
     let Ok(window) = windows.single() else { return };
-    let Some(cursor) = window.cursor_position() else { return };
-    if !viewport_rect.0.contains(bevy_egui::egui::pos2(cursor.x, cursor.y)) {
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    if !viewport_rect
+        .0
+        .contains(bevy_egui::egui::pos2(cursor.x, cursor.y))
+    {
         return;
     }
-    let Ok((camera, cam_tx)) = cameras.single() else { return };
+    let Ok((camera, cam_tx)) = cameras.single() else {
+        return;
+    };
     let Some(center_3d) = gimbal_center(entity, &g_transform_query, &aabb_query, &children_query)
     else {
         return;
@@ -79,11 +91,13 @@ fn pick_axis(
             segment_dist_2d(cursor, center_screen, tip_screen)
         };
 
-        let threshold = if tool == Tool::Rotate { RING_PICK_PX } else { PICK_PX };
-        if dist < threshold {
-            if best.is_none() || dist < best.unwrap().1 {
-                best = Some((axis, dist));
-            }
+        let threshold = if tool == Tool::Rotate {
+            RING_PICK_PX
+        } else {
+            PICK_PX
+        };
+        if dist < threshold && (best.is_none() || dist < best.unwrap().1) {
+            best = Some((axis, dist));
         }
     }
 
@@ -140,6 +154,7 @@ pub(super) fn handle_gimbal_interaction(
     mut manager: ResMut<NodeManager>,
     tool: Res<ToolState>,
     mut transform_query: Query<(&mut Transform, &GlobalTransform)>,
+    g_transform_query: Query<&GlobalTransform>,
     aabb_query: Query<&bevy::camera::primitives::Aabb>,
     children_query: Query<&Children>,
     mut arbiter: ResMut<ClickArbiter>,
@@ -159,7 +174,9 @@ pub(super) fn handle_gimbal_interaction(
 
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
-    let Ok((camera, cam_tx)) = cameras.single() else { return };
+    let Ok((camera, cam_tx)) = cameras.single() else {
+        return;
+    };
 
     // Release → commit
     if mouse_button.just_released(MouseButton::Left) && sel.drag.is_some() {
@@ -179,7 +196,10 @@ pub(super) fn handle_gimbal_interaction(
             match tool.active_tool {
                 Tool::Move => {
                     let movement = (cursor_pos - drag.start_cursor).dot(drag.axis_screen_dir);
-                    let scale_factor = (g_tx.translation() - cam_tx.translation()).length().max(0.5) * 0.002;
+                    let scale_factor = (g_tx.translation() - cam_tx.translation())
+                        .length()
+                        .max(0.5)
+                        * 0.002;
                     transform.translation = drag.start_pos + axis_dir * movement * scale_factor;
                 }
                 Tool::Scale => {
@@ -187,9 +207,21 @@ pub(super) fn handle_gimbal_interaction(
                     let f = 1.0 + movement * 0.005;
                     let b = drag.start_scale;
                     transform.scale = Vec3::new(
-                        if drag.axis == GimbalAxis::X { b.x * f } else { b.x },
-                        if drag.axis == GimbalAxis::Y { b.y * f } else { b.y },
-                        if drag.axis == GimbalAxis::Z { b.z * f } else { b.z },
+                        if drag.axis == GimbalAxis::X {
+                            b.x * f
+                        } else {
+                            b.x
+                        },
+                        if drag.axis == GimbalAxis::Y {
+                            b.y * f
+                        } else {
+                            b.y
+                        },
+                        if drag.axis == GimbalAxis::Z {
+                            b.z * f
+                        } else {
+                            b.z
+                        },
                     );
                 }
                 Tool::Rotate => {
@@ -211,9 +243,14 @@ pub(super) fn handle_gimbal_interaction(
     // so a press that misses the gimbal yields to lower-priority consumers.
     if arbiter.is_fresh_press() && arbiter.is_available() {
         let Some(cursor_pos) = cursor else { return };
-        let Ok((t, g_tx)) = transform_query.get(entity) else { return };
-        let center_3d = compute_gimbal_center_inline(entity, g_tx, &aabb_query, &children_query, &transform_query);
-        let Ok(center_screen) = camera.world_to_viewport(cam_tx, center_3d) else { return };
+        let Ok((t, g_tx)) = transform_query.get(entity) else {
+            return;
+        };
+        let center_3d = gimbal_center(entity, &g_transform_query, &aabb_query, &children_query)
+            .unwrap_or_else(|| g_tx.translation());
+        let Ok(center_screen) = camera.world_to_viewport(cam_tx, center_3d) else {
+            return;
+        };
 
         if let Some(axis) = pick_axis(tool.active_tool, cursor_pos, center_3d, camera, cam_tx) {
             if !arbiter.claim(ClickPriority::Gimbal) {
@@ -246,31 +283,13 @@ fn axis_vec(axis: GimbalAxis) -> Vec3 {
     }
 }
 
-/// Compute AABB-based gimbal center without needing a separate `Query<&GlobalTransform>`.
-/// Used in systems that already hold a mutable transform query.
-fn compute_gimbal_center_inline(
-    entity: Entity,
-    g_tx: &GlobalTransform,
-    aabb_query: &Query<&bevy::camera::primitives::Aabb>,
-    children_query: &Query<&Children>,
-    transform_query: &Query<(&mut Transform, &GlobalTransform)>,
-) -> Vec3 {
-    if let Ok(aabb) = aabb_query.get(entity) {
-        return g_tx.transform_point(aabb.center.into());
-    }
-    if let Ok(children) = children_query.get(entity) {
-        for child in children.iter() {
-            if let (Ok((_, child_gtx)), Ok(aabb)) = (transform_query.get(child), aabb_query.get(child)) {
-                return child_gtx.transform_point(aabb.center.into());
-            }
-        }
-    }
-    g_tx.translation()
-}
-
 fn segment_dist_2d(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
-    let t = ((p - a).dot(ab) / ab.dot(ab).max(1e-6)).clamp(0.0, 1.0);
+    let ab_len_sq = ab.dot(ab);
+    if ab_len_sq < 1e-4 {
+        return (p - a).length(); // degenerate segment — distance to endpoint
+    }
+    let t = ((p - a).dot(ab) / ab_len_sq).clamp(0.0, 1.0);
     (p - (a + ab * t)).length()
 }
 
@@ -287,7 +306,8 @@ pub(super) fn draw_gimbal_system(
     gizmos: Gizmos<GimbalGizmoGroup>,
 ) {
     let Some(sel) = &manager.selected else { return };
-    let Some(center) = gimbal_center(sel.entity, &g_transform_query, &aabb_query, &children_query) else {
+    let Some(center) = gimbal_center(sel.entity, &g_transform_query, &aabb_query, &children_query)
+    else {
         return;
     };
     // Dragged axis takes priority over hover highlight.

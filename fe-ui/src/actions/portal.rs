@@ -44,7 +44,10 @@ pub(crate) fn compute_open_portal(node_mgr: &NodeManager, raw_url: &str) -> Open
 /// selection changed or was cleared while the portal was open for a
 /// specific entity.
 pub(crate) fn should_auto_close(portal: &PortalState, selected: Option<Entity>) -> bool {
-    let PortalState::Open { opened_for_entity, .. } = portal else {
+    let PortalState::Open {
+        opened_for_entity, ..
+    } = portal
+    else {
         return false;
     };
     let entity_changed = selected != Some(*opened_for_entity);
@@ -54,7 +57,10 @@ pub(crate) fn should_auto_close(portal: &PortalState, selected: Option<Entity>) 
 /// Result of validating + computing the persist payload for `UiAction::SaveUrl`.
 pub(crate) enum SaveUrlOutcome {
     /// Persist `url` for `node_id`; `None` clears the stored URL.
-    Persist { node_id: String, url: Option<String> },
+    Persist {
+        node_id: String,
+        url: Option<String>,
+    },
     /// URL unparseable or rejected by `is_url_allowed` — show `reason` to the user.
     Blocked { reason: String },
     /// Nothing is selected; caller surfaces a "no selection" toast.
@@ -89,6 +95,7 @@ pub(crate) fn compute_save_url(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
 
     fn entity(n: u32) -> Entity {
@@ -118,7 +125,14 @@ mod tests {
         let mut mgr = NodeManager::default();
         mgr.select(entity(1), "node-1");
         match compute_open_portal(&mgr, "https://example.com/path") {
-            OpenPortalOutcome::Navigate(PortalState::Open { opened_for_entity, cached_hostname, .. }, url) => {
+            OpenPortalOutcome::Navigate(
+                PortalState::Open {
+                    opened_for_entity,
+                    cached_hostname,
+                    ..
+                },
+                url,
+            ) => {
                 assert_eq!(opened_for_entity, entity(1));
                 assert_eq!(cached_hostname, "example.com");
                 assert_eq!(url.as_str(), "https://example.com/path");
@@ -174,7 +188,10 @@ mod tests {
     fn compute_save_url_no_selection() {
         let mgr = NodeManager::default();
         let inspector = InspectorFormState::default();
-        assert!(matches!(compute_save_url(&mgr, &inspector), SaveUrlOutcome::NoSelection));
+        assert!(matches!(
+            compute_save_url(&mgr, &inspector),
+            SaveUrlOutcome::NoSelection
+        ));
     }
 
     #[test]
@@ -204,13 +221,19 @@ mod tests {
     #[test]
     fn compute_save_url_blocks_loopback() {
         let (mgr, inspector) = selected_with_url("http://localhost:8080/");
-        assert!(matches!(compute_save_url(&mgr, &inspector), SaveUrlOutcome::Blocked { .. }));
+        assert!(matches!(
+            compute_save_url(&mgr, &inspector),
+            SaveUrlOutcome::Blocked { .. }
+        ));
     }
 
     #[test]
     fn compute_save_url_blocks_private_range() {
         let (mgr, inspector) = selected_with_url("http://192.168.1.1/admin");
-        assert!(matches!(compute_save_url(&mgr, &inspector), SaveUrlOutcome::Blocked { .. }));
+        assert!(matches!(
+            compute_save_url(&mgr, &inspector),
+            SaveUrlOutcome::Blocked { .. }
+        ));
     }
 
     #[test]

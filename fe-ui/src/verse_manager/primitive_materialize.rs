@@ -14,6 +14,26 @@ use super::{NodeEntry, TextureRegistryRes, VerseManager};
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
 
+/// Live primitive entities (marker + descriptor + mesh + material handles).
+pub(super) type PrimitiveEntityQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static SpawnedNodeMarker,
+        &'static mut PrimitiveNode,
+        &'static mut Mesh3d,
+        &'static mut MeshMaterial3d<StandardMaterial>,
+    ),
+>;
+
+/// Fallback placard signs eligible for promotion to a primitive mesh.
+pub(super) type FallbackSignQuery<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static SpawnedNodeMarker, &'static Transform),
+    (With<FallbackSign>, Without<PrimitiveNode>),
+>;
+
 /// Cache of `node_id → PrimitiveDescriptor` parsed from `NodePropertiesLoaded`
 /// broadcasts, plus the in-flight `GetNodeProperties` request set. See
 /// AGENTS.md §primitives for why this exists (hierarchy payload carries no
@@ -108,28 +128,26 @@ pub(super) fn materialize_cached_primitives(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
-    mut primitives: Query<(
-        &SpawnedNodeMarker,
-        &mut PrimitiveNode,
-        &mut Mesh3d,
-        &mut MeshMaterial3d<StandardMaterial>,
-    )>,
-    fallback_signs: Query<
-        (Entity, &SpawnedNodeMarker, &Transform),
-        (With<FallbackSign>, Without<PrimitiveNode>),
-    >,
+    mut primitives: PrimitiveEntityQuery,
+    fallback_signs: FallbackSignQuery,
 ) {
     if !cache.is_changed() {
         return;
     }
-    let Some(petal_id) = nav.active_petal_id.as_deref() else { return };
-    let Some(petal) = verse_mgr.find_petal(petal_id) else { return };
+    let Some(petal_id) = nav.active_petal_id.as_deref() else {
+        return;
+    };
+    let Some(petal) = verse_mgr.find_petal(petal_id) else {
+        return;
+    };
 
     for node in &petal.nodes {
         if node.asset_path.is_some() {
             continue; // GLTF branch owns asset-backed nodes
         }
-        let Some(descriptor) = cache.get(&node.id) else { continue };
+        let Some(descriptor) = cache.get(&node.id) else {
+            continue;
+        };
 
         // Already a primitive → reconcile in place on descriptor drift.
         let mut found = false;
@@ -164,7 +182,11 @@ pub(super) fn materialize_cached_primitives(
             .find(|(_, m, _)| m.node_id == node.id && m.petal_id == petal_id)
         {
             commands.entity(entity).despawn();
-            [transform.translation.x, transform.translation.y - 0.5, transform.translation.z]
+            [
+                transform.translation.x,
+                transform.translation.y - 0.5,
+                transform.translation.z,
+            ]
         } else {
             node.position
         };
@@ -221,7 +243,10 @@ mod tests {
         let desc = cache.get("n1").expect("descriptor cached");
         assert_eq!(desc.kind, PrimitiveKind::Cube);
         assert_eq!(desc.dims, vec![1.0, 2.0, 3.0]);
-        assert!(!cache.requested.contains("n1"), "request mark cleared on load");
+        assert!(
+            !cache.requested.contains("n1"),
+            "request mark cleared on load"
+        );
     }
 
     #[test]
@@ -232,7 +257,10 @@ mod tests {
         assert!(cache.get("n1").is_none(), "absent key must evict");
 
         cache.note_properties("n1", &cube_props());
-        cache.note_properties("n1", &json!({ "primitive": { "kind": "torus", "dims": [1.0] } }));
+        cache.note_properties(
+            "n1",
+            &json!({ "primitive": { "kind": "torus", "dims": [1.0] } }),
+        );
         assert!(cache.get("n1").is_none(), "invalid descriptor must evict");
     }
 
@@ -240,7 +268,10 @@ mod tests {
     fn mark_requested_dedupes_and_skips_cached_nodes() {
         let mut cache = PrimitiveDescriptorCache::default();
         assert!(cache.mark_requested("n1"));
-        assert!(!cache.mark_requested("n1"), "in-flight request must not re-send");
+        assert!(
+            !cache.mark_requested("n1"),
+            "in-flight request must not re-send"
+        );
         cache.note_properties("n2", &cube_props());
         assert!(!cache.mark_requested("n2"), "cached node needs no fetch");
     }
@@ -253,7 +284,10 @@ mod tests {
         cache.invalidate("n1");
         cache.invalidate("n2");
         assert!(cache.get("n1").is_none());
-        assert!(cache.mark_requested("n2"), "invalidated request mark must re-arm");
+        assert!(
+            cache.mark_requested("n2"),
+            "invalidated request mark must re-arm"
+        );
     }
 
     #[test]
@@ -278,6 +312,9 @@ mod tests {
             SpawnBranch::Gltf("models/cube.glb".to_string())
         );
         // Unknown asset-less node keeps the fallback sign.
-        assert_eq!(spawn_branch(&node("n9", None), &cache), SpawnBranch::Fallback);
+        assert_eq!(
+            spawn_branch(&node("n9", None), &cache),
+            SpawnBranch::Fallback
+        );
     }
 }

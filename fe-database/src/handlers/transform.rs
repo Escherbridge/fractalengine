@@ -36,7 +36,7 @@ pub(crate) async fn update_node_transform_handler(
     });
 
     let entry = OpLogEntry {
-        lamport_clock: 0, // populated by write_op_log via HLC
+        lamport_clock: 0,             // populated by write_op_log via HLC
         hlc_timestamp: String::new(), // populated by write_op_log
         node_id: NodeId(node_id.to_string()),
         op_type: OpType::TransformUpdate,
@@ -74,10 +74,7 @@ pub(crate) async fn update_node_transform_handler(
 
 /// Query the current transform of a node (position, rotation, scale).
 /// Returns None if the node doesn't exist. Used for op_log old-value capture.
-async fn query_current_transform(
-    db: &Db,
-    node_id: &str,
-) -> Option<([f32; 3], [f32; 3], [f32; 3])> {
+async fn query_current_transform(db: &Db, node_id: &str) -> Option<([f32; 3], [f32; 3], [f32; 3])> {
     let q = QueryBuilder::new()
         .select(&["position", "elevation", "rotation", "scale"])
         .from("node")
@@ -134,7 +131,8 @@ pub(crate) async fn update_node_url_handler(
         .filter(Filter::eq("node_id", node_id))
         .limit(1)
         .build();
-    let mut res = exec_query(db, &q).await
+    let mut res = exec_query(db, &q)
+        .await
         .map_err(|e| anyhow::anyhow!("UpdateNodeUrl: asset lookup failed: {e}"))?;
     let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
     let asset_id = rows
@@ -145,10 +143,15 @@ pub(crate) async fn update_node_url_handler(
 
     // Step 2: update the model's external_url
     let uq = UpdateBuilder::update("model")
-        .set("external_url", url.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null))
+        .set(
+            "external_url",
+            url.map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null),
+        )
         .where_clause(Filter::eq("asset_id", asset_id.as_str()))
         .build();
-    exec_query(db, &uq).await
+    exec_query(db, &uq)
+        .await
         .map_err(|e| anyhow::anyhow!("UpdateNodeUrl DB query failed: {e}"))?;
     Ok(())
 }

@@ -15,13 +15,17 @@ pub(super) fn broadcast_transform(
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
 ) {
-    let Some(sel) = manager.selected.as_mut() else { return };
+    let Some(sel) = manager.selected.as_mut() else {
+        return;
+    };
     if !sel.drag_committed {
         return;
     }
     sel.drag_committed = false;
 
-    let Ok((transform, marker)) = transform_query.get(sel.entity) else { return };
+    let Ok((transform, marker)) = transform_query.get(sel.entity) else {
+        return;
+    };
     let pos = transform.translation;
     let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
     let sc = transform.scale;
@@ -85,16 +89,20 @@ pub(super) fn apply_inbound_transforms(
                 transform.scale = Vec3::new(update.scale[0], update.scale[1], update.scale[2]);
                 // Stamp the entity with the DB-acknowledged (confirmed) transform
                 // so that rollback logic can read it back if needed.
-                commands.entity(entity).insert(fe_runtime::messages::DbConfirmedTransform {
-                    position: update.position,
-                    rotation: update.rotation,
-                    scale: update.scale,
-                });
+                commands
+                    .entity(entity)
+                    .insert(fe_runtime::messages::DbConfirmedTransform {
+                        position: update.position,
+                        rotation: update.rotation,
+                        scale: update.scale,
+                    });
                 found = true;
                 bevy::log::info!(
                     "API transform applied: node={} pos=[{:.2}, {:.2}, {:.2}]",
                     update.node_id,
-                    update.position[0], update.position[1], update.position[2],
+                    update.position[0],
+                    update.position[1],
+                    update.position[2],
                 );
                 break;
             }

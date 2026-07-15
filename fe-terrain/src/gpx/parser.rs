@@ -96,7 +96,9 @@ pub fn parse_gpx<R: Read>(reader: R) -> Result<GpxData> {
                                 lon: pt.x(),
                                 ele: wp.elevation,
                                 time: wp.time.and_then(|t| {
-                                    t.format().ok().and_then(|s| s.parse::<DateTime<Utc>>().ok())
+                                    t.format()
+                                        .ok()
+                                        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
                                 }),
                                 hr: None,
                                 cad: None,
@@ -128,7 +130,9 @@ pub fn parse_gpx<R: Read>(reader: R) -> Result<GpxData> {
                         description: wp.description,
                         symbol: wp.symbol,
                         time: wp.time.and_then(|t| {
-                            t.format().ok().and_then(|s| s.parse::<DateTime<Utc>>().ok())
+                            t.format()
+                                .ok()
+                                .and_then(|s| s.parse::<DateTime<Utc>>().ok())
                         }),
                     }
                 })
@@ -149,7 +153,9 @@ pub fn parse_gpx<R: Read>(reader: R) -> Result<GpxData> {
                 description: wp.description,
                 symbol: wp.symbol,
                 time: wp.time.and_then(|t| {
-                    t.format().ok().and_then(|s| s.parse::<DateTime<Utc>>().ok())
+                    t.format()
+                        .ok()
+                        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
                 }),
             }
         })

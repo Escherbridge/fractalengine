@@ -55,10 +55,7 @@ impl Filter {
     ///
     /// `param_counter` is incremented for each parameter produced, ensuring
     /// unique names across an entire query.
-    pub fn render(
-        &self,
-        param_counter: &mut usize,
-    ) -> (String, Vec<(String, serde_json::Value)>) {
+    pub fn render(&self, param_counter: &mut usize) -> (String, Vec<(String, serde_json::Value)>) {
         match self {
             Filter::Eq(field, val) => {
                 let name = format!("p{}", *param_counter);
@@ -185,16 +182,11 @@ impl Filter {
                 for (old_name, value) in &subquery.params {
                     let new_name = format!("p{}", *param_counter);
                     *param_counter += 1;
-                    remapped_sql = remapped_sql.replace(
-                        &format!("${}", old_name),
-                        &format!("${}", new_name),
-                    );
+                    remapped_sql =
+                        remapped_sql.replace(&format!("${}", old_name), &format!("${}", new_name));
                     params.push((new_name, value.clone()));
                 }
-                (
-                    format!("{} IN ({})", field, remapped_sql),
-                    params,
-                )
+                (format!("{} IN ({})", field, remapped_sql), params)
             }
             Filter::Raw(sql) => (sql.clone(), vec![]),
         }
@@ -252,15 +244,12 @@ impl Filter {
         Filter::Or(Box::new(self), Box::new(other))
     }
 
+    #[allow(clippy::should_implement_trait)] // builder DSL method, not std::ops::Not
     pub fn not(self) -> Self {
         Filter::Not(Box::new(self))
     }
 
-    pub fn d_within(
-        field: impl Into<String>,
-        point: impl Into<QueryValue>,
-        radius_m: f64,
-    ) -> Self {
+    pub fn d_within(field: impl Into<String>, point: impl Into<QueryValue>, radius_m: f64) -> Self {
         Filter::DWithin(field.into(), point.into(), radius_m)
     }
 
@@ -426,10 +415,7 @@ mod tests {
         let f = Filter::eq("petal_id", "abc").and(inner);
         let mut c = 0;
         let (sql, params) = f.render(&mut c);
-        assert_eq!(
-            sql,
-            "(petal_id = $p0 AND (edit_seq > $p1 OR status = $p2))"
-        );
+        assert_eq!(sql, "(petal_id = $p0 AND (edit_seq > $p1 OR status = $p2))");
         assert_eq!(params.len(), 3);
     }
 

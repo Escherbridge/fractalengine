@@ -240,7 +240,13 @@ mod tests {
             "test-plugin",
             &CapabilityManifest::from_json(r#"{"property_scope": ["color", "health"]}"#).unwrap(),
         );
-        assert!(validate_access(&token, &CapabilityOperation::PropertyAccess { key: "color".into() }).is_ok());
+        assert!(validate_access(
+            &token,
+            &CapabilityOperation::PropertyAccess {
+                key: "color".into()
+            }
+        )
+        .is_ok());
     }
 
     #[test]
@@ -249,7 +255,13 @@ mod tests {
             "test-plugin",
             &CapabilityManifest::from_json(r#"{"property_scope": ["color"]}"#).unwrap(),
         );
-        assert!(validate_access(&token, &CapabilityOperation::PropertyAccess { key: "secret".into() }).is_err());
+        assert!(validate_access(
+            &token,
+            &CapabilityOperation::PropertyAccess {
+                key: "secret".into()
+            }
+        )
+        .is_err());
     }
 
     #[test]
@@ -258,7 +270,13 @@ mod tests {
             "test-plugin",
             &CapabilityManifest::from_json(r#"{"verse_scope": ["VERSE#*"]}"#).unwrap(),
         );
-        assert!(validate_access(&token, &CapabilityOperation::VerseAccess { scope: "VERSE#abc".into() }).is_ok());
+        assert!(validate_access(
+            &token,
+            &CapabilityOperation::VerseAccess {
+                scope: "VERSE#abc".into()
+            }
+        )
+        .is_ok());
     }
 
     #[test]
@@ -282,20 +300,16 @@ mod tests {
     #[test]
     fn capability_grants_fail_closed() {
         // No capabilities declared => every named capability is denied.
-        let token = CapabilityToken::mint(
-            "test-plugin",
-            &CapabilityManifest::from_json("{}").unwrap(),
-        );
+        let token =
+            CapabilityToken::mint("test-plugin", &CapabilityManifest::from_json("{}").unwrap());
         assert!(!token.has_capability(fe_sdk::CAP_STORAGE_READ));
         assert!(!token.has_capability(fe_sdk::CAP_QUERY_SELECT));
 
         // Explicit grants are honored; unlisted ones stay denied.
         let token = CapabilityToken::mint(
             "test-plugin",
-            &CapabilityManifest::from_json(
-                r#"{"capabilities": ["storage.read", "query.select"]}"#,
-            )
-            .unwrap(),
+            &CapabilityManifest::from_json(r#"{"capabilities": ["storage.read", "query.select"]}"#)
+                .unwrap(),
         );
         assert!(token.has_capability(fe_sdk::CAP_STORAGE_READ));
         assert!(token.has_capability(fe_sdk::CAP_QUERY_SELECT));
@@ -316,13 +330,23 @@ mod tests {
 
     #[test]
     fn validate_empty_scope_is_wildcard() {
-        let token = CapabilityToken::mint(
-            "test-plugin",
-            &CapabilityManifest::from_json("{}").unwrap(),
-        );
+        let token =
+            CapabilityToken::mint("test-plugin", &CapabilityManifest::from_json("{}").unwrap());
         // Empty property_scope = wildcard
-        assert!(validate_access(&token, &CapabilityOperation::PropertyAccess { key: "anything".into() }).is_ok());
+        assert!(validate_access(
+            &token,
+            &CapabilityOperation::PropertyAccess {
+                key: "anything".into()
+            }
+        )
+        .is_ok());
         // Empty petal_scope = wildcard
-        assert!(validate_access(&token, &CapabilityOperation::PetalAccess { scope: "any".into() }).is_ok());
+        assert!(validate_access(
+            &token,
+            &CapabilityOperation::PetalAccess {
+                scope: "any".into()
+            }
+        )
+        .is_ok());
     }
 }

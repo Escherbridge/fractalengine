@@ -11,17 +11,13 @@ pub const PATH_ASSET_PROPERTY_KEY: &str = "path_asset";
 /// How repeated instances are distributed along a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SpacingMode {
     /// Fixed world-units of arc length between consecutive instances.
+    #[default]
     FixedSpacing,
     /// A fixed number of instances distributed evenly across the whole path.
     FixedCount,
-}
-
-impl Default for SpacingMode {
-    fn default() -> Self {
-        SpacingMode::FixedSpacing
-    }
 }
 
 /// A path-asset stamp descriptor: the model asset to stamp plus the spacing
@@ -123,7 +119,8 @@ mod tests {
 
     #[test]
     fn descriptor_rejects_unknown_spacing_mode() {
-        let json = serde_json::json!({ "asset_path": "blob://x.glb", "spacing_mode": "logarithmic" });
+        let json =
+            serde_json::json!({ "asset_path": "blob://x.glb", "spacing_mode": "logarithmic" });
         assert!(PathAssetDescriptor::from_json(&json).is_err());
     }
 

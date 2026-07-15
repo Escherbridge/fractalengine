@@ -94,9 +94,9 @@ mod tests {
 
     #[test]
     fn fuel_metering_in_store() {
-        use crate::wasm::WasmEngine;
         use crate::capability::{CapabilityManifest, CapabilityToken};
         use crate::context::PluginContext;
+        use crate::wasm::WasmEngine;
 
         let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -114,18 +114,10 @@ mod tests {
             .unwrap();
             let token = CapabilityToken::mint("fuel-plugin", &manifest);
             let (tx, _rx) = crossbeam::channel::unbounded();
-            let ctx = PluginContext::new(
-                "fuel-plugin".into(),
-                "test-petal".into(),
-                token,
-                tx,
-            );
+            let ctx = PluginContext::new("fuel-plugin".into(), "test-petal".into(), token, tx);
 
             let budget = FuelBudget::new(1000, 500, 100);
-            let (mut store, _instance) = engine
-                .instantiate(&plugin, ctx, budget)
-                .await
-                .unwrap();
+            let (mut store, _instance) = engine.instantiate(&plugin, ctx, budget).await.unwrap();
 
             // Check initial fuel
             let fuel = store.get_fuel().unwrap();
@@ -151,9 +143,9 @@ mod tests {
 
     #[test]
     fn fuel_exhaustion_traps() {
-        use crate::wasm::WasmEngine;
         use crate::capability::{CapabilityManifest, CapabilityToken};
         use crate::context::PluginContext;
+        use crate::wasm::WasmEngine;
 
         let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -180,25 +172,14 @@ mod tests {
             let bytes = wat::parse_str(wat).unwrap();
             let plugin = engine.load_module(&bytes, "burn-test").unwrap();
 
-            let manifest = CapabilityManifest::from_json(
-                r#"{"property_scope": ["*"]}"#,
-            )
-            .unwrap();
+            let manifest = CapabilityManifest::from_json(r#"{"property_scope": ["*"]}"#).unwrap();
             let token = CapabilityToken::mint("burn-plugin", &manifest);
             let (tx, _rx) = crossbeam::channel::unbounded();
-            let ctx = PluginContext::new(
-                "burn-plugin".into(),
-                "test-petal".into(),
-                token,
-                tx,
-            );
+            let ctx = PluginContext::new("burn-plugin".into(), "test-petal".into(), token, tx);
 
             // Very small fuel budget: loop will exhaust it
             let budget = FuelBudget::new(10, 5, 1);
-            let (mut store, instance) = engine
-                .instantiate(&plugin, ctx, budget)
-                .await
-                .unwrap();
+            let (mut store, instance) = engine.instantiate(&plugin, ctx, budget).await.unwrap();
 
             // Call the burn function — it will exhaust the 10 fuel
             let result = engine

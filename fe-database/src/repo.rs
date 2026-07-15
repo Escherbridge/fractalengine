@@ -66,10 +66,7 @@ impl<T: Table> Repo<T> {
     /// to be absent (interpreted as `NONE`) rather than explicitly null.
     pub async fn create(db: &Db, item: &T) -> anyhow::Result<()> {
         let val = strip_json_nulls(serde_json::to_value(item)?);
-        let _: Option<serde_json::Value> = db
-            .create(T::TABLE_NAME)
-            .content(val)
-            .await?;
+        let _: Option<serde_json::Value> = db.create(T::TABLE_NAME).content(val).await?;
         Ok(())
     }
 
@@ -167,11 +164,7 @@ impl<T: Table> Repo<T> {
 
     /// Delete rows where the ID field matches.
     pub async fn delete_by_id(db: &Db, id: &str) -> anyhow::Result<()> {
-        let sql = format!(
-            "DELETE FROM {} WHERE {} = $id",
-            T::TABLE_NAME,
-            T::ID_FIELD,
-        );
+        let sql = format!("DELETE FROM {} WHERE {} = $id", T::TABLE_NAME, T::ID_FIELD,);
         db.query(&sql).bind(("id", id.to_string())).await?;
         Ok(())
     }
@@ -181,16 +174,10 @@ impl<T: Table> Repo<T> {
     /// Count rows in the table.
     pub async fn count(db: &Db) -> anyhow::Result<u64> {
         let mut res: surrealdb::IndexedResults = db
-            .query(format!(
-                "SELECT count() FROM {} GROUP ALL",
-                T::TABLE_NAME,
-            ))
+            .query(format!("SELECT count() FROM {} GROUP ALL", T::TABLE_NAME,))
             .await?;
         let rows: Vec<serde_json::Value> = res.take(0)?;
-        Ok(rows
-            .first()
-            .and_then(|v| v["count"].as_u64())
-            .unwrap_or(0))
+        Ok(rows.first().and_then(|v| v["count"].as_u64()).unwrap_or(0))
     }
 
     // ----- escape hatch -----------------------------------------------------
@@ -299,10 +286,22 @@ mod tests {
     #[test]
     fn strip_nulls_non_object_passthrough() {
         // Non-object values should pass through unchanged.
-        assert_eq!(strip_json_nulls(serde_json::json!(42)), serde_json::json!(42));
-        assert_eq!(strip_json_nulls(serde_json::json!("str")), serde_json::json!("str"));
-        assert_eq!(strip_json_nulls(serde_json::json!(null)), serde_json::json!(null));
-        assert_eq!(strip_json_nulls(serde_json::json!([1, null, 3])), serde_json::json!([1, null, 3]));
+        assert_eq!(
+            strip_json_nulls(serde_json::json!(42)),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            strip_json_nulls(serde_json::json!("str")),
+            serde_json::json!("str")
+        );
+        assert_eq!(
+            strip_json_nulls(serde_json::json!(null)),
+            serde_json::json!(null)
+        );
+        assert_eq!(
+            strip_json_nulls(serde_json::json!([1, null, 3])),
+            serde_json::json!([1, null, 3])
+        );
     }
 
     #[test]

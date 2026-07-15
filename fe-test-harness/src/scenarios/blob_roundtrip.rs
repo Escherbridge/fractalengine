@@ -32,14 +32,12 @@ pub fn run() -> Result<TestResult> {
     )?;
 
     let petal_id = match &hierarchy {
-        DbResult::HierarchyLoaded { verses } => {
-            verses
-                .first()
-                .and_then(|v| v.fractals.first())
-                .and_then(|f| f.petals.first())
-                .map(|p| p.id.clone())
-                .ok_or_else(|| anyhow::anyhow!("No petal found after seed"))?
-        }
+        DbResult::HierarchyLoaded { verses } => verses
+            .first()
+            .and_then(|v| v.fractals.first())
+            .and_then(|f| f.petals.first())
+            .map(|p| p.id.clone())
+            .ok_or_else(|| anyhow::anyhow!("No petal found after seed"))?,
         _ => unreachable!(),
     };
 
@@ -74,10 +72,7 @@ pub fn run() -> Result<TestResult> {
     if !asset_path.starts_with("blob://") {
         return Ok(TestResult::fail(
             "blob_roundtrip",
-            &format!(
-                "asset_path does not start with blob://: {}",
-                asset_path
-            ),
+            &format!("asset_path does not start with blob://: {}", asset_path),
         ));
     }
 
@@ -86,9 +81,7 @@ pub fn run() -> Result<TestResult> {
         .strip_prefix("blob://")
         .unwrap()
         .strip_suffix(".glb")
-        .ok_or_else(|| {
-            anyhow::anyhow!("asset_path does not end with .glb: {}", asset_path)
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("asset_path does not end with .glb: {}", asset_path))?;
 
     // 6. Verify BLAKE3 hash matches
     let expected_hash = blake3::hash(&glb_bytes);

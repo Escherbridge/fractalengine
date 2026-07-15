@@ -92,7 +92,10 @@ pub enum WsServerMsg {
         changes: Vec<fe_runtime::messages::SceneChange>,
     },
     /// Latency probe response.
-    Pong { timestamp_ms: u64, server_timestamp_ms: u64 },
+    Pong {
+        timestamp_ms: u64,
+        server_timestamp_ms: u64,
+    },
     /// A previously-optimistic transform failed to persist — client should
     /// revert the node to these last-known-good values.
     TransformRollback {
@@ -151,10 +154,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                 .await;
                 None
             } else {
-                match fe_identity::api_token::verify_api_token(
-                    &access_token,
-                    &state.verifying_key,
-                ) {
+                match fe_identity::api_token::verify_api_token(&access_token, &state.verifying_key)
+                {
                     Ok(claims) => {
                         tracing::info!(
                             "WS authenticated: sub={} scope={} role={}",
@@ -205,7 +206,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
     let mut scene_version: u64 = 0;
 
     // Debounce map: last transform update per node, flushed to DB every 200ms.
-    let mut transform_debounce: std::collections::HashMap<String, ([f32; 3], [f32; 3], [f32; 3])> =
+    type TransformTriple = ([f32; 3], [f32; 3], [f32; 3]); // (position, rotation, scale)
+    let mut transform_debounce: std::collections::HashMap<String, TransformTriple> =
         std::collections::HashMap::new();
     let mut debounce_interval = tokio::time::interval(std::time::Duration::from_millis(200));
     debounce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -428,10 +430,7 @@ async fn recv_msg(socket: &mut WebSocket) -> Option<WsClientMsg> {
 /// When a direct `db_reader` is available, queries SurrealDB directly and
 /// bypasses the crossbeam channel. Falls back to the channel-based
 /// `DbCommand::LoadNodesByPetal` otherwise.
-async fn load_petal_nodes(
-    state: &ApiState,
-    petal_id: &str,
-) -> Vec<crate::types::NodeDto> {
+async fn load_petal_nodes(state: &ApiState, petal_id: &str) -> Vec<crate::types::NodeDto> {
     if let Some(ref db) = state.db_reader {
         return crate::rest::direct_load_petal_nodes(db, petal_id).await;
     }
@@ -450,20 +449,18 @@ async fn load_petal_nodes(
         return vec![];
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodesLoaded { nodes, .. })) => {
-            nodes
-                .into_iter()
-                .map(|n| crate::types::NodeDto {
-                    id: n.node_id,
-                    name: n.name,
-                    petal_id: n.petal_id,
-                    position: n.position,
-                    has_asset: n.has_asset,
-                    asset_path: n.asset_path,
-                    webpage_url: None,
-                })
-                .collect()
-        }
+        Ok(Ok(DbResult::NodesLoaded { nodes, .. })) => nodes
+            .into_iter()
+            .map(|n| crate::types::NodeDto {
+                id: n.node_id,
+                name: n.name,
+                petal_id: n.petal_id,
+                position: n.position,
+                has_asset: n.has_asset,
+                asset_path: n.asset_path,
+                webpage_url: None,
+            })
+            .collect(),
         _ => vec![],
     }
 }
@@ -504,29 +501,42 @@ async fn handle_entity_command(
     }
 
     let db_cmd = match command {
-        Ec::CreateNode { petal_id, name, position } => DbCommand::CreateNode {
+        Ec::CreateNode {
+            petal_id,
+            name,
+            position,
+        } => DbCommand::CreateNode {
             petal_id,
             name,
             position: position.unwrap_or([0.0, 0.0, 0.0]),
             correlation_id: None,
         },
         Ec::DeleteNode { node_id } => DbCommand::DeleteNode { node_id },
-        Ec::SetNodeProperty { node_id, key, value } => {
-            DbCommand::SetNodeProperty { node_id, key, value }
-        }
-        Ec::DeleteNodeProperty { node_id, key } => {
-            DbCommand::DeleteNodeProperty { node_id, key }
-        }
+        Ec::SetNodeProperty {
+            node_id,
+            key,
+            value,
+        } => DbCommand::SetNodeProperty {
+            node_id,
+            key,
+            value,
+        },
+        Ec::DeleteNodeProperty { node_id, key } => DbCommand::DeleteNodeProperty { node_id, key },
     };
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     state
         .api_cmd_tx
-        .send(ApiCommand::DbRequest { cmd: db_cmd, reply_tx })
+        .send(ApiCommand::DbRequest {
+            cmd: db_cmd,
+            reply_tx,
+        })
         .map_err(|_| "internal channel closed".to_string())?;
 
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodeCreated { id, name, petal_id, .. })) => Ok(serde_json::json!({
+        Ok(Ok(DbResult::NodeCreated {
+            id, name, petal_id, ..
+        })) => Ok(serde_json::json!({
             "node_id": id, "name": name, "petal_id": petal_id,
         })),
         Ok(Ok(DbResult::NodeDeleted { node_id, petal_id })) => Ok(serde_json::json!({
@@ -558,10 +568,15 @@ async fn resolve_petal_scope_ws(state: &ApiState, petal_id: &str) -> Option<Stri
     }
     // Fallback: channel-based resolution
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state.api_cmd_tx.send(ApiCommand::DbRequest {
-        cmd: DbCommand::ResolvePetalScope { petal_id: petal_id.to_string() },
-        reply_tx,
-    }).ok()?;
+    state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest {
+            cmd: DbCommand::ResolvePetalScope {
+                petal_id: petal_id.to_string(),
+            },
+            reply_tx,
+        })
+        .ok()?;
     match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
         Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
         _ => None,
@@ -590,7 +605,10 @@ mod tests {
         assert!(json.contains("\"scene_subscribe\""));
         let roundtrip: WsClientMsg = serde_json::from_str(&json).unwrap();
         match roundtrip {
-            WsClientMsg::SceneSubscribe { petal_id, last_known_version } => {
+            WsClientMsg::SceneSubscribe {
+                petal_id,
+                last_known_version,
+            } => {
                 assert_eq!(petal_id, "p1");
                 assert_eq!(last_known_version, Some(42));
             }
@@ -603,7 +621,10 @@ mod tests {
         let json = r#"{"type":"scene_subscribe","petal_id":"p2"}"#;
         let msg: WsClientMsg = serde_json::from_str(json).unwrap();
         match msg {
-            WsClientMsg::SceneSubscribe { petal_id, last_known_version } => {
+            WsClientMsg::SceneSubscribe {
+                petal_id,
+                last_known_version,
+            } => {
                 assert_eq!(petal_id, "p2");
                 assert_eq!(last_known_version, None);
             }
@@ -617,10 +638,17 @@ mod tests {
             "command":{"op":"create_node","petal_id":"p1","name":"n","position":[1.0,2.0,3.0]}}"#;
         let msg: WsClientMsg = serde_json::from_str(json).unwrap();
         match msg {
-            WsClientMsg::EntityCommand { request_id, command } => {
+            WsClientMsg::EntityCommand {
+                request_id,
+                command,
+            } => {
                 assert_eq!(request_id, "r1");
                 match command {
-                    crate::types::EntityCommand::CreateNode { petal_id, name, position } => {
+                    crate::types::EntityCommand::CreateNode {
+                        petal_id,
+                        name,
+                        position,
+                    } => {
                         assert_eq!(petal_id, "p1");
                         assert_eq!(name, "n");
                         assert_eq!(position, Some([1.0, 2.0, 3.0]));
@@ -653,10 +681,14 @@ mod tests {
         let del: WsClientMsg = serde_json::from_str(
             r#"{"type":"entity_command","request_id":"r3",
                 "command":{"op":"delete_node","node_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(
             del,
-            WsClientMsg::EntityCommand { command: crate::types::EntityCommand::DeleteNode { .. }, .. }
+            WsClientMsg::EntityCommand {
+                command: crate::types::EntityCommand::DeleteNode { .. },
+                ..
+            }
         ));
         let set: WsClientMsg = serde_json::from_str(
             r#"{"type":"entity_command","request_id":"r4",
@@ -664,7 +696,10 @@ mod tests {
         ).unwrap();
         assert!(matches!(
             set,
-            WsClientMsg::EntityCommand { command: crate::types::EntityCommand::SetNodeProperty { .. }, .. }
+            WsClientMsg::EntityCommand {
+                command: crate::types::EntityCommand::SetNodeProperty { .. },
+                ..
+            }
         ));
         let delp: WsClientMsg = serde_json::from_str(
             r#"{"type":"entity_command","request_id":"r5",
@@ -672,7 +707,10 @@ mod tests {
         ).unwrap();
         assert!(matches!(
             delp,
-            WsClientMsg::EntityCommand { command: crate::types::EntityCommand::DeleteNodeProperty { .. }, .. }
+            WsClientMsg::EntityCommand {
+                command: crate::types::EntityCommand::DeleteNodeProperty { .. },
+                ..
+            }
         ));
     }
 
@@ -688,7 +726,10 @@ mod tests {
         assert!(json.contains("\"entity_command_result\""));
         assert!(json.contains("\"request_id\":\"r1\""));
         assert!(json.contains("\"node_id\":\"n1\""));
-        assert!(!json.contains("\"error\""), "error field must be omitted when None");
+        assert!(
+            !json.contains("\"error\""),
+            "error field must be omitted when None"
+        );
 
         let err = WsServerMsg::EntityCommandResult {
             request_id: "r2".into(),
@@ -699,7 +740,10 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains("\"ok\":false"));
         assert!(json.contains("insufficient scope"));
-        assert!(!json.contains("\"data\""), "data field must be omitted when None");
+        assert!(
+            !json.contains("\"data\""),
+            "data field must be omitted when None"
+        );
     }
 
     #[test]
@@ -719,11 +763,9 @@ mod tests {
         let msg = WsServerMsg::SceneDelta {
             petal_id: "p1".into(),
             version: 2,
-            changes: vec![
-                fe_runtime::messages::SceneChange::NodeRemoved {
-                    node_id: "n1".into(),
-                },
-            ],
+            changes: vec![fe_runtime::messages::SceneChange::NodeRemoved {
+                node_id: "n1".into(),
+            }],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"scene_delta\""));

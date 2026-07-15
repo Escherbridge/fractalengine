@@ -64,11 +64,7 @@ impl std::error::Error for ScopeError {}
 ///
 /// # Panics
 /// Panics if `petal_id` is `Some` but `fractal_id` is `None` — invalid hierarchy.
-pub fn build_scope(
-    verse_id: &str,
-    fractal_id: Option<&str>,
-    petal_id: Option<&str>,
-) -> String {
+pub fn build_scope(verse_id: &str, fractal_id: Option<&str>, petal_id: Option<&str>) -> String {
     if petal_id.is_some() && fractal_id.is_none() {
         panic!("build_scope: petal_id requires fractal_id (invalid hierarchy)");
     }
@@ -123,12 +119,17 @@ pub fn parse_scope(scope: &str) -> Result<ScopeParts, ScopeError> {
         Some(fractal_and_rest) => {
             // fractal_and_rest starts with "FRACTAL#..."
             if !fractal_and_rest.starts_with("FRACTAL#") {
-                return Err(ScopeError::UnrecognizedSegment(fractal_and_rest.to_string()));
+                return Err(ScopeError::UnrecognizedSegment(
+                    fractal_and_rest.to_string(),
+                ));
             }
             let after_fractal_prefix = &fractal_and_rest["FRACTAL#".len()..];
 
             let (fid, after_fractal) = if let Some(idx) = after_fractal_prefix.find("-PETAL#") {
-                (&after_fractal_prefix[..idx], Some(&after_fractal_prefix[idx + 1..]))
+                (
+                    &after_fractal_prefix[..idx],
+                    Some(&after_fractal_prefix[idx + 1..]),
+                )
             } else {
                 (after_fractal_prefix, None)
             };
@@ -211,8 +212,7 @@ pub fn scope_contains(token_scope: &str, resource_scope: &str) -> bool {
     }
     // Token scope must be a proper prefix ending at a keyword boundary.
     // e.g. "VERSE#v1" is a prefix of "VERSE#v1-FRACTAL#f1" at the "-FRACTAL#" boundary.
-    resource_scope.starts_with(token_scope)
-        && resource_scope[token_scope.len()..].starts_with('-')
+    resource_scope.starts_with(token_scope) && resource_scope[token_scope.len()..].starts_with('-')
 }
 
 #[cfg(test)]
@@ -228,10 +228,7 @@ mod tests {
 
     #[test]
     fn build_verse_fractal() {
-        assert_eq!(
-            build_scope("v1", Some("f1"), None),
-            "VERSE#v1-FRACTAL#f1"
-        );
+        assert_eq!(build_scope("v1", Some("f1"), None), "VERSE#v1-FRACTAL#f1");
     }
 
     #[test]
@@ -306,10 +303,7 @@ mod tests {
             parse_scope("FRACTAL#f1"),
             Err(ScopeError::MissingVersePrefix)
         );
-        assert_eq!(
-            parse_scope("PETAL#p1"),
-            Err(ScopeError::MissingVersePrefix)
-        );
+        assert_eq!(parse_scope("PETAL#p1"), Err(ScopeError::MissingVersePrefix));
         assert_eq!(
             parse_scope("random-string"),
             Err(ScopeError::MissingVersePrefix)

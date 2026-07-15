@@ -183,7 +183,10 @@ mod tests {
             matches!(result, Err(RegistryError::PermissionDenied(_))),
             "insufficient role must be denied"
         );
-        assert!(registry.list_installed(None).is_empty(), "nothing may be installed on deny");
+        assert!(
+            registry.list_installed(None).is_empty(),
+            "nothing may be installed on deny"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -209,7 +212,11 @@ mod tests {
 
         let denied = registry.uninstall_as(&did(RoleLevel::Viewer), &uri, "petal-1");
         assert!(matches!(denied, Err(RegistryError::PermissionDenied(_))));
-        assert_eq!(registry.list_installed(None).len(), 1, "deny must not uninstall");
+        assert_eq!(
+            registry.list_installed(None).len(),
+            1,
+            "deny must not uninstall"
+        );
 
         registry
             .uninstall_as(&did(RoleLevel::Editor), &uri, "petal-1")

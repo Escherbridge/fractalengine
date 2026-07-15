@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Json, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum_extra::extract::Multipart;
@@ -10,7 +10,7 @@ use fe_terrain::config::TerrainConfig;
 use serde::Deserialize;
 
 use crate::auth::{require_role, require_scope};
-use crate::types::{ApiResponse, is_valid_ulid};
+use crate::types::{is_valid_ulid, ApiResponse};
 
 /// PUT /api/v1/petals/:petal_id/terrain — set terrain configuration.
 ///
@@ -23,7 +23,9 @@ pub async fn set_terrain_config(
     Json(config): Json<TerrainConfig>,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&petal_id) {
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
@@ -35,7 +37,9 @@ pub async fn set_terrain_config(
         ));
     };
     if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient scope"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient scope",
+        ));
     }
 
     let Some(ref db) = state.db_reader else {
@@ -78,7 +82,9 @@ pub async fn get_terrain_config(
     Path(petal_id): Path<String>,
 ) -> impl IntoResponse {
     if require_role(&claims, "viewer").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&petal_id) {
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
@@ -90,7 +96,9 @@ pub async fn get_terrain_config(
         ));
     };
     if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient scope"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient scope",
+        ));
     }
 
     let Some(ref db) = state.db_reader else {
@@ -140,7 +148,9 @@ pub async fn delete_terrain_config(
     Path(petal_id): Path<String>,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
     if !is_valid_ulid(&petal_id) {
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
@@ -152,7 +162,9 @@ pub async fn delete_terrain_config(
         ));
     };
     if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient scope"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient scope",
+        ));
     }
 
     let Some(ref db) = state.db_reader else {
@@ -176,10 +188,7 @@ pub async fn delete_terrain_config(
     }
 }
 
-async fn resolve_petal_scope(
-    state: &crate::server::ApiState,
-    petal_id: &str,
-) -> Option<String> {
+async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
     if let Some(ref db) = state.db_reader {
         return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
     }
@@ -256,10 +265,7 @@ pub async fn get_satellite_tile(
     match registry.get_satellite_tile(&tileset_id, z, x, y) {
         Some(bytes) => {
             let mut headers = HeaderMap::new();
-            headers.insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("image/jpeg"),
-            );
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
             headers.insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("public, max-age=86400"),
@@ -280,7 +286,9 @@ pub async fn list_available_tilesets(
         return Json(ApiResponse::success(serde_json::json!([])));
     };
     let tilesets = registry.list_tilesets();
-    Json(ApiResponse::success(serde_json::to_value(tilesets).unwrap_or_default()))
+    Json(ApiResponse::success(
+        serde_json::to_value(tilesets).unwrap_or_default(),
+    ))
 }
 
 /// GET /api/v1/tilesets/:tileset_id/meta — return full metadata for a tileset.
@@ -291,10 +299,14 @@ pub async fn get_tileset_meta(
     Path(tileset_id): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref registry) = state.tileset_registry else {
-        return Json(ApiResponse::<serde_json::Value>::error("tileset registry not available"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "tileset registry not available",
+        ));
     };
     match registry.get_meta(&tileset_id) {
-        Some(meta) => Json(ApiResponse::success(serde_json::to_value(meta).unwrap_or_default())),
+        Some(meta) => Json(ApiResponse::success(
+            serde_json::to_value(meta).unwrap_or_default(),
+        )),
         None => Json(ApiResponse::<serde_json::Value>::error("tileset not found")),
     }
 }
@@ -315,18 +327,24 @@ pub async fn install_hexon_tileset(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
 
     let Some(ref registry) = state.tileset_registry else {
-        return Json(ApiResponse::<serde_json::Value>::error("tileset registry not available"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "tileset registry not available",
+        ));
     };
 
     // Read the first multipart field as the hexon bytes.
     let field = match multipart.next_field().await {
         Ok(Some(f)) => f,
         Ok(None) => {
-            return Json(ApiResponse::<serde_json::Value>::error("no file field in multipart body"));
+            return Json(ApiResponse::<serde_json::Value>::error(
+                "no file field in multipart body",
+            ));
         }
         Err(e) => {
             return Json(ApiResponse::<serde_json::Value>::error(format!(
@@ -345,7 +363,9 @@ pub async fn install_hexon_tileset(
     };
 
     match registry.install(&bytes) {
-        Ok(installed) => Json(ApiResponse::success(serde_json::to_value(installed).unwrap_or_default())),
+        Ok(installed) => Json(ApiResponse::success(
+            serde_json::to_value(installed).unwrap_or_default(),
+        )),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(format!(
             "install failed: {e}"
         ))),
@@ -361,11 +381,15 @@ pub async fn remove_hexon_tileset(
     Path(hexon_id): Path<String>,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
 
     let Some(ref registry) = state.tileset_registry else {
-        return Json(ApiResponse::<serde_json::Value>::error("tileset registry not available"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "tileset registry not available",
+        ));
     };
 
     match registry.remove(&hexon_id) {
@@ -396,11 +420,15 @@ pub async fn toggle_seeding(
     Json(body): Json<SeedingBody>,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
 
     let Some(ref registry) = state.tileset_registry else {
-        return Json(ApiResponse::<serde_json::Value>::error("tileset registry not available"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "tileset registry not available",
+        ));
     };
 
     match registry.set_seeding(&hexon_id, body.enabled) {
@@ -424,7 +452,9 @@ pub async fn list_installed_hexons(
     Extension(claims): Extension<ApiClaims>,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
 
     let Some(ref registry) = state.tileset_registry else {
@@ -454,7 +484,9 @@ pub async fn get_storage_info(
     Extension(claims): Extension<ApiClaims>,
 ) -> impl IntoResponse {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error("insufficient permissions"));
+        return Json(ApiResponse::<serde_json::Value>::error(
+            "insufficient permissions",
+        ));
     }
 
     let Some(ref registry) = state.tileset_registry else {

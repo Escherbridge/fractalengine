@@ -106,7 +106,8 @@ fn handle_verse_replica_lifecycle(
 
     // Close the previous replica.
     if let Some(ref old) = *last_verse {
-        if sync.0
+        if sync
+            .0
             .send(fe_sync::SyncCommand::CloseVerseReplica {
                 verse_id: old.clone(),
             })
@@ -122,6 +123,38 @@ fn handle_verse_replica_lifecycle(
     }
 
     *last_verse = nav.active_verse_id.clone();
+}
+
+fn open_replica(
+    sync: &fe_sync::SyncCommandSenderRes,
+    verse_id: &str,
+    verse_mgr: &VerseManager,
+    secret_store: Option<&fe_database::SecretStoreRes>,
+) {
+    let Some(ns_id) = verse_mgr
+        .verses
+        .iter()
+        .find(|v| v.id == verse_id)
+        .and_then(|v| v.namespace_id.clone())
+    else {
+        return;
+    };
+    let ns_secret = secret_store
+        .and_then(|ss| fe_database::get_namespace_secret(ss.0.as_ref(), verse_id).ok())
+        .flatten();
+    if sync
+        .0
+        .send(fe_sync::SyncCommand::OpenVerseReplica {
+            verse_id: verse_id.to_string(),
+            namespace_id: ns_id,
+            namespace_secret: ns_secret,
+        })
+        .is_err()
+    {
+        bevy::log::error!(
+            "sync_sender channel closed while opening verse replica — sync thread may have crashed"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +175,10 @@ mod tests {
         assert_eq!(nav.active_verse_id, Some("v2".to_string()));
         assert_eq!(nav.active_verse_name, "Verse 2");
         assert!(nav.active_fractal_id.is_none(), "fractal should be cleared");
-        assert!(nav.active_fractal_name.is_empty(), "fractal name should be cleared");
+        assert!(
+            nav.active_fractal_name.is_empty(),
+            "fractal name should be cleared"
+        );
         assert!(nav.active_petal_id.is_none(), "petal should be cleared");
     }
 
@@ -155,7 +191,10 @@ mod tests {
         nav.navigate_to_fractal("f2", "Fractal 2");
         assert_eq!(nav.active_fractal_id, Some("f2".to_string()));
         assert_eq!(nav.active_fractal_name, "Fractal 2");
-        assert!(nav.active_petal_id.is_none(), "petal should be cleared on fractal change");
+        assert!(
+            nav.active_petal_id.is_none(),
+            "petal should be cleared on fractal change"
+        );
         assert_eq!(nav.active_verse_id, Some("v1".to_string()));
     }
 
@@ -193,35 +232,9 @@ mod tests {
         nav.back_from_petal();
         assert_eq!(nav.active_verse_id, Some("v1".to_string()));
         assert_eq!(nav.active_fractal_id, Some("f1".to_string()));
-        assert!(nav.active_petal_id.is_none(), "only petal should be cleared");
-    }
-}
-
-fn open_replica(
-    sync: &fe_sync::SyncCommandSenderRes,
-    verse_id: &str,
-    verse_mgr: &VerseManager,
-    secret_store: Option<&fe_database::SecretStoreRes>,
-) {
-    let Some(ns_id) = verse_mgr
-        .verses
-        .iter()
-        .find(|v| v.id == verse_id)
-        .and_then(|v| v.namespace_id.clone())
-    else {
-        return;
-    };
-    let ns_secret = secret_store
-        .and_then(|ss| fe_database::get_namespace_secret(ss.0.as_ref(), verse_id).ok())
-        .flatten();
-    if sync.0
-        .send(fe_sync::SyncCommand::OpenVerseReplica {
-            verse_id: verse_id.to_string(),
-            namespace_id: ns_id,
-            namespace_secret: ns_secret,
-        })
-        .is_err()
-    {
-        bevy::log::error!("sync_sender channel closed while opening verse replica — sync thread may have crashed");
+        assert!(
+            nav.active_petal_id.is_none(),
+            "only petal should be cleared"
+        );
     }
 }

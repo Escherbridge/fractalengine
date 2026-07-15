@@ -69,7 +69,7 @@ impl FsBlobStore {
 
     /// Read a blob by hash.
     pub fn load(&self, hash: &str) -> Result<Vec<u8>, RegistryError> {
-        std::fs::read(self.blob_path(hash)).map_err(|e| RegistryError::Io(e))
+        std::fs::read(self.blob_path(hash)).map_err(RegistryError::Io)
     }
 
     /// Get the path for a blob by hash.
@@ -179,7 +179,7 @@ impl HexonRegistry {
 
         // Step 4: Write registry entries to DB
         if let Some(tx) = &self.db_tx {
-            self.persist_install_to_db(&package, petal_id, &tx)?;
+            self.persist_install_to_db(&package, petal_id, tx)?;
         }
 
         // Build the InstalledCrate record
@@ -228,7 +228,10 @@ impl HexonRegistry {
 
         // Note: we do NOT remove asset blobs from the blob store because other
         // crates may reference the same hashes (shared content addressing).
-        info!("Uninstalled crate {} from petal {}", hexon_uri, crate_data.petal_id);
+        info!(
+            "Uninstalled crate {} from petal {}",
+            hexon_uri, crate_data.petal_id
+        );
         Ok(())
     }
 
@@ -282,7 +285,9 @@ impl HexonRegistry {
                     let manifest_tags_lower: Vec<String> =
                         c.manifest.tags.iter().map(|t| t.to_lowercase()).collect();
                     let has_all_tags = tags.iter().all(|t| {
-                        manifest_tags_lower.iter().any(|mt| mt.contains(&t.to_lowercase()))
+                        manifest_tags_lower
+                            .iter()
+                            .any(|mt| mt.contains(&t.to_lowercase()))
                     });
                     if !has_all_tags {
                         return false;
@@ -364,9 +369,7 @@ impl HexonRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{
-        AssetEntry, EntryKind, HexonKind, HexonManifest, License, LicenseType,
-    };
+    use crate::manifest::{AssetEntry, EntryKind, HexonKind, HexonManifest, License, LicenseType};
     use crate::package::{hexon_uri, HexonPackage};
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;

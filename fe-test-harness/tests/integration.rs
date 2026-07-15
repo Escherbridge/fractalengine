@@ -29,8 +29,7 @@ fn create_minimal_glb() -> Vec<u8> {
 #[test]
 fn test_blob_store_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();
-    let blob_store: BlobStoreHandle =
-        Arc::new(FsBlobStore::new(tmp.path().join("blobs")).unwrap());
+    let blob_store: BlobStoreHandle = Arc::new(FsBlobStore::new(tmp.path().join("blobs")).unwrap());
 
     let glb_bytes = create_minimal_glb();
     let hash = blob_store.add_blob(&glb_bytes).unwrap();
@@ -58,19 +57,11 @@ fn test_blob_store_roundtrip() {
 #[test]
 fn test_migration_pattern() {
     let tmp = tempfile::tempdir().unwrap();
-    let blob_store: BlobStoreHandle =
-        Arc::new(FsBlobStore::new(tmp.path().join("blobs")).unwrap());
+    let blob_store: BlobStoreHandle = Arc::new(FsBlobStore::new(tmp.path().join("blobs")).unwrap());
 
     let original = b"fake GLB for migration";
-    let b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        original,
-    );
-    let decoded = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &b64,
-    )
-    .unwrap();
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, original);
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64).unwrap();
 
     let hash = blob_store.add_blob(&decoded).unwrap();
     let expected = *blake3::hash(original).as_bytes();
@@ -306,7 +297,13 @@ fn test_api_token_excessive_ttl_rejected() {
     use fe_identity::NodeKeypair;
 
     let kp = NodeKeypair::generate();
-    let result = mint_api_token(&kp, "VERSE#v1", "viewer", MAX_API_TOKEN_TTL_SECS + 1, "jti-ttl");
+    let result = mint_api_token(
+        &kp,
+        "VERSE#v1",
+        "viewer",
+        MAX_API_TOKEN_TTL_SECS + 1,
+        "jti-ttl",
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("30 days"));
 }
@@ -317,7 +314,8 @@ fn test_api_token_max_ttl_accepted() {
     use fe_identity::NodeKeypair;
 
     let kp = NodeKeypair::generate();
-    let token = mint_api_token(&kp, "VERSE#v1", "viewer", MAX_API_TOKEN_TTL_SECS, "jti-max").unwrap();
+    let token =
+        mint_api_token(&kp, "VERSE#v1", "viewer", MAX_API_TOKEN_TTL_SECS, "jti-max").unwrap();
     let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
     assert_eq!(claims.exp - claims.iat, MAX_API_TOKEN_TTL_SECS);
 }
@@ -343,7 +341,11 @@ fn test_api_token_multiple_scopes() {
     let kp = NodeKeypair::generate();
 
     // Test various scope levels
-    for scope in &["VERSE#v1", "VERSE#v1-FRACTAL#f1", "VERSE#v1-FRACTAL#f1-PETAL#p1"] {
+    for scope in &[
+        "VERSE#v1",
+        "VERSE#v1-FRACTAL#f1",
+        "VERSE#v1-FRACTAL#f1-PETAL#p1",
+    ] {
         let token = mint_api_token(&kp, scope, "viewer", 3600, &format!("jti-{}", scope)).unwrap();
         let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
         assert_eq!(claims.scope, *scope);
@@ -374,7 +376,11 @@ fn test_api_token_did_key_format() {
     let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
 
     // sub should be a valid did:key
-    assert!(claims.sub.starts_with("did:key:z6Mk"), "sub should be did:key format, got: {}", claims.sub);
+    assert!(
+        claims.sub.starts_with("did:key:z6Mk"),
+        "sub should be did:key format, got: {}",
+        claims.sub
+    );
 }
 
 #[tokio::test]
@@ -404,25 +410,36 @@ async fn test_api_token_store_roundtrip() {
     store_api_token(&db, &record).await.expect("store");
 
     // Check not revoked
-    let revoked = is_token_revoked(&db, "test-jti-001").await.expect("check revoked");
+    let revoked = is_token_revoked(&db, "test-jti-001")
+        .await
+        .expect("check revoked");
     assert!(!revoked);
 
     // List
-    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkTest", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
+    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkTest", "2026-01-01T00:00:00Z", 0, 100)
+        .await
+        .expect("list");
     assert_eq!(tokens.len(), 1);
     assert_eq!(tokens[0].jti, "test-jti-001");
     assert_eq!(tokens[0].scope, "VERSE#v1");
 
     // Revoke
-    let did_revoke = revoke_api_token(&db, "test-jti-001", "did:key:z6MkTest").await.expect("revoke");
+    let did_revoke = revoke_api_token(&db, "test-jti-001", "did:key:z6MkTest")
+        .await
+        .expect("revoke");
     assert!(did_revoke);
 
     // Check revoked
-    let revoked_after = is_token_revoked(&db, "test-jti-001").await.expect("check revoked after");
+    let revoked_after = is_token_revoked(&db, "test-jti-001")
+        .await
+        .expect("check revoked after");
     assert!(revoked_after);
 
     // List should be empty now (revoked tokens filtered)
-    let (tokens_after, _) = list_active_tokens(&db, "did:key:z6MkTest", "2026-01-01T00:00:00Z", 0, 100).await.expect("list after");
+    let (tokens_after, _) =
+        list_active_tokens(&db, "did:key:z6MkTest", "2026-01-01T00:00:00Z", 0, 100)
+            .await
+            .expect("list after");
     assert!(tokens_after.is_empty());
 }
 
@@ -438,7 +455,9 @@ async fn test_api_token_store_revoke_nonexistent() {
     apply_api_token_schema(&db).await.expect("apply schema");
 
     // Revoking a non-existent token returns false
-    let result = revoke_api_token(&db, "non-existent-jti", "did:key:z6MkTest").await.expect("revoke");
+    let result = revoke_api_token(&db, "non-existent-jti", "did:key:z6MkTest")
+        .await
+        .expect("revoke");
     assert!(!result);
 }
 
@@ -454,7 +473,9 @@ async fn test_api_token_store_is_revoked_unknown_token() {
     apply_api_token_schema(&db).await.expect("apply schema");
 
     // Unknown token is treated as non-revoked
-    let revoked = is_token_revoked(&db, "totally-unknown").await.expect("check");
+    let revoked = is_token_revoked(&db, "totally-unknown")
+        .await
+        .expect("check");
     assert!(!revoked);
 }
 
@@ -482,11 +503,16 @@ async fn test_api_token_store_list_wrong_sub() {
     store_api_token(&db, &record).await.expect("store");
 
     // Listing with a different sub should return empty
-    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkBob", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
+    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkBob", "2026-01-01T00:00:00Z", 0, 100)
+        .await
+        .expect("list");
     assert!(tokens.is_empty(), "Bob should not see Alice's tokens");
 
     // Listing with correct sub should return the token
-    let (alice_tokens, _) = list_active_tokens(&db, "did:key:z6MkAlice", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
+    let (alice_tokens, _) =
+        list_active_tokens(&db, "did:key:z6MkAlice", "2026-01-01T00:00:00Z", 0, 100)
+            .await
+            .expect("list");
     assert_eq!(alice_tokens.len(), 1);
 }
 
@@ -516,14 +542,23 @@ async fn test_api_token_store_multiple_tokens() {
         store_api_token(&db, &record).await.expect("store");
     }
 
-    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkMulti", "2026-01-01T00:00:00Z", 0, 100).await.expect("list");
+    let (tokens, _) = list_active_tokens(&db, "did:key:z6MkMulti", "2026-01-01T00:00:00Z", 0, 100)
+        .await
+        .expect("list");
     assert_eq!(tokens.len(), 5);
 
     // Revoke 2 of them
-    revoke_api_token(&db, "multi-jti-1", "did:key:z6MkMulti").await.expect("revoke 1");
-    revoke_api_token(&db, "multi-jti-3", "did:key:z6MkMulti").await.expect("revoke 3");
+    revoke_api_token(&db, "multi-jti-1", "did:key:z6MkMulti")
+        .await
+        .expect("revoke 1");
+    revoke_api_token(&db, "multi-jti-3", "did:key:z6MkMulti")
+        .await
+        .expect("revoke 3");
 
-    let (tokens_after, _) = list_active_tokens(&db, "did:key:z6MkMulti", "2026-01-01T00:00:00Z", 0, 100).await.expect("list after");
+    let (tokens_after, _) =
+        list_active_tokens(&db, "did:key:z6MkMulti", "2026-01-01T00:00:00Z", 0, 100)
+            .await
+            .expect("list after");
     assert_eq!(tokens_after.len(), 3);
 
     // Verify the right ones remain

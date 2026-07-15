@@ -173,8 +173,12 @@ impl PendingApiRequests {
     /// so they cannot poison the FIFO queue for subsequent requests.
     pub fn try_deliver(&mut self, result: DbResult) -> bool {
         loop {
-            let Some((&id, _)) = self.pending.iter().next() else { return false };
-            let Some(tx) = self.pending.remove(&id) else { return false };
+            let Some((&id, _)) = self.pending.iter().next() else {
+                return false;
+            };
+            let Some(tx) = self.pending.remove(&id) else {
+                return false;
+            };
             if tx.is_closed() {
                 // Receiver dropped — discard stale entry and try the next one.
                 continue;
@@ -221,7 +225,12 @@ pub fn drain_api_commands(
             Ok(ApiCommand::SyncForward { .. }) => {
                 // Transform sync forwarding handled via broadcast channel
             }
-            Ok(ApiCommand::TransformPersist { node_id, position, rotation, scale }) => {
+            Ok(ApiCommand::TransformPersist {
+                node_id,
+                position,
+                rotation,
+                scale,
+            }) => {
                 // Fire-and-forget: send directly to DB without enqueuing a reply.
                 let _ = db_tx.0.send(DbCommand::UpdateNodeTransform {
                     node_id,

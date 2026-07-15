@@ -87,9 +87,7 @@ pub fn run() -> Result<TestResult> {
             verse_id,
             verse_name,
         } => {
-            tracing::info!(
-                "Bob joined verse: {verse_name} ({verse_id})"
-            );
+            tracing::info!("Bob joined verse: {verse_name} ({verse_id})");
             (verse_id.clone(), verse_name.clone())
         }
         _ => unreachable!(),
@@ -124,9 +122,9 @@ pub fn run() -> Result<TestResult> {
     )?;
 
     let found_verse = match &hierarchy {
-        DbResult::HierarchyLoaded { verses } => {
-            verses.iter().any(|v| v.id == verse_id && v.name == "Test Verse")
-        }
+        DbResult::HierarchyLoaded { verses } => verses
+            .iter()
+            .any(|v| v.id == verse_id && v.name == "Test Verse"),
         _ => false,
     };
 

@@ -30,8 +30,8 @@ pub fn read_zip_json(path: &Path, name: &str) -> Result<serde_json::Value> {
 
 /// Read a single named file from a `.hexon` zip without touching other entries.
 pub fn read_zip_bytes(path: &Path, name: &str) -> Result<Vec<u8>> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file))
         .with_context(|| format!("not a zip archive: {}", path.display()))?;
     let mut entry = archive
@@ -46,7 +46,10 @@ pub fn read_zip_bytes(path: &Path, name: &str) -> Result<Vec<u8>> {
 pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
     let manifest = read_zip_json(path, "manifest.json")?;
     let s = |key: &str| -> Option<String> {
-        manifest.get(key).and_then(|v| v.as_str()).map(str::to_string)
+        manifest
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
     };
     Ok(HexonIndexEntry {
         hexon_id: s("hexon_id").context("manifest missing hexon_id")?,
@@ -57,7 +60,11 @@ pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
         tags: manifest
             .get("tags")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default(),
         publisher_did: s("publisher_did").unwrap_or_default(),
         size_bytes: std::fs::metadata(path)?.len(),
@@ -82,7 +89,9 @@ pub fn scan_dir(dir: &Path) -> Vec<HexonIndexEntry> {
         }
         match index_one(&path) {
             Ok(ie) => index.push(ie),
-            Err(e) => tracing::warn!(file = %path.display(), error = %e, "skipping unindexable hexon"),
+            Err(e) => {
+                tracing::warn!(file = %path.display(), error = %e, "skipping unindexable hexon")
+            }
         }
     }
     index

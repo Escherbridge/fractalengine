@@ -197,7 +197,11 @@ pub struct TrackStyleFields {
 
 impl Default for TrackStyleFields {
     fn default() -> Self {
-        Self { color: [0.0, 0.8, 1.0, 1.0], width: 2.0, visible: true }
+        Self {
+            color: [0.0, 0.8, 1.0, 1.0],
+            width: 2.0,
+            visible: true,
+        }
     }
 }
 
@@ -207,7 +211,11 @@ impl TrackStyleFields {
     /// `style_from_properties`. `#rrggbb`/`#rrggbbaa` (with or without `#`).
     pub(crate) fn from_properties(props: &serde_json::Value) -> Self {
         let mut s = Self::default();
-        if let Some(color) = props.get("gis.track.color").and_then(|v| v.as_str()).and_then(parse_hex_color) {
+        if let Some(color) = props
+            .get("gis.track.color")
+            .and_then(|v| v.as_str())
+            .and_then(parse_hex_color)
+        {
             s.color = color;
         }
         if let Some(width) = props.get("gis.track.width").and_then(|v| v.as_f64()) {
@@ -242,7 +250,12 @@ pub(crate) fn parse_hex_color(hex: &str) -> Option<[f32; 4]> {
         ),
         _ => return None,
     };
-    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
+    Some([
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+        a as f32 / 255.0,
+    ])
 }
 
 impl PathEditorState {
@@ -341,6 +354,7 @@ pub(crate) fn next_pen_correlation_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
 
     #[test]
@@ -372,7 +386,10 @@ mod tests {
     #[test]
     fn path_editor_start_editing_clears_points() {
         let mut s = PathEditorState::default();
-        s.points.push(PathPointRow { position: [1.0, 0.0, 1.0], time_seconds: None });
+        s.points.push(PathPointRow {
+            position: [1.0, 0.0, 1.0],
+            time_seconds: None,
+        });
         s.start_editing("track-1".to_string());
         assert_eq!(s.editing_track_id.as_deref(), Some("track-1"));
         assert!(s.points.is_empty());
@@ -382,7 +399,10 @@ mod tests {
     fn path_editor_stop_editing_clears_state() {
         let mut s = PathEditorState::default();
         s.start_editing("track-1".to_string());
-        s.points.push(PathPointRow { position: [1.0, 0.0, 1.0], time_seconds: None });
+        s.points.push(PathPointRow {
+            position: [1.0, 0.0, 1.0],
+            time_seconds: None,
+        });
         s.stop_editing();
         assert!(s.editing_track_id.is_none());
         assert!(s.points.is_empty());
@@ -431,8 +451,14 @@ mod tests {
 
     #[test]
     fn parse_hex_color_valid_and_invalid() {
-        assert_eq!(parse_hex_color("#00ccff"), Some([0.0, 204.0 / 255.0, 1.0, 1.0]));
-        assert_eq!(parse_hex_color("00ccffff"), Some([0.0, 204.0 / 255.0, 1.0, 1.0]));
+        assert_eq!(
+            parse_hex_color("#00ccff"),
+            Some([0.0, 204.0 / 255.0, 1.0, 1.0])
+        );
+        assert_eq!(
+            parse_hex_color("00ccffff"),
+            Some([0.0, 204.0 / 255.0, 1.0, 1.0])
+        );
         assert_eq!(parse_hex_color("#fff"), None);
         assert_eq!(parse_hex_color(""), None);
     }
@@ -440,7 +466,11 @@ mod tests {
     #[test]
     fn start_editing_resets_style_to_default() {
         let mut s = PathEditorState::default();
-        s.edited_track_style = TrackStyleFields { color: [1.0, 0.0, 0.0, 1.0], width: 9.0, visible: false };
+        s.edited_track_style = TrackStyleFields {
+            color: [1.0, 0.0, 0.0, 1.0],
+            width: 9.0,
+            visible: false,
+        };
         s.start_editing("track-1".to_string());
         assert_eq!(s.edited_track_style, TrackStyleFields::default());
     }
@@ -460,7 +490,10 @@ mod tests {
         let mut s = PathEditorState::default();
         s.edited_track_path_asset = Some(sample_descriptor());
         s.start_editing("track-1".to_string());
-        assert!(s.edited_track_path_asset.is_none(), "start_editing must clear the stale descriptor");
+        assert!(
+            s.edited_track_path_asset.is_none(),
+            "start_editing must clear the stale descriptor"
+        );
     }
 
     #[test]
@@ -469,7 +502,10 @@ mod tests {
         s.start_editing("track-1".to_string());
         s.edited_track_path_asset = Some(sample_descriptor());
         s.stop_editing();
-        assert!(s.edited_track_path_asset.is_none(), "stop_editing must clear the descriptor");
+        assert!(
+            s.edited_track_path_asset.is_none(),
+            "stop_editing must clear the descriptor"
+        );
     }
 
     #[test]
@@ -490,9 +526,16 @@ mod tests {
             first_point: [3.0, 0.0, 4.0],
         });
         assert!(s.has_pending_pen_create());
-        assert_eq!(s.take_pending_pen_create_if("pen-track:7"), Some([3.0, 0.0, 4.0]));
+        assert_eq!(
+            s.take_pending_pen_create_if("pen-track:7"),
+            Some([3.0, 0.0, 4.0])
+        );
         assert!(!s.has_pending_pen_create(), "match clears the flag");
-        assert_eq!(s.take_pending_pen_create_if("pen-track:7"), None, "second take yields None");
+        assert_eq!(
+            s.take_pending_pen_create_if("pen-track:7"),
+            None,
+            "second take yields None"
+        );
     }
 
     #[test]
@@ -505,10 +548,20 @@ mod tests {
             correlation_id: "pen-track:2".to_string(),
             first_point: [1.0, 0.0, 1.0],
         });
-        assert_eq!(s.take_pending_pen_create_if("authored-track:0"), None, "mismatch never flushes");
-        assert!(s.has_pending_pen_create(), "mismatch leaves the pending create untouched");
+        assert_eq!(
+            s.take_pending_pen_create_if("authored-track:0"),
+            None,
+            "mismatch never flushes"
+        );
+        assert!(
+            s.has_pending_pen_create(),
+            "mismatch leaves the pending create untouched"
+        );
         // The correct id still flushes it afterwards.
-        assert_eq!(s.take_pending_pen_create_if("pen-track:2"), Some([1.0, 0.0, 1.0]));
+        assert_eq!(
+            s.take_pending_pen_create_if("pen-track:2"),
+            Some([1.0, 0.0, 1.0])
+        );
     }
 
     #[test]
@@ -525,7 +578,10 @@ mod tests {
         assert_eq!(flushed, Some([1.0, 0.0, 1.0]));
         assert_eq!(s.editing_track_id.as_deref(), Some("auto-track"));
         assert!(!s.has_pending_pen_create());
-        assert!(s.points.is_empty(), "start_editing seeds an empty buffer for the flushed append");
+        assert!(
+            s.points.is_empty(),
+            "start_editing seeds an empty buffer for the flushed append"
+        );
     }
 
     #[test]
@@ -538,7 +594,10 @@ mod tests {
             correlation_id: "pen-track:1".to_string(),
             first_point: [2.0, 0.0, 2.0],
         });
-        assert!(s.clear_pending_pen_create(), "pending → cleared, reports true");
+        assert!(
+            s.clear_pending_pen_create(),
+            "pending → cleared, reports true"
+        );
         assert!(!s.has_pending_pen_create());
     }
 

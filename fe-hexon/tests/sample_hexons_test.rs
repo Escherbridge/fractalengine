@@ -50,7 +50,10 @@ fn alpine_tileset_loads_via_hexon_tile_source() {
 
     // Every generated coordinate is servable.
     for (z, x, y) in sample_hexons::demo_tile_coords() {
-        assert!(source.has_tile(TileCoord::new(x, y, z)), "missing tile {z}/{x}/{y}");
+        assert!(
+            source.has_tile(TileCoord::new(x, y, z)),
+            "missing tile {z}/{x}/{y}"
+        );
     }
 }
 
@@ -106,12 +109,7 @@ fn lakeside_scene_round_trips_nodes_and_schema() {
     let waypoints = data
         .nodes
         .iter()
-        .filter(|n| {
-            n.properties
-                .as_ref()
-                .and_then(|p| p["gpx_type"].as_str())
-                == Some("waypoint")
-        })
+        .filter(|n| n.properties.as_ref().and_then(|p| p["gpx_type"].as_str()) == Some("waypoint"))
         .count();
     assert_eq!(waypoints, 2);
 

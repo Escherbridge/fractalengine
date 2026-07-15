@@ -17,11 +17,15 @@ pub(crate) fn annotation_card_section(
     node_mgr: &NodeManager,
     ui_mgr: &mut UiManager,
 ) {
-    let Some(sel) = node_mgr.selected.as_ref() else { return };
+    let Some(sel) = node_mgr.selected.as_ref() else {
+        return;
+    };
     let node_id = sel.node_id.clone();
 
     egui::CollapsingHeader::new(
-        egui::RichText::new("Annotation").strong().color(theme::TEXT_SECTION),
+        egui::RichText::new("Annotation")
+            .strong()
+            .color(theme::TEXT_SECTION),
     )
     .default_open(false)
     .show(ui, |ui| {
@@ -152,7 +156,10 @@ pub(crate) fn annotation_save_actions(
     .map(|(key, buf)| {
         let trimmed = buf.trim();
         if trimmed.is_empty() {
-            UiAction::DeleteNodeProperty { node_id: node_id.to_string(), key: key.to_string() }
+            UiAction::DeleteNodeProperty {
+                node_id: node_id.to_string(),
+                key: key.to_string(),
+            }
         } else {
             UiAction::SetNodeProperty {
                 node_id: node_id.to_string(),
@@ -215,7 +222,11 @@ mod tests {
         let actions = annotation_save_actions("node-1", "Trailhead", "Start here", "#ff0000");
         assert_eq!(actions.len(), 3);
         match &actions[0] {
-            UiAction::SetNodeProperty { node_id, key, value } => {
+            UiAction::SetNodeProperty {
+                node_id,
+                key,
+                value,
+            } => {
                 assert_eq!(node_id, "node-1");
                 assert_eq!(key, ANNOTATION_TITLE_KEY);
                 assert_eq!(value, &serde_json::json!("Trailhead"));
@@ -244,7 +255,9 @@ mod tests {
             other => panic!("expected DeleteNodeProperty for whitespace-only title, got {other:?}"),
         }
         match &actions[1] {
-            UiAction::SetNodeProperty { value, .. } => assert_eq!(value, &serde_json::json!("Body")),
+            UiAction::SetNodeProperty { value, .. } => {
+                assert_eq!(value, &serde_json::json!("Body"))
+            }
             other => panic!("expected SetNodeProperty for body, got {other:?}"),
         }
     }

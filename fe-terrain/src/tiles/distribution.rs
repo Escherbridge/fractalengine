@@ -312,6 +312,12 @@ pub struct PartialTileSource {
     chunks: HashMap<u32, HexonTileSource>,
 }
 
+impl Default for PartialTileSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartialTileSource {
     /// Create an empty partial source.
     pub fn new() -> Self {

@@ -15,7 +15,9 @@ use iroh_gossip::net::{Gossip, GossipTopic};
 use iroh_gossip::proto::TopicId;
 
 use crate::endpoint::SyncEndpoint;
-use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender, TransformUpdate};
+use crate::messages::{
+    SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender, TransformUpdate,
+};
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator, VerseReplicator,
 };
@@ -504,6 +506,7 @@ fn derive_gossip_topic(verse_id: &str) -> String {
 ///
 /// Broadcasts the transform update to peers via iroh-gossip.
 /// If gossip is not available, logs a warning and skips broadcast.
+#[allow(clippy::too_many_arguments)] // gossip broadcast seam — params mirror the command
 async fn handle_update_node_transform(
     gossip_host: &Option<Gossip>,
     gossip_topics: &mut HashMap<String, GossipTopic>,
@@ -642,14 +645,16 @@ impl TilesetDownloadTracker {
         }
     }
 
+    #[allow(dead_code)] // download-start bookkeeping — wiring lands with P2P chunk transfer
     fn start(&mut self, tileset_id: String, peer_id: String, chunk_seq: u32) {
         self.active.insert(tileset_id, (peer_id, chunk_seq));
     }
 
     fn cancel(&mut self, tileset_id: &str) -> Option<(String, u32)> {
-        self.active.remove(tileset_id).map(|(peer_id, chunk_seq)| (peer_id, chunk_seq))
+        self.active.remove(tileset_id)
     }
 
+    #[allow(dead_code)] // download-start bookkeeping — wiring lands with P2P chunk transfer
     fn get(&self, tileset_id: &str) -> Option<&(String, u32)> {
         self.active.get(tileset_id)
     }
@@ -665,7 +670,10 @@ async fn handle_advertise_tilesets(
     verse_id: &str,
 ) {
     if gossip_host.is_none() {
-        tracing::debug!(len = advertisements_json.len(), "No gossip, skipping tileset advertise");
+        tracing::debug!(
+            len = advertisements_json.len(),
+            "No gossip, skipping tileset advertise"
+        );
         return;
     };
 
@@ -687,7 +695,10 @@ async fn handle_advertise_tilesets(
     // Get the verse topic handle
     let topic_key = derive_gossip_topic(verse_id);
     let Some(topic) = gossip_topics.get(&topic_key) else {
-        tracing::warn!(verse_id, "No gossip topic for verse, cannot advertise tilesets");
+        tracing::warn!(
+            verse_id,
+            "No gossip topic for verse, cannot advertise tilesets"
+        );
         return;
     };
 
@@ -713,52 +724,44 @@ async fn handle_advertise_tilesets(
 ///
 /// Looks up tileset metadata locally and sends to requesting peer.
 /// This is a stub - full implementation would track local tilesets.
-fn handle_request_tileset_meta(
-    peer_id: &str,
-    tileset_id: &str,
-    evt_tx: &SyncEventSender,
-) {
+fn handle_request_tileset_meta(peer_id: &str, tileset_id: &str, evt_tx: &SyncEventSender) {
     tracing::debug!(peer_id = %peer_id, tileset_id = %tileset_id, "RequestTilesetMeta (stub)");
 
     // Stub: emit a placeholder response
     // In full implementation, we'd look up actual metadata
     let meta_json = r#"{"error": "tileset not found locally"}"#;
-    evt_tx.send(SyncEvent::TilesetMetaReceived {
-        peer_id: peer_id.to_string(),
-        tileset_id: tileset_id.to_string(),
-        meta_json: meta_json.to_string(),
-        total_chunks: 0,
-        approx_size_bytes: 0,
-    }).ok();
+    evt_tx
+        .send(SyncEvent::TilesetMetaReceived {
+            peer_id: peer_id.to_string(),
+            tileset_id: tileset_id.to_string(),
+            meta_json: meta_json.to_string(),
+            total_chunks: 0,
+            approx_size_bytes: 0,
+        })
+        .ok();
 }
 
 /// Handle [`SyncCommand::RequestChunk`].
 ///
 /// Requests a chunk from a peer via iroh-blobs.
 /// This is a stub - full implementation would use actual blob transfer.
-fn handle_request_chunk(
-    peer_id: &str,
-    tileset_id: &str,
-    chunk_seq: u32,
-    evt_tx: &SyncEventSender,
-) {
+fn handle_request_chunk(peer_id: &str, tileset_id: &str, chunk_seq: u32, evt_tx: &SyncEventSender) {
     tracing::debug!(peer_id = %peer_id, tileset_id = %tileset_id, chunk_seq, "RequestChunk (stub)");
 
     // Stub: emit failure since we can't actually transfer
-    evt_tx.send(SyncEvent::ChunkFailed {
-        tileset_id: tileset_id.to_string(),
-        chunk_seq,
-        reason: "chunk transfer not implemented in stub".to_string(),
-    }).ok();
+    evt_tx
+        .send(SyncEvent::ChunkFailed {
+            tileset_id: tileset_id.to_string(),
+            chunk_seq,
+            reason: "chunk transfer not implemented in stub".to_string(),
+        })
+        .ok();
 }
 
 /// Handle [`SyncCommand::CancelTilesetDownload`].
 ///
 /// Cancels an in-progress tileset download.
-fn handle_cancel_tileset_download(
-    download_tracker: &mut TilesetDownloadTracker,
-    tileset_id: &str,
-) {
+fn handle_cancel_tileset_download(download_tracker: &mut TilesetDownloadTracker, tileset_id: &str) {
     if let Some((peer_id, chunk_seq)) = download_tracker.cancel(tileset_id) {
         tracing::info!(tileset_id, peer_id = %peer_id, chunk_seq, "Cancelled tileset download");
     } else {
@@ -963,7 +966,10 @@ mod tests {
         let topic3 = derive_gossip_topic("verse-xyz");
 
         assert_eq!(topic1, topic2, "same verse_id should produce same topic");
-        assert_ne!(topic1, topic3, "different verse_ids should produce different topics");
+        assert_ne!(
+            topic1, topic3,
+            "different verse_ids should produce different topics"
+        );
     }
 
     #[test]
@@ -1031,7 +1037,10 @@ mod tests {
         // Should not panic
         unsubscribe_from_verse_gossip_topic(&gossip_host, &mut gossip_topics, "verse-test");
 
-        assert!(gossip_topics.is_empty(), "map should be empty after unsubscribe");
+        assert!(
+            gossip_topics.is_empty(),
+            "map should be empty after unsubscribe"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1050,12 +1059,18 @@ mod tests {
 
         // Start a download
         tracker.start("ts-001".to_string(), "peer-a".to_string(), 0);
-        assert!(tracker.get("ts-001").is_some(), "download should be tracked");
+        assert!(
+            tracker.get("ts-001").is_some(),
+            "download should be tracked"
+        );
 
         // Cancel it
         let result = tracker.cancel("ts-001");
         assert!(result.is_some(), "cancel should return the download info");
-        assert!(tracker.get("ts-001").is_none(), "download should be removed after cancel");
+        assert!(
+            tracker.get("ts-001").is_none(),
+            "download should be removed after cancel"
+        );
     }
 
     #[test]
@@ -1064,7 +1079,10 @@ mod tests {
 
         // Cancel something that doesn't exist
         let result = tracker.cancel("ts-nonexistent");
-        assert!(result.is_none(), "canceling non-existent should return None");
+        assert!(
+            result.is_none(),
+            "canceling non-existent should return None"
+        );
     }
 
     #[test]
@@ -1079,6 +1097,11 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(handle_advertise_tilesets(&gossip_host, &gossip_topics, ads_json, "verse-1"));
+        rt.block_on(handle_advertise_tilesets(
+            &gossip_host,
+            &gossip_topics,
+            ads_json,
+            "verse-1",
+        ));
     }
 }

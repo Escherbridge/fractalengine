@@ -26,7 +26,11 @@ struct TestDb {
 
 fn spawn_test_db() -> TestDb {
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir for test DB");
-    let db_path = tmp_dir.path().join("gpx_path_persistence_test.db").to_string_lossy().to_string();
+    let db_path = tmp_dir
+        .path()
+        .join("gpx_path_persistence_test.db")
+        .to_string_lossy()
+        .to_string();
 
     let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(256);
     let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(256);
@@ -46,31 +50,60 @@ fn spawn_test_db() -> TestDb {
     let started = res_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("gpx_path_persistence test DB did not start within 30s");
-    assert!(matches!(started, DbResult::Started), "expected DbResult::Started, got {started:?}");
+    assert!(
+        matches!(started, DbResult::Started),
+        "expected DbResult::Started, got {started:?}"
+    );
 
-    TestDb { cmd_tx, res_rx, _tmp_dir: tmp_dir }
+    TestDb {
+        cmd_tx,
+        res_rx,
+        _tmp_dir: tmp_dir,
+    }
 }
 
 /// Build the minimal verse -> fractal -> petal hierarchy and return the petal ID.
 fn seed_hierarchy(db: &TestDb) -> String {
-    db.cmd_tx.send(DbCommand::CreateVerse { name: "gpx-path-test-verse".to_string() }).unwrap();
-    let verse_id = match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateVerse result") {
+    db.cmd_tx
+        .send(DbCommand::CreateVerse {
+            name: "gpx-path-test-verse".to_string(),
+        })
+        .unwrap();
+    let verse_id = match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateVerse result")
+    {
         DbResult::VerseCreated { id, .. } => id,
         other => panic!("expected VerseCreated, got {other:?}"),
     };
 
     db.cmd_tx
-        .send(DbCommand::CreateFractal { verse_id, name: "gpx-path-test-fractal".to_string() })
+        .send(DbCommand::CreateFractal {
+            verse_id,
+            name: "gpx-path-test-fractal".to_string(),
+        })
         .unwrap();
-    let fractal_id = match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateFractal result") {
+    let fractal_id = match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateFractal result")
+    {
         DbResult::FractalCreated { id, .. } => id,
         other => panic!("expected FractalCreated, got {other:?}"),
     };
 
     db.cmd_tx
-        .send(DbCommand::CreatePetal { fractal_id, name: "gpx-path-test-petal".to_string() })
+        .send(DbCommand::CreatePetal {
+            fractal_id,
+            name: "gpx-path-test-petal".to_string(),
+        })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreatePetal result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreatePetal result")
+    {
         DbResult::PetalCreated { id, .. } => id,
         other => panic!("expected PetalCreated, got {other:?}"),
     }
@@ -79,9 +112,18 @@ fn seed_hierarchy(db: &TestDb) -> String {
 /// Create a node in `petal_id` at local `position` and return its node ID.
 fn create_node(db: &TestDb, petal_id: &str, name: &str, position: [f32; 3]) -> String {
     db.cmd_tx
-        .send(DbCommand::CreateNode { petal_id: petal_id.to_string(), name: name.to_string(), position, correlation_id: None })
+        .send(DbCommand::CreateNode {
+            petal_id: petal_id.to_string(),
+            name: name.to_string(),
+            position,
+            correlation_id: None,
+        })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("CreateNode result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("CreateNode result")
+    {
         DbResult::NodeCreated { id, .. } => id,
         other => panic!("expected NodeCreated, got {other:?}"),
     }
@@ -90,9 +132,17 @@ fn create_node(db: &TestDb, petal_id: &str, name: &str, position: [f32; 3]) -> S
 /// Set a custom property on a node via the real `SetNodeProperty` command.
 fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value) {
     db.cmd_tx
-        .send(DbCommand::SetNodeProperty { node_id: node_id.to_string(), key: key.to_string(), value })
+        .send(DbCommand::SetNodeProperty {
+            node_id: node_id.to_string(),
+            key: key.to_string(),
+            value,
+        })
         .unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("SetNodeProperty result") {
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("SetNodeProperty result")
+    {
         DbResult::NodePropertySet { .. } => {}
         other => panic!("expected NodePropertySet, got {other:?}"),
     }
@@ -100,8 +150,16 @@ fn set_property(db: &TestDb, node_id: &str, key: &str, value: serde_json::Value)
 
 /// Load a node's custom properties via the real `GetNodeProperties` command.
 fn get_properties(db: &TestDb, node_id: &str) -> serde_json::Value {
-    db.cmd_tx.send(DbCommand::GetNodeProperties { node_id: node_id.to_string() }).unwrap();
-    match db.res_rx.recv_timeout(CMD_TIMEOUT).expect("GetNodeProperties result") {
+    db.cmd_tx
+        .send(DbCommand::GetNodeProperties {
+            node_id: node_id.to_string(),
+        })
+        .unwrap();
+    match db
+        .res_rx
+        .recv_timeout(CMD_TIMEOUT)
+        .expect("GetNodeProperties result")
+    {
         DbResult::NodePropertiesLoaded { properties, .. } => properties,
         other => panic!("expected NodePropertiesLoaded, got {other:?}"),
     }
@@ -122,7 +180,10 @@ fn gpx_points_round_trip_persists_and_reads_back() {
     set_property(&db, &node_id, "gpx_type", serde_json::json!("track"));
 
     let props = get_properties(&db, &node_id);
-    assert_eq!(props["gpx_points"], points, "gpx_points must round-trip exactly");
+    assert_eq!(
+        props["gpx_points"], points,
+        "gpx_points must round-trip exactly"
+    );
     assert_eq!(props["gpx_type"], serde_json::json!("track"));
 }
 
@@ -145,7 +206,12 @@ fn gpx_points_overwrite_replaces_previous_value() {
     let petal_id = seed_hierarchy(&db);
     let node_id = create_node(&db, &petal_id, "Appended Track", [0.0, 0.0, 0.0]);
 
-    set_property(&db, &node_id, "gpx_points", serde_json::json!([[0.0, 0.0, 0.0, 0.0]]));
+    set_property(
+        &db,
+        &node_id,
+        "gpx_points",
+        serde_json::json!([[0.0, 0.0, 0.0, 0.0]]),
+    );
     set_property(
         &db,
         &node_id,
@@ -154,8 +220,14 @@ fn gpx_points_overwrite_replaces_previous_value() {
     );
 
     let props = get_properties(&db, &node_id);
-    let arr = props["gpx_points"].as_array().expect("gpx_points must be an array");
-    assert_eq!(arr.len(), 2, "second SetNodeProperty must overwrite, not append");
+    let arr = props["gpx_points"]
+        .as_array()
+        .expect("gpx_points must be an array");
+    assert_eq!(
+        arr.len(),
+        2,
+        "second SetNodeProperty must overwrite, not append"
+    );
 }
 
 #[test]

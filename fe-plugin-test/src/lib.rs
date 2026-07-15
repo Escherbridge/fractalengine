@@ -42,8 +42,8 @@ pub mod prelude {
 
 // Top-level re-exports
 pub use assertions::{
-    assert_kv_set, assert_logged, assert_no_writes, assert_node_property_set,
-    assert_nodes_created, assert_property_set, assert_query_ran,
+    assert_kv_set, assert_logged, assert_no_writes, assert_node_property_set, assert_nodes_created,
+    assert_property_set, assert_query_ran,
 };
 pub use fixtures::SceneFixture;
 pub use mock_host::MockHostEnv;

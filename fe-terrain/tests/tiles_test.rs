@@ -1,7 +1,7 @@
-use fe_terrain::tiles::source::TileCoord;
-use fe_terrain::tiles::elevation::{TerrainRgbDecoder, TerrariumDecoder, ElevationDecoder};
 use fe_terrain::tiles::cache::DiskTileCache;
+use fe_terrain::tiles::elevation::{ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder};
 use fe_terrain::tiles::lod::TileLodManager;
+use fe_terrain::tiles::source::TileCoord;
 
 #[test]
 fn tile_coord_from_lat_lon() {
@@ -56,7 +56,11 @@ fn terrain_rgb_decoder() {
     let pixels = vec![1, 134, 160]; // RGB for 0m elevation
     let elevations = decoder.decode(&pixels, 1, 1);
     assert_eq!(elevations.len(), 1);
-    assert!((elevations[0] - 0.0).abs() < 0.2, "sea level should be ~0, got {}", elevations[0]);
+    assert!(
+        (elevations[0] - 0.0).abs() < 0.2,
+        "sea level should be ~0, got {}",
+        elevations[0]
+    );
 
     // Known value: R=0, G=0, B=0 -> h = -10000 + 0 = -10000
     let pixels_deep = vec![0, 0, 0];
@@ -77,7 +81,11 @@ fn terrarium_decoder() {
     let pixels = vec![128, 0, 0];
     let elevations = decoder.decode(&pixels, 1, 1);
     assert_eq!(elevations.len(), 1);
-    assert!((elevations[0] - 0.0).abs() < 0.1, "sea level should be ~0, got {}", elevations[0]);
+    assert!(
+        (elevations[0] - 0.0).abs() < 0.1,
+        "sea level should be ~0, got {}",
+        elevations[0]
+    );
 
     // R=0, G=0, B=0 -> h = -32768
     let pixels_deep = vec![0, 0, 0];
@@ -106,7 +114,9 @@ fn disk_tile_cache_put_get() {
 
     // Put a tile
     let data = b"fake tile data";
-    cache.put("test-source", "14/42/99", data).expect("put failed");
+    cache
+        .put("test-source", "14/42/99", data)
+        .expect("put failed");
 
     // Get it back
     let retrieved = cache.get("test-source", "14/42/99");
@@ -170,7 +180,7 @@ fn lod_manager_basic() {
 
 #[test]
 fn config_serde_roundtrip() {
-    use fe_terrain::config::{TerrainConfig, ElevationSourceKind, LayerConfig};
+    use fe_terrain::config::{ElevationSourceKind, LayerConfig, TerrainConfig};
     use fe_terrain::projection::Projection;
 
     let config = TerrainConfig {
@@ -197,10 +207,13 @@ fn config_serde_roundtrip() {
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: TerrainConfig = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(deserialized.enabled, true);
+    assert!(deserialized.enabled);
     assert_eq!(deserialized.max_zoom, 16);
     assert_eq!(deserialized.min_zoom, 8);
-    assert_eq!(deserialized.elevation_source, ElevationSourceKind::TerrainRgb);
+    assert_eq!(
+        deserialized.elevation_source,
+        ElevationSourceKind::TerrainRgb
+    );
     assert_eq!(deserialized.layers.len(), 1);
     assert_eq!(deserialized.layers[0].name, "satellite");
     assert!((deserialized.origin.origin_lat - 47.6).abs() < 1e-6);
@@ -220,5 +233,5 @@ fn petal_terrain_binding_serde() {
     let deserialized: PetalTerrainBinding = serde_json::from_str(&json).unwrap();
 
     assert_eq!(deserialized.petal_id, "petal-123");
-    assert_eq!(deserialized.config.enabled, false);
+    assert!(!deserialized.config.enabled);
 }

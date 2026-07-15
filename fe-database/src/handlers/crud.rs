@@ -1,10 +1,10 @@
 use tracing::instrument;
 
+use crate::repo::{Db, Repo};
+use crate::schema::{Fractal, Role, Verse};
 use fe_runtime::messages::{
     FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
 };
-use crate::repo::{Db, Repo};
-use crate::schema::{Fractal, Role, Verse};
 
 use super::invite::{generate_namespace_secret, store_namespace_secret};
 use crate::{
@@ -144,11 +144,15 @@ pub(crate) async fn create_petal_handler(
     .await?
     .check()
     .map_err(|e| anyhow::anyhow!("CREATE petal '{name}' failed: {e}"))?;
-    Repo::<Role>::create(db, &Role {
-        peer_did: local_did.to_string(),
-        scope:    format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.clone()),
-        role:     "owner".to_string(),
-    }).await?;
+    Repo::<Role>::create(
+        db,
+        &Role {
+            peer_did: local_did.to_string(),
+            scope: format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.clone()),
+            role: "owner".to_string(),
+        },
+    )
+    .await?;
     Ok(petal_id)
 }
 
@@ -193,9 +197,14 @@ pub(crate) async fn create_node_handler(
     .map_err(|e| anyhow::anyhow!("CREATE empty node '{name}' failed: {e}"))?;
 
     if let Err(e) = super::node_log::append_node_log(
-        db, &node_id, "created", "local",
+        db,
+        &node_id,
+        "created",
+        "local",
         &serde_json::json!({ "petal_id": petal_id, "name": name, "position": position }),
-    ).await {
+    )
+    .await
+    {
         tracing::warn!("Failed to write node_log for created node {node_id}: {e}");
     }
 
@@ -254,9 +263,9 @@ pub(crate) async fn delete_node_handler(db: &Db, node_id: &str) -> anyhow::Resul
     // The parent node existed (the petal_id lookup above matched it), so if the
     // combined delete returned nothing the row vanished between lookup and
     // delete — preserve the matched-no-node contract.
-    let parent_deleted = deleted.iter().any(|row| {
-        row.get("node_id").and_then(|v| v.as_str()) == Some(node_id)
-    });
+    let parent_deleted = deleted
+        .iter()
+        .any(|row| row.get("node_id").and_then(|v| v.as_str()) == Some(node_id));
     if !parent_deleted {
         anyhow::bail!("DeleteNode matched no node with node_id = {node_id}");
     }
@@ -354,12 +363,17 @@ pub(crate) async fn import_gltf_handler(
     .map_err(|e| anyhow::anyhow!("CREATE gltf node '{name}' failed: {e}"))?;
 
     if let Err(e) = super::node_log::append_node_log(
-        db, &node_id, "created", "local",
+        db,
+        &node_id,
+        "created",
+        "local",
         &serde_json::json!({
             "petal_id": petal_id, "name": name, "position": position,
             "asset_id": asset_id, "asset_path": &asset_path,
         }),
-    ).await {
+    )
+    .await
+    {
         tracing::warn!("Failed to write node_log for imported gltf node {node_id}: {e}");
     }
 
@@ -412,8 +426,7 @@ pub(crate) async fn load_hierarchy_handler(
             .await?;
         let asset_rows: Vec<serde_json::Value> = asset_res.take(0)?;
         for row in &asset_rows {
-            if let (Some(aid), Some(ch)) =
-                (row["asset_id"].as_str(), row["content_hash"].as_str())
+            if let (Some(aid), Some(ch)) = (row["asset_id"].as_str(), row["content_hash"].as_str())
             {
                 asset_hash_map.insert(aid.to_string(), ch.to_string());
             }
@@ -466,9 +479,7 @@ pub(crate) async fn load_hierarchy_handler(
                 if blob_store.has_blob(&hash) {
                     return Some(format!("blob://{}.glb", ch));
                 }
-                tracing::warn!(
-                    "Blob missing for asset_id={aid} content_hash={ch}"
-                );
+                tracing::warn!("Blob missing for asset_id={aid} content_hash={ch}");
             }
         }
         let dir = imported_assets_dir();
@@ -489,9 +500,7 @@ pub(crate) async fn load_hierarchy_handler(
                 return Some(rel);
             }
         }
-        tracing::warn!(
-            "Hierarchy asset missing for asset_id={aid} (no blob, no imported file)"
-        );
+        tracing::warn!("Hierarchy asset missing for asset_id={aid} (no blob, no imported file)");
         None
     };
 
@@ -509,8 +518,7 @@ pub(crate) async fn load_hierarchy_handler(
                         .map(|f| {
                             let fractal_id =
                                 f["fractal_id"].as_str().unwrap_or_default().to_string();
-                            let fractal_name =
-                                f["name"].as_str().unwrap_or_default().to_string();
+                            let fractal_name = f["name"].as_str().unwrap_or_default().to_string();
 
                             let petals: Vec<PetalHierarchyData> = petals_by_fractal
                                 .get(&fractal_id)
@@ -521,10 +529,8 @@ pub(crate) async fn load_hierarchy_handler(
                                                 .as_str()
                                                 .unwrap_or_default()
                                                 .to_string();
-                                            let petal_name = p["name"]
-                                                .as_str()
-                                                .unwrap_or_default()
-                                                .to_string();
+                                            let petal_name =
+                                                p["name"].as_str().unwrap_or_default().to_string();
 
                                             let nodes: Vec<NodeHierarchyData> = nodes_by_petal
                                                 .get(&petal_id)
@@ -538,14 +544,12 @@ pub(crate) async fn load_hierarchy_handler(
                                                                 .map(|s| s.to_string());
                                                             let coords =
                                                                 &n["position"]["coordinates"];
-                                                            let x = coords[0]
-                                                                .as_f64()
-                                                                .unwrap_or(0.0)
-                                                                as f32;
-                                                            let z = coords[1]
-                                                                .as_f64()
-                                                                .unwrap_or(0.0)
-                                                                as f32;
+                                                            let x =
+                                                                coords[0].as_f64().unwrap_or(0.0)
+                                                                    as f32;
+                                                            let z =
+                                                                coords[1].as_f64().unwrap_or(0.0)
+                                                                    as f32;
                                                             let y = n["elevation"]
                                                                 .as_f64()
                                                                 .unwrap_or(0.0)
@@ -645,8 +649,7 @@ pub(crate) async fn load_nodes_by_petal_handler(
             .await?;
         let asset_rows: Vec<serde_json::Value> = asset_res.take(0)?;
         for row in &asset_rows {
-            if let (Some(aid), Some(ch)) =
-                (row["asset_id"].as_str(), row["content_hash"].as_str())
+            if let (Some(aid), Some(ch)) = (row["asset_id"].as_str(), row["content_hash"].as_str())
             {
                 asset_hash_map.insert(aid.to_string(), ch.to_string());
             }
@@ -719,12 +722,15 @@ pub(crate) async fn load_nodes_by_petal_handler(
 // Get node transform
 // ---------------------------------------------------------------------------
 
+/// Persisted node transform triple: (position, rotation, scale).
+pub(crate) type NodeTransformRow = ([f32; 3], [f32; 3], [f32; 3]);
+
 /// Read a single node's persisted transform (position, rotation, scale).
 #[instrument(skip(db))]
 pub(crate) async fn get_node_transform_handler(
     db: &Db,
     node_id: &str,
-) -> anyhow::Result<Option<([f32; 3], [f32; 3], [f32; 3])>> {
+) -> anyhow::Result<Option<NodeTransformRow>> {
     let mut res: surrealdb::IndexedResults = db
         .query("SELECT position, elevation, rotation, scale FROM node WHERE node_id = $nid LIMIT 1")
         .bind(("nid", node_id.to_string()))
@@ -801,7 +807,11 @@ pub(crate) async fn resolve_petal_scope_handler(
         return Ok(None);
     };
 
-    Ok(Some(crate::build_scope(verse_id, Some(&fractal_id), Some(petal_id))))
+    Ok(Some(crate::build_scope(
+        verse_id,
+        Some(&fractal_id),
+        Some(petal_id),
+    )))
 }
 
 /// Resolve a `node_id` to its full hierarchical scope string by first
@@ -856,8 +866,7 @@ mod delete_node_tests {
 
         // Tag the waypoint as a child of the track, mirroring gpx_bridge's
         // property shape (properties.gpx_track_id == track node_id).
-        set_entity_property_helper(&db, &wp_id, "gpx_track_id", serde_json::json!(track_id))
-            .await;
+        set_entity_property_helper(&db, &wp_id, "gpx_track_id", serde_json::json!(track_id)).await;
 
         let petal_id = delete_node_handler(&db, &track_id)
             .await
@@ -878,7 +887,10 @@ mod delete_node_tests {
             .await
             .unwrap();
         let rows2: Vec<serde_json::Value> = res2.take(0).unwrap();
-        assert!(rows2.is_empty(), "cascaded waypoint node row should be gone");
+        assert!(
+            rows2.is_empty(),
+            "cascaded waypoint node row should be gone"
+        );
     }
 
     #[tokio::test]
@@ -895,7 +907,12 @@ mod delete_node_tests {
 
     /// Minimal property-set helper mirroring `set_entity_property_handler`'s
     /// shape without pulling in the fe-query builder (keeps this test local).
-    async fn set_entity_property_helper(db: &Db, node_id: &str, key: &str, value: serde_json::Value) {
+    async fn set_entity_property_helper(
+        db: &Db,
+        node_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) {
         db.query("UPDATE node SET properties[$key] = $val WHERE node_id = $nid")
             .bind(("key", key.to_string()))
             .bind(("val", value))
@@ -906,4 +923,3 @@ mod delete_node_tests {
             .unwrap();
     }
 }
-
