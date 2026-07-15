@@ -1,0 +1,12 @@
+{
+  "id": "outstanding_decisions_20260715",
+  "description": "Decision register: every product/architecture call deferred or provisionally defaulted during the 2026-07-14/15 board-hygiene + 3-wave implementation session. The user ratifies, overrides, or kills each entry; resolved entries get a dated resolution note.",
+  "type": "decision_register",
+  "created_at": "2026-07-15T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 1,
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "Created at user request at session end ('hold any questions for the end'). Sources: 37-agent track audit (2026-07-14) + 3 implementation waves (commits 9ef76a1, f062921, 51bc90e). UX-theme entries mirrored into ux_qa_review_20260714/findings.md."
+}

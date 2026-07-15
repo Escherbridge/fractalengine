@@ -10,5 +10,5 @@
   "blocks": [],
   "archived": false,
   "alignment": {"verdict": "PLATFORM-KEEP", "priority": "P1", "rationale": "QA scaffold for the user's review; produces the UX track's backlog. The roadmap explicitly defers UX to a user-owned track — this is its input.", "assessed": "2026-07-14"},
-  "notes": "Created 2026-07-14 at user request ('create a qa track for the ux review to assist'). Checklist covers: pen/path drawing, data icons, track styling, path-asset stamp, Paths/GIS editing, and forward-looking analytics-egress affordance wishes. Known concern to validate: single-point-node flat quad is a smaller click target than the old sphere. Findings go in findings.md; correctness bugs get fixed outside this review track."
+  "notes": "Created 2026-07-14 at user request ('create a qa track for the ux review to assist'). Checklist covers: pen/path drawing, data icons, track styling, path-asset stamp, Paths/GIS editing, and forward-looking analytics-egress affordance wishes. Known concern to validate: single-point-node flat quad is a smaller click target than the old sphere. Findings go in findings.md; correctness bugs get fixed outside this review track. 2026-07-15: outstanding-decisions register created (outstanding_decisions_20260715); UX-theme entries mirrored into findings.md."
 }

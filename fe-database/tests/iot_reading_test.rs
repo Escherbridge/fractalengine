@@ -6,6 +6,9 @@ use fe_database::handlers::iot_reading::{insert_readings, IotIngestError, IotRea
 type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;
 
 async fn setup_db() -> Db {
+    // The write handler packs HLC timestamps; production init happens during
+    // DB startup, which this raw in-memory setup bypasses.
+    fe_database::op_log::init_hlc(0);
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
         .await
         .expect("in-memory SurrealDB");

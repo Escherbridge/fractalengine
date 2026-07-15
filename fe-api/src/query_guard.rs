@@ -19,7 +19,9 @@ const BLOCKED_KEYWORDS: &[&str] = &[
     "FOR", "THROW", "SLEEP", "BREAK", "LIVE", "KILL", "IF", "BEGIN", "COMMIT", "CANCEL",
 ];
 
-/// Tables a read-only query may target.
+/// Tables a read-only query may target. ROLE/VERSE_MEMBER deliberately
+/// excluded — RBAC data is not readable via the BI egress path (2026-07-15
+/// security review; the role-gated elevated endpoint retains them).
 const ALLOWED_TABLES: &[&str] = &[
     "NODE",
     "VERSE",
@@ -29,11 +31,9 @@ const ALLOWED_TABLES: &[&str] = &[
     "FIELD_DEF",
     "ASSET",
     "MODEL",
-    "ROLE",
     "ROOM",
     "CRATE_REGISTRY",
     "CRATE_ENTRY",
-    "VERSE_MEMBER",
     "IOT_READING",
 ];
 
@@ -80,27 +80,14 @@ pub fn validate_select_sql(sql: &str) -> Result<(), String> {
     // Reject any dangerous keyword anywhere in the statement (including subqueries,
     // comments, RETURN wrappers, LET bindings, etc.).
     for keyword in BLOCKED_KEYWORDS {
-        // Match whole-word-ish: the keyword must appear as an uppercase token,
-        // not as a substring of an identifier (e.g. "DELETED" should not match "DELETE").
-        let mut start = 0;
-        while let Some(pos) = sql_upper[start..].find(keyword) {
-            let abs_pos = start + pos;
-            let before_ok = abs_pos == 0
-                || !sql_upper.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
-                    && sql_upper.as_bytes()[abs_pos - 1] != b'_';
-            let after_pos = abs_pos + keyword.len();
-            let after_ok = after_pos >= sql_upper.len()
-                || !sql_upper.as_bytes()[after_pos].is_ascii_alphanumeric()
-                    && sql_upper.as_bytes()[after_pos] != b'_';
-            if before_ok && after_ok {
-                return Err(format!("{keyword} keyword is not allowed in queries"));
-            }
-            start = abs_pos + keyword.len();
+        if contains_word(&sql_upper, keyword) {
+            return Err(format!("{keyword} keyword is not allowed in queries"));
         }
     }
 
-    // Table whitelist: only allow queries against these tables.
-    if let Some(table_name) = from_table(&sql_upper) {
+    // Table whitelist: EVERY FROM clause (top level and subqueries) must
+    // target whitelisted tables — see AGENTS.md §query-guard (subquery bypass).
+    for table_name in from_clause_tables(&sql_upper)? {
         if !ALLOWED_TABLES.contains(&table_name.as_str()) {
             return Err(format!(
                 "queries against table '{table_name}' are not allowed"
@@ -109,6 +96,24 @@ pub fn validate_select_sql(sql: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// True if `word` appears as a whole word (not inside a longer identifier).
+pub fn contains_word(sql_upper: &str, word: &str) -> bool {
+    let bytes = sql_upper.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut start = 0;
+    while let Some(pos) = sql_upper[start..].find(word) {
+        let abs_pos = start + pos;
+        let before_ok = abs_pos == 0 || !is_ident(bytes[abs_pos - 1]);
+        let after_pos = abs_pos + word.len();
+        let after_ok = after_pos >= bytes.len() || !is_ident(bytes[after_pos]);
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs_pos + word.len();
+    }
+    false
 }
 
 /// Extract the (uppercased) table name following the first FROM, if any.
@@ -120,6 +125,87 @@ pub fn from_table(sql_upper: &str) -> Option<String> {
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
     Some(table_name)
+}
+
+/// Every table identifier targeted by any FROM clause; errors on FROM
+/// targets that cannot be whitelist-checked (variables, literals).
+pub fn from_clause_tables(sql_upper: &str) -> Result<Vec<String>, String> {
+    let bytes = sql_upper.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut tables = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = sql_upper[start..].find("FROM") {
+        let abs_pos = start + pos;
+        let before_ok = abs_pos == 0 || !is_ident(bytes[abs_pos - 1]);
+        let after_kw = abs_pos + 4;
+        let after_ok = after_kw >= bytes.len() || !is_ident(bytes[after_kw]);
+        start = after_kw;
+        if !(before_ok && after_ok) {
+            continue;
+        }
+        let mut rest = sql_upper[after_kw..].trim_start();
+        // A parenthesized subquery's own FROM is caught by this same scan.
+        if rest.starts_with('(') {
+            continue;
+        }
+        loop {
+            let table: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if table.is_empty() {
+                return Err(
+                    "unsupported FROM target (only table names or subqueries are allowed)"
+                        .to_string(),
+                );
+            }
+            rest = rest[table.len()..].trim_start();
+            tables.push(table);
+            match rest.strip_prefix(',') {
+                Some(next) => rest = next.trim_start(),
+                None => break,
+            }
+        }
+    }
+    Ok(tables)
+}
+
+/// Elevated-query validation: whole-word DDL/system keyword ban plus
+/// all-occurrence FROM/INTO/UPDATE target whitelisting (no substring or
+/// first-occurrence-only bypasses).
+pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result<(), String> {
+    for keyword in ["DEFINE", "REMOVE", "INFO", "SLEEP", "KILL"] {
+        if contains_word(sql_upper, keyword) {
+            return Err(format!("{keyword} is not allowed in elevated queries"));
+        }
+    }
+    let bytes = sql_upper.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    for keyword in ["FROM", "INTO", "UPDATE"] {
+        let mut start = 0;
+        while let Some(pos) = sql_upper[start..].find(keyword) {
+            let abs_pos = start + pos;
+            let before_ok = abs_pos == 0 || !is_ident(bytes[abs_pos - 1]);
+            let after_kw = abs_pos + keyword.len();
+            let after_ok = after_kw >= bytes.len() || !is_ident(bytes[after_kw]);
+            start = after_kw;
+            if !(before_ok && after_ok) {
+                continue;
+            }
+            let rest = sql_upper[after_kw..].trim_start();
+            if rest.starts_with('(') {
+                continue;
+            }
+            let table: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !table.is_empty() && !allowed_tables.contains(&table.as_str()) {
+                return Err(format!("table '{table}' is not allowed in elevated queries"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build a scope filter clause from the token's scope string.
@@ -336,5 +422,59 @@ mod tests {
             Some("NODE")
         );
         assert_eq!(from_table("SELECT 1").as_deref(), None);
+    }
+
+    #[test]
+    fn subquery_tables_are_whitelist_checked() {
+        // 2026-07-15 security review: a nested SELECT must not reach
+        // non-whitelisted tables through its own FROM clause.
+        let err =
+            validate_select_sql("SELECT * FROM node WHERE id IN (SELECT id FROM session_cache)")
+                .unwrap_err();
+        assert!(err.contains("session_cache") || err.contains("SESSION_CACHE"), "{err}");
+        assert!(validate_select_sql(
+            "SELECT * FROM node WHERE id IN (SELECT anchor_node_id FROM iot_reading)"
+        )
+        .is_ok());
+        assert!(validate_select_sql("SELECT * FROM (SELECT * FROM node)").is_ok());
+    }
+
+    #[test]
+    fn multi_table_from_lists_are_fully_checked() {
+        assert!(validate_select_sql("SELECT * FROM node, secrets").is_err());
+        assert!(validate_select_sql("SELECT * FROM node, petal").is_ok());
+    }
+
+    #[test]
+    fn non_identifier_from_targets_are_rejected() {
+        assert!(validate_select_sql("SELECT * FROM $tbl").is_err());
+        assert!(validate_select_sql("SELECT * FROM type::table($t)").is_err());
+    }
+
+    #[test]
+    fn rbac_tables_not_readable_via_egress() {
+        assert!(validate_select_sql("SELECT * FROM role").is_err());
+        assert!(validate_select_sql("SELECT * FROM verse_member").is_err());
+    }
+
+    #[test]
+    fn elevated_ddl_ban_survives_whitespace_tricks() {
+        const TABLES: &[&str] = &["NODE", "ROLE"];
+        // Multi-word substring match was bypassable with doubled whitespace.
+        assert!(validate_elevated_sql("DEFINE  TABLE X", TABLES).is_err());
+        assert!(validate_elevated_sql("DEFINE\nTABLE X", TABLES).is_err());
+        assert!(validate_elevated_sql("INFO FOR DB", TABLES).is_err());
+        assert!(validate_elevated_sql("UPDATE NODE SET X = 1", TABLES).is_ok());
+    }
+
+    #[test]
+    fn elevated_checks_every_target_occurrence() {
+        const TABLES: &[&str] = &["NODE", "ROLE"];
+        // First-occurrence-only checking missed later FROM/UPDATE targets.
+        assert!(
+            validate_elevated_sql("UPDATE NODE SET X = (SELECT Y FROM SESSION_CACHE)", TABLES)
+                .is_err()
+        );
+        assert!(validate_elevated_sql("UPDATE NODE SET X = (SELECT Y FROM ROLE)", TABLES).is_ok());
     }
 }
