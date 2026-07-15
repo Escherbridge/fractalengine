@@ -5,7 +5,17 @@
   "created_at": "2026-07-12T00:00:00Z",
   "status": "in-progress",
   "execution_wave": 1,
-  "depends_on": ["terrain_scale_controls_20260711"],
-  "coordinate_with": ["terrain_lod_hardening_20260711"],
-  "blocks": []
+  "depends_on": [
+    "terrain_scale_controls_20260711"
+  ],
+  "coordinate_with": [
+    "terrain_lod_hardening_20260711"
+  ],
+  "blocks": [],
+  "alignment": {
+    "verdict": "CORE-ANALYTICS",
+    "priority": "P0",
+    "rationale": "Scale/GSD/CRS spine — metrically-correct reporting needs this. Land FR-1..5 before egress GA; rulers trail.",
+    "assessed": "2026-07-14"
+  }
 }

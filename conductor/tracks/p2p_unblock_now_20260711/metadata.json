@@ -23,5 +23,11 @@
     "fe-entity-store/src/lib.rs",
     "fe-sync/src/sync_thread.rs"
   ],
-  "notes": "All four findings spot-check-verified in source (report \u00c2\u00a78.1). Spec-only this session; implementation next session per decisions D5-3 sequencing (these ship first, independent of format/auth tracks)."
+  "notes": "All four findings spot-check-verified in source (report Â§8.1). Spec-only this session; implementation next session per decisions D5-3 sequencing (these ship first, independent of format/auth tracks).",
+  "alignment": {
+    "verdict": "ENABLING-HARDENING",
+    "priority": "P1",
+    "rationale": "4 small local fixes; FR-2 node_log cap is hostile-to-IoT-frequency — feeds iot_spatial_reporting. Ship first.",
+    "assessed": "2026-07-14"
+  }
 }

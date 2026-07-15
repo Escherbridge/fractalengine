@@ -5,5 +5,11 @@
   "created_at": "2026-04-02T00:00:00Z",
   "status": "pending",
   "execution_wave": 4,
-  "wave_rationale": "Backlog Wave-2 feature; superseded UX exists."
+  "wave_rationale": "Backlog Wave-2 feature; superseded UX exists.",
+  "alignment": {
+    "verdict": "PLATFORM-KEEP / DEFER",
+    "priority": "P3",
+    "rationale": "Overlaps shipped asset work; hand to the user's coming UX track.",
+    "assessed": "2026-07-14"
+  }
 }

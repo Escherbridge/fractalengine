@@ -6,5 +6,11 @@
   "status": "pending",
   "execution_wave": 4,
   "wave_rationale": "Backlog fe-ui hot-path fixes; counterpart to p2p_unblock_now engine-side fixes.",
-  "notes": "verified 2026-07-10: update_node_position/update_node_url still O(n^3) nested tree walk"
+  "notes": "verified 2026-07-10: update_node_position/update_node_url still O(n^3) nested tree walk",
+  "alignment": {
+    "verdict": "ENABLING-HARDENING",
+    "priority": "P2",
+    "rationale": "O(n^3) drag-commit lookup + per-frame alloc; helps at data scale.",
+    "assessed": "2026-07-14"
+  }
 }

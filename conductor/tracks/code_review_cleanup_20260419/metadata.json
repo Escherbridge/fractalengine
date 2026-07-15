@@ -6,5 +6,11 @@
   "status": "in_progress",
   "execution_wave": 4,
   "wave_rationale": "P0 SSRF fix already done; remaining items are backlog cleanup.",
-  "notes": "verified 2026-07-10: FR-1 (SSRF fix) and FR-2 (dead guard/flush code removal) confirmed shipped; FR-3-FR-9 unverified"
+  "notes": "verified 2026-07-10: FR-1 (SSRF fix) and FR-2 (dead guard/flush code removal) confirmed shipped; FR-3-FR-9 unverified",
+  "alignment": {
+    "verdict": "ENABLING-HARDENING",
+    "priority": "P1 (FR-1) / P3 rest",
+    "rationale": "FR-1 is a CRITICAL SSRF fix in the wry nav handler — do now. Rest is cosmetic P3.",
+    "assessed": "2026-07-14"
+  }
 }

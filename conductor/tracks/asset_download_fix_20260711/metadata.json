@@ -9,5 +9,11 @@
   "depends_on": [],
   "blocks": [],
   "archived": false,
-  "notes": "user report 2026-07-11: 'downloading assets UI is there but the button does not work \u00e2\u20ac\u201d no glb download box'. Prior feature landed in 3a97fc1/19a2df2. Part of GIS-hardening ultrapilot run (W2)."
+  "notes": "user report 2026-07-11: 'downloading assets UI is there but the button does not work â€” no glb download box'. Prior feature landed in 3a97fc1/19a2df2. Part of GIS-hardening ultrapilot run (W2).",
+  "alignment": {
+    "verdict": "PLATFORM-KEEP",
+    "priority": "P1",
+    "rationale": "Live download-button bug on the 3D base; small, finish FR-2 save-dialog + FR-4.",
+    "assessed": "2026-07-14"
+  }
 }

@@ -35,5 +35,11 @@
   ],
   "blockers": [
     "Cross-platform compile verification requires CI or native Linux/macOS environment"
-  ]
+  ],
+  "alignment": {
+    "verdict": "PLATFORM-KEEP",
+    "priority": "P2",
+    "rationale": "Platform base; phase-3 CI verification. Sequence with release_ci.",
+    "assessed": "2026-07-14"
+  }
 }

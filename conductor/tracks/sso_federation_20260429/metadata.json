@@ -1,9 +1,15 @@
 {
   "id": "sso_federation_20260429",
-  "description": "SSO Federation \u00e2\u20ac\u201d OIDC Provider Integration for External Authentication",
+  "description": "SSO Federation â€” OIDC Provider Integration for External Authentication",
   "type": "feature",
   "created_at": "2026-04-29T00:00:00Z",
   "status": "pending",
   "execution_wave": 4,
-  "wave_rationale": "Backlog P2 enterprise SSO; no blocking deps."
+  "wave_rationale": "Backlog P2 enterprise SSO; no blocking deps.",
+  "alignment": {
+    "verdict": "PLATFORM-KEEP",
+    "priority": "P2",
+    "rationale": "Enterprise OIDC/SSO — the auth story enterprise analytics customers need; additive. Not the immediate last-mile.",
+    "assessed": "2026-07-14"
+  }
 }

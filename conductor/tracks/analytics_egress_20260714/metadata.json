@@ -1,0 +1,14 @@
+{
+  "id": "analytics_egress_20260714",
+  "description": "BI last-mile: finish GeoParquet export, add a BI-consumable egress (parquet/CSV download + DuckDB-attach, OData fast-follow), and a copy-paste UX that hands the user a SQL string / API URL / connection string to paste into PowerBI/spreadsheets. Plus the hardening the pivot forces: query cost limits, CRS correctness, RBAC-on-results.",
+  "type": "feature",
+  "created_at": "2026-07-14T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 0,
+  "wave_rationale": "The single highest-leverage investment toward the PRIMARY roadmap goal (spatial analytics engine). Backbone exists (/api/v1/query, fe-query columnar/duckdb_compat); this is the last mile. Depends on hexon_scale_orchestration (CRS/scale) for trustworthy numbers and auth_policy (RBAC-on-results slice).",
+  "depends_on": ["hexon_scale_orchestration_20260714", "auth_policy_pattern_20260710"],
+  "blocks": ["iot_spatial_reporting_20260714"],
+  "archived": false,
+  "alignment": {"verdict": "CORE-ANALYTICS", "priority": "P0", "rationale": "The killer feature — copy-paste query/URL into PowerBI. Everything else in the analytics push serves this.", "assessed": "2026-07-14"},
+  "notes": "NEW track from the 2026-07-14 alignment pass. GeoParquet is a verified stub (fe-query/columnar/geoparquet.rs). Egress shape decision: DuckDB-attach + parquet/CSV first (duckdb_compat exists), OData fast-follow. CRS conversion at API layer only (fe-query/src/AGENTS.md §local-coords). Reuse execute_query guards; add cost/row/timeout limits (roadmap §4.1). RBAC-on-results coordinates with auth_policy_pattern."
+}

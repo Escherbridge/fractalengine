@@ -18,7 +18,7 @@
       "hours_estimate": "3-4",
       "status": "reopened",
       "reopened_at": "2026-07-11T00:00:00Z",
-      "reopen_evidence": "hexon-p2p-commons report \u00c2\u00a78.1 SC3: IrohDocsEngineHolder::is_available() reads an AtomicBool nothing ever sets true (fe-sync/src/replicator.rs:235-237); write_row/subscribe/close delegate unconditionally to MockVerseReplicator (replicator.rs:286-304); two TODO(iroh-0.35) markers remain. Prior completed_at 2026-07-01T15:00:00Z was scaffolding-only.",
+      "reopen_evidence": "hexon-p2p-commons report Â§8.1 SC3: IrohDocsEngineHolder::is_available() reads an AtomicBool nothing ever sets true (fe-sync/src/replicator.rs:235-237); write_row/subscribe/close delegate unconditionally to MockVerseReplicator (replicator.rs:286-304); two TODO(iroh-0.35) markers remain. Prior completed_at 2026-07-01T15:00:00Z was scaffolding-only.",
       "prerequisite": "p2p_unblock_now_20260711 FR-1 (try_send bridge) must land first or the mock stops masking a DB freeze; sync write path must be policy-gated per auth_policy_pattern_20260710 amendment"
     },
     {
@@ -28,12 +28,12 @@
       "hours_estimate": "2-3",
       "status": "reopened",
       "reopened_at": "2026-07-11T00:00:00Z",
-      "reopen_evidence": "Subscribe/unsubscribe handlers + namespace derivation exist and are tested, but they create mock-backed replicators (phase_1 evidence) \u00e2\u20ac\u201d petal state never crosses the network. Prior completed_at 2026-07-01T16:30:00Z reflected the handler scaffolding, not working replication."
+      "reopen_evidence": "Subscribe/unsubscribe handlers + namespace derivation exist and are tested, but they create mock-backed replicators (phase_1 evidence) â€” petal state never crosses the network. Prior completed_at 2026-07-01T16:30:00Z reflected the handler scaffolding, not working replication."
     },
     {
       "id": "phase_3",
       "name": "Real-Time Transform Sync",
-      "description": "Broadcast node transform changes to peers via iroh-gossip AND receive them: add the gossip receive loop (topic.next() into the command loop) and apply inbound transforms to the Bevy scene. Send path exists (sync_thread.rs:538,678); receive loop does not (report \u00c2\u00a78.1 bonus check) \u00e2\u20ac\u201d without it the send path broadcasts into the void.",
+      "description": "Broadcast node transform changes to peers via iroh-gossip AND receive them: add the gossip receive loop (topic.next() into the command loop) and apply inbound transforms to the Bevy scene. Send path exists (sync_thread.rs:538,678); receive loop does not (report Â§8.1 bonus check) â€” without it the send path broadcasts into the void.",
       "hours_estimate": "3-4",
       "status": "pending"
     },
@@ -53,7 +53,7 @@
     }
   ],
   "total_hours_estimate": "14-18",
-  "hours_completed": "0 (phases 1-2 reopened 2026-07-11 \u00e2\u20ac\u201d prior 5-7h was scaffolding/tests, not working replication)",
+  "hours_completed": "0 (phases 1-2 reopened 2026-07-11 â€” prior 5-7h was scaffolding/tests, not working replication)",
   "files_to_modify": [
     "fe-sync/src/replicator.rs",
     "fe-sync/src/sync_thread.rs",
@@ -72,5 +72,11 @@
   "research_refs": [
     "conductor/tracks/p2p_mycelium_20260405/spec.md",
     "conductor/tracks/p2p_mycelium_20260405/plan.md"
-  ]
+  ],
+  "alignment": {
+    "verdict": "FOUNDRY-ADJACENT / ENABLING",
+    "priority": "P2",
+    "rationale": "Real iroh-docs replication matters for the commons/foundry, not single-instance BI. Pairs with foundry work.",
+    "assessed": "2026-07-14"
+  }
 }

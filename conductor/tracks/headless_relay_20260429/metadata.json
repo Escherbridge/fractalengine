@@ -51,5 +51,11 @@
     "Phase 3 Task 3.4: Scene subscription handler (WS client -> snapshot -> delta flow)",
     "Phase 3 Task 3.7: Documentation",
     "Phase 4 Task 4.5: Documentation"
-  ]
+  ],
+  "alignment": {
+    "verdict": "ENABLING-HARDENING",
+    "priority": "P1",
+    "rationale": "GPU-less relay IS the analytics-serving backend; FR-4/5 scene+asset delivery enable remote BI consumption.",
+    "assessed": "2026-07-14"
+  }
 }
