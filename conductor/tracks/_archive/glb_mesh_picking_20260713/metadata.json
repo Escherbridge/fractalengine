@@ -1,0 +1,16 @@
+{
+  "id": "glb_mesh_picking_20260713",
+  "description": "Replace proximity-sphere node picking with precise raycast against glb model geometry (AABB minimum, MeshRayCast stretch); walk glTF scene children like gimbal_center; keep path-point marker picking unregressed",
+  "type": "feature",
+  "created_at": "2026-07-13T00:00:00Z",
+  "status": "done",
+  "execution_wave": 1,
+  "wave_rationale": "FR-1/FR-2 (AABB raycast + child-walk) can be prototyped standalone against the existing viewport_pick.rs call site, but final FR-3 integration as a NodePick-priority router consumer depends on input_router_20260713 landing first, so this track is sequenced after that dependency rather than in the parallel wave-0 green set.",
+  "depends_on": [
+    "input_router_20260713"
+  ],
+  "blocks": [],
+  "archived": true,
+  "notes": "User's 'object detection' request == precise mesh/AABB raycast picking of glb models, not proximity. Mirrors fe-ui/src/gimbal.rs gimbal_center's entity-then-children Aabb scan. FR-4 keeps path_point_interaction.rs pick_marker's sphere test intact (markers are small fixed gizmos; proximity is correct there) â€” only model picking gets precision upgrade. bevy_picking + mesh_picking features already enabled in root Cargo.toml, so MeshRayCast is plausibly available; verify exact import path before relying on it, AABB is the required fallback. IMPLEMENTED 2026-07-13 (commit e7d6f63): chose AABB (ray_aabb_hit local-space slab test + pick_node_aabb child-walk) over MeshRayCast â€” MeshRayCast was confirmed available but AABB's marker-root loop scopes hits inherently (MeshRayCast would hit terrain/marker spheres) and the pure helper is unit-testable. Resolves to root SpawnedNodeMarker; active-petal filter + pick_marker preserved. fe-ui 214 tests green at land. Pending in-app verification. | PRUNE 2026-07-14: done + verified in-app; archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "archived_at": "2026-07-15T00:00:00Z"
+}

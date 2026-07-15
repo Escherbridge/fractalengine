@@ -1,0 +1,56 @@
+{
+  "id": "headless_relay_20260429",
+  "name": "Headless Relay",
+  "status": "done",
+  "execution_wave": 5,
+  "wave_rationale": "P1; blocks Release CI + thin clients. Also the always-on seeder / first verse service (D3).",
+  "priority": "P1",
+  "created": "2026-04-29",
+  "depends_on": [
+    "realtime_api_mcp_20260427"
+  ],
+  "blocks": [
+    "release_ci_20260429",
+    "iot_spatial_reporting_20260714"
+  ],
+  "notes": "2026-07-14 ref cleanup: former blocks 'web_client_sdk' and 'mobile_client' were aspirational (no such tracks exist) and were removed; 'docker_deployment' removed (delivered by this track's Dockerfile); 'iot_integration' replaced by iot_spatial_reporting_20260714. depends_on realtime_api_mcp_20260427 is archived/complete. 2026-07-15: all phases complete — pending session-end sweep. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "phases": [
+    {
+      "id": 1,
+      "name": "SecretStore Trait Extraction",
+      "status": "complete",
+      "tasks": 5,
+      "notes": "SecretStore trait + 3 backends (InMemory, OsKeystore, Env) implemented; all keyring call sites migrated"
+    },
+    {
+      "id": 2,
+      "name": "Relay Binary",
+      "status": "complete",
+      "tasks": 5,
+      "notes": "fractalengine-relay crate created; setup_core_systems and wire_engine extracted; GUI refactored to use shared wiring"
+    },
+    {
+      "id": 3,
+      "name": "Scene Graph Streaming",
+      "status": "complete",
+      "tasks": 7,
+      "notes": "All tasks done 2026-07-15: NodeRenamed now emitted from RenameEntity dispatch (test: db_test.rs::test_rename_entity_emits_scene_change); EntityCommand/EntityCommandResult implemented over WS (fe-api ws.rs + types.rs, editor role + scope enforced, request-id echo, 4 serde tests); README.md API section documents thin-client flow + entity commands"
+    },
+    {
+      "id": 4,
+      "name": "Relay Hardening",
+      "status": "complete",
+      "tasks": 5,
+      "notes": "Configurable bind/CORS done; graceful shutdown done; health endpoints done; Dockerfile done; docs done (BUILDING.md relay/Docker sections, docker/README.md, fractalengine-relay/README.md)"
+    }
+  ],
+  "blockers": [],
+  "alignment": {
+    "verdict": "ENABLING-HARDENING",
+    "priority": "P1",
+    "rationale": "GPU-less relay IS the analytics-serving backend; FR-4/5 scene+asset delivery enable remote BI consumption.",
+    "assessed": "2026-07-14"
+  },
+  "archived": true,
+  "archived_at": "2026-07-15T00:00:00Z"
+}

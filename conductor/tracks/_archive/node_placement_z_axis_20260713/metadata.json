@@ -1,0 +1,16 @@
+{
+  "id": "node_placement_z_axis_20260713",
+  "description": "Allow placed nodes/path points to move along the vertical (Bevy Y / user \"z\"/height) axis instead of the hardcoded y=0 plane, and make a single-point GPX track default to a plain node instead of dropping out of rendering",
+  "type": "feature",
+  "created_at": "2026-07-13T00:00:00Z",
+  "status": "done",
+  "execution_wave": 1,
+  "wave_rationale": "Touches interaction (fe-ui path_point_interaction/plugin.rs) and rendering-decision code (fractalengine/gpx_bridge advance_path_materialization) that isn't gated on any not-yet-existing API; soft dependency on input_router_20260713 only for FR-1's height-modifier drag routing, not a hard blocker.",
+  "depends_on": [
+    "input_router_20260713"
+  ],
+  "blocks": [],
+  "archived": true,
+  "notes": "User terminology: 'z-axis' = vertical/height = Bevy Y (Bevy is Y-up in this engine), not Bevy's own Z axis. FR-1 presents 3 options (height-modifier drag, numeric height field, terrain-height snapping) without deciding; recommends the height-modifier drag as lightest. FR-2 confirms gpx_points [x,y,z,t] + PathPointRow [f32;3] already support full 3D, no format change needed. FR-3 verified advance_path_materialization already gates polyline spawn on points.len() < 2, but currently does nothing for the 1-point case (silently invisible) rather than spawning a node â€” that gap is the actual FR-3 target. IMPLEMENTED 2026-07-13 (commits fadb001 + fix 6e09b86): USER CHOSE BOTH FR-1 options â€” Ctrl-modifier vertical drag (screen-Y delta â†’ Bevy Y) AND a per-point numeric Height(Y) field reusing UiAction::PathMovePoint. FR-3: a 1-point track now materializes a visible/selectable sphere node via reconcile_track_render (shared None/Node/Line helper). Review found the single-point node initially only reconciled on petal-load, not live edits (0â†’1 rendered nothing, 1â†’2 leaked a duplicate); fixed in 6e09b86 by sharing the reconcile between persist_and_render_points (live) and advance_path_materialization (petal-load). fe-ui 218 + fractalengine 24 unit tests green. Pending in-app verification. | PRUNE 2026-07-14: done + verified in-app; archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "archived_at": "2026-07-15T00:00:00Z"
+}

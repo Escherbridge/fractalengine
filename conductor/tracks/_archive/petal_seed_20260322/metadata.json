@@ -1,0 +1,22 @@
+{
+  "id": "petal_seed_20260322",
+  "name": "Petal Seed — GLTF Drag-and-Drop & Asset Seeding",
+  "status": "superseded",
+  "superseded_note": "Superseded: ingestion pipeline + manual GltfImport dialog shipped instead; roadmap 2026-07-14 verdict verify-then-archive.",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog Wave-2 feature; superseded by GltfImport dialog.",
+  "created_at": "2026-03-22",
+  "phases": 4,
+  "tasks": 9,
+  "depends_on": [],
+  "blocks": [],
+  "notes": "blocks edge to bloom_stage_20260322 cleared 2026-07-14 (that track is archived/done — dead edge). verified 2026-07-10: key was 'track_id' (schema drift from documented 'id' field per conductor-okf commands/new-track.md) — repaired to 'id'. Feature itself remains unimplemented (no AssetRegistry/asset browser panel found). | 2026-07-14 ALIGNMENT: VERIFY-THEN-ARCHIVE — GLB drag-drop + asset seeding scaffolding superseded by the shipped asset pipeline (create_entity.rs, gltf_import.rs, CreateNode/ImportGltf). Archived (backbone done); residual UX deferred to the user's QA-driven UX track. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "alignment": {
+    "verdict": "OFF-STRATEGY / VERIFY-THEN-ARCHIVE",
+    "priority": "P3",
+    "rationale": "Early Wave-2 GLB-seed scaffolding likely superseded by shipped asset pipeline. Verify+archive.",
+    "assessed": "2026-07-14"
+  },
+  "archived": true,
+  "archived_at": "2026-07-15T00:00:00Z"
+}
