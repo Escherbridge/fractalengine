@@ -3,11 +3,13 @@
   "description": "Precompute dense splat coverage at hexon/tileset build time and store it in the hexon file; load it at runtime with no live per-frame fill",
   "type": "feature",
   "created_at": "2026-07-12T00:00:00Z",
-  "status": "in-progress",
+  "status": "done",
   "execution_wave": 0,
-  "wave_rationale": "User 2026-07-12: the live splat coverage hole-fill (splat_lod_zoom_20260712) crashed the app because it ran O(n^2) per sub-tile every frame in reconcile_splat_chunks. User's chosen fix: offload the fill to build time — bake it into the hexon file once, load cheaply.",
-  "depends_on": ["terrain_splat_view_20260711"],
+  "wave_rationale": "User 2026-07-12: the live splat coverage hole-fill (splat_lod_zoom_20260712) crashed the app because it ran O(n^2) per sub-tile every frame in reconcile_splat_chunks. User's chosen fix: offload the fill to build time \u00e2\u20ac\u201d bake it into the hexon file once, load cheaply.",
+  "depends_on": [
+    "terrain_splat_view_20260711"
+  ],
   "blocks": [],
-  "archived": false,
-  "notes": "Supersedes the reverted splat_lod_zoom_20260712 (now in _archive/). The coverage-fill ALGORITHM from that track (gap-sized fill radius, logarithmic shrink as the field densifies, tile-seam guard, degenerate-cluster floor) is correct and reusable — it just must run ONCE at bake time, not live. Full reverted implementation is on branch archive/splat-coverage-experiment-20260712 (commits 9839094 + 4be8ec4); interpolate.rs there is the algorithm to lift. Anchors: bake hook fe-terrain/src/tiles/builder.rs (TilesetBuilder), runtime load fe-terrain/src/tiles/hexon_source.rs, hexon format fe-hexon/src/package.rs, current live-synth path fe-terrain/src/splat/synth.rs + render.rs (build_tile_splat_mesh). Complementary (not required): the LOD zoom-selection idea (splat_desired_zoom) can be revisited separately if higher real-res tiles are wanted; this track is specifically about not paying the fill cost at runtime."
+  "archived": true,
+  "notes": "Supersedes the reverted splat_lod_zoom_20260712 (now in _archive/). The coverage-fill ALGORITHM from that track (gap-sized fill radius, logarithmic shrink as the field densifies, tile-seam guard, degenerate-cluster floor) is correct and reusable \u00e2\u20ac\u201d it just must run ONCE at bake time, not live. Full reverted implementation is on branch archive/splat-coverage-experiment-20260712 (commits 9839094 + 4be8ec4); interpolate.rs there is the algorithm to lift. Anchors: bake hook fe-terrain/src/tiles/builder.rs (TilesetBuilder), runtime load fe-terrain/src/tiles/hexon_source.rs, hexon format fe-hexon/src/package.rs, current live-synth path fe-terrain/src/splat/synth.rs + render.rs (build_tile_splat_mesh). Complementary (not required): the LOD zoom-selection idea (splat_desired_zoom) can be revisited separately if higher real-res tiles are wanted; this track is specifically about not paying the fill cost at runtime. | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived."
 }

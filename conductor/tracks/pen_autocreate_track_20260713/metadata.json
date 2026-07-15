@@ -1,13 +1,13 @@
 {
   "id": "pen_autocreate_track_20260713",
-  "description": "First Pen click with no track in edit mode auto-creates a track, defers the first point until NodeCreated arrives, and enters edit mode — fixing the silent no-op where Pen does nothing without a pre-selected track",
+  "description": "First Pen click with no track in edit mode auto-creates a track, defers the first point until NodeCreated arrives, and enters edit mode \u00e2\u20ac\u201d fixing the silent no-op where Pen does nothing without a pre-selected track",
   "type": "feature",
   "created_at": "2026-07-13T00:00:00Z",
   "status": "done",
   "execution_wave": 0,
-  "wave_rationale": "Smallest, most urgent — a blocking usability bug exposed by input_router_20260713. Also removes the temp PEN-DIAG diagnostics. Land first in the batch.",
+  "wave_rationale": "Smallest, most urgent \u00e2\u20ac\u201d a blocking usability bug exposed by input_router_20260713. Also removes the temp PEN-DIAG diagnostics. Land first in the batch.",
   "depends_on": [],
   "blocks": [],
-  "archived": false,
-  "notes": "User: 'pen does not seem to create pointer events' then 'now only works with a track selected'. Cause: handle_path_point_interaction early-returns on editing_track_id==None. User chose auto-create. Async: new node_id returns via DbResult::NodeCreated; defer the first-point append until then. IMPLEMENTED 2026-07-13 (commit 3e90782 + review fix b1a981f): pen generates a fe-ui correlation id (pen-track:{n}), threads it through PathCreateTrack -> bridge CreateNode (reused verbatim) -> echoed on NodeCreated; flush matches on the id (not a content heuristic — HIGH-1 hijack fix), DbResult::Error clears pending (HIGH-2 leak fix). fe-ui 242 tests green. Pending in-app verify."
+  "archived": true,
+  "notes": "User: 'pen does not seem to create pointer events' then 'now only works with a track selected'. Cause: handle_path_point_interaction early-returns on editing_track_id==None. User chose auto-create. Async: new node_id returns via DbResult::NodeCreated; defer the first-point append until then. IMPLEMENTED 2026-07-13 (commit 3e90782 + review fix b1a981f): pen generates a fe-ui correlation id (pen-track:{n}), threads it through PathCreateTrack -> bridge CreateNode (reused verbatim) -> echoed on NodeCreated; flush matches on the id (not a content heuristic \u00e2\u20ac\u201d HIGH-1 hijack fix), DbResult::Error clears pending (HIGH-2 leak fix). fe-ui 242 tests green. Pending in-app verify. | PRUNE 2026-07-14: done + verified in-app; archived."
 }

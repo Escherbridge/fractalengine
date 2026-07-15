@@ -7,7 +7,11 @@
   "execution_wave": 0,
   "wave_rationale": "Foundational subsystem with no dependency on not-yet-existing APIs; should land before glb_mesh_picking_20260713 so that unit can register as a router consumer instead of adding another ad-hoc flag.",
   "depends_on": [],
-  "blocks": ["glb_mesh_picking_20260713", "node_placement_z_axis_20260713", "path_asset_picker_20260713"],
-  "archived": false,
-  "notes": "Motivated by the pen-tool regression fixed at commit ab9c53c (path_edit_capturing was un-gated, stealing model-selection clicks in Select mode; fixed by gating on Tool::Pen). IMPLEMENTED 2026-07-13 (commit 9e734fa): ClickArbiter Resource + resolve_pointer_frame system in fe-ui/src/node_manager/router.rs; 3 consumers migrated off is_dragging()/path_edit_capturing to a first-claim-wins priority model; path_edit_capturing fully removed; ab9c53c behavior now structural. fe-ui 207 tests green at land. Pending in-app verification."
+  "blocks": [
+    "glb_mesh_picking_20260713",
+    "node_placement_z_axis_20260713",
+    "path_asset_picker_20260713"
+  ],
+  "archived": true,
+  "notes": "Motivated by the pen-tool regression fixed at commit ab9c53c (path_edit_capturing was un-gated, stealing model-selection clicks in Select mode; fixed by gating on Tool::Pen). IMPLEMENTED 2026-07-13 (commit 9e734fa): ClickArbiter Resource + resolve_pointer_frame system in fe-ui/src/node_manager/router.rs; 3 consumers migrated off is_dragging()/path_edit_capturing to a first-claim-wins priority model; path_edit_capturing fully removed; ab9c53c behavior now structural. fe-ui 207 tests green at land. Pending in-app verification. | PRUNE 2026-07-14: done + verified in-app; archived."
 }
