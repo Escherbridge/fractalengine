@@ -86,8 +86,8 @@ pub(super) fn reconcile_selected_primitive(
     }
 
     // Not yet materialized as a primitive — promote from its fallback sign
-    // (FR-1). Nodes without any spawned placeholder are covered on next
-    // petal switch by `petal_respawn`.
+    // (FR-1 selection path). Petal-wide coverage without selection lives in
+    // `primitive_materialize::materialize_cached_primitives`.
     if let Some((entity, marker, transform)) =
         fallback_signs.iter().find(|(_, m, _)| m.node_id == sel.node_id && m.petal_id == petal_id)
     {

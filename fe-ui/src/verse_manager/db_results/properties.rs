@@ -7,7 +7,9 @@
 
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
+use fe_sdk::primitive::PRIMITIVE_PROPERTY_KEY;
 
+use super::super::PrimitiveDescriptorCache;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
@@ -27,7 +29,11 @@ pub(super) fn handle_node_properties_loaded(
     path_state: &mut PathEditorState,
     node_mgr: &NodeManager,
     inspector: &mut InspectorFormState,
+    primitive_cache: &mut PrimitiveDescriptorCache,
 ) -> bool {
+    // FR-1 petal-wide path: every properties broadcast feeds the primitive
+    // descriptor cache, selected or not (see ../AGENTS.md §primitives).
+    primitive_cache.note_properties(node_id, properties);
     // Path editor's `gpx_points` read-back (PathSelectTrack): a
     // DIFFERENT claimant from the inspector's `is_for_selected_node`
     // guard below — `NodePropertiesLoaded` has no correlation id
@@ -70,6 +76,7 @@ pub(super) fn handle_node_properties_loaded(
 
 /// `NodePropertySet`: re-sync the Paths tab / inspector by re-issuing the
 /// property read; returns whether the write targeted the selected node.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_node_property_set(
     node_id: &str,
     key: &str,
@@ -78,7 +85,14 @@ pub(super) fn handle_node_property_set(
     path_state: &mut PathEditorState,
     node_mgr: &NodeManager,
     inspector: &mut InspectorFormState,
+    primitive_cache: &mut PrimitiveDescriptorCache,
 ) -> bool {
+    // FR-1: a `primitive` write anywhere (API, extension, inspector) evicts
+    // the cached descriptor and re-fetches, independent of selection.
+    let primitive_write = key == PRIMITIVE_PROPERTY_KEY;
+    if primitive_write {
+        primitive_cache.invalidate(node_id);
+    }
     // FR-3: a track-identity property landing anywhere (not just
     // the currently-selected node) means the Paths tab's track
     // list may now be stale — re-run the query unconditionally
@@ -105,8 +119,8 @@ pub(super) fn handle_node_property_set(
         // Re-fetch properties for the node to refresh the inspector UI.
         inspector.node_properties_loading = true;
     }
-    // Issue the read once when either consumer needs it (idempotent).
-    if refresh_editing_track || for_selected {
+    // Issue the read once when any consumer needs it (idempotent).
+    if refresh_editing_track || for_selected || primitive_write {
         let _ = db_sender.0.send(DbCommand::GetNodeProperties { node_id: node_id.to_string() });
     }
     for_selected
@@ -118,7 +132,13 @@ pub(super) fn handle_node_property_deleted(
     key: &str,
     node_mgr: &NodeManager,
     inspector: &mut InspectorFormState,
+    primitive_cache: &mut PrimitiveDescriptorCache,
 ) -> bool {
+    // FR-1: evict the cached descriptor before the selection gate below —
+    // deletes on unselected nodes must not leave a stale primitive cached.
+    if key == PRIMITIVE_PROPERTY_KEY {
+        primitive_cache.invalidate(node_id);
+    }
     if !is_for_selected_node(node_mgr, node_id) {
         return false;
     }

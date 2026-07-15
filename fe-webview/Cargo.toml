@@ -27,6 +27,7 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 fe-database = { path = "../fe-database" }
+fe-policy = { path = "../fe-policy" }
 fe-runtime = { path = "../fe-runtime" }
 
 [dev-dependencies]

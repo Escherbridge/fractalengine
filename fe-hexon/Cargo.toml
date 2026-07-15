@@ -9,6 +9,7 @@ remote = ["dep:reqwest"]
 [dependencies]
 fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
+fe-policy = { path = "../fe-policy" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

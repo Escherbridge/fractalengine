@@ -309,11 +309,10 @@ pub(crate) fn process_ui_actions(
                 browser_commands.write(BrowserCommand::GoBack);
             }
             UiAction::SaveUrl => {
-                // compute_save_url returns None only when nothing is selected;
-                // surface that instead of silently dropping the click (see
-                // AGENTS.md §portal for the old silent no-op fragility).
+                // Every outcome is surfaced to the user (toast) — no silent
+                // drops; blocked URLs never reach the DB (see AGENTS.md §portal).
                 match portal::compute_save_url(&node_mgr, &inspector) {
-                    Some((node_id, url)) => {
+                    portal::SaveUrlOutcome::Persist { node_id, url } => {
                         verse_mgr.update_node_url(&node_id, url.clone());
                         if db_sender
                             .0
@@ -325,7 +324,11 @@ pub(crate) fn process_ui_actions(
                             ui_mgr.show_toast("URL saved", now_secs);
                         }
                     }
-                    None => {
+                    portal::SaveUrlOutcome::Blocked { reason } => {
+                        bevy::log::warn!("UiAction::SaveUrl rejected: {reason}");
+                        ui_mgr.show_toast(format!("URL not saved — {reason}"), now_secs);
+                    }
+                    portal::SaveUrlOutcome::NoSelection => {
                         ui_mgr.show_toast("No node selected", now_secs);
                     }
                 }

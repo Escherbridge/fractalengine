@@ -74,6 +74,26 @@ pub enum Role {
     Editor,
 }
 
+impl Role {
+    /// Map onto the canonical ordered role type (see src/AGENTS.md §tab-policy).
+    fn as_role_level(self) -> fe_policy::RoleLevel {
+        match self {
+            Role::Admin => fe_policy::RoleLevel::Owner,
+            Role::Editor => fe_policy::RoleLevel::Editor,
+            Role::Viewer => fe_policy::RoleLevel::Viewer,
+        }
+    }
+}
+
+/// Shared engine for tab gating: Config tab is a Manage action (Manager+).
+fn tab_engine() -> &'static fe_policy::PolicyEngine {
+    static ENGINE: std::sync::OnceLock<fe_policy::PolicyEngine> = std::sync::OnceLock::new();
+    ENGINE.get_or_init(|| {
+        fe_policy::PolicyEngine::new()
+            .with_policy(std::sync::Arc::new(fe_policy::RoleLevelPolicy::standard()))
+    })
+}
+
 /// Controls which browser tabs are visible for the current session.
 #[derive(Debug, Resource)]
 pub struct TabVisibilityFilter {
@@ -87,9 +107,19 @@ impl Default for TabVisibilityFilter {
 }
 
 impl TabVisibilityFilter {
-    /// Returns `true` only for Admin role.
+    /// Config-tab visibility read from the shared policy engine, not local role math.
     pub fn can_view_config(&self) -> bool {
-        self.role == Role::Admin
+        let subject = fe_policy::AuthContext::Did {
+            did: "local-session".to_string(),
+            role: self.role.as_role_level(),
+        };
+        tab_engine()
+            .evaluate(
+                &subject,
+                &fe_policy::Action::Manage,
+                &fe_policy::Scope::new("UI#config-tab"),
+            )
+            .is_allow()
     }
 }
 

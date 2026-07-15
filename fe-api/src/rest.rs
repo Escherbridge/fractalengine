@@ -549,7 +549,7 @@ pub async fn delete_node_property(
 ///
 /// Uses a direct DB query when `db_reader` is available, falling back to the
 /// crossbeam channel otherwise.
-async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
+pub(crate) async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
     if let Some(ref db) = state.db_reader {
         return direct_resolve_petal_scope(db, petal_id).await;
     }
@@ -762,7 +762,7 @@ pub(crate) async fn direct_load_petal_nodes(
 }
 
 /// Parse a JSON value as a `[f32; 3]` array, using `default` for missing elements.
-fn parse_f32_array3(val: &serde_json::Value, default: f32) -> [f32; 3] {
+pub(crate) fn parse_f32_array3(val: &serde_json::Value, default: f32) -> [f32; 3] {
     if let Some(arr) = val.as_array() {
         [
             arr.first().and_then(|v| v.as_f64()).unwrap_or(default as f64) as f32,
@@ -780,8 +780,9 @@ fn parse_f32_array3(val: &serde_json::Value, default: f32) -> [f32; 3] {
 
 /// POST /api/v1/query — execute a read-only SurrealQL query with scope guards.
 ///
-/// Security: Only SELECT statements are allowed. Scope injection ensures the
-/// caller can only see data within their token's scope. Rate-limited to 10 req/s.
+/// Security: full guard pipeline in `query_guard` (rate limit 10 req/s/DID,
+/// single-SELECT, keyword blocklist, table whitelist, scope injection) plus
+/// the FR-4 row cap + response-size ceiling from `limits`.
 pub async fn execute_query(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -793,91 +794,21 @@ pub async fn execute_query(
         return Json(ApiResponse::<QueryResultDto>::error("insufficient permissions"));
     }
 
-    // Rate limiting: 10 queries/sec per user (keyed by sub/DID, not jti, so
-    // creating multiple tokens doesn't bypass the limit).
+    // Rate limit keyed by sub/DID (not jti) so creating multiple tokens doesn't
+    // bypass the limit; then static validation + scope-filter injection.
+    let guarded = match crate::query_guard::guard_and_prepare_query(
+        &state,
+        &claims.sub,
+        crate::limits::QUERY_RATE_PER_SEC,
+        "10 queries/sec",
+        &claims.scope,
+        &req.sql,
+    )
+    .await
     {
-        let now = std::time::Instant::now();
-        let mut limiter = state.query_rate_limiter.lock().await;
-
-        // Evict stale entries older than 10s to prevent unbounded growth.
-        limiter.retain(|_, (_, ts)| now.duration_since(*ts) < std::time::Duration::from_secs(10));
-
-        let entry = limiter.entry(claims.sub.clone()).or_insert((0u32, now));
-        if now.duration_since(entry.1) > std::time::Duration::from_secs(1) {
-            // Reset window
-            *entry = (1, now);
-        } else {
-            entry.0 += 1;
-            if entry.0 > 10 {
-                return Json(ApiResponse::<QueryResultDto>::error("rate limit exceeded (10 queries/sec)"));
-            }
-        }
-    }
-
-    // Security: only allow single SELECT statements.
-    let sql_trimmed = req.sql.trim();
-
-    // Reject semicolons — prevents multi-statement chaining.
-    if sql_trimmed.contains(';') {
-        return Json(ApiResponse::<QueryResultDto>::error(
-            "semicolons are not allowed (single statement only)",
-        ));
-    }
-
-    let sql_upper = sql_trimmed.to_uppercase();
-    if !sql_upper.starts_with("SELECT") {
-        return Json(ApiResponse::<QueryResultDto>::error(
-            "only SELECT statements are allowed",
-        ));
-    }
-
-    // Reject any dangerous keyword anywhere in the statement (including subqueries,
-    // comments, RETURN wrappers, LET bindings, etc.).
-    const BLOCKED_KEYWORDS: &[&str] = &[
-        "CREATE", "UPDATE", "DELETE", "DEFINE", "REMOVE", "RELATE", "INSERT",
-        "LET", "RETURN", "INFO", "FOR", "THROW", "SLEEP", "BREAK", "LIVE", "KILL",
-        "IF", "BEGIN", "COMMIT", "CANCEL",
-    ];
-    for keyword in BLOCKED_KEYWORDS {
-        // Match whole-word-ish: the keyword must appear as an uppercase token,
-        // not as a substring of an identifier (e.g. "DELETED" should not match "DELETE").
-        // We check that the character before and after the keyword (if any) is not alphanumeric.
-        let mut start = 0;
-        while let Some(pos) = sql_upper[start..].find(keyword) {
-            let abs_pos = start + pos;
-            let before_ok = abs_pos == 0
-                || !sql_upper.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
-                    && sql_upper.as_bytes()[abs_pos - 1] != b'_';
-            let after_pos = abs_pos + keyword.len();
-            let after_ok = after_pos >= sql_upper.len()
-                || !sql_upper.as_bytes()[after_pos].is_ascii_alphanumeric()
-                    && sql_upper.as_bytes()[after_pos] != b'_';
-            if before_ok && after_ok {
-                return Json(ApiResponse::<QueryResultDto>::error(format!(
-                    "{keyword} keyword is not allowed in queries"
-                )));
-            }
-            start = abs_pos + keyword.len();
-        }
-    }
-
-    // Table whitelist: only allow queries against these tables.
-    const ALLOWED_TABLES: &[&str] = &[
-        "NODE", "VERSE", "FRACTAL", "PETAL", "NODE_LOG", "FIELD_DEF",
-        "ASSET", "MODEL", "ROLE", "ROOM", "CRATE_REGISTRY", "CRATE_ENTRY", "VERSE_MEMBER",
-    ];
-    if let Some(from_pos) = sql_upper.find("FROM") {
-        let after_from = &sql_upper[from_pos + 4..].trim_start();
-        let table_name: String = after_from
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if !ALLOWED_TABLES.contains(&table_name.as_str()) {
-            return Json(ApiResponse::<QueryResultDto>::error(format!(
-                "queries against table '{table_name}' are not allowed"
-            )));
-        }
-    }
+        Ok(g) => g,
+        Err(e) => return Json(ApiResponse::<QueryResultDto>::error(e)),
+    };
 
     // Require db_reader for query endpoint
     let Some(ref db) = state.db_reader else {
@@ -886,42 +817,27 @@ pub async fn execute_query(
         ));
     };
 
-    // Extract accessible petal_ids from the token scope for scope injection
-    let scope_filter = build_scope_filter(&claims.scope);
-
-    // Build the query with scope injection for node table queries
-    let final_sql = inject_scope_filter(sql_trimmed, &scope_filter);
-
-    // Build query with variables
-    let mut query_builder = db.query(&final_sql);
-    for (key, value) in &req.vars {
-        query_builder = query_builder.bind((key.clone(), value.clone()));
-    }
-
-    // Execute with timeout
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        async { query_builder.await },
+    match crate::query_guard::run_guarded_query(
+        db,
+        &guarded,
+        &req.vars,
+        crate::limits::QUERY_ROW_CAP,
     )
-    .await;
-
-    match result {
-        Ok(Ok(mut response)) => {
-            // Collect all statement results
-            let mut data = Vec::new();
-            let num = response.num_statements();
-            for idx in 0..num {
-                match response.take::<Vec<serde_json::Value>>(idx) {
-                    Ok(rows) => {
-                        data.extend(rows);
-                    }
-                    Err(_) => break,
-                }
+    .await
+    {
+        Ok(data) => {
+            if let Err(e) = crate::query_guard::enforce_byte_ceiling(
+                &data,
+                crate::limits::QUERY_MAX_RESPONSE_BYTES,
+                crate::limits::QUERY_MAX_RESPONSE_LABEL,
+            ) {
+                return Json(ApiResponse::<QueryResultDto>::error(e));
             }
-            Json(ApiResponse::success(QueryResultDto { data }))
+            // FR-5: stamp the egress CRS resolved from the token's scope.
+            let crs = crate::crs::scope_crs(&state, &claims.scope).await;
+            Json(ApiResponse::success(QueryResultDto { data, crs: Some(crs) }))
         }
-        Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!("query failed: {e}"))),
-        Err(_) => Json(ApiResponse::<QueryResultDto>::error("query timed out (5s)")),
+        Err(e) => Json(ApiResponse::<QueryResultDto>::error(e)),
     }
 }
 
@@ -1033,7 +949,7 @@ pub async fn execute_elevated_query(
                     Err(_) => break,
                 }
             }
-            Json(ApiResponse::success(QueryResultDto { data }))
+            Json(ApiResponse::success(QueryResultDto { data, crs: None }))
         }
         Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!("query failed: {e}"))),
         Err(_) => Json(ApiResponse::<QueryResultDto>::error("query timed out (10s)")),
@@ -1107,7 +1023,7 @@ pub async fn execute_analytics_query(
     )
     .await
     {
-        Ok(Ok(data)) => Json(ApiResponse::success(QueryResultDto { data })),
+        Ok(Ok(data)) => Json(ApiResponse::success(QueryResultDto { data, crs: None })),
         Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!("analytics query failed: {e}"))),
         Err(_) => Json(ApiResponse::<QueryResultDto>::error("analytics query timed out (10s)")),
     }
@@ -1294,39 +1210,6 @@ pub async fn delete_field_def(
         Ok(Ok(_)) => Json(ApiResponse::<FieldDefDto>::error("unexpected response")),
         Ok(Err(_)) => Json(ApiResponse::<FieldDefDto>::error("request cancelled")),
         Err(_) => Json(ApiResponse::<FieldDefDto>::error("request timed out")),
-    }
-}
-
-/// Build a scope filter clause from the token's scope string.
-/// Returns a WHERE clause fragment like `petal_id = 'p1'` or empty for broad access.
-fn build_scope_filter(scope: &str) -> String {
-    let Ok(parts) = fe_database::parse_scope(scope) else {
-        return String::new();
-    };
-    if let Some(ref petal_id) = parts.petal_id {
-        format!("petal_id = '{}'", petal_id.replace('\'', ""))
-    } else {
-        // Verse or fractal scope — broader access, pass through without filter.
-        String::new()
-    }
-}
-
-/// Inject scope filter into SQL that queries the `node` table.
-/// Simple heuristic: if the query touches `FROM node` and we have a scope filter,
-/// append/inject a WHERE clause.
-fn inject_scope_filter(sql: &str, scope_filter: &str) -> String {
-    if scope_filter.is_empty() {
-        return sql.to_string();
-    }
-    let sql_upper = sql.to_uppercase();
-    if !sql_upper.contains("FROM NODE") {
-        return sql.to_string();
-    }
-    // If there's already a WHERE, add AND; otherwise add WHERE
-    if sql_upper.contains("WHERE") {
-        format!("{sql} AND {scope_filter}")
-    } else {
-        format!("{sql} WHERE {scope_filter}")
     }
 }
 
@@ -1998,6 +1881,7 @@ mod tests {
             tileset_registry: None,
             hexon_registry: None,
             announcement_store: None,
+            share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
         let claims = ApiClaims {

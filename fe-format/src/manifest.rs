@@ -265,7 +265,7 @@ mod scale_field_tests {
     #[test]
     fn derive_scale_matches_web_mercator_tile_size_at_center_lat() {
         let bounds = [45.0, -122.0, 46.0, -121.0];
-        let center_lat = (bounds[0] + bounds[2]) / 2.0;
+        let center_lat: f64 = (bounds[0] + bounds[2]) / 2.0;
         let max_zoom = 12u8;
         let tile_size = 256u16;
 

@@ -5,7 +5,9 @@
 //! share one fail-closed policy. See `fe-plugin/src/AGENTS.md` §host-env.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+use fe_policy::{Action, CapabilityPolicy, Decision, PolicyEngine, Scope};
 
 use fe_sdk::property::PropertyValue;
 use fe_sdk::query::{self, ExtensionQueryApi, QueryError, MAX_RESULT_ROWS};
@@ -142,12 +144,19 @@ impl std::fmt::Debug for HostEnv {
     }
 }
 
-/// Fail-closed capability check used by every routed operation.
+/// Shared capability engine (fe-policy) — see AGENTS.md §capability-policy.
+fn capability_engine() -> &'static PolicyEngine {
+    static ENGINE: OnceLock<PolicyEngine> = OnceLock::new();
+    ENGINE.get_or_init(|| PolicyEngine::new().with_policy(Arc::new(CapabilityPolicy)))
+}
+
+/// Fail-closed capability check used by every routed operation (policy-engine decision).
 fn require(token: &CapabilityToken, capability: &str) -> Result<(), HostApiError> {
-    if token.has_capability(capability) {
-        Ok(())
-    } else {
-        Err(HostApiError::CapabilityDenied(capability.to_string()))
+    let subject = token.to_auth_context();
+    let action = Action::Custom(capability.to_string());
+    match capability_engine().evaluate(&subject, &action, &Scope::global()) {
+        Decision::Allow => Ok(()),
+        Decision::Deny(_) => Err(HostApiError::CapabilityDenied(capability.to_string())),
     }
 }
 

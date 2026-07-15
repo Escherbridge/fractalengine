@@ -67,6 +67,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         tileset_registry: None,
         hexon_registry: None,
         announcement_store: None,
+        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
 

@@ -282,7 +282,7 @@ Tests: serde round-trip for each variant. Channel send/recv works.
 
 ---
 
-### [ ] Task 3.2 — Wire entity change broadcast into CUD handlers
+### [x] Task 3.2 — Wire entity change broadcast into CUD handlers
 
 When `create_node`, `delete_entity`, `rename_entity` succeed in `fe-database`, emit `SceneChange` on the broadcast channel.
 
@@ -290,18 +290,26 @@ Integration test in `fe-test-harness`:
 - Send `DbCommand::CreateNode` through channel
 - Assert `entity_change_rx` receives `SceneChange::NodeAdded`
 
+**Decision 2026-07-15 (3.2 residue closed):** `RenameEntity` now emits
+`SceneChange::NodeRenamed` on success. `EntityType` has no Node variant
+(verse/fractal/petal only), so the emitted `node_id` carries the renamed
+entity's id; subscribers (fe-entity-store, WS clients) no-op on unknown ids.
+A dedicated node-rename command (and a true node `NodeRenamed`) is future work.
+Test: `fe-database/tests/db_test.rs::test_rename_entity_emits_scene_change`
+(result + broadcast + persisted read-back).
+
 **Files:** `fe-database/src/handlers/crud.rs`, `fe-database/src/handlers/entity.rs`, `fe-database/src/lib.rs`.
 
 ---
 
-### [~] Task 3.3 — SceneSubscribe + SceneSnapshot WS messages (TDD Red+Green) (all but EntityCommandResult)
+### [x] Task 3.3 — SceneSubscribe + SceneSnapshot WS messages (TDD Red+Green)
 
 Extend `WsClientMsg` and `WsServerMsg` in `fe-api/src/types.rs`:
 
 - `WsClientMsg::SceneSubscribe { petal_id, last_known_version: Option<u64> }`
 - `WsServerMsg::SceneSnapshot { petal_id, version, nodes: Vec<NodeDto> }`
 - `WsServerMsg::SceneDelta { petal_id, version, changes: Vec<SceneChange> }`
-- `WsServerMsg::EntityCommandResult { request_id, ok, data, error }` — NOT implemented (no hits in fe-api/src as of 2026-07-14; scope silently cut)
+- `WsServerMsg::EntityCommandResult { request_id, ok, data, error }` — implemented 2026-07-15 alongside `WsClientMsg::EntityCommand { request_id, command }` (typed `EntityCommand` enum in `fe-api/src/types.rs`: create_node / delete_node / set_node_property / delete_node_property; editor role + token scope enforced; results echo request ids; dispatched via `ApiCommand::DbRequest`)
 
 Tests: serde round-trip for each new variant.
 
@@ -309,7 +317,7 @@ Tests: serde round-trip for each new variant.
 
 ---
 
-### [~] Task 3.4 — Scene subscription handler
+### [x] Task 3.4 — Scene subscription handler (handler + delta forwarding live in `fe-api/src/ws.rs`, no separate `scene.rs`; full-socket e2e test deferred to fe-test-harness)
 
 In `fe-api/src/ws.rs`, handle `SceneSubscribe`:
 
@@ -347,7 +355,7 @@ Test: create node with transform, GET returns correct values.
 
 ---
 
-### [ ] Task 3.7 — Phase 3 docs
+### [x] Task 3.7 — Phase 3 docs (README.md API section: thin-client connection flow + entity commands; message types doc-commented in ws.rs/types.rs)
 
 - Document new WS message types in `fe-api/README.md` or inline module docs
 - Document asset delivery endpoint (URL, headers, caching behavior)
@@ -432,7 +440,7 @@ ENTRYPOINT ["/fe-relay"]
 
 ---
 
-### [ ] Task 4.5 — Phase 4 docs
+### [x] Task 4.5 — Phase 4 docs (verified 2026-07-15: BUILDING.md relay/Docker sections, docker/README.md, fractalengine-relay/README.md all present)
 
 - `fractalengine-relay/README.md`: complete with Docker usage, env vars, health endpoints
 - `docker/README.md`: Docker Compose example for running relay + volume mount

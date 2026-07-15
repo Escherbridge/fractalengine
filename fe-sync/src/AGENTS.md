@@ -75,3 +75,18 @@ to the local world (currently logged, not applied) — it depends on the inbound
 
 Runtime behavior is therefore unchanged from the pre-checkpoint WIP intent: fully mock-backed,
 network paths are no-ops when offline (which is every current test path).
+
+## §write-policy (auth_policy_pattern_20260710 §D1)
+
+`write_policy.rs` gates `handle_write_row_entry` (sync_thread.rs): no row is
+applied to a verse replica without a `Policy::evaluate` decision. Today the
+sync thread has **no role data plumbed** (roles live in the DB thread), so the
+default `PolicyHandle::permissive_migration()` wraps the strict
+`RoleLevelPolicy` in `fe_policy::PermissiveMigrationPolicy` — every would-be
+denial is logged at `warn` and allowed. Enforcement flips by swapping in
+`PolicyHandle::strict()` once role plumbing lands (roles must reach the sync
+thread before real iroh-docs replication ships — decisions §D1/§D5).
+`PolicyHandle` derives `Resource` so the app side can insert/override it;
+`spawn_sync_thread` constructs the default internally to avoid churning its
+signature (3 call sites). The causal-DAG membership resolver from the §D1
+amendment is NOT here — blocked on per-op ed25519 signing (hexon_delta_format).

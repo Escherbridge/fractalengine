@@ -54,6 +54,36 @@ pub struct PropertySetDto {
 }
 
 // ---------------------------------------------------------------------------
+// WS entity commands (CUD over WebSocket) — see ws.rs for the handler
+// ---------------------------------------------------------------------------
+
+/// CUD operation carried by `WsClientMsg::EntityCommand`.
+///
+/// JSON shape: `{"op": "create_node", "petal_id": "...", ...}`. Results echo
+/// the request id via `WsServerMsg::EntityCommandResult`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum EntityCommand {
+    /// Create a node in a petal (defaults to the origin when position is omitted).
+    CreateNode {
+        petal_id: String,
+        name: String,
+        #[serde(default)]
+        position: Option<[f32; 3]>,
+    },
+    /// Delete a node (cascades to child waypoint nodes).
+    DeleteNode { node_id: String },
+    /// Set a custom property on a node.
+    SetNodeProperty {
+        node_id: String,
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Delete a custom property from a node.
+    DeleteNodeProperty { node_id: String, key: String },
+}
+
+// ---------------------------------------------------------------------------
 // Response envelope
 // ---------------------------------------------------------------------------
 
@@ -247,6 +277,9 @@ pub struct QueryRequest {
 #[derive(Debug, Serialize)]
 pub struct QueryResultDto {
     pub data: Vec<serde_json::Value>,
+    /// FR-5 egress CRS label (see `crs.rs`); omitted where not applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crs: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

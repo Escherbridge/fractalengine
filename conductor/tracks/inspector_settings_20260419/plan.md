@@ -1,8 +1,18 @@
+---
+type: plan
+---
+
 # Implementation Plan: Portal URL Persistence + Inspector Settings
 
 ## Overview
 
 Four phases, progressing from foundational persistence to full hierarchical inspection and access control. Phase 1 completes the URL persistence round-trip. Phase 2 adds the tab system to the inspector. Phase 3 extends inspection to all hierarchy levels. Phase 4 builds the access control UI.
+
+> **Status 2026-07-15:** Phase 1 complete (bulk delivered by other tracks; FR-1
+> residue — `is_url_allowed` enforcement on SaveUrl + restart round-trip test —
+> closed this date). Phase 2 folded to the as-built {Properties, API Access,
+> Query} tab set (see spec FR-2 as-built). Phases 3 and 4 are the remaining
+> open work.
 
 ---
 
@@ -12,35 +22,35 @@ Goal: Ensure portal URLs survive application restarts by completing the load-on-
 
 Tasks:
 
-- [ ] Task 1.1: Write URL load-on-selection test (TDD Red)
+- [x] Task 1.1: Write URL load-on-selection test (TDD Red)
   - Write a test in `fe-ui` that asserts: when `NodeManager.selected` changes to a node with a stored URL, `InspectorFormState.external_url` is populated with that URL.
   - Write a test that asserts: when a node with no URL is selected, `InspectorFormState.external_url` is empty.
   - Confirm tests fail (current code may not fully populate on selection).
 
-- [ ] Task 1.2: Implement URL loading on node selection (TDD Green)
+- [x] Task 1.2: Implement URL loading on node selection (TDD Green)
   - In the system that handles node selection changes (likely in `node_manager.rs` or `inspector` update code), read the selected node's URL from `VerseManager` and write it to `InspectorFormState.external_url`.
   - Ensure `VerseManager` caches URLs loaded from the initial petal data fetch.
   - Run tests, confirm green.
 
-- [ ] Task 1.3: Write URL save persistence test (TDD Red)
+- [x] Task 1.3: Write URL save persistence test (TDD Red)
   - Write a test that asserts: `UiAction::SaveUrl` processing sends `DbCommand::UpdateNodeUrl` to the database channel.
   - Write a test that asserts: saving an empty URL sends `None` as the URL value.
   - Confirm tests fail or pass (verify existing implementation in `process_ui_actions`).
 
-- [ ] Task 1.4: Verify and fix save-to-DB path (TDD Green)
+- [x] Task 1.4: Verify and fix save-to-DB path (TDD Green)
   - Verify that `process_ui_actions` correctly sends `DbCommand::UpdateNodeUrl` for `UiAction::SaveUrl`. (Based on the current code reading, this appears to already be implemented -- confirm and add tests.)
   - Verify the database handler (`fe-runtime`) processes `UpdateNodeUrl` and persists to SurrealDB.
   - If gaps exist, implement the missing pieces.
   - Run tests, confirm green.
 
-- [ ] Task 1.5: Write round-trip integration test (TDD Red -> Green)
+- [x] Task 1.5: Write round-trip integration test (TDD Red -> Green)
   - Write an integration test (in `tests/` at the workspace or crate level) that:
     1. Saves a URL via the DB command channel.
     2. Simulates a node selection.
     3. Asserts the saved URL is loaded into the inspector form.
   - This may require a mock DB or in-memory SurrealDB instance.
 
-- [ ] Task 1.6: Refactor and add URL validation feedback
+- [x] Task 1.6: Refactor and add URL validation feedback
   - Add user-visible feedback when a blocked URL is rejected on save (e.g., set a validation state field on `InspectorFormState` that the egui renderer shows as red text).
   - Ensure empty strings are normalized to `None` before persistence.
   - Run `cargo clippy` and `cargo fmt --check`.
@@ -54,51 +64,31 @@ Tasks:
 
 ---
 
-## Phase 2: Inspector Tab System
+## Phase 2: Inspector Tab System — FOLDED TO AS-BUILT (2026-07-15)
 
-Goal: Add Info/Settings/Access tabs to the inspector panel.
+Goal (original): Add Info/Settings/Access tabs to the inspector panel.
 
-Tasks:
+**Fold:** the inspector shipped via other tracks with tabs **{Properties, API
+Access, Query}** (`InspectorTab` + `InspectorFormState.active_tab` in
+`fe-ui/src/plugin.rs`; tab bar + per-tab rendering in
+`fe-ui/src/panels/inspector.rs`). The Info/Settings/Access triad is
+superseded — see spec FR-2 (as-built) for the accepted deltas. Tab-reset-on-
+selection exists partially via `fe-ui/src/node_manager/inspector_sync.rs`
+(API-token tab state resets on selection change; `active_tab` intentionally
+persists). No further Phase 2 work; the tasks below are recorded as delivered
+in as-built form.
 
-- [ ] Task 2.1: Define InspectorTab enum and state (TDD Red)
-  - Write tests for a new `InspectorTab` enum: `Info`, `Settings`, `Access`.
-  - Write tests for tab state management: default is `Info`, tab switches correctly, resets to `Info` on entity change.
-  - Confirm tests fail (enum doesn't exist yet).
-
-- [ ] Task 2.2: Implement InspectorTab enum and state resource (TDD Green)
-  - Create `InspectorTab` enum in `fe-ui/src/plugin.rs` (or a new `inspector.rs` module).
-  - Add `active_tab: InspectorTab` field to `InspectorFormState` (or create a separate `InspectorTabState` resource).
-  - Implement tab reset logic: reset to `Info` when the selected entity changes.
-  - Run tests, confirm green.
-
-- [ ] Task 2.3: Render tab bar in inspector panel (TDD: implement + visual test)
-  - Modify the inspector panel rendering code to add a horizontal tab bar using `egui::SelectableLabel` or similar.
-  - The Info tab renders existing content (transform fields, URL fields).
-  - Settings tab renders placeholder text.
-  - Access tab renders placeholder text.
-  - Tab clicks update `InspectorTabState`.
-
-- [ ] Task 2.4: Write tab interaction tests (TDD Red -> Green)
-  - Write tests that: clicking Settings tab changes state, Info content is not rendered when Settings is active, tab resets to Info on deselection.
-  - Implement any fixes needed.
-
-- [ ] Task 2.5: Refactor inspector rendering for modularity
-  - Extract each tab's content into separate functions: `render_info_tab()`, `render_settings_tab()`, `render_access_tab()`.
-  - This prepares for Phase 3 where each hierarchy level has different tab content.
-  - Run tests.
-
-- [ ] Verification: Phase 2 Manual Verification [checkpoint marker]
-  - Run `cargo test`.
-  - Launch the application, select a node.
-  - Verify three tabs appear in the inspector.
-  - Click each tab -- confirm content switches.
-  - Deselect and reselect -- confirm tab resets to Info.
+- [x] Task 2.1/2.2: `InspectorTab` enum + `active_tab` state — delivered as-built (`plugin.rs`, variants Properties/ApiAccess/Query; reset-to-first-tab dropped by design).
+- [x] Task 2.3: Tab bar rendered in `panels/inspector.rs` with per-tab content dispatch — delivered as-built (no placeholder Settings/Access tabs).
+- [x] Task 2.4: Tab interaction behavior — delivered as-built (leaving API Access clears sensitive token state; entering it auto-populates scope + fetches tokens).
+- [x] Task 2.5: Modular per-tab render functions — delivered as-built (`inspector_url_meta_section`, `inspector_api_access_section`, `query_tab::inspector_query_section`, asset/annotation cards).
+- [x] Verification: Phase 2 — verified against shipped code 2026-07-15 (fold review), not the original manual script.
 
 ---
 
-## Phase 3: Inspectable Hierarchy Levels
+## Phase 3: Inspectable Hierarchy Levels — OPEN (remaining work)
 
-Goal: Allow inspecting petals, fractals, and verses from the sidebar, each with their own Info/Settings/Access tabs.
+Goal: Allow inspecting petals, fractals, and verses from the sidebar, each with their own tabs. (Re-scoped 2026-07-15: "Info tab" below maps to the shipped **Properties** tab; Settings placeholders dropped; Access is the FR-4 fourth tab — see spec FR-3 re-scope note.)
 
 Tasks:
 
@@ -151,9 +141,9 @@ Tasks:
 
 ---
 
-## Phase 4: Peer Management UI (Access Tab)
+## Phase 4: Peer Management UI (Access Tab) — OPEN (remaining work)
 
-Goal: Build dedicated peer management surfaces at every hierarchy level with hierarchical role resolution, invite generation, and audit trails.
+Goal: Build dedicated peer management surfaces at every hierarchy level with hierarchical role resolution, invite generation, and audit trails. (Re-scoped 2026-07-15: Access is a **new fourth `InspectorTab` variant** added to the shipped {Properties, ApiAccess, Query} set.)
 
 **Depends on:** Shared Peer Infrastructure track (RoleManager, PeerRegistry, RoleLevel, scope utilities, invite system).
 

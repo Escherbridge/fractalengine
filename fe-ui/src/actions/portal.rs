@@ -51,22 +51,40 @@ pub(crate) fn should_auto_close(portal: &PortalState, selected: Option<Entity>) 
     selected.is_none() || entity_changed
 }
 
-/// Pure: compute `(node_id, url)` to persist for `UiAction::SaveUrl`, or
-/// `None` if nothing is selected (matches original silent no-op behavior).
+/// Result of validating + computing the persist payload for `UiAction::SaveUrl`.
+pub(crate) enum SaveUrlOutcome {
+    /// Persist `url` for `node_id`; `None` clears the stored URL.
+    Persist { node_id: String, url: Option<String> },
+    /// URL unparseable or rejected by `is_url_allowed` — show `reason` to the user.
+    Blocked { reason: String },
+    /// Nothing is selected; caller surfaces a "no selection" toast.
+    NoSelection,
+}
+
+/// Pure: validate + compute what `UiAction::SaveUrl` should persist.
 /// Empty/whitespace-only `external_url` maps to `None` (clears the URL);
 /// otherwise the buffer is stored as-is (not trimmed) — see AGENTS.md §portal
-/// for the whitespace-preservation caveat.
+/// for the whitespace-preservation caveat and the FR-1 validation rationale.
 pub(crate) fn compute_save_url(
     node_mgr: &NodeManager,
     inspector: &InspectorFormState,
-) -> Option<(String, Option<String>)> {
-    let node_id = node_mgr.selected.as_ref().map(|s| s.node_id.clone())?;
-    let url = if inspector.external_url.trim().is_empty() {
-        None
-    } else {
-        Some(inspector.external_url.clone())
+) -> SaveUrlOutcome {
+    let Some(node_id) = node_mgr.selected.as_ref().map(|s| s.node_id.clone()) else {
+        return SaveUrlOutcome::NoSelection;
     };
-    Some((node_id, url))
+    let raw = inspector.external_url.trim();
+    if raw.is_empty() {
+        return SaveUrlOutcome::Persist { node_id, url: None };
+    }
+    match raw.parse::<url::Url>() {
+        Ok(parsed) if fe_webview::security::is_url_allowed(&parsed) => {
+            SaveUrlOutcome::Persist { node_id, url: Some(inspector.external_url.clone()) }
+        }
+        Ok(_) => SaveUrlOutcome::Blocked {
+            reason: "URL blocked by security policy (private/loopback hosts and non-http schemes are not allowed)".to_string(),
+        },
+        Err(e) => SaveUrlOutcome::Blocked { reason: format!("invalid URL: {e}") },
+    }
 }
 
 #[cfg(test)]
@@ -144,32 +162,63 @@ mod tests {
         assert!(!should_auto_close(&portal, Some(entity(1))));
     }
 
+    fn selected_with_url(url: &str) -> (NodeManager, InspectorFormState) {
+        let mut mgr = NodeManager::default();
+        mgr.select(entity(1), "node-1");
+        let mut inspector = InspectorFormState::default();
+        inspector.external_url = url.to_string();
+        (mgr, inspector)
+    }
+
     #[test]
-    fn compute_save_url_no_selection_is_noop() {
+    fn compute_save_url_no_selection() {
         let mgr = NodeManager::default();
         let inspector = InspectorFormState::default();
-        assert!(compute_save_url(&mgr, &inspector).is_none());
+        assert!(matches!(compute_save_url(&mgr, &inspector), SaveUrlOutcome::NoSelection));
     }
 
     #[test]
     fn compute_save_url_empty_buffer_maps_to_none() {
-        let mut mgr = NodeManager::default();
-        mgr.select(entity(1), "node-1");
-        let mut inspector = InspectorFormState::default();
-        inspector.external_url = "   ".to_string();
-        let (node_id, url) = compute_save_url(&mgr, &inspector).expect("selection present");
-        assert_eq!(node_id, "node-1");
-        assert_eq!(url, None);
+        let (mgr, inspector) = selected_with_url("   ");
+        match compute_save_url(&mgr, &inspector) {
+            SaveUrlOutcome::Persist { node_id, url } => {
+                assert_eq!(node_id, "node-1");
+                assert_eq!(url, None);
+            }
+            _ => panic!("expected Persist"),
+        }
     }
 
     #[test]
-    fn compute_save_url_populated_buffer_maps_to_some() {
-        let mut mgr = NodeManager::default();
-        mgr.select(entity(1), "node-1");
-        let mut inspector = InspectorFormState::default();
-        inspector.external_url = "https://example.com".to_string();
-        let (node_id, url) = compute_save_url(&mgr, &inspector).expect("selection present");
-        assert_eq!(node_id, "node-1");
-        assert_eq!(url, Some("https://example.com".to_string()));
+    fn compute_save_url_allowed_url_persists() {
+        let (mgr, inspector) = selected_with_url("https://example.com");
+        match compute_save_url(&mgr, &inspector) {
+            SaveUrlOutcome::Persist { node_id, url } => {
+                assert_eq!(node_id, "node-1");
+                assert_eq!(url, Some("https://example.com".to_string()));
+            }
+            _ => panic!("expected Persist"),
+        }
+    }
+
+    #[test]
+    fn compute_save_url_blocks_loopback() {
+        let (mgr, inspector) = selected_with_url("http://localhost:8080/");
+        assert!(matches!(compute_save_url(&mgr, &inspector), SaveUrlOutcome::Blocked { .. }));
+    }
+
+    #[test]
+    fn compute_save_url_blocks_private_range() {
+        let (mgr, inspector) = selected_with_url("http://192.168.1.1/admin");
+        assert!(matches!(compute_save_url(&mgr, &inspector), SaveUrlOutcome::Blocked { .. }));
+    }
+
+    #[test]
+    fn compute_save_url_blocks_unparseable() {
+        let (mgr, inspector) = selected_with_url("not a url at all");
+        match compute_save_url(&mgr, &inspector) {
+            SaveUrlOutcome::Blocked { reason } => assert!(reason.contains("invalid URL")),
+            _ => panic!("expected Blocked"),
+        }
     }
 }

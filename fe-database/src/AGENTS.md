@@ -96,3 +96,16 @@ with `?? {}` before the bracket lookup so the filter degrades to "absent" on
 a `NONE` properties field instead of relying on undocumented NONE-propagation
 behavior for indexing expressions — matching the same `?? {}` pattern
 already used in `delete_entity_property_handler`.
+
+## §rbac-policy (auth_policy_pattern_20260710)
+
+`rbac.rs` no longer owns role semantics: the old `WRITE_ROLES` string list is
+gone and `require_write_role` delegates to `fe-policy` (`RoleLevelPolicy::standard()`
+via a shared `PolicyEngine`). Public fn signatures are unchanged so callers
+(`space_manager`, `queries`) did not churn. The pure decision lives in
+`evaluate_write(peer_did, role, scope)` so it is unit-testable without I/O —
+the DB fetch of the role stays in `get_role`, *before* evaluation, per the
+track's acceptance criteria. `role_level.rs` is now a re-export shim: the
+canonical `RoleLevel` moved to `fe-policy` (see fe-policy/AGENTS.md §role-level)
+to avoid a dependency cycle; `fe_database::RoleLevel` paths still resolve to
+the same type.

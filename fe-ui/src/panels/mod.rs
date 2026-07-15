@@ -12,6 +12,7 @@ pub(crate) mod toolbar;
 
 mod annotation_card;
 mod asset_card;
+mod egress_card;
 mod gpx_import_card;
 mod layer_manager_card;
 // `pub(crate)` so `crate::viewport_labels` can reuse `type_glyph` (FR-3,

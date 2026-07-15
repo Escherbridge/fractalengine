@@ -1,3 +1,8 @@
+//! DB-layer RBAC entry points — role checks delegate to fe-policy (see src/AGENTS.md §rbac-policy).
+
+use std::sync::{Arc, OnceLock};
+
+use fe_policy::{Action, AuthContext, Decision, PolicyEngine, RoleLevel, RoleLevelPolicy, Scope};
 use fe_query::{DeleteBuilder, Filter, InsertBuilder, QueryBuilder};
 
 use crate::query_helpers::exec_query;
@@ -31,21 +36,28 @@ pub async fn get_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<Ro
         .unwrap_or_else(|| RoleId("public".to_string())))
 }
 
-/// Roles that are permitted to perform write/mutation operations on a petal.
-const WRITE_ROLES: &[&str] = &["owner", "manager", "editor"];
+/// Shared write-path policy engine (standard verb map: Write requires Editor+).
+fn write_engine() -> &'static PolicyEngine {
+    static ENGINE: OnceLock<PolicyEngine> = OnceLock::new();
+    ENGINE.get_or_init(|| PolicyEngine::new().with_policy(Arc::new(RoleLevelPolicy::standard())))
+}
 
-/// Check whether `peer_did` has one of the required roles at `scope`.
+/// Pure write decision for a pre-fetched role string — unit-testable without I/O.
+pub(crate) fn evaluate_write(peer_did: &str, role: &str, scope: &str) -> Decision {
+    let subject = AuthContext::Did {
+        did: peer_did.to_string(),
+        role: RoleLevel::from(role),
+    };
+    write_engine().evaluate(&subject, &Action::Write, &Scope::new(scope))
+}
+
+/// Check whether `peer_did` may write at `scope` (fe-policy engine decision).
 /// Returns Ok(role) on success, Err on permission denied or DB error.
 pub async fn require_write_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<RoleId> {
     let role = get_role(db, peer_did, scope).await?;
-    if WRITE_ROLES.contains(&role.0.as_str()) {
-        Ok(role)
-    } else {
-        anyhow::bail!(
-            "permission denied: peer '{peer_did}' has role '{}' at scope '{scope}' \
-             — write requires one of {WRITE_ROLES:?}",
-            role.0
-        )
+    match evaluate_write(peer_did, &role.0, scope) {
+        Decision::Allow => Ok(role),
+        Decision::Deny(reason) => anyhow::bail!("permission denied: {reason}"),
     }
 }
 
@@ -104,11 +116,32 @@ pub async fn revoke_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn write_roles_contains_owner_manager_and_editor() {
-        assert!(WRITE_ROLES.contains(&"owner"));
-        assert!(WRITE_ROLES.contains(&"manager"));
-        assert!(WRITE_ROLES.contains(&"editor"));
-        assert!(!WRITE_ROLES.contains(&"public"));
+    fn write_allowed_for_editor_and_above() {
+        for role in ["owner", "manager", "editor"] {
+            assert!(
+                evaluate_write("did:key:z6MkTest", role, "petal-1").is_allow(),
+                "role '{role}' must be allowed to write"
+            );
+        }
+    }
+
+    #[test]
+    fn write_denied_below_editor() {
+        for role in ["viewer", "public", "none", "unknown-role", ""] {
+            assert!(
+                !evaluate_write("did:key:z6MkTest", role, "petal-1").is_allow(),
+                "role '{role}' must be denied write"
+            );
+        }
+    }
+
+    #[test]
+    fn deny_reason_names_subject_and_scope() {
+        let decision = evaluate_write("did:key:z6MkTest", "viewer", "petal-1");
+        let reason = decision.reason().unwrap_or_default();
+        assert!(reason.contains("did:key:z6MkTest"));
+        assert!(reason.contains("petal-1"));
     }
 }

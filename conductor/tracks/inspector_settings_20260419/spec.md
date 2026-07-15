@@ -1,8 +1,21 @@
+---
+type: spec
+---
+
 # Specification: Portal URL Persistence + Inspector Settings
 
 ## Overview
 
-Expand the inspector panel from a simple transform/URL editor into a full hierarchical configuration panel with persistent portal URLs, a tab system (Info/Settings/Access), support for inspecting every level of the entity hierarchy (Node, Petal, Fractal, Verse), and a per-entity role/access configuration UI.
+Expand the inspector panel from a simple transform/URL editor into a full hierarchical configuration panel with persistent portal URLs, a tab system, support for inspecting every level of the entity hierarchy (Node, Petal, Fractal, Verse), and a per-entity role/access configuration UI.
+
+> **As-built reconciliation (2026-07-15):** the inspector shipped (via other
+> tracks) with a tab set of **{Properties, API Access, Query}** — the
+> Info/Settings/Access design in the original FR-2 never landed. Decision:
+> **FOLD the spec to the shipped tab set** rather than rework the UI. FR-2
+> below is rewritten as-built. FR-3 (hierarchy-level inspection) and FR-4
+> (Access RBAC UI, now a *fourth* tab added to the shipped set) remain the
+> open phases of this track. FR-1 residue (SaveUrl `is_url_allowed`
+> enforcement + restart round-trip test) closed 2026-07-15.
 
 ## Background
 
@@ -39,23 +52,25 @@ Phases 1-3 of this track are **independent** of the shared infrastructure and ca
 
 **Priority:** P0
 
-### FR-2: Inspector Tab System
+### FR-2: Inspector Tab System — AS-BUILT (folded 2026-07-15)
 
-**Description:** Add a horizontal tab bar to the inspector panel with three tabs: Info, Settings, Access. The Info tab contains the current transform fields and URL fields (existing functionality). Settings and Access tabs are initially placeholder panels with descriptive text.
+**Description (as shipped):** The inspector panel has a horizontal tab bar with three tabs: **Properties**, **API Access**, **Query**. `InspectorTab` enum + `InspectorFormState.active_tab` live in `fe-ui/src/plugin.rs`; rendering in `fe-ui/src/panels/inspector.rs`. The original Info/Settings/Access design never landed and is superseded by this shipped set.
 
-**Acceptance Criteria:**
-- A horizontal tab bar appears at the top of the inspector panel when an entity is selected.
-- Three tabs are displayed: "Info", "Settings", "Access".
-- Clicking a tab switches the inspector content below the tab bar.
-- The Info tab shows all current inspector content (transform, URLs).
-- The Settings tab shows a placeholder message: "Node settings will appear here."
-- The Access tab shows a placeholder message: "Access control will appear here."
-- Tab selection persists while the same entity is selected; resets to Info on entity change.
-- Tab state is stored in `InspectorFormState` (or a new `InspectorTabState` resource).
+**As-built behavior:**
+- Tab bar renders when a node is selected; clicking a tab switches content and updates `InspectorFormState.active_tab`.
+- **Properties** tab: transform fields, Portal URLs section (SaveUrl / OpenPortal), Asset card, Annotation card, custom properties, field defs.
+- **API Access** tab: API token scope/role/expiry generation + paginated token list; sensitive state (generated token) is cleared when leaving the tab.
+- **Query** tab: SurrealQL query box scoped to the current hierarchy scope.
+- Tab-reset-on-selection is **partial** (via `node_manager/inspector_sync.rs`): on selection change the API-token tab state (generated token, token list, scope buffer, pagination) is reset, but `active_tab` itself intentionally persists across selections — an operator paging through nodes on the Query tab stays on Query.
+- The original "Settings" concept is covered elsewhere: entity settings live in `fe-ui/src/dialogs/entity_settings.rs` (its own `SettingsTab::{General,Access}` dialog), not in the inspector.
 
-**Priority:** P1
+**Delta from original spec (accepted):** tab names differ; no placeholder Settings/Access tabs; `active_tab` does not reset to the first tab on entity change. FR-4's Access surface will be added as a **fourth inspector tab ("Access")** alongside the shipped three.
 
-### FR-3: Inspectable Hierarchy Levels
+**Priority:** P1 — **DONE (as-built, delivered via other tracks)**
+
+### FR-3: Inspectable Hierarchy Levels — OPEN (re-scoped 2026-07-15)
+
+**Re-scope note:** references below to "Info tab" map to the shipped **Properties** tab; "Settings tab" placeholders are dropped (entity settings live in the `entity_settings.rs` dialog); "Access tab" refers to the FR-4 fourth tab. Non-node levels show the tab subset that applies (Properties always; API Access/Query where the scope makes sense; Access once FR-4 lands).
 
 **Description:** Extend the inspector to work with petals, fractals, and verses -- not just nodes. The sidebar hierarchy (verse > fractal > petal > node) should allow selecting any level, and the inspector should show appropriate content for that level.
 
@@ -86,7 +101,9 @@ Phases 1-3 of this track are **independent** of the shared infrastructure and ca
 
 **Priority:** P2
 
-### FR-4: Peer Management UI (Access Tab)
+### FR-4: Peer Management UI (Access Tab) — OPEN (re-scoped 2026-07-15)
+
+**Re-scope note:** the Access tab is a **new fourth tab** added to the shipped `InspectorTab` enum ({Properties, ApiAccess, Query} + Access), not part of an Info/Settings/Access triad.
 
 **Description:** The Access tab is a dedicated peer management surface at every level of the entity hierarchy. Unlike a simple peer list, each hierarchy level has scope-appropriate management controls. Role resolution follows the hierarchical cascade — the UI shows both explicit and inherited roles so operators understand the effective permissions.
 
@@ -212,4 +229,4 @@ This follows the GitHub pattern: org-level member management, team-level access,
 
 1. **Multi-selection:** Should the inspector support inspecting multiple entities simultaneously (e.g., showing shared fields)? Current assumption: single selection only.
 2. **Inspector width:** Should the inspector panel width be fixed or resizable? Currently it shares space with the portal panel.
-3. **Tab persistence:** Should the active tab be remembered per entity type (e.g., always open Settings for petals) or reset to Info on every selection change?
+3. **Tab persistence:** ~~Should the active tab be remembered per entity type (e.g., always open Settings for petals) or reset to Info on every selection change?~~ **Resolved by the as-built fold (2026-07-15):** `active_tab` persists across selections; only per-tab sensitive/stale state (API tokens, property buffers) resets on selection change via `inspector_sync.rs`.

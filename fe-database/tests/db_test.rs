@@ -1,6 +1,6 @@
 use fe_database::BlobStoreHandle;
 use fe_runtime::blob_store::mock::MockBlobStore;
-use fe_runtime::messages::{DbCommand, DbResult, SceneChange};
+use fe_runtime::messages::{DbCommand, DbResult, EntityType, SceneChange};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -450,5 +450,64 @@ fn test_delete_property_emits_scene_change() {
             );
         }
         other => panic!("expected SceneChange::PropertyChanged(Null), got {other:?}"),
+    }
+}
+
+/// `RenameEntity` must emit `SceneChange::NodeRenamed` on the broadcast channel
+/// and the new name must be readable back from the DB (persist proof, not just
+/// handler `Ok` — see fe-database/src/AGENTS.md).
+#[test]
+fn test_rename_entity_emits_scene_change() {
+    let _guard = db_lock();
+    let db = shared_scene_db();
+
+    let petal_id = seed_hierarchy(&db.cmd_tx, &db.res_rx);
+
+    // Subscribe after setup so the receiver does not see setup events.
+    let mut ecr = db.scene_tx.subscribe();
+
+    db.cmd_tx
+        .send(DbCommand::RenameEntity {
+            entity_type: EntityType::Petal,
+            entity_id: petal_id.clone(),
+            new_name: "renamed-petal".to_string(),
+        })
+        .unwrap();
+
+    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("RenameEntity result") {
+        DbResult::EntityRenamed { entity_id, new_name, .. } => {
+            assert_eq!(entity_id, petal_id, "EntityRenamed.entity_id mismatch");
+            assert_eq!(new_name, "renamed-petal", "EntityRenamed.new_name mismatch");
+        }
+        other => panic!("expected EntityRenamed, got {other:?}"),
+    }
+
+    let change = recv_broadcast(&mut ecr, Duration::from_secs(5));
+    match change {
+        SceneChange::NodeRenamed { node_id, new_name } => {
+            assert_eq!(node_id, petal_id, "NodeRenamed.node_id mismatch");
+            assert_eq!(new_name, "renamed-petal", "NodeRenamed.new_name mismatch");
+        }
+        other => panic!("expected SceneChange::NodeRenamed, got {other:?}"),
+    }
+
+    // Read-back: the rename must be persisted, not just acknowledged.
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("pid".to_string(), serde_json::json!(petal_id));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT name FROM petal WHERE petal_id = $pid".to_string(),
+            vars,
+        })
+        .unwrap();
+    match db.res_rx.recv_timeout(Duration::from_secs(5)).expect("RawQuery result") {
+        DbResult::QueryResult { data } => {
+            assert_eq!(data.len(), 1, "renamed petal must exist in DB, got {data:?}");
+            assert_eq!(
+                data[0]["name"], serde_json::json!("renamed-petal"),
+                "petal.name must persist the rename, got {:?}", data[0]
+            );
+        }
+        other => panic!("expected QueryResult, got {other:?}"),
     }
 }

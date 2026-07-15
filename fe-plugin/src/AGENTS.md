@@ -88,3 +88,15 @@ The WIT is the **aspirational contract**, not the wired ABI: the running WASM
 host registers core-ABI `func_wrap` imports with `-1` denial sentinels
 (`wasm/host_imports.rs`), and no component-model bindgen exists yet. Keep the
 two in sync by name/shape; wiring bindgen is future work.
+
+## §capability-policy (auth_policy_pattern_20260710)
+
+`host_env.rs::require()` now delegates to the shared policy engine:
+`CapabilityToken::to_auth_context()` (capability.rs) bridges the token into
+`fe_policy::AuthContext::Capability`, and a static `PolicyEngine` holding
+`fe_policy::CapabilityPolicy` makes the decision (capability name travels as
+`Action::Custom`). Behavior is identical to the old inline `has_capability`
+check — fail closed, same `HostApiError::CapabilityDenied` — but the decision
+and its log now come from the one engine every entry point shares. The
+`CapabilityManifest`/`CapabilityToken` types themselves are unchanged by
+design (spec: they were already the right shape).

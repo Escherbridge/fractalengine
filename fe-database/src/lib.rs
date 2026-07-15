@@ -478,7 +478,17 @@ pub fn spawn_db_thread_with_sync(
                     }
                     Ok(DbCommand::RenameEntity { entity_type, entity_id, new_name }) => {
                         match handlers::entity::rename_entity_handler(&db, entity_type, &entity_id, &new_name).await {
-                            Ok(()) => send_result(&tx, DbResult::EntityRenamed { entity_type, entity_id, new_name }),
+                            Ok(()) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    // entity_id is a verse/fractal/petal id (EntityType has no
+                                    // Node variant); subscribers no-op on unknown node ids.
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeRenamed {
+                                        node_id: entity_id.clone(),
+                                        new_name: new_name.clone(),
+                                    });
+                                }
+                                send_result(&tx, DbResult::EntityRenamed { entity_type, entity_id, new_name });
+                            }
                             Err(e) => send_result(&tx, DbResult::Error(e)),
                         }
                     }

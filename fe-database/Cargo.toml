@@ -7,6 +7,7 @@ edition = "2021"
 fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
 fe-query = { path = "../fe-query" }
+fe-policy = { path = "../fe-policy" }
 surrealdb = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

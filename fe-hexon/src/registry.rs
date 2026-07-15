@@ -14,6 +14,9 @@ pub enum RegistryError {
     #[error("signature verification failed for crate {0}")]
     SignatureVerificationFailed(String),
 
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+
     #[error("crate already installed: {0}")]
     AlreadyInstalled(String),
 

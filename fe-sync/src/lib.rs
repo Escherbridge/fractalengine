@@ -11,6 +11,7 @@ pub mod replicator;
 pub mod status;
 pub mod sync_thread;
 pub mod verse_peers;
+pub mod write_policy;
 
 pub use bevy_asset_reader::BlobAssetReader;
 pub use blob_store::FsBlobStore;
@@ -26,3 +27,4 @@ pub use status::{
 };
 pub use sync_thread::spawn_sync_thread;
 pub use verse_peers::VersePeers;
+pub use write_policy::PolicyHandle;

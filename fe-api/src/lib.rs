@@ -1,12 +1,17 @@
 pub mod assets;
 pub mod auth;
+pub mod crs;
+pub mod export;
 pub mod format;
 pub mod gis;
 pub mod gpx;
 pub mod hexon;
+pub mod limits;
 pub mod mcp;
+pub mod query_guard;
 pub mod rest;
 pub mod server;
+pub mod share;
 pub mod terrain;
 pub mod types;
 pub mod ws;
@@ -80,6 +85,9 @@ async fn run_server(config: ApiConfig) {
         tileset_registry: config.tileset_registry,
         hexon_registry: config.hexon_registry,
         announcement_store: config.announcement_store,
+        // Ephemeral per-process share-URL signing key: restart invalidates
+        // outstanding links (TTL ≤ 24h anyway) — see AGENTS.md §share.
+        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
 
     // Background task: listen for revocation notifications from Bevy thread
