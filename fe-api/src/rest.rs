@@ -1001,27 +1001,6 @@ pub async fn execute_elevated_query(
     let sql_trimmed = req.sql.trim();
     let sql_upper = sql_trimmed.to_uppercase();
 
-    // Block system-level DDL that could alter the core schema
-    const BLOCKED_DDL: &[&str] = &[
-        "DEFINE TABLE",
-        "DEFINE FIELD",
-        "DEFINE INDEX",
-        "DEFINE EVENT",
-        "REMOVE TABLE",
-        "REMOVE FIELD",
-        "REMOVE INDEX",
-        "INFO",
-        "SLEEP",
-        "KILL",
-    ];
-    for ddl in BLOCKED_DDL {
-        if sql_upper.contains(ddl) {
-            return Json(ApiResponse::<QueryResultDto>::error(format!(
-                "{ddl} is not allowed in elevated queries"
-            )));
-        }
-    }
-
     // Allowed tables for mutations
     const ELEVATED_TABLES: &[&str] = &[
         "NODE",
@@ -1039,20 +1018,10 @@ pub async fn execute_elevated_query(
         "VERSE_MEMBER",
     ];
 
-    // Check that any FROM/INTO/UPDATE targets are in the allowed list
-    for keyword in ["FROM", "INTO", "UPDATE"] {
-        if let Some(pos) = sql_upper.find(keyword) {
-            let after = &sql_upper[pos + keyword.len()..].trim_start();
-            let table_name: String = after
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if !table_name.is_empty() && !ELEVATED_TABLES.contains(&table_name.as_str()) {
-                return Json(ApiResponse::<QueryResultDto>::error(format!(
-                    "table '{table_name}' is not accessible via elevated queries"
-                )));
-            }
-        }
+    // Whole-word DDL ban + all-occurrence target whitelist (2026-07-15
+    // security review — substring/first-occurrence checks were bypassable).
+    if let Err(e) = crate::query_guard::validate_elevated_sql(&sql_upper, ELEVATED_TABLES) {
+        return Json(ApiResponse::<QueryResultDto>::error(e));
     }
 
     let Some(ref db) = state.db_reader else {

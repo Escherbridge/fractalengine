@@ -128,6 +128,18 @@ one branch grows.
 
 ## §query-guard + §limits
 
+**Subquery/whitespace hardening (2026-07-15 security review):** the table
+whitelist is enforced on EVERY `FROM` clause via `from_clause_tables`
+(subqueries included; non-identifier FROM targets like `$var` or
+`type::table(...)` are rejected outright) — first-FROM-only checking let a
+nested `SELECT` read any table. `ROLE`/`VERSE_MEMBER` were removed from the
+read whitelist (RBAC data is not BI egress; the role-gated elevated endpoint
+retains them). The elevated endpoint's DDL screen moved from bypassable
+multi-word substring matching ("DEFINE TABLE" vs "DEFINE  TABLE") to
+whole-word keyword bans + all-occurrence target checks in
+`validate_elevated_sql`. Fail-closed tradeoff accepted: keywords inside
+string literals reject the query.
+
 `src/query_guard.rs` is the single guard pipeline for every read-only SQL
 egress path: `/api/v1/query`, both export routes, and shared-URL redemption.
 It was factored **verbatim** out of `rest.rs::execute_query` (error strings
