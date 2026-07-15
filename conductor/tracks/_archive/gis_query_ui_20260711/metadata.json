@@ -1,0 +1,16 @@
+{
+  "id": "gis_query_ui_20260711",
+  "description": "In-app GIS surface: annotation editor, spatial/property query panel with fly-to, layer manager",
+  "type": "feature",
+  "created_at": "2026-07-11T00:00:00Z",
+  "status": "done",
+  "execution_wave": 0,
+  "wave_rationale": "In-flight GIS hardening run (W4). Already underway.",
+  "depends_on": [
+    "petal_gis_endpoints_20260711"
+  ],
+  "blocks": [],
+  "archived": true,
+  "notes": "user 2026-07-11: 'expose UI for editing querying and orchestrating this data'. Shares gis.annotation.* property contract with the endpoints track. fe-ui must not depend on fe-terrain. Part of GIS-hardening ultrapilot run (W4). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "archived_at": "2026-07-15T00:00:00Z"
+}
