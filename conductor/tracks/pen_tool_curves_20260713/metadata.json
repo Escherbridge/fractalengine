@@ -3,11 +3,11 @@
   "description": "Transform the clunky cursor point-placement into a pen tool: polyline click-to-place (W7a), then Bezier/Catmull-Rom curves + sensitivity toggle + ellipse/shape primitives (W7b)",
   "type": "feature",
   "created_at": "2026-07-13T00:00:00Z",
-  "status": "in-progress",
+  "status": "done",
   "execution_wave": 0,
   "wave_rationale": "W7a (polyline pen) is independent of the not-yet-existing platform APIs, so it lands in the parallel green wave. W7b (curves/shapes) is sequential on green. Ultrapilot work units W7a/W7b.",
   "depends_on": [],
   "blocks": [],
-  "archived": false,
-  "notes": "User 2026-07-13 chose 'build the whole pen tool' but coordinator phases it: W7a polyline lands green in the parallel wave, W7b curves/sensitivity/ellipses built sequentially. Bevy 0.18 CubicCurve family available but unused. Reuses PathTracker arc-length (linear) shared with the stamp unit. W7a reuses PathAppendPoint (no new UiAction)."
+  "archived": true,
+  "notes": "User 2026-07-13 chose 'build the whole pen tool' but coordinator phases it: W7a polyline lands green in the parallel wave, W7b curves/sensitivity/ellipses built sequentially. Bevy 0.18 CubicCurve family available but unused. Reuses PathTracker arc-length (linear) shared with the stamp unit. W7a reuses PathAppendPoint (no new UiAction). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived."
 }

@@ -3,13 +3,13 @@
   "description": "Petal-scoped GIS REST endpoints (geo nodes + annotations, GPX tracks, bbox/radius queries) + shared fe-query gis data layer",
   "type": "feature",
   "created_at": "2026-07-11T00:00:00Z",
-  "status": "in-progress",
+  "status": "done",
   "execution_wave": 0,
   "wave_rationale": "In-flight GIS hardening run (W3+W5). Already underway.",
   "depends_on": [
     "terrain_scale_controls_20260711"
   ],
   "blocks": [],
-  "archived": false,
-  "notes": "user 2026-07-11: 'map GPX points and nodes with annotations and allow that information to be exposed through petal specific endpoints'. Quarantine: rest.rs/assets.rs/Cargo.toml (fe-api) + fe-database/src/lib.rs are live external-IDE WIP \u00e2\u20ac\u201d additive files only. Part of GIS-hardening ultrapilot run (W3+W5)."
+  "archived": true,
+  "notes": "user 2026-07-11: 'map GPX points and nodes with annotations and allow that information to be exposed through petal specific endpoints'. Quarantine: rest.rs/assets.rs/Cargo.toml (fe-api) + fe-database/src/lib.rs are live external-IDE WIP \u00e2\u20ac\u201d additive files only. Part of GIS-hardening ultrapilot run (W3+W5). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived."
 }
