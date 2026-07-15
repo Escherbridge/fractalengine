@@ -284,7 +284,7 @@ fn build_tile_splat_mesh(
     // FR-4: baked path — zero per-frame fill cost, just bake the mesh from the
     // hexon source's precomputed buffer when present.
     //
-    // SEAM (cross-worker, see WORKER_REPORT.md): `CompositeTileSource` doesn't
+    // SEAM: `CompositeTileSource` doesn't
     // yet expose a `get_baked_splats_sync(coord)` passthrough over its private
     // `hexon_sources` list (mirroring `get_tile_sync`/`get_satellite_tile_sync`,
     // `fe-terrain/src/tiles/composite.rs`, out of this track's file ownership).

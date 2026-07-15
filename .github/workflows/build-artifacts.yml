@@ -1,0 +1,110 @@
+name: Build Artifacts
+
+# Produce clean, runnable binaries for every successful build on `main` (and on
+# PRs targeting it). Artifacts are the GUI binary (`fractalengine`) and the
+# headless relay (`fe-relay`), uploaded per-OS. A build only publishes artifacts
+# if compilation AND the test sweep pass — a failed step fails the job, so no
+# broken binary is ever uploaded.
+#
+# This is the first slice of `release_ci_20260429`. The full pipeline (8-target
+# matrix, tag-triggered GitHub Releases, Docker/GHCR image, code signing,
+# packaging) stays in that track.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: build-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Guard against the deep-recursion stack usage some dependencies (surrealdb
+  # core) hit during compilation; harmless elsewhere.
+  RUST_MIN_STACK: "134217728"
+
+jobs:
+  linux:
+    name: Linux (build + test + artifacts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bevy 0.18 (x11 + wayland) link-time system libraries.
+      - name: Install Bevy system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Share the warm build cache across the build and test steps.
+          shared-key: linux-build
+
+      - name: Build release binaries
+        run: cargo build --release --bin fractalengine --bin fe-relay
+
+      # Sweep the crates that carry this project's test suites. Kept scoped (not
+      # a bare `cargo test --workspace`) to match the project's known-green set
+      # and keep CI time bounded; expand as coverage grows.
+      - name: Test sweep
+        run: cargo test --release -p fe-ui -p fe-terrain -p fractalengine
+
+      - name: Upload fractalengine (GUI) binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fractalengine-linux-x86_64
+          path: target/release/fractalengine
+          if-no-files-found: error
+
+      - name: Upload fe-relay (headless) binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe-relay-linux-x86_64
+          path: target/release/fe-relay
+          if-no-files-found: error
+
+  windows:
+    name: Windows (build + artifacts)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-build
+
+      - name: Build release binaries
+        run: cargo build --release --bin fractalengine --bin fe-relay
+
+      - name: Upload fractalengine (GUI) exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: fractalengine-windows-x86_64
+          path: target/release/fractalengine.exe
+          if-no-files-found: error
+
+      - name: Upload fe-relay (headless) exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe-relay-windows-x86_64
+          path: target/release/fe-relay.exe
+          if-no-files-found: error
