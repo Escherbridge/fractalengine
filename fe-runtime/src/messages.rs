@@ -659,8 +659,7 @@ pub enum SceneChange {
     ///
     /// `petal_id` deviates from the spec's exact mirror-of-NodeAdded shape:
     /// dropped to avoid a breaking change in `fractalengine/src/main.rs` and
-    /// `fe-api/src/ws.rs` (both out of this track's file ownership — see
-    /// `WORKER_REPORT.md`). Consumers needing petal scoping should resolve it
+    /// `fe-api/src/ws.rs`. Consumers needing petal scoping should resolve it
     /// via `DbResult::NodeDeleted { node_id, petal_id }` instead, which is
     /// emitted alongside this event on the same delete.
     NodeRemoved { node_id: String },

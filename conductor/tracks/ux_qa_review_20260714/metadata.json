@@ -1,0 +1,14 @@
+{
+  "id": "ux_qa_review_20260714",
+  "description": "QA harness to assist the user's thorough UX review of the shipped 2026-07 GPX/path/analytics surfaces: a structured per-surface checklist + a findings log that becomes the backlog for the user-owned UX implementation track. Review-only; deliverable is a triaged findings list, not code.",
+  "type": "qa",
+  "created_at": "2026-07-14T00:00:00Z",
+  "status": "pending",
+  "execution_wave": 1,
+  "wave_rationale": "Assists the user's own QA review that the roadmap defers the UX track to. Review-only; produces findings.md that seeds a future ux_polish implementation track.",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "alignment": {"verdict": "PLATFORM-KEEP", "priority": "P1", "rationale": "QA scaffold for the user's review; produces the UX track's backlog. The roadmap explicitly defers UX to a user-owned track — this is its input.", "assessed": "2026-07-14"},
+  "notes": "Created 2026-07-14 at user request ('create a qa track for the ux review to assist'). Checklist covers: pen/path drawing, data icons, track styling, path-asset stamp, Paths/GIS editing, and forward-looking analytics-egress affordance wishes. Known concern to validate: single-point-node flat quad is a smaller click target than the old sphere. Findings go in findings.md; correctness bugs get fixed outside this review track."
+}

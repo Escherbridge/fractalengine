@@ -256,7 +256,7 @@ an `auth` message containing a valid API token within 5 seconds.
 | [conductor/tech-stack.md](conductor/tech-stack.md) | Technology decisions and constraints |
 | [conductor/workflow.md](conductor/workflow.md) | Development process and TDD workflow |
 | [conductor/tracks.md](conductor/tracks.md) | Implementation tracks index |
-| [PLAYBOOK.md](PLAYBOOK.md) | Sprint-by-sprint progress tracker |
+| [conductor/roadmap.md](conductor/roadmap.md) | Strategic roadmap + go-forward slate |
 
 ---
 

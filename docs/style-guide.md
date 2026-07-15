@@ -298,5 +298,3 @@ For every test group:
 2. Edge case: calling back_from_* when already at the top level (should be a no-op / clear gracefully)
 3. Edge case: operating on an empty VerseManager (should not panic)
 4. Edge case: selecting an entity that is already selected (NodeManager preserves drag)
-
-See `docs/tests-todo.md` for the full list of specific test cases that need to be written.

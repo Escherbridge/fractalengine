@@ -88,9 +88,9 @@ without a live connection to the origin node.
 ### Time-travel checkpoints
 
 SurrealDB's existing `VERSION` clause / time-travel query capability
-(referenced in `PLAYBOOK.md` Track 3 scope: "Time-travel: implement
-query_petal_at_time(petal_id, timestamp)") is the live-DB analog of what a
-delta hexon should support offline: given a target `hlc_timestamp` or
+(a `query_petal_at_time(petal_id, timestamp)`-style live-DB query) is the
+live-DB analog of what a delta hexon should support offline: given a target
+`hlc_timestamp` or
 `lamport_clock`, replay only entries up to that point. A "checkpoint" is
 simply a delta hexon whose last entry is tagged as a snapshot boundary
 (compaction point), so replay doesn't have to walk the entire history from
