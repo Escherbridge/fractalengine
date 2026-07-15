@@ -1,7 +1,7 @@
 {
   "id": "release_ci_20260429",
   "name": "Release CI",
-  "status": "pending",
+  "status": "in_progress",
   "execution_wave": 5,
   "wave_rationale": "P2; depends on cross_platform_desktop + headless_relay.",
   "priority": "P2",
@@ -15,7 +15,7 @@
     {
       "id": 1,
       "name": "PR Check Workflow",
-      "status": "pending",
+      "status": "in_progress",
       "tasks": 3
     },
     {
@@ -25,6 +25,7 @@
       "tasks": 7
     }
   ],
+  "notes": "2026-07-14: partially delivered — build-artifacts.yml (commit 2fbebc4, 'first slice of release_ci_20260429') covers Tasks 1.1/1.3 substantially; docker/Dockerfile.relay delivers Task 2.5 / part of FR-4.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P2",

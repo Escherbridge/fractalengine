@@ -29,18 +29,18 @@ Goal: `TilesetMeta` carries scale/GSD/CRS/bounds fields that round-trip and defa
 plus a pure derivation from bounds+zoom. Existing `.hexon` archives keep parsing.
 
 Tasks:
-- [ ] Task: Add serde-defaulted scale fields to `TilesetMeta` (`fe-format/src/manifest.rs`):
+- [x] Task: Add serde-defaulted scale fields to `TilesetMeta` (`fe-format/src/manifest.rs`):
   `native_scale`, `ground_sample_distance_m`, `crs` (default EPSG:4326),
   `scale_bounds: Option<[f64;2]>`. (TDD: write `manifest.rs` test deserializing a legacy
   JSON blob with no scale fields and asserting defaults; then add fields.)
-- [ ] Task: Round-trip scale fields through archive export/import
+- [x] Task: Round-trip scale fields through archive export/import
   (`fe-format/src/archive.rs` `export_tileset` ~:199, `HexonArchiveData.tileset_meta` ~:36).
   (TDD: write archive round-trip test asserting scale fields survive export→import; then wire.)
-- [ ] Task: Pure `derive_scale_from_bounds(bounds, min_zoom, max_zoom)` deriving GSD +
+- [x] Task: Pure `derive_scale_from_bounds(bounds, min_zoom, max_zoom)` deriving GSD +
   native_scale via Web-Mercator (mirror `tile_world_size_m` constant `40_075_016.686`).
   Place in `fe-format` (or a small pure helper) so it has no Bevy dep. (TDD: write test with a
   real bounds+zoom asserting derived GSD ≈ `tile_world_size_m` at center latitude; then implement.)
-- [ ] Verification: legacy `.hexon` fixture parses; new fields round-trip; derivation matches
+- [x] Verification: legacy `.hexon` fixture parses; new fields round-trip; derivation matches
   Web-Mercator within tolerance. `cargo test -p fe-format` green, fmt+clippy clean. [checkpoint marker]
 
 ## Phase 2: Data-layer reconciliation + authoritative binding (FR-3, FR-4, FR-5)
@@ -49,23 +49,23 @@ metric frame, and the hexon becomes authoritative for world_scale with exposed c
 (Coordinate with `terrain_lod_hardening_20260711` before editing `composite.rs`.)
 
 Tasks:
-- [ ] Task: Backfill on load in `HexonStore`/`TilesetRegistry` (`fe-terrain/src/tiles/store.rs`,
+- [x] Task: Backfill on load in `HexonStore`/`TilesetRegistry` (`fe-terrain/src/tiles/store.rs`,
   `tiles/registry.rs:24/44`) — apply Phase-1 derivation when scale fields absent; idempotent.
   (TDD: write registry test loading a no-scale `TilesetInfo` and asserting backfilled non-default
   GSD, plus re-load leaves populated fields untouched; then implement.)
-- [ ] Task: `CompositeTileSource` (`fe-terrain/src/tiles/composite.rs:17`) retains each
+- [x] Task: `CompositeTileSource` (`fe-terrain/src/tiles/composite.rs:17`) retains each
   `HexonTileSource.tileset_meta` and adds `reconcile_metric_frame()` computing a common
   real-meter frame across sources. (TDD: write composite test with two sources at differing GSD
   asserting a single reconciled frame; then implement.)
-- [ ] Task: Per-source GSD → LOD/zoom selection in composite (replace blind first-hit `covers()`
+- [x] Task: Per-source GSD → LOD/zoom selection in composite (replace blind first-hit `covers()`
   where GSD should decide). (TDD: write test asserting the two sources select different LODs per
   their GSD; then implement.)
-- [ ] Task: Hexon-authoritative world_scale in `config_for_tileset`
+- [x] Task: Hexon-authoritative world_scale in `config_for_tileset`
   (`fe-terrain/src/petal_binding.rs:29`) + `apply_terrain_assignments` override site (`:159-173`):
   set `TerrainConfig.world_scale` from `native_scale`, expose `scale_bounds`, clamp user nudge via
   `scale::sanitize_world_scale`-style logic (`config.rs:74/79`). (TDD: write petal_binding test —
   bind tileset with native_scale sets world_scale; user value outside bounds is clamped; then implement.)
-- [ ] Verification: mixed-GSD compose reconciles; binding clamps user nudge to hexon bounds;
+- [x] Verification: mixed-GSD compose reconciles; binding clamps user nudge to hexon bounds;
   installed-tileset backfill non-default. `cargo test -p fe-terrain` green, fmt+clippy clean.
   [checkpoint marker]
 
@@ -73,13 +73,13 @@ Tasks:
 Goal: a Bevy-free `fe-terrain/src/ruler.rs` with all measurement/snap math, fully unit-tested.
 
 Tasks:
-- [ ] Task: `nice_number(span)` — snap to 1/2/5×10ⁿ round spans. (TDD: write `ruler.rs` test
+- [x] Task: `nice_number(span)` — snap to 1/2/5×10ⁿ round spans. (TDD: write `ruler.rs` test
   covering several spans and boundary cases; then implement.)
-- [ ] Task: `world_to_real_distance` + `bearing_deg` (0-360). (TDD: write tests for known
+- [x] Task: `world_to_real_distance` + `bearing_deg` (0-360). (TDD: write tests for known
   distance and known bearing; then implement.)
-- [ ] Task: `polygon_area_m2` (planar metric area). (TDD: write test for a known-area polygon;
+- [x] Task: `polygon_area_m2` (planar metric area). (TDD: write test for a known-area polygon;
   then implement.)
-- [ ] Verification: full `ruler.rs` unit suite green; module has zero Bevy imports; fmt+clippy
+- [x] Verification: full `ruler.rs` unit suite green; module has zero Bevy imports; fmt+clippy
   clean; add `AGENTS.md` pointer for rationale. [checkpoint marker]
 
 ## Phase 4: Scale bar HUD (FR-8)

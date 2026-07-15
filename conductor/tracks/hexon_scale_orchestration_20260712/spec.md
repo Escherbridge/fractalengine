@@ -2,7 +2,7 @@
 type: Track Spec
 title: Hexon Scale Orchestration + Rulers
 description: Hexon-authoritative real-world scale in the GIS data layer, multi-source metric-frame reconciliation, and a rulers/measurement/grid/annotation layer built on fe-terrain scale math.
-tags: [feature, hexon_scale_orchestration_20260712, pending]
+tags: [feature, hexon_scale_orchestration_20260712, in_progress]
 timestamp: 2026-07-12T00:00:00Z
 resource: ./metadata.json
 ---

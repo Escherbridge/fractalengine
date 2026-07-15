@@ -1,3 +1,7 @@
+---
+type: Implementation Plan
+---
+
 # Implementation Plan: Headless Relay
 
 ## Overview
@@ -290,14 +294,14 @@ Integration test in `fe-test-harness`:
 
 ---
 
-### [x] Task 3.3 — SceneSubscribe + SceneSnapshot WS messages (TDD Red+Green)
+### [~] Task 3.3 — SceneSubscribe + SceneSnapshot WS messages (TDD Red+Green) (all but EntityCommandResult)
 
 Extend `WsClientMsg` and `WsServerMsg` in `fe-api/src/types.rs`:
 
 - `WsClientMsg::SceneSubscribe { petal_id, last_known_version: Option<u64> }`
 - `WsServerMsg::SceneSnapshot { petal_id, version, nodes: Vec<NodeDto> }`
 - `WsServerMsg::SceneDelta { petal_id, version, changes: Vec<SceneChange> }`
-- `WsServerMsg::EntityCommandResult { request_id, ok, data, error }`
+- `WsServerMsg::EntityCommandResult { request_id, ok, data, error }` — NOT implemented (no hits in fe-api/src as of 2026-07-14; scope silently cut)
 
 Tests: serde round-trip for each new variant.
 

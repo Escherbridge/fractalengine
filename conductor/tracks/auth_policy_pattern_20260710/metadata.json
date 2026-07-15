@@ -1,19 +1,20 @@
 {
   "id": "auth_policy_pattern_20260710",
-  "description": "Policy Engine â€” unified authorization for layered tokens and entry points (spec only, no implementation this round)",
+  "description": "Policy Engine — unified authorization for layered tokens and entry points (spec only, no implementation this round)",
   "type": "spike",
   "created_at": "2026-07-10T00:00:00Z",
   "status": "spec_only",
   "execution_wave": 2,
   "wave_rationale": "D5: depends on per-op signing (hexon_delta_format, wave 1). Policy engine + sync-write-path evaluate() gate + causal-DAG membership. Blocks real replication.",
   "depends_on": [
-    "hexon_delta_format_20260710 (per-op ed25519 signing, decisions D5-1 â€” engine verifies op signatures)"
+    "hexon_delta_format_20260710"
   ],
   "blocks": [
-    "analytics_extension_api_20260710 (capability generalization, non-blocking)",
-    "p2p_mycelium_completion_20260701 (sync write path must be gated before/with real iroh-docs)"
+    "analytics_extension_api_20260710",
+    "p2p_mycelium_completion_20260701"
   ],
-  "notes": "spec-only per coordinator directive; read-only survey of authorization surfaces. AMENDED 2026-07-11 per conductor/decisions/hexon-p2p-commons-20260711.md: (1) 8th surface added â€” fe-sync sync write path has ZERO authz (handle_write_row_entry, sync_thread.rs:345; report SC5) and is the highest-priority evaluate() adapter, required before real replication ships; (2) auth state is NEVER plain LWW â€” signed causal-DAG membership ops + strong-removal resolver (D1 carve-out, Matrix state-reset precedent); (3) depends on real per-op signing (D5-1, 13 placeholder sites today). fe-hexon gap re-confirmed. No plan.md created this round.",
+  "dependency_notes": "depends_on hexon_delta_format_20260710: per-op ed25519 signing, decisions D5-1 — engine verifies op signatures. blocks analytics_extension_api_20260710: capability generalization, non-blocking (track archived in conductor/tracks/_archive/). blocks p2p_mycelium_completion_20260701: sync write path must be gated before/with real iroh-docs.",
+  "notes": "spec-only per coordinator directive; read-only survey of authorization surfaces. AMENDED 2026-07-11 per conductor/decisions/hexon-p2p-commons-20260711.md: (1) 8th surface added — fe-sync sync write path has ZERO authz (handle_write_row_entry, sync_thread.rs:345; report SC5) and is the highest-priority evaluate() adapter, required before real replication ships; (2) auth state is NEVER plain LWW — signed causal-DAG membership ops + strong-removal resolver (D1 carve-out, Matrix state-reset precedent); (3) depends on real per-op signing (D5-1, 13 placeholder sites today). fe-hexon gap re-confirmed. No plan.md created this round. Roadmap 2026-07-14 alignment promotes spec->impl (minimal slice first); status transitions from spec_only when the implementation slice starts.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P1",

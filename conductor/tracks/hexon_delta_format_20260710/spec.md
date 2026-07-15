@@ -12,7 +12,7 @@ decisions: ../../decisions/hexon-p2p-commons-20260711.md
 
 **Track ID:** `hexon_delta_format_20260710`
 **Type:** Spec / design (no implementation this round)
-**Status:** Draft
+**Status:** Amended 2026-07-11 / spec_only
 **Goal alignment:** 3D P2P analytics engine on the hexon format, with an extension storage/query API and Rhai/WASM scripting.
 
 ## Overview

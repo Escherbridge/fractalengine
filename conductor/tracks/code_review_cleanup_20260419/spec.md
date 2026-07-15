@@ -1,4 +1,10 @@
+---
+type: Track Spec
+---
+
 # Specification: Code Review Cleanup
+
+> Note (2026-07-14): the wry backend referenced below no longer exists; the webview backend is now `fe-webview/src/backends/tauri.rs` (`TauriBackend`) + `win32_popup.rs`. FR-1 shipped against the current backend.
 
 ## Overview
 
@@ -25,7 +31,7 @@ After the Gardener Console and Canopy View tracks were completed, a code review 
 
 ### FR-2: Remove Dead Guard/Flush Code (HIGH)
 
-**Description:** `tab_switch_guard_system`, `flush_browser_commands_system`, and the `PendingBrowserCommands` resource in `petal_portal.rs` are dead code. The comment at line 375-378 confirms they were removed from the plugin build, but the function bodies and resource definition remain. They should be deleted entirely.
+**Description:** `tab_switch_guard_system`, `flush_browser_commands_system`, and the `PendingBrowserCommands` resource in `petal_portal.rs` are dead code. The comment (now at petal_portal.rs:328-329) confirms they were removed from the plugin build, but the function bodies and resource definition remain. They should be deleted entirely.
 
 **Acceptance Criteria:**
 - `tab_switch_guard_system` function is deleted from `petal_portal.rs`.
@@ -116,17 +122,17 @@ After the Gardener Console and Canopy View tracks were completed, a code review 
 
 ### FR-10: Replace eprintln! with bevy::log (LOW)
 
-**Description:** `fe-webview/src/plugin.rs` and `wry.rs` use `eprintln!()` for debug output. These should use `bevy::log::info!`, `bevy::log::warn!`, or `bevy::log::error!` (via `tracing`) for consistent structured logging.
+**Description:** `fe-webview/src/plugin.rs` and `backends/tauri.rs` use `eprintln!()` for debug output. These should use `bevy::log::info!`, `bevy::log::warn!`, or `bevy::log::error!` (via `tracing`) for consistent structured logging.
 
 **Acceptance Criteria:**
-- All `eprintln!` calls in `fe-webview/src/plugin.rs` and `fe-webview/src/backends/wry.rs` are replaced with appropriate `bevy::log` macros.
+- All `eprintln!` calls in `fe-webview/src/plugin.rs` and `fe-webview/src/backends/tauri.rs` are replaced with appropriate `bevy::log` macros.
 - Log levels are appropriate: errors for failures, warn for blocked navigations, info/debug for lifecycle events.
 
 **Priority:** P3
 
 ### FR-11: Remove Redundant .clone() Calls (LOW)
 
-**Description:** `node_manager.rs:457` and `dialogs.rs:378` contain `.clone()` calls on values that are already owned or could be moved.
+**Description:** The former `node_manager.rs:457` and `dialogs.rs:378` sites contain `.clone()` calls on values that are already owned or could be moved. (Both files are now module directories: `fe-ui/src/node_manager/`, `fe-ui/src/dialogs/` — re-locate the sites before fixing.)
 
 **Acceptance Criteria:**
 - Redundant `.clone()` calls are removed.

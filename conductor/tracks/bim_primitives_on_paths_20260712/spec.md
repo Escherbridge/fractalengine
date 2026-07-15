@@ -2,7 +2,7 @@
 type: Track Spec
 title: BIM Primitives on Paths
 description: First-party 3D shape primitives with a hexon-backed texture area, path-to-wall extrusion that merges with the GPX layer, and an API-first geometric-transform / statistical-analysis surface extensions can drive over the API.
-tags: [feature, bim_primitives_on_paths_20260712, pending]
+tags: [feature, bim_primitives_on_paths_20260712, in_progress]
 timestamp: 2026-07-12T00:00:00Z
 resource: ./metadata.json
 ---

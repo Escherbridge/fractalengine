@@ -1,3 +1,7 @@
+---
+type: Track Plan
+---
+
 # Implementation Plan: Seedling Onboarding -- Local/Peer Instance Bootstrap + Entity CRUD
 
 ## Overview

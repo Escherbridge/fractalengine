@@ -3,7 +3,7 @@
   "description": "Hexon Scale Orchestration + Rulers — hexon-authoritative real-world scale in the GIS data layer, multi-source metric-frame reconciliation, and a rulers/measurement/grid/annotation layer",
   "type": "feature",
   "created_at": "2026-07-12T00:00:00Z",
-  "status": "in-progress",
+  "status": "in_progress",
   "execution_wave": 1,
   "depends_on": [
     "terrain_scale_controls_20260711"

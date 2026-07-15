@@ -1,8 +1,12 @@
+---
+type: Track Spec
+---
+
 # Specification: Refactor `apply_db_results` Mega-Function
 
 ## Problem
 
-`fe-ui/src/verse_manager.rs` contains the `apply_db_results` Bevy system — a single function of approximately **450 lines** that processes every `DbResult` variant in one giant `match` block.
+`fe-ui/src/verse_manager/db_results.rs` contains the `apply_db_results` Bevy system — a single function of approximately **450 lines** that processes every `DbResult` variant in one giant `match` block.
 
 This violates single-responsibility and makes the code:
 - **Hard to unit-test** — tests must construct the full `apply_db_results` system param set.
@@ -41,5 +45,5 @@ fn apply_db_results(
 
 ## Scope
 
-- `fe-ui/src/verse_manager.rs` only.
+- `fe-ui/src/verse_manager/db_results.rs` only.
 - No changes to `DbResult` variants or message definitions.

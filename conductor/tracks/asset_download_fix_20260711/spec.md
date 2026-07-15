@@ -37,3 +37,11 @@ happens — no dialog, no file, no error. Current design silently copies to
   `asset_path` shows why the download can't proceed instead of failing
   silently (DB-backed re-resolution is out of scope this round — the
   `DbCommand` dispatch file is under external-IDE quarantine).
+
+## Landed design note (2026-07-14)
+
+FR-2 shipped with the rfd dialog in the main-binary bridge
+(`fractalengine/src/asset_bridge.rs` `prompt_and_copy`), and
+`AssetOp::Download` was deliberately kept `{ node_id }` only — the spec's
+dest-in-op design was superseded; see `fractalengine/src/AGENTS.md`.
+In-app dialog smoke verification remains user-gated.

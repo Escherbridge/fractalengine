@@ -1,7 +1,11 @@
+---
+type: Track Spec
+---
+
 # Track: Headless Relay — Build Split, SecretStore Trait, Thin Client Surface
 
 **Created:** 2026-04-29
-**Status:** Draft
+**Status:** In Progress
 **Priority:** P1
 **Depends on:** Realtime API Gateway (complete)
 **Blocks:** Web Client SDK, IoT Integration, Docker Deployment, Mobile Client
