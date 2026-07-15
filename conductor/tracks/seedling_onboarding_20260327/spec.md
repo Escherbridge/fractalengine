@@ -1,3 +1,7 @@
+---
+type: Track Spec
+---
+
 # Specification: Seedling Onboarding -- Local/Peer Instance Bootstrap + Entity CRUD
 
 ## Overview

@@ -1,11 +1,12 @@
 {
   "id": "profile_manager_20260419",
-  "description": "User Profile Manager â€” Identity Display, Profile Editing, Identity Management, P2P Profile Sync",
+  "description": "User Profile Manager — Identity Display, Profile Editing, Identity Management, P2P Profile Sync",
   "type": "feature",
   "created_at": "2026-04-19T00:00:00Z",
   "status": "pending",
-  "execution_wave": 4,
-  "wave_rationale": "Backlog UI track; P4 needs PeerRegistry (exists).",
+  "wave_rationale": "Wave assignment removed 2026-07-14 per OFF-STRATEGY/DEFER alignment verdict; do not schedule. P4 needs PeerRegistry (exists).",
+  "depends_on": ["shared_peer_infra_20260419"],
+  "notes": "depends_on shared_peer_infra_20260419 (P4 hard dependency per spec.md) is archived/satisfied — PeerRegistry at fe-runtime/src/peer_registry.rs, NodeIdentity at fe-identity/src/resource.rs.",
   "alignment": {
     "verdict": "OFF-STRATEGY / DEFER",
     "priority": "P3",

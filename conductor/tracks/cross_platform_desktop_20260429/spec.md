@@ -1,8 +1,12 @@
+---
+type: Track Spec
+---
+
 # Track: Cross-Platform Desktop — Linux + macOS + Windows ARM64 GUI Builds
 
 **Created:** 2026-04-29
-**Status:** Draft
-**Priority:** P1
+**Status:** In Progress
+**Priority:** P2
 **Depends on:** none (independent of headless relay)
 **Blocks:** Release CI (must compile before CI can ship artifacts)
 

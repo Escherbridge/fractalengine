@@ -1,23 +1,23 @@
 {
   "id": "iroh_1_0_upgrade_20260711",
-  "description": "Upgrade iroh 0.35 â†’ 1.0 behind the VerseReplicator trait seam; forcing function: n0 hosted-relay support for the 0.35 wire protocol ends 2026-12-31",
+  "description": "Upgrade iroh 0.35 → 1.0 behind the VerseReplicator trait seam; forcing function: n0 hosted-relay support for the 0.35 wire protocol ends 2026-12-31",
   "type": "chore",
   "created_at": "2026-07-11T00:00:00Z",
   "status": "pending",
   "execution_wave": "DEADLINE",
   "wave_rationale": "HARD DEADLINE 2026-12-31 (0.35 relay EOL). Independent of the wave chain; schedule against the calendar, coordinate with p2p_mycelium_completion.",
-  "priority": "P1",
+  "priority": "P2",
   "deadline": "2026-12-31",
   "depends_on": [],
   "blocks": [],
   "coordinate_with": [
-    "p2p_mycelium_completion_20260701 (wire real iroh-docs against 1.x directly if still in flight)"
+    "p2p_mycelium_completion_20260701"
   ],
   "decisions_ref": "conductor/decisions/hexon-p2p-commons-20260711.md#d5",
   "research_refs": [
     "research/hexon-p2p-commons/stages/stage3-p2p-crdt-performance-sota.md"
   ],
-  "notes": "iroh 1.0 shipped 2026-06-15 (supersedes the April 2026 '0.35 is the production pin' finding). Hard deadline is external and non-negotiable; self-hosted 1.x relay is the resilient fallback.",
+  "notes": "iroh 1.0 shipped 2026-06-15 (supersedes the April 2026 '0.35 is the production pin' finding). Hard deadline is external and non-negotiable; self-hosted 1.x relay is the resilient fallback. Coordinate with p2p_mycelium_completion_20260701: wire real iroh-docs against 1.x directly if still in flight. Priority demoted to P2 per 2026-07-14 alignment (rises P1 by Q4).",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P2 (rises P1 by Q4)",

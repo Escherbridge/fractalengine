@@ -4,7 +4,7 @@
   "status": "in_progress",
   "execution_wave": 5,
   "wave_rationale": "P1 platform validation; blocks Release CI.",
-  "priority": "P1",
+  "priority": "P2",
   "created": "2026-04-29",
   "depends_on": [],
   "blocks": [

@@ -1,6 +1,6 @@
 {
   "id": "verse_services_20260711",
-  "description": "Verse Services â€” opt-in per-verse centralization as accelerator-only plugin service class (seeder, presence, serverless materializer, order-hinter); signed op-log stays state of record",
+  "description": "Verse Services — opt-in per-verse centralization as accelerator-only plugin service class (seeder, presence, serverless materializer, order-hinter); signed op-log stays state of record",
   "type": "spike",
   "created_at": "2026-07-11T00:00:00Z",
   "status": "spec_only",
@@ -8,12 +8,12 @@
   "wave_rationale": "D3 accelerator-only services. Depends on auth_policy_pattern (wave 2) + hexon_delta_format (wave 1).",
   "priority": "P2",
   "depends_on": [
-    "auth_policy_pattern_20260710 (services are policy subjects; engine must exist)",
-    "hexon_delta_format_20260710 (delta units are what the materializer consumes; per-op signing D5-1)"
+    "auth_policy_pattern_20260710",
+    "hexon_delta_format_20260710"
   ],
   "blocks": [],
   "decisions_ref": "conductor/decisions/hexon-p2p-commons-20260711.md#d3",
-  "notes": "Ratified 2026-07-11 (decisions D3/D4). Accelerator-only: reconstruct-without-service invariant is testable and non-negotiable. Sequencer authority deferred, not rejected. Relay + fe-hexon-registry re-framed as first instances of the class. | 2026-07-14 ALIGNMENT: FOUNDRY-CANDIDATE — belongs to the separate hexon-foundry project (open format / closed foundry+registry marketplace). Keep this spec here as reference; do NOT implement in the FractalEngine analytics core. Presupposes real per-op ed25519 signing (13 placeholder sigs) + auth causal-DAG.",
+  "notes": "Dependency rationale: auth_policy_pattern_20260710 (services are policy subjects; engine must exist); hexon_delta_format_20260710 (delta units are what the materializer consumes; per-op signing D5-1). Ratified 2026-07-11 (decisions D3/D4). Accelerator-only: reconstruct-without-service invariant is testable and non-negotiable. Sequencer authority deferred, not rejected. Relay + fe-hexon-registry re-framed as first instances of the class. | 2026-07-14 ALIGNMENT: FOUNDRY-CANDIDATE — belongs to the separate hexon-foundry project (open format / closed foundry+registry marketplace). Keep this spec here as reference; do NOT implement in the FractalEngine analytics core. Presupposes real per-op ed25519 signing (13 placeholder sigs) + auth causal-DAG.",
   "alignment": {
     "verdict": "FOUNDRY-CANDIDATE",
     "priority": "P3 (here)",

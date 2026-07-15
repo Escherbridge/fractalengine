@@ -3,7 +3,7 @@
   "description": "BIM Primitives on Paths — first-party 3D shape primitives (cube/plane/cylinder/sphere) with a hexon-backed texture area, path-to-wall extrusion merging with the GPX layer, and an API-first geometric-transform / statistical-analysis surface for extensions",
   "type": "feature",
   "created_at": "2026-07-12T00:00:00Z",
-  "status": "in-progress",
+  "status": "in_progress",
   "execution_wave": 2,
   "depends_on": [
     "path_node_binding_hardening_20260712"

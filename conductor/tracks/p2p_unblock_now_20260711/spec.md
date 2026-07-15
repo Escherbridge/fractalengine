@@ -11,7 +11,7 @@ decisions: ../../decisions/hexon-p2p-commons-20260711.md
 
 **Track ID:** `p2p_unblock_now_20260711`
 **Type:** Bug/perf fixes (small, local, no new subsystems)
-**Status:** Spec ready — implementation next session
+**Status:** Spec ready — implementation not yet started as of 2026-07-14
 **Priority:** P0 — decisions §D5-3: these ship **first**, independent of all format/auth work
 
 ## Overview

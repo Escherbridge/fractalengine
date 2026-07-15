@@ -5,7 +5,7 @@ type: track-spec
 # Track: Tauri-Host Shell SPIKE — Exploratory: Tauri as Primary Window + Bevy Render-into-Surface
 
 **Created:** 2026-06-30
-**Status:** Draft (SPIKE / exploratory)
+**Status:** In progress (SPIKE / exploratory) — Phases 1, 2, and Task 4.1 covered by spike-exit-report.md (2026-07-01); deferred per 2026-07-14 alignment (OFF-STRATEGY / DEFER, P3)
 **Priority:** P2
 **Depends on:** none
 **Blocks:** none (this is a SPIKE, not on the critical path)

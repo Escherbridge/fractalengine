@@ -1,3 +1,7 @@
+---
+type: Track Plan
+---
+
 # Implementation Plan: Release CI
 
 ## Overview

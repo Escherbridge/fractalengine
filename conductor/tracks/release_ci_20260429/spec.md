@@ -1,7 +1,11 @@
+---
+type: Track Spec
+---
+
 # Track: Release CI — Cross-Compilation Pipeline, Artifact Publishing, Docker Image
 
 **Created:** 2026-04-29
-**Status:** Draft
+**Status:** In progress (first slice landed 2026-07: build-artifacts.yml + docker/Dockerfile.relay)
 **Priority:** P2
 **Depends on:** Cross-Platform Desktop (GUI targets compile), Headless Relay (relay binary exists)
 **Blocks:** none (all tracks can develop locally without CI)

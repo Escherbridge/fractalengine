@@ -66,7 +66,7 @@ greenfield.
   local↔geographic conversion consistently, at the **API layer** via the petal's
   terrain origin (per `fe-query/src/AGENTS.md §gis`, `§local-coords`). A
   local-meters-labeled-as-degrees export is a data-integrity landmine — make it
-  an explicit acceptance test. Depends on `hexon_scale_orchestration_20260714`
+  an explicit acceptance test. Depends on `hexon_scale_orchestration_20260712`
   FR-1..5 (the `crs`/scale metadata) for trustworthy numbers.
 - **FR-6 — RBAC on query results (hardening; coordinate with `auth_policy_pattern`).**
   Endpoint-level "can this DID call /query" ≠ "which petals/nodes may appear in
@@ -84,6 +84,16 @@ greenfield.
 
 ## Dependencies
 
-- **hexon_scale_orchestration_20260714** (P0, FR-1..5) — CRS/scale metadata for
+- **hexon_scale_orchestration_20260712** (P0, FR-1..5) — CRS/scale metadata for
   metrically-correct egress (FR-5).
 - **auth_policy_pattern_20260710** (P1 slice) — RBAC-on-results (FR-6).
+
+## Audit deltas (2026-07-14)
+
+- **FR-4:** a 5s statement timeout ALREADY exists (`fe-api/src/rest.rs` ~902)
+  and per-DID rate limiting exists (~796); the remaining gap is the row-count
+  cap + result-size ceiling only.
+- **FR-6:** scope-filter injection for node-table queries ALREADY exists
+  (`build_scope_filter`/`inject_scope_filter`, `rest.rs` ~890); the remaining
+  delta is the shareable-URL scope ceiling + export pre-filtering, not
+  greenfield RBAC.

@@ -3,13 +3,13 @@
   "description": "Build Size Optimization & Mobile Deployment Preparation",
   "type": "chore",
   "created_at": "2026-05-08T00:00:00Z",
-  "status": "pending",
+  "status": "done",
   "execution_wave": 4,
-  "wave_rationale": "Backlog; mobile arch doc exists, binary-slimming pending.",
+  "wave_rationale": "Binary-slimming shipped 2026-05-08 (commit 5c039a8): tokio pruning + Bevy slimming with measured deltas (GUI 154->79 MB, relay 106->48 MB). Mobile arch doc exists.",
   "alignment": {
     "verdict": "OFF-STRATEGY / DEFER",
     "priority": "P3",
-    "rationale": "Mobile is explicit v2 non-goal. Defer.",
+    "rationale": "Mobile is explicit v2 non-goal. The build-size work itself already landed 2026-05-08 (all four FRs, commit 5c039a8); only further mobile work is deferred.",
     "assessed": "2026-07-14"
   }
 }

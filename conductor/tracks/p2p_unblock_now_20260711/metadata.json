@@ -6,10 +6,11 @@
   "status": "pending",
   "execution_wave": 0,
   "wave_rationale": "P0 per decisions D5-3: try_send bridge / BBR / node_log cap / spawn_blocking. Independent of format+auth; must land before real iroh-docs (masks a DB-freeze). Ships first.",
-  "priority": "P0",
+  "priority": "P1",
   "depends_on": [],
   "blocks": [
-    "p2p_mycelium_completion_20260701 (FR-1 must land before real iroh-docs replaces the mock, or the masked DB-freeze ships)"
+    "p2p_mycelium_completion_20260701",
+    "iot_spatial_reporting_20260714"
   ],
   "decisions_ref": "conductor/decisions/hexon-p2p-commons-20260711.md#d5",
   "research_refs": [
@@ -23,7 +24,7 @@
     "fe-entity-store/src/lib.rs",
     "fe-sync/src/sync_thread.rs"
   ],
-  "notes": "All four findings spot-check-verified in source (report Â§8.1). Spec-only this session; implementation next session per decisions D5-3 sequencing (these ship first, independent of format/auth tracks).",
+  "notes": "All four findings spot-check-verified in source (report §8.1). Spec written 2026-07-11; implementation not yet started as of 2026-07-14 (ships first per decisions D5-3 sequencing, independent of format/auth tracks). Blocks: p2p_mycelium_completion_20260701 because FR-1 (try_send bridge) must land before real iroh-docs replaces the mock, or the masked DB-freeze ships; iot_spatial_reporting_20260714 shares FR-2 (node_log cap, hostile to IoT-frequency updates).",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P1",

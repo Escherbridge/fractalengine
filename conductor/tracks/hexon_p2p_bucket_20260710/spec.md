@@ -12,7 +12,7 @@ decisions: ../../decisions/hexon-p2p-commons-20260711.md
 
 **Track ID:** `hexon_p2p_bucket_20260710`
 **Type:** Spec / design (no implementation this round)
-**Status:** Draft
+**Status:** spec_only
 **Goal alignment:** 3D P2P analytics engine on the hexon format — this spec is
 the *content layer* half of that goal (see Relationship to Hexon Deltas below).
 

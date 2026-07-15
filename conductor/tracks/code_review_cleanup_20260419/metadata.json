@@ -6,7 +6,7 @@
   "status": "in_progress",
   "execution_wave": 4,
   "wave_rationale": "P0 SSRF fix already done; remaining items are backlog cleanup.",
-  "notes": "verified 2026-07-10: FR-1 (SSRF fix) and FR-2 (dead guard/flush code removal) confirmed shipped; FR-3-FR-9 unverified",
+  "notes": "verified 2026-07-14: FR-1, FR-2, FR-4, FR-5, FR-6, FR-7 confirmed shipped; remaining: FR-3, FR-8, FR-9, FR-10, FR-11",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P1 (FR-1) / P3 rest",

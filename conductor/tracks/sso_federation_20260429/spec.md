@@ -1,3 +1,7 @@
+---
+type: Track Spec
+---
+
 # Track: SSO Federation — OIDC Provider Integration for External Authentication
 
 ## Summary

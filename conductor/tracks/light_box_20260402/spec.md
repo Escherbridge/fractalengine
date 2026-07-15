@@ -1,8 +1,12 @@
+---
+type: Track Spec
+---
+
 # Specification: Light Box — Default Lighting Rig and Light Management System
 
 **Track ID:** `light_box_20260402`
 **Type:** Feature
-**Status:** Draft
+**Status:** Pending
 **Date:** 2026-04-02
 
 ---

@@ -11,7 +11,7 @@ decisions: ../../decisions/hexon-p2p-commons-20260711.md
 
 **Track ID:** `verse_services_20260711`
 **Type:** Spec / design (spec-only; implementation after auth + delta foundations)
-**Status:** Draft — queued
+**Status:** Draft — queued. 2026-07-14 alignment: FOUNDRY-CANDIDATE — deferred out of this repo to the separate hexon-foundry project; kept here as reference only.
 **Decision basis:** decisions §D3 (accelerator-only), §D4 (serverless operating mode)
 
 ## Overview
@@ -49,7 +49,7 @@ eventually expressible through the same service contract.
 
 1. **Seeder** (§D2/§D4): always-on holder of the verse's hexon deltas + bucket blobs;
    what the relay container already is in practice. Quota/GC per
-   `hexon_p2p_bucket_20260711` FR-6 with a larger budget.
+   `hexon_p2p_bucket_20260710` FR-6 with a larger budget.
 2. **Presence host**: authoritative-ish liveness aggregation (the `VersePeers` consumer),
    strictly advisory data — safe to centralize because it is reconstructible and
    non-durable.

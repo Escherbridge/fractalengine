@@ -1,3 +1,7 @@
+---
+type: Implementation Plan
+---
+
 # Implementation Plan: Cross-Platform Desktop
 
 ## Overview
@@ -310,7 +314,7 @@ cargo build --release -p fractalengine
 
 ---
 
-### Task 3.2 — Full workspace test on all platforms [x] (Windows verified)
+### Task 3.2 — Full workspace test on all platforms [~] (Windows verified; Linux/macOS pending)
 
 Run `cargo test --workspace` on:
 - Ubuntu latest (x86_64)
