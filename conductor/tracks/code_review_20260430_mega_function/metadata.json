@@ -3,7 +3,7 @@
   "description": "Refactor apply_db_results Mega-Function",
   "type": "chore",
   "created_at": "2026-04-30T00:00:00Z",
-  "status": "pending",
+  "status": "in_progress",
   "execution_wave": 4,
   "wave_rationale": "Backlog refactor; no blocking deps.",
   "notes": "verified 2026-07-14: apply_db_results now ~620 lines with ~30 match arms, unrefactored; lives in fe-ui/src/verse_manager/db_results.rs (verse_manager.rs was split into a module directory)",

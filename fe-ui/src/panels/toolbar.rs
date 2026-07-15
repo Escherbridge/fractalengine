@@ -1,10 +1,10 @@
-//! Top toolbar: sidebar toggle, transform tool switcher, deselect, Hexons button.
+//! Top toolbar: transform tool switcher, deselect, GIS/Tools/Hexons buttons.
 
 use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
 use crate::dialogs::ActiveDialog;
-use crate::plugin::{SidebarState, ToolState};
+use crate::plugin::ToolState;
 use crate::terrain_map::{HexonManagerTab, StorageInfoDto};
 use crate::theme;
 
@@ -22,7 +22,6 @@ pub enum Tool {
 
 pub(crate) fn top_toolbar(
     ctx: &egui::Context,
-    sidebar: &mut SidebarState,
     tool: &mut ToolState,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
@@ -38,20 +37,9 @@ pub(crate) fn top_toolbar(
         )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                let sidebar_icon = if sidebar.open {
-                    "\u{25C0} Hide"
-                } else {
-                    "\u{25B6} Show"
-                };
-                if ui
-                    .add(egui::Button::new(sidebar_icon).fill(theme::BG_BUTTON))
-                    .clicked()
-                {
-                    sidebar.open = !sidebar.open;
-                }
-
-                ui.separator();
-
+                // Sidebar toggle removed: auto-collapse in panels/mod.rs overwrites
+                // `sidebar.open` every frame, making a manual button a no-op.
+                // TODO: re-add manual sidebar toggle when needed
                 for (t, label, tooltip) in [
                     (Tool::Select, "\u{2B1A} Select", "Select objects (S)"),
                     (Tool::Move, "\u{271B} Move", "Move selected object (G)"),

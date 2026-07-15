@@ -266,3 +266,32 @@ Applied in `terrain_plugin`:
 A live scale change round-trips as a `SetPetalTerrain` → `PetalTerrainLoaded` →
 `TerrainAssignmentMsg`, bumping `ActivePetalTerrain.revision` and respawning
 chunks (no restart). Camera limits adapt via fe-renderer's `CameraScaleSettings`.
+
+## §ruler
+
+`ruler.rs` is the Bevy-free measurement-math home (hexon_scale_orchestration
+FR-7/FR-8, C4: lives next to `scale.rs`, no new crate). All ground-plane math is
+XZ-planar (Y ignored): `nice_number` snaps spans to 1/2/5×10ⁿ so scale bars and
+grid spacings read cleanly; `world_to_real_distance`/`bearing_deg` (compass,
+north = −Z, CW) / `polygon_area_m2` (shoelace) divide by the sanitized
+`world_scale` so results are real meters regardless of render scale.
+
+Scale-bar selection (FR-8) is also pure here so the egui pass stays thin and the
+logic stays headless-testable: `meters_per_pixel` (visible ground span
+`2·h·tan(fov/2)` over the viewport height — a down-looking approximation, good
+enough for a HUD scale bar), `scale_bar_spec` (nice-number length nearest a
+target pixel width), `format_distance_m` (m below 1 km, km above, one decimal
+only when it carries signal). Degenerate inputs return `0.0`/`None`/`"0 m"`
+rather than NaN so the HUD silently hides instead of drawing garbage.
+
+## §ruler_plugin
+
+`ruler_plugin.rs` (render-gated) draws the FR-8 scale bar as a bevy_egui 0.39
+foreground layer-painter overlay in `EguiPrimaryContextPass` — same pattern as
+fe-ui's viewport labels; no in-world meshes. It reads the *same* metric frame as
+zoom selection (`ActivePetalTerrain.config.effective_world_scale()` +
+`world_to_real_height`) so the bar always agrees with what the terrain systems
+believe. `RulerSettings.show_scale_bar` (default on) is the reflection-free
+toggle seam for fe-ui (C6: bounds/toggles reach UI via the API surface, not a
+fe-terrain dep). Registered from `TerrainPlugin::build`, not `main.rs`. If
+`EguiPlugin` is absent (headless), the pass never runs — the plugin is inert.

@@ -39,19 +39,15 @@ pub struct SpawnedNodeMarker {
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct Billboard;
 
-/// Sidebar visibility and search state.
+/// Sidebar visibility state.
 #[derive(Resource)]
 pub struct SidebarState {
     pub open: bool,
-    pub tag_filter_buf: String,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self {
-            open: true,
-            tag_filter_buf: String::new(),
-        }
+        Self { open: true }
     }
 }
 

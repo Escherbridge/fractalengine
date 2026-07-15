@@ -141,7 +141,8 @@ impl Plugin for TerrainPlugin {
                 )
                     .chain(),
             )
-            .add_systems(Update, crate::iot::animation::advance_track_animations);
+            .add_systems(Update, crate::iot::animation::advance_track_animations)
+            .add_plugins(crate::ruler_plugin::RulerPlugin);
     }
 }
 

@@ -108,6 +108,14 @@ pub struct ReplicationEvent {
 /// Sender half for replication events.
 pub type ReplicationSender = crossbeam::channel::Sender<ReplicationEvent>;
 
+/// Events dropped because the replication bridge was full (see AGENTS.md §replication-backpressure).
+static REPLICATION_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Total replication events dropped due to a full bridge channel.
+pub fn replication_drop_count() -> u64 {
+    REPLICATION_DROPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Serialise row data as JSON, write to blob store, and send a
 /// `ReplicationEvent` to be bridged to the sync thread.
 ///
@@ -152,14 +160,28 @@ pub fn replicate_row_with_petal(
         }
     };
 
-    tx.send(ReplicationEvent {
+    // Never block the DB thread on a stalled sync thread: drop-and-count on Full
+    // (see AGENTS.md §replication-backpressure).
+    match tx.try_send(ReplicationEvent {
         verse_id: verse_id.to_string(),
         table: table.to_string(),
         record_id: record_id.to_string(),
         content_hash: hash,
         petal_id,
-    })
-    .ok();
+    }) {
+        Ok(()) => {}
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            let dropped =
+                REPLICATION_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            tracing::warn!(
+                table,
+                record_id,
+                dropped_total = dropped,
+                "replication bridge full — dropping event"
+            );
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+    }
 }
 
 pub fn spawn_db_thread(

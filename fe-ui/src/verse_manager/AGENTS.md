@@ -3,14 +3,10 @@
 - `mod.rs` — `VerseEntry`/`FractalEntry`/`PetalEntry`/`NodeEntry` tree types,
   `VerseManager` resource + its query/mutate methods, `VerseManagerPlugin`,
   and the hierarchy unit tests.
-- `db_results.rs` — `apply_db_results`, the large `DbResult` match that
-  updates the in-memory tree, dialog state, and inspector state in response
-  to every DB thread reply. Also owns `tokens_to_entries` /
-  `refresh_inspector_tokens` (API token list bookkeeping) and
-  `is_for_selected_node` — the `NodePropertiesLoaded`/`NodePropertySet`/
-  `NodePropertyDeleted` arms gate on this (dropping stale results for a
-  node that's no longer selected) as part of the annotation-save fix; see
-  root `AGENTS.md` §gis-query-ui.
+- `node_index.rs` — the `node_index` fast-lookup map + the indexed
+  `update_node_position`/`update_node_url`. See §node-index.
+- `db_results/` — `apply_db_results` dispatcher + per-domain `DbResult`
+  handlers. See §db-results.
 - `spawn.rs` — GLTF-backed scene spawning (`spawn_node_entity`), the
   fallback placard sign for asset-less nodes (`spawn_fallback_sign` +
   `FallbackSign` marker component), and primitive-mesh spawning
@@ -34,8 +30,61 @@
 
 `find_petal_mut` on `VerseManager` stays private (not `pub(super)`) — Rust's
 privacy rule already makes private items of a module visible to all of its
-descendants, so `db_results.rs` can call it without widening the type's
-public API.
+descendants, so the `db_results/` handlers can call it without widening the
+type's public API.
+
+## §db-results (`code_review_20260430_mega_function`)
+
+`apply_db_results` used to be a single ~620-line match with ~30 arms. It is
+now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
+`DbResult` variant, grouped by domain:
+
+- `hierarchy.rs` — tree structure: `Seeded`, `HierarchyLoaded`,
+  `DatabaseReset`, `VerseJoined`, `Verse/Fractal/PetalCreated`,
+  `EntityRenamed`, `EntityDeleted`.
+- `nodes.rs` — single-node lifecycle: `GltfImported`, `NodeCreated` (pen
+  auto-create flush + Paths-tab re-query), `NodeDeleted`.
+- `roles.rs` — invites, peer roles, local role, log-only acks.
+- `tokens.rs` — API token mint/revoke/list + `tokens_to_entries` /
+  `refresh_inspector_tokens`.
+- `properties.rs` — `NodeProperties{Loaded,Set,Deleted}` +
+  `is_for_selected_node`. These three return `bool`: `false` means the
+  dispatcher must `continue`, which **skips `pending_api.try_deliver` for
+  that result** — this preserves the original mega-match's `continue`
+  control flow exactly (stale/unselected property results were never
+  delivered to pending API requests).
+- `query.rs` — the shared untagged `QueryResult`/`Error` channel with its
+  GIS-panel > Paths-tab > Query-tab claim priority.
+- `fields.rs` / `terrain.rs` — field-def lists, petal terrain docs.
+
+Handlers take the minimal `&`/`&mut` param set (no Bevy system params), so
+they unit-test without spinning up ECS — the smoke tests live in
+`db_results/mod.rs`. Handlers are `pub(super)`: visible to the dispatcher
+and its tests only. The dispatcher keeps the `_ => {}` catch-all (variants
+like `ScopeResolved` are consumed solely via `pending_api.try_deliver`).
+
+## §node-index (`code_review_20260430_performance_hotpaths`)
+
+`VerseManager.node_index` maps `node_id → (verse_idx, fractal_idx,
+petal_idx)` so drag-commit updates (`update_node_position`,
+`update_node_url` — called every gimbal release via
+`node_manager/transform_broadcast.rs`) are O(1) average instead of the old
+O(n³) tree walk. Maintenance sites:
+
+- `rebuild_node_index()` — after `HierarchyLoaded` (full tree replace),
+  `EntityDeleted` (retains shift indices), `DatabaseReset`.
+- `add_node(petal_id, node)` / `remove_node(petal_id, node_id)` —
+  incremental upkeep used by `GltfImported` / `NodeCreated` / `NodeDeleted`.
+- Verse/fractal/petal *creates* append at the end of their Vecs and cannot
+  shift existing node indices — no rebuild needed there.
+
+The index is an accelerator, never an authority: lookups verify the indexed
+petal actually contains the node and otherwise fall back to the full walk,
+healing the entry. Code that mutates `verses` directly (it is still `pub`)
+therefore degrades to the old behavior instead of silently missing nodes.
+The field is `pub(crate)` only so in-crate test helpers can construct
+`VerseManager` literals with `..Default::default()`; do not write to it
+outside `node_index.rs`.
 
 ## §primitives (FR-1..FR-4, `bim_primitives_on_paths_20260712`)
 

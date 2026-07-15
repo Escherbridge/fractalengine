@@ -3,7 +3,7 @@
   "description": "Fix Hot-Path Performance Regressions",
   "type": "chore",
   "created_at": "2026-04-30T00:00:00Z",
-  "status": "pending",
+  "status": "in_progress",
   "execution_wave": 4,
   "wave_rationale": "Backlog fe-ui hot-path fixes; counterpart to p2p_unblock_now_20260711 engine-side fixes.",
   "notes": "verified 2026-07-10: update_node_position/update_node_url still O(n^3) nested tree walk",

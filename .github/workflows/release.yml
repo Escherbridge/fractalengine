@@ -1,0 +1,331 @@
+name: Release
+
+# Tag-triggered release pipeline (release_ci_20260429, plan Tasks 2.1-2.3, 2.6).
+# Builds the 8-target artifact matrix, assembles a macOS universal binary via
+# lipo, publishes a GitHub Release with a SHA256SUMS manifest, and pushes the
+# relay Docker image to GHCR. Tags containing '-' (e.g. v0.3.0-rc1) publish as
+# pre-releases. `workflow_dispatch` runs the builds without publishing.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # surrealdb-core needs deep compile-time recursion stacks; harmless elsewhere.
+  RUST_MIN_STACK: "134217728"
+
+jobs:
+  linux-x86_64:
+    name: Linux x86_64 (GUI + relay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # Full GUI-stack deps: Bevy (x11/wayland/alsa/udev) + wry/rfd/keyring
+      # (webkit2gtk/gtk3/glib/dbus). Mirrors build-artifacts.yml.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libdbus-1-dev libssl-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-x86_64
+
+      - name: Build release binaries
+        run: cargo build --release --bin fractalengine --bin fe-relay
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          strip target/release/fractalengine target/release/fe-relay
+          cp target/release/fractalengine dist/fractalengine-linux-x86_64
+          cp target/release/fe-relay dist/fe-relay-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  windows-x86_64:
+    name: Windows x86_64 (GUI + relay)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows-x86_64
+
+      - name: Build release binaries
+        run: cargo build --release --bin fractalengine --bin fe-relay
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/fractalengine.exe dist/fractalengine-windows-x86_64.exe
+          cp target/release/fe-relay.exe dist/fe-relay-windows-x86_64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  windows-arm64:
+    name: Windows ARM64 (GUI, MSVC cross)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows-arm64
+
+      - name: Build release binary
+        run: cargo build --release --target aarch64-pc-windows-msvc --bin fractalengine
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/aarch64-pc-windows-msvc/release/fractalengine.exe \
+            dist/fractalengine-windows-aarch64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }} (GUI)
+    runs-on: macos-latest
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos-${{ matrix.arch }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --bin fractalengine
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/fractalengine \
+            dist/fractalengine-macos-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # FR-5: combine both macOS slices into a universal binary via lipo.
+  macos-universal:
+    name: macOS universal (lipo)
+    runs-on: macos-latest
+    needs: [macos]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          merge-multiple: true
+          path: slices
+
+      - name: Create universal binary
+        run: |
+          mkdir -p dist
+          lipo -create \
+            slices/fractalengine-macos-aarch64 \
+            slices/fractalengine-macos-x86_64 \
+            -output dist/fractalengine-macos-universal
+          chmod +x dist/fractalengine-macos-universal
+          file dist/fractalengine-macos-universal | tee /dev/stderr \
+            | grep -q "Mach-O universal binary"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  # Static musl relay binaries via cargo-zigbuild (no glibc dependency).
+  musl-relay:
+    name: Relay musl ${{ matrix.arch }} (zigbuild)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-musl-${{ matrix.arch }}
+
+      - name: Build relay
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p fractalengine-relay
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/fe-relay \
+            dist/fe-relay-linux-musl-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: musl-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Task 2.6 / FR-4: relay image to GHCR. Tag = release tag; `latest` only on
+  # stable (non-prerelease) tags.
+  docker-relay:
+    name: Docker relay image (GHCR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/fractalengine-relay
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.relay
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # Task 2.2: collect every artifact, emit SHA256SUMS, publish the release.
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - linux-x86_64
+      - windows-x86_64
+      - windows-arm64
+      - macos
+      - macos-universal
+      - musl-relay
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## Artifacts
+
+            | Artifact | Platform | Type |
+            |----------|----------|------|
+            | `fractalengine-linux-x86_64` | Linux x86_64 (glibc) | GUI |
+            | `fe-relay-linux-x86_64` | Linux x86_64 (glibc) | Headless relay |
+            | `fractalengine-windows-x86_64.exe` | Windows x86_64 | GUI |
+            | `fe-relay-windows-x86_64.exe` | Windows x86_64 | Headless relay |
+            | `fractalengine-windows-aarch64.exe` | Windows ARM64 | GUI |
+            | `fractalengine-macos-aarch64` | macOS Apple Silicon | GUI |
+            | `fractalengine-macos-x86_64` | macOS Intel | GUI |
+            | `fractalengine-macos-universal` | macOS universal (lipo) | GUI |
+            | `fe-relay-linux-musl-x86_64` | Linux x86_64 (static musl) | Headless relay |
+            | `fe-relay-linux-musl-aarch64` | Linux ARM64 (static musl) | Headless relay |
+            | `SHA256SUMS` | — | Checksums |
+
+            Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
+
+            Docker: `docker pull ghcr.io/${{ github.repository_owner }}/fractalengine-relay:${{ github.ref_name }}`

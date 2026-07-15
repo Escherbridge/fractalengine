@@ -16,7 +16,7 @@ Two-phase implementation. Phase 1 establishes the PR check workflow (fast feedba
 
 ---
 
-### Task 1.1 — Create `.github/workflows/ci.yml`
+### Task 1.1 — Create `.github/workflows/ci.yml` [x] (delivered as `build-artifacts.yml`; macOS job added 2026-07-15)
 
 Workflow triggered on `pull_request` and `push` to `master`:
 
@@ -42,7 +42,7 @@ Steps per runner:
 
 ---
 
-### Task 1.2 — Add sccache configuration
+### Task 1.2 — Add sccache configuration [x] (superseded by rust-cache — see spec amendment 2026-07-15)
 
 Use `mozilla-actions/sccache-action@v0.0.5` for GitHub Actions Cache backend.
 
@@ -59,7 +59,7 @@ Verify cache hits on second CI run by checking sccache stats in logs.
 
 ---
 
-### Task 1.3 — Add cargo registry caching
+### Task 1.3 — Add cargo registry caching [x] (via Swatinem/rust-cache@v2)
 
 Use `actions/cache@v4` with:
 ```yaml
@@ -89,7 +89,7 @@ restore-keys: ${{ runner.os }}-cargo-
 
 ---
 
-### Task 2.1 — Create `.github/workflows/release.yml`
+### Task 2.1 — Create `.github/workflows/release.yml` [x] (2026-07-15)
 
 Workflow triggered on tag push `v[0-9]+.[0-9]+.[0-9]+*` and `workflow_dispatch`.
 
@@ -115,7 +115,7 @@ Each job: build, rename artifact, generate SHA256 checksum, upload artifact.
 
 ---
 
-### Task 2.2 — GitHub Release publishing job
+### Task 2.2 — GitHub Release publishing job [x] (softprops/action-gh-release@v2 + SHA256SUMS)
 
 Final job `needs` all 8 build jobs:
 1. Download all artifacts
@@ -128,7 +128,7 @@ Final job `needs` all 8 build jobs:
 
 ---
 
-### Task 2.3 — Install cross-compilation tools
+### Task 2.3 — Install cross-compilation tools [x] (taiki-e/install-action cargo-zigbuild + mlugg/setup-zig; targets via dtolnay/rust-toolchain)
 
 Add `taiki-e/install-action@v2` steps for:
 - `cargo-zigbuild` (musl builds)
@@ -144,7 +144,7 @@ Add `rustup target add` for:
 
 ---
 
-### Task 2.4 — Create Cross.toml
+### Task 2.4 — Create Cross.toml [x] (2026-07-15)
 
 Configure `cross-rs` for potential future ARM GNU targets:
 
@@ -160,7 +160,7 @@ image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge"
 
 ---
 
-### Task 2.5 — Create Dockerfile for relay
+### Task 2.5 — Create Dockerfile for relay [x] (alpine runtime — blessed deviation, see spec amendment 2026-07-15)
 
 Multi-stage build:
 
@@ -185,7 +185,7 @@ ENTRYPOINT ["/fe-relay"]
 
 ---
 
-### Task 2.6 — Docker image CI job
+### Task 2.6 — Docker image CI job [x] (GHCR push in release.yml; `latest` only on stable tags)
 
 Add to release workflow:
 1. Build Docker image from `docker/Dockerfile.relay`
@@ -197,7 +197,7 @@ Add to release workflow:
 
 ---
 
-### Task 2.7 — Test release workflow
+### Task 2.7 — Test release workflow [ ] (PENDING — requires live GitHub tag run)
 
 Create a test tag `v0.0.0-ci-test` to trigger the workflow. Verify:
 - All 8 jobs complete
@@ -227,3 +227,20 @@ Delete test tag/release after verification.
 |-------|----------|-------------|
 | 1 | PR check on 3 OS families | All matrix jobs green on test PR |
 | 2 | Release pipeline: 8 artifacts + Docker | Test tag produces complete release |
+
+---
+
+## Status Notes
+
+- **2026-07-15 — CI run 29390918844 (build-artifacts.yml, push on main):**
+  - Linux job **FAILED** in "Build release binaries" (exit 101): `glib-sys v0.18.1`
+    build script — `pkg-config` could not find `glib-2.0` (`Package 'glib-2.0' ...
+    not found`). Root cause: workflow installed only Bevy system deps; the GUI
+    binary also links wry/rfd/keyring (webkit2gtk/gtk3/glib/dbus). NOT a Rust
+    source failure. Fixed 2026-07-15 by extending the apt dependency list in
+    `build-artifacts.yml` (and mirrored in `release.yml`).
+  - Windows job: still `in_progress` at time of check (no verdict).
+  - macOS job: did not exist yet; added 2026-07-15.
+- **2026-07-15:** Task 2.7 end-to-end tag verification pending (requires live
+  GitHub run). Track stays in_progress until a test tag produces a complete
+  release (8 artifacts + SHA256SUMS + GHCR image).

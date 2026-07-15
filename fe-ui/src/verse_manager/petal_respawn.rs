@@ -56,39 +56,32 @@ pub(super) fn respawn_on_petal_change(
 
     // Spawn entities for the new petal directly from in-memory data — no DB round-trip.
     if let Some(ref pid) = new_petal {
-        for verse in &verse_mgr.verses {
-            for fractal in &verse.fractals {
-                for petal in &fractal.petals {
-                    if petal.id != *pid {
-                        continue;
-                    }
-                    for node in &petal.nodes {
-                        // Skip if already spawned and being kept (petal didn't fully change).
-                        if kept_node_ids.contains(node.id.as_str()) {
-                            continue;
-                        }
-                        if let Some(ref ap) = node.asset_path {
-                            super::spawn::spawn_node_entity(
-                                &mut commands,
-                                &asset_server,
-                                &node.id,
-                                pid,
-                                &node.name,
-                                node.position,
-                                ap,
-                            );
-                        } else {
-                            super::spawn::spawn_fallback_sign(
-                                &mut commands,
-                                &mut meshes,
-                                &mut materials,
-                                &node.id,
-                                pid,
-                                &node.name,
-                                node.position,
-                            );
-                        }
-                    }
+        if let Some(petal) = verse_mgr.find_petal(pid) {
+            for node in &petal.nodes {
+                // Skip if already spawned and being kept (petal didn't fully change).
+                if kept_node_ids.contains(node.id.as_str()) {
+                    continue;
+                }
+                if let Some(ref ap) = node.asset_path {
+                    super::spawn::spawn_node_entity(
+                        &mut commands,
+                        &asset_server,
+                        &node.id,
+                        pid,
+                        &node.name,
+                        node.position,
+                        ap,
+                    );
+                } else {
+                    super::spawn::spawn_fallback_sign(
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials,
+                        &node.id,
+                        pid,
+                        &node.name,
+                        node.position,
+                    );
                 }
             }
         }

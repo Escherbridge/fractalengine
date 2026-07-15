@@ -5,7 +5,8 @@ WORKDIR /app
 COPY . .
 RUN cargo build --release -p fractalengine-relay
 
-# Runtime stage
+# Runtime stage — alpine (not FROM scratch): blessed deviation, see
+# conductor/tracks/release_ci_20260429/spec.md amendment 2026-07-15.
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/target/release/fe-relay /usr/local/bin/fe-relay
@@ -14,4 +15,10 @@ EXPOSE 8765
 ENV FE_DB_PATH=/data/fractalengine.db
 ENV FE_BIND_ADDR=0.0.0.0:8765
 ENV FE_CORS_ORIGINS=*
+# Secrets: the relay reads FE_SECRET_{SERVICE}_{ACCOUNT} env vars (EnvBackend;
+# fe-identity builds without keyring here — no OS keychain in containers).
+# Pass them at `docker run -e ...`; see BUILDING.md "Running in Docker".
+# FE_KEYSTORE_BACKEND=env is set per spec FR-4 (informational — env is
+# already the relay's only backend).
+ENV FE_KEYSTORE_BACKEND=env
 ENTRYPOINT ["fe-relay"]

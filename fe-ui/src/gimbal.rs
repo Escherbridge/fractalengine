@@ -183,6 +183,9 @@ pub fn ring_basis(axis: Vec3) -> (Vec3, Vec3) {
     (perp1, perp2)
 }
 
+/// Ring sample count used by hover hit-testing (matches `draw_rotate_ring`'s SEGS).
+pub const RING_SEGMENTS: usize = 48;
+
 /// Sample points along a rotation ring for screen-space hit testing.
 pub fn ring_points(center: Vec3, axis: Vec3, count: usize) -> Vec<Vec3> {
     let (perp1, perp2) = ring_basis(axis);
@@ -192,4 +195,43 @@ pub fn ring_points(center: Vec3, axis: Vec3, count: usize) -> Vec<Vec3> {
             center + (perp1 * angle.cos() + perp2 * angle.sin()) * GIMBAL_LEN
         })
         .collect()
+}
+
+/// Allocation-free `ring_points` variant for per-frame hover detection — fills `buf` in place.
+pub fn ring_points_buf(center: Vec3, axis: Vec3, buf: &mut [Vec3; RING_SEGMENTS]) {
+    let (perp1, perp2) = ring_basis(axis);
+    for (i, slot) in buf.iter_mut().enumerate() {
+        let angle = i as f32 * std::f32::consts::TAU / RING_SEGMENTS as f32;
+        *slot = center + (perp1 * angle.cos() + perp2 * angle.sin()) * GIMBAL_LEN;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_points_buf_matches_vec_variant() {
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.3, 0.8, 0.5).normalize()] {
+            let center = Vec3::new(1.0, -2.0, 3.0);
+            let expected = ring_points(center, axis, RING_SEGMENTS);
+            let mut buf = [Vec3::ZERO; RING_SEGMENTS];
+            ring_points_buf(center, axis, &mut buf);
+            assert_eq!(expected.len(), RING_SEGMENTS);
+            for (a, b) in expected.iter().zip(buf.iter()) {
+                assert!((*a - *b).length() < 1e-6, "buf variant diverged: {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ring_points_buf_lies_on_ring_of_gimbal_len() {
+        let center = Vec3::new(4.0, 5.0, 6.0);
+        let mut buf = [Vec3::ZERO; RING_SEGMENTS];
+        ring_points_buf(center, Vec3::Y, &mut buf);
+        for p in &buf {
+            assert!(((*p - center).length() - GIMBAL_LEN).abs() < 1e-5);
+            assert!((p.y - center.y).abs() < 1e-5, "Y-axis ring must stay in the XZ plane");
+        }
+    }
 }

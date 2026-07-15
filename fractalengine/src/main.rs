@@ -107,18 +107,29 @@ fn main() {
         fe_sync::spawn_sync_thread(iroh_secret, blob_store.clone(), sync_cmd_rx, sync_evt_tx, local_did);
 
     // Phase E: bridge replication events from DB thread to sync thread.
+    // try_send + drop counter so a stalled sync thread never blocks this hop
+    // (see fe-database/src/AGENTS.md §replication-backpressure).
     {
         let sync_tx_for_repl = sync_cmd_tx.clone();
         std::thread::spawn(move || {
+            let mut dropped: u64 = 0;
             while let Ok(evt) = repl_rx.recv() {
-                sync_tx_for_repl
-                    .send(fe_sync::SyncCommand::WriteRowEntry {
-                        verse_id: evt.verse_id,
-                        table: evt.table,
-                        record_id: evt.record_id,
-                        content_hash: evt.content_hash,
-                    })
-                    .ok();
+                match sync_tx_for_repl.try_send(fe_sync::SyncCommand::WriteRowEntry {
+                    verse_id: evt.verse_id,
+                    table: evt.table,
+                    record_id: evt.record_id,
+                    content_hash: evt.content_hash,
+                }) {
+                    Ok(()) => {}
+                    Err(crossbeam::channel::TrySendError::Full(_)) => {
+                        dropped += 1;
+                        tracing::warn!(
+                            dropped_total = dropped,
+                            "DB→sync replication bridge full — dropping event"
+                        );
+                    }
+                    Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
+                }
             }
         });
     }

@@ -11,5 +11,6 @@
     "priority": "P3",
     "rationale": "Mobile is explicit v2 non-goal. The build-size work itself already landed 2026-05-08 (all four FRs, commit 5c039a8); only further mobile work is deferred.",
     "assessed": "2026-07-14"
-  }
+  },
+  "notes": "Last open item closed 2026-07-15: fe-query/Cargo.toml dev-dep tokio switched from its own `version=1, rt-multi-thread+macros` declaration to `workspace = true` (done during analytics_egress_20260714 Phase 1). All crates now inherit the workspace tokio."
 }

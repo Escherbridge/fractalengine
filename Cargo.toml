@@ -56,6 +56,8 @@ iroh = "0.35"
 iroh-blobs = "0.35"
 iroh-gossip = "0.35"
 iroh-docs = "0.35"
+# quinn fork used by iroh 0.35 — needed only for congestion::BbrConfig (fe-sync BBR)
+iroh-quinn-proto = "0.13"
 ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
 jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 keyring = "3"

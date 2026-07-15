@@ -99,7 +99,7 @@ fn init_backend(world: &mut bevy::prelude::World) {
             return;
         }
         // Backend window died externally — drop it and fall through to recreate.
-        eprintln!("[PORTAL] init_backend: backend lost, recreating");
+        bevy::log::warn!("Portal: init_backend: backend lost, recreating");
         world.remove_non_send_resource::<WebViewBackendRes>();
     }
 
@@ -130,8 +130,8 @@ fn init_backend(world: &mut bevy::prelude::World) {
             };
             let inner: &winit::window::Window = &**winit_wrapper;
             let geometry = portal_rect_to_geometry(&portal_rect, inner);
-            eprintln!(
-                "[PORTAL] init_backend: geometry x={} y={} w={} h={} scale={}",
+            bevy::log::info!(
+                "Portal: init_backend: geometry x={} y={} w={} h={} scale={}",
                 geometry.x, geometry.y, geometry.width, geometry.height,
                 inner.scale_factor()
             );
@@ -140,12 +140,12 @@ fn init_backend(world: &mut bevy::prelude::World) {
             let raw = match inner.window_handle() {
                 Ok(h) => h.as_raw(),
                 Err(_) => {
-                    eprintln!("[PORTAL] init_backend: could not get raw window handle");
+                    bevy::log::error!("Portal: init_backend: could not get raw window handle");
                     return Some(Err(anyhow::anyhow!("could not get raw window handle")));
                 }
             };
 
-            eprintln!("[PORTAL] init_backend: calling ActiveBackend::create...");
+            bevy::log::info!("Portal: init_backend: calling ActiveBackend::create...");
             Some(ActiveBackend::create(&raw, geometry, TRUST_BAR_JS))
         });
 
@@ -156,14 +156,14 @@ fn init_backend(world: &mut bevy::prelude::World) {
 
         match result {
             Ok(backend) => {
-                eprintln!("[PORTAL] backend initialized OK: {}", std::any::type_name::<ActiveBackend>());
+                bevy::log::info!("Portal: backend initialized OK: {}", std::any::type_name::<ActiveBackend>());
                 world.insert_non_send_resource(WebViewBackendRes {
                     backend: Some(backend),
                     lost: false,
                 });
             }
             Err(e) => {
-                eprintln!("[PORTAL] backend init FAILED: {e}");
+                bevy::log::error!("Portal: backend init FAILED: {e}");
                 world.insert_non_send_resource(WebViewBackendRes { backend: None, lost: false });
             }
         }
@@ -189,11 +189,11 @@ fn dispatch_commands(
     }
 
     let Some(mut res) = backend_res else {
-        eprintln!("[PORTAL] received {} cmd(s) but WebViewBackendRes not available", cmds.len());
+        bevy::log::warn!("Portal: received {} cmd(s) but WebViewBackendRes not available", cmds.len());
         return;
     };
     let Some(backend) = res.backend.as_mut() else {
-        eprintln!("[PORTAL] received {} cmd(s) but backend is None (init failed?)", cmds.len());
+        bevy::log::warn!("Portal: received {} cmd(s) but backend is None (init failed?)", cmds.len());
         return;
     };
 
@@ -201,7 +201,7 @@ fn dispatch_commands(
         match cmd {
             BrowserCommand::Navigate { ref url } => {
                 if !security::is_url_allowed(url) {
-                    eprintln!("[PORTAL] Navigate blocked by security policy: {url}");
+                    bevy::log::warn!("Portal: Navigate blocked by security policy: {url}");
                     events.write(BrowserEvent::Error {
                         message: format!("URL blocked: {url}"),
                     });
@@ -209,18 +209,18 @@ fn dispatch_commands(
                 }
                 // Backend deduplicates — silently skip if already at this URL.
                 if let Err(e) = backend.navigate(url) {
-                    eprintln!("[PORTAL] navigate failed: {e}");
+                    bevy::log::error!("Portal: navigate failed: {e}");
                 }
             }
             BrowserCommand::GoBack => {
                 if let Err(e) = backend.go_back() {
-                    eprintln!("[PORTAL] go_back failed: {e}");
+                    bevy::log::error!("Portal: go_back failed: {e}");
                 }
             }
             BrowserCommand::Close => {
-                eprintln!("[PORTAL] closing portal");
+                bevy::log::info!("Portal: closing portal");
                 if let Err(e) = backend.hide() {
-                    eprintln!("[PORTAL] hide failed: {e}");
+                    bevy::log::error!("Portal: hide failed: {e}");
                 }
             }
             BrowserCommand::GetUrl => {}

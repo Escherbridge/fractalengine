@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use super::router::{ClickArbiter, ClickPriority};
 use super::{AxisDrag, NodeManager};
-use crate::gimbal::{draw_gimbal, gimbal_center, ring_points, GimbalAxis, GimbalGizmoGroup, GIMBAL_LEN};
+use crate::gimbal::{draw_gimbal, gimbal_center, ring_points_buf, GimbalAxis, GimbalGizmoGroup, GIMBAL_LEN, RING_SEGMENTS};
 use crate::panels::toolbar::Tool;
 use crate::plugin::{ToolState, ViewportRect};
 
@@ -98,7 +98,9 @@ fn ring_screen_distance(
     camera: &Camera,
     cam_tx: &GlobalTransform,
 ) -> f32 {
-    let points = ring_points(center_3d, axis, 48);
+    // Stack buffer — this runs every frame during hover; no heap allocation.
+    let mut points = [Vec3::ZERO; RING_SEGMENTS];
+    ring_points_buf(center_3d, axis, &mut points);
     let mut min_dist = f32::MAX;
     let mut prev_screen: Option<Vec2> = None;
     for pt in &points {

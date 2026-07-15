@@ -34,8 +34,9 @@
     }
   ],
   "blockers": [
-    "Cross-platform compile verification requires CI or native Linux/macOS environment"
+    "Awaiting first green CI runs: Linux (apt deps fixed 2026-07-15 after glib-sys failure in run 29390918844), macOS job (new in build-artifacts.yml), Windows ARM64 (release.yml on next v* tag)"
   ],
+  "notes": "2026-07-15: CI now covers Linux compile+scoped tests (workflow deps fixed), macOS aarch64 compile+scoped tests (job added), Windows ARM64 compile (release.yml windows-arm64 job, next tag). Local Win-ARM64 compile check deferred-to-CI (memory-constrained dev machine, surrealdb-core). Still unverified: macOS launch smoke test (Task 3.3), macOS x86_64 compile, green-run evidence for all three.",
   "alignment": {
     "verdict": "PLATFORM-KEEP",
     "priority": "P2",
