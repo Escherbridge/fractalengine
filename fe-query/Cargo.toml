@@ -7,7 +7,9 @@ edition = "2021"
 default = ["geo"]
 graphql = ["dep:async-graphql"]
 geo = []
-datafusion = ["dep:datafusion", "dep:async-trait", "dep:fe-entity-store"]
+# Lighter than `datafusion`: GeoParquet I/O without DataFusion (see src/AGENTS.md §geoparquet)
+parquet = ["dep:parquet", "dep:arrow", "dep:fe-entity-store"]
+datafusion = ["dep:datafusion", "dep:async-trait", "dep:fe-entity-store", "parquet"]
 
 [dependencies]
 serde = { workspace = true }
@@ -19,6 +21,9 @@ async-graphql = { version = "7", optional = true }
 fe-entity-store = { path = "../fe-entity-store", optional = true }
 async-trait = { version = "0.1", optional = true }
 datafusion = { version = "46", optional = true, default-features = false, features = ["nested_expressions"] }
+# arrow/parquet on datafusion-46's 54.x line (single arrow in tree); not in workspace root — fe-query is sole consumer
+arrow = { version = "54", optional = true, default-features = false }
+parquet = { version = "54", optional = true, default-features = false, features = ["arrow"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true }

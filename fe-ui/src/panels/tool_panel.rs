@@ -498,7 +498,7 @@ mod tests {
             expanded: true,
             fractals: vec![fractal],
         };
-        VerseManager { verses: vec![verse] }
+        VerseManager { verses: vec![verse], ..Default::default() }
     }
 
     #[test]

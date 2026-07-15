@@ -48,11 +48,11 @@ Build direction: `fe-runtime` and `fe-database` are leaves (no FE dependencies).
 | `VerseManager` | VerseManagerPlugin | In-memory content tree |
 | `NodeManager` | NodeManagerPlugin | Selection + drag state (sole source of selection truth) |
 | `UiManager` | GardenerConsolePlugin | Centralized UI state: active dialogs, portal panel, UI action queue |
-| `SidebarState` | GardenerConsolePlugin | Sidebar open/close + selected_node_id (UI mirror) |
+| `SidebarState` | GardenerConsolePlugin | Sidebar open/close state |
 | `ToolState` | GardenerConsolePlugin | Active editor tool (Select/Move/Rotate/Scale) |
 | `InspectorFormState` | GardenerConsolePlugin | Transform buffers for inspector panel (form buffers only, no selection) |
 | `ActiveDialog` | UiManager | Active dialog variant (on UiManager enum); formerly separate dialog state resources |
-| `PortalState` | UiManager | Portal panel state (formerly separate PortalPanelState resource) |
+| `PortalState` | UiManager | Portal panel state (lives on `UiManager.portal`) |
 | `CameraFocusTarget` | GardenerConsolePlugin | One-shot focus target consumed by orbit camera |
 | `ViewportCursorWorld` | GardenerConsolePlugin | Cursor projected onto Y=0 plane (for model placement) |
 | `ViewportRect` | GardenerConsolePlugin | Screen-space rect of the 3D viewport (for click rejection) |
@@ -70,10 +70,10 @@ Build direction: `fe-runtime` and `fe-database` are leaves (no FE dependencies).
 ```
 Update schedule:
   1. handle_tool_shortcuts        — keyboard: S/G/R/X=tool switch, Escape=deselect
-  2. sync_sidebar_to_manager      — SidebarState.selected_node_id → NodeManager.select/deselect
+  2. sync_sidebar_to_manager      — NodeManager.pending_sidebar_select → NodeManager.select/deselect
   3. handle_gimbal_interaction    — axis hit-test on press; apply drag on hold; commit on release
   4. handle_viewport_click        — ray-cast pick on click (skipped if drag started this frame)
-  5. sync_manager_to_inspector    — NodeManager → InspectorState transform buffers
+  5. sync_manager_to_inspector    — NodeManager → InspectorFormState transform buffers
   6. draw_gimbal_system           — render gimbal gizmos for selected entity
   7. broadcast_transform          — on drag_committed: → DB channel, → sync channel, → VerseManager
 ```
@@ -157,10 +157,9 @@ User Input (keyboard / mouse)
         │
         ▼
 [handle_viewport_click]      ─► NodeManager.select / deselect
-                             ─► SidebarState.selected_node_id (mirror)
         │
         ▼
-[sync_manager_to_inspector]  ─► InspectorState.pos/rot/scale (display buffers)
+[sync_manager_to_inspector]  ─► InspectorFormState.pos/rot/scale (display buffers)
         │
         ▼
 [draw_gimbal_system]         ─► Gizmos (pure visual output, no state)

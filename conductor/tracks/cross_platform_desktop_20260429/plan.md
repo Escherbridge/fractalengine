@@ -48,7 +48,7 @@ linker = "rust-lld.exe"
 
 ---
 
-### Task 1.2 — Verify Linux x86_64 compile [~] (needs native platform or CI)
+### Task 1.2 — Verify Linux x86_64 compile [~] (CI wired 2026-07-15; first run failed on missing glib-2.0 system dep — workflow deps fixed, green run pending)
 
 On an Ubuntu system (or CI runner) with system deps installed:
 
@@ -67,7 +67,7 @@ Fix any compile errors. Expected issues:
 
 ---
 
-### Task 1.3 — Verify macOS aarch64 compile [~] (needs native platform or CI)
+### Task 1.3 — Verify macOS aarch64 compile [~] (macOS CI job added to build-artifacts.yml 2026-07-15; first run pending)
 
 On a macOS host with Xcode installed:
 
@@ -81,7 +81,7 @@ Fix any compile errors. macOS is the closest to "just works" given Bevy + wry na
 
 ---
 
-### Task 1.4 — Verify Windows ARM64 compile [~] (needs MSVC ARM64 toolchain or clang)
+### Task 1.4 — Verify Windows ARM64 compile [~] (local build DEFERRED-TO-CI 2026-07-15 — memory-constrained dev machine, surrealdb-core too heavy; release.yml windows-arm64 job covers it on next tag)
 
 On a Windows host (x86_64 is fine — MSVC cross-compiles to ARM64):
 
@@ -314,7 +314,7 @@ cargo build --release -p fractalengine
 
 ---
 
-### Task 3.2 — Full workspace test on all platforms [~] (Windows verified; Linux/macOS pending)
+### Task 3.2 — Full workspace test on all platforms [~] (Windows verified; Linux/macOS scoped sweep now in CI with FE_KEYSTORE_BACKEND=env — green run pending)
 
 Run `cargo test --workspace` on:
 - Ubuntu latest (x86_64)
@@ -359,3 +359,21 @@ This can be manual for now — automated GUI testing is out of scope.
 | 1 | Multi-target build infra | `cargo check` succeeds on 4 targets |
 | 2 | Platform code audit + tests | Every `#[cfg]` block has test coverage |
 | 3 | BUILDING.md + full verification | Clone-to-run works on all platforms |
+
+---
+
+## Status Notes
+
+- **2026-07-15 — CI coverage after release_ci work:**
+  - Linux x86_64 compile + scoped test sweep (`fe-ui`, `fe-terrain`,
+    `fractalengine`): covered by `build-artifacts.yml`. First run (29390918844)
+    failed on missing glib-2.0 dev packages (workflow-level, not source);
+    apt deps extended — awaiting first green run.
+  - macOS aarch64 compile + scoped test sweep: job added to
+    `build-artifacts.yml` 2026-07-15 — awaiting first run.
+  - Windows ARM64 (`aarch64-pc-windows-msvc`) compile: covered by
+    `release.yml` windows-arm64 job on next `v*` tag; local compile check
+    deferred-to-CI (dev machine memory constraints, surrealdb-core).
+  - Still UNVERIFIED: macOS launch smoke test (Task 3.3), macOS x86_64
+    compile (release.yml only), any actual green CI evidence for
+    Linux/macOS/ARM64 (all runs pending).

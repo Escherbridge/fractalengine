@@ -12,6 +12,7 @@
 //! See `fe-ui/src/verse_manager/AGENTS.md` for the submodule map.
 
 mod db_results;
+mod node_index;
 mod path_asset_reconcile;
 mod petal_respawn;
 mod primitive_reconcile;
@@ -76,6 +77,8 @@ pub struct NodeEntry {
 #[derive(Resource, Default)]
 pub struct VerseManager {
     pub verses: Vec<VerseEntry>,
+    /// node_id → (verse, fractal, petal) indices; see `node_index.rs` + AGENTS.md §node-index.
+    pub(crate) node_index: std::collections::HashMap<String, (usize, usize, usize)>,
 }
 
 impl VerseManager {
@@ -109,33 +112,6 @@ impl VerseManager {
             .find(|p| p.id == petal_id)
     }
 
-    /// Update position of a node by its ID across all petals.
-    pub fn update_node_position(&mut self, node_id: &str, position: [f32; 3]) {
-        for verse in &mut self.verses {
-            for fractal in &mut verse.fractals {
-                for petal in &mut fractal.petals {
-                    if let Some(node) = petal.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.position = position;
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Update webpage_url of a node by its ID across all petals.
-    pub fn update_node_url(&mut self, node_id: &str, url: Option<String>) {
-        for verse in &mut self.verses {
-            for fractal in &mut verse.fractals {
-                for petal in &mut fractal.petals {
-                    if let Some(node) = petal.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.webpage_url = url;
-                        return;
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Bevy [`Resource`] wrapper around [`fe_sdk::TextureRegistry`] (FR-4) — the
@@ -205,34 +181,7 @@ mod tests {
             expanded: true,
             fractals: vec![fractal],
         };
-        VerseManager { verses: vec![verse] }
-    }
-
-    #[test]
-    fn update_node_position_finds_correct_node() {
-        let mut mgr = make_tree();
-        mgr.update_node_position("node-1", [9.0, 8.0, 7.0]);
-        let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();
-        assert_eq!(node.position, [9.0, 8.0, 7.0]);
-    }
-
-    #[test]
-    fn update_node_position_noop_on_missing_id() {
-        let mut mgr = make_tree();
-        mgr.update_node_position("does-not-exist", [0.0, 0.0, 0.0]);
-        let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();
-        assert_eq!(node.position, [1.0, 2.0, 3.0], "existing node must be unaffected");
-    }
-
-    #[test]
-    fn update_node_url_sets_and_clears() {
-        let mut mgr = make_tree();
-        mgr.update_node_url("node-1", Some("https://example.com".to_string()));
-        let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();
-        assert_eq!(node.webpage_url, Some("https://example.com".to_string()));
-        mgr.update_node_url("node-1", None);
-        let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();
-        assert!(node.webpage_url.is_none());
+        VerseManager { verses: vec![verse], ..Default::default() }
     }
 
     #[test]

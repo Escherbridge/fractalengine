@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-render = ["bevy"]
+render = ["bevy", "bevy_egui"]
 fetch = ["reqwest", "async-trait", "tokio", "ed25519-dalek"]
 
 [dependencies]
@@ -31,6 +31,7 @@ bincode = "1"
 
 # Optional
 bevy = { workspace = true, optional = true }
+bevy_egui = { workspace = true, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 async-trait = { version = "0.1", optional = true }
 tokio = { workspace = true, optional = true }

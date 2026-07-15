@@ -3,6 +3,33 @@
 Design rationale for fe-database source modules. Code carries terse one-line
 doc comments; the "why" lives here.
 
+## §replication-backpressure
+
+The DB→sync replication bridge is two `crossbeam::bounded(256)` hops:
+`replicate_row_with_petal` (this crate) → `repl_rx` bridge thread
+(`fractalengine/src/main.rs` Phase E) → sync thread. Both hops use
+**`try_send` + drop-and-count**, never blocking `send` — a stalled sync
+thread must degrade to observable replication lag, not a frozen DB handler
+(track `p2p_unblock_now_20260711` FR-1; this had to land before real
+iroh-docs replaces the instant mock, which masked the freeze).
+
+- On `Full`: the event is dropped, `REPLICATION_DROPS` (process-global
+  `AtomicU64`, read via `replication_drop_count()`) increments, and a
+  `tracing::warn!` fires with the running total. The main.rs hop keeps a
+  thread-local `u64` + warn log instead (single owner, log-based metric).
+- On `Disconnected`: silent no-op — that's shutdown, not backpressure, so it
+  is *not* counted as a drop.
+- Dropped events are safe to lose today: replication is best-effort ahead of
+  the real iroh-docs wiring; the durable row is already committed in
+  SurrealDB before the bridge send.
+- Regression guard: `tests/replication_backpressure_test.rs` fills a
+  bounded(1) channel and asserts prompt return + counter increment. It's a
+  single test fn because the counter is process-global (parallel test fns
+  would race the before/after reads).
+- Do NOT "fix" this back to blocking `send`, and match the same pattern for
+  any new bridge hop (siblings: scene-change and transform bridges in
+  main.rs use the identical try_send shape).
+
 ## §geometry-inserts
 
 `node.position` (`geometry<point>`) and `petal.bounds` (`geometry<polygon>`)

@@ -36,11 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Bevy 0.18 (x11 + wayland) link-time system libraries.
-      - name: Install Bevy system dependencies
+      # Bevy 0.18 (x11 + wayland) link-time system libraries, plus the
+      # GUI-stack native deps (wry -> webkit2gtk/glib, rfd -> gtk3,
+      # keyring -> dbus). See conductor/tracks/cross_platform_desktop_20260429
+      # spec "Linux System Dependencies".
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            pkg-config libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libdbus-1-dev libssl-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
             libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev \
             libgl1-mesa-dev
@@ -61,6 +66,9 @@ jobs:
       # a bare `cargo test --workspace`) to match the project's known-green set
       # and keep CI time bounded; expand as coverage grows.
       - name: Test sweep
+        env:
+          # Env-backed keystore: no OS keychain / Secret Service on runners.
+          FE_KEYSTORE_BACKEND: env
         run: cargo test --release -p fe-ui -p fe-terrain -p fractalengine
 
       - name: Upload fractalengine (GUI) binary
@@ -107,4 +115,43 @@ jobs:
         with:
           name: fe-relay-windows-x86_64
           path: target/release/fe-relay.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS (build + test + artifacts)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # macos-latest is Apple Silicon; native target is aarch64-apple-darwin.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-build
+
+      - name: Build release binaries
+        run: cargo build --release --bin fractalengine --bin fe-relay
+
+      # Same scoped sweep as the Linux job — see that job's comment.
+      - name: Test sweep
+        env:
+          FE_KEYSTORE_BACKEND: env
+        run: cargo test --release -p fe-ui -p fe-terrain -p fractalengine
+
+      - name: Upload fractalengine (GUI) binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fractalengine-macos-aarch64
+          path: target/release/fractalengine
+          if-no-files-found: error
+
+      - name: Upload fe-relay (headless) binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe-relay-macos-aarch64
+          path: target/release/fe-relay
           if-no-files-found: error

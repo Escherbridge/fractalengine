@@ -20,7 +20,7 @@ pub mod gis;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 
-#[cfg(feature = "datafusion")]
+#[cfg(any(feature = "datafusion", feature = "parquet"))]
 pub mod columnar;
 
 pub mod duckdb_compat;

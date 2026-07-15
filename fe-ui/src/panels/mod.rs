@@ -58,7 +58,7 @@ pub fn gardener_console(
     path_status: &crate::path_ops::PathEditStatus,
     tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
 ) -> egui::Rect {
-    toolbar::top_toolbar(ctx, sidebar, tool, node_mgr, ui_mgr, gis_panel, tool_panel);
+    toolbar::top_toolbar(ctx, tool, node_mgr, ui_mgr, gis_panel, tool_panel);
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
     sidebar::left_sidebar(
         ctx,

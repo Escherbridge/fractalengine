@@ -27,14 +27,41 @@ pub struct TauriBackend {
     popup_hwnd: isize,
 }
 
+/// Navigation-handler decision: validates via `security::is_url_allowed`, records
+/// `UrlChanged`/`Error` on `events`, returns whether to allow the navigation.
+fn decide_navigation(raw_url: &str, events: &Rc<RefCell<Vec<BackendEvent>>>) -> bool {
+    match raw_url.parse::<Url>() {
+        Ok(parsed) if crate::security::is_url_allowed(&parsed) => {
+            events.borrow_mut().push(BackendEvent::UrlChanged(parsed));
+            true
+        }
+        Ok(parsed) => {
+            tracing::warn!("navigation_handler: blocked navigation to '{parsed}'");
+            events.borrow_mut().push(BackendEvent::Error(format!(
+                "Navigation blocked: URL not allowed: {parsed}"
+            )));
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                "navigation_handler: blocked navigation to unparseable URL '{raw_url}': {e}"
+            );
+            events.borrow_mut().push(BackendEvent::Error(format!(
+                "Navigation blocked: invalid URL '{raw_url}': {e}"
+            )));
+            false
+        }
+    }
+}
+
 impl WebViewBackend for TauriBackend {
     fn create(
         parent_handle: &RawWindowHandle,
         geometry: WindowGeometry,
         trust_bar_js: &str,
     ) -> anyhow::Result<Self> {
-        eprintln!(
-            "[PORTAL] TauriBackend::create — geometry: x={} y={} w={} h={}",
+        tracing::info!(
+            "TauriBackend::create — geometry: x={} y={} w={} h={}",
             geometry.x, geometry.y, geometry.width, geometry.height
         );
 
@@ -49,38 +76,7 @@ impl WebViewBackend for TauriBackend {
             .with_visible(true)
             .with_autoplay(true)
             .with_initialization_script(trust_bar_js)
-            .with_navigation_handler(move |url: String| {
-                match url.parse::<Url>() {
-                    Ok(parsed) if crate::security::is_url_allowed(&parsed) => {
-                        nav_events
-                            .borrow_mut()
-                            .push(BackendEvent::UrlChanged(parsed));
-                        true
-                    }
-                    Ok(parsed) => {
-                        tracing::warn!(
-                            "navigation_handler: blocked navigation to '{parsed}'"
-                        );
-                        nav_events
-                            .borrow_mut()
-                            .push(BackendEvent::Error(format!(
-                                "Navigation blocked: URL not allowed: {parsed}"
-                            )));
-                        false
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "navigation_handler: blocked navigation to unparseable URL '{url}': {e}"
-                        );
-                        nav_events
-                            .borrow_mut()
-                            .push(BackendEvent::Error(format!(
-                                "Navigation blocked: invalid URL '{url}': {e}"
-                            )));
-                        false
-                    }
-                }
-            })
+            .with_navigation_handler(move |url: String| decide_navigation(&url, &nav_events))
             .with_on_page_load_handler(move |event, _url| {
                 if matches!(event, PageLoadEvent::Finished) {
                     load_events.borrow_mut().push(BackendEvent::LoadComplete);
@@ -107,19 +103,19 @@ impl WebViewBackend for TauriBackend {
             // Create visible popup BEFORE building webview — WebView2 needs
             // a visible parent HWND to initialize its rendering pipeline.
             let popup_hwnd = win32::create_popup(parent_hwnd, &geometry)?;
-            eprintln!("[PORTAL] popup HWND = {popup_hwnd:#x}");
+            tracing::debug!("TauriBackend: popup HWND = {popup_hwnd:#x}");
 
             let popup = PopupHandle(popup_hwnd);
-            eprintln!("[PORTAL] calling build_as_child...");
+            tracing::debug!("TauriBackend: calling build_as_child...");
             let webview = builder
                 .build_as_child(&popup)
                 .map_err(|e| {
-                    eprintln!("[PORTAL] build_as_child FAILED: {e}");
+                    tracing::error!("TauriBackend: build_as_child FAILED: {e}");
                     win32::destroy(popup_hwnd);
                     anyhow::anyhow!("TauriBackend: build_as_child failed: {e}")
                 })?;
 
-            eprintln!("[PORTAL] webview built OK — hiding popup until navigate()");
+            tracing::info!("TauriBackend: webview built OK — hiding popup until navigate()");
             win32::hide(popup_hwnd);
 
             (webview, popup_hwnd)
@@ -152,7 +148,7 @@ impl WebViewBackend for TauriBackend {
         if self.current_url.as_ref() == Some(url) {
             return Ok(());
         }
-        eprintln!("[PORTAL] TauriBackend::navigate — {url}");
+        tracing::info!("TauriBackend::navigate — {url}");
         self.webview
             .load_url(url.as_str())
             .map_err(|e| anyhow::anyhow!("TauriBackend: load_url failed: {e}"))?;
@@ -172,7 +168,7 @@ impl WebViewBackend for TauriBackend {
 
     fn show(&mut self) -> anyhow::Result<()> {
         if !self.visible {
-            eprintln!("[PORTAL] TauriBackend::show");
+            tracing::debug!("TauriBackend::show");
             #[cfg(target_os = "windows")]
             win32::show(self.popup_hwnd);
 
@@ -186,7 +182,7 @@ impl WebViewBackend for TauriBackend {
 
     fn hide(&mut self) -> anyhow::Result<()> {
         if self.visible {
-            eprintln!("[PORTAL] TauriBackend::hide");
+            tracing::debug!("TauriBackend::hide");
             self.webview
                 .set_visible(false)
                 .map_err(|e| anyhow::anyhow!("TauriBackend: set_visible(false) failed: {e}"))?;
@@ -262,5 +258,76 @@ mod tests {
         fn _check_tauri_implements_trait() {
             _check_trait::<TauriBackend>();
         }
+    }
+
+    fn fresh_events() -> Rc<RefCell<Vec<BackendEvent>>> {
+        Rc::new(RefCell::new(Vec::new()))
+    }
+
+    #[test]
+    fn decide_navigation_allows_public_https_and_emits_url_changed() {
+        let events = fresh_events();
+        assert!(decide_navigation("https://example.com/", &events));
+        let evts = events.borrow();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            &evts[0],
+            BackendEvent::UrlChanged(u) if u.as_str() == "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn decide_navigation_blocks_private_ip_and_emits_error() {
+        let events = fresh_events();
+        assert!(!decide_navigation("http://192.168.1.1/admin", &events));
+        let evts = events.borrow();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            &evts[0],
+            BackendEvent::Error(msg) if msg.contains("Navigation blocked")
+        ));
+    }
+
+    #[test]
+    fn decide_navigation_blocks_localhost_and_emits_error() {
+        let events = fresh_events();
+        assert!(!decide_navigation("http://localhost:8080/", &events));
+        let evts = events.borrow();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(&evts[0], BackendEvent::Error(_)));
+    }
+
+    #[test]
+    fn decide_navigation_blocks_non_http_scheme_and_emits_error() {
+        let events = fresh_events();
+        assert!(!decide_navigation("ftp://example.com/", &events));
+        let evts = events.borrow();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(&evts[0], BackendEvent::Error(_)));
+    }
+
+    #[test]
+    fn decide_navigation_blocks_unparseable_url_and_emits_error() {
+        let events = fresh_events();
+        assert!(!decide_navigation("not a url at all", &events));
+        let evts = events.borrow();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            &evts[0],
+            BackendEvent::Error(msg) if msg.contains("invalid URL")
+        ));
+    }
+
+    #[test]
+    fn decide_navigation_does_not_emit_url_changed_when_blocked() {
+        let events = fresh_events();
+        decide_navigation("http://127.0.0.1/", &events);
+        assert!(
+            !events
+                .borrow()
+                .iter()
+                .any(|e| matches!(e, BackendEvent::UrlChanged(_))),
+            "blocked navigation must not record a UrlChanged event"
+        );
     }
 }

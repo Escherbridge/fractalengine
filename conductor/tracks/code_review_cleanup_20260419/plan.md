@@ -61,17 +61,17 @@ Tasks:
   - Run `cargo check -p fe-webview` to confirm compilation.
   - Run `cargo test -p fe-webview` to confirm all tests pass.
 
-- [ ] Task 2.2: Audit and update AGENTS.md
+- [x] Task 2.2: Audit and update AGENTS.md
   - Read `AGENTS.md` and search for references to removed types: `InspectorState`, `PortalPanelState`, individual dialog state resources.
   - Replace with current types: `UiManager`, `ActiveDialog`, `PortalState`, `UiAction`, `UiSet`, `InspectorFormState`.
   - Ensure the document accurately describes the current architecture.
 
-- [ ] Task 2.3: Audit and update docs/architecture.md
+- [x] Task 2.3: Audit and update docs/architecture.md
   - Read `docs/architecture.md` and search for stale type references.
   - Update all references to match current codebase state.
   - Add `UiSet` ordering description if system scheduling is documented.
 
-- [ ] Task 2.4: Audit and update docs/dataflows.md
+- [x] Task 2.4: Audit and update docs/dataflows.md (audited 2026-07-15: no stale `InspectorState`/`PortalPanelState`/dialog-resource references — already clean, no edits needed)
   - Read `docs/dataflows.md` and search for stale type references.
   - Update data flow diagrams/descriptions to reflect the `UiAction` queue pattern.
   - Replace any `PortalPanelState` flow with `UiManager.portal: PortalState` flow.
@@ -113,13 +113,13 @@ Tasks:
   - Implement: capture the `egui::Response` or `Rect` from the context menu rendering and use it for the click-outside check.
   - Run tests.
 
-- [ ] Task 3.4: Resolve sidebar toggle button (implement decision)
+- [x] Task 3.4: Resolve sidebar toggle button (implement decision) — default resolution applied 2026-07-15: button REMOVED from `panels/toolbar.rs` (auto-collapse in `panels/mod.rs` overwrites `sidebar.open` every frame, so a manual flag would fight it); TODO comment left for a future manual override
   - If decision is "remove": delete the toggle button code and any associated state.
   - If decision is "make functional": implement manual override of auto-collapse, add a code comment explaining the behavior.
   - Default action (if no product owner decision): remove the button and add a `// TODO: re-add manual sidebar toggle when needed` comment.
   - Run tests.
 
-- [ ] Task 3.5: Remove unused SidebarState.tag_filter_buf
+- [x] Task 3.5: Remove unused SidebarState.tag_filter_buf
   - Grep for `tag_filter_buf` across the codebase.
   - If no reads exist (only the field declaration and default init), remove the field.
   - Update `Default` impl accordingly.
@@ -141,7 +141,7 @@ Goal: Logging consistency and minor code quality.
 
 Tasks:
 
-- [ ] Task 4.1: Replace eprintln! with bevy::log in fe-webview (TDD: Write test, implement, refactor)
+- [x] Task 4.1: Replace eprintln! with bevy::log in fe-webview — all ~22 sites converted 2026-07-15 (plugin.rs → `bevy::log::*`, backends/tauri.rs → `tracing::*`); no eprintln! exceptions kept: `init_backend` runs in the Update schedule, i.e. after LogPlugin init, so tracing is always available. Also extracted `decide_navigation()` in tauri.rs + 6 tests covering FR-1/NFR-2 (allowed https, private IP, localhost, non-http scheme, unparseable URL, no-UrlChanged-on-block)
   - Audit all `eprintln!` calls in `fe-webview/src/plugin.rs` and `fe-webview/src/backends/tauri.rs` (formerly wry.rs).
   - Replace with appropriate `bevy::log` or `tracing` macros:
     - Errors: `bevy::log::error!`
@@ -150,10 +150,9 @@ Tasks:
   - For `eprintln!` calls in `init_backend` that fire before LogPlugin: use `tracing::info!` (available if any subscriber is installed) or keep as `eprintln!` with a comment explaining why.
   - Run `cargo clippy -- -D warnings` and `cargo test -p fe-webview`.
 
-- [ ] Task 4.2: Remove redundant .clone() calls
-  - Check the former `node_manager.rs:457` site (now under the `fe-ui/src/node_manager/` module directory) -- determine if the cloned value is used after the clone. If not, remove `.clone()` and move instead.
-  - Check the former `dialogs.rs:378` site (now under `fe-ui/src/dialogs/`) -- same analysis.
-  - Run `cargo check -p fe-ui` and `cargo test -p fe-ui`.
+- [x] Task 4.2: Remove redundant .clone() calls
+  - Former `dialogs.rs:378` site → `fe-ui/src/dialogs/node_options.rs:75`: removed redundant `url_opt.clone()` (value unused after the call; now moved).
+  - Former `node_manager.rs:457` site → MOOT after the fe-ui decomposition: audited all `.clone()` calls under `fe-ui/src/node_manager/` (2026-07-15); every remaining clone is load-bearing (borrowed sources, two-channel broadcasts, or `Local` caches) — no redundant clone survives the refactor.
 
 - [ ] Verification: Phase 4 Final Verification [checkpoint marker]
   - Run `cargo test` (all crates).

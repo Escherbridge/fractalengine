@@ -17,7 +17,7 @@
   "research_refs": [
     "research/hexon-p2p-commons/stages/stage3-p2p-crdt-performance-sota.md"
   ],
-  "notes": "iroh 1.0 shipped 2026-06-15 (supersedes the April 2026 '0.35 is the production pin' finding). Hard deadline is external and non-negotiable; self-hosted 1.x relay is the resilient fallback. Coordinate with p2p_mycelium_completion_20260701: wire real iroh-docs against 1.x directly if still in flight. Priority demoted to P2 per 2026-07-14 alignment (rises P1 by Q4).",
+  "notes": "iroh 1.0 shipped 2026-06-15 (supersedes the April 2026 '0.35 is the production pin' finding). Hard deadline is external and non-negotiable; self-hosted 1.x relay is the resilient fallback. Coordinate with p2p_mycelium_completion_20260701: wire real iroh-docs against 1.x directly if still in flight. Priority demoted to P2 per 2026-07-14 alignment (rises P1 by Q4). 2026-07-15 (p2p_unblock_now FR-4): fe-sync now pins iroh-quinn-proto 0.13 directly to select BBR congestion control (iroh 0.35 default is CUBIC, ~30x slower for blobs per iroh#4286) — when bumping iroh to 1.x, bump iroh-quinn-proto in lockstep and re-verify the congestion-controller default/API (see fe-sync/src/AGENTS.md §congestion-control).",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P2 (rises P1 by Q4)",

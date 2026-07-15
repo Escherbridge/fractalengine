@@ -61,6 +61,66 @@ pub fn polygon_area_m2(vertices: &[[f64; 3]], scale: f64) -> f64 {
     (sum.abs() / 2.0) / (sanitized * sanitized)
 }
 
+/// A chosen scale bar: nice-number real length and its on-screen pixel width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScaleBarSpec {
+    /// Real-world length the bar represents (meters).
+    pub meters: f64,
+    /// On-screen bar width (pixels).
+    pub pixels: f64,
+}
+
+/// Ground meters per screen pixel for a down-looking perspective camera
+/// (`cam_height_m` real meters, vertical FOV radians, viewport height px);
+/// `0.0` on degenerate input.
+pub fn meters_per_pixel(cam_height_m: f64, fov_y_rad: f64, viewport_h_px: f64) -> f64 {
+    let valid_height = cam_height_m.is_finite() && cam_height_m > 0.0;
+    let valid_fov = fov_y_rad.is_finite() && fov_y_rad > 0.0 && fov_y_rad < std::f64::consts::PI;
+    let valid_vp = viewport_h_px.is_finite() && viewport_h_px > 0.0;
+    if !(valid_height && valid_fov && valid_vp) {
+        return 0.0;
+    }
+    2.0 * cam_height_m * (fov_y_rad / 2.0).tan() / viewport_h_px
+}
+
+/// Pick the nice-number scale bar nearest a `target_px` on-screen width;
+/// `None` on degenerate input.
+pub fn scale_bar_spec(meters_per_px: f64, target_px: f64) -> Option<ScaleBarSpec> {
+    let valid_mpp = meters_per_px.is_finite() && meters_per_px > 0.0;
+    let valid_px = target_px.is_finite() && target_px > 0.0;
+    if !(valid_mpp && valid_px) {
+        return None;
+    }
+    let meters = nice_number(meters_per_px * target_px);
+    Some(ScaleBarSpec {
+        meters,
+        pixels: meters / meters_per_px,
+    })
+}
+
+/// Human-readable distance label: m below 1 km, km above, sensible precision.
+pub fn format_distance_m(meters: f64) -> String {
+    if !meters.is_finite() || meters <= 0.0 {
+        return "0 m".to_string();
+    }
+    if meters >= 1000.0 {
+        let km = meters / 1000.0;
+        if km >= 10.0 || km.fract().abs() < 1e-9 {
+            format!("{km:.0} km")
+        } else {
+            format!("{km:.1} km")
+        }
+    } else if meters >= 1.0 {
+        if meters.fract().abs() < 1e-9 {
+            format!("{meters:.0} m")
+        } else {
+            format!("{meters:.1} m")
+        }
+    } else {
+        format!("{meters:.2} m")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +230,73 @@ mod tests {
         assert_eq!(polygon_area_m2(&[], 1.0), 0.0);
         assert_eq!(polygon_area_m2(&[[0.0, 0.0, 0.0]], 1.0), 0.0);
         assert_eq!(polygon_area_m2(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 1.0), 0.0);
+    }
+
+    #[test]
+    fn meters_per_pixel_known_geometry() {
+        // fov = 90° → tan(fov/2) = 1 → visible span = 2h; 1000 px viewport.
+        let mpp = meters_per_pixel(1000.0, std::f64::consts::FRAC_PI_2, 1000.0);
+        assert!((mpp - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn meters_per_pixel_degenerate_inputs_return_zero() {
+        assert_eq!(meters_per_pixel(0.0, 1.0, 1000.0), 0.0);
+        assert_eq!(meters_per_pixel(-10.0, 1.0, 1000.0), 0.0);
+        assert_eq!(meters_per_pixel(f64::NAN, 1.0, 1000.0), 0.0);
+        assert_eq!(meters_per_pixel(100.0, 0.0, 1000.0), 0.0);
+        assert_eq!(meters_per_pixel(100.0, std::f64::consts::PI, 1000.0), 0.0);
+        assert_eq!(meters_per_pixel(100.0, 1.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn scale_bar_spec_snaps_to_nice_number() {
+        // 2 m/px × 120 px target = 240 m → nice 200 m → 100 px wide.
+        let spec = scale_bar_spec(2.0, 120.0).unwrap();
+        assert_eq!(spec.meters, 200.0);
+        assert!((spec.pixels - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn scale_bar_spec_none_on_degenerate_input() {
+        assert!(scale_bar_spec(0.0, 120.0).is_none());
+        assert!(scale_bar_spec(f64::NAN, 120.0).is_none());
+        assert!(scale_bar_spec(2.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn scale_bar_from_height_and_world_scale_end_to_end() {
+        // Camera at world-Y 500 under 0.001 scale → 500 km real height (FR-8 path:
+        // world_to_real_height → meters_per_pixel → scale_bar_spec).
+        let real_h = crate::scale::world_to_real_height(500.0, 0.001);
+        let mpp = meters_per_pixel(real_h, std::f64::consts::FRAC_PI_2, 1000.0);
+        assert!((mpp - 1000.0).abs() < 1e-9);
+        let spec = scale_bar_spec(mpp, 120.0).unwrap();
+        assert_eq!(spec.meters, 100_000.0); // nice(120 km) = 100 km
+        assert!((spec.pixels - 100.0).abs() < 1e-9);
+        assert_eq!(format_distance_m(spec.meters), "100 km");
+    }
+
+    #[test]
+    fn format_distance_meters_range() {
+        assert_eq!(format_distance_m(500.0), "500 m");
+        assert_eq!(format_distance_m(2.0), "2 m");
+        assert_eq!(format_distance_m(2.5), "2.5 m");
+        assert_eq!(format_distance_m(0.5), "0.50 m");
+    }
+
+    #[test]
+    fn format_distance_kilometers_range() {
+        assert_eq!(format_distance_m(1000.0), "1 km");
+        assert_eq!(format_distance_m(1500.0), "1.5 km");
+        assert_eq!(format_distance_m(2000.0), "2 km");
+        assert_eq!(format_distance_m(50_000.0), "50 km");
+    }
+
+    #[test]
+    fn format_distance_bad_input_is_zero() {
+        assert_eq!(format_distance_m(0.0), "0 m");
+        assert_eq!(format_distance_m(-5.0), "0 m");
+        assert_eq!(format_distance_m(f64::NAN), "0 m");
     }
 }

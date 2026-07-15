@@ -6,7 +6,7 @@
   "status": "in_progress",
   "execution_wave": 4,
   "wave_rationale": "P0 SSRF fix already done; remaining items are backlog cleanup.",
-  "notes": "verified 2026-07-14: FR-1, FR-2, FR-4, FR-5, FR-6, FR-7 confirmed shipped; remaining: FR-3, FR-8, FR-9, FR-10, FR-11",
+  "notes": "2026-07-15: all FRs implemented (FR-3 docs, FR-8 button removed, FR-9 field removed, FR-10 tracing everywhere, FR-11 node_options clone removed / node_manager site moot, FR-1 residual: decide_navigation helper + 6 tests). Remaining: end-of-session integrated test sweep + Phase 2/3/4 manual verification checkpoints.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P1 (FR-1) / P3 rest",

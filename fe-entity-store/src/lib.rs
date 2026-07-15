@@ -16,20 +16,13 @@ pub struct EntitySnapshot {
     pub scale: [f32; 3],
     pub properties: Option<serde_json::Value>,
     pub updated_at_ms: u64,
-    /// Append-only operation log for this node. Each entry records a
-    /// mutation that occurred, preserving a full audit trail. The log is
-    /// immutable once written — entries are never modified or removed.
-    /// This supports time-series queries, distributed replication conflict
-    /// resolution, and eventually-consistent merge across peers.
+    /// Last-K window of the node's op log (hot cache only; full history lives
+    /// in the durable SurrealDB op_log — see AGENTS.md §node-log-cap).
     #[serde(default)]
     pub node_log: Vec<NodeLogEntry>,
 }
 
-/// An append-only log entry recording a single operation on a node.
-///
-/// Node logs are immutable once created. The `_row_version` hidden metadata
-/// field tracks the latest "current" state, but the full log is always
-/// preserved for time-series queries and distributed merge.
+/// A log entry recording a single operation on a node (see AGENTS.md §node-log-cap).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeLogEntry {
     /// HLC-packed timestamp (upper 48 bits = wall_ms, lower 16 = counter).
@@ -114,19 +107,44 @@ pub struct NodeSnapshot {
 /// Backed by `papaya::HashMap` for wait-free reads and low-contention writes.
 /// Designed to be populated from `SceneChange` events and queried by the API
 /// layer and Bevy systems without DB round-trips.
+/// Default last-K cap for the in-memory `node_log` (see AGENTS.md §node-log-cap).
+pub const DEFAULT_NODE_LOG_CAP: usize = 1024;
+
 #[derive(Resource)]
 pub struct EntityStore {
     /// Primary index: node_id -> EntitySnapshot.
     nodes: HashMap<String, EntitySnapshot>,
     /// Secondary index: petal_id -> Vec<node_id>.
     petal_index: HashMap<String, Vec<String>>,
+    /// Max in-memory log entries kept per node (last-K window).
+    node_log_cap: usize,
 }
 
 impl EntityStore {
     pub fn new() -> Self {
+        Self::with_node_log_cap(DEFAULT_NODE_LOG_CAP)
+    }
+
+    /// Create a store with a custom last-K cap for per-node hot-cache logs.
+    pub fn with_node_log_cap(node_log_cap: usize) -> Self {
         Self {
             nodes: HashMap::new(),
             petal_index: HashMap::new(),
+            node_log_cap: node_log_cap.max(1),
+        }
+    }
+
+    /// The configured last-K cap for in-memory node logs.
+    pub fn node_log_cap(&self) -> usize {
+        self.node_log_cap
+    }
+
+    /// Push a log entry, trimming the front so the window stays within the cap.
+    fn push_log_capped(&self, log: &mut Vec<NodeLogEntry>, entry: NodeLogEntry) {
+        log.push(entry);
+        if log.len() > self.node_log_cap {
+            let excess = log.len() - self.node_log_cap;
+            log.drain(..excess);
         }
     }
 
@@ -189,15 +207,11 @@ impl EntityStore {
         }
     }
 
-    /// Append a log entry to a node. Returns the assigned row_version.
-    ///
-    /// The node log is append-only: entries are never modified or removed.
-    /// Each entry gets a monotonically increasing `row_version` scoped to
-    /// this node, serving as hidden metadata for "most recent state" queries.
+    /// Append a log entry to a node (last-K window). Returns the assigned row_version.
     pub fn append_log(&self, node_id: &str, op: NodeLogOp, source_did: &str, hlc_timestamp: u64, payload: serde_json::Value) -> Option<u64> {
         let mut snapshot = self.get(node_id)?;
         let row_version = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-        snapshot.node_log.push(NodeLogEntry {
+        self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
             hlc_timestamp,
             op,
             source_did: source_did.to_string(),
@@ -242,7 +256,7 @@ impl EntityStore {
                     node_log: vec![],
                 };
                 // Seed the log with the creation event
-                snapshot.node_log.push(NodeLogEntry {
+                self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
                     hlc_timestamp: hlc,
                     op: NodeLogOp::Created,
                     source_did: String::new(),
@@ -269,7 +283,7 @@ impl EntityStore {
                     snapshot.scale = *scale;
                     snapshot.updated_at_ms = timestamp_ms;
                     let rv = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-                    snapshot.node_log.push(NodeLogEntry {
+                    self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
                         hlc_timestamp: hlc,
                         op: NodeLogOp::TransformUpdate,
                         source_did: String::new(),
@@ -312,7 +326,7 @@ impl EntityStore {
                     }
                     snapshot.updated_at_ms = timestamp_ms;
                     let rv = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-                    snapshot.node_log.push(NodeLogEntry {
+                    self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
                         hlc_timestamp: hlc,
                         op: NodeLogOp::PropertySet,
                         source_did: String::new(),
@@ -328,7 +342,7 @@ impl EntityStore {
             SceneChange::NodeRenamed { node_id, new_name } => {
                 if let Some(mut snapshot) = self.get(node_id) {
                     let rv = snapshot.node_log.last().map(|e| e.row_version + 1).unwrap_or(1);
-                    snapshot.node_log.push(NodeLogEntry {
+                    self.push_log_capped(&mut snapshot.node_log, NodeLogEntry {
                         hlc_timestamp: hlc,
                         op: NodeLogOp::Renamed,
                         source_did: String::new(),
@@ -641,5 +655,73 @@ mod tests {
         // Rollbacks should NOT create log entries
         let snap = store.get("n1").unwrap();
         assert_eq!(snap.node_log.len(), 1); // Only the Created entry
+    }
+
+    #[test]
+    fn node_log_capped_to_last_k() {
+        let store = EntityStore::with_node_log_cap(4);
+        store.upsert(make_snapshot("n1", "p1"));
+
+        for i in 0..10u64 {
+            store.append_log(
+                "n1",
+                NodeLogOp::PropertySet,
+                "",
+                i << 16,
+                serde_json::json!({ "i": i }),
+            );
+        }
+
+        let snap = store.get("n1").unwrap();
+        assert_eq!(snap.node_log.len(), 4, "log must stay within the cap");
+        // Newest entries retained: row_versions 7..=10.
+        let versions: Vec<u64> = snap.node_log.iter().map(|e| e.row_version).collect();
+        assert_eq!(versions, vec![7, 8, 9, 10]);
+        // row_version stays monotonic even after trimming.
+        let rv = store.append_log("n1", NodeLogOp::Renamed, "", 11 << 16, serde_json::json!({}));
+        assert_eq!(rv, Some(11));
+        assert_eq!(store.get("n1").unwrap().node_log.len(), 4);
+    }
+
+    #[test]
+    fn node_log_cap_applies_to_scene_changes() {
+        let store = EntityStore::with_node_log_cap(3);
+        let add = SceneChange::NodeAdded {
+            node: NodeSnapshot {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                name: "Test".into(),
+                position: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                has_asset: false,
+                asset_path: None,
+            },
+        };
+        store.apply_scene_change(&add, 1000);
+
+        for i in 0..8u64 {
+            let transform = SceneChange::NodeTransform {
+                node_id: "n1".into(),
+                position: [i as f32, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0],
+                scale: [1.0, 1.0, 1.0],
+            };
+            store.apply_scene_change(&transform, 2000 + i);
+        }
+
+        let snap = store.get("n1").unwrap();
+        assert_eq!(snap.node_log.len(), 3);
+        // Latest transform (row_version 9 = Created + 8 transforms) is retained.
+        assert_eq!(snap.node_log.last().unwrap().row_version, 9);
+        assert_eq!(snap.node_log.last().unwrap().op, NodeLogOp::TransformUpdate);
+    }
+
+    #[test]
+    fn default_cap_is_1024() {
+        assert_eq!(EntityStore::new().node_log_cap(), DEFAULT_NODE_LOG_CAP);
+        assert_eq!(DEFAULT_NODE_LOG_CAP, 1024);
+        // Degenerate cap of 0 is clamped to 1.
+        assert_eq!(EntityStore::with_node_log_cap(0).node_log_cap(), 1);
     }
 }

@@ -72,7 +72,7 @@ pub fn render_node_options_dialog(
                 {
                     let url = webpage_url_buf.trim().to_string();
                     let url_opt = if url.is_empty() { None } else { Some(url) };
-                    node_options_save_url(hierarchy, &current_node_id, url_opt.clone(), db_tx);
+                    node_options_save_url(hierarchy, &current_node_id, url_opt, db_tx);
                     close = true;
                 }
                 if ui

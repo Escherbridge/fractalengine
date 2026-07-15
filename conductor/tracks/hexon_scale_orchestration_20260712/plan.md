@@ -86,13 +86,13 @@ Tasks:
 Goal: `RulerPlugin` renders a nice-number scale bar reflecting the hexon-bounded metric frame.
 
 Tasks:
-- [ ] Task: `RulerPlugin` scaffold + system reading camera height via `world_to_real_height`
+- [x] Task: `RulerPlugin` scaffold + system reading camera height via `world_to_real_height`
   (`fe-terrain/src/scale.rs`) and snapping via `ruler::nice_number`. (TDD: write test on the
   pure height→scale-bar-length helper asserting nice-number output at sample heights; then wire
   plugin.)
-- [ ] Task: egui overlay (bevy_egui 0.39) drawing the scale bar; label from reconciled metric
+- [x] Task: egui overlay (bevy_egui 0.39) drawing the scale bar; label from reconciled metric
   frame. (TDD: unit-test the label/format helper; egui draw stays thin.)
-- [ ] Verification: scale bar shows nice-number real distance consistent with the reconciled
+- [x] Verification: scale bar shows nice-number real distance consistent with the reconciled
   frame and updates on zoom. `cargo test -p fe-terrain` green, fmt+clippy clean. [checkpoint marker]
 
 ## Phase 5: Measurement tools — tape / area / bearing + GPX path length (FR-9)

@@ -160,7 +160,8 @@ pub fn spawn_sync_thread(
                             &table,
                             &record_id,
                             &content_hash,
-                        );
+                        )
+                        .await;
                     }
                     Ok(SyncCommand::UpdateNodeTransform {
                         verse_id,
@@ -339,10 +340,8 @@ fn handle_close_verse_replica(
     }
 }
 
-/// Handle [`SyncCommand::WriteRowEntry`].
-///
-/// Reads the row data from the blob store and writes it to the verse's replica.
-fn handle_write_row_entry(
+/// Handle [`SyncCommand::WriteRowEntry`] (blob read off-loaded via spawn_blocking).
+async fn handle_write_row_entry(
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
     blob_store: &BlobStoreHandle,
     verse_id: &str,
@@ -374,13 +373,23 @@ fn handle_write_row_entry(
         }
     };
 
-    let data = match std::fs::read(&blob_path) {
-        Ok(d) => d,
-        Err(e) => {
+    // Keep the current-thread runtime responsive during slow disk reads
+    // (see AGENTS.md §sync-thread-blocking-io).
+    let data = match tokio::task::spawn_blocking(move || std::fs::read(&blob_path)).await {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => {
             tracing::error!(
                 verse_id,
                 hash = %hex,
                 "WriteRowEntry: could not read blob: {e}"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::error!(
+                verse_id,
+                hash = %hex,
+                "WriteRowEntry: blob read task failed: {e}"
             );
             return;
         }

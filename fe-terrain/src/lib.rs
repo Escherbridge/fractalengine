@@ -18,6 +18,9 @@ pub mod tiles;
 pub mod layers;
 
 #[cfg(feature = "render")]
+pub mod ruler_plugin;
+
+#[cfg(feature = "render")]
 pub mod terrain_plugin;
 
 use serde::{Deserialize, Serialize};

@@ -34,19 +34,19 @@ Style constraints (all phases): files ~300 lines (split modules past that), ters
 
 ## Phase 1 — GeoParquet real writer + round-trip test [fe-query only]
 
-- [ ] **Task 1.1 — Add parquet/arrow deps to fe-query.**
+- [x] **Task 1.1 — Add parquet/arrow deps to fe-query.** *(Done 2026-07-15: plain `parquet`/`arrow` 54.x — matching datafusion 46's arrow line — behind a new lighter `parquet` feature; `datafusion` implies it. geoarrow-rs rejected: writer surface unstable + large dep tree. Not hoisted to workspace root — fe-query is the sole consumer. Bonus: fe-query dev-dep tokio switched to `workspace = true`, closing build_size_mobile_prep_20260508's last item.)*
   Files: `fe-query/Cargo.toml`, workspace `Cargo.toml`.
   Add `parquet` + `arrow` (or `geoarrow` if its writer is stable enough — decide at implementation, prefer plain `parquet` ArrowWriter + hand-written GeoParquet `geo` KV metadata to keep the dep surface small). Keep behind the existing `datafusion` feature (or a new lighter `parquet` feature so fe-api doesn't drag datafusion in).
   Accept: `cargo check -p fe-query` green with the feature on; no new default-features bloat for downstream crates.
-- [ ] **Task 1.2 — Replace `write_nodes_parquet` stub with a real writer.**
+- [x] **Task 1.2 — Replace `write_nodes_parquet` stub with a real writer.** *(Done 2026-07-15: split into `columnar/geoparquet/{mod,codec}.rs`; rows→RecordBatch→ArrowWriter with GeoParquet 1.0 `geo` footer metadata; position as ISO WKB Point Z; CRS default `"PETAL-LOCAL:meters;origin=unset"` — never silent EPSG:4326; `write_nodes_parquet_with_meta` is the FR-5 override seam. AGENTS.md §geoparquet added.)*
   Files: `fe-query/src/columnar/geoparquet.rs` (split into `geoparquet/{mod,schema,write,read}.rs` if >300 lines), `fe-query/src/AGENTS.md` (new §geoparquet section for the why).
   Map `EntitySnapshot` → RecordBatch (node_id, petal_id, position as geometry, rotation, scale, properties JSON, updated_at_ms); write via ArrowWriter with GeoParquet 1.0 file metadata (`geo` key) built from `GeoParquetMeta` (`primary_geometry_column`, `crs`, `encoding`).
   Accept: output file passes a parquet-footer sanity check in-test; `geo` metadata present and spec-shaped; returns real row count; no `.unwrap()` in the writer path.
-- [ ] **Task 1.3 — Replace `read_nodes_parquet` stub + round-trip test.**
+- [x] **Task 1.3 — Replace `read_nodes_parquet` stub + round-trip test.** *(Done 2026-07-15: real reader incl. `read_geo_metadata`; stub tests replaced with 5 tests — round-trip field equality on 2 snapshots incl. properties + geo-metadata assertions, empty-slice write, corrupt-file Err-not-panic, custom-CRS honored, local-meters default.)*
   Files: `fe-query/src/columnar/geoparquet.rs` (+submodules).
   Read RecordBatches back into `Vec<EntitySnapshot>`; delete the stub tests (`write_stub_returns_count`, `read_stub_returns_empty`) and replace with: write→read round-trip equality on ≥2 snapshots incl. properties, empty-slice write, corrupt-file read returns Err (not panic), `GeoParquetMeta` custom CRS honored in file metadata.
   Accept: round-trip test green (this is the FR-1 acceptance test); read-back verifies every field written.
-- [ ] **Task 1.4 — Phase sweep.** `cargo test -p fe-query` + clippy on fe-query, once, at end of phase.
+- [ ] **Task 1.4 — Phase sweep.** `cargo test -p fe-query` + clippy on fe-query, once, at end of phase. *(Deferred to the session-end integrated sweep per test policy; `cargo check -p fe-query --features parquet` green 2026-07-15.)*
 
 ## Phase 2 — Export endpoints: parquet + CSV reusing execute_query guards [fe-api]
 

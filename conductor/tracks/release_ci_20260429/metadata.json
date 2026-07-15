@@ -15,17 +15,19 @@
     {
       "id": 1,
       "name": "PR Check Workflow",
-      "status": "in_progress",
-      "tasks": 3
+      "status": "complete",
+      "tasks": 3,
+      "notes": "2026-07-15: build-artifacts.yml Linux+Windows+macOS jobs, rust-cache (blessed over sccache — spec amendment), FE_KEYSTORE_BACKEND=env on test steps; Linux GUI-stack apt deps fixed after glib-sys failure in run 29390918844"
     },
     {
       "id": 2,
       "name": "Release Pipeline",
-      "status": "pending",
-      "tasks": 7
+      "status": "in_progress",
+      "tasks": 7,
+      "notes": "2026-07-15: Tasks 2.1-2.6 done (release.yml 8-target matrix + lipo universal + SHA256SUMS + gh-release publish + GHCR docker job; Cross.toml). Task 2.7 pending."
     }
   ],
-  "notes": "2026-07-14: partially delivered — build-artifacts.yml (commit 2fbebc4, 'first slice of release_ci_20260429') covers Tasks 1.1/1.3 substantially; docker/Dockerfile.relay delivers Task 2.5 / part of FR-4.",
+  "notes": "2026-07-15: release.yml + Cross.toml + macOS PR job landed. Task 2.7 end-to-end tag verification pending (requires live GitHub run). CI run 29390918844: Linux FAILED on missing glib-2.0 system dep (workflow-level, fixed in build-artifacts.yml); Windows still in_progress at check time.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P2",

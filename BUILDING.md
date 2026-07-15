@@ -122,6 +122,28 @@ docker build -f docker/Dockerfile.relay -t fractalengine-relay .
 docker run -p 8765:8765 -v relay-data:/data fractalengine-relay
 ```
 
+Released images are published to GHCR on every `v*` tag:
+
+```bash
+docker pull ghcr.io/escherbridge/fractalengine-relay:latest
+```
+
+### Secrets in containers
+
+Containers have no OS keychain; the relay's `fe-identity` build excludes
+`keyring` and reads secrets from environment variables instead:
+
+| Variable | Description |
+|----------|-------------|
+| `FE_KEYSTORE_BACKEND` | Set to `env` (image default) — env-var-backed secret store |
+| `FE_SECRET_{SERVICE}_{ACCOUNT}` | One variable per secret; names uppercased, non-alphanumerics replaced with `_` |
+
+```bash
+docker run -p 8765:8765 -v relay-data:/data \
+  -e FE_SECRET_MY_SERVICE_V1_ADMIN=hunter2 \
+  fractalengine-relay
+```
+
 See [docker/README.md](docker/README.md) for Docker Compose examples.
 
 ## Running

@@ -116,3 +116,28 @@ Configure `cross-rs` for any ARM GNU targets:
 | GitHub Actions runner resource limits | Keep `jobs = 2` for Rust, use `--release` only in release workflow |
 | Cargo.lock drift between OS-specific builds | Single `Cargo.lock` committed to repo, all builds use it |
 | Long build times (~15min per target) | All 8 targets build in parallel; total wall time = longest single build |
+
+---
+
+## Spec Amendments
+
+### 2026-07-15 — FR-3 deviation blessed: Swatinem/rust-cache instead of sccache
+The landed workflows use `Swatinem/rust-cache@v2` (cargo registry + `target/`
+caching, per-job `shared-key`) rather than sccache + GHA cache backend. It is
+simpler (one action, no `RUSTC_WRAPPER` to disable in cross/Docker jobs),
+already proven in `build-artifacts.yml`, and caches whole `target/` output —
+comparable hit-rate for this workspace's dependency-heavy builds. sccache is
+NOT being added; FR-3 is considered satisfied by rust-cache.
+
+### 2026-07-15 — FR-4 deviation blessed: alpine runtime instead of FROM scratch
+`docker/Dockerfile.relay` uses an `alpine:latest` runtime stage (with
+`ca-certificates`) rather than `FROM scratch`. Rationale: a shell + apk in the
+runtime image simplifies debugging and cert management for a ~8 MB cost, and
+the relay is built inside the same alpine builder (musl) so the pairing is
+natural. `FROM scratch` remains a possible future hardening step, not a
+requirement.
+
+### 2026-07-15 — FR-1 note: scoped test sweep instead of full workspace
+PR-check test sweep is `cargo test --release -p fe-ui -p fe-terrain
+-p fractalengine` (the project's known-green set) rather than
+`cargo test --workspace`, to keep CI time bounded. Expand as coverage grows.

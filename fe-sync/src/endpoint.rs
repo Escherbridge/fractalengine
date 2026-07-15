@@ -4,11 +4,25 @@
 //! construction from a deterministic secret key, relay connectivity, and
 //! graceful shutdown.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
 
 /// Wraps an [`iroh::Endpoint`] with convenience accessors for the sync thread.
 pub struct SyncEndpoint {
     endpoint: iroh::Endpoint,
+}
+
+/// QUIC transport config with explicit BBR (see AGENTS.md §congestion-control).
+fn bbr_transport_config() -> iroh::endpoint::TransportConfig {
+    let mut transport = iroh::endpoint::TransportConfig::default();
+    // Re-apply iroh's builder default (replaced wholesale by a custom config).
+    transport.keep_alive_interval(Some(Duration::from_secs(1)));
+    transport.congestion_controller_factory(Arc::new(
+        iroh_quinn_proto::congestion::BbrConfig::default(),
+    ));
+    transport
 }
 
 impl SyncEndpoint {
@@ -19,8 +33,10 @@ impl SyncEndpoint {
     pub async fn new(secret_key: iroh::SecretKey) -> Result<Self> {
         let endpoint = iroh::Endpoint::builder()
             .secret_key(secret_key)
+            .transport_config(bbr_transport_config())
             .bind()
             .await?;
+        tracing::info!(congestion_controller = "bbr", "iroh endpoint bound");
         Ok(Self { endpoint })
     }
 
@@ -69,6 +85,13 @@ mod tests {
                 tracing::warn!("SyncEndpoint::new failed (expected in CI): {e}");
             }
         }
+    }
+
+    #[test]
+    fn bbr_transport_config_constructs() {
+        // Type-level guarantee that the BbrConfig factory unifies with iroh's
+        // re-exported ControllerFactory (same iroh-quinn-proto instance).
+        let _ = bbr_transport_config();
     }
 
     #[test]

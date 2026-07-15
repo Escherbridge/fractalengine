@@ -73,3 +73,35 @@ a malformed input into a silently-wrong query instead of a build-time error.
 RawQuery's own keyword/statement guard (single `SELECT`, no `;`, no bare
 CREATE/UPDATE/DELETE/DEFINE/etc.) is documented and regression-tested next to
 the builders themselves — see `fe-database/src/AGENTS.md` §gis.
+
+## §geoparquet
+
+`columnar/geoparquet/` writes/reads `EntitySnapshot` rows as GeoParquet 1.0
+(`analytics_egress_20260714` FR-1). `mod.rs` owns the public API + `geo`
+footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
+
+- **Plain `parquet`/`arrow` 54.x, not geoarrow-rs**: 54.x matches
+  datafusion 46's arrow line (single arrow in the tree when both features are
+  on); geoarrow-rs's writer surface was still churning at evaluation time
+  (2026-07-14) and its dep tree is far larger, while a Point-Z-only ISO WKB
+  codec is ~40 lines. The crates are declared in fe-query only — the workspace
+  root doesn't carry them; hoist to `[workspace.dependencies]` when a second
+  crate needs them.
+- The `parquet` cargo feature is deliberately lighter than `datafusion` so
+  fe-api can export parquet without dragging DataFusion in; the `datafusion`
+  feature implies `parquet` (columnar/ used to be all-or-nothing on
+  datafusion; only `geoparquet` is available under `parquet` alone).
+- Column shape: `position` (**petal-local meters**, §local-coords) is the
+  geometry column as ISO WKB Point Z (code 1001, little-endian) in a Binary
+  column; rotation/scale are flattened to six Float32 scalar columns
+  (BI/DuckDB-friendly); `properties` is a nullable JSON-string Utf8 column;
+  `node_log` is intentionally NOT exported (audit log ≠ analytics egress)
+  and reads back empty.
+- **CRS honesty (FR-5 seam):** the `geo` metadata `crs` field carries a
+  descriptive *string* — default `"PETAL-LOCAL:meters;origin=unset"` — never
+  a silent EPSG:4326 claim, because coordinates are petal-local meters. The
+  API layer (which owns the petal terrain origin) overrides it via
+  `write_nodes_parquet_with_meta`, either stamping the real origin string or
+  converting to lat/lon and only then labeling EPSG:4326 (track Phase 5). A
+  string in `crs` deviates from strict GeoParquet-1.0 PROJJSON; that is a
+  deliberate trade — honest-but-nonstandard beats standard-but-wrong.

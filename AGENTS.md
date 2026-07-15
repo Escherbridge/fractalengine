@@ -210,11 +210,11 @@ is in pure functions in `fe-renderer/src/camera.rs` — no ECS dependencies, ful
 | File | Owns |
 |------|------|
 | `fe-ui/src/navigation_manager.rs` | `NavigationManager` resource + `NavigationManagerPlugin` + P2P lifecycle system |
-| `fe-ui/src/verse_manager.rs` | `VerseManager` resource + `VerseManagerPlugin` + hierarchy tree types + spawn helper |
-| `fe-ui/src/node_manager.rs` | `NodeManager` resource + `NodeManagerPlugin` + all 7 chained systems |
+| `fe-ui/src/verse_manager/` | `VerseManager` resource + `VerseManagerPlugin` + hierarchy tree types + spawn helper |
+| `fe-ui/src/node_manager/` | `NodeManager` resource + `NodeManagerPlugin` + the chained selection/gimbal systems |
 | `fe-ui/src/gimbal.rs` | `GimbalAxis` enum + pure visual drawing functions (no state) |
-| `fe-ui/src/plugin.rs` | `GardenerConsolePlugin` + all UI-only resources (InspectorState, SidebarState, etc.) |
-| `fe-ui/src/panels.rs` | `gardener_console()` egui panel function + `Tool` enum |
+| `fe-ui/src/plugin.rs` | `GardenerConsolePlugin` + all UI-only resources (InspectorFormState, SidebarState, etc.) |
+| `fe-ui/src/panels/` | `gardener_console()` egui panel function + `Tool` enum |
 | `fe-renderer/src/camera.rs` | `OrbitCameraController` + `CameraControllerPlugin` + pure math functions |
 | `fe-database/src/lib.rs` | All async DB functions; called from spawned thread |
 | `fe-sync/src/lib.rs` | `SyncCommand` + `SyncCommandSenderRes` + iroh-docs replica management |
