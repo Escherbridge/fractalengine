@@ -5518,6 +5518,7 @@ dependencies = [
  "iroh-quinn-proto",
  "serde",
  "serde_json",
+ "socket2 0.5.10",
  "tempfile",
  "tokio",
  "tracing",

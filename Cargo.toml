@@ -59,6 +59,10 @@ iroh-gossip = "0.35"
 iroh-docs = "0.35"
 # quinn fork used by iroh 0.35 — needed only for congestion::BbrConfig (fe-sync BBR)
 iroh-quinn-proto = "0.13"
+# Feature-unification shim: netwatch 0.5.0 (iroh dep) uses socket2::Type::RAW
+# on macOS without enabling socket2/all — declaring it here turns the feature
+# on graph-wide so the macOS CI build compiles. Drop when iroh/netwatch fix it.
+socket2 = { version = "0.5", features = ["all"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
 jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 keyring = "3"
