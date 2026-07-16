@@ -1,0 +1,10 @@
+{
+  "id": "hexon_unification_20260716",
+  "description": "Unify fe-hexon onto fe-format v1.0.0 (single canonical .hexon) + PetalSnapshot hexon type carrying a petal's full SurrealDB state and op-log",
+  "type": "feature",
+  "created_at": "2026-07-16T00:00:00Z",
+  "status": "pending",
+  "depends_on": [],
+  "blocks": [],
+  "notes": "User directives 2026-07-16 (binding): fe-format v1.0.0 upheld as canonical; .fecrate stack deletable, registry compat may break (still in dev); snapshot carries op-log sigs verbatim (D5-1). Subsumes hexon_path_asset_20260713 FR-5 (PetalHexon bake). Forward-compatible with, but does not implement, hexon_delta_format_20260710 (foundry-candidate)."
+}
