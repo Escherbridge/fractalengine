@@ -38,7 +38,9 @@ jobs:
   linux:
     name: Linux (build + test + artifacts)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 150: cold-cache builds (e.g. after a profile change invalidates rust-cache)
+    # need ~2h; warm-cache runs finish far under. 90 killed the first thin-LTO run.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -126,7 +128,8 @@ jobs:
   macos:
     name: macOS (build + test + artifacts)
     runs-on: macos-latest
-    timeout-minutes: 90
+    # 150: same cold-cache rationale as the Linux job.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
