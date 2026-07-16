@@ -581,13 +581,15 @@ fn render_gpx_tracks(
             ..default()
         });
 
+        // try_insert throughout: the bridge may despawn a line the same frame
+        // (petal switch / style re-render) before these commands flush.
         let mut e = commands.entity(entity);
-        e.insert((Mesh3d(handle), MeshMaterial3d(material)));
+        e.try_insert((Mesh3d(handle), MeshMaterial3d(material)));
         // FR-3 visibility: apply the current visible flag at build time. A later
         // toggle isn't a cheap in-place `Visibility` flip — it persists the
         // `gis.track.visible` prop, which despawns+respawns the `GpxTrackLine`
         // via the bridge and re-runs this build, same as a color/width change.
-        e.insert(if style.visible {
+        e.try_insert(if style.visible {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -598,7 +600,7 @@ fn render_gpx_tracks(
             |t| matches!(t, LayerType::GpxTrack { node_id, .. } if node_id == &track.track_node_id),
         );
         if let Some(layer_id) = layer_id {
-            e.insert(LayerEntity { layer_id });
+            e.try_insert(LayerEntity { layer_id });
         }
     }
 }
@@ -625,7 +627,7 @@ fn render_waypoint_markers(
     let material = materials.add(StandardMaterial::from(color));
 
     for (entity, _marker) in waypoint_query.iter() {
-        commands.entity(entity).insert((
+        commands.entity(entity).try_insert((
             Mesh3d(sphere.clone()),
             MeshMaterial3d(material.clone()),
             Pickable::default(),
@@ -643,7 +645,7 @@ fn render_geojson_overlays(
 ) {
     for (entity, overlay) in overlay_query.iter() {
         // Mark processed up-front (also on failure) so a bad file never retry-spams.
-        commands.entity(entity).insert(GeoJsonProcessed);
+        commands.entity(entity).try_insert(GeoJsonProcessed);
 
         let json_str = match std::fs::read_to_string(&overlay.source_path) {
             Ok(s) => s,

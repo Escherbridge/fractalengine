@@ -91,7 +91,7 @@ pub(super) fn apply_inbound_transforms(
                 // so that rollback logic can read it back if needed.
                 commands
                     .entity(entity)
-                    .insert(fe_runtime::messages::DbConfirmedTransform {
+                    .try_insert(fe_runtime::messages::DbConfirmedTransform {
                         position: update.position,
                         rotation: update.rotation,
                         scale: update.scale,
