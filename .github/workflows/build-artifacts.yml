@@ -27,6 +27,12 @@ env:
   # Guard against the deep-recursion stack usage some dependencies (surrealdb
   # core) hit during compilation; harmless elsewhere.
   RUST_MIN_STACK: "134217728"
+  # The workspace release profile (lto = "fat", codegen-units = 1) exceeds
+  # hosted-runner memory on the Bevy binary link — the Linux job was
+  # SIGTERM'd mid-link (run 29440668419). Thin LTO in CI only; local/user
+  # release builds keep the fat-LTO profile from Cargo.toml.
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
   linux:

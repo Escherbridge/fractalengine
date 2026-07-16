@@ -15,6 +15,11 @@ env:
   CARGO_TERM_COLOR: always
   # surrealdb-core needs deep compile-time recursion stacks; harmless elsewhere.
   RUST_MIN_STACK: "134217728"
+  # Fat LTO + codegen-units=1 (workspace release profile) OOMs hosted runners
+  # on the Bevy binary link (see build-artifacts run 29440668419). Thin LTO
+  # for CI-built release artifacts; revisit with larger runners.
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
   linux-x86_64:

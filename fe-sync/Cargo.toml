@@ -21,6 +21,8 @@ iroh = { workspace = true }
 iroh-docs = { workspace = true }
 iroh-gossip = { workspace = true }
 iroh-quinn-proto = { workspace = true }
+# see workspace Cargo.toml — socket2/all shim for netwatch's macOS build
+socket2 = { workspace = true }
 crossbeam = { workspace = true }
 
 [dev-dependencies]
