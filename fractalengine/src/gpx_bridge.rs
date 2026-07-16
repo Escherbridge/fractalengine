@@ -494,9 +494,12 @@ pub fn tag_track_lines_selectable(
     }
     let petal_id = active_terrain.petal_id.clone().unwrap_or_default();
     for (entity, line) in lines.iter() {
+        // try_insert: track lines can be despawned (petal switch / track
+        // re-render) between this system and command flush; replacements
+        // re-tag next frame via the Without filter.
         commands
             .entity(entity)
-            .insert(fe_ui::plugin::SpawnedNodeMarker {
+            .try_insert(fe_ui::plugin::SpawnedNodeMarker {
                 node_id: line.track_node_id.clone(),
                 petal_id: petal_id.clone(),
             });
