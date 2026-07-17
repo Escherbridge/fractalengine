@@ -13,7 +13,8 @@ pub const PATH_ASSET_PROPERTY_KEY: &str = "path_asset";
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 pub enum SpacingMode {
-    /// Fixed world-units of arc length between consecutive instances.
+    /// Fixed real-world METERS of arc length between consecutive instances
+    /// (converted to world units at sampling time via the petal `world_scale`).
     #[default]
     FixedSpacing,
     /// A fixed number of instances distributed evenly across the whole path.
@@ -25,7 +26,9 @@ pub enum SpacingMode {
 ///
 /// - `asset_path`: the `blob://{hash}.glb` (or asset ref) to stamp, shared by
 ///   every instance (all resolve to one `Handle<Scene>`).
-/// - `spacing_value`: world-units between instances (used in `FixedSpacing`).
+/// - `spacing_value`: real-world METERS between instances (used in
+///   `FixedSpacing`); the sampler converts to world units via the active
+///   petal's `world_scale` (see `fe-ui` §path-asset-materialization).
 /// - `count`: instance count (used in `FixedCount`).
 /// - `tangent_align`: rotate each instance to face the local path tangent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

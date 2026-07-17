@@ -19,6 +19,8 @@ mod layer_manager_card;
 // data_icons_20260713); everything else in it is still crate-internal.
 pub(crate) mod path_editor_card;
 mod portal_toolbar;
+/// Shared reusable panel widgets (copy boxes, elision). See AGENTS.md §widgets.
+mod widgets;
 
 use bevy_egui::egui;
 

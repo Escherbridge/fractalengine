@@ -162,6 +162,15 @@ pub enum UiAction {
         index: usize,
         position: [f32; 3],
     },
+    /// path_interaction_20260716 (FR-4): replace ALL of a track's points with
+    /// `points` (world positions in order), keyed on the EXPLICIT track node id
+    /// — used when the whole-path gimbal bakes its transform delta into the gpx
+    /// points. Applied as one in-place `MovePoint` per index (count-preserving,
+    /// timestamps kept by the bridge), independent of `editing_track_id`.
+    PathTransformPoints {
+        track_node_id: String,
+        points: Vec<[f32; 3]>,
+    },
     /// Create a waypoint annotation at point `index`'s position.
     PathAnnotatePoint {
         track_node_id: String,
@@ -568,6 +577,12 @@ pub(crate) fn process_ui_actions(
                     position,
                 );
             }
+            UiAction::PathTransformPoints {
+                track_node_id,
+                points,
+            } => {
+                path::transform_points(&mut path_ops, &mut path_state, track_node_id, points);
+            }
             UiAction::PathAnnotatePoint {
                 track_node_id,
                 index,
@@ -592,8 +607,8 @@ pub(crate) fn process_ui_actions(
                 track_node_id,
                 descriptor,
             } => {
-                // Persist the descriptor on the track node; `reconcile_path_asset`
-                // (verse_manager) stamps the model on the resulting property load.
+                // Persist the descriptor on the track node; the property load feeds
+                // `PathAssetCache` and `materialize_path_assets` (verse_manager) stamps.
                 node_props::set(
                     &db_sender,
                     track_node_id,

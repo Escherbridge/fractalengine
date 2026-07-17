@@ -49,6 +49,17 @@ are `pub(crate)` (crate-internal) rather than `pub`. Nothing outside fe-ui
 referenced `fe_ui::panels::*` before this change (verified via
 `grep -rn "fe_ui::" fractalengine/src fe-webview/src`), so this is safe.
 
+## §camera-focus (`camera_focus_clip_20260716`)
+
+`CameraFocusTarget.target: Option<(String, [f32; 3])>` carries `(node_id,
+fallback position)`, not just a raw position. `plugin::apply_camera_focus`
+resolves the live spawned entity's `GlobalTransform` for `node_id` first (same
+`SpawnedNodeMarker` idiom as `node_manager::sidebar_sync`) and only falls back
+to the cached position — this fixes the stale-origin-then-real-spot two-step
+teleport that happened when a freshly created node's tree entry still held
+`[0.0; 3]`. Producers: `panels::sidebar` (tree click) and
+`panels::gis_panel::render_results` (GIS/Annotations row click).
+
 ## §actions
 
 `UiAction` is a one-frame signal queue pushed during the egui render pass

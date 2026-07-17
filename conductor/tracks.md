@@ -23,36 +23,38 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 
 ## P0 — UX test findings (2026-07-16, user-driven UX pillar)
 
-Bugs and asks from the user's live UX testing session, 2026-07-16 (feeds the
-ux_qa_review meta track). All four in flight this session.
+Bugs and asks from the user's live UX testing session, 2026-07-16 (logged in
+[ux_qa_review findings](./tracks/ux_qa_review_20260714/findings.md)). All four
+landed same-day; full sweep green (1517 tests, clippy -D warnings, fmt);
+in-app verification user-gated.
 
-### [~] path_interaction — precise picking, vertex/segment selection, whole-path gimbal
+### [x] path_interaction — precise picking, vertex/segment selection, whole-path gimbal
 
-_Link: [./tracks/path_interaction_20260716/](./tracks/path_interaction_20260716/) · in_progress · P0 UX_
+_Link: [./tracks/path_interaction_20260716/](./tracks/path_interaction_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
 
 Illustrator-style vertex select/move in Select tool, ray-vs-polyline ribbon
 picking (stop AABB click-swallowing), per-segment selection with real-metric
 length display, centroid-anchored move/rotate/scale gimbal baked into
 `gpx_points`, 0.5-unit default width.
 
-### [~] gpx_stamp_persistence — stamps survive scene changes; metric spacing
+### [x] gpx_stamp_persistence — stamps survive scene changes; metric spacing
 
-_Link: [./tracks/gpx_stamp_persistence_20260716/](./tracks/gpx_stamp_persistence_20260716/) · in_progress · P0 UX_
+_Link: [./tracks/gpx_stamp_persistence_20260716/](./tracks/gpx_stamp_persistence_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
 
 Petal-wide re-materialization of `path_asset` stamps from persisted node
 properties (mirrors primitive pattern); per-track change gate; spacing in
 meters via `world_scale`.
 
-### [~] inspector_units_width — panel width blow-out + real-unit transforms
+### [x] inspector_units_width — panel width blow-out + real-unit transforms
 
-_Link: [./tracks/inspector_units_width_20260716/](./tracks/inspector_units_width_20260716/) · in_progress · P0 UX_
+_Link: [./tracks/inspector_units_width_20260716/](./tracks/inspector_units_width_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
 
 Read-only copyable width-constrained property values (panel stays 260px);
 position in meters / rotation in degrees / size in meters from node AABB.
 
-### [~] camera_focus_clip — focus teleport + near-plane clipping
+### [x] camera_focus_clip — focus teleport + near-plane clipping
 
-_Link: [./tracks/camera_focus_clip_20260716/](./tracks/camera_focus_clip_20260716/) · in_progress · P0 UX_
+_Link: [./tracks/camera_focus_clip_20260716/](./tracks/camera_focus_clip_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
 
 `NodeCreated` echoes position + focus resolves live entity transform; near
 0.01 + min_distance 0.05 for clip-free close zoom.

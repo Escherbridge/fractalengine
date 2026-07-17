@@ -177,11 +177,31 @@ pub struct PathEditorState {
     /// The edited track's `path_asset` stamp descriptor, seeded from its loaded
     /// `path_asset` node prop when a track is selected (see
     /// `verse_manager::db_results`) and refreshed after a `PathAssetApply`
-    /// write round-trips. Drives `verse_manager::reconcile_path_asset`, which
-    /// keys off the Paths-tab selection (`editing_track_id`) rather than the
-    /// viewport/tree selection. `None` when the track has no stamp. Same
+    /// write round-trips. Feeds `verse_manager::PathAssetCache` via
+    /// `reconcile_path_asset` for live edits; petal-wide stamping is done by
+    /// `materialize_path_assets` (see verse_manager/AGENTS.md
+    /// §path-asset-materialization). `None` when the track has no stamp. Same
     /// load/reset seam as `edited_track_style`.
     pub edited_track_path_asset: Option<PathAssetDescriptor>,
+    /// path_interaction_20260716 (FR-2): the selected path VERTEX, if any —
+    /// index into `points`. Mutually exclusive with `selected_segment`. Set by a
+    /// marker click (`node_manager::path_point_interaction`), highlighted in the
+    /// viewport + the Paths-tab point list. Cleared on stop/count-change.
+    pub selected_point: Option<usize>,
+    /// path_interaction_20260716 (FR-3): the selected path SEGMENT, if any —
+    /// segment `i` spans `points[i] → points[i+1]`. Mutually exclusive with
+    /// `selected_point`. Set by a ribbon click between vertices
+    /// (`node_manager::path_segment_interaction`).
+    pub selected_segment: Option<usize>,
+    /// path_interaction_20260716 (FR-3): total path length in real meters, kept
+    /// live by `node_manager::sync_path_measurements` (world distance /
+    /// `PetalMapState.world_scale`). `None` when not editing. The Paths tab
+    /// formats it — fe-ui can't reach `world_scale` at the panel call site.
+    pub total_length_m: Option<f64>,
+    /// path_interaction_20260716 (FR-3): the selected segment's length in real
+    /// meters, or `None` when no segment is selected. Same producer/consumer as
+    /// `total_length_m`.
+    pub selected_segment_length_m: Option<f64>,
 }
 
 /// track_styling_20260713: the Paths-tab style-control state — a fe-ui-local
@@ -197,9 +217,11 @@ pub struct TrackStyleFields {
 
 impl Default for TrackStyleFields {
     fn default() -> Self {
+        // FR-5 (path_interaction_20260716): width 0.5 wu, mirroring
+        // `fe_terrain::iot::TrackStyle::default` (fe-ui must not depend on it).
         Self {
             color: [0.0, 0.8, 1.0, 1.0],
-            width: 2.0,
+            width: 0.5,
             visible: true,
         }
     }
@@ -273,6 +295,7 @@ impl PathEditorState {
         self.edited_track_style = TrackStyleFields::default();
         // Clear the stamp descriptor too; re-seeded from the loaded props.
         self.edited_track_path_asset = None;
+        self.clear_path_selection();
     }
 
     pub(crate) fn stop_editing(&mut self) {
@@ -282,7 +305,18 @@ impl PathEditorState {
         self.pending_pen_create = None;
         self.edited_track_style = TrackStyleFields::default();
         self.edited_track_path_asset = None;
+        self.clear_path_selection();
         self.close_annotate_form();
+    }
+
+    /// path_interaction_20260716 (FR-2/FR-3): drop the vertex/segment selection
+    /// and its cached measurements. Called on stop-editing, start-editing, and
+    /// whenever the point count changes (a stale index would mis-highlight).
+    pub(crate) fn clear_path_selection(&mut self) {
+        self.selected_point = None;
+        self.selected_segment = None;
+        self.total_length_m = None;
+        self.selected_segment_length_m = None;
     }
 
     /// Opens the inline annotation form for point `index`, seeding the title
@@ -419,7 +453,7 @@ mod tests {
     fn track_style_fields_default_is_cyan_visible() {
         let s = TrackStyleFields::default();
         assert_eq!(s.color, [0.0, 0.8, 1.0, 1.0]);
-        assert_eq!(s.width, 2.0);
+        assert_eq!(s.width, 0.5);
         assert!(s.visible);
     }
 

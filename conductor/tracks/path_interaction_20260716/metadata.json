@@ -1,0 +1,11 @@
+{
+  "id": "path_interaction_20260716",
+  "description": "Precise ray-vs-polyline ribbon picking, Illustrator-style vertex select/move in Select tool, segment selection with metric length display, centroid-anchored whole-path gimbal (move/rotate/scale baked into gpx_points), and 0.5-unit default track width",
+  "type": "feature",
+  "created_at": "2026-07-16T00:00:00Z",
+  "status": "done",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "User UX testing 2026-07-16 (5 asks): vertex select/move like Illustrator pen tool; path too wide; path too selectable (AABB pick swallows neighbors); no gimbal on path, 'need all of them, similar to a group of assets'; per-segment selection with real-metric measurement. Builds on archived gpx_path_editor/pen_tool_curves/track_styling/input_router tracks. IMPLEMENTED 2026-07-16: TrackPickShape ray-vs-polyline narrow phase (new path_segment_interaction.rs); vertex select/highlight/drag in Select+Pen (selected_point, orange highlight material); ClickPriority::PathSegment + segment select with m/km readout + total length (sync_path_measurements, format_distance_m fe-ui twin); centroid-anchored ribbon (track_centroid) + gimbal bake via bake_transformed_point -> PathTransformPoints -> per-index MovePoint ops (timestamps kept); width default 0.5, slider 0.1..=20. ~28 new tests. Full sweep green. In-app verify user-gated. Known cost: gimbal commit on an N-point track emits N MovePoint ops (one-shot)."
+}

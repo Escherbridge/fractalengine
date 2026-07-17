@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
 
+use super::path_asset_materialize::PathAssetApplied;
 use super::primitive_materialize::{spawn_branch, PrimitiveDescriptorCache, SpawnBranch};
 use super::primitive_reconcile::{resolve_primitive_material, PrimitiveMaterialAssets};
 use super::{TextureRegistryRes, VerseManager};
@@ -26,6 +27,7 @@ pub(super) fn respawn_on_petal_change(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut primitive_cache: ResMut<PrimitiveDescriptorCache>,
+    mut path_applied: ResMut<PathAssetApplied>,
     texture_registry: Res<TextureRegistryRes>,
     mat_assets: Res<PrimitiveMaterialAssets>,
     db_sender: Res<DbCommandSender>,
@@ -45,6 +47,13 @@ pub(super) fn respawn_on_petal_change(
         *last,
         new_petal
     );
+
+    // FR-2: the path-asset stamp groups for the old petal are about to be
+    // despawned by the loop below; clear the per-track applied gate so
+    // `materialize_path_assets` restamps every active-petal cached track on
+    // (re)entry instead of a stale gate skipping them. See AGENTS.md
+    // §path-asset-materialization.
+    path_applied.clear();
 
     // Collect which node_ids are staying alive (kept entities) before issuing any despawns.
     // commands.entity(e).despawn() is deferred — entities just despawned are still visible

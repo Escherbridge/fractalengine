@@ -10,11 +10,21 @@ mod roles;
 mod terrain;
 mod tokens;
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use fe_runtime::messages::DbResult;
 
 use super::VerseManager;
 use crate::navigation_manager::NavigationManager;
+
+/// The two fe-ui-local descriptor caches grouped as one `SystemParam` so
+/// `apply_db_results` stays within Bevy's 16-tuple system-param limit. Both are
+/// fed from the property handlers on `NodePropertiesLoaded`/`Set`/`Deleted`.
+#[derive(SystemParam)]
+pub(super) struct DescriptorCaches<'w> {
+    primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
+    path_asset: ResMut<'w, super::PathAssetCache>,
+}
 
 pub(super) fn apply_db_results(
     mut reader: MessageReader<DbResult>,
@@ -32,7 +42,7 @@ pub(super) fn apply_db_results(
     mut gis_panel: ResMut<crate::gis::GisPanelState>,
     mut path_state: ResMut<crate::gis::PathEditorState>,
     node_mgr: Res<crate::node_manager::NodeManager>,
-    mut primitive_cache: ResMut<super::PrimitiveDescriptorCache>,
+    mut caches: DescriptorCaches,
 ) {
     for result in reader.read() {
         match result {
@@ -47,7 +57,8 @@ pub(super) fn apply_db_results(
             ),
             DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
             DbResult::DatabaseReset { .. } => {
-                primitive_cache.clear();
+                caches.primitive.clear();
+                caches.path_asset.clear();
                 hierarchy::handle_database_reset(&mut verse_mgr, &db_sender);
             }
             DbResult::VerseCreated { id, name } => {
@@ -106,12 +117,14 @@ pub(super) fn apply_db_results(
                 name,
                 has_asset,
                 correlation_id,
+                position,
             } => nodes::handle_node_created(
                 id,
                 petal_id,
                 name,
                 *has_asset,
                 correlation_id.as_deref(),
+                *position,
                 &mut verse_mgr,
                 &nav,
                 &mut ui_mgr,
@@ -192,13 +205,18 @@ pub(super) fn apply_db_results(
                 node_id,
                 properties,
             } => {
+                // Resolve the node's owning petal so the path-asset cache entry
+                // knows where to materialize (borrow ends before the handler call).
+                let petal_id = verse_mgr.petal_id_of(node_id).map(str::to_string);
                 if !properties::handle_node_properties_loaded(
                     node_id,
+                    petal_id.as_deref(),
                     properties,
                     &mut path_state,
                     &node_mgr,
                     &mut inspector,
-                    &mut primitive_cache,
+                    &mut caches.primitive,
+                    &mut caches.path_asset,
                 ) {
                     continue;
                 }
@@ -212,7 +230,7 @@ pub(super) fn apply_db_results(
                     &mut path_state,
                     &node_mgr,
                     &mut inspector,
-                    &mut primitive_cache,
+                    &mut caches.primitive,
                 ) {
                     continue;
                 }
@@ -223,7 +241,8 @@ pub(super) fn apply_db_results(
                     key,
                     &node_mgr,
                     &mut inspector,
-                    &mut primitive_cache,
+                    &mut caches.primitive,
+                    &mut caches.path_asset,
                 ) {
                     continue;
                 }
@@ -404,6 +423,7 @@ mod tests {
             "New",
             false,
             None,
+            [0.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -432,6 +452,7 @@ mod tests {
             "New",
             false,
             None,
+            [0.0; 3],
             &mut mgr,
             &nav,
             &mut ui,
@@ -542,13 +563,16 @@ mod tests {
         let mut path_state = PathEditorState::default();
         let mut ins = InspectorFormState::default();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
+        let mut pa_cache = super::super::PathAssetCache::default();
         let delivered = properties::handle_node_properties_loaded(
             "n1",
+            None,
             &json!({}),
             &mut path_state,
             &NodeManager::default(),
             &mut ins,
             &mut cache,
+            &mut pa_cache,
         );
         assert!(
             !delivered,
@@ -561,19 +585,55 @@ mod tests {
         let mut path_state = PathEditorState::default();
         let mut ins = InspectorFormState::default();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
+        let mut pa_cache = super::super::PathAssetCache::default();
         let props = json!({"primitive": {"kind": "cube", "dims": [1.0, 1.0, 1.0]}});
         let delivered = properties::handle_node_properties_loaded(
             "n1",
+            None,
             &props,
             &mut path_state,
             &NodeManager::default(),
             &mut ins,
             &mut cache,
+            &mut pa_cache,
         );
         assert!(!delivered, "selection gate unchanged");
         assert!(
             cache.get("n1").is_some(),
             "FR-1: cache fed without selection"
+        );
+    }
+
+    #[test]
+    fn properties_loaded_feeds_path_asset_cache_when_track_has_stamp() {
+        // FR-1 path-asset: a track carrying both `path_asset` and `gpx_points`
+        // feeds the stamp cache without any selection, tagged with its petal.
+        let mut path_state = PathEditorState::default();
+        let mut ins = InspectorFormState::default();
+        let mut prim = super::super::PrimitiveDescriptorCache::default();
+        let mut pa = super::super::PathAssetCache::default();
+        let props = json!({
+            "path_asset": {
+                "asset_path": "blob://tree.glb",
+                "spacing_mode": "fixed_spacing",
+                "spacing_value": 5.0
+            },
+            "gpx_points": [[0.0, 0.0, 0.0, 0.0], [10.0, 0.0, 0.0, 1.0]]
+        });
+        let delivered = properties::handle_node_properties_loaded(
+            "t1",
+            Some("p1"),
+            &props,
+            &mut path_state,
+            &NodeManager::default(),
+            &mut ins,
+            &mut prim,
+            &mut pa,
+        );
+        assert!(!delivered, "selection gate unchanged");
+        assert!(
+            pa.get("t1").is_some(),
+            "FR-1: path-asset cache fed without selection"
         );
     }
 
@@ -617,12 +677,14 @@ mod tests {
             "n1",
             &json!({"primitive": {"kind": "sphere", "dims": [1.0]}}),
         );
+        let mut pa_cache = super::super::PathAssetCache::default();
         let delivered = properties::handle_node_property_deleted(
             "n1",
             "primitive",
             &NodeManager::default(),
             &mut ins,
             &mut cache,
+            &mut pa_cache,
         );
         assert!(!delivered);
         assert!(
@@ -637,13 +699,16 @@ mod tests {
         let mut ins = InspectorFormState::default();
         let props = json!({"gis.annotation.title": "T", "gis.annotation.body": "B"});
         let mut cache = super::super::PrimitiveDescriptorCache::default();
+        let mut pa_cache = super::super::PathAssetCache::default();
         let delivered = properties::handle_node_properties_loaded(
             "n1",
+            None,
             &props,
             &mut path_state,
             &mgr_selected("n1"),
             &mut ins,
             &mut cache,
+            &mut pa_cache,
         );
         assert!(delivered);
         assert_eq!(ins.node_properties, props);
@@ -705,12 +770,14 @@ mod tests {
         ins.annotation_title_buf = "T".into();
         ins.annotation_body_buf = "B".into();
         let mut cache = super::super::PrimitiveDescriptorCache::default();
+        let mut pa_cache = super::super::PathAssetCache::default();
         let delivered = properties::handle_node_property_deleted(
             "n1",
             "gis.annotation.title",
             &mgr_selected("n1"),
             &mut ins,
             &mut cache,
+            &mut pa_cache,
         );
         assert!(delivered);
         assert!(ins.annotation_title_buf.is_empty());

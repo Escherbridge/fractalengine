@@ -12,11 +12,13 @@ use fe_runtime::messages::{DbCommand, DbResult};
 use fe_terrain::gpx::{compute_stats, parse_gpx_bytes, scene_nodes_to_gpx, GpxData, TrackStats};
 use fe_terrain::iot::animation::{TimestampedRoutePoint, TrackRoute};
 use fe_terrain::iot::{parse_track_color_hex, TrackRouteMap, TrackStyle, TrackStyleMap};
+use fe_terrain::mesh::track::track_centroid;
 use fe_terrain::petal_binding::ActivePetalTerrain;
 use fe_terrain::projection::Projection;
 use fe_terrain::terrain_plugin::GpxTrackLine;
 use fe_terrain::ExportNode;
 use fe_ui::gpx_ops::{GpxImportStatus, GpxOp, PendingGpxOps};
+use fe_ui::node_manager::TrackPickShape;
 use fe_ui::path_ops::{PathEditStatus, PathOp, PendingPathOps};
 use fe_ui::verse_manager::VerseManager;
 
@@ -487,6 +489,8 @@ type UntaggedTrackLineQuery<'w, 's> = Query<
 pub fn tag_track_lines_selectable(
     lines: UntaggedTrackLineQuery,
     active_terrain: Res<ActivePetalTerrain>,
+    route_map: Res<TrackRouteMap>,
+    style_map: Res<TrackStyleMap>,
     mut commands: Commands,
 ) {
     if lines.is_empty() {
@@ -497,13 +501,57 @@ pub fn tag_track_lines_selectable(
         // try_insert: track lines can be despawned (petal switch / track
         // re-render) between this system and command flush; replacements
         // re-tag next frame via the Without filter.
-        commands
-            .entity(entity)
-            .try_insert(fe_ui::plugin::SpawnedNodeMarker {
-                node_id: line.track_node_id.clone(),
-                petal_id: petal_id.clone(),
-            });
+        let mut e = commands.entity(entity);
+        e.try_insert(fe_ui::plugin::SpawnedNodeMarker {
+            node_id: line.track_node_id.clone(),
+            petal_id: petal_id.clone(),
+        });
+        // path_interaction_20260716 (FR-1/FR-4): attach the precise pick
+        // polyline so `handle_viewport_click` ray-tests the actual ribbon (not a
+        // km-scale flat AABB) AND the whole-path gimbal can bake about the SAME
+        // centroid `render_gpx_tracks` anchored the mesh at. Built from the
+        // identical filtered positions the render uses so the baseline matches.
+        if let Some(shape) = track_pick_shape(&route_map, &style_map, &line.track_node_id) {
+            e.try_insert(shape);
+        }
     }
+}
+
+/// FR-1/FR-4: build the [`TrackPickShape`] for `track_node_id` from its current
+/// route + style, or `None` if it has no ≥2-point route yet. Filters non-finite
+/// points exactly like `render_gpx_tracks` so `centroid` equals the render
+/// entity's baseline `Transform` translation.
+fn track_pick_shape(
+    route_map: &TrackRouteMap,
+    style_map: &TrackStyleMap,
+    track_node_id: &str,
+) -> Option<TrackPickShape> {
+    let route = route_map.routes.get(track_node_id)?;
+    let positions: Vec<[f32; 3]> = route
+        .points
+        .iter()
+        .map(|p| {
+            [
+                p.position[0] as f32,
+                p.position[1] as f32,
+                p.position[2] as f32,
+            ]
+        })
+        .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
+        .collect();
+    if positions.len() < 2 {
+        return None;
+    }
+    let centroid = track_centroid(&positions);
+    let half_width = style_map.style_for(track_node_id).width.max(0.01) / 2.0;
+    Some(TrackPickShape {
+        points: positions
+            .iter()
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .collect(),
+        half_width,
+        centroid: Vec3::new(centroid[0], centroid[1], centroid[2]),
+    })
 }
 
 /// Build one draft per `<wpt>` in the file. Out-of-range coordinates are

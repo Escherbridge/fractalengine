@@ -93,6 +93,18 @@ pub struct InspectorFormState {
     pub pos: [String; 3],
     pub rot: [String; 3],
     pub scale: [String; 3],
+    // Real-unit display buffers (FR-2, inspector_units_width_20260716): position
+    // and asset size in meters, kept in sync by
+    // `panels::inspector::sync_inspector_units`. Edits live-write the converted
+    // world/scale values back into `pos`/`scale` above (Apply path unchanged).
+    pub pos_m: [String; 3],
+    pub size_m: [String; 3],
+    /// Selected node's combined child-AABB extents at scale 1 (world units);
+    /// `None` when nothing pickable is spawned. Basis for the size↔scale row.
+    pub base_extents: Option<[f32; 3]>,
+    /// Active petal's `world_scale` mirrored for panel unit conversions (world
+    /// units per meter; ≤0 / non-finite is treated as 1.0).
+    pub world_scale: f64,
     // API Access tab state
     pub api_token_scope_buf: String,
     pub api_token_role_buf: String,
@@ -134,6 +146,10 @@ impl Default for InspectorFormState {
             pos: ["0.00".into(), "0.00".into(), "0.00".into()],
             rot: ["0.00".into(), "0.00".into(), "0.00".into()],
             scale: ["1.00".into(), "1.00".into(), "1.00".into()],
+            pos_m: ["0.000".into(), "0.000".into(), "0.000".into()],
+            size_m: ["0.000".into(), "0.000".into(), "0.000".into()],
+            base_extents: None,
+            world_scale: 1.0,
             api_token_scope_buf: String::new(),
             api_token_role_buf: "viewer".into(),
             api_token_expiry_buf: 720,
@@ -186,9 +202,13 @@ impl LocalUserRole {
 // Camera focus target (set by sidebar click, consumed by camera system)
 // ---------------------------------------------------------------------------
 
+/// `(node_id, fallback position)`. `apply_camera_focus` (camera_focus_clip_20260716
+/// FR-2) resolves the live spawned entity's `GlobalTransform` for `node_id` first
+/// and only falls back to the cached position — avoids the stale-origin
+/// two-step teleport on freshly created nodes.
 #[derive(Resource, Default)]
 pub struct CameraFocusTarget {
-    pub target: Option<[f32; 3]>,
+    pub target: Option<(String, [f32; 3])>,
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +372,8 @@ impl Plugin for GardenerConsolePlugin {
                 apply_camera_focus,
                 strip_gltf_embedded_cameras,
                 update_viewport_cursor_world,
+                // Real-unit inspector display buffers (inspector_units_width_20260716 FR-2).
+                crate::panels::inspector::sync_inspector_units,
             )
                 .in_set(UiSet::PostSelection),
         );
@@ -468,13 +490,22 @@ fn strip_gltf_embedded_cameras(
     }
 }
 
+/// Resolves a pending focus request to a world position, preferring the live
+/// spawned entity's transform over the cached fallback (camera_focus_clip_20260716
+/// FR-2 — see `SpawnedNodeMarker` resolution idiom in `node_manager/sidebar_sync.rs`).
 fn apply_camera_focus(
     mut focus_target: ResMut<CameraFocusTarget>,
     mut query: Query<&mut fe_renderer::camera::OrbitCameraController>,
+    spawned: Query<(&SpawnedNodeMarker, &GlobalTransform)>,
 ) {
-    if let Some(pos) = focus_target.target.take() {
+    if let Some((node_id, fallback)) = focus_target.target.take() {
         if let Ok(mut controller) = query.single_mut() {
-            controller.focus = Vec3::new(pos[0], pos[1], pos[2]);
+            let pos = spawned
+                .iter()
+                .find(|(marker, _)| marker.node_id == node_id)
+                .map(|(_, transform)| transform.translation())
+                .unwrap_or_else(|| Vec3::from(fallback));
+            controller.focus = pos;
             controller.distance = 5.0;
         }
     }

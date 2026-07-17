@@ -1,70 +1,41 @@
-//! Path-asset stamp reconcile: stamps a hexon's model asset repeatedly along a
-//! track's GPX path. Reads a `path_asset` descriptor
-//! (`fe_sdk::path_asset::PathAssetDescriptor`) + the persisted `gpx_points`
-//! off the selected track node's loaded properties, samples the path by
-//! arc-length, and spawns one `SceneRoot` per sample point — despawning and
-//! rebuilding the whole group only when the descriptor or points change.
-//! Mirrors `primitive_reconcile`'s change-gated discipline. See
-//! `fe-ui/src/verse_manager/AGENTS.md` §path-asset-stamp.
+//! Path-asset stamp sampler + live-edit cache feeder. The arc-length sampler
+//! (`cumulative_distances`/`position_at_progress`/`sample_progresses`/
+//! `tangent_yaw`/`sample_transforms`) turns a `path_asset` descriptor
+//! (`fe_sdk::path_asset::PathAssetDescriptor`) + a path's points into a set of
+//! `(position, yaw)` stamp transforms; `spacing_value` is interpreted in real
+//! METERS and converted to world units via the petal `world_scale`.
+//!
+//! The `reconcile_path_asset` system no longer spawns: it FEEDS the shared
+//! `PathAssetCache` with the Paths-tab edited track's live descriptor + points,
+//! so the single `materialize_path_assets` system does all spawning (no
+//! double-stamping). See `fe-ui/src/verse_manager/AGENTS.md`
+//! §path-asset-materialization.
 
 use bevy::prelude::*;
 use fe_sdk::path_asset::{PathAssetDescriptor, SpacingMode};
 
-use super::spawn::{spawn_stamped_entity, PathAssetInstance};
+use super::path_asset_materialize::PathAssetCache;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 
 // ---------------------------------------------------------------------------
-// Applied-state gate
+// Live-edit cache feeder
 // ---------------------------------------------------------------------------
 
-/// Records the last-applied `(track_id, descriptor, points-fingerprint)` so the
-/// reconcile only re-stamps when the descriptor or the path changed — mirrors
-/// `reconcile_selected_primitive`'s descriptor-equality gate.
-#[derive(Resource, Default)]
-pub struct PathAssetApplied {
-    pub track_id: Option<String>,
-    pub descriptor: Option<PathAssetDescriptor>,
-    pub points_fingerprint: u64,
-}
-
-impl PathAssetApplied {
-    /// `true` when the incoming (track, descriptor, points) matches what was
-    /// last stamped — the reconcile can then skip the despawn/respawn entirely.
-    fn matches(&self, track_id: &str, descriptor: &PathAssetDescriptor, fingerprint: u64) -> bool {
-        self.track_id.as_deref() == Some(track_id)
-            && self.descriptor.as_ref() == Some(descriptor)
-            && self.points_fingerprint == fingerprint
-    }
-
-    fn remember(&mut self, track_id: &str, descriptor: PathAssetDescriptor, fingerprint: u64) {
-        self.track_id = Some(track_id.to_string());
-        self.descriptor = Some(descriptor);
-        self.points_fingerprint = fingerprint;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Reconcile system
-// ---------------------------------------------------------------------------
-
-/// Stamp the edited track's `path_asset` model along its path points.
-///
-/// Keyed on the **Paths-tab** selection (`PathEditorState.editing_track_id`),
-/// NOT the viewport/tree selection — the Tools panel stamps the Paths-tab
-/// track, so gating on `NodeManager` silently dropped stamps when the two
-/// selections diverged. The descriptor is `PathEditorState.edited_track_path_asset`
-/// (seeded/refreshed by `verse_manager::db_results`) and the points come
-/// straight from `PathEditorState.points`. Only runs for the active petal.
-/// Change-gated via [`PathAssetApplied`]: a no-op when nothing changed, a full
-/// despawn-and-restamp of the group when the descriptor or path changed.
+/// Feed the Paths-tab **edited** track's live stamp descriptor + points into the
+/// shared [`PathAssetCache`], keyed on `PathEditorState.editing_track_id` (NOT
+/// the viewport/tree selection). The descriptor is
+/// `PathEditorState.edited_track_path_asset` and the points come straight from
+/// `PathEditorState.points` (the freshest buffer while dragging), so live edits
+/// restamp promptly. `materialize_path_assets` consumes the cache and does all
+/// spawning — this system never touches scene entities, which is what makes
+/// double-stamping impossible. Only the active petal; a no-op cache write when
+/// nothing changed (keeps the materializer idle). See
+/// `fe-ui/src/verse_manager/AGENTS.md` §path-asset-materialization.
 pub(super) fn reconcile_path_asset(
     nav: Res<NavigationManager>,
     path_state: Res<PathEditorState>,
-    asset_server: Res<AssetServer>,
-    mut applied: ResMut<PathAssetApplied>,
-    mut commands: Commands,
-    existing: Query<(Entity, &PathAssetInstance)>,
+    mut cache: ResMut<PathAssetCache>,
 ) {
     let Some(petal_id) = nav.active_petal_id.as_deref() else {
         return;
@@ -72,58 +43,31 @@ pub(super) fn reconcile_path_asset(
     let Some(track_id) = path_state.editing_track_id.as_deref() else {
         return;
     };
-    let Some(descriptor) = path_state.edited_track_path_asset.clone() else {
+    let Some(descriptor) = path_state.edited_track_path_asset.as_ref() else {
         return;
     };
 
     let points: Vec<[f32; 3]> = path_state.points.iter().map(|p| p.position).collect();
-
     let fingerprint = points_fingerprint(&points);
-    if applied.matches(track_id, &descriptor, fingerprint) {
-        return; // nothing changed — skip the restamp entirely
-    }
 
-    // Despawn the previous group for this track (in this petal) before rebuild.
-    for (entity, inst) in existing.iter() {
-        if inst.source_track_id == track_id && inst.petal_id == petal_id {
-            commands.entity(entity).despawn();
+    // Conditional upsert: only mutate (and thus mark the cache changed) when the
+    // live descriptor/points/petal actually differ from what's cached — so the
+    // materializer stays idle when the user isn't editing.
+    let changed = match cache.get(track_id) {
+        Some(e) => {
+            e.petal_id != petal_id || &e.descriptor != descriptor || e.fingerprint != fingerprint
         }
+        None => true,
+    };
+    if changed {
+        cache.upsert(track_id, petal_id, descriptor.clone(), points, fingerprint);
     }
-
-    let samples = sample_transforms(&points, &descriptor);
-    let stamped = samples.len();
-    for (i, (position, yaw)) in samples.into_iter().enumerate() {
-        let mut transform = Transform::from_xyz(position[0], position[1], position[2]);
-        if descriptor.tangent_align {
-            transform.rotation = Quat::from_rotation_y(yaw);
-        }
-        let stamp_id = format!("{}::stamp::{}", track_id, i);
-        spawn_stamped_entity(
-            &mut commands,
-            &asset_server,
-            &stamp_id,
-            track_id,
-            petal_id,
-            &stamp_id,
-            transform,
-            &descriptor.asset_path,
-        );
-    }
-
-    bevy::log::debug!(
-        "Stamped {} instances of '{}' along track {} (petal {})",
-        stamped,
-        descriptor.asset_path,
-        track_id,
-        petal_id
-    );
-    applied.remember(track_id, descriptor, fingerprint);
 }
 
 /// A cheap order-sensitive fingerprint of the path points so the reconcile can
 /// detect a changed `gpx_points` without storing the whole list. Bit-casts
 /// each coordinate so `NaN`/`-0.0` compare deterministically.
-fn points_fingerprint(points: &[[f32; 3]]) -> u64 {
+pub(super) fn points_fingerprint(points: &[[f32; 3]]) -> u64 {
     const FNV_OFFSET: u64 = 1469598103934665603;
     const FNV_PRIME: u64 = 1099511628211;
     let mut hash = FNV_OFFSET;
@@ -202,15 +146,17 @@ fn position_at_progress(
 const MAX_STAMPS: usize = 4096;
 
 /// The arc-length progress values (0..1) at which to place instances for a
-/// descriptor. `FixedSpacing`: 0, spacing, 2·spacing, … clamped to total.
-/// `FixedCount`: `count` values evenly across the path. Guards degenerate
-/// inputs (empty path, non-positive spacing, count 0/1) without dividing by
-/// zero, and saturates at [`MAX_STAMPS`].
+/// descriptor. `FixedSpacing`: 0, spacing, 2·spacing, … clamped to total, where
+/// `spacing_value` is real METERS converted to world units via `world_scale`
+/// (FR-3). `FixedCount`: `count` values evenly across the path (scale-invariant).
+/// Guards degenerate inputs (empty path, non-positive spacing, count 0/1)
+/// without dividing by zero, and saturates at [`MAX_STAMPS`].
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN spacing/total must take the degenerate branch
 fn sample_progresses(
     points: &[[f32; 3]],
     descriptor: &PathAssetDescriptor,
     total: f32,
+    world_scale: f32,
 ) -> Vec<f32> {
     if points.is_empty() {
         return Vec::new();
@@ -220,7 +166,8 @@ fn sample_progresses(
     }
     match descriptor.spacing_mode {
         SpacingMode::FixedSpacing => {
-            let spacing = descriptor.spacing_value;
+            // FR-3: spacing_value is in real meters; convert to world units.
+            let spacing = descriptor.spacing_value * sanitize_world_scale(world_scale);
             if !(spacing > 0.0) || !(total > 0.0) {
                 // No valid spacing → just stamp the endpoints (start + end).
                 return vec![0.0, 1.0];
@@ -277,13 +224,16 @@ fn tangent_yaw(points: &[[f32; 3]], cumdist: &[f32], total: f32, progress: f32) 
 }
 
 /// The full set of `(position, yaw)` stamp transforms for a descriptor over a
-/// path. `yaw` is meaningful only when `descriptor.tangent_align`.
-fn sample_transforms(
+/// path. `yaw` is meaningful only when `descriptor.tangent_align`. `world_scale`
+/// (world units per meter) converts the descriptor's metric spacing to world
+/// units (FR-3); pass `1.0` for human scale. Shared by `materialize_path_assets`.
+pub(super) fn sample_transforms(
     points: &[[f32; 3]],
     descriptor: &PathAssetDescriptor,
+    world_scale: f32,
 ) -> Vec<([f32; 3], f32)> {
     let (cumdist, total) = cumulative_distances(points);
-    sample_progresses(points, descriptor, total)
+    sample_progresses(points, descriptor, total, world_scale)
         .into_iter()
         .map(|progress| {
             let pos = position_at_progress(points, &cumdist, total, progress);
@@ -291,6 +241,18 @@ fn sample_transforms(
             (pos, yaw)
         })
         .collect()
+}
+
+/// Sanitize a `world_scale` (world units per meter) for the metric-spacing
+/// conversion: any non-finite or non-positive value collapses to `1.0` (human
+/// scale) so a bad petal config never zeroes or flips the spacing (FR-3).
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN scale must take the degenerate branch
+pub(super) fn sanitize_world_scale(world_scale: f32) -> f32 {
+    if world_scale.is_finite() && world_scale > 0.0 {
+        world_scale
+    } else {
+        1.0
+    }
 }
 
 /// Euclidean distance between two 3D points.
@@ -378,7 +340,7 @@ mod tests {
     fn fixed_spacing_even_counts() {
         // total 20, spacing 5 → segments floor(20/5)=4, +1 = 5 instances.
         let d = desc(SpacingMode::FixedSpacing, 5.0, 0, false);
-        let out = sample_transforms(&straight_path(), &d);
+        let out = sample_transforms(&straight_path(), &d, 1.0);
         assert_eq!(out.len(), 5);
         let xs: Vec<f32> = out.iter().map(|(p, _)| p[0]).collect();
         for (i, x) in xs.iter().enumerate() {
@@ -389,7 +351,7 @@ mod tests {
     #[test]
     fn fixed_spacing_zero_spacing_returns_endpoints() {
         let d = desc(SpacingMode::FixedSpacing, 0.0, 0, false);
-        let out = sample_transforms(&straight_path(), &d);
+        let out = sample_transforms(&straight_path(), &d, 1.0);
         assert_eq!(
             out.len(),
             2,
@@ -402,7 +364,7 @@ mod tests {
     #[test]
     fn fixed_spacing_negative_spacing_returns_endpoints() {
         let d = desc(SpacingMode::FixedSpacing, -3.0, 0, false);
-        let out = sample_transforms(&straight_path(), &d);
+        let out = sample_transforms(&straight_path(), &d, 1.0);
         assert_eq!(out.len(), 2);
     }
 
@@ -410,7 +372,7 @@ mod tests {
     fn fixed_count_distribution() {
         // 5 instances at progress 0, .25, .5, .75, 1 → x = 0,5,10,15,20.
         let d = desc(SpacingMode::FixedCount, 0.0, 5, false);
-        let out = sample_transforms(&straight_path(), &d);
+        let out = sample_transforms(&straight_path(), &d, 1.0);
         assert_eq!(out.len(), 5);
         let xs: Vec<f32> = out.iter().map(|(p, _)| p[0]).collect();
         let expected = [0.0, 5.0, 10.0, 15.0, 20.0];
@@ -422,13 +384,13 @@ mod tests {
     #[test]
     fn fixed_count_zero_is_empty() {
         let d = desc(SpacingMode::FixedCount, 0.0, 0, false);
-        assert!(sample_transforms(&straight_path(), &d).is_empty());
+        assert!(sample_transforms(&straight_path(), &d, 1.0).is_empty());
     }
 
     #[test]
     fn fixed_count_one_is_start_only() {
         let d = desc(SpacingMode::FixedCount, 0.0, 1, false);
-        let out = sample_transforms(&straight_path(), &d);
+        let out = sample_transforms(&straight_path(), &d, 1.0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, [0.0, 0.0, 0.0]);
     }
@@ -436,28 +398,34 @@ mod tests {
     #[test]
     fn fixed_count_saturates_at_cap() {
         let d = desc(SpacingMode::FixedCount, 0.0, 1_000_000, false);
-        assert_eq!(sample_transforms(&straight_path(), &d).len(), MAX_STAMPS);
+        assert_eq!(
+            sample_transforms(&straight_path(), &d, 1.0).len(),
+            MAX_STAMPS
+        );
     }
 
     #[test]
     fn fixed_spacing_tiny_spacing_saturates_at_cap() {
         // total 20, spacing 0.0001 → ~200k requested; capped.
         let d = desc(SpacingMode::FixedSpacing, 0.0001, 0, false);
-        assert_eq!(sample_transforms(&straight_path(), &d).len(), MAX_STAMPS);
+        assert_eq!(
+            sample_transforms(&straight_path(), &d, 1.0).len(),
+            MAX_STAMPS
+        );
     }
 
     #[test]
     fn empty_path_yields_no_stamps() {
         let d = desc(SpacingMode::FixedCount, 0.0, 5, false);
-        assert!(sample_transforms(&[], &d).is_empty());
+        assert!(sample_transforms(&[], &d, 1.0).is_empty());
         let d2 = desc(SpacingMode::FixedSpacing, 2.0, 0, false);
-        assert!(sample_transforms(&[], &d2).is_empty());
+        assert!(sample_transforms(&[], &d2, 1.0).is_empty());
     }
 
     #[test]
     fn single_point_path_yields_one_stamp() {
         let d = desc(SpacingMode::FixedSpacing, 2.0, 0, false);
-        let out = sample_transforms(&[[3.0, 0.0, 4.0]], &d);
+        let out = sample_transforms(&[[3.0, 0.0, 4.0]], &d, 1.0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, [3.0, 0.0, 4.0]);
     }
@@ -508,29 +476,56 @@ mod tests {
     }
 
     #[test]
-    fn applied_gate_matches_only_on_identical_inputs() {
-        let d = desc(SpacingMode::FixedSpacing, 5.0, 0, true);
-        let fp = points_fingerprint(&straight_path());
-        let mut applied = PathAssetApplied::default();
-        assert!(
-            !applied.matches("track-1", &d, fp),
-            "empty gate never matches"
-        );
-        applied.remember("track-1", d.clone(), fp);
-        assert!(applied.matches("track-1", &d, fp), "identical inputs match");
-        assert!(
-            !applied.matches("track-2", &d, fp),
-            "different track re-stamps"
-        );
-        let mut d2 = d.clone();
-        d2.spacing_value = 6.0;
-        assert!(
-            !applied.matches("track-1", &d2, fp),
-            "changed descriptor re-stamps"
-        );
-        assert!(
-            !applied.matches("track-1", &d, fp ^ 1),
-            "changed points re-stamp"
-        );
+    fn sanitize_world_scale_guards_degenerate_values() {
+        assert_eq!(sanitize_world_scale(0.001), 0.001);
+        assert_eq!(sanitize_world_scale(1.0), 1.0);
+        // Non-positive / non-finite collapse to human scale (never zero/flip).
+        assert_eq!(sanitize_world_scale(0.0), 1.0);
+        assert_eq!(sanitize_world_scale(-3.0), 1.0);
+        assert_eq!(sanitize_world_scale(f32::NAN), 1.0);
+        assert_eq!(sanitize_world_scale(f32::INFINITY), 1.0);
+    }
+
+    #[test]
+    fn metric_spacing_converts_meters_to_world_units() {
+        // FR-3: spacing_value is meters. At world_scale = 0.5 (0.5 world units
+        // per meter), a 10 m spacing = 5 world units → floor(20/5)=4, +1 = 5.
+        let d = desc(SpacingMode::FixedSpacing, 10.0, 0, false);
+        let out = sample_transforms(&straight_path(), &d, 0.5);
+        assert_eq!(out.len(), 5);
+        let xs: Vec<f32> = out.iter().map(|(p, _)| p[0]).collect();
+        for (i, x) in xs.iter().enumerate() {
+            assert!((x - (i as f32 * 5.0)).abs() < 1e-3, "instance {i} at x={x}");
+        }
+    }
+
+    #[test]
+    fn metric_spacing_human_scale_is_identity() {
+        // world_scale = 1.0 → spacing_m used directly (10 m over total 20 → 3).
+        let d = desc(SpacingMode::FixedSpacing, 10.0, 0, false);
+        let out = sample_transforms(&straight_path(), &d, 1.0);
+        assert_eq!(out.len(), 3); // x = 0, 10, 20
+    }
+
+    #[test]
+    fn metric_spacing_degenerate_scale_falls_back_to_human() {
+        // A bad world_scale (≤0 / non-finite) must not zero or flip spacing:
+        // it collapses to 1.0, so 5 m spacing over total 20 → 5 instances.
+        let d = desc(SpacingMode::FixedSpacing, 5.0, 0, false);
+        for bad in [0.0_f32, -2.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                sample_transforms(&straight_path(), &d, bad).len(),
+                5,
+                "degenerate world_scale {bad} must fall back to human scale"
+            );
+        }
+    }
+
+    #[test]
+    fn metric_spacing_does_not_affect_fixed_count() {
+        // FixedCount is scale-invariant: count instances regardless of scale.
+        let d = desc(SpacingMode::FixedCount, 0.0, 4, false);
+        assert_eq!(sample_transforms(&straight_path(), &d, 0.001).len(), 4);
+        assert_eq!(sample_transforms(&straight_path(), &d, 1000.0).len(), 4);
     }
 }

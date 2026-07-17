@@ -8,6 +8,7 @@ use crate::actions::UiManager;
 use crate::gis::egress_strings::{self as es, EgressSource, ExportFormat};
 use crate::gis::GisPanelState;
 use crate::node_manager::NodeManager;
+use crate::panels::widgets::copy_row;
 use crate::theme;
 
 pub(crate) fn egress_section(
@@ -148,51 +149,6 @@ fn source_error(source: EgressSource) -> &'static str {
         EgressSource::Bbox => "Bbox fields must be numbers (see the Query tab).",
         EgressSource::Petal => "No petal context.",
     }
-}
-
-/// Labeled monospace value with a one-click copy button (egui builtin
-/// clipboard via `ctx.copy_text` — no new deps).
-fn copy_row(ui: &mut egui::Ui, ui_mgr: &mut UiManager, label: &str, value: &str) {
-    egui::Frame::NONE
-        .fill(theme::BG_BUTTON)
-        .inner_margin(egui::Margin::symmetric(6, 4))
-        .corner_radius(3.0)
-        .show(ui, |ui| {
-            ui.set_max_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .small()
-                        .strong()
-                        .color(theme::TEXT_SECTION),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new("\u{1F4CB}")
-                                .fill(egui::Color32::TRANSPARENT)
-                                .small(),
-                        )
-                        .on_hover_text("Copy to clipboard")
-                        .clicked()
-                    {
-                        ui.ctx().copy_text(value.to_string());
-                        let now = ui.ctx().input(|i| i.time);
-                        ui_mgr.show_toast(format!("Copied {label}"), now);
-                    }
-                });
-            });
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(value)
-                        .small()
-                        .monospace()
-                        .color(theme::TEXT_BRIGHT),
-                )
-                .wrap(),
-            );
-        });
-    ui.add_space(3.0);
 }
 
 /// Shareable-link section: fe-ui has no HTTP-client seam to fe-api yet, so

@@ -16,6 +16,25 @@ pub enum ColorMode {
     TimeGradient,
 }
 
+/// path_interaction_20260716 (FR-4): arithmetic-mean position of `points`, the
+/// anchor `render_gpx_tracks` builds the ribbon relative to (and spawns the
+/// entity `Transform` at). Callers must pass the SAME filtered position list the
+/// mesh is built from so the whole-path gimbal bakes about the exact baseline
+/// the entity renders at. `[0,0,0]` for an empty list. Pure + unit-tested.
+pub fn track_centroid(points: &[[f32; 3]]) -> [f32; 3] {
+    if points.is_empty() {
+        return [0.0, 0.0, 0.0];
+    }
+    let n = points.len() as f32;
+    let mut sum = [0.0f32; 3];
+    for p in points {
+        sum[0] += p[0];
+        sum[1] += p[1];
+        sum[2] += p[2];
+    }
+    [sum[0] / n, sum[1] / n, sum[2] / n]
+}
+
 /// Generate a ribbon mesh along a track path.
 ///
 /// - `points`: ordered 3D positions along the track.
@@ -139,4 +158,48 @@ pub fn track_mesh(points: &[[f32; 3]], width: f32, color_mode: ColorMode) -> Mes
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
     mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn centroid_of_empty_is_origin() {
+        assert_eq!(track_centroid(&[]), [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn centroid_of_single_point_is_itself() {
+        assert_eq!(track_centroid(&[[3.0, 4.0, 5.0]]), [3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn centroid_is_arithmetic_mean() {
+        // Symmetric square on XZ centered at (1, 0, 1).
+        let pts = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 2.0],
+            [0.0, 0.0, 2.0],
+        ];
+        let c = track_centroid(&pts);
+        assert!((c[0] - 1.0).abs() < 1e-6);
+        assert_eq!(c[1], 0.0);
+        assert!((c[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn centroid_relative_points_recenter_on_origin() {
+        // Subtracting the centroid must place the mean at the origin — the exact
+        // invariant `render_gpx_tracks` relies on for the whole-path gimbal.
+        let pts = [[10.0, 2.0, -4.0], [14.0, 6.0, 0.0], [12.0, 4.0, -2.0]];
+        let c = track_centroid(&pts);
+        let rel: Vec<[f32; 3]> = pts
+            .iter()
+            .map(|p| [p[0] - c[0], p[1] - c[1], p[2] - c[2]])
+            .collect();
+        let rc = track_centroid(&rel);
+        assert!(rc[0].abs() < 1e-5 && rc[1].abs() < 1e-5 && rc[2].abs() < 1e-5);
+    }
 }

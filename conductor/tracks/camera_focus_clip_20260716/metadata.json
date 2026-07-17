@@ -1,0 +1,11 @@
+{
+  "id": "camera_focus_clip_20260716",
+  "description": "Fix two-step focus teleport (NodeCreated echoes position; focus resolves live entity GlobalTransform) and close-zoom near-plane clipping (near 0.01, min_distance 0.05)",
+  "type": "bug",
+  "created_at": "2026-07-16T00:00:00Z",
+  "status": "done",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "User UX testing 2026-07-16: 'camera often clips after asset placements zooming in to a default area then going to where it should be, or simply zooming in on one of the duck glbs'. Root causes: db_results/nodes.rs:68 stores [0,0,0] on create (NodeCreated omits position); near=0.1 default + min_distance=0.5 in fe-renderer/src/camera.rs. IMPLEMENTED 2026-07-16: DbResult::NodeCreated gained position (defined in fe-runtime/src/messages.rs, echoed at fe-database emit site; test-harness + exhaustive matches updated); CameraFocusTarget now (node_id, fallback) and apply_camera_focus prefers live GlobalTransform; near 0.01 explicit + min_distance 0.05 (reverse-Z safe). Full sweep green. In-app verify user-gated."
+}

@@ -122,11 +122,12 @@ pub struct TrackStyle {
 
 impl Default for TrackStyle {
     fn default() -> Self {
-        // Matches the pre-styling hardcoded look (`Color::srgb(0.0, 0.8, 1.0)`),
-        // a 2 m ribbon, always visible — so untouched tracks are unchanged.
+        // Historic cyan look (`Color::srgb(0.0, 0.8, 1.0)`), always visible.
+        // FR-5 (path_interaction_20260716): default ribbon width 0.5 wu — the
+        // old 2.0 read as a fat band that over-covered nearby objects.
         Self {
             color: [0.0, 0.8, 1.0, 1.0],
-            width: 2.0,
+            width: 0.5,
             visible: true,
         }
     }
@@ -262,12 +263,12 @@ mod tests {
     }
 
     #[test]
-    fn track_style_default_matches_historic_cyan() {
-        // FR-4: the default must reproduce the pre-styling look so untouched
-        // tracks are unchanged — cyan, 2 m wide, visible.
+    fn track_style_default_is_cyan_thin_visible() {
+        // Historic cyan + visible; path_interaction_20260716 (FR-5) narrowed the
+        // default ribbon to 0.5 wu (the old 2.0 over-covered nearby objects).
         let s = TrackStyle::default();
         assert_eq!(s.color, [0.0, 0.8, 1.0, 1.0]);
-        assert_eq!(s.width, 2.0);
+        assert_eq!(s.width, 0.5);
         assert!(s.visible);
     }
 

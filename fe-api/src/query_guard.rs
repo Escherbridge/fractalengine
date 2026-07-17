@@ -201,7 +201,9 @@ pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
             if !table.is_empty() && !allowed_tables.contains(&table.as_str()) {
-                return Err(format!("table '{table}' is not allowed in elevated queries"));
+                return Err(format!(
+                    "table '{table}' is not allowed in elevated queries"
+                ));
             }
         }
     }
@@ -431,7 +433,10 @@ mod tests {
         let err =
             validate_select_sql("SELECT * FROM node WHERE id IN (SELECT id FROM session_cache)")
                 .unwrap_err();
-        assert!(err.contains("session_cache") || err.contains("SESSION_CACHE"), "{err}");
+        assert!(
+            err.contains("session_cache") || err.contains("SESSION_CACHE"),
+            "{err}"
+        );
         assert!(validate_select_sql(
             "SELECT * FROM node WHERE id IN (SELECT anchor_node_id FROM iot_reading)"
         )

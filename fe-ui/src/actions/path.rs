@@ -271,6 +271,24 @@ pub(crate) fn replace_points(
     }
 }
 
+/// path_interaction_20260716 (FR-4): replace `track_node_id`'s points with
+/// `new_points` (one per existing point, same order) by emitting an in-place
+/// `MovePoint` per index. Unlike `replace_points` this is keyed on the EXPLICIT
+/// track id (not `editing_track_id`) and count-preserving, so the bridge keeps
+/// each point's `time_seconds` (whole-path gimbal must not drop timestamps).
+/// The local buffer is updated only for indices `move_point` finds — matching
+/// when this IS the edited track (the gimbaled ribbon is always open for edit).
+pub(crate) fn transform_points(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    track_node_id: String,
+    new_points: Vec<[f32; 3]>,
+) {
+    for (index, position) in new_points.into_iter().enumerate() {
+        move_point(path_ops, path_state, track_node_id.clone(), index, position);
+    }
+}
+
 /// Resamples the currently-edited track's control points via
 /// `curve::resample` and replaces the track's points with the result. No-op if
 /// no track is being edited or the track has `< 2` points (nothing to smooth).
@@ -631,6 +649,51 @@ mod tests {
         assert!(matches!(ops.0[0], PathOp::RemovePoint { index: 1, .. }));
         assert!(matches!(ops.0[1], PathOp::RemovePoint { index: 0, .. }));
         assert!(matches!(ops.0[2], PathOp::AppendPoint { .. }));
+    }
+
+    #[test]
+    fn transform_points_moves_each_index_in_place() {
+        // FR-4 bake: one MovePoint per index, count preserved, explicit track id.
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [0.0, 0.0, 0.0]);
+        append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
+        ops.0.clear();
+        transform_points(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            vec![[5.0, 0.0, 5.0], [6.0, 0.0, 6.0]],
+        );
+        // Local buffer reflects the baked positions, count unchanged.
+        assert_eq!(state.points.len(), 2);
+        assert_eq!(state.points[0].position, [5.0, 0.0, 5.0]);
+        assert_eq!(state.points[1].position, [6.0, 0.0, 6.0]);
+        // Exactly two MovePoint ops (no remove/append churn → timestamps kept).
+        assert_eq!(ops.0.len(), 2);
+        assert!(matches!(ops.0[0], PathOp::MovePoint { index: 0, .. }));
+        assert!(matches!(ops.0[1], PathOp::MovePoint { index: 1, .. }));
+    }
+
+    #[test]
+    fn transform_points_preserves_time_seconds_in_buffer() {
+        // A moved point keeps its timestamp (MovePoint repositions only).
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        state.points.push(PathPointRow {
+            position: [0.0, 0.0, 0.0],
+            time_seconds: Some(42.0),
+        });
+        transform_points(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            vec![[9.0, 1.0, 9.0]],
+        );
+        assert_eq!(state.points[0].position, [9.0, 1.0, 9.0]);
+        assert_eq!(state.points[0].time_seconds, Some(42.0));
     }
 
     #[test]

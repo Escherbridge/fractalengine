@@ -27,3 +27,8 @@ linear `apply_zoom` to `apply_zoom_proportional` (log zoom): the step is a
 fraction (`ZOOM_FRACTION`) of the current distance, so a notch feels the same at
 5 units or 50 000 units. `apply_zoom` is kept (still `pub`, tested) for callers
 that want linear behavior.
+
+`apply_camera_scale` never touches `near`/`min_distance` — those are set once at
+spawn (`near: 0.01`) and in `OrbitCameraController::default()` (`min_distance:
+0.05`), see `camera_focus_clip_20260716` FR-3. Reverse-Z (Bevy 0.18) keeps depth
+precision sane at that near value.

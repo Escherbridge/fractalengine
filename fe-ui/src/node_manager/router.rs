@@ -17,6 +17,10 @@ pub(super) enum ClickPriority {
     PathMarker,
     /// Pen-tool append of a new path point.
     PathPlace,
+    /// Select a ribbon SEGMENT of the edited track (path_interaction_20260716,
+    /// FR-3). Outranks `NodePick` so while editing a click on the ribbon selects
+    /// the segment instead of re-picking the whole track as a node.
+    PathSegment,
     /// glTF / node selection (lowest priority).
     NodePick,
 }
@@ -70,6 +74,14 @@ impl ClickArbiter {
     /// Whether the left-click is available (passed egui + viewport gating).
     pub(super) fn is_available(&self) -> bool {
         self.available
+    }
+
+    /// Whether any consumer has already claimed this frame's click. Lets a
+    /// consumer distinguish "nobody wanted it" (a genuine empty click) from
+    /// "someone above me took it" without knowing which priority (FR-3 uses
+    /// this to clear the path selection only on a true empty click).
+    pub(super) fn is_claimed(&self) -> bool {
+        self.owner.is_some()
     }
 
     /// Camera ray through the cursor for this frame.

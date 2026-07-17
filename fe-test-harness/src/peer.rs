@@ -206,6 +206,7 @@ impl TestPeer {
                                             name,
                                             has_asset: false,
                                             correlation_id,
+                                            position,
                                         })
                                         .ok();
                                 }

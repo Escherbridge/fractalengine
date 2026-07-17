@@ -4,11 +4,17 @@
 //! `UiAction::OpenPortal` originate; see `fe-ui/src/AGENTS.md` §portal for
 //! the full save/open chain and its known fragilities.
 
+use bevy::camera::primitives::Aabb;
+use bevy::prelude::{
+    Children, Entity, GlobalTransform, Local, Query, Res, ResMut, Transform, Vec3,
+};
 use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
 use crate::navigation_manager::NavigationManager;
+use crate::node_manager::NodeManager;
 use crate::plugin::{InspectorFormState, InspectorTab, LocalUserRole, API_TOKEN_PAGE_SIZE};
+use crate::terrain_map::PetalMapState;
 use crate::theme;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
@@ -204,6 +210,256 @@ fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::N
     });
 }
 
+// ---------------------------------------------------------------------------
+// Real-unit transform helpers (FR-2, inspector_units_width_20260716)
+//
+// The entity Transform is world units / radians; the inspector shows meters
+// (position, size) and degrees (rotation). Conversions live here (pure,
+// unit-tested). The panel edits meter buffers and live-writes the converted
+// world / scale values into the EXISTING inspector.pos / inspector.scale
+// buffers, so the Apply action path (actions::transform) is unchanged.
+// See AGENTS.md §inspector-units.
+// ---------------------------------------------------------------------------
+
+/// Max characters shown for a custom-property value before eliding (FR-1); the
+/// full value is still copyable via the box's copy button.
+const PROP_VALUE_ELIDE_CHARS: usize = 240;
+
+/// world_scale sanitized: ≤0 / non-finite ⇒ 1.0 (1 world-unit : 1 m).
+fn sane_scale(world_scale: f64) -> f64 {
+    if world_scale.is_finite() && world_scale > 0.0 {
+        world_scale
+    } else {
+        1.0
+    }
+}
+
+/// World units → meters (`real_m = world / world_scale`).
+fn world_to_meters(world: f32, world_scale: f64) -> f32 {
+    (world as f64 / sane_scale(world_scale)) as f32
+}
+
+/// Meters → world units (`world = m * world_scale`).
+fn meters_to_world(meters: f32, world_scale: f64) -> f32 {
+    (meters as f64 * sane_scale(world_scale)) as f32
+}
+
+// Rotation is already stored degrees-side in `inspector.rot` (inspector_sync
+// converts radians→degrees on fill; actions::transform converts back on Apply),
+// so the panel needs no rotation conversion — these wrappers exist for symmetry
+// and unit-test coverage of the radians↔degrees leg.
+#[allow(dead_code)]
+fn radians_to_degrees(rad: f32) -> f32 {
+    rad.to_degrees()
+}
+
+#[allow(dead_code)]
+fn degrees_to_radians(deg: f32) -> f32 {
+    deg.to_radians()
+}
+
+/// Back-compute the scale multiplier yielding a target real size (`target_m`) on
+/// one axis, given that axis' base extent at scale 1 (`base_extent`, world
+/// units). `None` when the base extent is ~0 (no size↔scale ratio — leave scale
+/// untouched).
+fn size_to_scale(target_m: f32, base_extent: f32, world_scale: f64) -> Option<f32> {
+    if base_extent.abs() < 1e-6 {
+        return None;
+    }
+    Some(meters_to_world(target_m, world_scale) / base_extent)
+}
+
+/// Current real size (meters) for a scale multiplier + base extent (inverse of
+/// [`size_to_scale`]).
+fn scale_to_size(scale: f32, base_extent: f32, world_scale: f64) -> f32 {
+    world_to_meters(base_extent * scale, world_scale)
+}
+
+/// Combined AABB of `root` + its immediate children, expressed in `root`'s LOCAL
+/// frame — extents at root scale/rotation = identity (a stable, rotation-
+/// invariant "size at scale 1" basis). Mirrors node_manager's `pick_node_aabb`
+/// child walk (glTF puts the mesh + Aabb on a child of the SceneRoot). `None`
+/// when nothing pickable is spawned yet.
+fn combined_local_extents(
+    root: Entity,
+    g_query: &Query<&GlobalTransform>,
+    aabb_query: &Query<&Aabb>,
+    children_query: &Query<&Children>,
+) -> Option<Vec3> {
+    let root_inv = g_query.get(root).ok()?.affine().inverse();
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let mut found = false;
+    let mut consider = |ent: Entity| {
+        if let (Ok(g), Ok(aabb)) = (g_query.get(ent), aabb_query.get(ent)) {
+            let rel = root_inv * g.affine(); // child-local → root-local
+            let c = Vec3::from(aabb.center);
+            let h = Vec3::from(aabb.half_extents);
+            for sx in [-1.0f32, 1.0] {
+                for sy in [-1.0f32, 1.0] {
+                    for sz in [-1.0f32, 1.0] {
+                        let corner = c + Vec3::new(sx * h.x, sy * h.y, sz * h.z);
+                        let p = rel.transform_point3(corner);
+                        min = min.min(p);
+                        max = max.max(p);
+                    }
+                }
+            }
+            found = true;
+        }
+    };
+    consider(root);
+    if let Ok(children) = children_query.get(root) {
+        for child in children.iter() {
+            consider(*child);
+        }
+    }
+    found.then(|| max - min)
+}
+
+/// Mirrors `node_manager::inspector_sync` for the real-unit display buffers: on
+/// selection change / `Changed<Transform>` / world-scale change it refills
+/// `inspector.pos_m` (meters), `inspector.size_m` (meters), `base_extents`
+/// (scale-1 world extents) and `world_scale`. Read-only over Transform /
+/// GlobalTransform / Aabb / Children (no mutation → no query conflicts). See
+/// AGENTS.md §inspector-units.
+pub(crate) fn sync_inspector_units(
+    node_mgr: Res<NodeManager>,
+    petal_map: Res<PetalMapState>,
+    mut inspector: ResMut<InspectorFormState>,
+    changed_query: Query<&Transform, bevy::prelude::Changed<Transform>>,
+    all_query: Query<&Transform>,
+    g_query: Query<&GlobalTransform>,
+    aabb_query: Query<&Aabb>,
+    children_query: Query<&Children>,
+    mut last_selected: Local<Option<Entity>>,
+    mut last_ws: Local<f64>,
+) {
+    inspector.world_scale = petal_map.world_scale;
+    let Some(entity) = node_mgr.selected_entity() else {
+        *last_selected = None;
+        inspector.base_extents = None;
+        return;
+    };
+    let just_selected = *last_selected != Some(entity);
+    *last_selected = Some(entity);
+    let ws_changed = (*last_ws - petal_map.world_scale).abs() > 1e-12;
+    *last_ws = petal_map.world_scale;
+
+    // Only refill on a real change (else leave buffers so in-flight edits stick).
+    let t = if just_selected || ws_changed {
+        match all_query.get(entity) {
+            Ok(t) => t,
+            Err(_) => return,
+        }
+    } else {
+        match changed_query.get(entity) {
+            Ok(t) => t,
+            Err(_) => return,
+        }
+    };
+
+    let base = combined_local_extents(entity, &g_query, &aabb_query, &children_query);
+    inspector.base_extents = base.map(|e| e.to_array());
+    let ws = petal_map.world_scale;
+    inspector.pos_m = [
+        format!("{:.3}", world_to_meters(t.translation.x, ws)),
+        format!("{:.3}", world_to_meters(t.translation.y, ws)),
+        format!("{:.3}", world_to_meters(t.translation.z, ws)),
+    ];
+    inspector.size_m = match base {
+        Some(e) => [
+            format!("{:.3}", scale_to_size(t.scale.x, e.x, ws)),
+            format!("{:.3}", scale_to_size(t.scale.y, e.y, ws)),
+            format!("{:.3}", scale_to_size(t.scale.z, e.z, ws)),
+        ],
+        None => [
+            String::from("0.000"),
+            String::from("0.000"),
+            String::from("0.000"),
+        ],
+    };
+}
+
+/// One label + 3 axis inputs. `convert(axis, entered) -> Option<world>` maps the
+/// edited display value into the world/scale buffer `dst_bufs` on change (None
+/// leaves that axis' `dst` untouched). Returns true when Enter committed.
+fn units_axis_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    src_bufs: &mut [String; 3],
+    dst_bufs: &mut [String; 3],
+    convert: impl Fn(usize, f32) -> Option<f32>,
+) -> bool {
+    let mut commit = false;
+    ui.horizontal(|ui| {
+        let input_w = axis_input_width(ui);
+        ui.add_sized(
+            [TRANSFORM_LABEL_W, 16.0],
+            egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
+        );
+        for (i, (axis, (src, dst))) in ["X", "Y", "Z"]
+            .iter()
+            .zip(src_bufs.iter_mut().zip(dst_bufs.iter_mut()))
+            .enumerate()
+        {
+            ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
+            let resp = ui.add(
+                egui::TextEdit::singleline(src)
+                    .desired_width(input_w)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if resp.changed() {
+                if let Ok(entered) = src.trim().parse::<f32>() {
+                    if let Some(v) = convert(i, entered) {
+                        *dst = format!("{v:.4}");
+                    }
+                }
+            }
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                commit = true;
+            }
+        }
+    });
+    commit
+}
+
+/// One label + 3 axis inputs edited in place (no conversion). Used for the raw
+/// rotation-degrees and scale-multiplier rows.
+fn raw_axis_row(ui: &mut egui::Ui, label: &str, bufs: &mut [String; 3]) -> bool {
+    let mut commit = false;
+    ui.horizontal(|ui| {
+        let input_w = axis_input_width(ui);
+        ui.add_sized(
+            [TRANSFORM_LABEL_W, 16.0],
+            egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
+        );
+        for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
+            ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
+            let resp = ui.add(
+                egui::TextEdit::singleline(buf)
+                    .desired_width(input_w)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                commit = true;
+            }
+        }
+    });
+    commit
+}
+
+/// Label column width for the transform rows (wide enough for "Position (m)").
+const TRANSFORM_LABEL_W: f32 = 74.0;
+
+/// Dynamic per-axis input width so the 3 fields always fit the current panel
+/// width (same self-fitting math the transform section used before FR-2).
+fn axis_input_width(ui: &egui::Ui) -> f32 {
+    const AXIS_W: f32 = 10.0; // "X" / "Y" / "Z"
+    let spacing = ui.spacing().item_spacing.x;
+    ((ui.available_width() - TRANSFORM_LABEL_W - spacing * 7.0 - AXIS_W * 3.0) / 3.0).max(32.0)
+}
+
 fn inspector_transform_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
@@ -217,44 +473,42 @@ fn inspector_transform_section(
     .default_open(true)
     .show(ui, |ui| {
         ui.add_space(4.0);
-        // Enter/Tab away from any field commits the edit; the button covers
-        // click-away commits too. Both funnel through the same UiAction so
-        // the parse + Transform write happens exactly once, in
-        // `actions::transform::apply` — see AGENTS.md §inspector-transform.
+        // Rows edit real-unit display buffers and live-write the converted
+        // world/scale values into inspector.pos / inspector.scale; the Apply
+        // action (actions::transform) still parses those world buffers, so its
+        // path is unchanged (it receives world units / radians). Rotation is
+        // already degrees-side in inspector.rot. See AGENTS.md §inspector-units.
         let mut commit = false;
-        for (label, bufs) in [
-            ("Position", &mut inspector.pos),
-            ("Rotation", &mut inspector.rot),
-            ("Scale", &mut inspector.scale),
-        ] {
-            ui.horizontal(|ui| {
-                // Compute a dynamic input width so the three fields always fit
-                // within the inspector panel regardless of its current width.
-                const LABEL_W: f32 = 54.0;
-                const AXIS_W: f32 = 10.0; // "X" / "Y" / "Z"
-                let spacing = ui.spacing().item_spacing.x;
-                // total = LABEL_W + gap + 3*(AXIS_W + gap + input_w + gap)
-                let input_w = ((ui.available_width() - LABEL_W - spacing * 7.0 - AXIS_W * 3.0)
-                    / 3.0)
-                    .max(32.0);
+        let ws = inspector.world_scale;
+        let base = inspector.base_extents;
 
-                ui.add_sized(
-                    [LABEL_W, 16.0],
-                    egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)),
-                );
-                for (axis, buf) in ["X", "Y", "Z"].iter().zip(bufs.iter_mut()) {
-                    ui.label(egui::RichText::new(*axis).small().color(theme::TEXT_AXIS));
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(buf)
-                            .desired_width(input_w)
-                            .font(egui::TextStyle::Monospace),
-                    );
-                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        commit = true;
-                    }
-                }
-            });
+        // Position — meters → world into inspector.pos.
+        commit |= units_axis_row(
+            ui,
+            "Position (m)",
+            &mut inspector.pos_m,
+            &mut inspector.pos,
+            |_, m| Some(meters_to_world(m, ws)),
+        );
+
+        // Rotation — degrees, edited in place (Apply converts to radians).
+        commit |= raw_axis_row(ui, "Rotation (\u{00B0})", &mut inspector.rot);
+
+        // Size — real meters → scale multiplier into inspector.scale. Only when
+        // a base AABB is available (else the raw Scale row below is the control).
+        if let Some(base) = base {
+            commit |= units_axis_row(
+                ui,
+                "Size (m)",
+                &mut inspector.size_m,
+                &mut inspector.scale,
+                |i, m| size_to_scale(m, base[i], ws),
+            );
         }
+
+        // Scale — raw multiplier, edited in place (fallback when no AABB).
+        commit |= raw_axis_row(ui, "Scale", &mut inspector.scale);
+
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui.button("Apply").clicked() {
@@ -791,7 +1045,10 @@ fn inspector_properties_section(
             return;
         }
 
-        // Display existing properties
+        // Display existing properties. Each value renders in a width-capped,
+        // read-only, copyable box (NOT a Grid cell — a Grid ignores
+        // set_max_width, which let a giant value blow the panel out). See
+        // AGENTS.md §inspector-units / §widgets.
         let mut delete_key: Option<String> = None;
         if let Some(obj) = inspector.node_properties.as_object() {
             if obj.is_empty() {
@@ -801,27 +1058,28 @@ fn inspector_properties_section(
                         .color(theme::TEXT_MUTED),
                 );
             } else {
-                egui::Grid::new("node_props_grid")
-                    .num_columns(3)
-                    .spacing([6.0, 3.0])
-                    .show(ui, |ui| {
-                        for (key, value) in obj {
+                for (key, value) in obj {
+                    let val_str = match value {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let display = crate::panels::widgets::elide(&val_str, PROP_VALUE_ELIDE_CHARS);
+                    let mut want_delete = false;
+                    crate::panels::widgets::copy_value_box(
+                        ui,
+                        ui_mgr,
+                        &display,
+                        &val_str,
+                        &format!("Copied {key}"),
+                        |ui| {
                             ui.label(
                                 egui::RichText::new(key)
                                     .small()
                                     .strong()
                                     .color(theme::TEXT_DIM),
                             );
-                            let val_str = match value {
-                                serde_json::Value::String(s) => s.clone(),
-                                other => other.to_string(),
-                            };
-                            ui.label(
-                                egui::RichText::new(&val_str)
-                                    .small()
-                                    .monospace()
-                                    .color(theme::TEXT_BRIGHT),
-                            );
+                        },
+                        |ui| {
                             if ui
                                 .add(
                                     egui::Button::new(egui::RichText::new("\u{2715}").small())
@@ -831,11 +1089,14 @@ fn inspector_properties_section(
                                 .on_hover_text("Delete property")
                                 .clicked()
                             {
-                                delete_key = Some(key.clone());
+                                want_delete = true;
                             }
-                            ui.end_row();
-                        }
-                    });
+                        },
+                    );
+                    if want_delete {
+                        delete_key = Some(key.clone());
+                    }
+                }
             }
         }
 
@@ -1125,4 +1386,72 @@ fn inspector_schema_section(
 
         ui.add_space(4.0);
     });
+}
+
+// ---------------------------------------------------------------------------
+// Tests — pure real-unit conversion helpers (FR-2). No Bevy App / egui context.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EPS: f32 = 1e-4;
+
+    #[test]
+    fn world_meters_round_trip_at_human_scale() {
+        // world_scale 1.0 → world units == meters.
+        assert!((world_to_meters(5.0, 1.0) - 5.0).abs() < EPS);
+        assert!((meters_to_world(5.0, 1.0) - 5.0).abs() < EPS);
+    }
+
+    #[test]
+    fn world_meters_scaled() {
+        // 0.001 world units per meter (1 wu = 1 mm): 2 world units = 2000 m.
+        assert!((world_to_meters(2.0, 0.001) - 2000.0).abs() < 0.1);
+        assert!((meters_to_world(2000.0, 0.001) - 2.0).abs() < EPS);
+    }
+
+    #[test]
+    fn degenerate_scale_falls_back_to_one() {
+        assert_eq!(sane_scale(0.0), 1.0);
+        assert_eq!(sane_scale(-3.0), 1.0);
+        assert_eq!(sane_scale(f64::NAN), 1.0);
+        assert_eq!(sane_scale(f64::INFINITY), 1.0);
+        // Conversions treat a bad scale as 1:1 (raw units), never NaN.
+        assert!((world_to_meters(4.0, 0.0) - 4.0).abs() < EPS);
+        assert!((meters_to_world(4.0, f64::NAN) - 4.0).abs() < EPS);
+    }
+
+    #[test]
+    fn radians_degrees_round_trip() {
+        assert!((radians_to_degrees(std::f32::consts::FRAC_PI_2) - 90.0).abs() < EPS);
+        assert!((degrees_to_radians(180.0) - std::f32::consts::PI).abs() < EPS);
+        let r = 1.234_f32;
+        assert!((degrees_to_radians(radians_to_degrees(r)) - r).abs() < EPS);
+    }
+
+    #[test]
+    fn size_to_scale_back_computes_multiplier() {
+        // base extent 2 wu at scale 1; world_scale 1.0. Want 6 m → scale 3.
+        assert!((size_to_scale(6.0, 2.0, 1.0).unwrap() - 3.0).abs() < EPS);
+        // With world_scale 0.001: 6 m = 0.006 wu; /2 wu → scale 0.003.
+        assert!((size_to_scale(6.0, 2.0, 0.001).unwrap() - 0.003).abs() < EPS);
+    }
+
+    #[test]
+    fn size_to_scale_guards_zero_extent() {
+        // A zero-extent axis has no ratio → None (leave scale untouched).
+        assert!(size_to_scale(5.0, 0.0, 1.0).is_none());
+        assert!(size_to_scale(5.0, 1e-9, 1.0).is_none());
+    }
+
+    #[test]
+    fn size_scale_are_inverses() {
+        // scale_to_size ∘ size_to_scale == identity on the target size.
+        let base = 1.5_f32;
+        let ws = 0.01_f64;
+        let scale = size_to_scale(12.0, base, ws).unwrap();
+        assert!((scale_to_size(scale, base, ws) - 12.0).abs() < 1e-3);
+    }
 }

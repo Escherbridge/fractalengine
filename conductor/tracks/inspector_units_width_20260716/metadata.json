@@ -1,0 +1,11 @@
+{
+  "id": "inspector_units_width_20260716",
+  "description": "Read-only copyable width-constrained custom-property values (panel stays at default width), and real-measurement transform inputs: position in meters, rotation in degrees, size in meters from node AABB, converting via PetalMapState.world_scale",
+  "type": "bug",
+  "created_at": "2026-07-16T00:00:00Z",
+  "status": "done",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "User UX testing 2026-07-16: giant gpx_points value blows the panel out to ~80% viewport (unbounded ui.label at inspector.rs:819); wants copyable non-editable field + normal sidebar width. Also: 'asset size position and rotation inputs should use real measurements'. IMPLEMENTED 2026-07-16: new panels/widgets.rs copy_value_box/copy_row/elide (egress_card reuses); property values width-capped copyable boxes outside the grid (240-char elided display, full-value copy); Position (m) / Rotation (deg, buffer was already degrees end-to-end) / Size (m) rows via sync_inspector_units + combined_local_extents (per-axis size->scale back-computation, zero-extent + degenerate-scale guarded); Apply path untouched (world units). Full sweep green. In-app verify user-gated."
+}

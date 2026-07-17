@@ -53,6 +53,7 @@ pub(super) fn handle_node_created(
     name: &str,
     has_asset: bool,
     correlation_id: Option<&str>,
+    position: [f32; 3],
     verse_mgr: &mut VerseManager,
     nav: &NavigationManager,
     ui_mgr: &mut UiManager,
@@ -65,7 +66,9 @@ pub(super) fn handle_node_created(
             id: id.to_string(),
             name: name.to_string(),
             has_asset,
-            position: [0.0; 3],
+            // camera_focus_clip_20260716 FR-1: echoed from `NodeCreated` instead
+            // of a hardcoded origin (see spec §Root causes for the stale-focus bug).
+            position,
             webpage_url: None,
             asset_path: None,
         },

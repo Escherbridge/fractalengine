@@ -30,7 +30,49 @@ painful/confusing · **minor** = small friction · **polish** = cosmetic/nice-to
 
 ## Findings
 
-_(none yet — add as you review)_
+### 2026-07-16 — user live-testing batch #1 (fixed same-day, tracks noted)
+
+All eight findings below came from the user's hands-on session on 2026-07-16 and
+were triaged straight into four implementation tracks (fixed that session,
+in-app verification still user-gated):
+
+### [MAJOR] stamp — GPX stamping does not persist across scene changes
+- **Track:** `gpx_stamp_persistence_20260716` — petal-wide `PathAssetCache` +
+  `materialize_path_assets`, per-track applied gate cleared on petal change.
+
+### [MAJOR] pen — individual path vertices not selectable/moveable (want Illustrator pen tool)
+- **Track:** `path_interaction_20260716` FR-2 — vertex select + highlight +
+  drag now works in Select and Pen tools while a track is open for editing.
+
+### [MAJOR] paths-gis — ribbon "too selectable": km-scale AABB swallows clicks near the path
+- **Track:** `path_interaction_20260716` FR-1 — ray-vs-polyline narrow phase
+  (`TrackPickShape`) replaces the AABB hit for track lines.
+
+### [MAJOR] paths-gis — no gimbal on a selected path; want move/rotate/scale like a grouped asset
+- **Track:** `path_interaction_20260716` FR-4 — centroid-anchored ribbon +
+  gimbal commit bakes the delta into all `gpx_points` (timestamps kept).
+
+### [MINOR] styling — default path ribbon far too wide (2.0 wu cyan)
+- **Track:** `path_interaction_20260716` FR-5 — default width 0.5, slider down
+  to 0.1. NOTE: per-track color/thickness/visibility controls already existed
+  in the Paths-tab edit view (track_styling_20260713) — discoverability issue.
+
+### [MAJOR] paths-gis — segments need selection + real-metric length on select; stamp spacing in meters
+- **Tracks:** `path_interaction_20260716` FR-3 (segment select + m/km readout +
+  total length) and `gpx_stamp_persistence_20260716` FR-3 (spacing in meters
+  via `world_scale`).
+
+### [MAJOR] inspector — side panel blows out to huge width on long property values; want copyable non-editable field
+- **Track:** `inspector_units_width_20260716` FR-1 — width-capped copyable
+  value boxes (elided display, full-value copy button), panel stays 260px.
+
+### [MAJOR] inspector — asset size/position/rotation inputs should use real measurements
+- **Track:** `inspector_units_width_20260716` FR-2 — Position (m), Rotation (°),
+  Size (m) from node AABB with scale back-computation.
+
+### [MAJOR] camera — clips after asset placement; zooms to default area then jumps; clips zooming on duck glb
+- **Track:** `camera_focus_clip_20260716` — NodeCreated echoes position, focus
+  resolves live entity transform, near 0.01 + min_distance 0.05.
 
 ---
 

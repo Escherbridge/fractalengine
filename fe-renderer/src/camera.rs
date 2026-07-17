@@ -72,7 +72,9 @@ impl Default for OrbitCameraController {
             sensitivity: 0.005,
             pan_speed: 0.01,
             zoom_speed: 1.0,
-            min_distance: 0.5,
+            // camera_focus_clip_20260716 FR-3: was 0.5, clipped through compact
+            // GLBs (e.g. duck models) before the near plane got there first.
+            min_distance: 0.05,
             max_distance: 500.0,
             min_pitch: -limit,
             max_pitch: limit,
@@ -211,6 +213,10 @@ fn spawn_orbit_camera(mut commands: Commands) {
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: std::f32::consts::FRAC_PI_4,
+            // camera_focus_clip_20260716 FR-3: explicit near plane (was Bevy's
+            // default 0.1, which clipped close zoom). Reverse-Z keeps depth
+            // precision safe at this value; `apply_camera_scale` never touches it.
+            near: 0.01,
             ..default()
         }),
         transform,
@@ -558,5 +564,13 @@ mod tests {
     #[test]
     fn camera_scale_settings_default_is_unit() {
         assert_eq!(CameraScaleSettings::default().world_scale, 1.0);
+    }
+
+    #[test]
+    fn default_min_distance_allows_close_zoom_without_clipping() {
+        // camera_focus_clip_20260716 FR-3: must be small enough to orbit close
+        // on a compact GLB without the near plane clipping through it.
+        let c = OrbitCameraController::default();
+        assert!((c.min_distance - 0.05).abs() < EPSILON);
     }
 }
