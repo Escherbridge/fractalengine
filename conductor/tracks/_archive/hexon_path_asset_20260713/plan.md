@@ -17,7 +17,10 @@ Before starting either phase, confirm W5 is still next-up against the
 reconcile FR-6 with `hexon_p2p_bucket_20260710`'s FR-1/FR-2
 (directory-asset manifest) so the two tracks don't invent competing formats.
 
-## Phase 1: FR-5 — PetalHexon bake (XL)
+## Phase 1: FR-5 — PetalHexon bake (XL) — SUBSUMED by hexon_unification_20260716 (2026-07-16) — do not execute here
+
+PetalSnapshot in `hexon_unification_20260716` delivers this capability on the
+unified fe-format stack (see its spec §Relationship to hexon_path_asset FR-5).
 
 Serialize a petal's node write-ops (`node_log`/`op_log`, already append-only
 and HLC-stamped in `fe-database`) into a `fe-hexon` package; reloading the
@@ -43,7 +46,7 @@ in the workspace today — this is net-new.
   helpers — no new ad-hoc role checks (Phase 8.4 flagged fe-hexon RBAC gaps;
   do not widen them).
 
-## Phase 2: FR-6 — Multi-asset-per-node via `application/x-fe-directory` (L)
+## Phase 2: FR-6 — Multi-asset-per-node via `application/x-fe-directory` (L) — INHERITED by hexon_unification_20260716 (2026-07-17 board hygiene) — do not execute here
 
 `node.asset_id` is single-asset; the `application/x-fe-directory` seam in
 `fe-api/src/assets.rs:213` returns 501 NOT_IMPLEMENTED. Implement the seam so

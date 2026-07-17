@@ -1,5 +1,5 @@
 ---
-type: track-plan
+type: Implementation Plan
 ---
 
 # Implementation Plan: Tauri-Host Shell SPIKE
@@ -350,7 +350,7 @@ If recommendation is CONDITIONAL:
 - [ ] Minimal POC compiles
 - [ ] Input bridging implemented
 - [ ] Picking tested
-- [ ] Exit report with recommendation
+- [x] Exit report with recommendation (spike-exit-report.md, 2026-07-01 — CONDITIONAL GO; shelved per 2026-07-14 alignment)
 
 ## Time Box
 

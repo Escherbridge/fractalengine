@@ -1,3 +1,7 @@
+---
+type: Implementation Plan
+---
+
 # Implementation Plan: Light Box — Default Lighting Rig and Light Management System
 
 **Track ID:** `light_box_20260402`

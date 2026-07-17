@@ -4,8 +4,10 @@
   "type": "bug",
   "created_at": "2026-07-16T00:00:00Z",
   "status": "done",
+  "completed_at": "2026-07-16T00:00:00Z",
   "depends_on": [],
   "blocks": [],
-  "archived": false,
+  "archived": true,
+  "archived_at": "2026-07-17T00:00:00Z",
   "notes": "User UX testing 2026-07-16: 'stamping on gpx does not persist from scene change states'; 'the path stamp spacing should use real metric units'. Root cause: stamps are ephemeral Bevy entities, regenerator gated on Paths-tab editing_track_id + stale single-slot PathAssetApplied gate; persisted path_asset descriptor never re-consumed on petal load. IMPLEMENTED 2026-07-16: PathAssetCache + materialize_path_assets (sole spawner, per-track gate keyed descriptor+points-fingerprint+world_scale-bits, cleared on petal change); reconcile_path_asset repurposed to cache feeder; spacing meters via sanitize_world_scale; tool_panel labeled 'Spacing (m)'. Full sweep green (1517 tests, clippy -D warnings, fmt). In-app verify user-gated. FLAG: pre-existing cross-crate scale inconsistency — ribbons/stamps in raw petal-local meters vs terrain tiles scaled by world_scale; invisible at 1:1, belongs to hexon_scale_orchestration."
 }

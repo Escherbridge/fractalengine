@@ -2,12 +2,14 @@
 type: Code Styleguide
 title: General Code Style Principles
 tags: [enforcement, 2026-07-10]
-timestamp: 2026-07-10T00:00:00Z
+timestamp: 2026-07-17T00:00:00Z
 ---
 
 # General Code Style Principles
 
 This document outlines general coding principles that apply across all modules in FractalEngine.
+
+Rust-specific rules live in `rust.md`; UI/UX semantics for `fe-ui` (panel/dialog conventions, action-queue discipline, selection authority, unit display) live in `ui_ux.md`.
 
 ## File Size — Small, Domain-Specific Files
 
@@ -23,6 +25,11 @@ This document outlines general coding principles that apply across all modules i
 - **Reviewer check:** if a diff adds >50 lines to a file already over 300
   lines, flag it — the addition likely belongs in a new sibling module
   instead.
+- **Known-over backlog (standing decomposition candidates):**
+  `fe-ui/src/panels/inspector.rs` (~1350), `fe-ui/src/verse_manager/db_results/mod.rs`
+  (~800), `fe-terrain/src/terrain_plugin.rs` (~785). New features go in sibling
+  modules, not these files; any growth on them trips the `wc -l` reviewer check
+  above.
 
 ## Naming and Algorithmic Quality
 
@@ -76,6 +83,12 @@ This document outlines general coding principles that apply across all modules i
   spans more than 1-2 lines in a diff should be redirected into the
   directory's `AGENTS.md` with a one-line pointer left in the code (e.g.
   `// see fe-database/src/AGENTS.md §geometry-inserts`).
+- **Grandfather / migration rule:** multi-line doc blocks written before
+  2026-07-10 are grandfathered; migrate a file's blocks into the directory
+  `AGENTS.md` when you next materially edit that file — never as a bulk
+  rewrite. Every crate gains an `AGENTS.md` lazily on first substantive edit;
+  currently missing: `fe-format`, `fe-network`, `fe-identity`,
+  `fe-test-harness`, `fe-plugin-test`.
 - Keep documentation up-to-date with code changes.
 
 ## Data Access — Typed Writes for Schema-Typed Tables
@@ -113,19 +126,20 @@ This document outlines general coding principles that apply across all modules i
 
 ## Authorization — Central Policy Engine, Not Ad-Hoc Role Checks
 
-- Authorization decisions go through the central policy engine (see
-  `conductor/tracks/auth_policy_pattern_20260710/spec.md` for the design —
-  spec-only as of 2026-07-10, implementation to follow). Entry points are
-  thin adapters over one `Policy::evaluate(subject, action, resource)` call,
-  not independent role/scope comparisons.
+- Authorization decisions go through `fe-policy`
+  (`Policy::evaluate(subject, action, resource)`; deny-by-default), landed
+  2026-07-15. `RoleLevel`'s canonical home is `fe-policy` (`fe-database`
+  re-exports it). Entry points are thin adapters over one `Policy::evaluate`
+  call, not independent role/scope comparisons. Design history:
+  `conductor/tracks/auth_policy_pattern_20260710/spec.md`.
 - **Deny-by-default.** No matching policy means deny, not allow.
 - **Do not hand-roll a new role check.** If you're about to write
   `if role >= X` or a hardcoded list of allowed role strings in a new entry
-  point, that logic belongs in (or behind) the policy engine — see the
+  point, that logic belongs in (or behind) `fe-policy` — see the
   survey in `auth_policy_pattern_20260710/spec.md` for why this matters:
-  FractalEngine already has at least four different ad-hoc representations
-  of "role" scattered across `fe-database::rbac`/`role_level`, `fe-api::auth`,
-  and one crate (`fe-hexon`) with no role check at all.
+  pre-`fe-policy`, FractalEngine had at least four different ad-hoc
+  representations of "role" scattered across `fe-database::rbac`/`role_level`,
+  `fe-api::auth`, and one crate (`fe-hexon`) with no role check at all.
 - **Reviewer check / greppable pattern:** a new hardcoded `const *_ROLES:
   &[&str]` list, or a new standalone `require_*(...)` function outside the
   policy engine, is exactly the pattern this rule exists to stop repeating
@@ -143,7 +157,7 @@ These rules are non-negotiable and take precedence over all other style guidance
 - **Rate-limit all peer inputs.** Every inbound channel from a peer has a configurable cap. Drop the oldest messages on overflow — never block the render loop waiting for a slow peer.
 
 ### RBAC Transparency
-- **RBAC is enforced at the database layer only.** Bevy systems must never implement permission checks. If a system receives data from SurrealDB, it is already authorised. Do not add runtime permission checks in ECS systems.
+- **RBAC is enforced at the database layer only.** Bevy systems must never implement permission checks. If a system receives data from SurrealDB, it is already authorised. Do not add runtime permission checks in ECS systems. UI affordance gating on an already-resolved role (e.g. `LocalUserRole::can_manage` disabling a button in `fe-ui`) is display logic and is allowed; the prohibition is on systems making authorization decisions — those belong to the DB layer and `fe-policy`.
 - **Every role assignment and revocation is logged.** Write to the op-log before applying the change. The log entry must exist even if the subsequent write fails.
 - **Revocations propagate immediately.** A revoked session must be broadcast via iroh-gossip before the local SessionCache is updated. Order: sign revocation → broadcast → flush cache.
 

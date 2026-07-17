@@ -112,6 +112,14 @@ the unified format instead of the deleted `.fecrate` stack. On completion,
 that track's FR-5 should be marked satisfied-by-reference to this track (its
 FR-6 multi-asset seam is unaffected).
 
+**Inherited scope (2026-07-17 board hygiene):** `hexon_path_asset_20260713`
+was archived with FR-5 subsumed as above and its **FR-6 — multi-asset-per-node
+via `application/x-fe-directory`** (directory-asset manifest, replacing the
+501 stub at `fe-api/src/assets.rs:213`) inherited by this track; see the
+archived track's plan.md Phase 2 for the task/acceptance detail, and reconcile
+the manifest format with `hexon_p2p_bucket_20260710` FR-1/FR-2 as that plan
+directs.
+
 ## Functional Requirements
 
 ### FR-1: Single manifest and type system (Priority: P0)

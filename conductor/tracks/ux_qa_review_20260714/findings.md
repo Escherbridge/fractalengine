@@ -76,6 +76,37 @@ in-app verification still user-gated):
 
 ---
 
+## 2026-07-17 — audit-sourced findings (not yet fixed)
+
+Sourced from the 2026-07-17 board-hygiene audit, not user testing. All await
+the user-owned UX track — logged here so they survive until it is scoped.
+
+### [MAJOR] paths-gis — no undo system anywhere
+- **Actual:** no undo/redo exists in any editing surface; a one-shot Paths
+  undo has been proposed (gimbal commit on an N-point track emits N MovePoint
+  ops in one shot — cheapest first target).
+- **Status:** audit-sourced 2026-07-17, awaiting the user-owned UX track.
+
+### [MINOR] input — modifier-convention unification residual
+- **Actual:** modifier-key conventions (Shift/Ctrl/Alt semantics) still vary
+  across tools; unification residual from the input_router work.
+- **Status:** audit-sourced 2026-07-17, awaiting the user-owned UX track.
+
+### [POLISH] onboarding — verse/fractal/petal jargon strategy for first-run UI
+- **Actual:** first-run UI exposes verse/fractal/petal hierarchy jargon with
+  no plain-language framing; long-term naming strategy is ratification-gated
+  (outstanding_decisions register).
+- **Status:** audit-sourced 2026-07-17, awaiting the user-owned UX track.
+
+### [MAJOR] paths-gis — scale-authority split pending map_scale_authority
+- **Actual:** two disagreeing scale authorities remain (terrain
+  `effective_world_scale()` vs fe-ui `PetalMapState.world_scale`); UI numbers
+  can disagree with the ruler until `map_scale_authority_20260716` lands.
+- **Status:** audit-sourced 2026-07-17, awaiting the user-owned UX track
+  (fix owned by map_scale_authority_20260716).
+
+---
+
 ## Candidate UX-track scope (fill after review)
 
 Once findings are logged, summarize the themes here → this becomes the proposed

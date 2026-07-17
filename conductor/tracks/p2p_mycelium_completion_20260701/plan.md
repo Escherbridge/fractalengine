@@ -1,3 +1,7 @@
+---
+type: Implementation Plan
+---
+
 # Implementation Plan: P2P Mycelium Completion
 
 ## Track ID

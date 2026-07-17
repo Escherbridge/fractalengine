@@ -1,3 +1,7 @@
+---
+type: Track Spec
+---
+
 # Specification: User Profile Manager
 
 ## Overview

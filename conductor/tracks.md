@@ -1,7 +1,7 @@
 ---
 type: Track Index
 title: FractalEngine Project Tracks
-timestamp: 2026-07-15T00:00:00Z
+timestamp: 2026-07-17T00:00:00Z
 ---
 
 # Project Tracks
@@ -16,48 +16,22 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > — 28 folders moved there 2026-07-15 in the session close-out; see the
 > [consolidated session retro](./tracks/_archive/session_retro_20260715/retro.md) for
 > per-track outcomes and verification evidence (commits `c32e873` → `626f307`).
+> A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
+> (delivered and archived), not a dangling reference — no cross-check needed.
 
-**Open tracks: 30.**
+**Open tracks: 24.**
 
 ---
 
 ## P0 — UX test findings (2026-07-16, user-driven UX pillar)
 
 Bugs and asks from the user's live UX testing session, 2026-07-16 (logged in
-[ux_qa_review findings](./tracks/ux_qa_review_20260714/findings.md)). All four
-landed same-day; full sweep green (1517 tests, clippy -D warnings, fmt);
-in-app verification user-gated.
-
-### [x] path_interaction — precise picking, vertex/segment selection, whole-path gimbal
-
-_Link: [./tracks/path_interaction_20260716/](./tracks/path_interaction_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
-
-Illustrator-style vertex select/move in Select tool, ray-vs-polyline ribbon
-picking (stop AABB click-swallowing), per-segment selection with real-metric
-length display, centroid-anchored move/rotate/scale gimbal baked into
-`gpx_points`, 0.5-unit default width.
-
-### [x] gpx_stamp_persistence — stamps survive scene changes; metric spacing
-
-_Link: [./tracks/gpx_stamp_persistence_20260716/](./tracks/gpx_stamp_persistence_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
-
-Petal-wide re-materialization of `path_asset` stamps from persisted node
-properties (mirrors primitive pattern); per-track change gate; spacing in
-meters via `world_scale`.
-
-### [x] inspector_units_width — panel width blow-out + real-unit transforms
-
-_Link: [./tracks/inspector_units_width_20260716/](./tracks/inspector_units_width_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
-
-Read-only copyable width-constrained property values (panel stays 260px);
-position in meters / rotation in degrees / size in meters from node AABB.
-
-### [x] camera_focus_clip — focus teleport + near-plane clipping
-
-_Link: [./tracks/camera_focus_clip_20260716/](./tracks/camera_focus_clip_20260716/) · done 2026-07-16 (in-app verify user-gated) · P0 UX_
-
-`NodeCreated` echoes position + focus resolves live entity transform; near
-0.01 + min_distance 0.05 for clip-free close zoom.
+[ux_qa_review findings](./tracks/ux_qa_review_20260714/findings.md)). The four
+fix tracks (path_interaction, gpx_stamp_persistence, inspector_units_width,
+camera_focus_clip) landed same-day — full sweep green (1517 tests, clippy
+-D warnings, fmt), in-app verification user-gated — and were archived
+2026-07-17; see the [batch retro](./tracks/_archive/ux_retro_20260716/retro.md).
+Remaining:
 
 ### [ ] road_builder_ux — C:S-inspired road/path builder input layer
 
@@ -135,7 +109,8 @@ Landed 2026-07-15: `iot_reading` table + `insert_readings` handler with read-bac
 (FR-1), fe-query `builder/timeseries.rs` (FR-3), batch ingestion endpoint
 `POST /petals/:id/iot/readings` + query_guard whitelist seam (FR-4); FR-2 (node_log cap)
 was pre-satisfied by p2p_unblock_now (`9ef76a1`). Remaining: FR-5 — reading-shaped
-parquet/CSV export (plan Phase 4).
+parquet/CSV export (plan Phase 4) + the inherited bim_primitives FR-8
+statistical-analysis seam (2026-07-17, spec §Inherited seam).
 
 ---
 
@@ -151,6 +126,21 @@ Linux glib apt deps fixed after run 29390918844). Phase 2 tasks 2.1–2.6 done
 GHCR docker job, `Cross.toml`). Remaining: task 2.7 end-to-end tag verification
 (requires a live GitHub run). Docker relay image = shipping vehicle for the analytics
 backend.
+
+### [ ] oss_release — open-source release checklist
+
+_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · pending · P1 ENABLING · gated on D-69 (license) + D-70 (conductor/ publicity)_
+
+The full pre-public-push gate, sourced from the 2026-07-17 OSS-release audit
+(REL-01..11) + crate-consolidation audit ([decision record](./decisions/crate-consolidation-20260717.md)).
+License scaffolding landed 2026-07-17 (LICENSE-MIT/APACHE, workspace
+`license = "MIT OR Apache-2.0"`, THIRD-PARTY-LICENSES + deny.toml, SECURITY.md
+draft) but is DEFAULTED, not ratified. Checklist: placeholder ed25519 signature
+register disclosure (13 sites, all fe-database post-consolidation), SurrealDB
+BUSL-1.1 notice maintenance, crates.io metadata verification, SECURITY.md contact
+finalization, CI lint gate + badge, community health files, and the pre-push
+preflight (secrets re-scan, decision-register review, README claims audit).
+Ratification-gated items are marked BLOCKED-ON-USER in the plan.
 
 ### [~] cross_platform_desktop — Linux/macOS/Windows-ARM64 Builds
 
@@ -173,7 +163,7 @@ bump in lockstep and re-verify the congestion-controller default
 
 ### [ ] hexon_unification — one canonical .hexon + portable petal snapshot
 
-_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · pending · P1 PLATFORM · subsumes hexon_path_asset FR-5_
+_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · pending · P1 PLATFORM · subsumes hexon_path_asset FR-5 + inherits its FR-6 (archived 2026-07-17)_
 
 Collapse the fe-hexon `.fecrate` parallel stack onto fe-format v1.0.0 (fe-format
 stays the lean format layer; fe-hexon rebuilt as the runtime layer — registry,
@@ -230,13 +220,6 @@ No blocking dependencies; opportunistic or explicitly deferred (see each
 - [~] **inspector_settings** — FR-3 (hierarchy inspection) + FR-4 (Access-tab RBAC UI)
   remain; FR-1 SaveUrl `is_url_allowed` landed 2026-07-15, FR-2 folded to shipped tab
   set — [./tracks/inspector_settings_20260419/](./tracks/inspector_settings_20260419/)
-- [~] **bim_primitives_on_paths** — FR-8 (statistical-analysis extension seam) remains;
-  FR-1 closed 2026-07-15, P3 superseded by GPX rip-walls, P4 deferred on the fe-plugin
-  transaction stub — [./tracks/bim_primitives_on_paths_20260712/](./tracks/bim_primitives_on_paths_20260712/)
-- [~] **hexon_path_asset** — FR-5 (PetalHexon bake) subsumed by
-  hexon_unification_20260716; FR-6 (multi-asset) remains;
-  FR-1..4 shipped, loader/P2P handed to hexon_p2p_bucket —
-  [./tracks/hexon_path_asset_20260713/](./tracks/hexon_path_asset_20260713/)
 - [ ] **thorns_shields** — security hardening + pre-launch docs; Wave-1 scaffolds only,
   unwrap audit never run; folder reconstructed 2026-07-14 —
   [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
@@ -248,20 +231,21 @@ No blocking dependencies; opportunistic or explicitly deferred (see each
   [./tracks/light_box_20260402/](./tracks/light_box_20260402/)
 - [ ] **profile_manager** — identity/profile UI + P2P sync; OFF-STRATEGY defer
   (PeerRegistry dep satisfied) — [./tracks/profile_manager_20260419/](./tracks/profile_manager_20260419/)
-- [~] **tauri_host_shell_spike** — shell-inversion SPIKE, phases 1–2 done, shelved
-  per alignment — [./tracks/tauri_host_shell_spike_20260630/](./tracks/tauri_host_shell_spike_20260630/)
 
 ---
 
 ## Meta tracks
 
-- [ ] **ux_qa_review** — QA harness for the **user-owned** UX review of the shipped
+- [~] **ux_qa_review** — QA harness for the **user-owned** UX review of the shipped
   2026-07 GPX/path/analytics surfaces; review-only, its `findings.md` seeds the future
-  UX implementation track (roadmap defers UX to the user — do not pre-empt) —
+  UX implementation track (roadmap defers UX to the user — do not pre-empt);
+  in_progress: live-testing batch #1 (2026-07-16, 9 findings) triaged and closed,
+  audit-sourced findings logged 2026-07-17 —
   [./tracks/ux_qa_review_20260714/](./tracks/ux_qa_review_20260714/)
 - [ ] **outstanding_decisions_20260715** — **[the ratification register](./tracks/outstanding_decisions_20260715/spec.md)**:
-  68 entries (31 USER decisions, 37 DEFAULTED) from the 2026-07-14/15 audit + 3-wave
-  session, awaiting user ratify/override/kill — including D-12 (foundry split) and
+  72 entries (34 USER decisions, 38 DEFAULTED) from the 2026-07-14/15 audit + 3-wave
+  session, plus the 2026-07-17 OSS/consolidation appendix (D-69..D-72), awaiting user
+  ratify/override/kill — including D-12 (foundry split) and
   D-68 (egress guard bypass fixes) —
   [./tracks/outstanding_decisions_20260715/](./tracks/outstanding_decisions_20260715/)
 
@@ -298,3 +282,11 @@ One line per batch; full detail lives in each folder under
   code_review_cleanup + mega_function/perf_hotpaths/clippy trio, terrain_splat_view
   (verified already-done), petal_seed + seedling_onboarding (superseded) — outcomes in
   [session_retro_20260715/retro.md](./tracks/_archive/session_retro_20260715/retro.md)
+- **2026-07-17 — board-hygiene batch** (7 folders + batch retro): the four 2026-07-16
+  P0 UX tracks path_interaction, gpx_stamp_persistence, inspector_units_width,
+  camera_focus_clip (done 07-16, in-app verify user-gated — consolidated
+  [ux_retro_20260716/retro.md](./tracks/_archive/ux_retro_20260716/retro.md)); plus
+  tauri_host_shell_spike (superseded — shelved OFF-STRATEGY 07-14, exit report
+  delivered, CONDITIONAL GO), bim_primitives_on_paths (FR-8 seam folded into
+  iot_spatial_reporting), hexon_path_asset (FR-5 subsumed / FR-6 inherited by
+  hexon_unification)

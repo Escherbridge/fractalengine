@@ -1,5 +1,5 @@
 ---
-type: track-spec
+type: Track Spec
 ---
 
 # Track: Tauri-Host Shell SPIKE — Exploratory: Tauri as Primary Window + Bevy Render-into-Surface

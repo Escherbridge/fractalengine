@@ -48,6 +48,16 @@ can serve into PowerBI/spreadsheets.
   RBAC, so a user reports on live IoT data in PowerBI the same way as static
   spatial data.
 
+### Inherited seam — bim_primitives FR-8 (2026-07-17)
+
+Inherited from `bim_primitives_on_paths_20260712` (archived 2026-07-17, its
+only remaining item): **FR-8 — API-first statistical-analysis surface** —
+read-side stats over node/geometry sets (counts, bounds, path length, wall
+area/volume) via the existing query/API surface. That track kept it open as
+the "analytics seam" feeding the BI-egress roadmap; deliver it here alongside
+FR-3/FR-5 (or via `analytics_egress_20260714`) rather than reopening the
+archived track.
+
 ## Constraints
 
 - Respect the local-meters↔lat/lon CRS seam (API-layer conversion).
