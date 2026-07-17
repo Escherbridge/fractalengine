@@ -14,23 +14,36 @@ use crate::property::PropertyValue;
 pub enum SceneChange {
     /// A new node was created.
     NodeAdded {
+        /// The created node's id.
         node_id: String,
+        /// The petal the node was created in.
         petal_id: String,
+        /// The node's display name.
         name: String,
     },
     /// A node was removed from the scene.
-    NodeRemoved { node_id: String },
+    NodeRemoved {
+        /// The removed node's id.
+        node_id: String,
+    },
     /// A custom property changed on a node.
     PropertyChanged {
+        /// The affected node's id.
         node_id: String,
+        /// The property key that changed.
         key: String,
+        /// The new property value.
         value: PropertyValue,
     },
     /// A node's transform (position/rotation/scale) changed.
     TransformChanged {
+        /// The affected node's id.
         node_id: String,
+        /// New world position `[x, y, z]`.
         position: [f64; 3],
+        /// New rotation quaternion `[x, y, z, w]`.
         rotation: [f64; 4],
+        /// New scale `[x, y, z]`.
         scale: [f64; 3],
     },
 }

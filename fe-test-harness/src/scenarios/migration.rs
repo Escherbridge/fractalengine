@@ -1,15 +1,4 @@
-//! Scenario 2: Legacy Base64 Migration
-//!
-//! Verifies that the blob store correctly handles the pattern where:
-//! 1. An asset is stored as raw bytes in the blob store
-//! 2. A content_hash is computed correctly
-//! 3. The blob:// URL scheme is constructed correctly
-//!
-//! Note: This tests the migration *pattern*, not the actual
-//! `migrate_base64_assets_to_blob_store` function (which is private to
-//! fe-database). We verify that the same BLAKE3 hash is produced when
-//! content is written via the blob store API, matching what the migration
-//! would produce.
+//! Scenario 2: Legacy Base64 Migration — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use std::sync::Arc;
 

@@ -1,14 +1,4 @@
-//! Scenario 5: Two-Peer Blob Exchange
-//!
-//! Two peers exchange a blob by manually copying it (simulating what the sync
-//! thread would do over the network):
-//! 1. Alice spawns, seeds DB, imports a GLB file -> gets blob hash
-//! 2. Bob spawns
-//! 3. Read the blob bytes from Alice's blob store, write them to Bob's blob store
-//! 4. Verify Bob's blob store now has the same hash and identical bytes
-//! 5. Verify Bob can construct the same `blob://` URL
-//!
-//! This proves the blob store is content-addressable and portable across peers.
+//! Scenario 5: Two-Peer Blob Exchange — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use anyhow::Result;
 use fe_database::hash_to_hex;

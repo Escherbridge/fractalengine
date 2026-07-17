@@ -1,12 +1,5 @@
-//! Pluggable secret storage abstraction.
-//!
-//! Provides [`SecretStore`] — a trait for get/set/delete of string secrets
-//! keyed by `(service, account)` pairs — plus concrete backends:
-//!
-//! - [`InMemoryBackend`] — always compiled, used in tests.
-//! - [`OsKeystoreBackend`] — wraps `keyring::Entry`, compiled only with the
-//!   `keyring` feature.
-//! - [`EnvBackend`] — reads from environment variables, always compiled.
+//! Pluggable `(service, account)` secret storage — [`SecretStore`] trait +
+//! backends (design: fe-identity/src/AGENTS.md §secret-store).
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -100,12 +93,8 @@ pub use os_keystore::OsKeystoreBackend;
 // EnvBackend
 // ---------------------------------------------------------------------------
 
-/// Backend that maps `(service, account)` to environment variable
-/// `FE_SECRET_{SERVICE}_{ACCOUNT}` (uppercased, special chars replaced with `_`).
-///
-/// Reads check the real environment first; if absent, falls back to a
-/// runtime-written in-memory map. `set` writes only to the in-memory map
-/// (it does *not* mutate the process environment).
+/// Env-var backend: `(service, account)` → `FE_SECRET_{SERVICE}_{ACCOUNT}`
+/// (precedence + write semantics: fe-identity/src/AGENTS.md §secret-store).
 pub struct EnvBackend {
     overrides: RwLock<HashMap<(String, String), String>>,
 }

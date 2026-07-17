@@ -1,12 +1,4 @@
-//! Scenario: API Token Lifecycle
-//!
-//! Tests the complete API token management flow:
-//! 1. Mint a token with valid scope and role
-//! 2. List tokens and verify the minted token appears
-//! 3. Verify the token JWT is valid and contains correct claims
-//! 4. Revoke the token
-//! 5. List tokens again and verify it no longer appears
-//! 6. Edge cases: empty scope, excessive TTL, double revoke, wrong JTI
+//! Scenario: API Token Lifecycle (+ edge cases) — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use anyhow::Result;
 use fe_runtime::messages::{DbCommand, DbResult};

@@ -11,9 +11,13 @@ pub const PRIMITIVE_PROPERTY_KEY: &str = "primitive";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrimitiveKind {
+    /// Axis-aligned box: `dims = [width, height, depth]`.
     Cube,
+    /// Flat plane: `dims = [width, depth]`.
     Plane,
+    /// Cylinder: `dims = [radius, height]`.
     Cylinder,
+    /// Sphere: `dims = [radius]`.
     Sphere,
 }
 
@@ -27,8 +31,11 @@ pub enum PrimitiveKind {
 /// - `Sphere`: `[radius]`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrimitiveDescriptor {
+    /// Which Bevy shape to materialize.
     pub kind: PrimitiveKind,
+    /// Per-kind dimensions in world units (see struct docs for semantics).
     pub dims: Vec<f32>,
+    /// Optional texture id resolved through the [`crate::TextureRegistry`].
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub texture_ref: Option<String>,
 }

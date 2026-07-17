@@ -1,19 +1,5 @@
-//! Extracted command handlers for the DB dispatch loop.
-//!
-//! Each sub-module groups related handlers by domain:
-//! - `crud` — Verse/Fractal/Petal/Node creation, GLTF import, hierarchy loading
-//! - `entity` — Rename, delete, description updates
-//! - `entity_property` — Custom property CRUD for nodes
-//! - `field_def` — Field definition schema CRUD
-//! - `transform` — Node position/rotation/scale and URL persistence
-//! - `rbac` — Role resolution, assignment, revocation
-//! - `invite` — Verse invite generation and join-by-invite
-//! - `api_token` — API token minting, revocation, and listing
-//! - `seed` — Default data seeding
-//! - `admin` — Database reset
-//! - `crate_registry` — Hexon crate registry install/uninstall
-//! - `petal_terrain` — Per-petal terrain config get/set
-//! - `iot_reading` — Append-only IoT sensor-reading ingestion
+//! Extracted DB dispatch-loop command handlers (domain map:
+//! fe-database/src/AGENTS.md §handlers).
 
 pub mod admin;
 pub mod api_token;

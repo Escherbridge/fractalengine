@@ -8,25 +8,15 @@ use fe_runtime::shared_node::{validate_asset_path, SharedNode, WebViewInteractio
 #[cfg(feature = "backend-tauri")]
 use tauri::Manager;
 
-/// Get node data by ID.
-///
-/// Queries the node from the system and returns a SharedNode representation.
-/// In a full implementation, this would query VerseManager.
+/// Get node data by ID (unwired stub — see src/AGENTS.md §tauri-commands).
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
 pub fn get_node_data(node_id: String) -> Result<SharedNode, String> {
-    // In a full implementation, this would query VerseManager:
-    // verse_manager.find_node(&node_id)
-    //     .map(|node| SharedNode::from_node_entry(...))
-    //     .ok_or_else(|| format!("Node {} not found", node_id))
-
-    // For now, return a placeholder that indicates this needs to be connected to VerseManager
     tracing::warn!(
         "get_node_data called with node_id: {} - needs VerseManager integration",
         node_id
     );
 
-    // Return a minimal node for testing purposes
     Ok(SharedNode {
         node_id,
         verse_id: "default-verse".to_string(),
@@ -41,21 +31,11 @@ pub fn get_node_data(node_id: String) -> Result<SharedNode, String> {
     })
 }
 
-/// Notify the system of a webview interaction.
-///
-/// This command receives interactions from the webview and forwards them
-/// to Bevy systems for processing.
+/// Notify the system of a webview interaction (logging stub — see src/AGENTS.md §tauri-commands).
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
 pub fn notify_interaction(interaction: WebViewInteraction) -> Result<(), String> {
     tracing::debug!("Received webview interaction: {:?}", interaction);
-
-    // In a full implementation, this would:
-    // 1. Convert WebViewInteraction to a Bevy event
-    // 2. Send it through the event system
-    //
-    // Example:
-    // events.send(WebViewInteractionEvent(interaction));
 
     match &interaction {
         WebViewInteraction::NodeSelected { node } => {
@@ -98,19 +78,12 @@ pub fn notify_interaction(interaction: WebViewInteraction) -> Result<(), String>
     Ok(())
 }
 
-/// List all nodes for a given petal.
-///
-/// Returns a vector of SharedNode objects for all nodes in the specified petal.
+/// List all nodes for a petal (unwired stub — see src/AGENTS.md §tauri-commands).
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
 pub fn list_nodes_for_petal(petal_id: String) -> Result<Vec<SharedNode>, String> {
     tracing::debug!("Listing nodes for petal: {}", petal_id);
 
-    // In a full implementation, this would query VerseManager for all nodes in the petal
-    // verse_manager.find_petal(&petal_id)
-    //     .map(|petal| petal.nodes.iter().map(|n| SharedNode::from_node_entry(...)).collect())
-
-    // Return empty list for now
     Ok(vec![])
 }
 
@@ -167,9 +140,7 @@ pub fn get_asset_base_url(app: tauri::AppHandle) -> Result<String, String> {
     Ok(base.to_string_lossy().to_string())
 }
 
-/// Update a node's transform from the webview.
-///
-/// This allows the webview to modify node transforms directly.
+/// Update a node's transform from the webview (unwired stub — see src/AGENTS.md §tauri-commands).
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
 pub fn update_node_transform(
@@ -186,31 +157,22 @@ pub fn update_node_transform(
         scale
     );
 
-    // In a full implementation, this would:
-    // 1. Find the node in VerseManager
-    // 2. Update its transform
-    // 3. Emit a DbCommand to persist the change
-    // 4. Broadcast to P2P
-
     Ok(())
 }
 
-/// Update a node's URL from the webview.
+/// Update a node's URL from the webview (unwired stub — see src/AGENTS.md §tauri-commands).
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
 pub fn update_node_url(node_id: String, url: String) -> Result<(), String> {
     tracing::info!("Update URL for node {}: {}", node_id, url);
 
-    // In a full implementation, this would update the node's webpage_url in VerseManager
-
     Ok(())
 }
 
-/// Get the list of available petals (for the webview to display).
+/// Get the list of available petals (unwired stub — see src/AGENTS.md §tauri-commands).
 #[cfg(feature = "backend-tauri")]
 #[tauri::command]
 pub fn list_petals() -> Result<Vec<PetalInfo>, String> {
-    // In a full implementation, this would query VerseManager for all petals
     Ok(vec![])
 }
 

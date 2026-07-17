@@ -1,23 +1,9 @@
 //! fe-sdk — Stable extension SDK for FractalEngine plugins.
 //!
-//! This crate defines the **public API surface** that extension authors program
-//! against. It has minimal dependencies (serde + serde_json only) and is
-//! intentionally decoupled from engine internals (Bevy, SurrealDB, etc.).
-//!
-//! # Modules
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`node`] | [`NodeSnapshot`] — read-only view of a node |
-//! | [`path_asset`] | [`PathAssetDescriptor`] — repeated-model path stamping |
-//! | [`property`] | [`PropertyValue`], [`PropertyBag`] — typed properties |
-//! | [`scene`] | [`SceneChange`], [`SceneChangeBatch`] — scene mutations |
-//! | [`transaction`] | [`PluginTransaction`] trait — batched writes |
-//! | [`context`] | [`PluginContext`] trait — engine services |
-//! | [`storage`] | [`ExtensionStorageApi`] — node-property + KV access |
-//! | [`query`] | [`ExtensionQueryApi`], [`is_select_only`] — SELECT-only reads |
-//! | [`ui`] | [`UiSlot`], [`UiContribution`], [`UiExtensionRegistry`] |
-//! | [`events`] | [`PluginEvent`], [`EventSubscription`] — inter-plugin events |
+//! The public API surface extension authors program against: serde-only deps,
+//! decoupled from engine internals (module map: src/AGENTS.md §modules).
+
+#![warn(missing_docs)]
 
 pub mod api;
 pub mod context;

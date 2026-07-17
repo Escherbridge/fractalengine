@@ -1,24 +1,5 @@
-//! fe-plugin — Plugin host foundation for FractalEngine (Phase 9A.1).
-//!
-//! Provides the [`PluginHostPlugin`] Bevy plugin that spawns a dedicated
-//! plugin runtime thread (thread 7) with its own Tokio runtime. Plugins
-//! communicate with the Bevy ECS through crossbeam channels using
-//! [`PluginCommand`]/[`PluginResult`] enums.
-//!
-//! # Architecture
-//!
-//! ```text
-//! Bevy ECS  <--crossbeam-->  Plugin Thread (Tokio)
-//!   |                            |
-//!   | drain_plugin_results()     | FractalExtension callbacks
-//!   |                            | RhaiEngine sandboxed scripts
-//! ```
-//!
-//! # Extension trait
-//!
-//! Native plugins implement [`FractalExtension`] directly. Rhai scripts are
-//! wrapped by the [`rhai::RhaiEngine`] which bridges host API calls back
-//! through the command channel.
+//! fe-plugin — plugin host: [`PluginHostPlugin`] spawns the plugin runtime thread (thread 7).
+//! Thread/channel architecture: src/AGENTS.md §architecture.
 
 pub mod capability;
 pub mod context;

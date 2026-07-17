@@ -18,24 +18,8 @@ pub trait Table: Serialize + DeserializeOwned + Send + Sync + 'static {
     fn id_value(&self) -> String;
 }
 
-/// Generic repository providing typed CRUD over any [`Table`] implementor.
-///
-/// All methods are associated functions (no `&self`) — there is no instance
-/// state.  For domain-specific queries (spatial lookups, full-text search,
-/// SurrealQL `VERSION`, etc.) use [`Repo::query_raw`] or write free functions
-/// that accept `&Db` and return `T`.
-///
-/// # Quick start
-/// ```ignore
-/// // Insert
-/// Repo::<Petal>::create(&db, &petal).await?;
-///
-/// // Lookup
-/// let p = Repo::<Petal>::find_by_id(&db, "01HZ…").await?;
-///
-/// // Partial update
-/// Repo::<Petal>::merge_by_id(&db, "01HZ…", json!({"name": "new"})).await?;
-/// ```
+/// Generic repository providing typed CRUD over any [`Table`] implementor —
+/// associated functions only, no instance state (usage: fe-database/src/AGENTS.md §repo).
 pub struct Repo<T: Table>(std::marker::PhantomData<T>);
 
 impl<T: Table> Default for Repo<T> {

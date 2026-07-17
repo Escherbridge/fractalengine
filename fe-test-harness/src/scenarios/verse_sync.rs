@@ -1,14 +1,4 @@
-//! Scenario 4: Verse Sync Infrastructure
-//!
-//! Tests the sync command pipeline end-to-end:
-//! 1. Alice creates a verse and opens a replica via SyncCommand::OpenVerseReplica
-//! 2. Alice writes a row entry via SyncCommand::WriteRowEntry
-//! 3. Verifies the commands are accepted without errors
-//!
-//! This is an infrastructure stub — actual P2P sync between two peers requires
-//! the IrohDocsReplicator to be fully wired (Phase F+). This test validates
-//! that the command pipeline works and the sync thread processes commands
-//! without panicking.
+//! Scenario 4: Verse Sync Infrastructure — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use anyhow::Result;
 use fe_runtime::messages::{DbCommand, DbResult};

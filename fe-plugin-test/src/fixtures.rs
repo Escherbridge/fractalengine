@@ -20,15 +20,7 @@ pub struct SceneFixture {
 }
 
 impl SceneFixture {
-    /// Deserialize a fixture from a JSON string.
-    ///
-    /// Expected format:
-    /// ```json
-    /// {
-    ///   "nodes": [ { "node_id": "...", "petal_id": "...", ... } ],
-    ///   "properties": { "node_id:key": "value", ... }
-    /// }
-    /// ```
+    /// Deserialize a fixture from a JSON string (format: src/AGENTS.md §fixtures).
     pub fn load_from_json(json: &str) -> Self {
         let raw: serde_json::Value = serde_json::from_str(json).expect("Invalid fixture JSON");
 

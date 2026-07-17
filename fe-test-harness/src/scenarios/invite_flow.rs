@@ -1,10 +1,4 @@
-//! Scenario 3: Invite Flow
-//!
-//! Verifies the full invite lifecycle:
-//! 1. Alice creates a verse
-//! 2. Alice generates an invite string
-//! 3. Bob joins the verse via the invite string
-//! 4. Bob's hierarchy contains the verse with the correct name
+//! Scenario 3: Invite Flow — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use anyhow::Result;
 use fe_runtime::messages::{DbCommand, DbResult};

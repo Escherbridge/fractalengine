@@ -16,34 +16,29 @@ use std::collections::HashMap;
 // Shared Node Structure
 // ============================================================================
 
-/// A unified representation of a scene node that bridges Tauri ↔ Bevy.
-///
-/// This structure is passed alongside events to bridge Tauri↔Bevy interactions:
-/// - **Bevy → WebView**: When a node is selected in egui, the shared node is passed to the webview
-/// - **WebView → Bevy**: When the user interacts with content in the webview, the shared node is passed back
-///
-/// # Fields
-/// - `node_id`: Unique node identifier
-/// - `verse_id`: Parent verse ID
-/// - `fractal_id`: Parent fractal ID
-/// - `petal_id`: Parent petal ID
-/// - `position`: Transform position [x, y, z]
-/// - `rotation`: Transform rotation quaternion [x, y, z, w]
-/// - `scale`: Transform scale [x, y, z]
-/// - `webpage_url`: Optional PetalPortal URL
-/// - `asset_path`: Optional GLTF/GLB asset path
-/// - `properties`: Custom node properties
+/// A unified representation of a scene node that bridges Tauri ↔ Bevy —
+/// passed Bevy → WebView on selection and WebView → Bevy on user interaction.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SharedNode {
+    /// Unique node identifier.
     pub node_id: String,
+    /// Parent verse ID.
     pub verse_id: String,
+    /// Parent fractal ID.
     pub fractal_id: String,
+    /// Parent petal ID.
     pub petal_id: String,
+    /// Transform position `[x, y, z]`.
     pub position: [f32; 3],
+    /// Transform rotation quaternion `[x, y, z, w]`.
     pub rotation: [f32; 4],
+    /// Transform scale `[x, y, z]`.
     pub scale: [f32; 3],
+    /// Optional Portal URL.
     pub webpage_url: Option<String>,
+    /// Optional GLTF/GLB asset path.
     pub asset_path: Option<String>,
+    /// Custom node properties.
     pub properties: HashMap<String, PropertyValue>,
 }
 

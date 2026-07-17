@@ -55,15 +55,8 @@ impl fmt::Display for ScopeError {
 
 impl std::error::Error for ScopeError {}
 
-/// Build a hierarchical scope string from its components.
-///
-/// # Format
-/// - Verse only:          `"VERSE#<verse_id>"`
-/// - Verse + Fractal:     `"VERSE#<verse_id>-FRACTAL#<fractal_id>"`
-/// - Verse + Fractal + Petal: `"VERSE#<verse_id>-FRACTAL#<fractal_id>-PETAL#<petal_id>"`
-///
-/// # Panics
-/// Panics if `petal_id` is `Some` but `fractal_id` is `None` — invalid hierarchy.
+/// Build a hierarchical scope string `VERSE#<v>[-FRACTAL#<f>[-PETAL#<p>]]`;
+/// panics if `petal_id` is `Some` without `fractal_id`.
 pub fn build_scope(verse_id: &str, fractal_id: Option<&str>, petal_id: Option<&str>) -> String {
     if petal_id.is_some() && fractal_id.is_none() {
         panic!("build_scope: petal_id requires fractal_id (invalid hierarchy)");
@@ -165,13 +158,8 @@ pub fn parse_scope(scope: &str) -> Result<ScopeParts, ScopeError> {
     })
 }
 
-/// Returns the parent scope of a given scope string, or `None` if already at
-/// the verse level (no parent).
-///
-/// # Examples
-/// - `"VERSE#v-FRACTAL#f-PETAL#p"` → `Some("VERSE#v-FRACTAL#f")`
-/// - `"VERSE#v-FRACTAL#f"` → `Some("VERSE#v")`
-/// - `"VERSE#v"` → `None`
+/// Returns the parent scope (petal → fractal → verse), or `None` if already
+/// at verse level.
 pub fn parent_scope(scope: &str) -> Option<String> {
     // Walk from the right: look for the last occurrence of "-PETAL#" or "-FRACTAL#"
     if let Some(idx) = scope.rfind("-PETAL#") {
@@ -196,16 +184,8 @@ pub fn scope_level(scope: &str) -> Result<ScopeLevel, ScopeError> {
     }
 }
 
-/// Check whether `token_scope` grants access to `resource_scope`.
-///
-/// A token scoped to a higher level in the hierarchy grants access to all
-/// resources beneath it. For example:
-/// - `VERSE#v1` covers `VERSE#v1-FRACTAL#f1-PETAL#p1`
-/// - `VERSE#v1-FRACTAL#f1` covers `VERSE#v1-FRACTAL#f1-PETAL#p1`
-/// - `VERSE#v1-FRACTAL#f1-PETAL#p1` does NOT cover `VERSE#v1-FRACTAL#f1`
-///
-/// Returns `true` if the token scope is a prefix of (or equal to) the
-/// resource scope at a keyword boundary.
+/// True if `token_scope` grants access to `resource_scope` — higher scopes
+/// cover everything beneath them (resolution rules: fe-database/src/AGENTS.md §scope).
 pub fn scope_contains(token_scope: &str, resource_scope: &str) -> bool {
     if token_scope == resource_scope {
         return true;

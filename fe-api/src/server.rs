@@ -47,53 +47,7 @@ pub struct ApiState {
     pub share_signer: Arc<fe_identity::NodeKeypair>,
 }
 
-/// Build the complete axum [`Router`] for the API server.
-///
-/// # Route hierarchy
-///
-/// ```text
-/// PUBLIC (no auth):
-///   GET  /api/v1/health
-///   GET  /ws
-///
-/// AUTHENTICATED (Bearer JWT):
-///   GET  /api/v1/hierarchy
-///   POST /api/v1/verses
-///
-///   Verse-scoped:
-///   POST /api/v1/verses/:verse_id/fractals
-///
-///   Fractal-scoped:
-///   POST /api/v1/verses/:verse_id/fractals/:fractal_id/petals
-///
-///   Petal-scoped:
-///   POST /api/v1/verses/:verse_id/fractals/:fractal_id/petals/:petal_id/nodes
-///
-///   Node operations (scope resolved from node's parent chain):
-///   PATCH /api/v1/nodes/:node_id/transform
-///   GET   /api/v1/nodes/:node_id/transform
-///   PATCH /api/v1/nodes/:node_id/properties
-///   GET   /api/v1/nodes/:node_id/properties
-///   DELETE /api/v1/nodes/:node_id/properties/:key
-///   PATCH /api/v1/nodes/:waypoint_id/move
-///   GET   /api/v1/nodes/:track_id/elevation-profile
-///   GET   /api/v1/nodes/:track_id/stats
-///
-///   Petal GIS reads (Viewer+):
-///   GET   /api/v1/petals/:petal_id/gis/nodes
-///   GET   /api/v1/petals/:petal_id/gis/tracks
-///
-///   Waypoints (petal-scoped):
-///   POST  /api/v1/petals/:petal_id/waypoints
-///
-///   Assets:
-///   GET   /api/v1/assets/:content_hash
-///   GET   /api/v1/assets/by-id/:asset_id
-///   GET   /api/v1/nodes/:node_id/asset
-///
-///   MCP:
-///   POST /mcp
-/// ```
+/// Build the complete axum [`Router`] (route inventory: fe-api/AGENTS.md §routes).
 pub fn build_router(state: Arc<ApiState>) -> Router {
     let cors = if state.cors_origins.iter().any(|o| o == "*") {
         CorsLayer::new()

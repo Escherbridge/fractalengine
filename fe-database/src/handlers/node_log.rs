@@ -4,20 +4,8 @@ use crate::op_log::next_hlc_timestamp;
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
 
-/// Append an immutable log entry to the `node_log` table.
-///
-/// This is INSERT-only — the node_log table never receives UPDATE or DELETE.
-/// Each entry gets an HLC timestamp and a `row_version` that is monotonically
-/// increasing per node (derived from `max(row_version) + 1`).
-///
-/// # Thread Safety
-///
-/// The `row_version` derivation (SELECT max + INSERT) is NOT atomic. This is
-/// safe because the DB thread runs on a single-threaded tokio runtime
-/// (`current_thread`), so no two calls to this function execute concurrently.
-/// **This invariant must be maintained** — if the DB thread ever moves to a
-/// multi-threaded runtime, this must be replaced with an atomic subquery or
-/// a DB-level sequence.
+/// Append an immutable INSERT-only entry to `node_log` — single-writer
+/// invariant required (see fe-database/src/AGENTS.md §node-log).
 pub(crate) async fn append_node_log(
     db: &Db,
     node_id: &str,

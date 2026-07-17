@@ -48,14 +48,8 @@ fn canonical_json(value: &Value) -> String {
 
 // ---- signing ----------------------------------------------------------------
 
-/// Sign a manifest JSON byte slice with an Ed25519 signing key.
-/// Returns the base64-encoded signature string.
-///
-/// Process:
-/// 1. Parse JSON, set "signature" field to ""
-/// 2. Serialize to canonical JSON (sorted keys, no whitespace)
-/// 3. Sign with [`ed25519_dalek::SigningKey`]
-/// 4. Return base64 (standard encoding) of the 64-byte signature
+/// Sign a manifest JSON byte slice with an Ed25519 signing key; returns the
+/// base64-encoded signature (process: fe-format/src/AGENTS.md §signature).
 pub fn sign_manifest(json: &[u8], key: &SigningKey) -> Result<String> {
     let mut doc: Value =
         serde_json::from_slice(json).context("sign_manifest: invalid JSON input")?;
@@ -72,13 +66,8 @@ pub fn sign_manifest(json: &[u8], key: &SigningKey) -> Result<String> {
 
 // ---- verification -----------------------------------------------------------
 
-/// Verify a manifest's signature against the publisher's DID.
-///
-/// Process:
-/// 1. Parse JSON, extract "signature" field, set it to ""
-/// 2. Serialize to canonical JSON (sorted keys, no whitespace)
-/// 3. Extract public key from `publisher_did` (`did:key:z6Mk...` format)
-/// 4. Verify Ed25519 signature
+/// Verify a manifest's signature against the publisher's DID (process:
+/// fe-format/src/AGENTS.md §signature).
 pub fn verify_manifest(json: &[u8], sig: &str, publisher_did: &str) -> Result<bool> {
     let mut doc: Value =
         serde_json::from_slice(json).context("verify_manifest: invalid JSON input")?;

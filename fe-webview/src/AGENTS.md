@@ -61,6 +61,17 @@ The old guard/flush command re-write pipeline was removed — it echoed
 `Navigate` commands every frame; `SwitchTab(Config)` role-gating now happens
 inline in `dispatch_commands`.
 
+## §petal-portal-deferred — validation-phase work
+
+- `position_overlay_system` is a change-detection shell today. Sprint-4 plan:
+  project the selected model's AABB to screen space and drive
+  `surface.position()`; the projection math waits on wry surface integration.
+- Two activation tests (`selecting_model_with_allowed_url_sets_active_portal`,
+  `selecting_model_with_no_url_sets_active_portal_but_no_navigate`) are
+  `#[ignore = "needs full Bevy app (validation phase)"]` stubs:
+  `MessageWriter`-driven activation needs a full Bevy app, so the behavior is
+  exercised at the validation phase rather than in unit tests.
+
 ## §security — security.rs
 
 All navigation funnels through `is_url_allowed`: http/https only, loopback and
@@ -76,6 +87,13 @@ Scaffolding for a future full Tauri app shell (`#[tauri::command]` handlers for
 node data / assets). Nothing registers them yet — there is no `tauri::Builder`
 in the binary; wry is used directly. `resolve_asset` canonicalizes both base
 and target to keep symlinks inside the petal asset dir.
+
+**VerseManager wiring gap**: the node/petal commands (`get_node_data`,
+`list_nodes_for_petal`, `notify_interaction`, `update_node_transform`,
+`update_node_url`, `list_petals`) are stubs — no VerseManager query/event path
+reaches this seam yet. Each logs via `tracing` and returns placeholder data
+(hardcoded node, empty list, or bare `Ok`) until that wiring lands;
+`resolve_asset`/`get_asset_base_url` are the only fully-functional commands.
 
 ## §tests
 
@@ -93,4 +111,5 @@ roles locally: the local `Role` enum maps onto `fe_policy::RoleLevel`
 as `Action::Manage` on scope `UI#config-tab` against the shared
 `RoleLevelPolicy::standard()` engine. Same observable behavior (only Admin
 sees Config), but the decision + its log come from the engine. The `Role`
-enum itself stays until fe-auth exposes the canonical session role.
+enum itself stays until the session layer (`fe_database::session_cache` /
+`fe-policy`) exposes the canonical session role.

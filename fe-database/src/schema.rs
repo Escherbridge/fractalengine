@@ -1,32 +1,11 @@
-//! Table definitions for every SurrealDB table in the fractal-engine schema.
-//!
-//! Each table is defined exactly once via the [`define_table!`] macro, which
-//! generates:
-//!
-//! 1. A `pub struct` with `Debug, Clone, Serialize, Deserialize`.
-//! 2. An `impl Table` (see [`crate::repo::Table`]) providing `TABLE_NAME`,
-//!    `ID_FIELD`, `schema()` (the SurrealQL DDL), and `id_value()`.
-//!
-//! The generated `schema()` string uses `DEFINE TABLE/FIELD IF NOT EXISTS`
-//! so it is fully idempotent and safe to run on every startup.
+//! Table definitions for every SurrealDB table — one [`define_table!`] call
+//! per table (see fe-database/src/AGENTS.md §schema-macro).
 
-/// Define a SurrealDB table as a Rust struct with auto-generated DDL.
+/// Define a SurrealDB table as a Rust struct with auto-generated idempotent
+/// DDL (syntax guide: fe-database/src/AGENTS.md §schema-macro).
 ///
-/// # Syntax
-///
-/// ```ignore
-/// define_table! {
-///     /// Doc comment on the struct.
-///     table "surreal_table_name" => RustStructName (id: id_field_name) {
-///         field_a: String        => "TYPE string",
-///         field_b: Option<String> => "TYPE option<string>",
-///     }
-/// }
-/// ```
-///
-/// The right-hand side of `=>` for each field is the SurrealQL type clause
-/// (everything after `ON TABLE <name>`).  It can include `ASSERT`, `VALUE`,
-/// `DEFAULT`, and `FLEXIBLE` modifiers.
+/// Each field's `=>` right-hand side is the SurrealQL type clause after
+/// `ON TABLE <name>` (may include `ASSERT`, `VALUE`, `DEFAULT`, `FLEXIBLE`).
 macro_rules! define_table {
     (
         $(#[$struct_meta:meta])*
@@ -234,13 +213,8 @@ define_table! {
 }
 
 define_table! {
-    /// Append-only, per-node operation log. Each row is an immutable fact
-    /// recording a single mutation on a node. Rows are INSERT-only — no
-    /// UPDATE or DELETE is ever issued against this table.
-    ///
-    /// `row_version` is monotonically increasing per `node_id` and serves as
-    /// hidden metadata for "most recent state" queries. `hlc_timestamp` is
-    /// the HLC-packed u64 for time-series ordering and distributed merge.
+    /// Append-only per-node operation log — INSERT-only, immutable rows
+    /// (row_version/HLC semantics: fe-database/src/AGENTS.md §node-log).
     table "node_log" => NodeLog (id: log_id) {
         log_id:        String           => "TYPE string",
         node_id:       String           => "TYPE string",

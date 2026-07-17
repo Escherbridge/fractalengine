@@ -1,15 +1,4 @@
-//! Scenario 7: Two-Peer Sync Pipeline
-//!
-//! Tests the full sync command pipeline across two peers sharing a verse:
-//! 1. Alice creates a verse and opens a replica via SyncCommand::OpenVerseReplica
-//! 2. Alice writes a row entry to the replica (serialized verse JSON -> blob store -> WriteRowEntry)
-//! 3. Bob opens a replica for the same verse (using the namespace_id from Alice's invite)
-//! 4. Manually copy the blob from Alice's store to Bob's store (simulating network fetch)
-//! 5. Bob writes the same row entry to his replica
-//! 6. Verify both peers have the blob and no panics occurred
-//! 7. Both peers close their replicas
-//!
-//! This exercises the full sync infrastructure pipeline for two peers.
+//! Scenario 7: Two-Peer Sync Pipeline — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use anyhow::Result;
 use fe_database::hash_to_hex;

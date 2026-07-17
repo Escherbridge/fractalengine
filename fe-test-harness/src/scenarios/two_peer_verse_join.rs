@@ -1,14 +1,4 @@
-//! Scenario 6: Two-Peer Verse Join
-//!
-//! Full two-peer verse lifecycle:
-//! 1. Alice creates a verse, a fractal, and a petal
-//! 2. Alice generates an invite (include_write_cap=true)
-//! 3. Bob joins via the invite string
-//! 4. Bob's hierarchy contains the verse (with matching verse_id and name)
-//! 5. Bob creates a fractal in the joined verse (using the same verse_id)
-//! 6. Both Alice and Bob have their own fractals
-//!
-//! This proves invite-based collaboration works with independent DB state.
+//! Scenario 6: Two-Peer Verse Join — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use anyhow::Result;
 use fe_runtime::messages::{DbCommand, DbResult};
