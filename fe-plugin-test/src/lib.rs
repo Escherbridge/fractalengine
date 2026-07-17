@@ -1,10 +1,5 @@
-//! fe-plugin-test — Testing utilities for FractalEngine plugins (Phase 9C.1).
-//!
-//! This crate provides a mock host environment, spy recorder, scene fixtures,
-//! assertion helpers, and a Rhai test runner so plugin authors can test their
-//! scripts without spinning up a real engine.
-//!
-//! # Quick start
+//! fe-plugin-test — mock host + fixtures + assertions for engine-free plugin tests
+//! (architecture and walkthrough: src/AGENTS.md).
 //!
 //! ```rust
 //! use fe_plugin_test::prelude::*;

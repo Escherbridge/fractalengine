@@ -1,18 +1,5 @@
-//! Hybrid Logical Clock (HLC) and operation-log writer.
-//!
-//! Replaces the former static `LAMPORT_CLOCK: AtomicU64` with a proper HLC
-//! that encodes wall-clock milliseconds in the upper 48 bits and a
-//! monotonic counter in the lower 16 bits.  This guarantees:
-//!
-//! - **Monotonicity**: timestamps never go backwards, even if the wall clock
-//!   drifts or two events land in the same millisecond.
-//! - **Restart safety**: `init_hlc()` takes the highest persisted lamport value
-//!   and advances past it, so a restart never re-issues an old timestamp.
-//! - **Sortability**: the packed `u64` sorts identically to the `(wall_ms, counter)`
-//!   pair, so SurrealDB `ORDER BY lamport_clock` remains correct.
-//!
-//! The DB thread is single-threaded (current_thread tokio), but we wrap the
-//! state in a `Mutex` for `static` safety.  Contention is zero in practice.
+//! Hybrid Logical Clock (HLC) + operation-log writer (design:
+//! fe-database/src/AGENTS.md §hlc).
 
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,14 +21,8 @@ struct HlcState {
 /// Module-level HLC.  `None` until [`init_hlc`] is called.
 static HLC_STATE: Mutex<Option<HlcState>> = Mutex::new(None);
 
-/// Initialise the HLC from the highest persisted `lamport_clock` value.
-///
-/// Must be called **once** during DB startup, before any `write_op_log` call.
-/// The coordinator (fe-database/src/lib.rs) is responsible for calling this
-/// after querying `SELECT math::max(lamport_clock) FROM op_log`.
-///
-/// If `max_persisted` is 0 (empty op_log table) the clock starts from the
-/// current wall time.
+/// Initialise the HLC past the highest persisted `lamport_clock` — called
+/// once at DB startup, before any op-log write (see fe-database/src/AGENTS.md §hlc).
 pub fn init_hlc(max_persisted: u64) {
     let now_ms = wall_now_ms();
 
@@ -66,17 +47,8 @@ pub fn init_hlc(max_persisted: u64) {
     );
 }
 
-/// Generate the next HLC timestamp.
-///
-/// Returns `(packed_u64, human_string)` where:
-/// - `packed_u64` — upper 48 bits = wall_ms, lower 16 bits = counter.
-///   Drop-in replacement for the old Lamport clock: monotonic, orderable.
-/// - `human_string` — `"<wall_ms>:<counter_hex>"`, stored in the
-///   `hlc_timestamp` column for debugging / external tooling.
-///
-/// # Panics
-///
-/// Panics if [`init_hlc`] has not been called.
+/// Next HLC timestamp as `(packed_u64, human_string)`; panics if
+/// [`init_hlc`] has not been called (format: fe-database/src/AGENTS.md §hlc).
 pub fn next_hlc_timestamp() -> (u64, String) {
     let mut guard = HLC_STATE.lock().unwrap();
     let state = guard

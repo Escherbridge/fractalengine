@@ -5,6 +5,50 @@ lifecycle, capability tokens, and the channel bridge to the Bevy ECS. It now
 depends on `fe-sdk` and treats `fe-sdk` as the single source of truth for the
 stable data types.
 
+## §architecture
+
+`PluginHostPlugin` (lib.rs) spawns a dedicated plugin runtime thread
+(thread 7) with its own Tokio runtime. Plugins communicate with the Bevy ECS
+through bounded crossbeam channels using the `PluginCommand`/`PluginResult`
+enums:
+
+```text
+Bevy ECS  <--crossbeam-->  Plugin Thread (Tokio)
+  |                            |
+  | drain_plugin_results()     | FractalExtension callbacks
+  |                            | RhaiEngine sandboxed scripts
+```
+
+Native plugins implement `FractalExtension` directly. Rhai scripts are wrapped
+by `rhai::RhaiEngine`, which bridges host API calls back through the command
+channel. `drain_plugin_results` processes at most 64 results per frame to avoid
+stalling the main loop, and flips a plugin to `Degraded` on a `PluginResult::Error`.
+
+## §lifecycle
+
+`lifecycle.rs::PluginManager` wraps a `WasmEngine`, `AotCache`, and
+`PluginRegistry` behind the four lifecycle ops. State flow:
+
+```text
+install_plugin  → verify signature → AOT compile → register in registry (Installed)
+activate_plugin → load from AOT   → instantiate  → call on_activate → Active
+deactivate_plugin → call on_deactivate → registry Deactivated
+uninstall_plugin  → call on_uninstall  → remove from registry + delete files
+```
+
+Notes:
+
+- "Signature verification" at install is a BLAKE3 hash check against the
+  caller-supplied `expected_hash` (absent = skip).
+- `activate_plugin` only validates registry state
+  (`Installed`/`Deactivated`/`Degraded(_)` → activatable) and then returns
+  `NotImplemented`; the real path is `activate_with_bytes`, because the Wasm
+  bytes must come from plugin package storage.
+- `deactivate`/`uninstall` call the plugin's `on_deactivate`/`on_uninstall`
+  exports best-effort (errors ignored) — teardown must always complete.
+- `uninstall_plugin` takes the original `wasm_bytes` because AOT-cache
+  eviction is keyed by the hash of the source bytes.
+
 ## §type-unification
 
 Previously `fe-plugin` carried type definitions parallel to `fe-sdk`. It no

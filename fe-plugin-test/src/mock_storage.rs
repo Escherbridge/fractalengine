@@ -1,11 +1,4 @@
-//! In-memory implementations of the `fe-sdk` storage + query traits.
-//!
-//! [`MockStorage`] lets plugin/extension tests exercise `node_get_properties`,
-//! `node_set_property`, `query_select`, and the per-extension KV without a real
-//! database. It applies the same host-boundary validation and SELECT-only guard
-//! as the engine so tests observe realistic fail-closed behavior. It is cheap to
-//! clone (shared `Arc<Mutex<..>>`) so the same store can be seeded, injected,
-//! and inspected. See `fe-plugin-test`'s crate docs.
+//! In-memory `fe-sdk` storage + query trait impls (design: src/AGENTS.md §mock-storage).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

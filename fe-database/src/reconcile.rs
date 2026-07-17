@@ -1,19 +1,5 @@
-//! # Reconciliation — the sole startup data-fixing mechanism
-//!
-//! The former `migrations.rs` module was removed because tracked-once semantics
-//! don't work in P2P (peers can't coordinate "which migration ran").
-//! Reconciliation rules are idempotent invariants — safe to re-run forever.
-//!
-//! Declarative DB reconciliation — runs every startup, converges to correct state.
-//!
-//! Unlike ordered migrations that run once, reconciliation rules are **invariants**:
-//! they describe what the DB *should* look like, check for violations, and fix them.
-//! Every rule is idempotent and safe to run repeatedly. No tracking table needed.
-//!
-//! This pattern works for P2P because:
-//! - Peers on different client versions all converge to the same correct state
-//! - New rules are additive — old clients ignore fields they don't know about
-//! - No coordination needed between peers about "which migration ran"
+//! Declarative idempotent DB reconciliation — the sole startup data-fixing
+//! mechanism (see fe-database/src/AGENTS.md §reconcile).
 
 use crate::repo::Db;
 

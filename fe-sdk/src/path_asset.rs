@@ -33,13 +33,18 @@ pub enum SpacingMode {
 /// - `tangent_align`: rotate each instance to face the local path tangent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PathAssetDescriptor {
+    /// The `blob://{hash}.glb` (or asset ref) stamped at every instance.
     pub asset_path: String,
+    /// How instances are distributed along the path.
     #[serde(default)]
     pub spacing_mode: SpacingMode,
+    /// Real-world meters between instances (used in `FixedSpacing`).
     #[serde(default)]
     pub spacing_value: f32,
+    /// Instance count (used in `FixedCount`).
     #[serde(default)]
     pub count: u32,
+    /// Rotate each instance to face the local path tangent.
     #[serde(default)]
     pub tangent_align: bool,
 }

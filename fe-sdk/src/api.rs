@@ -9,10 +9,15 @@ use serde::{Deserialize, Serialize};
 /// HTTP method for an extension route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HttpMethod {
+    /// HTTP GET.
     Get,
+    /// HTTP POST.
     Post,
+    /// HTTP PUT.
     Put,
+    /// HTTP PATCH.
     Patch,
+    /// HTTP DELETE.
     Delete,
 }
 

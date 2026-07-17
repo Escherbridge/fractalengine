@@ -1,10 +1,4 @@
-//! Scenario 1: Blob Store Roundtrip
-//!
-//! Verifies that importing a GLB file via `ImportGltf`:
-//! 1. Writes the bytes to the blob store
-//! 2. Returns an `asset_path` using the `blob://` scheme
-//! 3. The BLAKE3 hash in the path matches the original file bytes
-//! 4. The blob store contains the exact original bytes
+//! Scenario 1: Blob Store Roundtrip — see fe-test-harness/src/AGENTS.md §scenarios.
 
 use anyhow::Result;
 use fe_runtime::messages::{DbCommand, DbResult};

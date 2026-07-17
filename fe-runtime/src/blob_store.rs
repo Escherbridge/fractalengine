@@ -1,18 +1,5 @@
-//! Content-addressed blob storage abstraction (P2P Mycelium Phase A).
-//!
-//! The `BlobStore` trait decouples asset-byte storage from the database layer.
-//! It lives in `fe-runtime` (no crate dependencies) so that both `fe-database`
-//! and `fe-sync` can depend on it without creating a cycle:
-//!
-//! ```text
-//! fe-runtime (trait)  <---  fe-database (uses handle)
-//!        ^
-//!        |
-//!     fe-sync (FsBlobStore impl)  --->  fe-database (existing dep)
-//! ```
-//!
-//! Hashes are raw BLAKE3 digests (`[u8; 32]`). Hex encoding is provided for DB
-//! rows (`content_hash` column) and paths (`blob://{hex}.glb`).
+//! Content-addressed BLAKE3 blob storage trait (placement rationale:
+//! fe-runtime/src/AGENTS.md §blob-store).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -138,15 +125,8 @@ pub mod mock {
         }
     }
 
-    /// Minimal BLAKE3 wrapper so the mock does not pull in the full `blake3`
-    /// crate as a direct dependency of `fe-runtime`. We duplicate the
-    /// computation via `std::hash`-style compression — but for real hashing
-    /// we need BLAKE3, so route through a tiny local helper.
-    ///
-    /// NOTE: We cannot avoid BLAKE3 here because the mock must produce the
-    /// same hash as `FsBlobStore` so tests can cross-check. `fe-runtime`
-    /// therefore takes a `blake3` dep. If this dep weight becomes an issue,
-    /// move the mock to `fe-sync` instead.
+    /// BLAKE3 helper — mock must hash identically to `FsBlobStore`
+    /// (see fe-runtime/src/AGENTS.md §blob-store).
     fn blake3_lite(bytes: &[u8]) -> blake3::Hash {
         blake3::hash(bytes)
     }

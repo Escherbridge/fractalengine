@@ -9,6 +9,43 @@ handlers may bypass that round-trip entirely with a direct SurrealDB query
 (`direct_*` helpers in `rest.rs`/`assets.rs`) — this is the established escape
 hatch for reads that don't have (or don't need) a dedicated `DbCommand`.
 
+## §routes
+
+Route inventory for `server.rs::build_router`. The `.route()` registrations
+there are the source of truth; this table is the browsable index — update it
+when a route lands.
+
+**Public** (no auth; WS authenticates after the upgrade handshake):
+
+| Method | Path | Handler |
+|--------|------|---------|
+| GET | `/api/v1/health` | inline |
+| GET | `/ready` | `ready_handler` (DB ping) |
+| GET | `/ws` | `ws::ws_handler` |
+| GET | `/api/v1/tiles/elevation/{tileset_id}/{z}/{x}/{y_png}` | `terrain::get_elevation_tile` |
+| GET | `/api/v1/tiles/satellite/{tileset_id}/{z}/{x}/{y_jpg}` | `terrain::get_satellite_tile` |
+| GET | `/api/v1/tilesets` | `terrain::list_available_tilesets` |
+| GET | `/api/v1/tilesets/{tileset_id}/meta` | `terrain::get_tileset_meta` |
+| GET | `/api/v1/shared/{token}` | `share::redeem_share_url` (§share — the signature is the credential) |
+
+**Authenticated** (Bearer JWT via `auth::auth_middleware`):
+
+| Area | Routes |
+|------|--------|
+| Hierarchy CRUD | `GET /api/v1/hierarchy`; `POST /api/v1/verses`, `POST …/verses/{v}/fractals`, `POST …/fractals/{f}/petals`, `POST …/petals/{p}/nodes`; legacy flat `POST /api/v1/nodes` |
+| Node ops | `PATCH\|GET /api/v1/nodes/{id}/transform`, `PATCH\|GET …/properties`, `DELETE …/properties/{key}`, `PATCH /api/v1/nodes/{waypoint_id}/move`, `GET /api/v1/nodes/{track_id}/elevation-profile`, `GET …/stats` |
+| Waypoints | `POST /api/v1/petals/{p}/waypoints` |
+| GIS reads (§gis) | `GET /api/v1/petals/{p}/gis/nodes`, `GET …/gis/tracks` |
+| Assets (§assets) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset` |
+| Petal archive / GPX | `GET /api/v1/petals/{p}/export`, `POST …/import`, `POST …/import/gpx`, `GET …/export/gpx` |
+| Terrain config | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
+| Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
+| Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query`, `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` |
+| IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
+| Hexon tilesets | `POST /api/v1/hexons/tilesets/install`, `DELETE /api/v1/hexons/tilesets/{id}`, `PATCH …/{id}/seeding`, `GET /api/v1/hexons/tilesets`, `GET /api/v1/hexons/storage` |
+| Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install`, `DELETE …/{uri}/uninstall`, `GET /api/v1/crates/search`, `GET /api/v1/crates/installed`, `GET /api/v1/crates/{uri}`, `GET …/{uri}/entries`, `GET …/{uri}/entries/{entry_id}/asset`, `GET /api/v1/crates/available` |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) |
+
 ## §gis
 
 Two petal-scoped read endpoints (`src/gis.rs`), under the JWT-authenticated

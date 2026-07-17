@@ -6,6 +6,24 @@ dependencies (`serde`, `serde_json`) and must never pull in engine internals
 types the plugin/extension API is expressed in — `fe-plugin` and
 `fe-plugin-test` both re-export these rather than defining parallel copies.
 
+## §modules
+
+| Module | Purpose |
+|--------|---------|
+| `api` | `ApiExtensionHandle`, `ExtensionRoute`, `HttpMethod` — HTTP route contributions |
+| `node` | `NodeSnapshot` — read-only view of a node |
+| `path_asset` | `PathAssetDescriptor` — repeated-model path stamping (§path-asset) |
+| `primitive` | `PrimitiveDescriptor`, `PrimitiveKind` — BIM primitive shape (§primitive) |
+| `property` | `PropertyValue`, `PropertyBag` — typed properties |
+| `scene` | `SceneChange`, `SceneChangeBatch` — scene mutations |
+| `transaction` | `PluginTransaction` trait — batched writes |
+| `context` | `PluginContext` trait — engine services |
+| `storage` | `ExtensionStorageApi` — node-property + KV access (§storage) |
+| `query` | `ExtensionQueryApi`, `is_select_only` — SELECT-only reads (§query) |
+| `texture` | `TextureRegistry`, `TextureEntry` — content-addressed textures (§texture) |
+| `ui` | `UiSlot`, `UiContribution`, `UiExtensionRegistry` — UI slot contributions |
+| `events` | `PluginEvent`, `EventSubscription` — inter-plugin events |
+
 ## §storage
 
 `storage.rs` defines [`ExtensionStorageApi`] — the host-provided read/write

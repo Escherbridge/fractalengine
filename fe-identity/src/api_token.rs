@@ -1,8 +1,5 @@
-//! API token minting and verification for the Realtime API Gateway.
-//!
-//! `ApiClaims` is a separate JWT type from `FractalClaims` — it supports
-//! longer TTLs (up to 30 days), scope-based authorization at any hierarchy
-//! level, and includes a `jti` for revocation tracking.
+//! API token minting and verification for the Realtime API Gateway
+//! (design: fe-identity/src/AGENTS.md §api-token).
 
 use crate::keypair::NodeKeypair;
 use ed25519_dalek::VerifyingKey;
@@ -15,13 +12,8 @@ fn ensure_crypto_provider() {
 /// Maximum API token TTL: 30 days.
 pub const MAX_API_TOKEN_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
-/// JWT claims for API access tokens.
-///
-/// Distinct from `FractalClaims`:
-/// - Longer TTL (up to 30 days vs 300 seconds)
-/// - Scope-based access at any hierarchy level (not just petal)
-/// - Token type discriminator for middleware routing
-/// - `jti` for server-side revocation
+/// JWT claims for API access tokens — deliberately distinct from
+/// `FractalClaims` (rationale: fe-identity/src/AGENTS.md §api-token).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ApiClaims {
     /// `did:key:z6Mk...` of the issuing node.

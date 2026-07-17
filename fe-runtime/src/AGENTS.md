@@ -30,3 +30,25 @@ depends on the current untagged wire shape (Tauri↔Bevy bridge).
 reconciling before the texture registry is wired at runtime (registry starts
 empty today, so it's currently inert) — flagged for whoever wires FR-4
 registry population / P2 texture install.
+
+## §blob-store (P2P Mycelium Phase A)
+
+`blob_store.rs` defines the `BlobStore` trait, decoupling asset-byte storage
+from the database layer. It lives in `fe-runtime` (no crate dependencies) so
+that both `fe-database` and `fe-sync` can depend on it without creating a
+cycle:
+
+```text
+fe-runtime (trait)  <---  fe-database (uses handle)
+       ^
+       |
+    fe-sync (FsBlobStore impl)  --->  fe-database (existing dep)
+```
+
+Hashes are raw BLAKE3 digests (`[u8; 32]`); hex encoding is provided for DB
+rows (`content_hash` column) and paths (`blob://{hex}.glb`).
+
+`MockBlobStore` must produce the same digest as `FsBlobStore` so tests can
+cross-check hashes — that is why `fe-runtime` takes a direct `blake3`
+dependency despite the trait itself needing none. If that dep weight ever
+becomes an issue, move the mock into `fe-sync` instead.

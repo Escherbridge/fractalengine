@@ -144,16 +144,9 @@ pub fn generate_scoped_invite(
     Ok(invite)
 }
 
-/// Validate a scoped invite: check signature, expiry, scope format, and role.
-///
-/// Derives the verifying key from `invite.creator_did` using the `did:key` format.
-///
-/// # Errors
-/// - Invalid `creator_did` format
-/// - Signature verification failure
-/// - Invite has expired
-/// - Invalid scope format
-/// - Role is `Owner`
+/// Validate a scoped invite: signature (verifying key derived from
+/// `creator_did` via `did:key`), expiry, scope format, and role (Owner not
+/// grantable by invite).
 pub fn validate_scoped_invite(invite: &ScopedInvite) -> anyhow::Result<()> {
     // Derive verifying key from creator DID
     let vk = fe_identity::did_key::public_key_from_did_key(&invite.creator_did)?;

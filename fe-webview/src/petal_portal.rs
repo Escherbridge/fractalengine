@@ -1,12 +1,4 @@
-//! Petal Portal — Overlay Activation System
-//!
-//! Drives the full lifecycle of the in-scene browser overlay:
-//!   - Activation on model entity selection
-//!   - Deactivation on deselect / ESC
-//!   - Cleanup when the active entity is despawned
-//!   - Overlay repositioning each frame (PostUpdate)
-//!   - Tab visibility gating by role (Phase 3)
-//!   - URL editor commit system (Phase 4)
+//! Petal Portal — selection-driven browser-overlay lifecycle (see src/AGENTS.md §portal-lifecycle).
 
 use bevy::prelude::*;
 use std::collections::HashSet;
@@ -61,7 +53,7 @@ pub struct ActivePortal {
 }
 
 /// Role enum used for tab visibility gating.
-/// Mirrors the role concept in `fe-auth`; defined here to avoid a hard dep.
+/// Mirrors the role concept in `fe-database` (`RoleLevel`, canonical home `fe-policy`); defined here to avoid a hard dep.
 // CROSS-CRATE: verify this matches the canonical Role type after merge
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Role {
@@ -295,8 +287,7 @@ pub fn position_overlay_system(
         return;
     };
 
-    // TODO Sprint 4: project AABB to screen space and call surface.position().
-    // DEFERRED TO VALIDATION PHASE — full projection math pending wry surface integration.
+    // TODO: AABB→screen projection deferred (see src/AGENTS.md §petal-portal-deferred).
 }
 
 /// Update — processes `UrlEditorSaved` events. Validates the new URL, mutates
@@ -462,26 +453,15 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[ignore = "needs full Bevy app (validation phase)"]
     fn selecting_model_with_allowed_url_sets_active_portal() {
-        // DEFERRED TO VALIDATION PHASE — MessageWriter integration requires full Bevy app
-        // This test documents the expected behavior; compilation verified at validation.
-        //
-        // let mut app = minimal_app_with_portal_plugin();
-        // let entity = app.world_mut().spawn((
-        //     ModelUrlMeta {
-        //         external_url: Some("https://example.com".to_string()),
-        //         config_url: None,
-        //     },
-        //     Selected,
-        // )).id();
-        // app.update();
-        // let portal = app.world().resource::<ActivePortal>();
-        // assert_eq!(portal.entity, Some(entity));
+        // Stub — see src/AGENTS.md §petal-portal-deferred.
     }
 
     #[test]
+    #[ignore = "needs full Bevy app (validation phase)"]
     fn selecting_model_with_no_url_sets_active_portal_but_no_navigate() {
-        // DEFERRED TO VALIDATION PHASE
+        // Stub — see src/AGENTS.md §petal-portal-deferred.
     }
 
     // -----------------------------------------------------------------------

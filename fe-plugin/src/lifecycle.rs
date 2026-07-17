@@ -1,17 +1,4 @@
-//! Plugin lifecycle management for Wasm plugins.
-//!
-//! Provides install / activate / deactivate / uninstall operations
-//! that handle signature verification, AOT compilation, instantiation,
-//! and registry state transitions.
-//!
-//! # Lifecycle flow
-//!
-//! ```text
-//! install_plugin  → verify signature → AOT compile → register in registry (Installed)
-//! activate_plugin → load from AOT   → instantiate  → call on_activate → Active
-//! deactivate_plugin → call on_deactivate → registry Deactivated
-//! uninstall_plugin  → call on_uninstall  → remove from registry + delete files
-//! ```
+//! Wasm plugin lifecycle ops (flow: src/AGENTS.md §lifecycle).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,13 +52,7 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
-    /// Create a new plugin manager.
-    ///
-    /// # Arguments
-    /// * `engine` — The Wasmtime engine (shared via Arc).
-    /// * `cache_dir` — Directory for AOT compiled `.cwasm` files.
-    /// * `registry` — Shared plugin registry.
-    /// * `cmd_tx` — Command channel sender.
+    /// Create a new plugin manager with an AOT cache rooted at `cache_dir`.
     pub fn new(
         engine: Arc<WasmEngine>,
         cache_dir: impl Into<PathBuf>,
@@ -88,17 +69,7 @@ impl PluginManager {
         })
     }
 
-    /// Install a Wasm plugin.
-    ///
-    /// 1. Verifies the plugin's cryptographic signature (BLAKE3 hash check).
-    /// 2. AOT compiles the Wasm bytes and caches the result.
-    /// 3. Registers the plugin in the registry as `Installed`.
-    ///
-    /// # Arguments
-    /// * `plugin_id` — Unique identifier for the plugin.
-    /// * `wasm_bytes` — Raw WebAssembly module bytes.
-    /// * `manifest` — Capability manifest for the plugin.
-    /// * `expected_hash` — Optional expected BLAKE3 hash for verification.
+    /// Install a Wasm plugin: verify hash, AOT compile, register as `Installed`.
     pub fn install_plugin(
         &mut self,
         plugin_id: &str,
@@ -154,18 +125,7 @@ impl PluginManager {
         Ok(())
     }
 
-    /// Activate an installed plugin.
-    ///
-    /// 1. Loads the plugin from AOT cache.
-    /// 2. Instantiates it with a fresh store and fuel budget.
-    /// 3. Calls the `on_activate` export if present.
-    /// 4. Transitions the registry state to `Active`.
-    ///
-    /// # Arguments
-    /// * `plugin_id` — The plugin to activate.
-    /// * `petal_id` — The petal scope for this plugin instance.
-    /// * `capabilities` — Capability manifest.
-    /// * `fuel_budget` — Fuel budget for this instance.
+    /// Activate an installed plugin (state check only; use [`Self::activate_with_bytes`]).
     pub async fn activate_plugin(
         &mut self,
         _plugin_id: &str,
@@ -270,11 +230,7 @@ impl PluginManager {
         Ok(())
     }
 
-    /// Deactivate a running plugin.
-    ///
-    /// 1. Calls the `on_deactivate` export if present.
-    /// 2. Removes the instance from the installed map.
-    /// 3. Transitions the registry state to `Deactivated`.
+    /// Deactivate a running plugin: call `on_deactivate`, drop instance, registry `Deactivated`.
     pub async fn deactivate_plugin(&mut self, plugin_id: &str) -> Result<(), LifecycleError> {
         // Try to call on_deactivate if the plugin is running
         if let Some(installed) = self.installed.get_mut(plugin_id) {
@@ -312,16 +268,7 @@ impl PluginManager {
         Ok(())
     }
 
-    /// Uninstall a plugin completely.
-    ///
-    /// 1. Deactivates if currently active.
-    /// 2. Calls the `on_uninstall` export if present.
-    /// 3. Removes from the registry.
-    /// 4. Evicts from the AOT cache.
-    ///
-    /// # Arguments
-    /// * `plugin_id` — The plugin to uninstall.
-    /// * `wasm_bytes` — Original Wasm bytes (for cache eviction).
+    /// Uninstall a plugin: call `on_uninstall`, unregister, evict from AOT cache.
     pub async fn uninstall_plugin(
         &mut self,
         plugin_id: &str,

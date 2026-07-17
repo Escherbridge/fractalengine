@@ -59,6 +59,7 @@ impl TextureRegistry {
         self.entries.len()
     }
 
+    /// Whether the registry has no entries.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
