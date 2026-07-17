@@ -151,6 +151,8 @@ pub struct PathEditorState {
     /// guard. Same idiom as `tracks_pending`.
     pub points_pending: bool,
     pub last_error: Option<String>,
+    /// Track row whose Delete awaits the inline two-step confirm (Paths list).
+    pub pending_track_delete: Option<String>,
     /// Point index whose annotation form is currently open, if any. Set by a
     /// modifier-click on a point marker or the list "Annotate" flow; drives the
     /// inline title/body/color form in `path_editor_card`.
@@ -309,6 +311,17 @@ impl PathEditorState {
         self.close_annotate_form();
     }
 
+    /// Full reset when the active petal changes: ends any edit session and
+    /// drops the previous petal's track list so Pen clicks can't append to a
+    /// foreign-petal track. Watched by `node_manager::open_track_on_select`.
+    pub(crate) fn reset_for_petal_change(&mut self) {
+        self.stop_editing();
+        self.tracks.clear();
+        self.tracks_pending = false;
+        self.last_error = None;
+        self.pending_track_delete = None;
+    }
+
     /// path_interaction_20260716 (FR-2/FR-3): drop the vertex/segment selection
     /// and its cached measurements. Called on stop-editing, start-editing, and
     /// whenever the point count changes (a stale index would mis-highlight).
@@ -440,6 +453,28 @@ mod tests {
         s.stop_editing();
         assert!(s.editing_track_id.is_none());
         assert!(s.points.is_empty());
+    }
+
+    #[test]
+    fn reset_for_petal_change_clears_list_and_session() {
+        let mut s = PathEditorState::default();
+        s.tracks.push(GisResultRow {
+            node_id: "track-1".to_string(),
+            name: "track-1".to_string(),
+            position: [0.0, 0.0, 0.0],
+            annotation_title: None,
+            annotation_color: None,
+        });
+        s.tracks_pending = true;
+        s.last_error = Some("boom".to_string());
+        s.pending_track_delete = Some("track-1".to_string());
+        s.start_editing("track-1".to_string());
+        s.reset_for_petal_change();
+        assert!(s.editing_track_id.is_none());
+        assert!(s.tracks.is_empty());
+        assert!(!s.tracks_pending);
+        assert!(s.last_error.is_none());
+        assert!(s.pending_track_delete.is_none());
     }
 
     #[test]

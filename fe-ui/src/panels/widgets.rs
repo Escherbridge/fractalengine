@@ -1,5 +1,6 @@
-//! Shared, reusable inspector/panel egui widgets. See
-//! `fe-ui/src/panels/AGENTS.md` §widgets. Keep these egui-only (no queries).
+//! Shared, reusable inspector/panel egui widgets + world↔meters unit helpers.
+//! See `fe-ui/src/panels/AGENTS.md` §widgets. Keep these egui-only (no
+//! queries).
 
 use bevy_egui::egui;
 
@@ -87,6 +88,25 @@ pub(crate) fn copy_row(ui: &mut egui::Ui, ui_mgr: &mut UiManager, label: &str, v
     );
 }
 
+/// world_scale sanitized: ≤0 / non-finite ⇒ 1.0 (1 world-unit : 1 m).
+fn sane_scale(world_scale: f64) -> f64 {
+    if world_scale.is_finite() && world_scale > 0.0 {
+        world_scale
+    } else {
+        1.0
+    }
+}
+
+/// World units → meters (`real_m = world / world_scale`).
+pub(crate) fn world_to_meters(world: f32, world_scale: f64) -> f32 {
+    (world as f64 / sane_scale(world_scale)) as f32
+}
+
+/// Meters → world units (`world = m * world_scale`).
+pub(crate) fn meters_to_world(meters: f32, world_scale: f64) -> f32 {
+    (meters as f64 * sane_scale(world_scale)) as f32
+}
+
 /// Truncate `s` to at most `max_chars` characters, appending an ellipsis when
 /// clipped. Char-boundary safe (multibyte-aware). Keeps a huge property value
 /// (e.g. a `gpx_points` JSON blob) from walling the inspector vertically; the
@@ -106,6 +126,16 @@ pub(crate) fn elide(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_conversion_round_trips_and_sanitizes_scale() {
+        assert_eq!(world_to_meters(10.0, 2.0), 5.0);
+        assert_eq!(meters_to_world(5.0, 2.0), 10.0);
+        assert_eq!(world_to_meters(meters_to_world(3.5, 0.25), 0.25), 3.5);
+        // Degenerate scales fall back to 1:1.
+        assert_eq!(world_to_meters(7.0, 0.0), 7.0);
+        assert_eq!(meters_to_world(7.0, f64::NAN), 7.0);
+    }
 
     #[test]
     fn elide_shorter_than_cap_is_unchanged() {

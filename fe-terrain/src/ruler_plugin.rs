@@ -53,13 +53,14 @@ fn draw_scale_bar(
     if !settings.show_scale_bar {
         return;
     }
+    let Ok(ectx) = ctx.ctx_mut() else {
+        return;
+    };
     let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+        draw_unscaled_chip(ectx);
         return;
     };
     let Ok((cam_tx, cam_proj)) = cameras.single() else {
-        return;
-    };
-    let Ok(ectx) = ctx.ctx_mut() else {
         return;
     };
 
@@ -98,4 +99,27 @@ fn draw_scale_bar(
         egui::FontId::proportional(12.0),
         egui::Color32::WHITE,
     );
+}
+
+/// Dimmed bottom-left chip shown in place of the scale bar when no enabled
+/// terrain config provides a map scale (distances are raw world units).
+fn draw_unscaled_chip(ectx: &egui::Context) {
+    let screen = ectx.content_rect();
+    let painter = ectx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("ruler_scale_bar"),
+    ));
+    let dim = egui::Color32::from_white_alpha(110);
+    let galley = painter.layout_no_wrap(
+        "world units (no map scale)".to_string(),
+        egui::FontId::proportional(11.0),
+        dim,
+    );
+    let pos = egui::pos2(
+        screen.min.x + BAR_MARGIN,
+        screen.max.y - BAR_MARGIN - galley.size().y,
+    );
+    let rect = egui::Rect::from_min_size(pos, galley.size()).expand(4.0);
+    painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(120));
+    painter.galley(pos, galley, dim);
 }

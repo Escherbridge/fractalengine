@@ -1,8 +1,9 @@
-//! GIS Query panel: a floating window with a Query tab (three query modes —
-//! nodes with annotations, property key/value filter, local-coords bbox,
-//! plus GPX import), an Annotations tab (all annotated nodes in the active
-//! petal), and a Layers tab (`layer_manager_card`, view mode). See
-//! `fe-ui/src/AGENTS.md` §gis-query-ui.
+//! Data panel ("Data — Query, Layers & Export"): a floating window with a
+//! Query tab (three query modes — nodes with annotations, property key/value
+//! filter, local-coords bbox, plus GPX import), an Annotations tab (all
+//! annotated nodes in the active petal), and a Layers tab
+//! (`layer_manager_card`, view mode). See `fe-ui/src/AGENTS.md`
+//! §gis-query-ui.
 
 use bevy_egui::egui;
 
@@ -11,13 +12,14 @@ use crate::gis::{self, GisPanelState, GisPanelTab, GisQueryMode};
 use crate::gpx_ops::GpxImportStatus;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
+use crate::panels::widgets::{meters_to_world, world_to_meters};
 use crate::path_ops::PathEditStatus;
 use crate::plugin::{CameraFocusTarget, ViewportCursorWorld};
 use crate::terrain_map::PetalMapState;
 use crate::theme;
 use crate::verse_manager::VerseManager;
 
-/// Default half-extent (world units) for the "Center on Selection"/"Center
+/// Default half-extent (meters) for the "Center on Selection"/"Center
 /// on Origin" bbox shortcuts.
 const DEFAULT_BBOX_HALF_EXTENT: f32 = 50.0;
 
@@ -39,8 +41,9 @@ pub(crate) fn render_gis_panel(
         return;
     }
 
+    let world_scale = petal_map.world_scale;
     let mut still_open = true;
-    egui::Window::new("GIS Query & Layers")
+    egui::Window::new("Data — Query, Layers & Export")
         .open(&mut still_open)
         .resizable(true)
         .default_width(360.0)
@@ -78,6 +81,7 @@ pub(crate) fn render_gis_panel(
                         camera_focus,
                         &petal_id,
                         gpx_status,
+                        world_scale,
                     );
                 }
                 GisPanelTab::Annotations => {
@@ -89,6 +93,7 @@ pub(crate) fn render_gis_panel(
                         ui_mgr,
                         camera_focus,
                         &petal_id,
+                        world_scale,
                     );
                 }
                 GisPanelTab::Layers => {
@@ -120,7 +125,12 @@ pub(crate) fn render_gis_panel(
                 }
                 GisPanelTab::Export => {
                     crate::panels::egress_card::egress_section(
-                        ui, gis_state, node_mgr, ui_mgr, &petal_id,
+                        ui,
+                        gis_state,
+                        node_mgr,
+                        ui_mgr,
+                        &petal_id,
+                        world_scale,
                     );
                 }
             }
@@ -170,6 +180,7 @@ fn render_annotations_tab(
     ui_mgr: &mut UiManager,
     camera_focus: &mut CameraFocusTarget,
     petal_id: &str,
+    world_scale: f64,
 ) {
     ui.horizontal(|ui| {
         ui.label(
@@ -191,7 +202,7 @@ fn render_annotations_tab(
                 .clicked()
             {
                 gis_state.mode = GisQueryMode::Annotated;
-                run_query(gis_state, verse_mgr, ui_mgr, petal_id);
+                run_query(gis_state, verse_mgr, ui_mgr, petal_id, world_scale);
             }
         });
     });
@@ -206,7 +217,7 @@ fn render_annotations_tab(
         ui.add_space(4.0);
     }
 
-    render_results(ui, gis_state, node_mgr, camera_focus);
+    render_results(ui, gis_state, node_mgr, camera_focus, world_scale);
 }
 
 fn render_query_section(
@@ -218,6 +229,7 @@ fn render_query_section(
     camera_focus: &mut CameraFocusTarget,
     petal_id: &str,
     gpx_status: &GpxImportStatus,
+    world_scale: f64,
 ) {
     ui.label(
         egui::RichText::new("Query")
@@ -282,7 +294,7 @@ fn render_query_section(
         GisQueryMode::Bbox => {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("Min (x,z)")
+                    egui::RichText::new("Min x,z (m)")
                         .small()
                         .color(theme::TEXT_DIM),
                 );
@@ -291,7 +303,7 @@ fn render_query_section(
             });
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("Max (x,z)")
+                    egui::RichText::new("Max x,z (m)")
                         .small()
                         .color(theme::TEXT_DIM),
                 );
@@ -304,7 +316,12 @@ fn render_query_section(
                         .selected
                         .as_ref()
                         .and_then(|sel| verse_mgr.all_nodes().find(|n| n.id == sel.node_id))
-                        .map(|n| [n.position[0], n.position[2]])
+                        .map(|n| {
+                            [
+                                world_to_meters(n.position[0], world_scale),
+                                world_to_meters(n.position[2], world_scale),
+                            ]
+                        })
                         .unwrap_or([0.0, 0.0]);
                     gis_state.center_bbox_on(center, DEFAULT_BBOX_HALF_EXTENT);
                 }
@@ -326,7 +343,7 @@ fn render_query_section(
         .add_enabled(can_run, egui::Button::new(run_label).fill(theme::BG_SAVE))
         .clicked()
     {
-        run_query(gis_state, verse_mgr, ui_mgr, petal_id);
+        run_query(gis_state, verse_mgr, ui_mgr, petal_id, world_scale);
     }
 
     if let Some(err) = &gis_state.last_error {
@@ -341,7 +358,7 @@ fn render_query_section(
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(4.0);
-    render_results(ui, gis_state, node_mgr, camera_focus);
+    render_results(ui, gis_state, node_mgr, camera_focus, world_scale);
 
     ui.add_space(6.0);
     ui.separator();
@@ -358,6 +375,7 @@ fn run_query(
     verse_mgr: &VerseManager,
     ui_mgr: &mut UiManager,
     petal_id: &str,
+    world_scale: f64,
 ) {
     gis_state.results.clear();
     gis_state.last_error = None;
@@ -384,13 +402,16 @@ fn run_query(
             });
         }
         GisQueryMode::Bbox => {
-            let (Some(min), Some(max)) = (
+            // Bbox fields are meters; node positions are world units.
+            let (Some(min_m), Some(max_m)) = (
                 gis::parse_bbox_fields(&gis_state.bbox_min),
                 gis::parse_bbox_fields(&gis_state.bbox_max),
             ) else {
                 gis_state.last_error = Some("Bbox fields must be numbers".to_string());
                 return;
             };
+            let min = min_m.map(|m| meters_to_world(m, world_scale));
+            let max = max_m.map(|m| meters_to_world(m, world_scale));
             let Some(petal) = verse_mgr.find_petal(petal_id) else {
                 return;
             };
@@ -415,6 +436,7 @@ fn render_results(
     gis_state: &GisPanelState,
     node_mgr: &mut NodeManager,
     camera_focus: &mut CameraFocusTarget,
+    world_scale: f64,
 ) {
     ui.label(
         egui::RichText::new(format!("Results ({})", gis_state.results.len()))
@@ -471,8 +493,10 @@ fn render_results(
                                 |ui| {
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "({:.1}, {:.1}, {:.1})",
-                                            row.position[0], row.position[1], row.position[2]
+                                            "({:.1}, {:.1}, {:.1}) m",
+                                            world_to_meters(row.position[0], world_scale),
+                                            world_to_meters(row.position[1], world_scale),
+                                            world_to_meters(row.position[2], world_scale),
                                         ))
                                         .small()
                                         .color(theme::TEXT_DIM),

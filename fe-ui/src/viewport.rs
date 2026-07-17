@@ -4,6 +4,7 @@ use crate::actions::UiManager;
 use crate::atlas::DashboardState;
 use crate::dialogs::{ActiveDialog, CreateKind, EntitySettingsType, SettingsTab};
 use crate::navigation_manager::NavigationManager;
+use crate::panels::toolbar;
 use crate::plugin::{LocalUserRole, ViewportCursorWorld};
 use crate::theme;
 use crate::verse_manager::VerseManager;
@@ -106,12 +107,27 @@ pub fn viewport_petal_space(
         );
     }
 
-    // Tool hints at bottom
-    if node_mgr.selected_entity().is_none() {
+    // Tool hints at bottom — keys/labels come from `panels::toolbar::TOOL_DEFS`.
+    if toolbar::active_tool_hint(ui.ctx()) == Some(toolbar::Tool::Pen) {
         ui.painter().text(
             egui::pos2(center.x, rect.max.y - 40.0),
             egui::Align2::CENTER_CENTER,
-            "Click an object to select it  \u{2022}  S = Select  G = Move  R = Rotate",
+            "Pen: click terrain to add points  \u{2022}  drag a marker to move  \u{2022}  Ctrl+drag a marker = raise/lower height  \u{2022}  Shift/Alt+click a marker to annotate",
+            egui::FontId::proportional(12.0),
+            theme::TEXT_VIEWPORT_HINT,
+        );
+    } else if node_mgr.selected_entity().is_none() {
+        ui.painter().text(
+            egui::pos2(center.x, rect.max.y - 56.0),
+            egui::Align2::CENTER_CENTER,
+            "Click an object to select it",
+            egui::FontId::proportional(12.0),
+            theme::TEXT_VIEWPORT_HINT,
+        );
+        ui.painter().text(
+            egui::pos2(center.x, rect.max.y - 38.0),
+            egui::Align2::CENTER_CENTER,
+            toolbar::shortcut_hint_line(),
             egui::FontId::proportional(12.0),
             theme::TEXT_VIEWPORT_HINT,
         );
@@ -311,6 +327,17 @@ pub fn viewport_verse_browser(
             });
         }
     });
+
+    // First-run hierarchy explainer (only when there are no verses yet).
+    if hierarchy.verses.is_empty() {
+        ui.painter().text(
+            egui::pos2(rect.min.x + 20.0, start_y + card_h + 16.0),
+            egui::Align2::LEFT_CENTER,
+            "A verse holds fractals; each fractal holds petals — the 3D spaces where you build.",
+            egui::FontId::proportional(11.0),
+            theme::TEXT_MUTED,
+        );
+    }
 
     // --- Peer Discovery section ---
     let peer_section_y =
@@ -561,7 +588,7 @@ pub fn viewport_fractal_browser(
     }
 }
 
-/// Fractal selected — browse petals, select one to enter the 3D room.
+/// Fractal selected — browse petals, select one to enter its 3D space.
 pub fn viewport_petal_browser(
     ui: &mut egui::Ui,
     nav: &mut NavigationManager,
@@ -608,7 +635,7 @@ pub fn viewport_petal_browser(
     ui.painter().text(
         egui::pos2(center.x, rect.min.y + 55.0),
         egui::Align2::CENTER_CENTER,
-        "Each petal is a room where 3D objects live",
+        "Each petal is a 3D space where objects live",
         egui::FontId::proportional(12.0),
         theme::TEXT_MUTED,
     );
@@ -770,7 +797,7 @@ pub fn viewport_petal_browser(
             ui.painter().text(
                 center,
                 egui::Align2::CENTER_CENTER,
-                "No petals yet — click + New Petal to create a room",
+                "No petals yet — click + New Petal to create one",
                 egui::FontId::proportional(14.0),
                 theme::TEXT_MUTED,
             );

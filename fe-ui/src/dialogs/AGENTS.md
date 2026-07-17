@@ -13,3 +13,23 @@
 Every render function early-returns via `let ActiveDialog::Variant { .. } =
 ui_mgr.active_dialog else { return };` — this is the enforcement mechanism
 for mutual exclusion; don't replace it with a separate `open: bool` flag.
+
+## §destructive-confirm
+
+Destructive buttons use a two-step inline confirm: first click flips a
+pending flag, second click ("Confirm …") executes; "Cancel" clears the flag.
+Canonical implementation: `entity_settings.rs` Delete (`pending_delete`
+variant field). Node Options' Delete Node (`DbCommand::DeleteNode`, cascades
+to child waypoints) and the sidebar's Reset Database follow it; the sidebar
+and the inspector's token Revoke keep the pending flag in egui temp data
+because their state lives outside `ActiveDialog`. New destructive actions
+must adopt this convention — never a single-click irreversible send
+(ux hardening batch 2026-07-17).
+
+## §map-terminology
+
+User-facing artifact name is "map" ("Map Manager", "Search maps...", "Set
+petal map"); "hexon" is reserved for the package/file format in
+publish/import contexts ("Install from file..." + `.hexon` filter). Internal
+identifiers (`hexon_id`, DTO names) unchanged (baked terminology decision,
+ux hardening batch 2026-07-17).

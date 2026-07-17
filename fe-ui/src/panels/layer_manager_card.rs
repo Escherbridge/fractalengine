@@ -15,9 +15,10 @@ use crate::theme;
 const HONORED_LAYER_NAMES: &[&str] = &["satellite", "terrain"];
 
 /// Layer names offered as inert placeholders — fe-terrain's `petal_binding`
-/// only maps `"satellite"`/`"terrain"` today and warns+skips anything else,
-/// so these checkboxes have no rendering effect yet. Tracked as a residual
-/// (see FR-3 in the track spec).
+/// only maps `"satellite"`/`"terrain"` today and warns+skips anything else
+/// (see `fe-terrain/src/AGENTS.md` §petal_binding), so these checkboxes have
+/// no rendering effect yet. Tracked as a residual (see FR-3 in the track
+/// spec).
 const INERT_LAYER_NAMES: &[&str] = &["gpx_track", "geojson_overlay"];
 
 pub(crate) fn layer_manager_section(
@@ -56,16 +57,15 @@ pub(crate) fn layer_manager_section(
     ui.separator();
     ui.add_space(4.0);
     ui.label(
-        egui::RichText::new("Not yet honored by fe-terrain (residual — see AGENTS.md):")
+        egui::RichText::new("Coming soon — these layer types aren't rendered yet.")
             .small()
             .color(theme::TEXT_MUTED)
             .italics(),
     );
     for name in INERT_LAYER_NAMES {
         let mut inert = false;
-        ui.add_enabled(false, egui::Checkbox::new(&mut inert, *name)).on_hover_text(
-            "Layer name isn't mapped in fe-terrain's petal_binding yet — see fe-terrain/src/AGENTS.md §petal_binding",
-        );
+        ui.add_enabled(false, egui::Checkbox::new(&mut inert, *name))
+            .on_hover_text("This layer type isn't rendered yet.");
     }
 }
 

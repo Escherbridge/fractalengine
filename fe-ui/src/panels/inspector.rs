@@ -13,6 +13,7 @@ use bevy_egui::egui;
 use crate::actions::{UiAction, UiManager};
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
+use crate::panels::widgets::{meters_to_world, world_to_meters};
 use crate::plugin::{InspectorFormState, InspectorTab, LocalUserRole, API_TOKEN_PAGE_SIZE};
 use crate::terrain_map::PetalMapState;
 use crate::theme;
@@ -224,25 +225,6 @@ fn inspector_entity_section(ui: &mut egui::Ui, node_mgr: &crate::node_manager::N
 /// Max characters shown for a custom-property value before eliding (FR-1); the
 /// full value is still copyable via the box's copy button.
 const PROP_VALUE_ELIDE_CHARS: usize = 240;
-
-/// world_scale sanitized: ≤0 / non-finite ⇒ 1.0 (1 world-unit : 1 m).
-fn sane_scale(world_scale: f64) -> f64 {
-    if world_scale.is_finite() && world_scale > 0.0 {
-        world_scale
-    } else {
-        1.0
-    }
-}
-
-/// World units → meters (`real_m = world / world_scale`).
-fn world_to_meters(world: f32, world_scale: f64) -> f32 {
-    (world as f64 / sane_scale(world_scale)) as f32
-}
-
-/// Meters → world units (`world = m * world_scale`).
-fn meters_to_world(meters: f32, world_scale: f64) -> f32 {
-    (meters as f64 * sane_scale(world_scale)) as f32
-}
 
 // Rotation is already stored degrees-side in `inspector.rot` (inspector_sync
 // converts radians→degrees on fill; actions::transform converts back on Apply),
@@ -542,7 +524,7 @@ fn inspector_url_meta_section(
         ui.add_space(4.0);
 
         ui.label(
-            egui::RichText::new("External URL")
+            egui::RichText::new("Portal URL")
                 .small()
                 .color(theme::TEXT_DIM),
         );
@@ -799,7 +781,7 @@ fn inspector_api_access_section(
                             // curl command — pre-built with the actual token
                             ui.add_space(4.0);
                             let curl_cmd = format!(
-                                "curl.exe -s http://localhost:8765/health -H \"Authorization: Bearer {}\"",
+                                "curl -s http://localhost:8765/health -H \"Authorization: Bearer {}\"",
                                 token,
                             );
                             egui::Frame::NONE
@@ -908,7 +890,42 @@ fn inspector_api_access_section(
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui
+                                            // Two-step confirm (destructive-action convention).
+                                            let pending_id =
+                                                egui::Id::new("inspector_token_revoke_pending");
+                                            let pending: Option<String> =
+                                                ui.ctx().data(|d| d.get_temp(pending_id));
+                                            if pending.as_deref() == Some(tok.jti.as_str()) {
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            egui::RichText::new("Cancel").small(),
+                                                        )
+                                                        .fill(theme::BG_BUTTON),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    ui.ctx().data_mut(|d| {
+                                                        d.remove::<String>(pending_id)
+                                                    });
+                                                }
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            egui::RichText::new("Confirm Revoke")
+                                                                .small(),
+                                                        )
+                                                        .fill(theme::BG_DANGER),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    revoke_jti =
+                                                        Some((tok.jti.clone(), tok.sub.clone()));
+                                                    ui.ctx().data_mut(|d| {
+                                                        d.remove::<String>(pending_id)
+                                                    });
+                                                }
+                                            } else if ui
                                                 .add(
                                                     egui::Button::new(
                                                         egui::RichText::new("Revoke").small(),
@@ -917,7 +934,9 @@ fn inspector_api_access_section(
                                                 )
                                                 .clicked()
                                             {
-                                                revoke_jti = Some((tok.jti.clone(), tok.sub.clone()));
+                                                ui.ctx().data_mut(|d| {
+                                                    d.insert_temp(pending_id, tok.jti.clone())
+                                                });
                                             }
                                         },
                                     );
@@ -1314,6 +1333,8 @@ fn inspector_schema_section(
         );
         ui.add_space(2.0);
 
+        // Key + type only — `DbCommand::CreateFieldDef` cannot persist
+        // description/required yet.
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut inspector.field_def_add_key_buf)
@@ -1332,15 +1353,7 @@ fn inspector_schema_section(
                         );
                     }
                 });
-            ui.checkbox(&mut inspector.field_def_add_required, "Req");
         });
-
-        ui.add_space(2.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut inspector.field_def_add_desc_buf)
-                .hint_text("description (optional)")
-                .desired_width(f32::INFINITY),
-        );
 
         ui.add_space(4.0);
 
@@ -1374,14 +1387,12 @@ fn inspector_schema_section(
                 field_def_id: format!("pending-{}", inspector.field_defs.len()),
                 key,
                 value_type,
-                description: inspector.field_def_add_desc_buf.trim().to_string(),
-                required: inspector.field_def_add_required,
+                description: String::new(),
+                required: false,
                 default_val: None,
             };
             inspector.field_defs.push(entry);
             inspector.field_def_add_key_buf.clear();
-            inspector.field_def_add_desc_buf.clear();
-            inspector.field_def_add_required = false;
         }
 
         ui.add_space(4.0);
@@ -1397,31 +1408,6 @@ mod tests {
     use super::*;
 
     const EPS: f32 = 1e-4;
-
-    #[test]
-    fn world_meters_round_trip_at_human_scale() {
-        // world_scale 1.0 → world units == meters.
-        assert!((world_to_meters(5.0, 1.0) - 5.0).abs() < EPS);
-        assert!((meters_to_world(5.0, 1.0) - 5.0).abs() < EPS);
-    }
-
-    #[test]
-    fn world_meters_scaled() {
-        // 0.001 world units per meter (1 wu = 1 mm): 2 world units = 2000 m.
-        assert!((world_to_meters(2.0, 0.001) - 2000.0).abs() < 0.1);
-        assert!((meters_to_world(2000.0, 0.001) - 2.0).abs() < EPS);
-    }
-
-    #[test]
-    fn degenerate_scale_falls_back_to_one() {
-        assert_eq!(sane_scale(0.0), 1.0);
-        assert_eq!(sane_scale(-3.0), 1.0);
-        assert_eq!(sane_scale(f64::NAN), 1.0);
-        assert_eq!(sane_scale(f64::INFINITY), 1.0);
-        // Conversions treat a bad scale as 1:1 (raw units), never NaN.
-        assert!((world_to_meters(4.0, 0.0) - 4.0).abs() < EPS);
-        assert!((meters_to_world(4.0, f64::NAN) - 4.0).abs() < EPS);
-    }
 
     #[test]
     fn radians_degrees_round_trip() {

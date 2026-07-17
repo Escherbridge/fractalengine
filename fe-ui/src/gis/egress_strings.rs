@@ -169,7 +169,7 @@ pub(crate) fn mint_share_curl(
         ttl_secs,
     );
     format!(
-        "curl.exe -s -X POST {}/api/v1/query/share -H \"Authorization: Bearer <YOUR_API_TOKEN>\" -H \"Content-Type: application/json\" -d \"{}\"",
+        "curl -s -X POST {}/api/v1/query/share -H \"Authorization: Bearer <YOUR_API_TOKEN>\" -H \"Content-Type: application/json\" -d \"{}\"",
         trim_base(base),
         body.replace('\\', "\\\\").replace('"', "\\\""),
     )
@@ -272,7 +272,7 @@ mod tests {
         );
         assert_eq!(
             cmd,
-            "curl.exe -s -X POST http://localhost:8765/api/v1/query/share \
+            "curl -s -X POST http://localhost:8765/api/v1/query/share \
              -H \"Authorization: Bearer <YOUR_API_TOKEN>\" -H \"Content-Type: application/json\" \
              -d \"{\\\"sql\\\":\\\"SELECT * FROM node WHERE petal_id = 'p'\\\",\\\"format\\\":\\\"parquet\\\",\\\"ttl_secs\\\":3600}\"",
         );

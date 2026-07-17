@@ -1,4 +1,4 @@
-//! Hexon Manager dialog: installed / available / downloads tabs.
+//! Map Manager dialog (hexon package UI): installed / available / downloads tabs.
 
 use bevy_egui::egui;
 
@@ -49,7 +49,7 @@ pub fn render_hexon_manager(
     let mut still_open = true;
     let mut actions: Vec<UiAction> = Vec::new();
 
-    egui::Window::new("Hexon Manager")
+    egui::Window::new("Map Manager")
         .open(&mut still_open)
         .collapsible(false)
         .resizable(false)
@@ -68,7 +68,7 @@ pub fn render_hexon_manager(
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(filter_text)
-                        .hint_text("Search tilesets...")
+                        .hint_text("Search maps...")
                         .desired_width(300.0),
                 );
 
@@ -165,7 +165,7 @@ pub fn render_hexon_manager(
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} tilesets, {} total",
+                        "{} maps, {} total",
                         storage_info.count,
                         format_size(storage_info.total_bytes),
                     ))
@@ -226,7 +226,7 @@ fn render_installed_tab(
     if tilesets.is_empty() {
         ui.label(
             egui::RichText::new(
-                "No tilesets installed. Use \"Install from file...\" or download from the Available tab.",
+                "No maps installed. Use \"Install from file...\" or download from the Available tab.",
             )
             .color(theme::TEXT_MUTED),
         );
@@ -443,7 +443,7 @@ fn render_scale_controls(
         .on_hover_text("World units per real meter (region ↔ human scale of space)");
         if petal_map.scale_bounds.is_some() {
             ui.label(
-                egui::RichText::new("(hexon-bounded)")
+                egui::RichText::new("(map-bounded)")
                     .small()
                     .color(theme::TEXT_DIM),
             );
@@ -499,7 +499,7 @@ fn render_available_tab(
     if tilesets.is_empty() {
         ui.label(
             egui::RichText::new(
-                "No peers connected. Available tilesets will appear when you connect to peers sharing terrain data.",
+                "No peers connected. Available maps will appear when you connect to peers sharing terrain data.",
             )
             .color(theme::TEXT_MUTED),
         );

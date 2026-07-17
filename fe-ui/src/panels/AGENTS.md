@@ -66,7 +66,7 @@
   `NodeManager.selected`, per project memory track-selection-two-concepts),
   and Bbox (reuses the Query tab's bbox buffers).
 - Shareable link: fe-ui has **no HTTP-client seam** to fe-api, so minting is
-  a displayed, copyable `curl.exe` command against the Phase-3 contract
+  a displayed, copyable `curl` command against the Phase-3 contract
   (`POST /api/v1/query/share`, body `sql`+`format`+`ttl_secs`); wiring a real
   in-app mint call is a recorded follow-up on the track. The bbox SQL filters
   on `position.coordinates[0|1]` (the `[x, z]` GeoJSON point contract from
@@ -122,7 +122,7 @@
   only the internal `render_tool_panel` call was widened.
 
   **Reachability (FR-4.2).** `ToolPanelState.open` is toggled by a
-  **"🔧 Tools"** button in `top_toolbar` (right cluster, beside GIS/Hexons);
+  **"🔧 Tools"** button in `top_toolbar` (right cluster, beside Data/Maps);
   `top_toolbar` gained a trailing `tool_panel: &mut ToolPanelState` param for
   it. Previously `.open` had no UI toggle (a discoverability gap) — the panel
   was only openable via code/default.

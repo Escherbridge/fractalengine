@@ -77,37 +77,84 @@ pub(super) fn handle_viewport_click(
     }
 }
 
-/// Open a track for editing when it becomes the viewport selection.
-///
-/// The viewport picker (`handle_viewport_click`) only touches `NodeManager`;
-/// the Paths tab's `editing_track_id` is independent. So when the newly
-/// selected node is one of the Paths-tab tracks (`PathEditorState.tracks`),
-/// dispatch `PathSelectTrack` so clicking a rendered ribbon also opens it for
-/// editing. fe-ui can't see fe-terrain's `GpxTrackLine`, so membership in the
-/// track list is the crate-visible "is this a track?" test. A `Local`
-/// remembers the last selection so this only fires on a *change* (not every
-/// frame), and it skips when that track is already being edited so it never
-/// clobbers the in-flight point buffer. See `node_manager/AGENTS.md`
-/// §track-picking.
+/// Keeps `NodeManager.selected` and `PathEditorState.editing_track_id` — the
+/// two halves of the selection model — in sync (see `node_manager/AGENTS.md`
+/// §track-picking):
+/// - selecting a listed track in the viewport opens it for editing
+///   (`PathSelectTrack`); skipped when already editing it (buffer clobber);
+/// - an explicit deselect (toolbar Deselect / empty click / Esc) also ends the
+///   path-edit session;
+/// - a Paths-tab selection becomes the viewport/inspector selection via
+///   `pending_sidebar_select` (only when the track's entity is spawned, so the
+///   sidebar resolver can't deselect-fallback and kill the fresh session);
+/// - an active-petal change fully resets the editor (`respawn_on_petal_change`
+///   cadence) so Pen clicks can't append to a foreign-petal track.
 pub(super) fn open_track_on_select(
-    manager: Res<NodeManager>,
-    path_state: Res<crate::gis::PathEditorState>,
+    mut manager: ResMut<NodeManager>,
+    mut path_state: ResMut<crate::gis::PathEditorState>,
+    nav: Res<NavigationManager>,
+    markers: Query<&SpawnedNodeMarker>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
     mut last_selected: Local<Option<String>>,
+    mut last_editing: Local<Option<String>>,
+    mut last_petal: Local<Option<String>>,
+    mut petal_initialized: Local<bool>,
 ) {
-    let current = manager.selected.as_ref().map(|s| s.node_id.clone());
-    if current == *last_selected {
-        return; // selection unchanged this frame
+    if !*petal_initialized {
+        *last_petal = nav.active_petal_id.clone();
+        *petal_initialized = true;
+    } else if *last_petal != nav.active_petal_id {
+        *last_petal = nav.active_petal_id.clone();
+        path_state.reset_for_petal_change();
+        *last_editing = None;
     }
-    *last_selected = current.clone();
 
-    let Some(node_id) = current else { return };
-    if !track_to_open(&node_id, &path_state) {
-        return;
+    let current = manager.selected.as_ref().map(|s| s.node_id.clone());
+    if current != *last_selected {
+        let prev = std::mem::replace(&mut *last_selected, current.clone());
+        match current {
+            Some(node_id) => {
+                if track_to_open(&node_id, &path_state) {
+                    ui_mgr.push_action(crate::actions::UiAction::PathSelectTrack {
+                        track_node_id: node_id,
+                    });
+                }
+            }
+            None => {
+                if prev.is_some() && path_state.editing_track_id.is_some() {
+                    path_state.stop_editing();
+                }
+            }
+        }
     }
-    ui_mgr.push_action(crate::actions::UiAction::PathSelectTrack {
-        track_node_id: node_id,
-    });
+
+    let editing = path_state.editing_track_id.clone();
+    if editing != *last_editing {
+        *last_editing = editing.clone();
+        if let Some(track_id) = editing {
+            let already_selected =
+                manager.selected.as_ref().map(|s| s.node_id.as_str()) == Some(track_id.as_str());
+            if !already_selected
+                && spawned_in_petal(&markers, &track_id, nav.active_petal_id.as_deref())
+            {
+                manager.pending_sidebar_select = Some(track_id);
+            }
+        }
+    }
+}
+
+/// `true` when a spawned entity for `node_id` exists in the active petal.
+fn spawned_in_petal(
+    markers: &Query<&SpawnedNodeMarker>,
+    node_id: &str,
+    active_petal: Option<&str>,
+) -> bool {
+    markers.iter().any(|m| {
+        m.node_id == node_id
+            && active_petal
+                .map(|pid| pid == m.petal_id.as_str())
+                .unwrap_or(true)
+    })
 }
 
 /// `true` when `node_id` names a Paths-tab track that isn't already the one

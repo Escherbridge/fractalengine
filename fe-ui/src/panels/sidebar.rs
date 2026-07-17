@@ -45,21 +45,54 @@ pub(crate) fn left_sidebar(
                     ui.add_space(4.0);
                 });
 
-            // Bottom-pinned reset button
+            // Bottom-pinned reset button (two-step destructive confirm)
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
-                let reset_btn = egui::Button::new(
-                    egui::RichText::new("Reset Database")
-                        .small()
-                        .color(theme::TEXT_DIM),
-                )
-                .fill(theme::BG_BUTTON_ALT);
-                if ui
-                    .add(reset_btn)
-                    .on_hover_text("Wipe all data and re-seed defaults")
-                    .clicked()
-                {
-                    db_tx.send(DbCommand::ResetDatabase).ok();
+                let pending_id = egui::Id::new("sidebar_reset_db_pending");
+                let pending: bool = ui.ctx().data(|d| d.get_temp(pending_id)).unwrap_or(false);
+                if !pending {
+                    let reset_btn = egui::Button::new(
+                        egui::RichText::new("Reset Database")
+                            .small()
+                            .color(theme::TEXT_DIM),
+                    )
+                    .fill(theme::BG_BUTTON_ALT);
+                    if ui
+                        .add(reset_btn)
+                        .on_hover_text("Wipe all data and re-seed defaults")
+                        .clicked()
+                    {
+                        ui.ctx().data_mut(|d| d.insert_temp(pending_id, true));
+                    }
+                } else {
+                    // bottom_up layout: buttons first so the warning sits above.
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Confirm Reset")
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .fill(theme::BG_DANGER)
+                                .small(),
+                            )
+                            .clicked()
+                        {
+                            db_tx.send(DbCommand::ResetDatabase).ok();
+                            ui.ctx().data_mut(|d| d.remove::<bool>(pending_id));
+                        }
+                        if ui
+                            .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON).small())
+                            .clicked()
+                        {
+                            ui.ctx().data_mut(|d| d.remove::<bool>(pending_id));
+                        }
+                    });
+                    ui.label(
+                        egui::RichText::new("Are you sure? This cannot be undone.")
+                            .small()
+                            .color(theme::STATUS_OFFLINE),
+                    );
                 }
                 ui.add_space(4.0);
             });
@@ -244,7 +277,7 @@ fn render_petals(
             .show(ui, |ui| {
                 render_nodes(
                     ui,
-                    &mut petals[pi].nodes,
+                    &petals[pi].nodes,
                     camera_focus,
                     node_mgr,
                     ui_mgr,
@@ -278,20 +311,16 @@ fn render_petals(
 
 fn render_nodes(
     ui: &mut egui::Ui,
-    nodes: &mut Vec<NodeEntry>,
+    nodes: &[NodeEntry],
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     is_active_petal: bool,
 ) {
-    let drag_id = egui::Id::new("sidebar_node_drag");
-    let dragging_idx: Option<usize> = ui.ctx().data(|d| d.get_temp(drag_id));
-
-    let mut drop_target_idx: Option<usize> = None;
     let mut node_click: Option<(String, [f32; 3])> = None;
     let mut node_alt_click: Option<(String, String, String)> = None;
 
-    for (i, node) in nodes.iter().enumerate() {
+    for node in nodes.iter() {
         let node_id = node.id.clone();
         let node_name = node.name.clone();
         let has_asset = node.has_asset;
@@ -299,7 +328,6 @@ fn render_nodes(
         let webpage_url = node.webpage_url.clone().unwrap_or_default();
         let is_selected =
             node_mgr.selected.as_ref().map(|s| s.node_id.as_str()) == Some(node_id.as_str());
-        let is_being_dragged = dragging_idx == Some(i);
 
         let bg = if is_selected {
             theme::TREE_SELECTED_BG
@@ -312,12 +340,6 @@ fn render_nodes(
             .inner_margin(egui::Margin::symmetric(4, 1))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // Drag handle
-                    ui.label(
-                        egui::RichText::new(if is_being_dragged { "✦" } else { "⠿" })
-                            .small()
-                            .color(theme::TEXT_DIM),
-                    );
                     let icon = if has_asset { "\u{25C6}" } else { "\u{25CF}" };
                     ui.label(
                         egui::RichText::new(icon)
@@ -345,8 +367,6 @@ fn render_nodes(
             });
 
         let label_resp: egui::Response = row.inner;
-        let row_id = egui::Id::new(("node_row_drag", node_id.as_str()));
-        let drag_resp = ui.interact(row.response.rect, row_id, egui::Sense::drag());
 
         let is_alt = ui.input(|inp| inp.modifiers.alt);
 
@@ -356,26 +376,6 @@ fn render_nodes(
             } else {
                 node_click = Some((node_id.clone(), position));
             }
-        }
-
-        if drag_resp.drag_started() {
-            ui.ctx().data_mut(|d| d.insert_temp::<usize>(drag_id, i));
-        }
-
-        if dragging_idx.is_some()
-            && drag_resp.hovered()
-            && ui.input(|inp| inp.pointer.primary_released())
-        {
-            drop_target_idx = Some(i);
-        }
-
-        // Show drop indicator when dragging over this item
-        if dragging_idx.is_some() && drag_resp.hovered() {
-            ui.painter().hline(
-                row.response.rect.x_range(),
-                row.response.rect.top(),
-                egui::Stroke::new(2.0, theme::BG_BUTTON_ACTIVE),
-            );
         }
     }
 
@@ -393,25 +393,8 @@ fn render_nodes(
             node_id: nid,
             node_name_buf: nname,
             webpage_url_buf: url,
+            pending_delete: false,
         });
-    }
-
-    // Apply DnD reorder on pointer release
-    if ui.input(|inp| inp.pointer.primary_released()) {
-        if let Some(from_idx) = dragging_idx {
-            ui.ctx().data_mut(|d| d.remove::<usize>(drag_id));
-            if let Some(to_idx) = drop_target_idx {
-                if from_idx != to_idx && from_idx < nodes.len() && to_idx < nodes.len() {
-                    let item = nodes.remove(from_idx);
-                    let insert_at = if from_idx < to_idx {
-                        to_idx - 1
-                    } else {
-                        to_idx
-                    };
-                    nodes.insert(insert_at, item);
-                }
-            }
-        }
     }
 }
 
@@ -452,9 +435,6 @@ fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState)
             .show(ui, |ui| {
                 ui.label(egui::RichText::new("Petals").color(theme::TEXT_DIM).small());
                 ui.label(egui::RichText::new(dashboard.petal_count.to_string()).strong());
-                ui.end_row();
-                ui.label(egui::RichText::new("Rooms").color(theme::TEXT_DIM).small());
-                ui.label(egui::RichText::new(dashboard.room_count.to_string()).strong());
                 ui.end_row();
                 ui.label(egui::RichText::new("Models").color(theme::TEXT_DIM).small());
                 ui.label(egui::RichText::new(dashboard.model_count.to_string()).strong());

@@ -3,7 +3,7 @@
 use bevy_egui::egui;
 
 use super::ActiveDialog;
-use crate::actions::UiManager;
+use crate::actions::{UiAction, UiManager};
 use crate::theme;
 
 pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
@@ -19,6 +19,7 @@ pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     let world = world_pos;
 
     let mut next_dialog: Option<ActiveDialog> = None;
+    let mut create_node_at: Option<[f32; 3]> = None;
     let mut close = false;
 
     let area_response = egui::Area::new(egui::Id::new("viewport_context_menu"))
@@ -48,7 +49,7 @@ pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                         .add(egui::Button::new("Add Empty Node").fill(egui::Color32::TRANSPARENT))
                         .clicked()
                     {
-                        // TODO(tracked): CreateEmptyNode at cursor world pos
+                        create_node_at = Some(world);
                         close = true;
                     }
                 });
@@ -66,6 +67,9 @@ pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
         }
     }
 
+    if let Some(position) = create_node_at {
+        ui_mgr.push_action(UiAction::CreateNodeAt { position });
+    }
     if let Some(dialog) = next_dialog {
         ui_mgr.open_dialog(dialog);
     } else if close {

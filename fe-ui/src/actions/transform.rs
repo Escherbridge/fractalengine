@@ -7,6 +7,7 @@ use crate::node_manager::NodeManager;
 use crate::plugin::InspectorFormState;
 
 /// Parsed transform values ready to write onto the selected entity.
+#[derive(Debug)]
 pub(crate) struct ParsedTransform {
     pub position: Vec3,
     /// Euler angles in radians (XYZ order), matching `Transform::rotation`'s
@@ -16,22 +17,29 @@ pub(crate) struct ParsedTransform {
 }
 
 /// Pure: parse the inspector's Position/Rotation/Scale text buffers.
-/// Rotation buffers are in degrees (as displayed); returns `None` for any
-/// axis that fails to parse, leaving the caller to fall back rather than
-/// silently zero it out.
-pub(crate) fn parse_inspector_transform(inspector: &InspectorFormState) -> Option<ParsedTransform> {
-    fn parse_axes(bufs: &[String; 3]) -> Option<Vec3> {
-        let x = bufs[0].trim().parse::<f32>().ok()?;
-        let y = bufs[1].trim().parse::<f32>().ok()?;
-        let z = bufs[2].trim().parse::<f32>().ok()?;
-        Some(Vec3::new(x, y, z))
+/// Rotation buffers are in degrees (as displayed); returns `Err` naming the
+/// first axis that fails to parse, leaving the caller to fall back (and tell
+/// the user) rather than silently zero it out.
+pub(crate) fn parse_inspector_transform(
+    inspector: &InspectorFormState,
+) -> Result<ParsedTransform, String> {
+    fn parse_axes(label: &str, bufs: &[String; 3]) -> Result<Vec3, String> {
+        const AXES: [&str; 3] = ["X", "Y", "Z"];
+        let mut vals = [0.0_f32; 3];
+        for (i, buf) in bufs.iter().enumerate() {
+            vals[i] = buf
+                .trim()
+                .parse::<f32>()
+                .map_err(|_| format!("{} {label} isn't a number", AXES[i]))?;
+        }
+        Ok(Vec3::from_array(vals))
     }
 
-    let position = parse_axes(&inspector.pos)?;
-    let rot_deg = parse_axes(&inspector.rot)?;
-    let scale = parse_axes(&inspector.scale)?;
+    let position = parse_axes("position", &inspector.pos)?;
+    let rot_deg = parse_axes("rotation", &inspector.rot)?;
+    let scale = parse_axes("scale", &inspector.scale)?;
 
-    Some(ParsedTransform {
+    Ok(ParsedTransform {
         position,
         rotation_euler: Vec3::new(
             rot_deg.x.to_radians(),
@@ -45,21 +53,25 @@ pub(crate) fn parse_inspector_transform(inspector: &InspectorFormState) -> Optio
 /// `UiAction::ApplyNodeTransform` handler: parses the inspector buffers and
 /// writes them onto the selected entity's `Transform`, then marks the drag
 /// as committed so `transform_broadcast::broadcast_transform` persists it to
-/// DB + P2P in the same frame's `UiSet::Selection` pass.
+/// DB + P2P in the same frame's `UiSet::Selection` pass. `Err` carries a
+/// user-facing parse-failure reason for the dispatcher's toast.
 pub(crate) fn apply(
     inspector: &InspectorFormState,
     node_mgr: &mut NodeManager,
     transform_query: &mut Query<&mut Transform>,
-) {
+) -> Result<(), String> {
     let Some(sel) = node_mgr.selected.as_mut() else {
-        return;
+        return Ok(());
     };
-    let Some(parsed) = parse_inspector_transform(inspector) else {
-        bevy::log::warn!("ApplyNodeTransform: could not parse one or more transform fields");
-        return;
+    let parsed = match parse_inspector_transform(inspector) {
+        Ok(parsed) => parsed,
+        Err(reason) => {
+            bevy::log::warn!("ApplyNodeTransform: {reason}");
+            return Err(reason);
+        }
     };
     let Ok(mut transform) = transform_query.get_mut(sel.entity) else {
-        return;
+        return Ok(());
     };
 
     transform.translation = parsed.position;
@@ -72,6 +84,7 @@ pub(crate) fn apply(
     transform.scale = parsed.scale;
 
     sel.drag_committed = true;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -96,7 +109,8 @@ mod tests {
     fn parse_inspector_transform_rejects_invalid_number() {
         let mut inspector = InspectorFormState::default();
         inspector.pos = ["not-a-number".into(), "0".into(), "0".into()];
-        assert!(parse_inspector_transform(&inspector).is_none());
+        let err = parse_inspector_transform(&inspector).expect_err("should fail");
+        assert_eq!(err, "X position isn't a number");
     }
 
     #[test]

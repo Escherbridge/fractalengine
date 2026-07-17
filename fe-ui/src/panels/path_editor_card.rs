@@ -124,7 +124,7 @@ fn render_track_list(
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(format!("Tracks ({})", path_state.tracks.len()))
+            egui::RichText::new(format!("Paths ({})", path_state.tracks.len()))
                 .strong()
                 .color(theme::TEXT_SECTION),
         );
@@ -173,6 +173,9 @@ fn render_track_list(
 
     let mut selected: Option<String> = None;
     let mut to_delete: Option<String> = None;
+    // Two-step Delete confirm — same convention as `entity_settings.rs` Delete.
+    let mut arm_delete: Option<String> = None;
+    let mut cancel_delete = false;
     egui::ScrollArea::vertical()
         .max_height(220.0)
         .show(ui, |ui| {
@@ -199,11 +202,30 @@ fn render_track_list(
                             {
                                 selected = Some(row.node_id.clone());
                             }
+                            let pending = path_state.pending_track_delete.as_deref()
+                                == Some(row.node_id.as_str());
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.small_button("Delete").clicked() {
-                                        to_delete = Some(row.node_id.clone());
+                                    if pending {
+                                        if ui.small_button("Cancel").clicked() {
+                                            cancel_delete = true;
+                                        }
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("Confirm Delete")
+                                                        .small()
+                                                        .color(egui::Color32::WHITE),
+                                                )
+                                                .fill(theme::BG_DANGER),
+                                            )
+                                            .clicked()
+                                        {
+                                            to_delete = Some(row.node_id.clone());
+                                        }
+                                    } else if ui.small_button("Delete").clicked() {
+                                        arm_delete = Some(row.node_id.clone());
                                     }
                                 },
                             );
@@ -213,12 +235,20 @@ fn render_track_list(
             }
         });
 
+    if let Some(node_id) = arm_delete {
+        path_state.pending_track_delete = Some(node_id);
+    }
+    if cancel_delete {
+        path_state.pending_track_delete = None;
+    }
     if let Some(node_id) = selected {
+        path_state.pending_track_delete = None;
         ui_mgr.push_action(UiAction::PathSelectTrack {
             track_node_id: node_id,
         });
     }
     if let Some(node_id) = to_delete {
+        path_state.pending_track_delete = None;
         ui_mgr.push_action(UiAction::PathDeleteTrack {
             track_node_id: node_id,
         });

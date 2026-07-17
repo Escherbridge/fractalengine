@@ -1,5 +1,6 @@
-//! Top toolbar: transform tool switcher, deselect, GIS/Tools/Hexons buttons.
+//! Top toolbar: transform tool switcher, deselect, GIS/Tools/Maps buttons.
 
+use bevy::prelude::KeyCode;
 use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
@@ -18,6 +19,84 @@ pub enum Tool {
     Scale,
     /// Click-to-place polyline pen for path editing; see `node_manager/AGENTS.md` §pen-tool.
     Pen,
+}
+
+/// One viewport tool: button glyph, user-facing name, shortcut, tooltip phrase.
+pub(crate) struct ToolDef {
+    pub(crate) tool: Tool,
+    pub(crate) glyph: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) key: &'static str,
+    pub(crate) key_code: KeyCode,
+    pub(crate) tip: &'static str,
+}
+
+/// Single source for toolbar buttons/tooltips, the keyboard bindings
+/// (`node_manager::shortcuts`), and the viewport hint line — so they can't drift.
+pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
+    ToolDef {
+        tool: Tool::Select,
+        glyph: "\u{2B1A}",
+        name: "Select",
+        key: "S",
+        key_code: KeyCode::KeyS,
+        tip: "Select objects",
+    },
+    ToolDef {
+        tool: Tool::Move,
+        glyph: "\u{271B}",
+        name: "Move",
+        key: "G",
+        key_code: KeyCode::KeyG,
+        tip: "Move selected object",
+    },
+    ToolDef {
+        tool: Tool::Rotate,
+        glyph: "\u{21BB}",
+        name: "Rotate",
+        key: "R",
+        key_code: KeyCode::KeyR,
+        tip: "Rotate selected object",
+    },
+    ToolDef {
+        tool: Tool::Scale,
+        glyph: "\u{2921}",
+        name: "Scale",
+        key: "X",
+        key_code: KeyCode::KeyX,
+        tip: "Scale selected object",
+    },
+    ToolDef {
+        tool: Tool::Pen,
+        glyph: "\u{270E}",
+        name: "Pen",
+        key: "P",
+        key_code: KeyCode::KeyP,
+        tip: "Draw a path: click the viewport to add points",
+    },
+];
+
+/// Viewport shortcut hint line generated from [`TOOL_DEFS`].
+pub(crate) fn shortcut_hint_line() -> String {
+    let mut line = TOOL_DEFS
+        .iter()
+        .map(|d| format!("{} = {}", d.key, d.name))
+        .collect::<Vec<_>>()
+        .join("  ");
+    line.push_str("  \u{2022}  Esc = deselect  \u{2022}  Right-click = menu");
+    line
+}
+
+/// Id under which `top_toolbar` stashes the frame's active tool (egui temp
+/// data — same idiom as the sidebar drag index) for panels that can't reach
+/// `ToolState`, e.g. the viewport hint.
+fn active_tool_id() -> egui::Id {
+    egui::Id::new("fe_active_tool")
+}
+
+/// Reads back the active tool stashed by `top_toolbar` this frame.
+pub(crate) fn active_tool_hint(ctx: &egui::Context) -> Option<Tool> {
+    ctx.data(|d| d.get_temp(active_tool_id()))
 }
 
 pub(crate) fn top_toolbar(
@@ -40,31 +119,24 @@ pub(crate) fn top_toolbar(
                 // Sidebar toggle removed: auto-collapse in panels/mod.rs overwrites
                 // `sidebar.open` every frame, making a manual button a no-op.
                 // TODO: re-add manual sidebar toggle when needed
-                for (t, label, tooltip) in [
-                    (Tool::Select, "\u{2B1A} Select", "Select objects (S)"),
-                    (Tool::Move, "\u{271B} Move", "Move selected object (G)"),
-                    (
-                        Tool::Rotate,
-                        "\u{21BB} Rotate",
-                        "Rotate selected object (R)",
-                    ),
-                    (Tool::Scale, "\u{2921} Scale", "Scale selected object (X)"),
-                    (
-                        Tool::Pen,
-                        "\u{270E} Pen",
-                        "Draw a path: click the viewport to add points (P)",
-                    ),
-                ] {
-                    let active = tool.active_tool == t;
-                    let btn = egui::Button::new(label).fill(if active {
-                        theme::BG_BUTTON_ACTIVE
-                    } else {
-                        theme::BG_BUTTON
-                    });
-                    if ui.add(btn).on_hover_text(tooltip).clicked() {
-                        tool.active_tool = t;
+                for def in &TOOL_DEFS {
+                    let active = tool.active_tool == def.tool;
+                    let btn =
+                        egui::Button::new(format!("{} {}", def.glyph, def.name)).fill(if active {
+                            theme::BG_BUTTON_ACTIVE
+                        } else {
+                            theme::BG_BUTTON
+                        });
+                    if ui
+                        .add(btn)
+                        .on_hover_text(format!("{} ({})", def.tip, def.key))
+                        .clicked()
+                    {
+                        tool.active_tool = def.tool;
                     }
                 }
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(active_tool_id(), tool.active_tool));
 
                 ui.separator();
 
@@ -84,12 +156,12 @@ pub(crate) fn top_toolbar(
                     );
 
                     if ui
-                        .add(egui::Button::new("\u{1F5FA} GIS").fill(if gis_panel.open {
+                        .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
                             theme::BG_BUTTON_ACTIVE
                         } else {
                             theme::BG_BUTTON
                         }))
-                        .on_hover_text("Query nodes, annotations, and terrain layers")
+                        .on_hover_text("Query nodes and layers, export for BI")
                         .clicked()
                     {
                         gis_panel.open = !gis_panel.open;
@@ -110,8 +182,8 @@ pub(crate) fn top_toolbar(
                     }
 
                     if ui
-                        .add(egui::Button::new("\u{1F4E6} Hexons").fill(theme::BG_BUTTON))
-                        .on_hover_text("Manage terrain tilesets")
+                        .add(egui::Button::new("\u{1F4E6} Maps").fill(theme::BG_BUTTON))
+                        .on_hover_text("Manage petal maps")
                         .clicked()
                     {
                         ui_mgr.open_dialog(ActiveDialog::HexonManager {
@@ -133,4 +205,42 @@ pub(crate) fn top_toolbar(
                 });
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hint_line_covers_every_tool_and_escape() {
+        let line = shortcut_hint_line();
+        for def in &TOOL_DEFS {
+            assert!(
+                line.contains(&format!("{} = {}", def.key, def.name)),
+                "hint line missing {}: {line}",
+                def.name
+            );
+        }
+        assert!(line.contains("Esc"), "hint line missing Esc: {line}");
+    }
+
+    #[test]
+    fn tool_defs_cover_all_tools_with_unique_keys() {
+        for t in [
+            Tool::Select,
+            Tool::Move,
+            Tool::Rotate,
+            Tool::Scale,
+            Tool::Pen,
+        ] {
+            assert!(
+                TOOL_DEFS.iter().any(|d| d.tool == t),
+                "no ToolDef for {t:?}"
+            );
+        }
+        let mut keys: Vec<&str> = TOOL_DEFS.iter().map(|d| d.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), TOOL_DEFS.len(), "duplicate shortcut keys");
+    }
 }

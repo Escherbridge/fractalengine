@@ -8,7 +8,7 @@ use crate::actions::UiManager;
 use crate::gis::egress_strings::{self as es, EgressSource, ExportFormat};
 use crate::gis::GisPanelState;
 use crate::node_manager::NodeManager;
-use crate::panels::widgets::copy_row;
+use crate::panels::widgets::{copy_row, meters_to_world};
 use crate::theme;
 
 pub(crate) fn egress_section(
@@ -17,6 +17,7 @@ pub(crate) fn egress_section(
     node_mgr: &NodeManager,
     ui_mgr: &mut UiManager,
     petal_id: &str,
+    world_scale: f64,
 ) {
     ui.label(
         egui::RichText::new("Copy for BI")
@@ -43,7 +44,7 @@ pub(crate) fn egress_section(
     });
     ui.add_space(6.0);
 
-    let Some(sql) = build_sql(gis_state, petal_id) else {
+    let Some(sql) = build_sql(gis_state, petal_id, world_scale) else {
         ui.label(
             egui::RichText::new(source_error(gis_state.egress.source))
                 .small()
@@ -118,17 +119,20 @@ fn render_source_selector(
         // Origin shortcuts live there).
         EgressSource::Bbox => {
             ui.label(
-                egui::RichText::new("Uses the Query tab's bbox fields.")
-                    .small()
-                    .color(theme::TEXT_MUTED),
+                egui::RichText::new(
+                    "Uses the Query tab's bbox fields (m; the SQL is in world units).",
+                )
+                .small()
+                .color(theme::TEXT_MUTED),
             );
         }
     }
 }
 
 /// Builds the egress SQL for the active source; `None` when its inputs are
-/// missing/unparseable (caller renders `source_error`).
-fn build_sql(gis_state: &GisPanelState, petal_id: &str) -> Option<String> {
+/// missing/unparseable (caller renders `source_error`). Bbox fields are
+/// meters; stored coordinates (and thus the SQL) are world units.
+fn build_sql(gis_state: &GisPanelState, petal_id: &str, world_scale: f64) -> Option<String> {
     match gis_state.egress.source {
         EgressSource::Petal => Some(es::petal_scope_sql(petal_id)),
         EgressSource::Node => {
@@ -136,8 +140,10 @@ fn build_sql(gis_state: &GisPanelState, petal_id: &str) -> Option<String> {
             (!node_id.is_empty()).then(|| es::node_selection_sql(petal_id, node_id))
         }
         EgressSource::Bbox => {
-            let min = crate::gis::parse_bbox_fields(&gis_state.bbox_min)?;
-            let max = crate::gis::parse_bbox_fields(&gis_state.bbox_max)?;
+            let min = crate::gis::parse_bbox_fields(&gis_state.bbox_min)?
+                .map(|m| meters_to_world(m, world_scale));
+            let max = crate::gis::parse_bbox_fields(&gis_state.bbox_max)?
+                .map(|m| meters_to_world(m, world_scale));
             Some(es::bbox_sql(petal_id, min, max))
         }
     }
