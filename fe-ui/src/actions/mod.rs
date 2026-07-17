@@ -6,6 +6,7 @@ mod asset;
 pub(crate) mod gis;
 mod gpx;
 mod hexon;
+mod node;
 pub(crate) mod node_props;
 pub(crate) mod path;
 pub(crate) mod portal;
@@ -40,6 +41,11 @@ pub enum UiAction {
     /// Apply the inspector's Position/Rotation/Scale text buffers to the
     /// selected node's `Transform`. See AGENTS.md §inspector-transform.
     ApplyNodeTransform,
+    /// Create an empty node at a viewport world position in the active petal
+    /// (context-menu "Add Empty Node").
+    CreateNodeAt {
+        position: [f32; 3],
+    },
     /// Submit a SurrealQL query via the API gateway.
     SubmitQuery {
         sql: String,
@@ -417,8 +423,20 @@ pub(crate) fn process_ui_actions(
                 }
             }
             UiAction::ApplyNodeTransform => {
-                transform::apply(&inspector, &mut node_mgr, &mut transform_query);
+                if let Err(reason) =
+                    transform::apply(&inspector, &mut node_mgr, &mut transform_query)
+                {
+                    ui_mgr.show_toast(format!("Transform not applied — {reason}"), now_secs);
+                }
             }
+            UiAction::CreateNodeAt { position } => match nav.active_petal_id.as_deref() {
+                Some(petal_id) => {
+                    node::create_at(&db_sender, petal_id.to_string(), position);
+                }
+                None => {
+                    ui_mgr.show_toast("Navigate to a petal first", now_secs);
+                }
+            },
             UiAction::SubmitQuery { sql, scope: _ } => {
                 query::submit(&db_sender, sql);
             }

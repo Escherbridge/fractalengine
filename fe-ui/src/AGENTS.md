@@ -95,8 +95,8 @@ app needed) — see the `#[cfg(test)]` modules in `actions/portal.rs` and
 3. `process_ui_actions` calls `actions::portal::compute_save_url(&node_mgr,
    &inspector)`. If nothing is selected, this returns `None` and the save is
    a **silent no-op** — no log, no toast. Whitespace-only URLs become
-   `None` (clears the field); non-empty URLs are stored **as typed, not
-   trimmed** — leading/trailing whitespace survives into the DB.
+   `None` (clears the field); non-empty URLs are **trimmed before persist**
+   (matching Node Options' save path, ux hardening batch 2026-07-17).
 4. On `Some((node_id, url))`: `verse_mgr.update_node_url(...)` updates the
    in-memory tree immediately (optimistic local echo), then
    `db_sender.send(DbCommand::UpdateNodeUrl { .. })` is fired at the DB
@@ -186,9 +186,9 @@ scope for this decomposition task):
   fire-and-forget with no ack surfaced to the UI (`DbResult::NodePropertySet`
   has an equivalent round-trip for custom properties, but `UpdateNodeUrl`
   has no corresponding `DbResult` handled here to confirm the write landed).
-- Whitespace is preserved (not trimmed) in the stored URL string; only the
-  "is it empty" check trims, so `"  https://x  "` is stored with the
-  padding intact and will need re-parsing/trimming on read.
+- URLs are trimmed before persist (`compute_save_url` stores the trimmed
+  buffer, matching Node Options' save path — ux hardening batch 2026-07-17),
+  so `"  https://x  "` is stored as `"https://x"`.
 
 ## §gis-query-ui — Annotation editor, GIS Query panel, Layer Manager
 

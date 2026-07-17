@@ -69,8 +69,9 @@ pub(crate) enum SaveUrlOutcome {
 
 /// Pure: validate + compute what `UiAction::SaveUrl` should persist.
 /// Empty/whitespace-only `external_url` maps to `None` (clears the URL);
-/// otherwise the buffer is stored as-is (not trimmed) — see AGENTS.md §portal
-/// for the whitespace-preservation caveat and the FR-1 validation rationale.
+/// otherwise the trimmed buffer is stored, matching Node Options' save path
+/// so both Portal URL editors normalize identically — see AGENTS.md §portal
+/// for the FR-1 validation rationale.
 pub(crate) fn compute_save_url(
     node_mgr: &NodeManager,
     inspector: &InspectorFormState,
@@ -84,7 +85,7 @@ pub(crate) fn compute_save_url(
     }
     match raw.parse::<url::Url>() {
         Ok(parsed) if fe_webview::security::is_url_allowed(&parsed) => {
-            SaveUrlOutcome::Persist { node_id, url: Some(inspector.external_url.clone()) }
+            SaveUrlOutcome::Persist { node_id, url: Some(raw.to_string()) }
         }
         Ok(_) => SaveUrlOutcome::Blocked {
             reason: "URL blocked by security policy (private/loopback hosts and non-http schemes are not allowed)".to_string(),
@@ -212,6 +213,17 @@ mod tests {
         match compute_save_url(&mgr, &inspector) {
             SaveUrlOutcome::Persist { node_id, url } => {
                 assert_eq!(node_id, "node-1");
+                assert_eq!(url, Some("https://example.com".to_string()));
+            }
+            _ => panic!("expected Persist"),
+        }
+    }
+
+    #[test]
+    fn compute_save_url_trims_whitespace() {
+        let (mgr, inspector) = selected_with_url("  https://example.com  ");
+        match compute_save_url(&mgr, &inspector) {
+            SaveUrlOutcome::Persist { url, .. } => {
                 assert_eq!(url, Some("https://example.com".to_string()));
             }
             _ => panic!("expected Persist"),

@@ -109,7 +109,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                         "type": "array",
                         "items": { "type": "number" },
                         "minItems": 3,
-                        "maxItems": 3
+                        "maxItems": 3,
+                        "description": "[x, y, z] in world units (meters × the petal map's world_scale; 1 world unit = 1 m when world_scale is 1)"
                     }
                 },
                 "required": ["verse_id", "fractal_id", "petal_id", "name"]
@@ -127,19 +128,22 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                         "type": "array",
                         "items": { "type": "number" },
                         "minItems": 3,
-                        "maxItems": 3
+                        "maxItems": 3,
+                        "description": "[x, y, z] in world units (meters × the petal map's world_scale; 1 world unit = 1 m when world_scale is 1)"
                     },
                     "rotation": {
                         "type": "array",
                         "items": { "type": "number" },
                         "minItems": 3,
-                        "maxItems": 3
+                        "maxItems": 3,
+                        "description": "[x, y, z] Euler angles in radians (the in-app inspector displays degrees)"
                     },
                     "scale": {
                         "type": "array",
                         "items": { "type": "number" },
                         "minItems": 3,
-                        "maxItems": 3
+                        "maxItems": 3,
+                        "description": "[x, y, z] unitless scale multipliers (1.0 = authored size)"
                     }
                 },
                 "required": ["node_id", "position", "rotation", "scale"]

@@ -18,7 +18,17 @@
   URL) and is not treated as a validation failure. The restart round-trip
   test (persist → DB-hydrated `VerseManager` → reload → still-validated)
   lives in `node_manager/inspector_sync.rs`, next to the reload path it
-  exercises.
+  exercises. `compute_save_url` persists the *trimmed* buffer so the
+  inspector and Node Options (both labeled "Portal URL") normalize
+  identically (ux hardening batch 2026-07-17).
+- `node.rs` — empty-node creation at a world position (context-menu "Add
+  Empty Node" → `CreateNodeAt` → `DbCommand::CreateNode`, targeting
+  `nav.active_petal_id`; toast when no petal is active).
+- `transform.rs` — inspector transform Apply. `apply` returns
+  `Err(reason)` on a parse failure (naming the axis/field) and the
+  dispatcher toasts "Transform not applied — …" so a bad field is never a
+  silent no-op (ux hardening batch 2026-07-17); no-selection/despawned-entity
+  remain silent `Ok`.
 - `node_props.rs` — custom node property load/set/delete (`DbCommand`
   fire-and-forget with a `warn!` on channel-closed). Also owns the reserved
   `gis.annotation.{title,body,color}` key constants + pure

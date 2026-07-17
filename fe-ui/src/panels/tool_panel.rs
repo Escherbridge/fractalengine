@@ -262,7 +262,7 @@ fn render_path_asset_section(
 
     if target_track.is_none() {
         ui.label(
-            egui::RichText::new("Select a track in the Paths tab to stamp along.")
+            egui::RichText::new("Select a path in the Paths tab to stamp along.")
                 .small()
                 .color(theme::TEXT_MUTED)
                 .italics(),
@@ -503,7 +503,7 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
             state.pen_mode != PenMode::Polyline,
             egui::Button::new("Smooth path"),
         )
-        .on_hover_text("Resample the edited track's points into the chosen curve")
+        .on_hover_text("Resample the edited path's points into the chosen curve")
         .clicked()
     {
         state.queue_action(UiAction::PathSmoothCurrent {
@@ -554,7 +554,7 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     ui.horizontal(|ui| {
         if ui
             .button("Add Ellipse")
-            .on_hover_text("Append an ellipse ring to the edited track")
+            .on_hover_text("Append an ellipse ring to the edited path")
             .clicked()
         {
             let pts = curve::ellipse(
@@ -567,7 +567,7 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
         }
         if ui
             .button("Add Circle")
-            .on_hover_text("Append a circle ring to the edited track")
+            .on_hover_text("Append a circle ring to the edited path")
             .clicked()
         {
             let pts = curve::circle(
@@ -579,7 +579,7 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
         }
         if ui
             .button("Add Rectangle")
-            .on_hover_text("Append a rectangle (Radius X \u{00d7} Radius Z) to the edited track")
+            .on_hover_text("Append a rectangle (Radius X \u{00d7} Radius Z) to the edited path")
             .clicked()
         {
             let pts = curve::rectangle(

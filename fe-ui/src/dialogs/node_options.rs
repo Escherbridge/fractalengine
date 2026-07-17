@@ -1,4 +1,4 @@
-//! Node options dialog (rename + webpage URL).
+//! Node options dialog (rename + portal URL + delete).
 
 use bevy_egui::egui;
 
@@ -18,6 +18,7 @@ pub fn render_node_options_dialog(
         ref node_id,
         ref mut node_name_buf,
         ref mut webpage_url_buf,
+        ref mut pending_delete,
     } = ui_mgr.active_dialog
     else {
         return;
@@ -46,7 +47,7 @@ pub fn render_node_options_dialog(
 
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("Webpage URL:")
+                egui::RichText::new("Portal URL:")
                     .small()
                     .color(theme::TEXT_DIM),
             );
@@ -82,6 +83,53 @@ pub fn render_node_options_dialog(
                     close = true;
                 }
             });
+
+            // --- Delete (two-step confirm; mirrors entity_settings.rs) ---
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(6.0);
+            if !*pending_delete {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Delete Node").color(egui::Color32::WHITE),
+                        )
+                        .fill(theme::BG_DANGER),
+                    )
+                    .clicked()
+                {
+                    *pending_delete = true;
+                }
+            } else {
+                ui.label(
+                    egui::RichText::new("Are you sure? This cannot be undone.")
+                        .color(theme::STATUS_OFFLINE),
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
+                            )
+                            .fill(theme::BG_DANGER),
+                        )
+                        .clicked()
+                    {
+                        db_tx
+                            .send(DbCommand::DeleteNode {
+                                node_id: current_node_id.clone(),
+                            })
+                            .ok();
+                        close = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+                        .clicked()
+                    {
+                        *pending_delete = false;
+                    }
+                });
+            }
         });
 
     if !still_open || close {

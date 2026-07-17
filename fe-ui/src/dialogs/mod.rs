@@ -101,6 +101,8 @@ pub enum ActiveDialog {
         node_id: String,
         node_name_buf: String,
         webpage_url_buf: String,
+        /// Two-step delete confirmation state.
+        pending_delete: bool,
     },
     InviteDialog {
         invite_string: String,

@@ -1,16 +1,19 @@
-//! Keyboard shortcuts for tool switching and deselect.
+//! Keyboard shortcuts: tool switching (bindings from `panels::toolbar::TOOL_DEFS`)
+//! and staged Escape — first press exits path editing, second clears selection.
 
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
 use super::NodeManager;
-use crate::panels::toolbar::Tool;
+use crate::gis::PathEditorState;
+use crate::panels::toolbar::TOOL_DEFS;
 use crate::plugin::ToolState;
 
 pub(super) fn handle_tool_shortcuts(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut tool: ResMut<ToolState>,
     mut manager: ResMut<NodeManager>,
+    mut path_state: ResMut<PathEditorState>,
     mut egui_ctx: EguiContexts,
 ) {
     let egui_wants_kb = egui_ctx
@@ -21,17 +24,18 @@ pub(super) fn handle_tool_shortcuts(
         return;
     }
 
-    if keyboard.just_pressed(KeyCode::KeyS) {
-        tool.active_tool = Tool::Select;
-    } else if keyboard.just_pressed(KeyCode::KeyG) {
-        tool.active_tool = Tool::Move;
-    } else if keyboard.just_pressed(KeyCode::KeyR) {
-        tool.active_tool = Tool::Rotate;
-    } else if keyboard.just_pressed(KeyCode::KeyX) {
-        tool.active_tool = Tool::Scale;
-    } else if keyboard.just_pressed(KeyCode::KeyP) {
-        tool.active_tool = Tool::Pen;
-    } else if keyboard.just_pressed(KeyCode::Escape) {
-        manager.deselect();
+    for def in &TOOL_DEFS {
+        if keyboard.just_pressed(def.key_code) {
+            tool.active_tool = def.tool;
+            return;
+        }
+    }
+
+    if keyboard.just_pressed(KeyCode::Escape) {
+        if path_state.editing_track_id.is_some() {
+            path_state.stop_editing();
+        } else {
+            manager.deselect();
+        }
     }
 }

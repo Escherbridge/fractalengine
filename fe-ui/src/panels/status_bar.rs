@@ -81,10 +81,11 @@ pub(crate) fn status_bar(
                 }
 
                 ui.separator();
+                // "rooms" is a legacy table with no in-app create path — not shown.
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} petals  {} rooms  {} models",
-                        dashboard.petal_count, dashboard.room_count, dashboard.model_count
+                        "{} petals  {} models",
+                        dashboard.petal_count, dashboard.model_count
                     ))
                     .small()
                     .color(theme::TEXT_MUTED),
