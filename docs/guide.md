@@ -199,6 +199,7 @@ SurrealDB persistence:
 - `op_log.rs` — Immutable mutation log with Lamport clock
 - `admin.rs` — Admin utilities (clear, dump, reset)
 - `types.rs` — `PetalId`, `NodeId`, `RoleId`, `OpLogEntry`
+- `session_cache.rs` — Session cache (60-second TTL) + `revoke_session` (absorbed from fe-auth 2026-07-17)
 
 ### `fe-network`
 
@@ -209,14 +210,6 @@ P2P networking:
 - `gossip.rs` — iroh-gossip epidemic broadcast
 - `iroh_blobs.rs` — Content-addressed asset distribution
 - `iroh_docs.rs` — CRDT key-value sync for Petal state
-
-### `fe-auth`
-
-Session management:
-- `handshake.rs` — Peer authentication protocol
-- `session.rs` — Session type definitions
-- `cache.rs` — Session cache with 60-second TTL
-- `revocation.rs` — Signed session revocation broadcast
 
 ### `fe-renderer`
 
@@ -549,7 +542,7 @@ FractalEngine follows strict Test-Driven Development:
 
 Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `conductor`
 
-Scopes: `fe-runtime`, `fe-identity`, `fe-database`, `fe-network`, `fe-renderer`, `fe-webview`, `fe-auth`, `fe-ui`, `fe-sync`
+Scopes: `fe-runtime`, `fe-identity`, `fe-database`, `fe-policy`, `fe-network`, `fe-renderer`, `fe-webview`, `fe-ui`, `fe-sync`
 
 ### Quality Gates
 
@@ -682,7 +675,7 @@ RUST_LOG=trace cargo run
 RUST_LOG=fe_database=debug,fe_network=trace cargo run
 
 # Common filters
-RUST_LOG=fe_auth=debug    # Debug auth handshakes
+RUST_LOG=fe_database=debug # Debug DB + session cache
 RUST_LOG=fe_sync=trace    # Trace replication
 RUST_LOG=fe_webview=debug # Debug WebView IPC
 ```

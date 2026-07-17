@@ -29,12 +29,11 @@ fractalengine/          (workspace root)
 ├── fractalengine/      Binary entry point — wires all plugins together
 ├── fe-ui/              All egui UI, domain managers, and Bevy plugin wiring
 ├── fe-renderer/        Orbit camera controller (OrbitCameraController + CameraControllerPlugin)
-├── fe-database/        Async DB functions (SQLite), called from a spawned thread
+├── fe-database/        Async DB functions (SurrealDB embedded, SurrealKV backend), called from a spawned thread; session-cache auth helpers live at fe_database::session_cache (absorbed from fe-auth 2026-07-17)
 ├── fe-sync/            P2P sync thread (iroh-docs); SyncCommand / SyncCommandSenderRes
 ├── fe-runtime/         Shared message types: DbCommand, DbResult, SyncCommand
 ├── fe-network/         Low-level iroh networking helpers
 ├── fe-webview/         Embedded webview for node webpage_url display (Tauri backend default)
-├── fe-auth/            Authentication / identity helpers
 ├── fe-identity/        Identity key management
 └── fe-test-harness/    Integration test utilities
 ```

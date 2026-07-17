@@ -1,8 +1,51 @@
 # FractalEngine
 
-A decentralized, peer-to-peer 3D digital twin platform. Run a Node, host Petals (3D worlds), place interactive Models, and connect with peers — all without a central server.
+[![Build Artifacts](https://github.com/JadeZaher/fractalengine/actions/workflows/build-artifacts.yml/badge.svg)](https://github.com/JadeZaher/fractalengine/actions/workflows/build-artifacts.yml)
 
-**Single binary. No cloud. No subscription. You own everything.**
+A **spatial analytics engine**. FractalEngine ingests real-world geodata — maps,
+terrain, GPX paths, IoT readings — into an embedded spatial database, and its
+headline capability is **BI egress**: copy a SQL string or API URL out of the
+app and paste it into PowerBI, a spreadsheet, or DuckDB. No connector SDK, no
+export wizard — your reporting tool talks straight to your data.
+
+Under the analytics layer sits a peer-to-peer **3D digital-twin substrate**: a
+Bevy-based editor where you build 3D spaces, place models, draw paths over real
+terrain, and share worlds with peers without a central server.
+
+**Single binary. Local-first. Your data stays in your database.**
+
+---
+
+## Status: alpha
+
+Pre-1.0, under active development. What that means concretely:
+
+**Works today**
+
+- 3D viewer/editor — Bevy 0.18 scene editor with egui panels, orbit camera, gizmos, node inspector
+- Entity hierarchy (Verse > Fractal > Petal > Node) persisted in embedded SurrealDB (SurrealKV)
+- GLTF/GLB asset import, content-addressed via BLAKE3
+- Maps: per-petal terrain tiles with real-world scale metadata and a scale-bar HUD; maps package and install as `.hexon` files
+- GPX import and path editing — pen tool with curves, vertex/segment selection, repeated-model stamping along paths
+- HTTP/WS API gateway on `127.0.0.1:8765` — REST, live scene subscriptions, MCP tools — plus a headless relay binary (Docker image available)
+- JWT auth, hierarchical RBAC, deny-by-default policy engine
+- Plugin system — Rhai and WASM sandboxes against the stable `fe-sdk` API, with UI slots
+
+**In progress**
+
+- **BI egress** (the headline): GeoParquet/CSV export endpoints, signed share URLs, and an in-app "Copy for BI" card — core landed; end-to-end verification and docs remain
+- Measurement tools (tape/area/bearing) on top of the landed real-world-scale plumbing
+- IoT spatial reporting — ingestion and time-series queries landed; reading-shaped export remains
+- Release pipeline — the 8-target build matrix exists; the first tag-triggered release has not yet run
+- P2P sync — petal replication works over iroh; parts of verse-level replication are still mock-backed
+
+**Planned**
+
+- Road/path builder input layer, map-authoritative scale everywhere, portable petal snapshots, an expanded MCP vocabulary for AI scene construction, iroh 1.0 upgrade
+
+**Known limitation:** op-log entries and gossip payloads carry ed25519
+signature *fields*, but signing is not yet implemented — current entries hold
+placeholder signatures. Do not rely on op-log integrity guarantees yet.
 
 ---
 
@@ -12,87 +55,38 @@ A decentralized, peer-to-peer 3D digital twin platform. Run a Node, host Petals 
 
 | Requirement | Version | Install |
 |---|---|---|
-| Rust (stable) | 1.82+ | `rustup toolchain install stable` |
+| Rust (stable) | 1.83+ | `rustup toolchain install stable` |
 | rustfmt | latest | `rustup component add rustfmt` |
 | clippy | latest | `rustup component add clippy` |
-| cargo-tarpaulin | latest | `cargo install cargo-tarpaulin` |
 
-### Build
+Platform-specific system packages (WebKitGTK on Linux, VS Build Tools on
+Windows, Xcode CLT on macOS) are covered in [BUILDING.md](BUILDING.md), along
+with a known `RUST_MIN_STACK` workaround for compiling `surrealdb-core`.
+
+### Build & Run
 
 ```bash
-# Debug build (faster compilation, includes dynamic linking)
-cargo build
-
-# Release build (optimized, single binary)
+# Release build (GUI binary)
 cargo build --release
 
-# Build a specific crate only
-cargo build -p fe-runtime
-cargo build -p fe-database
-cargo build -p fe-network
-```
-
-### Run
-
-```bash
-# Run with default logging
+# Run
 cargo run
 
-# Run with debug logging
+# Debug logging
 RUST_LOG=debug cargo run
 
-# Run with per-crate log levels
-RUST_LOG=fe_network=trace,fe_database=debug cargo run
-
-# Run the release binary directly
-./target/release/fractalengine
+# Headless relay (no GPU/windowing/keychain)
+cargo build --release -p fractalengine-relay
 ```
 
-### Test
+### Test / Lint / Format
 
 ```bash
-# Run all tests
-cargo test
-
-# Run tests for a specific crate
-cargo test -p fe-identity
-cargo test -p fe-auth
-cargo test -p fe-database
-
-# Run a specific test by name
-cargo test -p fe-identity test_jwt_roundtrip
-
-# Run tests with output
-cargo test -- --nocapture
-```
-
-### Lint & Format
-
-```bash
-# Check formatting
-cargo fmt --check
-
-# Auto-format
-cargo fmt
-
-# Lint (strict — treats warnings as errors)
-cargo clippy -- -D warnings
-```
-
-### Coverage
-
-```bash
-# Generate HTML coverage report
-cargo tarpaulin --out Html --output-dir coverage/
-
-# Console summary only
-cargo tarpaulin
-```
-
-### Pre-Commit Check (run all three)
-
-```bash
+# The pre-commit trio
 cargo fmt && cargo clippy -- -D warnings && cargo test
+
+# Single crate
+cargo test -p fe-identity
 ```
 
 ---
@@ -108,32 +102,37 @@ cargo fmt && cargo clippy -- -D warnings && cargo test
 
 ## Architecture Overview
 
-FractalEngine runs as a single native desktop application with a **six-thread topology**:
+FractalEngine runs as a single native desktop application with a
+**seven-thread topology**:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  T1 — Main Thread (Bevy ECS + wry WebView)         │
+│  T1 — Main Thread (Bevy ECS + wry WebView)          │
 │  Renders 3D world, processes input, drains events   │
 └──────────────┬────────────────────┬─────────────────┘
                │  crossbeam (256)   │  crossbeam (256)
 ┌──────────────▼──────────┐  ┌─────▼──────────────────┐
 │  T2 — Network Thread    │  │  T3 — Database Thread   │
 │  libp2p + iroh          │  │  SurrealDB (SurrealKV)  │
-│  Dedicated Tokio runtime│  │  Dedicated Tokio runtime │
-└─────────────────────────┘  └──────────────────────────┘
-┌─────────────────────────┐  ┌──────────────────────────┐
-│  T4 — Sync Thread       │  │  T5 — Replication Bridge │
-│  Petal replication      │  │  DB ↔ Network bridge     │
-└─────────────────────────┘  └──────────────────────────┘
-┌─────────────────────────────────────────────────────┐
-│  T6 — API Gateway (multi-thread Tokio)              │
-│  axum HTTP/WS on 127.0.0.1:8765, MCP tools         │
-└─────────────────────────────────────────────────────┘
+│  Dedicated Tokio runtime│  │  Dedicated Tokio runtime│
+└─────────────────────────┘  └─────────────────────────┘
+┌─────────────────────────┐  ┌─────────────────────────┐
+│  T4 — Sync Thread       │  │  T5 — Replication Bridge│
+│  Petal replication      │  │  DB ↔ Network bridge    │
+└─────────────────────────┘  └─────────────────────────┘
+┌─────────────────────────┐  ┌─────────────────────────┐
+│  T6 — API Gateway       │  │  T7 — Plugin Host       │
+│  axum HTTP/WS on :8765, │  │  Rhai + WASM sandboxes  │
+│  MCP tools (multi-thread│  │  Dedicated Tokio runtime│
+│  Tokio)                 │  │                         │
+└─────────────────────────┘  └─────────────────────────┘
 ```
 
-All cross-thread communication uses **typed crossbeam channels** — never raw bytes, never shared mutable state.
+All cross-thread communication uses **typed crossbeam channels** — never raw
+bytes, never shared mutable state.
 
-> See [docs/diagrams.md](docs/diagrams.md) for full architecture diagrams including data flow, auth sequences, and component interactions.
+> See [docs/diagrams.md](docs/diagrams.md) for full architecture diagrams
+> including data flow, auth sequences, and component interactions.
 
 ---
 
@@ -157,20 +156,28 @@ Verse                the top-level P2P namespace
 
 ## Workspace Crates
 
+22 crates; the load-bearing ones:
+
 | Crate | Purpose | Thread |
 |---|---|---|
-| `fractalengine` | Binary entry point — wires threads together | T1 |
+| `fractalengine` | GUI binary — wires threads together | T1 |
+| `fractalengine-relay` | Headless relay binary (`fe-relay`) | — |
 | `fe-runtime` | Bevy ECS app, channel management, message types | T1 |
 | `fe-network` | libp2p discovery + iroh data transport | T2 |
 | `fe-database` | SurrealDB persistence, RBAC, op-log | T3 |
 | `fe-identity` | Ed25519 keypair, JWT, DID:key, OS keychain | Shared |
-| `fe-auth` | Session handshake, cache, revocation | Shared |
-| `fe-renderer` | GLTF pipeline, content addressing, dead-reckoning | T1 |
+| `fe-policy` | Deny-by-default policy engine (RBAC decisions) | Shared |
+| `fe-renderer` | GLTF pipeline, content addressing, camera | T1 |
 | `fe-webview` | wry browser overlay, typed IPC, URL security | T1 |
-| `fe-sync` | Petal replication, caching, offline mode | T2/T3 |
-| `fe-ui` | egui admin panels and role display | T1 |
-| `fe-test-harness` | Integration test scenarios (multi-peer) | Test |
-| `fe-api` | API gateway: axum HTTP/WS, MCP tools, ApiClaims auth | T6 |
+| `fe-sync` | Petal replication, caching, offline mode | T4 |
+| `fe-ui` | egui panels, inspectors, managers | T1 |
+| `fe-api` | axum HTTP/WS gateway, MCP tools, ApiClaims auth | T6 |
+| `fe-query` | Query builder, GIS queries, GeoParquet export | T3/T6 |
+| `fe-terrain` | Terrain tiles, GPX, mesh generation, IoT layers | T1 |
+| `fe-format` / `fe-entity-store` | Canonical data formats + entity storage | Shared |
+| `fe-hexon` / `fe-hexon-registry` | `.hexon` packaging, publishing, hosted registry | Shared |
+| `fe-plugin` / `fe-sdk` / `fe-plugin-test` | Plugin engines, stable SDK, test kit | T7 |
+| `fe-test-harness` | Multi-peer integration scenarios | Test |
 
 ---
 
@@ -188,21 +195,17 @@ Verse                the top-level P2P namespace
 | `jsonwebtoken` | 10.3 | JWT minting/verification |
 | `wry` | 0.54 | Embedded WebView (Tauri org) |
 | `bevy_egui` | 0.39 | In-game UI |
-| `crossbeam` | 0.8 | Typed channel bridges |
-| `blake3` | 1.x | Content addressing |
 | `axum` | 0.8 | HTTP/WebSocket API gateway |
-| `tower-http` | 0.6 | HTTP middleware (CORS, tracing) |
 
 ---
 
 ## Key Design Invariants
 
 - **No Tokio on T1** — Bevy uses smol; use `AsyncComputeTaskPool` for async work
-- **No `block_on()` in Bevy systems** — sends commands via channels instead
-- **RBAC enforced at database layer** — SurrealDB `PERMISSIONS` clauses, never in Bevy systems
+- **No `block_on()` in Bevy systems** — send commands via channels instead
+- **RBAC enforced at the data layer** — policy engine + SurrealDB `PERMISSIONS`, never in Bevy systems
 - **All assets content-addressed** — BLAKE3 hash is the canonical ID
-- **All mutations logged** — immutable op-log with Lamport clock + ed25519 signature
-- **All gossip payloads signed** — unsigned messages rejected at ingest
+- **All mutations logged** — append-only op-log with hybrid logical clock; per-op ed25519 signing is designed but **not yet implemented** (see Status)
 - **WebView URL denylist** — blocks localhost, 127.0.0.1, RFC 1918 unconditionally
 - **GLTF/GLB only** — no FBX/OBJ; operators convert via Blender
 
@@ -258,30 +261,30 @@ persists are rolled back via `transform_rollback`.
 
 | Document | Description |
 |---|---|
+| [BUILDING.md](BUILDING.md) | Per-platform build instructions and known issues |
 | [docs/guide.md](docs/guide.md) | Comprehensive developer guide |
 | [docs/diagrams.md](docs/diagrams.md) | Architecture diagrams index (Mermaid) |
-| [docs/diagrams/](docs/diagrams/) | Individual diagram files |
 | [docs/security-checklist.md](docs/security-checklist.md) | Security audit checklist |
 | [docs/webview-threat-model.md](docs/webview-threat-model.md) | WebView threat model |
-| [docs/unwrap-audit.md](docs/unwrap-audit.md) | `unwrap()`/`expect()` inventory |
 | [conductor/product.md](conductor/product.md) | Product vision and entity hierarchy |
 | [conductor/tech-stack.md](conductor/tech-stack.md) | Technology decisions and constraints |
-| [conductor/workflow.md](conductor/workflow.md) | Development process and TDD workflow |
-| [conductor/tracks.md](conductor/tracks.md) | Implementation tracks index |
 | [conductor/roadmap.md](conductor/roadmap.md) | Strategic roadmap + go-forward slate |
-
----
-
-## Project Status
-
-| Wave | Description | Status |
-|---|---|---|
-| Wave 1 | Core Infrastructure (9 tracks) | Complete |
-| Wave 2 | Interactive Digital Twin Platform | In Progress |
-| Wave 3 | External Access & IoT Platform | Started (API Gateway) |
+| [conductor/tracks.md](conductor/tracks.md) | Live implementation-track board |
 
 ---
 
 ## License
 
-All rights reserved. See LICENSE for details.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
+
+Note: the embedded SurrealDB engine is a dependency licensed separately under
+the Business Source License 1.1.

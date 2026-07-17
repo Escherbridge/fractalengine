@@ -68,7 +68,7 @@ docker run -p 8765:8765 -v relay-data:/data fractalengine-relay
 The relay shares all core crates with the GUI binary but excludes GPU/display dependencies:
 
 ```
-Shared: fe-runtime, fe-database, fe-network, fe-sync, fe-identity, fe-auth, fe-api
+Shared: fe-runtime, fe-database, fe-policy, fe-network, fe-sync, fe-identity, fe-api
 GUI only: fe-renderer, fe-ui, fe-webview, bevy_egui, keyring
 ```
 

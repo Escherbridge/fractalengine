@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose an enhancement to FractalEngine
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Non-trivial features are scoped through the `conductor/` workflow —
+        an issue here is the right starting point (see CONTRIBUTING.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that FractalEngine doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working. Sketches, mockups, and API shapes welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today or other approaches you rejected.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Viewer / rendering
+        - Maps / terrain / hexon packages
+        - Paths / editing tools
+        - BI egress / query / API
+        - Sync / P2P
+        - Plugins / SDK
+        - Other
+    validations:
+      required: false
