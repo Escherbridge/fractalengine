@@ -1,0 +1,12 @@
+{
+  "id": "road_builder_ux_20260716",
+  "description": "Cities:Skylines-inspired road/path builder INPUT layer: straight/curved/freeform drag-to-place segments with continuous chaining, 45/90-degree angle snapping, alignment guidelines, ghost preview with validity coloring, snap-to-existing-path (coordinate-sharing only, no topology), live metric length readout, and a path_kind designed|recorded provenance property — all on the existing gpx_points + path_asset stamping model via the PathOp -> DbCommand seam",
+  "type": "feature",
+  "created_at": "2026-07-16T00:00:00Z",
+  "status": "pending",
+  "depends_on": ["path_interaction_20260716", "gpx_stamp_persistence_20260716"],
+  "blocks": [],
+  "archived": false,
+  "notes": "User-ratified HYBRID decision 2026-07-16 (C:S screenshot as reference feel): input layer ONLY. Non-goals deferred to named follow-on 'procedural_roads' (not created): ribbon road meshes, auto intersections/junction topology, road upgrade tool, zoning. Runs parallel with mcp_scene_primitives_20260716 and map_scale_authority_20260716 — stays in fe-ui + fractalengine/gpx_bridge; CONSUMES (not defines) the world_scale accessor via a single metric_scale() seam, feature-detected with world-unit degrade. Key decisions: curved mode = three-click quadratic Bezier reusing curve::bezier's 3-point promotion (no new curve math); snapped endpoints share coordinates only (documented limitation feeding procedural_roads); path_kind flat property, absence => recorded (zero migration); ghost/guides via immediate-mode Gizmos; snap candidates from resident TrackPickShape polylines; new Tool::Road (hotkey B) + ClickPriority::RoadPlace; multi-point commits reuse UiAction::PathAppendShape; first-commit auto-create mirrors pen correlation-id deferred flush (road-track:N). depends_on listed tracks are LANDED (consumed as foundations, not blockers).",
+  "alignment": "P0 UX (user-driven UX pillar, 2026-07-16 session)"
+}
