@@ -35,6 +35,44 @@ env:
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
+  # Fast quality gate: fmt + clippy -D warnings (the project standard, see
+  # README pre-commit trio). Runs in parallel with the build jobs — a lint
+  # failure fails the run without blocking artifact builds from starting.
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same native-dep set as the Linux build job: clippy runs every
+      # build script, which probes pkg-config for the GUI stack.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libdbus-1-dev libssl-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   linux:
     name: Linux (build + test + artifacts)
     runs-on: ubuntu-latest
@@ -70,9 +108,8 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --bin fractalengine --bin fe-relay
 
-      # Sweep the crates that carry this project's test suites. Kept scoped (not
-      # a bare `cargo test --workspace`) to match the project's known-green set
-      # and keep CI time bounded; expand as coverage grows.
+      # PR test sweep: intentionally scoped to 3 crates (not --workspace) for CI cost.
+      # Matches the project's known-green set; expand as coverage grows.
       - name: Test sweep
         env:
           # Env-backed keystore: no OS keychain / Secret Service on runners.

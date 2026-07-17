@@ -7,7 +7,7 @@ graph TD
     FE[fractalengine<br/>Binary Entry Point]
 
     FE --> Runtime[fe-runtime<br/>Bevy App + Channels]
-    FE --> Database[fe-database<br/>SurrealDB]
+    FE --> Database[fe-database<br/>SurrealDB + SessionCache]
     FE --> Sync[fe-sync<br/>Replication]
     FE --> UIPlugin[fe-ui<br/>egui Panels]
 
@@ -20,14 +20,11 @@ graph TD
     UIPlugin --> Sync
 
     Database --> Identity[fe-identity<br/>Ed25519 + JWT + DID]
-    Auth[fe-auth<br/>Session + Handshake] --> Identity
-    Auth --> Database
 
     Sync --> Database
     Sync --> Identity
 
     Renderer --> Identity
-    WebView --> Auth
 
     TestHarness[fe-test-harness<br/>Integration Scenarios] --> Database
     TestHarness --> Runtime
@@ -42,7 +39,7 @@ graph TD
 
     class FE binary
     class Runtime,Database core
-    class Identity,Auth infra
+    class Identity infra
     class Renderer,WebView,UIPlugin,Sync feature
     class TestHarness test
 ```

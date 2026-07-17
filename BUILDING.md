@@ -125,7 +125,7 @@ docker run -p 8765:8765 -v relay-data:/data fractalengine-relay
 Released images are published to GHCR on every `v*` tag:
 
 ```bash
-docker pull ghcr.io/escherbridge/fractalengine-relay:latest
+docker pull ghcr.io/jadezaher/fractalengine-relay:latest
 ```
 
 ### Secrets in containers
@@ -178,6 +178,11 @@ FE_KEYSTORE_BACKEND=env cargo test --workspace
 
 ## Known Issues
 
+- **`surrealdb-core` needs a deep compile-time recursion stack.** If rustc overflows its
+  stack or ICEs while compiling `surrealdb-core`, set `RUST_MIN_STACK=134217728` (128 MB —
+  what CI uses; 64 MB with `-j4` also works) and rebuild. After such an ICE, phantom
+  `E0463`/`E0786`/`E0282` errors mean poisoned `.rmeta` — run
+  `cargo clean -p surrealdb-core` and rebuild.
 - Cross-compilation from Windows to Linux/macOS requires platform-specific C toolchains
   (use native builds or CI for non-Windows targets)
 - The `ring` crate requires a C compiler for all targets
