@@ -1,29 +1,49 @@
-# Initial Concept
-
-FractalEngine is a decentralized, peer-to-peer 3D digital twin platform where any operator can run a Node (native Bevy desktop app), host multiple Petals (3D worlds/spaces), populate them with uploaded 3D Models (GLTF/GLB), and grant other peers role-based access — all without a central server. Each 3D Model can have an embedded in-world browser with two tabs: a public-facing external URL (configurable by the Petal admin) and an internal config panel. Roles are flexible (admin-defined custom tiers between `public` and `admin`), scoped per Petal and overridable per Model. The full network of connected Nodes is called the Fractal. The platform is domain-agnostic — virtual offices, industrial digital twins, showrooms, or social spaces can all be built on it. Naming convention follows fractal/botanical metaphors: Fractal (network) → Node (peer) → Petal (world/space) → Room (zone) → Model (3D object).
-
+---
+type: Product Definition
+title: FractalEngine — Spatial Analytics Engine on a P2P 3D Twin Substrate
+tags: [product, analytics, bi-egress, gis, p2p, digital-twin]
+timestamp: 2026-07-17T00:00:00Z
+resource: ./roadmap.md
 ---
 
-# Product Guide
+# FractalEngine
 
-## Vision
+## What FractalEngine is (2026-07): a spatial analytics engine
 
-FractalEngine empowers small businesses and teams to own their 3D collaborative infrastructure — no cloud vendor, no monthly subscription, no data lock-in. A business deploys a Node on any machine they control, builds 3D Petals representing their spaces (showroom, office, factory floor, portfolio), and invites peers to interact within those spaces under precise role-based access control. The Fractal is the collective network of all such Nodes, federated without a central authority.
+FractalEngine is a self-hosted **spatial analytics / reporting engine**. You
+build or import 3D/GIS spatial worlds (Petals), attach IoT and entity data to
+them, and export live queries into your existing BI stack: copy a SQL string,
+an API URL, or a DuckDB connection snippet out of the GIS panel and paste it
+into PowerBI, a spreadsheet, or a notebook. FractalEngine is the spatial
+backend; your BI tool stays the reporting frontend.
+
+The P2P 3D world-building layer described under
+[Foundational concept](#foundational-concept-2026-03-historical) is the
+substrate this runs on — the foundation, not the headline. Strategic
+direction: see [roadmap.md](./roadmap.md) (2026-07-14 repositioning). Current
+stack details: see [tech-stack.md](./tech-stack.md).
 
 ## Target Users
 
-### Primary: Small Businesses & Teams
-Organizations that need a self-hosted 3D collaborative environment for internal use or client-facing purposes. Use cases include:
-- Virtual product showrooms with interactive product pages (browser-triggered on 3D models)
-- Digital twins of physical office or factory spaces for remote team coordination
-- Private 3D meeting/presentation rooms with role-controlled access for clients vs. staff
-- Interactive training environments with embedded instructional web content
+### Primary: Analysts & operations teams doing spatial reporting
+Teams that already live in PowerBI, spreadsheets, or notebooks and need a
+spatial backend they control:
+- Facilities / infrastructure reporting over a 3D twin of a real site (map
+  tiles at real-world scale, paths, sensors, assets)
+- IoT dashboards where readings are queryable as spatial rows seconds after
+  ingestion
+- GIS-flavored BI: distance/within predicates, GeoJSON and GeoParquet egress,
+  CRS-correct coordinates
 
-### Secondary: Indie Developers & Hackers
-Technically capable builders who want to self-host a decentralized 3D world without cloud dependencies. They extend the platform, build custom Petals, and contribute to the Fractal network.
+### Secondary: World-builders, indie developers & hackers
+Technically capable builders who want a self-hosted 3D world without cloud
+dependencies. They build Petals, import maps, script the engine via the plugin
+system (Rhai/WASM) and MCP tools, and contribute to the Fractal network.
 
-### Tertiary: Creative Professionals
-3D artists, architects, and designers who use Petals as interactive portfolio or showroom spaces, embedding links to their work via the browser interaction system.
+### Tertiary: Creative professionals
+3D artists, architects, and designers using Petals as interactive portfolio or
+showroom spaces (the original concept's audience — still supported, no longer
+the design driver).
 
 ---
 
@@ -31,101 +51,149 @@ Technically capable builders who want to self-host a decentralized 3D world with
 
 | Value | Description |
 |---|---|
-| **Self-sovereign** | The Node operator owns all data. No third-party cloud holds world state or assets. |
-| **Zero infrastructure dependency** | A single binary runs the entire stack — 3D engine, database, P2P networking, and browser overlay. |
-| **Federated, not centralized** | Nodes connect peer-to-peer. There is no master server. Any Node can host any number of Petals. |
-| **Role-precise access** | Every interaction — entering a Petal, viewing a browser tab, editing a Model — is gated by admin-defined roles. |
-| **Interactive 3D content** | 3D Models are not just visual — they carry embedded browser interfaces linking to any web content or internal config. |
+| **BI egress, not BI lock-in** | Copy a query URL / SQL string / DuckDB snippet from the GIS panel into the tools you already use. FractalEngine never tries to be your dashboard. |
+| **Self-sovereign** | The operator owns all data. No third-party cloud holds world state, assets, or query results. |
+| **Single binary** | One Rust binary embeds the 3D engine, database, query engine, HTTP API, and P2P networking. A headless relay binary serves the same data GPU-less. |
+| **Spatially correct** | Map-authoritative real-world scale; petal-local meters in the store, lat/lon at the API edge; exports are CRS-stamped. |
+| **Federated, not centralized** | Peers connect P2P. Any operator can host any number of Petals; maps distribute as content-addressed packages. |
+| **Role-precise access** | Every read and write is gated by a deny-by-default policy engine over a fixed role hierarchy. |
 
 ---
 
-## Entity Hierarchy (The Fractal Naming System)
+## Entity Hierarchy
+
+The shipped hierarchy (scope strings `VERSE#v-FRACTAL#f-PETAL#p`):
 
 ```
-Fractal  — the entire P2P network of all connected Nodes
-  └── Node  — one peer/operator running the Bevy desktop app (the Node host is the admin)
-        └── Petal  — a 3D world/space hosted by the Node
-              └── Room  — a zone or area within a Petal
-                    └── Model  — a 3D object (GLTF/GLB) placed in a Room
-                          └── BrowserInteraction  — tabbed embedded browser on the Model
-                                ├── Tab 1: External URL  (admin-configured, role-gated)
-                                └── Tab 2: Config Panel  (model properties + per-setting role mapping)
+Verse    — top-level tenancy/network scope
+  └── Fractal  — a federation within a Verse
+        └── Petal  — a 3D world/space (owns terrain, map scale, GIS origin)
+              └── Node  — an entity placed in a Petal (3D object, path,
+                          sensor, primitive) with typed properties
 ```
+
+RBAC resolves hierarchically down this chain: a role granted at Verse scope
+applies to every Fractal/Petal beneath it unless a narrower scope overrides
+it. Note: **Node is a scene entity inside a Petal, not a peer** — a machine
+running the app is a *peer*. (The historical concept used Node-as-peer plus
+Room/Model tiers; those were never built — see below.)
 
 ---
 
-## Key Features
+## Status: what works today (2026-07)
 
-### 1. Self-Hosted Node
-- Single Rust binary embedding Bevy 3D engine, SurrealDB, and P2P networking
-- Generates an ed25519 keypair on first launch stored in the OS keychain
-- The Node operator is automatically the `admin` for all their Petals
-- Multiple Petals can be hosted per Node
+**Shipped**
+- Native Bevy desktop app (`fractalengine`) + headless relay (`fe-relay`)
+- Petal terrain from map tiles / imported maps, with map-authoritative
+  real-world scale and a scale-bar ruler
+- GPX import, path/pen editing, road tools, path asset stamping
+- Entity store with HLC-stamped immutable op-log
+- `/api/v1/query` single-SELECT SQL endpoint with cost/row/timeout guards;
+  GeoJSON GIS endpoints; parquet/CSV export (real GeoParquet writer);
+  ed25519-signed share URLs; Copy-for-BI panel
+- MCP server (6 tools, growing toward 20 — `mcp_scene_primitives` track)
+- Rhai + WASM plugin system (fe-plugin / fe-sdk / fe-plugin-test)
+- Content-addressed (BLAKE3) asset distribution over iroh; map packages
+  (hexon format v1.0.0) publish/import
+- IoT reading ingestion into the entity store
 
-### 2. 3D World Building (Petals & Rooms)
-- Operators create Petals (worlds) and subdivide them into Rooms (zones)
-- GLTF/GLB model uploads populate Rooms with positioned, scaled 3D objects
-- Content-addressed asset distribution: assets shared peer-to-peer by BLAKE3 hash
-- Dead-reckoning on moving entities reduces bandwidth by 60–90%
+**In progress**
+- BI egress GA (analytics_egress Phase 6: e2e + docs)
+- Measurement tools + graticule (hexon_scale_orchestration Ph. 5–6)
+- Policy-engine completion (RBAC on query results; fe-hexon enforcement gap)
 
-### 3. Embedded Browser Interaction
-- Approaching or clicking a Model opens an overlay browser window
-- Two tabs per Model:
-  - **External URL tab**: loads any admin-configured URL (product page, web app, video)
-  - **Config tab**: shows Model properties and per-setting role mapping (admin full control)
-- Role determines which tabs are visible and editable
+**Planned / currently mocked**
+- Real iroh-docs replication — today mock-backed behind the VerseReplicator
+  seam (p2p_mycelium_completion track)
+- Offline Petal cache / persistence tiers
+- Map foundry + registry marketplace — scoped to a **separate project** (see
+  Non-Goals)
 
-### 4. Decentralized RBAC
-- Three hardcoded tiers: `public` (floor) → custom named roles → `admin` (ceiling)
-- Admins define custom roles with named permissions scoped per Petal
-- Role assignments stored in SurrealDB with record-level enforcement
-- Roles overridable at the Room or Model level
-- Signed revocations propagate via P2P gossip within seconds
+---
 
-### 5. Peer Authentication
-- Visiting peers present their ed25519 public key
-- Host Node issues signed JWT sessions (`sub: did:key:<pub>`)
-- Session cache with 60s TTL and mandatory re-validation
-- Public (unauthenticated) access available for visitor-facing Petals
-- DID-compliant identity (W3C did:key) — wallet integration deferred to v2
+## Foundational concept (2026-03, historical)
 
-### 6. Petal Caching & Offline Access
-- Visiting peers cache Petal data (SurrealDB + assets) locally
-- Offline mode loads previously-visited Petals without network
-- Operators can define per-Petal persistence tier: EPHEMERAL / CACHED / REPLICATED
+The original vision — kept because the roadmap **supplements** it, it does not
+erase it: FractalEngine as a decentralized, peer-to-peer 3D digital twin
+platform. Any operator runs a peer (native Bevy desktop app), hosts multiple
+Petals, populates them with uploaded GLTF/GLB models, and grants other peers
+role-based access — all without a central server. 3D objects can carry an
+embedded in-world browser portal (a Portal URL configured by the Petal owner)
+turning any object into an interactive interface. Businesses own their 3D
+collaborative infrastructure: no cloud vendor, no subscription, no data
+lock-in — virtual offices, industrial twins, showrooms, or social spaces.
+
+Parts of that concept that were **never built and are not current
+vocabulary**: the `Room` and `Model` entity tiers, `BrowserInteraction` as an
+entity, Node-as-peer, and admin-defined custom roles. The portal/webview,
+P2P distribution, and self-sovereignty pillars all shipped and carry the
+analytics identity today.
+
+---
+
+## RBAC
+
+- Fixed role hierarchy: **Owner > Manager > Editor > Viewer > None**, assigned
+  per scope (Verse / Fractal / Petal) and resolved hierarchically.
+- Enforcement is a deny-by-default policy engine (`fe-policy`) consulted on
+  every write path: database writes, map-package install, and the sync write
+  gate all route through it. Authorization never lives in Bevy systems or UI
+  code.
+- Signed revocations propagate via P2P gossip.
 
 ---
 
 ## Non-Goals (v1)
 
-- No mobile or WASM browser client (deferred to v2)
-- No full W3C DID resolver or VC wallet integration (v2)
+- **Not a dashboard/BI tool** — egress hands data to PowerBI / spreadsheets /
+  DuckDB; FractalEngine does not grow charting or report layouts
+- **Not a general-purpose OLAP warehouse** — the query surface is guarded
+  single-SELECT spatial egress, not arbitrary analytical workloads
+- **Not a hosted SaaS** — self-hosted single binary; operators run their own
+  peers and relays
+- **No in-engine asset marketplace in this repo** — a map-package marketplace
+  is scoped to the separate closed foundry/registry project (roadmap
+  initiative 2); the open-format vs. closed-foundry line is **pending
+  ratification** (decision register D-12 — not settled)
+- No mobile or WASM browser client (deferred)
+- No full W3C DID resolver or VC wallet integration (deferred)
 - No built-in voice/video between peers
-- No global asset marketplace
-- No FBX/OBJ format support — GLTF/GLB only (operators use Blender to convert)
-- No concurrent real-time collaborative editing
+- No FBX/OBJ format support — GLTF/GLB only (convert via Blender)
 - No payment or token system
 
 ---
 
-## Success Metrics (v1)
+## Success Metrics
 
-- A Node can start and connect to another Node within 30 seconds on a LAN
+**Analytics (primary)**
+- A user can copy a query URL / SQL string from the GIS panel and get rows in
+  PowerBI or a spreadsheet without reading documentation
+- Exported coordinates are metrically correct: CRS-stamped, map-authoritative
+  scale, lat/lon at the edge
+- An IoT reading is queryable as a spatial row within seconds of ingestion
+- Query results are filtered per requester role by the policy engine
+
+**Platform (substrate)**
+- A peer can start and connect to another peer within 30 seconds on a LAN
 - A Petal with 10 GLTF models loads in under 5 seconds for a visiting peer
-- Role-based access correctly gates browser tabs for public vs. authenticated peers
 - A signed revocation reaches all connected peers within 5 seconds
-- An operator can complete the full flow (upload model → place in Room → set role → invite peer) without reading documentation
-- A previously-visited Petal loads from local cache when the host Node is offline
+- An operator completes upload model → place in Petal → set role → invite peer
+  without reading documentation
 
 ---
 
-## Competitive Differentiation
+## Competitive Frame
 
-| Platform | Centralized | Self-Hosted | 3D | RBAC | Embedded Browser | P2P |
-|---|---|---|---|---|---|---|
-| Gather.town | Yes | No | No | Basic | No | No |
-| Spatial.io | Yes | No | Yes | Basic | No | No |
-| Vircadia | No | Yes | Yes | Yes | Yes (CEF) | Partial |
-| **FractalEngine** | **No** | **Yes** | **Yes** | **Flexible** | **Yes (wry)** | **Yes** |
+**Primary frame (2026-07): spatial analytics.** The gap FractalEngine fills
+is *PowerBI-class reporting with a real spatial/3D backend you self-host*.
+GIS plugins for BI tools flatten the world to 2D layers; GIS servers
+(ArcGIS/Cesium class) don't hand you a copy-paste SQL/DuckDB egress. The
+aspirational comparison set is industrial spatial-analytics tooling like
+**AVEVA PI System** and **Neara** — asset-centric, metrically correct,
+query-first — delivered as a self-hosted single binary with P2P data
+distribution and live 3D editing in the same tool.
 
-FractalEngine's differentiator: a single binary, no infrastructure dependency, with the most flexible RBAC in the space and a browser-overlay interaction model that turns any 3D object into an interactive interface.
+**Historical frame: virtual-world platforms.** The original comparison set
+(Gather.town, Spatial.io, Vircadia — centralized vs. self-hosted, embedded
+browser, P2P) still describes the substrate, but it is no longer the market
+FractalEngine is positioned in.

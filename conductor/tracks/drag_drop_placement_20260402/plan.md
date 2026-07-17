@@ -1,3 +1,7 @@
+---
+type: Implementation Plan
+---
+
 # Implementation Plan: Drag & Drop Asset Placement -- File Drop + Scene Placement Flow
 
 ## Overview

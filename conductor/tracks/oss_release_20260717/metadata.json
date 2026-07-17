@@ -1,0 +1,12 @@
+{
+  "id": "oss_release_20260717",
+  "description": "Open-source release checklist: license ratification gate (MIT OR Apache-2.0 dual scaffolded 2026-07-17, awaiting D-69), placeholder ed25519 signature register disclosure (13 sites, all fe-database post-consolidation), SurrealDB BUSL-1.1 third-party notice maintenance, conductor/ public-vs-private call (D-70), pre-push preflight (secrets re-scan, decision-register review, README claims audit), crates.io metadata verification, SECURITY.md contact finalization, CI badge + lint-gate verification",
+  "type": "chore",
+  "created_at": "2026-07-17T00:00:00Z",
+  "status": "pending",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "Sourced from the 2026-07-17 OSS-release audit (REL-01..REL-11) + crate-consolidation audit (F1-F9, see conductor/decisions/crate-consolidation-20260717.md). Scaffolding already landed 2026-07-17: LICENSE-MIT + LICENSE-APACHE at root, [workspace.package] license = \"MIT OR Apache-2.0\", THIRD-PARTY-LICENSES.md, deny.toml, SECURITY.md draft — all DEFAULTED, none ratified. Hard gates before ANY public push: D-69 (license ratification), D-70 (conductor/ publicity), REL-03 sign-or-disclose choice (real op-log signing is unratified D5-1 territory — do not treat as settled). Coordinate CI items with release_ci_20260429 (in_progress); publishing gate itself is D-53. Plan phases mark every ratification-gated item BLOCKED-ON-USER.",
+  "alignment": "P1 ENABLING (OSS release readiness, 2026-07-17 audit)"
+}

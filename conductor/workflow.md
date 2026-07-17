@@ -1,195 +1,100 @@
+---
+type: Workflow
+title: FractalEngine Project Workflow
+tags: [workflow, conductor, tracks, testing, commits]
+timestamp: 2026-07-17T00:00:00Z
+resource: ./tracks.md
+---
+
 # Project Workflow
 
 ## Guiding Principles
 
-1. **The Plan is the Source of Truth:** All work must be tracked in `plan.md`
-2. **The Tech Stack is Deliberate:** Changes to the tech stack must be documented in `tech-stack.md` _before_ implementation
-3. **Test-Driven Development:** Write unit tests before implementing functionality
-4. **High Code Coverage:** Aim for >80% code coverage for all modules
-5. **User Experience First:** Every decision should prioritize user experience
-6. **Non-Interactive & CI-Aware:** Prefer non-interactive commands. Use `CI=true` for watch-mode tools (tests, linters) to ensure single execution.
+1. **The track is the source of truth:** all work is tracked in
+   `tracks/<id>/` — the track's `metadata.json` (machine state) + `plan.md`
+   (human plan). There is no single global plan file.
+2. **The tech stack is deliberate:** changes to the tech stack are documented
+   in [`tech-stack.md`](./tech-stack.md) _before_ implementation.
+3. **New behavior ships with tests:** every feature or fix lands with tests
+   that pin its behavior. No numeric coverage gate.
+4. **One sweep at the end:** apply a batch of changes first, verify once —
+   not test-fix-test loops per change.
+5. **User experience first:** every decision prioritizes user experience;
+   terminology follows [`product-guidelines.md`](./product-guidelines.md).
+6. **Non-interactive & CI-aware:** prefer non-interactive commands; use
+   `CI=true` for watch-mode tools to ensure single execution.
 
-## Task Workflow
+## Track workflow
 
-All tasks follow a strict lifecycle:
+Standing rule: **feature → track at start, retro + archive at completion.**
 
-### Standard Task Workflow
+1. **Create the track.** A new feature or bug batch gets a folder
+   `tracks/<id>/` (id = `<slug>_<YYYYMMDD>`) containing `spec.md`, `plan.md`,
+   and `metadata.json` — created via `conductor-okf:new-track`.
+2. **metadata.json is the machine source of truth.** Status canon:
+   `pending` | `in_progress` | `spec_only` | `done` | `superseded`.
+   Dependencies live in `depends_on` / `blocks`. Each track carries an
+   `alignment` field: its verdict + priority against
+   [`roadmap.md`](./roadmap.md).
+3. **tracks.md is the live board**, ordered by the roadmap go-forward slate.
+   Board lines summarize; the track folder holds the detail.
+4. **All conductor markdown carries OKF YAML frontmatter** (required field:
+   `type`). Add it lazily when touching a file that lacks it.
+5. **Completion = retro + archive.** Write the retro (in the track folder or
+   a consolidated batch retro), move the folder to `tracks/_archive/<id>/`,
+   set `archived: true` + `archived_at` in `metadata.json`, and collapse the
+   board to one line per archive batch.
+6. **Decisions needing user sign-off go to the ratification register**
+   (`tracks/outstanding_decisions_20260715/spec.md`). Register entries are
+   **never treated as settled until the user ratifies them** — do not state
+   an unratified decision as fact in any doc or commit message.
 
-1. **Select Task:** Choose the next available task from `plan.md` in sequential order
+## Verification & quality gates
 
-2. **Mark In Progress:** Before beginning work, edit `plan.md` and change the task from `[ ]` to `[~]`
+The practiced gate is a **single integrated sweep at the end of a change
+batch** — not per-task loops:
 
-3. **Write Failing Tests (Red Phase):**
-   - Create a new test file for the feature or bug fix.
-   - Write one or more unit tests that clearly define the expected behavior and acceptance criteria for the task.
-   - **CRITICAL:** Run the tests and confirm that they fail as expected. This is the "Red" phase of TDD. Do not proceed until you have failing tests.
+```bash
+cargo test --workspace
+cargo clippy -- -D warnings
+cargo fmt --check
+```
 
-4. **Implement to Pass Tests (Green Phase):**
-   - Write the minimum amount of application code necessary to make the failing tests pass.
-   - Run the test suite again and confirm that all tests now pass. This is the "Green" phase.
+- Apply all fixes in the batch first; run the sweep once at the very end.
+- Exception: changes that touch the test harness itself may run their own
+  file inline once to confirm the harness still works.
+- New behavior ships with tests; there is no numeric coverage gate and no
+  tarpaulin step.
+- **In-app verification is user-gated:** when a track needs manual in-app
+  checks, mark it done-pending-user-verify, list the manual steps in the
+  track folder, and continue — do not pause the session waiting for
+  confirmation.
 
-5. **Refactor (Optional but Recommended):**
-   - With the safety of passing tests, refactor the implementation code and the test code to improve clarity, remove duplication, and enhance performance without changing the external behavior.
-   - Rerun tests to ensure they still pass after refactoring.
+Per-change checklist (verified by the sweep + review, not re-run per fix):
 
-6. **Verify Coverage:** Run coverage reports using the project's chosen tools.
-
-   ```bash
-   cargo tarpaulin --out Html --output-dir coverage/
-   ```
-
-   Target: >80% coverage for new code.
-
-7. **Document Deviations:** If implementation differs from tech stack:
-   - **STOP** implementation
-   - Update `tech-stack.md` with new design
-   - Add dated note explaining the change
-   - Resume implementation
-
-8. **Commit Code Changes:**
-   - Stage all code changes related to the task.
-   - Propose a clear, concise commit message e.g, `feat(fe-network): Add libp2p Kademlia DHT peer discovery`.
-   - Perform the commit.
-
-9. **Attach Task Summary with Git Notes:**
-   - **Step 9.1: Get Commit Hash:** Obtain the hash of the _just-completed commit_ (`git log -1 --format="%H"`).
-   - **Step 9.2: Draft Note Content:** Create a detailed summary for the completed task. This should include the task name, a summary of changes, a list of all created/modified files, and the core "why" for the change.
-   - **Step 9.3: Attach Note:** Use the `git notes` command to attach the summary to the commit.
-     ```bash
-     git notes add -m "<note content>" <commit_hash>
-     ```
-
-10. **Get and Record Task Commit SHA:**
-    - **Step 10.1: Update Plan:** Read `plan.md`, find the line for the completed task, update its status from `[~]` to `[x]`, and append the first 7 characters of the commit hash.
-    - **Step 10.2: Write Plan:** Write the updated content back to `plan.md`.
-
-11. **Commit Plan Update:**
-    - Stage the modified `plan.md` file.
-    - Commit with a descriptive message (e.g., `conductor(plan): Mark task 'Add Kademlia DHT' as complete`).
-
-### Phase Completion Verification and Checkpointing Protocol
-
-**Trigger:** This protocol is executed immediately after a task is completed that also concludes a phase in `plan.md`.
-
-1.  **Announce Protocol Start:** Inform the user that the phase is complete and the verification and checkpointing protocol has begun.
-
-2.  **Ensure Test Coverage for Phase Changes:**
-    - **Step 2.1: Determine Phase Scope:** Find the starting point from `plan.md` (previous phase checkpoint SHA). If none, scope is all changes since first commit.
-    - **Step 2.2: List Changed Files:** Execute `git diff --name-only <previous_checkpoint_sha> HEAD`.
-    - **Step 2.3: Verify and Create Tests:** For each code file in the list, verify a corresponding test file exists. If missing, create one matching the project's naming conventions.
-
-3.  **Execute Automated Tests with Proactive Debugging:**
-    - Announce the exact command before running it.
-    - **Command:** `cargo test 2>&1`
-    - If tests fail, attempt to fix a maximum of **two times**. If still failing after two attempts, stop and ask the user for guidance.
-
-4.  **Propose a Detailed Manual Verification Plan:**
-    - Analyze `product.md` and `plan.md` to determine user-facing goals of the completed phase.
-    - Generate a step-by-step verification plan with specific expected outcomes.
-
-5.  **Await Explicit User Feedback:**
-    - Ask: "Does this meet your expectations? Please confirm with yes or provide feedback."
-    - **PAUSE** and await response. Do not proceed without explicit confirmation.
-
-6.  **Create Checkpoint Commit:**
-    - Stage all changes and commit: `conductor(checkpoint): Checkpoint end of Phase X`.
-
-7.  **Attach Auditable Verification Report using Git Notes:**
-    - Draft a verification report (test command, manual steps, user confirmation).
-    - Attach via `git notes add -m "<report>" <commit_hash>`.
-
-8.  **Get and Record Phase Checkpoint SHA:**
-    - Obtain the checkpoint commit hash.
-    - Update `plan.md` phase heading with `[checkpoint: <sha>]`.
-    - Write updated `plan.md`.
-
-9.  **Commit Plan Update:**
-    - `conductor(plan): Mark phase '<PHASE NAME>' as complete`
-
-10. **Announce Completion.**
-
-### Quality Gates
-
-Before marking any task complete, verify:
-
-- [ ] All tests pass (`cargo test`)
-- [ ] Code coverage meets requirements (>80% via `cargo tarpaulin`)
-- [ ] `cargo fmt --check` passes
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] All public functions have doc comments (`///`)
+- [ ] All tests pass (`cargo test --workspace`)
+- [ ] `cargo fmt --check` and `cargo clippy -- -D warnings` pass
+- [ ] Terse one-line doc comments on public items; rationale in the
+      directory-level `AGENTS.md`, not inline comment blocks
 - [ ] No `unwrap()` or `expect()` in production code paths
 - [ ] All gossip messages carry ed25519 signatures (enforced by type system)
 - [ ] No `block_on()` calls inside Bevy systems
-- [ ] RBAC checks only in SurrealDB layer, not in Bevy systems
+- [ ] Authorization routed through `fe-policy` — never checked in Bevy
+      systems or UI code
 - [ ] Security-relevant events logged via `tracing`
 - [ ] No hardcoded secrets or private key material in code
 
-## Development Commands
+## Commits
 
-### Setup
+- **One commit per coherent batch** (feature slice or fix wave), conventional
+  message — e.g. `fix(ux): 2026-07-16 UX-testing batch — path interaction,
+  stamp persistence, ...`.
+- Verification evidence lives in the track folder (`retro.md` /
+  `metadata.json`), **not** git notes.
+- Conductor bookkeeping (track creation, board updates, archives) commits
+  under the `conductor` type/scope.
 
-```bash
-# Install Rust stable toolchain
-rustup toolchain install stable
-rustup component add rustfmt clippy
-
-# Install cargo-tarpaulin for coverage
-cargo install cargo-tarpaulin
-
-# Build the project
-cargo build
-```
-
-### Daily Development
-
-```bash
-# Run all tests
-cargo test
-
-# Run with logging
-RUST_LOG=debug cargo run
-
-# Format check
-cargo fmt --check
-
-# Lint
-cargo clippy -- -D warnings
-
-# Coverage report
-cargo tarpaulin --out Html --output-dir coverage/
-```
-
-### Before Committing
-
-```bash
-cargo fmt && cargo clippy -- -D warnings && cargo test
-```
-
-## Testing Requirements
-
-### Unit Testing
-
-- Every module must have corresponding tests in `#[cfg(test)]` blocks.
-- Use `tokio::test` for async functions in `fe-network` and `fe-database`.
-- Mock external peers using in-process channels; never require a live network for unit tests.
-- Test both success and failure cases for all auth, crypto, and RBAC functions.
-
-### Integration Testing
-
-- Integration tests in `tests/` directory at the crate root.
-- Test the full session handshake flow (connect → JWT issue → role assign → verify → revoke).
-- Test RBAC enforcement at the SurrealDB layer (public cannot write, custom role can within scope, admin has full access).
-- Test WebView IPC command dispatch for all `BrowserCommand` variants.
-
-### Security Testing
-
-- Every signature verification function must have a test that passes a tampered message and asserts rejection.
-- WebView URL denylist must have tests for localhost, 127.0.0.1, and each RFC 1918 range.
-- JWT expiry and revocation propagation must have integration tests with synthetic clock advancement.
-
-## Commit Guidelines
-
-### Message Format
+### Message format
 
 ```
 <type>(<scope>): <description>
@@ -204,31 +109,93 @@ cargo fmt && cargo clippy -- -D warnings && cargo test
 - `refactor`: Code change that neither fixes a bug nor adds a feature
 - `test`: Adding or updating tests
 - `chore`: Maintenance tasks
-- `conductor`: Conductor plan/checkpoint updates
+- `conductor`: Conductor track/board updates
 
-### Scopes (match module names)
+### Scopes
 
-`fe-runtime`, `fe-identity`, `fe-database`, `fe-network`, `fe-world`, `fe-renderer`, `fe-webview`, `fe-auth`, `fe-ui`
+Any workspace crate name from the root `Cargo.toml` members list (22 crates):
+
+`fractalengine`, `fractalengine-relay`, `fe-runtime`, `fe-network`,
+`fe-database`, `fe-identity`, `fe-renderer`, `fe-webview`, `fe-sync`,
+`fe-ui`, `fe-test-harness`, `fe-api`, `fe-format`, `fe-entity-store`,
+`fe-query`, `fe-terrain`, `fe-hexon`, `fe-hexon-registry`, `fe-plugin`,
+`fe-plugin-test`, `fe-sdk`, `fe-policy`
+
+— plus the non-crate scopes `ci`, `ux`, `docs`, `conductor`.
 
 ### Examples
 
 ```bash
 git commit -m "feat(fe-network): Add libp2p Kademlia DHT peer discovery"
-git commit -m "feat(fe-auth): Implement signed JWT session handshake"
+git commit -m "feat(fe-api): Add signed share URLs for query egress"
 git commit -m "fix(fe-webview): Block RFC 1918 addresses in navigation handler"
-git commit -m "test(fe-identity): Add verify_strict failure case tests"
+git commit -m "conductor(track): Archive analytics_egress batch with retro"
 ```
+
+## Development Commands
+
+### Setup
+
+```bash
+rustup toolchain install stable
+rustup component add rustfmt clippy
+cargo build
+```
+
+### Daily Development
+
+```bash
+# Run with logging
+RUST_LOG=debug cargo run
+
+# End-of-batch sweep (run ONCE per change batch)
+cargo test --workspace
+cargo clippy -- -D warnings
+cargo fmt --check
+```
+
+## Testing Requirements
+
+### Unit Testing
+
+- Every module has corresponding tests in `#[cfg(test)]` blocks.
+- Use `tokio::test` for async functions in network/database/sync crates.
+- Mock external peers using in-process channels; never require a live network
+  for unit tests.
+- Test both success and failure cases for all auth, crypto, and RBAC paths.
+
+### Integration Testing
+
+- Integration tests in `tests/` at the crate root; cross-crate flows in
+  `fe-test-harness`.
+- Test the session flow end to end (JWT issue → role assign → verify →
+  revoke via `fe_database::session_cache`).
+- Test RBAC enforcement through `fe-policy` (None/Viewer cannot write, Editor
+  can within scope, Owner has full access).
+- Test WebView IPC command dispatch for all typed command variants.
+
+### Security Testing
+
+- Every signature verification function has a test that passes a tampered
+  message and asserts rejection.
+- WebView URL denylist has tests for localhost, 127.0.0.1, and each RFC 1918
+  range.
+- JWT expiry and revocation propagation have integration tests with
+  synthetic clock advancement.
 
 ## Definition of Done
 
-A task is complete when:
+A track (or batch within it) is complete when:
 
-1. All code implemented to specification
-2. Unit tests written and passing (TDD: red → green → refactor)
-3. Code coverage >80% for new code
-4. `cargo fmt` and `cargo clippy -- -D warnings` both pass
-5. All public functions have `///` doc comments
-6. Security rules from `general.md` verified (signatures, RBAC placement, no unsafe in auth paths)
-7. Implementation notes appended to `plan.md`
-8. Changes committed with proper message format
-9. Git note with task summary attached to the commit
+1. All code implemented to the track's spec
+2. New behavior covered by tests
+3. The end-of-batch sweep is green (`cargo test --workspace`, clippy
+   `-D warnings`, `fmt --check`)
+4. Terse doc comments present; rationale captured in the directory
+   `AGENTS.md` where non-obvious
+5. Security rules verified (signatures, fe-policy placement, no unsafe in
+   auth paths)
+6. `metadata.json` status updated; retro written at archive time
+7. Changes committed as a coherent batch with proper message format
+8. Any decision needing user sign-off is filed in the ratification register,
+   not assumed

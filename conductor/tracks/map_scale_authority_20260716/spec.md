@@ -267,3 +267,14 @@ As an operator, I want placed models to land on the ground surface, not at y=0.
 - **OQ-3:** Consolidate `UiManager.world_scale` (plugin.rs:107) onto
   `PetalMapState.world_scale` vs. keep the mirror with a documented single write-path.
   Default: consolidate reads onto PetalMapState; decide in Phase 3.
+
+# Audit evidence (2026-07-17)
+
+Board-hygiene audit confirms this track's premise with two live, disagreeing
+scale authorities: `fe-terrain/src/ruler_plugin.rs:72` reads
+`config.effective_world_scale()` (hexon-bounded terrain accessor) while
+`fe-ui/src/node_manager/path_segment_interaction.rs:186` reads
+`guard_world_scale(petal_map.world_scale)` (raw `PetalMapState` cache) — the
+ruler HUD and path-length readouts derive the same number from different
+sources. Unification must route BOTH through the canonical
+`fe_format::scale` accessor (FR-1/FR-3), not just the fe-ui copies.

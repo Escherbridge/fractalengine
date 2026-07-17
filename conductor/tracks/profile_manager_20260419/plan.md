@@ -1,3 +1,7 @@
+---
+type: Implementation Plan
+---
+
 # Implementation Plan: User Profile Manager
 
 ## Overview

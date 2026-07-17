@@ -1,3 +1,7 @@
+---
+type: Track Spec
+---
+
 # Specification: Drag & Drop Asset Placement -- File Drop + Scene Placement Flow
 
 ## Overview

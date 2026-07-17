@@ -10,7 +10,7 @@ resource: ./metadata.json
 
 Sources: 37-agent track audit (2026-07-14; 68 raw items → 53 deduped entries) + 72 provisional decisions logged by the 3 implementation waves (2026-07-14/15, commits 9ef76a1, f062921, 51bc90e). Wave decisions that refine an audit entry are merged into that entry's default with the implementing track cited; genuinely new calls got new numbers (D-54..D-67). Pure implementation-detail wave notes (no ratification value) are NOT registered — they live in the implementing tracks' plan.md / AGENTS.md dated notes.
 
-**67 entries: 31 [USER], 36 [DEFAULTED].** Tags: **[USER]** = genuine product/money/scope-kill call — needs an actual decision. **[DEFAULTED]** = a sensible default was taken (audit pass or implementation wave); needs only ratification (see checklist at bottom). Track names drop their `_2026xxxx` suffix.
+**72 entries: 34 [USER], 38 [DEFAULTED].** Tags: **[USER]** = genuine product/money/scope-kill call — needs an actual decision. **[DEFAULTED]** = a sensible default was taken (audit pass or implementation wave); needs only ratification (see checklist at bottom). Track names drop their `_2026xxxx` suffix.
 
 ## A. BI egress shape, credentials, limits
 
@@ -101,6 +101,15 @@ Sources: 37-agent track audit (2026-07-14; 68 raw items → 53 deduped entries) 
 - **D-66 CI spec deviations (dated amendments)** [DEFAULTED] — Ratify the wave's blessed deviations? Src: release_ci + cross_platform waves. Default: rust-cache (Swatinem v2) over sccache (FR-3; sccache is NOT being added); single SHA256SUMS manifest in the publish job instead of per-artifact .sha256 files; scoped test sweep (fe-ui, fe-terrain, fractalengine) over `cargo test --workspace` (FR-1 note), mirrored on macOS. Undecided: ratify or revert to spec.
 - **D-67 FE_KEYSTORE_BACKEND: wire or drop** [DEFAULTED] — The spec-mandated env var is read nowhere in Rust source (tests use InMemoryBackend; relay secrets come from FE_SECRET_{SERVICE}_{ACCOUNT} via EnvBackend). Src: release_ci wave. Default: set in CI test env + Dockerfile per spec with comments marking it informational. Follow-up: either wire actual backend selection to the var or drop it from specs. Undecided: dead config invites false confidence.
 
+## H. OSS release + crate consolidation (appended 2026-07-17)
+
+Sources: 2026-07-17 OSS-release audit (REL-01..REL-11, feeds track `oss_release_20260717`) + crate-consolidation audit (F1–F9; executed portions recorded in [../../decisions/crate-consolidation-20260717.md](../../decisions/crate-consolidation-20260717.md)).
+
+- **D-69 OSS license: MIT OR Apache-2.0 dual** [DEFAULTED] — Which license does FractalEngine ship under? Src: OSS audit REL-01/REL-02 (no LICENSE file existed while README claimed "All rights reserved. See LICENSE for details"; zero crates carried license metadata). Default: Rust-convention dual **MIT OR Apache-2.0**, scaffolded 2026-07-17 (LICENSE-MIT + LICENSE-APACHE at root, `[workspace.package] license = "MIT OR Apache-2.0"`, THIRD-PARTY-LICENSES.md + deny.toml with a surrealdb BUSL-1.1 exception). NOT ratified — no public push, tag, or crates.io publish until this resolves; a license choice is effectively irreversible once code ships under it. Undecided: the repo carries license files the owner never actually chose.
+- **D-70 conductor/ bundle public vs private on OSS release** [USER] — Does the conductor/ PM bundle (including this unratified register's internal deliberations) + research/ ship in the public repo, or move to a private sibling before first push? Src: OSS audit REL-10. If public: add a conductor/README.md framing it as open project management and mark this register draft/unratified. If private: split before the first push. Undecided: internal deliberations publish by default on first push.
+- **D-71 fe-network stage-2 retirement** [USER] — Move `AssetId` (+ `GossipMessage`) into `fe-runtime::messages`, retire the libp2p kademlia swarm + network thread, and delete the fe-network crate (dropping libp2p 0.56 from every workspace build) — or keep fe-network as a seam for a possible swarm revival? Src: crate-consolidation F1 (executed portions + mechanical surface in the 2026-07-17 decision record). Stage-1 dead-dep prune already applied 2026-07-17 (never-imported iroh-blobs/iroh-gossip/iroh-docs removed from fe-network/Cargo.toml; libp2p and the crate untouched). Board evidence says the live P2P direction is iroh (iroh_1_0_upgrade), but foundry-candidate specs (hexon_p2p_bucket "handshake-then-swarm", p2p_mycelium_completion) might intend a swarm revival. Undecided: a 190-line stub crate keeps libp2p in every build and the architecture docs claim a thread that only answers Ping/Pong.
+- **D-72 First-run UI vocabulary** [USER] — Keep the verse/fractal/petal jargon in first-run and user-facing UI, or shift to domain terms an OSS newcomer parses on sight? Src: OSS audit front-door review; feeds the user-owned UX track (roadmap defers UX to the user — no agent pre-emption; baked terminology rules already fix "path"/"map"/"Portal URL" independently of this call). Undecided: first-run comprehension for OSS newcomers vs the product's established identity.
+
 ## Quick ratification checklist ([DEFAULTED] — one-line yes/no each)
 
 1. D-1: parquet+CSV download (DuckDB-httpfs-readable) primary; OData fast-follow; no native wire; v1 exports node-table-only — OK?
@@ -141,6 +150,8 @@ Sources: 37-agent track audit (2026-07-14; 68 raw items → 53 deduped entries) 
 36. D-67: FE_KEYSTORE_BACKEND stays informational pending wire-or-drop — OK?
 
 37. D-68: role/verse_member removed from the /query + export whitelist (elevated endpoint keeps them); all FROM clauses whitelist-checked — OK?
+
+38. D-69: dual MIT OR Apache-2.0 license (scaffolded 2026-07-17) — ratify before any public push/tag/publish — OK?
 
 ## How to resolve
 

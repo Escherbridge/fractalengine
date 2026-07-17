@@ -6,9 +6,8 @@
   "status": "spec_only",
   "execution_wave": 4,
   "wave_rationale": "Backlog Wave-2 feature; superseded UX exists.",
-  "depends_on": [
-    "petal_seed_20260322"
-  ],
+  "depends_on": [],
+  "notes": "2026-07-17 board hygiene: depends_on petal_seed_20260322 removed — that track was archived 2026-07-15 as SUPERSEDED (never delivered as specced), so the stated prerequisite dissolved and this spec's plan is built on a void base. Flag at the next alignment pass: follow petal_seed into the archive, or re-spec into the user-owned UX track (board already hands it there).",
   "alignment": {
     "verdict": "PLATFORM-KEEP / DEFER",
     "priority": "P3",

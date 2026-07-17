@@ -15,6 +15,16 @@ replace it.
 
 ## The repositioning
 
+> **Status 2026-07-17:** initiative 1's last mile is largely **LANDED**
+> (analytics_egress phases 1–5, 2026-07-15: real GeoParquet writer/reader,
+> parquet/CSV export, query_guard cost/row/timeout limits, signed share URLs,
+> Copy-for-BI panel — Phase 6 e2e/docs remains). Slate items 5–7
+> (p2p_unblock_now, headless_relay, code_review_cleanup FR-1) shipped and were
+> archived in the 2026-07-15 close-out; hexon_scale_orchestration is
+> in_progress with phases 1–4 done. [tracks.md](./tracks.md) is the live
+> board; the reality-check and slate sections below are the 2026-07-14
+> snapshot and are kept as the alignment record.
+
 FractalEngine's **primary** identity is evolving from "P2P 3D digital-twin
 editor" into a **spatial analytics / reporting engine** — a BIM-style reporting
 solution. The 3D world-building stays, but the headline value becomes:

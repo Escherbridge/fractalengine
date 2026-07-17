@@ -1,3 +1,7 @@
+---
+type: Track Spec
+---
+
 # Specification: P2P Mycelium Completion Track
 
 ## Overview

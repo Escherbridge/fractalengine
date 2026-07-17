@@ -1,7 +1,11 @@
 {
   "id": "tauri_host_shell_spike_20260630",
   "name": "Tauri-Host Shell SPIKE — Exploratory: Tauri as Primary Window + Bevy Render-into-Surface",
-  "status": "in_progress",
+  "status": "superseded",
+  "completed_at": "2026-07-14",
+  "archived": true,
+  "archived_at": "2026-07-17",
+  "notes": "Shelved per 2026-07-14 OFF-STRATEGY alignment; exit report delivered (spike-exit-report.md, 2026-07-01), verdict CONDITIONAL GO. Phase 3 POC never run — spike terminated at the report. Archived 2026-07-17 board-hygiene batch.",
   "execution_wave": 4,
   "wave_rationale": "Backlog P2 exploratory SPIKE; off critical path.",
   "priority": "P3",
@@ -24,13 +28,13 @@
     {
       "id": 3,
       "name": "Proof-of-Concept Implementation",
-      "status": "pending",
+      "status": "superseded",
       "tasks": 4
     },
     {
       "id": 4,
       "name": "Exit Report + Decision",
-      "status": "pending",
+      "status": "done",
       "tasks": 2
     }
   ],
