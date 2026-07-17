@@ -16,9 +16,10 @@ truth alignment → community/CI → metadata → ratification → preflight + p
 
 ## Phase 1 — Verify the 2026-07-17 scaffolding (agent)
 
-- [ ] 1.1 `LICENSE-MIT` + `LICENSE-APACHE` present at root with correct canonical texts.
-- [ ] 1.2 Root `[workspace.package]` carries `license = "MIT OR Apache-2.0"`,
-      `repository`, `edition`, `version`; all member crates inherit via
+- [x] 1.1 `LICENSE-APACHE` present at root with correct canonical text
+      (D-69 ratified 2026-07-17: Apache-2.0 single; LICENSE-MIT removed).
+- [x] 1.2 Root `[workspace.package]` carries `license = "Apache-2.0"`,
+      `repository`, `edition`, `rust-version`; all member crates inherit via
       `license.workspace = true` (spec FR-6).
 - [ ] 1.3 `deny.toml` allowlist correct (MIT/Apache-2.0/BSD/ISC/MPL-2.0 + BUSL
       exception scoped to `surrealdb*` only); `cargo deny check licenses` wired into
@@ -40,8 +41,8 @@ truth alignment → community/CI → metadata → ratification → preflight + p
 - [ ] 2.4 BUILDING.md: add RUST_MIN_STACK=134217728 / surrealdb-core deep-recursion
       gotcha (+ poisoned-rmeta `cargo clean -p` note); fix the GHCR org pull URL
       (REL-09).
-- [ ] 2.5 README license section: dual-license text + contribution-licensing sentence
-      (lands with Phase 5.1 ratification; draft may be staged behind it).
+- [x] 2.5 README license section: Apache-2.0 text + contribution-licensing sentence
+      (landed 2026-07-17 with D-69 ratification).
 
 ## Phase 3 — Community health + CI gates (agent)
 
@@ -74,11 +75,10 @@ truth alignment → community/CI → metadata → ratification → preflight + p
 
 ## Phase 5 — Ratification wall (every item BLOCKED-ON-USER)
 
-- [ ] 5.1 **BLOCKED-ON-USER — D-69:** ratify (or override) MIT OR Apache-2.0 dual
-      license. No public push, tag, or publish before this lands.
-- [ ] 5.2 **BLOCKED-ON-USER — D-70:** conductor/ (+ research/) public vs private.
-      If public: conductor/README.md framing + register marked draft/unratified.
-      If private: split to a sibling repo before push.
+- [x] 5.1 **RESOLVED 2026-07-17 — D-69:** user ratified **Apache-2.0 single**
+      (overrode the dual default; LICENSE-MIT removed, metadata + docs updated).
+- [x] 5.2 **RESOLVED 2026-07-17 — D-70:** conductor/ **stays public**;
+      conductor/README.md framing added, register marked draft where unratified.
 - [ ] 5.3 **BLOCKED-ON-USER — REL-03 path choice:** implement real op-log signing
       (D5-1-adjacent, its own track if chosen) vs ship with disclosure (Phase 2.2/2.3
       text stands). Default posture staged: disclosure.

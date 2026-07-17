@@ -129,13 +129,13 @@ backend.
 
 ### [ ] oss_release — open-source release checklist
 
-_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · pending · P1 ENABLING · gated on D-69 (license) + D-70 (conductor/ publicity)_
+_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · pending · P1 ENABLING · D-69 + D-70 RATIFIED 2026-07-17 (Apache-2.0; conductor/ public)_
 
 The full pre-public-push gate, sourced from the 2026-07-17 OSS-release audit
 (REL-01..11) + crate-consolidation audit ([decision record](./decisions/crate-consolidation-20260717.md)).
-License scaffolding landed 2026-07-17 (LICENSE-MIT/APACHE, workspace
-`license = "MIT OR Apache-2.0"`, THIRD-PARTY-LICENSES + deny.toml, SECURITY.md
-draft) but is DEFAULTED, not ratified. Checklist: placeholder ed25519 signature
+License **ratified 2026-07-17: Apache-2.0 single** (LICENSE-APACHE, workspace
+`license = "Apache-2.0"`, THIRD-PARTY-LICENSES + deny.toml, SECURITY.md draft);
+conductor/ ships public with its README framing. Checklist: placeholder ed25519 signature
 register disclosure (13 sites, all fe-database post-consolidation), SurrealDB
 BUSL-1.1 notice maintenance, crates.io metadata verification, SECURITY.md contact
 finalization, CI lint gate + badge, community health files, and the pre-push

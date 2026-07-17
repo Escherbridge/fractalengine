@@ -8,9 +8,11 @@ headline capability is **BI egress**: copy a SQL string or API URL out of the
 app and paste it into PowerBI, a spreadsheet, or DuckDB. No connector SDK, no
 export wizard — your reporting tool talks straight to your data.
 
-Under the analytics layer sits a peer-to-peer **3D digital-twin substrate**: a
-Bevy-based editor where you build 3D spaces, place models, draw paths over real
-terrain, and share worlds with peers without a central server.
+Under the analytics layer sits a **peer-to-peer 3D digital-twin substrate** — the
+project's key differentiator: a Bevy-based editor where you build 3D spaces, place
+models, draw paths over real terrain, and share worlds with peers **without a
+central server**. Where other spatial analytics tools assume a hosted backend,
+FractalEngine's data layer replicates peer-to-peer.
 
 **Single binary. Local-first. Your data stays in your database.**
 
@@ -275,16 +277,11 @@ persists are rolled back via `transform_rollback`.
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+licensed as above, without any additional terms or conditions.
 
 Note: the embedded SurrealDB engine is a dependency licensed separately under
 the Business Source License 1.1.

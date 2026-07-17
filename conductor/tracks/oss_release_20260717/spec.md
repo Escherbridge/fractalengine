@@ -20,19 +20,19 @@ each BLOCKED-ON-USER.
 
 ## Current state (as of 2026-07-17)
 
-Scaffolding landed 2026-07-17 but is DEFAULTED, not ratified: `LICENSE-MIT` +
-`LICENSE-APACHE` at root, `[workspace.package] license = "MIT OR Apache-2.0"` (root
-`Cargo.toml`), `THIRD-PARTY-LICENSES.md`, `deny.toml`, `SECURITY.md` draft. The repo has
-never been publicly pushed; there is no license the owner has actually chosen yet.
+Scaffolding landed 2026-07-17 and **D-69 was ratified the same day: Apache-2.0
+single** (user overrode the dual default). Current: `LICENSE-APACHE` at root
+(LICENSE-MIT removed), `[workspace.package] license = "Apache-2.0"` (root
+`Cargo.toml`), `THIRD-PARTY-LICENSES.md`, `deny.toml`, `SECURITY.md` draft. The
+repo has never been publicly pushed.
 
-## FR-1 — License ratification gate (REL-01, REL-02 → D-69)
+## FR-1 — License ratification gate (REL-01, REL-02 → D-69) — RESOLVED
 
 - Dual MIT OR Apache-2.0 was scaffolded 2026-07-17 as the Rust-convention default.
-- **Gate:** the user must ratify D-69 before any public push, tag, or crates.io publish
-  — a license choice is effectively irreversible once code ships under it.
-- On ratification: README license section states "Licensed under either of Apache
-  License 2.0 or MIT license at your option" + the standard contribution-licensing
-  sentence; the stale "All rights reserved. See LICENSE for details." text is gone.
+- **RATIFIED 2026-07-17: Apache-2.0 single.** LICENSE-MIT removed; workspace
+  metadata, README license section, CONTRIBUTING licensing clause, and
+  THIRD-PARTY-LICENSES.md all state Apache-2.0; the stale "All rights reserved.
+  See LICENSE for details." text is gone.
 - On override: swap license files + workspace metadata before push; everything
   downstream (THIRD-PARTY notice, deny.toml allowlist, README) re-checks.
 

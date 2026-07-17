@@ -2,7 +2,7 @@
 type: Decision Record
 title: Crate Consolidation Audit — fe-auth absorbed, fe-network staged, KEEP verdicts
 timestamp: 2026-07-17T00:00:00Z
-status: recorded (executed items done; stage-2 fe-network retirement pending D-71)
+status: closed (executed items done; D-71 resolved 2026-07-17 — fe-network KEPT)
 tags: [decision-record, crates, workspace, consolidation, oss-release]
 ---
 
@@ -54,17 +54,21 @@ Sprint-5B stubs. The three never-imported deps (`iroh-blobs`, `iroh-gossip`,
 `iroh-docs`) were removed from `fe-network/Cargo.toml`; libp2p and the crate itself
 untouched. Zero-risk, executed 2026-07-17.
 
-## Pending — fe-network stage-2 retirement (F1 stage 2, gated on D-71)
+## Resolved — fe-network stage-2 retirement REJECTED (D-71, ratified 2026-07-17)
 
-**UNRATIFIED (register D-71, [USER]).** The candidate move: relocate `AssetId` (+
+**KEEP fe-network.** User directive: "we need peer to peer, it's the main
+differentiator." P2P is core product identity, so the crate stays as the swarm
+seam and libp2p remains in the workspace. The retirement analysis below is
+preserved for the record only — do not execute.
+
+The rejected candidate move was: relocate `AssetId` (+
 `GossipMessage`) into `fe-runtime::messages` (already the cross-thread type hub),
 retire the libp2p kademlia swarm + network thread (it only answers Ping/Pong), delete
 the crate, and drop libp2p 0.56 from the entire workspace build. Mechanical surface:
 3 fe-renderer files, `fe-sync/src/cache.rs`, both binaries' spawn call, two test
 files, and the 7-thread architecture docs. Counter-consideration: foundry-candidate
 specs (hexon_p2p_bucket "handshake-then-swarm", p2p_mycelium_completion) might intend
-a swarm revival, though the board's live P2P direction is iroh. Do not execute until
-D-71 resolves.
+a swarm revival, though the board's live P2P direction is iroh.
 
 ## KEEP verdicts (rationale on record)
 

@@ -1,7 +1,7 @@
 # Third-Party Licenses
 
-FractalEngine is licensed under MIT OR Apache-2.0 (see `LICENSE-MIT` and
-`LICENSE-APACHE`). That license covers FractalEngine's own source code only.
+FractalEngine is licensed under Apache-2.0 (see `LICENSE-APACHE`).
+That license covers FractalEngine's own source code only.
 The binaries additionally embed third-party dependencies under their own
 licenses. Most are permissively licensed (MIT / Apache-2.0 / BSD / ISC /
 Zlib / Unicode / MPL-2.0); the one notable exception is called out below.
@@ -17,7 +17,7 @@ Licensor SurrealDB Ltd. FractalEngine embeds the SurrealDB storage engine
 What BUSL-1.1 means in practice:
 
 - **It is source-available, not OSI-approved open source.** The
-  "MIT OR Apache-2.0" license on FractalEngine's own code does not extend
+  Apache-2.0 license on FractalEngine's own code does not extend
   to the embedded SurrealDB engine.
 - **Broad use is permitted, with one carve-out.** BUSL-1.1 grants the right
   to copy, modify, and use the licensed work, limited by an Additional Use

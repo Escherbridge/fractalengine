@@ -58,15 +58,10 @@ conductor track per feature.
 
 ## Licensing of Contributions
 
-FractalEngine is dual-licensed under MIT OR Apache-2.0 (see
-[LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)).
+FractalEngine is licensed under Apache-2.0
+([LICENSE-APACHE](LICENSE-APACHE); ratified 2026-07-17, decision D-69).
 
 Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in the work by you, as defined in the Apache-2.0
-license, shall be dual licensed as above, without any additional terms or
+license, shall be licensed as above, without any additional terms or
 conditions.
-
-> Note: the dual MIT/Apache-2.0 default is proposed under project decision
-> D-69 and is **pending ratification**. The license files and manifest
-> metadata are scaffolded so tooling works, but the final licensing choice
-> may still change before the first public release.
