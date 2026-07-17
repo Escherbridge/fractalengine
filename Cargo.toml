@@ -6,7 +6,6 @@ members = [
     "fe-database",
     "fe-identity",
     "fe-renderer",
-    "fe-auth",
     "fe-webview",
     "fe-sync",
     "fe-ui",
@@ -25,6 +24,12 @@ members = [
     "fe-policy",
 ]
 resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JadeZaher/fractalengine"
+rust-version = "1.83"
 
 [workspace.dependencies]
 bevy = { version = "0.18", default-features = false, features = [

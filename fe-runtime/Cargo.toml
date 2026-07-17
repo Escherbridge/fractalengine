@@ -1,7 +1,11 @@
 [package]
 name = "fe-runtime"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Thread orchestration and channel plumbing for the FractalEngine runtime"
 
 [dependencies]
 bevy = { workspace = true }

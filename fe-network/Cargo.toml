@@ -1,7 +1,11 @@
 [package]
 name = "fe-network"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "libp2p peer-to-peer networking layer for FractalEngine"
 
 [dependencies]
 fe-runtime = { path = "../fe-runtime" }
@@ -9,9 +13,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 crossbeam = { workspace = true }
 libp2p = { workspace = true }
-iroh-blobs = { workspace = true }
-iroh-gossip = { workspace = true }
-iroh-docs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { workspace = true }

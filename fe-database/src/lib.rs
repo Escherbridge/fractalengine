@@ -67,6 +67,7 @@ pub mod role_manager;
 pub mod schema;
 pub mod scope;
 pub mod scoped_invite;
+pub mod session_cache;
 pub mod space_manager;
 pub mod types;
 pub mod verse;

@@ -1,7 +1,11 @@
 [package]
 name = "fe-entity-store"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Typed entity store over the FractalEngine database layer"
 
 [dependencies]
 bevy = { workspace = true }
