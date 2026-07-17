@@ -137,3 +137,160 @@ modules are path-tracking/animation only). Design decisions:
   facts, and the caller gets an error to retry idempotently-enough).
 - Errors are typed (`IotIngestError`, thiserror) so fe-api maps real HTTP
   statuses instead of string-sniffing.
+
+## §session-cache (absorbed from fe-auth, 2026-07-17)
+
+`session_cache.rs` is the former `fe-auth` crate's surviving surface, moved
+here verbatim when fe-auth was retired (its verse-invite logic was already
+superseded by `invite.rs`, and its handshake was a petal-only migration
+bridge with no consumers). Rationale carried over from the deleted crate:
+
+- `SESSION_TTL_SECS = 60` bounds how long a stale role can be served after a
+  role change elsewhere; `get` treats expired entries as absent and
+  `prune_expired` reclaims them.
+- `revoke_session` is log-first: it writes a `RevokeSession` op-log entry
+  *before* evicting the cache entry, so revocation survives restarts and can
+  replicate. Its `sig: "00".repeat(64)` is one of the workspace's known
+  placeholder op-log signatures (13 sites tracked by the hexon-p2p-commons
+  research); broadcasting the revocation to peers
+  (`NetworkCommand::BroadcastRevocation`) is still deferred (Sprint 5B).
+
+## §reconcile
+
+`reconcile.rs` is the sole startup data-fixing mechanism. The former
+`migrations.rs` was removed because tracked-once migration semantics don't
+work in P2P — peers can't coordinate "which migration ran". Reconciliation
+rules are instead **idempotent invariants**: each describes what the DB
+*should* look like, checks for violations, and fixes them; every rule is
+safe to re-run on every startup, with no tracking table. This converges in
+P2P because peers on different client versions all reach the same correct
+state, new rules are additive (old clients ignore fields they don't know
+about), and no coordination between peers is needed. `RULES` is an ordered,
+append-only list.
+
+## §hlc
+
+`op_log.rs` replaced the former static `LAMPORT_CLOCK: AtomicU64` with a
+Hybrid Logical Clock: wall-clock milliseconds in the upper 48 bits of a
+packed `u64`, a monotonic counter in the lower 16. Guarantees:
+
+- **Monotonicity** — timestamps never go backwards, even if the wall clock
+  drifts or multiple events land in the same millisecond (the counter
+  saturates into the next millisecond rather than wrapping past `0xFFFF`).
+- **Restart safety** — `init_hlc()` takes the highest persisted
+  `lamport_clock` and advances past it, so a restart never re-issues an old
+  timestamp. The coordinator (`lib.rs`) must call it once during DB startup,
+  after querying `SELECT math::max(lamport_clock) FROM op_log` and before
+  any op-log write; `next_hlc_timestamp()` panics if it hasn't run.
+- **Sortability** — the packed `u64` sorts identically to the
+  `(wall_ms, counter)` pair, so SurrealDB `ORDER BY lamport_clock` remains
+  correct.
+
+`next_hlc_timestamp()` returns `(packed_u64, human_string)`; the human
+string is `"<wall_ms>:<counter_hex>"`, stored in the `hlc_timestamp` column
+for debugging / external tooling. HLC state sits in a `Mutex` purely for
+`static` safety — the DB thread is single-threaded (current_thread tokio),
+so contention is zero in practice.
+
+## §handlers
+
+`handlers/` holds the command handlers extracted from the DB dispatch loop,
+one sub-module per domain:
+
+- `crud` — Verse/Fractal/Petal/Node creation, GLTF import, hierarchy loading
+- `entity` — rename, delete, description updates
+- `entity_property` — custom property CRUD for nodes
+- `field_def` — field definition schema CRUD
+- `transform` — node position/rotation/scale and URL persistence
+- `rbac` — role resolution, assignment, revocation
+- `invite` — verse invite generation and join-by-invite
+- `api_token` — API token minting, revocation, and listing
+- `seed` — default data seeding
+- `admin` — database reset
+- `crate_registry` — hexon crate registry install/uninstall
+- `petal_terrain` — per-petal terrain config get/set
+- `iot_reading` — append-only IoT sensor-reading ingestion (§iot-readings)
+- `node_log` — append-only per-node operation log (§node-log)
+
+## §node-log
+
+The `node_log` table is append-only: each row is an immutable fact recording
+a single mutation on a node, INSERT-only — no UPDATE or DELETE is ever
+issued against it. `row_version` is monotonically increasing per `node_id`
+and serves as hidden metadata for "most recent state" queries;
+`hlc_timestamp` is the HLC-packed `u64` (§hlc) for time-series ordering and
+distributed merge.
+
+`handlers::node_log::append_node_log` derives `row_version` as
+`SELECT math::max(row_version)` + INSERT, which is NOT atomic. It is safe
+only because the DB thread runs on a single-threaded tokio runtime
+(`current_thread`), so no two calls execute concurrently. **This invariant
+must be maintained** — if the DB thread ever moves to a multi-threaded
+runtime, replace the derivation with an atomic subquery or a DB-level
+sequence.
+
+## §repo
+
+`Repo<T>` (`repo.rs`) provides typed CRUD over any `Table` implementor. All
+methods are associated functions (no `&self`) — there is no instance state.
+For domain-specific queries (spatial lookups, full-text search, SurrealQL
+`VERSION`, etc.) use `Repo::query_raw` or write free functions that accept
+`&Db` and return `T`.
+
+Quick start:
+
+```rust
+// Insert
+Repo::<Petal>::create(&db, &petal).await?;
+
+// Lookup
+let p = Repo::<Petal>::find_by_id(&db, "01HZ…").await?;
+
+// Partial update
+Repo::<Petal>::merge_by_id(&db, "01HZ…", json!({"name": "new"})).await?;
+```
+
+JSON `null` values are stripped before every insert (`create`/`create_raw`)
+because SurrealDB's `option<T>` rejects explicit `null` — it expects the
+field to be absent (interpreted as `NONE`).
+
+## §schema-macro
+
+`schema.rs` defines every SurrealDB table exactly once via `define_table!`,
+which generates (1) a `pub struct` with `Debug, Clone, Serialize,
+Deserialize` and (2) an `impl Table` (see `repo.rs`) providing `TABLE_NAME`,
+`ID_FIELD`, `schema()` (the SurrealQL DDL), and `id_value()`. The generated
+DDL uses `DEFINE TABLE/FIELD IF NOT EXISTS`, so it is fully idempotent and
+safe to run on every startup.
+
+Syntax:
+
+```rust
+define_table! {
+    /// Doc comment on the struct.
+    table "surreal_table_name" => RustStructName (id: id_field_name) {
+        field_a: String         => "TYPE string",
+        field_b: Option<String> => "TYPE option<string>",
+    }
+}
+```
+
+The right-hand side of `=>` for each field is the SurrealQL type clause
+(everything after `ON TABLE <name>`); it can include `ASSERT`, `VALUE`,
+`DEFAULT`, and `FLEXIBLE` modifiers.
+
+## §scope
+
+Scope strings are `VERSE#<v>[-FRACTAL#<f>[-PETAL#<p>]]` (`scope.rs`).
+Access resolution is hierarchical: a scope at a higher level covers every
+resource beneath it —
+
+- `VERSE#v1` covers `VERSE#v1-FRACTAL#f1-PETAL#p1`
+- `VERSE#v1-FRACTAL#f1` covers `VERSE#v1-FRACTAL#f1-PETAL#p1`
+- `VERSE#v1-FRACTAL#f1-PETAL#p1` does NOT cover `VERSE#v1-FRACTAL#f1`
+
+`scope_contains` implements this as "token scope equals, or is a proper
+prefix of, the resource scope ending at a `-` keyword boundary" — the
+boundary check stops `VERSE#v1` from covering `VERSE#v10`. IDs may
+themselves contain `-`, so `parse_scope` splits on the literal markers
+`-FRACTAL#` / `-PETAL#`, never on bare `-`.

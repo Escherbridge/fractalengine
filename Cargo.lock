@@ -5235,23 +5235,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fe-auth"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bevy",
- "ed25519-dalek",
- "fe-database",
- "fe-identity",
- "fe-network",
- "hex",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "fe-database"
 version = "0.1.0"
 dependencies = [
@@ -5387,9 +5370,6 @@ dependencies = [
  "fe-runtime",
  "hex",
  "ipnet",
- "iroh-blobs",
- "iroh-docs",
- "iroh-gossip",
  "libp2p",
  "rand 0.8.6",
  "serde",
@@ -5798,7 +5778,6 @@ dependencies = [
  "dirs 5.0.1",
  "ed25519-dalek",
  "fe-api",
- "fe-auth",
  "fe-database",
  "fe-entity-store",
  "fe-identity",

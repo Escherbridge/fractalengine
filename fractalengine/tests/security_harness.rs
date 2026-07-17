@@ -48,7 +48,7 @@ fn test_oversized_asset_rejected() {
 
 #[test]
 fn test_role_cache_invalidated_after_revoke() {
-    use fe_auth::cache::SessionCache;
+    use fe_database::session_cache::SessionCache;
     use fe_database::RoleId;
     let mut cache = SessionCache::new();
     let key = [42u8; 32];
