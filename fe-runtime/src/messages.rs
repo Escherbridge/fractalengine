@@ -382,6 +382,10 @@ pub enum DbResult {
         /// Echoes the originating `CreateNode.correlation_id` (FR-4); `None`
         /// when the command carried none.
         correlation_id: Option<String>,
+        /// Echoes the originating `CreateNode.position` (camera_focus_clip_20260716
+        /// FR-1) so callers don't have to wait for a hierarchy reload to know
+        /// where the node actually landed.
+        position: [f32; 3],
     },
     GltfImported {
         node_id: String,

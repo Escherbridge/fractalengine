@@ -18,7 +18,7 @@ use crate::lod_ring::{
 };
 use crate::mesh::interp::upsample_bilinear;
 use crate::mesh::terrain::terrain_mesh;
-use crate::mesh::track::{track_mesh, ColorMode as TrackColorMode};
+use crate::mesh::track::{track_centroid, track_mesh, ColorMode as TrackColorMode};
 use crate::petal_binding::{
     apply_terrain_assignments, ActivePetalTerrain, ActiveTileSource, TerrainAssignmentMsg,
 };
@@ -567,11 +567,18 @@ fn render_gpx_tracks(
             style.color_u8()[2],
             style.color_u8()[3],
         );
-        let ribbon = track_mesh(
-            &positions,
-            style.width.max(0.01),
-            TrackColorMode::Solid(color),
-        );
+        // path_interaction_20260716 (FR-4): centroid-anchor the ribbon so the
+        // gimbal has a real transform to grab. Build the mesh with positions
+        // relative to the centroid and spawn the entity `Transform` at the
+        // centroid — net world position unchanged, but Move/Rotate/Scale now
+        // pivot about the path's center. The gpx bridge tags a `TrackPickShape`
+        // carrying the SAME centroid so the whole-path bake pivots identically.
+        let centroid = track_centroid(&positions);
+        let rel: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|p| [p[0] - centroid[0], p[1] - centroid[1], p[2] - centroid[2]])
+            .collect();
+        let ribbon = track_mesh(&rel, style.width.max(0.01), TrackColorMode::Solid(color));
 
         let handle = meshes.add(ribbon);
         let material = materials.add(StandardMaterial {
@@ -584,7 +591,11 @@ fn render_gpx_tracks(
         // try_insert throughout: the bridge may despawn a line the same frame
         // (petal switch / style re-render) before these commands flush.
         let mut e = commands.entity(entity);
-        e.try_insert((Mesh3d(handle), MeshMaterial3d(material)));
+        e.try_insert((
+            Mesh3d(handle),
+            MeshMaterial3d(material),
+            Transform::from_translation(Vec3::new(centroid[0], centroid[1], centroid[2])),
+        ));
         // FR-3 visibility: apply the current visible flag at build time. A later
         // toggle isn't a cheap in-place `Visibility` flip — it persists the
         // `gis.track.visible` prop, which despawns+respawns the `GpxTrackLine`

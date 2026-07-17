@@ -378,7 +378,7 @@ pub fn spawn_db_thread_with_sync(
                                 ).await {
                                     tracing::warn!("node_log append failed for {id}: {e}");
                                 }
-                                send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false, correlation_id });
+                                send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false, correlation_id, position });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create node failed: {e}"))),
                         }

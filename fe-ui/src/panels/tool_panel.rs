@@ -205,16 +205,20 @@ fn render_path_asset_section(
     match state.spacing_mode {
         SpacingMode::FixedSpacing => {
             ui.horizontal(|ui| {
+                // FR-3: spacing is real meters (converted to world units via the
+                // petal `world_scale` at sampling time).
                 ui.label(
-                    egui::RichText::new("Spacing")
+                    egui::RichText::new("Spacing (m)")
                         .small()
                         .color(theme::TEXT_DIM),
                 );
                 ui.add(
                     egui::DragValue::new(&mut state.spacing_value)
                         .speed(0.1)
-                        .range(0.0..=f32::MAX),
-                );
+                        .range(0.0..=f32::MAX)
+                        .suffix(" m"),
+                )
+                .on_hover_text("Distance between stamped instances, in real-world meters");
             });
         }
         SpacingMode::FixedCount => {

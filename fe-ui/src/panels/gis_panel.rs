@@ -492,7 +492,9 @@ fn render_results(
     // pending_sidebar_select resolves to an Entity next frame) + the
     // existing camera-focus target — see fe-ui/src/panels/sidebar.rs.
     if let Some((node_id, pos)) = clicked_row {
+        // camera_focus_clip_20260716 FR-2: carry node_id so apply_camera_focus
+        // can prefer the live spawned transform over this cached fallback.
+        camera_focus.target = Some((node_id.clone(), pos));
         node_mgr.pending_sidebar_select = Some(node_id);
-        camera_focus.target = Some(pos);
     }
 }

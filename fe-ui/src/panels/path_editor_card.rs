@@ -39,6 +39,31 @@ pub(crate) fn type_glyph(gpx_type: &str) -> &'static str {
     }
 }
 
+/// path_interaction_20260716 (FR-3): human-readable distance label — m below
+/// 1 km, km above, cm-ish precision below 1 m. fe-ui-local twin of
+/// `fe_terrain::ruler::format_distance_m` (fe-ui must not depend on fe-terrain).
+pub(crate) fn format_distance_m(meters: f64) -> String {
+    if !meters.is_finite() || meters <= 0.0 {
+        return "0 m".to_string();
+    }
+    if meters >= 1000.0 {
+        let km = meters / 1000.0;
+        if km >= 10.0 || km.fract().abs() < 1e-9 {
+            format!("{km:.0} km")
+        } else {
+            format!("{km:.1} km")
+        }
+    } else if meters >= 1.0 {
+        if meters.fract().abs() < 1e-9 {
+            format!("{meters:.0} m")
+        } else {
+            format!("{meters:.1} m")
+        }
+    } else {
+        format!("{meters:.2} m")
+    }
+}
+
 pub(crate) fn path_editor_section(
     ui: &mut egui::Ui,
     path_state: &mut PathEditorState,
@@ -299,14 +324,48 @@ fn render_edit_view(
         return;
     }
 
+    // FR-3 (path_interaction_20260716): real-world measurements, computed by
+    // `node_manager::sync_path_measurements` (the panel can't reach
+    // `world_scale`). Total length is always shown; a selected segment (or
+    // vertex) shows its own readout below it.
+    if let Some(total_m) = path_state.total_length_m {
+        ui.label(
+            egui::RichText::new(format!("Total length: {}", format_distance_m(total_m)))
+                .small()
+                .color(theme::TEXT_SECTION),
+        );
+    }
+    if let Some(seg) = path_state.selected_segment {
+        let len = path_state
+            .selected_segment_length_m
+            .map(format_distance_m)
+            .unwrap_or_else(|| "\u{2014}".to_string());
+        ui.label(
+            egui::RichText::new(format!("Segment {}\u{2013}{}: {}", seg, seg + 1, len))
+                .small()
+                .color(theme::STATUS_ONLINE),
+        );
+    } else if let Some(pt) = path_state.selected_point {
+        ui.label(
+            egui::RichText::new(format!("Vertex {pt} selected"))
+                .small()
+                .color(theme::STATUS_ONLINE),
+        );
+    }
+    ui.add_space(4.0);
+
     ui.label(
-        egui::RichText::new("Pen tool: click terrain to add \u{2022} drag markers to move \u{2022} Ctrl+drag a marker to raise/lower height \u{2022} edit Height (Y) below \u{2022} Shift/Alt+click a marker to annotate")
+        egui::RichText::new("Pen tool: click terrain to add \u{2022} click a marker to select \u{2022} drag markers to move \u{2022} Ctrl+drag a marker to raise/lower height \u{2022} click the ribbon to select a segment \u{2022} Shift/Alt+click a marker to annotate")
             .small()
             .color(theme::TEXT_MUTED)
             .italics(),
     );
     ui.add_space(4.0);
 
+    // FR-2/FR-3: mirror the viewport highlight in the list — the selected vertex
+    // or the two ends of the selected segment get an active row fill.
+    let sel_point = path_state.selected_point;
+    let sel_seg = path_state.selected_segment;
     let mut to_remove: Option<usize> = None;
     let mut to_annotate: Option<usize> = None;
     // FR-1b: a numeric Height (Y, the user's "z-axis") edit on a point row.
@@ -317,8 +376,15 @@ fn render_edit_view(
         .max_height(240.0)
         .show(ui, |ui| {
             for (i, point) in path_state.points.iter().enumerate() {
+                let highlighted =
+                    sel_point == Some(i) || sel_seg.is_some_and(|s| i == s || i == s + 1);
+                let row_fill = if highlighted {
+                    theme::BG_BUTTON_ACTIVE
+                } else {
+                    theme::BG_PEER_ROW_EVEN
+                };
                 egui::Frame::NONE
-                    .fill(theme::BG_PEER_ROW_EVEN)
+                    .fill(row_fill)
                     .inner_margin(egui::Margin::symmetric(6, 4))
                     .corner_radius(2.0)
                     .show(ui, |ui| {
@@ -468,7 +534,9 @@ fn render_style_controls(
     ui.horizontal(|ui| {
         ui.label("Thickness");
         let mut w = style.width;
-        let resp = ui.add(egui::Slider::new(&mut w, 0.5..=20.0).step_by(0.5));
+        // FR-5 (path_interaction_20260716): range starts at 0.1 (step 0.1) so
+        // the new 0.5 default can be dialed even thinner.
+        let resp = ui.add(egui::Slider::new(&mut w, 0.1..=20.0).step_by(0.1));
         if resp.changed() {
             // Live feedback every frame; persist only on release below.
             style.width = w;
@@ -580,6 +648,24 @@ mod tests {
     fn type_glyph_unknown_falls_back_to_point() {
         assert_eq!(type_glyph("mystery"), GLYPH_POINT);
         assert_eq!(type_glyph(""), GLYPH_POINT);
+    }
+
+    #[test]
+    fn format_distance_meters_and_kilometers() {
+        // Mirrors the fe-terrain ruler twin so the two stay in lock-step.
+        assert_eq!(format_distance_m(500.0), "500 m");
+        assert_eq!(format_distance_m(2.5), "2.5 m");
+        assert_eq!(format_distance_m(0.5), "0.50 m");
+        assert_eq!(format_distance_m(1000.0), "1 km");
+        assert_eq!(format_distance_m(1500.0), "1.5 km");
+        assert_eq!(format_distance_m(50_000.0), "50 km");
+    }
+
+    #[test]
+    fn format_distance_bad_input_is_zero() {
+        assert_eq!(format_distance_m(0.0), "0 m");
+        assert_eq!(format_distance_m(-5.0), "0 m");
+        assert_eq!(format_distance_m(f64::NAN), "0 m");
     }
 
     #[test]

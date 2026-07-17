@@ -28,9 +28,16 @@
   FR-2 live reconcile) and `resolve_primitive_material` (FR-3 texture
   resolution via `fe_hexon::handlers::material::resolve_material_textures` +
   `FsBlobStore`). `PrimitiveMaterialAssets` holds the shared default material.
-- `path_asset_reconcile.rs` — `reconcile_path_asset` (stamps a hexon model
-  along a track's GPX path) + the fe-ui-local arc-length sampler. See
-  §path-asset-stamp.
+- `path_asset_reconcile.rs` — the fe-ui-local arc-length sampler
+  (`sample_transforms` + metric `sanitize_world_scale`) plus
+  `reconcile_path_asset`, which no longer spawns: it FEEDS the shared
+  `PathAssetCache` with the Paths-tab edited track's live descriptor + points.
+  See §path-asset-materialization.
+- `path_asset_materialize.rs` — `PathAssetCache` (track_id →
+  descriptor/points/petal, fed by `NodePropertiesLoaded` + the live feeder),
+  the per-track `PathAssetApplied` change gate, and `materialize_path_assets`
+  (the single system that does ALL stamp spawning — petal-wide FR-1). See
+  §path-asset-materialization.
 
 `find_petal_mut` on `VerseManager` stays private (not `pub(super)`) — Rust's
 privacy rule already makes private items of a module visible to all of its
@@ -130,16 +137,18 @@ the core "hexon-as-path-asset" feature. A `path_asset` descriptor
 §path-asset) rides the track node's property bag; the Tools panel writes it
 via `UiAction::PathAssetApply` → `SetNodeProperty`.
 
-`reconcile_path_asset` is the consuming system. It keys off the **Paths-tab**
+`reconcile_path_asset` is the Paths-tab **live-edit feeder** (it no longer
+spawns — see §path-asset-materialization). It keys off the **Paths-tab**
 selection — `PathEditorState.editing_track_id` — NOT the viewport/tree
 selection (`NodeManager.selected`). The Tools panel stamps the Paths-tab
 track, so the original gating on `NodeManager` + `InspectorFormState.node_properties`
 silently dropped every stamp whenever the two selections diverged (the common
 case: stamp from the Paths tab without also viewport-selecting the ribbon).
-It now reads the descriptor from `PathEditorState.edited_track_path_asset` and
+It reads the descriptor from `PathEditorState.edited_track_path_asset` and
 the points from `PathEditorState.points` directly — both seeded by the
 `PathSelectTrack` read-back and refreshed after a `PathAssetApply` write (see
-below). Still active-petal-gated (`nav.active_petal_id`).
+below) — and upserts them into `PathAssetCache`. Still active-petal-gated
+(`nav.active_petal_id`).
 
 `edited_track_path_asset` is populated in `db_results`'s `NodePropertiesLoaded`
 arm alongside `points`/`edited_track_style` (parsed from the `path_asset` prop
@@ -157,20 +166,67 @@ rotation bakes in) and tags each entity with a `PathAssetInstance` marker
 carrying the source track id + petal. That marker lets the system despawn and
 rebuild the whole stamped group as a unit.
 
-Change-gating: `PathAssetApplied` (a `Resource`) records the last-applied
-`(track_id, descriptor, points-fingerprint)`. `points_fingerprint` is an
-FNV-1a hash over the bit-cast coordinates + length (order-sensitive), so a
-changed path or descriptor re-stamps and an unchanged one is a no-op — the
-same equality-gate discipline as the primitive reconcile's `descriptor ==`
-check. The system runs each frame in the `.before(UiSet::ProcessActions)`
-group in `VerseManagerPlugin::build`, gated by the cheap `matches()` check.
-
 The arc-length sampler is a focused, `[f32;3]`-based port of
 `fe_terrain::iot::PathTracker` (fe-ui must **not** depend on fe-terrain):
 `cumulative_distances` / `position_at_progress` / `sample_progresses` /
-`tangent_yaw`. `FixedSpacing` places instances every `spacing_value`
-world-units (guarding non-positive spacing → endpoints only, no
+`tangent_yaw` / `sample_transforms`. `FixedSpacing` places instances every
+`spacing_value` **meters** (converted to world units via `world_scale` — see
+§path-asset-materialization; guards non-positive spacing → endpoints only, no
 div-by-zero); `FixedCount` distributes `count` instances evenly (count 0 →
-none, 1 → start only). `tangent_yaw` returns the `Quat::from_rotation_y`
-angle (`atan2(dx, dz)`, aiming the model's -Z forward down the path) applied
-only when `descriptor.tangent_align`.
+none, 1 → start only, scale-invariant). `tangent_yaw` returns the
+`Quat::from_rotation_y` angle (`atan2(dx, dz)`, aiming the model's -Z forward
+down the path) applied only when `descriptor.tangent_align`.
+
+## §path-asset-materialization (`gpx_stamp_persistence_20260716`)
+
+The bug: stamped instances (`spawn::spawn_stamped_entity`, tagged
+`PathAssetInstance`) are ephemeral scene entities. The old reconcile spawned
+them only while the Paths tab had the track selected and gated them behind a
+**single-slot** `PathAssetApplied` that was never invalidated when
+`respawn_on_petal_change` despawned them — so stamps vanished on petal change
+and never came back, and one track's applied state stomped another's.
+
+The fix mirrors §primitives: a petal-wide **`PathAssetCache`**
+(`path_asset_materialize.rs`, keyed `track_id → {petal_id, descriptor, points,
+fingerprint}`) fed independently of selection, plus ONE materializer.
+
+- **Feed (petal-load persistence):** every `NodePropertiesLoaded` broadcast
+  carrying BOTH a `path_asset` descriptor AND non-empty `gpx_points` upserts
+  the cache in `db_results/properties.rs` (`cache.note_properties`), tagged
+  with the node's owning petal (`VerseManager::petal_id_of`). The gpx bridge's
+  `request_petal_gpx_materialization` already fetches `GetNodeProperties` for
+  every node on petal (re)entry, so this fires without any fe-ui-side fetch. A
+  `path_asset` `NodePropertySet` re-fetches (regardless of selection); a
+  `NodePropertyDeleted` or an empty/absent path evicts; `DatabaseReset` clears.
+- **Feed (live edit):** `reconcile_path_asset` upserts the Paths-tab edited
+  track's live descriptor + `PathEditorState.points` (the freshest buffer while
+  dragging). A **conditional** upsert (only when the content actually differs)
+  keeps the cache — and thus the materializer — idle when nothing changed.
+- **Materialize (all spawning):** `materialize_path_assets` is the ONLY system
+  that spawns stamps. It runs when the cache changed, the petal changed, or the
+  petal `world_scale` changed; for each active-petal cached track whose
+  `(descriptor, points, world_scale)` differs from the **per-track**
+  `PathAssetApplied` gate, it despawns the old group and restamps. Orphan groups
+  (track no longer cached) are torn down. Chained LAST (after
+  `respawn_on_petal_change` + `reconcile_path_asset`) so it observes their
+  despawns, the gate clear, and both feeds — and because only it spawns, double
+  stamping is structurally impossible.
+
+Why petal-wide + property-driven: the hierarchy payload carries no properties
+(same constraint as §primitives), and stamps must survive petal switches even
+when the Paths tab isn't open — so materialization keys on the cache + active
+petal, never on selection.
+
+Why a per-track gate: the single slot let one track's applied fingerprint hide
+another's need to restamp. The gate is keyed `track_id → (descriptor,
+points-fingerprint, world_scale-bits)` and **cleared wholesale** by
+`respawn_on_petal_change` on petal change (the old petal's stamps are despawned
+there), so re-entering a petal always restamps every active-petal cached track.
+
+Metric spacing (FR-3): `PathAssetDescriptor.spacing_value` is real METERS.
+`sample_transforms` converts `spacing_world = spacing_m * world_scale` where
+`world_scale` (world units per meter) comes from `PetalMapState.world_scale`;
+`sanitize_world_scale` collapses a non-finite/≤0 scale to `1.0` so a bad petal
+config never zeroes or flips spacing. `world_scale` is folded into the applied
+gate so a scale change restamps. Pre-existing saved descriptors re-interpret in
+meters (identical at human scale `1.0`). `FixedCount` is scale-invariant.

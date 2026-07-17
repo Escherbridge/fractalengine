@@ -63,40 +63,30 @@ pub struct PathPointDrag {
 /// Keeps one `PathPointMarker` sphere per edited-track point; despawns all when
 /// not editing. Runs before the interaction system so picks see current markers.
 pub(super) fn sync_path_point_markers(
-    path_state: Res<PathEditorState>,
+    mut path_state: ResMut<PathEditorState>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    markers: Query<(Entity, &PathPointMarker)>,
+    mut markers: Query<(
+        Entity,
+        &PathPointMarker,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
     mut mesh_handle: Local<Option<Handle<Mesh>>>,
     mut mat_handle: Local<Option<Handle<StandardMaterial>>>,
+    mut hl_handle: Local<Option<Handle<StandardMaterial>>>,
 ) {
     let editing = path_state.editing_track_id.is_some();
     let want = if editing { path_state.points.len() } else { 0 };
     let have = markers.iter().count();
 
-    // Count matches: positions stay live via the drag system + count-change rebuild.
-    if want == have {
-        return;
-    }
-
-    // Despawn-all + respawn: point counts are small, so a per-change rebuild is
-    // cheaper than index bookkeeping when a mid-list point is removed.
-    for (entity, _) in markers.iter() {
-        commands.entity(entity).despawn();
-    }
-    if want == 0 {
-        return;
-    }
-
-    // FR-2 (data_icons_20260713): a flat, camera-facing icon quad instead of a
-    // solid sphere. `Rectangle` lies in local XY (+Z normal); the `Billboard`
-    // tag + `billboard_face_camera` keep it turned toward the viewport. Unlit +
-    // double-sided so it reads at any orbit angle before the first face frame.
+    // Shared handles (allocated once): the icon-quad mesh + the normal (yellow)
+    // and FR-2/FR-3 highlight (orange) materials. `Rectangle` lies in local XY
+    // (+Z normal); the `Billboard` tag keeps it camera-facing (data_icons).
     let mesh = mesh_handle
         .get_or_insert_with(|| meshes.add(Rectangle::new(MARKER_QUAD_SIZE, MARKER_QUAD_SIZE)))
         .clone();
-    let material = mat_handle
+    let normal_mat = mat_handle
         .get_or_insert_with(|| {
             materials.add(StandardMaterial {
                 base_color: Color::srgb(1.0, 0.85, 0.2),
@@ -106,16 +96,58 @@ pub(super) fn sync_path_point_markers(
             })
         })
         .clone();
+    let highlight_mat = hl_handle
+        .get_or_insert_with(|| {
+            materials.add(StandardMaterial {
+                // FR-2/FR-3: bright orange for the selected vertex, or the two
+                // ends of the selected segment.
+                base_color: Color::srgb(1.0, 0.5, 0.05),
+                unlit: true,
+                cull_mode: None,
+                ..default()
+            })
+        })
+        .clone();
 
-    for (i, point) in path_state.points.iter().enumerate() {
-        commands.spawn((
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::from_xyz(point.position[0], point.position[1], point.position[2]),
-            Name::new(format!("PathPoint {i}")),
-            PathPointMarker { index: i },
-            Billboard,
-        ));
+    if want != have {
+        // Count changed → a cached selection index may be stale; drop it.
+        path_state.clear_path_selection();
+        // Despawn-all + respawn: point counts are small, so a per-change
+        // rebuild is cheaper than index bookkeeping when a mid-list point goes.
+        for (entity, _, _) in markers.iter() {
+            commands.entity(entity).despawn();
+        }
+        if want == 0 {
+            return;
+        }
+        for (i, point) in path_state.points.iter().enumerate() {
+            commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(normal_mat.clone()),
+                Transform::from_xyz(point.position[0], point.position[1], point.position[2]),
+                Name::new(format!("PathPoint {i}")),
+                PathPointMarker { index: i },
+                Billboard,
+            ));
+        }
+        return;
+    }
+
+    // FR-2/FR-3 highlight pass: recolor markers in place (no respawn) so the
+    // selected vertex — or the two ends of the selected segment — stands out.
+    let sel_point = path_state.selected_point;
+    let sel_seg = path_state.selected_segment;
+    for (_, marker, mut mat) in markers.iter_mut() {
+        let highlighted = Some(marker.index) == sel_point
+            || sel_seg.is_some_and(|s| marker.index == s || marker.index == s + 1);
+        let want_mat = if highlighted {
+            &highlight_mat
+        } else {
+            &normal_mat
+        };
+        if mat.0.id() != want_mat.id() {
+            mat.0 = want_mat.clone();
+        }
     }
 }
 
@@ -172,12 +204,17 @@ pub(super) fn handle_path_point_interaction(
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
-    // Only act while the Pen tool is active (new-point placement, incl. the
-    // no-track auto-create case) or a marker drag is in flight. In
-    // Select/Move/Rotate/Scale with no active drag, node selection + gimbal
-    // keep the click. See `AGENTS.md` §pen-tool.
+    // Act while the Pen tool is active (new-point placement, incl. the no-track
+    // auto-create case), OR — path_interaction_20260716 (FR-2) — while a track
+    // is open for editing in the Select tool so its vertex markers are
+    // pick/draggable like Illustrator's pen; OR while a marker drag is in
+    // flight. Markers only exist while editing, so `markers_editable` gates the
+    // Select case. Pen-append stays Pen-only (guarded at the append branch).
+    // Move/Rotate/Scale still yield to the gimbal (their handler runs first).
     let pen_active = tool.active_tool == Tool::Pen;
-    if !pen_active && drag.active.is_none() {
+    let markers_editable = path_state.editing_track_id.is_some()
+        && matches!(tool.active_tool, Tool::Select | Tool::Pen);
+    if !pen_active && !markers_editable && drag.active.is_none() {
         drag.active = None;
         return;
     }
@@ -263,13 +300,16 @@ pub(super) fn handle_path_point_interaction(
     let Some(ray) = arbiter.ray() else { return };
 
     if let Some((index, _)) = pick_marker(&ray, &marker_pick) {
-        // A marker pick claims `PathMarker`, but only reachable in Pen mode (or
-        // while a drag is already active) — the guard above returns before this
-        // in Select/Move/Rotate/Scale with no active drag, so node selection +
-        // gimbal keep the click there.
+        // A marker pick claims `PathMarker` (Pen mode, Select-while-editing per
+        // FR-2, or while a drag is already active) — the guard above returns in
+        // Move/Rotate/Scale so the gimbal keeps the click there.
         if !arbiter.claim(ClickPriority::PathMarker) {
             return;
         }
+        // FR-2: selecting a vertex highlights it and clears any segment
+        // selection (the two are mutually exclusive).
+        path_state.selected_point = Some(index);
+        path_state.selected_segment = None;
         let modifier = keys.pressed(KeyCode::ShiftLeft)
             || keys.pressed(KeyCode::ShiftRight)
             || keys.pressed(KeyCode::AltLeft)

@@ -285,7 +285,16 @@ fn test_create_node_emits_scene_change() {
         .recv_timeout(Duration::from_secs(5))
         .expect("CreateNode result")
     {
-        DbResult::NodeCreated { id, .. } => id,
+        // camera_focus_clip_20260716 FR-1: NodeCreated must echo the create
+        // position (was previously dropped, forcing fe-ui to focus on [0;3]).
+        DbResult::NodeCreated { id, position, .. } => {
+            assert_eq!(
+                position,
+                [10.0, 20.0, 30.0],
+                "NodeCreated.position mismatch"
+            );
+            id
+        }
         other => panic!("expected NodeCreated, got {other:?}"),
     };
 

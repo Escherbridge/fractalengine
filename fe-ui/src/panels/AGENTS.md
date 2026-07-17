@@ -136,5 +136,57 @@
   `tool_panel: &mut crate::panels::tool_panel::ToolPanelState` param from the
   shell pass (the caller `plugin.rs` still registers `ToolPanelState`).
 
+## §widgets
+
+- `widgets.rs` — shared, reusable, egui-only panel widgets (no Bevy queries).
+  `copy_value_box(ui, ui_mgr, display, copy_value, toast, left, right)` renders a
+  read-only, width-capped, copyable value box: the frame never exceeds
+  `ui.available_width()` and the value wraps in monospace, so an arbitrarily
+  large value can't push the panel wider. `left`/`right` draw caller header
+  content (a label on the left; extra right-aligned controls beside the copy
+  button). `copy_row(label, value)` is the labelled convenience (display == copy
+  == value) the **egress card reuses** (it no longer inlines its own copy row).
+  `elide(s, max_chars)` truncates (char-boundary-safe) with an ellipsis for the
+  *display* only — the copy button always carries the full value.
+- **Must be rendered OUTSIDE an `egui::Grid` cell.** A Grid cell ignores
+  `set_max_width`, which is exactly what let a giant value blow the panel out.
+
+## §inspector-units
+
+`inspector_units_width_20260716`. Two fixes in `inspector.rs`:
+
+- **FR-1 width-stable property values.** The Custom Properties section renders
+  each value via `widgets::copy_value_box` (read-only, wrapped, width-capped,
+  copy button, `elide`d display) instead of an unbounded non-wrapping `ui.label`
+  inside a 3-col Grid. The key label + delete button + Add Property flows are
+  unchanged; only the value cell and its container changed. Result: the panel
+  stays at its 260px default regardless of value size.
+- **FR-2 real-unit transform inputs.** Position shows/edits **meters**, rotation
+  **degrees**, and (when the selection has a pickable AABB) asset **Size** in
+  meters; a raw Scale-multiplier row remains as the fallback when no AABB is
+  available. Rotation was *already* degrees-side in `inspector.rot`
+  (`node_manager::inspector_sync` converts radians→degrees on fill,
+  `actions::transform` converts back on Apply) — FR-2 only added the `°` label.
+- **Where conversions live.** Pure helpers in `inspector.rs`
+  (`world_to_meters`/`meters_to_world`, `size_to_scale`/`scale_to_size`,
+  `sane_scale`) are unit-tested. `real_m = world / world_scale`;
+  `world = m * world_scale`; a degenerate `world_scale` (≤0 / non-finite) is
+  treated as `1.0` so fields read as raw units, never NaN.
+  `world_scale` is `PetalMapState.world_scale` (world units per meter).
+- **Size ↔ scale.** `size_m_i = base_extent_i * scale_i / world_scale`;
+  back-computed on edit as `scale_i = size_m_i * world_scale / base_extent_i`
+  (per-axis, independent), guarded to `None` when `base_extent_i ≈ 0`.
+  `base_extents` are the selected node's combined child-AABB extents expressed in
+  the root's LOCAL frame (extents at root scale/rotation = identity → stable,
+  rotation-invariant), computed by `combined_local_extents`.
+- **Wiring (no `gardener_console` signature change).** `sync_inspector_units`
+  (registered in `plugin.rs`, `UiSet::PostSelection`) mirrors `inspector_sync`'s
+  cadence (selection change / `Changed<Transform>` / world-scale change) and
+  refills the meter buffers `InspectorFormState.pos_m` / `size_m` plus
+  `base_extents` / `world_scale`. The panel edits those meter buffers and
+  **live-writes** the converted world/scale values into the existing
+  `inspector.pos` / `inspector.scale` world buffers, so the Apply action path
+  (`actions::transform`) still receives world units / radians — it is untouched.
+
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.

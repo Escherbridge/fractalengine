@@ -7,9 +7,10 @@
 
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
+use fe_sdk::path_asset::PATH_ASSET_PROPERTY_KEY;
 use fe_sdk::primitive::PRIMITIVE_PROPERTY_KEY;
 
-use super::super::PrimitiveDescriptorCache;
+use super::super::{PathAssetCache, PrimitiveDescriptorCache};
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::NodeManager;
@@ -26,17 +27,29 @@ pub(super) fn is_for_selected_node(node_mgr: &NodeManager, node_id: &str) -> boo
 }
 
 /// `NodePropertiesLoaded`: feed the Paths-tab read-back, then the inspector.
+///
+/// `petal_id` is the node's owning petal (resolved by the dispatcher from
+/// `VerseManager`), needed to tag the path-asset cache entry — `None` when the
+/// node isn't in the tree.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_node_properties_loaded(
     node_id: &str,
+    petal_id: Option<&str>,
     properties: &serde_json::Value,
     path_state: &mut PathEditorState,
     node_mgr: &NodeManager,
     inspector: &mut InspectorFormState,
     primitive_cache: &mut PrimitiveDescriptorCache,
+    path_asset_cache: &mut PathAssetCache,
 ) -> bool {
     // FR-1 petal-wide path: every properties broadcast feeds the primitive
     // descriptor cache, selected or not (see ../AGENTS.md §primitives).
     primitive_cache.note_properties(node_id, properties);
+    // FR-1 path-asset: the same broadcast feeds the path-asset stamp cache when
+    // the node carries both a `path_asset` and `gpx_points` — independent of the
+    // Paths-tab selection, so stamps re-materialize on petal (re)entry (see
+    // ../AGENTS.md §path-asset-materialization).
+    path_asset_cache.note_properties(node_id, petal_id, properties);
     // Path editor's `gpx_points` read-back (PathSelectTrack): a
     // DIFFERENT claimant from the inspector's `is_for_selected_node`
     // guard below — `NodePropertiesLoaded` has no correlation id
@@ -95,6 +108,11 @@ pub(super) fn handle_node_property_set(
     if primitive_write {
         primitive_cache.invalidate(node_id);
     }
+    // FR-1 path-asset: a `path_asset` write anywhere (Stamp button, API,
+    // extension) means the stamp cache is stale — re-fetch (regardless of
+    // selection) so `NodePropertiesLoaded` refreshes the cache and the
+    // materializer restamps. The reload upserts the fresh descriptor + points.
+    let path_asset_write = key == PATH_ASSET_PROPERTY_KEY;
     // FR-3: a track-identity property landing anywhere (not just
     // the currently-selected node) means the Paths tab's track
     // list may now be stale — re-run the query unconditionally
@@ -122,7 +140,7 @@ pub(super) fn handle_node_property_set(
         inspector.node_properties_loading = true;
     }
     // Issue the read once when any consumer needs it (idempotent).
-    if refresh_editing_track || for_selected || primitive_write {
+    if refresh_editing_track || for_selected || primitive_write || path_asset_write {
         let _ = db_sender.0.send(DbCommand::GetNodeProperties {
             node_id: node_id.to_string(),
         });
@@ -131,17 +149,25 @@ pub(super) fn handle_node_property_set(
 }
 
 /// `NodePropertyDeleted`: drop the key locally and clear only its buffer.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_node_property_deleted(
     node_id: &str,
     key: &str,
     node_mgr: &NodeManager,
     inspector: &mut InspectorFormState,
     primitive_cache: &mut PrimitiveDescriptorCache,
+    path_asset_cache: &mut PathAssetCache,
 ) -> bool {
     // FR-1: evict the cached descriptor before the selection gate below —
     // deletes on unselected nodes must not leave a stale primitive cached.
     if key == PRIMITIVE_PROPERTY_KEY {
         primitive_cache.invalidate(node_id);
+    }
+    // FR-1 path-asset: a `path_asset` delete evicts the stamp cache entry so
+    // `materialize_path_assets` tears the orphaned stamp group down (also before
+    // the selection gate — deletes on unselected tracks must still clean up).
+    if key == PATH_ASSET_PROPERTY_KEY {
+        path_asset_cache.invalidate(node_id);
     }
     if !is_for_selected_node(node_mgr, node_id) {
         return false;

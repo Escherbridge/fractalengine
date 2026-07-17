@@ -13,6 +13,7 @@
 
 mod db_results;
 mod node_index;
+mod path_asset_materialize;
 mod path_asset_reconcile;
 mod petal_respawn;
 mod primitive_materialize;
@@ -23,7 +24,7 @@ use bevy::prelude::*;
 
 use crate::plugin::UiSet;
 
-pub use path_asset_reconcile::PathAssetApplied;
+pub use path_asset_materialize::{PathAssetApplied, PathAssetCache};
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
 pub use spawn::{build_primitive_mesh, PrimitiveNode};
@@ -143,9 +144,13 @@ impl Plugin for VerseManagerPlugin {
         app.init_resource::<TextureRegistryRes>();
         app.init_resource::<PrimitiveMaterialAssets>();
         app.init_resource::<PathAssetApplied>();
+        app.init_resource::<PathAssetCache>();
         app.init_resource::<PrimitiveDescriptorCache>();
         // Chained: materialize must observe entities spawned via Commands by
         // the earlier systems (chain inserts the needed sync points).
+        // `reconcile_path_asset` only FEEDS the path-asset cache; the single
+        // `materialize_path_assets` (last) does all stamp spawning so no
+        // double-stamping is possible. See AGENTS.md §path-asset-materialization.
         app.add_systems(
             Update,
             (
@@ -154,6 +159,7 @@ impl Plugin for VerseManagerPlugin {
                 primitive_materialize::materialize_cached_primitives,
                 primitive_reconcile::reconcile_selected_primitive,
                 path_asset_reconcile::reconcile_path_asset,
+                path_asset_materialize::materialize_path_assets,
             )
                 .chain()
                 .before(UiSet::ProcessActions),

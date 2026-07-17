@@ -12,6 +12,9 @@
 - `viewport_pick.rs` — 3-D viewport click → nearest-node select/deselect via a
   precise ray/AABB raycast (see §glb-mesh-picking).
 - `path_point_interaction.rs` — path-point viewport editor (see §path-points).
+- `path_segment_interaction.rs` — `TrackPickShape` (precise ribbon pick
+  geometry), the shared ray-vs-segment math, ribbon-SEGMENT selection, and
+  live metric measurement (see §track-picking + §path-segments).
 - `billboard.rs` — `billboard_face_camera`, the per-frame face-camera system
   for `Billboard`-tagged icon quads (see §data-icons + `fe-ui/src/AGENTS.md`
   §data-icons).
@@ -123,9 +126,17 @@ has an `editing_track_id`. Design notes:
   path-point claim lands before node-pick tries to claim in the same frame.
 - **Interaction model.** Empty click on terrain (Y=0 plane) while `Tool::Pen`
   is active → queue `PathAppendPoint` (see §pen-tool). Plain click on a
-  marker → begin a drag on that marker's current y-plane (Pen mode, or while a
-  drag is already active — the `pen_active || drag.active` guard gates it);
-  release commits a single `PathMovePoint` (no remove+append index churn). Holding **Ctrl** during the drag switches to vertical mode
+  marker → **select** that vertex (`path_interaction_20260716` FR-2: sets
+  `PathEditorState.selected_point`, clears `selected_segment`, highlighted
+  orange by `sync_path_point_markers` + the Paths-tab list row) AND begin a
+  drag on that marker's current y-plane; release commits a single
+  `PathMovePoint` (no remove+append index churn). **FR-2 gate change:** marker
+  pick/drag now works in `Tool::Select` too (not just Pen) whenever a track is
+  open for editing — the guard is
+  `pen_active || (editing && Select|Pen) || drag.active`. Markers only exist
+  while editing, so this is safe; pen-APPEND stays Pen-only (guarded at the
+  append branch), and Move/Rotate/Scale still yield to the gimbal (its handler
+  runs first and claims). Holding **Ctrl** during the drag switches to vertical mode
   (FR-1a, `node_placement_z_axis_20260713`): vertical cursor motion raises/
   lowers the point's height (Bevy Y, the user's "z-axis") by
   `height_delta_from_cursor` at `HEIGHT_DRAG_SENSITIVITY` (0.01 world-units/px,
@@ -226,6 +237,70 @@ track?" is decided by membership in `PathEditorState.tracks` — the pure
 re-issues the `GetNodeProperties` round-trip that would clobber the in-flight
 point buffer.
 
+**Precise ribbon picking (`path_interaction_20260716`, FR-1).** The old AABB
+pick made a km-scale flat ribbon a giant flat box that swallowed clicks meant
+for nearby objects. The bridge now also attaches a `TrackPickShape { points,
+half_width, centroid }` (fe-ui component, re-exported at
+`fe_ui::node_manager::TrackPickShape`, populated in `tag_track_lines_selectable`
+from the track's route + style — the RAW world polyline, no y-lift). In
+`handle_viewport_click`, an entity carrying `TrackPickShape` SKIPS the AABB slab
+test and instead ray-tests the actual polyline: `ray_polyline_hit` returns the
+along-ray `t` of the closest segment within `half_width + PICK_SLOP` (0.3 wu),
+adding the ribbon's `RIBBON_Y_LIFT` (0.5, matching `track_mesh`) so the test
+matches the drawn ribbon. That `t` is the closest-approach distance along the
+ray, directly comparable to other nodes' AABB entry `t`, so a nearer real
+object still out-picks a track behind it. `TrackPickShape` is refreshed every
+respawn (the despawn/respawn redraw cycle re-tags via the `Without` filter), so
+it stays in sync with style-width and point edits. `centroid` is the render
+entity's baseline `Transform` translation — see §path-segments (FR-4 bake).
+
+## §path-segments — ribbon-segment select, whole-path gimbal, measurement (`path_segment_interaction.rs`)
+
+`path_interaction_20260716` added segment selection (FR-3), the whole-path
+gimbal bake (FR-4), and live metric measurement, plus the `TrackPickShape`
+picking geometry (FR-1, §track-picking). All the ray/segment math lives here as
+pure helpers (`ray_segment_distance`, `closest_ribbon_segment`,
+`ray_polyline_hit`, `nearest_segment`) shared by `viewport_pick` (FR-1) and the
+two systems below.
+
+- **Segment selection (FR-3).** `handle_path_segment_interaction` claims the new
+  `ClickPriority::PathSegment` — ranked between `PathPlace` and `NodePick`. While
+  a track is being edited, a fresh press that reaches it (a marker/gimbal didn't
+  claim first) ray-tests the edited track's `PathEditorState.points` polyline; a
+  hit within `half_width + PICK_SLOP` selects that segment
+  (`selected_segment = Some(i)`, clears `selected_point`) and claims the frame so
+  it wins the re-pick of the ribbon-as-node. A genuine empty click (no segment,
+  and `!arbiter.is_claimed()`) clears the selection. Half-width comes from the
+  edited track's live `edited_track_style.width`. `selected_point`/
+  `selected_segment` are mutually exclusive and cleared on stop/start-editing and
+  on any point-count change (`sync_path_point_markers`, via
+  `PathEditorState::clear_path_selection`).
+- **Measurement (FR-3).** `sync_path_measurements` writes
+  `PathEditorState.total_length_m` (always, while editing) and
+  `selected_segment_length_m` (when a segment is selected) as REAL meters =
+  ground-plane (XZ) world distance / `PetalMapState.world_scale` (guarded ≤0/
+  non-finite → 1.0, mirroring `fe_terrain::scale::sanitize_world_scale`). This
+  runs here — not in the Paths panel — because the panel call site
+  (`gis_panel.rs`, not editable) can't reach `world_scale`; the panel only
+  formats the stored meters via its local `format_distance_m` twin.
+- **Whole-path gimbal bake (FR-4).** `render_gpx_tracks` now centroid-anchors
+  the ribbon (mesh vertices relative to the centroid, entity `Transform` at the
+  centroid), so Move/Rotate/Scale pivot about the path center. On commit,
+  `transform_broadcast::broadcast_transform` sees the entity carries a
+  `TrackPickShape`, so instead of a node-transform DB write it bakes the gimbal
+  delta into every gpx point — `bake_transformed_point(world, centroid,
+  transform) = transform.transform_point(world - centroid)` — using the SAME
+  `centroid` the mesh was anchored at, and dispatches
+  `UiAction::PathTransformPoints { track_node_id, points }`. That resolves to one
+  in-place `PathOp::MovePoint` per index (count-preserving; the bridge keeps each
+  point's `time_seconds`), keyed on the EXPLICIT track id (not
+  `editing_track_id`). The entity transform is then reset to the centroid
+  baseline; the queued MovePoints drive the bridge's despawn/respawn redraw so
+  mesh + markers + `TrackPickShape` resync at the new positions. N MovePoints
+  each seed a `GetNodeProperties` on the first frame (existing bridge behavior),
+  so a huge imported track costs N round-trips on commit — fine for a one-shot
+  deliberate action; authored paths are small.
+
 ## §input-router — per-frame left-click arbitration (`router.rs`)
 
 `router.rs` centralizes "who gets this frame's left-click" so consumers claim
@@ -236,12 +311,13 @@ ownership instead of racing ad-hoc booleans (replaces the old
 - **Priority table** (highest first — mirrors the old implicit `.chain()`
   order, now explicit):
 
-  | Priority     | Consumer system                     | Claims when                          |
-  | ------------ | ----------------------------------- | ------------------------------------ |
-  | `Gimbal`     | `handle_gimbal_interaction`         | press hits a gimbal axis             |
-  | `PathMarker` | `handle_path_point_interaction`     | press picks an existing marker (Pen mode, or while a drag is already active) |
-  | `PathPlace`  | `handle_path_point_interaction`     | Pen-mode empty click on terrain      |
-  | `NodePick`   | `handle_viewport_click`             | any remaining fresh press            |
+  | Priority      | Consumer system                     | Claims when                          |
+  | ------------- | ----------------------------------- | ------------------------------------ |
+  | `Gimbal`      | `handle_gimbal_interaction`         | press hits a gimbal axis             |
+  | `PathMarker`  | `handle_path_point_interaction`     | press picks an existing marker (Pen mode, Select-while-editing per FR-2, or while a drag is active) |
+  | `PathPlace`   | `handle_path_point_interaction`     | Pen-mode empty click on terrain      |
+  | `PathSegment` | `handle_path_segment_interaction`   | editing + press hits a ribbon segment (FR-3) |
+  | `NodePick`    | `handle_viewport_click`             | any remaining fresh press            |
 
 - **How it works.** `resolve_pointer_frame` runs first: it clears `owner` to
   `None`, resolves the pointer `phase` (press/hold/release/hover), applies the

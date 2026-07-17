@@ -17,6 +17,31 @@ impl VerseManager {
         }
     }
 
+    /// The id of the petal containing `node_id`, via the index (with a
+    /// self-heal-less full-walk fallback for a stale/missing entry). Read-only —
+    /// used to tag a node's `path_asset` cache entry with its owning petal (see
+    /// `path_asset_materialize`). `None` when the node isn't in the tree.
+    pub(crate) fn petal_id_of(&self, node_id: &str) -> Option<&str> {
+        if let Some(&(vi, fi, pi)) = self.node_index.get(node_id) {
+            if let Some(petal) = self
+                .verses
+                .get(vi)
+                .and_then(|v| v.fractals.get(fi))
+                .and_then(|f| f.petals.get(pi))
+            {
+                if petal.nodes.iter().any(|n| n.id == node_id) {
+                    return Some(&petal.id);
+                }
+            }
+        }
+        self.verses
+            .iter()
+            .flat_map(|v| &v.fractals)
+            .flat_map(|f| &f.petals)
+            .find(|p| p.nodes.iter().any(|n| n.id == node_id))
+            .map(|p| p.id.as_str())
+    }
+
     /// Tree indices of a petal by ID.
     fn petal_indices(&self, petal_id: &str) -> Option<(usize, usize, usize)> {
         for (vi, verse) in self.verses.iter().enumerate() {
@@ -272,6 +297,18 @@ mod tests {
         // A later update on the removed id is a clean no-op.
         mgr.update_node_position("node-2", [0.0; 3]);
         assert!(!mgr.node_index.contains_key("node-2"));
+    }
+
+    #[test]
+    fn petal_id_of_resolves_via_index_and_walk_fallback() {
+        let mut mgr = make_tree();
+        assert_eq!(mgr.petal_id_of("node-1"), Some("petal-1"));
+        assert_eq!(mgr.petal_id_of("node-3"), Some("petal-2"));
+        assert_eq!(mgr.petal_id_of("node-4"), Some("petal-3"));
+        assert_eq!(mgr.petal_id_of("missing"), None);
+        // A cleared/stale index still resolves via the full-walk fallback.
+        mgr.node_index.clear();
+        assert_eq!(mgr.petal_id_of("node-2"), Some("petal-2"));
     }
 
     #[test]

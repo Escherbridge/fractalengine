@@ -6,13 +6,14 @@ use bevy::camera::primitives::Aabb;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
+use super::path_segment_interaction::{ray_polyline_hit, TrackPickShape};
 use super::router::{ClickArbiter, ClickPriority};
 use super::NodeManager;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
 
 pub(super) fn handle_viewport_click(
-    node_query: Query<(Entity, &SpawnedNodeMarker)>,
+    node_query: Query<(Entity, &SpawnedNodeMarker, Option<&TrackPickShape>)>,
     g_transform_query: Query<&GlobalTransform>,
     aabb_query: Query<&Aabb>,
     children_query: Query<&Children>,
@@ -35,26 +36,35 @@ pub(super) fn handle_viewport_click(
     let active_petal = nav.active_petal_id.as_deref();
     let mut best: Option<(Entity, f32, String)> = None;
 
-    for (entity, marker) in node_query.iter() {
+    for (entity, marker, pick_shape) in node_query.iter() {
         if active_petal
             .map(|pid| pid != marker.petal_id.as_str())
             .unwrap_or(false)
         {
             continue;
         }
-        // Resolve the pickable Aabb: glTF scenes place it on a child mesh, not
-        // the root marker entity — mirror `gimbal_center`'s entity-then-children
-        // walk (`gimbal.rs`), but slab-test instead of centering. Whatever child
-        // we hit, selection resolves to this root `entity` (FR-2).
-        let Some(t) = pick_node_aabb(
-            entity,
-            &ray,
-            &g_transform_query,
-            &aabb_query,
-            &children_query,
-        ) else {
-            continue;
+        // FR-1: a rendered track ribbon carries `TrackPickShape` (its actual
+        // polyline). Narrow-phase ray-vs-segment against it instead of the giant
+        // flat AABB, so a km-scale track no longer swallows clicks for nearby
+        // objects. `t` is the closest-approach distance along the ray, directly
+        // comparable to the AABB entry `t` below (nearer objects still win).
+        let t = if let Some(shape) = pick_shape {
+            ray_polyline_hit(&shape.points, ray.origin, *ray.direction, shape.half_width)
+        } else {
+            // Resolve the pickable Aabb: glTF scenes place it on a child mesh,
+            // not the root marker entity — mirror `gimbal_center`'s
+            // entity-then-children walk (`gimbal.rs`), but slab-test instead of
+            // centering. Whatever child we hit, selection resolves to this root
+            // `entity` (FR-2).
+            pick_node_aabb(
+                entity,
+                &ray,
+                &g_transform_query,
+                &aabb_query,
+                &children_query,
+            )
         };
+        let Some(t) = t else { continue };
         if best.as_ref().is_none_or(|b| t < b.1) {
             best = Some((entity, t, marker.node_id.clone()));
         }

@@ -17,6 +17,7 @@ pub(crate) mod curve;
 mod gimbal_interaction;
 mod inspector_sync;
 mod path_point_interaction;
+mod path_segment_interaction;
 mod router;
 mod shortcuts;
 mod sidebar_sync;
@@ -27,6 +28,11 @@ use bevy::prelude::*;
 
 use crate::gimbal::GimbalAxis;
 use crate::plugin::UiSet;
+
+/// path_interaction_20260716 (FR-1/FR-4): precise ribbon pick geometry attached
+/// to rendered track lines by the fractalengine gpx bridge. Re-exported so
+/// `fe_ui::node_manager::TrackPickShape` is reachable outside this crate.
+pub use path_segment_interaction::TrackPickShape;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -123,8 +129,10 @@ impl Plugin for NodeManagerPlugin {
                 gimbal_interaction::handle_gimbal_interaction, // claims Gimbal on axis pick + drag
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
                 path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
+                path_segment_interaction::handle_path_segment_interaction, // claims PathSegment — ribbon-segment select (FR-3)
                 viewport_pick::handle_viewport_click, // claims NodePick — entity pick / deselect
                 viewport_pick::open_track_on_select, // clicking a track ribbon opens it for editing
+                path_segment_interaction::sync_path_measurements, // live metric length readouts (FR-3)
                 inspector_sync::sync_manager_to_inspector,
                 gimbal_interaction::draw_gimbal_system,
                 transform_broadcast::broadcast_transform,

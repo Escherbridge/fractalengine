@@ -143,6 +143,26 @@ node props; live restyle is a despawn+respawn of the `GpxTrackLine` (same
   `layer_stack.is_changed()`, and opacity < 1.0 also sets
   `AlphaMode::Blend` (alpha alone doesn't blend on `StandardMaterial`).
 
+**§ribbon-centroid-anchor (path_interaction_20260716, FR-4/FR-5).** Two changes
+to the ribbon:
+
+- **Default width 0.5 wu** (was 2.0). `TrackStyle::default().width` — the old
+  2.0 read as a fat band that over-covered nearby objects. fe-ui's
+  `TrackStyleFields` default + the Paths-tab slider floor (0.1) mirror this.
+- **Centroid-anchored geometry.** `render_gpx_tracks` now computes
+  `mesh::track::track_centroid(&positions)` (arithmetic mean of the SAME
+  finite-filtered positions the mesh is built from), builds the ribbon with
+  positions RELATIVE to that centroid, and spawns the entity
+  `Transform::from_translation(centroid)`. Net world position is unchanged, but
+  the whole-path gimbal (fe-ui) now has a real transform to grab (Move/Rotate/
+  Scale pivot about the path center). The fractalengine bridge attaches a
+  `fe_ui::node_manager::TrackPickShape` carrying the SAME `track_centroid`
+  result, so the gimbal commit bakes its delta about the exact baseline the mesh
+  renders at. `track_centroid` is a pure, unit-tested helper (`[0,0,0]` for an
+  empty list); callers MUST pass the identical filtered position list the mesh
+  uses or the bake drifts. IoT animation reads `TrackRouteMap` (world-space route
+  points), NOT the mesh vertices, so it's unaffected by the re-anchor.
+
 **LOD hardening (terrain_lod_hardening_20260711).** Three region-scale
 (`world_scale < 1`) rendering defects were fixed. The pure math lives in
 `lod_ring.rs` (no `bevy`, always compiled + unit-tested) and `mesh/skirt.rs`
