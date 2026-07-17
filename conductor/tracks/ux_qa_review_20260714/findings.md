@@ -94,9 +94,10 @@ the user-owned UX track — logged here so they survive until it is scoped.
 
 ### [POLISH] onboarding — verse/fractal/petal jargon strategy for first-run UI
 - **Actual:** first-run UI exposes verse/fractal/petal hierarchy jargon with
-  no plain-language framing; long-term naming strategy is ratification-gated
-  (outstanding_decisions register).
-- **Status:** audit-sourced 2026-07-17, awaiting the user-owned UX track.
+  no plain-language framing.
+- **Status:** naming RESOLVED 2026-07-17 — D-72 ratified: vocabulary stays
+  ("for sure"). Residual scope for the UX track is plain-language *framing*
+  (explainers/tooltips) only; renaming is off the table.
 
 ### [MAJOR] paths-gis — scale-authority split pending map_scale_authority
 - **Actual:** two disagreeing scale authorities remain (terrain

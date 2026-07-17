@@ -192,10 +192,11 @@ batch; **[adopt-when-touched]** = apply whenever you edit the surface; **[future
 | Petal contents | (per existing labels) | "room" | "room" removed from status bar, viewport, and sidebar Space overview (2026-07-17) |
 | Dev internals | — | crate names, `AGENTS.md`, "residual", repo paths | see §6 |
 
-Verse/fractal/petal renaming to domain terms is ratification-gated
-(`conductor/tracks/outstanding_decisions_20260715/spec.md` — UNRATIFIED; do not treat
-as settled). Until then: don't mix hierarchy terms in one sentence, and the empty
-verse browser carries a one-line hierarchy explainer.
+The verse/fractal/petal vocabulary is **canon** (D-72 RATIFIED 2026-07-17: keep the
+jargon in all user-facing UI). Rules: never rename hierarchy tiers to domain terms,
+don't mix hierarchy terms in one sentence, and first-run comprehension is served by
+plain-language framing (e.g. the empty verse browser's one-line hierarchy explainer),
+never by renaming.
 
 ## Pre-merge checklist for any fe-ui change
 
