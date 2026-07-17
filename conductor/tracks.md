@@ -17,7 +17,7 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > [consolidated session retro](./tracks/_archive/session_retro_20260715/retro.md) for
 > per-track outcomes and verification evidence (commits `c32e873` → `626f307`).
 
-**Open tracks: 27.**
+**Open tracks: 30.**
 
 ---
 
@@ -59,6 +59,18 @@ _Link: [./tracks/camera_focus_clip_20260716/](./tracks/camera_focus_clip_2026071
 `NodeCreated` echoes position + focus resolves live entity transform; near
 0.01 + min_distance 0.05 for clip-free close zoom.
 
+### [ ] road_builder_ux — C:S-inspired road/path builder input layer
+
+_Link: [./tracks/road_builder_ux_20260716/](./tracks/road_builder_ux_20260716/) · pending · P0 UX (user-driven, 2026-07-16)_
+
+Straight/curved(quadratic-bezier)/freeform drag-to-place segments with C:S-style
+chaining, 45°/90° angle snap, guidelines + ghost preview, snap-to-existing-path
+(coordinate-share only — no topology graph, feeds a future `procedural_roads`
+track), live metric length via a `metric_scale()` seam. New `path_kind`
+designed|recorded property (absence ⇒ recorded, zero migration) so analytics can
+filter designed roads from GPS traces. Input layer ONLY — ribbon meshes,
+intersections, upgrade tool, zoning all deferred (user-ratified hybrid, 2026-07-16).
+
 ---
 
 ## P0 — Analytics engine critical path
@@ -89,6 +101,18 @@ reconciliation in `CompositeTileSource`, then a measurement layer. Phases 1–4 
 (scale plumbing + `RulerPlugin` scale-bar HUD landed 2026-07-15). Remaining: Phase 5
 (measurement tools — tape/area/bearing + GPX path length) and Phase 6
 (graticule/annotations). Metrically-correct reporting gates egress GA; rulers trail.
+
+### [ ] map_scale_authority — map-authoritative scale for placement + UI numbers
+
+_Link: [./tracks/map_scale_authority_20260716/](./tracks/map_scale_authority_20260716/) · pending · P1 CORE-ANALYTICS · complements hexon_scale_orchestration (owns scale CORRECTNESS; that track owns measurement TOOLS)_
+
+User directive 2026-07-16: the map always sets the scale — no per-asset scale
+metadata. One canonical world_scale accessor (new `fe-format/src/scale.rs`;
+fe-terrain delegates via re-export), placement handlers default node scale from
+petal terrain (kills the hardcoded `[1,1,1]` in ImportGltf/create_node), 6+
+duplicated fe-ui conversion formulas become shims, API unit contract documented
+(world units on the wire, meters at the UI edge), terrain-height snap-on-place
+in scope as an independently de-scopable phase (fixes the y=0 placement issue).
 
 ### [~] auth_policy_pattern — Policy Engine (RBAC-on-results backbone)
 
@@ -158,6 +182,19 @@ fe-api `/crates/*` re-pointed) and add a `PetalSnapshot` hexon type packaging a
 petal's full SurrealDB state + op-log (HLC-ordered, sigs verbatim per D5-1),
 Manager+ gated, with export→import→export round-trip determinism as the acceptance
 gate. User directives 2026-07-16: v1.0.0 upheld; registry compat may break freely.
+
+### [ ] mcp_scene_primitives — MCP primitive vocabulary for AI scene construction
+
+_Link: [./tracks/mcp_scene_primitives_20260716/](./tracks/mcp_scene_primitives_20260716/) · pending · P1 PLATFORM · primitives only (user-ratified 2026-07-16)_
+
+Close the asset-ingestion gap — glb upload writes blobs API-side through the
+shared BlobStore handle (bytes never cross the bounded crossbeam channel;
+metadata-only `DbCommand::CreateAsset`), new `CreateNodeWithAsset` reusing
+`DbResult::GltfImported` — and grow `/mcp` from 6 to 20 tools behind a
+table-driven ToolSpec/ScopeRule dispatcher that also fixes the 3 weak-authz
+warts (create_node / create_petal / update_transform scope checks). Acceptance:
+headless e2e upload→place→property→move→read→delete over MCP with RBAC
+negatives. No semantic city verbs (tripwire-tested); 256 MiB glb-only limit.
 
 ---
 

@@ -1,0 +1,11 @@
+{
+  "id": "map_scale_authority_20260716",
+  "description": "Map-authoritative scale consistency: the petal's terrain/map world_scale is the single source of scale truth; model placement and every user-facing number (inspector, rulers, path lengths, stamp spacing, gimbal/transform displays) derive from one canonical accessor (fe_format::scale), consistently. Includes terrain-height snap-on-place default and the documented world-units-on-the-wire API contract.",
+  "type": "feature",
+  "created_at": "2026-07-16T00:00:00Z",
+  "status": "pending",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "USER DIRECTIVE 2026-07-16 (binding): 'the map always sets the scale — UI scale numbers must match the petal/terrain scale.' NO per-asset scale metadata; glTF authored in meters; one formula. Complement to hexon_scale_orchestration_20260712 (owns measurement TOOLS Ph5/6 — do not duplicate); parallel with mcp_scene_primitives_20260716 (place_asset consumes petal_world_scale helper in fe-database) and road_builder_ux_20260716 (road lengths via fe_format::scale). Key decisions: accessor home fe-format/src/scale.rs (fe-terrain delegates, API stable); placement handlers read scale from DB petal.terrain (not caller-supplied); API stays world-units on the wire; snap-on-place IN scope (Phase 4, de-scopable); no migration of existing nodes. Single full workspace sweep at end (Phase 5)."
+}

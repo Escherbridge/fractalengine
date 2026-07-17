@@ -1,0 +1,11 @@
+{
+  "id": "mcp_scene_primitives_20260716",
+  "description": "Close the asset-ingestion gap and expand /mcp from 6 tools to a complete 20-tool primitive vocabulary so an external AI client can build scenes (model homes, properties, city layouts) headlessly: asset upload (REST multipart + MCP base64), asset-bearing node placement, node deletion, MCP wrappers over existing REST ops, and one shared authz/dispatch helper that fixes the create_node/create_petal role-only fallbacks.",
+  "type": "feature",
+  "created_at": "2026-07-16T00:00:00Z",
+  "status": "pending",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "USER DIRECTIVES 2026-07-16 (binding): (1) PRIMITIVES ONLY — no city-semantic verbs (place_building/create_road/footprint queries); the AI composes from low-level tools. (2) Scale is map-authoritative — parallel track map_scale_authority_20260716 owns world_scale-derived placement; this track passes position/rotation/scale through verbatim and invents NO per-asset scale metadata. (3) Runs parallel with road_builder_ux_20260716 (fe-ui only) and map_scale_authority_20260716 — this track stays in fe-api/fe-runtime/fe-database (+fractalengine wiring if needed) and MUST NOT touch fe-ui. Key seam decision: asset bytes never cross the crossbeam channel — API thread writes blobs via its own BlobStoreHandle (main.rs:40 shares one handle between ApiState and the DB thread), only hash/metadata goes to the DB thread. New DbCommand variants (CreateAsset, CreateNodeWithAsset) instead of extending CreateNode, to avoid the ~15-construction-site blast radius incl. fe-ui."
+}
