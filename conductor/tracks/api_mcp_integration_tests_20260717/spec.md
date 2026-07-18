@@ -48,6 +48,25 @@ it consumes it).
   turns them into failing-then-fixed strict assertions.
 - **FR-4 — Sweep integration.** Both suites run as ordinary `cargo test -p
   fe-api` targets — no special runner, no network, no on-disk DB.
+- **FR-5 — Comprehensive suite expansion (user ask 2026-07-18).** Grow the
+  suites to the remaining fe-api surface, keeping the FR-1 harness as the
+  shared substrate (no parallel fixtures):
+  - **remaining endpoint families:** WS/realtime surface if present (inventory
+    first — cover or record N/A), hexon/tileset endpoints (`/crates/*` as
+    currently shipped; note re-point owned by `hexon_unification_20260716`),
+    IoT ingestion (`POST /petals/:id/iot/readings` batch semantics + guard
+    whitelist seam) and reading-shaped export, share-URL **mint → redeem
+    lifecycle** (authed mint, public redemption, scope ceiling, expired/
+    tampered-signature negatives), auth **token lifecycle** (issue, use,
+    expiry, revocation via session cache TTL);
+  - **cross-thread scenarios** via `fractalengine-test-harness`: DB↔API↔sync
+    seams — a write through the API observed via the DB thread's channel
+    contract, and sync-facing effects asserted at the seam (mock replicator
+    boundary is fine; no live P2P);
+  - **MCP negative/fuzz coverage:** malformed JSON-RPC frames, unknown tool
+    names, wrong-typed/oversized arguments, missing-scope calls, and a
+    bounded structured-fuzz pass over tool arg schemas — assert graceful
+    errors, never panics or channel poisoning.
 
 ## Acceptance criteria
 
@@ -59,6 +78,8 @@ it consumes it).
   downstream crate (SG-08 closed).
 - Weak-authz markers documented and cross-referenced from
   `mcp_scene_primitives_20260716`.
+- FR-5: endpoint-family inventory recorded (covered / N/A per family); fuzz
+  pass bounded and deterministic (seeded) so the sweep stays reproducible.
 
 ## Out of scope
 
