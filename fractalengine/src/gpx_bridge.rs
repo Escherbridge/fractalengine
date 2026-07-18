@@ -1011,9 +1011,11 @@ pub fn drain_path_ops(
                 pending.in_flight_points.remove(&track_node_id);
                 pending.seed_pending.remove(&track_node_id);
                 route_map.routes.remove(&track_node_id);
-                if let Some((entity, _)) = track_lines
+                // Despawn ALL matching lines — a leaked duplicate ribbon must
+                // not survive a single-`.find()` teardown.
+                for (entity, _) in track_lines
                     .iter()
-                    .find(|(_, t)| t.track_node_id == track_node_id)
+                    .filter(|(_, t)| t.track_node_id == track_node_id)
                 {
                     commands.entity(entity).despawn();
                 }
@@ -1795,6 +1797,12 @@ pub fn request_petal_gpx_materialization(
     }
 }
 
+/// `true` only the first time `id` is seen this frame — the same-batch
+/// duplicate-`NodePropertiesLoaded` guard. Pure so it is unit-testable.
+fn first_seen(seen: &mut std::collections::HashSet<String>, id: &str) -> bool {
+    seen.insert(id.to_string())
+}
+
 /// FR-6: the single projection path from DB events to render state
 /// (`TrackRouteMap` + `GpxTrackLine`). Treats the DB node row as the sole
 /// source of truth: any `NodePropertiesLoaded` carrying a track's current
@@ -1816,6 +1824,11 @@ pub fn advance_path_materialization(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
 ) {
+    // Per-frame dedupe: petal entry can queue TWO GetNodeProperties for the
+    // same track (petal materialization + fe-ui asset-less fallback); if both
+    // results land in one batch, the second reconcile can't see the first's
+    // deferred spawn and would duplicate the ribbon. First occurrence wins.
+    let mut reconciled: std::collections::HashSet<String> = std::collections::HashSet::new();
     for result in db_results.read() {
         match result {
             DbResult::NodePropertiesLoaded {
@@ -1825,6 +1838,9 @@ pub fn advance_path_materialization(
                 let is_track =
                     properties.get(GPX_TYPE_KEY).and_then(|v| v.as_str()) == Some("track");
                 if !is_track {
+                    continue;
+                }
+                if !first_seen(&mut reconciled, node_id) {
                     continue;
                 }
                 // track_styling_20260713: refresh this track's style from its
@@ -1891,20 +1907,21 @@ pub fn advance_path_materialization(
                 }
             }
             DbResult::NodeDeleted { node_id, .. } => {
-                // Projection teardown: despawn both a rendered line and a
-                // single-point node for the deleted id, covering deletes that
-                // bypass PathOp::DeleteTrack's own optimistic cleanup.
+                // Projection teardown: despawn EVERY rendered line and
+                // single-point node for the deleted id (a leaked duplicate must
+                // not survive a `.find()`-single teardown), covering deletes
+                // that bypass PathOp::DeleteTrack's own optimistic cleanup.
                 route_map.routes.remove(node_id);
                 style_map.styles.remove(node_id);
-                if let Some((entity, _)) = track_lines
+                for (entity, _) in track_lines
                     .iter()
-                    .find(|(_, t)| t.track_node_id == *node_id)
+                    .filter(|(_, t)| t.track_node_id == *node_id)
                 {
                     commands.entity(entity).despawn();
                 }
-                if let Some((entity, _)) = single_nodes
+                for (entity, _) in single_nodes
                     .iter()
-                    .find(|(_, t)| t.track_node_id == *node_id)
+                    .filter(|(_, t)| t.track_node_id == *node_id)
                 {
                     commands.entity(entity).despawn();
                 }
@@ -1919,6 +1936,21 @@ mod tests {
     use super::*;
     use fe_terrain::config::TerrainConfig;
     use std::path::PathBuf;
+
+    #[test]
+    fn first_seen_true_once_per_id_per_frame() {
+        let mut seen = std::collections::HashSet::new();
+        assert!(first_seen(&mut seen, "track-a"));
+        assert!(
+            !first_seen(&mut seen, "track-a"),
+            "same-batch duplicate skipped"
+        );
+        assert!(
+            first_seen(&mut seen, "track-b"),
+            "different track unaffected"
+        );
+        assert!(!first_seen(&mut seen, "track-b"));
+    }
 
     const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="test">

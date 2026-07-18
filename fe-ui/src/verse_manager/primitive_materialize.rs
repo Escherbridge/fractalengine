@@ -122,6 +122,7 @@ pub(super) fn materialize_cached_primitives(
     nav: Res<NavigationManager>,
     verse_mgr: Res<VerseManager>,
     cache: Res<PrimitiveDescriptorCache>,
+    mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
     texture_registry: Res<TextureRegistryRes>,
     mat_assets: Res<PrimitiveMaterialAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -140,6 +141,16 @@ pub(super) fn materialize_cached_primitives(
     let Some(petal) = verse_mgr.find_petal(petal_id) else {
         return;
     };
+
+    // Spawn budget: halt under the app-wide mesh-budget gate, else saturate
+    // fresh spawns at MAX_PETAL_NODES (mirrors petal_respawn; §mesh-budget).
+    let mut remaining = if mesh_budget.exceeded {
+        0
+    } else {
+        let live = primitives.iter().count() + fallback_signs.iter().count();
+        super::spawn::spawn_allowance(usize::MAX, live, super::spawn::MAX_PETAL_NODES)
+    };
+    let mut skipped: usize = 0;
 
     for node in &petal.nodes {
         if node.asset_path.is_some() {
@@ -174,6 +185,11 @@ pub(super) fn materialize_cached_primitives(
         if found {
             continue;
         }
+        if remaining == 0 {
+            skipped += 1;
+            continue;
+        }
+        remaining -= 1;
 
         // Promote a fallback sign (undoing its +0.5 hover offset), or spawn
         // fresh at the tree position when no placeholder exists yet.
@@ -210,6 +226,13 @@ pub(super) fn materialize_cached_primitives(
         bevy::log::debug!(
             "Materialized cached primitive node={} without selection (FR-1)",
             node.id
+        );
+    }
+    if skipped > 0 {
+        bevy::log::warn!(
+            "primitive materialization saturated: {} node(s) skipped (cap {} / budget gate)",
+            skipped,
+            super::spawn::MAX_PETAL_NODES
         );
     }
 }

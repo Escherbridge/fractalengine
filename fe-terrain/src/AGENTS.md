@@ -315,3 +315,21 @@ believe. `RulerSettings.show_scale_bar` (default on) is the reflection-free
 toggle seam for fe-ui (C6: bounds/toggles reach UI via the API surface, not a
 fe-terrain dep). Registered from `TerrainPlugin::build`, not `main.rs`. If
 `EguiPlugin` is absent (headless), the pass never runs — the plugin is inert.
+
+## §tile-budget — per-tile mesh + overlay feature caps (oom_guardrails_20260717)
+
+Chunk COUNT is bounded (max_chunks=256, ring clamp, MAX_SPAWNS_PER_FRAME) but
+per-tile mesh SIZE was not: `decode_png_pixels` has no dimension guard, and
+close-range upsampling makes vertices `((w-1)·U+1)²` — a 512px tile at U=4 is
+~4.2M verts (~234 MB), and a degenerate 4096px PNG would be ~268M verts
+(host OOM from a single tile). Guards in `terrain_plugin.rs`:
+- `MAX_TILE_DIMENSION = 1024`: larger decoded elevation tiles are rejected
+  with a `warn!` (satellite-texture fallback still renders).
+- `clamp_upsample_for_grid` lowers the upsample factor until the densified
+  grid fits `MAX_TILE_VERTICES = 1,100,000` (256px keeps U=4; 512px clamps to
+  U=2; 1024px to U=1; U floors at 1). The dimension cap guarantees U=1 always
+  fits.
+- `MAX_GEOJSON_FEATURES = 50,000` per overlay file — one shared budget across
+  polygons/polylines/markers (the only otherwise-unbounded spawner in this
+  crate), plus a single shared marker sphere mesh per overlay instead of one
+  mesh asset per marker. Saturation logs a `warn!` with the true count.

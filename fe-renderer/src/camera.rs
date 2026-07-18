@@ -177,6 +177,23 @@ impl Plugin for CameraControllerPlugin {
         app.init_resource::<CameraScaleSettings>();
         app.add_systems(Startup, spawn_orbit_camera);
         app.add_systems(Update, (orbit_camera_system, apply_camera_scale));
+        app.add_systems(PostUpdate, deactivate_foreign_cameras);
+    }
+}
+
+/// Deactivates cameras embedded in spawned glb scenes before extraction; see AGENTS.md §camera-scale.
+fn deactivate_foreign_cameras(
+    mut cameras: Query<&mut Camera, (Added<Camera>, Without<OrbitCameraController>)>,
+) {
+    let mut disabled = 0usize;
+    for mut camera in cameras.iter_mut() {
+        if camera.is_active {
+            camera.is_active = false;
+            disabled += 1;
+        }
+    }
+    if disabled > 0 {
+        bevy::log::info!("deactivated {disabled} non-orbit camera(s) from spawned scenes");
     }
 }
 

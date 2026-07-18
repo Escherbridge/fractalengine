@@ -9,6 +9,16 @@ use fe_sdk::primitive::{PrimitiveDescriptor, PrimitiveKind};
 
 use crate::plugin::SpawnedNodeMarker;
 
+/// Hard cap on scene entities spawned per petal — mirrors `MAX_STAMPS`; a
+/// runaway node count saturates here instead of wedging the renderer.
+pub(super) const MAX_PETAL_NODES: usize = 10_000;
+
+/// Additional spawns allowed given `already` live and `requested` wanted,
+/// saturating at `max`. Pure so the cap math is unit-testable.
+pub(super) fn spawn_allowance(requested: usize, already: usize, max: usize) -> usize {
+    max.saturating_sub(already).min(requested)
+}
+
 /// Resolve an asset path to a loadable scene path: append `#Scene0` only for
 /// gltf/glb assets that don't already carry a label; pass anything else through.
 fn scene_asset_path(asset_path: &str) -> String {
@@ -226,4 +236,37 @@ pub(super) fn spawn_fallback_sign(
         entity,
         petal_id
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_allowance_passes_through_under_cap() {
+        assert_eq!(spawn_allowance(5, 0, 10), 5);
+        assert_eq!(spawn_allowance(10, 0, 10), 10);
+    }
+
+    #[test]
+    fn spawn_allowance_saturates_at_cap() {
+        assert_eq!(spawn_allowance(100, 0, 10), 10);
+        assert_eq!(spawn_allowance(100, 7, 10), 3);
+    }
+
+    #[test]
+    fn spawn_allowance_zero_when_cap_reached_or_overshot() {
+        assert_eq!(spawn_allowance(100, 10, 10), 0);
+        // Already over the cap (e.g. pre-existing entities) must not underflow.
+        assert_eq!(spawn_allowance(100, 999, 10), 0);
+    }
+
+    #[test]
+    fn spawn_allowance_degenerate_inputs() {
+        assert_eq!(spawn_allowance(0, 0, 10), 0);
+        assert_eq!(
+            spawn_allowance(usize::MAX, 0, MAX_PETAL_NODES),
+            MAX_PETAL_NODES
+        );
+    }
 }

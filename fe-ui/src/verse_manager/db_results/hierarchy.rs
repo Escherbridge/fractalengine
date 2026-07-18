@@ -37,7 +37,10 @@ pub(super) fn handle_database_reset(verse_mgr: &mut VerseManager, db_sender: &Db
 }
 
 /// `HierarchyLoaded`: rebuild the whole tree, auto-navigate on first load, and
-/// spawn scene entities for the active petal's asset nodes.
+/// spawn scene entities for the active petal's asset nodes. `already_spawned`
+/// holds node_ids with a live scene entity — repeat loads (API polls, P2P
+/// joins) skip them instead of double-materializing; see AGENTS.md §db-results.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_hierarchy_loaded(
     verses: &[VerseHierarchyData],
     verse_mgr: &mut VerseManager,
@@ -45,6 +48,8 @@ pub(super) fn handle_hierarchy_loaded(
     commands: &mut Commands,
     asset_server: &AssetServer,
     pending_api: &mut PendingApiRequests,
+    already_spawned: &mut std::collections::HashSet<String>,
+    budget_exceeded: bool,
 ) {
     let first_load = nav.active_verse_id.is_none();
 
@@ -76,6 +81,20 @@ pub(super) fn handle_hierarchy_loaded(
 
     let active_petal = nav.active_petal_id.clone();
 
+    // Spawn budget: skip nodes already materialized (repeat HierarchyLoaded
+    // must be idempotent) and saturate at MAX_PETAL_NODES / the app-wide mesh
+    // budget instead of spawning unbounded.
+    let mut remaining = if budget_exceeded {
+        0
+    } else {
+        super::super::spawn::spawn_allowance(
+            usize::MAX,
+            already_spawned.len(),
+            super::super::spawn::MAX_PETAL_NODES,
+        )
+    };
+    let mut skipped: usize = 0;
+
     verse_mgr.verses = verses
         .iter()
         .map(|v| VerseEntry {
@@ -103,15 +122,25 @@ pub(super) fn handle_hierarchy_loaded(
                                 .map(|n| {
                                     if active_petal.as_deref() == Some(n.petal_id.as_str()) {
                                         if let Some(ref ap) = n.asset_path {
-                                            super::super::spawn::spawn_node_entity(
-                                                commands,
-                                                asset_server,
-                                                &n.id,
-                                                &n.petal_id,
-                                                &n.name,
-                                                n.position,
-                                                ap,
-                                            );
+                                            // Skip already-live nodes (repeat load) —
+                                            // the pre-fix double-materialization bug.
+                                            if already_spawned.contains(&n.id) {
+                                                // already materialized — no-op
+                                            } else if remaining == 0 {
+                                                skipped += 1;
+                                            } else {
+                                                super::super::spawn::spawn_node_entity(
+                                                    commands,
+                                                    asset_server,
+                                                    &n.id,
+                                                    &n.petal_id,
+                                                    &n.name,
+                                                    n.position,
+                                                    ap,
+                                                );
+                                                already_spawned.insert(n.id.clone());
+                                                remaining -= 1;
+                                            }
                                         }
                                     }
                                     NodeEntry {
@@ -131,6 +160,14 @@ pub(super) fn handle_hierarchy_loaded(
         })
         .collect();
     verse_mgr.rebuild_node_index();
+
+    if skipped > 0 {
+        bevy::log::warn!(
+            "hierarchy spawn saturated: {} node(s) not materialized (cap {} / budget gate)",
+            skipped,
+            super::super::spawn::MAX_PETAL_NODES
+        );
+    }
 
     // Auto-select verse after non-first-load (e.g. after CreateVerse).
     if nav.active_verse_id.is_none() {

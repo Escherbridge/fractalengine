@@ -534,3 +534,37 @@ output routes through Bevy's `LogPlugin`. Non-ECS code (webview backends, DB /
 sync / network threads) logs via `tracing::` directly. Do not mix the two
 within a single module; silent `.ok()` swallowing of errors that deserve a log
 line should become a `warn!`/`error!` when touched.
+
+## §mesh-budget — app-wide mesh-instance watchdog (oom_guardrails_20260717)
+
+A 2026-07-17 crash queued ~15.7M mesh-instance slots in one render phase
+(2.75 GB MeshUniform buffer > the 2 GiB `max_*_buffer_binding_size` limit),
+panicking bevy_pbr's bind-group creation and then OOMing the host. Bevy's
+per-phase instance buffers are grow-only and wholly bound, so the only real
+guard is keeping the main-world instance count bounded BEFORE render
+extraction — post-panic remediation is impossible.
+
+Guard architecture (in order of defense):
+1. **Per-path caps** (primary): `MAX_STAMPS` (4096/track) +
+   `MAX_STAMPS_PER_PETAL` (65,536/pass) in `verse_manager/path_asset_*`,
+   `MAX_PETAL_NODES` (10,000) in `verse_manager/spawn.rs` (enforced by both
+   `petal_respawn` and the `HierarchyLoaded` handler), `MAX_POINT_MARKERS`
+   (4096) in `node_manager/path_point_interaction.rs`. All saturate + `warn!`.
+2. **`MeshInstanceBudget` watchdog** (backstop, `plugin.rs`): counts
+   `Query<(), With<Mesh3d>>` in `Last` (archetypal filter — O(archetypes)).
+   Ceiling `MAX_MESH_INSTANCES = 2,000,000`: with the worst realistic view
+   multiplier (main + 4 shadow cascades = 5 slots/entity) that is 10M slots,
+   under the ~12.2M/phase hard limit (2 GiB / 176 B per MeshUniform), and caps
+   the CPU-side input Vec (~96 B/entity) at ~192 MB. On crossing: `error!` +
+   toast (HMI rule: no silent failure) and `exceeded = true`, which every
+   fe-ui spawn path checks before spawning more scene entities. The gate
+   clears automatically when the count drops (petal switch, deletes).
+3. Render-degrade switches (NoIndirectDrawing, CPU preprocessing) do NOT
+   avoid the panic (same 2 GiB entire-binding limit on the CPU path) — they
+   were deliberately not applied.
+
+The `HierarchyLoaded` handler additionally skips nodes that already have a
+live `SpawnedNodeMarker` entity (stamp instances excluded via
+`Without<PathAssetInstance>`): every API `GetHierarchy` poll re-broadcasts
+`HierarchyLoaded`, and before this guard each event duplicated the entire
+active petal's scene — the amplification behind the crash.
