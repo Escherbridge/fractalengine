@@ -1,0 +1,12 @@
+{
+  "id": "runtime_instance_guardrails_20260717",
+  "description": "Fix and guard against the 2026-07-17 user-reported GPU-OOM crash: a create_bind_group panic (buffer binding 6 range 2758820944 exceeds max_*_buffer_binding_size 2147483647) implying ~10-20M mesh instances from a runaway spawn path or unbounded persisted data. Cap every spawn path, guard degenerate scales, eliminate double-materialization, add an instance-count watchdog with a user-visible warning, and verify a clean live app run against the user's existing data/ database",
+  "type": "bug",
+  "created_at": "2026-07-17T00:00:00Z",
+  "status": "in_progress",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "P0 user-reported crash, live-DB repro. HARD RULE: never delete/reset/overwrite anything under data/ — it is the user's live database; reading and launching against it is allowed. Existing partial guards to build on, not duplicate: fe-ui/src/verse_manager/path_asset_reconcile.rs MAX_STAMPS=4096 + sanitize_world_scale. Crash chain: bevy_pbr prepare_mesh_bind_groups + prepare_preprocess_bind_groups panic ('preprocess_gpu_indexed_frustum_culling_bind_group'), then host allocation failure (2703360 bytes) -> STATUS_STACK_BUFFER_OVERRUN on a memory-constrained Windows machine.",
+  "alignment": "P0 STABILITY (user-reported crash 2026-07-17; blocks all live-app verification work)"
+}

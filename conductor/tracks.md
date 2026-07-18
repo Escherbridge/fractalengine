@@ -19,7 +19,27 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
 > (delivered and archived), not a dangling reference — no cross-check needed.
 
-**Open tracks: 24.**
+**Open tracks: 26.**
+
+---
+
+## P0 — Stability (user-reported crash, 2026-07-17)
+
+### [~] runtime_instance_guardrails — fix the GPU-OOM crash + cap every spawn path
+
+_Link: [./tracks/runtime_instance_guardrails_20260717/](./tracks/runtime_instance_guardrails_20260717/) · in_progress · P0 STABILITY (user-reported crash 2026-07-17)_
+
+App run died in bevy_pbr render prepare: `create_bind_group` panic (buffer
+binding 6 range 2758820944 exceeds the 2 GiB `max_*_buffer_binding_size`
+limit) — ~2.75 GB of per-instance GPU data ⇒ roughly 10–20M mesh instances
+from a runaway spawner or unbounded persisted data, then host allocation
+failure → STATUS_STACK_BUFFER_OVERRUN. Diagnose by repro against the live
+`data/` DB (read-only — never delete/reset/overwrite it) + spawn/terrain/
+render/DB audits; fix: every spawn path capped + degenerate-scale guarded
+(building on path_asset_reconcile's MAX_STAMPS=4096 + sanitize_world_scale),
+double-materialization eliminated, instance watchdog with user-visible
+warning. Acceptance: the app launches against the user's existing `data/`
+without the `create_bind_group` panic.
 
 ---
 
@@ -115,6 +135,19 @@ statistical-analysis seam (2026-07-17, spec §Inherited seam).
 ---
 
 ## P1 — Platform
+
+### [~] api_mcp_integration_tests — reusable API harness + api/mcp integration suites
+
+_Link: [./tracks/api_mcp_integration_tests_20260717/](./tracks/api_mcp_integration_tests_20260717/) · in_progress · P1 ENABLING_
+
+Reusable integration-test harness (in-mem SurrealDB + **real** fe-api router +
+tower `oneshot`), consumed by `api_integration.rs` (query-guard limits,
+SQL-injection attempts, RBAC negatives, GIS round-trips, egress CSV) and
+`mcp_integration.rs` (MCP tool round-trips + KNOWN-WEAK authz markers for the
+create_node / create_petal / update_transform gaps, cross-referencing
+mcp_scene_primitives). Gives `fractalengine-test-harness` its first downstream
+consumer (closes the styleguide SG-08 gap). Acceptance: both suites green in
+the workspace sweep.
 
 ### [~] release_ci — Cross-Compilation Pipeline + Docker Image
 
