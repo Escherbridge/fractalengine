@@ -1,0 +1,12 @@
+{
+  "id": "crate_consolidation_r2_20260718",
+  "description": "Round-2 crate consolidation driven by the 2026-07-18 user directive that the 22-crate workspace is itself an anti-pattern (crate count is a cost, not just closure hygiene). Three merge candidates re-opened against the 2026-07-17 audit's KEEP verdicts, each with the audit counter-evidence embedded and an explicit accept/defer gate: fe-plugin-test into fe-plugin (as a test-utils feature), fe-hexon-registry into fe-hexon (format merge routed through hexon_unification), and fe-query into fe-api (consumer-set evidence first)",
+  "type": "chore",
+  "created_at": "2026-07-18T00:00:00Z",
+  "status": "pending",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "User directive 2026-07-18 (verbatim): 'we should be able to do things like merge plugin-test and plugin; hexon + hexon-registry + format; query + api — its just a lot of crates, some of them are sparse, seems like an anti pattern'. This re-weights the 2026-07-17 audit (conductor/decisions/crate-consolidation-20260717.md) — its KEEP rationale is embedded per-merge so each gate is decided with eyes open, not re-litigated blind. COORDINATION: fe-format/fe-hexon restructure is OWNED by hexon_unification_20260716 — the format-merge decision is a gate inside that track's scope, this track must not fork a parallel workstream. OUT OF SCOPE: fe-network (D-71 RESOLVED-KEEP 2026-07-17 — P2P is the differentiator). Preliminary evidence 2026-07-18: fe-query consumers per Cargo.toml grep = fe-api (features=[datafusion]) AND fe-database — an fe-query→fe-api merge as-is would invert layering (fe-database depending on fe-api); Phase 1 must confirm.",
+  "alignment": "P1 PLATFORM (user directive 2026-07-18; feeds oss_release crates.io publishing shape)"
+}

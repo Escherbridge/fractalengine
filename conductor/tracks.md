@@ -19,7 +19,7 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
 > (delivered and archived), not a dangling reference — no cross-check needed.
 
-**Open tracks: 26.**
+**Open tracks: 28.**
 
 ---
 
@@ -64,6 +64,22 @@ track), live metric length via a `metric_scale()` seam. New `path_kind`
 designed|recorded property (absence ⇒ recorded, zero migration) so analytics can
 filter designed roads from GPS traces. Input layer ONLY — ribbon meshes,
 intersections, upgrade tool, zoning all deferred (user-ratified hybrid, 2026-07-16).
+
+### [ ] ux_interaction_hardening — GPX controls, toolbar-as-context-menu, gimbal smoothing, selection highlighting
+
+_Link: [./tracks/ux_interaction_hardening_20260718/](./tracks/ux_interaction_hardening_20260718/) · pending · P0 UX (user-driven, 2026-07-18)_
+
+Four-surface hardening slate from the user's 2026-07-18 ask: (1) robust
+GPX/path editing controls — cancel-safe interrupts (Escape/tool-switch/
+petal-switch), forgiving drag handles, undo-safe point edits on the shipped
+path editor; (2) top-bar buttons become the context selector for the
+inspector/left-sidebar region with the core inspector getting its own toolbar
+icon (`TOOL_DEFS` stays the single-source table); (3) damped, frame-rate-
+independent gimbal drags (no overshoot/drift); (4) calm smooth selection
+highlighting for paths AND objects — the two selection authorities
+(`NodeManager.selected` vs `PathEditorState.editing_track_id`) rendered
+distinguishably, NOT unified (codified split, ui_ux.md §5); highlight colors
+respect the §1 status-tier ownership (selection ≠ alarm).
 
 ---
 
@@ -146,8 +162,28 @@ SQL-injection attempts, RBAC negatives, GIS round-trips, egress CSV) and
 `mcp_integration.rs` (MCP tool round-trips + KNOWN-WEAK authz markers for the
 create_node / create_petal / update_transform gaps, cross-referencing
 mcp_scene_primitives). Gives `fractalengine-test-harness` its first downstream
-consumer (closes the styleguide SG-08 gap). Acceptance: both suites green in
-the workspace sweep.
+consumer (closes the styleguide SG-08 gap). FR-5 appended 2026-07-18 (user
+ask): comprehensive expansion — remaining endpoint families (WS/realtime if
+present, hexon/tileset, IoT ingest+export, share-URL mint→redeem, auth token
+lifecycle), cross-thread DB↔API↔sync scenarios via the harness, MCP
+negative/fuzz coverage. Acceptance: both suites green in the workspace sweep.
+
+### [ ] crate_consolidation_r2 — user-directed merges with audit counter-evidence embedded
+
+_Link: [./tracks/crate_consolidation_r2_20260718/](./tracks/crate_consolidation_r2_20260718/) · pending · P1 PLATFORM (user directive 2026-07-18)_
+
+User directive 2026-07-18: the 22-crate workspace is itself an anti-pattern —
+crate count is a cost, sparse crates should merge. Re-opens exactly three
+candidates against the [2026-07-17 audit's](./decisions/crate-consolidation-20260717.md)
+KEEP verdicts, each with the counter-evidence embedded and an accept/defer
+gate: G-1 fe-plugin-test→fe-plugin as a `test-utils` feature (F8 cost: OSS
+plugin authors pull wasmtime+bevy to test); G-2 fe-hexon-registry→fe-hexon as
+a feature-gated bin (F7 cost: docker engine-closure + foundry extraction path;
+the fe-format merge question routes as a gate INSIDE hexon_unification's
+scope — no parallel workstream); G-3 fe-query→fe-api evidence-first
+(preliminary grep: fe-database ALSO consumes fe-query ⇒ naive merge inverts
+layering — consumer map is the gate artifact). fe-network untouchable
+(D-71 RESOLVED-KEEP: P2P is the differentiator). Merges are structure-only.
 
 ### [~] release_ci — Cross-Compilation Pipeline + Docker Image
 
