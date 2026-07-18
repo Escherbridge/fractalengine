@@ -36,6 +36,9 @@ base64 = "0.22"
 tempfile = "3"
 blake3 = { workspace = true }
 hex = "0.4"
+# Dev-dep cycle is legal cargo: the API-integration harness lives in the
+# harness crate's lib target (see fe-test-harness/src/AGENTS.md §api-harness).
+fractalengine-test-harness = { path = "../fe-test-harness" }
 
 
 

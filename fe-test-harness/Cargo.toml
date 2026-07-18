@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Integration test harness for FractalEngine subsystems"
 
 [dependencies]
+fe-api = { path = "../fe-api" }
 fe-database = { path = "../fe-database" }
 fe-runtime = { path = "../fe-runtime" }
 fe-sync = { path = "../fe-sync" }
@@ -29,3 +30,5 @@ chrono = "0.4"
 base64 = "0.22"
 ed25519-dalek = { workspace = true }
 rand = "0.8"
+axum = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
