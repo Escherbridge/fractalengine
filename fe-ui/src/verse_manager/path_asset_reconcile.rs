@@ -174,6 +174,13 @@ fn sample_progresses(
             }
             let n = (total / spacing).floor() as usize; // segments
             let count = (n + 1).min(MAX_STAMPS); // inclusive of the start point, capped
+            if n + 1 > MAX_STAMPS {
+                bevy::log::warn!(
+                    "stamp count saturated: wanted {} of cap {} — spacing too small for path length (check map scale)",
+                    n + 1,
+                    MAX_STAMPS
+                );
+            }
             (0..count)
                 .map(|i| ((i as f32 * spacing) / total).clamp(0.0, 1.0))
                 .collect()

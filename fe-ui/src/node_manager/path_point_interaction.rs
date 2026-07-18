@@ -27,6 +27,19 @@ const MARKER_QUAD_SIZE: f32 = 0.7;
 /// Manual ray/marker hit radius (world units) — see AGENTS.md §path-points.
 const PICK_RADIUS: f32 = 0.7;
 
+/// Hard cap on point-marker entities (mirrors `MAX_STAMPS`): a huge imported
+/// GPX track shows markers for its first N points only.
+const MAX_POINT_MARKERS: usize = 4096;
+
+/// Marker count to keep spawned: the edited track's point count, capped.
+fn marker_want(editing: bool, points: usize, cap: usize) -> usize {
+    if editing {
+        points.min(cap)
+    } else {
+        0
+    }
+}
+
 /// In-progress drag of a path-point marker, `None` when idle. See
 /// `node_manager/AGENTS.md` §path-points for the two drag modes (horizontal
 /// ray-plane vs. Ctrl-held vertical height).
@@ -77,7 +90,7 @@ pub(super) fn sync_path_point_markers(
     mut hl_handle: Local<Option<Handle<StandardMaterial>>>,
 ) {
     let editing = path_state.editing_track_id.is_some();
-    let want = if editing { path_state.points.len() } else { 0 };
+    let want = marker_want(editing, path_state.points.len(), MAX_POINT_MARKERS);
     let have = markers.iter().count();
 
     // Shared handles (allocated once): the icon-quad mesh + the normal (yellow)
@@ -110,6 +123,15 @@ pub(super) fn sync_path_point_markers(
         .clone();
 
     if want != have {
+        // Saturation warn only on rebuild — not every frame while editing.
+        if editing && path_state.points.len() > MAX_POINT_MARKERS {
+            bevy::log::warn!(
+                "path-point markers saturated: showing {} of {} points (cap {})",
+                want,
+                path_state.points.len(),
+                MAX_POINT_MARKERS
+            );
+        }
         // Count changed → a cached selection index may be stale; drop it.
         path_state.clear_path_selection();
         // Despawn-all + respawn: point counts are small, so a per-change
@@ -120,7 +142,7 @@ pub(super) fn sync_path_point_markers(
         if want == 0 {
             return;
         }
-        for (i, point) in path_state.points.iter().enumerate() {
+        for (i, point) in path_state.points.iter().take(want).enumerate() {
             commands.spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(normal_mat.clone()),
@@ -383,6 +405,33 @@ pub(super) fn handle_path_point_interaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marker_want_zero_when_not_editing() {
+        assert_eq!(marker_want(false, 500, MAX_POINT_MARKERS), 0);
+        assert_eq!(marker_want(false, 0, MAX_POINT_MARKERS), 0);
+    }
+
+    #[test]
+    fn marker_want_passes_through_under_cap() {
+        assert_eq!(marker_want(true, 12, MAX_POINT_MARKERS), 12);
+        assert_eq!(
+            marker_want(true, MAX_POINT_MARKERS, MAX_POINT_MARKERS),
+            MAX_POINT_MARKERS
+        );
+    }
+
+    #[test]
+    fn marker_want_saturates_at_cap() {
+        assert_eq!(
+            marker_want(true, 500_000, MAX_POINT_MARKERS),
+            MAX_POINT_MARKERS
+        );
+        assert_eq!(
+            marker_want(true, usize::MAX, MAX_POINT_MARKERS),
+            MAX_POINT_MARKERS
+        );
+    }
 
     #[test]
     fn upward_cursor_motion_raises_height() {

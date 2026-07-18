@@ -3,6 +3,16 @@
 Design rationale for fe-database source modules. Code carries terse one-line
 doc comments; the "why" lives here.
 
+## §diagnostics
+
+Two read-only examples inspect the live SurrealKV store (`FE_DB_PATH`, default
+`data/fractalengine.db`): `examples/dump_db.rs` (raw row dump of
+verse/petal/node/asset) and `examples/inspect_db.rs` (table discovery via
+`INFO FOR DB`, per-table row counts, top petals by node count, node property
+histograms, gpx_points sizes, node_log/asset breakdowns, disk size). Both open
+the store normally but run only SELECT queries — safe against the user's live
+DB, but they DO take the SurrealKV lock, so the app must not be running.
+
 ## §replication-backpressure
 
 The DB→sync replication bridge is two `crossbeam::bounded(256)` hops:

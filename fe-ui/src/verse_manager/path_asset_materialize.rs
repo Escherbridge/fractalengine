@@ -185,6 +185,18 @@ impl PathAssetApplied {
 // The single materializer (does ALL stamp spawning)
 // ---------------------------------------------------------------------------
 
+/// Petal-wide stamp budget: the per-track `MAX_STAMPS` (4096) still allows
+/// tracks × 4096 stamps, so one materializer pass saturates here overall.
+const MAX_STAMPS_PER_PETAL: usize = 65_536;
+
+/// Take up to `requested` stamps from the shared petal budget; returns how many
+/// may spawn. Pure so the saturation math is unit-testable.
+fn take_stamp_budget(remaining: &mut usize, requested: usize) -> usize {
+    let granted = requested.min(*remaining);
+    *remaining -= granted;
+    granted
+}
+
 /// Petal-wide path-asset materializer (FR-1): the ONLY system that spawns
 /// stamp instances. For every cached track in the active petal it despawns the
 /// old `PathAssetInstance` group and restamps whenever the descriptor, points,
@@ -204,6 +216,7 @@ pub(super) fn materialize_path_assets(
     mut last_petal: Local<Option<String>>,
     mut commands: Commands,
     existing: Query<(Entity, &PathAssetInstance)>,
+    mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
 ) {
     let petal_changed = *last_petal != nav.active_petal_id;
     if !(cache.is_changed() || petal_map.is_changed() || petal_changed) {
@@ -231,6 +244,14 @@ pub(super) fn materialize_path_assets(
         }
     }
 
+    // Petal-wide stamp budget for this pass; the app-wide mesh-budget gate
+    // (§mesh-budget) zeroes it so restamps stop growing a runaway scene.
+    let mut stamp_budget = if mesh_budget.exceeded {
+        0
+    } else {
+        MAX_STAMPS_PER_PETAL
+    };
+
     // (Re)stamp every active-petal cached track whose stamp inputs changed.
     for (track_id, entry) in cache.iter() {
         if entry.petal_id != active_petal {
@@ -247,7 +268,18 @@ pub(super) fn materialize_path_assets(
             }
         }
 
-        let samples = sample_transforms(&entry.points, &entry.descriptor, world_scale);
+        let mut samples = sample_transforms(&entry.points, &entry.descriptor, world_scale);
+        let granted = take_stamp_budget(&mut stamp_budget, samples.len());
+        if granted < samples.len() {
+            bevy::log::warn!(
+                "path-asset stamps saturated: track {} truncated {} → {} (petal cap {})",
+                track_id,
+                samples.len(),
+                granted,
+                MAX_STAMPS_PER_PETAL
+            );
+            samples.truncate(granted);
+        }
         let stamped = samples.len();
         for (i, (position, yaw)) in samples.into_iter().enumerate() {
             let mut transform = Transform::from_xyz(position[0], position[1], position[2]);
@@ -390,6 +422,43 @@ mod tests {
         cache.upsert("t2", "p1", sample_desc(), vec![[0.0; 3]], 1);
         cache.clear();
         assert!(cache.get("t2").is_none());
+    }
+
+    // --- petal-wide stamp budget ---
+
+    #[test]
+    fn stamp_budget_grants_up_to_remaining() {
+        let mut remaining = 10;
+        assert_eq!(take_stamp_budget(&mut remaining, 4), 4);
+        assert_eq!(remaining, 6);
+        assert_eq!(take_stamp_budget(&mut remaining, 6), 6);
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn stamp_budget_saturates_and_stays_zero() {
+        let mut remaining = 5;
+        assert_eq!(take_stamp_budget(&mut remaining, 100), 5);
+        assert_eq!(remaining, 0);
+        assert_eq!(take_stamp_budget(&mut remaining, 100), 0);
+    }
+
+    #[test]
+    fn stamp_budget_zero_request_is_noop() {
+        let mut remaining = MAX_STAMPS_PER_PETAL;
+        assert_eq!(take_stamp_budget(&mut remaining, 0), 0);
+        assert_eq!(remaining, MAX_STAMPS_PER_PETAL);
+    }
+
+    #[test]
+    fn stamp_budget_petal_cap_bounds_many_max_stamp_tracks() {
+        // 32 fully-saturated tracks (4096 each) would be 131072 stamps; the
+        // petal budget cuts the total at MAX_STAMPS_PER_PETAL.
+        let mut remaining = MAX_STAMPS_PER_PETAL;
+        let total: usize = (0..32)
+            .map(|_| take_stamp_budget(&mut remaining, 4096))
+            .sum();
+        assert_eq!(total, MAX_STAMPS_PER_PETAL);
     }
 
     // --- per-track applied gate (FR-2) ---

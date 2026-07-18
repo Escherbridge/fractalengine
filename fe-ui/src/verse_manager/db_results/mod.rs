@@ -17,13 +17,22 @@ use fe_runtime::messages::DbResult;
 use super::VerseManager;
 use crate::navigation_manager::NavigationManager;
 
-/// The two fe-ui-local descriptor caches grouped as one `SystemParam` so
-/// `apply_db_results` stays within Bevy's 16-tuple system-param limit. Both are
-/// fed from the property handlers on `NodePropertiesLoaded`/`Set`/`Deleted`.
+/// The two fe-ui-local descriptor caches plus the spawn-guard state, grouped
+/// as one `SystemParam` so `apply_db_results` stays within Bevy's 16-tuple
+/// system-param limit. The caches are fed from the property handlers on
+/// `NodePropertiesLoaded`/`Set`/`Deleted`; `spawned`/`mesh_budget` gate
+/// `HierarchyLoaded` re-materialization (see ../AGENTS.md §db-results).
 #[derive(SystemParam)]
-pub(super) struct DescriptorCaches<'w> {
+pub(super) struct DescriptorCaches<'w, 's> {
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
     path_asset: ResMut<'w, super::PathAssetCache>,
+    spawned: Query<
+        'w,
+        's,
+        &'static crate::plugin::SpawnedNodeMarker,
+        Without<super::spawn::PathAssetInstance>,
+    >,
+    mesh_budget: Res<'w, crate::plugin::MeshInstanceBudget>,
 }
 
 pub(super) fn apply_db_results(
@@ -44,6 +53,12 @@ pub(super) fn apply_db_results(
     node_mgr: Res<crate::node_manager::NodeManager>,
     mut caches: DescriptorCaches,
 ) {
+    // Live scene node_ids: repeat HierarchyLoaded events (API polls, joins)
+    // must not re-spawn them. Updated in-place so several HierarchyLoaded in
+    // one batch can't double-spawn either (deferred spawns are query-invisible).
+    let mut already_spawned: std::collections::HashSet<String> =
+        caches.spawned.iter().map(|m| m.node_id.clone()).collect();
+    let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     for result in reader.read() {
         match result {
             DbResult::Seeded { .. } => hierarchy::handle_seeded(&db_sender),
@@ -54,6 +69,8 @@ pub(super) fn apply_db_results(
                 &mut commands,
                 &asset_server,
                 &mut pending_api,
+                &mut already_spawned,
+                mesh_budget_exceeded,
             ),
             DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
             DbResult::DatabaseReset { .. } => {

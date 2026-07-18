@@ -96,6 +96,8 @@ pub fn build_app(handles: BevyHandles) -> App {
         ..Default::default()
     }));
 
+    app.add_plugins(crate::diag15m::Diag15MPlugin); // DIAG-15M
+
     setup_core_systems(&mut app, handles);
     app
 }

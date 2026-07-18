@@ -18,7 +18,7 @@ mod path_asset_reconcile;
 mod petal_respawn;
 mod primitive_materialize;
 mod primitive_reconcile;
-mod spawn;
+pub(crate) mod spawn;
 
 use bevy::prelude::*;
 

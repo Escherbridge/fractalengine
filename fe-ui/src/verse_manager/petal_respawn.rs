@@ -31,6 +31,7 @@ pub(super) fn respawn_on_petal_change(
     texture_registry: Res<TextureRegistryRes>,
     mat_assets: Res<PrimitiveMaterialAssets>,
     db_sender: Res<DbCommandSender>,
+    mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
 ) {
     if !*initialized {
         *last = nav.active_petal_id.clone();
@@ -85,11 +86,28 @@ pub(super) fn respawn_on_petal_change(
     // for the entities themselves (only cache-miss primitive descriptors fetch async).
     if let Some(ref pid) = new_petal {
         if let Some(petal) = verse_mgr.find_petal(pid) {
+            // Spawn budget: saturate at MAX_PETAL_NODES (mirrors MAX_STAMPS) and
+            // halt entirely under the app-wide mesh-budget gate (§mesh-budget).
+            let mut remaining = if mesh_budget.exceeded {
+                0
+            } else {
+                super::spawn::spawn_allowance(
+                    petal.nodes.len(),
+                    kept_node_ids.len(),
+                    super::spawn::MAX_PETAL_NODES,
+                )
+            };
+            let mut skipped: usize = 0;
             for node in &petal.nodes {
                 // Skip if already spawned and being kept (petal didn't fully change).
                 if kept_node_ids.contains(node.id.as_str()) {
                     continue;
                 }
+                if remaining == 0 {
+                    skipped += 1;
+                    continue;
+                }
+                remaining -= 1;
                 match spawn_branch(node, &primitive_cache) {
                     SpawnBranch::Gltf(asset_path) => {
                         super::spawn::spawn_node_entity(
@@ -148,6 +166,13 @@ pub(super) fn respawn_on_petal_change(
                         }
                     }
                 }
+            }
+            if skipped > 0 {
+                bevy::log::warn!(
+                    "petal respawn saturated: {} node(s) not materialized (cap {} / budget gate)",
+                    skipped,
+                    super::spawn::MAX_PETAL_NODES
+                );
             }
         }
     }

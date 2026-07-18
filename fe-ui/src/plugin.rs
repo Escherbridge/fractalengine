@@ -41,6 +41,109 @@ pub struct SpawnedNodeMarker {
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct Billboard;
 
+/// Ceiling on renderable mesh instances before spawners stop and the user is
+/// warned — sized under the GPU 2 GiB bind-group limit; see AGENTS.md §mesh-budget.
+pub const MAX_MESH_INSTANCES: usize = 2_000_000;
+
+/// App-wide mesh-instance budget: `exceeded` gates all fe-ui spawn paths so a
+/// runaway can't grow past the GPU bind-group limit. See AGENTS.md §mesh-budget.
+#[derive(Resource, Debug)]
+pub struct MeshInstanceBudget {
+    pub ceiling: usize,
+    pub exceeded: bool,
+    pub last_count: usize,
+    /// Last count/time emitted by the growth-curve diagnostic log.
+    pub last_logged_count: usize,
+    pub last_log_at: f64,
+    /// Mesh3d entities added/removed since the last diagnostic log line.
+    pub churn_added: usize,
+    pub churn_removed: usize,
+}
+
+impl Default for MeshInstanceBudget {
+    fn default() -> Self {
+        Self {
+            ceiling: MAX_MESH_INSTANCES,
+            exceeded: false,
+            last_count: 0,
+            last_logged_count: 0,
+            last_log_at: -2.0,
+            churn_added: 0,
+            churn_removed: 0,
+        }
+    }
+}
+
+/// `(exceeded, announce)` for a watchdog pass: announce only on the rising edge.
+fn watchdog_transition(prev_exceeded: bool, count: usize, ceiling: usize) -> (bool, bool) {
+    let exceeded = count > ceiling;
+    (exceeded, exceeded && !prev_exceeded)
+}
+
+/// Counts `Mesh3d` entities each frame (archetypal filter — cheap) and trips
+/// the budget gate + toast when the ceiling is crossed. Runs in `Last` so the
+/// gate is set before the next frame's spawners. See AGENTS.md §mesh-budget.
+fn mesh_instance_watchdog(
+    meshes: Query<(), With<Mesh3d>>,
+    scene_roots: Query<(), With<bevy::scene::SceneRoot>>,
+    node_markers: Query<(), With<SpawnedNodeMarker>>,
+    stamps: Query<(), With<crate::verse_manager::spawn::PathAssetInstance>>,
+    added: Query<Option<&Name>, Added<Mesh3d>>,
+    mut removed: RemovedComponents<Mesh3d>,
+    mut budget: ResMut<MeshInstanceBudget>,
+    mut ui_mgr: ResMut<UiManager>,
+    time: Res<Time>,
+) {
+    let count = meshes.iter().len();
+    let (exceeded, announce) = watchdog_transition(budget.exceeded, count, budget.ceiling);
+    // Churn tracking: per-frame Mesh3d add/remove accumulate between log
+    // intervals — steady churn leaks GPU mesh-input slots even at a flat
+    // entity count (see AGENTS.md §mesh-budget).
+    let added_names: Vec<String> = added
+        .iter()
+        .take(3)
+        .map(|n| n.map(|n| n.as_str().to_string()).unwrap_or_default())
+        .collect();
+    budget.churn_added += added.iter().count();
+    budget.churn_removed += removed.read().count();
+    // Growth-curve diagnostic: log every ~2s, and immediately on any jump >10k
+    // since the last logged value (crash forensics — see AGENTS.md §mesh-budget).
+    let elapsed = time.elapsed_secs_f64();
+    let jumped = count.abs_diff(budget.last_logged_count) > 10_000;
+    if jumped || elapsed - budget.last_log_at >= 2.0 {
+        bevy::log::info!(
+            "mesh instances: {count} (ceiling {}) | scene_roots {} nodes {} stamps {} | churn +{}/-{} sample {:?}",
+            budget.ceiling,
+            scene_roots.iter().len(),
+            node_markers.iter().len(),
+            stamps.iter().len(),
+            budget.churn_added,
+            budget.churn_removed,
+            added_names
+        );
+        budget.last_log_at = elapsed;
+        budget.last_logged_count = count;
+        budget.churn_added = 0;
+        budget.churn_removed = 0;
+    }
+    budget.last_count = count;
+    if announce {
+        bevy::log::error!(
+            "mesh instance watchdog: {} instances > ceiling {} — further scene spawning halted",
+            count,
+            budget.ceiling
+        );
+        ui_mgr.show_toast(
+            format!(
+                "Scene too large: {count} mesh instances (limit {}). Spawning paused.",
+                budget.ceiling
+            ),
+            time.elapsed_secs_f64(),
+        );
+    }
+    budget.exceeded = exceeded;
+}
+
 /// Sidebar visibility state.
 #[derive(Resource)]
 pub struct SidebarState {
@@ -265,6 +368,42 @@ mod tests {
         let cursor = ViewportCursorWorld::default();
         assert!(cursor.pos.is_none());
     }
+
+    #[test]
+    fn watchdog_under_ceiling_is_quiet() {
+        assert_eq!(watchdog_transition(false, 100, 2_000_000), (false, false));
+        // At exactly the ceiling: still within budget.
+        assert_eq!(
+            watchdog_transition(false, 2_000_000, 2_000_000),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn watchdog_announces_only_on_rising_edge() {
+        // Crossing the ceiling announces once…
+        assert_eq!(
+            watchdog_transition(false, 2_000_001, 2_000_000),
+            (true, true)
+        );
+        // …and stays silent while it remains exceeded.
+        assert_eq!(
+            watchdog_transition(true, 2_000_001, 2_000_000),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn watchdog_recovers_when_count_drops() {
+        assert_eq!(watchdog_transition(true, 10, 2_000_000), (false, false));
+    }
+
+    #[test]
+    fn mesh_budget_default_uses_named_ceiling() {
+        let b = MeshInstanceBudget::default();
+        assert_eq!(b.ceiling, MAX_MESH_INSTANCES);
+        assert!(!b.exceeded);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +429,10 @@ impl Plugin for GardenerConsolePlugin {
         app.add_plugins(crate::verse_manager::VerseManagerPlugin);
         app.add_plugins(crate::node_manager::NodeManagerPlugin);
         // UI-only resources (form buffers, dialog flags, etc.)
+        app.init_resource::<MeshInstanceBudget>();
+        // Mesh-instance watchdog runs in Last so its gate lands before the
+        // next frame's spawners (see AGENTS.md §mesh-budget).
+        app.add_systems(Last, mesh_instance_watchdog);
         app.init_resource::<SidebarState>();
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorFormState>();

@@ -32,6 +32,40 @@ use crate::tiles::{
 /// Max chunks spawned per frame so a large adaptive ring fills without hitching.
 const MAX_SPAWNS_PER_FRAME: usize = 16;
 
+/// Hard cap on entities spawned per GeoJSON overlay file (polygons + polylines
+/// + markers) — the only otherwise-unbounded spawner in this crate.
+const MAX_GEOJSON_FEATURES: usize = 50_000;
+
+/// Max decoded elevation-tile edge (px); oversized tiles are rejected so one
+/// hostile/degenerate PNG can't build a multi-GB mesh. See AGENTS.md §tile-budget.
+const MAX_TILE_DIMENSION: u32 = 1024;
+
+/// Per-tile vertex budget after close-range upsampling (~34 MB of attributes).
+const MAX_TILE_VERTICES: usize = 1_100_000;
+
+/// Take up to `requested` features from an overlay's shared budget.
+fn take_feature_budget(remaining: &mut usize, requested: usize) -> usize {
+    let granted = requested.min(*remaining);
+    *remaining -= granted;
+    granted
+}
+
+/// Largest upsample factor `1..=requested` keeping the densified grid
+/// `((w-1)·U+1)·((h-1)·U+1)` within `max_vertices`. `w,h ≤ MAX_TILE_DIMENSION`
+/// always fit at `U = 1`.
+fn clamp_upsample_for_grid(w: u32, h: u32, requested: u32, max_vertices: usize) -> u32 {
+    let mut u = requested.max(1);
+    while u > 1 {
+        let gw = (w.saturating_sub(1) as usize) * u as usize + 1;
+        let gh = (h.saturating_sub(1) as usize) * u as usize + 1;
+        if gw.saturating_mul(gh) <= max_vertices {
+            break;
+        }
+        u -= 1;
+    }
+    u
+}
+
 /// Links an entity to a layer in the [`LayerStack`] for visibility synchronization.
 #[derive(Component)]
 pub struct LayerEntity {
@@ -378,12 +412,27 @@ fn spawn_chunk(
     let tile_size = scaled_tile_size(tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom), scale);
 
     let elevation_mesh = elevation_png.and_then(|png| match decode_png_pixels(&png) {
+        Ok((_, w, h)) if w > MAX_TILE_DIMENSION || h > MAX_TILE_DIMENSION => {
+            // Oversized tile: one such PNG upsampled could allocate multi-GB
+            // meshes and OOM the host — reject it (§tile-budget).
+            tracing::warn!(
+                tile = %coord.cache_key(),
+                width = w,
+                height = h,
+                "elevation tile exceeds {}px cap; ignoring",
+                MAX_TILE_DIMENSION
+            );
+            None
+        }
         Ok((pixels, w, h)) if w > 1 && h > 1 => {
             let decoded = match config.elevation_source {
                 ElevationSourceKind::TerrainRgb => TerrainRgbDecoder.decode(&pixels, w, h),
                 ElevationSourceKind::Terrarium => TerrariumDecoder.decode(&pixels, w, h),
                 ElevationSourceKind::None => vec![0.0; (w * h) as usize],
             };
+            // Clamp the densification so the vertex count stays budgeted even
+            // for large (e.g. 512px @2x) tiles (§tile-budget).
+            let upsample = clamp_upsample_for_grid(w, h, upsample, MAX_TILE_VERTICES);
             // Densify before scaling so interpolation stays in real meters and the
             // world-Y invariant `(ele - origin_ele) * scale` is preserved.
             let (grid, gw, gh) = upsample_bilinear(&decoded, w as usize, h as usize, upsample);
@@ -682,7 +731,23 @@ fn render_geojson_overlays(
             |t| matches!(t, LayerType::GeoJsonOverlay { source_path } if source_path == &overlay.source_path),
         );
 
-        for polygon in &result.polygon_meshes {
+        // One shared budget across the three feature kinds so a huge overlay
+        // saturates instead of spawning millions of entities.
+        let total = result.polygon_meshes.len()
+            + result.polyline_meshes.len()
+            + result.marker_positions.len();
+        let mut remaining = MAX_GEOJSON_FEATURES;
+        if total > MAX_GEOJSON_FEATURES {
+            tracing::warn!(
+                path = %overlay.source_path,
+                features = total,
+                cap = MAX_GEOJSON_FEATURES,
+                "GeoJSON overlay saturated feature cap; truncating"
+            );
+        }
+
+        let polygons = take_feature_budget(&mut remaining, result.polygon_meshes.len());
+        for polygon in result.polygon_meshes.iter().take(polygons) {
             let mut mesh = Mesh::new(
                 bevy::render::render_resource::PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
@@ -709,7 +774,8 @@ fn render_geojson_overlays(
             }
         }
 
-        for line in &result.polyline_meshes {
+        let polylines = take_feature_budget(&mut remaining, result.polyline_meshes.len());
+        for line in result.polyline_meshes.iter().take(polylines) {
             let mut mesh = Mesh::new(
                 bevy::render::render_resource::PrimitiveTopology::LineStrip,
                 RenderAssetUsages::default(),
@@ -736,8 +802,11 @@ fn render_geojson_overlays(
             }
         }
 
-        for marker in &result.marker_positions {
-            let marker_mesh = meshes.add(Sphere::new(0.3));
+        let markers = take_feature_budget(&mut remaining, result.marker_positions.len());
+        // One sphere mesh shared by every marker in this overlay (no per-marker asset).
+        let shared_marker_mesh = meshes.add(Sphere::new(0.3));
+        for marker in result.marker_positions.iter().take(markers) {
+            let marker_mesh = shared_marker_mesh.clone();
             let marker_mat = materials.add(StandardMaterial::from(Color::srgba(
                 marker.color[0],
                 marker.color[1],
@@ -799,6 +868,51 @@ fn sync_layer_visibility(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_budget_grants_up_to_remaining_and_saturates() {
+        let mut remaining = 10;
+        assert_eq!(take_feature_budget(&mut remaining, 4), 4);
+        assert_eq!(take_feature_budget(&mut remaining, 100), 6);
+        assert_eq!(remaining, 0);
+        assert_eq!(take_feature_budget(&mut remaining, 5), 0);
+    }
+
+    #[test]
+    fn feature_budget_zero_request_is_noop() {
+        let mut remaining = MAX_GEOJSON_FEATURES;
+        assert_eq!(take_feature_budget(&mut remaining, 0), 0);
+        assert_eq!(remaining, MAX_GEOJSON_FEATURES);
+    }
+
+    #[test]
+    fn clamp_upsample_keeps_standard_tile_at_full_factor() {
+        // 256px tile at U=4 → 1021² = 1,042,441 ≤ budget: unchanged.
+        assert_eq!(clamp_upsample_for_grid(256, 256, 4, MAX_TILE_VERTICES), 4);
+    }
+
+    #[test]
+    fn clamp_upsample_reduces_large_tile_factor() {
+        // 512px tile: U=4 → 2045² ≈ 4.18M > budget; U=2 → 1023² ≈ 1.05M fits.
+        assert_eq!(clamp_upsample_for_grid(512, 512, 4, MAX_TILE_VERTICES), 2);
+        // 1024px tile: only U=1 (1024² ≈ 1.05M) fits.
+        assert_eq!(clamp_upsample_for_grid(1024, 1024, 4, MAX_TILE_VERTICES), 1);
+    }
+
+    #[test]
+    fn clamp_upsample_degenerate_inputs_never_zero() {
+        assert_eq!(clamp_upsample_for_grid(2, 2, 0, MAX_TILE_VERTICES), 1);
+        assert_eq!(clamp_upsample_for_grid(1, 1, 4, MAX_TILE_VERTICES), 4);
+        // Even an absurd budget floors at U=1 rather than 0.
+        assert_eq!(clamp_upsample_for_grid(4096, 4096, 4, 16), 1);
+    }
+
+    #[test]
+    fn tile_dimension_cap_always_fits_vertex_budget_at_unit_upsample() {
+        // The dimension guard + U=1 floor keep max-size tiles within budget.
+        let max = MAX_TILE_DIMENSION as usize;
+        assert!(max * max <= MAX_TILE_VERTICES);
+    }
 
     #[test]
     fn desired_zoom_monotonic_in_height() {
