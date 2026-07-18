@@ -1,5 +1,54 @@
 # fe-test-harness/src — harness rationale
 
+Package `fractalengine-test-harness` has two targets: the P2P scenario runner
+binary (`main.rs`, §scenarios below) and a library (`lib.rs`) exposing the
+API-integration harness (§api-harness).
+
+## §api-harness
+
+`api.rs` — reusable in-process fe-api integration harness, consumed from
+`fe-api/tests/` as a dev-dependency (`fractalengine-test-harness = { path =
+"../fe-test-harness" }`; the dev-dep cycle with fe-api's normal dep is legal
+cargo). Import path for test authors:
+
+```rust
+use fractalengine_test_harness::api::ApiHarness;
+```
+
+**What `ApiHarness::spawn()` builds** (no network, no Bevy, no DB thread):
+
+- In-memory SurrealDB (`engine::local::Mem`, ns/db `test`/`test`) with the
+  full schema (`fe_database::schema::apply_all` + api-token schema).
+- The **real router** via `fe_api::server::build_router` over a real
+  `ApiState`: `db_reader = Some(db)` (so every direct-read handler works),
+  a tempdir-backed `FsBlobStore`, and a live `api_cmd_tx` whose receiver is
+  held open but **never serviced** — handlers that require the
+  crossbeam→DB-thread round-trip (most writes, `get_hierarchy`, …) will hang
+  or 5xx; test against `db_reader`-backed handlers or seed directly.
+- Requests go through `tower::ServiceExt::oneshot` (`h.request(req)`), with
+  `get`/`post_json` conveniences returning `(StatusCode, lenient JSON)`.
+  Raw bodies: `api::body_bytes(resp)`.
+
+**Auth approach**: the harness generates its own `NodeKeypair`, installs its
+verifying key in `ApiState`, and `mint_token(scope, role)` mints a real signed
+JWT via `fe_identity::api_token::mint_api_token` (1h TTL, fresh jti) — so the
+production `auth_middleware` runs unmodified: 401/403 paths are the real ones.
+Scopes use the repo grammar (`VERSE#v`, `VERSE#v-FRACTAL#f-PETAL#p`);
+`SeededHierarchy::verse_scope()` gives the covering verse scope.
+
+**Seeding**: `seed_verse`/`seed_fractal`/`seed_petal`/`seed_node` (+
+`seed_hierarchy` for the full chain) run the same `CREATE ... CONTENT`
+statements the fe-database handlers write — including the mandatory
+`<geometry<point>>` cast (fe-database/src/AGENTS.md §geometry-inserts) and
+omit-when-absent optional fields. The real DbCommand dispatch loop is
+quarantined inside fe-database's DB thread (SurrealKV-only, not callable
+against Mem), so statement-parity is the strongest "real write path"
+available in-process; `h.db` is the same handle as `state.db_reader` for
+bespoke seeding/assertions. Smoke test proving the wiring end-to-end:
+`fe-api/tests/api_harness_smoke.rs`. Run with
+`RUST_MIN_STACK=134217728 cargo test -p fe-api --test <file>` (surrealdb-core
+stack gotcha, see project memory).
+
 Standalone binary (package `fractalengine-test-harness`) that functional-tests
 the P2P Mycelium stack headlessly: each scenario spawns isolated `TestPeer`s
 (own in-memory DB, blob store, sync thread, and identity — no Bevy/GPU) and
