@@ -1,0 +1,12 @@
+{
+  "id": "p2p_asset_streaming_20260718",
+  "description": "Fine-grained P2P hexon transfer + scene-driven residency: decision round D-73..D-77 (granularity, residency shape, registry parity, integrity, iroh timing), then fill the existing chunk-protocol stubs over iroh, lazy tile residency keyed to render distance + entity caps, registry partial-fetch parity, and relay-EOL loud-fail hardening",
+  "type": "feature",
+  "created_at": "2026-07-18T00:00:00Z",
+  "status": "pending",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "User-directed 2026-07-18: 'stream in parts of multiple hexons based on what's actually in the scene and work based on render distance and entity caps'. Decision record: conductor/decisions/p2p-streaming-20260718.md — RATIFIED 2026-07-18: user locked D-73..D-77 to staged defaults (A4 HashSeq bundles / D-74 residency ledger driving a POINTER-SET {(hexon_uri,bundle_hash),...} recomputed per frame, NO materialized scene artifact — 'no new primitive, leverage pointers to multiple hexons' / C1 / D2 / E2) and added D-78 application-settings surface (FR-7). The Ratification section answers the P2P mechanics, renderer effect, and limit-enforcement (2-layer: hard watchdog backstops + soft distance-ranked ledger; promote DIAG-15M census to shared resource for the closed-loop GPU-byte horizon). Exploration memo: ./memo.md. Phases 0-1 (evidence pack, relay loud-fail hardening) + Phase 4b (settings) are decision-independent and executable now. FR-4 implements runtime_instance_guardrails FR-6 'render horizon' (specced, zero code) — scope call 2.6 (NOT a gate) decides subsumption. FR-6 integrity fields route through hexon_unification_20260716. Relay EOL 2026-12-31 hard deadline backstops D-77.",
+  "alignment": "P1 Platform (user-driven 2026-07-18; P2P = main differentiator per D-71)"
+}

@@ -1,9 +1,9 @@
 {
   "id": "ux_interaction_hardening_20260718",
-  "description": "User-directed 2026-07-18 UX hardening slate: robust GPX/path editing controls on the shipped path editor; toolbar-as-context-menu (top-bar buttons select what renders in the inspector/left-sidebar region, core inspector gets its own toolbar icon, TOOL_DEFS stays the single-source table); smoothed/damped gimbal drag interactions; and clear, calm selection highlighting with smooth transitions for both paths and objects generally",
+  "description": "User-directed 2026-07-18 UX hardening slate: robust GPX/path editing controls on the shipped path editor; toolbar-as-context-menu (top-bar buttons select what renders in the inspector/left-sidebar region, core inspector gets its own toolbar icon, TOOL_DEFS stays the single-source table); smoothed/damped gimbal drag interactions; clear, calm selection highlighting with smooth transitions for both paths and objects generally; and camera hardening (terrain ground-clamp so close-up work never dives below terrain, scale-aware min-distance defaults, eased motion) — FR-5 added 2026-07-18 same-day from the user's camera ask",
   "type": "feature",
   "created_at": "2026-07-18T00:00:00Z",
-  "status": "pending",
+  "status": "in_progress",
   "depends_on": [],
   "blocks": [],
   "archived": false,
