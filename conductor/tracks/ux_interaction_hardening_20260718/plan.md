@@ -9,9 +9,9 @@ resource: ./spec.md
 
 ## Overview
 
-Four independent surfaces ordered structural-first: the toolbar/context work
-(FR-2) reshapes where panels live, so it lands before control hardening
-touches those panels. Damping and highlighting are parallel-safe. All fe-ui
+Five surfaces ordered structural-first: the toolbar/context work (FR-2)
+reshapes where panels live, so it lands before control hardening touches
+those panels. Damping, highlighting, and camera hardening are parallel-safe. All fe-ui
 changes pass the ui_ux.md pre-merge checklist; full workspace sweep runs ONCE
 at the end per the standing test-execution policy. In-app verification is
 user-gated (established convention for UX tracks).
@@ -52,7 +52,36 @@ Goal: at-a-glance selection legibility for both authorities, calm palette.
 - [ ] Task: Editing-track highlight driven by `PathEditorState.editing_track_id`, visually distinct from object selection; both may coexist (TDD)
 - [ ] Verification: both authorities highlighted simultaneously and distinguishably; no alarm-tier colors used [checkpoint]
 
-## Phase 5: Close-out
+## Phase 5: Camera hardening (FR-5)
+
+Goal: close-up planning without the camera diving below terrain; scale-aware
+distances; eased motion. (Design + evidence: `../p2p_asset_streaming_20260718/memo.md` §C.)
+
+- [ ] Task: Height-field resource type renderer-side + fe-terrain population in
+      `spawn_chunk` (final scaled grid downsampled ≤65×65, zero extra decode),
+      removal on chunk despawn, clear on assignment switch; allocation-free
+      bilinear `height_at(x, z)` — O(1) per-tile sample, bounded scan over
+      resident tiles (TDD: pure sampling tests — interior, edge, out-of-tile,
+      no-data)
+- [ ] Task: Ground avoidance at the `orbit_camera_system` transform-recompute
+      tail (covers pan/fly/zoom paths, which run earlier in the same system):
+      focus floors at the surface, camera keeps `ground_margin` clearance via
+      pitch clamp (`min_pitch_above_ground`, on-sphere so zoom/pan never
+      diverge) + transform-raise fallback for steep slopes; margin floored at
+      3× near; no-data ⇒ no clamp (TDD: clamp + pitch math; pinned
+      `camera_focus_clip` tests stay green — never touch near=0.01)
+- [ ] Task: `scaled_min_distance` in `apply_camera_scale` mirroring
+      `scaled_max_distance`, floored at 2× near so `near < min_distance` holds
+      at every scale; `controller.distance` + `target_distance` clamped into
+      [scaled_min, scaled_max] on scale change (TDD)
+- [ ] Task: Exponential-decay easing toward target_distance/target_focus with a
+      viewing-distance-relative snap epsilon (no arrival teleport at large
+      world coordinates), under-terrain fly-to targets floored so flights
+      converge, dt-independent, no overshoot, raw mode via easing_rate=0 (TDD)
+- [ ] Verification: simulated descent (pan/zoom/fly) never puts the camera below
+      height_at+margin; all pre-existing camera tests green [checkpoint]
+
+## Phase 6: Close-out
 
 - [ ] Task: Single end-of-track workspace sweep (test/clippy/fmt) per standing directive
 - [ ] Task: ui_ux.md pre-merge checklist pass recorded; in-app verification handed to the user (user-gated)

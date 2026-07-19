@@ -19,7 +19,7 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
 > (delivered and archived), not a dangling reference — no cross-check needed.
 
-**Open tracks: 28.**
+**Open tracks: 30.**
 
 ---
 
@@ -65,11 +65,11 @@ designed|recorded property (absence ⇒ recorded, zero migration) so analytics c
 filter designed roads from GPS traces. Input layer ONLY — ribbon meshes,
 intersections, upgrade tool, zoning all deferred (user-ratified hybrid, 2026-07-16).
 
-### [ ] ux_interaction_hardening — GPX controls, toolbar-as-context-menu, gimbal smoothing, selection highlighting
+### [~] ux_interaction_hardening — GPX controls, toolbar-as-context-menu, gimbal smoothing, selection highlighting, camera ground-clamp
 
-_Link: [./tracks/ux_interaction_hardening_20260718/](./tracks/ux_interaction_hardening_20260718/) · pending · P0 UX (user-driven, 2026-07-18)_
+_Link: [./tracks/ux_interaction_hardening_20260718/](./tracks/ux_interaction_hardening_20260718/) · in_progress (Phase 5 camera hardening landed first, 2026-07-18) · P0 UX (user-driven, 2026-07-18)_
 
-Four-surface hardening slate from the user's 2026-07-18 ask: (1) robust
+Five-surface hardening slate from the user's 2026-07-18 asks: (1) robust
 GPX/path editing controls — cancel-safe interrupts (Escape/tool-switch/
 petal-switch), forgiving drag handles, undo-safe point edits on the shipped
 path editor; (2) top-bar buttons become the context selector for the
@@ -79,7 +79,38 @@ independent gimbal drags (no overshoot/drift); (4) calm smooth selection
 highlighting for paths AND objects — the two selection authorities
 (`NodeManager.selected` vs `PathEditorState.editing_track_id`) rendered
 distinguishably, NOT unified (codified split, ui_ux.md §5); highlight colors
-respect the §1 status-tier ownership (selection ≠ alarm).
+respect the §1 status-tier ownership (selection ≠ alarm); (5) camera
+hardening for close-up planning — terrain ground avoidance via a bounded-scan
+height-field provider + pitch clamp with raise fallback (camera can no longer
+dive below terrain), scale-aware `scaled_min_distance` floored above the fixed
+near=0.01 (camera_focus_clip contract kept), and eased dt-independent motion
+(FR-5, added same-day from the user's camera ask).
+
+### [ ] terrain_editor_overhaul — unified typed-selection editor + analytics-first terrain proposals
+
+_Link: [./tracks/terrain_editor_overhaul_20260718/](./tracks/terrain_editor_overhaul_20260718/) · pending · P0 UX + P0 Analytics (user-driven 2026-07-18)_
+
+Re-spec of the editor as one object-aware left-click surface, plus a
+Cities-Skylines-map-editor-inspired terrain editor that stays true to the
+analytics mandate. **Phase 0 (quick wins):** FR-3 gimbal-on-path (the gimbal
+reads only `NodeManager.selected` and is double-gated off in Select/Pen, so a
+selected path vertex/segment — living in `PathEditorState` — never shows one) and
+FR-4 path-delete cascade-stamp (the back-ref `PathAssetInstance.source_track_id`
+already exists; `DbResult::NodeDeleted` just never invalidates `PathAssetCache`,
+so stamped glTF orphans **and resurrects on petal re-entry** — both `invalidate()`
+methods already exist). **Then:** FR-1 typed `SelectionKind` read-model as a
+**facade** over both selection authorities (NOT a merge — the split is codified in
+`code_styleguides/ui_ux.md §5`) + FR-2 object-type-aware left-click op table
+(shares the dispatch seam with road_builder_ux). **Then FR-5:** terrain edits
+become **NON-destructive PROPOSED overlays** (new `MapLayer` parallel to the
+display-overlay `LayerStack`) — raise/flatten/ramp/cut/fill volumes rendered
+ghosted atop the read-only `TerrainHeightField`, **never writing true terrain**
+(the analytics contract); terrain is load-and-display-only today (literal
+placeholder). **FR-6:** wire the tested-but-unwired `ruler.rs` geometry math
+(`polygon_area_m2`/`world_to_real_distance`/`bearing_deg`) into a scale/geometry
+report panel (extent m, area m², cut/fill m³, slope, bearing). Consumes
+p2p_asset_streaming's mesh budget + D-78 `AppSettings`; measurement scope
+coordinates with hexon_scale_orchestration Phase 5.
 
 ---
 
@@ -219,6 +250,32 @@ Phases 1–2 done. Phase 3 awaits green CI evidence: Linux (deps fixed 2026-07-1
 macOS aarch64 (new PR job), Windows ARM64 (release.yml, next `v*` tag). Local
 Win-ARM64 compile deferred-to-CI (memory-constrained dev machine). Still unverified:
 macOS launch smoke test, macOS x86_64 compile.
+
+### [ ] p2p_asset_streaming — fine-grained hexon transfer + scene-driven residency
+
+_Link: [./tracks/p2p_asset_streaming_20260718/](./tracks/p2p_asset_streaming_20260718/) · pending · P1 PLATFORM (user-driven 2026-07-18; P2P = main differentiator per D-71) · decision round **D-73…D-78 RATIFIED 2026-07-18**_
+
+User ask 2026-07-18: stream parts of multiple hexons based on what's actually
+in the scene (render distance + entity caps) instead of forcing full downloads.
+Decision round in [decisions/p2p-streaming-20260718.md](./decisions/p2p-streaming-20260718.md)
+**RATIFIED 2026-07-18** — user locked the staged defaults ("no new primitive;
+leverage pointers to multiple hexons"): A4 HashSeq of size-tuned chunk bundles
+reusing the existing `package_chunked`/RequestChunk scaffolding (protocol exists
+in types + UI wiring, sync-thread handlers are stubs); D-74 residency ledger
+driving an **ephemeral pointer-set** `{(hexon_uri, bundle_hash), …}` recomputed
+per frame — **no materialized scene artifact**, so no staleness (content-addressed
+blobs make the pointer-set free + cross-hexon-dedup free); C1 registry
+member-granular routes behind one `PartialHexonFetch` trait; D2 Merkle-extended
+signature root; E2 build-on-0.35 behind a transport trait; **D-78 new: a
+dedicated application-settings surface** (FR-7 — no settings surface exists
+today; resurrects the archived render_distance_lod `AppSettings`). The
+Ratification section answers P2P mechanics, renderer effect, and 2-layer limit
+enforcement (hard watchdog backstops + soft distance-ranked ledger; promote
+DIAG-15M census to a shared resource for the closed-loop GPU-byte horizon).
+Phases 0–1 (evidence pack + relay loud-fail hardening for the 2026-12-31 EOL) +
+Phase 4b (settings) are decision-independent and executable now. FR-4 implements
+runtime_instance_guardrails' specced-but-unbuilt FR-6 render horizon; integrity
+fields route through hexon_unification.
 
 ### [ ] iroh_1_0_upgrade — 0.35 → 1.0 behind the VerseReplicator seam
 
