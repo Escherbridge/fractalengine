@@ -4,7 +4,7 @@
 use bevy::prelude::*;
 use fe_runtime::app::DbCommandSender;
 
-use super::super::{NodeEntry, VerseManager};
+use super::super::{NodeEntry, PathAssetApplied, PathAssetCache, VerseManager};
 use crate::actions::UiManager;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
@@ -100,9 +100,11 @@ pub(super) fn handle_node_created(
     }
 }
 
-/// `NodeDeleted`: prune the node, drop a stale Paths-tab edit session, and
-/// re-sync the Paths tab. (FR-1/FR-3 — fixes the left-panel orphan for all
-/// node deletes, not just tracks.)
+/// `NodeDeleted`: prune the node, cascade-delete its stamped path-assets (FR-4),
+/// drop a stale Paths-tab edit session, and re-sync the Paths tab. (FR-1/FR-3 —
+/// fixes the left-panel orphan for all node deletes, not just tracks.) See
+/// ../AGENTS.md §path-asset-materialization.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_node_deleted(
     node_id: &str,
     petal_id: &str,
@@ -110,8 +112,15 @@ pub(super) fn handle_node_deleted(
     nav: &NavigationManager,
     path_state: &mut PathEditorState,
     db_sender: &DbCommandSender,
+    path_asset_cache: &mut PathAssetCache,
+    path_asset_applied: &mut PathAssetApplied,
 ) {
     verse_mgr.remove_node(petal_id, node_id);
+    // FR-4: evict the track's stamp cache + applied gate so the materializer's
+    // orphan pass despawns its glTF and it can't resurrect on petal re-entry.
+    // No-op for a track that never stamped (NFR-5).
+    path_asset_cache.invalidate(node_id);
+    path_asset_applied.invalidate(node_id);
     if path_state.editing_track_id.as_deref() == Some(node_id) {
         path_state.stop_editing();
     }

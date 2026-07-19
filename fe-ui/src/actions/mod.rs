@@ -11,6 +11,7 @@ pub(crate) mod node_props;
 pub(crate) mod path;
 pub(crate) mod portal;
 mod query;
+mod terrain_proposal;
 mod transform;
 
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use crate::dialogs::ActiveDialog;
 use crate::plugin::InspectorFormState;
 use crate::portal::PortalState;
 use crate::terrain_map::{InstalledTilesetDto, PendingHexonOps, PetalManifest, PetalMapState};
+use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
 
 /// Actions queued by the egui render pass, drained by a single Update system.
 /// Replaces scattered one-frame signal fields.
@@ -225,6 +227,23 @@ pub enum UiAction {
     PathAppendShape {
         points: Vec<[f32; 3]>,
     },
+    // Application settings + terrain proposals — see `fe-ui/src/AGENTS.md`
+    // §app-settings and §terrain-proposal-editor.
+    /// Toggle the application Settings window (D-78). The window itself and the
+    /// `ActiveDialog::Settings` variant are owned by w4a; this only signals intent.
+    SettingsToggle,
+    /// Add a proposed-overlay terrain edit (FR-5) to the active petal and persist
+    /// the `proposals` block additively via `SetPetalTerrain`.
+    TerrainProposalAdd {
+        op: ProposalOp,
+        footprint: Vec<[f32; 2]>,
+        target_height: Option<f32>,
+        delta: Option<f32>,
+    },
+    /// Delete a terrain proposal by id and re-persist the `proposals` block.
+    TerrainProposalDelete {
+        id: String,
+    },
 }
 
 /// Centralized UI state resource.
@@ -352,6 +371,7 @@ pub(crate) fn process_ui_actions(
     time: Res<Time>,
     gis: GisPathParams,
     mut tool_panel: ResMut<crate::panels::tool_panel::ToolPanelState>,
+    mut proposal_state: ResMut<ProposalEditState>,
 ) {
     let GisPathParams {
         mut gis_panel,
@@ -649,6 +669,41 @@ pub(crate) fn process_ui_actions(
             }
             UiAction::PathAppendShape { points } => {
                 path::append_shape(&mut path_ops, &mut path_state, points);
+            }
+            UiAction::SettingsToggle => {
+                // Toggle the D-78 Settings window (variant + `settings_window`
+                // owned by w4a; wired by the coordinator after the swarm).
+                if matches!(ui_mgr.active_dialog, ActiveDialog::Settings) {
+                    ui_mgr.close_dialog();
+                } else {
+                    ui_mgr.open_dialog(ActiveDialog::Settings);
+                }
+            }
+            UiAction::TerrainProposalAdd {
+                op,
+                footprint,
+                target_height,
+                delta,
+            } => {
+                terrain_proposal::add(
+                    &db_sender,
+                    &mut petal_map,
+                    &mut proposal_state,
+                    nav.active_petal_id.clone(),
+                    op,
+                    footprint,
+                    target_height,
+                    delta,
+                );
+            }
+            UiAction::TerrainProposalDelete { id } => {
+                terrain_proposal::delete(
+                    &db_sender,
+                    &mut petal_map,
+                    &mut proposal_state,
+                    nav.active_petal_id.clone(),
+                    id,
+                );
             }
         }
     }

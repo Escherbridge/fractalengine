@@ -185,6 +185,7 @@ fn config_serde_roundtrip() {
 
     let config = TerrainConfig {
         enabled: true,
+        proposals: Vec::new(),
         origin: Projection::new(47.6, -122.3, 50.0),
         tile_source_url: "https://tiles.example.com/{z}/{x}/{y}.png".into(),
         elevation_source: ElevationSourceKind::TerrainRgb,

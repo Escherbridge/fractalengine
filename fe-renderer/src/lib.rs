@@ -5,4 +5,6 @@ pub mod dead_reckoning;
 pub mod grid;
 pub mod ingester;
 pub mod loader;
+pub mod terrain_height;
+pub mod terrain_overlay;
 pub mod viewport;

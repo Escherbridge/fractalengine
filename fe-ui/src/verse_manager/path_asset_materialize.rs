@@ -197,6 +197,16 @@ fn take_stamp_budget(remaining: &mut usize, requested: usize) -> usize {
     granted
 }
 
+/// A live stamp is orphaned when it belongs to the active petal but its source
+/// track no longer has a cache entry there — the `path_asset` was deleted or the
+/// track/node itself was removed (FR-4, `PathAssetCache::invalidate` on
+/// `NodeDeleted`). The materializer then despawns it. Pure so the delete-cascade
+/// contract is unit-testable without a live `App`.
+fn stamp_is_orphaned(inst: &PathAssetInstance, active_petal: &str, cache: &PathAssetCache) -> bool {
+    inst.petal_id == active_petal
+        && cache.get(&inst.source_track_id).map(|e| e.petal_id.as_str()) != Some(active_petal)
+}
+
 /// Petal-wide path-asset materializer (FR-1): the ONLY system that spawns
 /// stamp instances. For every cached track in the active petal it despawns the
 /// old `PathAssetInstance` group and restamps whenever the descriptor, points,
@@ -216,7 +226,7 @@ pub(super) fn materialize_path_assets(
     mut last_petal: Local<Option<String>>,
     mut commands: Commands,
     existing: Query<(Entity, &PathAssetInstance)>,
-    mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
+    residency: super::spawn::ResidencyBudget,
 ) {
     let petal_changed = *last_petal != nav.active_petal_id;
     if !(cache.is_changed() || petal_map.is_changed() || petal_changed) {
@@ -233,23 +243,25 @@ pub(super) fn materialize_path_assets(
     // Orphan cleanup: tear down active-petal stamp groups whose track no longer
     // has a cache entry in this petal (path_asset deleted / node removed).
     for (entity, inst) in existing.iter() {
-        if inst.petal_id == active_petal
-            && cache
-                .get(&inst.source_track_id)
-                .map(|e| e.petal_id.as_str())
-                != Some(active_petal)
-        {
+        if stamp_is_orphaned(inst, active_petal, &cache) {
             commands.entity(entity).despawn();
             applied.invalidate(&inst.source_track_id);
         }
     }
 
-    // Petal-wide stamp budget for this pass; the app-wide mesh-budget gate
-    // (§mesh-budget) zeroes it so restamps stop growing a runaway scene.
-    let mut stamp_budget = if mesh_budget.exceeded {
+    // Petal-wide stamp budget for this pass (D-74/D-78 residency ledger): the
+    // configurable `stamp_ceiling` ranked by `render_distance`, hard-backstopped
+    // by MAX_STAMPS_PER_PETAL. The app-wide mesh-budget gate (§mesh-budget)
+    // still zeroes it so restamps stop growing a runaway scene. Distance 0 =
+    // active petal is the near region; per-frame taper is the ledger's job.
+    let mut stamp_budget = if residency.mesh_budget.exceeded {
         0
     } else {
-        MAX_STAMPS_PER_PETAL
+        super::spawn::distance_ranked_allowance(
+            0.0,
+            residency.settings.render_distance,
+            residency.settings.stamp_ceiling.min(MAX_STAMPS_PER_PETAL),
+        )
     };
 
     // (Re)stamp every active-petal cached track whose stamp inputs changed.
@@ -422,6 +434,36 @@ mod tests {
         cache.upsert("t2", "p1", sample_desc(), vec![[0.0; 3]], 1);
         cache.clear();
         assert!(cache.get("t2").is_none());
+    }
+
+    // --- delete cascade (FR-4 / NFR-5) ---
+
+    #[test]
+    fn deleted_track_cascades_to_stamps_and_is_idempotent() {
+        let mut cache = PathAssetCache::default();
+        cache.upsert("t1", "p1", sample_desc(), vec![[0.0; 3], [1.0, 0.0, 0.0]], 1);
+        let live = PathAssetInstance {
+            source_track_id: "t1".to_string(),
+            petal_id: "p1".to_string(),
+        };
+        // Still cached in the active petal → not an orphan; stamps stay.
+        assert!(!stamp_is_orphaned(&live, "p1", &cache));
+        // FR-4: NodeDeleted invalidates the cache entry → the stamp becomes an
+        // orphan the materializer despawns.
+        cache.invalidate("t1");
+        assert!(stamp_is_orphaned(&live, "p1", &cache));
+        // NFR-5: a repeated NodeDeleted for the same id is a no-op — still orphaned,
+        // no churn (the entity is already gone from the query, so no double despawn).
+        cache.invalidate("t1");
+        assert!(stamp_is_orphaned(&live, "p1", &cache));
+        // NFR-5: deleting a track that never stamped is a no-op (absent key).
+        cache.invalidate("never-stamped");
+        // A stamp owned by a different petal is never touched by this pass.
+        let other_petal = PathAssetInstance {
+            source_track_id: "t1".to_string(),
+            petal_id: "p2".to_string(),
+        };
+        assert!(!stamp_is_orphaned(&other_petal, "p1", &cache));
     }
 
     // --- petal-wide stamp budget ---

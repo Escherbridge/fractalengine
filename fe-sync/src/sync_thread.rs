@@ -18,6 +18,7 @@ use crate::endpoint::SyncEndpoint;
 use crate::messages::{
     SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender, TransformUpdate,
 };
+use crate::relay_config::{RelayConfig, RelayHealth};
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator, VerseReplicator,
 };
@@ -54,20 +55,41 @@ pub fn spawn_sync_thread(
             .expect("Failed to build sync Tokio runtime");
 
         rt.block_on(async move {
+            // Relay-health hardening (track p2p_asset_streaming_20260718 FR-1 /
+            // decision D-77): resolve the relay config up front so both the
+            // bind attempt and the health signal below use the same value.
+            let relay_config = RelayConfig::from_env();
+            tracing::info!(relay_config = ?relay_config, "Resolved relay config for sync thread");
+
             // Phase F.1: Create the iroh endpoint first
-            let endpoint = match SyncEndpoint::new(secret_key).await {
+            let mut relay_health: RelayHealth;
+            let endpoint = match SyncEndpoint::new(secret_key, &relay_config).await {
                 Ok(ep) => {
                     tracing::info!(
                         node_id = %ep.node_id(),
                         "Sync thread started (online)"
                     );
                     evt_tx.send(SyncEvent::Started { online: true }).ok();
+                    relay_health = RelayHealth::on_bind_success(&relay_config);
+                    evt_tx
+                        .send(SyncEvent::RelayHealthChanged {
+                            health: relay_health,
+                        })
+                        .ok();
                     Some(ep)
                 }
                 Err(e) => {
-                    tracing::warn!("Sync thread could not bind iroh endpoint: {e}");
+                    // LOUD-FAIL: this is a hard connectivity failure, not a
+                    // debug-level detail — see AGENTS.md §relay-health.
+                    tracing::error!("Sync thread could not bind iroh endpoint — relay unreachable: {e}");
                     tracing::warn!("Running in offline mode — network fetch disabled");
                     evt_tx.send(SyncEvent::Started { online: false }).ok();
+                    relay_health = RelayHealth::on_bind_failure();
+                    evt_tx
+                        .send(SyncEvent::RelayHealthChanged {
+                            health: relay_health,
+                        })
+                        .ok();
                     None
                 }
             };
@@ -86,7 +108,16 @@ pub fn spawn_sync_thread(
                         Some(gossip)
                     }
                     Err(e) => {
+                        // LOUD-FAIL: gossip rides the same endpoint/relay
+                        // connection — a spawn failure here is a real
+                        // degradation of P2P health, not just a debug note.
                         tracing::warn!("Failed to spawn gossip: {e}");
+                        relay_health = relay_health.on_error();
+                        evt_tx
+                            .send(SyncEvent::RelayHealthChanged {
+                                health: relay_health,
+                            })
+                            .ok();
                         None
                     }
                 },
@@ -95,6 +126,15 @@ pub fn spawn_sync_thread(
                     None
                 }
             };
+
+            // TODO(ultrapilot): continuous relay-health monitoring.
+            // `endpoint.inner().home_relay()` returns a `Watcher<Option<RelayUrl>>`
+            // that would let us detect relay loss mid-session (Healthy ->
+            // Degraded/Unreachable via `RelayHealth::on_error`, and recovery via
+            // `on_success`), but wiring it requires turning this loop's blocking
+            // `cmd_rx.recv()` into a `tokio::select!` against the watcher stream.
+            // Only the startup bind result and the gossip-spawn outcome are
+            // tracked today — see AGENTS.md §relay-health.
 
             // Track active gossip subscriptions (topic key -> live handle) for verse/petal.
             let mut gossip_topics: HashMap<String, GossipTopic> = HashMap::new();
@@ -816,11 +856,29 @@ mod tests {
             "expected Started event, got {started:?}"
         );
 
+        // Startup also emits a RelayHealthChanged signal right after Started
+        // (relay-health hardening — see AGENTS.md §relay-health).
+        let health = evt_rx.recv_timeout(std::time::Duration::from_secs(2));
+        assert!(
+            matches!(health, Ok(SyncEvent::RelayHealthChanged { .. })),
+            "expected RelayHealthChanged event, got {health:?}"
+        );
+
         cmd_tx.send(SyncCommand::Shutdown).unwrap();
         handle.join().expect("sync thread panicked");
 
-        let stopped = evt_rx.recv_timeout(std::time::Duration::from_secs(2));
-        assert!(matches!(stopped, Ok(SyncEvent::Stopped)));
+        // Drain any further RelayHealthChanged events (e.g. a gossip-spawn
+        // failure in a sandboxed CI network) until the final Stopped event.
+        let stopped = loop {
+            match evt_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(SyncEvent::RelayHealthChanged { .. }) => continue,
+                other => break other,
+            }
+        };
+        assert!(
+            matches!(stopped, Ok(SyncEvent::Stopped)),
+            "expected Stopped event, got {stopped:?}"
+        );
     }
 
     // -------------------------------------------------------------------------

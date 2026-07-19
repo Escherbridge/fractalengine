@@ -25,6 +25,9 @@ pub enum LayerType {
     Heatmap { radius_m: f32, color_ramp: String },
     /// Waypoint marker collection.
     Waypoints,
+    /// Non-destructive terrain proposal overlay (analytics ghosts; NFR-1 —
+    /// never a true-terrain write). See `src/AGENTS.md` §terrain-proposals.
+    ProposalOverlay,
 }
 
 /// Map a petal-config layer `name` (+ optional `source` id) to a [`LayerType`].
@@ -44,6 +47,7 @@ pub fn layer_type_from_config_name(name: &str, source: Option<&str>) -> Option<L
         "geojson_overlay" => Some(LayerType::GeoJsonOverlay {
             source_path: source.unwrap_or_default().to_string(),
         }),
+        "proposal_overlay" => Some(LayerType::ProposalOverlay),
         _ => None,
     }
 }
@@ -291,5 +295,24 @@ mod tests {
     fn layer_type_from_config_name_unknown_is_none() {
         assert!(layer_type_from_config_name("heatmap", None).is_none());
         assert!(layer_type_from_config_name("", None).is_none());
+    }
+
+    #[test]
+    fn layer_type_from_config_name_maps_proposal_overlay() {
+        assert!(matches!(
+            layer_type_from_config_name("proposal_overlay", None),
+            Some(LayerType::ProposalOverlay)
+        ));
+    }
+
+    #[test]
+    fn proposal_overlay_layer_participates_in_visibility_plumbing() {
+        let mut stack = LayerStack::new();
+        let id = stack.add_layer(MapLayer::new(LayerType::ProposalOverlay, 9));
+        assert_eq!(stack.get_visible_layers().len(), 1);
+        assert!(stack.set_visibility(id, false));
+        assert!(stack.get_visible_layers().is_empty());
+        // Still enumerable while hidden (report/edit paths need it).
+        assert_eq!(stack.get_all_layers_sorted().len(), 1);
     }
 }

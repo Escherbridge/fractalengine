@@ -12,6 +12,7 @@ pub mod ruler;
 pub mod scale;
 pub mod simplify;
 pub mod splat;
+pub mod terrain_proposal;
 pub mod tiles;
 
 #[cfg(feature = "render")]

@@ -256,6 +256,21 @@ to the ribbon:
 `ZOOM_BASE_HEIGHT_M` (200 m) is the single source for `desired_zoom`'s base and
 the close-range trigger, keeping the two in lock-step.
 
+### Height-field feed (ux_interaction_hardening_20260718 FR-5)
+
+`spawn_chunk` also publishes each tile's final scaled elevation grid —
+bilinear-downsampled to ≤`MAX_HEIGHT_GRID_AXIS` (65) per side via
+`resample_height_grid` (~16 KB/tile vs up to ~4.4 MB for the full mesh grid) —
+into `fe_renderer::terrain_height::TerrainHeightField`, keyed like
+`TerrainChunk.tile_coords`. The camera ground clamp in fe-renderer reads it.
+Lifecycle is lockstep with chunk entities: `update_terrain_lod` removes the
+entry on despawn, `apply_terrain_assignments` clears the field on
+petal/assignment switch. The resource type deliberately lives in fe-renderer
+(fe-ui ↛ fe-terrain boundary; same channel pattern as `CameraScaleSettings`)
+and all fe-terrain systems take it as `Option<ResMut>` so headless tests run
+without it. Rationale for the design (and rejected alternatives) in
+fe-renderer `src/AGENTS.md` §terrain-height.
+
 ## §scale
 
 `TerrainConfig.world_scale` (serde default `1.0`, additive — pre-feature petal
@@ -333,3 +348,69 @@ close-range upsampling makes vertices `((w-1)·U+1)²` — a 512px tile at U=4 i
   polygons/polylines/markers (the only otherwise-unbounded spawner in this
   crate), plus a single shared marker sphere mesh per overlay instead of one
   mesh asset per marker. Saturation logs a `warn!` with the true count.
+
+## §terrain-proposals — analytics-first NON-destructive terrain edits (terrain_editor_overhaul_20260718 FR-5/FR-6, NFR-1)
+
+The analytics contract (NFR-1, **sacred**): a terrain edit is a PROPOSED
+OVERLAY, never a write to the true terrain. `fe_renderer::terrain_height::
+TerrainHeightField` and the loaded tileset are the immutable ground truth so a
+report can compare proposed-vs-true honestly. Every pure fn here takes the base
+as `&impl Fn(f32,f32)->Option<f32>` — structurally read-only, so the type system
+enforces the contract; `terrain_proposal.rs` tests assert byte-identity of the
+base before/after apply (one closure-backed, one against a real
+`TerrainHeightField` under the `render` feature) as the NFR-1 proof.
+
+`terrain_proposal.rs` is **Bevy-free and always compiled** (like `ruler.rs`/
+`scale.rs`) so the record model + geometry are headless-testable and the fe-ui
+side can mirror them via JSON:
+
+- `TerrainProposal { id, op, footprint: Vec<[f32;2]>, target_height: Option, delta: Option }`
+  + `TerrainOp { Raise, Lower, Flatten, Ramp, Slope, Pad, Cut, Fill }` (serde
+  snake_case — the persisted `terrain.proposals` contract). Footprint is an
+  XZ-world polygon (need not be closed).
+- Per-op proposed-height semantics (`proposed_height_at`, private): Raise/Lower
+  `base ± delta` (relative → `None` if no base). Flatten `target` (absolute).
+  Pad `max(base,target)` (fill-only platform). Cut `min(base,target)` or
+  `base−delta` (remove-only). Fill `max(base,target)` or `base+delta` (add-only).
+  Ramp `lerp(base,target)` across the footprint X extent (or `base+delta·frac`).
+  Slope constant grade `base+delta·run` (rise per world-unit +X run).
+- `apply_proposal_over_base(base, proposal, sample_pts) -> Vec<Option<f32>>`:
+  per-point proposed heights; points outside the footprint gate to `None`
+  (even-odd `point_in_polygon`).
+- `proposal_overlay_mesh_data(base, proposal) -> Option<(positions, indices)>`:
+  earcut-triangulated footprint lifted to proposed heights (relative-op-no-base
+  falls back to `target` then `0.0` so intent still renders). `None` for <3
+  verts / triangulation failure.
+- `parse_proposals(&Value)` / `to_json(&[..])`: array round-trip; invalid
+  records are dropped with a `warn!`, never fail the set (additive resilience).
+- `proposal_report(proposal, world_scale) -> ProposalReport { extent_m, area_m2,
+  volume_m3, slope_pct, bearing_deg, scaled }` (FR-6): reuses the tested `ruler`
+  math (`polygon_area_m2`, `bearing_deg`). `scaled == false` when `world_scale`
+  is non-finite/≤0 → values are WORLD UNITS, never fabricated meters (NFR-4).
+  `slope_pct` is scale-invariant (world-unit rise/run). `volume_m3 = area × |delta|`
+  is a representative cut/fill (true cut/fill needs base; fe-ui can pass a
+  base-derived delta).
+
+Persistence + rendering (render-gated):
+
+- Proposals live on `TerrainConfig.proposals` (serde default `[]`,
+  `skip_serializing_if empty` — additive, pre-feature petal JSON omits the key),
+  so they round-trip through the existing `SetPetalTerrain` →
+  `TerrainAssignmentMsg` path with no new config surface (spec: petal-config is
+  the lower-risk v1 vs a hexon proposal-layer).
+- `render_terrain_proposals` (terrain_plugin.rs) is the SOLE despawner/spawner of
+  `ProposalOverlayEntity` ghosts. Revision-gated on `ActivePetalTerrain.revision`
+  (a proposal edit bumps it via the round-trip), so it rebuilds only on change —
+  it is NOT in `apply_terrain_assignments`' despawn query (avoids a double
+  despawn). Each ghost is a `ProposalGhost` mesh with a per-op tinted, blended,
+  unlit, double-sided material from `fe_renderer::terrain_overlay`, tagged to the
+  `MapLayer::ProposalOverlay` layer.
+- `MapLayer::ProposalOverlay` is parallel to satellite/terrain/gpx_track/
+  geojson_overlay (`layers/stack.rs`, config name `"proposal_overlay"`);
+  `apply_terrain_assignments` auto-adds one (topmost z) when a petal has
+  proposals but declares no such layer, so the visibility toggle works
+  out-of-the-box. Ghosts with a bound layer honor `sync_layer_visibility`.
+- NFR-2: `MAX_PROPOSAL_OVERLAYS = 4,096` is the interim per-petal cap. The true
+  residency budget (`spawn_allowance`/`mesh_instance_watchdog`) lives in the
+  fractalengine binary and is unreachable from fe-terrain — see the
+  `TODO(ultrapilot)` seam in `render_terrain_proposals`.

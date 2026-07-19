@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use std::sync::{Arc, Mutex};
 
 use crate::messages::{SyncCommandSender, SyncEvent, SyncEventReceiver};
+use crate::relay_config::RelayHealth;
 
 /// Bevy resource wrapping the sync command sender.
 ///
@@ -25,6 +26,8 @@ pub struct SyncStatus {
     pub node_addr: Option<String>,
     /// Number of connected peers (Phase F).
     pub peer_count: usize,
+    /// Relay reachability (relay-health hardening) — see AGENTS.md §relay-health.
+    pub health: RelayHealth,
 }
 
 /// Bevy resource that buffers tileset distribution events for the UI layer.
@@ -69,6 +72,14 @@ pub fn drain_sync_events(
                 status.peer_count = status.peer_count.saturating_sub(1);
                 tracing::info!(peer_id, peer_count = status.peer_count, "Peer disconnected");
             }
+            SyncEvent::RelayHealthChanged { health } => {
+                if health.is_problem() {
+                    tracing::warn!(?health, "Relay health degraded");
+                } else {
+                    tracing::info!(?health, "Relay health updated");
+                }
+                status.health = health;
+            }
             SyncEvent::ComputeResultReady {
                 ref task_id,
                 row_count,
@@ -97,5 +108,26 @@ pub fn drain_sync_events(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_status_default_health_is_unknown() {
+        let status = SyncStatus::default();
+        assert_eq!(status.health, RelayHealth::Unknown);
+        assert!(!status.online);
+        assert_eq!(status.peer_count, 0);
+    }
+
+    #[test]
+    fn sync_status_health_is_settable_and_reads_back() {
+        let mut status = SyncStatus::default();
+        status.health = RelayHealth::Unreachable;
+        assert_eq!(status.health, RelayHealth::Unreachable);
+        assert!(status.health.is_problem());
     }
 }

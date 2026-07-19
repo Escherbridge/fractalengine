@@ -6,7 +6,8 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::Projection as CameraProjection;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::mesh::Indices;
+use bevy::render::render_resource::{Extent3d, PrimitiveTopology, TextureDimension, TextureFormat};
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
 use crate::iot::{TrackRouteMap, TrackStyleMap};
@@ -28,6 +29,7 @@ use crate::tiles::{
     decode_png_pixels, CompositeTileSource, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder,
     TileCoord,
 };
+use fe_renderer::terrain_height::{HeightTile, TerrainHeightField};
 
 /// Max chunks spawned per frame so a large adaptive ring fills without hitching.
 const MAX_SPAWNS_PER_FRAME: usize = 16;
@@ -42,6 +44,15 @@ const MAX_TILE_DIMENSION: u32 = 1024;
 
 /// Per-tile vertex budget after close-range upsampling (~34 MB of attributes).
 const MAX_TILE_VERTICES: usize = 1_100_000;
+
+/// Per-axis sample cap for the camera-clamp height field (~16 KB/tile);
+/// see fe-renderer `src/AGENTS.md` §terrain-height.
+const MAX_HEIGHT_GRID_AXIS: usize = 65;
+
+/// Interim cap on proposal ghost meshes per petal (NFR-2). The true residency
+/// budget (`spawn_allowance`/`mesh_instance_watchdog`) lives in the fractalengine
+/// binary; see `render_terrain_proposals` for the TODO seam.
+const MAX_PROPOSAL_OVERLAYS: usize = 4_096;
 
 /// Take up to `requested` features from an overlay's shared budget.
 fn take_feature_budget(remaining: &mut usize, requested: usize) -> usize {
@@ -64,6 +75,46 @@ fn clamp_upsample_for_grid(w: u32, h: u32, requested: u32, max_vertices: usize) 
         u -= 1;
     }
     u
+}
+
+/// Bilinear-resample a row-major grid down to ≤ `max_axis` per side (corner-preserving);
+/// feeds the camera-clamp height field without duplicating full mesh grids in RAM.
+fn resample_height_grid(
+    grid: &[f32],
+    w: usize,
+    h: usize,
+    max_axis: usize,
+) -> (Vec<f32>, usize, usize) {
+    if w < 2 || h < 2 || grid.len() != w * h {
+        return (grid.to_vec(), w, h);
+    }
+    if w <= max_axis && h <= max_axis {
+        return (grid.to_vec(), w, h);
+    }
+    let nw = w.min(max_axis).max(2);
+    let nh = h.min(max_axis).max(2);
+    let mut out = Vec::with_capacity(nw * nh);
+    for r in 0..nh {
+        let v = r as f32 / (nh - 1) as f32 * (h - 1) as f32;
+        let r0 = (v.floor() as usize).min(h - 2);
+        let fv = v - r0 as f32;
+        for c in 0..nw {
+            let u = c as f32 / (nw - 1) as f32 * (w - 1) as f32;
+            let c0 = (u.floor() as usize).min(w - 2);
+            let fu = u - c0 as f32;
+            let g00 = grid[r0 * w + c0];
+            let g10 = grid[r0 * w + c0 + 1];
+            let g01 = grid[(r0 + 1) * w + c0];
+            let g11 = grid[(r0 + 1) * w + c0 + 1];
+            out.push(
+                g00 * (1.0 - fu) * (1.0 - fv)
+                    + g10 * fu * (1.0 - fv)
+                    + g01 * (1.0 - fu) * fv
+                    + g11 * fu * fv,
+            );
+        }
+    }
+    (out, nw, nh)
 }
 
 /// Links an entity to a layer in the [`LayerStack`] for visibility synchronization.
@@ -104,6 +155,20 @@ pub struct GeoJsonOverlay {
 /// Marks a GeoJSON source entity as processed (and its spawned children).
 #[derive(Component)]
 pub struct GeoJsonProcessed;
+
+/// Marker for a spawned terrain-proposal ghost mesh (FR-5); carries the proposal
+/// id so a future selection/report path can resolve back to the record.
+#[derive(Component, Clone)]
+pub struct ProposalOverlayEntity {
+    pub proposal_id: String,
+}
+
+/// Tracks the assignment revision the proposal ghosts were last built for, so
+/// they rebuild only when the petal's proposals actually change.
+#[derive(Resource, Default)]
+pub struct ProposalRenderState {
+    last_revision: Option<u64>,
+}
 
 /// Configuration for terrain LOD thresholds.
 #[derive(Resource, Clone)]
@@ -155,11 +220,13 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainLodConfig>()
             .init_resource::<WaypointMarkerConfig>()
+            .init_resource::<TerrainHeightField>()
             .init_resource::<TrackRouteMap>()
             .init_resource::<TrackStyleMap>()
             .init_resource::<ActivePetalTerrain>()
             .init_resource::<ActiveTileSource>()
             .init_resource::<FailedTiles>()
+            .init_resource::<ProposalRenderState>()
             .insert_resource(LayerStack::new())
             .add_message::<TerrainAssignmentMsg>()
             .add_systems(
@@ -171,6 +238,7 @@ impl Plugin for TerrainPlugin {
                     render_gpx_tracks,
                     render_waypoint_markers,
                     render_geojson_overlays,
+                    render_terrain_proposals,
                     sync_layer_visibility,
                 )
                     .chain(),
@@ -215,6 +283,7 @@ fn update_terrain_lod(
     lod_config: Res<TerrainLodConfig>,
     active: Res<ActivePetalTerrain>,
     mut commands: Commands,
+    mut height_field: Option<ResMut<TerrainHeightField>>,
 ) {
     let Ok((cam_transform, cam_proj)) = camera_query.single() else {
         return;
@@ -265,6 +334,9 @@ fn update_terrain_lod(
             desired.is_some_and(|z| wrong_zoom_replacement_present(coord, z, &existing));
         if too_far || stale_zoom {
             commands.entity(entity).despawn();
+            if let Some(field) = height_field.as_mut() {
+                field.remove(&chunk.tile_coords);
+            }
         }
     }
 }
@@ -284,6 +356,7 @@ fn fetch_and_spawn_terrain_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut height_field: Option<ResMut<TerrainHeightField>>,
 ) {
     let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
         return;
@@ -371,6 +444,7 @@ fn fetch_and_spawn_terrain_chunks(
             &mut meshes,
             &mut materials,
             &mut images,
+            height_field.as_deref_mut(),
         ) {
             active_count += 1;
             spawned_this_frame += 1;
@@ -395,6 +469,7 @@ fn spawn_chunk(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
+    height_field: Option<&mut TerrainHeightField>,
 ) -> bool {
     let elevation_png = composite.get_tile_sync(coord);
     let satellite_bytes = composite.get_satellite_tile_sync(coord);
@@ -411,7 +486,7 @@ fn spawn_chunk(
     let (s_lat, _) = TileCoord::new(coord.x, coord.y.saturating_add(1), coord.zoom).to_lat_lon();
     let tile_size = scaled_tile_size(tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom), scale);
 
-    let elevation_mesh = elevation_png.and_then(|png| match decode_png_pixels(&png) {
+    let elevation_data = elevation_png.and_then(|png| match decode_png_pixels(&png) {
         Ok((_, w, h)) if w > MAX_TILE_DIMENSION || h > MAX_TILE_DIMENSION => {
             // Oversized tile: one such PNG upsampled could allocate multi-GB
             // meshes and OOM the host — reject it (§tile-budget).
@@ -439,7 +514,10 @@ fn spawn_chunk(
             // Scale heights to world units (origin_ele subtraction lands in the anchor).
             let scaled = scale_elevations(&grid, scale as f32);
             let flipped = flip_rows(&scaled, gw, gh);
-            Some(terrain_mesh(&flipped, gw as u32, gh as u32, tile_size))
+            let mesh = terrain_mesh(&flipped, gw as u32, gh as u32, tile_size);
+            // Downsampled copy feeds the camera-clamp height field (§terrain-height).
+            let heights = resample_height_grid(&flipped, gw, gh, MAX_HEIGHT_GRID_AXIS);
+            Some((mesh, heights))
         }
         Ok(_) => {
             tracing::warn!(tile = %coord.cache_key(), "elevation tile smaller than 2x2; ignoring");
@@ -451,11 +529,12 @@ fn spawn_chunk(
         }
     });
 
-    let mesh = match elevation_mesh {
-        Some(m) => m,
+    let (mesh, heights) = match elevation_data {
+        Some(t) => t,
         None if satellite_bytes.is_some() => {
             // Flat 16x16 grid fallback so the satellite texture still renders.
-            terrain_mesh(&vec![0.0f32; 16 * 16], 16, 16, tile_size)
+            let mesh = terrain_mesh(&vec![0.0f32; 16 * 16], 16, 16, tile_size);
+            (mesh, (vec![0.0f32; 4], 2, 2))
         }
         None => return false,
     };
@@ -506,6 +585,19 @@ fn spawn_chunk(
     ));
     if let Some(layer_id) = layer_id {
         entity.insert(LayerEntity { layer_id });
+    }
+    if let Some(field) = height_field {
+        let (grid, hw, hh) = heights;
+        field.insert(
+            (coord.zoom, coord.x, coord.y),
+            HeightTile {
+                anchor: Vec3::new(anchor[0] as f32, anchor[1] as f32, anchor[2] as f32),
+                tile_size: tile_size as f32,
+                grid,
+                width: hw as u32,
+                height: hh as u32,
+            },
+        );
     }
     true
 }
@@ -828,6 +920,87 @@ fn render_geojson_overlays(
     }
 }
 
+/// Render non-destructive terrain proposals as ghosted/tinted meshes over the
+/// READ-ONLY [`TerrainHeightField`] (FR-5, NFR-1). Rebuilds only when the petal's
+/// assignment revision changes (proposal edits round-trip through
+/// `apply_terrain_assignments`). Tagged to the `ProposalOverlay` layer for
+/// visibility; capped by `MAX_PROPOSAL_OVERLAYS` (NFR-2 interim). See
+/// `src/AGENTS.md` §terrain-proposals.
+#[allow(clippy::too_many_arguments)]
+fn render_terrain_proposals(
+    active: Res<ActivePetalTerrain>,
+    layer_stack: Res<LayerStack>,
+    height_field: Option<Res<TerrainHeightField>>,
+    existing: Query<Entity, With<ProposalOverlayEntity>>,
+    mut state: ResMut<ProposalRenderState>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    // Revision-gated: skip unless the active assignment changed since last build.
+    if state.last_revision == Some(active.revision) {
+        return;
+    }
+    state.last_revision = Some(active.revision);
+
+    // Sole despawner of proposal ghosts: clear the previous petal's set.
+    for entity in existing.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+        return;
+    };
+    if config.proposals.is_empty() {
+        return;
+    }
+
+    let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
+
+    // READ-ONLY base sampler over the true heightfield — NEVER mutated (NFR-1).
+    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+
+    let mut remaining = MAX_PROPOSAL_OVERLAYS;
+    for proposal in &config.proposals {
+        if remaining == 0 {
+            tracing::warn!(cap = MAX_PROPOSAL_OVERLAYS, "proposal overlays saturated cap; truncating");
+            break;
+        }
+        let Some((positions, indices)) =
+            crate::terrain_proposal::proposal_overlay_mesh_data(&base, proposal)
+        else {
+            continue;
+        };
+        remaining -= 1;
+
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_indices(Indices::U32(indices));
+
+        let tint = fe_renderer::terrain_overlay::op_tint(proposal.op_snake());
+        let material = materials.add(fe_renderer::terrain_overlay::ghost_material(tint));
+
+        let mut entity = commands.spawn((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material),
+            fe_renderer::terrain_overlay::ProposalGhost,
+            ProposalOverlayEntity {
+                proposal_id: proposal.id.clone(),
+            },
+        ));
+        if let Some(layer_id) = layer_id {
+            entity.insert(LayerEntity { layer_id });
+        }
+    }
+    // TODO(ultrapilot): route these spawns through the residency mesh budget
+    // (`spawn_allowance` / `mesh_instance_watchdog`, NFR-2) — those live in the
+    // fractalengine binary and are unreachable from fe-terrain. MAX_PROPOSAL_OVERLAYS
+    // is the interim per-petal cap until that bridge exists.
+    // TODO(ultrapilot): revision-gate means a relative-op ghost built before the
+    // height field has coverage stays at its `target`/0.0 fallback; rebuild (or
+    // re-ground) when terrain chunks arrive for the footprint.
+}
+
 /// Synchronize [`LayerStack`] visibility/opacity to layer-bound entities (on change only).
 fn sync_layer_visibility(
     layer_stack: Res<LayerStack>,
@@ -868,6 +1041,41 @@ fn sync_layer_visibility(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resample_height_grid_passthrough_when_small() {
+        let grid = vec![1.0, 2.0, 3.0, 4.0];
+        let (out, w, h) = resample_height_grid(&grid, 2, 2, 65);
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(out, grid);
+    }
+
+    #[test]
+    fn resample_height_grid_preserves_corners() {
+        // 5x5 ramp grid downsampled to 3x3 keeps exact corner values.
+        let mut grid = Vec::new();
+        for r in 0..5 {
+            for c in 0..5 {
+                grid.push((r * 10 + c) as f32);
+            }
+        }
+        let (out, w, h) = resample_height_grid(&grid, 5, 5, 3);
+        assert_eq!((w, h), (3, 3));
+        assert!((out[0] - grid[0]).abs() < 1e-4);
+        assert!((out[2] - grid[4]).abs() < 1e-4);
+        assert!((out[6] - grid[20]).abs() < 1e-4);
+        assert!((out[8] - grid[24]).abs() < 1e-4);
+        // Center of a bilinear ramp interpolates exactly.
+        assert!((out[4] - grid[12]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn resample_height_grid_guards_degenerate_input() {
+        let grid = vec![1.0, 2.0, 3.0];
+        let (out, w, h) = resample_height_grid(&grid, 3, 1, 2);
+        assert_eq!((w, h), (3, 1));
+        assert_eq!(out, grid);
+    }
 
     #[test]
     fn feature_budget_grants_up_to_remaining_and_saturates() {

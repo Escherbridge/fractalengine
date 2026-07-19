@@ -211,6 +211,16 @@ fingerprint}`) fed independently of selection, plus ONE materializer.
   `respawn_on_petal_change` + `reconcile_path_asset`) so it observes their
   despawns, the gate clear, and both feeds — and because only it spawns, double
   stamping is structurally impossible.
+- **Delete cascade (FR-4, `terrain_editor_overhaul_20260718`):** `NodeDeleted`
+  (`db_results/nodes.rs::handle_node_deleted`) calls `PathAssetCache::invalidate`
+  + `PathAssetApplied::invalidate` on the deleted track. Invalidating the cache
+  both wakes the materializer (it's `is_changed`) and makes the track's stamps
+  match `stamp_is_orphaned` (no cache entry for their `source_track_id`), so the
+  orphan pass despawns every stamped glTF and it can't resurrect on petal
+  re-entry. Idempotent / no-op for a track that never stamped (NFR-5): invalidate
+  on an absent key is a no-op and there is no `PathAssetInstance` to tear down.
+  Realizes "a path's lifecycle owns its stamped assets" with no new data model —
+  the `PathAssetInstance { source_track_id }` back-reference already existed.
 
 Why petal-wide + property-driven: the hierarchy payload carries no properties
 (same constraint as §primitives), and stamps must survive petal switches even

@@ -4,7 +4,8 @@
 use bevy::prelude::*;
 
 use super::router::{ClickArbiter, ClickPriority};
-use super::{AxisDrag, NodeManager};
+use super::selection::{is_path_selection, path_gimbal_target};
+use super::{AxisDrag, NodeManager, SelectionKind, SelectionState};
 use crate::gimbal::{
     draw_gimbal, gimbal_center, ring_points_buf, GimbalAxis, GimbalGizmoGroup, GIMBAL_LEN,
     RING_SEGMENTS,
@@ -64,8 +65,10 @@ pub(super) fn update_hovered_axis(
     manager.hovered_axis = pick_axis(tool.active_tool, cursor, center_3d, camera, cam_tx);
 }
 
-/// Shared axis picking logic for both hover and click.
-fn pick_axis(
+/// Shared axis picking logic for both hover and click. `pub(super)` so the FR-3
+/// path-gimbal drag (`path_gimbal_drag.rs`) picks against a resolved path target
+/// with the same math (see AGENTS.md §dispatch).
+pub(super) fn pick_axis(
     tool: Tool,
     cursor: Vec2,
     center_3d: Vec3,
@@ -275,12 +278,34 @@ pub(super) fn handle_gimbal_interaction(
     }
 }
 
-fn axis_vec(axis: GimbalAxis) -> Vec3 {
+/// World-space unit vector of a gimbal axis. `pub(super)` — shared with the FR-3
+/// path-gimbal drag (`path_gimbal_drag.rs`).
+pub(super) fn axis_vec(axis: GimbalAxis) -> Vec3 {
     match axis {
         GimbalAxis::X => Vec3::X,
         GimbalAxis::Y => Vec3::Y,
         GimbalAxis::Z => Vec3::Z,
     }
+}
+
+/// Screen-space unit direction of `axis` projected from the gimbal `center_3d`,
+/// or zero if the center fails to project. `pub(super)` — the FR-3 path-gimbal
+/// drag captures this exactly as `handle_gimbal_interaction`'s press branch does,
+/// so vertex/segment drags feel identical to entity drags (see AGENTS.md §dispatch).
+pub(super) fn axis_screen_dir(
+    axis: GimbalAxis,
+    center_3d: Vec3,
+    camera: &Camera,
+    cam_tx: &GlobalTransform,
+) -> Vec2 {
+    let Ok(center_screen) = camera.world_to_viewport(cam_tx, center_3d) else {
+        return Vec2::ZERO;
+    };
+    let tip_3d = center_3d + axis_vec(axis) * GIMBAL_LEN;
+    let tip_screen = camera
+        .world_to_viewport(cam_tx, tip_3d)
+        .unwrap_or(center_screen);
+    (tip_screen - center_screen).normalize_or_zero()
 }
 
 fn segment_dist_2d(p: Vec2, a: Vec2, b: Vec2) -> f32 {
@@ -299,12 +324,52 @@ fn segment_dist_2d(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 
 pub(super) fn draw_gimbal_system(
     manager: Res<NodeManager>,
+    selection: Res<SelectionState>,
     tool: Res<ToolState>,
+    path_state: Res<crate::gis::PathEditorState>,
     g_transform_query: Query<&GlobalTransform>,
     aabb_query: Query<&bevy::camera::primitives::Aabb>,
     children_query: Query<&Children>,
     gizmos: Gizmos<GimbalGizmoGroup>,
 ) {
+    // FR-3: path selections draw a gimbal even under Select/Pen (which have no
+    // gizmo of their own → show Move arrows as a grabbable handle). Drawing
+    // steals no clicks, so relaxing the tool gate for the *visual* is safe (the
+    // axis-pick gate in `handle_gimbal_interaction` is untouched). Vertex/segment
+    // resolve to a world point (they have no entity); a whole track keeps its
+    // bridged ribbon-entity center so the drawn handle stays where the axis-pick
+    // expects it (no regression to the existing whole-track drag).
+    if is_path_selection(&selection.kind) {
+        let path_center = match &selection.kind {
+            SelectionKind::PathTrack { .. } => manager
+                .selected
+                .as_ref()
+                .and_then(|s| {
+                    gimbal_center(s.entity, &g_transform_query, &aabb_query, &children_query)
+                })
+                .or_else(|| {
+                    // Track open but ribbon unspawned: fall back to the centroid.
+                    let points: Vec<Vec3> =
+                        path_state.points.iter().map(|p| Vec3::from(p.position)).collect();
+                    path_gimbal_target(&selection.kind, &points)
+                }),
+            _ => {
+                let points: Vec<Vec3> =
+                    path_state.points.iter().map(|p| Vec3::from(p.position)).collect();
+                path_gimbal_target(&selection.kind, &points)
+            }
+        };
+        if let Some(center) = path_center {
+            let effective_tool = match tool.active_tool {
+                Tool::Select | Tool::Pen => Tool::Move,
+                other => other,
+            };
+            draw_gimbal(center, effective_tool, manager.hovered_axis, gizmos);
+        }
+        return;
+    }
+
+    // Entity selections (node / bridged stamp) use the entity-based gimbal.
     let Some(sel) = &manager.selected else { return };
     let Some(center) = gimbal_center(sel.entity, &g_transform_query, &aabb_query, &children_query)
     else {
