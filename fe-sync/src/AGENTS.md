@@ -90,3 +90,71 @@ thread before real iroh-docs replication ships — decisions §D1/§D5).
 `spawn_sync_thread` constructs the default internally to avoid churning its
 signature (3 call sites). The causal-DAG membership resolver from the §D1
 amendment is NOT here — blocked on per-op ed25519 signing (hexon_delta_format).
+
+## §relay-health (track `p2p_asset_streaming_20260718` FR-1 / decision D-77)
+
+**Why:** iroh 0.35's default n0-hosted relay servers **EOL 2026-12-31**. Before
+this hardening pass, relay failure was quiet: default relay binding with no
+`relay_url` config wired, offline detection only checked bind failure — post-EOL,
+gossip/replica traffic would have queued silently forever. This section documents
+the config + health model that replaces that silence.
+
+### `RelayConfig` (`relay_config.rs`)
+
+Three variants, matching the D-77 hardening note verbatim: `Default` (iroh's
+n0-hosted infra — the EOL-bound one), `Disabled` (direct/LAN-only), `Custom(Vec<String>)`
+(operator relay URLs). `RelayConfig::parse` accepts the keywords
+`"default"`/`"disabled"`/`"none"` or a comma-separated URL list, validating every
+URL eagerly with iroh's own `iroh::RelayUrl` parser (`FromStr`) so a
+misconfiguration fails at parse time — and again at `to_relay_mode()` time in
+case a `Custom` value was hand-built bypassing `parse` — rather than on first
+dial. `to_relay_mode()` converts to the `iroh::RelayMode` the endpoint builder
+expects (`iroh::RelayMode::{Default,Disabled,Custom(RelayMap)}` — all
+re-exported directly from the `iroh` crate; no new dependency was needed).
+
+`RelayConfig::from_env()` reads the `FE_SYNC_RELAY` env var (falling back to
+`Default` with a warning on a missing var or parse failure) and is what
+`spawn_sync_thread` calls today. **This is a stopgap** — `spawn_sync_thread`'s
+signature was deliberately left unchanged (env var instead of a parameter) so
+this pass didn't have to touch its 3 external call sites
+(`fractalengine/src/main.rs`, `fractalengine-relay/src/main.rs`,
+`fe-test-harness/src/peer.rs` — all outside `fe-sync/src/`). FR-7 (application
+settings surface, D-78) is the intended real home for this value; swap
+`from_env()` for an `AppSettings`-sourced `RelayConfig` then.
+
+### `RelayHealth` (`relay_config.rs`, surfaced via `SyncStatus::health`)
+
+Five states: `Unknown` (default, pre-signal) → `Healthy` / `Disabled` (from
+`on_bind_success`, which reads the `RelayConfig` to tell "no relay needed" apart
+from "relay reachable") or `Unreachable` (from `on_bind_failure`, hard bind
+failure). Runtime signals move the state with `on_error`/`on_success`:
+`Healthy` degrades one step to `Degraded` before reaching `Unreachable` (two
+consecutive failures, not one, to avoid flapping on a single transient error);
+`Disabled` is a fixed point — a disabled relay cannot "fail" or "recover".
+`is_problem()` (`Degraded`/`Unreachable`) is what a consumer should alarm on;
+`Disabled` and `Unknown` are deliberately excluded.
+
+Wired today: the endpoint bind result (`on_bind_success`/`on_bind_failure`) and
+a gossip-spawn failure right after a successful bind (`on_error`) — both in
+`sync_thread.rs`'s startup sequence, both emitting a new
+`SyncEvent::RelayHealthChanged { health }` that `status.rs::drain_sync_events`
+applies to `SyncStatus.health`, loud-logging (`warn!`) whenever the new health
+`is_problem()`.
+
+**TODO(ultrapilot) — continuous monitoring not wired.** `iroh::Endpoint::home_relay()`
+returns a `Watcher<Option<RelayUrl>>` that would let the sync thread detect
+relay loss *mid-session* (not just at startup), but wiring it means turning the
+command loop's blocking `cmd_rx.recv()` into a `tokio::select!` against the
+watcher stream — a bigger structural change than this pass's scope. Only the
+startup bind result and the gossip-spawn outcome are tracked; a live watcher
+loop is the natural next step.
+
+### EOL warning
+
+`endpoint.rs::warn_default_relay_eol_once()` logs one `WARN` per process (a
+`std::sync::Once` guard) the first time a `SyncEndpoint` binds against
+`RelayConfig::Default`, naming the 2026-12-31 date and pointing at this section.
+Deliberately not unit-tested for the "fires exactly once" property — `Once` is
+process-global static state, so asserting on it across `#[test]` functions in
+the same test binary would be order-dependent; the pure decision of *whether*
+to warn (`RelayConfig::is_default_infra`) is what's tested instead.

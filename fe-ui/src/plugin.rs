@@ -443,6 +443,14 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<ViewportRect>();
         app.init_resource::<UiManager>();
         app.init_resource::<PetalMapState>();
+        // Application settings (D-78) + terrain-proposal editor state (FR-5).
+        app.init_resource::<crate::settings::AppSettings>();
+        app.init_resource::<crate::terrain_proposal_state::ProposalEditState>();
+        // Mirror AppSettings.mesh_budget_ceiling → MeshInstanceBudget.ceiling live.
+        app.add_systems(Update, crate::settings::sync_app_settings_to_mesh_budget);
+        // TODO(ultrapilot): register w4a's Settings/terrain-editor panel systems
+        // (`settings_window`, `terrain_tools_panel`, `proposal_report_panel`) in
+        // `EguiPrimaryContextPass` once they land — the coordinator reconciles.
         // Guarantee the renderer scale resource exists so fe-ui can drive it
         // (idempotent with CameraControllerPlugin's own init).
         app.init_resource::<fe_renderer::camera::CameraScaleSettings>();
@@ -546,6 +554,9 @@ struct MiscUiParams<'w> {
     path_state: ResMut<'w, crate::gis::PathEditorState>,
     path_status: Res<'w, crate::path_ops::PathEditStatus>,
     tool_panel: ResMut<'w, crate::panels::tool_panel::ToolPanelState>,
+    // FR-5/D-78: terrain proposal editor state + app settings (w4b resources).
+    proposal_state: ResMut<'w, crate::terrain_proposal_state::ProposalEditState>,
+    app_settings: ResMut<'w, crate::settings::AppSettings>,
 }
 
 fn gardener_ui_system(
@@ -589,6 +600,8 @@ fn gardener_ui_system(
         &mut misc.path_state,
         &misc.path_status,
         &mut misc.tool_panel,
+        &mut misc.proposal_state,
+        &mut misc.app_settings,
     );
     viewport_rect.0 = rect;
 
@@ -648,8 +661,11 @@ fn apply_camera_focus(
                 .find(|(marker, _)| marker.node_id == node_id)
                 .map(|(_, transform)| transform.translation())
                 .unwrap_or_else(|| Vec3::from(fallback));
-            controller.focus = pos;
-            controller.distance = 5.0;
+            // ux_interaction_hardening FR-5: write easing targets so the camera
+            // flies to the node instead of teleporting.
+            controller.target_focus = Some(pos);
+            controller.target_distance =
+                5.0_f32.clamp(controller.min_distance, controller.max_distance);
         }
     }
 }

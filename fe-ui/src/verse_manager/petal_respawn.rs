@@ -31,7 +31,7 @@ pub(super) fn respawn_on_petal_change(
     texture_registry: Res<TextureRegistryRes>,
     mat_assets: Res<PrimitiveMaterialAssets>,
     db_sender: Res<DbCommandSender>,
-    mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
+    residency: super::spawn::ResidencyBudget,
 ) {
     if !*initialized {
         *last = nav.active_petal_id.clone();
@@ -86,16 +86,24 @@ pub(super) fn respawn_on_petal_change(
     // for the entities themselves (only cache-miss primitive descriptors fetch async).
     if let Some(ref pid) = new_petal {
         if let Some(petal) = verse_mgr.find_petal(pid) {
-            // Spawn budget: saturate at MAX_PETAL_NODES (mirrors MAX_STAMPS) and
-            // halt entirely under the app-wide mesh-budget gate (§mesh-budget).
-            let mut remaining = if mesh_budget.exceeded {
+            // Spawn budget (D-74/D-78 residency ledger): the configurable
+            // `entity_cap` ranked by `render_distance`, hard-backstopped by
+            // MAX_PETAL_NODES, and halted under the app-wide mesh-budget gate.
+            // At petal-entry the whole petal is the near region (distance 0 →
+            // full ranked ceiling), so no node is dropped one-shot. The true
+            // per-frame distance taper is the residency-ledger system's job.
+            // TODO(ultrapilot): drive per-node/per-frame distance from the
+            // camera position + PetalManifest.render_distance override once the
+            // ledger system lands (p2p_asset_streaming FR-7).
+            let ceiling = super::spawn::distance_ranked_allowance(
+                0.0,
+                residency.settings.render_distance,
+                residency.settings.entity_cap.min(super::spawn::MAX_PETAL_NODES),
+            );
+            let mut remaining = if residency.mesh_budget.exceeded {
                 0
             } else {
-                super::spawn::spawn_allowance(
-                    petal.nodes.len(),
-                    kept_node_ids.len(),
-                    super::spawn::MAX_PETAL_NODES,
-                )
+                super::spawn::spawn_allowance(petal.nodes.len(), kept_node_ids.len(), ceiling)
             };
             let mut skipped: usize = 0;
             for node in &petal.nodes {

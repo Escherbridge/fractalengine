@@ -19,6 +19,51 @@ pub(super) fn spawn_allowance(requested: usize, already: usize, max: usize) -> u
     max.saturating_sub(already).min(requested)
 }
 
+/// Outer taper ring as a multiple of `render_distance` — matches the ×1.5
+/// despawn-hysteresis pattern already used for terrain chunks (D-74).
+const RESIDENCY_TAPER_FACTOR: f32 = 1.5;
+
+/// Distance-ranked residency allowance (D-74 soft budget): the number of
+/// instances a region at `distance_to_camera` may spawn, given a global
+/// `render_distance` horizon and a hard-backstopped `ceiling`. Full `ceiling`
+/// while inside `render_distance`, tapering linearly to `0` out to
+/// `render_distance * 1.5`, then `0`. Never exceeds `ceiling`. A non-positive /
+/// non-finite `render_distance` halts spawning (`0`); a non-finite/negative
+/// distance is treated defensively as "unknown → don't over-spawn" (`0`). Pure
+/// so the ledger math is unit-testable. See AGENTS.md §residency-ledger.
+pub(crate) fn distance_ranked_allowance(
+    distance_to_camera: f32,
+    render_distance: f32,
+    ceiling: usize,
+) -> usize {
+    if !render_distance.is_finite() || render_distance <= 0.0 {
+        return 0;
+    }
+    if !distance_to_camera.is_finite() || distance_to_camera < 0.0 {
+        return 0;
+    }
+    if distance_to_camera <= render_distance {
+        return ceiling;
+    }
+    let outer = render_distance * RESIDENCY_TAPER_FACTOR;
+    if distance_to_camera >= outer {
+        return 0;
+    }
+    // Linear taper across the hysteresis band (render_distance, outer).
+    let t = (outer - distance_to_camera) / (outer - render_distance);
+    ((ceiling as f32) * t).floor() as usize
+}
+
+/// Bundle of the two residency-budget inputs (D-74/D-78) — the app-wide
+/// `MeshInstanceBudget` gate + the tunable `AppSettings` — so spawner systems
+/// consume one `SystemParam` and stay under Bevy's 16-param limit. See AGENTS.md
+/// §residency-ledger.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct ResidencyBudget<'w> {
+    pub mesh_budget: Res<'w, crate::plugin::MeshInstanceBudget>,
+    pub settings: Res<'w, crate::settings::AppSettings>,
+}
+
 /// Resolve an asset path to a loadable scene path: append `#Scene0` only for
 /// gltf/glb assets that don't already carry a label; pass anything else through.
 fn scene_asset_path(asset_path: &str) -> String {
@@ -268,5 +313,35 @@ mod tests {
             spawn_allowance(usize::MAX, 0, MAX_PETAL_NODES),
             MAX_PETAL_NODES
         );
+    }
+
+    #[test]
+    fn ranked_allowance_full_inside_render_distance() {
+        // At or inside the horizon → full ceiling.
+        assert_eq!(distance_ranked_allowance(0.0, 500.0, 10_000), 10_000);
+        assert_eq!(distance_ranked_allowance(250.0, 500.0, 10_000), 10_000);
+        assert_eq!(distance_ranked_allowance(500.0, 500.0, 10_000), 10_000);
+    }
+
+    #[test]
+    fn ranked_allowance_tapers_to_zero_beyond() {
+        // Midpoint of the (500, 750] hysteresis band → ~half the ceiling.
+        assert_eq!(distance_ranked_allowance(625.0, 500.0, 1_000), 500);
+        // At/beyond the outer ring (1.5×) → nothing.
+        assert_eq!(distance_ranked_allowance(750.0, 500.0, 1_000), 0);
+        assert_eq!(distance_ranked_allowance(5_000.0, 500.0, 1_000), 0);
+    }
+
+    #[test]
+    fn ranked_allowance_respects_ceiling_and_degenerate_inputs() {
+        // Result never exceeds the ceiling.
+        assert!(distance_ranked_allowance(0.0, 500.0, 42) <= 42);
+        // render_distance <= 0 / non-finite halts spawning.
+        assert_eq!(distance_ranked_allowance(0.0, 0.0, 10_000), 0);
+        assert_eq!(distance_ranked_allowance(0.0, -1.0, 10_000), 0);
+        assert_eq!(distance_ranked_allowance(0.0, f32::NAN, 10_000), 0);
+        // Unknown (non-finite / negative) distance → defensive zero.
+        assert_eq!(distance_ranked_allowance(f32::NAN, 500.0, 10_000), 0);
+        assert_eq!(distance_ranked_allowance(-3.0, 500.0, 10_000), 0);
     }
 }

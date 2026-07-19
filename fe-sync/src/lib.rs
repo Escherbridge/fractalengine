@@ -6,6 +6,7 @@ pub mod endpoint;
 pub mod messages;
 pub mod offline;
 pub mod reconciliation;
+pub mod relay_config;
 pub mod replication;
 pub mod replicator;
 pub mod status;
@@ -17,6 +18,7 @@ pub use bevy_asset_reader::BlobAssetReader;
 pub use blob_store::FsBlobStore;
 pub use fe_database::invite::VerseInvite;
 pub use messages::{SyncCommand, SyncCommandSender, SyncEvent, SyncEventReceiver};
+pub use relay_config::{RelayConfig, RelayConfigError, RelayHealth, RELAY_CONFIG_ENV_VAR};
 pub use replicator::{
     IncomingEntryApplicator, IrohDocsReplicator, IrohPetalReplicator, MockVerseReplicator,
     PetalReplicator, RowChange, VerseReplicator,

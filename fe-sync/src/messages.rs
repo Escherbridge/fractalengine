@@ -5,6 +5,8 @@
 
 use fe_runtime::blob_store::BlobHash;
 
+use crate::relay_config::RelayHealth;
+
 /// Commands sent **to** the sync thread.
 #[derive(Debug, Clone)]
 pub enum SyncCommand {
@@ -147,6 +149,12 @@ pub enum SyncEvent {
         scale: [f32; 3],
         author_id: String,
     },
+    /// Relay reachability changed (bind result or a runtime signal).
+    ///
+    /// Drained into [`crate::status::SyncStatus::health`] — see AGENTS.md
+    /// §relay-health. Not silent: a `Degraded`/`Unreachable` transition is
+    /// loud-logged by the sync thread at the point of failure.
+    RelayHealthChanged { health: RelayHealth },
 }
 
 /// Real-time transform update message for P2P gossip.
@@ -359,6 +367,23 @@ mod tests {
             chunk_seq: 0,
         };
         let _ = format!("{:?}", cmd.clone());
+    }
+
+    #[test]
+    fn relay_health_changed_debug_clone() {
+        let ev = SyncEvent::RelayHealthChanged {
+            health: RelayHealth::Unreachable,
+        };
+        let cloned = ev.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("RelayHealthChanged"));
+        assert!(dbg.contains("Unreachable"));
+        match ev {
+            SyncEvent::RelayHealthChanged { health } => {
+                assert_eq!(health, RelayHealth::Unreachable);
+            }
+            _ => panic!("expected RelayHealthChanged"),
+        }
     }
 
     #[test]

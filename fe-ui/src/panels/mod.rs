@@ -4,9 +4,11 @@
 
 pub(crate) mod gis_panel;
 pub(crate) mod inspector;
+pub(crate) mod proposal_report_panel;
 pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
+pub(crate) mod terrain_tools_panel;
 pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
 
@@ -65,6 +67,15 @@ pub fn gardener_console(
     path_state: &mut crate::gis::PathEditorState,
     path_status: &crate::path_ops::PathEditStatus,
     tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
+    // FR-5/FR-6/D-78 (terrain_editor_overhaul_20260718 + p2p_asset_streaming_20260718):
+    // new cross-worker resources (owned by w4b — `terrain_proposal_state.rs`/
+    // `settings.rs`). NOTE FOR w4b: this is a genuine `gardener_console`
+    // signature change (unlike `tool_panel`'s picker, which reused existing
+    // params) — `plugin.rs::gardener_ui_system`'s call site needs these two
+    // args threaded in (via `init_resource` + a `ResMut` bundle, same idiom
+    // as `MiscUiParams`). See `panels/AGENTS.md` §terrain-tools.
+    proposal_state: &mut crate::terrain_proposal_state::ProposalEditState,
+    app_settings: &mut crate::settings::AppSettings,
 ) -> egui::Rect {
     toolbar::top_toolbar(ctx, tool, node_mgr, ui_mgr, gis_panel, tool_panel);
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
@@ -128,6 +139,8 @@ pub fn gardener_console(
     crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx);
     crate::dialogs::render_hexon_manager(ctx, ui_mgr, petal_map, nav.active_petal_id.as_deref());
     crate::dialogs::render_petal_manifest(ctx, ui_mgr);
+    // D-78: application settings window (see `dialogs/settings.rs`).
+    crate::dialogs::settings_window(ctx, ui_mgr, app_settings);
 
     // GIS query & layer-manager panel (independent floating window, not part
     // of the mutual-exclusion `ActiveDialog` set — see panels/AGENTS.md §gis).
@@ -151,6 +164,12 @@ pub fn gardener_console(
     // `UiAction::PathAssetApply` for the Paths-tab track being edited — see
     // panels/AGENTS.md §tool-panel).
     tool_panel::render_tool_panel(ctx, tool_panel, ui_mgr, path_state, hierarchy);
+
+    // FR-5/FR-6 (terrain_editor_overhaul_20260718): terrain proposal palette
+    // (own floating window, toggled from the Tools panel's "Terrain Tools"
+    // pointer section) and its report panel for the selected proposal.
+    terrain_tools_panel::terrain_tools_panel(ctx, tool_panel, ui_mgr, proposal_state);
+    proposal_report_panel::proposal_report_panel(ctx, proposal_state, petal_map.world_scale);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);

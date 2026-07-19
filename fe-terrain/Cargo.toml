@@ -9,7 +9,7 @@ description = "Terrain tiles, GPX ingestion, meshes, and map layers for FractalE
 
 [features]
 default = []
-render = ["bevy", "bevy_egui"]
+render = ["bevy", "bevy_egui", "dep:fe-renderer"]
 fetch = ["reqwest", "async-trait", "tokio", "ed25519-dalek"]
 
 [dependencies]
@@ -36,6 +36,7 @@ bincode = "1"
 # Optional
 bevy = { workspace = true, optional = true }
 bevy_egui = { workspace = true, optional = true }
+fe-renderer = { path = "../fe-renderer", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 async-trait = { version = "0.1", optional = true }
 tokio = { workspace = true, optional = true }

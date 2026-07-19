@@ -122,7 +122,7 @@ pub(super) fn materialize_cached_primitives(
     nav: Res<NavigationManager>,
     verse_mgr: Res<VerseManager>,
     cache: Res<PrimitiveDescriptorCache>,
-    mesh_budget: Res<crate::plugin::MeshInstanceBudget>,
+    residency: super::spawn::ResidencyBudget,
     texture_registry: Res<TextureRegistryRes>,
     mat_assets: Res<PrimitiveMaterialAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -142,13 +142,20 @@ pub(super) fn materialize_cached_primitives(
         return;
     };
 
-    // Spawn budget: halt under the app-wide mesh-budget gate, else saturate
-    // fresh spawns at MAX_PETAL_NODES (mirrors petal_respawn; §mesh-budget).
-    let mut remaining = if mesh_budget.exceeded {
+    // Spawn budget (D-74/D-78): halt under the app-wide mesh-budget gate, else
+    // saturate fresh spawns at the `entity_cap`-ranked ceiling hard-backstopped
+    // by MAX_PETAL_NODES (mirrors petal_respawn; §residency-ledger). Distance 0
+    // = active petal is the near region; per-frame taper is the ledger's job.
+    let ceiling = super::spawn::distance_ranked_allowance(
+        0.0,
+        residency.settings.render_distance,
+        residency.settings.entity_cap.min(super::spawn::MAX_PETAL_NODES),
+    );
+    let mut remaining = if residency.mesh_budget.exceeded {
         0
     } else {
         let live = primitives.iter().count() + fallback_signs.iter().count();
-        super::spawn::spawn_allowance(usize::MAX, live, super::spawn::MAX_PETAL_NODES)
+        super::spawn::spawn_allowance(usize::MAX, live, ceiling)
     };
     let mut skipped: usize = 0;
 

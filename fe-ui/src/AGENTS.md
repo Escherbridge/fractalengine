@@ -20,7 +20,10 @@ see each module's own doc-comment for the "what"; this file is the "why".
 | `path_ops` | Path-editor op queue (`PathOp`/`PendingPathOps`) + the result-status resource (`PathEditStatus`) the main binary's GPX bridge writes back to. See §path-editor. |
 | `panels` | The top-level egui shell (`gardener_console`) + one file per panel (toolbar, status bar, sidebar tree, inspector tabs, query tab, portal toolbar). |
 | `node_manager` | `NodeManager` (single source of truth for selection) + gimbal interaction/hover/pick, viewport click-to-select, transform broadcast, inspector sync — one file per concern. |
-| `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. |
+| `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. Also the residency-ledger primitive (`spawn::distance_ranked_allowance` + `spawn::ResidencyBudget`). See §residency-ledger. |
+| `settings` | `AppSettings` (D-78 application settings Resource) + `TileSourceMode` + `sync_app_settings_to_mesh_budget`. See §app-settings. |
+| `terrain_proposal_state` | `ProposalEditState` (Resource) + `ProposalRecord`/`ProposalOp` + pure `to_json`/`from_json`. The fe-ui-local mirror of the persisted proposal contract. See §terrain-proposal-editor. |
+| `geometry` | fe-ui-local pure mirror of fe-terrain's ruler math (`polygon_area_m2`/`world_to_real_distance`/`bearing_deg`). See §geometry-mirror. |
 | `navigation_manager`, `viewport`, `atlas`, `gimbal`, `theme`, `role_chip` | Unchanged from before this decomposition; not god-files. |
 
 This module tree is a **physical decomposition only** — no behavior changed
@@ -568,3 +571,111 @@ live `SpawnedNodeMarker` entity (stamp instances excluded via
 `Without<PathAssetInstance>`): every API `GetHierarchy` poll re-broadcasts
 `HierarchyLoaded`, and before this guard each event duplicated the entire
 active petal's scene — the amplification behind the crash.
+
+## §app-settings — the D-78 application settings surface
+
+`settings::AppSettings` (Resource) is the single home for user-tunable knobs
+(D-78, ratified 2026-07-18). It resurrects the never-built
+`render_distance_lod_20260407` design. Fields: `render_distance` (global
+soft-residency horizon, default 500), `mesh_budget_ceiling` (seeded from
+`plugin::MAX_MESH_INSTANCES`), `entity_cap` (soft per-petal node cap, default
+mirrors `MAX_PETAL_NODES`), `stamp_ceiling` (soft per-petal stamp cap, default
+mirrors `MAX_STAMPS_PER_PETAL`), `tile_mode` (`TileSourceMode::{Offline,Online,
+Hybrid}`), and camera prefs (`camera_sensitivity`/`camera_zoom_speed`/
+`camera_easing`). The `const` HARD caps stay as the never-crash backstops; the
+settings fields are the soft budgets routed through them (`.min(HARD_CAP)` at
+each spawn site) — a lowered `entity_cap` shrinks spawns, a corrupt/oversized one
+can never breach the backstop.
+
+- **Live mesh-ceiling sync:** `sync_app_settings_to_mesh_budget` (registered in
+  `plugin.rs`, `Update`) mirrors `AppSettings.mesh_budget_ceiling` into the live
+  `MeshInstanceBudget.ceiling` so a settings change re-ceilings the watchdog
+  without a restart. Single-compare, runs every frame.
+- **Persistence is a seam.** In-memory only for now; the serde derives make RON
+  persistence under the platform config dir (`~/.config/fractalengine/settings.ron`)
+  a drop-in — see the `// TODO(ultrapilot)` in `settings.rs`. `#[serde(default)]`
+  on the struct + each enum's `Default` means a partial/legacy doc loads with
+  missing fields filled from defaults (forward/backward compat).
+- **The Settings *window* is w4a's.** `AppSettings` (state) is owned here;
+  `ActiveDialog::Settings` + the egui `settings_window` render system are w4a's.
+  `UiAction::SettingsToggle` currently logs a debug seam (the variant does not
+  exist yet) — the coordinator wires it to flip `ActiveDialog::Settings` once
+  w4a lands. The per-petal render-distance override
+  (`PetalManifest.render_distance`) is not yet a resident resource, so the
+  ledger reads only the global `AppSettings.render_distance` today (seam).
+
+## §residency-ledger — distance-ranked spawn budgets (D-74)
+
+The D-74 residency ledger replaces the boolean `mesh_budget.exceeded` gate with
+a **distance-ranked allowance**. `spawn::distance_ranked_allowance(distance,
+render_distance, ceiling)` (pure, in `verse_manager/spawn.rs`) returns full
+`ceiling` inside `render_distance`, tapering linearly to `0` across the
+`(render_distance, render_distance × 1.5]` hysteresis band (matching the terrain
+×1.5 despawn hysteresis), then `0`; never exceeds `ceiling`. A non-positive
+`render_distance` halts spawning (a valid "render nothing" setting); a
+non-finite/negative distance is a defensive `0`.
+
+- **Wiring (drop-in, per D-74).** Every fe-ui spawner already consumed a numeric
+  budget (`spawn_allowance`, `take_stamp_budget`) as `if exceeded {0} else
+  {CONST}`. The `CONST` is now replaced by `distance_ranked_allowance(0.0,
+  settings.render_distance, settings.<cap>.min(HARD_CAP))`. The two budget inputs
+  (the `MeshInstanceBudget` gate + `AppSettings`) are bundled into
+  `spawn::ResidencyBudget` (a `SystemParam`) so `petal_respawn`,
+  `materialize_cached_primitives`, and `materialize_path_assets` each stay under
+  Bevy's 16-param limit (the bundle replaces the old standalone `mesh_budget`
+  param 1-for-1).
+- **Why distance `0.0` at the batch spawners.** These systems run at
+  petal-*entry* / cache-change, not per frame. The petal you just navigated into
+  is the near region, so distance `0` → full ranked ceiling → **no node is
+  dropped one-shot** (a per-frame taper would strand nodes permanently since
+  these spawners don't re-run per frame). The *live* per-frame distance taper —
+  ranking individual entities by camera distance + `PetalManifest` override — is
+  the future residency-ledger system's job (`p2p_asset_streaming` FR-7), marked
+  with `// TODO(ultrapilot)` seams at the call sites. What the batch path *does*
+  gain now: the configurable `entity_cap`/`stamp_ceiling` and the
+  `render_distance ≤ 0` kill-switch.
+- **Hard backstops kept.** `MAX_PETAL_NODES` (10k), `MAX_STAMPS` (4096/track),
+  `MAX_STAMPS_PER_PETAL` (65,536), and the 2M mesh watchdog are untouched — the
+  ranked ceiling is always `.min()`-ed under them. The FR-4 stamp delete-cascade
+  (`stamp_is_orphaned` + `take_stamp_budget`) is preserved verbatim; the ledger
+  only changed how the *initial* `stamp_budget` value is computed.
+
+## §terrain-proposal-editor — analytics-first proposed overlays (FR-5)
+
+`terrain_proposal_state` holds the NON-destructive terrain-editor state
+(terrain_editor_overhaul FR-5): `ProposalEditState` (Resource) = the live
+`Vec<ProposalRecord>` + `selected` + armed `active_op`. `ProposalRecord { id,
+op, footprint, target_height, delta}` and `ProposalOp` (Raise…Fill) are the
+**fe-ui-local mirror** of the persisted JSON contract — deliberately NOT
+`fe_terrain::TerrainProposal` (fe-ui must not depend on fe-terrain). Serde field
+names + the `snake_case` op tags match the contract exactly; `target_height`/
+`delta` omit when `None`.
+
+- **Persistence is additive (NFR-1).** `UiAction::TerrainProposalAdd`/`Delete`
+  route through `actions::terrain_proposal`, which serializes the whole set
+  (`terrain_proposal_state::to_json`) and embeds it under the petal terrain
+  config's **`proposals`** key via the pure `embed_proposals` — preserving every
+  other field (origin, layers, tileset uris, `world_scale`). Same "mutate one
+  field of the stored terrain JSON, then round-trip via `SetPetalTerrain`" idiom
+  as `actions::gis::set_layer`. The true heightfield / loaded tileset are never
+  written. A proposals-only doc is produced when the petal has no map yet (the
+  terrain loader must tolerate that — a seam for the fe-terrain side).
+- **Ids** are minted by a monotonic `ProposalEditState` counter (`p{n}`, no
+  `uuid`/`rand` dep — mirrors `gis::next_pen_correlation_id`). `replace_all`
+  keeps the counter past any rehydrated `p{n}` so a load-then-add never collides.
+- **The editor *panels* are w4a's.** `ProposalEditState` (state) + the
+  add/delete/persist plumbing are owned here; the tool palette, brush UI, and
+  report panel are w4a. Proposal overlay *meshes* must spawn through the same
+  residency/mesh-budget gating (NFR-2) — no bypass.
+
+## §geometry-mirror — fe-ui-local ruler math
+
+`geometry` is a verbatim copy of fe-terrain's pure ruler formulas
+(`polygon_area_m2` / `world_to_real_distance` / `bearing_deg`) plus a local
+`sanitize_world_scale`. fe-ui must NOT depend on fe-terrain, so the pure
+formulas are **copied, not imported** (same boundary rule as
+`terrain_map::tileset_to_terrain_json` building `TerrainConfig` JSON by hand).
+Kept byte-for-byte equivalent to `fe_terrain::ruler` — if either changes, sync
+by hand. **Metrically honest:** an unusable `world_scale` (≤0/unset) sanitizes to
+`1.0`, so the returned numbers are world units, not meters — callers surface the
+"no map scale" chip (NFR-4) rather than fabricating meters.

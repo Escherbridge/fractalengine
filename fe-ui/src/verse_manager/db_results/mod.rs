@@ -17,15 +17,18 @@ use fe_runtime::messages::DbResult;
 use super::VerseManager;
 use crate::navigation_manager::NavigationManager;
 
-/// The two fe-ui-local descriptor caches plus the spawn-guard state, grouped
-/// as one `SystemParam` so `apply_db_results` stays within Bevy's 16-tuple
-/// system-param limit. The caches are fed from the property handlers on
-/// `NodePropertiesLoaded`/`Set`/`Deleted`; `spawned`/`mesh_budget` gate
-/// `HierarchyLoaded` re-materialization (see ../AGENTS.md §db-results).
+/// The two fe-ui-local descriptor caches plus the path-asset applied-gate and
+/// the spawn-guard state, grouped as one `SystemParam` so `apply_db_results`
+/// stays within Bevy's 16-tuple system-param limit. The caches are fed from the
+/// property handlers on `NodePropertiesLoaded`/`Set`/`Deleted`; `NodeDeleted`
+/// invalidates `path_asset` + `applied` so a deleted track's stamps cascade
+/// away (FR-4); `spawned`/`mesh_budget` gate `HierarchyLoaded`
+/// re-materialization (see ../AGENTS.md §db-results).
 #[derive(SystemParam)]
 pub(super) struct DescriptorCaches<'w, 's> {
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
     path_asset: ResMut<'w, super::PathAssetCache>,
+    applied: ResMut<'w, super::PathAssetApplied>,
     spawned: Query<
         'w,
         's,
@@ -155,6 +158,8 @@ pub(super) fn apply_db_results(
                 &nav,
                 &mut path_state,
                 &db_sender,
+                &mut caches.path_asset,
+                &mut caches.applied,
             ),
             DbResult::VerseInviteGenerated { invite_string, .. } => {
                 roles::handle_verse_invite_generated(invite_string, &mut ui_mgr)
@@ -489,7 +494,18 @@ mod tests {
         let nav = NavigationManager::default();
         let mut path_state = PathEditorState::default();
         path_state.editing_track_id = Some("n1".into());
-        nodes::handle_node_deleted("n1", "p1", &mut mgr, &nav, &mut path_state, &tx);
+        let mut path_asset_cache = crate::verse_manager::PathAssetCache::default();
+        let mut path_asset_applied = crate::verse_manager::PathAssetApplied::default();
+        nodes::handle_node_deleted(
+            "n1",
+            "p1",
+            &mut mgr,
+            &nav,
+            &mut path_state,
+            &tx,
+            &mut path_asset_cache,
+            &mut path_asset_applied,
+        );
         assert!(mgr.all_nodes().all(|n| n.id != "n1"));
         assert!(!mgr.node_index.contains_key("n1"));
         assert!(path_state.editing_track_id.is_none());

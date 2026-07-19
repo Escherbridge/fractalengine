@@ -8,7 +8,14 @@
   node_id set by a sidebar click) into an ECS `Entity` + `select()` call.
 - `gimbal_interaction.rs` — hover detection, axis pick → drag → commit, and
   the gizmo draw system. The largest submodule; keep pure geometry helpers
-  (`pick_axis`, `segment_dist_2d`, etc.) private to this file.
+  private to this file, EXCEPT the axis-pick trio (`pick_axis`, `axis_vec`,
+  `axis_screen_dir`) which is `pub(super)` so the FR-3 path gimbal drag reuses
+  the exact same math (see §dispatch).
+- `dispatch.rs` — FR-2 object-aware left-click operation table: the pure
+  `resolve_operation(tool, kind, hit)` truth table + `Operation`/`HitTarget`
+  enums (see §dispatch).
+- `path_gimbal_drag.rs` — FR-3 drag: gimbal-drag a selected path vertex/segment
+  (no entity) → `UiAction::PathMovePoint` on release (see §dispatch).
 - `viewport_pick.rs` — 3-D viewport click → nearest-node select/deselect via a
   precise ray/AABB raycast (see §glb-mesh-picking).
 - `path_point_interaction.rs` — path-point viewport editor (see §path-points).
@@ -19,6 +26,10 @@
   for `Billboard`-tagged icon quads (see §data-icons + `fe-ui/src/AGENTS.md`
   §data-icons).
 - `router.rs` — per-frame left-click arbitration (see §input-router).
+- `selection.rs` — typed selection read-model (FR-1): a per-frame projection
+  over `NodeManager.selected` + `PathEditorState.*` into `SelectionKind`; feeds
+  the gimbal (FR-3) and future object-aware dispatch (FR-2). See
+  §selection-read-model.
 - `inspector_sync.rs` — `NodeManager` → `InspectorFormState` display sync
   (transform strings + per-node URL/property load on selection change; also
   clears the Annotation card's title/body/color buffers here since the
@@ -313,7 +324,7 @@ ownership instead of racing ad-hoc booleans (replaces the old
 
   | Priority      | Consumer system                     | Claims when                          |
   | ------------- | ----------------------------------- | ------------------------------------ |
-  | `Gimbal`      | `handle_gimbal_interaction`         | press hits a gimbal axis             |
+  | `Gimbal`      | `handle_path_gimbal_drag` (FR-3 vertex/segment, runs first) → `handle_gimbal_interaction` (entity) | press hits a gimbal axis |
   | `PathMarker`  | `handle_path_point_interaction`     | press picks an existing marker (Pen mode, Select-while-editing per FR-2, or while a drag is active) |
   | `PathPlace`   | `handle_path_point_interaction`     | Pen-mode empty click on terrain      |
   | `PathSegment` | `handle_path_segment_interaction`   | editing + press hits a ribbon segment (FR-3) |
@@ -340,3 +351,102 @@ ownership instead of racing ad-hoc booleans (replaces the old
   (`NodeSelection.drag` / `is_dragging()`) and path-point keeps `PathPointDrag`;
   the router only arbitrates the PRESS-time ownership contest. Hover detection
   (`update_hovered_axis`) is ambient and claims nothing.
+
+## §selection-read-model — typed selection facade (`selection.rs`)
+
+`terrain_editor_overhaul_20260718` FR-1. Two selection authorities exist and are
+deliberately NOT merged (codified in `conductor/code_styleguides/ui_ux.md §5`):
+`NodeManager.selected` (entity / gimbal selection) and `PathEditorState`
+(`editing_track_id` / `selected_point` / `selected_segment`). `SelectionState`
+is a **read-only projection** over both, recomputed each frame by
+`update_selection_state` (runs late in the `.chain()`, just before
+`draw_gimbal_system`), so any system can ask "what kind of thing is selected?"
+without touching either store.
+
+- **`project_selection` priority** (pure, unit-tested truth table): path vertex →
+  path segment → a selected entity — but the open track's own bridged ribbon
+  (`node_id == editing_track_id`) reads as `PathTrack`, so ribbon-vs-node stays
+  type-distinguishable for FR-2 — → an open track with no bridged entity → empty.
+- **`SelectionKind::{Stamp, TerrainProposal}`** exist for FR-2 / the terrain
+  proposal phases but have no selection path yet (nothing sets them).
+- **Gimbal on path (FR-3).** `draw_gimbal_system` draws a gimbal for path
+  selections even under Select/Pen (which have no gizmo of their own → it shows
+  Move arrows). Vertex/segment resolve to a world point via `path_gimbal_target`
+  (they have no entity); a whole track keeps its bridged ribbon-entity center so
+  the drawn handle matches where `handle_gimbal_interaction`'s axis-pick expects
+  it (no regression to the existing whole-track drag). The relaxed gate is for
+  the VISUAL only — the axis-pick / drag gate on `handle_gimbal_interaction` is
+  untouched.
+- **Dragging a vertex/segment via the gimbal (FR-3 drag) — now implemented** in
+  `path_gimbal_drag.rs` under `Tool::Move`. Because a vertex/segment has no
+  entity, the drag writes `UiAction::PathMovePoint` (→ `PathOp::MovePoint`), not
+  an entity `Transform`; a segment moves both endpoints by the same delta. It
+  claims `ClickPriority::Gimbal` ahead of `handle_gimbal_interaction` so the
+  entity gimbal yields. See §dispatch for the full interaction + the pure
+  `drag_delta_to_position` math.
+
+## §dispatch — object-aware left-click table (`dispatch.rs`) + FR-3 gimbal drag (`path_gimbal_drag.rs`)
+
+`terrain_editor_overhaul_20260718` FR-2/FR-3.
+
+**The table (`dispatch.rs`, FR-2).** `resolve_operation(tool, kind, hit) ->
+Operation` is a PURE, total truth table keyed on `(active Tool, SelectionKind,
+HitTarget)` — the single place that answers "what does left-click DO for this
+object type?", and the headroom for the "more operations on left click" ask. It
+does NOT replace `router.rs`'s first-claim-wins arbitration (§input-router): the
+per-frame consumer systems still own the PRESS contest; the table is the shared
+decision model they (and the FR-3 drag) consult. `HitTarget` is the raw pick
+result (`Empty`/`Node`/`PathVertex`/`PathSegment`/`Stamp`/`TerrainProposal`/
+`TerrainCell`/`GimbalAxis`); `Operation` is the resolved verb (`SelectNode`/
+`SelectVertex`/`SelectSegment`/`SelectStamp`/`SelectProposal`/`PlacePathPoint`/
+`PlaceNode`/`BeginGimbalDrag`/`MoveVertex`/`MoveSegment`/`TerrainCellEdit`/
+`Deselect`/`None`). Resolution is **hit-first**, modulated by tool/selection only
+where intent changes: Pen keeps placing a point even over a grazed node; a
+gimbal-axis press drags the current selection (entity → `BeginGimbalDrag`; a
+vertex/segment under Move → `MoveVertex`/`MoveSegment`; Select/Pen → `None`, so
+the drawn path gimbal stays a visual-only handle). WHEN a given hit can occur is
+the router's gate, not the table's concern — the table stays decoupled from the
+per-tool pick guards.
+
+**FR-3 gimbal drag (`path_gimbal_drag.rs`).** A selected path vertex/segment has
+NO entity, so it can't reuse `handle_gimbal_interaction`'s entity-`Transform`
+drag. `handle_path_gimbal_drag` computes the new world position from the axis +
+cursor delta (`drag_axis_delta`/`drag_delta_to_position`, pure + unit-tested;
+the same `* 0.002` camera-distance feel as the entity gimbal via
+`move_scale_factor`) and, on RELEASE, queues one `UiAction::PathMovePoint` per
+affected index — a segment moves BOTH endpoints by the same delta (parallel
+translate: length + orientation preserved). It:
+
+- is gated to `Tool::Move` ONLY — Pen appends and Select picks are structurally
+  safe (it returns before touching anything in every other tool), and it cancels
+  an in-flight drag if the tool changes mid-drag;
+- runs in the `.chain()` immediately BEFORE `handle_gimbal_interaction`, and on a
+  vertex/segment press that hits the axis it claims `ClickPriority::Gimbal`
+  FIRST — so the entity gimbal's own `claim(Gimbal)` fails (first-claim-wins) and
+  it never starts a competing entity drag on the bridged ribbon;
+- reads the CURRENT selection by calling `project_selection` directly (NOT
+  `SelectionState`, which is projected late in the chain and would be a frame
+  stale), then asks `resolve_operation(Move, kind, GimbalAxis)` for the
+  `MoveVertex`/`MoveSegment` index set;
+- gives live feedback by writing the affected `PathPointMarker` transforms each
+  hold frame. `handle_path_point_interaction` doesn't fight it: the Gimbal claim
+  denies its `PathMarker` claim on the same press, and it keys off a separate
+  `PathGimbalDrag` resource. Because `PathMovePoint` → `path::move_point` also
+  updates the local buffer, no manual `PathEditorState` write is needed.
+
+Whole-track gimbal drag stays on the entity path (the ribbon has an entity + the
+FR-4 bake in §path-segments); FR-3 only adds the vertex/segment case.
+
+**Terrain-cell seam (FR-5, NOT fully wired).** `HitTarget::TerrainCell →
+Operation::TerrainCellEdit` exists and is tested, and
+`dispatch::terrain_cell_proposal(brush, footprint, target_height, delta) ->
+TerrainProposalEdit` builds the payload. `TerrainBrush` enumerates the
+Cities-Skylines-style brushes (raise/lower/flatten/ramp/slope/pad/cut/fill);
+every brush emits a PROPOSAL, never a destructive terrain write (NFR-1). Two
+`TODO(ultrapilot)` seams remain: (a) there is no terrain-edit `Tool` variant to
+produce `TerrainCell` hits (adding one touches `panels/toolbar.rs`, outside
+node_manager's write scope); (b) the emit target
+`crate::actions::UiAction::TerrainProposalAdd { op, footprint, target_height,
+delta }` is owned by the p2p/terrain worker — once it lands, the terrain-cell
+consumer pushes it directly instead of returning `TerrainProposalEdit`. fe-ui
+must NOT depend on fe-terrain, so `TerrainBrush` is a local enum, not a re-export.

@@ -181,6 +181,22 @@ pub(crate) fn top_toolbar(
                         tool_panel.open = !tool_panel.open;
                     }
 
+                    // D-78 (p2p_asset_streaming_20260718 FR-7): application
+                    // settings entry point. Routed through the action queue
+                    // (not a direct `ui_mgr.open_dialog` call like Maps below)
+                    // so w4b's `process_ui_actions` can fold in any side
+                    // effects (e.g. persistence) alongside the dialog open.
+                    // TODO(ultrapilot): `UiAction::SettingsToggle` is a
+                    // cross-worker variant (w4b, actions/mod.rs) — this button
+                    // compiles once that variant + its match arm land.
+                    if ui
+                        .add(egui::Button::new("\u{2699} Settings").fill(theme::BG_BUTTON))
+                        .on_hover_text("Application settings (render distance, mesh budget, ...)")
+                        .clicked()
+                    {
+                        ui_mgr.push_action(UiAction::SettingsToggle);
+                    }
+
                     if ui
                         .add(egui::Button::new("\u{1F4E6} Maps").fill(theme::BG_BUTTON))
                         .on_hover_text("Manage petal maps")

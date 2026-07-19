@@ -71,7 +71,7 @@ mod render_support {
 
     use super::PetalTerrainAssignment;
     use crate::config::{ElevationSourceKind, TerrainConfig};
-    use crate::layers::{layer_type_from_config_name, LayerStack, MapLayer};
+    use crate::layers::{layer_type_from_config_name, LayerStack, LayerType, MapLayer};
     use crate::terrain_plugin::{GeoJsonOverlay, GeoJsonProcessed, GpxTrackLine, TerrainChunk};
     use crate::tiles::{
         decode_png_pixels, CompositeTileSource, DiskTileCache, ElevationDecoder, TerrainRgbDecoder,
@@ -120,6 +120,7 @@ mod render_support {
     >;
 
     /// Applies the last queued assignment: state, tile source, layer stack, entity reset.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_terrain_assignments(
         mut reader: MessageReader<TerrainAssignmentMsg>,
         registry: Option<Res<SharedTilesetRegistry>>,
@@ -128,6 +129,7 @@ mod render_support {
         mut layer_stack: ResMut<LayerStack>,
         mut commands: Commands,
         spawned: SpawnedTerrainQuery,
+        mut height_field: Option<ResMut<fe_renderer::terrain_height::TerrainHeightField>>,
     ) {
         // Only the last assignment per frame wins.
         let Some(TerrainAssignmentMsg(assignment)) = reader.read().last().cloned() else {
@@ -230,6 +232,20 @@ mod render_support {
                     layer_stack.add_layer(map_layer);
                 }
 
+                // FR-5: ensure a ProposalOverlay layer exists when the petal has
+                // proposals so the ghost toggle works even if the config didn't
+                // declare one. Topmost z-order — proposals draw over base layers.
+                if !config.proposals.is_empty()
+                    && !layer_stack
+                        .iter()
+                        .any(|l| matches!(l.layer_type, LayerType::ProposalOverlay))
+                {
+                    layer_stack.add_layer(MapLayer::new(
+                        LayerType::ProposalOverlay,
+                        config.layers.len() as i32,
+                    ));
+                }
+
                 // Publish the reconciled config (encoding + grounded origin).
                 active.config = Some(config);
             }
@@ -243,6 +259,9 @@ mod render_support {
         // Despawn all terrain-derived entities so they respawn under the new config.
         for entity in spawned.iter() {
             commands.entity(entity).despawn();
+        }
+        if let Some(field) = height_field.as_mut() {
+            field.clear();
         }
     }
 

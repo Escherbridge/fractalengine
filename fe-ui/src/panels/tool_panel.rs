@@ -84,6 +84,67 @@ impl SpacingMode {
     }
 }
 
+/// FR-5 (terrain_editor_overhaul): the Cities-Skylines-style terrain edit
+/// modes, kept as a panel-local enum (same idiom as `SpacingMode`) so this
+/// file has no hard dependency on `terrain_proposal_state::ProposalOp`'s
+/// exact derive set — converted at emit time via `to_proposal_op`. See
+/// `panels/AGENTS.md` §terrain-tools and `panels/terrain_tools_panel.rs`.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum TerrainToolMode {
+    #[default]
+    Raise,
+    Lower,
+    Flatten,
+    Ramp,
+    Slope,
+    Pad,
+    Cut,
+    Fill,
+}
+
+impl TerrainToolMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            TerrainToolMode::Raise => "Raise",
+            TerrainToolMode::Lower => "Lower",
+            TerrainToolMode::Flatten => "Flatten",
+            TerrainToolMode::Ramp => "Ramp",
+            TerrainToolMode::Slope => "Slope",
+            TerrainToolMode::Pad => "Pad",
+            TerrainToolMode::Cut => "Cut",
+            TerrainToolMode::Fill => "Fill",
+        }
+    }
+
+    pub const ALL: [TerrainToolMode; 8] = [
+        TerrainToolMode::Raise,
+        TerrainToolMode::Lower,
+        TerrainToolMode::Flatten,
+        TerrainToolMode::Ramp,
+        TerrainToolMode::Slope,
+        TerrainToolMode::Pad,
+        TerrainToolMode::Cut,
+        TerrainToolMode::Fill,
+    ];
+
+    /// Map to the cross-worker `ProposalOp` (owned by `terrain_proposal_state`,
+    /// w4b). TODO(ultrapilot): confirm variant names line up 1:1 once that
+    /// module lands; adjust this match if they diverge.
+    pub fn to_proposal_op(self) -> crate::terrain_proposal_state::ProposalOp {
+        use crate::terrain_proposal_state::ProposalOp;
+        match self {
+            TerrainToolMode::Raise => ProposalOp::Raise,
+            TerrainToolMode::Lower => ProposalOp::Lower,
+            TerrainToolMode::Flatten => ProposalOp::Flatten,
+            TerrainToolMode::Ramp => ProposalOp::Ramp,
+            TerrainToolMode::Slope => ProposalOp::Slope,
+            TerrainToolMode::Pad => ProposalOp::Pad,
+            TerrainToolMode::Cut => ProposalOp::Cut,
+            TerrainToolMode::Fill => ProposalOp::Fill,
+        }
+    }
+}
+
 /// Persistent state for the Tools panel (open flag + path-asset stamp
 /// controls). `selected_hexon_ref` holds the picked asset's `asset_path`
 /// (`blob://{hash}.glb`); the picker (FR-1b) or the collapsible manual-entry
@@ -116,6 +177,15 @@ pub struct ToolPanelState {
     /// `actions::process_ui_actions` (avoids threading `ui_mgr` through the
     /// `render_tool_panel` signature). See AGENTS.md §tool-panel.
     pub pending_actions: Vec<UiAction>,
+    // --- FR-5 terrain tool palette (terrain_editor_overhaul_20260718) ---
+    /// Whether the standalone `terrain_tools_panel` window is open. Toggled
+    /// from this panel's "Terrain Tools" pointer section (see
+    /// `render_terrain_tools_section`) and from the toolbar (TODO seam).
+    pub terrain_tools_open: bool,
+    pub terrain_tool_mode: TerrainToolMode,
+    pub terrain_footprint_radius: f32,
+    pub terrain_target_height: f32,
+    pub terrain_delta: f32,
 }
 
 impl ToolPanelState {
@@ -163,7 +233,7 @@ pub fn render_tool_panel(
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
-            render_terrain_tools_section(ui);
+            render_terrain_tools_section(ui, state);
         });
 
     if !still_open {
@@ -598,7 +668,12 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     );
 }
 
-fn render_terrain_tools_section(ui: &mut egui::Ui) {
+/// FR-5: the terrain edit palette itself lives in a standalone floating
+/// window (`panels::terrain_tools_panel::terrain_tools_panel`) so it can hold
+/// a `ProposalEditState` handle without widening this panel's — and by
+/// extension `gardener_console`'s — signature. This section is just the
+/// reachability toggle. See `panels/AGENTS.md` §terrain-tools.
+fn render_terrain_tools_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     ui.label(
         egui::RichText::new("Terrain Tools")
             .strong()
@@ -606,11 +681,21 @@ fn render_terrain_tools_section(ui: &mut egui::Ui) {
     );
     ui.add_space(4.0);
     ui.label(
-        egui::RichText::new("(placeholder — future terrain tools)")
-            .small()
-            .color(theme::TEXT_MUTED)
-            .italics(),
+        egui::RichText::new(
+            "Non-destructive proposal overlays (raise/lower/flatten/ramp/slope/pad/cut/fill) — analytics only, never writes true terrain.",
+        )
+        .small()
+        .color(theme::TEXT_MUTED),
     );
+    ui.add_space(4.0);
+    let label = if state.terrain_tools_open {
+        "Close Terrain Tools"
+    } else {
+        "Open Terrain Tools"
+    };
+    if ui.button(label).clicked() {
+        state.terrain_tools_open = !state.terrain_tools_open;
+    }
 }
 
 #[cfg(test)]
@@ -733,5 +818,32 @@ mod tests {
             SpacingMode::FixedCount.to_sdk(),
             fe_sdk::path_asset::SpacingMode::FixedCount
         );
+    }
+
+    #[test]
+    fn terrain_tool_mode_labels_are_all_distinct_and_nonempty() {
+        let mut labels: Vec<&str> = TerrainToolMode::ALL.iter().map(|m| m.label()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()));
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), TerrainToolMode::ALL.len());
+    }
+
+    // TODO(ultrapilot): depends on `crate::terrain_proposal_state::ProposalOp`
+    // (w4b) — will compile once that module lands. Locks the FR-5 op mapping.
+    #[test]
+    fn terrain_tool_mode_maps_1to1_onto_proposal_op() {
+        use crate::terrain_proposal_state::ProposalOp;
+        assert_eq!(TerrainToolMode::Raise.to_proposal_op(), ProposalOp::Raise);
+        assert_eq!(TerrainToolMode::Lower.to_proposal_op(), ProposalOp::Lower);
+        assert_eq!(
+            TerrainToolMode::Flatten.to_proposal_op(),
+            ProposalOp::Flatten
+        );
+        assert_eq!(TerrainToolMode::Ramp.to_proposal_op(), ProposalOp::Ramp);
+        assert_eq!(TerrainToolMode::Slope.to_proposal_op(), ProposalOp::Slope);
+        assert_eq!(TerrainToolMode::Pad.to_proposal_op(), ProposalOp::Pad);
+        assert_eq!(TerrainToolMode::Cut.to_proposal_op(), ProposalOp::Cut);
+        assert_eq!(TerrainToolMode::Fill.to_proposal_op(), ProposalOp::Fill);
     }
 }

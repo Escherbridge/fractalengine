@@ -1,4 +1,5 @@
 use crate::projection::Projection;
+use crate::terrain_proposal::TerrainProposal;
 use serde::{Deserialize, Serialize};
 
 /// Elevation data source kind.
@@ -72,6 +73,11 @@ pub struct TerrainConfig {
     /// `world_scale` are clamped into this range. `None` = unbounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale_bounds: Option<[f64; 2]>,
+    /// Non-destructive analytics terrain proposals (overlays only; NEVER written
+    /// to the heightfield/tileset — NFR-1). Additive: pre-feature petal JSON
+    /// omits the key. See `src/AGENTS.md` §terrain-proposals.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<TerrainProposal>,
 }
 
 impl TerrainConfig {
@@ -114,6 +120,7 @@ impl Default for TerrainConfig {
             tile_source_mode: TileSourceMode::default(),
             world_scale: default_world_scale(),
             scale_bounds: None,
+            proposals: vec![],
         }
     }
 }
@@ -159,6 +166,36 @@ mod tests {
         assert_eq!(cfg.effective_world_scale(), 1.0);
         cfg.world_scale = f64::NAN;
         assert_eq!(cfg.effective_world_scale(), 1.0);
+    }
+
+    #[test]
+    fn proposals_default_empty_and_roundtrip_additively() {
+        use crate::terrain_proposal::{TerrainOp, TerrainProposal};
+
+        // Pre-feature stored JSON (no `proposals` key) parses to an empty set.
+        let json = serde_json::json!({
+            "enabled": true,
+            "origin": { "origin_lat": 0.0, "origin_lon": 0.0, "origin_ele": 0.0 },
+            "tile_source_url": "",
+            "elevation_source": "none",
+        });
+        let cfg: TerrainConfig = serde_json::from_value(json).expect("parses without proposals");
+        assert!(cfg.proposals.is_empty());
+
+        // With proposals: they roundtrip and the empty case stays omitted.
+        let mut cfg = TerrainConfig::default();
+        assert!(serde_json::to_value(&cfg).unwrap().get("proposals").is_none());
+        cfg.proposals.push(TerrainProposal {
+            id: "p1".into(),
+            op: TerrainOp::Flatten,
+            footprint: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            target_height: Some(5.0),
+            delta: None,
+        });
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["proposals"][0]["op"], serde_json::json!("flatten"));
+        let parsed: TerrainConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.proposals, cfg.proposals);
     }
 
     #[test]
