@@ -10,7 +10,7 @@ practical workflow; for build details see [BUILDING.md](BUILDING.md).
 2. Clone and build:
 
    ```bash
-   git clone https://github.com/JadeZaher/fractalengine.git
+   git clone https://github.com/Escherbridge/fractalengine.git
    cd fractalengine
    cargo build
    ```

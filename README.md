@@ -1,6 +1,6 @@
 # FractalEngine
 
-[![Build Artifacts](https://github.com/JadeZaher/fractalengine/actions/workflows/build-artifacts.yml/badge.svg)](https://github.com/JadeZaher/fractalengine/actions/workflows/build-artifacts.yml)
+[![Build Artifacts](https://github.com/Escherbridge/fractalengine/actions/workflows/build-artifacts.yml/badge.svg)](https://github.com/Escherbridge/fractalengine/actions/workflows/build-artifacts.yml)
 
 A **spatial analytics engine**. FractalEngine ingests real-world geodata — maps,
 terrain, GPX paths, IoT readings — into an embedded spatial database, and its
