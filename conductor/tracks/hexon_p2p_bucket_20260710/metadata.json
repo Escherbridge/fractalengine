@@ -18,5 +18,6 @@
     "rationale": "3D visual IPFS / P2P pull-through = foundry content layer. Cherry-pick generic-asset-model only if IoT needs it.",
     "assessed": "2026-07-14",
     "foundry_project": true
-  }
+  },
+  "validation_notes": "VALIDATED 2026-07-19: spec_only — confirmed unchanged since 2026-07-15 note; fe-network/src/iroh_blobs.rs remains the same stub, no real P2P blob transport landed. Foundry-candidate, deliberately not implemented in the analytics core. Kept as reference. remaining: everything beyond the already-landed GET /nodes/{id}/asset + GET /assets/by-id/{asset_id} (commit 3a97fc1, predates this validation window); do NOT archive."
 }

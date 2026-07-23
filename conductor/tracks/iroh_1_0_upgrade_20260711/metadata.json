@@ -23,5 +23,6 @@
     "priority": "P2 (rises P1 by Q4)",
     "rationale": "relay 0.35 EOL 2026-12-31; only bites P2P. Do the real iroh wiring once, on 1.x, with mycelium_completion.",
     "assessed": "2026-07-14"
-  }
+  },
+  "validation_notes": "VALIDATED 2026-07-19: pending — evidence: Cargo.toml:61 still pins `iroh = \"0.35\"`, unchanged. Calendar-driven deadline (2026-12-31) not yet reached (~5.4 months out); no premature work needed. Note: p2p_asset_streaming_20260718's D-77/E2 decision explicitly builds FR-3 transport on 0.35 behind a trait seam (not yet implemented either), consistent with this track's deferred posture. remaining: not started, on schedule; do NOT archive."
 }

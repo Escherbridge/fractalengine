@@ -12,5 +12,6 @@
     "priority": "P3",
     "rationale": "Social/identity cosmetics; off the analytics path. Defer.",
     "assessed": "2026-07-14"
-  }
+  },
+  "notes_validation": "VALIDATED 2026-07-19: pending (unchanged) — `git grep` for ProfileAnnounce, PeerProfileCache, and a `profiles` SurrealDB table across *.rs returns zero hits. No profile UI, identity-management panel, or P2P profile-sync code exists. Stated dependency shared_peer_infra_20260419 (PeerRegistry, NodeIdentity) is confirmed satisfied/archived per existing notes, so Phases 1-3 are unblocked but still unstarted. remaining: all 4 FRs (profile display, profile editing, identity management, P2P/DB integration)."
 }

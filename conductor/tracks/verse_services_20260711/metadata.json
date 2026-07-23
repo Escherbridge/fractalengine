@@ -20,5 +20,6 @@
     "rationale": "Accelerator-only per-verse services = foundry commons; presupposes delta/auth/signing. Belongs to foundry project.",
     "assessed": "2026-07-14",
     "foundry_project": true
-  }
+  },
+  "validation_notes": "VALIDATED 2026-07-19: spec_only — confirmed unchanged; depends on hexon_delta_format_20260710 which is itself still spec_only (per-op signing not built), so this track cannot have progressed. Foundry-candidate, deliberately not implemented in the analytics core. Kept as reference. remaining: everything (spec-only by design, blocked on prerequisite tracks); do NOT archive."
 }

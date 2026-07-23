@@ -4,7 +4,7 @@
   "type": "feature",
   "created_at": "2026-07-12T00:00:00Z",
   "status": "in_progress",
-  "notes": "Phase 4 done; 5 (measurement tools) + 6 (graticule/annotations) remain",
+  "notes": "Phase 4 done; 5 (measurement tools) + 6 (graticule/annotations) remain. VALIDATED 2026-07-19: in_progress — commits 9ef76a1/f062921/51bc90e/320ebfe land fe-format/src/manifest.rs scale fields, fe-terrain/src/tiles/composite.rs reconciliation, fe-terrain/src/petal_binding.rs authoritative binding, fe-terrain/src/ruler.rs pure math (nice_number/world_to_real_distance/bearing_deg/polygon_area_m2/scale_bar_spec) + fe-terrain/src/ruler_plugin.rs HUD, all present on disk (Phases 1-4 confirmed); remaining: Phase 5 — no measurement-tool interaction system (tape/area/bearing anchor placement) wired in fe-ui/fe-terrain, only the pure ruler math exists; Phase 6 — no graticule/world-grid/dimension-callout code found anywhere in the tree.",
   "execution_wave": 1,
   "depends_on": [
     "terrain_scale_controls_20260711"

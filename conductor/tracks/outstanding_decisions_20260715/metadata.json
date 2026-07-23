@@ -8,5 +8,5 @@
   "depends_on": [],
   "blocks": [],
   "archived": false,
-  "notes": "Created at user request at session end ('hold any questions for the end'). Sources: 37-agent track audit (2026-07-14) + 3 implementation waves (commits 9ef76a1, f062921, 51bc90e). UX-theme entries mirrored into ux_qa_review_20260714/findings.md."
+  "notes": "Created at user request at session end ('hold any questions for the end'). Sources: 37-agent track audit (2026-07-14) + 3 implementation waves (commits 9ef76a1, f062921, 51bc90e). UX-theme entries mirrored into ux_qa_review_20260714/findings.md. VALIDATED 2026-07-19: pending — decision register (72 entries), no plan.md/code to verify against; stays open per instructions as a ratification register awaiting the user, never auto-archived. No status change."
 }

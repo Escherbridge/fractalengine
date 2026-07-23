@@ -6,5 +6,5 @@
   "status": "pending",
   "depends_on": [],
   "blocks": [],
-  "notes": "User directives 2026-07-16 (binding): fe-format v1.0.0 upheld as canonical; .fecrate stack deletable, registry compat may break (still in dev); snapshot carries op-log sigs verbatim (D5-1). Subsumes hexon_path_asset_20260713 FR-5 (PetalHexon bake). Forward-compatible with, but does not implement, hexon_delta_format_20260710 (foundry-candidate)."
+  "notes": "User directives 2026-07-16 (binding): fe-format v1.0.0 upheld as canonical; .fecrate stack deletable, registry compat may break (still in dev); snapshot carries op-log sigs verbatim (D5-1). Subsumes hexon_path_asset_20260713 FR-5 (PetalHexon bake). Forward-compatible with, but does not implement, hexon_delta_format_20260710 (foundry-candidate).\nVALIDATED 2026-07-19: pending — evidence: `.fecrate` still referenced in production code (fe-api/src/hexon.rs, fe-hexon/src/package.rs, fe-hexon/src/publisher.rs), fe-hexon/src/manifest.rs still defines the parallel `crate_id`-keyed manifest type (3 hits), zero `PetalSnapshot` references anywhere in fe-format or fe-hexon (FR-6 not started). No phase of plan.md (Phase 1-6) has landed. Remaining: everything — FR-1..FR-10 all open.",
 }

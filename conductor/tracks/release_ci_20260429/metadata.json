@@ -27,7 +27,7 @@
       "notes": "2026-07-15: Tasks 2.1-2.6 done (release.yml 8-target matrix + lipo universal + SHA256SUMS + gh-release publish + GHCR docker job; Cross.toml). Task 2.7 pending."
     }
   ],
-  "notes": "2026-07-15: release.yml + Cross.toml + macOS PR job landed. Task 2.7 end-to-end tag verification pending (requires live GitHub run). CI run 29390918844: Linux FAILED on missing glib-2.0 system dep (workflow-level, fixed in build-artifacts.yml); Windows still in_progress at check time.",
+  "notes": "2026-07-15: release.yml + Cross.toml + macOS PR job landed. Task 2.7 end-to-end tag verification pending (requires live GitHub run). CI run 29390918844: Linux FAILED on missing glib-2.0 system dep (workflow-level, fixed in build-artifacts.yml); Windows still in_progress at check time. VALIDATED 2026-07-19: in_progress — Phase 1 complete, Phase 2 tasks 2.1-2.6 done via git history (build-artifacts.yml, release.yml, Cross.toml, docker/Dockerfile.relay all present); task 2.7 (live tag e2e) still unchecked in plan.md. CI IS CURRENTLY FAILING (confirmed via `gh run list`/`gh run view`): last 2 pushes to main (29687337676 2026-07-19, 29633446714 2026-07-18) both failed — root cause is the new `Lint (fmt + clippy)` job added in d5cc361 (2026-07-17, `cargo clippy --workspace --all-targets -- -D warnings`); Windows/Linux/macOS build+test jobs all pass, only Lint fails. This is a pre-existing-warnings-vs-new-strict-gate issue, not a build breakage; remaining: task 2.7 live tag verification + fix clippy warnings so Lint job passes (out of scope for this validation pass).",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P2",

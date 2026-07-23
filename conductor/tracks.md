@@ -19,7 +19,20 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
 > (delivered and archived), not a dangling reference — no cross-check needed.
 
-**Open tracks: 30.**
+**Open tracks: 31.**
+
+> **Validation pass 2026-07-19** (5-worker swarm, code-reading + git evidence only —
+> build env memory-blocked, no test execution). Every track's `metadata.json` re-validated
+> against committed git + a dated `VALIDATED 2026-07-19` note appended. **Status corrections:**
+> `terrain_editor_overhaul` `pending`→`in_progress` (FR-1..6 landed @ `320ebfe`; 4 in-app
+> regression fixes uncommitted), `p2p_asset_streaming` `pending`→`in_progress` (settings/
+> ledger/relay @ `320ebfe`; FR-3 chunk transfer still stubbed), `oss_release` `pending`→
+> `in_progress` (D-69/D-70 ratified @ `b555082`), `thorns_shields` `pending`→`in_progress`
+> (fuzz targets + threat-model docs @ `d5cc361`). New track `tool_inspector_ux_20260719`
+> added (Phase 1 local-only). **0 archived** — no track met the `done` bar (all carry
+> remaining acceptance items or uncommitted/unverified work). Nearest-to-done:
+> `runtime_instance_guardrails` (crash fix committed + verified @ `46e19de`; needs retro +
+> FR-6 live-run sign-off to archive).
 
 ---
 
@@ -86,9 +99,9 @@ dive below terrain), scale-aware `scaled_min_distance` floored above the fixed
 near=0.01 (camera_focus_clip contract kept), and eased dt-independent motion
 (FR-5, added same-day from the user's camera ask).
 
-### [ ] terrain_editor_overhaul — unified typed-selection editor + analytics-first terrain proposals
+### [~] terrain_editor_overhaul — unified typed-selection editor + analytics-first terrain proposals
 
-_Link: [./tracks/terrain_editor_overhaul_20260718/](./tracks/terrain_editor_overhaul_20260718/) · pending · P0 UX + P0 Analytics (user-driven 2026-07-18)_
+_Link: [./tracks/terrain_editor_overhaul_20260718/](./tracks/terrain_editor_overhaul_20260718/) · in_progress (FR-1..6 landed @ 320ebfe; 4 in-app regressions fixed LOCAL/uncommitted 2026-07-19) · P0 UX + P0 Analytics (user-driven 2026-07-18)_
 
 Re-spec of the editor as one object-aware left-click surface, plus a
 Cities-Skylines-map-editor-inspired terrain editor that stays true to the
@@ -111,6 +124,37 @@ placeholder). **FR-6:** wire the tested-but-unwired `ruler.rs` geometry math
 report panel (extent m, area m², cut/fill m³, slope, bearing). Consumes
 p2p_asset_streaming's mesh budget + D-78 `AppSettings`; measurement scope
 coordinates with hexon_scale_orchestration Phase 5.
+
+### [~] tool_inspector_ux — Blender-like tool-inspector (active tool as a legible UI MODE)
+
+_Link: [./tracks/tool_inspector_ux_20260719/](./tracks/tool_inspector_ux_20260719/) · in_progress (Phase 1 LOCAL/uncommitted 2026-07-19) · P0 UX (user-directed 2026-07-19) · depends_on terrain_editor_overhaul_
+
+Make the active tool an explicit, legible UI MODE: a tool-mode switcher (top,
+adapting `TOOL_DEFS`) + a left per-tool inspector panel (Use/Settings zones) that
+reshapes how Select/Move/Rotate/Scale/Pen behave and surfaces each mode's
+affordances (gimbal-active, axis constraints, snapping, highlighting) — without
+merging the two selection authorities (ui_ux.md §5) and without an fe-ui→fe-terrain
+dep. **Phase 1 implemented (local-only):** `panels/tool_inspector.rs` left
+per-tool SidePanel + luminance active-mode emphasis (ui_ux.md §1) + FR-7 gimbal
+"grabbable wherever shown" (landed early in the 2026-07-19 bug-fix pass). Deferred:
+Phases 2–6 (per-tool Use/Settings bodies, snapping/constraint/highlight pure
+models, `tool_panel.rs` migration, keyboard-parity close-out).
+
+### [ ] pen_curve_tool — Illustrator-style Pen curve tool (bezier anchors + corner settings)
+
+_Link: [./tracks/pen_curve_tool_20260722/](./tracks/pen_curve_tool_20260722/) · pending (design-only 2026-07-22) · P1 UX (user-directed 2026-07-22) · depends_on terrain_editor_overhaul, tool_inspector_ux_
+
+Turn the Pen tool into an Illustrator-style cubic-bezier curve tool: per-anchor
+in/out handles + Corner/Smooth/Symmetric classification, click=corner /
+press-drag=smooth / Alt-drag=corner-break, and a per-anchor "corner settings"
+smoothness slider (0 = sharp .. 1 = round) that auto-derives collinear handles.
+Reuses the existing de Casteljau tessellation (`node_manager/curve.rs`) — a
+UI/interaction/persistence feature, NOT new curve math. Geometry stays in raw
+petal-local meters (no `world_scale`); legacy straight polylines render
+byte-identically. **Design-only** (workflow `wf_a7826e5e-6dc`; critique:
+sound-with-fixes, 3 sacred invariants respected, 2 must-fixes folded into the plan).
+Supersedes the Pen arm-grab review finding; open decisions await ratification
+before build.
 
 ---
 
@@ -227,9 +271,9 @@ GHCR docker job, `Cross.toml`). Remaining: task 2.7 end-to-end tag verification
 (requires a live GitHub run). Docker relay image = shipping vehicle for the analytics
 backend.
 
-### [ ] oss_release — open-source release checklist
+### [~] oss_release — open-source release checklist
 
-_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · pending · P1 ENABLING · D-69 + D-70 RATIFIED 2026-07-17 (Apache-2.0; conductor/ public)_
+_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · in_progress (D-69/D-70 ratified @ b555082; Apache-2.0 SINGLE, scaffolding + CI lint gate landed; many items BLOCKED-ON-USER) · P1 ENABLING · D-69 + D-70 RATIFIED 2026-07-17 (Apache-2.0; conductor/ public)_
 
 The full pre-public-push gate, sourced from the 2026-07-17 OSS-release audit
 (REL-01..11) + crate-consolidation audit ([decision record](./decisions/crate-consolidation-20260717.md)).
@@ -251,9 +295,9 @@ macOS aarch64 (new PR job), Windows ARM64 (release.yml, next `v*` tag). Local
 Win-ARM64 compile deferred-to-CI (memory-constrained dev machine). Still unverified:
 macOS launch smoke test, macOS x86_64 compile.
 
-### [ ] p2p_asset_streaming — fine-grained hexon transfer + scene-driven residency
+### [~] p2p_asset_streaming — fine-grained hexon transfer + scene-driven residency
 
-_Link: [./tracks/p2p_asset_streaming_20260718/](./tracks/p2p_asset_streaming_20260718/) · pending · P1 PLATFORM (user-driven 2026-07-18; P2P = main differentiator per D-71) · decision round **D-73…D-78 RATIFIED 2026-07-18**_
+_Link: [./tracks/p2p_asset_streaming_20260718/](./tracks/p2p_asset_streaming_20260718/) · in_progress (FR-1 relay + FR-7/D-78 settings + FR-4 soft residency landed @ 320ebfe; **FR-3 chunk transfer still STUBBED** — sync_thread.rs:767-793 emits ChunkFailed; FR-5/FR-6 unbuilt) · P1 PLATFORM (user-driven 2026-07-18; P2P = main differentiator per D-71) · decision round **D-73…D-78 RATIFIED 2026-07-18**_
 
 User ask 2026-07-18: stream parts of multiple hexons based on what's actually
 in the scene (render distance + entity caps) instead of forcing full downloads.
@@ -346,9 +390,10 @@ No blocking dependencies; opportunistic or explicitly deferred (see each
 - [~] **inspector_settings** — FR-3 (hierarchy inspection) + FR-4 (Access-tab RBAC UI)
   remain; FR-1 SaveUrl `is_url_allowed` landed 2026-07-15, FR-2 folded to shipped tab
   set — [./tracks/inspector_settings_20260419/](./tracks/inspector_settings_20260419/)
-- [ ] **thorns_shields** — security hardening + pre-launch docs; Wave-1 scaffolds only,
-  unwrap audit never run; folder reconstructed 2026-07-14 —
-  [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
+- [~] **thorns_shields** — security hardening + pre-launch docs; in_progress: fuzz targets
+  (ed25519/jwt) + threat-model/security-checklist/unwrap-audit docs landed @ d5cc361, but
+  `scripts/audit.sh` never committed, no fuzz CI job, 2 v2 gaps (DNS-rebinding, oversized-content)
+  open — [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
 - [ ] **sso_federation** — enterprise OIDC/SSO, spec_only P2 —
   [./tracks/sso_federation_20260429/](./tracks/sso_federation_20260429/)
 - [ ] **drag_drop_placement** — OS file drop + placement flow, spec_only; hand to the
