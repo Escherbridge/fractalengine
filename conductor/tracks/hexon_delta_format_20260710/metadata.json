@@ -18,5 +18,6 @@
     "rationale": "Op-log delta hexons / WAL / sig-chains = foundry commons. Keep spec as reference; belongs to foundry project.",
     "assessed": "2026-07-14",
     "foundry_project": true
-  }
+  },
+  "validation_notes": "VALIDATED 2026-07-19: spec_only — confirmed unchanged; no HashSeq usage found in fe-hexon/fe-format (git grep clean), OpLogEntry.sig still a placeholder field (fe-database/src/types.rs), no log-first WAL implementation. Foundry-candidate, deliberately not implemented in the analytics core per 2026-07-14 alignment. Kept as reference. remaining: everything (spec-only by design); do NOT archive."
 }

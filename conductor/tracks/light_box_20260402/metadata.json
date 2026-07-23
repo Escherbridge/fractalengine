@@ -11,5 +11,6 @@
     "priority": "P3",
     "rationale": "Visual polish (default lighting). Defer.",
     "assessed": "2026-07-14"
-  }
+  },
+  "notes": "VALIDATED 2026-07-19: pending (unchanged) — `git grep` for PetalLight, LightPreset, spawn_default_light_box, LightKind across *.rs returns zero hits. No lighting subsystem exists; FractalEngine still relies on Bevy defaults. None of the 6 FRs implemented. remaining: all 6 FRs (light component system, default 3-point rig, presets, SurrealDB light schema/persistence, light inspector panel, default spawn-on-load)."
 }

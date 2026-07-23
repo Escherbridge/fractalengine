@@ -12,5 +12,6 @@
     "priority": "P2",
     "rationale": "Enterprise OIDC/SSO — the auth story enterprise analytics customers need; additive. Not the immediate last-mile.",
     "assessed": "2026-07-14"
-  }
+  },
+  "notes": "VALIDATED 2026-07-19: spec_only (unchanged) — `git grep` for sso_provider, SsoProviderRecord, openidconnect, and auth/exchange across *.rs/*.toml returns zero hits; no fe-api/src/sso.rs or fe-database/src/sso_store.rs exist in git history (any branch). No implementation work has started on any of the 6 phases; the detailed spec (data model, token-exchange flow, admin UI mocks) remains design-only. remaining: all 6 phases (token exchange endpoint, identity mapping, admin UI, login portal, OAuth2 code flow, WS/MCP SSO auth)."
 }

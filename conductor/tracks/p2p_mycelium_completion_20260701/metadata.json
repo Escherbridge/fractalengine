@@ -10,7 +10,7 @@
   "depends_on": [
     "p2p_mycelium_20260405"
   ],
-  "notes": "depends_on p2p_mycelium_20260405 is archived (conductor/tracks/_archive/p2p_mycelium_20260405/) — satisfied, kept for provenance. Top-level priority demoted P0 → P2 per 2026-07-14 alignment (FOUNDRY-ADJACENT).",
+  "notes": "depends_on p2p_mycelium_20260405 is archived (conductor/tracks/_archive/p2p_mycelium_20260405/) — satisfied, kept for provenance. Top-level priority demoted P0 → P2 per 2026-07-14 alignment (FOUNDRY-ADJACENT).\nVALIDATED 2026-07-19: in_progress — evidence: fe-sync/src/replicator.rs untouched since 51bc90e (predates 320ebfe), IrohDocsEngineHolder::is_available() (replicator.rs:235) still gated false, PetalDocsBackend::write (replicator.rs:289) still branches to MockVerseReplicator; no gossip receive loop found in fe-sync/src/sync_thread.rs (git grep for topic.next/gossip receive: no hits) confirming phase 3 (transform sync receive side) still pending. Status unchanged from pending phases 1-2 reopened. Remaining: phase 1 (real iroh-docs Engine wiring), phase 2 (petal namespaces off mock), phase 3 (gossip receive loop + apply-to-Bevy), phase 4 per-petal topic subscription, phase 5 tileset P2P — all still open. Do NOT archive.",
   "phases": [
     {
       "id": "phase_1",

@@ -4,10 +4,10 @@
   "type": "security",
   "created_at": "2026-03-21T00:00:00Z",
   "reconstructed_at": "2026-07-14T00:00:00Z",
-  "status": "pending",
+  "status": "in_progress",
   "execution_wave": 4,
   "depends_on": [],
   "blocks": [],
   "archived": false,
-  "notes": "Folder reconstructed 2026-07-14 during board-hygiene pass — track existed only as a tracks.md entry. Evidence of open state: docs/webview-threat-model.md, docs/security-checklist.md, docs/unwrap-audit.md (says Status: PENDING and cites an .expect already removed 2026-04-30), scripts/audit.sh, fuzz/targets/ are thin scaffolds."
+  "notes": "Folder reconstructed 2026-07-14 during board-hygiene pass — track existed only as a tracks.md entry. Evidence of open state: docs/webview-threat-model.md, docs/security-checklist.md, docs/unwrap-audit.md (says Status: PENDING and cites an .expect already removed 2026-04-30), scripts/audit.sh, fuzz/targets/ are thin scaffolds. VALIDATED 2026-07-19: in_progress (was pending) — the three docs + fuzz/targets/{ed25519_verify,jwt_parse}.rs + fuzz/Cargo.toml are committed (git-tracked as of d5cc361 chore(oss) commit) with real, non-trivial content (webview-threat-model.md has 5 named attack categories w/ mitigations incl. 2 flagged v2 gaps; security-checklist.md has operator+dev checklists), so this is past spec_only/pending scaffolding into partial delivery. `scripts/audit.sh` referenced by docs/unwrap-audit.md does NOT exist in the repo (never committed) — FR-1 (run+update unwrap audit) unmet, docs/unwrap-audit.md still carries its own 'STALE/never executed' marker. No fuzz job found in .github/workflows/{build-artifacts,release}.yml — FR-3 (fuzz targets build+run in CI) unmet. FR-2 (flesh out threat model/checklist) partially done but has 2 explicitly deferred gaps (DNS-rebinding IP check, oversized-content limit). remaining: FR-1 (run the audit, replace stale doc), FR-3 (wire fuzz targets into CI), FR-2 close the 2 flagged v2 gaps."
 }

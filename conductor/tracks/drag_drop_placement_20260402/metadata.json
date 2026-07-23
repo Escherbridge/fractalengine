@@ -13,5 +13,6 @@
     "priority": "P3",
     "rationale": "Overlaps shipped asset work; hand to the user's coming UX track.",
     "assessed": "2026-07-14"
-  }
+  },
+  "notes_validation": "VALIDATED 2026-07-19: spec_only (unchanged) — `git grep` for PlacementMode, FileDragAndDrop, DragHoverActive, PlacementPreview across *.rs returns zero hits; none of the 8 FRs (file-drop detection, drop-zone overlay, asset-record creation, placement preview, click-to-place, escape-cancel, alt-drag duplicate, asset-library panel) have any implementation. Existing 2026-07-17 board-hygiene note about the dissolved petal_seed_20260322 dependency still applies and is unresolved. remaining: all 8 FRs; dependency base (petal_seed_20260322) needs re-basing or re-spec before work can start."
 }
