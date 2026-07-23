@@ -30,7 +30,7 @@ pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                 .fill(theme::BG_CONTEXT_MENU)
                 .inner_margin(egui::Margin::same(4))
                 .corner_radius(4.0)
-                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
                 .show(ui, |ui| {
                     ui.set_min_width(160.0);
 

@@ -230,7 +230,7 @@ pub fn viewport_verse_browser(
                         .color(theme::TEXT_BRIGHT),
                 )
                 .fill(theme::BG_PANEL)
-                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
                 .corner_radius(6.0),
             );
             if resp.clicked() {
@@ -316,7 +316,7 @@ pub fn viewport_verse_browser(
                     .color(theme::TEXT_DIM),
             )
             .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0, theme::BG_BUTTON_ALT))
+            .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
             .corner_radius(6.0),
         );
         if resp.clicked() {
@@ -360,7 +360,7 @@ pub fn viewport_verse_browser(
         peer_box_rect,
         6.0,
         theme::BG_PANEL,
-        egui::Stroke::new(1.0, theme::BG_BUTTON_ALT),
+        egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT),
         egui::StrokeKind::Outside,
     );
 
@@ -477,7 +477,7 @@ pub fn viewport_fractal_browser(
                             .color(theme::TEXT_BRIGHT),
                     )
                     .fill(theme::BG_PANEL)
-                    .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+                    .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
                     .corner_radius(6.0),
                 );
                 if resp.clicked() {
@@ -564,7 +564,7 @@ pub fn viewport_fractal_browser(
                         .color(theme::TEXT_DIM),
                 )
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0, theme::BG_BUTTON_ALT))
+                .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
                 .corner_radius(6.0),
             );
             if resp.clicked() {
@@ -693,7 +693,7 @@ pub fn viewport_petal_browser(
                             .color(theme::TEXT_BRIGHT),
                     )
                     .fill(theme::BG_PANEL)
-                    .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+                    .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
                     .corner_radius(6.0),
                 );
                 if resp.clicked() {
@@ -781,7 +781,7 @@ pub fn viewport_petal_browser(
                         .color(theme::TEXT_DIM),
                 )
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0, theme::BG_BUTTON_ALT))
+                .stroke(egui::Stroke::new(1.0_f32, theme::BG_BUTTON_ALT))
                 .corner_radius(6.0),
             );
             if resp.clicked() {

@@ -39,7 +39,7 @@ pub fn render_petal_manifest(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                 .fill(theme::BG_DIALOG)
                 .inner_margin(egui::Margin::same(16))
                 .corner_radius(6.0)
-                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
+                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
             ui.label(

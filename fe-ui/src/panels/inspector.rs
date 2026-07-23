@@ -42,7 +42,7 @@ pub(crate) fn right_inspector(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
                 .inner_margin(egui::Margin::same(0))
-                .stroke(egui::Stroke::new(2.0, theme::BG_BUTTON)),
+                .stroke(egui::Stroke::new(2.0_f32, theme::BG_BUTTON)),
         )
         .show_animated(ctx, open, |ui| {
             ui.add_space(8.0);

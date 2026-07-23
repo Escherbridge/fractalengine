@@ -47,7 +47,7 @@ pub fn installed_assets(verse_mgr: &VerseManager) -> Vec<AssetPickRow> {
             asset_path: path.clone(),
         });
     }
-    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rows.sort_by_key(|a| a.name.to_lowercase());
     rows
 }
 
@@ -222,7 +222,7 @@ pub fn render_tool_panel(
                 .fill(theme::BG_DIALOG)
                 .inner_margin(egui::Margin::same(12))
                 .corner_radius(6.0)
-                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
+                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
             render_path_asset_section(ui, state, ui_mgr, path_state, verse_mgr);

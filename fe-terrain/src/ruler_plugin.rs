@@ -84,8 +84,8 @@ fn draw_scale_bar(
     let y = screen.max.y - BAR_MARGIN;
     let x0 = screen.min.x + BAR_MARGIN;
     let x1 = x0 + spec.pixels as f32;
-    let shadow = egui::Stroke::new(3.0, egui::Color32::from_black_alpha(140));
-    let stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
+    let shadow = egui::Stroke::new(3.0_f32, egui::Color32::from_black_alpha(140));
+    let stroke = egui::Stroke::new(1.5_f32, egui::Color32::WHITE);
     // Shadow pass first so the bar stays legible over bright terrain.
     for s in [shadow, stroke] {
         painter.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], s);

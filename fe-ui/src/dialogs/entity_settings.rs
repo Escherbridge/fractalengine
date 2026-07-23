@@ -85,7 +85,7 @@ pub fn render_entity_settings_dialog(
                 .fill(theme::BG_DIALOG)
                 .inner_margin(egui::Margin::same(16))
                 .corner_radius(6.0)
-                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
+                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
             // Tab bar
@@ -468,7 +468,7 @@ pub fn render_entity_settings_dialog(
                         .fill(egui::Color32::from_rgb(30, 35, 50))
                         .inner_margin(egui::Margin::same(8))
                         .corner_radius(4.0)
-                        .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM))
+                        .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("API Endpoint").small().color(theme::TEXT_MUTED));
