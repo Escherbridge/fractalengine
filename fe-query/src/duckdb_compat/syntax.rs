@@ -102,7 +102,7 @@ fn translate_ilike(sql: &str) -> String {
         let (pattern, pattern_len) = extract_value(after_trimmed);
         let consumed = pos + needle.len() + ws_after + pattern_len;
 
-        result.push_str(&before[..cursor.min(before.len()).max(0)]);
+        result.push_str(&before[..cursor.min(before.len())]);
         // We need to push the prefix within `before` (up to cursor offset).
         result.push_str(prefix);
         result.push_str(&format!("lower({col}) LIKE lower({pattern})"));
