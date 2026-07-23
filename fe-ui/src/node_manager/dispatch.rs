@@ -154,25 +154,22 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
     }
 }
 
-/// Gimbal-axis resolution split out for readability. Only the transform tools
-/// grab the gimbal; Select/Pen draw it as a visual handle but don't drag (the
-/// axis-pick gate in `handle_gimbal_interaction` stays closed there). Under Move
-/// a path vertex/segment becomes a non-entity `MoveVertex`/`MoveSegment` (FR-3);
-/// Rotate/Scale of a single vertex/segment has no meaning yet.
+/// Gimbal-axis resolution split out for readability. A path vertex/segment is
+/// grabbable in EVERY tool (decision 2026-07-19 "grab it wherever it's shown"):
+/// its gimbal is always drawn as a Move handle, and a lone vertex/segment only
+/// supports Move, so any tool resolves to `MoveVertex`/`MoveSegment` (FR-3).
+/// Entity-backed selections (node / stamp / whole track) use the entity gimbal,
+/// which stays closed outside the transform tools (`handle_gimbal_interaction`).
 fn resolve_gimbal(tool: Tool, kind: &SelectionKind) -> Operation {
-    if !matches!(tool, Tool::Move | Tool::Rotate | Tool::Scale) {
-        return Operation::None;
-    }
     match kind {
-        SelectionKind::PathVertex { idx, .. } if tool == Tool::Move => {
-            Operation::MoveVertex { idx: *idx }
-        }
-        SelectionKind::PathSegment { idx, .. } if tool == Tool::Move => {
-            Operation::MoveSegment { idx: *idx }
-        }
-        SelectionKind::PathVertex { .. } | SelectionKind::PathSegment { .. } => Operation::None,
+        SelectionKind::PathVertex { idx, .. } => Operation::MoveVertex { idx: *idx },
+        SelectionKind::PathSegment { idx, .. } => Operation::MoveSegment { idx: *idx },
         SelectionKind::Node(_) | SelectionKind::Stamp(_) | SelectionKind::PathTrack { .. } => {
-            Operation::BeginGimbalDrag
+            if matches!(tool, Tool::Move | Tool::Rotate | Tool::Scale) {
+                Operation::BeginGimbalDrag
+            } else {
+                Operation::None
+            }
         }
         SelectionKind::Empty | SelectionKind::TerrainProposal { .. } => Operation::None,
     }
@@ -226,7 +223,9 @@ mod tests {
         assert_eq!(
             resolve_operation(
                 Tool::Rotate,
-                &SelectionKind::PathTrack { track_id: "t".into() },
+                &SelectionKind::PathTrack {
+                    track_id: "t".into()
+                },
                 HitTarget::GimbalAxis
             ),
             Operation::BeginGimbalDrag
@@ -234,47 +233,69 @@ mod tests {
     }
 
     #[test]
-    fn gimbal_on_vertex_moves_vertex_only_under_move() {
-        assert_eq!(
-            resolve_operation(Tool::Move, &track_vertex(3), HitTarget::GimbalAxis),
-            Operation::MoveVertex { idx: 3 }
-        );
-        // Rotate/Scale of a lone vertex is a no-op for now.
-        assert_eq!(
-            resolve_operation(Tool::Rotate, &track_vertex(3), HitTarget::GimbalAxis),
-            Operation::None
-        );
-        assert_eq!(
-            resolve_operation(Tool::Scale, &track_vertex(3), HitTarget::GimbalAxis),
-            Operation::None
-        );
+    fn gimbal_on_vertex_moves_vertex_in_every_tool() {
+        // "Grab it wherever it's shown": the vertex gimbal is a Move handle in
+        // every tool, so a lone vertex moves regardless of the active tool.
+        for tool in [
+            Tool::Select,
+            Tool::Pen,
+            Tool::Move,
+            Tool::Rotate,
+            Tool::Scale,
+        ] {
+            assert_eq!(
+                resolve_operation(tool, &track_vertex(3), HitTarget::GimbalAxis),
+                Operation::MoveVertex { idx: 3 },
+                "{tool:?}"
+            );
+        }
     }
 
     #[test]
-    fn gimbal_on_segment_moves_segment_only_under_move() {
-        assert_eq!(
-            resolve_operation(Tool::Move, &track_segment(2), HitTarget::GimbalAxis),
-            Operation::MoveSegment { idx: 2 }
-        );
-        assert_eq!(
-            resolve_operation(Tool::Scale, &track_segment(2), HitTarget::GimbalAxis),
-            Operation::None
-        );
+    fn gimbal_on_segment_moves_segment_in_every_tool() {
+        for tool in [
+            Tool::Select,
+            Tool::Pen,
+            Tool::Move,
+            Tool::Rotate,
+            Tool::Scale,
+        ] {
+            assert_eq!(
+                resolve_operation(tool, &track_segment(2), HitTarget::GimbalAxis),
+                Operation::MoveSegment { idx: 2 },
+                "{tool:?}"
+            );
+        }
     }
 
     #[test]
-    fn gimbal_is_inert_in_select_and_pen() {
-        // Select/Pen show the path gimbal as a visual only — no drag (Pen safety).
+    fn entity_gimbal_is_inert_in_select_and_pen() {
+        // Entity-backed selections still need a transform tool — the entity
+        // gimbal handler stays closed in Select/Pen.
         assert_eq!(
-            resolve_operation(Tool::Select, &track_vertex(0), HitTarget::GimbalAxis),
+            resolve_operation(
+                Tool::Select,
+                &SelectionKind::Node(entity(1)),
+                HitTarget::GimbalAxis
+            ),
             Operation::None
         );
         assert_eq!(
-            resolve_operation(Tool::Pen, &track_segment(0), HitTarget::GimbalAxis),
+            resolve_operation(
+                Tool::Pen,
+                &SelectionKind::Stamp(entity(1)),
+                HitTarget::GimbalAxis
+            ),
             Operation::None
         );
         assert_eq!(
-            resolve_operation(Tool::Select, &SelectionKind::Node(entity(1)), HitTarget::GimbalAxis),
+            resolve_operation(
+                Tool::Select,
+                &SelectionKind::PathTrack {
+                    track_id: "t".into()
+                },
+                HitTarget::GimbalAxis
+            ),
             Operation::None
         );
     }
@@ -300,11 +321,19 @@ mod tests {
     #[test]
     fn node_hit_selects_node_except_in_pen() {
         assert_eq!(
-            resolve_operation(Tool::Select, &SelectionKind::Empty, HitTarget::Node(entity(9))),
+            resolve_operation(
+                Tool::Select,
+                &SelectionKind::Empty,
+                HitTarget::Node(entity(9))
+            ),
             Operation::SelectNode(entity(9))
         );
         assert_eq!(
-            resolve_operation(Tool::Move, &SelectionKind::Empty, HitTarget::Node(entity(9))),
+            resolve_operation(
+                Tool::Move,
+                &SelectionKind::Empty,
+                HitTarget::Node(entity(9))
+            ),
             Operation::SelectNode(entity(9))
         );
         // Pen keeps placing points even when the ray grazes a node.
@@ -318,12 +347,20 @@ mod tests {
     fn vertex_and_segment_hits_select_regardless_of_tool() {
         for tool in [Tool::Select, Tool::Pen, Tool::Move] {
             assert_eq!(
-                resolve_operation(tool, &SelectionKind::Empty, HitTarget::PathVertex { idx: 4 }),
+                resolve_operation(
+                    tool,
+                    &SelectionKind::Empty,
+                    HitTarget::PathVertex { idx: 4 }
+                ),
                 Operation::SelectVertex { idx: 4 },
                 "{tool:?}"
             );
             assert_eq!(
-                resolve_operation(tool, &SelectionKind::Empty, HitTarget::PathSegment { idx: 1 }),
+                resolve_operation(
+                    tool,
+                    &SelectionKind::Empty,
+                    HitTarget::PathSegment { idx: 1 }
+                ),
                 Operation::SelectSegment { idx: 1 },
                 "{tool:?}"
             );
@@ -333,7 +370,11 @@ mod tests {
     #[test]
     fn stamp_and_proposal_hits_select_them() {
         assert_eq!(
-            resolve_operation(Tool::Select, &SelectionKind::Empty, HitTarget::Stamp(entity(5))),
+            resolve_operation(
+                Tool::Select,
+                &SelectionKind::Empty,
+                HitTarget::Stamp(entity(5))
+            ),
             Operation::SelectStamp(entity(5))
         );
         assert_eq!(

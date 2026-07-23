@@ -116,11 +116,12 @@ impl RelayConfig {
             Self::Custom(urls) => {
                 let mut nodes = Vec::with_capacity(urls.len());
                 for raw in urls {
-                    let url =
-                        iroh::RelayUrl::from_str(raw).map_err(|e| RelayConfigError::InvalidUrl {
+                    let url = iroh::RelayUrl::from_str(raw).map_err(|e| {
+                        RelayConfigError::InvalidUrl {
                             raw: raw.clone(),
                             reason: e.to_string(),
-                        })?;
+                        }
+                    })?;
                     nodes.push(iroh::RelayNode::from(url));
                 }
                 Ok(iroh::RelayMode::Custom(nodes.into_iter().collect()))
@@ -137,9 +138,7 @@ impl RelayConfig {
 /// Observed reachability of the configured relay(s), surfaced to consumers via
 /// [`crate::status::SyncStatus::health`] so relay failure is visible instead of
 /// silently queuing forever (see AGENTS.md §relay-health).
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum RelayHealth {
     /// No health signal observed yet (thread just started).
     #[default]
@@ -236,8 +235,7 @@ mod tests {
 
     #[test]
     fn parse_multiple_custom_urls_with_whitespace() {
-        let cfg =
-            RelayConfig::parse(" https://a.example.com , https://b.example.com ").unwrap();
+        let cfg = RelayConfig::parse(" https://a.example.com , https://b.example.com ").unwrap();
         assert_eq!(
             cfg,
             RelayConfig::Custom(vec![
@@ -325,9 +323,9 @@ mod tests {
             RelayHealth::Healthy
         );
         assert_eq!(
-            RelayHealth::on_bind_success(&RelayConfig::Custom(vec![
-                "https://x.example.com".into()
-            ])),
+            RelayHealth::on_bind_success(&RelayConfig::Custom(
+                vec!["https://x.example.com".into()]
+            )),
             RelayHealth::Healthy
         );
     }
@@ -349,7 +347,10 @@ mod tests {
     fn on_error_degrades_then_becomes_unreachable() {
         assert_eq!(RelayHealth::Healthy.on_error(), RelayHealth::Degraded);
         assert_eq!(RelayHealth::Degraded.on_error(), RelayHealth::Unreachable);
-        assert_eq!(RelayHealth::Unreachable.on_error(), RelayHealth::Unreachable);
+        assert_eq!(
+            RelayHealth::Unreachable.on_error(),
+            RelayHealth::Unreachable
+        );
         assert_eq!(RelayHealth::Unknown.on_error(), RelayHealth::Unreachable);
     }
 

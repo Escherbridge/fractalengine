@@ -4,9 +4,9 @@ use std::collections::HashSet;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::mesh::Indices;
 use bevy::prelude::Projection as CameraProjection;
 use bevy::prelude::*;
-use bevy::mesh::Indices;
 use bevy::render::render_resource::{Extent3d, PrimitiveTopology, TextureDimension, TextureFormat};
 
 use crate::config::{ElevationSourceKind, TerrainConfig};
@@ -963,7 +963,10 @@ fn render_terrain_proposals(
     let mut remaining = MAX_PROPOSAL_OVERLAYS;
     for proposal in &config.proposals {
         if remaining == 0 {
-            tracing::warn!(cap = MAX_PROPOSAL_OVERLAYS, "proposal overlays saturated cap; truncating");
+            tracing::warn!(
+                cap = MAX_PROPOSAL_OVERLAYS,
+                "proposal overlays saturated cap; truncating"
+            );
             break;
         }
         let Some((positions, indices)) =
@@ -973,7 +976,10 @@ fn render_terrain_proposals(
         };
         remaining -= 1;
 
-        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.insert_indices(Indices::U32(indices));
 

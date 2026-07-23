@@ -38,7 +38,9 @@ pub fn track_centroid(points: &[[f32; 3]]) -> [f32; 3] {
 /// Generate a ribbon mesh along a track path.
 ///
 /// - `points`: ordered 3D positions along the track.
-/// - `width`: ribbon width in world units.
+/// - `width`: ribbon width in the SAME units as `points` (petal-local meters —
+///   the ribbon is NOT world-scaled, so width must not be either; see
+///   `src/AGENTS.md` §track-styling).
 /// - `color_mode`: determines vertex colors.
 ///
 /// The ribbon is extruded perpendicular to the path direction in the XZ plane,

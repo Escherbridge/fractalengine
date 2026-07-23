@@ -167,13 +167,37 @@ fn track_to_open(node_id: &str, path_state: &crate::gis::PathEditorState) -> boo
     path_state.tracks.iter().any(|t| t.node_id == node_id)
 }
 
+/// Nearest per-entity hit `t` across `root` and ALL its descendants (iterative
+/// DFS). Pure over the two lookups so the *depth* traversal — the crux of the
+/// glTF-scene fix below — is unit-testable without a Bevy App. `hit_of` yields a
+/// candidate along-ray distance for an entity's own geometry (if any);
+/// `children_of` yields its direct children.
+fn nearest_in_subtree(
+    root: Entity,
+    hit_of: impl Fn(Entity) -> Option<f32>,
+    children_of: impl Fn(Entity) -> Vec<Entity>,
+) -> Option<f32> {
+    let mut best: Option<f32> = None;
+    let mut stack = vec![root];
+    while let Some(ent) = stack.pop() {
+        if let Some(t) = hit_of(ent) {
+            if best.is_none_or(|b| t < b) {
+                best = Some(t);
+            }
+        }
+        stack.extend(children_of(ent));
+    }
+    best
+}
+
 /// Nearest along-ray hit `t` for a node's geometry Aabb, or `None` on a miss.
 ///
-/// Tries the root `entity`'s own `Aabb` first, then scans immediate children
-/// (glTF loaders attach the mesh + `Aabb` to a child of the `SceneRoot`), and
-/// returns the smallest entry distance across all candidates so overlapping
-/// child meshes resolve to the closest surface. `t` is measured along the
-/// world-space ray direction and is comparable across entities.
+/// Walks the root `entity` AND every descendant (not just immediate children):
+/// glTF `SceneRoot`s nest the mesh + `Aabb` several levels down, so a one-level
+/// scan finds nothing and silently breaks GLB selection (the shipped
+/// regression). Returns the smallest entry distance across all candidates so
+/// overlapping child meshes resolve to the closest surface. `t` is measured
+/// along the world-space ray direction and is comparable across entities.
 fn pick_node_aabb(
     entity: Entity,
     ray: &Ray3d,
@@ -181,30 +205,26 @@ fn pick_node_aabb(
     aabb_query: &Query<&Aabb>,
     children_query: &Query<&Children>,
 ) -> Option<f32> {
-    let mut best: Option<f32> = None;
-    let mut consider = |ent: Entity| {
-        if let (Ok(g_tx), Ok(aabb)) = (g_transform_query.get(ent), aabb_query.get(ent)) {
-            if let Some(t) = ray_aabb_hit(
+    nearest_in_subtree(
+        entity,
+        |ent| {
+            let g_tx = g_transform_query.get(ent).ok()?;
+            let aabb = aabb_query.get(ent).ok()?;
+            ray_aabb_hit(
                 ray.origin,
                 *ray.direction,
                 g_tx.affine(),
                 Vec3::from(aabb.center),
                 Vec3::from(aabb.half_extents),
-            ) {
-                if best.is_none_or(|b| t < b) {
-                    best = Some(t);
-                }
-            }
-        }
-    };
-
-    consider(entity);
-    if let Ok(children) = children_query.get(entity) {
-        for child in children.iter() {
-            consider(child);
-        }
-    }
-    best
+            )
+        },
+        |ent| {
+            children_query
+                .get(ent)
+                .map(|c| c.iter().collect())
+                .unwrap_or_default()
+        },
+    )
 }
 
 /// Ray/AABB slab intersection in the box's local space.
@@ -404,5 +424,56 @@ mod tests {
             Vec3::splat(0.5),
         );
         assert!(near.unwrap() < far.unwrap());
+    }
+
+    // --- descendant traversal (the GLB-selection depth fix) ---
+
+    use std::collections::HashMap;
+
+    fn ent(n: u64) -> Entity {
+        Entity::from_bits(n)
+    }
+
+    #[test]
+    fn subtree_finds_hit_on_a_deep_grandchild() {
+        // root(no geometry) → child(no geometry) → grandchild(hit @ t=5). glTF
+        // SceneRoots put the Aabb this deep; the old immediate-children scan
+        // returned None here and deselected every GLB. The DFS must find it.
+        let children: HashMap<Entity, Vec<Entity>> =
+            HashMap::from([(ent(1), vec![ent(2)]), (ent(2), vec![ent(3)])]);
+        let hits: HashMap<Entity, f32> = HashMap::from([(ent(3), 5.0)]);
+        let t = nearest_in_subtree(
+            ent(1),
+            |e| hits.get(&e).copied(),
+            |e| children.get(&e).cloned().unwrap_or_default(),
+        );
+        assert_eq!(t, Some(5.0));
+    }
+
+    #[test]
+    fn subtree_keeps_the_closest_hit_across_depths() {
+        // Immediate child hits at t=9, its own child (grandchild) at t=3 — the
+        // nearer surface, even though it's deeper, must win.
+        let children: HashMap<Entity, Vec<Entity>> =
+            HashMap::from([(ent(1), vec![ent(2)]), (ent(2), vec![ent(3)])]);
+        let hits: HashMap<Entity, f32> = HashMap::from([(ent(2), 9.0), (ent(3), 3.0)]);
+        let t = nearest_in_subtree(
+            ent(1),
+            |e| hits.get(&e).copied(),
+            |e| children.get(&e).cloned().unwrap_or_default(),
+        );
+        assert_eq!(t, Some(3.0));
+    }
+
+    #[test]
+    fn subtree_is_none_when_no_entity_has_geometry() {
+        let children: HashMap<Entity, Vec<Entity>> =
+            HashMap::from([(ent(1), vec![ent(2), ent(3)])]);
+        let t = nearest_in_subtree(
+            ent(1),
+            |_| None,
+            |e| children.get(&e).cloned().unwrap_or_default(),
+        );
+        assert_eq!(t, None);
     }
 }

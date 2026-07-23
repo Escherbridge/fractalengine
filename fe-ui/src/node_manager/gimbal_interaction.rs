@@ -332,13 +332,13 @@ pub(super) fn draw_gimbal_system(
     children_query: Query<&Children>,
     gizmos: Gizmos<GimbalGizmoGroup>,
 ) {
-    // FR-3: path selections draw a gimbal even under Select/Pen (which have no
-    // gizmo of their own → show Move arrows as a grabbable handle). Drawing
-    // steals no clicks, so relaxing the tool gate for the *visual* is safe (the
-    // axis-pick gate in `handle_gimbal_interaction` is untouched). Vertex/segment
-    // resolve to a world point (they have no entity); a whole track keeps its
-    // bridged ribbon-entity center so the drawn handle stays where the axis-pick
-    // expects it (no regression to the existing whole-track drag).
+    // Path selections draw a gimbal at a resolved world point (they have no
+    // entity of their own). Vertex/segment handles are a grabbable Move gimbal in
+    // EVERY tool (decision 2026-07-19 "grab it wherever it's shown"); a whole
+    // track keeps its bridged ribbon-entity center and uses the entity gimbal, so
+    // it draws only in the transform tools. Drawing steals no clicks — the actual
+    // grab is gated by the axis-pick in `handle_path_gimbal_drag` (vertex/segment)
+    // and `handle_gimbal_interaction` (whole track / node).
     if is_path_selection(&selection.kind) {
         let path_center = match &selection.kind {
             SelectionKind::PathTrack { .. } => manager
@@ -349,20 +349,31 @@ pub(super) fn draw_gimbal_system(
                 })
                 .or_else(|| {
                     // Track open but ribbon unspawned: fall back to the centroid.
-                    let points: Vec<Vec3> =
-                        path_state.points.iter().map(|p| Vec3::from(p.position)).collect();
+                    let points: Vec<Vec3> = path_state
+                        .points
+                        .iter()
+                        .map(|p| Vec3::from(p.position))
+                        .collect();
                     path_gimbal_target(&selection.kind, &points)
                 }),
             _ => {
-                let points: Vec<Vec3> =
-                    path_state.points.iter().map(|p| Vec3::from(p.position)).collect();
+                let points: Vec<Vec3> = path_state
+                    .points
+                    .iter()
+                    .map(|p| Vec3::from(p.position))
+                    .collect();
                 path_gimbal_target(&selection.kind, &points)
             }
         };
         if let Some(center) = path_center {
-            let effective_tool = match tool.active_tool {
-                Tool::Select | Tool::Pen => Tool::Move,
-                other => other,
+            // Vertex/segment gimbals are Move-only and grabbable in every tool
+            // (decision 2026-07-19 "grab it wherever it's shown"), so always draw
+            // the Move handle for them. A whole track uses the entity gimbal,
+            // live only in the transform tools — draw with the actual tool so
+            // `draw_gimbal` shows nothing in Select/Pen (no drawn-but-dead handle).
+            let effective_tool = match &selection.kind {
+                SelectionKind::PathVertex { .. } | SelectionKind::PathSegment { .. } => Tool::Move,
+                _ => tool.active_tool,
             };
             draw_gimbal(center, effective_tool, manager.hovered_axis, gizmos);
         }

@@ -7,6 +7,10 @@ pub const BG_PANEL: Color32 = Color32::from_rgb(24, 24, 30);
 pub const BG_BUTTON: Color32 = Color32::from_rgb(40, 40, 52);
 pub const BG_BUTTON_ALT: Color32 = Color32::from_rgb(40, 40, 60);
 pub const BG_BUTTON_ACTIVE: Color32 = Color32::from_rgb(60, 100, 160);
+/// Active tool-MODE emphasis (ui_ux.md §1): a brighter NEUTRAL fill, so the
+/// active mode reads via luminance rather than the saturated-blue hue shift of
+/// `BG_BUTTON_ACTIVE`. Same hue family as `BG_BUTTON`, higher luminance.
+pub const BG_MODE_ACTIVE: Color32 = Color32::from_rgb(88, 88, 104);
 pub const BG_DANGER: Color32 = Color32::from_rgb(80, 40, 40);
 pub const BG_SAVE: Color32 = Color32::from_rgb(40, 80, 40);
 pub const BG_ROLE_CHIP: Color32 = Color32::from_rgb(30, 30, 50);

@@ -142,7 +142,10 @@ mod tests {
 
     #[test]
     fn op_serializes_snake_case_per_contract() {
-        assert_eq!(serde_json::to_value(ProposalOp::Raise).unwrap(), json!("raise"));
+        assert_eq!(
+            serde_json::to_value(ProposalOp::Raise).unwrap(),
+            json!("raise")
+        );
         assert_eq!(serde_json::to_value(ProposalOp::Cut).unwrap(), json!("cut"));
         assert_eq!(
             serde_json::to_value(ProposalOp::Flatten).unwrap(),

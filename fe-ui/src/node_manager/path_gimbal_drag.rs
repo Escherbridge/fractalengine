@@ -26,6 +26,12 @@ use crate::plugin::ToolState;
 /// `Tool::Move` branch so a vertex drag feels identical to an entity drag.
 const MOVE_SENSITIVITY: f32 = 0.002;
 
+/// World-space radius of a path-point marker's pick body — mirrors
+/// `path_point_interaction::PICK_RADIUS`. In Select/Pen a press within this of a
+/// selected vertex is a BODY press (free-plane drag / Ctrl-height, FR-2/FR-1a),
+/// so the gimbal yields it; only axis-ARM presses (farther out) grab the gimbal.
+const MARKER_BODY_RADIUS: f32 = 0.7;
+
 /// In-progress path-gimbal drag, `None` when idle.
 #[derive(Resource, Default)]
 pub struct PathGimbalDrag {
@@ -63,7 +69,9 @@ pub(super) fn drag_axis_delta(
 }
 
 /// New world position of a point dragged from `start_pos` along the gimbal axis.
-/// Pure (Bevy-App-free) — the FR-3 math the unit tests pin down.
+/// Pure (Bevy-App-free) — the FR-3 math the unit tests pin down. Test-only: the
+/// live drag composes `start + drag_axis_delta` inline (see `handle_path_gimbal_drag`).
+#[cfg(test)]
 pub(super) fn drag_delta_to_position(
     start_pos: Vec3,
     axis_dir: Vec3,
@@ -91,8 +99,12 @@ pub(super) fn move_scale_factor(center: Vec3, cam_pos: Vec3) -> f32 {
 /// FR-3 drag: press the gimbal axis over a selected vertex/segment → drag →
 /// release commits `PathMovePoint`(s). Runs BEFORE `handle_gimbal_interaction`
 /// in the chain and claims `ClickPriority::Gimbal` first, so the entity gimbal
-/// yields (first-claim-wins) and never starts a competing entity drag. Gated to
-/// `Tool::Move` only, so Pen appends and Select picks are untouched.
+/// yields (first-claim-wins) and never starts a competing entity drag.
+///
+/// Runs in EVERY tool (decision 2026-07-19 "grab it wherever it's shown"): the
+/// vertex/segment gimbal is drawn as a Move handle in all tools, so it must be
+/// grabbable in all tools. It only ever claims on a real axis-hit over a
+/// vertex/segment selection, so a miss still yields to Pen append / node pick.
 pub(super) fn handle_path_gimbal_drag(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
@@ -105,13 +117,6 @@ pub(super) fn handle_path_gimbal_drag(
     mut markers: Query<(&mut Transform, &PathPointMarker)>,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
-    // Only the Move tool drags a path point via the gimbal. Any other tool
-    // cancels an in-flight drag (keeps Pen/Select click paths safe).
-    if tool.active_tool != Tool::Move {
-        drag.active = None;
-        return;
-    }
-
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
     let Ok((camera, cam_tx)) = cameras.single() else {
@@ -155,7 +160,11 @@ pub(super) fn handle_path_gimbal_drag(
                 state.current.push(*start + delta);
             }
             for (mut tx, marker) in markers.iter_mut() {
-                if let Some(pos_i) = state.affected.iter().position(|(idx, _)| *idx == marker.index) {
+                if let Some(pos_i) = state
+                    .affected
+                    .iter()
+                    .position(|(idx, _)| *idx == marker.index)
+                {
                     if let Some(p) = state.current.get(pos_i) {
                         tx.translation = *p;
                     }
@@ -202,14 +211,36 @@ pub(super) fn handle_path_gimbal_drag(
     let Some(center) = path_gimbal_target(&kind, &points) else {
         return;
     };
+
+    // In Select/Pen, a press on the vertex BODY free-drags the marker (FR-2
+    // free-plane / FR-1a Ctrl-height) — only the axis ARMS grab the gimbal there.
+    // So if the ray hits the marker body, yield: `handle_path_point_interaction`
+    // (next in the chain) picks it up. Transform tools have no direct marker drag,
+    // so the gimbal takes body presses there too (this guard doesn't run).
+    if matches!(tool.active_tool, Tool::Select | Tool::Pen)
+        && matches!(kind, SelectionKind::PathVertex { .. })
+    {
+        if let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) {
+            let along = (center - ray.origin).dot(*ray.direction);
+            if along > 0.0
+                && (center - (ray.origin + *ray.direction * along)).length() < MARKER_BODY_RADIUS
+            {
+                return;
+            }
+        }
+    }
+
     // Same axis pick as the entity gimbal, but against the resolved path target.
     let Some(axis) = pick_axis(Tool::Move, cursor_pos, center, camera, cam_tx) else {
         return;
     };
 
     // FR-2 dispatch: what does a gimbal-axis press mean for this selection?
+    // Pass the ACTUAL tool so the truth table is the single source of truth; the
+    // axis pick above always uses Move geometry because a lone vertex/segment
+    // only supports Move (drawn as a Move handle in every tool).
     let affected: Vec<(usize, Vec3)> =
-        match resolve_operation(Tool::Move, &kind, HitTarget::GimbalAxis) {
+        match resolve_operation(tool.active_tool, &kind, HitTarget::GimbalAxis) {
             Operation::MoveVertex { idx } => {
                 points.get(idx).map(|p| vec![(idx, *p)]).unwrap_or_default()
             }
@@ -291,10 +322,18 @@ mod tests {
         // A segment drag applies one delta to both endpoints (parallel translate).
         let a = Vec3::new(0.0, 0.0, 0.0);
         let b = Vec3::new(10.0, 0.0, 0.0);
-        let new_a = drag_delta_to_position(a, Vec3::X, Vec2::X, Vec2::ZERO, Vec2::new(50.0, 0.0), 0.002);
-        let new_b = drag_delta_to_position(b, Vec3::X, Vec2::X, Vec2::ZERO, Vec2::new(50.0, 0.0), 0.002);
-        assert!((new_a - Vec3::new(0.1, 0.0, 0.0)).length() < 1e-6, "a = {new_a:?}");
-        assert!((new_b - Vec3::new(10.1, 0.0, 0.0)).length() < 1e-6, "b = {new_b:?}");
+        let new_a =
+            drag_delta_to_position(a, Vec3::X, Vec2::X, Vec2::ZERO, Vec2::new(50.0, 0.0), 0.002);
+        let new_b =
+            drag_delta_to_position(b, Vec3::X, Vec2::X, Vec2::ZERO, Vec2::new(50.0, 0.0), 0.002);
+        assert!(
+            (new_a - Vec3::new(0.1, 0.0, 0.0)).length() < 1e-6,
+            "a = {new_a:?}"
+        );
+        assert!(
+            (new_b - Vec3::new(10.1, 0.0, 0.0)).length() < 1e-6,
+            "b = {new_b:?}"
+        );
         // The segment's length/orientation is preserved by an equal delta.
         assert!(((new_b - new_a) - (b - a)).length() < 1e-6);
     }

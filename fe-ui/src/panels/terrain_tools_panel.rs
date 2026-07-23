@@ -101,7 +101,11 @@ fn render_palette(ui: &mut egui::Ui, tool_panel: &mut ToolPanelState) {
 /// Pen section's shape buttons — see `tool_panel.rs::render_pen_section`);
 /// dragging a placed proposal is a follow-up once FR-1/FR-3 gimbal-on-typed-
 /// selection wiring lands elsewhere in this track.
-fn render_controls_and_emit(ui: &mut egui::Ui, tool_panel: &mut ToolPanelState, ui_mgr: &mut UiManager) {
+fn render_controls_and_emit(
+    ui: &mut egui::Ui,
+    tool_panel: &mut ToolPanelState,
+    ui_mgr: &mut UiManager,
+) {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Footprint radius")
@@ -130,7 +134,10 @@ fn render_controls_and_emit(ui: &mut egui::Ui, tool_panel: &mut ToolPanelState, 
     ui.add_space(4.0);
 
     if ui
-        .button(format!("Add {} proposal", tool_panel.terrain_tool_mode.label()))
+        .button(format!(
+            "Add {} proposal",
+            tool_panel.terrain_tool_mode.label()
+        ))
         .on_hover_text("Adds a non-destructive proposed overlay — true terrain is never written")
         .clicked()
     {
@@ -152,16 +159,22 @@ fn render_controls_and_emit(ui: &mut egui::Ui, tool_panel: &mut ToolPanelState, 
         });
     }
     ui.label(
-        egui::RichText::new("Proposals append at the origin; drag to reposition once gimbal-on-proposal lands.")
-            .small()
-            .color(theme::TEXT_MUTED)
-            .italics(),
+        egui::RichText::new(
+            "Proposals append at the origin; drag to reposition once gimbal-on-proposal lands.",
+        )
+        .small()
+        .color(theme::TEXT_MUTED)
+        .italics(),
     );
 }
 
 /// Select/delete list of existing proposals. Selecting sets
 /// `ProposalEditState.selected`, read by `proposal_report_panel`.
-fn render_proposal_list(ui: &mut egui::Ui, proposal_state: &mut ProposalEditState, ui_mgr: &mut UiManager) {
+fn render_proposal_list(
+    ui: &mut egui::Ui,
+    proposal_state: &mut ProposalEditState,
+    ui_mgr: &mut UiManager,
+) {
     ui.label(
         egui::RichText::new("Proposals")
             .strong()

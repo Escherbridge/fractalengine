@@ -204,7 +204,10 @@ fn take_stamp_budget(remaining: &mut usize, requested: usize) -> usize {
 /// contract is unit-testable without a live `App`.
 fn stamp_is_orphaned(inst: &PathAssetInstance, active_petal: &str, cache: &PathAssetCache) -> bool {
     inst.petal_id == active_petal
-        && cache.get(&inst.source_track_id).map(|e| e.petal_id.as_str()) != Some(active_petal)
+        && cache
+            .get(&inst.source_track_id)
+            .map(|e| e.petal_id.as_str())
+            != Some(active_petal)
 }
 
 /// Petal-wide path-asset materializer (FR-1): the ONLY system that spawns
@@ -441,7 +444,13 @@ mod tests {
     #[test]
     fn deleted_track_cascades_to_stamps_and_is_idempotent() {
         let mut cache = PathAssetCache::default();
-        cache.upsert("t1", "p1", sample_desc(), vec![[0.0; 3], [1.0, 0.0, 0.0]], 1);
+        cache.upsert(
+            "t1",
+            "p1",
+            sample_desc(),
+            vec![[0.0; 3], [1.0, 0.0, 0.0]],
+            1,
+        );
         let live = PathAssetInstance {
             source_track_id: "t1".to_string(),
             petal_id: "p1".to_string(),

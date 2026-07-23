@@ -9,6 +9,9 @@ pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
 pub(crate) mod terrain_tools_panel;
+/// tool_inspector_ux_20260719: active tool as a legible UI MODE (left per-tool
+/// inspector panel). See `fe-ui/src/panels/AGENTS.md` §tool-inspector.
+pub(crate) mod tool_inspector;
 pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
 
@@ -94,6 +97,16 @@ pub fn gardener_console(
     // Auto-collapse left sidebar when right panel is open, restore when closed.
     let right_panel_open = ui_mgr.portal_is_open() || node_mgr.selected_entity().is_some();
     sidebar.open = !right_panel_open;
+
+    // tool_inspector_ux_20260719: the active tool as a legible MODE. A second
+    // left panel (inner of the hierarchy sidebar) — a transform inspector is most
+    // useful exactly when a node is selected and the hierarchy sidebar has
+    // auto-collapsed, so it survives that collapse. Hidden while the portal
+    // webview is open (like the right inspector below) so it doesn't clutter the
+    // portal view.
+    if !ui_mgr.portal_is_open() {
+        tool_inspector::tool_inspector_panel(ctx, tool, node_mgr, path_state);
+    }
 
     // When the portal webview is open, show the portal toolbar instead of inspector.
     if ui_mgr.portal_is_open() {

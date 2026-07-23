@@ -270,7 +270,9 @@ mod tests {
             Vec3::new(6.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 6.0),
         ];
-        let k = SelectionKind::PathTrack { track_id: "t".into() };
+        let k = SelectionKind::PathTrack {
+            track_id: "t".into(),
+        };
         assert_eq!(path_gimbal_target(&k, &pts), Some(Vec3::new(2.0, 0.0, 2.0)));
     }
 
@@ -288,10 +290,15 @@ mod tests {
         };
         assert_eq!(path_gimbal_target(&k_s, &[Vec3::ZERO]), None);
         // Empty track has no centroid.
-        let k_t = SelectionKind::PathTrack { track_id: "t".into() };
+        let k_t = SelectionKind::PathTrack {
+            track_id: "t".into(),
+        };
         assert_eq!(path_gimbal_target(&k_t, &[]), None);
         // Non-path selections have no path target.
-        assert_eq!(path_gimbal_target(&SelectionKind::Node(entity(1)), &[]), None);
+        assert_eq!(
+            path_gimbal_target(&SelectionKind::Node(entity(1)), &[]),
+            None
+        );
         assert_eq!(path_gimbal_target(&SelectionKind::Empty, &[]), None);
     }
 

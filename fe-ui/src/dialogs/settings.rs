@@ -13,7 +13,11 @@ use crate::actions::UiManager;
 use crate::settings::AppSettings;
 use crate::theme;
 
-pub fn settings_window(ctx: &egui::Context, ui_mgr: &mut UiManager, app_settings: &mut AppSettings) {
+pub fn settings_window(
+    ctx: &egui::Context,
+    ui_mgr: &mut UiManager,
+    app_settings: &mut AppSettings,
+) {
     if !matches!(ui_mgr.active_dialog, ActiveDialog::Settings) {
         return;
     }
