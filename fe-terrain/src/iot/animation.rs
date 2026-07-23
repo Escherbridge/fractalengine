@@ -42,11 +42,57 @@ impl TrackAnimator {
     }
 }
 
+/// pen_curve_tool_20260722: anchor classification. Corner = independent/absent
+/// handles; Smooth = collinear, free lengths; Symmetric = collinear + equal length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CornerKind {
+    #[default]
+    Corner,
+    Smooth,
+    Symmetric,
+}
+
+impl CornerKind {
+    /// Wire code for the 12-slot `gpx_points` encoding.
+    pub fn to_code(self) -> f64 {
+        match self {
+            Self::Corner => 0.0,
+            Self::Smooth => 1.0,
+            Self::Symmetric => 2.0,
+        }
+    }
+    /// Inverse of `to_code`; unknown codes decode to `Corner`.
+    pub fn from_code(c: f64) -> Self {
+        match c as i64 {
+            1 => Self::Smooth,
+            2 => Self::Symmetric,
+            _ => Self::Corner,
+        }
+    }
+}
+
 /// Interpolated position from a set of route points with timestamps.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TimestampedRoutePoint {
     pub position: [f64; 3],
     pub time_seconds: f64,
+    /// bezier in-handle: RELATIVE meter offset from position; None = no handle.
+    pub handle_in: Option<[f64; 3]>,
+    /// bezier out-handle: RELATIVE meter offset from position; None = no handle.
+    pub handle_out: Option<[f64; 3]>,
+    pub corner: CornerKind,
+    /// "corner settings" knob 0=sharp..1=round.
+    pub smoothness: f32,
+}
+
+impl TimestampedRoutePoint {
+    /// A plain legacy corner (no curve data) — encodes as the compact 4-slot form.
+    pub fn is_plain_corner(&self) -> bool {
+        self.handle_in.is_none()
+            && self.handle_out.is_none()
+            && self.corner == CornerKind::Corner
+            && self.smoothness <= 0.0
+    }
 }
 
 /// Advance track animations for all entities with a `TrackAnimator`.

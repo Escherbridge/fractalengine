@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::{GisResultRow, PathPointRow};
+use super::{CornerKind, GisResultRow, PathPointRow};
 
 /// Reserved annotation-title/color property keys (mirrors `actions::node_props`,
 /// duplicated here rather than pulled in as a dependency to keep this module
@@ -165,8 +165,22 @@ fn extract_xz(pos: Option<&serde_json::Value>) -> (f32, f32) {
 // no persistence I/O. See AGENTS.md §path-editor.
 // ---------------------------------------------------------------------------
 
-/// Decodes a node's persisted `gpx_points` property (JSON array of
-/// `[x, y, z, time_seconds]`) into local editor point rows, skipping
+/// Read a 3-slot handle offset starting at `base`; `None` if any slot is absent
+/// or the whole vector is ~zero (zero == absent, keeps legacy 4-slot rows -> None).
+fn read_handle(a: &[serde_json::Value], base: usize) -> Option<[f32; 3]> {
+    let x = a.get(base)?.as_f64()? as f32;
+    let y = a.get(base + 1)?.as_f64()? as f32;
+    let z = a.get(base + 2)?.as_f64()? as f32;
+    if x.abs() < f32::EPSILON && y.abs() < f32::EPSILON && z.abs() < f32::EPSILON {
+        None
+    } else {
+        Some([x, y, z])
+    }
+}
+
+/// Decodes a node's persisted `gpx_points` property (JSON array of `[x,y,z,t]`
+/// compact rows or 12-slot `[x,y,z,t, in3, out3, corner, smoothness]` bezier
+/// rows, pen_curve_tool_20260722) into local editor point rows, skipping
 /// malformed/short entries best-effort.
 pub(crate) fn decode_gpx_points(value: &serde_json::Value) -> Vec<PathPointRow> {
     value
@@ -179,9 +193,22 @@ pub(crate) fn decode_gpx_points(value: &serde_json::Value) -> Vec<PathPointRow> 
                     let y = a.get(1)?.as_f64()? as f32;
                     let z = a.get(2)?.as_f64()? as f32;
                     let t = a.get(3).and_then(|v| v.as_f64());
+                    let handle_in = read_handle(a, 4);
+                    let handle_out = read_handle(a, 7);
+                    let mut corner =
+                        CornerKind::from_code(a.get(10).and_then(|v| v.as_f64()).unwrap_or(0.0));
+                    let smoothness = a.get(11).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    // Open Q6: a claimed-smooth anchor with no handles is malformed.
+                    if corner != CornerKind::Corner && handle_in.is_none() && handle_out.is_none() {
+                        corner = CornerKind::Corner;
+                    }
                     Some(PathPointRow {
                         position: [x, y, z],
                         time_seconds: t,
+                        handle_in,
+                        handle_out,
+                        corner,
+                        smoothness,
                     })
                 })
                 .collect()
@@ -402,5 +429,28 @@ mod tests {
     #[test]
     fn decode_gpx_points_empty_array_yields_empty() {
         assert!(decode_gpx_points(&serde_json::json!([])).is_empty());
+    }
+
+    // pen_curve_tool_20260722 Phase 1: legacy compat + bezier slot decode.
+    #[test]
+    fn decode_gpx_points_legacy_4slot_is_corner_no_handles() {
+        let value = serde_json::json!([[1.0, 2.0, 3.0, 10.5]]);
+        let points = decode_gpx_points(&value);
+        assert_eq!(points.len(), 1);
+        assert!(points[0].handle_in.is_none() && points[0].handle_out.is_none());
+        assert_eq!(points[0].corner, CornerKind::Corner);
+        assert!(points[0].smoothness <= 0.0);
+    }
+
+    #[test]
+    fn decode_gpx_points_12slot_reads_handles_and_corner() {
+        let value =
+            serde_json::json!([[0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.5]]);
+        let points = decode_gpx_points(&value);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].handle_in, Some([-1.0f32, 0.0, 0.0]));
+        assert_eq!(points[0].handle_out, Some([1.0f32, 0.0, 0.0]));
+        assert_eq!(points[0].corner, CornerKind::Symmetric);
+        assert!((points[0].smoothness - 0.5).abs() < f32::EPSILON);
     }
 }
