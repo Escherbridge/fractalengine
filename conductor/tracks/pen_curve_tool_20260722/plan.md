@@ -27,8 +27,13 @@ sweep at the very end per standing policy
 > Phases 4 and 6 (marked ⚠). Key scope finding: the bezier→ribbon tessellation
 > already exists (`node_manager/curve.rs`), so Phase 2 is small.
 
-> **Status 2026-07-22.** Design-only. NOT implemented, NOT committed. Open
-> decisions in `spec.md` await user ratification before Phase 1 starts.
+> **Status 2026-07-23.** **Phases 1-2 IMPLEMENTED + VERIFIED GREEN** — Phase 1
+> (per-anchor bezier data model + 4/12-slot wire format) and Phase 2 (anchor-bezier
+> `flatten_route` wired into the ribbon mesh + pick shape; all-corner tracks flatten
+> byte-identically). clippy `-D warnings` clean; 15 new tests + full suite pass.
+> Phases 3-7 remain: **Phase 3 (ops) waits on its Phase 4 producer** (adding the
+> ops before the gesture that emits them would be dead code), and the open UI/
+> interaction decisions in `spec.md` await user ratification before Phase 4+.
 
 ## Phase 1: Anchor data model + wire format (pure, TDD-first)
 
