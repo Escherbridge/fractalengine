@@ -100,6 +100,7 @@ pub(crate) fn append_point(
     path_state.points.push(PathPointRow {
         position,
         time_seconds: None,
+        ..Default::default()
     });
     path_ops.0.push(PathOp::AppendPoint {
         track_node_id,
@@ -685,6 +686,7 @@ mod tests {
         state.points.push(PathPointRow {
             position: [0.0, 0.0, 0.0],
             time_seconds: Some(42.0),
+            ..Default::default()
         });
         transform_points(
             &mut ops,
@@ -777,6 +779,7 @@ mod tests {
         state.points.push(PathPointRow {
             position: [9.0, 0.0, 9.0],
             time_seconds: None,
+            ..Default::default()
         });
         select_track(&db_sender, &mut state, "track-1".to_string());
         assert_eq!(state.editing_track_id.as_deref(), Some("track-1"));

@@ -188,6 +188,25 @@ fn gpx_points_round_trip_persists_and_reads_back() {
 }
 
 #[test]
+fn gpx_points_12slot_bezier_row_persists_and_reads_back() {
+    // pen_curve_tool_20260722 Phase 1: a 12-slot bezier anchor row
+    // `[x,y,z,t, in3, out3, corner_code, smoothness]` must persist byte-identically.
+    let db = spawn_test_db();
+    let petal_id = seed_hierarchy(&db);
+    let node_id = create_node(&db, &petal_id, "Bezier Track", [0.0, 0.0, 0.0]);
+
+    let points = serde_json::json!([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.5]]);
+    set_property(&db, &node_id, "gpx_points", points.clone());
+    set_property(&db, &node_id, "gpx_type", serde_json::json!("track"));
+
+    let props = get_properties(&db, &node_id);
+    assert_eq!(
+        props["gpx_points"], points,
+        "12-slot bezier gpx_points must round-trip exactly"
+    );
+}
+
+#[test]
 fn gpx_points_empty_array_round_trips_for_freshly_created_track() {
     let db = spawn_test_db();
     let petal_id = seed_hierarchy(&db);

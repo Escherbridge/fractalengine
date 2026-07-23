@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::{DbCommand, DbResult};
 use fe_terrain::gpx::{compute_stats, parse_gpx_bytes, scene_nodes_to_gpx, GpxData, TrackStats};
-use fe_terrain::iot::animation::{TimestampedRoutePoint, TrackRoute};
+use fe_terrain::iot::animation::{CornerKind, TimestampedRoutePoint, TrackRoute};
 use fe_terrain::iot::{parse_track_color_hex, TrackRouteMap, TrackStyle, TrackStyleMap};
 use fe_terrain::mesh::track::track_centroid;
 use fe_terrain::petal_binding::ActivePetalTerrain;
@@ -232,22 +232,56 @@ fn build_route_points(data: &GpxData, projection: &Projection) -> Vec<Timestampe
             Some(TimestampedRoutePoint {
                 position: [local[0], local[1], local[2]],
                 time_seconds,
+                ..Default::default()
             })
         })
         .collect()
 }
 
-/// Encode route points as the `gpx_points` JSON array: `[x, y, z, time_seconds]`
-/// per point, petal-local meters — see `GPX_POINTS_KEY`.
+/// Encode route points as the `gpx_points` JSON array — compact 4-slot
+/// `[x,y,z,t]` for plain corners, else 12-slot `[x,y,z,t, in3, out3, corner, smoothness]`
+/// (pen_curve_tool_20260722); petal-local meters — see `GPX_POINTS_KEY`.
 fn route_points_to_json(points: &[TimestampedRoutePoint]) -> serde_json::Value {
     serde_json::Value::Array(
         points
             .iter()
             .map(|p| {
-                serde_json::json!([p.position[0], p.position[1], p.position[2], p.time_seconds])
+                if p.is_plain_corner() {
+                    serde_json::json!([p.position[0], p.position[1], p.position[2], p.time_seconds])
+                } else {
+                    let hin = p.handle_in.unwrap_or([0.0, 0.0, 0.0]);
+                    let hout = p.handle_out.unwrap_or([0.0, 0.0, 0.0]);
+                    serde_json::json!([
+                        p.position[0],
+                        p.position[1],
+                        p.position[2],
+                        p.time_seconds,
+                        hin[0],
+                        hin[1],
+                        hin[2],
+                        hout[0],
+                        hout[1],
+                        hout[2],
+                        p.corner.to_code(),
+                        p.smoothness,
+                    ])
+                }
             })
             .collect(),
     )
+}
+
+/// Read a 3-slot handle offset starting at `base`; `None` if any slot is absent
+/// or the whole vector is ~zero (zero == absent, keeps legacy 4-slot rows -> None).
+fn read_handle(a: &[serde_json::Value], base: usize) -> Option<[f64; 3]> {
+    let x = a.get(base)?.as_f64()?;
+    let y = a.get(base + 1)?.as_f64()?;
+    let z = a.get(base + 2)?.as_f64()?;
+    if x.abs() < f64::EPSILON && y.abs() < f64::EPSILON && z.abs() < f64::EPSILON {
+        None
+    } else {
+        Some([x, y, z])
+    }
 }
 
 /// Decode a `gpx_points` JSON value back into route points. Malformed/short
@@ -264,9 +298,22 @@ fn json_to_route_points(value: &serde_json::Value) -> Vec<TimestampedRoutePoint>
                     let y = a.get(1)?.as_f64()?;
                     let z = a.get(2)?.as_f64()?;
                     let t = a.get(3).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let handle_in = read_handle(a, 4);
+                    let handle_out = read_handle(a, 7);
+                    let mut corner =
+                        CornerKind::from_code(a.get(10).and_then(|v| v.as_f64()).unwrap_or(0.0));
+                    let smoothness = a.get(11).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    // Open Q6: a claimed-smooth anchor with no handles is malformed.
+                    if corner != CornerKind::Corner && handle_in.is_none() && handle_out.is_none() {
+                        corner = CornerKind::Corner;
+                    }
                     Some(TimestampedRoutePoint {
                         position: [x, y, z],
                         time_seconds: t,
+                        handle_in,
+                        handle_out,
+                        corner,
+                        smoothness,
                     })
                 })
                 .collect()
@@ -527,18 +574,15 @@ fn track_pick_shape(
     track_node_id: &str,
 ) -> Option<TrackPickShape> {
     let route = route_map.routes.get(track_node_id)?;
-    let positions: Vec<[f32; 3]> = route
-        .points
-        .iter()
-        .map(|p| {
-            [
-                p.position[0] as f32,
-                p.position[1] as f32,
-                p.position[2] as f32,
-            ]
-        })
-        .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
-        .collect();
+    // pen_curve_tool_20260722 (Phase 2): flatten the SAME way render_gpx_tracks does
+    // so the pick polyline matches the visible curve.
+    let positions: Vec<[f32; 3]> = fe_terrain::mesh::curve::flatten_route(
+        &route.points,
+        fe_terrain::mesh::curve::SAMPLES_PER_SEGMENT,
+    )
+    .into_iter()
+    .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
+    .collect();
     if positions.len() < 2 {
         return None;
     }
@@ -1039,6 +1083,7 @@ pub fn drain_path_ops(
                     points.push(TimestampedRoutePoint {
                         position: [position[0] as f64, position[1] as f64, position[2] as f64],
                         time_seconds: time_seconds.unwrap_or(0.0),
+                        ..Default::default()
                     });
                     let points = points.clone();
                     persist_and_render_points(
@@ -1425,6 +1470,7 @@ pub fn advance_path_edits(
                         points.push(TimestampedRoutePoint {
                             position: [position[0] as f64, position[1] as f64, position[2] as f64],
                             time_seconds: time_seconds.unwrap_or(0.0),
+                            ..Default::default()
                         });
                         // FR-5: this is the seed read — hand off authority to
                         // in_flight_points so any AppendPoint queued while
@@ -1448,6 +1494,7 @@ pub fn advance_path_edits(
                                             position[2] as f64,
                                         ],
                                         time_seconds: time_seconds.unwrap_or(0.0),
+                                        ..Default::default()
                                     });
                                 }
                             }
@@ -1936,6 +1983,87 @@ mod tests {
     use super::*;
     use fe_terrain::config::TerrainConfig;
     use std::path::PathBuf;
+
+    // pen_curve_tool_20260722 Phase 1: bezier wire-format (4/12-slot) round-trips.
+    #[test]
+    fn plain_corner_encodes_compact_4slot_and_round_trips() {
+        let pts = vec![TimestampedRoutePoint {
+            position: [1.0, 2.0, 3.0],
+            time_seconds: 5.0,
+            ..Default::default()
+        }];
+        let json = route_points_to_json(&pts);
+        let row = json.as_array().unwrap()[0].as_array().unwrap();
+        assert_eq!(row.len(), 4, "plain corner must encode as compact 4-slot");
+        let back = json_to_route_points(&json);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].position, [1.0, 2.0, 3.0]);
+        assert!((back[0].time_seconds - 5.0).abs() < f64::EPSILON);
+        assert!(back[0].handle_in.is_none() && back[0].handle_out.is_none());
+        assert_eq!(back[0].corner, CornerKind::Corner);
+        assert!(back[0].smoothness <= 0.0);
+    }
+
+    #[test]
+    fn symmetric_smooth_anchor_encodes_12slot_and_round_trips() {
+        let pts = vec![TimestampedRoutePoint {
+            position: [0.0, 0.0, 0.0],
+            time_seconds: 0.0,
+            handle_in: Some([-1.0, 0.0, 0.5]),
+            handle_out: Some([1.0, 0.0, -0.5]),
+            corner: CornerKind::Symmetric,
+            smoothness: 0.5,
+        }];
+        let json = route_points_to_json(&pts);
+        let row = json.as_array().unwrap()[0].as_array().unwrap();
+        assert_eq!(row.len(), 12, "handle-carrying anchor must encode 12-slot");
+        let back = json_to_route_points(&json);
+        assert_eq!(back[0].handle_in, Some([-1.0, 0.0, 0.5]));
+        assert_eq!(back[0].handle_out, Some([1.0, 0.0, -0.5]));
+        assert_eq!(back[0].corner, CornerKind::Symmetric);
+        assert!((back[0].smoothness - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn legacy_4slot_decodes_to_corner_no_handles() {
+        let json = serde_json::json!([[10.0, 0.0, -5.0, 1.0]]);
+        let back = json_to_route_points(&json);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].position, [10.0, 0.0, -5.0]);
+        assert!(back[0].handle_in.is_none() && back[0].handle_out.is_none());
+        assert_eq!(back[0].corner, CornerKind::Corner);
+        assert!(back[0].smoothness <= 0.0);
+    }
+
+    #[test]
+    fn mixed_length_array_decodes_each_row() {
+        let json = serde_json::json!([
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 1.0, -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.75],
+        ]);
+        let back = json_to_route_points(&json);
+        assert_eq!(back.len(), 2);
+        assert!(back[0].handle_in.is_none() && back[0].handle_out.is_none());
+        assert_eq!(back[0].corner, CornerKind::Corner);
+        assert_eq!(back[1].handle_in, Some([-0.5, 0.0, 0.0]));
+        assert_eq!(back[1].handle_out, Some([0.5, 0.0, 0.0]));
+        assert_eq!(back[1].corner, CornerKind::Symmetric);
+    }
+
+    #[test]
+    fn smooth_claim_with_zero_handles_normalizes_to_corner() {
+        // 12-slot row claiming Smooth (code 1) but both handle-triples zero.
+        let json =
+            serde_json::json!([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]]);
+        let back = json_to_route_points(&json);
+        assert_eq!(back.len(), 1);
+        assert!(back[0].handle_in.is_none() && back[0].handle_out.is_none());
+        assert_eq!(
+            back[0].corner,
+            CornerKind::Corner,
+            "malformed smooth-with-no-handles normalizes to Corner"
+        );
+    }
 
     #[test]
     fn first_seen_true_once_per_id_per_frame() {

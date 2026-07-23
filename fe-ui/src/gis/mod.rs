@@ -113,14 +113,52 @@ impl GisPanelState {
     }
 }
 
+/// pen_curve_tool_20260722: anchor classification. Corner = independent/absent
+/// handles; Smooth = collinear, free lengths; Symmetric = collinear + equal length.
+/// fe-ui-local twin of `fe_terrain::iot::animation::CornerKind` (no cross-crate import).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CornerKind {
+    #[default]
+    Corner,
+    Smooth,
+    Symmetric,
+}
+
+impl CornerKind {
+    /// Wire code for the 12-slot `gpx_points` encoding.
+    pub fn to_code(self) -> f64 {
+        match self {
+            Self::Corner => 0.0,
+            Self::Smooth => 1.0,
+            Self::Symmetric => 2.0,
+        }
+    }
+    /// Inverse of `to_code`; unknown codes decode to `Corner`.
+    pub fn from_code(c: f64) -> Self {
+        match c as i64 {
+            1 => Self::Smooth,
+            2 => Self::Symmetric,
+            _ => Self::Corner,
+        }
+    }
+}
+
 /// A single point in the track currently being edited. `time_seconds` is
 /// `None` for points authored via "Append from cursor" (no timestamp).
 /// Local-only editing buffer — fe-ui never persists this itself, see
 /// `crate::path_ops`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PathPointRow {
     pub position: [f32; 3],
     pub time_seconds: Option<f64>,
+    /// bezier in-handle: RELATIVE meter offset from position; None = no handle.
+    pub handle_in: Option<[f32; 3]>,
+    /// bezier out-handle: RELATIVE meter offset from position; None = no handle.
+    pub handle_out: Option<[f32; 3]>,
+    /// anchor corner classification (Corner/Smooth/Symmetric).
+    pub corner: CornerKind,
+    /// "corner settings" knob 0=sharp..1=round.
+    pub smoothness: f32,
 }
 
 /// Paths tab state: the list of track nodes (from `track_query`) plus the
@@ -436,6 +474,7 @@ mod tests {
         s.points.push(PathPointRow {
             position: [1.0, 0.0, 1.0],
             time_seconds: None,
+            ..Default::default()
         });
         s.start_editing("track-1".to_string());
         assert_eq!(s.editing_track_id.as_deref(), Some("track-1"));
@@ -449,6 +488,7 @@ mod tests {
         s.points.push(PathPointRow {
             position: [1.0, 0.0, 1.0],
             time_seconds: None,
+            ..Default::default()
         });
         s.stop_editing();
         assert!(s.editing_track_id.is_none());

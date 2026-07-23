@@ -678,18 +678,15 @@ fn render_gpx_tracks(
             continue;
         };
 
-        let positions: Vec<[f32; 3]> = route
-            .points
-            .iter()
-            .map(|p| {
-                [
-                    p.position[0] as f32,
-                    p.position[1] as f32,
-                    p.position[2] as f32,
-                ]
-            })
-            .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
-            .collect();
+        // pen_curve_tool_20260722 (Phase 2): flatten per-anchor bezier handles into
+        // the dense ribbon polyline (all-corner tracks pass through unchanged).
+        let positions: Vec<[f32; 3]> = crate::mesh::curve::flatten_route(
+            &route.points,
+            crate::mesh::curve::SAMPLES_PER_SEGMENT,
+        )
+        .into_iter()
+        .filter(|v| v[0].is_finite() && v[1].is_finite() && v[2].is_finite())
+        .collect();
 
         if positions.len() < 2 {
             continue;
