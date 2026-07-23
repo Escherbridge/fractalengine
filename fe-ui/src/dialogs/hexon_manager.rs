@@ -61,7 +61,7 @@ pub fn render_hexon_manager(
                 .fill(theme::BG_DIALOG)
                 .inner_margin(egui::Margin::same(16))
                 .corner_radius(6.0)
-                .stroke(egui::Stroke::new(1.0, theme::TEXT_DIM)),
+                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
             // Top bar: search + install from file

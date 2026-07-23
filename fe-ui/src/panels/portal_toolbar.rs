@@ -15,7 +15,7 @@ pub(crate) fn right_portal_toolbar(ctx: &egui::Context, ui_mgr: &mut UiManager) 
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
                 .inner_margin(egui::Margin::same(0))
-                .stroke(egui::Stroke::new(2.0, theme::BG_BUTTON)),
+                .stroke(egui::Stroke::new(2.0_f32, theme::BG_BUTTON)),
         )
         .show(ctx, |ui| {
             // Toolbar row: back, URL, close

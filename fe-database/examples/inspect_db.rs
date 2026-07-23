@@ -39,7 +39,7 @@ async fn grouped(db: &Surreal<Db>, sql: &str) -> anyhow::Result<Vec<(String, i64
             (k, v["n"].as_i64().unwrap_or(0))
         })
         .collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|x| std::cmp::Reverse(x.1));
     Ok(out)
 }
 
@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let mut key_rows: Vec<(String, i64)> = key_hist.into_iter().collect();
-    key_rows.sort_by(|a, b| b.1.cmp(&a.1));
+    key_rows.sort_by_key(|x| std::cmp::Reverse(x.1));
     print_top(
         "NODE PROPERTY KEYS (nodes carrying each key)",
         &key_rows,
