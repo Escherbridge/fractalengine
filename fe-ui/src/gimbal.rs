@@ -48,11 +48,32 @@ const COLOR_HOVER: Color = Color::srgb(1.0, 1.0, 0.2);
 // Public drawing entry point (called by node_manager's draw system)
 // ---------------------------------------------------------------------------
 
+/// First value `visit` resolves across `root` and its descendants (iterative
+/// DFS), or `None`. Pure over the two lookups so the descendant traversal is
+/// unit-testable without a Bevy App.
+fn find_in_subtree<T>(
+    root: Entity,
+    mut visit: impl FnMut(Entity) -> Option<T>,
+    children_of: impl Fn(Entity) -> Vec<Entity>,
+) -> Option<T> {
+    let mut stack = vec![root];
+    while let Some(ent) = stack.pop() {
+        if let Some(v) = visit(ent) {
+            return Some(v);
+        }
+        stack.extend(children_of(ent));
+    }
+    None
+}
+
 /// Compute the world-space center of the gimbal for an entity.
 ///
-/// If the entity (or any child) has a Bevy `Aabb`, the gimbal is placed at
-/// the AABB center transformed to world space.  Otherwise it falls back to
-/// the entity's `GlobalTransform` translation.
+/// If the entity (or ANY descendant) has a Bevy `Aabb`, the gimbal is placed at
+/// that AABB center transformed to world space. Otherwise it falls back to the
+/// entity's `GlobalTransform` translation. The walk descends the full subtree
+/// (not just immediate children): glTF `SceneRoot`s nest the mesh + `Aabb`
+/// several levels down, so a one-level scan left the gimbal stuck at the
+/// SceneRoot origin for every GLB.
 pub fn gimbal_center(
     entity: Entity,
     g_transform_query: &Query<&GlobalTransform>,
@@ -60,20 +81,21 @@ pub fn gimbal_center(
     children_query: &Query<&Children>,
 ) -> Option<Vec3> {
     let g_tx = g_transform_query.get(entity).ok()?;
-    // Try the entity itself first, then scan immediate children (glTF scenes
-    // often place the Aabb on a child mesh entity, not the root).
-    if let Ok(aabb) = aabb_query.get(entity) {
-        return Some(g_tx.transform_point(aabb.center.into()));
-    }
-    if let Ok(children) = children_query.get(entity) {
-        for child in children.iter() {
-            if let (Ok(child_gtx), Ok(aabb)) = (g_transform_query.get(child), aabb_query.get(child))
-            {
-                return Some(child_gtx.transform_point(aabb.center.into()));
-            }
-        }
-    }
-    Some(g_tx.translation())
+    find_in_subtree(
+        entity,
+        |ent| {
+            let ent_gtx = g_transform_query.get(ent).ok()?;
+            let aabb = aabb_query.get(ent).ok()?;
+            Some(ent_gtx.transform_point(aabb.center.into()))
+        },
+        |ent| {
+            children_query
+                .get(ent)
+                .map(|c| c.iter().collect())
+                .unwrap_or_default()
+        },
+    )
+    .or(Some(g_tx.translation()))
 }
 
 /// Draw the gimbal handles at `center` given the current `tool` and which
@@ -255,5 +277,28 @@ mod tests {
                 "Y-axis ring must stay in the XZ plane"
             );
         }
+    }
+
+    #[test]
+    fn find_in_subtree_reaches_a_deep_grandchild() {
+        // root → child → grandchild(carries the Aabb). glTF puts the mesh this
+        // deep; the immediate-children scan that shipped missed it and the
+        // gimbal snapped to the SceneRoot origin instead of the visual center.
+        use std::collections::HashMap;
+        let ent = Entity::from_bits;
+        let children: HashMap<Entity, Vec<Entity>> =
+            HashMap::from([(ent(1), vec![ent(2)]), (ent(2), vec![ent(3)])]);
+        let found = find_in_subtree(
+            ent(1),
+            |e| (e == ent(3)).then_some(Vec3::splat(7.0)),
+            |e| children.get(&e).cloned().unwrap_or_default(),
+        );
+        assert_eq!(found, Some(Vec3::splat(7.0)));
+    }
+
+    #[test]
+    fn find_in_subtree_is_none_when_nothing_matches() {
+        let found = find_in_subtree(Entity::from_bits(1), |_| None::<Vec3>, |_| Vec::new());
+        assert_eq!(found, None);
     }
 }

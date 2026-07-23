@@ -125,8 +125,10 @@ mod tests {
 
     #[test]
     fn sync_status_health_is_settable_and_reads_back() {
-        let mut status = SyncStatus::default();
-        status.health = RelayHealth::Unreachable;
+        let status = SyncStatus {
+            health: RelayHealth::Unreachable,
+            ..Default::default()
+        };
         assert_eq!(status.health, RelayHealth::Unreachable);
         assert!(status.health.is_problem());
     }

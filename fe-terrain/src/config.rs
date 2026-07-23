@@ -184,7 +184,10 @@ mod tests {
 
         // With proposals: they roundtrip and the empty case stays omitted.
         let mut cfg = TerrainConfig::default();
-        assert!(serde_json::to_value(&cfg).unwrap().get("proposals").is_none());
+        assert!(serde_json::to_value(&cfg)
+            .unwrap()
+            .get("proposals")
+            .is_none());
         cfg.proposals.push(TerrainProposal {
             id: "p1".into(),
             op: TerrainOp::Flatten,

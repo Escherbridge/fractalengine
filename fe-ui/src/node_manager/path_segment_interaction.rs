@@ -138,8 +138,9 @@ pub(super) fn handle_path_segment_interaction(
     }
     let Some(ray) = arbiter.ray() else { return };
 
-    // Half-width from the edited track's live style; floored so a hair-thin
-    // ribbon is still selectable (PICK_SLOP does most of the work there).
+    // Half-width from the edited track's live style (petal-local meters, same
+    // frame as the rendered ribbon — width is NOT world-scaled); floored so a
+    // hair-thin ribbon is still selectable (PICK_SLOP does most of the work).
     let half_width = (path_state.edited_track_style.width * 0.5).max(0.05);
     let pts: Vec<Vec3> = path_state
         .points

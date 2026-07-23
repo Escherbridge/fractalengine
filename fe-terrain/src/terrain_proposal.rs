@@ -98,8 +98,7 @@ fn point_in_polygon(p: [f32; 2], polygon: &[[f32; 2]]) -> bool {
     for i in 0..n {
         let [xi, zi] = polygon[i];
         let [xj, zj] = polygon[j];
-        let intersects = ((zi > pz) != (zj > pz))
-            && (px < (xj - xi) * (pz - zi) / (zj - zi) + xi);
+        let intersects = ((zi > pz) != (zj > pz)) && (px < (xj - xi) * (pz - zi) / (zj - zi) + xi);
         if intersects {
             inside = !inside;
         }
@@ -169,7 +168,14 @@ pub fn apply_proposal_over_base(
                 return None;
             }
             let (frac, run) = bounds.map(|b| ramp_params(x, b)).unwrap_or((0.0, 0.0));
-            proposed_height_at(proposal.op, base(x, z), proposal.target_height, delta, frac, run)
+            proposed_height_at(
+                proposal.op,
+                base(x, z),
+                proposal.target_height,
+                delta,
+                frac,
+                run,
+            )
         })
         .collect()
 }
@@ -198,9 +204,16 @@ pub fn proposal_overlay_mesh_data(
         .iter()
         .map(|&[x, z]| {
             let (frac, run) = ramp_params(x, bounds);
-            let y = proposed_height_at(proposal.op, base(x, z), proposal.target_height, delta, frac, run)
-                .or(proposal.target_height)
-                .unwrap_or(0.0);
+            let y = proposed_height_at(
+                proposal.op,
+                base(x, z),
+                proposal.target_height,
+                delta,
+                frac,
+                run,
+            )
+            .or(proposal.target_height)
+            .unwrap_or(0.0);
             [x, y, z]
         })
         .collect();
@@ -214,13 +227,15 @@ pub fn parse_proposals(value: &serde_json::Value) -> Vec<TerrainProposal> {
     match value {
         serde_json::Value::Array(items) => items
             .iter()
-            .filter_map(|item| match serde_json::from_value::<TerrainProposal>(item.clone()) {
-                Ok(p) => Some(p),
-                Err(err) => {
-                    tracing::warn!(error = %err, "invalid terrain proposal; skipping");
-                    None
-                }
-            })
+            .filter_map(
+                |item| match serde_json::from_value::<TerrainProposal>(item.clone()) {
+                    Ok(p) => Some(p),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "invalid terrain proposal; skipping");
+                        None
+                    }
+                },
+            )
             .collect(),
         _ => Vec::new(),
     }
@@ -514,7 +529,7 @@ mod tests {
         assert!(r.scaled);
         assert!((r.extent_m[0] - 100.0).abs() < 1e-6);
         assert!((r.area_m2 - 10_000.0).abs() < 1e-3); // 100 m × 100 m
-        // volume = area(10_000 m²) × real rise(2 / 0.1 = 20 m) = 200_000 m³
+                                                      // volume = area(10_000 m²) × real rise(2 / 0.1 = 20 m) = 200_000 m³
         assert!((r.volume_m3 - 200_000.0).abs() < 1e-1);
         // slope is scale-invariant: 100 × 2 / 10 = 20%
         assert!((r.slope_pct - 20.0).abs() < 1e-6);

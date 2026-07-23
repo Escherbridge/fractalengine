@@ -14,18 +14,18 @@ use crate::theme;
 
 /// Bevy-system-shaped entry point (plain fn — see `terrain_tools_panel.rs`
 /// for why). Not yet called from `gardener_console`; needs `ProposalEditState`
-/// + the active petal's `world_scale` (already mirrored as
+/// and the active petal's `world_scale` (already mirrored as
 /// `PetalMapState.world_scale`, see `gis_panel.rs`) threaded into the call
 /// site — see this file's return-summary note.
-pub fn proposal_report_panel(ctx: &egui::Context, proposal_state: &ProposalEditState, world_scale: f64) {
+pub fn proposal_report_panel(
+    ctx: &egui::Context,
+    proposal_state: &ProposalEditState,
+    world_scale: f64,
+) {
     let Some(selected) = proposal_state.selected.as_deref() else {
         return;
     };
-    let Some(record) = proposal_state
-        .proposals
-        .iter()
-        .find(|r| r.id == selected)
-    else {
+    let Some(record) = proposal_state.proposals.iter().find(|r| r.id == selected) else {
         return;
     };
 
@@ -36,7 +36,11 @@ pub fn proposal_report_panel(ctx: &egui::Context, proposal_state: &ProposalEditS
         .iter()
         .map(|p| [f64::from(p[0]), 0.0, f64::from(p[1])])
         .collect();
-    let report = compute_report(&footprint, f64::from(record.delta.unwrap_or(0.0)), world_scale);
+    let report = compute_report(
+        &footprint,
+        f64::from(record.delta.unwrap_or(0.0)),
+        world_scale,
+    );
 
     egui::Window::new("Proposal Report")
         .resizable(false)
@@ -72,7 +76,10 @@ pub fn proposal_report_panel(ctx: &egui::Context, proposal_state: &ProposalEditS
                 u = report.length_unit
             ));
             ui.label(format!("Area: {:.2} {}", report.area, report.area_unit));
-            ui.label(format!("Volume: {:.2} {}", report.volume, report.volume_unit));
+            ui.label(format!(
+                "Volume: {:.2} {}",
+                report.volume, report.volume_unit
+            ));
             ui.label(format!("Slope: {:.1}%", report.slope_pct));
             ui.label(format!("Bearing: {:.1}\u{00b0}", report.bearing_deg));
             if !report.has_scale {

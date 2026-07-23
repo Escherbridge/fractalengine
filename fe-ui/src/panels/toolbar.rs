@@ -121,12 +121,10 @@ pub(crate) fn top_toolbar(
                 // TODO: re-add manual sidebar toggle when needed
                 for def in &TOOL_DEFS {
                     let active = tool.active_tool == def.tool;
-                    let btn =
-                        egui::Button::new(format!("{} {}", def.glyph, def.name)).fill(if active {
-                            theme::BG_BUTTON_ACTIVE
-                        } else {
-                            theme::BG_BUTTON
-                        });
+                    // tool_inspector_ux_20260719 (FR-1): active MODE reads via
+                    // luminance, not the old saturated-blue hue (ui_ux.md §1).
+                    let btn = egui::Button::new(format!("{} {}", def.glyph, def.name))
+                        .fill(crate::panels::tool_inspector::mode_button_fill(active));
                     if ui
                         .add(btn)
                         .on_hover_text(format!("{} ({})", def.tip, def.key))

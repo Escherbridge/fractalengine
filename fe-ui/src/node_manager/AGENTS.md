@@ -207,13 +207,17 @@ the node origin and false-positived on empty space near it —
   filter applies cleanly per-root. Mesh-triangle picking would need an
   ancestry-filter closure during the cast to achieve the same scoping. Upgrade
   to `MeshRayCast` only if per-triangle precision is later required.
-- **Child-Aabb walk (FR-2).** glTF scenes attach the mesh + `Aabb` to a CHILD
-  of the `SceneRoot`, not the root marker entity. `pick_node_aabb` mirrors
-  `gimbal.rs`'s `gimbal_center` walk — try the root's own `Aabb`, then scan
-  immediate children — but slab-tests each candidate instead of centering, and
-  keeps the nearest entry `t`. Whatever child geometry is hit, selection always
-  resolves to the ROOT `entity` carrying `SpawnedNodeMarker` (its
-  `node_id`/`petal_id`), exactly as the old proximity path did.
+- **Descendant-Aabb walk (FR-2 + depth fix).** glTF scenes attach the mesh +
+  `Aabb` several levels BELOW the `SceneRoot`, not on the root marker entity or
+  even an immediate child. The original one-level scan therefore found nothing
+  for GLBs and deselected them — the regression fixed here. `pick_node_aabb` now
+  does an iterative DFS over the root AND its whole subtree (pure helper
+  `nearest_in_subtree`, unit-tested), slab-testing each candidate and keeping the
+  nearest entry `t`; `gimbal.rs`'s `gimbal_center` mirrors it via `find_in_subtree`
+  (first Aabb wins, else the SceneRoot translation). Primitives keep their `Aabb`
+  on the root entity, so they were never affected. Whatever descendant geometry
+  is hit, selection always resolves to the ROOT `entity` carrying
+  `SpawnedNodeMarker` (its `node_id`/`petal_id`), exactly as before.
 - **The math (`ray_aabb_hit`).** An `Aabb` is axis-aligned in the entity's
   LOCAL space. Rather than transform 8 corners to world space for an OBB test,
   the world ray is transformed INTO local space via `GlobalTransform::affine()`
@@ -402,11 +406,14 @@ result (`Empty`/`Node`/`PathVertex`/`PathSegment`/`Stamp`/`TerrainProposal`/
 `PlaceNode`/`BeginGimbalDrag`/`MoveVertex`/`MoveSegment`/`TerrainCellEdit`/
 `Deselect`/`None`). Resolution is **hit-first**, modulated by tool/selection only
 where intent changes: Pen keeps placing a point even over a grazed node; a
-gimbal-axis press drags the current selection (entity → `BeginGimbalDrag`; a
-vertex/segment under Move → `MoveVertex`/`MoveSegment`; Select/Pen → `None`, so
-the drawn path gimbal stays a visual-only handle). WHEN a given hit can occur is
-the router's gate, not the table's concern — the table stays decoupled from the
-per-tool pick guards.
+gimbal-axis press drags the current selection. Per the ratified decision
+(2026-07-19 "grab it wherever it's shown"), a path vertex/segment resolves to
+`MoveVertex`/`MoveSegment` in EVERY tool (its gimbal is always drawn as a Move
+handle, so it must always be grabbable); an entity-backed selection (node / stamp
+/ whole track) resolves to `BeginGimbalDrag` only in the transform tools
+(`Move`/`Rotate`/`Scale`), matching the entity gimbal that stays closed in
+Select/Pen. WHEN a given hit can occur is the router's gate, not the table's
+concern — the table stays decoupled from the per-tool pick guards.
 
 **FR-3 gimbal drag (`path_gimbal_drag.rs`).** A selected path vertex/segment has
 NO entity, so it can't reuse `handle_gimbal_interaction`'s entity-`Transform`
@@ -417,9 +424,13 @@ the same `* 0.002` camera-distance feel as the entity gimbal via
 affected index — a segment moves BOTH endpoints by the same delta (parallel
 translate: length + orientation preserved). It:
 
-- is gated to `Tool::Move` ONLY — Pen appends and Select picks are structurally
-  safe (it returns before touching anything in every other tool), and it cancels
-  an in-flight drag if the tool changes mid-drag;
+- runs in EVERY tool (2026-07-19 "grab it wherever it's shown") — a
+  vertex/segment gimbal is drawn as a Move handle in all tools, so it must be
+  grabbable in all tools. It only ever claims on a real axis-hit over a
+  vertex/segment selection, so a miss still yields to Pen append / node pick;
+  `draw_gimbal_system` correspondingly draws vertex/segment as Move arrows in
+  every tool (never a dead rotate ring), while a whole track keeps the entity
+  gimbal and so draws only in the transform tools (no drawn-but-dead handle);
 - runs in the `.chain()` immediately BEFORE `handle_gimbal_interaction`, and on a
   vertex/segment press that hits the axis it claims `ClickPriority::Gimbal`
   FIRST — so the entity gimbal's own `claim(Gimbal)` fails (first-claim-wins) and

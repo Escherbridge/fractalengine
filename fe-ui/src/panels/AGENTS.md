@@ -241,5 +241,33 @@ FR-5/FR-6 (`terrain_editor_overhaul_20260718`) + D-78
   report lifts `[x, z]` back to `[x, 0, z]` for the `[f64; 3]` geometry helpers
   and treats a `None` delta as `0.0`.
 
+## §tool-inspector — active tool as a legible UI MODE (`tool_inspector.rs`)
+
+`tool_inspector_ux_20260719` Phase 1. A left `SidePanel` (`tool_inspector`)
+rendered by `gardener_console` right after `left_sidebar`, so it sits inner of
+the hierarchy tree. Unlike the hierarchy sidebar (which auto-collapses when the
+right inspector opens, `mod.rs`), it uses plain `.show()` and is **always
+visible** — a transform inspector is most useful exactly when a node is selected
+and the tree has collapsed.
+
+- **No signature change.** The panel reads only state already threaded into
+  `gardener_console` (`ToolState`, `NodeManager`, `PathEditorState`); it projects
+  the selection itself via `node_manager::project_selection` (re-exported for
+  this) rather than taking a new `SelectionState` param.
+- **Pure core, thin paint.** `panel_descriptor(tool)` (title + Use/Settings zone
+  labels per tool), `gimbal_affordance_label(tool, kind)`, `selection_summary`,
+  and `mode_button_fill(active)` are all pure + unit-tested; the egui body just
+  lays them out. Phase-2+ fills the Use/Settings zones with real controls and
+  folds in `tool_panel.rs` (see the track's `plan.md`).
+- **Mode legibility (FR-1).** The top toolbar's active-tool button now fills via
+  `mode_button_fill` — a brighter NEUTRAL (`theme::BG_MODE_ACTIVE`), i.e. a
+  LUMINANCE emphasis, not the old saturated-blue `BG_BUTTON_ACTIVE` hue shift
+  (`code_styleguides/ui_ux.md §1`).
+- **Gimbal affordance (FR-7).** `gimbal_affordance_label` mirrors the ratified
+  "grab it wherever it's shown" rule (see `node_manager/AGENTS.md §dispatch`): a
+  vertex/segment selection shows the affordance in EVERY tool; an entity / whole
+  track only in the transform tools. Keep it in lockstep with the draw/interact
+  logic in `gimbal_interaction.rs` — it is the textual mirror of what is drawn.
+
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.

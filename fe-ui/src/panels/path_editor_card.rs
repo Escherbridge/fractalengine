@@ -564,8 +564,8 @@ fn render_style_controls(
     ui.horizontal(|ui| {
         ui.label("Thickness");
         let mut w = style.width;
-        // FR-5 (path_interaction_20260716): range starts at 0.1 (step 0.1) so
-        // the new 0.5 default can be dialed even thinner.
+        // Range starts at 0.1 (step 0.1), matching the thin default (petal-local
+        // meters). Dial up for wider roads/paths.
         let resp = ui.add(egui::Slider::new(&mut w, 0.1..=20.0).step_by(0.1));
         if resp.changed() {
             // Live feedback every frame; persist only on release below.

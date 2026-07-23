@@ -42,8 +42,9 @@ use crate::plugin::UiSet;
 pub use path_segment_interaction::TrackPickShape;
 
 /// FR-1 typed selection read-model, re-exported for the gimbal, the object-aware
-/// left-click dispatch (FR-2), and panels.
-pub(crate) use selection::{SelectionKind, SelectionState};
+/// left-click dispatch (FR-2), and panels (the tool inspector projects it to name
+/// the live selection + gimbal affordance).
+pub(crate) use selection::{project_selection, SelectionKind, SelectionState};
 
 /// FR-2 object-aware left-click dispatch model, re-exported for the FR-3 path
 /// gimbal drag and future terrain/road-builder consumers of the shared table.

@@ -219,11 +219,11 @@ pub struct TrackStyleFields {
 
 impl Default for TrackStyleFields {
     fn default() -> Self {
-        // FR-5 (path_interaction_20260716): width 0.5 wu, mirroring
+        // Width 0.1 petal-local meters, mirroring
         // `fe_terrain::iot::TrackStyle::default` (fe-ui must not depend on it).
         Self {
             color: [0.0, 0.8, 1.0, 1.0],
-            width: 0.5,
+            width: 0.1,
             visible: true,
         }
     }
@@ -488,7 +488,7 @@ mod tests {
     fn track_style_fields_default_is_cyan_visible() {
         let s = TrackStyleFields::default();
         assert_eq!(s.color, [0.0, 0.8, 1.0, 1.0]);
-        assert_eq!(s.width, 0.5);
+        assert_eq!(s.width, 0.1);
         assert!(s.visible);
     }
 

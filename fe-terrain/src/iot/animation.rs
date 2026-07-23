@@ -114,7 +114,9 @@ pub struct TrackRouteMap {
 pub struct TrackStyle {
     /// Linear RGBA in `0.0..=1.0`. Default matches the historic hardcoded cyan.
     pub color: [f32; 4],
-    /// Ribbon width in world units (petal-local meters).
+    /// Ribbon width in petal-local meters — the SAME frame as the track points,
+    /// so it must NOT be world-scaled (the ribbon geometry isn't either). Default
+    /// is intentionally thin; per-track `gis.track.width` dials it up.
     pub width: f32,
     /// When `false`, the track's mesh is hidden (entity kept for cheap toggle).
     pub visible: bool,
@@ -123,11 +125,12 @@ pub struct TrackStyle {
 impl Default for TrackStyle {
     fn default() -> Self {
         // Historic cyan look (`Color::srgb(0.0, 0.8, 1.0)`), always visible.
-        // FR-5 (path_interaction_20260716): default ribbon width 0.5 wu — the
-        // old 2.0 read as a fat band that over-covered nearby objects.
+        // Width 0.1 (petal-local meters): the old 0.5 read as a fat band
+        // (in-app 2026-07-19, user asked for "way thinner"). Per-track
+        // `gis.track.width` dials it up.
         Self {
             color: [0.0, 0.8, 1.0, 1.0],
-            width: 0.5,
+            width: 0.1,
             visible: true,
         }
     }
@@ -264,11 +267,11 @@ mod tests {
 
     #[test]
     fn track_style_default_is_cyan_thin_visible() {
-        // Historic cyan + visible; path_interaction_20260716 (FR-5) narrowed the
-        // default ribbon to 0.5 wu (the old 2.0 over-covered nearby objects).
+        // Historic cyan + visible; width 0.1 petal-local meters (the old 0.5
+        // read as a fat band — narrowed 2026-07-19).
         let s = TrackStyle::default();
         assert_eq!(s.color, [0.0, 0.8, 1.0, 1.0]);
-        assert_eq!(s.width, 0.5);
+        assert_eq!(s.width, 0.1);
         assert!(s.visible);
     }
 

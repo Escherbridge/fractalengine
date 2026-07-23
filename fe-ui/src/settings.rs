@@ -103,10 +103,12 @@ mod tests {
 
     #[test]
     fn serde_roundtrips_through_json() {
-        let mut s = AppSettings::default();
-        s.render_distance = 750.0;
-        s.entity_cap = 2_000;
-        s.tile_mode = TileSourceMode::Offline;
+        let s = AppSettings {
+            render_distance: 750.0,
+            entity_cap: 2_000,
+            tile_mode: TileSourceMode::Offline,
+            ..Default::default()
+        };
         let json = serde_json::to_value(&s).expect("serialize");
         assert_eq!(json["tile_mode"], serde_json::json!("offline"));
         let back: AppSettings = serde_json::from_value(json).expect("deserialize");

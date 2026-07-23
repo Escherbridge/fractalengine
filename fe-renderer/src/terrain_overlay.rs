@@ -63,7 +63,9 @@ mod tests {
     #[test]
     fn op_tints_are_distinct_and_translucent() {
         // A few representative ops must not collide, and all are translucent.
-        let ops = ["raise", "lower", "flatten", "cut", "fill", "ramp", "slope", "pad"];
+        let ops = [
+            "raise", "lower", "flatten", "cut", "fill", "ramp", "slope", "pad",
+        ];
         for op in ops {
             let t = op_tint(op);
             assert!(t[3] < 1.0, "{op} tint must be translucent");
@@ -104,6 +106,10 @@ mod tests {
         let len_before = field.len();
         assert_eq!(sample_base(&field, 5.0, 5.0), Some(2.0));
         assert!(sample_base(&field, 500.0, 500.0).is_none());
-        assert_eq!(field.len(), len_before, "sampling must not mutate the field");
+        assert_eq!(
+            field.len(),
+            len_before,
+            "sampling must not mutate the field"
+        );
     }
 }

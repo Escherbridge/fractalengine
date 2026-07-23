@@ -149,7 +149,10 @@ pub(super) fn materialize_cached_primitives(
     let ceiling = super::spawn::distance_ranked_allowance(
         0.0,
         residency.settings.render_distance,
-        residency.settings.entity_cap.min(super::spawn::MAX_PETAL_NODES),
+        residency
+            .settings
+            .entity_cap
+            .min(super::spawn::MAX_PETAL_NODES),
     );
     let mut remaining = if residency.mesh_budget.exceeded {
         0
