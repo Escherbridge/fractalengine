@@ -74,6 +74,10 @@ impl WebViewBackend for TauriBackend {
 
         // --- build wry WebView -------------------------------------------
 
+        // `mut` is consumed by the platform-specific blocks below (e.g. the
+        // Windows child-window attach); those cfg out on Linux/macOS, so allow the
+        // resulting unused_mut there rather than duplicate the whole builder chain.
+        #[allow(unused_mut)]
         let mut builder = WebViewBuilder::new()
             .with_bounds(webview_fill_rect(&geometry))
             .with_visible(true)
