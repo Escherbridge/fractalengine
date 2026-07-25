@@ -8,4 +8,4 @@
 pub mod left_sidebar;
 pub mod right_sidebar;
 pub mod topbar;
-// NOTE: `modal` is intentionally absent this phase — a sibling slice adds it later.
+pub(crate) mod modal;
