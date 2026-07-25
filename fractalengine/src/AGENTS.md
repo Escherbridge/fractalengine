@@ -7,6 +7,30 @@ terrain + webview), and bridges the background threads to Bevy resources.
 turn fe-ui's queued ops into real side effects (the UI crate has no DB / blob /
 filesystem access by design).
 
+## §panic-hook
+
+`panic_log.rs` (GUI binary only — `fe-relay` has no egui pass and stays
+plain) installs a *chained* panic hook (`std::panic::take_hook` +
+`set_hook`) as the very first line of `main`, before any thread spawns.
+
+**Why it exists.** The unified spatial editor's `gardener_ui_system`
+(fe-ui) runs the entire egui pass in one function body; a panic anywhere in
+that body unwinds mid-pass and the process aborts. The crash cascade the
+user hits (`ui_shell_architecture_20260724`, directive 3 — terrain tools
+crash) surfaces only as `bevy_egui`'s "Encountered a panic in system" +
+exit 101 on stderr — the *actual* panic payload (which `unwrap`/`expect`/
+index panicked, where, with what backtrace) is never captured anywhere,
+making the root cause undiagnosable from the user's report alone. This hook
+is the diagnostic: it appends a timestamp, thread name, panic payload, panic
+location, and a `Backtrace::force_capture()` to `data/panic.log` (same
+writable-data-dir convention as `DB_PATH`), then calls the previous hook so
+stderr output and Bevy's own reporting are unaffected. std-only, no new
+dependency. It does not change crash *behavior* (the process still aborts on
+an uncaught panic) — see FR-7 in `ui_shell_architecture_20260724` for the
+panel-level `catch_unwind` guard that will make single-panel panics
+non-fatal; this hook stays useful afterward as the log sink for whatever
+still reaches an uncaught panic.
+
 ## §durability
 
 SurrealKV's disk-flush cadence is controlled by the `SURREAL_DATASTORE_SYNC_DATA`

@@ -363,6 +363,21 @@ track?" is decided by membership in `PathEditorState.tracks` — the pure
 re-issues the `GetNodeProperties` round-trip that would clobber the in-flight
 point buffer.
 
+**FR-2 (`ui_shell_architecture_20260724`) — eager track-list load.**
+`track_to_open`'s gate was starved: `PathEditorState.tracks` was populated
+ONLY while the Data window's Paths tab rendered (`gis_panel.rs`'s
+auto-populate), so a fresh session that never opened that window left the
+list empty and every viewport track click silently no-op'd — the bridge above
+never fired, so vertex/handle markers never spawned. `advance_petal_tracking`
+(same file) now issues the Paths tab's own request
+(`UiAction::PathQueryTracks` → `actions::path::query_tracks`) on the
+petal-entry/change branch that already existed, so the list is loaded before
+the user ever needs to open the Data window. `request_track_list_refresh`
+guards against a duplicate `RawQuery` when a request is already in flight;
+the transition-only `Local<bool>`/`Local<Option<String>>` pair (unchanged)
+guards against re-firing every frame. The two selection authorities stay
+split (`ui_ux.md` §5, sacred) — this only feeds Authority B's track list.
+
 **Precise ribbon picking (`path_interaction_20260716`, FR-1).** The old AABB
 pick made a km-scale flat ribbon a giant flat box that swallowed clicks meant
 for nearby objects. The bridge now also attaches a `TrackPickShape { points,
