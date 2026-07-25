@@ -2,7 +2,11 @@
 //! (`ui_shell::{topbar, left_sidebar, right_sidebar}`) around the status bar,
 //! viewport, floating dialogs, and the toast overlay. The manager render bodies
 //! live in `ui_shell` (FR-4/5/6); this module keeps the panel widgets they call
-//! plus the still-floating windows. See `fe-ui/src/panels/AGENTS.md`.
+//! plus the still-floating `gis_panel` window and the `ActiveDialog` set.
+//! Phase 4 (FR-9) retired the last three floating windows (Tools/Terrain
+//! Tools/Proposal Report) — their bodies now live in
+//! `ui_shell::right_sidebar`'s PathTools/TerrainTools/ProposalReport
+//! sections. See `fe-ui/src/panels/AGENTS.md`.
 
 pub(crate) mod gis_panel;
 pub(crate) mod inspector;
@@ -98,7 +102,6 @@ pub fn gardener_console(
         node_mgr,
         ui_mgr,
         gis_panel,
-        tool_panel,
         right_state,
     );
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
@@ -129,7 +132,8 @@ pub fn gardener_console(
     }
 
     // Right sidebar (FR-6): portal toolbar when the portal owns the region, else
-    // the active section (Inspector today; placeholders for the rest).
+    // the active section (Inspector by default; Path/Terrain Tools and the
+    // Proposal Report host the former floating windows as of Phase 4/FR-9).
     crate::ui_shell::right_sidebar::render_right_sidebar(
         ctx,
         right_state,
@@ -141,6 +145,10 @@ pub fn gardener_console(
         db_tx,
         nav,
         asset_status,
+        tool_panel,
+        path_state,
+        proposal_state,
+        petal_map.world_scale,
     );
 
     let viewport_response =
@@ -189,18 +197,6 @@ pub fn gardener_console(
         path_status,
         cursor_world,
     );
-
-    // Tools panel (independent floating window, hosts hexon-path-asset
-    // stamping controls; the "Stamp along path" button emits
-    // `UiAction::PathAssetApply` for the Paths-tab track being edited — see
-    // panels/AGENTS.md §tool-panel).
-    tool_panel::render_tool_panel(ctx, tool_panel, ui_mgr, path_state, hierarchy);
-
-    // FR-5/FR-6 (terrain_editor_overhaul_20260718): terrain proposal palette
-    // (own floating window, toggled from the Tools panel's "Terrain Tools"
-    // pointer section) and its report panel for the selected proposal.
-    terrain_tools_panel::terrain_tools_panel(ctx, tool_panel, ui_mgr, proposal_state);
-    proposal_report_panel::proposal_report_panel(ctx, proposal_state, petal_map.world_scale);
 
     // Toast overlay (bottom-left, semi-transparent)
     render_toast(ctx, ui_mgr);

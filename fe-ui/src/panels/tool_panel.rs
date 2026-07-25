@@ -1,9 +1,10 @@
-//! Tools panel: a floating window (independent of `ActiveDialog`, like
-//! `gis_panel`) that hosts the hexon-path-asset stamping controls. The
-//! "Stamp along path" button emits `UiAction::PathAssetApply` for the track
-//! currently being edited (`PathEditorState.editing_track_id`), building the
-//! descriptor from the repetition/pattern controls. See
-//! `fe-ui/src/panels/AGENTS.md` §tool-panel.
+//! Path-tools + pen controls: pure rendering helpers called by
+//! `ui_shell::right_sidebar::render_path_tools_section` (ui_shell_architecture
+//! Phase 4 folded the former floating "Tools" window into the right-sidebar
+//! PathTools section). The "Stamp along path" button emits
+//! `UiAction::PathAssetApply` for the track currently being edited
+//! (`PathEditorState.editing_track_id`), building the descriptor from the
+//! repetition/pattern controls. See `fe-ui/src/panels/AGENTS.md` §tool-panel.
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
@@ -145,13 +146,12 @@ impl TerrainToolMode {
     }
 }
 
-/// Persistent state for the Tools panel (open flag + path-asset stamp
-/// controls). `selected_hexon_ref` holds the picked asset's `asset_path`
-/// (`blob://{hash}.glb`); the picker (FR-1b) or the collapsible manual-entry
-/// fallback populate it. See `panels/AGENTS.md` §tool-panel.
+/// Persistent state for the path-tools section (path-asset stamp + pen +
+/// terrain-tool controls). `selected_hexon_ref` holds the picked asset's
+/// `asset_path` (`blob://{hash}.glb`); the picker (FR-1b) or the collapsible
+/// manual-entry fallback populate it. See `panels/AGENTS.md` §tool-panel.
 #[derive(Resource, Default)]
 pub struct ToolPanelState {
-    pub open: bool,
     // --- W4 path-asset stamp controls (owned by the gis_tool_panel track) ---
     pub selected_hexon_ref: Option<String>,
     /// Filter-text buffer for the path-asset picker list.
@@ -180,13 +180,11 @@ pub struct ToolPanelState {
     pub shape_segments: usize,
     /// Pen-tool actions queued during the egui pass; drained by
     /// `actions::process_ui_actions` (avoids threading `ui_mgr` through the
-    /// `render_tool_panel` signature). See AGENTS.md §tool-panel.
+    /// `render_pen_section` signature). See AGENTS.md §tool-panel.
     pub pending_actions: Vec<UiAction>,
     // --- FR-5 terrain tool palette (terrain_editor_overhaul_20260718) ---
-    /// Whether the standalone `terrain_tools_panel` window is open. Toggled
-    /// from this panel's "Terrain Tools" pointer section (see
-    /// `render_terrain_tools_section`) and from the toolbar (TODO seam).
-    pub terrain_tools_open: bool,
+    // Reachability is now the right-sidebar `TerrainTools` section rail entry
+    // (ui_shell_architecture Phase 4 retired the standalone-window pointer).
     pub terrain_tool_mode: TerrainToolMode,
     pub terrain_footprint_radius: f32,
     pub terrain_target_height: f32,
@@ -205,48 +203,11 @@ impl ToolPanelState {
     }
 }
 
-pub fn render_tool_panel(
-    ctx: &egui::Context,
-    state: &mut ToolPanelState,
-    ui_mgr: &mut UiManager,
-    path_state: &PathEditorState,
-    verse_mgr: &VerseManager,
-) {
-    if !state.open {
-        return;
-    }
-
-    let mut still_open = true;
-    egui::Window::new("Tools")
-        .open(&mut still_open)
-        .resizable(true)
-        .default_width(320.0)
-        .min_width(280.0)
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::BG_DIALOG)
-                .inner_margin(egui::Margin::same(12))
-                .corner_radius(6.0)
-                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
-        )
-        .show(ctx, |ui| {
-            render_path_asset_section(ui, state, ui_mgr, path_state, verse_mgr);
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(6.0);
-            render_pen_section(ui, state);
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(6.0);
-            render_terrain_tools_section(ui, state);
-        });
-
-    if !still_open {
-        state.open = false;
-    }
-}
-
-fn render_path_asset_section(
+/// Path-asset stamp controls. Called directly by
+/// `ui_shell::right_sidebar::render_path_tools_section` (the former
+/// `render_tool_panel` floating-window shell was retired in Phase 4 — this
+/// body moved verbatim, only the `egui::Window` wrapper was dropped).
+pub(crate) fn render_path_asset_section(
     ui: &mut egui::Ui,
     state: &mut ToolPanelState,
     ui_mgr: &mut UiManager,
@@ -500,9 +461,11 @@ fn build_descriptor(
 /// Pen-tool phase-2 controls: mode radio, sensitivity (tension) slider, a
 /// "Smooth path" button (resample + replace the edited track's points), and
 /// shape buttons (ellipse/circle). All buttons queue a `UiAction` into
-/// `state.pending_actions`, drained by `process_ui_actions`. See
+/// `state.pending_actions`, drained by `process_ui_actions`. Called directly
+/// by `ui_shell::right_sidebar::render_path_tools_section` (see
+/// `render_path_asset_section`'s doc for the Phase-4 window retirement). See
 /// `node_manager/AGENTS.md` §pen-tool.
-fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
+pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     // `ToolPanelState` is `#[derive(Default)]` (shared with W4), so the pen
     // fields start at zero. Lazily seed usable defaults on first paint.
     if state.pen_samples_per_segment == 0 {
@@ -701,36 +664,6 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     );
 }
 
-/// FR-5: the terrain edit palette itself lives in a standalone floating
-/// window (`panels::terrain_tools_panel::terrain_tools_panel`) so it can hold
-/// a `ProposalEditState` handle without widening this panel's — and by
-/// extension `gardener_console`'s — signature. This section is just the
-/// reachability toggle. See `panels/AGENTS.md` §terrain-tools.
-fn render_terrain_tools_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
-    ui.label(
-        egui::RichText::new("Terrain Tools")
-            .strong()
-            .color(theme::TEXT_SECTION),
-    );
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(
-            "Non-destructive proposal overlays (raise/lower/flatten/ramp/slope/pad/cut/fill) — analytics only, never writes true terrain.",
-        )
-        .small()
-        .color(theme::TEXT_MUTED),
-    );
-    ui.add_space(4.0);
-    let label = if state.terrain_tools_open {
-        "Close Terrain Tools"
-    } else {
-        "Open Terrain Tools"
-    };
-    if ui.button(label).clicked() {
-        state.terrain_tools_open = !state.terrain_tools_open;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,7 +755,6 @@ mod tests {
     #[test]
     fn build_descriptor_maps_all_controls() {
         let state = ToolPanelState {
-            open: true,
             selected_hexon_ref: Some("blob://model.glb".to_string()),
             spacing_mode: SpacingMode::FixedCount,
             spacing_value: 2.5,
