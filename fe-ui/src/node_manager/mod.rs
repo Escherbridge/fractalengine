@@ -20,6 +20,8 @@ mod gimbal_interaction;
 mod inspector_sync;
 /// FR-3 drag: gimbal-drag a selected path vertex/segment. See AGENTS.md §dispatch.
 mod path_gimbal_drag;
+/// FR-5 (pen_curve_tool_20260722): bezier-handle markers + drag. See AGENTS.md §pen-tool.
+mod path_handle_interaction;
 mod path_point_interaction;
 mod path_segment_interaction;
 mod router;
@@ -49,7 +51,7 @@ pub(crate) use selection::{project_selection, SelectionKind, SelectionState};
 /// FR-2 object-aware left-click dispatch model, re-exported for the FR-3 path
 /// gimbal drag and future terrain/road-builder consumers of the shared table.
 pub use dispatch::{
-    resolve_operation, terrain_cell_proposal, HitTarget, Operation, TerrainBrush,
+    resolve_operation, terrain_cell_proposal, HandleSide, HitTarget, Operation, TerrainBrush,
     TerrainProposalEdit,
 };
 
@@ -137,6 +139,8 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<NodeManager>();
         app.init_resource::<router::ClickArbiter>();
         app.init_resource::<path_point_interaction::PathPointDrag>();
+        app.init_resource::<path_point_interaction::PenHandleDrag>();
+        app.init_resource::<path_handle_interaction::PathHandleDrag>();
         app.init_resource::<path_gimbal_drag::PathGimbalDrag>();
         app.init_resource::<selection::SelectionState>();
         app.add_systems(Startup, crate::gimbal::configure_gimbal_gizmos);
@@ -147,6 +151,8 @@ impl Plugin for NodeManagerPlugin {
                 sidebar_sync::sync_sidebar_to_manager,
                 router::resolve_pointer_frame, // arbitrate left-click ownership for this frame (first)
                 gimbal_interaction::update_hovered_axis, // hover detection (before interaction)
+                path_handle_interaction::sync_path_handle_markers, // keep handle markers current before their pick
+                path_handle_interaction::handle_path_handle_interaction, // claims PathHandle FIRST — Q7 handle > vertex > gimbal
                 path_gimbal_drag::handle_path_gimbal_drag, // FR-3: claims Gimbal FIRST for a selected vertex/segment
                 gimbal_interaction::handle_gimbal_interaction, // claims Gimbal on axis pick + drag
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
@@ -157,6 +163,7 @@ impl Plugin for NodeManagerPlugin {
                 path_segment_interaction::sync_path_measurements, // live metric length readouts (FR-3)
                 inspector_sync::sync_manager_to_inspector,
                 selection::update_selection_state, // FR-1: project the read-model before the gimbal draws
+                path_handle_interaction::draw_handle_stems, // anchor→handle stems (draws only, steals no clicks)
                 gimbal_interaction::draw_gimbal_system,
                 transform_broadcast::broadcast_transform,
                 transform_broadcast::apply_inbound_transforms,

@@ -9,7 +9,7 @@ use bevy::prelude::Resource;
 use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
-use crate::gis::PathEditorState;
+use crate::gis::{CornerKind, PathEditorState};
 use crate::node_manager::curve::{self, PenMode};
 use crate::theme;
 use crate::verse_manager::VerseManager;
@@ -167,6 +167,11 @@ pub struct ToolPanelState {
     pub pen_tension: f32,
     /// Samples emitted per curve segment when smoothing.
     pub pen_samples_per_segment: usize,
+    /// pen_curve_tool_20260722 (FR-4): anchor kind a plain (below-threshold)
+    /// Pen click places — Corner = legacy sharp append; Smooth/Symmetric
+    /// auto-derive collinear handles. Edited here (NFR-6: the tool inspector
+    /// stays read-only), consumed by the Pen release decision.
+    pub pen_new_anchor_kind: CornerKind,
     /// Radius used by the "Add Circle" / X-radius of "Add Ellipse" shape.
     pub shape_radius: f32,
     /// Z-radius for "Add Ellipse" (X-radius is `shape_radius`).
@@ -542,6 +547,34 @@ fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
             PenMode::Bezier.label(),
         );
     });
+    ui.add_space(4.0);
+
+    // pen_curve_tool_20260722 (FR-4/FR-6): the tool-level default anchor kind
+    // a plain Pen click places, read by the release decision.
+    ui.label(
+        egui::RichText::new("New anchor")
+            .small()
+            .color(theme::TEXT_DIM),
+    );
+    ui.horizontal(|ui| {
+        ui.selectable_value(
+            &mut state.pen_new_anchor_kind,
+            CornerKind::Corner,
+            CornerKind::Corner.label(),
+        );
+        ui.selectable_value(
+            &mut state.pen_new_anchor_kind,
+            CornerKind::Smooth,
+            CornerKind::Smooth.label(),
+        );
+        ui.selectable_value(
+            &mut state.pen_new_anchor_kind,
+            CornerKind::Symmetric,
+            CornerKind::Symmetric.label(),
+        );
+    })
+    .response
+    .on_hover_text("Anchor kind a plain Pen click places (press-drag always pulls out handles)");
     ui.add_space(4.0);
 
     ui.label(

@@ -265,6 +265,7 @@ persists are rolled back via `transform_rollback`.
 |---|---|
 | [BUILDING.md](BUILDING.md) | Per-platform build instructions and known issues |
 | [docs/guide.md](docs/guide.md) | Comprehensive developer guide |
+| [docs/editor-guide.md](docs/editor-guide.md) | Editor usage guide (Pen tool, paths, curves) |
 | [docs/diagrams.md](docs/diagrams.md) | Architecture diagrams index (Mermaid) |
 | [docs/security-checklist.md](docs/security-checklist.md) | Security audit checklist |
 | [docs/webview-threat-model.md](docs/webview-threat-model.md) | WebView threat model |

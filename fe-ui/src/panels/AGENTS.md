@@ -132,6 +132,13 @@
   into `ToolPanelState.pending_actions` (drained in `process_ui_actions`, since
   the panel has no `ui_mgr` for those). The pen curve/shape math + action
   contract live in `fe-ui/src/node_manager/AGENTS.md` §pen-tool (phase 2).
+  `pen_curve_tool_20260722` (FR-4/NFR-6) adds the **"New anchor"**
+  Corner/Smooth/Symmetric picker bound to `ToolPanelState.pen_new_anchor_kind`
+  — the anchor kind a plain (below-threshold) Pen click places, consumed by
+  the Release decision (§pen-tool's bezier subsection). It lives HERE, not in
+  `tool_inspector.rs`, because this panel owns `&mut ToolPanelState` while the
+  tool inspector is read-only by construction (§tool-inspector); a pure
+  default needs no `UiAction`.
   `gardener_console` retains its trailing
   `tool_panel: &mut crate::panels::tool_panel::ToolPanelState` param from the
   shell pass (the caller `plugin.rs` still registers `ToolPanelState`).
@@ -268,6 +275,14 @@ and the tree has collapsed.
   vertex/segment selection shows the affordance in EVERY tool; an entity / whole
   track only in the transform tools. Keep it in lockstep with the draw/interact
   logic in `gimbal_interaction.rs` — it is the textual mirror of what is drawn.
+- **Read-only anchor readout (`pen_curve_tool_20260722` FR-6/NFR-6).** The pure
+  `anchor_readout(kind, points)` renders the selected path vertex's corner kind
+  + smoothness ("Anchor #3: Smooth, smoothness 0.50" — unitless 0..1) under the
+  selection summary. STRICTLY a readout: the panel signature is unchanged (all
+  params still `&`), and the EDITABLE corner settings live in the Paths card
+  (`fe-ui/src/AGENTS.md` §path-editor item 10) + the Pen default in
+  `tool_panel.rs` (§tool-panel). Adding any `&mut` here would break the
+  read-only-by-construction contract this panel exists to keep.
 
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.

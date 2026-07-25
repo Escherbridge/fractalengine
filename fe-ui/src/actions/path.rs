@@ -7,7 +7,7 @@
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
 
-use crate::gis::{self, PathEditorState, PathPointRow};
+use crate::gis::{self, CornerKind, PathEditorState, PathPointRow};
 use crate::node_manager::curve::{self, PenMode};
 use crate::path_ops::{PathOp, PendingPathOps};
 
@@ -106,6 +106,73 @@ pub(crate) fn append_point(
         track_node_id,
         position,
         time_seconds: None,
+    });
+}
+
+/// Appends a full bezier-anchor row to both the local buffer and the op queue —
+/// the smooth-anchor sibling of `append_point` (pen_curve_tool_20260722 FR-7).
+pub(crate) fn append_smooth_point(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    track_node_id: String,
+    row: PathPointRow,
+) {
+    path_ops.0.push(PathOp::AppendSmoothPoint {
+        track_node_id,
+        position: row.position,
+        handle_in: row.handle_in,
+        handle_out: row.handle_out,
+        corner_code: row.corner.to_code(),
+        smoothness: row.smoothness,
+    });
+    path_state.points.push(row);
+}
+
+/// Sets anchor `index`'s handles (+ smoothness) in the local buffer and queues
+/// the op. Out-of-range index still queues (bridge is source of truth).
+pub(crate) fn set_anchor_handles(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    track_node_id: String,
+    index: usize,
+    handle_in: Option<[f32; 3]>,
+    handle_out: Option<[f32; 3]>,
+    smoothness: f32,
+) {
+    if let Some(row) = path_state.points.get_mut(index) {
+        row.handle_in = handle_in;
+        row.handle_out = handle_out;
+        row.smoothness = smoothness;
+    } else {
+        bevy::log::warn!("Paths: set_anchor_handles index {index} out of range for local buffer");
+    }
+    path_ops.0.push(PathOp::SetAnchorHandles {
+        track_node_id,
+        index,
+        handle_in,
+        handle_out,
+        smoothness,
+    });
+}
+
+/// Sets anchor `index`'s corner classification in the local buffer and queues
+/// the op. Out-of-range index still queues (bridge is source of truth).
+pub(crate) fn set_anchor_corner(
+    path_ops: &mut PendingPathOps,
+    path_state: &mut PathEditorState,
+    track_node_id: String,
+    index: usize,
+    corner: CornerKind,
+) {
+    if let Some(row) = path_state.points.get_mut(index) {
+        row.corner = corner;
+    } else {
+        bevy::log::warn!("Paths: set_anchor_corner index {index} out of range for local buffer");
+    }
+    path_ops.0.push(PathOp::SetAnchorCorner {
+        track_node_id,
+        index,
+        corner_code: corner.to_code(),
     });
 }
 
@@ -509,6 +576,131 @@ mod tests {
         assert!(state.points.is_empty());
         assert_eq!(ops.0.len(), 1);
         assert!(matches!(ops.0[0], PathOp::MovePoint { index: 9, .. }));
+    }
+
+    #[test]
+    fn append_smooth_point_updates_local_buffer_and_queues_op() {
+        // pen_curve_tool_20260722 FR-7: the full anchor row echoes locally and
+        // rides the op (corner as its wire code).
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_smooth_point(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            PathPointRow {
+                position: [1.0, 0.0, 2.0],
+                time_seconds: None,
+                handle_in: Some([-0.5, 0.0, 0.0]),
+                handle_out: Some([0.5, 0.0, 0.0]),
+                corner: CornerKind::Symmetric,
+                smoothness: 0.25,
+            },
+        );
+        assert_eq!(state.points.len(), 1);
+        assert_eq!(state.points[0].handle_in, Some([-0.5, 0.0, 0.0]));
+        assert_eq!(state.points[0].handle_out, Some([0.5, 0.0, 0.0]));
+        assert_eq!(state.points[0].corner, CornerKind::Symmetric);
+        assert_eq!(ops.0.len(), 1);
+        match &ops.0[0] {
+            PathOp::AppendSmoothPoint {
+                track_node_id,
+                position,
+                handle_in,
+                handle_out,
+                corner_code,
+                smoothness,
+            } => {
+                assert_eq!(track_node_id, "track-1");
+                assert_eq!(*position, [1.0, 0.0, 2.0]);
+                assert_eq!(*handle_in, Some([-0.5, 0.0, 0.0]));
+                assert_eq!(*handle_out, Some([0.5, 0.0, 0.0]));
+                assert_eq!(*corner_code, 2.0, "Symmetric encodes as code 2");
+                assert_eq!(*smoothness, 0.25);
+            }
+            other => panic!("expected AppendSmoothPoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_anchor_handles_updates_row_and_queues_op() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
+        ops.0.clear();
+        set_anchor_handles(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            0,
+            Some([-1.0, 0.0, 0.0]),
+            Some([1.0, 0.0, 0.0]),
+            0.5,
+        );
+        assert_eq!(state.points[0].handle_in, Some([-1.0, 0.0, 0.0]));
+        assert_eq!(state.points[0].handle_out, Some([1.0, 0.0, 0.0]));
+        assert_eq!(state.points[0].smoothness, 0.5);
+        assert_eq!(
+            state.points[0].position,
+            [1.0, 0.0, 1.0],
+            "position untouched"
+        );
+        assert_eq!(ops.0.len(), 1);
+        assert!(matches!(
+            ops.0[0],
+            PathOp::SetAnchorHandles { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn set_anchor_handles_out_of_range_still_queues_op() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        set_anchor_handles(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            7,
+            None,
+            Some([1.0, 0.0, 0.0]),
+            0.0,
+        );
+        assert!(state.points.is_empty());
+        assert_eq!(ops.0.len(), 1);
+        assert!(matches!(
+            ops.0[0],
+            PathOp::SetAnchorHandles { index: 7, .. }
+        ));
+    }
+
+    #[test]
+    fn set_anchor_corner_updates_row_and_queues_op() {
+        let mut ops = PendingPathOps::default();
+        let mut state = PathEditorState::default();
+        state.start_editing("track-1".to_string());
+        append_point(&mut ops, &mut state, "track-1".to_string(), [1.0, 0.0, 1.0]);
+        ops.0.clear();
+        set_anchor_corner(
+            &mut ops,
+            &mut state,
+            "track-1".to_string(),
+            0,
+            CornerKind::Smooth,
+        );
+        assert_eq!(state.points[0].corner, CornerKind::Smooth);
+        assert_eq!(ops.0.len(), 1);
+        match &ops.0[0] {
+            PathOp::SetAnchorCorner {
+                index, corner_code, ..
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(*corner_code, 1.0, "Smooth encodes as code 1");
+            }
+            other => panic!("expected SetAnchorCorner, got {other:?}"),
+        }
     }
 
     #[test]

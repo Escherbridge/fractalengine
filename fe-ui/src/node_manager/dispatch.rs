@@ -10,6 +10,16 @@ use bevy::prelude::Entity;
 use super::selection::SelectionKind;
 use crate::panels::toolbar::Tool;
 
+/// Which bezier handle of a path anchor a pick refers to
+/// (pen_curve_tool_20260722 FR-5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleSide {
+    /// The incoming handle (`handle_in`).
+    In,
+    /// The outgoing handle (`handle_out`).
+    Out,
+}
+
 /// What the ray hit in the viewport this frame — the raw pick result, before it
 /// is interpreted against the current tool/selection. Consumers build this from
 /// their own pick (marker pick, ribbon pick, AABB node pick, gimbal-axis pick),
@@ -22,6 +32,8 @@ pub enum HitTarget {
     Node(Entity),
     /// An existing path vertex marker — index into the edited track's points.
     PathVertex { idx: usize },
+    /// A bezier handle marker of the edited track's anchor `idx` (FR-5).
+    PathHandle { idx: usize, side: HandleSide },
     /// A ribbon segment `idx` of the edited track (`points[idx] → points[idx+1]`).
     PathSegment { idx: usize },
     /// A materialized path-asset stamp entity.
@@ -65,6 +77,9 @@ pub enum Operation {
     MoveVertex { idx: usize },
     /// Drag the selected path segment via the gimbal (FR-3, moves both ends).
     MoveSegment { idx: usize },
+    /// Drag anchor `idx`'s bezier handle (pen_curve_tool_20260722 FR-5).
+    /// Position-free like `MoveVertex` — the consumer computes positions.
+    MoveHandle { idx: usize, side: HandleSide },
     /// Emit a proposed terrain-cell edit (FR-5 seam — see AGENTS.md §dispatch).
     TerrainCellEdit,
 }
@@ -143,6 +158,9 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
         // A concrete object hit selects that object regardless of tool; WHEN such
         // a hit can occur is the router's gate, not this table's concern.
         HitTarget::PathVertex { idx } => Operation::SelectVertex { idx },
+        // A handle hit drags that handle wherever it's pickable (FR-5) — like
+        // vertices, WHEN it's pickable is the claiming system's gate.
+        HitTarget::PathHandle { idx, side } => Operation::MoveHandle { idx, side },
         HitTarget::PathSegment { idx } => Operation::SelectSegment { idx },
         HitTarget::Stamp(entity) => Operation::SelectStamp(entity),
         HitTarget::TerrainProposal { id } => Operation::SelectProposal { id },
@@ -368,6 +386,46 @@ mod tests {
     }
 
     #[test]
+    fn handle_hit_moves_handle_in_every_tool() {
+        // FR-5: a handle marker drags its handle wherever it's pickable — the
+        // table is tool- and selection-independent (gating is the system's).
+        for tool in [
+            Tool::Select,
+            Tool::Pen,
+            Tool::Move,
+            Tool::Rotate,
+            Tool::Scale,
+        ] {
+            for side in [HandleSide::In, HandleSide::Out] {
+                assert_eq!(
+                    resolve_operation(
+                        tool,
+                        &SelectionKind::Empty,
+                        HitTarget::PathHandle { idx: 2, side }
+                    ),
+                    Operation::MoveHandle { idx: 2, side },
+                    "{tool:?} {side:?}"
+                );
+            }
+        }
+        // Selection-independent: an existing vertex selection doesn't change it.
+        assert_eq!(
+            resolve_operation(
+                Tool::Select,
+                &track_vertex(0),
+                HitTarget::PathHandle {
+                    idx: 5,
+                    side: HandleSide::Out
+                }
+            ),
+            Operation::MoveHandle {
+                idx: 5,
+                side: HandleSide::Out
+            }
+        );
+    }
+
+    #[test]
     fn stamp_and_proposal_hits_select_them() {
         assert_eq!(
             resolve_operation(
@@ -460,6 +518,10 @@ mod tests {
             Operation::BeginGimbalDrag,
             Operation::MoveVertex { idx: 0 },
             Operation::MoveSegment { idx: 0 },
+            Operation::MoveHandle {
+                idx: 0,
+                side: HandleSide::In,
+            },
             Operation::TerrainCellEdit,
         ];
     }

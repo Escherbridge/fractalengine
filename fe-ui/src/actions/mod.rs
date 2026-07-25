@@ -159,6 +159,30 @@ pub enum UiAction {
         track_node_id: String,
         position: [f32; 3],
     },
+    /// Append a bezier anchor with handles (Pen press-drag / Alt-drag commit,
+    /// pen_curve_tool_20260722 FR-7).
+    PathAppendSmoothPoint {
+        track_node_id: String,
+        position: [f32; 3],
+        handle_in: Option<[f32; 3]>,
+        handle_out: Option<[f32; 3]>,
+        corner: crate::gis::CornerKind,
+        smoothness: f32,
+    },
+    /// Set anchor `index`'s bezier handles (+ smoothness) in place.
+    PathSetAnchorHandles {
+        track_node_id: String,
+        index: usize,
+        handle_in: Option<[f32; 3]>,
+        handle_out: Option<[f32; 3]>,
+        smoothness: f32,
+    },
+    /// Set anchor `index`'s corner classification in place.
+    PathSetAnchorCorner {
+        track_node_id: String,
+        index: usize,
+        corner: crate::gis::CornerKind,
+    },
     /// Remove the point at `index` from a track's point list.
     PathRemovePoint {
         track_node_id: String,
@@ -595,6 +619,58 @@ pub(crate) fn process_ui_actions(
                 position,
             } => {
                 path::append_point(&mut path_ops, &mut path_state, track_node_id, position);
+            }
+            UiAction::PathAppendSmoothPoint {
+                track_node_id,
+                position,
+                handle_in,
+                handle_out,
+                corner,
+                smoothness,
+            } => {
+                path::append_smooth_point(
+                    &mut path_ops,
+                    &mut path_state,
+                    track_node_id,
+                    crate::gis::PathPointRow {
+                        position,
+                        time_seconds: None,
+                        handle_in,
+                        handle_out,
+                        corner,
+                        smoothness,
+                    },
+                );
+            }
+            UiAction::PathSetAnchorHandles {
+                track_node_id,
+                index,
+                handle_in,
+                handle_out,
+                smoothness,
+            } => {
+                path::set_anchor_handles(
+                    &mut path_ops,
+                    &mut path_state,
+                    track_node_id,
+                    index,
+                    handle_in,
+                    handle_out,
+                    smoothness,
+                );
+            }
+            UiAction::PathSetAnchorCorner {
+                track_node_id,
+                index,
+                corner,
+            } => {
+                path::set_anchor_corner(
+                    &mut path_ops,
+                    &mut path_state,
+                    track_node_id,
+                    index,
+                    corner,
+                );
             }
             UiAction::PathRemovePoint {
                 track_node_id,

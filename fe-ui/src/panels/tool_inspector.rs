@@ -11,7 +11,7 @@
 
 use bevy_egui::egui;
 
-use crate::gis::PathEditorState;
+use crate::gis::{PathEditorState, PathPointRow};
 use crate::node_manager::{project_selection, NodeManager, SelectionKind};
 use crate::panels::toolbar::Tool;
 use crate::plugin::ToolState;
@@ -67,9 +67,14 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
             subtitle: "Draw a path by clicking the viewport",
             use_zone: &[
                 "Click the terrain to add a point",
+                "Press-drag to pull out curve handles",
+                "Alt mid-drag breaks the handles apart",
                 "A gimbal on a selected point stays grabbable",
             ],
-            settings_zone: &["Curve mode (soon)", "Shapes: circle / rectangle (soon)"],
+            settings_zone: &[
+                "New anchor type — Tools window, Pen",
+                "Corner settings — Paths tab, selected vertex",
+            ],
         },
     }
 }
@@ -123,6 +128,22 @@ pub(crate) fn mode_button_fill(active: bool) -> egui::Color32 {
     } else {
         theme::BG_BUTTON
     }
+}
+
+/// pen_curve_tool_20260722 (FR-6): read-only per-anchor readout for the
+/// inspector — the selected vertex's corner kind + smoothness (unitless 0..1).
+/// Pure; `None` unless the selection is an in-range path vertex. The EDITABLE
+/// corner settings live in the Paths card / Tools window (NFR-6).
+pub(crate) fn anchor_readout(kind: &SelectionKind, points: &[PathPointRow]) -> Option<String> {
+    let SelectionKind::PathVertex { idx, .. } = kind else {
+        return None;
+    };
+    let row = points.get(*idx)?;
+    Some(format!(
+        "Anchor #{idx}: {}, smoothness {:.2}",
+        row.corner.label(),
+        row.smoothness
+    ))
 }
 
 /// Downgrade a path selection whose index has outlived the current track's points
@@ -200,6 +221,14 @@ pub(crate) fn tool_inspector_panel(
                     .small()
                     .color(theme::TEXT_MUTED),
             );
+            // FR-6 read-only per-anchor affordance (edit in the Paths card).
+            if let Some(readout) = anchor_readout(&kind, &path_state.points) {
+                ui.label(
+                    egui::RichText::new(readout)
+                        .small()
+                        .color(theme::TEXT_MUTED),
+                );
+            }
             if let Some(affordance) = gimbal_affordance_label(tool.active_tool, &kind) {
                 ui.add_space(4.0);
                 ui.label(
@@ -419,6 +448,46 @@ mod tests {
             fresh_path_selection(fresh, 3),
             SelectionKind::PathSegment { idx: 1, .. }
         ));
+    }
+
+    #[test]
+    fn anchor_readout_names_kind_and_smoothness() {
+        // pen_curve_tool_20260722 (FR-6): the read-only per-anchor affordance.
+        let points = vec![
+            PathPointRow::default(),
+            PathPointRow {
+                position: [1.0, 0.0, 0.0],
+                corner: crate::gis::CornerKind::Smooth,
+                smoothness: 0.5,
+                ..Default::default()
+            },
+        ];
+        let kind = SelectionKind::PathVertex {
+            track_id: "t".into(),
+            idx: 1,
+        };
+        let readout = anchor_readout(&kind, &points).expect("in-range vertex");
+        assert!(readout.contains("#1"), "names its index: {readout}");
+        assert!(readout.contains("Smooth"), "names its kind: {readout}");
+        assert!(readout.contains("0.50"), "names its smoothness: {readout}");
+    }
+
+    #[test]
+    fn anchor_readout_none_for_non_vertex_or_stale() {
+        let points = vec![PathPointRow::default()];
+        // Non-vertex selections have no per-anchor readout.
+        assert!(anchor_readout(&SelectionKind::Empty, &points).is_none());
+        let seg = SelectionKind::PathSegment {
+            track_id: "t".into(),
+            idx: 0,
+        };
+        assert!(anchor_readout(&seg, &points).is_none());
+        // An out-of-range index never fabricates a phantom anchor.
+        let stale = SelectionKind::PathVertex {
+            track_id: "t".into(),
+            idx: 7,
+        };
+        assert!(anchor_readout(&stale, &points).is_none());
     }
 
     #[test]

@@ -3,10 +3,12 @@
 
 use bevy::prelude::*;
 
-use super::router::{ClickArbiter, ClickPriority};
+use super::curve;
+use super::router::{sweep_stranded_drag, ClickArbiter, ClickPriority, PointerPhase};
 use crate::actions::{UiAction, UiManager};
-use crate::gis::PathEditorState;
+use crate::gis::{min_neighbor_gap_m, smoothness_readback, CornerKind, PathEditorState};
 use crate::navigation_manager::NavigationManager;
+use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::toolbar::Tool;
 use crate::plugin::{Billboard, ToolState};
 
@@ -24,12 +26,13 @@ pub struct PathPointMarker {
 /// data_icons_20260713) reads as an icon vs. the old solid sphere; sized to
 /// span roughly the old `Sphere(0.35)` diameter so pick feel is unchanged.
 const MARKER_QUAD_SIZE: f32 = 0.7;
-/// Manual ray/marker hit radius (world units) — see AGENTS.md §path-points.
-const PICK_RADIUS: f32 = 0.7;
+/// Manual ray/marker hit radius (world units) — shared with the FR-5 handle
+/// pick (ratified Q7, same radius). See AGENTS.md §path-points.
+pub(super) const PICK_RADIUS: f32 = 0.7;
 
 /// Hard cap on point-marker entities (mirrors `MAX_STAMPS`): a huge imported
 /// GPX track shows markers for its first N points only.
-const MAX_POINT_MARKERS: usize = 4096;
+pub(super) const MAX_POINT_MARKERS: usize = 4096;
 
 /// Marker count to keep spawned: the edited track's point count, capped.
 fn marker_want(editing: bool, points: usize, cap: usize) -> usize {
@@ -71,6 +74,253 @@ fn height_delta_from_cursor(prev_cursor_y: f32, cur_cursor_y: f32, sensitivity: 
 #[derive(Resource, Default)]
 pub struct PathPointDrag {
     pub active: Option<PathPointDragState>,
+}
+
+/// pen_curve_tool_20260722 (FR-4): drag distance below which a Pen release is
+/// a plain click (petal-local meters).
+pub(super) const PEN_DRAG_THRESHOLD_M: f32 = 0.15;
+
+/// In-progress Pen press-drag placing a NEW anchor; resolved at Release by
+/// `pen_release_decision`. See AGENTS.md §pen-tool.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PenHandleDragState {
+    /// Anchor position captured at press (y=0 plane hit, petal-local meters).
+    pub anchor: [f32; 3],
+    /// Live drag vector (current y=0 plane hit − anchor).
+    pub drag_vec: [f32; 3],
+    /// `true` once Alt has been observed during the gesture (press or hold).
+    pub alt_seen: bool,
+    /// Symmetric in-handle frozen at the FIRST mid-drag Alt observation
+    /// (ratified Q8); stays `None` when Alt was held from the initial press.
+    pub frozen_in: Option<[f32; 3]>,
+    /// Edited track at Press; `None` = the auto-create was intended. Release
+    /// drops the gesture when this no longer matches (see AGENTS.md §pen-tool).
+    pub press_track_id: Option<String>,
+    /// Active petal at Press — auto-create fires only while it still matches.
+    pub press_petal_id: Option<String>,
+}
+
+/// The in-progress pen press-drag, `None` when idle — mirrors `PathPointDrag`.
+#[derive(Resource, Default)]
+pub struct PenHandleDrag {
+    pub active: Option<PenHandleDragState>,
+}
+
+/// Record an Alt observation on a hold frame: the FIRST one freezes the
+/// symmetric trailing in-handle at the current drag vector (ratified Q8).
+fn pen_observe_alt(state: &mut PenHandleDragState, alt_held: bool) {
+    if alt_held && !state.alt_seen {
+        state.alt_seen = true;
+        state.frozen_in = Some([-state.drag_vec[0], -state.drag_vec[1], -state.drag_vec[2]]);
+    }
+}
+
+/// What a Pen release places — the pure FR-4 threshold/symmetry/Alt decision.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum PenReleaseDecision {
+    /// Below-threshold click, Corner default: today's handle-less append.
+    Corner,
+    /// Below-threshold click, Smooth/Symmetric default: auto-derived handles.
+    SmoothClick { kind: CornerKind },
+    /// Press-drag without Alt: symmetric smooth anchor.
+    SymmetricDrag {
+        handle_out: [f32; 3],
+        handle_in: [f32; 3],
+    },
+    /// Alt-drag (ratified Q8): combination anchor — independent out-handle,
+    /// `handle_in` frozen at first mid-drag Alt (`None` when Alt from press).
+    CombinationDrag {
+        handle_out: [f32; 3],
+        handle_in: Option<[f32; 3]>,
+    },
+}
+
+/// Pure release decision: drag length vs `threshold`, Alt state, tool default.
+fn pen_release_decision(
+    drag_vec: [f32; 3],
+    alt_seen: bool,
+    frozen_in: Option<[f32; 3]>,
+    default_kind: CornerKind,
+    threshold: f32,
+) -> PenReleaseDecision {
+    let len =
+        (drag_vec[0] * drag_vec[0] + drag_vec[1] * drag_vec[1] + drag_vec[2] * drag_vec[2]).sqrt();
+    if len < threshold {
+        return match default_kind {
+            CornerKind::Corner => PenReleaseDecision::Corner,
+            kind => PenReleaseDecision::SmoothClick { kind },
+        };
+    }
+    if alt_seen {
+        PenReleaseDecision::CombinationDrag {
+            handle_out: drag_vec,
+            handle_in: frozen_in,
+        }
+    } else {
+        PenReleaseDecision::SymmetricDrag {
+            handle_out: drag_vec,
+            handle_in: [-drag_vec[0], -drag_vec[1], -drag_vec[2]],
+        }
+    }
+}
+
+/// Resolve a release decision into the anchor's bezier fields
+/// `(handle_in, handle_out, corner, smoothness)`; `prev` is the previous
+/// anchor's position for the SmoothClick tangent derivation. `None` = plain
+/// legacy corner append (also the SmoothClick fallback with no tangent).
+#[allow(clippy::type_complexity)]
+fn pen_anchor_fields(
+    decision: PenReleaseDecision,
+    prev: Option<[f32; 3]>,
+    anchor: [f32; 3],
+) -> Option<(Option<[f32; 3]>, Option<[f32; 3]>, CornerKind, f32)> {
+    match decision {
+        PenReleaseDecision::Corner => None,
+        PenReleaseDecision::SmoothClick { kind } => {
+            // Appending at the end: no next neighbor yet; full smoothness so
+            // the derived length matches the classic 1/3-gap tangent.
+            let (hin, hout) = curve::derive_symmetric_handles(prev, anchor, None, 1.0)?;
+            Some((Some(hin), Some(hout), kind, 1.0))
+        }
+        // Drag anchors store the geometry-readback smoothness (0.0 only when
+        // no neighbor gap exists yet, e.g. the first anchor of a new track) so
+        // the stored scalar tracks handle truth — see AGENTS.md §pen-tool.
+        PenReleaseDecision::SymmetricDrag {
+            handle_out,
+            handle_in,
+        } => {
+            let s = smoothness_readback(
+                Some(handle_in),
+                Some(handle_out),
+                min_neighbor_gap_m(prev, anchor, None),
+            );
+            Some((Some(handle_in), Some(handle_out), CornerKind::Symmetric, s))
+        }
+        PenReleaseDecision::CombinationDrag {
+            handle_out,
+            handle_in,
+        } => {
+            let s = smoothness_readback(
+                handle_in,
+                Some(handle_out),
+                min_neighbor_gap_m(prev, anchor, None),
+            );
+            Some((handle_in, Some(handle_out), CornerKind::Corner, s))
+        }
+    }
+}
+
+/// What a completed pen gesture may do at Release, from the press-time vs
+/// release-time context. A mid-hold stop/switch/petal-change drops the
+/// gesture — a canceled edit session must never auto-create a track or append
+/// to a context the press never saw. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PenGestureFate {
+    /// Append onto the (unchanged) edited track.
+    Append,
+    /// Auto-create a track in the (unchanged) active petal.
+    AutoCreate,
+    /// Context changed between Press and Release — drop silently.
+    Drop,
+}
+
+/// Pure Release gate: the press-time editing track must still be the current
+/// one; auto-create (press-time `None`) additionally requires the same petal.
+fn pen_gesture_fate(
+    press_track: Option<&str>,
+    cur_track: Option<&str>,
+    press_petal: Option<&str>,
+    cur_petal: Option<&str>,
+) -> PenGestureFate {
+    if press_track != cur_track {
+        return PenGestureFate::Drop;
+    }
+    match cur_track {
+        Some(_) => PenGestureFate::Append,
+        None if press_petal.is_some() && press_petal == cur_petal => PenGestureFate::AutoCreate,
+        None => PenGestureFate::Drop,
+    }
+}
+
+/// Resolve a completed pen gesture: append onto the edited track, or stash the
+/// FULL first-anchor payload (handles included — the FR-4 must-fix) under a
+/// correlation id for the deferred auto-create echo. See AGENTS.md §pen-tool.
+fn release_pen_gesture(
+    pen: PenHandleDragState,
+    default_kind: CornerKind,
+    path_state: &mut PathEditorState,
+    nav: &NavigationManager,
+    ui_mgr: &mut UiManager,
+) {
+    // Press-time context gate: a staged-Escape stop_editing, track delete,
+    // petal change, or track switch mid-hold cancels the gesture outright.
+    let fate = pen_gesture_fate(
+        pen.press_track_id.as_deref(),
+        path_state.editing_track_id.as_deref(),
+        pen.press_petal_id.as_deref(),
+        nav.active_petal_id.as_deref(),
+    );
+    if fate == PenGestureFate::Drop {
+        return;
+    }
+    let decision = pen_release_decision(
+        pen.drag_vec,
+        pen.alt_seen,
+        pen.frozen_in,
+        default_kind,
+        PEN_DRAG_THRESHOLD_M,
+    );
+    let prev = path_state.points.last().map(|p| p.position);
+    if fate == PenGestureFate::Append {
+        let Some(track_id) = pen.press_track_id else {
+            return; // unreachable: Append implies a press-time track
+        };
+        match pen_anchor_fields(decision, prev, pen.anchor) {
+            Some((handle_in, handle_out, corner, smoothness)) => {
+                ui_mgr.push_action(UiAction::PathAppendSmoothPoint {
+                    track_node_id: track_id,
+                    position: pen.anchor,
+                    handle_in,
+                    handle_out,
+                    corner,
+                    smoothness,
+                });
+            }
+            None => {
+                ui_mgr.push_action(UiAction::PathAppendPoint {
+                    track_node_id: track_id,
+                    position: pen.anchor,
+                });
+            }
+        }
+        return;
+    }
+    // AutoCreate: no track at Press AND still none (same petal) → auto-create
+    // one and stash this gesture's anchor (+ handles) under a fe-ui-generated
+    // correlation id; the append is deferred until the new track's
+    // `NodeCreated` echoes that id (`pen_autocreate_track_20260713` + FR-4).
+    if path_state.has_pending_pen_create() {
+        return;
+    }
+    let Some(petal_id) = nav.active_petal_id.clone() else {
+        return; // unreachable: AutoCreate requires a (matching) active petal
+    };
+    let (handle_in, handle_out, corner, smoothness) = pen_anchor_fields(decision, None, pen.anchor)
+        .unwrap_or((None, None, CornerKind::Corner, 0.0));
+    let correlation_id = crate::gis::next_pen_correlation_id();
+    path_state.pending_pen_create = Some(crate::gis::PendingPenCreate {
+        correlation_id: correlation_id.clone(),
+        first_point: pen.anchor,
+        handle_in,
+        handle_out,
+        corner,
+        smoothness,
+    });
+    ui_mgr.push_action(UiAction::PathCreateTrack {
+        petal_id,
+        name: AUTO_TRACK_NAME.to_string(),
+        correlation_id: Some(correlation_id),
+    });
 }
 
 /// Keeps one `PathPointMarker` sphere per edited-track point; despawns all when
@@ -195,8 +445,8 @@ fn pick_marker(
 }
 
 /// Intersect `ray` with the horizontal plane `y = plane_y`; `None` if parallel
-/// or behind the origin.
-fn ray_plane_y(ray: &Ray3d, plane_y: f32) -> Option<Vec3> {
+/// or behind the origin. Shared with the FR-5 handle drag.
+pub(super) fn ray_plane_y(ray: &Ray3d, plane_y: f32) -> Option<Vec3> {
     let dir_y = ray.direction.y;
     if dir_y.abs() < 1e-6 {
         return None;
@@ -208,35 +458,43 @@ fn ray_plane_y(ray: &Ray3d, plane_y: f32) -> Option<Vec3> {
     Some(ray.origin + *ray.direction * t)
 }
 
-/// Path-point interaction: Pen-tool click-to-place, drag-to-move (Ctrl-held →
-/// vertical height, FR-1a), modifier-click-to-annotate. Claims `PathMarker` on
-/// marker pick and `PathPlace` on pen append. See `node_manager/AGENTS.md`
-/// §pen-tool.
+/// Path-point interaction: Pen-tool Press/Hold/Release gesture (click = corner
+/// anchor, press-drag = smooth anchor, Alt-drag = Q8 combination —
+/// pen_curve_tool_20260722 FR-4), drag-to-move (Ctrl-held → vertical height,
+/// FR-1a), modifier-click-to-annotate. Claims `PathMarker` on marker pick and
+/// `PathPlace` on the pen press. See `node_manager/AGENTS.md` §pen-tool.
 pub(super) fn handle_path_point_interaction(
-    mouse_button: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
     mut path_state: ResMut<PathEditorState>,
     mut drag: ResMut<PathPointDrag>,
+    mut pen_drag: ResMut<PenHandleDrag>,
     tool: Res<ToolState>,
+    tool_panel: Res<ToolPanelState>,
     nav: Res<NavigationManager>,
     mut ui_mgr: ResMut<UiManager>,
     mut marker_tx: Query<(&mut Transform, &PathPointMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
+    // Stranded-gesture sweep: a Hover frame (button up) with a live drag means
+    // its Release was missed — drop it before it can replay on a later click.
+    let phase = arbiter.phase();
+    sweep_stranded_drag(phase, &mut drag.active);
+    sweep_stranded_drag(phase, &mut pen_drag.active);
+
     // Act while the Pen tool is active (new-point placement, incl. the no-track
     // auto-create case), OR — path_interaction_20260716 (FR-2) — while a track
     // is open for editing in the Select tool so its vertex markers are
-    // pick/draggable like Illustrator's pen; OR while a marker drag is in
+    // pick/draggable like Illustrator's pen; OR while a marker/pen drag is in
     // flight. Markers only exist while editing, so `markers_editable` gates the
     // Select case. Pen-append stays Pen-only (guarded at the append branch).
     // Move/Rotate/Scale still yield to the gimbal (their handler runs first).
     let pen_active = tool.active_tool == Tool::Pen;
     let markers_editable = path_state.editing_track_id.is_some()
         && matches!(tool.active_tool, Tool::Select | Tool::Pen);
-    if !pen_active && !markers_editable && drag.active.is_none() {
+    if !pen_active && !markers_editable && drag.active.is_none() && pen_drag.active.is_none() {
         drag.active = None;
         return;
     }
@@ -251,10 +509,11 @@ pub(super) fn handle_path_point_interaction(
         return;
     };
 
-    // Release → commit the drag as a MovePoint (no index churn). The committed
-    // y is read from the marker `Transform`, so a Ctrl-raised height flows
-    // through automatically (FR-1a).
-    if mouse_button.just_released(MouseButton::Left) {
+    // Release → commit gestures. A marker drag commits as a MovePoint (no
+    // index churn; the committed y is read from the marker `Transform`, so a
+    // Ctrl-raised height flows through automatically, FR-1a). A pen press-drag
+    // resolves via the pure threshold decision (pen_curve_tool_20260722 FR-4).
+    if arbiter.phase() == PointerPhase::Release {
         if let Some(state) = drag.active.take() {
             // A drag can only start while editing a track, so `editing_track_id`
             // is `Some` here.
@@ -270,13 +529,23 @@ pub(super) fn handle_path_point_interaction(
                 });
             }
         }
+        if let Some(pen) = pen_drag.active.take() {
+            release_pen_gesture(
+                pen,
+                tool_panel.pen_new_anchor_kind,
+                &mut path_state,
+                &nav,
+                &mut ui_mgr,
+            );
+        }
         return;
     }
 
-    // Hold → update the dragged marker. Ctrl-held: raise/lower height (Bevy Y)
-    // by vertical cursor delta, decoupled from the ray-plane hit (FR-1a).
-    // Otherwise: reproject through the horizontal `plane_y` (existing behavior).
-    if mouse_button.pressed(MouseButton::Left) {
+    // Hold → update the dragged marker (Ctrl-held: raise/lower height, Bevy Y,
+    // by vertical cursor delta, decoupled from the ray-plane hit, FR-1a;
+    // otherwise reproject through the horizontal `plane_y`) — or update the
+    // in-flight pen gesture's drag vector + Alt freeze (FR-4/Q8).
+    if arbiter.phase() == PointerPhase::Hold {
         if let Some(mut state) = drag.active {
             let Some(cursor_pos) = cursor else { return };
             let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
@@ -310,6 +579,24 @@ pub(super) fn handle_path_point_interaction(
                 }
             }
             drag.active = Some(state);
+            return;
+        }
+        if let Some(pen) = pen_drag.active.as_mut() {
+            let Some(cursor_pos) = cursor else { return };
+            let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else {
+                return;
+            };
+            if let Some(hit) = ray_plane_y(&ray, 0.0) {
+                pen.drag_vec = [
+                    hit.x - pen.anchor[0],
+                    hit.y - pen.anchor[1],
+                    hit.z - pen.anchor[2],
+                ];
+            }
+            pen_observe_alt(
+                pen,
+                keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight),
+            );
             return;
         }
     }
@@ -357,49 +644,49 @@ pub(super) fn handle_path_point_interaction(
         return;
     }
 
-    // Empty click on terrain while the Pen tool is active → append a point at
-    // the Y=0 plane. Claims `PathPlace` only in Pen mode, so Select-mode empty
-    // clicks yield to node selection — see AGENTS.md §pen-tool.
+    // Empty press on terrain while the Pen tool is active → begin a pen
+    // press-drag gesture at the Y=0 plane; the anchor kind (corner vs smooth
+    // vs Q8 combination) is decided at Release (pen_curve_tool_20260722 FR-4).
+    // Claims `PathPlace` only in Pen mode, so Select-mode empty clicks yield
+    // to node selection — see AGENTS.md §pen-tool.
     if tool.active_tool != Tool::Pen {
         return;
     }
     // Claim `PathPlace` first (even in the no-track auto-create case) so
     // `viewport_pick`'s `NodePick` doesn't also fire on this frame's click.
+    // The claim must stay on the PRESS frame — the arbiter resets its owner
+    // each frame, and the Release frame is never contested (other consumers
+    // act on `is_fresh_press` only).
     if !arbiter.claim(ClickPriority::PathPlace) {
         return;
     }
     let Some(hit) = ray_plane_y(&ray, 0.0) else {
         return;
     };
-    if let Some(track_id) = editing_track_id {
-        // A track is being edited → append normally.
-        ui_mgr.push_action(UiAction::PathAppendPoint {
-            track_node_id: track_id,
-            position: [hit.x, hit.y, hit.z],
-        });
-    } else if !path_state.has_pending_pen_create() {
-        // No track yet → auto-create one in the active petal and stash this
-        // click's world position under a fe-ui-generated correlation id; the
-        // append is deferred until the new track's `NodeCreated` echoes that id
-        // (`pen_autocreate_track_20260713`, FR-1/FR-2). Guarded on
-        // `!has_pending_pen_create()` so a rapid second click before the create
-        // round-trips doesn't queue a second track.
-        let Some(petal_id) = nav.active_petal_id.clone() else {
-            // No active petal → nowhere to put a track; keep the no-op (FR-4).
+    // The no-track gates stay press-time (mirroring the old append-time
+    // behavior) so a doomed gesture never starts: a rapid press while the
+    // auto-create round-trips is dropped (`pen_autocreate_track_20260713`),
+    // and no active petal means nowhere to put a track.
+    if editing_track_id.is_none() {
+        if path_state.has_pending_pen_create() {
+            return;
+        }
+        if nav.active_petal_id.is_none() {
             bevy::log::info!("Pen: no active petal — select a petal before drawing a path");
             return;
-        };
-        let correlation_id = crate::gis::next_pen_correlation_id();
-        path_state.pending_pen_create = Some(crate::gis::PendingPenCreate {
-            correlation_id: correlation_id.clone(),
-            first_point: [hit.x, hit.y, hit.z],
-        });
-        ui_mgr.push_action(UiAction::PathCreateTrack {
-            petal_id,
-            name: AUTO_TRACK_NAME.to_string(),
-            correlation_id: Some(correlation_id),
-        });
+        }
     }
+    pen_drag.active = Some(PenHandleDragState {
+        anchor: [hit.x, hit.y, hit.z],
+        drag_vec: [0.0; 3],
+        // Alt already down at press ⇒ Q8's "held from the initial press" case:
+        // `alt_seen` without a frozen in-handle.
+        alt_seen: keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight),
+        frozen_in: None,
+        // Press-time context: Release commits only when it still matches.
+        press_track_id: editing_track_id.clone(),
+        press_petal_id: nav.active_petal_id.clone(),
+    });
 }
 
 #[cfg(test)]
@@ -472,6 +759,310 @@ mod tests {
             (state.height_y - 3.0).abs() < 1e-6,
             "got {}",
             state.height_y
+        );
+    }
+
+    // ---- FR-4 pure release-decision tests (pen_curve_tool_20260722) -----
+
+    #[test]
+    fn release_below_threshold_defaults_to_corner_click() {
+        let d = pen_release_decision(
+            [0.1, 0.0, 0.05],
+            false,
+            None,
+            CornerKind::Corner,
+            PEN_DRAG_THRESHOLD_M,
+        );
+        assert_eq!(d, PenReleaseDecision::Corner);
+    }
+
+    #[test]
+    fn release_below_threshold_with_smooth_default_is_smooth_click() {
+        // The tool-level default kind (ToolPanelState.pen_new_anchor_kind)
+        // upgrades a plain click to an auto-derived smooth anchor.
+        let d = pen_release_decision(
+            [0.0; 3],
+            false,
+            None,
+            CornerKind::Smooth,
+            PEN_DRAG_THRESHOLD_M,
+        );
+        assert_eq!(
+            d,
+            PenReleaseDecision::SmoothClick {
+                kind: CornerKind::Smooth
+            }
+        );
+        let d = pen_release_decision(
+            [0.0; 3],
+            false,
+            None,
+            CornerKind::Symmetric,
+            PEN_DRAG_THRESHOLD_M,
+        );
+        assert_eq!(
+            d,
+            PenReleaseDecision::SmoothClick {
+                kind: CornerKind::Symmetric
+            }
+        );
+    }
+
+    #[test]
+    fn release_at_threshold_is_symmetric_drag() {
+        // Exactly ON the threshold counts as a drag (below ⇒ click, at/above
+        // ⇒ smooth) — the FR-4 boundary case.
+        let d = pen_release_decision(
+            [PEN_DRAG_THRESHOLD_M, 0.0, 0.0],
+            false,
+            None,
+            CornerKind::Corner,
+            PEN_DRAG_THRESHOLD_M,
+        );
+        assert_eq!(
+            d,
+            PenReleaseDecision::SymmetricDrag {
+                handle_out: [PEN_DRAG_THRESHOLD_M, 0.0, 0.0],
+                handle_in: [-PEN_DRAG_THRESHOLD_M, 0.0, 0.0],
+            }
+        );
+    }
+
+    #[test]
+    fn drag_without_alt_mirrors_the_in_handle() {
+        let d = pen_release_decision(
+            [2.0, 0.0, 1.0],
+            false,
+            None,
+            CornerKind::Corner,
+            PEN_DRAG_THRESHOLD_M,
+        );
+        match d {
+            PenReleaseDecision::SymmetricDrag {
+                handle_out,
+                handle_in,
+            } => {
+                assert_eq!(handle_out, [2.0, 0.0, 1.0]);
+                assert_eq!(handle_in, [-2.0, 0.0, -1.0]);
+            }
+            other => panic!("expected SymmetricDrag, got {other:?}"),
+        }
+    }
+
+    /// Pen drag state with no press-time context, for the pure decision math.
+    fn pen_state(drag_vec: [f32; 3], alt_seen: bool) -> PenHandleDragState {
+        PenHandleDragState {
+            anchor: [0.0; 3],
+            drag_vec,
+            alt_seen,
+            frozen_in: None,
+            press_track_id: None,
+            press_petal_id: None,
+        }
+    }
+
+    #[test]
+    fn alt_frozen_mid_drag_yields_combination_with_frozen_in() {
+        // Q8: Alt first observed mid-drag freezes −drag at that moment; the
+        // out-handle keeps tracking the cursor afterwards.
+        let mut pen = pen_state([1.0, 0.0, 0.0], false);
+        pen_observe_alt(&mut pen, true); // Alt first seen at drag (1,0,0)
+        pen.drag_vec = [3.0, 0.0, 1.0]; // keeps dragging after the freeze
+        pen_observe_alt(&mut pen, true); // later Alt frames don't re-freeze
+        let d = pen_release_decision(
+            pen.drag_vec,
+            pen.alt_seen,
+            pen.frozen_in,
+            CornerKind::Corner,
+            PEN_DRAG_THRESHOLD_M,
+        );
+        assert_eq!(
+            d,
+            PenReleaseDecision::CombinationDrag {
+                handle_out: [3.0, 0.0, 1.0],
+                handle_in: Some([-1.0, 0.0, 0.0]),
+            }
+        );
+    }
+
+    #[test]
+    fn alt_from_press_yields_combination_with_no_in_handle() {
+        // Q8: Alt held from the initial press ⇒ handle_in None (the press
+        // branch seeds alt_seen without a frozen value).
+        let mut pen = pen_state([0.0; 3], true);
+        pen.drag_vec = [1.0, 0.0, 0.0];
+        pen_observe_alt(&mut pen, true); // never re-freezes once alt_seen
+        let d = pen_release_decision(
+            pen.drag_vec,
+            pen.alt_seen,
+            pen.frozen_in,
+            CornerKind::Corner,
+            PEN_DRAG_THRESHOLD_M,
+        );
+        assert_eq!(
+            d,
+            PenReleaseDecision::CombinationDrag {
+                handle_out: [1.0, 0.0, 0.0],
+                handle_in: None,
+            }
+        );
+    }
+
+    #[test]
+    fn alt_release_mid_drag_does_not_unfreeze() {
+        let mut pen = pen_state([1.0, 0.0, 0.0], false);
+        pen_observe_alt(&mut pen, true);
+        pen_observe_alt(&mut pen, false); // Alt released — the freeze persists
+        assert!(pen.alt_seen);
+        assert_eq!(pen.frozen_in, Some([-1.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn pen_anchor_fields_smooth_click_derives_from_prev_tangent() {
+        // A Smooth click with a previous anchor derives collinear handles
+        // (3 m gap · 1/3 = 1 m out-handle along the trailing tangent).
+        let fields = pen_anchor_fields(
+            PenReleaseDecision::SmoothClick {
+                kind: CornerKind::Smooth,
+            },
+            Some([0.0, 0.0, 0.0]),
+            [3.0, 0.0, 0.0],
+        );
+        let (hin, hout, corner, smoothness) = fields.expect("neighbor tangent derivable");
+        assert_eq!(corner, CornerKind::Smooth);
+        assert_eq!(smoothness, 1.0);
+        let hout = hout.unwrap();
+        assert!((hout[0] - 1.0).abs() < 1e-5, "got {}", hout[0]);
+        assert_eq!(hin.unwrap()[0], -hout[0]);
+    }
+
+    #[test]
+    fn pen_anchor_fields_first_anchor_smooth_click_falls_back_to_corner() {
+        // No neighbors at all (first anchor of a new track) ⇒ no tangent ⇒
+        // the plain legacy corner append.
+        assert!(pen_anchor_fields(
+            PenReleaseDecision::SmoothClick {
+                kind: CornerKind::Smooth
+            },
+            None,
+            [1.0, 0.0, 1.0],
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn pen_anchor_fields_corner_is_legacy_append() {
+        assert!(
+            pen_anchor_fields(PenReleaseDecision::Corner, Some([0.0; 3]), [1.0, 0.0, 0.0])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pen_anchor_fields_combination_keeps_optional_in_handle() {
+        // Q8 combination: independent out-handle, classification Corner.
+        let (hin, hout, corner, _) = pen_anchor_fields(
+            PenReleaseDecision::CombinationDrag {
+                handle_out: [2.0, 0.0, 0.0],
+                handle_in: Some([-0.5, 0.0, 0.0]),
+            },
+            Some([0.0; 3]),
+            [1.0, 0.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(hin, Some([-0.5, 0.0, 0.0]));
+        assert_eq!(hout, Some([2.0, 0.0, 0.0]));
+        assert_eq!(corner, CornerKind::Corner);
+    }
+
+    #[test]
+    fn pen_anchor_fields_drag_commit_stores_readback_smoothness() {
+        // A drag-created anchor must not store 0.0 while carrying real
+        // handles: smoothness = |handle_out| / (k · gap-to-prev), clamped.
+        let (_, _, _, s) = pen_anchor_fields(
+            PenReleaseDecision::SymmetricDrag {
+                handle_out: [1.0, 0.0, 0.0],
+                handle_in: [-1.0, 0.0, 0.0],
+            },
+            Some([0.0; 3]),
+            [3.0, 0.0, 0.0], // gap 3 → k·gap = 1 → s = 1.0
+        )
+        .unwrap();
+        assert!((s - 1.0).abs() < 1e-5, "got {s}");
+        let (_, _, _, s) = pen_anchor_fields(
+            PenReleaseDecision::CombinationDrag {
+                handle_out: [0.5, 0.0, 0.0],
+                handle_in: None,
+            },
+            Some([0.0; 3]),
+            [3.0, 0.0, 0.0],
+        )
+        .unwrap();
+        assert!((s - 0.5).abs() < 1e-5, "got {s}");
+    }
+
+    #[test]
+    fn pen_anchor_fields_first_drag_anchor_falls_back_to_zero_smoothness() {
+        // First anchor of a new track: no neighbor gap yet — keep the 0.0
+        // default (the readback becomes computable once a neighbor exists).
+        let (_, _, _, s) = pen_anchor_fields(
+            PenReleaseDecision::SymmetricDrag {
+                handle_out: [1.0, 0.0, 0.0],
+                handle_in: [-1.0, 0.0, 0.0],
+            },
+            None,
+            [3.0, 0.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(s, 0.0);
+    }
+
+    // ---- press-time context gate (canceled-gesture findings) -------------
+
+    #[test]
+    fn escape_mid_drag_does_not_auto_create() {
+        // Editing track canceled (staged Escape / Back / delete) mid-hold:
+        // the release must NOT fall through into the auto-create branch.
+        assert_eq!(
+            pen_gesture_fate(Some("track:1"), None, Some("petal:1"), Some("petal:1")),
+            PenGestureFate::Drop
+        );
+    }
+
+    #[test]
+    fn editing_track_changed_mid_gesture_drops_the_anchor() {
+        assert_eq!(
+            pen_gesture_fate(Some("track:1"), Some("track:2"), None, None),
+            PenGestureFate::Drop
+        );
+        // A track opened mid-hold must not receive a no-track press either.
+        assert_eq!(
+            pen_gesture_fate(None, Some("track:2"), Some("petal:1"), Some("petal:1")),
+            PenGestureFate::Drop
+        );
+    }
+
+    #[test]
+    fn unchanged_context_appends_or_auto_creates() {
+        assert_eq!(
+            pen_gesture_fate(Some("track:1"), Some("track:1"), None, Some("petal:1")),
+            PenGestureFate::Append
+        );
+        assert_eq!(
+            pen_gesture_fate(None, None, Some("petal:1"), Some("petal:1")),
+            PenGestureFate::AutoCreate
+        );
+    }
+
+    #[test]
+    fn petal_changed_mid_gesture_drops_the_auto_create() {
+        assert_eq!(
+            pen_gesture_fate(None, None, Some("petal:1"), Some("petal:2")),
+            PenGestureFate::Drop
+        );
+        assert_eq!(
+            pen_gesture_fate(None, None, Some("petal:1"), None),
+            PenGestureFate::Drop
         );
     }
 }

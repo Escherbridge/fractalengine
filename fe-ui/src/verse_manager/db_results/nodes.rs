@@ -84,12 +84,26 @@ pub(super) fn handle_node_created(
     // foreign create (GPX import / create-entity dialog) carries a
     // different id (or `None`), so it can never hijack the pen flush.
     if let Some(cid) = correlation_id {
-        if let Some(position) = path_state.take_pending_pen_create_if(cid) {
+        if let Some(pen) = path_state.take_pending_pen_create_if(cid) {
             path_state.start_editing(id.to_string());
-            ui_mgr.push_action(crate::actions::UiAction::PathAppendPoint {
-                track_node_id: id.to_string(),
-                position,
-            });
+            // pen_curve_tool_20260722 (FR-4): a press-drag first anchor keeps
+            // its handles through the deferred echo; a plain click stays on
+            // the legacy append path.
+            if pen.handle_in.is_some() || pen.handle_out.is_some() {
+                ui_mgr.push_action(crate::actions::UiAction::PathAppendSmoothPoint {
+                    track_node_id: id.to_string(),
+                    position: pen.first_point,
+                    handle_in: pen.handle_in,
+                    handle_out: pen.handle_out,
+                    corner: pen.corner,
+                    smoothness: pen.smoothness,
+                });
+            } else {
+                ui_mgr.push_action(crate::actions::UiAction::PathAppendPoint {
+                    track_node_id: id.to_string(),
+                    position: pen.first_point,
+                });
+            }
         }
     }
     // FR-3: any node create in the active petal may be a track —

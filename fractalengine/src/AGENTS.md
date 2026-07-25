@@ -262,8 +262,57 @@ in one `Update` tuple so Bevy serializes them on the shared `Assets`/`TrackRoute
 `ResMut` access (a scheduling constraint, not a conflict). `spawn_track_route`
 now assumes `points.len() >= 2` (its only callers — the `Line` arm of the helper
 and the import path — both guarantee it). The user's "z-axis" height edits (FR-1)
-persist through the unchanged `[x, y, z, time]` `gpx_points` encoding — no format
-change (FR-2).
+persist through the `gpx_points` encoding's unchanged 4 leading slots; since
+`pen_curve_tool_20260722` Phase 1 the encoding is the mixed 4/12-slot form —
+see **§gpx-points-wire-format** below.
+
+**§gpx-points-wire-format (pen_curve_tool_20260722 Phases 1+3).** The
+`gpx_points` node property is a positional JSON array with MIXED row lengths —
+no version field, no object wrap, no migration pass:
+
+- **Row layout.** A plain legacy corner (`TimestampedRoutePoint::
+  is_plain_corner()`: no handles + `CornerKind::Corner` + `smoothness <= 0`)
+  encodes as the compact 4-slot `[x, y, z, t]`; any anchor carrying curve data
+  encodes as the 12-slot `[x, y, z, t, inx, iny, inz, outx, outy, outz,
+  corner_code, smoothness]` (encoder `route_points_to_json`). Handles are
+  RELATIVE meter offsets from the position; `corner_code` is
+  `CornerKind::to_code` (0 = Corner, 1 = Smooth, 2 = Symmetric).
+- **Only 4 or 12 — never an intermediate length.** The encoder emits exactly
+  one of the two forms per row, and a decoded legacy 4-slot row re-encodes as
+  the identical 4-slot row (NFR-3 byte-identity: legacy polylines round-trip
+  unchanged, decode to all-corner/no-handle, and flatten/mesh/RDP/centroid
+  exactly as before). An absent handle encodes as three `0.0` slots in the
+  12-slot form; the decoder's `read_handle` treats an all-zero vector as
+  `None` (zero == absent), so the two representations are one state.
+- **Decode defaults + the Open-Q6 guard.** `json_to_route_points` reads slots
+  4-11 with `.get()/unwrap_or` defaults (`None` handles / `Corner` / `0.0`),
+  so short and legacy rows are backward-compatible for free; a row claiming
+  Smooth/Symmetric with NO decoded handles is normalized to `Corner`
+  (partial-row guard — prevents silent state drift). fe-ui's twin decoder
+  (`fe-ui/src/gis/query.rs::decode_gpx_points`) must stay slot-compatible;
+  the two `CornerKind` enums stay separate local twins by design (NFR-4),
+  talking only through `corner_code` floats.
+- **Phase 3 ops.** `PathOp::{AppendSmoothPoint, SetAnchorHandles,
+  SetAnchorCorner}` extend the FR-7 persistence path. `drain_path_ops`:
+  `AppendSmoothPoint` mirrors `AppendPoint`'s direct-mutate vs seed-read
+  split (including the seed-pending dedup); the two `SetAnchor*` ops mirror
+  `MovePoint`'s buffer-first split. `advance_path_edits`' append arm is
+  unified over BOTH append variants, and after ANY deferred reply
+  `drain_queued_appends` hoists all queued append-variant reads past in-place
+  entries (Move/SetAnchor*/Annotate/Export — order-safe: appends only touch
+  the list tail), stopping only at the index-shifting `RemovePoint` (never
+  seed-deduped, so its own reply resumes the drain) — appends are seed-deduped
+  to one read, so a reply-per-entry drain would strand them; the deferred
+  `SetAnchor*` arms keep
+  `in_flight_points` in sync and persist through the existing
+  `persist_and_render_points` (live re-render for free). `smooth_anchor_point`
+  widens the fe-ui f32 payload to the f64 route point;
+  `apply_anchor_handles` mutates ONLY the bezier fields (position/timestamp/
+  corner untouched). `MovePoint` needs no handle rewrite — relative offsets
+  ride the anchor. Render + pick both flatten the decoded anchors through
+  `fe_terrain::mesh::curve::flatten_route` (`render_gpx_tracks` and
+  `track_pick_shape` — see `fe-terrain/src/mesh/AGENTS.md` §curve), so the
+  clickable polyline is the visible curve.
 
 **§track-styling (track_styling_20260713).** Per-track color / thickness /
 visibility, edited in the Paths tab, persisted as `gis.track.*` node props

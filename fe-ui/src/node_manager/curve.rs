@@ -220,6 +220,43 @@ pub fn rectangle(center: [f32; 3], w: f32, h: f32) -> Vec<[f32; 3]> {
     ]
 }
 
+/// Collinear symmetric handles for an anchor from its neighbor tangent
+/// (pen_curve_tool_20260722): direction = normalize(next − prev), a missing
+/// endpoint neighbor duplicating the anchor (mirrors `catmull_rom`'s phantom
+/// rule); length = smoothness · (1/3) · min(existing neighbor gaps). Returns
+/// `(handle_in, handle_out)` relative meter offsets, `None` when degenerate.
+pub fn derive_symmetric_handles(
+    prev: Option<[f32; 3]>,
+    cur: [f32; 3],
+    next: Option<[f32; 3]>,
+    smoothness: f32,
+) -> Option<([f32; 3], [f32; 3])> {
+    // ~1/3 gap: the classic Catmull-Rom / cubic-Bezier tangent convention.
+    const K: f32 = 1.0 / 3.0;
+    if smoothness <= 0.0 {
+        return None;
+    }
+    let dist = |a: [f32; 3], b: [f32; 3]| {
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    };
+    let min_gap = match (prev.map(|p| dist(p, cur)), next.map(|n| dist(cur, n))) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    let p = prev.unwrap_or(cur);
+    let n = next.unwrap_or(cur);
+    let dir = [n[0] - p[0], n[1] - p[1], n[2] - p[2]];
+    let dir_len = (dir[0].powi(2) + dir[1].powi(2) + dir[2].powi(2)).sqrt();
+    if dir_len < 1e-6 || min_gap < 1e-6 {
+        return None;
+    }
+    let scale = smoothness * K * min_gap / dir_len;
+    let out = [dir[0] * scale, dir[1] * scale, dir[2] * scale];
+    Some(([-out[0], -out[1], -out[2]], out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +280,67 @@ mod tests {
         let control = [[0.0, 0.0, 0.0], [1.0, 0.0, 2.0], [3.0, 0.0, 1.0]];
         let out = resample(&control, PenMode::Polyline, 0.5, 12);
         assert_eq!(out, control.to_vec());
+    }
+
+    // ---- derive_symmetric_handles (pen_curve_tool_20260722) -------------
+
+    #[test]
+    fn derive_symmetric_handles_interior_direction_and_length() {
+        // prev (0,0,0), cur (2,0,0), next (2,0,2): dir = next−prev = (2,0,2),
+        // both gaps 2 → |out| = 1 · (1/3) · 2 along normalize(2,0,2).
+        let (hin, hout) = derive_symmetric_handles(
+            Some([0.0, 0.0, 0.0]),
+            [2.0, 0.0, 0.0],
+            Some([2.0, 0.0, 2.0]),
+            1.0,
+        )
+        .unwrap();
+        let unit = 1.0 / 2f32.sqrt();
+        let expect = [unit * 2.0 / 3.0, 0.0, unit * 2.0 / 3.0];
+        for k in 0..3 {
+            assert!((hout[k] - expect[k]).abs() < 1e-5, "out[{k}] = {}", hout[k]);
+            assert!((hin[k] + expect[k]).abs() < 1e-5, "in[{k}] = {}", hin[k]);
+        }
+    }
+
+    #[test]
+    fn derive_symmetric_handles_first_point_duplicates_missing_prev() {
+        // No prev → direction cur→next, length from the next gap (3 · 1/3 = 1).
+        let (hin, hout) =
+            derive_symmetric_handles(None, [0.0, 0.0, 0.0], Some([3.0, 0.0, 0.0]), 1.0).unwrap();
+        assert!((hout[0] - 1.0).abs() < 1e-5, "got {}", hout[0]);
+        assert_eq!(hout[1], 0.0);
+        assert_eq!(hout[2], 0.0);
+        assert!((hin[0] + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn derive_symmetric_handles_last_point_duplicates_missing_next() {
+        let (_, hout) =
+            derive_symmetric_handles(Some([0.0, 0.0, 0.0]), [3.0, 0.0, 0.0], None, 1.0).unwrap();
+        assert!(
+            (hout[0] - 1.0).abs() < 1e-5,
+            "trailing tangent keeps +X, got {}",
+            hout[0]
+        );
+    }
+
+    #[test]
+    fn derive_symmetric_handles_smoothness_scales_length() {
+        let full = derive_symmetric_handles(Some([0.0; 3]), [3.0, 0.0, 0.0], None, 1.0).unwrap();
+        let half = derive_symmetric_handles(Some([0.0; 3]), [3.0, 0.0, 0.0], None, 0.5).unwrap();
+        assert!((half.1[0] - full.1[0] * 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn derive_symmetric_handles_degenerate_is_none() {
+        // smoothness 0 = sharp; no neighbors at all; coincident neighbor.
+        assert!(derive_symmetric_handles(Some([0.0; 3]), [1.0, 0.0, 0.0], None, 0.0).is_none());
+        assert!(derive_symmetric_handles(None, [1.0, 0.0, 0.0], None, 1.0).is_none());
+        assert!(
+            derive_symmetric_handles(Some([1.0, 0.0, 0.0]), [1.0, 0.0, 0.0], None, 1.0).is_none(),
+            "coincident neighbor has no tangent"
+        );
     }
 
     // ---- catmull_rom ---------------------------------------------------
