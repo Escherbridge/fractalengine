@@ -1,4 +1,6 @@
-//! Bottom status bar: online/peer indicators, active verse, space counts.
+//! Bottom status bar: online/peer indicators, active verse, space counts, and
+//! the persistent panel-guard error segment (Q-5, FR-7) — see
+//! `ui_shell/AGENTS.md` §modal.
 
 use bevy_egui::egui;
 
@@ -7,6 +9,7 @@ use crate::atlas::DashboardState;
 use crate::dialogs::ActiveDialog;
 use crate::navigation_manager::NavigationManager;
 use crate::theme;
+use crate::ui_shell::modal::ModalManagerState;
 
 pub(crate) fn status_bar(
     ctx: &egui::Context,
@@ -14,6 +17,7 @@ pub(crate) fn status_bar(
     sync_status: Option<&fe_sync::SyncStatus>,
     nav: &NavigationManager,
     ui_mgr: &mut UiManager,
+    modal: &ModalManagerState,
 ) {
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(22.0)
@@ -90,6 +94,20 @@ pub(crate) fn status_bar(
                     .small()
                     .color(theme::TEXT_MUTED),
                 );
+
+                // Persistent guard-error segment (Q-5, FR-7): a disabled
+                // panel's error stays visible for the session — no
+                // auto-clear on petal switch, unlike the general §6
+                // clears-on-resolution tier (ratified exception for this
+                // guard, since the panel itself stays disabled).
+                if let Some(err) = &modal.last_error {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!("\u{26A0} {err}"))
+                            .small()
+                            .color(theme::STATUS_OFFLINE),
+                    );
+                }
             });
         });
 }

@@ -450,6 +450,8 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::ui_shell::topbar::TopbarState>();
         app.init_resource::<crate::ui_shell::left_sidebar::LeftSidebarState>();
         app.init_resource::<crate::ui_shell::right_sidebar::RightSidebarState>();
+        // Phase 3 (FR-7/Q-5): panel panic guard + transient-layer state.
+        app.init_resource::<crate::ui_shell::modal::ModalManagerState>();
         // Mirror AppSettings.mesh_budget_ceiling → MeshInstanceBudget.ceiling live.
         app.add_systems(Update, crate::settings::sync_app_settings_to_mesh_budget);
         // TODO(ultrapilot): register w4a's Settings/terrain-editor panel systems
@@ -572,6 +574,10 @@ struct UiShellParams<'w> {
     topbar: ResMut<'w, crate::ui_shell::topbar::TopbarState>,
     left_sidebar: ResMut<'w, crate::ui_shell::left_sidebar::LeftSidebarState>,
     right_sidebar: ResMut<'w, crate::ui_shell::right_sidebar::RightSidebarState>,
+    // Phase 3 (FR-7/Q-5): panel panic guard + transient-layer state, read by
+    // `gardener_console` and `status_bar::status_bar` (persistent error
+    // segment). See `ui_shell/modal.rs`.
+    modal: ResMut<'w, crate::ui_shell::modal::ModalManagerState>,
 }
 
 fn gardener_ui_system(
@@ -621,6 +627,7 @@ fn gardener_ui_system(
         &mut ui_shell.topbar,
         &mut ui_shell.left_sidebar,
         &mut ui_shell.right_sidebar,
+        &mut ui_shell.modal,
     );
     viewport_rect.0 = rect;
 
