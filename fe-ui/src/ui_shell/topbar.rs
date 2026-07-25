@@ -22,8 +22,9 @@ use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
 pub struct TopbarState;
 
 /// Renders the top toolbar. Migrated verbatim from `panels::toolbar::top_toolbar`
-/// (FR-4); the only behavioral change is the Tools button also driving the
-/// right-sidebar `Tool` section (with a compat shim mirroring the legacy flag).
+/// (FR-4). Phase 4 (FR-9) retired the Phase-2 compat shim: the Tools button
+/// now toggles the right-sidebar `Tool` section directly — that toggle is the
+/// SOLE reveal path (no more mirrored `ToolPanelState.open` legacy flag).
 pub fn render_topbar(
     ctx: &egui::Context,
     _topbar: &mut TopbarState,
@@ -31,7 +32,6 @@ pub fn render_topbar(
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     gis_panel: &mut crate::gis::GisPanelState,
-    tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
     right: &mut RightSidebarState,
 ) {
     egui::TopBottomPanel::top("toolbar")
@@ -90,20 +90,21 @@ pub fn render_topbar(
 
                     if ui
                         .add(
-                            egui::Button::new("\u{1F527} Tools").fill(if tool_panel.open {
-                                theme::BG_BUTTON_ACTIVE
-                            } else {
-                                theme::BG_BUTTON
-                            }),
+                            egui::Button::new("\u{1F527} Tools").fill(
+                                if right.is_active(RightSidebarSection::Tool) {
+                                    theme::BG_BUTTON_ACTIVE
+                                } else {
+                                    theme::BG_BUTTON
+                                },
+                            ),
                         )
                         .on_hover_text("Path-asset stamp, pen curves, and shape tools")
                         .clicked()
                     {
-                        // FR-4: the Tools button now toggles the right-sidebar
-                        // `Tool` section (the target architecture).
+                        // FR-4/FR-9: the Tools button toggles the right-sidebar
+                        // `Tool` section — the sole reveal path (Phase 4 retired
+                        // the Phase-2 compat shim).
                         right.toggle(RightSidebarSection::Tool);
-                        // COMPAT SHIM (Phase 2): mirror until Phase 4 removes floating windows
-                        tool_panel.open = right.is_active(RightSidebarSection::Tool);
                     }
 
                     if ui

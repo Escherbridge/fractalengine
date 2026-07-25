@@ -1,5 +1,9 @@
-//! FR-6 (terrain_editor_overhaul_20260718): report panel for the currently
-//! selected terrain proposal — real-unit extent/area/volume/slope/bearing.
+//! FR-6 (terrain_editor_overhaul_20260718): report for the currently selected
+//! terrain proposal — real-unit extent/area/volume/slope/bearing.
+//! ui_shell_architecture Phase 4 folded the former floating window into
+//! `ui_shell::right_sidebar::render_proposal_report_section`;
+//! `render_report_body` is the pure-egui body it calls, with calm empty-state
+//! hints replacing the old window's "just don't render" early returns.
 //! NFR-4 (reporting honesty): when no map scale is set (`world_scale` unset
 //! or `<= 0`), reports WORLD UNITS with an explicit "no map scale" chip;
 //! never fabricates meters. Mirrors the `RulerPlugin`/
@@ -12,20 +16,32 @@ use crate::geometry::{bearing_deg, polygon_area_m2, world_to_real_distance};
 use crate::terrain_proposal_state::ProposalEditState;
 use crate::theme;
 
-/// Bevy-system-shaped entry point (plain fn — see `terrain_tools_panel.rs`
-/// for why). Not yet called from `gardener_console`; needs `ProposalEditState`
-/// and the active petal's `world_scale` (already mirrored as
-/// `PetalMapState.world_scale`, see `gis_panel.rs`) threaded into the call
-/// site — see this file's return-summary note.
-pub fn proposal_report_panel(
-    ctx: &egui::Context,
+/// Section body (no window/chrome — the caller, `right_sidebar::section_chrome`
+/// via `render_proposal_report_section`, supplies that). Calm empty-state
+/// hints replace the old floating window's "just don't render" early returns
+/// (never-blank — `ui_ux.md §7`); the <3-point guard's message is preserved
+/// verbatim.
+pub(crate) fn render_report_body(
+    ui: &mut egui::Ui,
     proposal_state: &ProposalEditState,
     world_scale: f64,
 ) {
     let Some(selected) = proposal_state.selected.as_deref() else {
+        ui.label(
+            egui::RichText::new("Select a proposal to see its metrics here.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
         return;
     };
     let Some(record) = proposal_state.proposals.iter().find(|r| r.id == selected) else {
+        ui.label(
+            egui::RichText::new("Selected proposal no longer exists.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
         return;
     };
 
@@ -42,51 +58,38 @@ pub fn proposal_report_panel(
         world_scale,
     );
 
-    egui::Window::new("Proposal Report")
-        .resizable(false)
-        .collapsible(true)
-        .default_width(240.0)
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::BG_DIALOG)
-                .inner_margin(egui::Margin::same(12))
-                .corner_radius(6.0)
-                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
-        )
-        .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(format!("{:?}", record.op))
-                    .strong()
-                    .color(theme::TEXT_SECTION),
-            );
-            ui.add_space(4.0);
-            let Some(report) = report else {
-                ui.label(
-                    egui::RichText::new("Footprint has fewer than 3 points — nothing to report.")
-                        .small()
-                        .color(theme::TEXT_MUTED)
-                        .italics(),
-                );
-                return;
-            };
-            ui.label(format!(
-                "Extent: {:.2} {u} x {:.2} {u}",
-                report.extent_x,
-                report.extent_z,
-                u = report.length_unit
-            ));
-            ui.label(format!("Area: {:.2} {}", report.area, report.area_unit));
-            ui.label(format!(
-                "Volume: {:.2} {}",
-                report.volume, report.volume_unit
-            ));
-            ui.label(format!("Slope: {:.1}%", report.slope_pct));
-            ui.label(format!("Bearing: {:.1}\u{00b0}", report.bearing_deg));
-            if !report.has_scale {
-                ui.add_space(4.0);
-                ui.colored_label(theme::TEXT_MUTED, "no map scale — showing world units");
-            }
-        });
+    ui.label(
+        egui::RichText::new(format!("{:?}", record.op))
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
+    ui.add_space(4.0);
+    let Some(report) = report else {
+        ui.label(
+            egui::RichText::new("Footprint has fewer than 3 points — nothing to report.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
+        return;
+    };
+    ui.label(format!(
+        "Extent: {:.2} {u} x {:.2} {u}",
+        report.extent_x,
+        report.extent_z,
+        u = report.length_unit
+    ));
+    ui.label(format!("Area: {:.2} {}", report.area, report.area_unit));
+    ui.label(format!(
+        "Volume: {:.2} {}",
+        report.volume, report.volume_unit
+    ));
+    ui.label(format!("Slope: {:.1}%", report.slope_pct));
+    ui.label(format!("Bearing: {:.1}\u{00b0}", report.bearing_deg));
+    if !report.has_scale {
+        ui.add_space(4.0);
+        ui.colored_label(theme::TEXT_MUTED, "no map scale — showing world units");
+    }
 }
 
 /// Pure geometry report for one proposal footprint. Kept free of egui/ECS so

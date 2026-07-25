@@ -1,18 +1,25 @@
 //! Right-sidebar area manager (FR-6): the single right region, one section at a
 //! time (RATIFIED Q-2). `active_section` precedence is portal > explicit toggle
 //! > selection-default; the Inspector is the never-blank fallback. There is ONE
-//! render fn per section variant — the seam downstream slices fill (P4:
-//! PathTools/TerrainTools/ProposalReport; P5: Tool). See
-//! `fe-ui/src/ui_shell/AGENTS.md` §right.
+//! render fn per section variant. Phase 4 (FR-9) filled PathTools/TerrainTools/
+//! ProposalReport by dissolving the three floating windows into this region
+//! (bodies delegate to pure helpers still homed in `panels::{tool_panel,
+//! terrain_tools_panel, proposal_report_panel}`); P5 fills the remaining `Tool`
+//! placeholder. See `fe-ui/src/ui_shell/AGENTS.md` §right.
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
 
 use crate::actions::UiManager;
 use crate::asset_ops::AssetDownloadStatus;
+use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
-use crate::panels::{inspector, portal_toolbar};
+use crate::panels::tool_panel::ToolPanelState;
+use crate::panels::{
+    inspector, portal_toolbar, proposal_report_panel, terrain_tools_panel, tool_panel,
+};
 use crate::plugin::{InspectorFormState, LocalUserRole};
+use crate::terrain_proposal_state::ProposalEditState;
 use crate::theme;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
@@ -98,6 +105,12 @@ pub fn render_right_sidebar(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     nav: &NavigationManager,
     asset_status: &AssetDownloadStatus,
+    // Phase 4 (FR-9): threaded so the dissolved-window sections below can
+    // reach the state their former floating windows read/wrote.
+    tool_panel_state: &mut ToolPanelState,
+    path_state: &PathEditorState,
+    proposal_state: &mut ProposalEditState,
+    world_scale: f64,
 ) {
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
@@ -119,9 +132,24 @@ pub fn render_right_sidebar(
             asset_status,
         ),
         Some(RightSidebarSection::Tool) => render_tool_section(ctx, state),
-        Some(RightSidebarSection::PathTools) => render_path_tools_section(ctx, state),
-        Some(RightSidebarSection::TerrainTools) => render_terrain_tools_section(ctx, state),
-        Some(RightSidebarSection::ProposalReport) => render_proposal_report_section(ctx, state),
+        Some(RightSidebarSection::PathTools) => render_path_tools_section(
+            ctx,
+            state,
+            tool_panel_state,
+            ui_mgr,
+            path_state,
+            hierarchy,
+        ),
+        Some(RightSidebarSection::TerrainTools) => render_terrain_tools_section(
+            ctx,
+            state,
+            tool_panel_state,
+            ui_mgr,
+            proposal_state,
+        ),
+        Some(RightSidebarSection::ProposalReport) => {
+            render_proposal_report_section(ctx, state, proposal_state, world_scale)
+        }
         None => {} // unreachable: portal short-circuited above
     }
 }
@@ -168,54 +196,90 @@ fn render_tool_section(ctx: &egui::Context, state: &mut RightSidebarState) {
     );
 }
 
-/// Path-tools section — P4 fills this. Calm placeholder this phase.
-fn render_path_tools_section(ctx: &egui::Context, state: &mut RightSidebarState) {
-    section_placeholder(
-        ctx,
-        state,
-        RightSidebarSection::PathTools,
-        "Path tools arrive in this panel in a later phase.",
-    );
+/// Path-tools section — path-asset stamp picker + pen controls, moved
+/// verbatim (Phase 4/FR-9) from the retired `tool_panel::render_tool_panel`
+/// floating window. `PathAssetApply` targets `PathEditorState.editing_track_id`
+/// ONLY — never `NodeManager.selected` (two-authority split, see
+/// `panels/AGENTS.md` §tool-panel).
+fn render_path_tools_section(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    tool_panel_state: &mut ToolPanelState,
+    ui_mgr: &mut UiManager,
+    path_state: &PathEditorState,
+    verse_mgr: &VerseManager,
+) {
+    section_chrome(ctx, state, RightSidebarSection::PathTools, |ui| {
+        tool_panel::render_path_asset_section(ui, tool_panel_state, ui_mgr, path_state, verse_mgr);
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+        tool_panel::render_pen_section(ui, tool_panel_state);
+    });
 }
 
-/// Terrain-tools section — P4 fills this. Calm placeholder this phase.
-fn render_terrain_tools_section(ctx: &egui::Context, state: &mut RightSidebarState) {
-    section_placeholder(
-        ctx,
-        state,
-        RightSidebarSection::TerrainTools,
-        "Terrain tools are in the floating Terrain palette this phase.",
-    );
+/// Terrain-tools section — the 8-mode palette + controls + proposal list,
+/// moved verbatim (Phase 4/FR-9) from the retired
+/// `terrain_tools_panel::terrain_tools_panel` floating window. Emits
+/// `UiAction::TerrainProposalAdd`/`TerrainProposalDelete`; true terrain is
+/// never written here (NFR-1).
+fn render_terrain_tools_section(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    tool_panel_state: &mut ToolPanelState,
+    ui_mgr: &mut UiManager,
+    proposal_state: &mut ProposalEditState,
+) {
+    terrain_tools_panel::ensure_defaults(tool_panel_state);
+    section_chrome(ctx, state, RightSidebarSection::TerrainTools, |ui| {
+        terrain_tools_panel::render_palette(ui, tool_panel_state);
+        ui.add_space(6.0);
+        terrain_tools_panel::render_controls_and_emit(ui, tool_panel_state, ui_mgr);
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+        terrain_tools_panel::render_proposal_list(ui, proposal_state, ui_mgr);
+    });
 }
 
-/// Proposal-report section — P4 fills this. Calm placeholder this phase.
-fn render_proposal_report_section(ctx: &egui::Context, state: &mut RightSidebarState) {
-    section_placeholder(
-        ctx,
-        state,
-        RightSidebarSection::ProposalReport,
-        "Select a proposal to see its metrics here (coming soon).",
-    );
+/// Proposal-report section — real-unit extent/area/volume/slope/bearing for
+/// the selected terrain proposal, moved verbatim (Phase 4/FR-9) from the
+/// retired `proposal_report_panel::proposal_report_panel` floating window.
+/// `render_report_body` supplies its own calm empty-state hints in place of
+/// the old window's "just don't render" early returns (never-blank).
+fn render_proposal_report_section(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    proposal_state: &ProposalEditState,
+    world_scale: f64,
+) {
+    section_chrome(ctx, state, RightSidebarSection::ProposalReport, |ui| {
+        proposal_report_panel::render_report_body(ui, proposal_state, world_scale);
+    });
 }
 
 // ---------------------------------------------------------------------------
-// Shared placeholder chrome (rail + hint). Downstream fills the section fns
-// above; this helper is only the transitional calm placeholder body.
+// Shared chrome: header + rail + separator + scrollable body, used by every
+// section fn above (filled or placeholder). P5 fills `render_tool_section`
+// via the same `section_chrome`/`section_placeholder` seam.
 // ---------------------------------------------------------------------------
 
-/// A calm one-section placeholder: the section rail + a single hint line (never
-/// blank — `ui_ux.md §7`). Shared by the four not-yet-filled sections.
-fn section_placeholder(
+/// Shared SidePanel chrome (header + rail + separator + scrollable, padded
+/// body) for a FILLED section — the P4 seam every real section fn (path
+/// tools / terrain tools / proposal report) renders through. Companion to
+/// `section_placeholder`, which is `section_chrome` plus a canned hint body
+/// for not-yet-filled sections (today: only `Tool`, P5's seam).
+fn section_chrome(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
     section: RightSidebarSection,
-    hint: &str,
+    body: impl FnOnce(&mut egui::Ui),
 ) {
     let max_w = ctx.viewport_rect().width() * 0.8;
     egui::SidePanel::right("right_section")
         .resizable(true)
-        .default_width(260.0)
-        .width_range(200.0..=max_w)
+        .default_width(320.0)
+        .width_range(260.0..=max_w)
         .frame(
             egui::Frame::NONE
                 .fill(theme::BG_PANEL)
@@ -235,12 +299,31 @@ fn section_placeholder(
             ui.add_space(2.0);
             section_rail(ui, state);
             ui.separator();
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(hint).color(theme::TEXT_DIM).small());
-            });
+            egui::ScrollArea::vertical()
+                .id_salt(format!("right_section_scroll_{section:?}"))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::same(8))
+                        .show(ui, |ui| body(ui));
+                });
         });
+}
+
+/// A calm one-section placeholder: `section_chrome` + a single hint line
+/// (never blank — `ui_ux.md §7`). Used today only by the not-yet-filled
+/// `Tool` section (P5's seam).
+fn section_placeholder(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    section: RightSidebarSection,
+    hint: &str,
+) {
+    section_chrome(ctx, state, section, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(hint).color(theme::TEXT_DIM).small());
+        });
+    });
 }
 
 /// Compact icon rail: one small button per section; click toggles it. Uses the
