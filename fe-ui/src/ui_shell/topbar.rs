@@ -9,7 +9,7 @@ use bevy_egui::egui;
 
 use crate::actions::{UiAction, UiManager};
 use crate::dialogs::ActiveDialog;
-use crate::panels::toolbar::{mode_button_fill, stash_active_tool, TOOL_DEFS};
+use crate::panels::toolbar::{mode_button_fill, stash_active_tool, tool_tooltip_text, TOOL_DEFS};
 use crate::plugin::ToolState;
 use crate::terrain_map::{HexonManagerTab, StorageInfoDto};
 use crate::theme;
@@ -49,11 +49,7 @@ pub fn render_topbar(
                     // luminance, not a saturated-blue hue (ui_ux.md §1).
                     let btn = egui::Button::new(format!("{} {}", def.glyph, def.name))
                         .fill(mode_button_fill(active));
-                    if ui
-                        .add(btn)
-                        .on_hover_text(format!("{} ({})", def.tip, def.key))
-                        .clicked()
-                    {
+                    if ui.add(btn).on_hover_text(tool_tooltip_text(def)).clicked() {
                         tool.active_tool = def.tool;
                     }
                 }
@@ -89,15 +85,13 @@ pub fn render_topbar(
                     }
 
                     if ui
-                        .add(
-                            egui::Button::new("\u{1F527} Tools").fill(
-                                if right.is_active(RightSidebarSection::Tool) {
-                                    theme::BG_BUTTON_ACTIVE
-                                } else {
-                                    theme::BG_BUTTON
-                                },
-                            ),
-                        )
+                        .add(egui::Button::new("\u{1F527} Tools").fill(
+                            if right.is_active(RightSidebarSection::Tool) {
+                                theme::BG_BUTTON_ACTIVE
+                            } else {
+                                theme::BG_BUTTON
+                            },
+                        ))
                         .on_hover_text("Path-asset stamp, pen curves, and shape tools")
                         .clicked()
                     {

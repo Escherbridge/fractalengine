@@ -95,11 +95,7 @@ fn guarded_catching<R>(
 /// (`debug_assertions`): still skips already-disabled panels, but a FRESH panic
 /// is re-propagated via `resume_unwind` so developers crash loudly. Both arms are
 /// compiled and warning-clean in each profile.
-pub fn guarded<R>(
-    state: &mut ModalManagerState,
-    name: &str,
-    f: impl FnOnce() -> R,
-) -> Option<R> {
+pub fn guarded<R>(state: &mut ModalManagerState, name: &str, f: impl FnOnce() -> R) -> Option<R> {
     #[cfg(not(debug_assertions))]
     {
         guarded_catching(state, name, f)

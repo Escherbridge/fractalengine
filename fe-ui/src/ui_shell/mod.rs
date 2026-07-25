@@ -6,6 +6,6 @@
 //! `active_section` precedence rule, and the section-fn seam contract.
 
 pub mod left_sidebar;
+pub(crate) mod modal;
 pub mod right_sidebar;
 pub mod topbar;
-pub(crate) mod modal;

@@ -624,7 +624,11 @@ pub(super) fn handle_path_point_interaction(
         // A marker hit resolves to `SelectVertex` (dispatch.rs), tool- and
         // selection-independent — confirm the verb before claiming.
         if !matches!(
-            resolve_operation(tool.active_tool, &kind, HitTarget::PathVertex { idx: index }),
+            resolve_operation(
+                tool.active_tool,
+                &kind,
+                HitTarget::PathVertex { idx: index }
+            ),
             Operation::SelectVertex { .. }
         ) {
             return;

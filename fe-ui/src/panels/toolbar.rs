@@ -21,14 +21,15 @@ pub enum Tool {
     Pen,
 }
 
-/// One viewport tool: button glyph, user-facing name, shortcut, tooltip phrase.
+/// One viewport tool: button glyph, user-facing name, shortcut, key binding.
+/// The hover tooltip text is sourced from `tool_inspector::panel_descriptor`
+/// (joined in `tool_tooltip_text`) so button and description can't drift.
 pub(crate) struct ToolDef {
     pub(crate) tool: Tool,
     pub(crate) glyph: &'static str,
     pub(crate) name: &'static str,
     pub(crate) key: &'static str,
     pub(crate) key_code: KeyCode,
-    pub(crate) tip: &'static str,
 }
 
 /// Single source for toolbar buttons/tooltips, the keyboard bindings
@@ -40,7 +41,6 @@ pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
         name: "Select",
         key: "S",
         key_code: KeyCode::KeyS,
-        tip: "Select objects",
     },
     ToolDef {
         tool: Tool::Move,
@@ -48,7 +48,6 @@ pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
         name: "Move",
         key: "G",
         key_code: KeyCode::KeyG,
-        tip: "Move selected object",
     },
     ToolDef {
         tool: Tool::Rotate,
@@ -56,7 +55,6 @@ pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
         name: "Rotate",
         key: "R",
         key_code: KeyCode::KeyR,
-        tip: "Rotate selected object",
     },
     ToolDef {
         tool: Tool::Scale,
@@ -64,7 +62,6 @@ pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
         name: "Scale",
         key: "X",
         key_code: KeyCode::KeyX,
-        tip: "Scale selected object",
     },
     ToolDef {
         tool: Tool::Pen,
@@ -72,7 +69,6 @@ pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
         name: "Pen",
         key: "P",
         key_code: KeyCode::KeyP,
-        tip: "Draw a path: click the viewport to add points",
     },
 ];
 
