@@ -103,6 +103,10 @@ ui_shell NFR-2 precedent).
   section content module** (NOT `right_sidebar.rs` — that seam is T6's).
 - Disjoint from T3 within fe-terrain (curve/track/marker vs terrain/interp/skirt)
   and fe-renderer (loader/viewport vs terrain_overlay). Runs Wave 1 parallel.
+- **Slice-time corrections:** T2 owns the `fe-renderer/src/lib.rs` `pub mod
+  instancing;` line (the only new fe-renderer module in Wave 1). T2 fills the
+  `actions/{asset,path}.rs` handler stubs the T6 scaffold laid down in Wave 0 —
+  it does **not** edit `actions/mod.rs` or `plugin.rs`. See anchor corrections.
 
 ## Open questions (ratify before build)
 
