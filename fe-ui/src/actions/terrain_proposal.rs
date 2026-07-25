@@ -181,7 +181,10 @@ mod tests {
         // asserts the JSON shape directly).
         let out = embed_proposals(None, &[]);
         assert!(out.get("enabled").and_then(|v| v.as_bool()).is_some());
-        assert!(out.get("tile_source_url").and_then(|v| v.as_str()).is_some());
+        assert!(out
+            .get("tile_source_url")
+            .and_then(|v| v.as_str())
+            .is_some());
         let origin = out.get("origin").expect("origin present");
         assert!(origin.get("origin_lat").and_then(|v| v.as_f64()).is_some());
         assert!(origin.get("origin_lon").and_then(|v| v.as_f64()).is_some());
