@@ -8,13 +8,16 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
 
 - `mod.rs` — `gardener_console()`, the single entry point called from
   `plugin::gardener_ui_system`. Owns overall layout order (topbar → status bar →
-  left sidebar → tool inspector → right sidebar → viewport → dialogs → toast),
-  the still-floating windows, and the toast overlay itself. The topbar/left/
-  right rendering is delegated to `ui_shell` managers.
+  left sidebar → right sidebar → viewport → dialogs → toast), the still-floating
+  windows, and the toast overlay itself. The topbar/left/right rendering is
+  delegated to `ui_shell` managers. **No left tool-inspector panel** as of
+  Phase 5 (FR-8, RATIFIED Q-1) — see §tool-inspector below.
 - `toolbar.rs` — the `Tool` enum + the single-source tool data: `TOOL_DEFS`,
-  `shortcut_hint_line`, `active_tool_hint`/`stash_active_tool`, and
-  `mode_button_fill`. The top-toolbar RENDER body lives in `ui_shell::topbar`
-  (FR-4) and calls these. `Tool` is reachable crate-internally as
+  `shortcut_hint_line`, `active_tool_hint`/`stash_active_tool`,
+  `mode_button_fill`, and (Phase 5, FR-8) `tool_tooltip_text` — the rich
+  hover-tooltip content joined from `TOOL_DEFS` + `tool_inspector::panel_
+  descriptor`. The top-toolbar RENDER body lives in `ui_shell::topbar` (FR-4)
+  and calls these. `Tool` is reachable crate-internally as
   `crate::panels::toolbar::Tool` (not re-exported further — see root
   `AGENTS.md` §compat).
 - `status_bar.rs` — bottom status bar (online/peer indicators, active verse).
@@ -258,28 +261,37 @@ FR-5/FR-6 (`terrain_editor_overhaul_20260718`) + D-78
   report lifts `[x, z]` back to `[x, 0, z]` for the `[f64; 3]` geometry helpers
   and treats a `None` delta as `0.0`.
 
-## §tool-inspector — active tool as a legible UI MODE (`tool_inspector.rs`)
+## §tool-inspector — active-tool helpers (`tool_inspector.rs`, no left panel)
 
-`tool_inspector_ux_20260719` Phase 1. A left `SidePanel` (`tool_inspector`)
-rendered by `gardener_console` right after `left_sidebar`, so it sits inner of
-the hierarchy tree. Unlike the hierarchy sidebar (which auto-collapses when the
-right inspector opens, `mod.rs`), it uses plain `.show()` and is **always
-visible** — a transform inspector is most useful exactly when a node is selected
-and the tree has collapsed.
+`tool_inspector_ux_20260719` → `ui_shell_architecture_20260724` Phase 5
+(FR-8, RATIFIED Q-1): the always-open left tool-inspector `SidePanel` is
+**REMOVED**. `tool_inspector.rs` is now a **pure-helper-only module** (no egui
+paint, no render fn) — its content moved to two consumers:
 
-- **No signature change.** The panel reads only state already threaded into
-  `gardener_console` (`ToolState`, `NodeManager`, `PathEditorState`); it projects
-  the selection itself via `node_manager::project_selection` (re-exported for
-  this) rather than taking a new `SelectionState` param.
-- **Pure core, thin paint.** `panel_descriptor(tool)` (title + Use/Settings zone
-  labels per tool), `gimbal_affordance_label(tool, kind)`, `selection_summary`,
-  and `mode_button_fill(active)` are all pure + unit-tested; the egui body just
-  lays them out. Phase-2+ fills the Use/Settings zones with real controls and
-  folds in `tool_panel.rs` (see the track's `plan.md`).
-- **Mode legibility (FR-1).** The top toolbar's active-tool button now fills via
-  `mode_button_fill` — a brighter NEUTRAL (`theme::BG_MODE_ACTIVE`), i.e. a
-  LUMINANCE emphasis, not the old saturated-blue `BG_BUTTON_ACTIVE` hue shift
-  (`code_styleguides/ui_ux.md §1`).
+- **Tooltips carry title/description/Use-guidance.** Each topbar mode button
+  (`ui_shell::topbar::render_topbar`, driven by `panels::toolbar::TOOL_DEFS`)
+  is meant to show a rich hover tooltip built by `toolbar::tool_tooltip_text`,
+  which joins `TOOL_DEFS` (shortcut) with `tool_inspector::panel_descriptor`
+  (title/subtitle/Use zone) so button/shortcut/tooltip can never drift. Test:
+  `toolbar::tests::tool_tooltip_text_covers_every_tool_with_title_shortcut_description_and_use_zone`.
+  **Wiring note (Phase 6):** `tool_tooltip_text` is pure + tested but not yet
+  called — `ui_shell::topbar` isn't owned by this slice. Phase 6 (or the
+  ui_shell owner) should replace `render_topbar`'s inline
+  `format!("{tip} ({key})")` `.on_hover_text(...)` call with
+  `toolbar::tool_tooltip_text(def)`, and update
+  `fe-ui/src/ui_shell/AGENTS.md §topbar` to describe the richer tooltip.
+- **Live readouts moved to the right-sidebar Tool section.** `selection_summary`,
+  `gimbal_affordance_label`, and `anchor_readout` are now called from
+  `ui_shell::right_sidebar::render_tool_section` (the section fn P4 left as a
+  placeholder). It projects the selection via `node_manager::project_selection`
+  exactly as the old panel did, guards a stale index via `fresh_path_selection`,
+  and shows the gimbal-active affordance exactly when a gimbal is drawn.
+- **Pure + total, still unit-tested.** `panel_descriptor(tool)` (title/subtitle/
+  Use/Settings-zone labels per tool), `gimbal_affordance_label(tool, kind)`,
+  `selection_summary`, `anchor_readout`, and `fresh_path_selection` are pure;
+  all their tests survive unchanged in `tool_inspector.rs`. `mode_button_fill`
+  is no longer duplicated here — `toolbar::mode_button_fill` is the sole
+  source (topbar button fill + right-sidebar section rail).
 - **Gimbal affordance (FR-7).** `gimbal_affordance_label` mirrors the ratified
   "grab it wherever it's shown" rule (see `node_manager/AGENTS.md §dispatch`): a
   vertex/segment selection shows the affordance in EVERY tool; an entity / whole
@@ -288,11 +300,11 @@ and the tree has collapsed.
 - **Read-only anchor readout (`pen_curve_tool_20260722` FR-6/NFR-6).** The pure
   `anchor_readout(kind, points)` renders the selected path vertex's corner kind
   + smoothness ("Anchor #3: Smooth, smoothness 0.50" — unitless 0..1) under the
-  selection summary. STRICTLY a readout: the panel signature is unchanged (all
-  params still `&`), and the EDITABLE corner settings live in the Paths card
-  (`fe-ui/src/AGENTS.md` §path-editor item 10) + the Pen default in
-  `tool_panel.rs` (§tool-panel). Adding any `&mut` here would break the
-  read-only-by-construction contract this panel exists to keep.
+  selection summary. STRICTLY a readout: its new host, `render_tool_section`,
+  takes `node_mgr`/`path_state` as shared refs only (no `&mut` path/pen state)
+  — read-only-by-construction, same contract as the retired panel. The
+  EDITABLE corner settings live in the Paths card (`fe-ui/src/AGENTS.md`
+  §path-editor item 10) + the Pen default in `tool_panel.rs` (§tool-panel).
 
 All panel-rendering submodules are `pub(crate)` — nothing outside `fe-ui`
 should render sub-panels directly; go through `gardener_console`.

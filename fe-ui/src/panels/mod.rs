@@ -15,8 +15,9 @@ pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
 pub(crate) mod terrain_tools_panel;
-/// tool_inspector_ux_20260719: active tool as a legible UI MODE (left per-tool
-/// inspector panel). See `fe-ui/src/panels/AGENTS.md` §tool-inspector.
+/// Pure per-tool helpers (descriptor/selection/anchor), consumed by the
+/// toolbar tooltip and the right-sidebar Tool section. No left panel anymore
+/// (ui_shell_architecture_20260724 Phase 5) — see `panels/AGENTS.md` §tool-inspector.
 pub(crate) mod tool_inspector;
 pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
@@ -52,9 +53,9 @@ use fe_runtime::messages::DbCommand;
 // ---------------------------------------------------------------------------
 
 /// Renders the full UI shell in order: topbar -> status bar -> left sidebar ->
-/// tool inspector -> right sidebar -> central viewport -> floating windows ->
-/// toast. Returns the screen-space rect of the 3-D viewport (CentralPanel) so
-/// the caller can store it for viewport-click gating in the gimbal system.
+/// right sidebar -> central viewport -> floating windows -> toast. Returns the
+/// screen-space rect of the 3-D viewport (CentralPanel) so the caller can
+/// store it for viewport-click gating in the gimbal system.
 // NOTE: wide param list accepted (plain egui fn, not a Bevy system); group new
 // params into the caller's SystemParam bundles before adding more here.
 pub fn gardener_console(
@@ -124,13 +125,6 @@ pub fn gardener_console(
         ui_mgr,
     );
 
-    // tool_inspector_ux_20260719: the active tool as a legible MODE (inner left
-    // panel). KEPT this phase — a Phase-5 sibling folds it into the Tool section.
-    // Hidden while the portal webview is open so it doesn't clutter the portal.
-    if !ui_mgr.portal_is_open() {
-        tool_inspector::tool_inspector_panel(ctx, tool, node_mgr, path_state);
-    }
-
     // Right sidebar (FR-6): portal toolbar when the portal owns the region, else
     // the active section (Inspector by default; Path/Terrain Tools and the
     // Proposal Report host the former floating windows as of Phase 4/FR-9).
@@ -149,6 +143,7 @@ pub fn gardener_console(
         path_state,
         proposal_state,
         petal_map.world_scale,
+        tool,
     );
 
     let viewport_response =
