@@ -1,0 +1,16 @@
+{
+  "id": "sculpt_earthwork_regions_20260725",
+  "description": "Tactile sculpt tool (brush + defined shapes) to select the affected terrain area, plus earthwork edits that become persistent addressable 'modification region' nodes (footprint shape + material + computed cut/fill volume in real units) baked into the surface and reportable/queryable like any node (D-A8). First BIM-grade terraforming primitive; layered strata is a later phase. Owns fe-terrain terrain_proposal + mesh/{terrain,interp,skirt} + layers + new sculpt module, fe-renderer terrain_overlay/terrain_height + brush overlay, fe-ui terrain-tools section content + new sculpt panel.",
+  "type": "feature",
+  "created_at": "2026-07-25T00:00:00Z",
+  "status": "pending",
+  "alignment": "P1 BIM/BUILDER — Spatial Builder Program (grilling 2026-07-25, D-A8 + R1Q4 layered-earthwork ambition). Addresses in-app QA ask #3 (brush area selection, volume data of material added/removed, reportable shape, new sculpt tool, more BIM-like terraforming). Wave 1.",
+  "depends_on": ["node_lifecycle_addressing_20260725"],
+  "blocks": [],
+  "notes": [
+    "2026-07-25: created from in-app QA ask #3. FR-1 brush + defined-shape area selection (the shape is the reportable region per D-A8). FR-2 sculpt ops (raise/lower/level/smooth) over the footprint. FR-3 each edit = persistent addressable modification-region node (via T1), baked into surface. FR-4 true cut/fill volume in REAL UNITS via fe-terrain scale.rs (N-1 — the civil-engineer to-scale rule serves the BIM persona without a mode). FR-5 reporting + egress (regions queryable via T5). FR-6 evolves the existing terrain_proposal system, does not fork it.",
+    "Depends on node_lifecycle_addressing (region = ordinary node; delete/address). File partition: owns fe-terrain terrain_proposal.rs + mesh/{terrain,interp,skirt}.rs + layers/* + new sculpt module, fe-renderer {terrain_overlay,terrain_height}.rs + new brush overlay, fe-ui terrain-tools SECTION CONTENT + new sculpt panel (NOT right_sidebar.rs). Disjoint from stamped_asset_nodes within fe-terrain/fe-renderer → Wave 1 parallel.",
+    "Open Qs: Q-1 brush+shape both now (recommended), Q-2 delete reverts the bake (recommended), Q-3 single-material now + strata later phase (recommended, matches R1Q4 multi-track), Q-4 planning-grade heightfield volume with documented tolerance (recommended).",
+    "Ratified earlier direction honored: non-destructive proposals → baked region nodes (D-A8, not a live stack). Guard the proposals-only terrain_json shape (ui_shell H-C1). NOT started. /slice deferred per user."
+  ]
+}

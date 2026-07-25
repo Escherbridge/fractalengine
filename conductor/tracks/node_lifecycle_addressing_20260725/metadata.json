@@ -1,0 +1,21 @@
+{
+  "id": "node_lifecycle_addressing_20260725",
+  "description": "Data-layer spine of the Spatial Builder Program: sync-safe delete (tombstone + cascade + path-reflow event) that fixes the empty-husk bug, a stable per-node addressing scheme (substrate for the read/write API and stamp-as-node), and a lazy node-promotion primitive so tens-of-thousands of addressable stamp nodes stay smooth. Owns fe-entity-store, fe-database, fe-policy, fe-sync exclusively.",
+  "type": "feature",
+  "created_at": "2026-07-25T00:00:00Z",
+  "status": "pending",
+  "alignment": "P0 PROGRAM SPINE — Spatial Builder Program (grilling 2026-07-25, decisions/spatial-builder-program-20260725.md D-A4/D-A5/D-A6/D-A7). Blocks all four Wave-1 tracks. User-owned UX pillar per roadmap 2026-07-14 + spatial-analytics roadmap 2026-07-14.",
+  "depends_on": [],
+  "blocks": [
+    "stamped_asset_nodes_20260725",
+    "sculpt_earthwork_regions_20260725",
+    "contextual_controls_20260725",
+    "endpoint_api_surface_20260725"
+  ],
+  "notes": [
+    "2026-07-25: created from the planning grilling. Encodes D-A7 (tombstone delete + cascade + re-flow, sync-safe under P2P/HLC — never a raw drop), D-A4 (stable addressing substrate for the read/write API), D-A5+D-A6 (lazy node-promotion so full-node-per-stamp scales to tens of thousands). Fixes the user-reported empty-husk bug (clear-props leaves an empty node; there is no real delete today).",
+    "Owns the data core exclusively (fe-entity-store/fe-database/fe-policy/fe-sync) — zero file overlap; Wave 0 runs fully parallel with shell_ux_sidebar. Must land Phases 1-2 before Wave-1 consumers (T2 reflow+promotion, T4 delete+cascade, T5 address+events).",
+    "Open Qs await ratification: Q-1 address form (internal stable key now, public URI in T5 — recommended), Q-2 promotion trigger (on first select/edit — recommended), Q-3 cascade confirm (always — recommended), Q-4 tombstone GC (unbounded for now, follow-up).",
+    "NOT started. /slice deferred per user (2026-07-25: write specs, do not slice yet)."
+  ]
+}
