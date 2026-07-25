@@ -101,21 +101,21 @@ Goal: one documented seam owns click claiming + object-aware dispatch +
 cross-authority coordination. Behavior-preserving.
 
 Tasks:
-- [ ] Task: **Claim-priority table.** Extract the effective claim order
+- [x] Task: **Claim-priority table.** (landed 2026-07-24, swarm) Extract the effective claim order
       (handle > vertex > segment > gimbal-axis > node pick > empty) into a
       pure, exported table next to `ClickArbiter` (`node_manager/router.rs:34-124`)
       with a test asserting the order covers every `HitTarget` variant
       (`dispatch.rs:28-47`) exactly once. (TDD: table test first; then assert
       each consumer system's registration order in `NodeManagerPlugin` matches
       the table — a compile-time-adjacent constants test, not a runtime probe.)
-- [ ] Task: **Re-home the cross-authority bridge.** Move `open_track_on_select`
+- [x] Task: **Re-home the cross-authority bridge.** (landed 2026-07-24, swarm) Move `open_track_on_select`
       (+ `track_to_open`, `spawned_in_petal` and the Phase 0 eager-load) from
       `viewport_pick.rs:92-168` into the pointer module, keeping tests; the
       pointer manager is now the ONLY writer that coordinates the two
       authorities, exclusively via queued `UiAction`s (NFR-1). (TDD: moved
       tests green from the new path; grep-test/doc-assert that no panels module
       references `NodeManager.selected` write paths.)
-- [ ] Task: **No-bypass audit.** Sweep the six consumer systems
+- [x] Task: **No-bypass audit.** (landed 2026-07-24, swarm) Sweep the six consumer systems
       (`viewport_pick`, `path_point_interaction`, `path_handle_interaction`,
       `path_segment_interaction`, `path_gimbal_drag`, `gimbal_interaction`) —
       every left-click decision routes through `ClickArbiter` claim +
@@ -132,25 +132,25 @@ the right sidebar gains its section/rail model (sections still hosting only the
 existing inspector content this phase).
 
 Tasks:
-- [ ] Task: **`ui_shell` module scaffold.** New `fe-ui/src/ui_shell/` with
+- [x] Task: **`ui_shell` module scaffold.** (landed 2026-07-24, swarm) New `fe-ui/src/ui_shell/` with
       `topbar.rs`, `left_sidebar.rs`, `right_sidebar.rs` manager modules; each
       = small state resource + pure decision helpers + thin render fn.
       `panels/mod.rs::gardener_console` (`panels/mod.rs:51-191`) shrinks to
       ordered manager calls; `gardener_ui_system` registration
       (`plugin.rs:472-479`) unchanged — still one `EguiPrimaryContextPass`
       entry (NFR-4).
-- [ ] Task: **Topbar manager (FR-4).** Owns the `TOOL_DEFS` mode switcher +
+- [x] Task: **Topbar manager (FR-4).** (landed 2026-07-24, swarm) Owns the `TOOL_DEFS` mode switcher +
       the window/section toggle buttons; toggles now write right-sidebar
       section state instead of window-open flags (compat shim: the flags the
       floating windows still read this phase are mirrored until Phase 4
       removes them). (TDD: `TOOL_DEFS` single-source tests stay green; toggle
       round-trip test topbar→right-manager state.)
-- [ ] Task: **Left manager (FR-5).** Replace the per-frame stomp
+- [x] Task: **Left manager (FR-5).** (landed 2026-07-24, swarm) Replace the per-frame stomp
       `sidebar.open = !right_panel_open` (`panels/mod.rs:97-99`) with pure
       `left_visibility(policy, right_open, user_intent) -> bool` owned by the
       manager; default policy preserves today's behavior exactly. (TDD:
       truth-table test incl. the preserved default.)
-- [ ] Task: **Right manager shell (FR-6).** `RightSidebarSection` enum
+- [x] Task: **Right manager shell (FR-6).** (landed 2026-07-24, swarm) `RightSidebarSection` enum
       (Inspector | Tool | PathTools | TerrainTools | ProposalReport) + rail
       rendering + section-reveal state; this phase it hosts Inspector (moved
       call, `inspector.rs:37` panel becomes manager-owned) and an empty calm
@@ -168,13 +168,13 @@ Goal: tooltips/toasts/context-menu/dialogs under one transient-layer manager;
 one broken panel can never again abort the app.
 
 Tasks:
-- [ ] Task: **Modal manager.** `ui_shell/modal.rs` owning render order for the
+- [x] Task: **Modal manager.** (landed 2026-07-24, swarm) `ui_shell/modal.rs` owning render order for the
       transient layer: dialogs (`ActiveDialog` mutual-exclusion set,
       `dialogs/*.rs`), context menu, toast overlay (`panels/mod.rs:193-217`),
       and the tooltip helpers FR-8 will consume. Rendering stays last in the
       pass (layering preserved). (TDD: pure ordering/exclusivity test — one
       dialog at a time; toast unaffected by dialog state.)
-- [ ] Task: **Panic guard.** `guarded(name, ui_fn)` wrapper using
+- [x] Task: **Panic guard.** (landed 2026-07-24, swarm) `guarded(name, ui_fn)` wrapper using
       `catch_unwind(AssertUnwindSafe(...))` applied at every manager's
       panel/section/window boundary; on catch: `tracing::error!`, mark the
       panel disabled-for-session in modal-manager state, render a persistent
@@ -193,22 +193,22 @@ Goal: "Tools", "Terrain Tools", and "Proposal Report" dissolve into FR-6
 sections with toggle reveal; zero control loss.
 
 Tasks:
-- [ ] Task: **Control inventory checklist.** Enumerate every widget in
+- [x] Task: **Control inventory checklist.** (landed 2026-07-24, swarm) Enumerate every widget in
       `tool_panel.rs:220-` (path-asset stamp, pen curve/shape, terrain toggle),
       `terrain_tools_panel.rs:42-232`, `proposal_report_panel.rs:45-90` into
       the track folder as the zero-loss diff basis.
-- [ ] Task: **Path tools section.** Move the stamp + pen sections into
+- [x] Task: **Path tools section.** (landed 2026-07-24, swarm) Move the stamp + pen sections into
       `right_sidebar` PathTools; keep `installed_assets`/`filter_assets`/
       `build_descriptor` + tests intact; `UiAction::PathAssetApply` still
       targets `PathEditorState.editing_track_id` ONLY (NFR-1). (TDD: migrated
       helper tests green from new home; emitted `UiAction` variants unchanged.)
-- [ ] Task: **Terrain tools + report sections.** Move palette/controls/proposal
+- [x] Task: **Terrain tools + report sections.** (landed 2026-07-24, swarm) Move palette/controls/proposal
       list and the report body; keep `TerrainToolMode` mirror +
       `to_proposal_op` (NFR-2) and `compute_report` + tests verbatim;
       `TerrainProposalAdd/Delete` emissions unchanged. The Phase 0 crash
       regression test must still pass against the migrated surface. (TDD: same
       emissions; report fixtures green.)
-- [ ] Task: **Remove the floating windows + compat flags.** Delete the three
+- [x] Task: **Remove the floating windows + compat flags.** (landed 2026-07-24, swarm) Delete the three
       `egui::Window` call sites from the shell (`panels/mod.rs:179-185`
       equivalents post-Phase-2), retire the mirrored open-flags from Phase 2's
       shim; topbar/rail toggles are now the only reveal path. (TDD: checklist
@@ -223,17 +223,17 @@ Tasks:
 Goal: directive 2 — reclaim the real estate; keep the legibility wins.
 
 Tasks:
-- [ ] Task: **Rich tooltips from the single-source table.** Extend `TOOL_DEFS`
+- [x] Task: **Rich tooltips from the single-source table.** (landed 2026-07-24, swarm) Extend `TOOL_DEFS`
       (or join it with `panel_descriptor`) so each mode button's hover tooltip
       renders title + shortcut + one-line description from ONE table. (TDD:
       tooltip-content test covers every `Tool`; extends the existing
       `tool_defs_cover_all_tools…` pattern so drift is impossible.)
-- [ ] Task: **Re-home live readouts.** Move `selection_summary`,
+- [x] Task: **Re-home live readouts.** (landed 2026-07-24, swarm) Move `selection_summary`,
       `gimbal_affordance_label`, `anchor_readout` (+ tests) from
       `panels/tool_inspector.rs` into the right-sidebar Tool section body.
       (TDD: helper tests green from new home; Tool section shows gimbal-active
       affordance exactly when a gimbal is drawn.)
-- [ ] Task: **Remove the left panel.** Delete the `SidePanel::left("tool_inspector")`
+- [x] Task: **Remove the left panel.** (landed 2026-07-24, swarm) Delete the `SidePanel::left("tool_inspector")`
       (`tool_inspector.rs:185`) + its call site (`panels/mod.rs:107-109`
       equivalent); honor Open Q-1's ratified answer (default: remove entirely).
       Update the supersession note in `tool_inspector_ux_20260719` handling —
@@ -247,15 +247,15 @@ Tasks:
 Goal: directory docs reflect the manager topology; one green sweep; retro.
 
 Tasks:
-- [ ] Task: **Directory AGENTS.md updates.** New `fe-ui/src/ui_shell/AGENTS.md`
+- [x] Task: **Directory AGENTS.md updates.** (landed 2026-07-24, swarm) New `fe-ui/src/ui_shell/AGENTS.md`
       (manager topology, claim-priority table, panic-guard contract, section
       model); update `panels/AGENTS.md` (removed windows/panels, tooltip
       source) and `node_manager/AGENTS.md` (§pointer-manager, bridge re-home);
       terse one-line pointers in code (NFR-7).
-- [ ] Task: **`ui_ux.md` conformance pass.** Pre-merge checklist over every
+- [x] Task: **`ui_ux.md` conformance pass.** (landed 2026-07-24, swarm) Pre-merge checklist over every
       touched surface (§1 luminance, §2 units, §6 failure tiers — the new
       error segment, §7 calm empty states, §9 terminology).
-- [ ] Task: **Single end-of-track sweep** — `cargo test --workspace`,
+- [x] Task: **Single end-of-track sweep** (1.97.1 clippy + push pending) — `cargo test --workspace`,
       `cargo clippy -- -D warnings` (latest stable; consult the 2026-07-23
       toolchain-drift playbook if CI-only warnings appear), `cargo fmt --check`.
       List the user-gated in-app verification steps in the track folder; write
