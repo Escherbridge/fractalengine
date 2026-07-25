@@ -193,6 +193,6 @@ Tasks:
       `TimestampedRoutePoint` in the iot doc.
 - [x] Task: Update the `fractalengine/src/AGENTS.md` `gpx_points` section documenting
       the 4/12-slot encoding + backward compat.
-- [ ] Task: Leave only one-line pointers in code per repo convention; run the full
+- [x] Task: Leave only one-line pointers in code per repo convention; run the full
       workspace test/clippy/fmt sweep ONCE at the end; retro + archive per the
-      track-per-feature workflow. [checkpoint]
+      track-per-feature workflow. (retro written 2026-07-24; in-app re-verify + archival user-gated) [checkpoint]

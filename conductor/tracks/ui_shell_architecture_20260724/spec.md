@@ -402,3 +402,26 @@ boundary so one broken panel can never again abort the app.
   (recommended), or attempt automatic re-enable on the next petal switch?
   (Debug builds keep propagating the panic under `cfg(debug_assertions)` so
   developers still see crashes loudly — part of the recommendation.)
+
+## Ratified decisions (2026-07-24)
+
+User directive 2026-07-24: **"Ratify spec 5"** — accept all five recommended
+answers verbatim and proceed. Normative for the phases they gate.
+
+- **Q-1 → RATIFIED: remove the left tool-inspector panel entirely.** Tooltips
+  (FR-8) + the right-sidebar **Tool** section carry all of its content; the
+  topbar already switches modes. This reverses the 2026-07-19 "add a left
+  panel" ask. Gates Phase 5.
+- **Q-2 → RATIFIED: right sidebar is one-section-at-a-time behind a compact
+  icon rail.** Predictable width, calm chrome; no stackable accordion. Gates
+  Phase 2 (`RightSidebarSection` + rail) and Phase 4 (section reveal).
+- **Q-3 → RATIFIED: keep single-click auto-enter path edit mode.** Fewest steps
+  to the user's stated goal; no second gesture required. Gates the FR-2 edit
+  entry (already landed) — no change needed.
+- **Q-4 → RATIFIED: GIS "Data" window + Map Manager stay floating** in this
+  track. They are data/query surfaces, not tool palettes; a successor track may
+  revisit after living with the new shell. Gates Phase 4 scope boundary.
+- **Q-5 → RATIFIED: panic-guard disables the panel for the session + persistent
+  status-bar error segment** (`ui_ux.md` §6 Error tier). No auto re-enable on
+  petal switch. Debug builds re-propagate under `cfg(debug_assertions)` so
+  developers still see crashes loudly. Gates Phase 3 (FR-7 guard UX).
