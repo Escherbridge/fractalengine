@@ -6,6 +6,7 @@
 use bevy::prelude::KeyCode;
 use bevy_egui::egui;
 
+use crate::panels::tool_inspector::panel_descriptor;
 use crate::theme;
 
 /// Active viewport transform tool.
@@ -107,14 +108,32 @@ pub(crate) fn stash_active_tool(ctx: &egui::Context, tool: Tool) {
 
 /// Active-MODE button fill: a luminance emphasis (brighter neutral), not a hue
 /// shift (`code_styleguides/ui_ux.md §1`). Single source for the topbar's
-/// active-tool button + the right-sidebar section rail. (`tool_inspector.rs`
-/// keeps its own identical copy until the Phase-5 sibling folds it in.)
+/// active-tool button + the right-sidebar section rail.
 pub(crate) fn mode_button_fill(active: bool) -> egui::Color32 {
     if active {
         theme::BG_MODE_ACTIVE
     } else {
         theme::BG_BUTTON
     }
+}
+
+/// Rich hover-tooltip text for a topbar mode button: title + shortcut on the
+/// first line, its one-line description, then its Use-zone guidance — joined
+/// from `TOOL_DEFS` (shortcut) and `tool_inspector::panel_descriptor`
+/// (title/subtitle/Use zone) so button, shortcut, and tooltip can never drift.
+/// Pure; ready for `ui_shell::topbar::render_topbar` to call in place of its
+/// current inline `format!("{tip} ({key})")` (Phase 6 wiring — see
+/// `panels/AGENTS.md` §tool-inspector).
+pub(crate) fn tool_tooltip_text(def: &ToolDef) -> String {
+    let desc = panel_descriptor(def.tool);
+    let mut text = format!("{} ({})\n{}", desc.title, def.key, desc.subtitle);
+    if !desc.use_zone.is_empty() {
+        text.push_str("\n\nUse:");
+        for item in desc.use_zone {
+            text.push_str(&format!("\n\u{2022} {item}"));
+        }
+    }
+    text
 }
 
 #[cfg(test)]
@@ -158,5 +177,37 @@ mod tests {
     fn mode_button_fill_uses_luminance_emphasis() {
         assert_eq!(mode_button_fill(true), crate::theme::BG_MODE_ACTIVE);
         assert_eq!(mode_button_fill(false), crate::theme::BG_BUTTON);
+    }
+
+    #[test]
+    fn tool_tooltip_text_covers_every_tool_with_title_shortcut_description_and_use_zone() {
+        // Single-source join (FR-8): the tooltip can never drift from TOOL_DEFS
+        // or panel_descriptor because it is built FROM them.
+        for def in &TOOL_DEFS {
+            let tip = tool_tooltip_text(def);
+            let desc = panel_descriptor(def.tool);
+            assert!(
+                tip.contains(desc.title),
+                "{:?} tooltip missing title: {tip}",
+                def.tool
+            );
+            assert!(
+                tip.contains(def.key),
+                "{:?} tooltip missing shortcut: {tip}",
+                def.tool
+            );
+            assert!(
+                tip.contains(desc.subtitle),
+                "{:?} tooltip missing description: {tip}",
+                def.tool
+            );
+            for item in desc.use_zone {
+                assert!(
+                    tip.contains(item),
+                    "{:?} tooltip missing use-zone item {item}: {tip}",
+                    def.tool
+                );
+            }
+        }
     }
 }

@@ -4,8 +4,10 @@
 //! render fn per section variant. Phase 4 (FR-9) filled PathTools/TerrainTools/
 //! ProposalReport by dissolving the three floating windows into this region
 //! (bodies delegate to pure helpers still homed in `panels::{tool_panel,
-//! terrain_tools_panel, proposal_report_panel}`); P5 fills the remaining `Tool`
-//! placeholder. See `fe-ui/src/ui_shell/AGENTS.md` §right.
+//! terrain_tools_panel, proposal_report_panel}`); Phase 5 (FR-8) fills the
+//! `Tool` section with the retired left tool-inspector panel's live readouts
+//! (delegates to pure helpers homed in `panels::tool_inspector`). All five
+//! sections are filled. See `fe-ui/src/ui_shell/AGENTS.md` §right.
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
@@ -14,11 +16,15 @@ use crate::actions::UiManager;
 use crate::asset_ops::AssetDownloadStatus;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
+use crate::node_manager::{project_selection, NodeManager};
+use crate::panels::tool_inspector::{
+    anchor_readout, fresh_path_selection, gimbal_affordance_label, selection_summary,
+};
 use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::{
     inspector, portal_toolbar, proposal_report_panel, terrain_tools_panel, tool_panel,
 };
-use crate::plugin::{InspectorFormState, LocalUserRole};
+use crate::plugin::{InspectorFormState, LocalUserRole, ToolState};
 use crate::terrain_proposal_state::ProposalEditState;
 use crate::theme;
 use crate::verse_manager::VerseManager;
@@ -111,6 +117,10 @@ pub fn render_right_sidebar(
     path_state: &PathEditorState,
     proposal_state: &mut ProposalEditState,
     world_scale: f64,
+    // Phase 5 (FR-8): the active tool, so the Tool section can render the
+    // live selection/gimbal/anchor readouts moved from the retired left
+    // `tool_inspector_panel`. Read-only here — see `render_tool_section`.
+    tool: &ToolState,
 ) {
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
@@ -131,7 +141,9 @@ pub fn render_right_sidebar(
             nav,
             asset_status,
         ),
-        Some(RightSidebarSection::Tool) => render_tool_section(ctx, state),
+        Some(RightSidebarSection::Tool) => {
+            render_tool_section(ctx, state, tool, node_mgr, path_state)
+        }
         Some(RightSidebarSection::PathTools) => render_path_tools_section(
             ctx,
             state,
@@ -186,14 +198,61 @@ fn render_inspector_section(
     );
 }
 
-/// Tool section — P5 (ui_shell Phase 5) fills this. Calm placeholder this phase.
-fn render_tool_section(ctx: &egui::Context, state: &mut RightSidebarState) {
-    section_placeholder(
-        ctx,
-        state,
-        RightSidebarSection::Tool,
-        "Tool settings are in the floating Tools panel this phase.",
+/// Tool section — P5 (ui_shell Phase 5, FR-8): the active tool's live
+/// readouts, moved from the retired left `tool_inspector_panel` (Q-1: no
+/// always-open left panel; per-tool title/subtitle/Use guidance now live in
+/// the topbar tooltip, `panels::toolbar::tool_tooltip_text`). Read-only for
+/// DISPLAY — `node_mgr`/`path_state` are shared refs, never mutated here
+/// (two-authority split, `panels/AGENTS.md` §tool-inspector).
+fn render_tool_section(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    tool: &ToolState,
+    node_mgr: &NodeManager,
+    path_state: &PathEditorState,
+) {
+    let kind = project_selection(
+        node_mgr
+            .selected
+            .as_ref()
+            .map(|s| (s.entity, s.node_id.as_str())),
+        path_state.editing_track_id.as_deref(),
+        path_state.selected_point,
+        path_state.selected_segment,
     );
+    // Guard a stale selected index outliving its points (see helper doc).
+    let kind = fresh_path_selection(kind, path_state.points.len());
+
+    section_chrome(ctx, state, RightSidebarSection::Tool, |ui| {
+        ui.label(
+            egui::RichText::new("SELECTION")
+                .small()
+                .color(theme::TEXT_SECTION),
+        );
+        ui.label(
+            egui::RichText::new(selection_summary(&kind))
+                .small()
+                .color(theme::TEXT_MUTED),
+        );
+        // FR-6 read-only per-anchor affordance (edit in the Paths card).
+        if let Some(readout) = anchor_readout(&kind, &path_state.points) {
+            ui.label(
+                egui::RichText::new(readout)
+                    .small()
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+        // Gimbal-active affordance exactly when a gimbal is drawn (mirrors
+        // `gimbal_interaction.rs`'s draw/interact rule).
+        if let Some(affordance) = gimbal_affordance_label(tool.active_tool, &kind) {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(affordance)
+                    .small()
+                    .color(theme::TEXT_STRONG),
+            );
+        }
+    });
 }
 
 /// Path-tools section — path-asset stamp picker + pen controls, moved
@@ -260,15 +319,12 @@ fn render_proposal_report_section(
 
 // ---------------------------------------------------------------------------
 // Shared chrome: header + rail + separator + scrollable body, used by every
-// section fn above (filled or placeholder). P5 fills `render_tool_section`
-// via the same `section_chrome`/`section_placeholder` seam.
+// section fn above. All five sections are filled as of P5 (FR-8).
 // ---------------------------------------------------------------------------
 
 /// Shared SidePanel chrome (header + rail + separator + scrollable, padded
-/// body) for a FILLED section — the P4 seam every real section fn (path
-/// tools / terrain tools / proposal report) renders through. Companion to
-/// `section_placeholder`, which is `section_chrome` plus a canned hint body
-/// for not-yet-filled sections (today: only `Tool`, P5's seam).
+/// body) — the seam every section fn (Inspector/Tool/PathTools/TerrainTools/
+/// ProposalReport) renders through.
 fn section_chrome(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
@@ -308,22 +364,6 @@ fn section_chrome(
                         .show(ui, |ui| body(ui));
                 });
         });
-}
-
-/// A calm one-section placeholder: `section_chrome` + a single hint line
-/// (never blank — `ui_ux.md §7`). Used today only by the not-yet-filled
-/// `Tool` section (P5's seam).
-fn section_placeholder(
-    ctx: &egui::Context,
-    state: &mut RightSidebarState,
-    section: RightSidebarSection,
-    hint: &str,
-) {
-    section_chrome(ctx, state, section, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(hint).color(theme::TEXT_DIM).small());
-        });
-    });
 }
 
 /// Compact icon rail: one small button per section; click toggles it. Uses the

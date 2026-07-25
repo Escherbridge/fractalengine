@@ -1,21 +1,17 @@
-//! tool_inspector_ux_20260719 (Phase 1): the active tool as a legible UI MODE.
-//!
-//! A left `SidePanel` that renders the ACTIVE tool's inspector — its Use zone
-//! (what the mode lets you do) and Settings zone (its knobs) — plus a live
-//! selection readout and a "gimbal active" affordance so users always know what
-//! the current mode enables (FR-1/FR-2/FR-7). The per-tool descriptor, the
-//! gimbal affordance, the selection summary, and the active-mode emphasis are
-//! all PURE helpers (unit-tested); the egui paint stays thin (validated in-app).
-//! Later phases fill the Use/Settings zones with real controls + fold in
-//! `tool_panel.rs`. See `fe-ui/src/panels/AGENTS.md` §tool-inspector.
+//! tool_inspector_ux_20260719 → ui_shell_architecture_20260724 Phase 5 (FR-8):
+//! the active tool's descriptor + selection/gimbal/anchor readouts, as PURE,
+//! unit-tested helpers. The left `SidePanel` this module used to render is
+//! GONE (RATIFIED Q-1) — its content now lives in two places: the topbar
+//! mode-button tooltips (`toolbar::tool_tooltip_text`, built from
+//! `panel_descriptor` here) and the right-sidebar Tool section
+//! (`ui_shell::right_sidebar::render_tool_section`, built from
+//! `selection_summary`/`gimbal_affordance_label`/`anchor_readout` here). This
+//! module is helper-only now — no egui paint. See
+//! `fe-ui/src/panels/AGENTS.md` §tool-inspector.
 
-use bevy_egui::egui;
-
-use crate::gis::{PathEditorState, PathPointRow};
-use crate::node_manager::{project_selection, NodeManager, SelectionKind};
+use crate::gis::PathPointRow;
+use crate::node_manager::SelectionKind;
 use crate::panels::toolbar::Tool;
-use crate::plugin::ToolState;
-use crate::theme;
 
 /// A per-tool inspector descriptor: the mode's title, a one-line "what this mode
 /// does", and the labels shown in its Use / Settings zones. Pure data so the
@@ -119,17 +115,6 @@ pub(crate) fn selection_summary(kind: &SelectionKind) -> String {
     }
 }
 
-/// Fill color for a tool-MODE button: the active mode reads via LUMINANCE (a
-/// brighter neutral), not a saturated hue (`ui_ux.md §1`). Pure — the toolbar
-/// calls it so the emphasis decision lives in one tested place.
-pub(crate) fn mode_button_fill(active: bool) -> egui::Color32 {
-    if active {
-        theme::BG_MODE_ACTIVE
-    } else {
-        theme::BG_BUTTON
-    }
-}
-
 /// pen_curve_tool_20260722 (FR-6): read-only per-anchor readout for the
 /// inspector — the selected vertex's corner kind + smoothness (unitless 0..1).
 /// Pure; `None` unless the selection is an in-range path vertex. The EDITABLE
@@ -157,102 +142,6 @@ pub(crate) fn fresh_path_selection(kind: SelectionKind, points_len: usize) -> Se
         SelectionKind::PathVertex { idx, .. } if idx >= points_len => SelectionKind::Empty,
         SelectionKind::PathSegment { idx, .. } if idx + 1 >= points_len => SelectionKind::Empty,
         other => other,
-    }
-}
-
-/// Left `SidePanel` rendering the active tool's inspector. Reads only state
-/// already threaded into `gardener_console` (no signature change): the active
-/// tool, plus the two selection authorities projected via `project_selection`.
-pub(crate) fn tool_inspector_panel(
-    ctx: &egui::Context,
-    tool: &ToolState,
-    node_mgr: &NodeManager,
-    path_state: &PathEditorState,
-) {
-    let desc = panel_descriptor(tool.active_tool);
-    let kind = project_selection(
-        node_mgr
-            .selected
-            .as_ref()
-            .map(|s| (s.entity, s.node_id.as_str())),
-        path_state.editing_track_id.as_deref(),
-        path_state.selected_point,
-        path_state.selected_segment,
-    );
-    // Guard against a stale selected index outliving its points (see helper).
-    let kind = fresh_path_selection(kind, path_state.points.len());
-
-    egui::SidePanel::left("tool_inspector")
-        .resizable(true)
-        .default_width(200.0)
-        .width_range(160.0..=320.0)
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::BG_PANEL)
-                .inner_margin(egui::Margin::same(8)),
-        )
-        .show(ctx, |ui| {
-            // Mode header — the whole panel is the active MODE.
-            ui.label(
-                egui::RichText::new(desc.title)
-                    .strong()
-                    .color(theme::TEXT_HEADING),
-            );
-            ui.label(
-                egui::RichText::new(desc.subtitle)
-                    .small()
-                    .color(theme::TEXT_DIM),
-            );
-            ui.separator();
-
-            zone(ui, "USE", desc.use_zone);
-            ui.add_space(6.0);
-            zone(ui, "SETTINGS", desc.settings_zone);
-
-            ui.add_space(6.0);
-            ui.separator();
-            ui.label(
-                egui::RichText::new("SELECTION")
-                    .small()
-                    .color(theme::TEXT_SECTION),
-            );
-            ui.label(
-                egui::RichText::new(selection_summary(&kind))
-                    .small()
-                    .color(theme::TEXT_MUTED),
-            );
-            // FR-6 read-only per-anchor affordance (edit in the Paths card).
-            if let Some(readout) = anchor_readout(&kind, &path_state.points) {
-                ui.label(
-                    egui::RichText::new(readout)
-                        .small()
-                        .color(theme::TEXT_MUTED),
-                );
-            }
-            if let Some(affordance) = gimbal_affordance_label(tool.active_tool, &kind) {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(affordance)
-                        .small()
-                        .color(theme::TEXT_STRONG),
-                );
-            }
-        });
-}
-
-/// Render one labelled zone (USE / SETTINGS) as a section header + bullet lines.
-fn zone(ui: &mut egui::Ui, label: &str, items: &[&str]) {
-    ui.label(
-        egui::RichText::new(label)
-            .small()
-            .color(theme::TEXT_SECTION),
-    );
-    for item in items {
-        ui.label(
-            egui::RichText::new(format!("• {item}"))
-                .small()
-                .color(theme::TEXT_MUTED),
-        );
     }
 }
 
@@ -393,20 +282,6 @@ mod tests {
             "vertex summary names its index: {vertex}"
         );
         assert_eq!(selection_summary(&SelectionKind::Empty), "Nothing selected");
-    }
-
-    #[test]
-    fn active_mode_reads_brighter_than_inactive() {
-        // Emphasis via luminance, not hue (ui_ux.md §1): the active fill must be
-        // strictly brighter than the inactive one.
-        let lum =
-            |c: egui::Color32| 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
-        let active = mode_button_fill(true);
-        let inactive = mode_button_fill(false);
-        assert!(
-            lum(active) > lum(inactive),
-            "active {active:?} must be brighter than inactive {inactive:?}"
-        );
     }
 
     #[test]
