@@ -32,7 +32,16 @@ Goal: the terrain tools no longer crash the app, and path points/handles are
 selectable + draggable from direct viewport interaction.
 
 Tasks:
-- [ ] Task: **Crash repro + root cause (FR-1).** Run with `RUST_BACKTRACE=1`;
+- [ ] Task: **Crash repro + root cause (FR-1).** NOT DONE this pass (2026-07-24
+      worker: FR-2 + panic-hook diagnostic infra only). The fc9800f/190188f
+      data-shape fix already landed on `main` (proposals-only `terrain_json`
+      shape hardening), but the live panic payload from the user's reported
+      crash is still uncaptured — no finding doc, no confirmed hypothesis.
+      `fractalengine/src/panic_log.rs` (this pass) is the diagnostic
+      prerequisite: the next terrain-tools repro attempt now appends
+      timestamp/thread/payload/location/backtrace to `data/panic.log` instead
+      of only surfacing bevy_egui's opaque "Encountered a panic in system" +
+      exit 101. Run with `RUST_BACKTRACE=1`;
       repro matrix: Tools → Terrain Tools → palette clicks / "Add proposal" /
       select + delete proposal, each on (a) a petal WITH an installed map and
       (b) a petal WITHOUT terrain config — hypothesis H-C1 predicts (b) crashes
@@ -42,31 +51,49 @@ Tasks:
       `conductor/tracks/ui_shell_architecture_20260724/finding-crash.md`.
       Check H-C2 (stale `selected_point`/`selected_segment` indexing in fresh
       pen-curve panel code) and H-C3 (egui invariant) only if H-C1 clears.
-- [ ] Task: **Crash fix + regression test (FR-1).** (TDD: write the failing
+- [ ] Task: **Crash fix + regression test (FR-1).** NOT DONE this pass — blocked
+      on the repro/root-cause task above. (TDD: write the failing
       test first from the captured repro — e.g. if H-C1: a unit test feeding a
       proposals-only terrain doc through the consumer that panicked; then fix;
       then refactor.) No new `unwrap`/`expect`/unguarded index in the touched
       path.
-- [ ] Task: **Point-selection enabling fix (FR-2).** Eager-load
-      `path_state.tracks` on active-petal change: extend the petal-change
-      branch of `open_track_on_select` (`node_manager/viewport_pick.rs:103-110`)
-      — or a sibling system in the same set — to push the track-list refresh
-      (reuse the `request_tracks` idiom, `actions/path.rs:15-27`), replacing
-      sole reliance on the render-gated load at `panels/gis_panel.rs:108-110`.
-      Add a traced warning on the previously-silent `track_to_open` no-op
-      (`viewport_pick.rs:163-168`) when a clicked node looks path-like but the
-      list is empty. (TDD: exactly one refresh request per petal change
-      [Local-flag test, same idiom as `petal_initialized`]; `track_to_open`
-      existing tests green; refresh not re-fired while `tracks_pending`.)
-- [ ] Task: **Reachability confirmation tests (FR-2).** Pin the chain: track
-      row arrival (`actions/path.rs:401`) + viewport select →
-      `UiAction::PathSelectTrack` → `start_editing` → handle/vertex systems no
-      longer early-out (`path_handle_interaction.rs:207,291,408` gates satisfied).
-      Unit-level where pure; note the in-app steps for the user.
-- [ ] Verification: fresh session → click imported path in viewport → markers
+- [x] Task: **Point-selection enabling fix (FR-2).** DONE (2026-07-24, local,
+      not committed). Eager-load
+      `path_state.tracks` on active-petal change: extended the petal-change
+      branch of `open_track_on_select` (`node_manager/viewport_pick.rs:103-110`,
+      factored into the new `advance_petal_tracking` helper) to push the
+      track-list refresh (reuses the `request_tracks`/`query_tracks` idiom via
+      `UiAction::PathQueryTracks`, the same action the Paths tab pushes —
+      `actions/path.rs:17-30`), replacing sole reliance on the render-gated
+      load at `panels/gis_panel.rs:108-116`. `request_track_list_refresh` skips
+      the push while `tracks_pending` (dedup guard). Traced-warning-on-silent-
+      no-op (`viewport_pick.rs:163-168`) DEFERRED: the eager-load fix removes
+      the main starvation path, and reliably distinguishing "clicked node looks
+      path-like" from an ordinary node click needs data not available at that
+      call site (e.g. a `TrackPickShape` check) — adding a warning without it
+      risks per-click log spam on every non-track selection while the list is
+      still loading. Left for a follow-up pass.
+      (TDD: exactly one refresh request per petal change
+      [`advance_petal_tracking_fires_exactly_once_per_transition`]; `track_to_open`
+      existing tests green; refresh not re-fired while `tracks_pending`
+      [`request_track_list_refresh_noop_while_already_pending`].)
+- [x] Task: **Reachability confirmation tests (FR-2).** DONE at the unit level
+      (2026-07-24): `track_to_open`'s existing tests plus the new
+      `advance_petal_tracking`/`request_track_list_refresh` tests together pin
+      the chain from track-list arrival through the `PathSelectTrack` dispatch;
+      `path_handle_interaction.rs`'s pre-existing gate tests (untouched, assume
+      `editing_track_id: Some`) are unaffected and stay green. The deeper
+      in-app chain (`start_editing` → handle/vertex markers spawn → drag) is
+      NOT re-verified here — it was already covered by that file's own tests
+      and this pass didn't touch it; full end-to-end reachability remains
+      in-app/user-gated (see Verification below).
+- [ ] Verification: NOT DONE this pass — user-gated in-app step, and FR-1
+      (terrain-tools crash) is still open so the full Phase-0 checkpoint isn't
+      closeable yet. fresh session → click imported path in viewport → markers
       appear, vertex + bezier-handle drag work under Select/Move/Pen; terrain
       tools full repro matrix crash-free. Commit Phase 0 as its own batch
-      (`fix(fe-ui): ...`). In-app confirmation user-gated. [checkpoint]
+      (`fix(fe-ui): ...`) — deliberately NOT committed this pass per the
+      orchestrator's no-commit instruction. In-app confirmation user-gated. [checkpoint]
 
 ## Phase 1: Pointer-operations manager (FR-3) [P1]
 
