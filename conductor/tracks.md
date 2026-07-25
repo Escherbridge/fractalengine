@@ -19,7 +19,7 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
 > (delivered and archived), not a dangling reference — no cross-check needed.
 
-**Open tracks: 31.**
+**Open tracks: 27.**
 
 > **Validation pass 2026-07-19** (5-worker swarm, code-reading + git evidence only —
 > build env memory-blocked, no test execution). Every track's `metadata.json` re-validated
@@ -34,25 +34,50 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > `runtime_instance_guardrails` (crash fix committed + verified @ `46e19de`; needs retro +
 > FR-6 live-run sign-off to archive).
 
+> **Pruning pass 2026-07-24** (evidence-based board assessment + user live in-app test).
+> **5 folders archived** to [`./tracks/_archive/`](./tracks/_archive/), each with a retro:
+> `runtime_instance_guardrails` (done — GPU-OOM root cause fixed @ `46e19de`, FR-6 render
+> horizon delivered cross-track @ `320ebfe`, no recurrence over two live runs),
+> `terrain_editor_overhaul` (done — FR-1..6 @ `320ebfe` + the four regression fixes @
+> `f223bfa`; failed 2026-07-24 viewport path-point-selection acceptance TRANSFERRED to
+> `ui_shell_architecture_20260724`), `tool_inspector_ux` (superseded — Phase 1 + FR-7
+> delivered @ `f223bfa`; always-open sidebar replaced by a tooltip model, Phases 2-6
+> subsumed by `ui_shell_architecture_20260724`), `ux_interaction_hardening` (superseded —
+> FR-5 camera hardening delivered @ `320ebfe`; FR-1..4 absorbed into
+> `ui_shell_architecture_20260724`), `drag_drop_placement` (superseded — spec-only on a
+> void base, re-spec routes through the shell track). **Stale CI-failure notes struck**:
+> the release_ci + cross_platform_desktop "Lint failing" validation notes are superseded —
+> CI fully green @ `f5d9673` (run 30055712210; lint fixes `b75ad2a`/`3dae0ee`/`f5d9673`);
+> release_ci remaining = task 2.7 (live `v*` tag e2e) only. **pen_curve_tool status
+> corrected** pending→in_progress (Phases 1-6 implemented; see its entry). **2026-07-24
+> in-app findings logged** to
+> [ux_qa_review findings](./tracks/ux_qa_review_20260714/findings.md) (viewport
+> point-selection gap, gardener_ui_system terrain crash, sidebar→tooltip).
+
 ---
 
-## P0 — Stability (user-reported crash, 2026-07-17)
+## P0 — UI shell architecture (user-directed 2026-07-24)
 
-### [~] runtime_instance_guardrails — fix the GPU-OOM crash + cap every spawn path
+### [ ] ui_shell_architecture — pointer/tab/modal manager decoupling + right-sidebar tool inspector + P0 crash/selection fixes
 
-_Link: [./tracks/runtime_instance_guardrails_20260717/](./tracks/runtime_instance_guardrails_20260717/) · in_progress · P0 STABILITY (user-reported crash 2026-07-17)_
+_Link: [./tracks/ui_shell_architecture_20260724/](./tracks/ui_shell_architecture_20260724/) · pending · P0 UX + P0 STABILITY (user live-test findings 2026-07-24) · supersedes tool_inspector_ux + ux_interaction_hardening (both archived 2026-07-24)_
 
-App run died in bevy_pbr render prepare: `create_bind_group` panic (buffer
-binding 6 range 2758820944 exceeds the 2 GiB `max_*_buffer_binding_size`
-limit) — ~2.75 GB of per-instance GPU data ⇒ roughly 10–20M mesh instances
-from a runaway spawner or unbounded persisted data, then host allocation
-failure → STATUS_STACK_BUFFER_OVERRUN. Diagnose by repro against the live
-`data/` DB (read-only — never delete/reset/overwrite it) + spawn/terrain/
-render/DB audits; fix: every spawn path capped + degenerate-scale guarded
-(building on path_asset_reconcile's MAX_STAMPS=4096 + sanitize_world_scale),
-double-materialization eliminated, instance watchdog with user-visible
-warning. Acceptance: the app launches against the user's existing `data/`
-without the `create_bind_group` panic.
+User-directed re-coupling of the UI rendering system: **1 pointer/cursor-ops
+manager** (consolidating the click-claim/drag surfaces), **1 tab-interaction
+manager per core area** (topbar / left sidebar / right sidebar), **1 modal
+manager** (tooltips + transient overlays, panic-guarded panels); floating tool
+windows (terrain/path/tools) migrate into the **right-sidebar inspector**
+revealed on toggle; the always-open tool-descriptions sidebar becomes
+**tooltips**. **Phase 0 (P0, ratification-independent, lands first):**
+(a) gardener_ui_system terrain crash (panic poisons the whole egui pass, exit
+101 — leading hypothesis: proposals-only `terrain_json` on a config-less
+petal); (b) viewport path-point selection — ROOT CAUSE CONFIRMED: the
+`viewport_pick.rs` track-open gate needs `path_state.tracks`, which only loads
+while the Data window's Paths tab renders; fix = eager-load on petal change.
+Absorbs ux_interaction_hardening FR-1..4 (incl. FR-3 gimbal damping); carries
+terrain_editor_overhaul's transferred viewport-selection acceptance; unblocks
+pen_curve_tool in-app verification. 5 open questions await ratification
+(spec §Open questions); road_builder_ux + inspector_settings coordinate.
 
 ---
 
@@ -78,83 +103,22 @@ designed|recorded property (absence ⇒ recorded, zero migration) so analytics c
 filter designed roads from GPS traces. Input layer ONLY — ribbon meshes,
 intersections, upgrade tool, zoning all deferred (user-ratified hybrid, 2026-07-16).
 
-### [~] ux_interaction_hardening — GPX controls, toolbar-as-context-menu, gimbal smoothing, selection highlighting, camera ground-clamp
+### [~] pen_curve_tool — Illustrator-style Pen curve tool (bezier anchors + corner settings)
 
-_Link: [./tracks/ux_interaction_hardening_20260718/](./tracks/ux_interaction_hardening_20260718/) · in_progress (Phase 5 camera hardening landed first, 2026-07-18) · P0 UX (user-driven, 2026-07-18)_
+_Link: [./tracks/pen_curve_tool_20260722/](./tracks/pen_curve_tool_20260722/) · in_progress (Phases 1-6 implemented; Phase 7 + in-app re-verify pending) · P1 UX (user-directed 2026-07-22) · depends_on terrain_editor_overhaul, tool_inspector_ux (both archived 2026-07-24 — satisfied deps)_
 
-Five-surface hardening slate from the user's 2026-07-18 asks: (1) robust
-GPX/path editing controls — cancel-safe interrupts (Escape/tool-switch/
-petal-switch), forgiving drag handles, undo-safe point edits on the shipped
-path editor; (2) top-bar buttons become the context selector for the
-inspector/left-sidebar region with the core inspector getting its own toolbar
-icon (`TOOL_DEFS` stays the single-source table); (3) damped, frame-rate-
-independent gimbal drags (no overshoot/drift); (4) calm smooth selection
-highlighting for paths AND objects — the two selection authorities
-(`NodeManager.selected` vs `PathEditorState.editing_track_id`) rendered
-distinguishably, NOT unified (codified split, ui_ux.md §5); highlight colors
-respect the §1 status-tier ownership (selection ≠ alarm); (5) camera
-hardening for close-up planning — terrain ground avoidance via a bounded-scan
-height-field provider + pitch clamp with raise fallback (camera can no longer
-dive below terrain), scale-aware `scaled_min_distance` floored above the fixed
-near=0.01 (camera_focus_clip contract kept), and eased dt-independent motion
-(FR-5, added same-day from the user's camera ask).
-
-### [~] terrain_editor_overhaul — unified typed-selection editor + analytics-first terrain proposals
-
-_Link: [./tracks/terrain_editor_overhaul_20260718/](./tracks/terrain_editor_overhaul_20260718/) · in_progress (FR-1..6 landed @ 320ebfe; 4 in-app regressions fixed LOCAL/uncommitted 2026-07-19) · P0 UX + P0 Analytics (user-driven 2026-07-18)_
-
-Re-spec of the editor as one object-aware left-click surface, plus a
-Cities-Skylines-map-editor-inspired terrain editor that stays true to the
-analytics mandate. **Phase 0 (quick wins):** FR-3 gimbal-on-path (the gimbal
-reads only `NodeManager.selected` and is double-gated off in Select/Pen, so a
-selected path vertex/segment — living in `PathEditorState` — never shows one) and
-FR-4 path-delete cascade-stamp (the back-ref `PathAssetInstance.source_track_id`
-already exists; `DbResult::NodeDeleted` just never invalidates `PathAssetCache`,
-so stamped glTF orphans **and resurrects on petal re-entry** — both `invalidate()`
-methods already exist). **Then:** FR-1 typed `SelectionKind` read-model as a
-**facade** over both selection authorities (NOT a merge — the split is codified in
-`code_styleguides/ui_ux.md §5`) + FR-2 object-type-aware left-click op table
-(shares the dispatch seam with road_builder_ux). **Then FR-5:** terrain edits
-become **NON-destructive PROPOSED overlays** (new `MapLayer` parallel to the
-display-overlay `LayerStack`) — raise/flatten/ramp/cut/fill volumes rendered
-ghosted atop the read-only `TerrainHeightField`, **never writing true terrain**
-(the analytics contract); terrain is load-and-display-only today (literal
-placeholder). **FR-6:** wire the tested-but-unwired `ruler.rs` geometry math
-(`polygon_area_m2`/`world_to_real_distance`/`bearing_deg`) into a scale/geometry
-report panel (extent m, area m², cut/fill m³, slope, bearing). Consumes
-p2p_asset_streaming's mesh budget + D-78 `AppSettings`; measurement scope
-coordinates with hexon_scale_orchestration Phase 5.
-
-### [~] tool_inspector_ux — Blender-like tool-inspector (active tool as a legible UI MODE)
-
-_Link: [./tracks/tool_inspector_ux_20260719/](./tracks/tool_inspector_ux_20260719/) · in_progress (Phase 1 LOCAL/uncommitted 2026-07-19) · P0 UX (user-directed 2026-07-19) · depends_on terrain_editor_overhaul_
-
-Make the active tool an explicit, legible UI MODE: a tool-mode switcher (top,
-adapting `TOOL_DEFS`) + a left per-tool inspector panel (Use/Settings zones) that
-reshapes how Select/Move/Rotate/Scale/Pen behave and surfaces each mode's
-affordances (gimbal-active, axis constraints, snapping, highlighting) — without
-merging the two selection authorities (ui_ux.md §5) and without an fe-ui→fe-terrain
-dep. **Phase 1 implemented (local-only):** `panels/tool_inspector.rs` left
-per-tool SidePanel + luminance active-mode emphasis (ui_ux.md §1) + FR-7 gimbal
-"grabbable wherever shown" (landed early in the 2026-07-19 bug-fix pass). Deferred:
-Phases 2–6 (per-tool Use/Settings bodies, snapping/constraint/highlight pure
-models, `tool_panel.rs` migration, keyboard-parity close-out).
-
-### [ ] pen_curve_tool — Illustrator-style Pen curve tool (bezier anchors + corner settings)
-
-_Link: [./tracks/pen_curve_tool_20260722/](./tracks/pen_curve_tool_20260722/) · pending (design-only 2026-07-22) · P1 UX (user-directed 2026-07-22) · depends_on terrain_editor_overhaul, tool_inspector_ux_
-
-Turn the Pen tool into an Illustrator-style cubic-bezier curve tool: per-anchor
-in/out handles + Corner/Smooth/Symmetric classification, click=corner /
-press-drag=smooth / Alt-drag=corner-break, and a per-anchor "corner settings"
-smoothness slider (0 = sharp .. 1 = round) that auto-derives collinear handles.
-Reuses the existing de Casteljau tessellation (`node_manager/curve.rs`) — a
-UI/interaction/persistence feature, NOT new curve math. Geometry stays in raw
-petal-local meters (no `world_scale`); legacy straight polylines render
-byte-identically. **Design-only** (workflow `wf_a7826e5e-6dc`; critique:
-sound-with-fixes, 3 sacred invariants respected, 2 must-fixes folded into the plan).
-Supersedes the Pen arm-grab review finding; open decisions await ratification
-before build.
+Illustrator-style cubic-bezier Pen tool: per-anchor in/out handles +
+Corner/Smooth/Symmetric classification, click=corner / press-drag=smooth /
+Alt-drag=corner-break, and a per-anchor "corner settings" smoothness slider
+that auto-derives collinear handles. Reuses the existing de Casteljau
+tessellation (`node_manager/curve.rs`); geometry stays in raw petal-local
+meters (no `world_scale`); legacy straight polylines render byte-identically.
+**Phases 1-6 implemented**: Phases 1-2 pushed @ `01c175d` (CI green); Phases
+3-6 landed 2026-07-24 with a 14-finding review-fix pass. **In-app test
+2026-07-24**: cannot select/manipulate existing points — suspected app-wide
+viewport selection routing (owned by `ui_shell_architecture_20260724`, not
+pen-specific) — plus an unrelated `gardener_ui_system` terrain crash (same
+track owns it). Remaining: Phase 7 close-out + in-app re-verify.
 
 ---
 
@@ -396,8 +360,6 @@ No blocking dependencies; opportunistic or explicitly deferred (see each
   open — [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
 - [ ] **sso_federation** — enterprise OIDC/SSO, spec_only P2 —
   [./tracks/sso_federation_20260429/](./tracks/sso_federation_20260429/)
-- [ ] **drag_drop_placement** — OS file drop + placement flow, spec_only; hand to the
-  user's UX track — [./tracks/drag_drop_placement_20260402/](./tracks/drag_drop_placement_20260402/)
 - [ ] **light_box** — default lighting rig; OFF-STRATEGY defer —
   [./tracks/light_box_20260402/](./tracks/light_box_20260402/)
 - [ ] **profile_manager** — identity/profile UI + P2P sync; OFF-STRATEGY defer
@@ -461,3 +423,12 @@ One line per batch; full detail lives in each folder under
   delivered, CONDITIONAL GO), bim_primitives_on_paths (FR-8 seam folded into
   iot_spatial_reporting), hexon_path_asset (FR-5 subsumed / FR-6 inherited by
   hexon_unification)
+- **2026-07-24 — pruning-pass batch** (5 folders, each with its own
+  [`_archive/<id>/retro.md`](./tracks/_archive/)): runtime_instance_guardrails
+  (done — GPU-OOM root cause fixed @ 46e19de, FR-6 delivered cross-track @
+  320ebfe), terrain_editor_overhaul (done — FR-1..6 @ 320ebfe + regression
+  fixes @ f223bfa; viewport point-selection defect TRANSFERRED to
+  ui_shell_architecture_20260724), tool_inspector_ux (superseded — Phase 1
+  delivered @ f223bfa; sidebar→tooltip, Phases 2-6 subsumed),
+  ux_interaction_hardening (superseded — FR-5 shipped @ 320ebfe; FR-1..4
+  absorbed), drag_drop_placement (superseded — spec-only on a void base)

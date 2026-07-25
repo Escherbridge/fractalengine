@@ -265,7 +265,53 @@ curve *rendering* is a small anchor-aware flatten step feeding the existing mesh
   (`actions/path.rs:295`) — it can remain as a bulk "smooth entire track" action;
   its fate is an Open Q, not a task here.
 
-## Open questions (ratify before build)
+## Open questions — RESOLVED
+
+### Ratified decisions (2026-07-24 — normative; supersedes the option text below)
+
+User ratification 2026-07-24. Q1/Q3/Q4/Q6/Q10 were already landed as the
+Phase 1-2 assumed defaults.
+
+1. **Handle storage — RELATIVE offsets** from the anchor (landed, Phase 1).
+2. **Smoothness = auto-derived collinear handle LENGTH** (no arc/fillet
+   geometry); a true fillet radius stays a deferred follow-up knob.
+3. **Flattener duplicated in `fe-terrain/src/mesh/curve.rs`** (landed, Phase 2).
+4. **Mixed 4/12-slot encoding** (landed, Phase 1).
+5. **Slider readback — GREY OUT on manual asymmetry.** The smoothness slider is
+   enabled only while the anchor's handles are symmetric-collinear
+   (`handle_in ≈ −handle_out` within epsilon) or both absent. Once a manual drag
+   breaks symmetry the slider greys out with a hint, showing the approximate
+   readback `|handle_out| / (k·min(gap_prev, gap_next))` clamped to 0..1.
+   Re-selecting Smooth/Symmetric on the corner toggle re-derives collinear
+   handles and re-enables it. The slider never silently overwrites manual
+   handles.
+6. **Partial-row normalization guard** (landed, Phase 1): Smooth/Symmetric with
+   a missing handle decodes as Corner.
+7. **Pick priority — as designed:** handle-marker > vertex-marker > gimbal-arm;
+   handle markers picked via the same along-ray `PICK_RADIUS = 0.7` test; the
+   `MARKER_BODY_RADIUS = 0.7` vertex-body yield unchanged. An overlapping
+   handle + vertex marker resolves to the handle.
+8. **Alt-drag while placing — FULL ILLUSTRATOR combination anchor.** Releasing
+   an Alt-drag produces a broken-handle anchor: `handle_out` = final drag
+   vector; `handle_in` = the symmetric trailing value frozen at the moment Alt
+   was first pressed during the drag (`None` when Alt was held from the initial
+   press); classification `Corner` (independent handles). This preserves the
+   just-drawn segment's curvature — the substantive difference from the earlier
+   "out-handle-only" design. No retroactive mutation of the *previous* anchor:
+   Illustrator's combination point leaves prior anchors untouched (the drawn
+   segment's curve lives in the CURRENT anchor's in-handle, which this rule
+   keeps); the original question's parenthetical mislabeled that behavior.
+9. **`smooth_current`/PenMode bake stays** as a bulk "smooth entire track"
+   action; deprecation deferred.
+10. **Fixed `samples_per_seg`** from `ToolPanelState.pen_samples_per_segment`
+    (landed, Phase 2); adaptive flattening deferred.
+
+Standing (non-blocking) ratification: **CI toolchain drift — keep the code
+pristine against latest stable** (no Lint-job rustc pin, no `--cap-lints`);
+run `cargo +<CI-stable> clippy --workspace --all-targets -- -D warnings`
+locally before every push.
+
+### Original option text (historical)
 
 1. **Handle storage** — RELATIVE offset from anchor (assumed; `MovePoint` free,
    easy smoothness scaling) vs ABSOLUTE petal-meter positions (matches Illustrator's
