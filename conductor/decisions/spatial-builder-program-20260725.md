@@ -94,29 +94,33 @@ the single source of truth for those; specs do not repeat them.
 
 ## Conflict-free file partition (the pre-slice homework)
 
-Grounded in the real 2026-07-25 module layout. No two tracks own the same file.
+Grounded in the real 2026-07-25 module layout **and re-validated by the
+2026-07-25 `/slice` re-grill (fresh greps against the tree).** No two tracks own
+the same file in the same wave. This table is authoritative; the corrections
+subsection below records the provenance of the additions.
 
-| Crate | Owner(s) — by file |
+| Owner | Owned files (writes) |
 |---|---|
-| `fe-entity-store`, `fe-database`, `fe-policy`, `fe-sync` | **T1** exclusively (data core + tombstone op-log + delete authz). |
-| `fe-api/*`, `fe-query/*`, `fe-renderer/src/addressing.rs` | **T5** exclusively. Calls T1's node ops via existing channel seams; never edits the store. |
-| `fe-terrain/src/mesh/{curve,track,marker}.rs` + stamp materializer path (`actions/asset.rs`, `actions/path.rs`) | **T2**. |
-| `fe-terrain/src/terrain_proposal.rs`, `mesh/{terrain,interp,skirt}.rs`, `layers/*`, new `sculpt` module | **T3**. |
-| `fe-renderer/src/{loader,ingester,viewport}.rs` + new `instancing.rs` | **T2**. |
-| `fe-renderer/src/{terrain_overlay,terrain_height}.rs` + new brush overlay | **T3**. |
-| `fe-ui/src/ui_shell/{mod,left_sidebar,right_sidebar}.rs`, `panels/mod.rs`, `dialogs/{settings,hexon_manager}.rs` | **T6** — the shell seam owner. |
-| `fe-ui/src/ui_shell/modal.rs`, `dialogs/{context_menu,node_options}.rs` | **T4** — the contextual-controls surfaces. |
-| `fe-ui` path-tools section content module (from `tool_panel.rs` migration) | **T2** — content only, not the section registry. |
-| `fe-ui` terrain-tools section content module + new sculpt panel | **T3** — content only, not the section registry. |
+| **T1** (Wave 0) | `fe-entity-store`, `fe-database`, `fe-policy`, `fe-sync`, **`fe-runtime/src/messages.rs`** — data core + tombstone op-log + delete authz + the whole-program `DbCommand`/lifecycle-event **vocabulary** (Wave-1 tracks only construct/match these). *(The `DbCommand` **struct** in `fe-terrain/src/lib.rs` is unrelated — not this.)* |
+| **T6** (Wave 0) | `fe-ui/src/ui_shell/{mod,left_sidebar,right_sidebar,topbar}.rs`, `panels/mod.rs`, `dialogs/{settings,hexon_manager}.rs`, **`actions/mod.rs`** (`UiAction` enum + dispatch), **`plugin.rs`** (resource/system reg + `gardener_console` signature). Shell seam owner **+ the Wave-0 fe-ui registration scaffold**; also creates the empty Wave-1 handler stubs the tracks below fill. |
+| **T2** (Wave 1) | `fe-terrain/src/mesh/{curve,track,marker}.rs`; `fe-renderer/src/{loader,ingester,viewport}.rs` + new `instancing.rs` + the **`fe-renderer/src/lib.rs` `mod instancing;`** line (the only new fe-renderer module in Wave 1); `fe-ui/src/panels/tool_panel.rs` (PathTools content); fills `fe-ui/src/actions/{asset,path}.rs` stubs. |
+| **T3** (Wave 1) | `fe-terrain/src/{terrain_proposal.rs, mesh/{terrain,interp,skirt}.rs, layers/*}` + new `sculpt` module + the **`fe-terrain/src/lib.rs` `mod sculpt;`** line; `fe-renderer/src/{terrain_overlay,terrain_height}.rs` (**brush overlay folded IN — no new fe-renderer module**); `fe-ui/src/panels/{terrain_tools_panel,proposal_report_panel}.rs` (**sculpt UI folded into TerrainTools — no new `RightSidebarSection`**); fills `fe-ui/src/actions/terrain_proposal.rs` stub. |
+| **T4** (Wave 1) | `fe-ui/src/ui_shell/modal.rs`, `dialogs/{context_menu,node_options}.rs`; fills `fe-ui/src/actions/{node,node_props}.rs` handler bodies. **Does NOT touch** `actions/mod.rs`/`plugin.rs`/`right_sidebar.rs`/`panels/mod.rs`. |
+| **T5** (Wave 1) | `fe-api/*`, `fe-query/*`, `fe-renderer/src/addressing.rs` (already declared → no `lib.rs` edit). Consumes T1's op vocabulary + `fe://` address via channel seams; never edits T1/T2/T3 files. |
 
-**The one shared seam is `fe-ui/src/ui_shell/right_sidebar.rs` — the section
-registry. T6 owns it.** The section-fn seam already exists (ui_shell track FR-6:
-Path tools / Terrain tools sections are registered). T2/T3 therefore extend
-their *existing* section content and do **not** touch `right_sidebar.rs`. If a
-Wave-1 track needs a brand-new section, the one-line registration is handed to
-**T6** (owner) or added through an append-only registry T6 exposes — never
-edited concurrently. This is the single rule the eventual `/slice` run must
-enforce.
+**Single-owner central files (the collision-proof seams).** Each of these is
+edited by exactly one owner per wave, by construction:
+`right_sidebar.rs` (`RightSidebarSection` registry) → **T6**;
+`actions/mod.rs` (`UiAction` + dispatch) → **T6 scaffold**;
+`plugin.rs` (resource/system reg + console signature) → **T6 scaffold**;
+`panels/mod.rs` (module reg + signature) → **T6**;
+`fe-runtime/src/messages.rs` (`DbCommand`) → **T1**;
+`fe-renderer/src/lib.rs` (`mod instancing;`) → **T2**;
+`fe-terrain/src/lib.rs` (`mod sculpt;`) → **T3**.
+The fold rules (T3 brush → `terrain_overlay.rs`, T3 sculpt → TerrainTools) keep
+the fe-renderer and section registries single-owner. Any *brand-new* fe-ui
+section a Wave-1 track later needs is registered through **T6** (owner), never
+edited concurrently. This is the single rule the `/slice` run enforces.
 
 ## Slice-time partition corrections (2026-07-25, grep-validated)
 
