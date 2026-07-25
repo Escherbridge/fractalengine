@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 mod asset_bridge;
 mod gpx_bridge;
+mod panic_log;
 mod terrain_bridge;
 
 /// Default SurrealKV database path. Must match the path used by
@@ -19,6 +20,11 @@ mod terrain_bridge;
 const DB_PATH: &str = "data/fractalengine.db";
 
 fn main() {
+    // Captures the payload of any panic (esp. in-egui-pass panics that
+    // otherwise only surface as "Encountered a panic in system" + abort) to
+    // `data/panic.log`. Installed first so it covers every subsequent line.
+    panic_log::install();
+
     // Durability: default SurrealKV's fsync mode unless the operator overrode it.
     // Valid values are `never` | `every` | a duration >100ms; `"true"` is invalid
     // and would brick startup. See src/AGENTS.md §durability. Must run before any

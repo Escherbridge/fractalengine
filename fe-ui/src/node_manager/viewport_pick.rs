@@ -100,12 +100,13 @@ pub(super) fn open_track_on_select(
     mut last_petal: Local<Option<String>>,
     mut petal_initialized: Local<bool>,
 ) {
-    if !*petal_initialized {
-        *last_petal = nav.active_petal_id.clone();
-        *petal_initialized = true;
-    } else if *last_petal != nav.active_petal_id {
-        *last_petal = nav.active_petal_id.clone();
-        path_state.reset_for_petal_change();
+    if advance_petal_tracking(
+        &mut petal_initialized,
+        &mut last_petal,
+        nav.active_petal_id.as_deref(),
+        &mut path_state,
+        &mut ui_mgr,
+    ) {
         *last_editing = None;
     }
 
@@ -140,6 +141,59 @@ pub(super) fn open_track_on_select(
                 manager.pending_sidebar_select = Some(track_id);
             }
         }
+    }
+}
+
+/// FR-2 (`ui_shell_architecture_20260724`): detects the petal-entry/change
+/// transition (first-ever frame, or an actual petal switch) and — on either —
+/// resets `path_state` (transitions only, matching prior behavior) and
+/// eager-loads the Paths-tab track list for the new petal via the same
+/// request idiom the Data window's Paths tab uses (`UiAction::PathQueryTracks`
+/// → `actions::path::query_tracks`), so `track_to_open`'s gate is fed without
+/// requiring that window to ever render (`panels/gis_panel.rs:108-116`'s
+/// render-gated load becomes a redundant no-op once `tracks` is populated
+/// here). Returns `true` when a transition happened (caller also clears
+/// `last_editing` in that case). Deliberately separated from the
+/// selection-sync half below so both halves are independently testable.
+fn advance_petal_tracking(
+    petal_initialized: &mut bool,
+    last_petal: &mut Option<String>,
+    active_petal: Option<&str>,
+    path_state: &mut crate::gis::PathEditorState,
+    ui_mgr: &mut crate::actions::UiManager,
+) -> bool {
+    let active_owned = active_petal.map(str::to_string);
+    if !*petal_initialized {
+        *last_petal = active_owned;
+        *petal_initialized = true;
+        request_track_list_refresh(ui_mgr, active_petal, path_state.tracks_pending);
+        return true;
+    }
+    if *last_petal != active_owned {
+        *last_petal = active_owned;
+        path_state.reset_for_petal_change();
+        request_track_list_refresh(ui_mgr, active_petal, path_state.tracks_pending);
+        return true;
+    }
+    false
+}
+
+/// Queues `UiAction::PathQueryTracks` for `active_petal`, unless there's no
+/// active petal or a track-list request is already in flight (avoids a
+/// duplicate `RawQuery` racing the Paths tab's own auto-populate in
+/// `gis_panel.rs`, e.g. if it's already open on the transition frame).
+fn request_track_list_refresh(
+    ui_mgr: &mut crate::actions::UiManager,
+    active_petal: Option<&str>,
+    tracks_pending: bool,
+) {
+    if tracks_pending {
+        return;
+    }
+    if let Some(petal_id) = active_petal {
+        ui_mgr.push_action(crate::actions::UiAction::PathQueryTracks {
+            petal_id: petal_id.to_string(),
+        });
     }
 }
 
@@ -296,6 +350,7 @@ fn ray_aabb_hit(
 mod tests {
     #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::*;
+    use crate::actions::{UiAction, UiManager};
     use crate::gis::{GisResultRow, PathEditorState};
 
     /// A unit box centered at the origin in identity local space.
@@ -344,6 +399,120 @@ mod tests {
         state.editing_track_id = Some("track-a".to_string());
         // Switching to a different listed track should open it.
         assert!(track_to_open("track-b", &state));
+    }
+
+    // --- FR-2 eager track-list load (petal change ⇒ track-list request) ---
+
+    fn drained_petal_ids(ui_mgr: &mut UiManager) -> Vec<String> {
+        ui_mgr
+            .drain_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                UiAction::PathQueryTracks { petal_id } => Some(petal_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn request_track_list_refresh_queues_for_active_petal() {
+        let mut ui_mgr = UiManager::default();
+        request_track_list_refresh(&mut ui_mgr, Some("petal-1"), false);
+        assert_eq!(drained_petal_ids(&mut ui_mgr), vec!["petal-1".to_string()]);
+    }
+
+    #[test]
+    fn request_track_list_refresh_noop_without_active_petal() {
+        let mut ui_mgr = UiManager::default();
+        request_track_list_refresh(&mut ui_mgr, None, false);
+        assert!(drained_petal_ids(&mut ui_mgr).is_empty());
+    }
+
+    #[test]
+    fn request_track_list_refresh_noop_while_already_pending() {
+        let mut ui_mgr = UiManager::default();
+        request_track_list_refresh(&mut ui_mgr, Some("petal-1"), true);
+        assert!(drained_petal_ids(&mut ui_mgr).is_empty());
+    }
+
+    #[test]
+    fn advance_petal_tracking_fires_exactly_once_per_transition() {
+        let mut ui_mgr = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        let mut petal_initialized = false;
+        let mut last_petal: Option<String> = None;
+
+        // Frame 1: cold start, no active petal yet — no request (nothing to load).
+        advance_petal_tracking(
+            &mut petal_initialized,
+            &mut last_petal,
+            None,
+            &mut path_state,
+            &mut ui_mgr,
+        );
+        // Frame 2: navigate into petal "p1" — one request.
+        advance_petal_tracking(
+            &mut petal_initialized,
+            &mut last_petal,
+            Some("p1"),
+            &mut path_state,
+            &mut ui_mgr,
+        );
+        // Frame 3: same petal — must NOT re-fire (this is the "no spam while
+        // the tab stays open" guarantee: the transition-only Local check).
+        advance_petal_tracking(
+            &mut petal_initialized,
+            &mut last_petal,
+            Some("p1"),
+            &mut path_state,
+            &mut ui_mgr,
+        );
+        // Frame 4: switch to petal "p2" — one more request.
+        advance_petal_tracking(
+            &mut petal_initialized,
+            &mut last_petal,
+            Some("p2"),
+            &mut path_state,
+            &mut ui_mgr,
+        );
+
+        assert_eq!(
+            drained_petal_ids(&mut ui_mgr),
+            vec!["p1".to_string(), "p2".to_string()]
+        );
+    }
+
+    #[test]
+    fn advance_petal_tracking_resets_session_only_on_real_transition() {
+        let mut ui_mgr = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        path_state.editing_track_id = Some("stale-track".to_string());
+        let mut petal_initialized = false;
+        let mut last_petal: Option<String> = None;
+
+        // First-ever frame with an already-active petal must not wipe
+        // pre-seeded state (matches the pre-existing `petal_initialized`
+        // cold-start behavior).
+        let changed = advance_petal_tracking(
+            &mut petal_initialized,
+            &mut last_petal,
+            Some("p1"),
+            &mut path_state,
+            &mut ui_mgr,
+        );
+        assert!(changed);
+        assert_eq!(path_state.editing_track_id.as_deref(), Some("stale-track"));
+
+        // A real transition to a different petal resets the edit session.
+        let changed = advance_petal_tracking(
+            &mut petal_initialized,
+            &mut last_petal,
+            Some("p2"),
+            &mut path_state,
+            &mut ui_mgr,
+        );
+        assert!(changed);
+        assert!(path_state.editing_track_id.is_none());
     }
 
     #[test]
