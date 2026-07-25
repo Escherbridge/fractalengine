@@ -1,0 +1,20 @@
+{
+  "id": "drag_drop_placement_20260402",
+  "description": "OS file drop ingestion, placement preview, click-to-place, Alt+Drag duplicate, asset library panel",
+  "type": "feature",
+  "created_at": "2026-04-02T00:00:00Z",
+  "status": "superseded",
+  "archived": true,
+  "archived_at": "2026-07-24T00:00:00Z",
+  "execution_wave": 4,
+  "wave_rationale": "Backlog Wave-2 feature; superseded UX exists.",
+  "depends_on": [],
+  "notes": "2026-07-17 board hygiene: depends_on petal_seed_20260322 removed — that track was archived 2026-07-15 as SUPERSEDED (never delivered as specced), so the stated prerequisite dissolved and this spec's plan is built on a void base. Flag at the next alignment pass: follow petal_seed into the archive, or re-spec into the user-owned UX track (board already hands it there).",
+  "alignment": {
+    "verdict": "PLATFORM-KEEP / DEFER",
+    "priority": "P3",
+    "rationale": "Overlaps shipped asset work; hand to the user's coming UX track.",
+    "assessed": "2026-07-14"
+  },
+  "notes_validation": "VALIDATED 2026-07-19: spec_only (unchanged) — `git grep` for PlacementMode, FileDragAndDrop, DragHoverActive, PlacementPreview across *.rs returns zero hits; none of the 8 FRs (file-drop detection, drop-zone overlay, asset-record creation, placement preview, click-to-place, escape-cancel, alt-drag duplicate, asset-library panel) have any implementation. Existing 2026-07-17 board-hygiene note about the dissolved petal_seed_20260322 dependency still applies and is unresolved. remaining: all 8 FRs; dependency base (petal_seed_20260322) needs re-basing or re-spec before work can start.\nARCHIVED 2026-07-24 (status superseded, moot base): spec_only with zero implementation (07-19 validation: zero grep hits for all 8 FRs); base dependency petal_seed_20260322 archived superseded; this metadata already pointed at re-spec into the user-owned UX track — which ui_shell_architecture_20260724 now is. Spec retained as archived reference. See retro.md."
+}

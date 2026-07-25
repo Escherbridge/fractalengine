@@ -1,0 +1,16 @@
+{
+  "id": "ui_shell_architecture_20260724",
+  "description": "UI shell architecture overhaul: pointer-ops manager, per-area tab managers (topbar/left/right), modal+tooltip manager with panic-guarded panels; floating tool windows migrate into the right-sidebar inspector; tool-descriptions sidebar replaced by tooltips; P0 Phase 0 = gardener_ui_system terrain crash fix + viewport path-point selection fix (eager track-list load)",
+  "type": "chore",
+  "created_at": "2026-07-24T00:00:00Z",
+  "status": "pending",
+  "alignment": "P0 UX + P0 STABILITY (user-directed 2026-07-24 in-app findings); user-owned UX pillar per roadmap 2026-07-14",
+  "depends_on": ["terrain_editor_overhaul_20260718"],
+  "blocks": [],
+  "supersedes": ["tool_inspector_ux_20260719", "ux_interaction_hardening_20260718"],
+  "notes": [
+    "2026-07-24: created from live user testing — (1) cannot select/manipulate existing path points (ROOT CAUSE CONFIRMED: viewport_pick track_to_open gate requires path_state.tracks, which only loads while the Data window Paths tab renders; fix = eager-load on petal change); (2) terrain tools crash (gardener_ui_system panic → egui pass poisoned, exit 101; H-C1 = proposals-only terrain_json on config-less petal); (3) always-open tool-descriptions sidebar → tooltips; (4) manager decoupling directive (pointer / per-area tabs / modal).",
+    "Absorbs ux_interaction_hardening FR-1..FR-4 (incl. FR-3 gimbal damping — absorbed, not dropped); supersedes tool_inspector_ux Phases 2-6 and reworks its Phase 1 left panel; carries terrain_editor_overhaul's residual viewport-selection acceptance; unblocks pen_curve_tool in-app verification.",
+    "5 open questions filed in spec §Open questions await user ratification (Q-1 left rail removal, Q-2 right-sidebar tabs, Q-3 single-click edit entry, Q-4 Data/Map windows stay floating, Q-5 panic-guard UX); Phase 0 is ratification-independent."
+  ]
+}

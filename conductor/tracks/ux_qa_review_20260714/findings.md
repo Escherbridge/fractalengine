@@ -108,6 +108,47 @@ the user-owned UX track — logged here so they survive until it is scoped.
 
 ---
 
+## 2026-07-24 — user live-testing batch #2 (in-app)
+
+Findings from the user's live in-app test on 2026-07-24 (run on the pen_curve
+Phases 3-6 build, CI green @ `f5d9673`). All three are owned by
+`ui_shell_architecture_20260724`.
+
+### [MAJOR] paths-gis — cannot select/manipulate existing path points from the viewport
+- **Surface:** paths-gis / pen
+- **Repro:** open a petal with an existing track; attempt to click-select or
+  drag an existing path point in the viewport.
+- **Expected:** viewport pick selects the point and allows manipulation
+  (select/drag), entering the path edit flow.
+- **Actual:** existing path points cannot be selected or manipulated from the
+  viewport at all. Suspected selection-routing gap between viewport picks and
+  the Authority B (`PathEditorState`) edit mode — app-wide, not pen-specific
+  (this was also terrain_editor_overhaul's failed residual acceptance).
+- **Status:** transferred to `ui_shell_architecture_20260724`.
+- **Severity:** major
+
+### [BLOCKER] terrain — terrain tools crash the app (gardener_ui_system panic, exit 101)
+- **Surface:** terrain tools
+- **Repro:** use the terrain tools in-app.
+- **Expected:** terrain tool UI runs without panicking.
+- **Actual:** panic in `fe_ui::plugin::gardener_ui_system`, followed by a
+  bevy_egui `run_egui_context_pass_loop_system` panic ("pass output has not
+  been prepared") and `Main::run_main` abort, exit code 101.
+- **Status:** owned by `ui_shell_architecture_20260724`.
+- **Severity:** blocker
+
+### [MINOR] styling — tool-descriptions sidebar always open wastes real estate
+- **Surface:** styling / tool inspector
+- **Actual:** the always-open per-tool descriptions sidebar
+  (`tool_inspector.rs` left SidePanel) consumes viewport real estate for
+  static descriptive text.
+- **Suggested fix:** replace with a tooltip model (user verdict 2026-07-24);
+  `tool_inspector_ux_20260719` superseded accordingly.
+- **Status:** owned by `ui_shell_architecture_20260724`.
+- **Severity:** minor
+
+---
+
 ## Candidate UX-track scope (fill after review)
 
 Once findings are logged, summarize the themes here → this becomes the proposed
