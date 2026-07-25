@@ -1,12 +1,22 @@
 # fe-ui/src/panels — the egui shell
 
+**Shell layout moved to area managers** (`ui_shell_architecture_20260724`
+Phase 2). The topbar/left/right render bodies now live in `crate::ui_shell`
+(`topbar`, `left_sidebar`, `right_sidebar`); `gardener_console` just orders the
+manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
+`active_section` precedence rule, and the per-section render-fn seam.
+
 - `mod.rs` — `gardener_console()`, the single entry point called from
-  `plugin::gardener_ui_system`. Owns overall layout order (toolbar → status
-  bar → sidebar → inspector/portal-toolbar → viewport → dialogs → toast) and
-  the toast overlay itself.
-- `toolbar.rs` — top toolbar + the `Tool` enum (viewport transform tool).
-  `Tool` is reachable crate-internally as `crate::panels::toolbar::Tool`
-  (not re-exported further — see root `AGENTS.md` §compat).
+  `plugin::gardener_ui_system`. Owns overall layout order (topbar → status bar →
+  left sidebar → tool inspector → right sidebar → viewport → dialogs → toast),
+  the still-floating windows, and the toast overlay itself. The topbar/left/
+  right rendering is delegated to `ui_shell` managers.
+- `toolbar.rs` — the `Tool` enum + the single-source tool data: `TOOL_DEFS`,
+  `shortcut_hint_line`, `active_tool_hint`/`stash_active_tool`, and
+  `mode_button_fill`. The top-toolbar RENDER body lives in `ui_shell::topbar`
+  (FR-4) and calls these. `Tool` is reachable crate-internally as
+  `crate::panels::toolbar::Tool` (not re-exported further — see root
+  `AGENTS.md` §compat).
 - `status_bar.rs` — bottom status bar (online/peer indicators, active verse).
 - `sidebar.rs` — left verse/fractal/petal/node tree, drag-reorder, space
   overview.

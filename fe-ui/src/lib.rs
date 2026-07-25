@@ -21,6 +21,7 @@ pub mod settings;
 pub mod terrain_map;
 pub mod terrain_proposal_state;
 pub mod theme;
+pub mod ui_shell;
 pub mod verse_manager;
 pub mod viewport;
 pub mod viewport_labels;

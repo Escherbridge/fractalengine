@@ -446,6 +446,10 @@ impl Plugin for GardenerConsolePlugin {
         // Application settings (D-78) + terrain-proposal editor state (FR-5).
         app.init_resource::<crate::settings::AppSettings>();
         app.init_resource::<crate::terrain_proposal_state::ProposalEditState>();
+        // ui_shell_architecture_20260724 (FR-4/5/6): area-manager state resources.
+        app.init_resource::<crate::ui_shell::topbar::TopbarState>();
+        app.init_resource::<crate::ui_shell::left_sidebar::LeftSidebarState>();
+        app.init_resource::<crate::ui_shell::right_sidebar::RightSidebarState>();
         // Mirror AppSettings.mesh_budget_ceiling → MeshInstanceBudget.ceiling live.
         app.add_systems(Update, crate::settings::sync_app_settings_to_mesh_budget);
         // TODO(ultrapilot): register w4a's Settings/terrain-editor panel systems
@@ -559,6 +563,17 @@ struct MiscUiParams<'w> {
     app_settings: ResMut<'w, crate::settings::AppSettings>,
 }
 
+/// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
+/// bundled to keep `gardener_ui_system` under Bevy's 16-`SystemParam` tuple
+/// ceiling. All three are `ResMut` so downstream slices can fill in mutation
+/// without re-touching this system's signature.
+#[derive(bevy::ecs::system::SystemParam)]
+struct UiShellParams<'w> {
+    topbar: ResMut<'w, crate::ui_shell::topbar::TopbarState>,
+    left_sidebar: ResMut<'w, crate::ui_shell::left_sidebar::LeftSidebarState>,
+    right_sidebar: ResMut<'w, crate::ui_shell::right_sidebar::RightSidebarState>,
+}
+
 fn gardener_ui_system(
     mut ctx: EguiContexts,
     mut sidebar: ResMut<SidebarState>,
@@ -575,6 +590,7 @@ fn gardener_ui_system(
     local_role: Res<LocalUserRole>,
     mut petal_map: ResMut<PetalMapState>,
     mut misc: MiscUiParams,
+    mut ui_shell: UiShellParams,
 ) {
     let Ok(ectx) = ctx.ctx_mut() else { return };
 
@@ -602,6 +618,9 @@ fn gardener_ui_system(
         &mut misc.tool_panel,
         &mut misc.proposal_state,
         &mut misc.app_settings,
+        &mut ui_shell.topbar,
+        &mut ui_shell.left_sidebar,
+        &mut ui_shell.right_sidebar,
     );
     viewport_rect.0 = rect;
 
