@@ -1,6 +1,8 @@
-//! Top-level UI shell: toolbar, status bar, sidebar, inspector/portal panel,
-//! viewport, floating dialogs, and the toast overlay. See
-//! `fe-ui/src/panels/AGENTS.md` for the per-panel file map.
+//! Top-level UI shell: `gardener_console` orders the area managers
+//! (`ui_shell::{topbar, left_sidebar, right_sidebar}`) around the status bar,
+//! viewport, floating dialogs, and the toast overlay. The manager render bodies
+//! live in `ui_shell` (FR-4/5/6); this module keeps the panel widgets they call
+//! plus the still-floating windows. See `fe-ui/src/panels/AGENTS.md`.
 
 pub(crate) mod gis_panel;
 pub(crate) mod inspector;
@@ -23,7 +25,9 @@ mod layer_manager_card;
 // `pub(crate)` so `crate::viewport_labels` can reuse `type_glyph` (FR-3,
 // data_icons_20260713); everything else in it is still crate-internal.
 pub(crate) mod path_editor_card;
-mod portal_toolbar;
+// `pub(crate)` so `ui_shell::right_sidebar` can call `right_portal_toolbar`
+// when the portal owns the right region (FR-6).
+pub(crate) mod portal_toolbar;
 /// Shared reusable panel widgets (copy boxes, elision). See AGENTS.md §widgets.
 mod widgets;
 
@@ -43,9 +47,10 @@ use fe_runtime::messages::DbCommand;
 // Top-level layout entry point
 // ---------------------------------------------------------------------------
 
-/// Renders the full UI shell: toolbar -> status bar -> sidebar -> inspector -> viewport.
-/// Returns the screen-space rect of the 3-D viewport (CentralPanel) so the
-/// caller can store it for viewport-click gating in the gimbal system.
+/// Renders the full UI shell in order: topbar -> status bar -> left sidebar ->
+/// tool inspector -> right sidebar -> central viewport -> floating windows ->
+/// toast. Returns the screen-space rect of the 3-D viewport (CentralPanel) so
+/// the caller can store it for viewport-click gating in the gimbal system.
 // NOTE: wide param list accepted (plain egui fn, not a Bevy system); group new
 // params into the caller's SystemParam bundles before adding more here.
 pub fn gardener_console(
@@ -79,12 +84,34 @@ pub fn gardener_console(
     // as `MiscUiParams`). See `panels/AGENTS.md` §terrain-tools.
     proposal_state: &mut crate::terrain_proposal_state::ProposalEditState,
     app_settings: &mut crate::settings::AppSettings,
+    // ui_shell_architecture_20260724 Phase 2 (FR-4/5/6): area-manager state,
+    // supplied by `plugin.rs::gardener_ui_system` via the `UiShellParams` bundle.
+    topbar_state: &mut crate::ui_shell::topbar::TopbarState,
+    left_state: &mut crate::ui_shell::left_sidebar::LeftSidebarState,
+    right_state: &mut crate::ui_shell::right_sidebar::RightSidebarState,
 ) -> egui::Rect {
-    toolbar::top_toolbar(ctx, tool, node_mgr, ui_mgr, gis_panel, tool_panel);
-    status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
-    sidebar::left_sidebar(
+    // Topbar (FR-4): tool switcher, deselect, Data/Tools/Settings/Maps.
+    crate::ui_shell::topbar::render_topbar(
         ctx,
+        topbar_state,
+        tool,
+        node_mgr,
+        ui_mgr,
+        gis_panel,
+        tool_panel,
+        right_state,
+    );
+    status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr);
+
+    // Left sidebar (FR-5): the manager owns the auto-collapse policy. `right_open`
+    // reproduces today's formula exactly; the manager's default policy applies it
+    // as `sidebar.open = !right_open` (replacing the old post-render stomp).
+    let right_open = ui_mgr.portal_is_open() || node_mgr.selected_entity().is_some();
+    crate::ui_shell::left_sidebar::render_left_sidebar(
+        ctx,
+        left_state,
         sidebar,
+        right_open,
         nav,
         dashboard,
         hierarchy,
@@ -94,36 +121,27 @@ pub fn gardener_console(
         ui_mgr,
     );
 
-    // Auto-collapse left sidebar when right panel is open, restore when closed.
-    let right_panel_open = ui_mgr.portal_is_open() || node_mgr.selected_entity().is_some();
-    sidebar.open = !right_panel_open;
-
-    // tool_inspector_ux_20260719: the active tool as a legible MODE. A second
-    // left panel (inner of the hierarchy sidebar) — a transform inspector is most
-    // useful exactly when a node is selected and the hierarchy sidebar has
-    // auto-collapsed, so it survives that collapse. Hidden while the portal
-    // webview is open (like the right inspector below) so it doesn't clutter the
-    // portal view.
+    // tool_inspector_ux_20260719: the active tool as a legible MODE (inner left
+    // panel). KEPT this phase — a Phase-5 sibling folds it into the Tool section.
+    // Hidden while the portal webview is open so it doesn't clutter the portal.
     if !ui_mgr.portal_is_open() {
         tool_inspector::tool_inspector_panel(ctx, tool, node_mgr, path_state);
     }
 
-    // When the portal webview is open, show the portal toolbar instead of inspector.
-    if ui_mgr.portal_is_open() {
-        portal_toolbar::right_portal_toolbar(ctx, ui_mgr);
-    } else {
-        inspector::right_inspector(
-            ctx,
-            inspector,
-            node_mgr,
-            hierarchy,
-            ui_mgr,
-            local_role,
-            db_tx,
-            nav,
-            asset_status,
-        );
-    }
+    // Right sidebar (FR-6): portal toolbar when the portal owns the region, else
+    // the active section (Inspector today; placeholders for the rest).
+    crate::ui_shell::right_sidebar::render_right_sidebar(
+        ctx,
+        right_state,
+        inspector,
+        node_mgr,
+        hierarchy,
+        ui_mgr,
+        local_role,
+        db_tx,
+        nav,
+        asset_status,
+    );
 
     let viewport_response =
         egui::CentralPanel::default()

@@ -1,12 +1,11 @@
-//! Top toolbar: transform tool switcher, deselect, GIS/Tools/Maps buttons.
+//! Toolbar constants + the `Tool` enum: single source for `TOOL_DEFS`, the
+//! shortcut hint line, the active-tool temp-data stash, and `mode_button_fill`.
+//! The top-toolbar RENDER body lives in `ui_shell::topbar` (FR-4) and calls
+//! these. See `fe-ui/src/panels/AGENTS.md`.
 
 use bevy::prelude::KeyCode;
 use bevy_egui::egui;
 
-use crate::actions::{UiAction, UiManager};
-use crate::dialogs::ActiveDialog;
-use crate::plugin::ToolState;
-use crate::terrain_map::{HexonManagerTab, StorageInfoDto};
 use crate::theme;
 
 /// Active viewport transform tool.
@@ -87,138 +86,35 @@ pub(crate) fn shortcut_hint_line() -> String {
     line
 }
 
-/// Id under which `top_toolbar` stashes the frame's active tool (egui temp
-/// data — same idiom as the sidebar drag index) for panels that can't reach
-/// `ToolState`, e.g. the viewport hint.
+/// Id under which `stash_active_tool` stashes the frame's active tool (egui
+/// temp data — same idiom as the sidebar drag index) for panels that can't
+/// reach `ToolState`, e.g. the viewport hint.
 fn active_tool_id() -> egui::Id {
     egui::Id::new("fe_active_tool")
 }
 
-/// Reads back the active tool stashed by `top_toolbar` this frame.
+/// Reads back the active tool stashed by the topbar this frame.
 pub(crate) fn active_tool_hint(ctx: &egui::Context) -> Option<Tool> {
     ctx.data(|d| d.get_temp(active_tool_id()))
 }
 
-pub(crate) fn top_toolbar(
-    ctx: &egui::Context,
-    tool: &mut ToolState,
-    node_mgr: &mut crate::node_manager::NodeManager,
-    ui_mgr: &mut UiManager,
-    gis_panel: &mut crate::gis::GisPanelState,
-    tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
-) {
-    egui::TopBottomPanel::top("toolbar")
-        .exact_height(40.0)
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::BG_TOOLBAR)
-                .inner_margin(egui::Margin::symmetric(8, 6)),
-        )
-        .show(ctx, |ui| {
-            ui.horizontal_centered(|ui| {
-                // Sidebar toggle removed: auto-collapse in panels/mod.rs overwrites
-                // `sidebar.open` every frame, making a manual button a no-op.
-                // TODO: re-add manual sidebar toggle when needed
-                for def in &TOOL_DEFS {
-                    let active = tool.active_tool == def.tool;
-                    // tool_inspector_ux_20260719 (FR-1): active MODE reads via
-                    // luminance, not the old saturated-blue hue (ui_ux.md §1).
-                    let btn = egui::Button::new(format!("{} {}", def.glyph, def.name))
-                        .fill(crate::panels::tool_inspector::mode_button_fill(active));
-                    if ui
-                        .add(btn)
-                        .on_hover_text(format!("{} ({})", def.tip, def.key))
-                        .clicked()
-                    {
-                        tool.active_tool = def.tool;
-                    }
-                }
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(active_tool_id(), tool.active_tool));
+/// Stashes the frame's active tool under the private temp-data key that
+/// [`active_tool_hint`] reads. Called by `ui_shell::topbar` (FR-4) so the
+/// temp-data key stays single-source here.
+pub(crate) fn stash_active_tool(ctx: &egui::Context, tool: Tool) {
+    ctx.data_mut(|d| d.insert_temp(active_tool_id(), tool));
+}
 
-                ui.separator();
-
-                if node_mgr.selected_entity().is_some()
-                    && ui
-                        .add(egui::Button::new("\u{2715} Deselect").fill(theme::BG_DANGER))
-                        .clicked()
-                {
-                    node_mgr.deselect();
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new("FractalEngine")
-                            .color(theme::TEXT_DIM)
-                            .small(),
-                    );
-
-                    if ui
-                        .add(egui::Button::new("\u{1F5FA} Data").fill(if gis_panel.open {
-                            theme::BG_BUTTON_ACTIVE
-                        } else {
-                            theme::BG_BUTTON
-                        }))
-                        .on_hover_text("Query nodes and layers, export for BI")
-                        .clicked()
-                    {
-                        gis_panel.open = !gis_panel.open;
-                    }
-
-                    if ui
-                        .add(
-                            egui::Button::new("\u{1F527} Tools").fill(if tool_panel.open {
-                                theme::BG_BUTTON_ACTIVE
-                            } else {
-                                theme::BG_BUTTON
-                            }),
-                        )
-                        .on_hover_text("Path-asset stamp, pen curves, and shape tools")
-                        .clicked()
-                    {
-                        tool_panel.open = !tool_panel.open;
-                    }
-
-                    // D-78 (p2p_asset_streaming_20260718 FR-7): application
-                    // settings entry point. Routed through the action queue
-                    // (not a direct `ui_mgr.open_dialog` call like Maps below)
-                    // so w4b's `process_ui_actions` can fold in any side
-                    // effects (e.g. persistence) alongside the dialog open.
-                    // TODO(ultrapilot): `UiAction::SettingsToggle` is a
-                    // cross-worker variant (w4b, actions/mod.rs) — this button
-                    // compiles once that variant + its match arm land.
-                    if ui
-                        .add(egui::Button::new("\u{2699} Settings").fill(theme::BG_BUTTON))
-                        .on_hover_text("Application settings (render distance, mesh budget, ...)")
-                        .clicked()
-                    {
-                        ui_mgr.push_action(UiAction::SettingsToggle);
-                    }
-
-                    if ui
-                        .add(egui::Button::new("\u{1F4E6} Maps").fill(theme::BG_BUTTON))
-                        .on_hover_text("Manage petal maps")
-                        .clicked()
-                    {
-                        ui_mgr.open_dialog(ActiveDialog::HexonManager {
-                            installed_tilesets: Vec::new(),
-                            available_tilesets: Vec::new(),
-                            download_progress: std::collections::HashMap::new(),
-                            filter_text: String::new(),
-                            active_tab: HexonManagerTab::Installed,
-                            storage_info: StorageInfoDto {
-                                base_dir: String::new(),
-                                total_bytes: 0,
-                                count: 0,
-                            },
-                            loading: true,
-                            pending_remove: None,
-                        });
-                        ui_mgr.push_action(UiAction::HexonRefreshList);
-                    }
-                });
-            });
-        });
+/// Active-MODE button fill: a luminance emphasis (brighter neutral), not a hue
+/// shift (`code_styleguides/ui_ux.md §1`). Single source for the topbar's
+/// active-tool button + the right-sidebar section rail. (`tool_inspector.rs`
+/// keeps its own identical copy until the Phase-5 sibling folds it in.)
+pub(crate) fn mode_button_fill(active: bool) -> egui::Color32 {
+    if active {
+        theme::BG_MODE_ACTIVE
+    } else {
+        theme::BG_BUTTON
+    }
 }
 
 #[cfg(test)]
@@ -256,5 +152,11 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), TOOL_DEFS.len(), "duplicate shortcut keys");
+    }
+
+    #[test]
+    fn mode_button_fill_uses_luminance_emphasis() {
+        assert_eq!(mode_button_fill(true), crate::theme::BG_MODE_ACTIVE);
+        assert_eq!(mode_button_fill(false), crate::theme::BG_BUTTON);
     }
 }
