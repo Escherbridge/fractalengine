@@ -109,6 +109,14 @@ crate dependency (mirror enums + JSON contract). Volume math accuracy is
   `fe-renderer/src/{terrain_overlay,terrain_height}.rs` + new brush overlay;
   fe-ui **terrain-tools section content** + new sculpt panel (NOT
   `right_sidebar.rs`). Disjoint from T2 within fe-terrain/fe-renderer.
+- **Slice-time corrections (keep the enum registries single-owner):** the brush
+  overlay folds into `fe-renderer/src/terrain_overlay.rs` (T3-owned) — **no** new
+  fe-renderer module, so T3 does not edit `fe-renderer/src/lib.rs`. The sculpt UI
+  folds into the existing **TerrainTools** section (`terrain_tools_panel.rs`) —
+  **no** new `RightSidebarSection` variant, so `right_sidebar.rs` stays T6's. T3
+  owns the `fe-terrain/src/lib.rs` `pub mod sculpt;` line (its one new module) and
+  fills the `actions/terrain_proposal.rs` stub the scaffold laid down; it does
+  **not** edit `actions/mod.rs` or `plugin.rs`. See anchor corrections.
 
 ## Open questions (ratify before build)
 

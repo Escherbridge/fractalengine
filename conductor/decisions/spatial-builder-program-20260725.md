@@ -118,6 +118,38 @@ Wave-1 track needs a brand-new section, the one-line registration is handed to
 edited concurrently. This is the single rule the eventual `/slice` run must
 enforce.
 
+## Slice-time partition corrections (2026-07-25, grep-validated)
+
+The `/slice` re-grill (fresh greps, not the once-over module scan) found the
+table above partitioned by *feature file* and **omitted the files that
+physically hold the mutations** — the classic boundary gap. Five additions,
+each resolved to a single owner per wave so no two same-wave slices collide:
+
+| Shared file | Why it's shared | Owner (resolution) |
+|---|---|---|
+| `fe-runtime/src/messages.rs` (`DbCommand` enum) | every new op = a new variant | **T1** — defines *all* program op/event variants in Wave 0; T4/T5/T2 only construct/match them |
+| `fe-ui/src/actions/mod.rs` (`UiAction` enum + drain-dispatch) | T2/T3/T4 each add verbs | **T6 scaffold** (Wave 0) pre-adds variants + dispatch arms calling per-track handler stubs |
+| `fe-ui/src/plugin.rs` (`init_resource`/`add_systems` + `gardener_console` call site) | every fe-ui track adds a resource/system/state param | **T6 scaffold** (Wave 0) pre-registers all resources/systems + threads the console signature |
+| `fe-ui/src/panels/mod.rs` (`gardener_console` signature + module reg) | new state params + T3 sculpt panel | **T6** owns; scaffold lands signature + module regs in Wave 0 |
+| `fe-ui/src/ui_shell/topbar.rs` | T6 FR-3 sticky-toggle button lives here | **T6** (was orphaned by the table) |
+
+**Two fold rules keep the enum registries single-owner (no new variant races):**
+- **T3 brush overlay folds into `fe-renderer/src/terrain_overlay.rs`** (which T3
+  already owns) — it adds **no** new fe-renderer module, so only **T2** edits
+  `fe-renderer/src/lib.rs` (`pub mod instancing;`).
+- **T3 sculpt UI folds into the existing TerrainTools section**
+  (`terrain_tools_panel.rs`) — it adds **no** new `RightSidebarSection` variant,
+  so `right_sidebar.rs` stays T6-exclusive.
+- T3's new `fe-terrain/src/sculpt` module means **T3 owns the
+  `fe-terrain/src/lib.rs` `mod sculpt;` line** (T2 adds no fe-terrain module).
+
+**T6's real Wave-0 role is shell UX *plus* the fe-ui registration scaffold**
+(`actions/mod.rs` + `plugin.rs` + `panels/mod.rs` signature + handler stubs in
+`actions/{asset,path,node,node_props,terrain_proposal}.rs`). Wave-1 fe-ui tracks
+fill only their leaf handler bodies + owned panel/dialog files; they never touch
+the four central files. This converts a would-be-serial fe-ui chain into
+parallel leaf work — the enabling investment for Wave-1 fan-out.
+
 ## Open-question resolutions (ratified 2026-07-25)
 
 All six tracks' open questions ratified via AskUserQuestion. Per-Q rationale lives

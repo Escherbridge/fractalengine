@@ -86,10 +86,18 @@ dependencies; single egui pass discipline (one `begin_pass`/`end_pass`).
 
 - **depends_on:** none (the ui_shell seam is landed). **blocks:** none.
 - **Owns exclusively (file partition):** `fe-ui/src/ui_shell/{mod,left_sidebar,
-  right_sidebar}.rs`, `fe-ui/src/panels/mod.rs`, `fe-ui/src/dialogs/{settings,
-  hexon_manager}.rs`. **T6 is the section-registry owner** — Wave-1 tracks that
-  need a new section route the one-line registration through this track; they do
-  not edit `right_sidebar.rs` (see the anchor partition).
+  right_sidebar,topbar}.rs`, `fe-ui/src/panels/mod.rs`, `fe-ui/src/dialogs/
+  {settings,hexon_manager}.rs`. **T6 is the section-registry owner** — Wave-1
+  tracks that need a new section route the one-line registration through this
+  track; they do not edit `right_sidebar.rs` (see the anchor partition).
+- **Wave-0 fe-ui registration scaffold (added by the slice re-grill).** Beyond
+  its own FRs, T6 also owns and lays down in Wave 0 the fe-ui *registration
+  spine* so Wave-1 tracks fan out collision-free: `fe-ui/src/actions/mod.rs`
+  (all new `UiAction` variants + dispatch arms), `fe-ui/src/plugin.rs` (resource/
+  system registration + `gardener_console` param threading), and empty handler
+  stubs in `actions/{asset,path,node,node_props,terrain_proposal}.rs` that the
+  Wave-1 tracks fill. Wave-1 fe-ui tracks never touch these four central files.
+  See the anchor "Slice-time partition corrections".
 - Runs Wave 0 fully parallel with the data spine (different crates entirely).
 
 ## Open questions (ratify before build)
