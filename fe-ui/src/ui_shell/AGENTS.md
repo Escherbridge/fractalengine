@@ -15,8 +15,7 @@ own Bevy systems (NFR-4: exactly ONE `EguiPrimaryContextPass` entry,
 | Topbar (FR-4) | `topbar.rs` | `TopbarState` (minimal/reserved) | — (delegates to `panels::toolbar`) | `render_topbar` |
 | Left (FR-5) | `left_sidebar.rs` | `LeftSidebarState { policy, user_intent }` | `left_visibility` | `render_left_sidebar` |
 | Right (FR-6) | `right_sidebar.rs` | `RightSidebarState { requested }` | `active_section`, `section_label`, `toggle`/`is_active` | `render_right_sidebar` |
-
-`modal` is intentionally NOT declared here — a sibling slice adds it later.
+| Modal (FR-7) | `modal.rs` | `ModalManagerState { disabled_panels, last_error }` | `guarded`, `transient_order`, `resolve_exclusive` | transient layer, rendered last |
 
 Resources are `init_resource`'d in `plugin.rs` and threaded into
 `gardener_console` via the `UiShellParams` SystemParam bundle (all `ResMut`, so
@@ -30,12 +29,17 @@ The single-source data — `TOOL_DEFS`, `shortcut_hint_line`, `active_tool_hint`
 topbar only calls it. The tool-switcher, deselect, and Data/Settings/Maps
 buttons are byte-for-byte the same behavior.
 
-**Section-toggle wiring.** The only current topbar button with a matching
-`RightSidebarSection` variant is **Tools** → `RightSidebarSection::Tool`. It now
-calls `right.toggle(Tool)`, then a **COMPAT SHIM (Phase 2)** mirrors the legacy
-`tool_panel.open` flag from `right.is_active(Tool)` so the still-floating Tools
-window keeps working until Phase 4 removes floating windows. Data/Settings/Maps
-have no section variant and are unchanged.
+**Section-toggle wiring.** The **Tools** button toggles
+`RightSidebarSection::Tool` via `right.toggle(Tool)` — the SOLE reveal path
+(Phase 4 (FR-9) retired the Phase-2 compat shim + the legacy `tool_panel.open`
+flag). Data/Settings/Maps have no section variant and are unchanged.
+
+**Tooltips (FR-8).** Each mode button's hover text comes from
+`toolbar::tool_tooltip_text(def)`, which joins `TOOL_DEFS` (glyph/name/shortcut)
+with `tool_inspector::panel_descriptor` (title/subtitle/Use guidance) into one
+string — so button, shortcut, and description can't drift. The redundant
+`ToolDef.tip` one-liner was removed (its single-source duty moved to
+`panel_descriptor`).
 
 ## §left (FR-5)
 
@@ -78,21 +82,58 @@ also enforces it at the state level: requesting a new section replaces, never
 stacks.
 
 **The section-fn seam (CRITICAL — do not collapse).** There is exactly ONE
-render fn per variant:
+render fn per variant; all five are now filled (the one-fn-per-section split is
+what kept the P4 and P5 slices conflict-free):
 
-| Section | Fn | This phase | Owner |
+| Section | Fn | Content | Landed by |
 | :-- | :-- | :-- | :-- |
-| Inspector | `render_inspector_section` | hosts the moved `inspector::right_inspector` call | (P2) |
-| Tool | `render_tool_section` | calm placeholder | **P5** |
-| PathTools | `render_path_tools_section` | calm placeholder | **P4** |
-| TerrainTools | `render_terrain_tools_section` | calm placeholder | **P4** |
-| ProposalReport | `render_proposal_report_section` | calm placeholder | **P4** |
+| Inspector | `render_inspector_section` | node inspector (`inspector::right_inspector`) | P2 |
+| Tool | `render_tool_section` | live readouts `selection_summary` / `gimbal_affordance_label` / `anchor_readout` — read-only host (no `&mut` path/pen state) | P5 |
+| PathTools | `render_path_tools_section` | path-asset stamp + pen + shape tools (ex-"Tools" window) | P4 |
+| TerrainTools | `render_terrain_tools_section` | 8-mode palette + proposals (ex-"Terrain Tools" window) | P4 |
+| ProposalReport | `render_proposal_report_section` | proposal report body (ex-"Proposal Report" window) | P4 |
 
-Downstream slices fill their own fn's body and MUST NOT merge fns together — the
-one-fn-per-section split is what keeps P4 and P5 conflict-free. The four
-placeholders share `section_placeholder` (rail + a single calm hint line, never
-blank — `ui_ux.md §7`); replace the whole fn body when filling. The Inspector
-section delegates to `inspector::right_inspector` (which still owns its own
-SidePanel + self-collapse); Phase 4 folds that SidePanel under this manager.
-Portal-open swaps the whole right region to `portal_toolbar::right_portal_toolbar`
-(preserved).
+Migrated tool sections keep their logic + tests verbatim and their authority
+rules (path/stamp sections key ONLY on `PathEditorState.editing_track_id`, never
+`NodeManager.selected` — NFR-1). Portal-open swaps the whole right region to
+`portal_toolbar::right_portal_toolbar` (preserved). Empty states are calm hints,
+never blank (`ui_ux.md §7`).
+
+## §modal (FR-7) — transient layer + panel panic guard
+
+`modal.rs` owns the transient layer (dialogs, context menu, toast) and the
+panel panic guard. It is CALLED FROM `gardener_console` (never a standalone
+system — NFR-4).
+
+**Panic guard.** `guarded(state, name, f)` runs each panel body inside
+`catch_unwind(AssertUnwindSafe(f))`:
+- **release:** a panic is caught → `tracing::error!` → the panel is marked
+  disabled-for-session (`disabled_panels`) → `last_error` set → the frame
+  completes. An already-disabled panel is skipped (not re-run).
+- **debug (`cfg(debug_assertions)`):** the panic RE-PROPAGATES so developers
+  crash loudly (RATIFIED Q-5).
+- `AssertUnwindSafe` is sound by construction: `f` is a generic `FnOnce() -> R`,
+  so no raw `&mut` egui borrow escapes; the guarded state is exactly what the
+  guard quarantines.
+- Surfaced UX (Q-5): a persistent status-bar Error-tier chip (`status_bar.rs`
+  reads `last_error`), no auto-clear on petal switch.
+
+**⚠ `panic = "abort"` caveat.** `Cargo.toml [profile.release]` sets
+`panic = "abort"`, under which `catch_unwind` is INERT — the shipped release
+binary will NOT quarantine a panicking panel. The guard is live only under
+`panic = "unwind"` (tests force this; debug re-propagates by design). Making
+FR-7 actually shield in-app requires flipping the release profile to
+`panic = "unwind"` (workspace-wide) — a pending user decision. FR-1
+(root-causing the terrain crash) remains the primary remedy regardless.
+
+**Transient order.** `transient_order()` = Dialog → ContextMenu → Toast (toast
+topmost); `TransientVisibility::resolve_exclusive()` keeps at most one dialog
+family visible with toast independent. Rendered LAST in the pass so layering is
+preserved.
+
+**Guard granularity.** `gardener_console` guards each top-level render call
+(topbar/left/right/viewport/each dialog/context-menu/toast/gis). The
+right-sidebar guard is coarse — a panic in any one section quarantines all five
+for the session (per-section granularity is a noted follow-up, would need the
+guard threaded into `right_sidebar.rs`). `status_bar` is deliberately NOT
+guarded (it hosts the error chip).

@@ -246,7 +246,9 @@ mod tests {
             HitTarget::GimbalAxis,
             HitTarget::Node(Entity::from_bits(1)),
             HitTarget::Stamp(Entity::from_bits(2)),
-            HitTarget::TerrainProposal { id: "p".to_string() },
+            HitTarget::TerrainProposal {
+                id: "p".to_string(),
+            },
             HitTarget::TerrainCell,
             HitTarget::Empty,
         ];

@@ -170,25 +170,26 @@ pub fn gardener_console(
         )
     });
 
-    let viewport_response = egui::CentralPanel::default()
-        .frame(egui::Frame::NONE)
-        .show(ctx, |ui| {
-            // Guarded INSIDE the `.show` closure so a panic doesn't unwind
-            // through `CentralPanel::show` — the returned rect stays valid.
-            let _ = guarded(modal, "viewport", || {
-                crate::viewport::viewport_overlay(
-                    ui,
-                    nav,
-                    node_mgr,
-                    hierarchy,
-                    db_tx,
-                    dashboard,
-                    cursor_world,
-                    ui_mgr,
-                    local_role,
-                );
+    let viewport_response =
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                // Guarded INSIDE the `.show` closure so a panic doesn't unwind
+                // through `CentralPanel::show` — the returned rect stays valid.
+                let _ = guarded(modal, "viewport", || {
+                    crate::viewport::viewport_overlay(
+                        ui,
+                        nav,
+                        node_mgr,
+                        hierarchy,
+                        db_tx,
+                        dashboard,
+                        cursor_world,
+                        ui_mgr,
+                        local_role,
+                    );
+                });
             });
-        });
 
     // Transient overlay layer (FR-7/Q-5): dialogs, context menu, toast, LAST
     // in the pass so they layer on top (behavior-preserving vs. today).

@@ -164,7 +164,11 @@ pub(super) fn handle_path_segment_interaction(
     match nearest_segment(&pts, ray.origin, *ray.direction, half_width) {
         Some(index) => {
             if matches!(
-                resolve_operation(tool.active_tool, &kind, HitTarget::PathSegment { idx: index }),
+                resolve_operation(
+                    tool.active_tool,
+                    &kind,
+                    HitTarget::PathSegment { idx: index }
+                ),
                 Operation::SelectSegment { .. }
             ) {
                 // A marker pick (PathMarker) or gimbal already claimed → claim

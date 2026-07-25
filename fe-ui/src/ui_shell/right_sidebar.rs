@@ -1,13 +1,13 @@
 //! Right-sidebar area manager (FR-6): the single right region, one section at a
-//! time (RATIFIED Q-2). `active_section` precedence is portal > explicit toggle
-//! > selection-default; the Inspector is the never-blank fallback. There is ONE
-//! render fn per section variant. Phase 4 (FR-9) filled PathTools/TerrainTools/
-//! ProposalReport by dissolving the three floating windows into this region
-//! (bodies delegate to pure helpers still homed in `panels::{tool_panel,
-//! terrain_tools_panel, proposal_report_panel}`); Phase 5 (FR-8) fills the
-//! `Tool` section with the retired left tool-inspector panel's live readouts
-//! (delegates to pure helpers homed in `panels::tool_inspector`). All five
-//! sections are filled. See `fe-ui/src/ui_shell/AGENTS.md` §right.
+//! time (RATIFIED Q-2). `active_section` precedence is portal, then explicit
+//! toggle, then selection-default; the Inspector is the never-blank fallback.
+//! There is ONE render fn per section variant. Phase 4 (FR-9) filled
+//! PathTools/TerrainTools/ProposalReport by dissolving the three floating
+//! windows into this region (bodies delegate to pure helpers still homed in
+//! `panels::{tool_panel, terrain_tools_panel, proposal_report_panel}`); Phase 5
+//! (FR-8) fills the `Tool` section with the retired left tool-inspector panel's
+//! live readouts (delegates to pure helpers homed in `panels::tool_inspector`).
+//! All five sections are filled. See `fe-ui/src/ui_shell/AGENTS.md` §right.
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
@@ -18,7 +18,8 @@ use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 use crate::node_manager::{project_selection, NodeManager};
 use crate::panels::tool_inspector::{
-    anchor_readout, fresh_path_selection, gimbal_affordance_label, selection_summary,
+    anchor_readout, fresh_path_selection, gimbal_affordance_label, panel_descriptor,
+    selection_summary,
 };
 use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::{
@@ -144,21 +145,12 @@ pub fn render_right_sidebar(
         Some(RightSidebarSection::Tool) => {
             render_tool_section(ctx, state, tool, node_mgr, path_state)
         }
-        Some(RightSidebarSection::PathTools) => render_path_tools_section(
-            ctx,
-            state,
-            tool_panel_state,
-            ui_mgr,
-            path_state,
-            hierarchy,
-        ),
-        Some(RightSidebarSection::TerrainTools) => render_terrain_tools_section(
-            ctx,
-            state,
-            tool_panel_state,
-            ui_mgr,
-            proposal_state,
-        ),
+        Some(RightSidebarSection::PathTools) => {
+            render_path_tools_section(ctx, state, tool_panel_state, ui_mgr, path_state, hierarchy)
+        }
+        Some(RightSidebarSection::TerrainTools) => {
+            render_terrain_tools_section(ctx, state, tool_panel_state, ui_mgr, proposal_state)
+        }
         Some(RightSidebarSection::ProposalReport) => {
             render_proposal_report_section(ctx, state, proposal_state, world_scale)
         }
@@ -251,6 +243,21 @@ fn render_tool_section(
                     .small()
                     .color(theme::TEXT_STRONG),
             );
+        }
+        // FR-6: the active tool's per-tool settings. Typed models
+        // (SnapSettings/TransformConstraints) are P2 backlog; shown as calm
+        // "(soon)" hints so the section is never blank (`ui_ux.md §7`).
+        let settings = panel_descriptor(tool.active_tool).settings_zone;
+        if !settings.is_empty() {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("SETTINGS")
+                    .small()
+                    .color(theme::TEXT_SECTION),
+            );
+            for line in settings {
+                ui.label(egui::RichText::new(*line).small().color(theme::TEXT_MUTED));
+            }
         }
     });
 }
@@ -381,8 +388,7 @@ fn section_rail(ui: &mut egui::Ui, state: &mut RightSidebarState) {
             let active = state.is_active(section);
             if ui
                 .add(
-                    egui::Button::new(glyph)
-                        .fill(crate::panels::toolbar::mode_button_fill(active)),
+                    egui::Button::new(glyph).fill(crate::panels::toolbar::mode_button_fill(active)),
                 )
                 .on_hover_text(section_label(section))
                 .clicked()
