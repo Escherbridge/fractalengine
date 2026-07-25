@@ -1,0 +1,16 @@
+{
+  "id": "stamped_asset_nodes_20260725",
+  "description": "Stamped path assets become individually addressable nodes (D-A5): position locked to and following the actual curve (not the flattened polyline), per-stamp scale+rotation overrides with free translate disabled, backed by GPU instancing + spatial pick so tens of thousands stay smooth (D-A6). Consumes the node spine's promotion + reflow lifecycle. Owns fe-terrain mesh/{curve,track,marker} + stamp materializer, fe-renderer loader/ingester/viewport + new instancing.rs, and the fe-ui path-tools section content.",
+  "type": "feature",
+  "created_at": "2026-07-25T00:00:00Z",
+  "status": "pending",
+  "alignment": "P1 BUILDER UX — Spatial Builder Program (grilling 2026-07-25, D-A5/D-A6). Directly addresses in-app QA asks #1 (select stamps individually, scale/rotate, lock position) and #2 (stamps don't follow curves). Wave 1.",
+  "depends_on": ["node_lifecycle_addressing_20260725"],
+  "blocks": [],
+  "notes": [
+    "2026-07-25: created from in-app QA. FR-1 curve-follow fixes the reported 'stamps don't follow curved paths' (stamps space on the flattened polyline; must sample the bezier at correct arc-length + true tangent). FR-2/3 make each stamp an individually addressable node (T1 lazy promotion) with scale+rotate overrides and free-translate disabled (position path-derived). FR-4 GPU instancing + spatial pick for the tens-of-thousands ceiling (D-A6). FR-5 delete→path re-flow consumes T1 FR-2.",
+    "Depends on node_lifecycle_addressing (promotion FR-5, address FR-4, reflow event FR-2). File partition: owns fe-terrain mesh/{curve,track,marker} + stamp materializer (actions/asset.rs, actions/path.rs), fe-renderer {loader,ingester,viewport}.rs + new instancing.rs, fe-ui path-tools SECTION CONTENT only (NOT right_sidebar.rs — that seam is shell_ux_sidebar's). Disjoint from sculpt_earthwork within fe-terrain/fe-renderer → Wave 1 parallel.",
+    "Open Qs: Q-1 slide-along-path affordance (allow 1-D slide — recommended), Q-2 promotion granularity (per-stamp on select — recommended), Q-3 override precedence (per-stamp wins — recommended), Q-4 tangent default (keep OFF but fix to curve tangent — recommended).",
+    "N-1 CRITICAL: all stamp geometry in raw petal-local meters, no world_scale (2026-07-19 ribbon regression precedent). NOT started. /slice deferred per user."
+  ]
+}

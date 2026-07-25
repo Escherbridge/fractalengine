@@ -1,0 +1,16 @@
+{
+  "id": "contextual_controls_20260725",
+  "description": "Object-aware right-click context menu whose verbs depend on the hit target (empty ground / node / stamp / path / path point / earthwork region), replacing the thin create-node/place-asset menu. Ships the missing Delete wired to the node spine's tombstone+cascade+re-flow (fixes the 'no way to remove a node / empty husk' bug) plus duplicate, rename, edit-properties, promote-to-node, and copy-API-string / report / query verbs. Menu-first per D-A9; radial deferred. Owns fe-ui ui_shell/modal.rs + dialogs/{context_menu,node_options}.rs.",
+  "type": "feature",
+  "created_at": "2026-07-25T00:00:00Z",
+  "status": "pending",
+  "alignment": "P1 BUILDER UX — Spatial Builder Program (grilling 2026-07-25, D-A9). Addresses in-app QA ask #2 (right-click options need delete + comprehensive context-specific controls). Wave 1.",
+  "depends_on": ["node_lifecycle_addressing_20260725"],
+  "blocks": [],
+  "notes": [
+    "2026-07-25: created from in-app QA ask #2. FR-1 object-aware menu built from the existing HitTarget/Operation dispatch classification. FR-2 Delete wired to T1 tombstone+cascade (with child-count confirm) — this is the real fix for 'no way to remove a node' + 'removing properties leaves an empty node' (clear-props is a distinct verb; delete removes). FR-3 duplicate/rename/edit-props/promote-to-node/copy-API/report. FR-4 copy-API + report call a T5 seam; disabled-with-hint until T5 lands (no silent failure, ui_ux §6).",
+    "depends_on node_lifecycle_addressing (delete FR-1, cascade FR-2, promote FR-5). COORDINATES endpoint_api_surface (the copy-API-string/report seam). File partition: owns fe-ui ui_shell/modal.rs + dialogs/{context_menu,node_options}.rs — disjoint from shell_ux_sidebar (shell seam), stamped_asset_nodes (path section), sculpt_earthwork_regions (terrain section). Does NOT edit right_sidebar.rs. Wave 1 parallel.",
+    "Open Qs: Q-1 per-type verb sets (recommended defaults enumerated in spec), Q-2 cascade confirm always w/ child count (recommended), Q-3 T5-dependent verbs disabled-with-hint pre-T5 (recommended), Q-4 radial deferred (D-A9, recommended).",
+    "NOT started. /slice deferred per user."
+  ]
+}

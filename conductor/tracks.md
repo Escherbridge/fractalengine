@@ -19,7 +19,7 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
 > (delivered and archived), not a dangling reference — no cross-check needed.
 
-**Open tracks: 27.**
+**Open tracks: 33.**
 
 > **Validation pass 2026-07-19** (5-worker swarm, code-reading + git evidence only —
 > build env memory-blocked, no test execution). Every track's `metadata.json` re-validated
@@ -53,6 +53,96 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 > in-app findings logged** to
 > [ux_qa_review findings](./tracks/ux_qa_review_20260714/findings.md) (viewport
 > point-selection gap, gardener_ui_system terrain crash, sidebar→tooltip).
+
+---
+
+## P0 — Spatial Builder Program (user planning grill 2026-07-25)
+
+Six tracks from the 2026-07-25 planning grilling (12 decision-forcing questions,
+3 rounds). Anchor decision record:
+[./decisions/spatial-builder-program-20260725.md](./decisions/spatial-builder-program-20260725.md)
+(product thesis, register D-A1..A11, shared NFR pool N-1..N-10, and the
+**conflict-free file partition** for `/slice`). **Thesis:** a Cities:Skylines-
+simple spatial *builder* where every artifact is a persistent, addressable,
+real-world-scale data endpoint with a full read/write API — no modes, one shell,
+tool/selection-driven context; the analyst is served by the API/query layer, the
+civil engineer by the to-scale rule. **Wave DAG:** Wave 0 = `node_lifecycle_
+addressing` ‖ `shell_ux_sidebar` (different crates); Wave 1 = `stamped_asset_
+nodes` ‖ `sculpt_earthwork_regions` ‖ `contextual_controls` ‖
+`endpoint_api_surface` (all depend on the spine). **`/slice` deferred by user
+2026-07-25** ("write specs, don't slice yet"); every track is `pending`, NOT
+started.
+
+### [ ] node_lifecycle_addressing — SPINE: tombstone delete + cascade + re-flow, stable addresses, lazy promotion
+
+_Link: [./tracks/node_lifecycle_addressing_20260725/](./tracks/node_lifecycle_addressing_20260725/) · pending · P0 PROGRAM SPINE (Wave 0) · blocks all four Wave-1 tracks_
+
+The data-layer foundation (D-A4/A5/A6/A7). Sync-safe delete (tombstone + cascade
++ path-reflow event, never a raw drop — fixes the "empty husk" bug), a stable
+per-node addressing scheme (substrate for the read/write API + stamp-as-node),
+and a lazy node-promotion primitive so tens-of-thousands of addressable stamp
+nodes stay smooth. Owns `fe-entity-store` / `fe-database` / `fe-policy` /
+`fe-sync` exclusively — zero file overlap, Wave 0 parallel with the shell track.
+
+### [ ] shell_ux_sidebar — Settings & Maps → sidebar sections, user-sticky left sidebar
+
+_Link: [./tracks/shell_ux_sidebar_20260725/](./tracks/shell_ux_sidebar_20260725/) · pending · P1 UX (Wave 0) · continuation of ui_shell_architecture_20260724_
+
+Finishes "no modes, one shell" (D-A1/A10/A11): migrate the Settings + Maps
+(hexon manager) modals into tool-contextual right-sidebar sections like the
+other tools, and make the left sidebar user-driven sticky (open until closed).
+**Owns the fe-ui shell seam** (`ui_shell/{mod,left_sidebar,right_sidebar}.rs`,
+`panels/mod.rs`, `dialogs/{settings,hexon_manager}.rs`) — the section-registry
+owner; Wave-1 tracks route new-section registration through it. The program's
+cheapest, highest-daily-satisfaction track.
+
+### [ ] stamped_asset_nodes — stamps become curve-following addressable nodes with scale/rotate overrides + instancing
+
+_Link: [./tracks/stamped_asset_nodes_20260725/](./tracks/stamped_asset_nodes_20260725/) · pending · P1 BUILDER UX (Wave 1) · depends_on node_lifecycle_addressing_
+
+In-app QA asks #1/#2 (D-A5/A6). Stamps follow the actual curve (not the
+flattened polyline), each is an individually addressable node with per-stamp
+scale + rotation overrides and free-translate disabled (position path-derived),
+backed by GPU instancing + a spatial pick index for the tens-of-thousands
+ceiling. Owns `fe-terrain mesh/{curve,track,marker}` + stamp materializer,
+`fe-renderer {loader,ingester,viewport}` + new `instancing.rs`, and the fe-ui
+path-tools section content (not `right_sidebar.rs`).
+
+### [ ] sculpt_earthwork_regions — brush/shape sculpt tool + reportable cut/fill volume region nodes
+
+_Link: [./tracks/sculpt_earthwork_regions_20260725/](./tracks/sculpt_earthwork_regions_20260725/) · pending · P1 BIM/BUILDER (Wave 1) · depends_on node_lifecycle_addressing_
+
+In-app QA ask #3 (D-A8 + R1Q4). A tactile sculpt tool (brush + defined shapes)
+to select the affected area, and earthwork edits that become persistent
+addressable "modification region" nodes (footprint + material + real-unit
+cut/fill volume via the scale authority) baked into the surface and reportable/
+queryable like any node. First BIM-grade terraforming primitive; layered strata
+is a later phase. Owns `fe-terrain terrain_proposal + mesh/{terrain,interp,skirt}
++ layers` + new sculpt module, `fe-renderer {terrain_overlay,terrain_height}` +
+brush overlay, fe-ui terrain-tools section content + new sculpt panel.
+
+### [ ] contextual_controls — object-aware right-click menu with real Delete + comprehensive verbs
+
+_Link: [./tracks/contextual_controls_20260725/](./tracks/contextual_controls_20260725/) · pending · P1 BUILDER UX (Wave 1) · depends_on node_lifecycle_addressing · coordinates endpoint_api_surface_
+
+In-app QA ask #2 (D-A9). An object-aware context menu (verbs depend on the hit
+target) replacing the thin create-node/place-asset menu; ships the missing
+Delete wired to the spine's tombstone+cascade (fixes "no way to remove a node")
+plus duplicate/rename/edit-props/promote-to-node/copy-API-string/report. Menu-
+first; radial deferred. Owns `fe-ui ui_shell/modal.rs` + `dialogs/{context_menu,
+node_options}.rs`.
+
+### [ ] endpoint_api_surface — every object a read/write API endpoint (+ MCP drive, egress seam)
+
+_Link: [./tracks/endpoint_api_surface_20260725/](./tracks/endpoint_api_surface_20260725/) · pending · P1 DATA/ANALYTICS (Wave 1) · depends_on node_lifecycle_addressing · coordinates contextual_controls_
+
+The "API on every endpoint" idea (D-A4/A3). Every object is a stable public
+endpoint with full read + write (GET data / mutate via the spine's sync-safe
+ops, authorized by fe-policy), exposed over REST + the existing MCP tools so an
+agent/external tool can drive the scene; also emits the copy-API-string / report
+seam the analyst persona and the context menu (T4) consume, and makes stamp +
+region nodes first-class in fe-query. Owns `fe-api/*` + `fe-query/*` +
+`fe-renderer/addressing.rs` — the cleanest-isolated Wave-1 track.
 
 ---
 

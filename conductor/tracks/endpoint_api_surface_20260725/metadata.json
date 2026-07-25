@@ -1,0 +1,16 @@
+{
+  "id": "endpoint_api_surface_20260725",
+  "description": "Every object (node, promoted stamp, earthwork region, path) becomes a stable public endpoint with a full read+write API (D-A4): GET its data + MUTATE it (move/scale/rotate/edit-props/delete/trigger-op) through the node spine's sync-safe ops, authorized by fe-policy, exposed over REST + the existing MCP tools so an external tool/agent can drive the scene. Emits the copy-API-string / report seam the analyst persona and the context menu (T4) consume; makes stamp + region nodes first-class in fe-query. Owns fe-api/* + fe-query/* + fe-renderer/addressing.rs.",
+  "type": "feature",
+  "created_at": "2026-07-25T00:00:00Z",
+  "status": "pending",
+  "alignment": "P1 DATA-LAYER / ANALYTICS — Spatial Builder Program (grilling 2026-07-25, D-A4 + D-A3). The 'API on every endpoint' idea that serves the analyst (egress/query) and civil engineer (queryable real-unit quantities) without a mode, and drives the MCP/agent integration. Extends the BI-egress backbone (roadmap 2026-07-14). Wave 1.",
+  "depends_on": ["node_lifecycle_addressing_20260725"],
+  "blocks": [],
+  "notes": [
+    "2026-07-25: created from the R3Q1 answer 'full read + write API'. FR-1 projects T1's stable address into a public URI (T1 Q-1 assigned the public projection here). FR-2 read + FR-3 write per object; writes go through T1's sync-safe ops (N-4) authorized by fe-policy (N-5) — the API is a client of the same ops the UI uses, never a bypass. FR-4 extends the existing 6 primitives-only MCP tools to per-endpoint CRUD (agent/external drive). FR-5 copy-API-string/report seam serves the analyst (D-A3) and is what T4's copy-API/report verbs call. FR-6 makes promoted stamps + earthwork regions first-class in fe-query (N-10).",
+    "depends_on node_lifecycle_addressing (address FR-4, ops, events FR-6). COORDINATES contextual_controls (provides its FR-5 seam). Reads T2/T3 data SHAPES at integration via the generic node abstraction — does NOT edit T2/T3 files. File partition: owns fe-api/* + fe-query/* + fe-renderer/addressing.rs — the cleanest-isolated Wave-1 track (own crates), fully parallel.",
+    "Open Qs: Q-1 URI scheme (fe://verse/fractal/petal/node human-readable — recommended), Q-2 external/MCP auth (reuse session/relay auth → RoleLevel — recommended), Q-3 read-first then write, both in-track (recommended), Q-4 extend the 6 MCP tools to CRUD (recommended).",
+    "Extends the SQL/API egress backbone; GeoParquet/DataFusion (Phase 6.2) stays deferred. NOT started. /slice deferred per user."
+  ]
+}
