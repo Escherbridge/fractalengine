@@ -11,6 +11,10 @@ use crate::plugin::ViewportRect;
 /// `claim` a frame owns it and lower-priority consumers yield.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub(super) enum ClickPriority {
+    /// Drag a bezier handle marker of the edited track (pen_curve_tool_20260722
+    /// FR-5, ratified Q7): outranks the gimbal arm AND the vertex marker, so an
+    /// overlapping handle + vertex resolves to the handle.
+    PathHandle,
     /// Gimbal axis pick / drag (transform tools).
     Gimbal,
     /// Drag / annotate an existing path-point marker.
@@ -108,8 +112,8 @@ impl ClickArbiter {
         self.cursor
     }
 
-    #[allow(dead_code)]
-    /// Resolved pointer phase for this frame.
+    /// Resolved pointer phase for this frame (consumed by the pen gesture's
+    /// Press/Hold/Release machine — pen_curve_tool_20260722 FR-4).
     pub(super) fn phase(&self) -> PointerPhase {
         self.phase
     }
@@ -118,6 +122,28 @@ impl ClickArbiter {
 // ---------------------------------------------------------------------------
 // System: resolve the per-frame pointer decision (runs before consumers)
 // ---------------------------------------------------------------------------
+
+/// Pure per-frame phase resolution. A press+release coalesced into ONE frame
+/// resolves as Release (drop-the-click) — see AGENTS.md §input-router.
+fn resolve_phase(just_pressed: bool, just_released: bool, held: bool) -> PointerPhase {
+    if just_released {
+        PointerPhase::Release
+    } else if just_pressed {
+        PointerPhase::Press
+    } else if held {
+        PointerPhase::Hold
+    } else {
+        PointerPhase::Hover
+    }
+}
+
+/// Stranded-gesture sweep: a Hover frame means the button is up, so any
+/// surviving drag missed its Release — drop it (never replay it later).
+pub(super) fn sweep_stranded_drag<T>(phase: PointerPhase, active: &mut Option<T>) {
+    if phase == PointerPhase::Hover {
+        *active = None;
+    }
+}
 
 /// First system in the selection chain: recomputes [`ClickArbiter`] for the
 /// frame. Centralizes egui pointer-capture + `ViewportRect` gating so consumer
@@ -133,15 +159,11 @@ pub(super) fn resolve_pointer_frame(
     // Fresh frame: no owner yet.
     arbiter.owner = None;
 
-    arbiter.phase = if mouse_button.just_pressed(MouseButton::Left) {
-        PointerPhase::Press
-    } else if mouse_button.just_released(MouseButton::Left) {
-        PointerPhase::Release
-    } else if mouse_button.pressed(MouseButton::Left) {
-        PointerPhase::Hold
-    } else {
-        PointerPhase::Hover
-    };
+    arbiter.phase = resolve_phase(
+        mouse_button.just_pressed(MouseButton::Left),
+        mouse_button.just_released(MouseButton::Left),
+        mouse_button.pressed(MouseButton::Left),
+    );
 
     let egui_using = egui_ctx
         .ctx_mut()
@@ -209,6 +231,24 @@ mod tests {
     }
 
     #[test]
+    fn handle_claim_outranks_vertex_and_gimbal_in_chain_order() {
+        // pen_curve_tool_20260722 Q7: the handle system runs FIRST in the
+        // chain, so its claim wins over the gimbal arm and the vertex marker.
+        let mut arb = available_arbiter();
+        for who in [
+            ClickPriority::PathHandle,
+            ClickPriority::Gimbal,
+            ClickPriority::PathMarker,
+            ClickPriority::PathPlace,
+            ClickPriority::NodePick,
+        ] {
+            let claimed = arb.claim(who);
+            assert_eq!(claimed, who == ClickPriority::PathHandle, "{who:?}");
+        }
+        assert!(arb.is_owner(ClickPriority::PathHandle));
+    }
+
+    #[test]
     fn node_pick_wins_when_higher_priorities_dont_claim() {
         // Select-mode empty click: gimbal + path-point decline to claim, so the
         // lowest-priority NodePick gets the frame (reproduces the ab9c53c fix).
@@ -250,5 +290,50 @@ mod tests {
     #[test]
     fn default_phase_is_hover() {
         assert_eq!(ClickArbiter::default().phase(), PointerPhase::Hover);
+    }
+
+    #[test]
+    fn same_frame_press_and_release_resolves_as_release() {
+        // A click coalesced into one frame must not report Press — a Press
+        // with no later Release strands the pen/handle drag machines. Release
+        // wins (drop-the-click), whatever the held bit says.
+        assert_eq!(resolve_phase(true, true, false), PointerPhase::Release);
+        assert_eq!(resolve_phase(true, true, true), PointerPhase::Release);
+    }
+
+    #[test]
+    fn resolve_phase_maps_the_plain_cases() {
+        assert_eq!(resolve_phase(true, false, true), PointerPhase::Press);
+        assert_eq!(resolve_phase(false, true, false), PointerPhase::Release);
+        assert_eq!(resolve_phase(false, false, true), PointerPhase::Hold);
+        assert_eq!(resolve_phase(false, false, false), PointerPhase::Hover);
+    }
+
+    #[test]
+    fn hover_sweeps_a_stranded_drag_other_phases_keep_it() {
+        let mut active = Some(42);
+        sweep_stranded_drag(PointerPhase::Press, &mut active);
+        sweep_stranded_drag(PointerPhase::Hold, &mut active);
+        sweep_stranded_drag(PointerPhase::Release, &mut active);
+        assert_eq!(active, Some(42), "live gesture phases never sweep");
+        sweep_stranded_drag(PointerPhase::Hover, &mut active);
+        assert_eq!(active, None, "button-up hover clears the stranded drag");
+    }
+
+    #[test]
+    fn phase_reports_hold_and_release_and_neither_is_fresh_press() {
+        // FR-4: the pen gesture keys its Hold/Release branches on phase().
+        let hold = ClickArbiter {
+            phase: PointerPhase::Hold,
+            ..Default::default()
+        };
+        assert_eq!(hold.phase(), PointerPhase::Hold);
+        assert!(!hold.is_fresh_press());
+        let release = ClickArbiter {
+            phase: PointerPhase::Release,
+            ..Default::default()
+        };
+        assert_eq!(release.phase(), PointerPhase::Release);
+        assert!(!release.is_fresh_press());
     }
 }

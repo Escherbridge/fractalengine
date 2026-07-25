@@ -42,45 +42,57 @@ System functions are `pub(super)` (visible to `mod.rs`'s plugin
 registration only) — this module's public surface is just `NodeManager`
 itself; nothing outside `fe-ui` should call the per-frame systems directly.
 
-## §pen-tool — pen (phase 1 polyline + phase 2 curves/shapes)
+## §pen-tool — pen (phase 1 polyline + phase 2 curves/shapes + bezier anchors)
 
 `Tool::Pen` (`panels/toolbar.rs`, hotkey `P` via `shortcuts.rs`) is the
 click-to-place tool for drawing a track's polyline. Phase 1 places straight-
 segment control points; phase 2 (`curve.rs` + the Tools-panel Pen section)
-resamples them into curves and generates shape rings.
+resamples them into curves and generates shape rings;
+`pen_curve_tool_20260722` (the bezier-anchors subsection below) makes the
+Pen an Illustrator-style per-anchor cubic-bezier curve tool.
 
 - **Gating, not a separate system.** Pen behavior is folded into the
   existing `handle_path_point_interaction` (no new system/registration).
-  The empty-click-on-terrain → `PathAppendPoint` branch claims the router's
-  `PathPlace` priority only when `tool.active_tool == Tool::Pen`; a marker
-  pick claims `PathMarker`, but only in Pen mode (or while a drag is already
-  active) — the system's `if !pen_active && drag.active.is_none() { return; }`
-  guard returns before `pick_marker` runs in Select/Move/Rotate/Scale.
+  An empty press on terrain begins the pen gesture and claims the router's
+  `PathPlace` priority — on the PRESS frame, since the arbiter resets its
+  owner each frame and only the press is contested — but only when
+  `tool.active_tool == Tool::Pen`; a marker pick claims `PathMarker` (Pen
+  mode, Select-while-editing per FR-2, or while a drag is in flight) — the
+  system's `!pen_active && !markers_editable && …no drag in flight…` guard
+  returns before `pick_marker` runs in Move/Rotate/Scale.
   Because `PathPlace` outranks
-  `NodePick`, a Pen-mode empty click wins the frame and node-pick yields;
+  `NodePick`, a Pen-mode empty press wins the frame and node-pick yields;
   in Select mode path-point declines to claim `PathPlace`, so `NodePick`
   gets the click. This structurally reproduces the ab9c53c fix (node
   selection wins in Select mode) — see §input-router.
-- **No new action.** Reuses `UiAction::PathAppendPoint` unchanged; the pen
-  tool only changes *when* a click is allowed to emit it.
+- **Two append actions.** A below-threshold Corner click still emits the
+  legacy `UiAction::PathAppendPoint` unchanged; an anchor that carries
+  bezier fields emits `PathAppendSmoothPoint` (FR-7 — bezier subsection
+  below). The pen decides *which* at Release time, not press time.
 - **Auto-create on the first click** (`pen_autocreate_track_20260713` +
   HIGH-1/HIGH-2 correlation-id hardening). A Pen empty-click with
   `PathEditorState.editing_track_id == None` no longer no-ops: it claims
   `PathPlace` (so `NodePick` still yields), then — because the new track's
   `node_id` doesn't exist until the DB round-trips — generates a fe-ui-side
   correlation id (`gis::next_pen_correlation_id`), stashes
-  `PathEditorState.pending_pen_create` (that id + the click's Y=0 world position)
+  `PathEditorState.pending_pen_create` (that id + the gesture's FULL
+  first-anchor payload: the Y=0 world position PLUS
+  `handle_in`/`handle_out`/`corner`/`smoothness` — the FR-4 must-fix, so a
+  press-drag that STARTS a track keeps its curve through the deferred echo)
   and queues `UiAction::PathCreateTrack { petal_id, "New Path", correlation_id:
-  Some(id) }`. The petal is the active one, sourced from
+  Some(id) }`. The auto-create decision itself now happens at Release (the
+  gesture end), but the no-track gates are ALSO enforced at Press so a doomed
+  gesture never starts. The petal is the active one, sourced from
   `NavigationManager.active_petal_id` exactly like `viewport_pick`; no active
-  petal → keep the no-op (one-line log hint). A second click before the create
+  petal → keep the no-op (one-line log hint). A second press before the create
   resolves is suppressed by the `has_pending_pen_create()` guard. The deferred
   append lands in `verse_manager::db_results` on the track's
   `DbResult::NodeCreated`, matched by the **echoed correlation id**
   (`take_pending_pen_create_if(cid)`) — NOT the old `!has_asset && active-petal`
   content heuristic, which a concurrent GPX-import/dialog create could hijack. On
-  a match it calls `start_editing(new_id)` and pushes the stashed point as the
-  track's first `PathAppendPoint`. The full id threading + the `DbResult::Error`
+  a match it calls `start_editing(new_id)` and pushes the stashed anchor as the
+  track's first append — `PathAppendSmoothPoint` when it carries handles, else
+  the legacy `PathAppendPoint`. The full id threading + the `DbResult::Error`
   cleanup (a failed create clears the pending state so the pen can't go dead) are
   documented in `fe-ui/src/AGENTS.md` §path-editor. Subsequent clicks see
   `editing_track_id == Some` and append through the normal branch — no further
@@ -107,6 +119,105 @@ into `ToolPanelState.pending_actions`, drained in `process_ui_actions` (the
 panel has no `ui_mgr` handle). Both actions re-express their result as the
 existing `RemovePoint`/`AppendPoint` `PathOp`s, so no gpx-bridge change is
 needed — smooth = resample-then-replace, shape = append the generated ring.
+This post-hoc whole-track bake STAYS (ratified Q9) alongside the per-anchor
+bezier model below; deprecation deferred.
+
+### bezier anchors — Illustrator-style curves (`pen_curve_tool_20260722`, phases 1/3-6)
+
+All decision logic is pure + unit-tested; geometry stays raw petal-local
+meters (no `world_scale`, NFR-1); every mutation targets `PathEditorState` +
+queued `UiAction`s (Authority B — `NodeManager.selected` is never touched,
+NFR-2, `ui_ux.md §5`).
+
+- **Anchor model (FR-1).** `PathPointRow` (`gis/mod.rs`) carries
+  `handle_in`/`handle_out: Option<[f32;3]>` (RELATIVE meter offsets from
+  `position`, so `MovePoint` rides them for free), `corner: CornerKind`
+  (`Corner`/`Smooth`/`Symmetric` — a fe-ui-LOCAL enum, deliberately never
+  shared with fe-terrain's twin, NFR-4; `to_code`/`from_code` maps it to the
+  wire's `corner_code` float) and `smoothness: f32` (0..1). The ops seam is
+  `PathOp::{AppendSmoothPoint, SetAnchorHandles, SetAnchorCorner}` (FR-7)
+  with matching `UiAction`s + local-echo handlers in `actions/path.rs`;
+  persistence is the mixed 4/12-slot `gpx_points` encoding
+  (`fractalengine/src/AGENTS.md` §gpx); render/pick flattening is
+  fe-terrain's `flatten_route` (`fe-terrain/src/mesh/AGENTS.md` §curve).
+- **Press/Hold/Release gesture (FR-4).** The old press-time append became a
+  release-time decision, keyed on `arbiter.phase()` (`router.rs` — its
+  previously dead `phase()` is now consumed). Press claims `PathPlace` and
+  captures the anchor into the `PenHandleDrag` resource (mirror of
+  `PathPointDrag`); Hold updates `drag_vec` from the y=0 ray hit and
+  observes Alt (`pen_observe_alt`: the FIRST mid-drag Alt freezes `−drag_vec`
+  as `frozen_in`; Alt already down at press sets `alt_seen` with NO frozen
+  value); Release runs the pure `pen_release_decision(drag_vec, alt_seen,
+  frozen_in, default_kind, PEN_DRAG_THRESHOLD_M = 0.15 m)`: below threshold
+  ⇒ `Corner` (legacy append) or `SmoothClick` per the tool-level default
+  `ToolPanelState.pen_new_anchor_kind`; at/above without Alt ⇒
+  `SymmetricDrag` (`handle_out = drag`, `handle_in = −drag`, kind
+  Symmetric); at/above with Alt ⇒ the **ratified-Q8 combination anchor** —
+  `handle_out` = final drag, `handle_in` = the frozen symmetric value
+  (`None` when Alt was held from the press), kind Corner — preserving the
+  just-drawn segment's curvature WITHOUT retro-mutating the previous anchor
+  (full Illustrator behavior). `pen_anchor_fields` maps the decision to the
+  row's bezier fields; `SmoothClick` derives collinear handles via
+  `curve::derive_symmetric_handles` (direction `normalize(next − prev)` with
+  missing-endpoint neighbor duplication, length `smoothness · ⅓ ·
+  min-neighbor-gap`), falling back to the plain corner append on a first
+  anchor with no tangent.
+- **Gesture cancellation safety (post-review hardening).** Both drag
+  machines capture their press-time context and validate it at Release
+  instead of re-reading mutable state: `PenHandleDragState` carries
+  `press_track_id`/`press_petal_id`, resolved by the pure
+  `pen_gesture_fate` (track changed ⇒ Drop; auto-create fires only when it
+  was intended at press AND the petal is unchanged — a staged-Escape
+  `stop_editing`, track delete, or petal change mid-hold can therefore
+  never auto-create a spurious track from a canceled anchor);
+  `PathHandleDragState` carries `press_track_id` and commits only while it
+  still equals `editing_track_id`. This is deliberately release-time
+  validation rather than clearing the drag resources from
+  `PathEditorState::stop_editing` — that method is a plain struct fn called
+  from panel code (`path_editor_card` Back, `shortcuts` Escape,
+  `actions`, `db_results`) with no access to the ECS drag resources, and
+  press-context validation covers every cancellation path uniformly.
+- **Stored smoothness = geometry truth.** Every commit that writes handles
+  also stores the smoothness READBACK (`gis::smoothness_readback`,
+  `|handle_out| / (⅓ · min-neighbor-gap)` clamped 0..1): drag-created pen
+  anchors (`pen_anchor_fields`) and handle-drag releases
+  (`commit_smoothness`), falling back to the prior value only when no
+  neighbor gap exists (first anchor of a new track). This keeps the Q5
+  slider from seeding 0.00 on a visibly-round anchor and from collapsing
+  the curve on its first nudge; the card-side seed rule is
+  `fe-ui/src/AGENTS.md` §path-editor.
+- **Viewport handle editing (FR-5, `path_handle_interaction.rs`).** One cyan
+  billboard quad (`PathHandleMarker { index, side }`, `dispatch::HandleSide::
+  {In, Out}`) per `Some` handle side of the edited track, at `anchor +
+  offset`; membership-keyed despawn-all rebuild + idle-only position sync
+  (`sync_path_handle_markers` — a live drag owns the dragged anchor's marker
+  transforms); Illustrator-style anchor→handle stems via `draw_handle_stems`
+  (gizmo lines, draws only). Picking uses the SAME along-ray
+  `PICK_RADIUS = 0.7` test as vertex markers (pure core
+  `pick_nearest_handle`), and the system runs FIRST in the `.chain()`,
+  claiming the top-rank `ClickPriority::PathHandle` — handle > vertex >
+  gimbal by first-claim-wins construction (ratified Q7). The
+  `MARKER_BODY_RADIUS = 0.7` vertex-body yield is untouched; radius equality
+  is unit-tested so an overlapping handle + vertex resolves purely by chain
+  order. Drag discipline is pure: `disciplined_opposite` (Symmetric =
+  equal-and-opposite mirror; Smooth = collinear direction, opposite keeps
+  its OWN length; Corner = independent; a missing opposite is never
+  fabricated) plus a one-way Alt-break (`handle_observe_alt` freezes the
+  opposite at its live disciplined value and demotes the gesture to Corner;
+  Alt-at-press keeps the STORED opposite). Release commits ONE
+  `PathSetAnchorHandles` (skipped when unmoved, mirroring the gimbal's no-op
+  skip) plus `PathSetAnchorCorner(Corner)` on an Alt-break. Handles are a
+  `HitTarget`, not a `SelectionKind` — the lone-vertex/segment "grab it
+  wherever it's shown" gimbal arms are untouched (see §dispatch).
+- **Read-only vs editable Pen affordance split (NFR-6).**
+  `tool_inspector.rs` stays read-only BY CONSTRUCTION (its panel signature
+  is unchanged): it renders the pure `anchor_readout` line ("Anchor #3:
+  Smooth, smoothness 0.50") under the selection summary
+  (`panels/AGENTS.md` §tool-inspector). Everything EDITABLE lives where
+  `&mut` already flows: the per-anchor corner-settings card in
+  `path_editor_card.rs` (FR-6/Q5 — `fe-ui/src/AGENTS.md` §path-editor) and
+  the tool-level new-anchor default `pen_new_anchor_kind` in
+  `tool_panel.rs` (`panels/AGENTS.md` §tool-panel).
 
 ## §path-points — viewport path-point editor
 
@@ -328,6 +439,7 @@ ownership instead of racing ad-hoc booleans (replaces the old
 
   | Priority      | Consumer system                     | Claims when                          |
   | ------------- | ----------------------------------- | ------------------------------------ |
+  | `PathHandle`  | `handle_path_handle_interaction` (pen_curve_tool_20260722 FR-5, ratified Q7 — runs first) | press picks a bezier-handle marker of the edited track (see §pen-tool) |
   | `Gimbal`      | `handle_path_gimbal_drag` (FR-3 vertex/segment, runs first) → `handle_gimbal_interaction` (entity) | press hits a gimbal axis |
   | `PathMarker`  | `handle_path_point_interaction`     | press picks an existing marker (Pen mode, Select-while-editing per FR-2, or while a drag is active) |
   | `PathPlace`   | `handle_path_point_interaction`     | Pen-mode empty click on terrain      |
@@ -355,6 +467,14 @@ ownership instead of racing ad-hoc booleans (replaces the old
   (`NodeSelection.drag` / `is_dragging()`) and path-point keeps `PathPointDrag`;
   the router only arbitrates the PRESS-time ownership contest. Hover detection
   (`update_hovered_axis`) is ambient and claims nothing.
+- **Same-frame press+release coalesces to Release** (`resolve_phase`): a
+  fast click landing in one frame previously reported `Press` with no later
+  `Release`, permanently stranding the pen/handle drag machines (the stale
+  state replayed on the NEXT unrelated click as a phantom anchor / corner
+  set). Release-wins restores the pre-restructure drop-the-click semantics.
+  As a second net, `sweep_stranded_drag` clears any live pen/handle/marker
+  drag on a Hover frame — the button being up with a drag active can only
+  mean its Release was missed.
 
 ## §selection-read-model — typed selection facade (`selection.rs`)
 
@@ -400,10 +520,12 @@ object type?", and the headroom for the "more operations on left click" ask. It
 does NOT replace `router.rs`'s first-claim-wins arbitration (§input-router): the
 per-frame consumer systems still own the PRESS contest; the table is the shared
 decision model they (and the FR-3 drag) consult. `HitTarget` is the raw pick
-result (`Empty`/`Node`/`PathVertex`/`PathSegment`/`Stamp`/`TerrainProposal`/
-`TerrainCell`/`GimbalAxis`); `Operation` is the resolved verb (`SelectNode`/
+result (`Empty`/`Node`/`PathVertex`/`PathHandle`/`PathSegment`/`Stamp`/
+`TerrainProposal`/`TerrainCell`/`GimbalAxis`); `Operation` is the resolved verb
+(`SelectNode`/
 `SelectVertex`/`SelectSegment`/`SelectStamp`/`SelectProposal`/`PlacePathPoint`/
-`PlaceNode`/`BeginGimbalDrag`/`MoveVertex`/`MoveSegment`/`TerrainCellEdit`/
+`PlaceNode`/`BeginGimbalDrag`/`MoveVertex`/`MoveSegment`/`MoveHandle`/
+`TerrainCellEdit`/
 `Deselect`/`None`). Resolution is **hit-first**, modulated by tool/selection only
 where intent changes: Pen keeps placing a point even over a grazed node; a
 gimbal-axis press drags the current selection. Per the ratified decision
@@ -414,6 +536,17 @@ handle, so it must always be grabbable); an entity-backed selection (node / stam
 (`Move`/`Rotate`/`Scale`), matching the entity gimbal that stays closed in
 Select/Pen. WHEN a given hit can occur is the router's gate, not the table's
 concern — the table stays decoupled from the per-tool pick guards.
+
+**Handle variants (pen_curve_tool_20260722 FR-5).** `HitTarget::PathHandle
+{ idx, side }` (`HandleSide::{In, Out}`) resolves to `Operation::MoveHandle
+{ idx, side }` in EVERY tool, selection-independent — like vertices, WHEN a
+handle is pickable is the claiming system's gate (`path_handle_interaction.rs`,
+§pen-tool), not the table's. `MoveHandle` is position-free (like `MoveVertex`;
+consumers compute positions), preserving the `Operation` `Eq` derive. Handles
+are a `HitTarget` only — never a `SelectionKind` — so `resolve_gimbal`'s
+lone-vertex/segment "grab it wherever it's shown" arms are untouched; the
+claim ordering (handle > vertex > gimbal, ratified Q7) lives in the router
+chain, not here.
 
 **FR-3 gimbal drag (`path_gimbal_drag.rs`).** A selected path vertex/segment has
 NO entity, so it can't reuse `handle_gimbal_interaction`'s entity-`Transform`

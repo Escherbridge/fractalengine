@@ -141,6 +141,58 @@ impl CornerKind {
             _ => Self::Corner,
         }
     }
+    /// UI label (corner toggle, Pen default picker, inspector readout).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Corner => "Corner",
+            Self::Smooth => "Smooth",
+            Self::Symmetric => "Symmetric",
+        }
+    }
+}
+
+/// Handle-length fraction of the min neighbor gap at smoothness 1 (~1/3, the
+/// classic cubic tangent — mirrors `node_manager::curve::derive_symmetric_handles`).
+pub(crate) const SMOOTHNESS_K: f32 = 1.0 / 3.0;
+
+/// Smaller of the two neighbor gaps around an anchor, meters — the length
+/// basis shared by `curve::derive_symmetric_handles`. `None` when no neighbor
+/// exists. Pure.
+pub(crate) fn min_neighbor_gap_m(
+    prev: Option<[f32; 3]>,
+    cur: [f32; 3],
+    next: Option<[f32; 3]>,
+) -> Option<f32> {
+    let dist = |a: [f32; 3], b: [f32; 3]| {
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    };
+    match (prev.map(|p| dist(p, cur)), next.map(|n| dist(cur, n))) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Ratified Q5 readback: approximate smoothness of the stored handles —
+/// `|handle_out| / (k · min gap)` clamped 0..1 (falls back to `handle_in`
+/// when out is absent; 0 with no handles or no usable gap). Inverse of
+/// `curve::derive_symmetric_handles`' length rule; the value every commit
+/// stores so the scalar tracks geometry truth (see `fe-ui/src/AGENTS.md`
+/// §path-editor). Pure.
+pub(crate) fn smoothness_readback(
+    handle_in: Option<[f32; 3]>,
+    handle_out: Option<[f32; 3]>,
+    min_gap_m: Option<f32>,
+) -> f32 {
+    let Some(h) = handle_out.or(handle_in) else {
+        return 0.0;
+    };
+    let Some(gap) = min_gap_m.filter(|g| *g > 1e-6) else {
+        return 0.0;
+    };
+    let len = (h[0].powi(2) + h[1].powi(2) + h[2].powi(2)).sqrt();
+    (len / (SMOOTHNESS_K * gap)).clamp(0.0, 1.0)
 }
 
 /// A single point in the track currently being edited. `time_seconds` is
@@ -394,15 +446,17 @@ impl PathEditorState {
     }
 
     /// If a Pen auto-create is pending AND `correlation_id` matches it, consume
-    /// it (clearing the flag) and return its stashed first point. Returns `None`
-    /// on a mismatch or when nothing is pending — so a foreign `NodeCreated`
-    /// (GPX import, create-entity dialog) can never flush the pen point onto the
-    /// wrong node. See `pen_autocreate_track_20260713` + AGENTS.md §path-editor.
-    pub(crate) fn take_pending_pen_create_if(&mut self, correlation_id: &str) -> Option<[f32; 3]> {
+    /// it (clearing the flag) and return the stashed create payload (first
+    /// anchor + its bezier fields). Returns `None` on a mismatch or when nothing
+    /// is pending — so a foreign `NodeCreated` (GPX import, create-entity
+    /// dialog) can never flush the pen point onto the wrong node. See
+    /// `pen_autocreate_track_20260713` + AGENTS.md §path-editor.
+    pub(crate) fn take_pending_pen_create_if(
+        &mut self,
+        correlation_id: &str,
+    ) -> Option<PendingPenCreate> {
         match &self.pending_pen_create {
-            Some(p) if p.correlation_id == correlation_id => {
-                self.pending_pen_create.take().map(|p| p.first_point)
-            }
+            Some(p) if p.correlation_id == correlation_id => self.pending_pen_create.take(),
             _ => None,
         }
     }
@@ -421,10 +475,17 @@ impl PathEditorState {
 /// position to flush once the track's `node_id` arrives. Matching the flush on
 /// `correlation_id` — not on node content — is what makes the deferred flush
 /// hijack-proof. See `fe-ui/src/AGENTS.md` §path-editor.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PendingPenCreate {
     pub correlation_id: String,
     pub first_point: [f32; 3],
+    /// pen_curve_tool_20260722 (FR-4 must-fix): the first anchor's bezier
+    /// fields, so a press-drag that STARTS a track keeps its handles through
+    /// the deferred `NodeCreated` echo.
+    pub handle_in: Option<[f32; 3]>,
+    pub handle_out: Option<[f32; 3]>,
+    pub corner: CornerKind,
+    pub smoothness: f32,
 }
 
 /// Process-unique correlation id for a Pen auto-created track. fe-ui-side twin
@@ -458,6 +519,20 @@ mod tests {
         gis.center_bbox_on([10.0, 20.0], 5.0);
         assert_eq!(parse_bbox_fields(&gis.bbox_min), Some([5.0, 15.0]));
         assert_eq!(parse_bbox_fields(&gis.bbox_max), Some([15.0, 25.0]));
+    }
+
+    #[test]
+    fn corner_kind_labels_are_distinct() {
+        // pen_curve_tool_20260722 (FR-6): one label per kind, no collisions.
+        let labels = [
+            CornerKind::Corner.label(),
+            CornerKind::Smooth.label(),
+            CornerKind::Symmetric.label(),
+        ];
+        let mut sorted = labels.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), labels.len(), "duplicate labels: {labels:?}");
     }
 
     #[test]
@@ -633,18 +708,40 @@ mod tests {
         s.pending_pen_create = Some(PendingPenCreate {
             correlation_id: "pen-track:7".to_string(),
             first_point: [3.0, 0.0, 4.0],
+            ..Default::default()
         });
         assert!(s.has_pending_pen_create());
         assert_eq!(
-            s.take_pending_pen_create_if("pen-track:7"),
+            s.take_pending_pen_create_if("pen-track:7")
+                .map(|p| p.first_point),
             Some([3.0, 0.0, 4.0])
         );
         assert!(!s.has_pending_pen_create(), "match clears the flag");
-        assert_eq!(
-            s.take_pending_pen_create_if("pen-track:7"),
-            None,
+        assert!(
+            s.take_pending_pen_create_if("pen-track:7").is_none(),
             "second take yields None"
         );
+    }
+
+    #[test]
+    fn take_pending_pen_create_preserves_first_anchor_handles() {
+        // pen_curve_tool_20260722 (FR-4 must-fix): a press-drag that STARTS a
+        // track stashes the first anchor's handles; the NodeCreated flush must
+        // get them back intact.
+        let mut s = PathEditorState::default();
+        s.pending_pen_create = Some(PendingPenCreate {
+            correlation_id: "pen-track:9".to_string(),
+            first_point: [1.0, 0.0, 2.0],
+            handle_in: Some([-0.5, 0.0, 0.0]),
+            handle_out: Some([0.5, 0.0, 0.0]),
+            corner: CornerKind::Symmetric,
+            smoothness: 0.0,
+        });
+        let pen = s.take_pending_pen_create_if("pen-track:9").unwrap();
+        assert_eq!(pen.first_point, [1.0, 0.0, 2.0]);
+        assert_eq!(pen.handle_in, Some([-0.5, 0.0, 0.0]));
+        assert_eq!(pen.handle_out, Some([0.5, 0.0, 0.0]));
+        assert_eq!(pen.corner, CornerKind::Symmetric);
     }
 
     #[test]
@@ -656,10 +753,10 @@ mod tests {
         s.pending_pen_create = Some(PendingPenCreate {
             correlation_id: "pen-track:2".to_string(),
             first_point: [1.0, 0.0, 1.0],
+            ..Default::default()
         });
-        assert_eq!(
-            s.take_pending_pen_create_if("authored-track:0"),
-            None,
+        assert!(
+            s.take_pending_pen_create_if("authored-track:0").is_none(),
             "mismatch never flushes"
         );
         assert!(
@@ -668,7 +765,8 @@ mod tests {
         );
         // The correct id still flushes it afterwards.
         assert_eq!(
-            s.take_pending_pen_create_if("pen-track:2"),
+            s.take_pending_pen_create_if("pen-track:2")
+                .map(|p| p.first_point),
             Some([1.0, 0.0, 1.0])
         );
     }
@@ -681,8 +779,11 @@ mod tests {
         s.pending_pen_create = Some(PendingPenCreate {
             correlation_id: "pen-track:0".to_string(),
             first_point: [1.0, 0.0, 1.0],
+            ..Default::default()
         });
-        let flushed = s.take_pending_pen_create_if("pen-track:0");
+        let flushed = s
+            .take_pending_pen_create_if("pen-track:0")
+            .map(|p| p.first_point);
         s.start_editing("auto-track".to_string());
         assert_eq!(flushed, Some([1.0, 0.0, 1.0]));
         assert_eq!(s.editing_track_id.as_deref(), Some("auto-track"));
@@ -702,6 +803,7 @@ mod tests {
         s.pending_pen_create = Some(PendingPenCreate {
             correlation_id: "pen-track:1".to_string(),
             first_point: [2.0, 0.0, 2.0],
+            ..Default::default()
         });
         assert!(
             s.clear_pending_pen_create(),
@@ -718,6 +820,7 @@ mod tests {
         s.pending_pen_create = Some(PendingPenCreate {
             correlation_id: "pen-track:3".to_string(),
             first_point: [2.0, 0.0, 2.0],
+            ..Default::default()
         });
         s.stop_editing();
         assert!(!s.has_pending_pen_create());

@@ -321,6 +321,40 @@ fn json_to_route_points(value: &serde_json::Value) -> Vec<TimestampedRoutePoint>
         .unwrap_or_default()
 }
 
+/// Widen a fe-ui smooth-anchor op payload (f32 + corner code) into the
+/// bridge's route point (pen_curve_tool_20260722 Phase 3).
+fn smooth_anchor_point(
+    position: [f32; 3],
+    handle_in: Option<[f32; 3]>,
+    handle_out: Option<[f32; 3]>,
+    corner_code: f64,
+    smoothness: f32,
+) -> TimestampedRoutePoint {
+    let widen = |h: [f32; 3]| [h[0] as f64, h[1] as f64, h[2] as f64];
+    TimestampedRoutePoint {
+        position: widen(position),
+        time_seconds: 0.0,
+        handle_in: handle_in.map(widen),
+        handle_out: handle_out.map(widen),
+        corner: CornerKind::from_code(corner_code),
+        smoothness,
+    }
+}
+
+/// Apply a `SetAnchorHandles` payload to an existing point in place —
+/// position/timestamp/corner untouched (pen_curve_tool_20260722 Phase 3).
+fn apply_anchor_handles(
+    point: &mut TimestampedRoutePoint,
+    handle_in: Option<[f32; 3]>,
+    handle_out: Option<[f32; 3]>,
+    smoothness: f32,
+) {
+    let widen = |h: [f32; 3]| [h[0] as f64, h[1] as f64, h[2] as f64];
+    point.handle_in = handle_in.map(widen);
+    point.handle_out = handle_out.map(widen);
+    point.smoothness = smoothness;
+}
+
 /// Populate `TrackRouteMap` for `track_node_id` and (re)spawn its
 /// `GpxTrackLine` entity. Used only by the import path, which never has a
 /// pre-existing render entity (`existing_entity` is always `None` there); live
@@ -914,12 +948,29 @@ enum PendingPathRead {
         position: [f32; 3],
         time_seconds: Option<f64>,
     },
+    AppendSmoothPoint {
+        position: [f32; 3],
+        handle_in: Option<[f32; 3]>,
+        handle_out: Option<[f32; 3]>,
+        corner_code: f64,
+        smoothness: f32,
+    },
     RemovePoint {
         index: usize,
     },
     MovePoint {
         index: usize,
         position: [f32; 3],
+    },
+    SetAnchorHandles {
+        index: usize,
+        handle_in: Option<[f32; 3]>,
+        handle_out: Option<[f32; 3]>,
+        smoothness: f32,
+    },
+    SetAnchorCorner {
+        index: usize,
+        corner_code: f64,
     },
     AnnotatePoint {
         index: usize,
@@ -930,6 +981,66 @@ enum PendingPathRead {
     ExportGpx {
         save_path: std::path::PathBuf,
     },
+}
+
+/// Apply a queued append read (plain or smooth) onto the working point list —
+/// no-op for non-append variants (callers match those separately).
+fn push_append_read(points: &mut Vec<TimestampedRoutePoint>, read: PendingPathRead) {
+    match read {
+        PendingPathRead::AppendPoint {
+            position,
+            time_seconds,
+        } => points.push(TimestampedRoutePoint {
+            position: [position[0] as f64, position[1] as f64, position[2] as f64],
+            time_seconds: time_seconds.unwrap_or(0.0),
+            ..Default::default()
+        }),
+        PendingPathRead::AppendSmoothPoint {
+            position,
+            handle_in,
+            handle_out,
+            corner_code,
+            smoothness,
+        } => points.push(smooth_anchor_point(
+            position,
+            handle_in,
+            handle_out,
+            corner_code,
+            smoothness,
+        )),
+        _ => {}
+    }
+}
+
+/// Drain queued append reads onto `points` in queue order, hoisting them past
+/// in-place entries (Move/SetAnchor*/Annotate/Export — appends only touch the
+/// list tail, so existing indices are undisturbed) but stopping at the first
+/// `RemovePoint`: the one index-shifting variant, whose own un-deduped read
+/// reply resumes the drain. Returns how many appends were applied. Closes the
+/// reply-count deficit where seed-deduped appends queued behind a Set/Move had
+/// no reply left to pop them (see src/AGENTS.md §gpx-points-wire-format).
+fn drain_queued_appends(
+    queue: &mut VecDeque<PendingPathRead>,
+    points: &mut Vec<TimestampedRoutePoint>,
+) -> usize {
+    let mut applied = 0;
+    let mut kept: VecDeque<PendingPathRead> = VecDeque::with_capacity(queue.len());
+    let mut barrier = false;
+    for read in queue.drain(..) {
+        let is_append = matches!(
+            read,
+            PendingPathRead::AppendPoint { .. } | PendingPathRead::AppendSmoothPoint { .. }
+        );
+        if is_append && !barrier {
+            push_append_read(points, read);
+            applied += 1;
+        } else {
+            barrier |= matches!(read, PendingPathRead::RemovePoint { .. });
+            kept.push_back(read);
+        }
+    }
+    *queue = kept;
+    applied
 }
 
 /// A `CreateTrack` node's `CreateNode` was sent; once `NodeCreated` arrives,
@@ -1229,6 +1340,163 @@ pub fn drain_path_ops(
                         .push_back(PendingPathRead::MovePoint { index, position });
                 }
             }
+            PathOp::AppendSmoothPoint {
+                track_node_id,
+                position,
+                handle_in,
+                handle_out,
+                corner_code,
+                smoothness,
+            } => {
+                // Phase 3: same FR-5 direct-mutate vs seed-read split as AppendPoint.
+                if let Some(points) = pending.in_flight_points.get_mut(&track_node_id) {
+                    points.push(smooth_anchor_point(
+                        position,
+                        handle_in,
+                        handle_out,
+                        corner_code,
+                        smoothness,
+                    ));
+                    let points = points.clone();
+                    persist_and_render_points(
+                        &db_tx,
+                        &mut route_map,
+                        &mut meshes,
+                        &mut materials,
+                        &track_lines,
+                        &single_nodes,
+                        &active_petal_id,
+                        &mut commands,
+                        &track_node_id,
+                        points,
+                    );
+                    *status = PathEditStatus {
+                        track_node_id: Some(track_node_id),
+                        message: Some("Point added".to_string()),
+                        error: None,
+                    };
+                } else {
+                    if pending.seed_pending.insert(track_node_id.clone()) {
+                        db_tx
+                            .0
+                            .send(DbCommand::GetNodeProperties {
+                                node_id: track_node_id.clone(),
+                            })
+                            .ok();
+                    }
+                    pending.reads.entry(track_node_id).or_default().push_back(
+                        PendingPathRead::AppendSmoothPoint {
+                            position,
+                            handle_in,
+                            handle_out,
+                            corner_code,
+                            smoothness,
+                        },
+                    );
+                }
+            }
+            PathOp::SetAnchorHandles {
+                track_node_id,
+                index,
+                handle_in,
+                handle_out,
+                smoothness,
+            } => {
+                // Phase 3: same FR-5 buffer-first split as MovePoint — mutate the
+                // anchor's bezier fields in place, position/timestamp untouched.
+                if let Some(points) = pending.in_flight_points.get_mut(&track_node_id) {
+                    if let Some(point) = points.get_mut(index) {
+                        apply_anchor_handles(point, handle_in, handle_out, smoothness);
+                        let points = points.clone();
+                        persist_and_render_points(
+                            &db_tx,
+                            &mut route_map,
+                            &mut meshes,
+                            &mut materials,
+                            &track_lines,
+                            &single_nodes,
+                            &active_petal_id,
+                            &mut commands,
+                            &track_node_id,
+                            points,
+                        );
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: Some("Handles set".to_string()),
+                            error: None,
+                        };
+                    } else {
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some(format!("point index {index} out of range")),
+                        };
+                    }
+                } else {
+                    db_tx
+                        .0
+                        .send(DbCommand::GetNodeProperties {
+                            node_id: track_node_id.clone(),
+                        })
+                        .ok();
+                    pending.reads.entry(track_node_id).or_default().push_back(
+                        PendingPathRead::SetAnchorHandles {
+                            index,
+                            handle_in,
+                            handle_out,
+                            smoothness,
+                        },
+                    );
+                }
+            }
+            PathOp::SetAnchorCorner {
+                track_node_id,
+                index,
+                corner_code,
+            } => {
+                // Phase 3: same FR-5 buffer-first split as MovePoint.
+                if let Some(points) = pending.in_flight_points.get_mut(&track_node_id) {
+                    if let Some(point) = points.get_mut(index) {
+                        point.corner = CornerKind::from_code(corner_code);
+                        let points = points.clone();
+                        persist_and_render_points(
+                            &db_tx,
+                            &mut route_map,
+                            &mut meshes,
+                            &mut materials,
+                            &track_lines,
+                            &single_nodes,
+                            &active_petal_id,
+                            &mut commands,
+                            &track_node_id,
+                            points,
+                        );
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: Some("Corner set".to_string()),
+                            error: None,
+                        };
+                    } else {
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some(format!("point index {index} out of range")),
+                        };
+                    }
+                } else {
+                    db_tx
+                        .0
+                        .send(DbCommand::GetNodeProperties {
+                            node_id: track_node_id.clone(),
+                        })
+                        .ok();
+                    pending
+                        .reads
+                        .entry(track_node_id)
+                        .or_default()
+                        .push_back(PendingPathRead::SetAnchorCorner { index, corner_code });
+                }
+            }
             PathOp::AnnotatePoint {
                 track_node_id,
                 index,
@@ -1463,41 +1731,21 @@ pub fn advance_path_edits(
                 };
 
                 match action {
-                    PendingPathRead::AppendPoint {
-                        position,
-                        time_seconds,
-                    } => {
-                        points.push(TimestampedRoutePoint {
-                            position: [position[0] as f64, position[1] as f64, position[2] as f64],
-                            time_seconds: time_seconds.unwrap_or(0.0),
-                            ..Default::default()
-                        });
+                    append_read @ (PendingPathRead::AppendPoint { .. }
+                    | PendingPathRead::AppendSmoothPoint { .. }) => {
+                        push_append_read(&mut points, append_read);
                         // FR-5: this is the seed read — hand off authority to
-                        // in_flight_points so any AppendPoint queued while
+                        // in_flight_points so any append queued while
                         // this read was outstanding (or arriving after) uses
                         // the direct-mutate path instead of another
                         // GetNodeProperties race.
-                        // Drain any appends that piggy-backed on this one seed
-                        // read (dedup in drain suppressed their own reads), so
-                        // no confirmed append is lost when several overlap.
+                        // Drain any appends (plain or smooth) that piggy-backed
+                        // on this one seed read (dedup in drain suppressed their
+                        // own reads) — including ones queued BEHIND an in-place
+                        // Set/Move entry, which the old front-contiguous pop
+                        // stranded forever (see `drain_queued_appends`).
                         if let Some(queue) = pending.reads.get_mut(node_id) {
-                            while let Some(PendingPathRead::AppendPoint { .. }) = queue.front() {
-                                if let Some(PendingPathRead::AppendPoint {
-                                    position,
-                                    time_seconds,
-                                }) = queue.pop_front()
-                                {
-                                    points.push(TimestampedRoutePoint {
-                                        position: [
-                                            position[0] as f64,
-                                            position[1] as f64,
-                                            position[2] as f64,
-                                        ],
-                                        time_seconds: time_seconds.unwrap_or(0.0),
-                                        ..Default::default()
-                                    });
-                                }
-                            }
+                            drain_queued_appends(queue, &mut points);
                         }
                         pending
                             .in_flight_points
@@ -1530,6 +1778,18 @@ pub fn advance_path_edits(
                         continue;
                     }
                     PendingPathRead::RemovePoint { index } => {
+                        let in_range = index < points.len();
+                        if in_range {
+                            points.remove(index);
+                        }
+                        // Drain seed-deduped appends stranded behind this reply
+                        // (even when the remove itself errored — the appends
+                        // are valid regardless). See `drain_queued_appends`.
+                        let drained = pending
+                            .reads
+                            .get_mut(node_id)
+                            .map(|q| drain_queued_appends(q, &mut points))
+                            .unwrap_or(0);
                         if pending
                             .reads
                             .get(node_id)
@@ -1538,8 +1798,7 @@ pub fn advance_path_edits(
                         {
                             pending.reads.remove(node_id);
                         }
-                        if index < points.len() {
-                            points.remove(index);
+                        if in_range || drained > 0 {
                             // Keep FR-5's authoritative buffer in sync so a
                             // subsequent AppendPoint doesn't resurrect the
                             // just-removed point from a stale in_flight_points.
@@ -1558,20 +1817,37 @@ pub fn advance_path_edits(
                                 node_id,
                                 points,
                             );
-                            *status = PathEditStatus {
+                        }
+                        *status = if in_range {
+                            PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: Some("Point removed".to_string()),
                                 error: None,
-                            };
+                            }
                         } else {
-                            *status = PathEditStatus {
+                            PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: None,
                                 error: Some(format!("point index {index} out of range")),
-                            };
-                        }
+                            }
+                        };
                     }
                     PendingPathRead::MovePoint { index, position } => {
+                        let moved = if let Some(point) = points.get_mut(index) {
+                            // Reposition only; preserve the existing timestamp (no index churn).
+                            point.position =
+                                [position[0] as f64, position[1] as f64, position[2] as f64];
+                            true
+                        } else {
+                            false
+                        };
+                        // Drain seed-deduped appends stranded behind this reply
+                        // (see `drain_queued_appends`).
+                        let drained = pending
+                            .reads
+                            .get_mut(node_id)
+                            .map(|q| drain_queued_appends(q, &mut points))
+                            .unwrap_or(0);
                         if pending
                             .reads
                             .get(node_id)
@@ -1580,10 +1856,7 @@ pub fn advance_path_edits(
                         {
                             pending.reads.remove(node_id);
                         }
-                        if let Some(point) = points.get_mut(index) {
-                            // Reposition only; preserve the existing timestamp (no index churn).
-                            point.position =
-                                [position[0] as f64, position[1] as f64, position[2] as f64];
+                        if moved || drained > 0 {
                             // Keep FR-5's authoritative buffer in sync so a later
                             // AppendPoint doesn't rebuild from a stale in_flight_points.
                             pending
@@ -1601,25 +1874,42 @@ pub fn advance_path_edits(
                                 node_id,
                                 points,
                             );
-                            *status = PathEditStatus {
+                        }
+                        *status = if moved {
+                            PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: Some("Point moved".to_string()),
                                 error: None,
-                            };
+                            }
                         } else {
-                            *status = PathEditStatus {
+                            PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: None,
                                 error: Some(format!("point index {index} out of range")),
-                            };
-                        }
+                            }
+                        };
                     }
-                    PendingPathRead::AnnotatePoint {
+                    PendingPathRead::SetAnchorHandles {
                         index,
-                        title,
-                        body,
-                        color,
+                        handle_in,
+                        handle_out,
+                        smoothness,
                     } => {
+                        // Phase 3: mirror MovePoint's deferred arm — bezier
+                        // fields only, buffer kept in sync.
+                        let applied = if let Some(point) = points.get_mut(index) {
+                            apply_anchor_handles(point, handle_in, handle_out, smoothness);
+                            true
+                        } else {
+                            false
+                        };
+                        // Drain seed-deduped appends stranded behind this reply
+                        // (see `drain_queued_appends`).
+                        let drained = pending
+                            .reads
+                            .get_mut(node_id)
+                            .map(|q| drain_queued_appends(q, &mut points))
+                            .unwrap_or(0);
                         if pending
                             .reads
                             .get(node_id)
@@ -1628,7 +1918,141 @@ pub fn advance_path_edits(
                         {
                             pending.reads.remove(node_id);
                         }
-                        let Some(point) = points.get(index) else {
+                        if applied || drained > 0 {
+                            pending
+                                .in_flight_points
+                                .insert(node_id.clone(), points.clone());
+                            persist_and_render_points(
+                                &db_tx,
+                                &mut route_map,
+                                &mut meshes,
+                                &mut materials,
+                                &track_lines,
+                                &single_nodes,
+                                &active_petal_id,
+                                &mut commands,
+                                node_id,
+                                points,
+                            );
+                        }
+                        *status = if applied {
+                            PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: Some("Handles set".to_string()),
+                                error: None,
+                            }
+                        } else {
+                            PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: None,
+                                error: Some(format!("point index {index} out of range")),
+                            }
+                        };
+                    }
+                    PendingPathRead::SetAnchorCorner { index, corner_code } => {
+                        // Phase 3: mirror MovePoint's deferred arm.
+                        let applied = if let Some(point) = points.get_mut(index) {
+                            point.corner = CornerKind::from_code(corner_code);
+                            true
+                        } else {
+                            false
+                        };
+                        // Drain seed-deduped appends stranded behind this reply
+                        // (see `drain_queued_appends`).
+                        let drained = pending
+                            .reads
+                            .get_mut(node_id)
+                            .map(|q| drain_queued_appends(q, &mut points))
+                            .unwrap_or(0);
+                        if pending
+                            .reads
+                            .get(node_id)
+                            .map(|q| q.is_empty())
+                            .unwrap_or(true)
+                        {
+                            pending.reads.remove(node_id);
+                        }
+                        if applied || drained > 0 {
+                            pending
+                                .in_flight_points
+                                .insert(node_id.clone(), points.clone());
+                            persist_and_render_points(
+                                &db_tx,
+                                &mut route_map,
+                                &mut meshes,
+                                &mut materials,
+                                &track_lines,
+                                &single_nodes,
+                                &active_petal_id,
+                                &mut commands,
+                                node_id,
+                                points,
+                            );
+                        }
+                        *status = if applied {
+                            PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: Some("Corner set".to_string()),
+                                error: None,
+                            }
+                        } else {
+                            PathEditStatus {
+                                track_node_id: Some(node_id.clone()),
+                                message: None,
+                                error: Some(format!("point index {index} out of range")),
+                            }
+                        };
+                    }
+                    PendingPathRead::AnnotatePoint {
+                        index,
+                        title,
+                        body,
+                        color,
+                    } => {
+                        // Snapshot the anchor BEFORE the drain — the annotate's
+                        // index carries issue-time semantics (appends queued
+                        // after it must not widen its valid range).
+                        let anchor = points.get(index).map(|p| {
+                            [
+                                p.position[0] as f32,
+                                p.position[1] as f32,
+                                p.position[2] as f32,
+                            ]
+                        });
+                        // Drain seed-deduped appends stranded behind this reply
+                        // BEFORE the error-path `continue`s below (see
+                        // `drain_queued_appends`).
+                        let drained = pending
+                            .reads
+                            .get_mut(node_id)
+                            .map(|q| drain_queued_appends(q, &mut points))
+                            .unwrap_or(0);
+                        if pending
+                            .reads
+                            .get(node_id)
+                            .map(|q| q.is_empty())
+                            .unwrap_or(true)
+                        {
+                            pending.reads.remove(node_id);
+                        }
+                        if drained > 0 {
+                            pending
+                                .in_flight_points
+                                .insert(node_id.clone(), points.clone());
+                            persist_and_render_points(
+                                &db_tx,
+                                &mut route_map,
+                                &mut meshes,
+                                &mut materials,
+                                &track_lines,
+                                &single_nodes,
+                                &active_petal_id,
+                                &mut commands,
+                                node_id,
+                                points,
+                            );
+                        }
+                        let Some(position) = anchor else {
                             *status = PathEditStatus {
                                 track_node_id: Some(node_id.clone()),
                                 message: None,
@@ -1651,11 +2075,6 @@ pub fn advance_path_edits(
                             };
                             continue;
                         };
-                        let position = [
-                            point.position[0] as f32,
-                            point.position[1] as f32,
-                            point.position[2] as f32,
-                        ];
                         let key = (petal_id.clone(), title.clone());
                         db_tx
                             .0
@@ -1673,14 +2092,6 @@ pub fn advance_path_edits(
                             .push_back(PendingAnnotateCreate { title, body, color });
                     }
                     PendingPathRead::ExportGpx { save_path } => {
-                        if pending
-                            .reads
-                            .get(node_id)
-                            .map(|q| q.is_empty())
-                            .unwrap_or(true)
-                        {
-                            pending.reads.remove(node_id);
-                        }
                         let export_node = ExportNode {
                             node_id: node_id.clone(),
                             name: node_id.clone(),
@@ -1711,6 +2122,39 @@ pub fn advance_path_edits(
                                     error: Some(format!("write failed: {e}")),
                                 };
                             }
+                        }
+                        // Drain seed-deduped appends stranded behind this reply
+                        // (the export above snapshots issue-time points; see
+                        // `drain_queued_appends`).
+                        let drained = pending
+                            .reads
+                            .get_mut(node_id)
+                            .map(|q| drain_queued_appends(q, &mut points))
+                            .unwrap_or(0);
+                        if pending
+                            .reads
+                            .get(node_id)
+                            .map(|q| q.is_empty())
+                            .unwrap_or(true)
+                        {
+                            pending.reads.remove(node_id);
+                        }
+                        if drained > 0 {
+                            pending
+                                .in_flight_points
+                                .insert(node_id.clone(), points.clone());
+                            persist_and_render_points(
+                                &db_tx,
+                                &mut route_map,
+                                &mut meshes,
+                                &mut materials,
+                                &track_lines,
+                                &single_nodes,
+                                &active_petal_id,
+                                &mut commands,
+                                node_id,
+                                points,
+                            );
                         }
                     }
                 }
@@ -2063,6 +2507,338 @@ mod tests {
             CornerKind::Corner,
             "malformed smooth-with-no-handles normalizes to Corner"
         );
+    }
+
+    // pen_curve_tool_20260722 Phase 3: op-payload widening + read-modify-write
+    // round-trips through the 4/12-slot codec.
+    #[test]
+    fn smooth_anchor_point_widens_payload_and_maps_corner_code() {
+        let p = smooth_anchor_point(
+            [1.0, 2.0, 3.0],
+            Some([-0.5, 0.0, 0.25]),
+            Some([0.5, 0.0, -0.25]),
+            2.0,
+            0.75,
+        );
+        assert_eq!(p.position, [1.0, 2.0, 3.0]);
+        assert!(
+            p.time_seconds.abs() < f64::EPSILON,
+            "authored anchor has t=0"
+        );
+        assert_eq!(p.handle_in, Some([-0.5, 0.0, 0.25]));
+        assert_eq!(p.handle_out, Some([0.5, 0.0, -0.25]));
+        assert_eq!(p.corner, CornerKind::Symmetric);
+        assert!((p.smoothness - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn append_smooth_persist_reload_preserves_handles() {
+        // Simulates the AppendSmoothPoint arm's mutation + persist + reload.
+        let points = vec![smooth_anchor_point(
+            [1.0, 0.0, 2.0],
+            Some([-0.5, 0.0, 0.0]),
+            Some([0.5, 0.0, 0.0]),
+            2.0,
+            0.0,
+        )];
+        let back = json_to_route_points(&route_points_to_json(&points));
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].position, [1.0, 0.0, 2.0]);
+        assert_eq!(back[0].handle_in, Some([-0.5, 0.0, 0.0]));
+        assert_eq!(back[0].handle_out, Some([0.5, 0.0, 0.0]));
+        assert_eq!(back[0].corner, CornerKind::Symmetric);
+    }
+
+    #[test]
+    fn set_anchor_handles_on_legacy_row_round_trips() {
+        // Decode a legacy 4-slot list, apply the SetAnchorHandles mutation to
+        // row 0, re-encode: it grows to 12-slot; untouched rows stay compact
+        // (NFR-3: no intermediate lengths, timestamps preserved).
+        let json = serde_json::json!([[0.0, 0.0, 0.0, 1.0], [4.0, 0.0, 0.0, 2.0]]);
+        let mut points = json_to_route_points(&json);
+        apply_anchor_handles(
+            &mut points[0],
+            Some([-1.0, 0.0, 0.0]),
+            Some([1.0, 0.0, 0.0]),
+            0.25,
+        );
+        let encoded = route_points_to_json(&points);
+        let rows = encoded.as_array().unwrap();
+        assert_eq!(rows[0].as_array().unwrap().len(), 12);
+        assert_eq!(
+            rows[1].as_array().unwrap().len(),
+            4,
+            "untouched legacy row stays compact"
+        );
+        let back = json_to_route_points(&encoded);
+        assert_eq!(back[0].handle_in, Some([-1.0, 0.0, 0.0]));
+        assert_eq!(back[0].handle_out, Some([1.0, 0.0, 0.0]));
+        assert!((back[0].smoothness - 0.25).abs() < f32::EPSILON);
+        assert!(
+            (back[0].time_seconds - 1.0).abs() < f64::EPSILON,
+            "t preserved"
+        );
+        assert!(back[1].handle_in.is_none() && back[1].handle_out.is_none());
+    }
+
+    #[test]
+    fn set_anchor_corner_round_trips_alongside_handles() {
+        let mut points = vec![smooth_anchor_point(
+            [0.0, 0.0, 0.0],
+            Some([-1.0, 0.0, 0.0]),
+            Some([1.0, 0.0, 0.0]),
+            2.0,
+            0.0,
+        )];
+        // The SetAnchorCorner arm's mutation: corner only.
+        points[0].corner = CornerKind::from_code(1.0);
+        let back = json_to_route_points(&route_points_to_json(&points));
+        assert_eq!(back[0].corner, CornerKind::Smooth);
+        assert_eq!(
+            back[0].handle_out,
+            Some([1.0, 0.0, 0.0]),
+            "handles untouched"
+        );
+    }
+
+    #[test]
+    fn move_point_rides_relative_handles() {
+        // The MovePoint arm rewrites position ONLY — relative handles, corner
+        // and smoothness survive the mutation + persist round-trip (FR-7).
+        let mut points = vec![smooth_anchor_point(
+            [1.0, 0.0, 1.0],
+            Some([-0.5, 0.0, 0.0]),
+            Some([0.5, 0.0, 0.0]),
+            2.0,
+            0.5,
+        )];
+        points[0].position = [9.0, 0.0, 9.0];
+        let back = json_to_route_points(&route_points_to_json(&points));
+        assert_eq!(back[0].position, [9.0, 0.0, 9.0]);
+        assert_eq!(back[0].handle_in, Some([-0.5, 0.0, 0.0]));
+        assert_eq!(back[0].handle_out, Some([0.5, 0.0, 0.0]));
+        assert_eq!(back[0].corner, CornerKind::Symmetric);
+        assert!((back[0].smoothness - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn push_append_read_handles_both_variants() {
+        // The unified deferred-append drain applies plain and smooth reads alike.
+        let mut points = Vec::new();
+        push_append_read(
+            &mut points,
+            PendingPathRead::AppendPoint {
+                position: [1.0, 0.0, 1.0],
+                time_seconds: None,
+            },
+        );
+        push_append_read(
+            &mut points,
+            PendingPathRead::AppendSmoothPoint {
+                position: [2.0, 0.0, 2.0],
+                handle_in: None,
+                handle_out: Some([0.5, 0.0, 0.0]),
+                corner_code: 0.0,
+                smoothness: 0.0,
+            },
+        );
+        assert_eq!(points.len(), 2);
+        assert!(points[0].is_plain_corner());
+        assert_eq!(points[1].handle_out, Some([0.5, 0.0, 0.0]));
+        assert_eq!(points[1].corner, CornerKind::Corner);
+        // Non-append reads are a no-op (callers match them separately).
+        push_append_read(&mut points, PendingPathRead::RemovePoint { index: 0 });
+        assert_eq!(points.len(), 2);
+    }
+
+    // Reply-count deficit repro (pen_curve review): AppendPoint sends ONE seed
+    // read; SetAnchor*/MovePoint each send their own read; a later append is
+    // seed-deduped (no read). Queue [Append, Set*, AppendSmooth] therefore gets
+    // TWO replies for THREE entries — reply 1 must hoist the trailing append
+    // past the in-place entry or it is stranded forever (silent point loss).
+    #[test]
+    fn deferred_drain_rescues_append_stranded_behind_set_corner() {
+        let mut queue: VecDeque<PendingPathRead> = VecDeque::new();
+        queue.push_back(PendingPathRead::AppendPoint {
+            position: [1.0, 0.0, 1.0],
+            time_seconds: None,
+        });
+        queue.push_back(PendingPathRead::SetAnchorCorner {
+            index: 0,
+            corner_code: 1.0,
+        });
+        queue.push_back(PendingPathRead::AppendSmoothPoint {
+            position: [2.0, 0.0, 2.0],
+            handle_in: Some([-0.5, 0.0, 0.0]),
+            handle_out: Some([0.5, 0.0, 0.0]),
+            corner_code: 2.0,
+            smoothness: 0.5,
+        });
+
+        // Empty DB base; reply 1 pops the seed append then drains the queue.
+        let mut points: Vec<TimestampedRoutePoint> = Vec::new();
+        push_append_read(&mut points, queue.pop_front().unwrap());
+        assert_eq!(drain_queued_appends(&mut queue, &mut points), 1);
+        assert_eq!(points.len(), 2, "trailing append hoisted past the Set");
+
+        // Reply 2 pops the Set and applies it against the seeded buffer.
+        match queue.pop_front().unwrap() {
+            PendingPathRead::SetAnchorCorner { index, corner_code } => {
+                points[index].corner = CornerKind::from_code(corner_code);
+            }
+            _ => panic!("expected SetAnchorCorner at the front"),
+        }
+        assert_eq!(drain_queued_appends(&mut queue, &mut points), 0);
+        assert!(queue.is_empty(), "no stranded reads after the last reply");
+
+        // All three ops applied, in issue order.
+        assert_eq!(points[0].position, [1.0, 0.0, 1.0]);
+        assert_eq!(points[0].corner, CornerKind::Smooth);
+        assert_eq!(points[1].position, [2.0, 0.0, 2.0]);
+        assert_eq!(points[1].handle_out, Some([0.5, 0.0, 0.0]));
+        // ...and the full list persists in order through the wire format.
+        let back = json_to_route_points(&route_points_to_json(&points));
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].position, [1.0, 0.0, 1.0]);
+        assert_eq!(back[1].position, [2.0, 0.0, 2.0]);
+        assert_eq!(back[1].corner, CornerKind::Symmetric);
+    }
+
+    #[test]
+    fn deferred_drain_rescues_append_stranded_behind_move_point() {
+        // Same deficit shape with MovePoint as the middle op (the pre-Phase-3
+        // reachable variant).
+        let mut queue: VecDeque<PendingPathRead> = VecDeque::new();
+        queue.push_back(PendingPathRead::AppendPoint {
+            position: [1.0, 0.0, 1.0],
+            time_seconds: None,
+        });
+        queue.push_back(PendingPathRead::MovePoint {
+            index: 0,
+            position: [9.0, 0.0, 9.0],
+        });
+        queue.push_back(PendingPathRead::AppendSmoothPoint {
+            position: [2.0, 0.0, 2.0],
+            handle_in: None,
+            handle_out: Some([0.5, 0.0, 0.0]),
+            corner_code: 1.0,
+            smoothness: 0.0,
+        });
+
+        let mut points: Vec<TimestampedRoutePoint> = Vec::new();
+        push_append_read(&mut points, queue.pop_front().unwrap());
+        assert_eq!(drain_queued_appends(&mut queue, &mut points), 1);
+        assert_eq!(points.len(), 2);
+
+        match queue.pop_front().unwrap() {
+            PendingPathRead::MovePoint { index, position } => {
+                points[index].position =
+                    [position[0] as f64, position[1] as f64, position[2] as f64];
+            }
+            _ => panic!("expected MovePoint at the front"),
+        }
+        assert_eq!(drain_queued_appends(&mut queue, &mut points), 0);
+        assert!(queue.is_empty());
+
+        // Move hit the FIRST append (index 0), not the hoisted tail.
+        assert_eq!(points[0].position, [9.0, 0.0, 9.0]);
+        assert_eq!(points[1].position, [2.0, 0.0, 2.0]);
+        let back = json_to_route_points(&route_points_to_json(&points));
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].position, [9.0, 0.0, 9.0]);
+        assert_eq!(back[1].position, [2.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn drain_stops_at_remove_point_and_resumes_on_its_own_reply() {
+        // RemovePoint is index-shifting, so appends must NOT hoist past it —
+        // its own (never seed-deduped) read reply applies it, then resumes.
+        let mut queue: VecDeque<PendingPathRead> = VecDeque::new();
+        queue.push_back(PendingPathRead::AppendPoint {
+            position: [1.0, 0.0, 0.0],
+            time_seconds: None,
+        });
+        queue.push_back(PendingPathRead::RemovePoint { index: 0 });
+        queue.push_back(PendingPathRead::AppendSmoothPoint {
+            position: [3.0, 0.0, 0.0],
+            handle_in: None,
+            handle_out: None,
+            corner_code: 0.0,
+            smoothness: 0.0,
+        });
+
+        // DB base has one pre-existing point (the Remove's target).
+        let mut points = vec![TimestampedRoutePoint {
+            position: [0.0, 0.0, 0.0],
+            ..Default::default()
+        }];
+        // Reply 1 (seed read): pops the append; drain halts at the Remove.
+        push_append_read(&mut points, queue.pop_front().unwrap());
+        assert_eq!(drain_queued_appends(&mut queue, &mut points), 0);
+        assert_eq!(queue.len(), 2, "Remove + trailing append still queued");
+        assert_eq!(points.len(), 2);
+
+        // Reply 2 (the Remove's own read): pops it, applies, resumes the drain.
+        match queue.pop_front().unwrap() {
+            PendingPathRead::RemovePoint { index } => {
+                assert!(index < points.len());
+                points.remove(index);
+            }
+            _ => panic!("expected RemovePoint at the front"),
+        }
+        assert_eq!(drain_queued_appends(&mut queue, &mut points), 1);
+        assert!(queue.is_empty());
+        assert_eq!(points.len(), 2);
+        assert_eq!(
+            points[0].position,
+            [1.0, 0.0, 0.0],
+            "base removed, first append kept"
+        );
+        assert_eq!(points[1].position, [3.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn drain_queued_appends_hoists_past_in_place_ops_preserving_their_order() {
+        let mut queue: VecDeque<PendingPathRead> = VecDeque::new();
+        queue.push_back(PendingPathRead::SetAnchorHandles {
+            index: 0,
+            handle_in: None,
+            handle_out: Some([1.0, 0.0, 0.0]),
+            smoothness: 0.0,
+        });
+        queue.push_back(PendingPathRead::AppendPoint {
+            position: [1.0, 0.0, 0.0],
+            time_seconds: None,
+        });
+        queue.push_back(PendingPathRead::AnnotatePoint {
+            index: 0,
+            title: "t".into(),
+            body: "b".into(),
+            color: "#ffffffff".into(),
+        });
+        queue.push_back(PendingPathRead::AppendSmoothPoint {
+            position: [2.0, 0.0, 0.0],
+            handle_in: None,
+            handle_out: None,
+            corner_code: 0.0,
+            smoothness: 0.0,
+        });
+
+        let mut points = vec![TimestampedRoutePoint::default()];
+        assert_eq!(drain_queued_appends(&mut queue, &mut points), 2);
+        // Both appends extracted in queue order; in-place entries kept in order.
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[1].position, [1.0, 0.0, 0.0]);
+        assert_eq!(points[2].position, [2.0, 0.0, 0.0]);
+        assert_eq!(queue.len(), 2);
+        assert!(matches!(
+            queue.pop_front(),
+            Some(PendingPathRead::SetAnchorHandles { .. })
+        ));
+        assert!(matches!(
+            queue.pop_front(),
+            Some(PendingPathRead::AnnotatePoint { .. })
+        ));
     }
 
     #[test]

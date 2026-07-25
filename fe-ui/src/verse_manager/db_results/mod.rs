@@ -294,9 +294,9 @@ mod tests {
     #![allow(clippy::field_reassign_with_default)] // default-then-set is clearer in test fixtures
     use super::super::{FractalEntry, NodeEntry, PetalEntry, VerseEntry, VerseManager};
     use super::*;
-    use crate::actions::UiManager;
+    use crate::actions::{UiAction, UiManager};
     use crate::dialogs::ActiveDialog;
-    use crate::gis::{GisPanelState, PathEditorState};
+    use crate::gis::{CornerKind, GisPanelState, PathEditorState, PendingPenCreate};
     use crate::node_manager::NodeManager;
     use crate::plugin::InspectorFormState;
     use bevy::prelude::Entity;
@@ -485,6 +485,215 @@ mod tests {
             rx.try_recv().is_ok(),
             "active-petal create must re-run the Paths query"
         );
+    }
+
+    // --- pen auto-create flush (pen_autocreate_track FR-2 + pen_curve FR-4) ---
+
+    /// Handle-less pending stash; tests layer bezier fields via struct update.
+    fn pen_stash(cid: &str) -> PendingPenCreate {
+        PendingPenCreate {
+            correlation_id: cid.into(),
+            first_point: [1.0, 2.0, 3.0],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pen_flush_with_handles_appends_smooth_point_with_all_fields() {
+        let (tx, _rx) = sender();
+        let mut mgr = tree();
+        let nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        path_state.pending_pen_create = Some(PendingPenCreate {
+            handle_in: Some([-4.0, 0.5, -5.0]),
+            handle_out: Some([4.0, -0.5, 5.0]),
+            corner: CornerKind::Symmetric,
+            smoothness: 0.42,
+            ..pen_stash("pen-track:t1")
+        });
+        nodes::handle_node_created(
+            "n2",
+            "p1",
+            "Track",
+            false,
+            Some("pen-track:t1"),
+            [0.0; 3],
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+        );
+        assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
+        assert!(
+            !path_state.has_pending_pen_create(),
+            "flush must consume the stash"
+        );
+        let actions = ui.drain_actions();
+        assert_eq!(actions.len(), 1, "exactly one deferred first-point append");
+        match &actions[0] {
+            UiAction::PathAppendSmoothPoint {
+                track_node_id,
+                position,
+                handle_in,
+                handle_out,
+                corner,
+                smoothness,
+            } => {
+                assert_eq!(track_node_id, "n2", "flushes onto the echoed node id");
+                assert_eq!(*position, [1.0, 2.0, 3.0], "raw petal-local meters");
+                assert_eq!(*handle_in, Some([-4.0, 0.5, -5.0]));
+                assert_eq!(*handle_out, Some([4.0, -0.5, 5.0]));
+                assert_eq!(*corner, CornerKind::Symmetric);
+                assert_eq!(*smoothness, 0.42);
+            }
+            other => panic!("expected PathAppendSmoothPoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pen_flush_with_one_sided_handle_still_takes_smooth_branch() {
+        // A press-drag first anchor typically carries only handle_out.
+        let (tx, _rx) = sender();
+        let mut mgr = tree();
+        let nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        path_state.pending_pen_create = Some(PendingPenCreate {
+            handle_out: Some([2.0, 0.0, 2.0]),
+            corner: CornerKind::Smooth,
+            smoothness: 1.0,
+            ..pen_stash("pen-track:t2")
+        });
+        nodes::handle_node_created(
+            "n2",
+            "p1",
+            "Track",
+            false,
+            Some("pen-track:t2"),
+            [0.0; 3],
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+        );
+        let actions = ui.drain_actions();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            UiAction::PathAppendSmoothPoint {
+                handle_in,
+                handle_out,
+                corner,
+                smoothness,
+                ..
+            } => {
+                assert_eq!(*handle_in, None, "absent side must stay absent");
+                assert_eq!(*handle_out, Some([2.0, 0.0, 2.0]));
+                assert_eq!(*corner, CornerKind::Smooth);
+                assert_eq!(*smoothness, 1.0);
+            }
+            other => panic!("expected PathAppendSmoothPoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pen_flush_without_handles_appends_plain_point() {
+        let (tx, _rx) = sender();
+        let mut mgr = tree();
+        let nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        path_state.pending_pen_create = Some(pen_stash("pen-track:t3"));
+        nodes::handle_node_created(
+            "n2",
+            "p1",
+            "Track",
+            false,
+            Some("pen-track:t3"),
+            [0.0; 3],
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+        );
+        assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
+        assert!(!path_state.has_pending_pen_create());
+        let actions = ui.drain_actions();
+        assert_eq!(actions.len(), 1, "plain click stays a single legacy append");
+        match &actions[0] {
+            UiAction::PathAppendPoint {
+                track_node_id,
+                position,
+            } => {
+                assert_eq!(track_node_id, "n2");
+                assert_eq!(*position, [1.0, 2.0, 3.0]);
+            }
+            other => panic!("expected legacy PathAppendPoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pen_flush_skipped_on_correlation_mismatch() {
+        let (tx, _rx) = sender();
+        let mut mgr = tree();
+        let nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        path_state.pending_pen_create = Some(PendingPenCreate {
+            handle_out: Some([1.0, 0.0, 0.0]),
+            ..pen_stash("pen-track:t4")
+        });
+        nodes::handle_node_created(
+            "n2",
+            "p1",
+            "Foreign",
+            false,
+            Some("authored-track:9"),
+            [0.0; 3],
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+        );
+        assert!(
+            ui.drain_actions().is_empty(),
+            "foreign echo must not flush the pen point"
+        );
+        assert!(
+            path_state.has_pending_pen_create(),
+            "stash must survive for the real echo"
+        );
+        assert!(path_state.editing_track_id.is_none());
+    }
+
+    #[test]
+    fn pen_flush_skipped_when_echo_has_no_correlation_id() {
+        let (tx, _rx) = sender();
+        let mut mgr = tree();
+        let nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        path_state.pending_pen_create = Some(pen_stash("pen-track:t5"));
+        nodes::handle_node_created(
+            "n2",
+            "p1",
+            "Imported",
+            false,
+            None,
+            [0.0; 3],
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+        );
+        assert!(ui.drain_actions().is_empty(), "id-less echo must not flush");
+        assert!(path_state.has_pending_pen_create());
+        assert!(path_state.editing_track_id.is_none());
     }
 
     #[test]

@@ -30,7 +30,7 @@ const MOVE_SENSITIVITY: f32 = 0.002;
 /// `path_point_interaction::PICK_RADIUS`. In Select/Pen a press within this of a
 /// selected vertex is a BODY press (free-plane drag / Ctrl-height, FR-2/FR-1a),
 /// so the gimbal yields it; only axis-ARM presses (farther out) grab the gimbal.
-const MARKER_BODY_RADIUS: f32 = 0.7;
+pub(super) const MARKER_BODY_RADIUS: f32 = 0.7;
 
 /// In-progress path-gimbal drag, `None` when idle.
 #[derive(Resource, Default)]

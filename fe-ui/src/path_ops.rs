@@ -39,6 +39,30 @@ pub enum PathOp {
         index: usize,
         position: [f32; 3],
     },
+    /// Append a bezier anchor: relative-meter handles + corner code (per
+    /// `gis::CornerKind::to_code`) + smoothness — pen_curve_tool_20260722 FR-7.
+    AppendSmoothPoint {
+        track_node_id: String,
+        position: [f32; 3],
+        handle_in: Option<[f32; 3]>,
+        handle_out: Option<[f32; 3]>,
+        corner_code: f64,
+        smoothness: f32,
+    },
+    /// Set anchor `index`'s bezier handles (+ smoothness) in place.
+    SetAnchorHandles {
+        track_node_id: String,
+        index: usize,
+        handle_in: Option<[f32; 3]>,
+        handle_out: Option<[f32; 3]>,
+        smoothness: f32,
+    },
+    /// Set anchor `index`'s corner classification (code per `CornerKind::to_code`).
+    SetAnchorCorner {
+        track_node_id: String,
+        index: usize,
+        corner_code: f64,
+    },
     /// Create a waypoint annotation node at the position of point `index` in
     /// `track_node_id`'s list, via the existing `gis.annotation.*` property
     /// contract (see `crate::actions::node_props`).

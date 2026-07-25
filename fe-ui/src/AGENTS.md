@@ -444,12 +444,16 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    bridge should conform to this shape rather than the reverse.
 8. **Pen auto-create + deferred first-point flush** (correlation-id matched;
    `pen_autocreate_track_20260713` + HIGH-1/HIGH-2 hardening). The Pen tool no
-   longer requires a track to be pre-selected. A Pen empty-click with
+   longer requires a track to be pre-selected. A Pen gesture with
    `editing_track_id == None` (`node_manager/path_point_interaction.rs`, see
-   `node_manager/AGENTS.md` §pen-tool) generates a **fe-ui-side correlation id**
+   `node_manager/AGENTS.md` §pen-tool; resolved at gesture Release since
+   `pen_curve_tool_20260722` FR-4) generates a **fe-ui-side correlation id**
    (`gis::next_pen_correlation_id`, a monotonic `pen-track:{n}` counter — no
    `rand`/`uuid` dep), stashes `PathEditorState.pending_pen_create` (that id +
-   the click's world position), and queues `UiAction::PathCreateTrack { petal_id,
+   the gesture's FULL first-anchor payload: the world position PLUS
+   `handle_in`/`handle_out`/`corner`/`smoothness` — the FR-4 must-fix, so a
+   press-drag that STARTS a track keeps its curve), and queues
+   `UiAction::PathCreateTrack { petal_id,
    "New Path", correlation_id: Some(id) }` for `NavigationManager.active_petal_id`.
    The append **cannot** be synchronous because the track's `node_id` doesn't
    exist until the `CreateTrack` round-trips.
@@ -462,7 +466,8 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    `DbResult::NodeCreated { correlation_id }`. `verse_manager::db_results`' arm
    flushes the pen point **only when the echoed id matches** the pending create
    (`take_pending_pen_create_if(cid)`), then `start_editing(new_id)` + pushes the
-   first `PathAppendPoint`. Because the match is on the id — **not** a content
+   first append — `PathAppendSmoothPoint` when the stash carries handles, else
+   the legacy `PathAppendPoint`. Because the match is on the id — **not** a content
    heuristic (`!has_asset && in_active_petal`) — a concurrent foreign create (a
    GPX-import track/waypoint node, the create-entity dialog) carries a different
    id (or `None`) and can **never** hijack the flush (HIGH-1, the old heuristic's
@@ -486,6 +491,41 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    response can't see the popup's internal slider drag, so `drag_stopped()` is
    unusable there); the checkbox immediately (a single click, no drag churn).
    Live visual feedback is preserved; exactly one DB write lands at release.
+10. **Corner settings card** (`pen_curve_tool_20260722` FR-6 + ratified Q5).
+   `path_editor_card::render_corner_settings` is the "Corner settings —
+   vertex N" sub-card in the edit view, gated on `selected_point`: a
+   Corner/Smooth/Symmetric toggle + a smoothness slider `0.0..=1.0` (unitless
+   per `ui_ux.md §2`; handle lengths shown in m). It follows item 9's
+   deferred-push idiom: live-edits the row (deriving collinear handles via
+   `node_manager::curve::derive_symmetric_handles` each changed frame for
+   instant marker echo) and persists once on settle as `PathSetAnchorHandles`;
+   the toggle persists `PathSetAnchorCorner` via the pure
+   `corner_toggle_outcome`. **The toggle is NON-destructive** (post-review
+   hardening): an anchor whose handles are already symmetric-collinear
+   reclassifies only — a same-kind re-click is a full no-op and a
+   Smooth↔Symmetric switch never touches hand-pulled handles; the re-derive
+   fires ONLY from the broken/asymmetric grey-out state (at the geometry
+   READBACK, never the stored scalar — the explicit Q5 re-enable route) or on
+   a handle-less anchor (at the `max(stored, 0.5)` floor, so the handles
+   exist and the classification survives the Q6 reload normalization). When
+   nothing is derivable (no neighbors) the kind stays/reverts to Corner —
+   never persist a handle-less Smooth that reload would silently demote; the
+   same coherence rule (`zero_handle_kind_revert`) reverts the kind, locally
+   AND persisted, when the slider is settled at exactly 0. **Q5 grey-out:**
+   the pure `smoothness_slider_enabled` predicate (both handles `None`, or
+   `handle_in ≈ −handle_out` within epsilon) gates the slider —
+   manually-broken handles show the pure `gis::smoothness_readback`
+   (`|handle_out| / (k·min_neighbor_gap)` clamped 0..1) as a disabled value +
+   hint instead; the slider never silently overwrites manual handles. The
+   ENABLED slider seeds from that same readback whenever the anchor HAS
+   handles (`slider_seed`) — the stored scalar (only trusted for handle-less
+   anchors) can be stale, and every commit path now also stores the readback
+   (`node_manager/AGENTS.md` §pen-tool). Authority B by construction: the
+   card mutates `PathEditorState.points` + pushes `UiAction`s;
+   `render_edit_view` still receives no `NodeManager`. The read-only twin
+   (inspector `anchor_readout`) and the tool-level default
+   (`pen_new_anchor_kind`) are documented in `panels/AGENTS.md`
+   §tool-inspector / §tool-panel.
 
 ## §data-icons — type icons on three surfaces (`data_icons_20260713`)
 
