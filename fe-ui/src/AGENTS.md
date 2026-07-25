@@ -698,8 +698,16 @@ names + the `snake_case` op tags match the contract exactly; `target_height`/
   other field (origin, layers, tileset uris, `world_scale`). Same "mutate one
   field of the stored terrain JSON, then round-trip via `SetPetalTerrain`" idiom
   as `actions::gis::set_layer`. The true heightfield / loaded tileset are never
-  written. A proposals-only doc is produced when the petal has no map yet (the
-  terrain loader must tolerate that — a seam for the fe-terrain side).
+  written. **P0 fix (ui_shell_architecture_20260724 Phase 0, H-C1):** a petal
+  with no map yet used to get a bare `{"proposals": [...]}` skeleton, which
+  fails to deserialize into `fe_terrain::config::TerrainConfig` (`enabled`/
+  `origin`/`tile_source_url` have no `#[serde(default)]`) — confirmed
+  non-fatal there (`terrain_config_from_petal_json` catches the `Err` and
+  warns), but still a silent-failure surface (`ui_ux.md §6`). `embed_proposals`
+  now seeds the complete baseline shape (`baseline_terrain_doc`, mirroring
+  `terrain_map::tileset_to_terrain_json`'s fields, `enabled: false`) for any
+  `None`/non-object base, so every terrain-JSON reader always sees a
+  well-formed doc.
 - **Ids** are minted by a monotonic `ProposalEditState` counter (`p{n}`, no
   `uuid`/`rand` dep — mirrors `gis::next_pen_correlation_id`). `replace_all`
   keeps the counter past any rehydrated `p{n}` so a load-then-add never collides.
