@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
+use super::dispatch::HitTarget;
 use crate::plugin::ViewportRect;
 
 /// A viewport left-click consumer, ordered highest-priority first.
@@ -120,6 +121,31 @@ impl ClickArbiter {
 }
 
 // ---------------------------------------------------------------------------
+// Claim-priority table (FR-3): the object-level pick preference over HitTarget
+// ---------------------------------------------------------------------------
+
+/// Effective claim priority of a resolved [`HitTarget`] — LOWER rank wins.
+/// Pure + total over every `HitTarget` variant: `handle > vertex > segment >
+/// gimbal-axis > node > stamp > proposal > terrain-cell > empty`. This is the
+/// object-level pick preference (which target owns a click that could resolve
+/// to several), distinct from the per-system [`ClickPriority`] chain that
+/// enforces it at runtime. See `node_manager/AGENTS.md` §pointer-manager.
+#[allow(dead_code)] // FR-3 claim-priority surface; asserted by tests, no in-tree consumer yet.
+pub(crate) fn hit_target_rank(hit: &HitTarget) -> u8 {
+    match hit {
+        HitTarget::PathHandle { .. } => 0,
+        HitTarget::PathVertex { .. } => 1,
+        HitTarget::PathSegment { .. } => 2,
+        HitTarget::GimbalAxis => 3,
+        HitTarget::Node(_) => 4,
+        HitTarget::Stamp(_) => 5,
+        HitTarget::TerrainProposal { .. } => 6,
+        HitTarget::TerrainCell => 7,
+        HitTarget::Empty => 8,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // System: resolve the per-frame pointer decision (runs before consumers)
 // ---------------------------------------------------------------------------
 
@@ -201,6 +227,55 @@ mod tests {
             available: true,
             phase: PointerPhase::Press,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hit_target_rank_covers_every_variant_exactly_once_in_priority_order() {
+        use super::super::dispatch::HandleSide;
+        // One value per HitTarget variant. The exhaustive match in
+        // `hit_target_rank` (no wildcard) forces a rank for any new variant;
+        // this array must then gain it too, or the permutation assert trips.
+        let all = [
+            HitTarget::PathHandle {
+                idx: 0,
+                side: HandleSide::In,
+            },
+            HitTarget::PathVertex { idx: 0 },
+            HitTarget::PathSegment { idx: 0 },
+            HitTarget::GimbalAxis,
+            HitTarget::Node(Entity::from_bits(1)),
+            HitTarget::Stamp(Entity::from_bits(2)),
+            HitTarget::TerrainProposal { id: "p".to_string() },
+            HitTarget::TerrainCell,
+            HitTarget::Empty,
+        ];
+        // Ranks are a permutation of 0..N — each variant a distinct rank, no
+        // ties, no gaps — asserted independently of any enum/derive ordering.
+        let mut ranks: Vec<u8> = all.iter().map(hit_target_rank).collect();
+        ranks.sort_unstable();
+        assert_eq!(ranks, (0..all.len() as u8).collect::<Vec<_>>());
+
+        // The ratified backbone holds: handle > vertex > segment > gimbal-axis
+        // > node-pick > empty (lower rank = higher priority).
+        let backbone = [
+            HitTarget::PathHandle {
+                idx: 9,
+                side: HandleSide::Out,
+            },
+            HitTarget::PathVertex { idx: 9 },
+            HitTarget::PathSegment { idx: 9 },
+            HitTarget::GimbalAxis,
+            HitTarget::Node(Entity::from_bits(3)),
+            HitTarget::Empty,
+        ];
+        for pair in backbone.windows(2) {
+            assert!(
+                hit_target_rank(&pair[0]) < hit_target_rank(&pair[1]),
+                "{:?} must outrank {:?}",
+                pair[0],
+                pair[1]
+            );
         }
     }
 

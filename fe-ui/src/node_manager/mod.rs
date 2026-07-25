@@ -24,6 +24,9 @@ mod path_gimbal_drag;
 mod path_handle_interaction;
 mod path_point_interaction;
 mod path_segment_interaction;
+/// FR-3 cross-authority pointer bridge: coordinates `NodeManager.selected` with
+/// `PathEditorState` WITHOUT merging them. See AGENTS.md §pointer-manager.
+mod pointer;
 mod router;
 /// Typed selection read-model (FR-1): a per-frame projection over the two
 /// selection authorities. See AGENTS.md §selection-read-model.
@@ -159,7 +162,7 @@ impl Plugin for NodeManagerPlugin {
                 path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
                 path_segment_interaction::handle_path_segment_interaction, // claims PathSegment — ribbon-segment select (FR-3)
                 viewport_pick::handle_viewport_click, // claims NodePick — entity pick / deselect
-                viewport_pick::open_track_on_select, // clicking a track ribbon opens it for editing
+                pointer::open_track_on_select, // clicking a track ribbon opens it for editing (re-homed FR-3)
                 path_segment_interaction::sync_path_measurements, // live metric length readouts (FR-3)
                 inspector_sync::sync_manager_to_inspector,
                 selection::update_selection_state, // FR-1: project the read-model before the gimbal draws

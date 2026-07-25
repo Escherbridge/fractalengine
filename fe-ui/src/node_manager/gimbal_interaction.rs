@@ -3,6 +3,7 @@
 
 use bevy::prelude::*;
 
+use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::router::{ClickArbiter, ClickPriority};
 use super::selection::{is_path_selection, path_gimbal_target};
 use super::{AxisDrag, NodeManager, SelectionKind, SelectionState};
@@ -256,6 +257,20 @@ pub(super) fn handle_gimbal_interaction(
         };
 
         if let Some(axis) = pick_axis(tool.active_tool, cursor_pos, center_3d, camera, cam_tx) {
+            // Route the begin-drag decision through the FR-2 table (no-bypass):
+            // an entity-backed selection begins an entity gimbal drag only in
+            // the transform tools. The Select/Pen early-return above already
+            // enforces this; routing keeps the decision in one place.
+            // Node/Stamp/PathTrack resolve identically for a gimbal-axis hit,
+            // so `Node` stands in for the concrete entity kind.
+            if resolve_operation(
+                tool.active_tool,
+                &SelectionKind::Node(entity),
+                HitTarget::GimbalAxis,
+            ) != Operation::BeginGimbalDrag
+            {
+                return;
+            }
             if !arbiter.claim(ClickPriority::Gimbal) {
                 return;
             }
