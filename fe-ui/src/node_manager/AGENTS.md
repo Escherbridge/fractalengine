@@ -25,7 +25,12 @@
 - `billboard.rs` — `billboard_face_camera`, the per-frame face-camera system
   for `Billboard`-tagged icon quads (see §data-icons + `fe-ui/src/AGENTS.md`
   §data-icons).
-- `router.rs` — per-frame left-click arbitration (see §input-router).
+- `router.rs` — per-frame left-click arbitration + the pure `hit_target_rank`
+  claim-priority table (see §input-router + §pointer-manager).
+- `pointer/mod.rs` — cross-authority pointer bridge (FR-3): `open_track_on_select`
+  + petal-tracking, re-homed verbatim from `viewport_pick.rs`. Coordinates
+  `NodeManager.selected` with `PathEditorState` WITHOUT merging them (see
+  §pointer-manager + §track-picking).
 - `selection.rs` — typed selection read-model (FR-1): a per-frame projection
   over `NodeManager.selected` + `PathEditorState.*` into `SelectionKind`; feeds
   the gimbal (FR-3) and future object-aware dispatch (FR-2). See
@@ -342,7 +347,7 @@ the node origin and false-positived on empty space near it —
   small fixed-size gizmo spheres and explicitly out of scope. No shared helper
   was extracted; the two picks are independent.
 
-## §track-picking — clicking a track ribbon opens it for editing (`viewport_pick.rs`)
+## §track-picking — track ribbon pick (`viewport_pick.rs`) + open-on-select bridge (`pointer/mod.rs`)
 
 Track ribbons render in fe-terrain (`GpxTrackLine` + `Mesh3d`), which can't
 attach fe-ui's `SpawnedNodeMarker` (no fe-terrain → fe-ui dep). The
@@ -353,7 +358,8 @@ can then AABB-pick it like any node.
 
 Selecting a track in the viewport must ALSO open it in the Paths tab, but
 `NodeManager.selected` (viewport/tree selection) and `PathEditorState.editing_track_id`
-(Paths-tab selection) are independent. `open_track_on_select` closes the loop:
+(Paths-tab selection) are independent. `open_track_on_select` (`pointer/mod.rs`,
+§pointer-manager) closes the loop:
 it watches for a *change* in `NodeManager.selected` (a `Local<Option<String>>`
 remembers the last one so it fires once per selection, not per frame) and, when
 the newly selected `node_id` is a Paths-tab track, dispatches
@@ -369,7 +375,7 @@ ONLY while the Data window's Paths tab rendered (`gis_panel.rs`'s
 auto-populate), so a fresh session that never opened that window left the
 list empty and every viewport track click silently no-op'd — the bridge above
 never fired, so vertex/handle markers never spawned. `advance_petal_tracking`
-(same file) now issues the Paths tab's own request
+(`pointer/mod.rs`) now issues the Paths tab's own request
 (`UiAction::PathQueryTracks` → `actions::path::query_tracks`) on the
 petal-entry/change branch that already existed, so the list is loaded before
 the user ever needs to open the Data window. `request_track_list_refresh`
@@ -490,6 +496,49 @@ ownership instead of racing ad-hoc booleans (replaces the old
   As a second net, `sweep_stranded_drag` clears any live pen/handle/marker
   drag on a Hover frame — the button being up with a drag active can only
   mean its Release was missed.
+
+## §pointer-manager — cross-authority bridge + claim-priority table (`pointer/mod.rs`, `router.rs`)
+
+`ui_shell_architecture_20260724` FR-3. Two pointer/router concerns are now
+explicit and consolidated:
+
+- **Claim-priority table (`router.rs::hit_target_rank`).** The pure, total
+  `hit_target_rank(&HitTarget) -> u8` makes the object-level pick preference
+  explicit: `handle > vertex > segment > gimbal-axis > node > stamp > proposal
+  > terrain-cell > empty` (lower rank = higher priority). This is the "which
+  target owns a click that could resolve to several" ordering — distinct from,
+  but consistent with, the per-system `ClickPriority` `.chain()` that ENFORCES
+  it at runtime (§input-router). No in-tree consumer reads it yet
+  (`#[allow(dead_code)]`, mirroring the FR-1 arbiter API seams); a coverage test
+  asserts the ranks are a permutation of `0..N` over every `HitTarget` variant,
+  independent of any derive ordering, so a new variant must be given a rank (the
+  match is exhaustive, no wildcard) and slotted into the order.
+- **The re-homed bridge (`pointer/mod.rs`).** `open_track_on_select` +
+  `advance_petal_tracking` + `request_track_list_refresh` + `spawned_in_petal` +
+  `track_to_open` moved VERBATIM out of `viewport_pick.rs` into `pointer/mod.rs`
+  — the single home of the cross-authority coordination. Behavior is unchanged;
+  the mechanics live in §track-picking (viewport track-select → `PathSelectTrack`,
+  plus the FR-2 eager track-list load). Registered in `mod.rs`'s `.chain()` as
+  `pointer::open_track_on_select`, still IMMEDIATELY after `handle_viewport_click`
+  so it reacts to the same-frame `NodeManager.selected` change (FR-2, commits
+  b12b646/190188f) — the chain position is load-bearing and was NOT reordered.
+- **No-bypass claim routing.** The consumer systems' CLAIM/select decisions now
+  route through `dispatch::resolve_operation` (the FR-2 table) instead of
+  hardcoding the verb: `handle_viewport_click` (`Node`/`Empty` →
+  `SelectNode`/`Deselect`), `handle_path_handle_interaction` (`PathHandle` →
+  `MoveHandle`), `handle_path_segment_interaction` (`PathSegment` →
+  `SelectSegment`), `handle_gimbal_interaction` (`GimbalAxis` →
+  `BeginGimbalDrag`, entity-backed), and `handle_path_point_interaction`
+  (`PathVertex` → `SelectVertex` on a marker pick; `Empty` → `PlacePathPoint`
+  on a Pen empty press). `handle_path_gimbal_drag` was already routed (the
+  reference impl). Each is behavior-preserving — the resolved `Operation` equals
+  the previously-hardcoded action — and the bespoke Press/Hold/Release
+  drag-commit state machines are UNTOUCHED (`Operation` doesn't model them);
+  only the press-time claim/select decision is routed. For hits whose
+  resolution is tool- and selection-INDEPENDENT (handle/vertex/segment), the
+  routed `kind` is immaterial (a projected Authority-B kind, or `Empty` where no
+  `PathEditorState` is in scope) — the call is a guard that keeps the verb
+  decision in the one table, not a behavior change.
 
 ## §selection-read-model — typed selection facade (`selection.rs`)
 

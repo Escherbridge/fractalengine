@@ -4,8 +4,11 @@
 
 use bevy::prelude::*;
 
+use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::router::{ClickArbiter, ClickPriority};
+use super::selection::project_selection;
 use crate::gis::PathEditorState;
+use crate::plugin::ToolState;
 
 /// Vertical lift baked into the rendered ribbon (`fe_terrain`'s `track_mesh`
 /// `y_offset`). Picking geometry adds it so the ray test hits where the ribbon
@@ -127,6 +130,7 @@ fn ground_len_world(a: [f32; 3], b: [f32; 3]) -> f64 {
 // ---------------------------------------------------------------------------
 
 pub(super) fn handle_path_segment_interaction(
+    tool: Res<ToolState>,
     mut arbiter: ResMut<ClickArbiter>,
     mut path_state: ResMut<PathEditorState>,
 ) {
@@ -148,13 +152,27 @@ pub(super) fn handle_path_segment_interaction(
         .map(|p| Vec3::from(p.position))
         .collect();
 
+    // Route the claim through the FR-2 table (no-bypass): a ribbon-segment hit
+    // resolves to `SelectSegment`, tool- and selection-independent (projected
+    // from Authority B — the edited track — so node selection is immaterial).
+    let kind = project_selection(
+        None,
+        path_state.editing_track_id.as_deref(),
+        path_state.selected_point,
+        path_state.selected_segment,
+    );
     match nearest_segment(&pts, ray.origin, *ray.direction, half_width) {
         Some(index) => {
-            // A marker pick (PathMarker) or gimbal already claimed → claim fails,
-            // leaving that selection intact. Otherwise select this segment.
-            if arbiter.claim(ClickPriority::PathSegment) {
-                path_state.selected_segment = Some(index);
-                path_state.selected_point = None;
+            if matches!(
+                resolve_operation(tool.active_tool, &kind, HitTarget::PathSegment { idx: index }),
+                Operation::SelectSegment { .. }
+            ) {
+                // A marker pick (PathMarker) or gimbal already claimed → claim
+                // fails, leaving that selection intact. Otherwise select it.
+                if arbiter.claim(ClickPriority::PathSegment) {
+                    path_state.selected_segment = Some(index);
+                    path_state.selected_point = None;
+                }
             }
         }
         None => {

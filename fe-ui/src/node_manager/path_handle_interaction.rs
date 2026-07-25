@@ -6,9 +6,10 @@
 
 use bevy::prelude::*;
 
-use super::dispatch::HandleSide;
+use super::dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
 use super::path_point_interaction::{ray_plane_y, MAX_POINT_MARKERS, PICK_RADIUS};
 use super::router::{sweep_stranded_drag, ClickArbiter, ClickPriority, PointerPhase};
+use super::selection::project_selection;
 use crate::actions::{UiAction, UiManager};
 use crate::gis::{
     min_neighbor_gap_m, smoothness_readback, CornerKind, PathEditorState, PathPointRow,
@@ -406,6 +407,26 @@ pub(super) fn handle_path_handle_interaction(
     let Some((index, side, _)) = pick_handle_marker(&ray, &marker_pick) else {
         return;
     };
+    // Route the claim through the FR-2 table (no-bypass): a handle-marker hit
+    // resolves to `MoveHandle`, selection- and tool-independent — WHEN it's
+    // pickable is this system's gate (the `editable` guard above). Projected
+    // from Authority B (the edited track); node selection is immaterial here.
+    let kind = project_selection(
+        None,
+        path_state.editing_track_id.as_deref(),
+        path_state.selected_point,
+        path_state.selected_segment,
+    );
+    if !matches!(
+        resolve_operation(
+            tool.active_tool,
+            &kind,
+            HitTarget::PathHandle { idx: index, side }
+        ),
+        Operation::MoveHandle { .. }
+    ) {
+        return;
+    }
     // Q7: claim FIRST — this system runs before the gimbal and vertex
     // consumers, so an overlapping handle + vertex resolves to the handle.
     if !arbiter.claim(ClickPriority::PathHandle) {

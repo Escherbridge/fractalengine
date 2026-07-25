@@ -4,7 +4,9 @@
 use bevy::prelude::*;
 
 use super::curve;
+use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::router::{sweep_stranded_drag, ClickArbiter, ClickPriority, PointerPhase};
+use super::selection::project_selection;
 use crate::actions::{UiAction, UiManager};
 use crate::gis::{min_neighbor_gap_m, smoothness_readback, CornerKind, PathEditorState};
 use crate::navigation_manager::NavigationManager;
@@ -608,7 +610,25 @@ pub(super) fn handle_path_point_interaction(
     }
     let Some(ray) = arbiter.ray() else { return };
 
+    // Object-aware routing (no-bypass): both claim branches below confirm their
+    // verb against the FR-2 table before claiming. Projected from Authority B
+    // (the edited track); node selection is immaterial to marker/place resolution.
+    let kind = project_selection(
+        None,
+        editing_track_id.as_deref(),
+        path_state.selected_point,
+        path_state.selected_segment,
+    );
+
     if let Some((index, _)) = pick_marker(&ray, &marker_pick) {
+        // A marker hit resolves to `SelectVertex` (dispatch.rs), tool- and
+        // selection-independent — confirm the verb before claiming.
+        if !matches!(
+            resolve_operation(tool.active_tool, &kind, HitTarget::PathVertex { idx: index }),
+            Operation::SelectVertex { .. }
+        ) {
+            return;
+        }
         // A marker pick claims `PathMarker` (Pen mode, Select-while-editing per
         // FR-2, or while a drag is already active) — the guard above returns in
         // Move/Rotate/Scale so the gimbal keeps the click there.
@@ -648,8 +668,13 @@ pub(super) fn handle_path_point_interaction(
     // press-drag gesture at the Y=0 plane; the anchor kind (corner vs smooth
     // vs Q8 combination) is decided at Release (pen_curve_tool_20260722 FR-4).
     // Claims `PathPlace` only in Pen mode, so Select-mode empty clicks yield
-    // to node selection — see AGENTS.md §pen-tool.
-    if tool.active_tool != Tool::Pen {
+    // to node selection — see AGENTS.md §pen-tool. Routed (no-bypass): an
+    // empty-terrain press resolves to `PlacePathPoint` only in Pen (dispatch.rs);
+    // every other tool resolves to `Deselect` and yields the frame to NodePick.
+    if !matches!(
+        resolve_operation(tool.active_tool, &kind, HitTarget::Empty),
+        Operation::PlacePathPoint
+    ) {
         return;
     }
     // Claim `PathPlace` first (even in the no-track auto-create case) so
