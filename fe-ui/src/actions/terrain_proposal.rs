@@ -13,18 +13,38 @@ use crate::terrain_proposal_state::{ProposalEditState, ProposalOp, ProposalRecor
 
 /// Additively embed `records` under the terrain config's `proposals` key,
 /// preserving every other field (origin, layers, tileset uris, world_scale, …).
-/// A `None`/non-object base yields a proposals-only document. Pure so the
-/// additive-merge contract (NFR-1: never clobber tileset config) is testable.
+/// A `None`/non-object base seeds the same complete baseline shape as
+/// `terrain_map::tileset_to_terrain_json` (never a bare `{"proposals": [...]}`
+/// skeleton) — see `fe-ui/src/AGENTS.md` §terrain-proposal-editor for why. Pure
+/// so the additive-merge contract (NFR-1: never clobber tileset config) is
+/// testable.
 pub(crate) fn embed_proposals(
     base: Option<&serde_json::Value>,
     records: &[ProposalRecord],
 ) -> serde_json::Value {
     let mut doc = match base {
         Some(v @ serde_json::Value::Object(_)) => v.clone(),
-        _ => serde_json::json!({}),
+        _ => baseline_terrain_doc(),
     };
     doc["proposals"] = crate::terrain_proposal_state::to_json(records);
     doc
+}
+
+/// Complete, well-formed terrain doc for a petal with no map assigned yet:
+/// `enabled: false` (honest — no real tileset backs it) plus every field a
+/// terrain-JSON reader might expect (mirrors
+/// `terrain_map::tileset_to_terrain_json`'s shape). Ensures a proposals-only
+/// edit never leaves `PetalMapState.terrain_json` in a shape some consumer
+/// doesn't expect (`ui_ux.md §6` — no silent-failure surfaces).
+fn baseline_terrain_doc() -> serde_json::Value {
+    serde_json::json!({
+        "enabled": false,
+        "origin": { "origin_lat": 0.0, "origin_lon": 0.0, "origin_ele": 0.0 },
+        "tile_source_url": "",
+        "layers": [],
+        "tileset_hexon_uris": [],
+        "world_scale": 1.0,
+    })
 }
 
 /// Persist the current proposal set on the active petal's terrain config.
@@ -124,10 +144,48 @@ mod tests {
     }
 
     #[test]
-    fn embed_none_base_yields_proposals_only_doc() {
+    fn embed_none_base_yields_complete_baseline_doc() {
+        // Regression (H-C1, ui_shell_architecture_20260724 Phase 0): a
+        // map-less petal must NOT get a bare `{"proposals": [...]}` skeleton —
+        // every field a terrain-JSON reader (fe-ui panels, fe-terrain's
+        // `TerrainConfig`) might require must be present with a safe default.
         let out = embed_proposals(None, &[record("p1")]);
         assert!(out.is_object());
         assert_eq!(out["proposals"][0]["id"], json!("p1"));
+        assert_eq!(out["enabled"], json!(false), "no real map — honest default");
+        assert_eq!(out["tile_source_url"], json!(""));
+        assert_eq!(out["layers"], json!([]));
+        assert_eq!(out["tileset_hexon_uris"], json!([]));
+        assert_eq!(out["world_scale"], json!(1.0));
+        assert_eq!(out["origin"]["origin_lat"], json!(0.0));
+        assert_eq!(out["origin"]["origin_lon"], json!(0.0));
+        assert_eq!(out["origin"]["origin_ele"], json!(0.0));
+    }
+
+    #[test]
+    fn embed_non_object_base_also_gets_the_complete_baseline() {
+        // A non-object base (e.g. a stale/corrupt doc) must not leak through
+        // as the seed — same complete-baseline treatment as `None`.
+        let out = embed_proposals(Some(&json!([1, 2, 3])), &[record("p1")]);
+        assert_eq!(out["enabled"], json!(false));
+        assert_eq!(out["tile_source_url"], json!(""));
+        assert_eq!(out["proposals"][0]["id"], json!("p1"));
+    }
+
+    #[test]
+    fn embed_none_base_doc_carries_every_field_terrain_config_requires() {
+        // fe_terrain::config::TerrainConfig has NO #[serde(default)] on
+        // `enabled`/`origin`/`tile_source_url` — deserializing a doc missing
+        // any of them fails. Pin that the baseline always carries all three
+        // (fe-ui can't import TerrainConfig itself — boundary rule — so this
+        // asserts the JSON shape directly).
+        let out = embed_proposals(None, &[]);
+        assert!(out.get("enabled").and_then(|v| v.as_bool()).is_some());
+        assert!(out.get("tile_source_url").and_then(|v| v.as_str()).is_some());
+        let origin = out.get("origin").expect("origin present");
+        assert!(origin.get("origin_lat").and_then(|v| v.as_f64()).is_some());
+        assert!(origin.get("origin_lon").and_then(|v| v.as_f64()).is_some());
+        assert!(origin.get("origin_ele").and_then(|v| v.as_f64()).is_some());
     }
 
     #[test]
