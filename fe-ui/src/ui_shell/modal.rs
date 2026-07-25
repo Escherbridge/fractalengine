@@ -14,11 +14,13 @@
 //! actually runs under `panic = "unwind"` (which the test harness forces, so the
 //! tests below exercise it). See this slice's report §panic-abort.
 //!
-//! This whole module is STANDALONE this slice — S3b wires it into
-//! `panels::gardener_console`. The module-level `allow(dead_code)` below exists
-//! only because nothing calls this yet; S3b removes it on wiring. The
-//! `ui_shell/AGENTS.md` entry is owned by another slice / Phase 6.
-#![allow(dead_code)] // staged-but-unwired this slice (FR-7); S3b removes on wiring.
+//! S3b (Phase 3) wired this into `panels::gardener_console`: every top-level
+//! panel/dialog/menu/toast render call runs through [`guarded`], and the
+//! transient overlay layer (dialogs/context-menu/toast) is sequenced via
+//! [`transient_order`] + [`TransientVisibility::resolve_exclusive`]. See
+//! `fe-ui/src/panels/mod.rs` and `fe-ui/src/panels/status_bar.rs` (the
+//! persistent error segment, Q-5). The `ui_shell/AGENTS.md` entry is owned by
+//! another slice / Phase 6.
 
 use std::collections::HashSet;
 
@@ -37,6 +39,11 @@ pub struct ModalManagerState {
 /// `&str`/`String` cover every `unwrap`/`expect`/`panic!` payload; anything else
 /// yields a placeholder rather than silently dropping the reason. Mirrors
 /// `fractalengine/src/panic_log.rs::panic_payload_string`.
+///
+/// Only reachable from [`guarded_catching`] (release `guarded` arm) or tests —
+/// `guarded`'s debug arm re-propagates instead, so a debug/non-test build
+/// never calls this; cfg-gated to match, avoiding dead-code in that profile.
+#[cfg(any(test, not(debug_assertions)))]
 fn panic_payload_string(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -55,6 +62,10 @@ fn panic_payload_string(payload: &(dyn std::any::Any + Send)) -> String {
 /// `AssertUnwindSafe` is justified: `f` is a generic `FnOnce() -> R` closure, so
 /// no raw `&mut` egui borrow escapes its type; the guarded per-panel state is
 /// exactly what this function then quarantines.
+///
+/// Same reachability note as [`panic_payload_string`]: only called from
+/// [`guarded`]'s release arm, plus directly by tests.
+#[cfg(any(test, not(debug_assertions)))]
 fn guarded_catching<R>(
     state: &mut ModalManagerState,
     name: &str,
@@ -174,6 +185,11 @@ impl TransientVisibility {
 /// FR-8 (P5) tooltip seam placeholder: decide whether to paint a widget tooltip
 /// given hover + presence of help text. Pure/trivial now; S3b/P5 replaces the
 /// body with the real egui `on_hover_text` wiring.
+///
+/// Not called yet — P5 (a later, tooltip-specific slice) wires it, out of
+/// this slice's (Phase 3/FR-7) scope. Tested (`should_show_tooltip_requires_
+/// hover_and_help`); scoped `allow` rather than deleting reserved future work.
+#[allow(dead_code)]
 #[must_use]
 pub const fn should_show_tooltip(hovered: bool, has_help: bool) -> bool {
     hovered && has_help
