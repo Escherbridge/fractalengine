@@ -118,13 +118,15 @@ system — NFR-4).
 - Surfaced UX (Q-5): a persistent status-bar Error-tier chip (`status_bar.rs`
   reads `last_error`), no auto-clear on petal switch.
 
-**⚠ `panic = "abort"` caveat.** `Cargo.toml [profile.release]` sets
-`panic = "abort"`, under which `catch_unwind` is INERT — the shipped release
-binary will NOT quarantine a panicking panel. The guard is live only under
-`panic = "unwind"` (tests force this; debug re-propagates by design). Making
-FR-7 actually shield in-app requires flipping the release profile to
-`panic = "unwind"` (workspace-wide) — a pending user decision. FR-1
-(root-causing the terrain crash) remains the primary remedy regardless.
+**⚠ `panic = "abort"` — RATIFIED 2026-07-25: keep abort.** `Cargo.toml
+[profile.release]` sets `panic = "abort"`, under which `catch_unwind` is INERT
+— the shipped release binary will NOT quarantine a panicking panel. The user
+ratified KEEPING `panic = "abort"` (retaining the tuned `lto=fat` /
+`codegen-units=1` release profile): the guard is therefore intentionally
+**debug/test-only scaffolding** (tests force `unwind`; debug re-propagates by
+Q-5 design), and **FR-1 (root-causing the terrain crash) is the primary
+remedy**. To make FR-7 shield in-app later, a future decision would flip the
+release profile to `panic = "unwind"` (workspace-wide).
 
 **Transient order.** `transient_order()` = Dialog → ContextMenu → Toast (toast
 topmost); `TransientVisibility::resolve_exclusive()` keeps at most one dialog
