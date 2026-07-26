@@ -50,7 +50,8 @@
 - `asset.rs` — node asset download request; only pushes onto
   `crate::asset_ops::PendingAssetOps`, mirroring the `hexon.rs` pattern of
   queuing for the main binary rather than resolving in fe-ui. See root
-  `AGENTS.md` §asset-download.
+  `AGENTS.md` §asset-download. Also homes the Wave-1 stamped-asset state +
+  handlers (§stamped-assets).
 - `gpx.rs` — GPX track import request; only pushes onto
   `crate::gpx_ops::PendingGpxOps`, mirroring `asset.rs` exactly. See root
   `AGENTS.md` §gpx-import.
@@ -58,3 +59,40 @@
 `process_ui_actions` stays a thin per-variant dispatcher; keep new actions'
 actual logic in the matching domain file rather than growing the match arms
 in `mod.rs`.
+
+## §stamped-assets — individual stamp select + overrides (stamped_asset_nodes_20260725 T2)
+
+`StampInteractionState` (homed in `asset.rs`, registered in `plugin.rs`) is the
+per-stamp authority — DISTINCT from `NodeManager.selected` and
+`PathEditorState.editing_track_id` (N-3): a stamp selection is its own storage
+until promotion yields a node id. It holds the selected stamp, a
+pending-promotion marker, the `(track,index)→node_id` promotion map, and the
+sparse per-stamp overrides.
+
+- **FR-2 select → promote (Q-2).** `handle_select_stamp` (no `DbCommandSender` by
+  design — N-5: selection is a pure state transition) records the selection and,
+  on the FIRST individual address of an un-promoted stamp, sets
+  `pending_promotion`. The UI drains it (`take_pending_promotion`) and queues
+  `UiAction::PromoteStamp`, which routes to T1 `DbCommand::PromoteInstance{..,
+  auth: CallerAuth::Local}` via the T4 `node::handle_promote_stamp` handler. The
+  DB thread resolves the local role (N-5); the promotion is idempotent (T1) and
+  guarded again by `is_promoted` (N-9: no store row until first address).
+- **FR-3 overrides.** `handle_set_stamp_scale`/`handle_set_stamp_rotation`
+  record a sparse override in-state (live gesture) and, once the promoted node id
+  is known, persist it to a node property (`STAMP_SCALE_KEY`/`STAMP_ROTATION_KEY`
+  /`STAMP_ARC_KEY` — a mirror-enum/JSON contract the materializer reads back;
+  fe-ui must not depend on fe-terrain). Position is NEVER stored — it stays
+  path-derived (no free translate). Arc-length "slide along path" (Q-1) is homed
+  in `path.rs::handle_slide_stamp` (curve domain) and clamps to `[0, total]` of
+  the edited track's points (N-3, meters — no `world_scale`, N-1).
+- **FR-5 reflow.** `reflow_after_delete(track, deleted_index)` consumes T1's
+  `LifecycleEvent::PathReflow`: it drops the deleted stamp's override and shifts
+  same-track indices `> deleted_index` down by one so every survivor keeps its
+  override under its new index; the selection/promotion markers shift too.
+  Positions re-derive by re-running the sampler for the new count.
+
+**Cross-boundary wiring (open, not owned by T2):** recording promoted node ids
+into `StampInteractionState` on `DbResult::NodePromoted`, and dispatching
+`reflow_after_delete` from a `PathReflow` observer, land in the db-results /
+plugin systems (T6/T1 seam) — the handlers + state machine here are the leaf
+logic those systems call.

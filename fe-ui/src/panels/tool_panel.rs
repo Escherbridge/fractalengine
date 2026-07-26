@@ -189,6 +189,18 @@ pub struct ToolPanelState {
     pub terrain_footprint_radius: f32,
     pub terrain_target_height: f32,
     pub terrain_delta: f32,
+    // --- stamped_asset_nodes_20260725 (T2): per-stamp editor buffers ---
+    /// Which instance index of the edited track's stamp group the stamp editor
+    /// targets (select/promote/scale/rotate/slide). Position stays path-locked.
+    pub stamp_edit_index: u32,
+    /// Uniform per-stamp scale override to apply (FR-3). 1.0 = inherit base.
+    pub stamp_scale: f32,
+    /// Per-stamp yaw override in DEGREES about +Y (FR-3), converted to a
+    /// quaternion at emit time.
+    pub stamp_yaw_deg: f32,
+    /// Arc-length "slide along path" offset in real METERS (FR-3, Q-1). N-1:
+    /// meters only — no `world_scale` in the buffer.
+    pub stamp_arc_m: f32,
 }
 
 impl ToolPanelState {
@@ -311,6 +323,133 @@ pub(crate) fn render_path_asset_section(
                 .italics(),
         );
     }
+
+    // stamped_asset_nodes_20260725 (T2): per-stamp editor — select an individual
+    // stamp (promotes on first select, FR-2), then scale/rotate/slide it (FR-3).
+    if let Some(track_id) = target_track {
+        ui.add_space(8.0);
+        ui.separator();
+        render_stamp_editor(ui, state, ui_mgr, track_id);
+    }
+}
+
+/// Convert a yaw angle (radians about +Y) to a rotation quaternion `[x,y,z,w]`
+/// in the glTF/Bevy convention. Pure so the emit math is unit-testable.
+pub(crate) fn yaw_to_quat(yaw_rad: f32) -> [f32; 4] {
+    let half = yaw_rad * 0.5;
+    [0.0, half.sin(), 0.0, half.cos()]
+}
+
+/// FR-2/FR-3 per-stamp editor (T2). Emits `SelectStamp`/`PromoteStamp` and the
+/// scale/rotate/slide override actions for `track_id`'s stamp at
+/// `state.stamp_edit_index`. Free translate is intentionally absent — position
+/// stays path-derived; "Slide" is the only reposition (Q-1). Values are real
+/// units (scale factor, degrees, meters) — N-1: no `world_scale` here.
+fn render_stamp_editor(
+    ui: &mut egui::Ui,
+    state: &mut ToolPanelState,
+    ui_mgr: &mut UiManager,
+    track_id: String,
+) {
+    // Seed a usable default scale on first paint (Default gives 0.0).
+    if state.stamp_scale <= 0.0 {
+        state.stamp_scale = 1.0;
+    }
+
+    ui.label(
+        egui::RichText::new("Selected Stamp")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Index").small().color(theme::TEXT_DIM));
+        ui.add(egui::DragValue::new(&mut state.stamp_edit_index).range(0..=u32::MAX))
+            .on_hover_text("Which stamp along the path to edit (0-based)");
+        if ui
+            .button("Select")
+            .on_hover_text("Select this stamp as an individual node (promotes on first select)")
+            .clicked()
+        {
+            ui_mgr.push_action(UiAction::SelectStamp {
+                track_node_id: track_id.clone(),
+                stamp_index: state.stamp_edit_index as usize,
+            });
+        }
+        if ui
+            .button("Promote")
+            .on_hover_text("Materialize this stamp as an addressable node (T1 promotion)")
+            .clicked()
+        {
+            ui_mgr.push_action(UiAction::PromoteStamp {
+                track_node_id: track_id.clone(),
+                stamp_index: state.stamp_edit_index as usize,
+            });
+        }
+    });
+    ui.add_space(4.0);
+
+    // Scale override (uniform) — position stays path-derived (no translate handle).
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Scale").small().color(theme::TEXT_DIM));
+        ui.add(
+            egui::DragValue::new(&mut state.stamp_scale)
+                .speed(0.05)
+                .range(0.01..=f32::MAX),
+        );
+        if ui.button("Apply").clicked() {
+            let s = state.stamp_scale;
+            ui_mgr.push_action(UiAction::SetStampScale {
+                track_node_id: track_id.clone(),
+                stamp_index: state.stamp_edit_index as usize,
+                scale: [s, s, s],
+            });
+        }
+    });
+
+    // Rotation override — yaw about +Y, entered in degrees.
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Rotate (°)")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add(egui::DragValue::new(&mut state.stamp_yaw_deg).speed(1.0));
+        if ui.button("Apply").clicked() {
+            let quat = yaw_to_quat(state.stamp_yaw_deg.to_radians());
+            ui_mgr.push_action(UiAction::SetStampRotation {
+                track_node_id: track_id.clone(),
+                stamp_index: state.stamp_edit_index as usize,
+                rotation: quat,
+            });
+        }
+    });
+
+    // Slide along path — 1-D arc-length reposition in real meters (Q-1).
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Slide (m)")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add(
+            egui::DragValue::new(&mut state.stamp_arc_m)
+                .speed(0.1)
+                .range(0.0..=f32::MAX)
+                .suffix(" m"),
+        )
+        .on_hover_text(
+            "Reposition the stamp along its curve by arc length (free translate stays off)",
+        );
+        if ui.button("Apply").clicked() {
+            ui_mgr.push_action(UiAction::SlideStampAlongPath {
+                track_node_id: track_id.clone(),
+                stamp_index: state.stamp_edit_index as usize,
+                arc_length: state.stamp_arc_m,
+            });
+        }
+    });
 }
 
 /// Resolve an edited track's display name from the Paths-tab track list,
@@ -771,6 +910,29 @@ mod tests {
         assert_eq!(desc.spacing_value, 2.5);
         assert_eq!(desc.count, 7);
         assert!(desc.tangent_align);
+    }
+
+    #[test]
+    fn yaw_to_quat_identity_and_ninety() {
+        // 0° → identity quaternion.
+        let q = yaw_to_quat(0.0);
+        assert!((q[0]).abs() < 1e-6 && (q[1]).abs() < 1e-6 && (q[2]).abs() < 1e-6);
+        assert!((q[3] - 1.0).abs() < 1e-6);
+        // 90° about +Y → (0, sin45, 0, cos45).
+        let q = yaw_to_quat(std::f32::consts::FRAC_PI_2);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((q[1] - s).abs() < 1e-5, "y = sin45, got {}", q[1]);
+        assert!((q[3] - s).abs() < 1e-5, "w = cos45, got {}", q[3]);
+        assert!(q[0].abs() < 1e-6 && q[2].abs() < 1e-6);
+    }
+
+    #[test]
+    fn yaw_to_quat_is_unit_length() {
+        for deg in [0.0f32, 30.0, 45.0, 180.0, 270.0, -90.0] {
+            let q = yaw_to_quat(deg.to_radians());
+            let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+            assert!((n - 1.0).abs() < 1e-5, "quat not unit for {deg}°: {n}");
+        }
     }
 
     #[test]
