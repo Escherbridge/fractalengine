@@ -369,6 +369,28 @@ pub enum DbCommand {
         /// Caller identity — authorized before materializing the node (N-5).
         auth: CallerAuth,
     },
+    /// Rename a node's `display_name`. Authorized in fe-policy (Editor+, via
+    /// `auth`); a missing/tombstoned node is an error, never a silent success.
+    RenameNode {
+        node_id: String,
+        new_name: String,
+        /// Caller identity — authorized before mutating (see `TombstoneNode`).
+        auth: CallerAuth,
+    },
+    /// Duplicate a node: full row copy with a fresh id, " (copy)" name, +1m x/z
+    /// offset, and path-binding identity keys stripped — see
+    /// fe-database/src/AGENTS.md §lifecycle. Authorized in fe-policy (Editor+).
+    DuplicateNode {
+        node_id: String,
+        /// Caller identity — authorized before mutating (see `TombstoneNode`).
+        auth: CallerAuth,
+    },
+    /// Count a node's live (non-tombstoned) descendants, excluding the node
+    /// itself — read-only (no auth, mirrors `GetNodeProperties`); feeds the
+    /// cascade-delete confirm copy ("its N child nodes").
+    CountNodeDescendants {
+        node_id: String,
+    },
     // --- Field definition (property schema) management ---
     /// Create a new field definition for a scope.
     CreateFieldDef {
@@ -606,6 +628,16 @@ pub enum DbResult {
         /// instance was already promoted (idempotent no-op).
         newly_promoted: bool,
     },
+    /// Result of `RenameNode` — the node's `display_name` was updated.
+    NodeRenamed {
+        node_id: String,
+        new_name: String,
+    },
+    /// Result of `CountNodeDescendants` — live descendants, root excluded.
+    NodeDescendantCount {
+        node_id: String,
+        count: usize,
+    },
     // --- Field definition results ---
     /// Result of `CreateFieldDef`.
     FieldDefCreated {
@@ -814,9 +846,17 @@ pub enum LifecycleEvent {
     },
     /// A node was deleted via tombstone — sync-safe, survives merge (FR-1).
     NodeDeleted { address: String, node_id: String },
+    /// A node's `display_name` changed — metadata only, address unchanged.
+    NodeRenamed { address: String, node_id: String },
     /// A stamp delete asks the owning path to re-flow its remaining stamps
     /// (FR-2). Geometry re-flow is T2's; this event is the lifecycle hook only.
-    PathReflow { path_id: String },
+    PathReflow {
+        path_id: String,
+        /// The deleted stamp's `instance_index`, when the tombstoned node was a
+        /// promoted stamp. Optional + defaulted so pre-field payloads still parse.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deleted_index: Option<u32>,
+    },
 }
 
 impl LifecycleEvent {
@@ -826,7 +866,8 @@ impl LifecycleEvent {
         match self {
             LifecycleEvent::NodeCreated { address, .. }
             | LifecycleEvent::NodePromoted { address, .. }
-            | LifecycleEvent::NodeDeleted { address, .. } => Some(address),
+            | LifecycleEvent::NodeDeleted { address, .. }
+            | LifecycleEvent::NodeRenamed { address, .. } => Some(address),
             LifecycleEvent::PathReflow { .. } => None,
         }
     }
@@ -1011,6 +1052,18 @@ mod lifecycle_vocabulary_tests {
                 instance_index: 7,
                 auth: CallerAuth::identified("did:key:z6MkA", "editor"),
             },
+            DbCommand::RenameNode {
+                node_id: "n1".into(),
+                new_name: "N2".into(),
+                auth: CallerAuth::Local,
+            },
+            DbCommand::DuplicateNode {
+                node_id: "n1".into(),
+                auth: CallerAuth::identified("did:key:z6MkA", "editor"),
+            },
+            DbCommand::CountNodeDescendants {
+                node_id: "n1".into(),
+            },
         ] {
             let _ = format!("{:?}", cmd.clone());
         }
@@ -1046,6 +1099,20 @@ mod lifecycle_vocabulary_tests {
     }
 
     #[test]
+    fn rename_and_count_results_debug_clone() {
+        let r = DbResult::NodeRenamed {
+            node_id: "n1".into(),
+            new_name: "N2".into(),
+        };
+        let _ = format!("{:?}", r.clone());
+        let c = DbResult::NodeDescendantCount {
+            node_id: "n1".into(),
+            count: 4,
+        };
+        let _ = format!("{:?}", c.clone());
+    }
+
+    #[test]
     fn lifecycle_event_carries_address_and_round_trips() {
         let events = [
             LifecycleEvent::NodeCreated {
@@ -1059,6 +1126,10 @@ mod lifecycle_vocabulary_tests {
                 instance_index: 3,
             },
             LifecycleEvent::NodeDeleted {
+                address: "fe://v1/f1/p1/n1".into(),
+                node_id: "n1".into(),
+            },
+            LifecycleEvent::NodeRenamed {
                 address: "fe://v1/f1/p1/n1".into(),
                 node_id: "n1".into(),
             },
@@ -1077,14 +1148,65 @@ mod lifecycle_vocabulary_tests {
     fn path_reflow_has_no_address_but_carries_path_id() {
         let ev = LifecycleEvent::PathReflow {
             path_id: "path1".into(),
+            deleted_index: None,
         };
         assert!(ev.address().is_none());
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"lifecycle\":\"path_reflow\""), "{json}");
+        // `None` is skipped on the wire — the legacy payload shape is preserved.
+        assert!(!json.contains("deleted_index"), "{json}");
         let back: LifecycleEvent = serde_json::from_str(&json).unwrap();
         match back {
-            LifecycleEvent::PathReflow { path_id } => assert_eq!(path_id, "path1"),
+            LifecycleEvent::PathReflow {
+                path_id,
+                deleted_index,
+            } => {
+                assert_eq!(path_id, "path1");
+                assert_eq!(deleted_index, None);
+            }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn path_reflow_deleted_index_round_trips_and_old_payloads_parse() {
+        let ev = LifecycleEvent::PathReflow {
+            path_id: "path1".into(),
+            deleted_index: Some(4),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"deleted_index\":4"), "{json}");
+        let back: LifecycleEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            LifecycleEvent::PathReflow { deleted_index, .. } => {
+                assert_eq!(deleted_index, Some(4));
+            }
+            _ => panic!("wrong variant"),
+        }
+        // Back-compat: a pre-field payload (no `deleted_index`) still parses.
+        let old = r#"{"lifecycle":"path_reflow","path_id":"path1"}"#;
+        let back: LifecycleEvent = serde_json::from_str(old).unwrap();
+        match back {
+            LifecycleEvent::PathReflow {
+                path_id,
+                deleted_index,
+            } => {
+                assert_eq!(path_id, "path1");
+                assert_eq!(deleted_index, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn node_renamed_event_round_trips() {
+        let ev = LifecycleEvent::NodeRenamed {
+            address: "fe://v1/f1/p1/n1".into(),
+            node_id: "n1".into(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"lifecycle\":\"node_renamed\""), "{json}");
+        let back: LifecycleEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.address(), Some("fe://v1/f1/p1/n1"));
     }
 }

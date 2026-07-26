@@ -858,6 +858,10 @@ pub(crate) struct TombstoneDurableOutcome {
     pub petal_id: String,
     /// Owning-path node id if a tombstoned node was a stamp (FR-2 re-flow hook).
     pub reflow_path: Option<String>,
+    /// The tombstoned stamp's `properties.instance_index` — threads into
+    /// `LifecycleEvent::PathReflow.deleted_index` so T2's re-flow knows which
+    /// slot vanished. `None` for non-stamp deletes.
+    pub deleted_instance_index: Option<u32>,
     /// Node ids actually tombstoned by this op (empty on an idempotent no-op).
     /// Read by the DB-thread arms to gate lifecycle-event emission (FR-6): a
     /// no-op repeat must not re-emit. Also the basis for a future per-descendant
@@ -865,12 +869,20 @@ pub(crate) struct TombstoneDurableOutcome {
     pub tombstoned_ids: Vec<String>,
 }
 
-/// Read a node's `(petal_id, reflow_path, already_tombstoned)`, tolerating an
-/// absent `node` table (fresh DB). `None` = no such node (matched-no-node).
+/// Lifecycle-relevant fields of one node row (see `read_node_lifecycle_meta`).
+struct NodeLifecycleMeta {
+    petal_id: String,
+    reflow_path: Option<String>,
+    instance_index: Option<u32>,
+    already_tombstoned: bool,
+}
+
+/// Read a node's lifecycle meta, tolerating an absent `node` table (fresh DB).
+/// `None` = no such node (matched-no-node).
 async fn read_node_lifecycle_meta(
     db: &Db,
     node_id: &str,
-) -> anyhow::Result<Option<(String, Option<String>, bool)>> {
+) -> anyhow::Result<Option<NodeLifecycleMeta>> {
     let lookup = db
         .query("SELECT petal_id, properties, tombstone FROM node WHERE node_id = $nid LIMIT 1")
         .bind(("nid", node_id.to_string()))
@@ -902,8 +914,18 @@ async fn read_node_lifecycle_meta(
                 .and_then(|v| v.as_str())
         })
         .map(|s| s.to_string());
+    let instance_index = row
+        .get("properties")
+        .and_then(|p| p.get("instance_index"))
+        .and_then(|v| v.as_u64())
+        .map(|i| i as u32);
     let already_tombstoned = row.get("tombstone").map(|t| !t.is_null()).unwrap_or(false);
-    Ok(Some((petal_id, reflow_path, already_tombstoned)))
+    Ok(Some(NodeLifecycleMeta {
+        petal_id,
+        reflow_path,
+        instance_index,
+        already_tombstoned,
+    }))
 }
 
 /// Build the durable tombstone marker object stamped onto a soft-deleted row.
@@ -928,15 +950,15 @@ pub(crate) async fn tombstone_node_handler(
     node_id: &str,
     source_did: &str,
 ) -> anyhow::Result<TombstoneDurableOutcome> {
-    let Some((petal_id, reflow_path, already)) = read_node_lifecycle_meta(db, node_id).await?
-    else {
+    let Some(meta) = read_node_lifecycle_meta(db, node_id).await? else {
         anyhow::bail!("TombstoneNode matched no node with node_id = {node_id}");
     };
-    if already {
+    if meta.already_tombstoned {
         // Idempotent no-op — already tombstoned, nothing to re-record (N-4).
         return Ok(TombstoneDurableOutcome {
-            petal_id,
-            reflow_path,
+            petal_id: meta.petal_id,
+            reflow_path: meta.reflow_path,
+            deleted_instance_index: meta.instance_index,
             tombstoned_ids: Vec::new(),
         });
     }
@@ -962,7 +984,7 @@ pub(crate) async fn tombstone_node_handler(
         op_type: crate::types::OpType::NodeTombstoned,
         payload: serde_json::json!({
             "node_id": node_id,
-            "petal_id": petal_id,
+            "petal_id": meta.petal_id,
             "source_did": source_did,
         }),
         sig: "00".repeat(64),
@@ -970,10 +992,14 @@ pub(crate) async fn tombstone_node_handler(
     };
     crate::op_log::write_op_log(db, entry).await?;
 
-    tracing::info!("Tombstoned node {node_id} (petal {petal_id}) — durable soft-delete + op-log");
+    tracing::info!(
+        "Tombstoned node {node_id} (petal {}) — durable soft-delete + op-log",
+        meta.petal_id
+    );
     Ok(TombstoneDurableOutcome {
-        petal_id,
-        reflow_path,
+        petal_id: meta.petal_id,
+        reflow_path: meta.reflow_path,
+        deleted_instance_index: meta.instance_index,
         tombstoned_ids: vec![node_id.to_string()],
     })
 }
@@ -985,22 +1011,18 @@ pub(crate) async fn tombstone_node_handler(
 /// `properties.owning_path_id` (BFS, de-duplicated, depth-capped). The subtree
 /// tombstone UPDATE and the op-log record commit together or not at all. See
 /// AGENTS.md §lifecycle.
-#[instrument(skip(db))]
-pub(crate) async fn cascade_tombstone_node_handler(
+/// BFS-collect the live (non-tombstoned) subtree rooted at `root` over the
+/// durable parent edges, INCLUDING the root itself. Shared by cascade tombstone
+/// (FR-2) and `CountNodeDescendants` so the two traversals can never drift.
+/// Node children are `properties.parent_id`; gpx waypoints and promoted stamps
+/// reference their parent via `gpx_track_id` / `owning_path_id`.
+async fn collect_live_subtree(
     db: &Db,
-    node_id: &str,
-    source_did: &str,
-) -> anyhow::Result<TombstoneDurableOutcome> {
-    let Some((petal_id, _root_reflow, _)) = read_node_lifecycle_meta(db, node_id).await? else {
-        anyhow::bail!("CascadeTombstoneNode matched no node with node_id = {node_id}");
-    };
-
-    // BFS over the durable parent edges to collect the whole live subtree. Node
-    // children are `properties.parent_id`; gpx waypoints and promoted stamps
-    // reference their parent via `gpx_track_id` / `owning_path_id`.
+    root: &str,
+) -> anyhow::Result<std::collections::HashSet<String>> {
     let mut collected: std::collections::HashSet<String> = std::collections::HashSet::new();
-    collected.insert(node_id.to_string());
-    let mut frontier: Vec<String> = vec![node_id.to_string()];
+    collected.insert(root.to_string());
+    let mut frontier: Vec<String> = vec![root.to_string()];
     // Depth cap: guards against a pathological/self-referential parent edge.
     for _ in 0..10_000 {
         if frontier.is_empty() {
@@ -1034,7 +1056,33 @@ pub(crate) async fn cascade_tombstone_node_handler(
         }
         frontier = next;
     }
+    Ok(collected)
+}
 
+/// Count a node's live descendants, EXCLUDING the root itself (the UI copy is
+/// "its N child nodes"). Read-only; shares `collect_live_subtree` with cascade.
+#[instrument(skip(db))]
+pub(crate) async fn count_node_descendants_handler(
+    db: &Db,
+    node_id: &str,
+) -> anyhow::Result<usize> {
+    let mut subtree = collect_live_subtree(db, node_id).await?;
+    subtree.remove(node_id);
+    Ok(subtree.len())
+}
+
+#[instrument(skip(db))]
+pub(crate) async fn cascade_tombstone_node_handler(
+    db: &Db,
+    node_id: &str,
+    source_did: &str,
+) -> anyhow::Result<TombstoneDurableOutcome> {
+    let Some(meta) = read_node_lifecycle_meta(db, node_id).await? else {
+        anyhow::bail!("CascadeTombstoneNode matched no node with node_id = {node_id}");
+    };
+    let petal_id = meta.petal_id;
+
+    let collected = collect_live_subtree(db, node_id).await?;
     let ids: Vec<String> = collected.into_iter().collect();
     let (lamport, hlc_ts) = crate::op_log::next_hlc_timestamp();
     let marker = tombstone_marker(lamport, source_did);
@@ -1075,6 +1123,7 @@ pub(crate) async fn cascade_tombstone_node_handler(
     Ok(TombstoneDurableOutcome {
         petal_id,
         reflow_path: None,
+        deleted_instance_index: None,
         tombstoned_ids: ids,
     })
 }
@@ -1118,6 +1167,9 @@ pub(crate) async fn promote_instance_handler(
     }
 
     // Materialize a full node row (geometry cast per AGENTS.md §geometry-inserts).
+    // `node_kind`/`path_id`/`instance_index` are the read-side contract of
+    // fe-query/src/spatial_nodes.rs; `owning_path_id` stays — it is the durable
+    // parent edge the cascade BFS and reflow hook traverse.
     db.query(
         "CREATE node CONTENT {
             node_id: $node_id,
@@ -1130,7 +1182,8 @@ pub(crate) async fn promote_instance_handler(
             scale: [1.0, 1.0, 1.0],
             interactive: true,
             created_at: $now,
-            properties: { owning_path_id: $path_id, instance_index: $idx },
+            properties: { node_kind: 'stamp', path_id: $path_id, \
+                          owning_path_id: $path_id, instance_index: $idx },
         }",
     )
     .bind(("node_id", node_id.clone()))
@@ -1160,6 +1213,204 @@ pub(crate) async fn promote_instance_handler(
 
     tracing::info!("Promoted stamp instance {node_id} (path {path_id}) in petal {petal_id}");
     Ok((node_id, true))
+}
+
+/// Rename a node's `display_name` (authorized upstream, Editor+). Mirrors
+/// `rename_entity_handler` for the `node` table; a missing or tombstoned node
+/// is an error, never a silent success. See AGENTS.md §lifecycle.
+#[instrument(skip(db))]
+pub(crate) async fn rename_node_handler(
+    db: &Db,
+    node_id: &str,
+    new_name: &str,
+) -> anyhow::Result<()> {
+    let update = db
+        .query("UPDATE node SET display_name = $name WHERE node_id = $nid AND tombstone = NONE")
+        .bind(("name", new_name.to_string()))
+        .bind(("nid", node_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("RenameNode query failed: {e}"))?
+        .check();
+    let updated: Vec<serde_json::Value> = match update {
+        Ok(mut res) => res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("RenameNode take failed: {e}"))?,
+        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+        Err(e) => return Err(anyhow::anyhow!("RenameNode statement failed: {e}")),
+    };
+    if updated.is_empty() {
+        anyhow::bail!("RenameNode matched no live node with node_id = {node_id}");
+    }
+    Ok(())
+}
+
+/// Duplicated-node row data the dispatch arm needs to mirror the CreateNode
+/// side effects (SceneChange, node_log, lifecycle event, `NodeCreated` result).
+#[derive(Debug, Clone)]
+pub(crate) struct DuplicateNodeOutcome {
+    pub node_id: String,
+    pub petal_id: String,
+    pub name: String,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+    pub has_asset: bool,
+}
+
+/// Drop the path-binding identity keys from a copied node's properties — a copy
+/// is not path-bound, so it must not claim a stamp identity. Rule details in
+/// AGENTS.md §lifecycle (duplicate).
+fn strip_path_identity_properties(properties: &serde_json::Value) -> serde_json::Value {
+    let Some(map) = properties.as_object() else {
+        return serde_json::json!({});
+    };
+    let mut out = serde_json::Map::new();
+    for (key, value) in map {
+        let strip = match key.as_str() {
+            // Path-binding identity + curve-domain override never survive a copy.
+            "owning_path_id" | "path_id" | "instance_index" | "stamp.override.arc_m" => true,
+            // A copy is not a stamp; other kinds (e.g. earthwork_region) carry over.
+            "node_kind" => value.as_str() == Some("stamp"),
+            _ => false,
+        };
+        if !strip {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+/// Duplicate a node (authorized upstream, Editor+): full row copy with a fresh
+/// ulid id, `"{source} (copy)"` name, a +1.0 m x/z offset (raw petal-local
+/// meters, N-1), and the path-binding identity keys stripped
+/// (`strip_path_identity_properties`). A missing or tombstoned source is an
+/// error. See AGENTS.md §lifecycle.
+#[instrument(skip(db))]
+pub(crate) async fn duplicate_node_handler(
+    db: &Db,
+    node_id: &str,
+) -> anyhow::Result<DuplicateNodeOutcome> {
+    let lookup = db
+        .query("SELECT * FROM node WHERE node_id = $nid AND tombstone = NONE LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("DuplicateNode lookup query failed: {e}"))?
+        .check();
+    let rows: Vec<serde_json::Value> = match lookup {
+        Ok(mut res) => res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("DuplicateNode lookup take failed: {e}"))?,
+        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "DuplicateNode lookup statement failed: {e}"
+            ))
+        }
+    };
+    let Some(src) = rows.first() else {
+        anyhow::bail!("DuplicateNode matched no live node with node_id = {node_id}");
+    };
+
+    let petal_id = src["petal_id"].as_str().unwrap_or_default().to_string();
+    let name = format!(
+        "{} (copy)",
+        src["display_name"].as_str().unwrap_or_default()
+    );
+    // +1.0 m on x and z — raw petal-local meters (N-1).
+    let coords = &src["position"]["coordinates"];
+    let x = coords[0].as_f64().unwrap_or(0.0) + 1.0;
+    let z = coords[1].as_f64().unwrap_or(0.0) + 1.0;
+    let y = src["elevation"].as_f64().unwrap_or(0.0);
+
+    let rotation: [f64; 4] = {
+        let arr = src["rotation"].as_array().cloned().unwrap_or_default();
+        [
+            arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0),
+            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0),
+            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0),
+            arr.get(3).and_then(|v| v.as_f64()).unwrap_or(1.0),
+        ]
+    };
+    let scale: [f64; 3] = {
+        let arr = src["scale"].as_array().cloned().unwrap_or_default();
+        [
+            arr.first().and_then(|v| v.as_f64()).unwrap_or(1.0),
+            arr.get(1).and_then(|v| v.as_f64()).unwrap_or(1.0),
+            arr.get(2).and_then(|v| v.as_f64()).unwrap_or(1.0),
+        ]
+    };
+    let asset_id: Option<String> = src["asset_id"].as_str().map(String::from);
+    let has_asset = asset_id.is_some();
+    let interactive = src["interactive"].as_bool().unwrap_or(false);
+    let properties = strip_path_identity_properties(&src["properties"]);
+
+    let new_id = ulid::Ulid::new().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
+    db.query(
+        "CREATE node CONTENT {
+            node_id: $node_id,
+            petal_id: $petal_id,
+            display_name: $name,
+            asset_id: $asset_id,
+            position: <geometry<point>> [$x, $z],
+            elevation: $y,
+            rotation: $rotation,
+            scale: $scale,
+            interactive: $interactive,
+            created_at: $now,
+            properties: $props,
+        }",
+    )
+    .bind(("node_id", new_id.clone()))
+    .bind(("petal_id", petal_id.clone()))
+    .bind(("name", name.clone()))
+    .bind(("asset_id", asset_id))
+    .bind(("x", x))
+    .bind(("z", z))
+    .bind(("y", y))
+    .bind(("rotation", rotation.to_vec()))
+    .bind(("scale", scale.to_vec()))
+    .bind(("interactive", interactive))
+    .bind(("now", now))
+    .bind(("props", properties))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("DuplicateNode CREATE failed: {e}"))?;
+
+    // Op-log parity with the create path: node_log only (create writes no op_log).
+    if let Err(e) = super::node_log::append_node_log(
+        db,
+        &new_id,
+        "created",
+        "local",
+        &serde_json::json!({
+            "petal_id": petal_id,
+            "name": name,
+            "position": [x, y, z],
+            "duplicated_from": node_id,
+        }),
+    )
+    .await
+    {
+        tracing::warn!("Failed to write node_log for duplicated node {new_id}: {e}");
+    }
+
+    tracing::info!("Duplicated node {node_id} -> {new_id} (petal {petal_id})");
+    Ok(DuplicateNodeOutcome {
+        node_id: new_id,
+        petal_id,
+        name,
+        position: [x as f32, y as f32, z as f32],
+        rotation: [
+            rotation[0] as f32,
+            rotation[1] as f32,
+            rotation[2] as f32,
+            rotation[3] as f32,
+        ],
+        scale: [scale[0] as f32, scale[1] as f32, scale[2] as f32],
+        has_asset,
+    })
 }
 
 // ---------------------------------------------------------------------------

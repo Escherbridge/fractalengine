@@ -27,6 +27,12 @@ pub fn authorize_instance_promotion(subject: &AuthContext, scope: &Scope) -> Dec
     RoleLevelPolicy::standard().evaluate(subject, &Action::Write, scope)
 }
 
+/// Authorize a node edit (rename / duplicate) — an Editor+ write like the rest
+/// of the lifecycle family. Shared by `RenameNode` and `DuplicateNode`.
+pub fn authorize_node_edit(subject: &AuthContext, scope: &Scope) -> Decision {
+    RoleLevelPolicy::standard().evaluate(subject, &Action::Write, scope)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +76,13 @@ mod tests {
     fn promotion_shares_the_editor_gate() {
         assert!(authorize_instance_promotion(&did(RoleLevel::Editor), &scope()).is_allow());
         assert!(!authorize_instance_promotion(&did(RoleLevel::Viewer), &scope()).is_allow());
+    }
+
+    #[test]
+    fn edit_shares_the_editor_gate() {
+        assert!(authorize_node_edit(&did(RoleLevel::Editor), &scope()).is_allow());
+        assert!(!authorize_node_edit(&did(RoleLevel::Viewer), &scope()).is_allow());
+        assert!(!authorize_node_edit(&AuthContext::Anonymous, &scope()).is_allow());
     }
 
     #[test]

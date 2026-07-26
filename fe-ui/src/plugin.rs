@@ -446,15 +446,15 @@ impl Plugin for GardenerConsolePlugin {
         // Application settings (D-78) + terrain-proposal editor state (FR-5).
         app.init_resource::<crate::settings::AppSettings>();
         app.init_resource::<crate::terrain_proposal_state::ProposalEditState>();
-        // Wave-1 registration scaffold (spatial-builder-program-20260725):
-        // interaction-state stubs homed in the owned action leaf files so
-        // T2/T3 fill their bodies without editing plugin.rs. See actions/mod.rs.
-        // StampInteractionState is NOT threaded into the render path: promote-on-
-        // select routes stamps into `NodeManager.selected` (inspector/gimbal cover
-        // T2). If T2 later needs render-path access, that one-line signature change
-        // routes through T6 (this scaffold owns the console/right-sidebar seam).
+        // Wave-1 (spatial-builder-program-20260725): interaction states homed in
+        // the action leaf files. StampInteractionState is the third selection
+        // authority (N-3); the T2 integration pass threads it read-only into
+        // `materialize_path_assets` (override application) and mutably into the
+        // db-results / lifecycle consumers. See actions/AGENTS.md §stamped-assets.
         app.init_resource::<crate::actions::asset::StampInteractionState>();
         app.init_resource::<crate::actions::terrain_proposal::SculptToolState>();
+        // T3: earthwork region↔node bookkeeping + volume changed-value gate.
+        app.init_resource::<crate::actions::terrain_proposal::EarthworkNodeMap>();
         // ui_shell_architecture_20260724 (FR-4/5/6): area-manager state resources.
         app.init_resource::<crate::ui_shell::topbar::TopbarState>();
         app.init_resource::<crate::ui_shell::left_sidebar::LeftSidebarState>();
@@ -481,6 +481,15 @@ impl Plugin for GardenerConsolePlugin {
         // fe-webview's WebViewPlugin also registers this; calling add_message
         // twice is idempotent.
         app.add_message::<fe_webview::ipc::BrowserCommand>();
+        // T3 shared seam: fe-terrain's TerrainPlugin also registers this;
+        // add_message twice is idempotent (same pattern as BrowserCommand).
+        app.add_message::<fe_renderer::terrain_overlay::EarthworkVolumeReport>();
+        // T3: persist bake-reported cut/fill volumes onto region nodes
+        // (changed-value gated inside the system).
+        app.add_systems(
+            Update,
+            crate::actions::terrain_proposal::persist_earthwork_volumes,
+        );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system);
         // FR-3 (data_icons_20260713): floating point labels over the viewport.
         // After `gardener_ui_system` so it reads the same-frame `ViewportRect`
@@ -537,6 +546,9 @@ impl Plugin for GardenerConsolePlugin {
                 update_viewport_cursor_world,
                 // Real-unit inspector display buffers (inspector_units_width_20260716 FR-2).
                 crate::panels::inspector::sync_inspector_units,
+                // T3 sculpt brush ring — after the cursor system so the ring
+                // reads the same-frame world position.
+                crate::sculpt_cursor::draw_sculpt_brush_ring.after(update_viewport_cursor_world),
             )
                 .in_set(UiSet::PostSelection),
         );
@@ -573,6 +585,9 @@ struct MiscUiParams<'w> {
     // (T3 fold). Mirrors `proposal_state`; distinct schedule from
     // `process_ui_actions`'s `ResMut`, so no resource-access conflict.
     sculpt_state: ResMut<'w, crate::actions::terrain_proposal::SculptToolState>,
+    // T4: stamp-selection authority, read-only for the context menu's selected
+    // marker + live promotion gates (mutation stays in `process_ui_actions`).
+    stamp_state: Res<'w, crate::actions::asset::StampInteractionState>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -635,6 +650,7 @@ fn gardener_ui_system(
         &mut misc.proposal_state,
         &mut misc.app_settings,
         &mut misc.sculpt_state,
+        &misc.stamp_state,
         &mut ui_shell.topbar,
         &mut ui_shell.left_sidebar,
         &mut ui_shell.right_sidebar,

@@ -107,16 +107,10 @@ fn main() {
         }
     };
 
-    // Drain lifecycle events in-process so create/promote/tombstone/reflow flow
-    // in the running app (FR-6). The op-log is the durable source of truth and
-    // P2P propagation rides the row-replication bridge above, so this consumer is
-    // the observation/reporting seam (T5) — currently a structured log; a richer
-    // reporting subscriber attaches here as a follow-up.
-    std::thread::spawn(move || {
-        while let Ok(ev) = lifecycle_rx.recv() {
-            tracing::debug!(address = ?ev.address(), event = ?ev, "node lifecycle event");
-        }
-    });
+    // `lifecycle_rx` rides into `BevyHandles` below: fe-runtime pumps it into
+    // `Messages<LifecycleEvent>` so in-app consumers (fe-ui PathReflow re-flow,
+    // T5 reporting) observe create/promote/tombstone/reflow (FR-6). The op-log
+    // stays the durable source of truth.
 
     // Send seed command so the DB populates initial data
     ch.db_cmd_tx.send(DbCommand::Seed).ok();
@@ -192,6 +186,7 @@ fn main() {
         db_res_rx: ch.db_res_rx,
         blob_store: Some(blob_store),
         on_blob_miss: Some(on_miss),
+        lifecycle_rx: Some(lifecycle_rx),
     });
 
     // GUI-only plugins (removed from fe-runtime so the headless relay can skip them)

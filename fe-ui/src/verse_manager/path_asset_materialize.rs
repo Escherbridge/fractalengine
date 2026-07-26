@@ -10,8 +10,15 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use fe_sdk::path_asset::{PathAssetDescriptor, PATH_ASSET_PROPERTY_KEY};
 
-use super::path_asset_reconcile::{points_fingerprint, sample_transforms, sanitize_world_scale};
+use fe_renderer::instancing::{
+    batch_by_asset, InstanceBatch, StampInstanceData, StampSpatialIndex, DEFAULT_CELL_SIZE_M,
+};
+
+use super::path_asset_reconcile::{
+    points_fingerprint, sample_transforms, sanitize_world_scale, transform_at_arc_length,
+};
 use super::spawn::{spawn_stamped_entity, PathAssetInstance};
+use crate::actions::asset::{StampInteractionState, StampOverride};
 use crate::navigation_manager::NavigationManager;
 
 // ---------------------------------------------------------------------------
@@ -88,16 +95,27 @@ impl PathAssetCache {
             self.invalidate(node_id);
             return;
         };
-        let points: Vec<[f32; 3]> = properties
+        // T2 curve-follow: keep the bezier handles and FLATTEN before caching so
+        // stamps sit on the same curve the renderer draws (fe-terrain
+        // `flatten_route` mirror). The fingerprint is over the FLATTENED
+        // polyline, so a handle-only edit retriggers materialization.
+        let rows = properties
             .get("gpx_points")
             .map(crate::gis::decode_gpx_points)
-            .map(|rows| rows.into_iter().map(|r| r.position).collect())
             .unwrap_or_default();
-        if points.is_empty() {
+        if rows.is_empty() {
             // A `path_asset` with no path to stamp along → nothing to materialize.
             self.invalidate(node_id);
             return;
         }
+        let anchors: Vec<crate::node_manager::curve::BezierAnchor> = rows
+            .iter()
+            .map(|r| (r.position, r.handle_in, r.handle_out))
+            .collect();
+        let points = crate::node_manager::curve::flatten_anchor_path(
+            &anchors,
+            crate::node_manager::curve::FLATTEN_SAMPLES_PER_SEGMENT,
+        );
         let fingerprint = points_fingerprint(&points);
         self.upsert(node_id, petal_id, descriptor, points, fingerprint);
     }
@@ -117,11 +135,13 @@ impl PathAssetCache {
 // Per-track applied-state gate (FR-2)
 // ---------------------------------------------------------------------------
 
-/// The `(descriptor, points-fingerprint, world-scale)` last stamped for a track.
+/// The `(descriptor, points-fingerprint, world-scale, overrides-fingerprint)`
+/// last stamped for a track. See AGENTS.md §path-asset-materialization.
 struct AppliedState {
     descriptor: PathAssetDescriptor,
     points_fingerprint: u64,
     world_scale_bits: u32,
+    overrides_fingerprint: u64,
 }
 
 /// Per-track change gate (FR-2): replaces the old single-slot gate so live
@@ -144,11 +164,13 @@ impl PathAssetApplied {
         descriptor: &PathAssetDescriptor,
         points_fingerprint: u64,
         world_scale: f32,
+        overrides_fingerprint: u64,
     ) -> bool {
         self.applied.get(track_id).is_some_and(|s| {
             &s.descriptor == descriptor
                 && s.points_fingerprint == points_fingerprint
                 && s.world_scale_bits == world_scale.to_bits()
+                && s.overrides_fingerprint == overrides_fingerprint
         })
     }
 
@@ -158,6 +180,7 @@ impl PathAssetApplied {
         descriptor: PathAssetDescriptor,
         points_fingerprint: u64,
         world_scale: f32,
+        overrides_fingerprint: u64,
     ) {
         self.applied.insert(
             track_id.to_string(),
@@ -165,6 +188,7 @@ impl PathAssetApplied {
                 descriptor,
                 points_fingerprint,
                 world_scale_bits: world_scale.to_bits(),
+                overrides_fingerprint,
             },
         );
     }
@@ -179,6 +203,121 @@ impl PathAssetApplied {
     pub(super) fn clear(&mut self) {
         self.applied.clear();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-track pick index + instanced-draw seam (T2 FR-4 / T4 HitTarget::Stamp)
+// ---------------------------------------------------------------------------
+
+/// Stable `SpawnedNodeMarker.node_id` for stamp instance `index` of `track_id`.
+/// Single source of the `{track}::stamp::{index}` format; the T4 right-click
+/// classifier parses it back via [`parse_stamp_marker_id`].
+pub(crate) fn stamp_marker_id(track_id: &str, index: usize) -> String {
+    format!("{track_id}::stamp::{index}")
+}
+
+/// Inverse of [`stamp_marker_id`]: `(track_id, stamp_index)`, or `None` when
+/// `id` is not a stamp marker id.
+pub(crate) fn parse_stamp_marker_id(id: &str) -> Option<(&str, usize)> {
+    let (track, idx) = id.rsplit_once("::stamp::")?;
+    if track.is_empty() {
+        return None;
+    }
+    Some((track, idx.parse().ok()?))
+}
+
+/// One materialized track's render/pick data. `index.pick_nearest(x, z, r)`
+/// returns the STAMP INDEX within this track (positions are fed in stamp
+/// order); `batches` is the CPU seam for a future custom instanced pipeline —
+/// today's draw rides Bevy auto-instancing over the shared GLB handles from
+/// `spawn_stamped_entity`. See AGENTS.md §path-asset-materialization.
+pub struct StampTrackRenderData {
+    /// Owning petal (entries are cleared wholesale on petal change).
+    pub petal_id: String,
+    /// XZ uniform-grid pick index; a hit IS the stamp_index for this track.
+    pub index: StampSpatialIndex,
+    /// Per-asset instance batches with overrides folded in (one per track today).
+    pub batches: Vec<InstanceBatch>,
+}
+
+/// `track_node_id → StampTrackRenderData`, rebuilt ONLY when a track (re)stamps
+/// (inside the applied-gate — never per frame). T4's right-click classification
+/// iterates active-petal tracks, calls `pick_nearest`, and yields
+/// `(track_node_id, stamp_index)` for `HitTarget::Stamp`.
+#[derive(Resource, Default)]
+pub struct StampRenderIndex {
+    pub tracks: HashMap<String, StampTrackRenderData>,
+}
+
+// ---------------------------------------------------------------------------
+// Per-stamp override application (T2 FR-3)
+// ---------------------------------------------------------------------------
+
+/// Order-insensitive fingerprint of one track's sparse overrides so the applied
+/// gate restamps when any override changes (input list is index-sorted by
+/// `StampInteractionState::overrides_for_track`). FNV over presence-tagged bits.
+fn overrides_fingerprint(overrides: &[(usize, StampOverride)]) -> u64 {
+    const FNV_OFFSET: u64 = 1469598103934665603;
+    const FNV_PRIME: u64 = 1099511628211;
+    fn mix(hash: &mut u64, v: u64) {
+        *hash ^= v;
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    let mut hash = FNV_OFFSET;
+    for (index, ov) in overrides {
+        mix(&mut hash, *index as u64 ^ 0x9E37_79B9_7F4A_7C15);
+        if let Some(s) = ov.scale {
+            mix(&mut hash, 1);
+            for v in s {
+                mix(&mut hash, v.to_bits() as u64);
+            }
+        }
+        if let Some(r) = ov.rotation {
+            mix(&mut hash, 2);
+            for v in r {
+                mix(&mut hash, v.to_bits() as u64);
+            }
+        }
+        if let Some(a) = ov.arc_offset_m {
+            mix(&mut hash, 3);
+            mix(&mut hash, a.to_bits() as u64);
+        }
+    }
+    mix(&mut hash, overrides.len() as u64);
+    hash
+}
+
+/// Compose one stamp's final transform: the path-derived default plus the
+/// sparse override. Precedence (T2 FR-3): `arc_offset_m` re-samples position +
+/// yaw at the absolute arc length (meters, clamped) on the SAME polyline;
+/// `rotation` (absolute quaternion xyzw) replaces the tangent-yaw rotation;
+/// `scale` sets the transform scale. Position stays path-derived always.
+fn stamp_transform(
+    points: &[[f32; 3]],
+    default_position: [f32; 3],
+    default_yaw: f32,
+    tangent_align: bool,
+    ov: Option<&StampOverride>,
+) -> Transform {
+    let (mut position, mut yaw) = (default_position, default_yaw);
+    if let Some(arc_m) = ov.and_then(|o| o.arc_offset_m) {
+        (position, yaw) = transform_at_arc_length(points, arc_m);
+    }
+    let mut transform = Transform::from_xyz(position[0], position[1], position[2]);
+    if tangent_align {
+        transform.rotation = Quat::from_rotation_y(yaw);
+    }
+    if let Some(r) = ov.and_then(|o| o.rotation) {
+        let q = Quat::from_xyzw(r[0], r[1], r[2], r[3]);
+        // A degenerate (zero-length) quat keeps the tangent default (no NaNs).
+        if q.length_squared() > 1e-9 {
+            transform.rotation = q.normalize();
+        }
+    }
+    if let Some(s) = ov.and_then(|o| o.scale) {
+        transform.scale = Vec3::from_array(s);
+    }
+    transform
 }
 
 // ---------------------------------------------------------------------------
@@ -213,9 +352,9 @@ fn stamp_is_orphaned(inst: &PathAssetInstance, active_petal: &str, cache: &PathA
 /// Petal-wide path-asset materializer (FR-1): the ONLY system that spawns
 /// stamp instances. For every cached track in the active petal it despawns the
 /// old `PathAssetInstance` group and restamps whenever the descriptor, points,
-/// or `world_scale` changed (per-track gate). Orphaned groups (track no longer
-/// cached — e.g. its `path_asset` was deleted) are torn down. Runs when the
-/// cache changed, the petal changed, or the petal's `world_scale` changed;
+/// `world_scale`, or per-stamp overrides changed (per-track gate). Orphaned
+/// groups (track no longer cached — e.g. its `path_asset` was deleted) are torn
+/// down. Runs when the cache, petal, `world_scale`, or stamp state changed;
 /// chained after `respawn_on_petal_change` + `reconcile_path_asset` so it
 /// observes their despawns, gate clears, and cache feeds. See AGENTS.md
 /// §path-asset-materialization.
@@ -225,17 +364,26 @@ pub(super) fn materialize_path_assets(
     cache: Res<PathAssetCache>,
     petal_map: Res<crate::terrain_map::PetalMapState>,
     asset_server: Res<AssetServer>,
+    stamp_state: Res<StampInteractionState>,
     mut applied: ResMut<PathAssetApplied>,
+    mut render_index: ResMut<StampRenderIndex>,
     mut last_petal: Local<Option<String>>,
     mut commands: Commands,
     existing: Query<(Entity, &PathAssetInstance)>,
     residency: super::spawn::ResidencyBudget,
 ) {
     let petal_changed = *last_petal != nav.active_petal_id;
-    if !(cache.is_changed() || petal_map.is_changed() || petal_changed) {
+    // T2 FR-3: `stamp_state` changes (override gestures) also re-run the pass;
+    // the per-track overrides fingerprint keeps untouched tracks gated out.
+    if !(cache.is_changed() || petal_map.is_changed() || petal_changed || stamp_state.is_changed())
+    {
         return;
     }
     *last_petal = nav.active_petal_id.clone();
+    if petal_changed {
+        // Pick/instance data is petal-scoped; restamps below rebuild it.
+        render_index.tracks.clear();
+    }
 
     let Some(active_petal) = nav.active_petal_id.as_deref() else {
         return;
@@ -249,6 +397,7 @@ pub(super) fn materialize_path_assets(
         if stamp_is_orphaned(inst, active_petal, &cache) {
             commands.entity(entity).despawn();
             applied.invalidate(&inst.source_track_id);
+            render_index.tracks.remove(&inst.source_track_id);
         }
     }
 
@@ -272,9 +421,20 @@ pub(super) fn materialize_path_assets(
         if entry.petal_id != active_petal {
             continue;
         }
-        if applied.matches(track_id, &entry.descriptor, entry.fingerprint, world_scale) {
+        // T2 FR-3: sparse per-stamp overrides are a stamp input like any other.
+        let track_overrides = stamp_state.overrides_for_track(track_id);
+        let ov_fingerprint = overrides_fingerprint(&track_overrides);
+        if applied.matches(
+            track_id,
+            &entry.descriptor,
+            entry.fingerprint,
+            world_scale,
+            ov_fingerprint,
+        ) {
             continue; // nothing changed — skip the restamp entirely
         }
+        let ov_by_index: HashMap<usize, &StampOverride> =
+            track_overrides.iter().map(|(i, o)| (*i, o)).collect();
 
         // Despawn the previous group for this track before rebuild (deferred).
         for (entity, inst) in existing.iter() {
@@ -296,12 +456,26 @@ pub(super) fn materialize_path_assets(
             samples.truncate(granted);
         }
         let stamped = samples.len();
+        // FR-4 seam: per-stamp positions + instance data for the pick index and
+        // the instanced-draw batch, built once per restamp (never per frame).
+        let mut positions: Vec<[f32; 3]> = Vec::with_capacity(stamped);
+        let mut instances: Vec<StampInstanceData> = Vec::with_capacity(stamped);
         for (i, (position, yaw)) in samples.into_iter().enumerate() {
-            let mut transform = Transform::from_xyz(position[0], position[1], position[2]);
-            if entry.descriptor.tangent_align {
-                transform.rotation = Quat::from_rotation_y(yaw);
-            }
-            let stamp_id = format!("{}::stamp::{}", track_id, i);
+            let transform = stamp_transform(
+                &entry.points,
+                position,
+                yaw,
+                entry.descriptor.tangent_align,
+                ov_by_index.get(&i).copied(),
+            );
+            positions.push(transform.translation.to_array());
+            instances.push(StampInstanceData {
+                position: transform.translation.to_array(),
+                rotation: transform.rotation.to_array(),
+                scale: transform.scale.to_array(),
+                stamp_index: i as u32,
+            });
+            let stamp_id = stamp_marker_id(track_id, i);
             spawn_stamped_entity(
                 &mut commands,
                 &asset_server,
@@ -313,11 +487,24 @@ pub(super) fn materialize_path_assets(
                 &entry.descriptor.asset_path,
             );
         }
+        render_index.tracks.insert(
+            track_id.clone(),
+            StampTrackRenderData {
+                petal_id: active_petal.to_string(),
+                index: StampSpatialIndex::build(&positions, DEFAULT_CELL_SIZE_M),
+                batches: batch_by_asset(
+                    instances
+                        .iter()
+                        .map(|inst| (entry.descriptor.asset_path.as_str(), *inst)),
+                ),
+            },
+        );
         applied.remember(
             track_id,
             entry.descriptor.clone(),
             entry.fingerprint,
             world_scale,
+            ov_fingerprint,
         );
         bevy::log::debug!(
             "Materialized {} path-asset stamps of '{}' along track {} (petal {})",
@@ -358,6 +545,26 @@ mod tests {
         }
     }
 
+    // --- stamp marker id round-trip (T4 right-click classification) ---
+
+    #[test]
+    fn stamp_marker_id_round_trips_through_parse() {
+        let id = stamp_marker_id("track-1", 42);
+        assert_eq!(id, "track-1::stamp::42");
+        assert_eq!(parse_stamp_marker_id(&id), Some(("track-1", 42)));
+        // A track id that itself contains the separator still parses (rsplit).
+        let nested = stamp_marker_id("a::stamp::b", 3);
+        assert_eq!(parse_stamp_marker_id(&nested), Some(("a::stamp::b", 3)));
+    }
+
+    #[test]
+    fn parse_stamp_marker_id_rejects_non_stamp_ids() {
+        assert_eq!(parse_stamp_marker_id("plain-node"), None);
+        assert_eq!(parse_stamp_marker_id("t::stamp::"), None);
+        assert_eq!(parse_stamp_marker_id("t::stamp::x"), None);
+        assert_eq!(parse_stamp_marker_id("::stamp::3"), None);
+    }
+
     // --- cache feed (FR-1) ---
 
     #[test]
@@ -396,6 +603,48 @@ mod tests {
             &json!({ "path_asset": { "asset_path": "blob://x.glb" }, "gpx_points": [] }),
         );
         assert!(cache.get("t3").is_none());
+    }
+
+    #[test]
+    fn note_properties_flattens_bezier_handles_and_refingerprints() {
+        // T2 curve-follow: the same two anchors WITH a bezier handle must (a)
+        // densify the cached polyline onto the curve and (b) change the
+        // fingerprint — a handle-only edit MUST retrigger materialization.
+        let mut cache = PathAssetCache::default();
+        cache.note_properties("t1", Some("p1"), &track_props());
+        let plain = cache.get("t1").expect("plain track cached");
+        let (plain_len, plain_fp) = (plain.points.len(), plain.fingerprint);
+        assert_eq!(plain_len, 2, "all-corner rows stay passthrough");
+
+        // Same positions, but a 12-slot row carrying a non-zero out-handle.
+        let handled = json!({
+            "path_asset": {
+                "asset_path": "blob://tree.glb",
+                "spacing_mode": "fixed_spacing",
+                "spacing_value": 5.0,
+                "count": 0,
+                "tangent_align": true
+            },
+            "gpx_points": [
+                [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  3.0, 0.0, 6.0,  1.0, 0.5],
+                [10.0, 0.0, 0.0, 1.0]
+            ]
+        });
+        cache.note_properties("t1", Some("p1"), &handled);
+        let curved = cache.get("t1").expect("handled track cached");
+        assert!(
+            curved.points.len() > plain_len,
+            "handled segment densifies onto the curve ({} pts)",
+            curved.points.len()
+        );
+        assert_ne!(
+            curved.fingerprint, plain_fp,
+            "handle-only edit must change the fingerprint (restamp trigger)"
+        );
+        assert!(
+            curved.points.iter().any(|p| p[2] > 0.5),
+            "flattened points must bow toward the +Z handle"
+        );
     }
 
     #[test]
@@ -520,33 +769,41 @@ mod tests {
         let fp = 12345u64;
         let mut applied = PathAssetApplied::default();
         assert!(
-            !applied.matches("t1", &d, fp, 1.0),
+            !applied.matches("t1", &d, fp, 1.0, 0),
             "empty gate never matches"
         );
-        applied.remember("t1", d.clone(), fp, 1.0);
-        assert!(applied.matches("t1", &d, fp, 1.0), "identical inputs match");
+        applied.remember("t1", d.clone(), fp, 1.0, 0);
+        assert!(
+            applied.matches("t1", &d, fp, 1.0, 0),
+            "identical inputs match"
+        );
         // FR-2: a different track is independent — the single-slot gate used to
         // stomp here, dropping one track's stamps when another was applied.
         assert!(
-            !applied.matches("t2", &d, fp, 1.0),
+            !applied.matches("t2", &d, fp, 1.0, 0),
             "different track re-stamps"
         );
         // Changed points fingerprint re-stamps.
         assert!(
-            !applied.matches("t1", &d, fp ^ 1, 1.0),
+            !applied.matches("t1", &d, fp ^ 1, 1.0, 0),
             "changed points re-stamp"
         );
         // Changed descriptor re-stamps.
         let mut d2 = d.clone();
         d2.spacing_value = 6.0;
         assert!(
-            !applied.matches("t1", &d2, fp, 1.0),
+            !applied.matches("t1", &d2, fp, 1.0, 0),
             "changed descriptor re-stamps"
         );
         // FR-3: metric spacing depends on world_scale, so a scale change re-stamps.
         assert!(
-            !applied.matches("t1", &d, fp, 0.5),
+            !applied.matches("t1", &d, fp, 0.5, 0),
             "changed world_scale re-stamps"
+        );
+        // T2 FR-3: a changed per-stamp override set re-stamps.
+        assert!(
+            !applied.matches("t1", &d, fp, 1.0, 42),
+            "changed overrides re-stamp"
         );
     }
 
@@ -554,19 +811,145 @@ mod tests {
     fn applied_gate_invalidate_is_per_track_and_clear_drops_all() {
         let d = sample_desc();
         let mut applied = PathAssetApplied::default();
-        applied.remember("t1", d.clone(), 1, 1.0);
-        applied.remember("t2", d.clone(), 2, 1.0);
+        applied.remember("t1", d.clone(), 1, 1.0, 0);
+        applied.remember("t2", d.clone(), 2, 1.0, 0);
         applied.invalidate("t1");
         assert!(
-            !applied.matches("t1", &d, 1, 1.0),
+            !applied.matches("t1", &d, 1, 1.0, 0),
             "invalidated track re-stamps"
         );
         assert!(
-            applied.matches("t2", &d, 2, 1.0),
+            applied.matches("t2", &d, 2, 1.0, 0),
             "sibling survives invalidate"
         );
         // Petal change / reset clears everything so re-entry restamps.
         applied.clear();
-        assert!(!applied.matches("t2", &d, 2, 1.0), "clear drops everything");
+        assert!(
+            !applied.matches("t2", &d, 2, 1.0, 0),
+            "clear drops everything"
+        );
+    }
+
+    // --- per-stamp override application (T2 FR-3) ---
+
+    /// 3-point straight polyline along +X, total length 20 m.
+    fn straight_points() -> Vec<[f32; 3]> {
+        vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]]
+    }
+
+    #[test]
+    fn arc_offset_override_resamples_position_on_the_polyline() {
+        let points = straight_points();
+        let ov = StampOverride {
+            arc_offset_m: Some(7.5),
+            ..Default::default()
+        };
+        let t = stamp_transform(&points, [0.0, 0.0, 0.0], 0.0, true, Some(&ov));
+        assert!(
+            (t.translation.x - 7.5).abs() < 1e-3,
+            "slide to 7.5 m along +X, got {:?}",
+            t.translation
+        );
+        // Yaw is re-derived at the new offset (still +X → FRAC_PI_2).
+        let (axis, angle) = t.rotation.to_axis_angle();
+        assert!(
+            (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-2 && axis.y > 0.9,
+            "tangent yaw at the new offset, got axis {axis:?} angle {angle}"
+        );
+        // Overlong slide clamps to the path end (never off-curve).
+        let ov_far = StampOverride {
+            arc_offset_m: Some(999.0),
+            ..Default::default()
+        };
+        let t = stamp_transform(&points, [0.0, 0.0, 0.0], 0.0, false, Some(&ov_far));
+        assert!((t.translation.x - 20.0).abs() < 1e-3, "clamped to total");
+    }
+
+    #[test]
+    fn rotation_override_replaces_tangent_yaw() {
+        use std::f32::consts::FRAC_1_SQRT_2;
+        let points = straight_points();
+        let ov = StampOverride {
+            rotation: Some([0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2]),
+            ..Default::default()
+        };
+        // Default yaw would be PI (some other heading); the override wins.
+        let t = stamp_transform(
+            &points,
+            [5.0, 0.0, 0.0],
+            std::f32::consts::PI,
+            true,
+            Some(&ov),
+        );
+        let expected = Quat::from_xyzw(0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
+        assert!(
+            t.rotation.angle_between(expected) < 1e-3,
+            "override quat wins over tangent yaw, got {:?}",
+            t.rotation
+        );
+        // A degenerate zero quat keeps the tangent default (no NaN basis).
+        let ov_zero = StampOverride {
+            rotation: Some([0.0; 4]),
+            ..Default::default()
+        };
+        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.5, true, Some(&ov_zero));
+        assert!(
+            t.rotation.angle_between(Quat::from_rotation_y(0.5)) < 1e-3,
+            "zero quat must not replace the default"
+        );
+    }
+
+    #[test]
+    fn scale_override_sets_transform_scale() {
+        let points = straight_points();
+        let ov = StampOverride {
+            scale: Some([2.0, 3.0, 4.0]),
+            ..Default::default()
+        };
+        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.0, false, Some(&ov));
+        assert_eq!(t.scale, Vec3::new(2.0, 3.0, 4.0));
+        // No override → identity scale and the path-derived position.
+        let t = stamp_transform(&points, [5.0, 0.0, 0.0], 0.0, false, None);
+        assert_eq!(t.scale, Vec3::ONE);
+        assert_eq!(t.translation, Vec3::new(5.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn overrides_fingerprint_tracks_every_field_and_sparseness() {
+        let base: Vec<(usize, StampOverride)> = vec![];
+        let one_scale = vec![(
+            2usize,
+            StampOverride {
+                scale: Some([2.0, 2.0, 2.0]),
+                ..Default::default()
+            },
+        )];
+        let one_scale_other_value = vec![(
+            2usize,
+            StampOverride {
+                scale: Some([3.0, 2.0, 2.0]),
+                ..Default::default()
+            },
+        )];
+        let one_arc = vec![(
+            2usize,
+            StampOverride {
+                arc_offset_m: Some(1.5),
+                ..Default::default()
+            },
+        )];
+        let fp = overrides_fingerprint;
+        assert_ne!(fp(&base), fp(&one_scale), "adding an override re-stamps");
+        assert_ne!(
+            fp(&one_scale),
+            fp(&one_scale_other_value),
+            "changing a value re-stamps"
+        );
+        assert_ne!(
+            fp(&one_scale),
+            fp(&one_arc),
+            "different field with same index differs"
+        );
+        assert_eq!(fp(&one_scale), fp(&one_scale), "deterministic");
     }
 }

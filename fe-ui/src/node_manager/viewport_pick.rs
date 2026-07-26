@@ -126,7 +126,8 @@ fn nearest_in_subtree(
 /// regression). Returns the smallest entry distance across all candidates so
 /// overlapping child meshes resolve to the closest surface. `t` is measured
 /// along the world-space ray direction and is comparable across entities.
-fn pick_node_aabb(
+/// `pub(super)`: shared with the right-click classifier (`context_pick`).
+pub(super) fn pick_node_aabb(
     entity: Entity,
     ray: &Ray3d,
     g_transform_query: &Query<&GlobalTransform>,

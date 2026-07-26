@@ -141,6 +141,13 @@ impl VerseManager {
             node.webpage_url = url;
         }
     }
+
+    /// Update display name of a node by its ID (`DbResult::NodeRenamed`).
+    pub fn update_node_name(&mut self, node_id: &str, name: &str) {
+        if let Some(node) = self.node_entry_mut(node_id) {
+            node.name = name.to_string();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -244,6 +251,18 @@ mod tests {
         mgr.update_node_url("node-1", None);
         let node = mgr.all_nodes().find(|n| n.id == "node-1").unwrap();
         assert!(node.webpage_url.is_none());
+    }
+
+    #[test]
+    fn update_node_name_renames_and_ignores_missing() {
+        let mut mgr = make_tree();
+        mgr.update_node_name("node-3", "Renamed");
+        assert_eq!(
+            mgr.all_nodes().find(|n| n.id == "node-3").unwrap().name,
+            "Renamed"
+        );
+        mgr.update_node_name("missing", "X");
+        assert!(mgr.all_nodes().all(|n| n.name != "X"));
     }
 
     #[test]

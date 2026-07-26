@@ -130,22 +130,43 @@ impl Harness {
     }
 
     fn set_parent(&self, node_id: &str, parent_id: &str) {
+        self.set_property(node_id, "parent_id", serde_json::json!(parent_id));
+    }
+
+    fn set_property(&self, node_id: &str, key: &str, value: serde_json::Value) {
         self.send(DbCommand::SetNodeProperty {
             node_id: node_id.into(),
-            key: "parent_id".into(),
-            value: serde_json::json!(parent_id),
+            key: key.into(),
+            value,
         });
         assert!(matches!(self.recv(), DbResult::NodePropertySet { .. }));
     }
 
-    fn load_ids(&self, petal_id: &str) -> Vec<String> {
+    fn get_properties(&self, node_id: &str) -> serde_json::Value {
+        self.send(DbCommand::GetNodeProperties {
+            node_id: node_id.into(),
+        });
+        match self.recv() {
+            DbResult::NodePropertiesLoaded { properties, .. } => properties,
+            o => panic!("expected NodePropertiesLoaded, got {o:?}"),
+        }
+    }
+
+    fn load_nodes(&self, petal_id: &str) -> Vec<fe_runtime::messages::NodeDto> {
         self.send(DbCommand::LoadNodesByPetal {
             petal_id: petal_id.into(),
         });
         match self.recv() {
-            DbResult::NodesLoaded { nodes, .. } => nodes.into_iter().map(|n| n.node_id).collect(),
+            DbResult::NodesLoaded { nodes, .. } => nodes,
             o => panic!("expected NodesLoaded, got {o:?}"),
         }
+    }
+
+    fn load_ids(&self, petal_id: &str) -> Vec<String> {
+        self.load_nodes(petal_id)
+            .into_iter()
+            .map(|n| n.node_id)
+            .collect()
     }
 }
 
@@ -390,4 +411,346 @@ fn repeat_tombstone_is_idempotent_and_emits_no_second_event() {
         h.life_rx.try_recv().is_err(),
         "repeat tombstone on an already-deleted node emits no second event"
     );
+}
+
+// --- Step 1: rename is authorized, persists, and emits one event ---
+
+#[test]
+fn rename_is_authorized_persists_and_emits_one_event() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let node = h.create_node(&petal, "N");
+    h.drain_life();
+
+    // N-5: a Viewer is denied — name untouched, no event.
+    h.send(DbCommand::RenameNode {
+        node_id: node.clone(),
+        new_name: "X".into(),
+        auth: viewer(),
+    });
+    match h.recv() {
+        DbResult::Error(e) => assert!(e.contains("denied"), "viewer denied: {e}"),
+        o => panic!("viewer rename must be denied, got {o:?}"),
+    }
+    assert!(
+        h.life_rx.try_recv().is_err(),
+        "a denied rename emits no event"
+    );
+    let names: Vec<String> = h.load_nodes(&petal).into_iter().map(|n| n.name).collect();
+    assert!(names.contains(&"N".to_string()), "name survives: {names:?}");
+
+    // Editor rename → NodeRenamed result + exactly one NodeRenamed event.
+    h.send(DbCommand::RenameNode {
+        node_id: node.clone(),
+        new_name: "N2".into(),
+        auth: editor(),
+    });
+    match h.recv() {
+        DbResult::NodeRenamed { node_id, new_name } => {
+            assert_eq!(node_id, node);
+            assert_eq!(new_name, "N2");
+        }
+        o => panic!("expected NodeRenamed, got {o:?}"),
+    }
+    match h.recv_life() {
+        LifecycleEvent::NodeRenamed { node_id, address } => {
+            assert_eq!(node_id, node);
+            assert!(address.starts_with("fe://"), "stable address: {address}");
+        }
+        o => panic!("expected NodeRenamed event, got {o:?}"),
+    }
+    assert!(
+        h.life_rx.try_recv().is_err(),
+        "rename emits exactly one event"
+    );
+
+    // Persisted: the reload read sees the new display_name.
+    let names: Vec<String> = h.load_nodes(&petal).into_iter().map(|n| n.name).collect();
+    assert!(names.contains(&"N2".to_string()), "renamed: {names:?}");
+
+    // N-5: the local session renames via its DB-resolved (owner) role.
+    h.send(DbCommand::RenameNode {
+        node_id: node.clone(),
+        new_name: "N3".into(),
+        auth: local(),
+    });
+    assert!(
+        matches!(h.recv(), DbResult::NodeRenamed { .. }),
+        "local owner rename is authorized via the DB-resolved role"
+    );
+}
+
+#[test]
+fn rename_missing_or_tombstoned_node_is_an_error() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let node = h.create_node(&petal, "N");
+    h.drain_life();
+
+    // Nonexistent node: scope resolution fails → error, never a silent success.
+    h.send(DbCommand::RenameNode {
+        node_id: "no-such-node".into(),
+        new_name: "X".into(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::Error(_)));
+
+    // Tombstoned node: the live-row UPDATE matches nothing → error, no event.
+    h.send(DbCommand::TombstoneNode {
+        node_id: node.clone(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::NodeDeleted { .. }));
+    h.drain_life();
+    h.send(DbCommand::RenameNode {
+        node_id: node,
+        new_name: "X".into(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::Error(_)));
+    assert!(h.life_rx.try_recv().is_err());
+}
+
+// --- Step 1: duplicate copies the row minus the path-binding identity keys ---
+
+#[test]
+fn duplicate_copies_row_minus_path_identity_keys() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let node = h.create_node(&petal, "N");
+    h.set_property(&node, "owning_path_id", serde_json::json!("path"));
+    h.set_property(&node, "path_id", serde_json::json!("path"));
+    h.set_property(&node, "instance_index", serde_json::json!(2));
+    h.set_property(&node, "node_kind", serde_json::json!("stamp"));
+    h.set_property(&node, "stamp.override.scale", serde_json::json!(2.0));
+    h.set_property(&node, "stamp.override.arc_m", serde_json::json!(5.0));
+    h.set_property(&node, "annotation", serde_json::json!("keep me"));
+    h.drain_life();
+
+    // N-5: a Viewer is denied — no copy, no event.
+    h.send(DbCommand::DuplicateNode {
+        node_id: node.clone(),
+        auth: viewer(),
+    });
+    assert!(
+        matches!(h.recv(), DbResult::Error(_)),
+        "viewer duplicate denied"
+    );
+    assert!(h.life_rx.try_recv().is_err());
+
+    // Editor duplicates → NodeCreated with " (copy)" name and +1 m x/z offset.
+    h.send(DbCommand::DuplicateNode {
+        node_id: node.clone(),
+        auth: editor(),
+    });
+    let copy_id = match h.recv() {
+        DbResult::NodeCreated {
+            id,
+            petal_id,
+            name,
+            correlation_id,
+            position,
+            ..
+        } => {
+            assert_eq!(name, "N (copy)");
+            assert_eq!(position, [1.0, 0.0, 1.0], "+1 m x/z in raw meters (N-1)");
+            assert_eq!(correlation_id, None);
+            assert_eq!(petal_id, petal);
+            id
+        }
+        o => panic!("expected NodeCreated, got {o:?}"),
+    };
+    assert!(matches!(h.recv_life(), LifecycleEvent::NodeCreated { .. }));
+    assert!(
+        h.life_rx.try_recv().is_err(),
+        "duplicate emits exactly one event"
+    );
+
+    // Properties copied MINUS the path-binding identity keys (a copy is not
+    // path-bound — see fe-database/src/AGENTS.md §lifecycle).
+    let props = h.get_properties(&copy_id);
+    assert_eq!(props["annotation"], serde_json::json!("keep me"));
+    assert_eq!(props["stamp.override.scale"], serde_json::json!(2.0));
+    for stripped in [
+        "owning_path_id",
+        "path_id",
+        "instance_index",
+        "node_kind",
+        "stamp.override.arc_m",
+    ] {
+        assert!(
+            props.get(stripped).is_none(),
+            "{stripped} must be stripped from the copy: {props:?}"
+        );
+    }
+    // The source keeps its identity untouched.
+    let src_props = h.get_properties(&node);
+    assert_eq!(src_props["node_kind"], serde_json::json!("stamp"));
+}
+
+#[test]
+fn duplicate_keeps_non_stamp_node_kind() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let node = h.create_node(&petal, "E");
+    h.set_property(&node, "node_kind", serde_json::json!("earthwork_region"));
+    h.drain_life();
+
+    h.send(DbCommand::DuplicateNode {
+        node_id: node,
+        auth: editor(),
+    });
+    let copy_id = match h.recv() {
+        DbResult::NodeCreated { id, .. } => id,
+        o => panic!("expected NodeCreated, got {o:?}"),
+    };
+    let props = h.get_properties(&copy_id);
+    assert_eq!(
+        props["node_kind"],
+        serde_json::json!("earthwork_region"),
+        "a non-stamp kind carries over to the copy"
+    );
+}
+
+#[test]
+fn duplicate_missing_or_tombstoned_node_is_an_error() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let node = h.create_node(&petal, "N");
+    h.drain_life();
+
+    h.send(DbCommand::DuplicateNode {
+        node_id: "no-such-node".into(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::Error(_)));
+
+    h.send(DbCommand::TombstoneNode {
+        node_id: node.clone(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::NodeDeleted { .. }));
+    h.drain_life();
+    h.send(DbCommand::DuplicateNode {
+        node_id: node,
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::Error(_)));
+    assert!(h.life_rx.try_recv().is_err());
+}
+
+// --- Step 1: descendant count shares the cascade BFS, excludes the root ---
+
+#[test]
+fn count_descendants_excludes_root_and_tombstoned_rows() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let root = h.create_node(&petal, "root");
+    let child = h.create_node(&petal, "child");
+    let grand = h.create_node(&petal, "grand");
+    h.set_parent(&child, &root);
+    h.set_parent(&grand, &child);
+    h.drain_life();
+
+    h.send(DbCommand::CountNodeDescendants {
+        node_id: root.clone(),
+    });
+    match h.recv() {
+        DbResult::NodeDescendantCount { node_id, count } => {
+            assert_eq!(node_id, root);
+            assert_eq!(count, 2, "child + grand, root excluded");
+        }
+        o => panic!("expected NodeDescendantCount, got {o:?}"),
+    }
+
+    // After the cascade the whole subtree is tombstoned → the count is 0.
+    h.send(DbCommand::CascadeTombstoneNode {
+        node_id: root.clone(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::NodeDeleted { .. }));
+    h.drain_life();
+    h.send(DbCommand::CountNodeDescendants { node_id: root });
+    match h.recv() {
+        DbResult::NodeDescendantCount { count, .. } => assert_eq!(count, 0),
+        o => panic!("expected NodeDescendantCount, got {o:?}"),
+    }
+}
+
+// --- Step 1: promotion writes fe-query's stamp read contract ---
+
+#[test]
+fn promotion_writes_the_stamp_read_contract_properties() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    h.drain_life();
+
+    h.send(DbCommand::PromoteInstance {
+        petal_id: petal.clone(),
+        path_id: "path".into(),
+        instance_index: 3,
+        auth: editor(),
+    });
+    let node_id = match h.recv() {
+        DbResult::NodePromoted {
+            node_id,
+            newly_promoted,
+            ..
+        } => {
+            assert!(newly_promoted);
+            node_id
+        }
+        o => panic!("expected NodePromoted, got {o:?}"),
+    };
+
+    // Write-side of fe-query/src/spatial_nodes.rs's read contract.
+    let props = h.get_properties(&node_id);
+    assert_eq!(props["node_kind"], serde_json::json!("stamp"));
+    assert_eq!(props["path_id"], serde_json::json!("path"));
+    assert_eq!(
+        props["owning_path_id"],
+        serde_json::json!("path"),
+        "the cascade/reflow parent edge is kept"
+    );
+    assert_eq!(props["instance_index"], serde_json::json!(3));
+}
+
+// --- Step 1: a stamp tombstone re-flows its path naming the vanished slot ---
+
+#[test]
+fn tombstoning_a_promoted_stamp_reflows_with_deleted_index() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    h.drain_life();
+
+    h.send(DbCommand::PromoteInstance {
+        petal_id: petal.clone(),
+        path_id: "path".into(),
+        instance_index: 2,
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::NodePromoted { .. }));
+    h.drain_life();
+
+    h.send(DbCommand::TombstoneNode {
+        node_id: "path#inst-2".into(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::NodeDeleted { .. }));
+    assert!(matches!(h.recv_life(), LifecycleEvent::NodeDeleted { .. }));
+    match h.recv_life() {
+        LifecycleEvent::PathReflow {
+            path_id,
+            deleted_index,
+        } => {
+            assert_eq!(path_id, "path");
+            assert_eq!(
+                deleted_index,
+                Some(2),
+                "the reflow names the vanished stamp slot"
+            );
+        }
+        o => panic!("expected PathReflow event, got {o:?}"),
+    }
+    assert!(h.life_rx.try_recv().is_err());
 }

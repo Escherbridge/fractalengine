@@ -64,11 +64,6 @@ pub fn sample_base(field: &TerrainHeightField, x: f32, z: f32) -> Option<f32> {
 // shared height field so it never writes true terrain (NFR-1).
 // ---------------------------------------------------------------------------
 
-/// Marker for the spawned sculpt-brush footprint ring (analytics cursor, not
-/// true terrain). Parallel to [`ProposalGhost`].
-#[derive(Component, Debug, Clone, Copy)]
-pub struct BrushOverlay;
-
 /// Brush-ring tint (translucent amber) — distinct from every proposal-ghost op
 /// tint so the tactile sculpt cursor reads as a tool, not a committed edit.
 pub const BRUSH_OVERLAY_RGBA: [f32; 4] = [1.00, 0.75, 0.20, GHOST_ALPHA];
@@ -103,6 +98,17 @@ pub fn brush_overlay_positions(
         .into_iter()
         .map(|[x, z]| [x, field.height_at(x, z).unwrap_or(fallback_y), z])
         .collect()
+}
+
+/// Per-region cut/fill volume in real m³ — written by fe-terrain's earthwork
+/// bake, consumed by fe-ui persistence (the fe-renderer-as-shared-seam idiom;
+/// see `src/AGENTS.md` §terrain-overlay).
+#[derive(Message, Debug, Clone, PartialEq)]
+pub struct EarthworkVolumeReport {
+    pub petal_id: String,
+    pub region_id: String,
+    pub cut_m3: f64,
+    pub fill_m3: f64,
 }
 
 #[cfg(test)]

@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn all_four_variants_forward() {
+    fn all_variants_forward() {
         let (tx, rx) = lifecycle_channel(8);
         let fwd = LifecycleForwarder::new(tx);
         let events = [
@@ -88,14 +88,24 @@ mod tests {
                 address: "fe://v/f/p/n".into(),
                 node_id: "n".into(),
             },
+            LifecycleEvent::NodeRenamed {
+                address: "fe://v/f/p/n".into(),
+                node_id: "n".into(),
+            },
             LifecycleEvent::PathReflow {
                 path_id: "path".into(),
+                deleted_index: Some(1),
             },
         ];
+        let expected = events.len();
         for ev in events.iter().cloned() {
             assert!(fwd.forward(ev));
         }
-        assert_eq!(rx.len(), 4, "every lifecycle op reaches the sync path");
+        assert_eq!(
+            rx.len(),
+            expected,
+            "every lifecycle op reaches the sync path"
+        );
     }
 
     #[test]
@@ -104,11 +114,13 @@ mod tests {
         let fwd = LifecycleForwarder::new(tx);
         // First send fills the single slot.
         assert!(fwd.forward(LifecycleEvent::PathReflow {
-            path_id: "a".into()
+            path_id: "a".into(),
+            deleted_index: None,
         }));
         // Second must not block — it drops and returns false.
         assert!(!fwd.forward(LifecycleEvent::PathReflow {
-            path_id: "b".into()
+            path_id: "b".into(),
+            deleted_index: None,
         }));
     }
 }

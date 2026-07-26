@@ -41,6 +41,8 @@ pub(super) fn handle_node_properties_loaded(
     inspector: &mut InspectorFormState,
     primitive_cache: &mut PrimitiveDescriptorCache,
     path_asset_cache: &mut PathAssetCache,
+    stamp_state: &mut crate::actions::asset::StampInteractionState,
+    earthwork_map: &mut crate::actions::terrain_proposal::EarthworkNodeMap,
 ) -> bool {
     // FR-1 petal-wide path: every properties broadcast feeds the primitive
     // descriptor cache, selected or not (see ../AGENTS.md §primitives).
@@ -50,6 +52,12 @@ pub(super) fn handle_node_properties_loaded(
     // Paths-tab selection, so stamps re-materialize on petal (re)entry (see
     // ../AGENTS.md §path-asset-materialization).
     path_asset_cache.note_properties(node_id, petal_id, properties);
+    // T2 hydration: a promoted stamp node (`node_kind == "stamp"`) re-binds its
+    // id + persisted overrides so they survive restart (§stamped-assets).
+    crate::actions::asset::hydrate_promoted_stamp(node_id, properties, stamp_state);
+    // T3 hydration: an earthwork region node (`node_kind == "earthwork_region"`)
+    // re-binds region_id→node_id + seeds the volume gate (§sculpt).
+    crate::actions::terrain_proposal::hydrate_earthwork_region(node_id, properties, earthwork_map);
     // Path editor's `gpx_points` read-back (PathSelectTrack): a
     // DIFFERENT claimant from the inspector's `is_for_selected_node`
     // guard below — `NodePropertiesLoaded` has no correlation id

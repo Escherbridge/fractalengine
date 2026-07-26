@@ -6,6 +6,7 @@ use fe_runtime::app::DbCommandSender;
 
 use super::super::{NodeEntry, PathAssetApplied, PathAssetCache, VerseManager};
 use crate::actions::UiManager;
+use crate::dialogs::ActiveDialog;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 
@@ -46,7 +47,8 @@ pub(super) fn handle_gltf_imported(
 }
 
 /// `NodeCreated`: add the node to the tree, flush a pending pen auto-create,
-/// and re-sync the Paths tab.
+/// bind an earthwork-region correlation (T3), and re-sync the Paths tab.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_node_created(
     id: &str,
     petal_id: &str,
@@ -59,6 +61,7 @@ pub(super) fn handle_node_created(
     ui_mgr: &mut UiManager,
     path_state: &mut PathEditorState,
     db_sender: &DbCommandSender,
+    earthwork_map: &mut crate::actions::terrain_proposal::EarthworkNodeMap,
 ) {
     verse_mgr.add_node(
         petal_id,
@@ -74,6 +77,37 @@ pub(super) fn handle_node_created(
         },
     );
     let in_active_petal = nav.active_petal_id.as_deref() == Some(petal_id);
+    // T3 (D-A8/N-10): an `earthwork:{region_id}` correlation binds the created
+    // node to its region and writes the endpoint property bag (node_kind /
+    // material / region_id / zeroed volumes — the bake report fills volumes
+    // async). Mirrors the pen consume idiom below: echoed-id match only, so a
+    // concurrent foreign create can never hijack the bind.
+    if let Some(region_id) = correlation_id
+        .and_then(crate::actions::terrain_proposal::earthwork_region_id_from_correlation)
+    {
+        let material = earthwork_map
+            .take_pending_material(region_id)
+            .unwrap_or_else(|| "earth".to_string());
+        earthwork_map.record(region_id, id);
+        for (key, value) in
+            crate::actions::terrain_proposal::earthwork_node_properties(region_id, &material)
+        {
+            if db_sender
+                .0
+                .send(fe_runtime::messages::DbCommand::SetNodeProperty {
+                    node_id: id.to_string(),
+                    key: key.to_string(),
+                    value,
+                })
+                .is_err()
+            {
+                bevy::log::warn!(
+                    "db_sender channel closed — earthwork node contract keys not written"
+                );
+                break;
+            }
+        }
+    }
     // Pen auto-create flush (`pen_autocreate_track_20260713`, FR-2 +
     // HIGH-1 correlation-id fix): a no-track Pen click stashed
     // `pending_pen_create` (its fe-ui-generated `correlation_id` +
@@ -111,6 +145,39 @@ pub(super) fn handle_node_created(
     // manual Refresh button as the only sync path.
     if in_active_petal {
         crate::actions::path::query_tracks(db_sender, path_state, petal_id.to_string());
+    }
+}
+
+/// `NodeRenamed`: update the node's display name in the tree (the node mirror
+/// of `EntityRenamed`; the spawned entity's `Name` refreshes on next respawn).
+pub(super) fn handle_node_renamed(node_id: &str, new_name: &str, verse_mgr: &mut VerseManager) {
+    verse_mgr.update_node_name(node_id, new_name);
+    bevy::log::info!("Renamed node {node_id} -> '{new_name}'");
+}
+
+/// `NodeDescendantCount`: stash the authoritative subtree size where the open
+/// cascade-delete confirm reads it (Node Options or the context menu). A result
+/// for a since-closed/re-targeted dialog is dropped — stale counts never leak
+/// into another node's confirm.
+pub(super) fn handle_node_descendant_count(node_id: &str, count: usize, ui_mgr: &mut UiManager) {
+    match &mut ui_mgr.active_dialog {
+        ActiveDialog::NodeOptions {
+            node_id: open_id,
+            descendant_count,
+            ..
+        } if open_id.as_str() == node_id => *descendant_count = Some(count),
+        ActiveDialog::ContextMenu {
+            target,
+            descendant_count,
+            ..
+        } if target
+            .as_ref()
+            .and_then(|t| t.node_id.as_deref())
+            .is_some_and(|id| id == node_id) =>
+        {
+            *descendant_count = Some(count)
+        }
+        _ => {}
     }
 }
 

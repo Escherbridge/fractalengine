@@ -122,6 +122,14 @@ fe-renderer under `render`. The proposal *geometry* + records stay in fe-terrain
 - `sample_base(&TerrainHeightField, x, z)`: READ-ONLY passthrough to `height_at`
   for grounding a ghost. Takes `&TerrainHeightField` (shared ref) so it can never
   mutate the true heightfield — the NFR-1 analytics contract at the type level.
+- Sculpt brush cursor (T3): `brush_ring` / `brush_overlay_positions` /
+  `BRUSH_OVERLAY_RGBA`. fe-ui consumes them via immediate-mode `Gizmos`
+  (`sculpt_cursor.rs`), so the once-planned `BrushOverlay` entity marker was
+  removed (no entity lifecycle, no dead code).
+- `EarthworkVolumeReport { petal_id, region_id, cut_m3, fill_m3 }` (bevy
+  `Message`): the fe-renderer-as-shared-seam idiom — written by fe-terrain's
+  earthwork bake, consumed by fe-ui's volume persistence. Both sides
+  `add_message` it (idempotent); neither may dep the other.
 
 ## §instancing
 

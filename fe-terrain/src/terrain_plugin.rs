@@ -170,6 +170,26 @@ pub struct ProposalRenderState {
     last_revision: Option<u64>,
 }
 
+/// Chunk marker: earthwork regions were last baked into this chunk's mesh at
+/// `revision` (T3; see `src/AGENTS.md` §sculpt (Earthwork bake)).
+#[derive(Component)]
+pub struct EarthworkBaked {
+    pub revision: u64,
+}
+
+/// Pristine (pre-bake) local vertex Y snapshot for a chunk mesh, taken before
+/// its first earthwork bake so every re-bake starts from the untouched base
+/// (Q-2 revert; see `src/AGENTS.md` §sculpt (Earthwork bake)).
+#[derive(Component)]
+pub struct PristineChunkHeights(pub Vec<f32>);
+
+/// Revision bookkeeping for the earthwork bake + one-shot missing-field warn.
+#[derive(Resource, Default)]
+pub struct EarthworkBakeState {
+    last_revision: Option<u64>,
+    warned_revision: Option<u64>,
+}
+
 /// Configuration for terrain LOD thresholds.
 #[derive(Resource, Clone)]
 pub struct TerrainLodConfig {
@@ -227,8 +247,11 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ActiveTileSource>()
             .init_resource::<FailedTiles>()
             .init_resource::<ProposalRenderState>()
+            .init_resource::<EarthworkBakeState>()
             .insert_resource(LayerStack::new())
             .add_message::<TerrainAssignmentMsg>()
+            // Idempotent: fe-ui's plugin also registers this shared-seam message.
+            .add_message::<fe_renderer::terrain_overlay::EarthworkVolumeReport>()
             .add_systems(
                 Update,
                 (
@@ -239,6 +262,7 @@ impl Plugin for TerrainPlugin {
                     render_waypoint_markers,
                     render_geojson_overlays,
                     render_terrain_proposals,
+                    bake_earthwork_regions,
                     sync_layer_visibility,
                 )
                     .chain(),
@@ -959,6 +983,11 @@ fn render_terrain_proposals(
 
     let mut remaining = MAX_PROPOSAL_OVERLAYS;
     for proposal in &config.proposals {
+        // T3: earthwork regions bake into the chunk meshes (`bake_earthwork_regions`)
+        // — never double-visualize them as ghosts. Predicate = `material` presence.
+        if proposal.is_earthwork_region() {
+            continue;
+        }
         if remaining == 0 {
             tracing::warn!(
                 cap = MAX_PROPOSAL_OVERLAYS,
@@ -1001,7 +1030,288 @@ fn render_terrain_proposals(
     // is the interim per-petal cap until that bridge exists.
     // TODO(ultrapilot): revision-gate means a relative-op ghost built before the
     // height field has coverage stays at its `target`/0.0 fallback; rebuild (or
-    // re-ground) when terrain chunks arrive for the footprint.
+    // re-ground) when terrain chunks arrive for the footprint. (Earthwork regions
+    // do NOT share this gap: `bake_earthwork_regions` re-bakes late-arriving
+    // chunks via the per-chunk `EarthworkBaked` marker.)
+}
+
+// ---------------------------------------------------------------------------
+// T3 earthwork bake (sculpt_earthwork_regions_20260725 integration). Regions
+// (proposal records carrying `material`) bake as VERTEX DELTAS into resident
+// chunk meshes; the shared `TerrainHeightField` stays PRE-BAKE so it remains
+// the pristine READ-ONLY base for deltas, volumes, and the Q-2 revert. See
+// `src/AGENTS.md` §sculpt (Earthwork bake).
+// ---------------------------------------------------------------------------
+
+/// Volume-lattice resolution: each region's grid step = longest bound extent
+/// divided by this (≈16k samples/region; O(step) tolerance, Q-4 planning-grade).
+const EARTHWORK_LATTICE: f32 = 128.0;
+
+/// One region pre-resolved for the per-vertex bake loop.
+struct PreparedRegion {
+    footprint: crate::sculpt::Footprint,
+    bounds: Option<(f32, f32, f32, f32)>,
+    op: crate::sculpt::SculptOp,
+    target: f32,
+    delta: f32,
+    mean: Option<f32>,
+    grid_step: f32,
+}
+
+/// Earthwork regions in the config's proposal block — the `material` predicate
+/// filter, parsed through the designated `sculpt::parse_regions`.
+fn config_earthwork_regions(config: &TerrainConfig) -> Vec<crate::sculpt::EarthworkRegion> {
+    let raw: Vec<serde_json::Value> = config
+        .proposals
+        .iter()
+        .filter(|p| p.is_earthwork_region())
+        .filter_map(|p| serde_json::to_value(p).ok())
+        .collect();
+    crate::sculpt::parse_regions(&serde_json::Value::Array(raw))
+}
+
+/// Grid step for a region's volume/mean lattice from its bounds (see
+/// [`EARTHWORK_LATTICE`]); floored so a degenerate footprint can't stall.
+fn region_grid_step(bounds: Option<(f32, f32, f32, f32)>) -> f32 {
+    let Some((min_x, min_z, max_x, max_z)) = bounds else {
+        return 1.0;
+    };
+    ((max_x - min_x).max(max_z - min_z) / EARTHWORK_LATTICE).max(1e-4)
+}
+
+/// Resolve footprint/params/mean once per region for the bake loop.
+fn prepare_regions(
+    regions: &[crate::sculpt::EarthworkRegion],
+    base: &impl Fn(f32, f32) -> Option<f32>,
+) -> Vec<PreparedRegion> {
+    regions
+        .iter()
+        .map(|r| {
+            let footprint = r.footprint_shape();
+            let bounds = footprint.bounds();
+            let grid_step = region_grid_step(bounds);
+            let mean = if r.op == crate::sculpt::SculptOp::Smooth {
+                crate::sculpt::region_mean_height(base, &footprint, grid_step)
+            } else {
+                None
+            };
+            PreparedRegion {
+                footprint,
+                bounds,
+                op: r.op,
+                target: r.target_height.unwrap_or(0.0),
+                delta: r.delta.unwrap_or(0.0),
+                mean,
+                grid_step,
+            }
+        })
+        .collect()
+}
+
+/// XZ AABB overlap (touching counts).
+fn bounds_intersect(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 <= b.2 && b.0 <= a.2 && a.1 <= b.3 && b.1 <= a.3
+}
+
+/// World-XZ AABB of a chunk's local vertex positions offset by its translation.
+fn positions_world_xz_bounds(
+    positions: &[[f32; 3]],
+    translation: Vec3,
+) -> Option<(f32, f32, f32, f32)> {
+    let mut it = positions.iter();
+    let first = it.next()?;
+    let (mut min_x, mut min_z, mut max_x, mut max_z) = (first[0], first[2], first[0], first[2]);
+    for p in it {
+        min_x = min_x.min(p[0]);
+        max_x = max_x.max(p[0]);
+        min_z = min_z.min(p[2]);
+        max_z = max_z.max(p[2]);
+    }
+    Some((
+        min_x + translation.x,
+        min_z + translation.z,
+        max_x + translation.x,
+        max_z + translation.z,
+    ))
+}
+
+/// Net surface delta at `(x, z)` from applying every containing region in
+/// record order over `base_y` (strength 1.0 — mirrors `EarthworkRegion::cut_fill`).
+fn earthwork_surface_delta(prepared: &[PreparedRegion], base_y: f32, x: f32, z: f32) -> f32 {
+    let mut h = base_y;
+    for r in prepared {
+        if r.footprint.contains(x, z) {
+            if let Some(p) =
+                crate::sculpt::proposed_height(r.op, Some(h), r.target, r.delta, r.mean, 1.0)
+            {
+                h = p;
+            }
+        }
+    }
+    h - base_y
+}
+
+/// Smooth vertex normals for `positions` under `indices` (the `terrain_mesh`
+/// accumulation, re-run after a bake so lighting follows the new relief).
+fn recompute_smooth_normals(positions: &[[f32; 3]], indices: Option<&Indices>) -> Vec<[f32; 3]> {
+    let mut normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
+    let Some(indices) = indices else {
+        return normals;
+    };
+    let idx: Vec<usize> = indices.iter().collect();
+    for tri in idx.chunks_exact(3) {
+        let [i0, i1, i2] = [tri[0], tri[1], tri[2]];
+        if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() {
+            continue;
+        }
+        let v0 = Vec3::from(positions[i0]);
+        let v1 = Vec3::from(positions[i1]);
+        let v2 = Vec3::from(positions[i2]);
+        let face = (v1 - v0).cross(v2 - v0);
+        for &i in &[i0, i1, i2] {
+            normals[i][0] += face.x;
+            normals[i][1] += face.y;
+            normals[i][2] += face.z;
+        }
+    }
+    for n in &mut normals {
+        let v = Vec3::from(*n).normalize_or(Vec3::Y);
+        *n = [v.x, v.y, v.z];
+    }
+    normals
+}
+
+/// Bake earthwork regions into resident chunk meshes and publish per-region
+/// cut/fill volumes. Per-chunk `EarthworkBaked` markers gate work to (a) an
+/// assignment-revision change (mirrors `render_terrain_proposals`) and (b)
+/// late-arriving chunks; every bake restores the chunk's `PristineChunkHeights`
+/// snapshot first, so edits/deletes revert cleanly (Q-2). The height field is
+/// never written — it IS the pristine base. See `src/AGENTS.md` §sculpt
+/// (Earthwork bake).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn bake_earthwork_regions(
+    active: Res<ActivePetalTerrain>,
+    height_field: Option<Res<TerrainHeightField>>,
+    mut state: ResMut<EarthworkBakeState>,
+    chunks: Query<
+        (
+            Entity,
+            &Transform,
+            &Mesh3d,
+            Option<&EarthworkBaked>,
+            Option<&PristineChunkHeights>,
+        ),
+        With<TerrainChunk>,
+    >,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut commands: Commands,
+    mut reports: MessageWriter<fe_renderer::terrain_overlay::EarthworkVolumeReport>,
+) {
+    let revision = active.revision;
+    let revision_changed = state.last_revision != Some(revision);
+    state.last_revision = Some(revision);
+
+    let config = active.config.as_ref().filter(|c| c.enabled);
+    let regions = config.map(config_earthwork_regions).unwrap_or_default();
+
+    // READ-ONLY pristine base sampler (the field stays pre-bake — NFR-1).
+    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+    let prepared = prepare_regions(&regions, &base);
+
+    if !regions.is_empty() && height_field.is_none() && state.warned_revision != Some(revision) {
+        state.warned_revision = Some(revision);
+        tracing::warn!(
+            regions = regions.len(),
+            "earthwork bake: no TerrainHeightField — regions persist but cannot bake (N-8)"
+        );
+    }
+
+    let mut baked_any = false;
+    for (entity, tx, mesh3d, baked, pristine) in chunks.iter() {
+        if baked.is_some_and(|b| b.revision == revision) {
+            continue; // up to date for this revision
+        }
+        let Some(mesh) = meshes.get(&mesh3d.0) else {
+            continue; // asset not ready — retry next frame (no marker)
+        };
+        let Some(raw) = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .and_then(|a| a.as_float3())
+        else {
+            commands.entity(entity).insert(EarthworkBaked { revision });
+            continue;
+        };
+        // Working copy restored to pristine Y (the snapshot is the pre-bake truth).
+        let mut positions: Vec<[f32; 3]> = raw.to_vec();
+        if let Some(p) = pristine {
+            if p.0.len() == positions.len() {
+                for (v, y) in positions.iter_mut().zip(&p.0) {
+                    v[1] = *y;
+                }
+            }
+        }
+        let chunk_bounds = positions_world_xz_bounds(&positions, tx.translation);
+        let touches = chunk_bounds.is_some_and(|cb| {
+            prepared
+                .iter()
+                .any(|r| r.bounds.is_some_and(|rb| bounds_intersect(cb, rb)))
+        });
+
+        if touches {
+            let pristine_y: Vec<f32> = positions.iter().map(|v| v[1]).collect();
+            let mut changed = false;
+            for v in positions.iter_mut() {
+                let wx = tx.translation.x + v[0];
+                let wz = tx.translation.z + v[2];
+                let Some(b) = base(wx, wz) else {
+                    continue; // no pristine cover here — leave the vertex alone
+                };
+                let dh = earthwork_surface_delta(&prepared, b, wx, wz);
+                if dh != 0.0 {
+                    v[1] += dh;
+                    changed = true;
+                }
+            }
+            if changed || pristine.is_some() {
+                if pristine.is_none() {
+                    commands
+                        .entity(entity)
+                        .insert(PristineChunkHeights(pristine_y));
+                }
+                if let Some(mesh) = meshes.get_mut(&mesh3d.0) {
+                    let normals = recompute_smooth_normals(&positions, mesh.indices());
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+                    baked_any = true;
+                }
+            }
+        } else if pristine.is_some() {
+            // Regions edited/deleted away from this chunk — restore pristine relief.
+            if let Some(mesh) = meshes.get_mut(&mesh3d.0) {
+                let normals = recompute_smooth_normals(&positions, mesh.indices());
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+                baked_any = true;
+            }
+        }
+        commands.entity(entity).insert(EarthworkBaked { revision });
+    }
+
+    // Publish real-unit volumes once per revision (and again as late chunks
+    // extend field coverage — fe-ui's changed-value gate absorbs the re-fires).
+    if (revision_changed || baked_any) && !regions.is_empty() {
+        let petal_id = active.petal_id.clone().unwrap_or_default();
+        let world_scale = config.map(|c| c.effective_world_scale()).unwrap_or(1.0);
+        for (region, prep) in regions.iter().zip(&prepared) {
+            let cf = region.cut_fill(&base, prep.grid_step, world_scale);
+            reports.write(fe_renderer::terrain_overlay::EarthworkVolumeReport {
+                petal_id: petal_id.clone(),
+                region_id: region.id.clone(),
+                cut_m3: cf.cut_m3,
+                fill_m3: cf.fill_m3,
+            });
+        }
+    }
 }
 
 /// Synchronize [`LayerStack`] visibility/opacity to layer-bound entities (on change only).
@@ -1044,6 +1354,113 @@ fn sync_layer_visibility(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- T3 earthwork bake helpers ---
+
+    #[test]
+    fn bounds_intersect_overlap_touch_and_miss() {
+        let a = (0.0, 0.0, 10.0, 10.0);
+        assert!(bounds_intersect(a, (5.0, 5.0, 15.0, 15.0)));
+        assert!(
+            bounds_intersect(a, (10.0, 0.0, 20.0, 10.0)),
+            "touching counts"
+        );
+        assert!(!bounds_intersect(a, (10.1, 0.0, 20.0, 10.0)));
+        assert!(!bounds_intersect(a, (0.0, -20.0, 10.0, -10.1)));
+    }
+
+    #[test]
+    fn region_grid_step_scales_with_extent_and_floors() {
+        // 128-unit extent → step 1; tiny/degenerate extents floor, never stall.
+        assert!((region_grid_step(Some((0.0, 0.0, 128.0, 64.0))) - 1.0).abs() < 1e-6);
+        assert!(region_grid_step(Some((0.0, 0.0, 0.0, 0.0))) >= 1e-4);
+        assert_eq!(region_grid_step(None), 1.0);
+    }
+
+    #[test]
+    fn positions_world_xz_bounds_offsets_by_translation() {
+        let pos = [[0.0, 5.0, 0.0], [10.0, 7.0, 20.0], [-2.0, 1.0, 3.0]];
+        let b = positions_world_xz_bounds(&pos, Vec3::new(100.0, 0.0, -50.0)).unwrap();
+        assert_eq!(b, (98.0, -50.0, 110.0, -30.0));
+        assert!(positions_world_xz_bounds(&[], Vec3::ZERO).is_none());
+    }
+
+    #[test]
+    fn earthwork_surface_delta_applies_regions_in_order() {
+        use crate::sculpt::{EarthworkRegion, SculptOp};
+        let base = |_x: f32, _z: f32| Some(1.0);
+        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let regions = vec![
+            EarthworkRegion {
+                id: "r1".into(),
+                op: SculptOp::Raise,
+                footprint: square.clone(),
+                material: "earth".into(),
+                target_height: None,
+                delta: Some(2.0),
+            },
+            EarthworkRegion {
+                id: "r2".into(),
+                op: SculptOp::Level,
+                footprint: square,
+                material: "earth".into(),
+                target_height: Some(0.5),
+                delta: None,
+            },
+        ];
+        let prepared = prepare_regions(&regions, &base);
+        // Inside: raise 1→3, then level to 0.5 → net delta -0.5 off base 1.0.
+        assert!((earthwork_surface_delta(&prepared, 1.0, 5.0, 5.0) + 0.5).abs() < 1e-5);
+        // Outside every footprint: no delta.
+        assert_eq!(earthwork_surface_delta(&prepared, 1.0, 50.0, 50.0), 0.0);
+    }
+
+    #[test]
+    fn config_earthwork_regions_filters_on_material_predicate() {
+        use crate::terrain_proposal::{TerrainOp, TerrainProposal};
+        let mut cfg = TerrainConfig::default();
+        cfg.proposals.push(TerrainProposal {
+            id: "p1".into(),
+            op: TerrainOp::Raise,
+            footprint: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            target_height: None,
+            delta: Some(1.0),
+            material: None, // plain proposal — ghosts, never bakes
+        });
+        cfg.proposals.push(TerrainProposal {
+            id: "r1".into(),
+            op: TerrainOp::Level,
+            footprint: vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]],
+            target_height: Some(3.0),
+            delta: None,
+            material: Some("gravel".into()), // earthwork region — bakes, never ghosts
+        });
+        let regions = config_earthwork_regions(&cfg);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].id, "r1");
+        assert_eq!(regions[0].material, "gravel");
+        assert_eq!(regions[0].op, crate::sculpt::SculptOp::Level);
+    }
+
+    #[test]
+    fn recompute_smooth_normals_flat_grid_points_up() {
+        let positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ];
+        let indices = Indices::U32(vec![0, 2, 1, 1, 2, 3]);
+        let normals = recompute_smooth_normals(&positions, Some(&indices));
+        for n in &normals {
+            assert!(
+                (n[1] - 1.0).abs() < 1e-5,
+                "flat grid normal must be +Y: {n:?}"
+            );
+        }
+        // No indices → safe default normals, same length.
+        assert_eq!(recompute_smooth_normals(&positions, None).len(), 4);
+    }
 
     #[test]
     fn resample_height_grid_passthrough_when_small() {

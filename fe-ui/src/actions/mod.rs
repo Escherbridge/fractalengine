@@ -488,6 +488,8 @@ pub(crate) struct ToolStateParams<'w> {
     proposal_state: ResMut<'w, ProposalEditState>,
     stamp_state: ResMut<'w, asset::StampInteractionState>,
     sculpt_state: ResMut<'w, terrain_proposal::SculptToolState>,
+    /// T3: region_id↔node_id bookkeeping for earthwork endpoint rows (D-A8).
+    earthwork_map: ResMut<'w, terrain_proposal::EarthworkNodeMap>,
 }
 
 /// Drains all UiActions queued during the egui pass and processes them.
@@ -520,11 +522,22 @@ pub(crate) fn process_ui_actions(
         mut proposal_state,
         mut stamp_state,
         mut sculpt_state,
+        mut earthwork_map,
     } = tool_state;
     // Fold pen-tool actions queued by `render_tool_panel` into the main queue
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
     for pen_action in tool_panel.drain_pending() {
         ui_mgr.push_action(pen_action);
+    }
+    // T3 commit line: fold sculpt actions queued during the egui pass into the
+    // main queue, filling each petal-shaped hole from the active petal (the
+    // sculpt section has no petal handle — see actions/terrain_proposal.rs).
+    for sculpt_action in sculpt_state.drain_pending() {
+        if let Some(action) =
+            terrain_proposal::thread_active_petal(sculpt_action, nav.active_petal_id.as_deref())
+        {
+            ui_mgr.push_action(action);
+        }
     }
     // egui reads toast time from the same Bevy clock (bevy_egui feeds
     // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
@@ -891,14 +904,23 @@ pub(crate) fn process_ui_actions(
                 );
             }
 
-            // ---- Wave-1 scaffold dispatch — each arm calls a per-track handler
-            // stub (empty until T2/T3/T4 fill it). See the enum block above. ----
+            // ---- Wave-1 dispatch — each arm calls its per-track handler
+            // (T2/T3/T4 leaf logic + integration). See the enum block above. ----
             // T2 stamped_asset_nodes (asset.rs):
             UiAction::SelectStamp {
                 track_node_id,
                 stamp_index,
             } => {
                 asset::handle_select_stamp(&mut stamp_state, track_node_id, stamp_index);
+                // T2 FR-5 / N-9: the FIRST individual select of an un-promoted
+                // stamp queues exactly one PromoteStamp (drained here so the
+                // marker can never fire twice; dispatched next drain pass).
+                if let Some(pending) = stamp_state.take_pending_promotion() {
+                    ui_mgr.push_action(UiAction::PromoteStamp {
+                        track_node_id: pending.track_node_id,
+                        stamp_index: pending.stamp_index,
+                    });
+                }
             }
             UiAction::SetStampScale {
                 track_node_id,
@@ -952,6 +974,7 @@ pub(crate) fn process_ui_actions(
                     &db_sender,
                     &mut petal_map,
                     &mut sculpt_state,
+                    &mut earthwork_map,
                     petal_id,
                     center,
                     radius,
@@ -971,6 +994,7 @@ pub(crate) fn process_ui_actions(
                     &db_sender,
                     &mut petal_map,
                     &mut sculpt_state,
+                    &mut earthwork_map,
                     petal_id,
                     footprint,
                     op,
@@ -984,6 +1008,7 @@ pub(crate) fn process_ui_actions(
                     &db_sender,
                     &mut petal_map,
                     &mut sculpt_state,
+                    &mut earthwork_map,
                     nav.active_petal_id.clone(),
                     region_id,
                 );
@@ -1005,6 +1030,7 @@ pub(crate) fn process_ui_actions(
                 node::handle_promote_stamp(
                     &db_sender,
                     &mut stamp_state,
+                    nav.active_petal_id.as_deref(),
                     track_node_id,
                     stamp_index,
                 );
@@ -1041,9 +1067,19 @@ mod tests {
         mgr.open_dialog(ActiveDialog::ContextMenu {
             screen_pos: [100.0, 200.0],
             world_pos: world,
+            target: None,
+            pending_delete: false,
+            descendant_count: None,
         });
-        if let ActiveDialog::ContextMenu { world_pos, .. } = &mgr.active_dialog {
+        if let ActiveDialog::ContextMenu {
+            world_pos, target, ..
+        } = &mgr.active_dialog
+        {
             assert_eq!(*world_pos, [5.0, 0.0, -3.0]);
+            assert!(
+                target.is_none(),
+                "opens unclassified; context_pick fills it"
+            );
         } else {
             panic!("expected ContextMenu");
         }
@@ -1057,6 +1093,9 @@ mod tests {
         mgr.open_dialog(ActiveDialog::ContextMenu {
             screen_pos: [0.0, 0.0],
             world_pos: world,
+            target: None,
+            pending_delete: false,
+            descendant_count: None,
         });
         if let ActiveDialog::ContextMenu { world_pos, .. } = &mgr.active_dialog {
             assert_eq!(*world_pos, [0.0, 0.0, 0.0]);

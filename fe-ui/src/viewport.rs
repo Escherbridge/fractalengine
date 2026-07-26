@@ -156,13 +156,18 @@ pub fn viewport_petal_space(
         nav.back_from_petal();
     }
 
-    // Right-click for context menu — use input directly to avoid stealing clicks
+    // Right-click for context menu — use input directly to avoid stealing clicks.
+    // `target: None` = classification pending; `node_manager::context_pick`
+    // fills it from the same pick machinery left-click uses (T4 FR-1).
     if ui.input(|i| i.pointer.secondary_clicked()) {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             if rect.contains(pos) {
                 ui_mgr.open_dialog(ActiveDialog::ContextMenu {
                     screen_pos: [pos.x, pos.y],
                     world_pos: cursor_world.pos.unwrap_or([0.0, 0.0, 0.0]),
+                    target: None,
+                    pending_delete: false,
+                    descendant_count: None,
                 });
             }
         }

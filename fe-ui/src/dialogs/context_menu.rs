@@ -9,10 +9,13 @@
 
 use bevy_egui::egui;
 
-use super::ActiveDialog;
+use super::{ActiveDialog, ContextTarget};
+use crate::actions::asset::{StampInteractionState, StampRef};
 use crate::actions::{UiAction, UiManager};
 use crate::node_manager::HitTarget;
 use crate::theme;
+use crate::verse_manager::VerseManager;
+use fe_runtime::messages::DbCommand;
 
 /// One entry in an object's right-click menu. The set is the union of the
 /// ratified per-object verb tables (spec Q-1); [`menu_for`] selects the subset
@@ -177,12 +180,27 @@ pub(crate) fn verb_action(verb: Verb, node_id: &str, cascade: bool) -> Option<Ui
     }
 }
 
+/// Disabled-hint for seam-gated verbs whose T5 egress string is absent (FR-4).
+const SEAM_GATED_HINT: &str =
+    "No API endpoint for this object yet \u{2014} lights up when the read/write \
+     API surface (endpoint_api_surface) provides one.";
+
 /// Renders one verb button and reports whether it was clicked. Seam-gated verbs
 /// whose seam string is absent render disabled-with-an-explanatory-hint (FR-4,
 /// never silently absent). All verbs carry a hover tooltip (ui_ux §8).
 pub(crate) fn render_verb_button(ui: &mut egui::Ui, verb: Verb, seam_available: bool) -> bool {
-    let gated = verb_is_seam_gated(verb);
-    let enabled = !gated || seam_available;
+    let enabled = !verb_is_seam_gated(verb) || seam_available;
+    render_gated_verb_button(ui, verb, enabled, SEAM_GATED_HINT)
+}
+
+/// [`render_verb_button`] with explicit gating + hint — for object-state gates
+/// (e.g. a stamp verb waiting on promotion). Disabled is never silent (N-8).
+pub(crate) fn render_gated_verb_button(
+    ui: &mut egui::Ui,
+    verb: Verb,
+    enabled: bool,
+    disabled_hint: &str,
+) -> bool {
     let color = if matches!(verb, Verb::Delete | Verb::DeletePoint) {
         egui::Color32::from_rgb(230, 120, 120)
     } else {
@@ -194,41 +212,69 @@ pub(crate) fn render_verb_button(ui: &mut egui::Ui, verb: Verb, seam_available: 
     if enabled {
         resp.on_hover_text(verb_tooltip(verb)).clicked()
     } else {
-        resp.on_disabled_hover_text(
-            "No API endpoint for this object yet \u{2014} lights up when the read/write \
-             API surface (endpoint_api_surface) provides one.",
-        );
+        resp.on_disabled_hover_text(disabled_hint);
         false
     }
 }
 
-/// Renders the viewport right-click context menu.
-///
-/// The `ActiveDialog::ContextMenu` variant carries only the cursor world
-/// position, so this surface renders the empty-ground menu (create / place),
-/// driven by [`menu_for`]. Object menus (node/stamp/path/region) render through
-/// the same [`menu_for`]/[`render_verb_button`] machinery the moment the
-/// `ContextMenu` variant carries a `HitTarget` — see `dialogs/AGENTS.md`
-/// §context-menu for the one-line follow-up that lights them up. Node verbs are
-/// live now via the Node Options surface (`node_options.rs`).
-pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
+/// Prefill a Node Options dialog for `node_id` from the loaded hierarchy —
+/// the menu's Rename verb opens this (the dialog's Name field is the rename
+/// surface, persisted via `DbCommand::RenameNode` on Save).
+pub(crate) fn node_options_prefill(hierarchy: &VerseManager, node_id: &str) -> ActiveDialog {
+    let (name, url) = hierarchy
+        .all_nodes()
+        .find(|n| n.id == node_id)
+        .map(|n| (n.name.clone(), n.webpage_url.clone().unwrap_or_default()))
+        .unwrap_or_default();
+    ActiveDialog::NodeOptions {
+        node_id: node_id.to_string(),
+        node_name_buf: name,
+        webpage_url_buf: url,
+        pending_delete: false,
+        descendant_count: None,
+    }
+}
+
+/// Side effects a menu pass queues; flushed after the egui borrow window.
+#[derive(Default)]
+struct MenuOutcome {
+    actions: Vec<UiAction>,
+    next_dialog: Option<ActiveDialog>,
+    toast: Option<&'static str>,
+    /// Node id to send `CountNodeDescendants` for (cascade confirm arming).
+    count_request: Option<String>,
+    close: bool,
+}
+
+/// Renders the viewport right-click context menu (T4 FR-1): object-aware via
+/// the classified [`ContextTarget`] the `node_manager::context_pick` system
+/// fills (a dim placeholder shows for the ≤1 frame before it lands). Delete is
+/// a two-step in-menu confirm with the live descendant count (Q-2); stamp
+/// verbs key on the `(track, index)` payload + the stamp authority's live
+/// promotion state. See `dialogs/AGENTS.md` §context-menu.
+pub fn render_context_menu(
+    ctx: &egui::Context,
+    ui_mgr: &mut UiManager,
+    hierarchy: &VerseManager,
+    stamp_state: &StampInteractionState,
+    tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+) {
     let ActiveDialog::ContextMenu {
-        screen_pos,
-        world_pos,
+        ref screen_pos,
+        ref world_pos,
+        ref target,
+        ref mut pending_delete,
+        ref mut descendant_count,
     } = ui_mgr.active_dialog
     else {
         return;
     };
 
     let pos = egui::pos2(screen_pos[0], screen_pos[1]);
-    let world = world_pos;
-
-    let mut next_dialog: Option<ActiveDialog> = None;
-    let mut create_node_at: Option<[f32; 3]> = None;
-    let mut close = false;
-
-    // Empty-ground menu, built from the object-aware table (FR-1).
-    let verbs = menu_for(&HitTarget::Empty);
+    let world = *world_pos;
+    let now = ctx.input(|i| i.time);
+    let mut outcome = MenuOutcome::default();
 
     let area_response = egui::Area::new(egui::Id::new("viewport_context_menu"))
         .fixed_pos(pos)
@@ -240,25 +286,34 @@ pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
                 .corner_radius(4.0)
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM))
                 .show(ui, |ui| {
-                    ui.set_min_width(160.0);
-                    for verb in verbs {
-                        // Empty-ground verbs are never seam-gated.
-                        if render_verb_button(ui, verb, true) {
-                            match verb {
-                                Verb::PlaceAsset => {
-                                    next_dialog = Some(ActiveDialog::GltfImport {
-                                        file_path_buf: String::new(),
-                                        name_buf: String::new(),
-                                        position: world,
-                                    });
-                                }
-                                Verb::CreateNode => {
-                                    create_node_at = Some(world);
-                                    close = true;
-                                }
-                                _ => {}
-                            }
-                        }
+                    ui.set_min_width(170.0);
+                    let Some(target) = target else {
+                        // Classification pending (≤1 frame) — placeholder, not
+                        // a possibly-wrong menu.
+                        ui.label(egui::RichText::new("\u{2026}").color(theme::TEXT_DIM));
+                        return;
+                    };
+                    if *pending_delete {
+                        render_delete_confirm(
+                            ui,
+                            target,
+                            stamp_state,
+                            *descendant_count,
+                            pending_delete,
+                            &mut outcome,
+                        );
+                    } else {
+                        render_target_menu(
+                            ui,
+                            target,
+                            world,
+                            hierarchy,
+                            stamp_state,
+                            tool_panel,
+                            pending_delete,
+                            descendant_count,
+                            &mut outcome,
+                        );
                     }
                 });
         });
@@ -270,19 +325,290 @@ pub fn render_context_menu(ctx: &egui::Context, ui_mgr: &mut UiManager) {
         if let Some(ptr_pos) = ptr {
             let menu_rect = area_response.response.rect;
             if !menu_rect.contains(ptr_pos) {
-                close = true;
+                outcome.close = true;
             }
         }
     }
 
-    if let Some(position) = create_node_at {
-        ui_mgr.push_action(UiAction::CreateNodeAt { position });
+    if let Some(node_id) = outcome.count_request {
+        // Authoritative subtree size for the cascade confirm (spine query);
+        // the dialog shows the generic copy until the count lands.
+        if db_tx
+            .send(DbCommand::CountNodeDescendants { node_id })
+            .is_err()
+        {
+            bevy::log::warn!("db_sender channel closed \u{2014} CountNodeDescendants not sent");
+        }
     }
-    if let Some(dialog) = next_dialog {
+    if let Some(msg) = outcome.toast {
+        ui_mgr.show_toast(msg, now);
+    }
+    for action in outcome.actions {
+        ui_mgr.push_action(action);
+    }
+    if let Some(dialog) = outcome.next_dialog {
         ui_mgr.open_dialog(dialog);
-    } else if close {
+    } else if outcome.close {
         ui_mgr.close_dialog();
     }
+}
+
+/// Object header + the [`menu_for`] verb list for the classified target.
+#[allow(clippy::too_many_arguments)] // thin egui render fn over one dialog's state
+fn render_target_menu(
+    ui: &mut egui::Ui,
+    target: &ContextTarget,
+    world: [f32; 3],
+    hierarchy: &VerseManager,
+    stamp_state: &StampInteractionState,
+    tool_panel: &mut crate::panels::tool_panel::ToolPanelState,
+    pending_delete: &mut bool,
+    descendant_count: &mut Option<usize>,
+    outcome: &mut MenuOutcome,
+) {
+    // Stamp payload + live promotion state (the promoted node id backs the
+    // node-scoped verbs; it can land WHILE the menu is open — verbs light up).
+    let stamp_ref = target.stamp.as_ref().map(|(track, index)| StampRef {
+        track_node_id: track.clone(),
+        stamp_index: *index,
+    });
+    let promoted_id = stamp_ref
+        .as_ref()
+        .and_then(|s| stamp_state.promoted_node_id(s))
+        .map(str::to_string);
+    // The id node-scoped verbs act on: the node itself, or a stamp's promoted node.
+    let node_backed = target.node_id.clone().or_else(|| promoted_id.clone());
+
+    // Calm header: what the menu is about.
+    match (&target.hit, &stamp_ref) {
+        (HitTarget::Stamp(_), Some(stamp)) => {
+            // Live read of the stamp-selection authority (right-click routed
+            // through `SelectStamp`, so this marks the menu's own object).
+            let selected = stamp_state.selected() == Some(stamp);
+            let header = format!(
+                "Stamp {}{}",
+                stamp.stamp_index,
+                if selected { " \u{2014} selected" } else { "" }
+            );
+            ui.label(egui::RichText::new(header).small().color(theme::TEXT_DIM));
+            ui.separator();
+        }
+        (HitTarget::Node(_), _) => {
+            if let Some(id) = &target.node_id {
+                let name = hierarchy
+                    .all_nodes()
+                    .find(|n| n.id == *id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_else(|| id.clone());
+                ui.label(egui::RichText::new(name).small().color(theme::TEXT_DIM));
+                ui.separator();
+            }
+        }
+        _ => {}
+    }
+
+    for verb in menu_for(&target.hit) {
+        match verb {
+            // --- empty ground: creation ---
+            Verb::CreateNode => {
+                if render_verb_button(ui, verb, true) {
+                    outcome
+                        .actions
+                        .push(UiAction::CreateNodeAt { position: world });
+                    outcome.close = true;
+                }
+            }
+            Verb::PlaceAsset => {
+                if render_verb_button(ui, verb, true) {
+                    outcome.next_dialog = Some(ActiveDialog::GltfImport {
+                        file_path_buf: String::new(),
+                        name_buf: String::new(),
+                        position: world,
+                    });
+                }
+            }
+            // --- node-scoped verbs (shared `verb_action` map) ---
+            Verb::EditProperties | Verb::Duplicate | Verb::ClearProperties => {
+                if let Some(id) = &node_backed {
+                    if render_verb_button(ui, verb, true) {
+                        outcome.actions.extend(verb_action(verb, id, false));
+                        outcome.close = true;
+                    }
+                }
+            }
+            Verb::Rename => {
+                if let Some(id) = &node_backed {
+                    if render_verb_button(ui, verb, true) {
+                        // The Node Options Name field is the rename surface
+                        // (Save → DbCommand::RenameNode).
+                        outcome.next_dialog = Some(node_options_prefill(hierarchy, id));
+                    }
+                }
+            }
+            Verb::CopyApi | Verb::Report | Verb::ReportVolume => {
+                let egress = node_backed.as_deref().and_then(|id| match verb {
+                    Verb::CopyApi => crate::gis::egress_strings::api_string_for(id),
+                    _ => crate::gis::egress_strings::report_for(id),
+                });
+                let unpromoted_stamp = stamp_ref.is_some() && promoted_id.is_none();
+                let clicked = if unpromoted_stamp {
+                    render_gated_verb_button(
+                        ui,
+                        verb,
+                        false,
+                        "Available once this stamp finishes promoting to a node.",
+                    )
+                } else {
+                    render_verb_button(ui, verb, egress.is_some())
+                };
+                if clicked {
+                    if let (Some(id), Some(text)) = (&node_backed, &egress) {
+                        // Clipboard write is render-side (only egui `ctx` may
+                        // touch it); the action surfaces the outcome toast.
+                        ui.ctx().copy_text(text.clone());
+                        outcome.actions.extend(verb_action(verb, id, false));
+                        outcome.close = true;
+                    }
+                }
+            }
+            Verb::Delete => {
+                let deletable = node_backed.is_some();
+                let clicked = if deletable {
+                    render_verb_button(ui, verb, true)
+                } else {
+                    render_gated_verb_button(
+                        ui,
+                        verb,
+                        false,
+                        "Promoting this stamp to a node \u{2014} try again in a moment.",
+                    )
+                };
+                if clicked {
+                    // Two-step confirm (Q-2) + authoritative descendant count
+                    // (nodes only — a stamp's confirm uses its re-flow copy).
+                    *pending_delete = true;
+                    *descendant_count = None;
+                    if stamp_ref.is_none() {
+                        outcome.count_request = node_backed.clone();
+                    }
+                }
+            }
+            // --- stamp verbs (T2 payload) ---
+            Verb::PromoteToNode => {
+                if let Some(stamp) = &stamp_ref {
+                    let clicked = render_gated_verb_button(
+                        ui,
+                        verb,
+                        promoted_id.is_none(),
+                        "Already promoted \u{2014} this stamp is a full addressable node.",
+                    );
+                    if clicked {
+                        outcome.actions.push(UiAction::PromoteStamp {
+                            track_node_id: stamp.track_node_id.clone(),
+                            stamp_index: stamp.stamp_index,
+                        });
+                        outcome.close = true;
+                    }
+                }
+            }
+            Verb::ScaleRotate | Verb::SlideAlongPath => {
+                if let Some(stamp) = &stamp_ref {
+                    if render_verb_button(ui, verb, true) {
+                        // Route to the per-stamp editor (Tools sidebar): open
+                        // the owning track for editing and aim the editor at
+                        // this stamp's index.
+                        outcome.actions.push(UiAction::PathSelectTrack {
+                            track_node_id: stamp.track_node_id.clone(),
+                        });
+                        tool_panel.stamp_edit_index = stamp.stamp_index as u32;
+                        outcome.toast = Some("Stamp controls opened in the Tools panel");
+                        outcome.close = true;
+                    }
+                }
+            }
+            // --- path-object verbs (track-backed) ---
+            Verb::EditPath | Verb::AddStamps => {
+                if let Some(id) = &node_backed {
+                    if render_verb_button(ui, verb, true) {
+                        outcome.actions.push(UiAction::PathSelectTrack {
+                            track_node_id: id.clone(),
+                        });
+                        outcome.toast = Some("Path opened for editing (Tools panel)");
+                        outcome.close = true;
+                    }
+                }
+            }
+            // --- hits the right-click classifier doesn't produce yet: never a
+            // silent click if a future classifier adds them before wiring ---
+            Verb::SetCornerSmooth | Verb::DeletePoint | Verb::EditRegionParams => {
+                if render_verb_button(ui, verb, true) {
+                    outcome.toast = Some("Not reachable from the context menu yet");
+                    outcome.close = true;
+                }
+            }
+        }
+    }
+}
+
+/// The two-step delete confirm (Q-2): cascade copy with the live descendant
+/// count for nodes, re-flow copy for stamps. Confirm routes the sync-safe
+/// tombstone-cascade (T1) — the real remove path, never a raw drop.
+fn render_delete_confirm(
+    ui: &mut egui::Ui,
+    target: &ContextTarget,
+    stamp_state: &StampInteractionState,
+    descendant_count: Option<usize>,
+    pending_delete: &mut bool,
+    outcome: &mut MenuOutcome,
+) {
+    let node_backed = target.node_id.clone().or_else(|| {
+        target
+            .stamp
+            .as_ref()
+            .and_then(|(track, index)| {
+                stamp_state.promoted_node_id(&StampRef {
+                    track_node_id: track.clone(),
+                    stamp_index: *index,
+                })
+            })
+            .map(str::to_string)
+    });
+    let message = if target.stamp.is_some() {
+        "Delete this stamp? Its node is tombstoned and the path re-flows the \
+         remaining stamps. This cannot be undone."
+            .to_string()
+    } else {
+        crate::ui_shell::modal::cascade_confirm_message(descendant_count.unwrap_or(0))
+    };
+    ui.label(egui::RichText::new(message).color(theme::STATUS_OFFLINE));
+    ui.horizontal(|ui| {
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("Confirm Delete").color(egui::Color32::WHITE),
+                )
+                .fill(theme::BG_DANGER),
+            )
+            .clicked()
+        {
+            if let Some(id) = node_backed {
+                outcome.actions.push(UiAction::DeleteNode {
+                    node_id: id,
+                    cascade: true,
+                });
+            } else {
+                // The backing node vanished between arm and confirm — say so.
+                outcome.toast = Some("Nothing to delete \u{2014} the object is gone");
+            }
+            outcome.close = true;
+        }
+        if ui
+            .add(egui::Button::new("Cancel").fill(theme::BG_BUTTON))
+            .clicked()
+        {
+            *pending_delete = false;
+        }
+    });
 }
 
 #[cfg(test)]
@@ -471,6 +797,94 @@ mod tests {
         ] {
             assert!(!verb_is_seam_gated(v), "{v:?} must not be seam-gated");
         }
+    }
+
+    // --- Rename routing: the Node Options prefill (the rename surface) ---
+
+    fn tree_with_node() -> VerseManager {
+        use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseEntry};
+        VerseManager::from_verses(vec![VerseEntry {
+            id: "v1".into(),
+            name: "V".into(),
+            namespace_id: None,
+            expanded: true,
+            fractals: vec![FractalEntry {
+                id: "f1".into(),
+                name: "F".into(),
+                expanded: true,
+                petals: vec![PetalEntry {
+                    id: "p1".into(),
+                    name: "P".into(),
+                    expanded: true,
+                    nodes: vec![NodeEntry {
+                        id: "n1".into(),
+                        name: "Tower".into(),
+                        has_asset: false,
+                        position: [0.0; 3],
+                        webpage_url: Some("https://example.com".into()),
+                        asset_path: None,
+                    }],
+                }],
+            }],
+        }])
+    }
+
+    #[test]
+    fn node_options_prefill_carries_current_name_and_url() {
+        let dialog = node_options_prefill(&tree_with_node(), "n1");
+        match dialog {
+            ActiveDialog::NodeOptions {
+                node_id,
+                node_name_buf,
+                webpage_url_buf,
+                pending_delete,
+                descendant_count,
+            } => {
+                assert_eq!(node_id, "n1");
+                assert_eq!(node_name_buf, "Tower");
+                assert_eq!(webpage_url_buf, "https://example.com");
+                assert!(!pending_delete);
+                assert!(descendant_count.is_none());
+            }
+            other => panic!("expected NodeOptions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn node_options_prefill_unknown_node_defaults_to_empty_buffers() {
+        let dialog = node_options_prefill(&tree_with_node(), "missing");
+        match dialog {
+            ActiveDialog::NodeOptions {
+                node_id,
+                node_name_buf,
+                webpage_url_buf,
+                ..
+            } => {
+                assert_eq!(node_id, "missing");
+                assert!(node_name_buf.is_empty());
+                assert!(webpage_url_buf.is_empty());
+            }
+            other => panic!("expected NodeOptions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_target_payloads_construct_for_every_backed_kind() {
+        // Node-backed target: node verbs key on `node_id`.
+        let node = ContextTarget {
+            hit: HitTarget::Node(entity(1)),
+            node_id: Some("n1".into()),
+            stamp: None,
+        };
+        assert_eq!(node.node_id.as_deref(), Some("n1"));
+        // Stamp-backed target: stamp verbs key on `(track, index)`.
+        let stamp = ContextTarget {
+            hit: HitTarget::Stamp(entity(2)),
+            node_id: None,
+            stamp: Some(("track-1".into(), 4)),
+        };
+        assert_eq!(stamp.stamp, Some(("track-1".to_string(), 4)));
+        assert!(!menu_for(&stamp.hit).is_empty());
     }
 
     #[test]

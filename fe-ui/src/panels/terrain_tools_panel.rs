@@ -228,13 +228,11 @@ pub(crate) fn sculpt_footprint_area(sculpt: &SculptToolState) -> f32 {
 /// T3 FR-1/FR-2 sculpt section (folded into TerrainTools — no new
 /// `RightSidebarSection`). Configures `SculptToolState` (shape mode, op, brush
 /// radius/strength, level target + delta, material, polygon draft) — the tactile
-/// area-selection controls (D-A8). NOTE the frozen scaffold seam: this fn has no
-/// `ui_mgr`/petal handle, so the actual brush-paint + defined-shape REGION
-/// COMMIT is viewport/interaction-driven (emits `UiAction::Sculpt*` once T6
-/// threads the active petal + drains `SculptToolState.pending_actions`, mirroring
-/// `ToolPanelState.drain_pending`). Region CREATE/DELETE + reporting work today
-/// through the evolved proposal path above (FR-6). See `panels/AGENTS.md`
-/// §terrain-tools. Kept named `render_sculpt_placeholder` (T6's frozen call site).
+/// area-selection controls (D-A8). This fn has no `ui_mgr`/petal handle by
+/// design: commits queue into `SculptToolState.pending_actions`, and the LIVE
+/// commit line in `process_ui_actions` drains them + threads the active petal
+/// (see `actions/AGENTS.md` §sculpt). Kept named `render_sculpt_placeholder`
+/// (frozen call site in `right_sidebar`).
 pub(crate) fn render_sculpt_placeholder(ui: &mut egui::Ui, sculpt_state: &mut SculptToolState) {
     ui.label(
         egui::RichText::new("Sculpt")

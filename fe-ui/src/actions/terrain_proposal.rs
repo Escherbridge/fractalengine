@@ -5,9 +5,9 @@
 //! terrain JSON, then round-trip via SetPetalTerrain" idiom. See
 //! `fe-ui/src/AGENTS.md` §terrain-proposal-editor.
 
-use bevy::prelude::Resource;
+use bevy::prelude::{MessageReader, Res, ResMut, Resource};
 use fe_runtime::app::DbCommandSender;
-use fe_runtime::messages::DbCommand;
+use fe_runtime::messages::{CallerAuth, DbCommand};
 
 use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::{ProposalEditState, ProposalOp, ProposalRecord};
@@ -265,6 +265,290 @@ impl SculptToolState {
     }
 }
 
+/// Mint a region id that is unused in the current terrain doc's `proposals`
+/// array (the counter restarts per session; rehydrated `r{n}` ids must not be
+/// reused — the node map keys on them). Pure over the doc.
+fn mint_unused_region_id(
+    state: &mut SculptToolState,
+    terrain: Option<&serde_json::Value>,
+) -> String {
+    loop {
+        let id = state.mint_region_id();
+        let taken = terrain
+            .and_then(|t| t.get("proposals"))
+            .and_then(|p| p.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|r| r.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+            });
+        if !taken {
+            return id;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Earthwork region NODE rows (D-A8/N-10): every committed region is also an
+// addressable node whose property bag mirrors fe-query's literal read contract
+// (node_kind="earthwork_region", region_id, material, cut/fill volumes). The
+// map below is the region↔node bookkeeping + the volume changed-value gate.
+// See `fe-ui/src/actions/AGENTS.md` §sculpt.
+// ---------------------------------------------------------------------------
+
+/// `node_kind` contract value for earthwork region nodes (mirror of fe-query's
+/// literal key — do not import fe-query).
+pub(crate) const EARTHWORK_NODE_KIND: &str = "earthwork_region";
+/// `CreateNode.correlation_id` prefix binding a created node to its region.
+pub(crate) const EARTHWORK_CORRELATION_PREFIX: &str = "earthwork:";
+/// Property keys for the real-unit volume contract (fe-query sums these).
+pub(crate) const KEY_CUT_VOLUME: &str = "cut_volume_m3";
+pub(crate) const KEY_FILL_VOLUME: &str = "fill_volume_m3";
+
+/// region_id ↔ node_id bookkeeping for earthwork region nodes, plus the
+/// pending-material stash consumed on `NodeCreated` (the Pen tool's
+/// pending-correlation idiom) and the last-persisted volume cache (the DB
+/// write gate for bake re-fires).
+#[derive(Resource, Default)]
+pub struct EarthworkNodeMap {
+    nodes: std::collections::HashMap<String, String>,
+    pending_materials: std::collections::HashMap<String, String>,
+    last_sent_volumes: std::collections::HashMap<String, (f64, f64)>,
+}
+
+impl EarthworkNodeMap {
+    /// Stash the material tag until the region's `NodeCreated` echo arrives.
+    pub fn stash_pending_material(&mut self, region_id: &str, material: &str) {
+        self.pending_materials
+            .insert(region_id.to_string(), material.to_string());
+    }
+
+    /// Consume the stashed material for `region_id` (once, on `NodeCreated`).
+    pub fn take_pending_material(&mut self, region_id: &str) -> Option<String> {
+        self.pending_materials.remove(region_id)
+    }
+
+    /// Bind `region_id` to its created/hydrated node.
+    pub fn record(&mut self, region_id: &str, node_id: &str) {
+        self.nodes
+            .insert(region_id.to_string(), node_id.to_string());
+    }
+
+    /// The node backing `region_id`, when known.
+    pub fn node_for(&self, region_id: &str) -> Option<&str> {
+        self.nodes.get(region_id).map(String::as_str)
+    }
+
+    /// Drop all bookkeeping for a deleted region; returns its node id (the
+    /// tombstone target) when one was known.
+    pub fn forget_region(&mut self, region_id: &str) -> Option<String> {
+        self.pending_materials.remove(region_id);
+        self.last_sent_volumes.remove(region_id);
+        self.nodes.remove(region_id)
+    }
+
+    /// Changed-value gate: `true` when `(cut, fill)` differs from the last
+    /// persisted pair (bake re-fires per revision are deterministic for
+    /// unchanged inputs, so exact comparison is the correct no-spam gate).
+    pub fn volume_changed(&self, region_id: &str, cut_m3: f64, fill_m3: f64) -> bool {
+        self.last_sent_volumes.get(region_id) != Some(&(cut_m3, fill_m3))
+    }
+
+    /// Record a successfully-persisted volume pair (also seeded on hydration).
+    pub fn mark_volume_sent(&mut self, region_id: &str, cut_m3: f64, fill_m3: f64) {
+        self.last_sent_volumes
+            .insert(region_id.to_string(), (cut_m3, fill_m3));
+    }
+}
+
+/// Vertex-mean centroid of a footprint `[x, z]` (planning-grade node anchor).
+pub(crate) fn footprint_centroid(footprint: &[[f32; 2]]) -> [f32; 2] {
+    if footprint.is_empty() {
+        return [0.0, 0.0];
+    }
+    let n = footprint.len() as f32;
+    let (sx, sz) = footprint
+        .iter()
+        .fold((0.0f32, 0.0f32), |(sx, sz), [x, z]| (sx + x, sz + z));
+    [sx / n, sz / n]
+}
+
+/// Extract the region id from an `earthwork:{region_id}` correlation id.
+pub(crate) fn earthwork_region_id_from_correlation(correlation_id: &str) -> Option<&str> {
+    correlation_id
+        .strip_prefix(EARTHWORK_CORRELATION_PREFIX)
+        .filter(|id| !id.is_empty())
+}
+
+/// Display name for a region node, e.g. `"Earthwork raise r3"`.
+pub(crate) fn earthwork_display_name(op: &str, region_id: &str) -> String {
+    format!("Earthwork {op} {region_id}")
+}
+
+/// Initial property bag for a freshly-created region node (volumes start 0.0;
+/// the bake report updates them async). Pure — the endpoint contract is testable.
+pub(crate) fn earthwork_node_properties(
+    region_id: &str,
+    material: &str,
+) -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        ("node_kind", serde_json::json!(EARTHWORK_NODE_KIND)),
+        ("material", serde_json::json!(material)),
+        ("region_id", serde_json::json!(region_id)),
+        (KEY_CUT_VOLUME, serde_json::json!(0.0)),
+        (KEY_FILL_VOLUME, serde_json::json!(0.0)),
+    ]
+}
+
+/// Send the `CreateNode` making a committed region an addressable endpoint
+/// (D-A8/N-10): anchored at the footprint centroid (raw petal-local meters,
+/// N-1), correlated `earthwork:{region_id}` for the `NodeCreated` bind.
+fn create_region_node(
+    db_sender: &DbCommandSender,
+    map: &mut EarthworkNodeMap,
+    petal_id: &str,
+    region_id: &str,
+    op: &str,
+    footprint: &[[f32; 2]],
+    material: &str,
+) {
+    let [cx, cz] = footprint_centroid(footprint);
+    map.stash_pending_material(region_id, material);
+    if db_sender
+        .0
+        .send(DbCommand::CreateNode {
+            petal_id: petal_id.to_string(),
+            name: earthwork_display_name(op, region_id),
+            position: [cx, 0.0, cz],
+            correlation_id: Some(format!("{EARTHWORK_CORRELATION_PREFIX}{region_id}")),
+        })
+        .is_err()
+    {
+        bevy::log::warn!("db_sender channel closed — earthwork region node not created");
+    }
+}
+
+/// Reload seam (`NodePropertiesLoaded`): a bag whose `node_kind` is
+/// `"earthwork_region"` re-binds region_id→node_id and seeds the volume gate
+/// from the persisted values (mirrors `asset::hydrate_promoted_stamp`).
+pub(crate) fn hydrate_earthwork_region(
+    node_id: &str,
+    properties: &serde_json::Value,
+    map: &mut EarthworkNodeMap,
+) {
+    if properties.get("node_kind").and_then(|v| v.as_str()) != Some(EARTHWORK_NODE_KIND) {
+        return;
+    }
+    let Some(region_id) = properties.get("region_id").and_then(|v| v.as_str()) else {
+        return;
+    };
+    map.record(region_id, node_id);
+    if let (Some(cut), Some(fill)) = (
+        properties.get(KEY_CUT_VOLUME).and_then(|v| v.as_f64()),
+        properties.get(KEY_FILL_VOLUME).and_then(|v| v.as_f64()),
+    ) {
+        map.mark_volume_sent(region_id, cut, fill);
+    }
+}
+
+/// Fill a drained sculpt action's `petal_id` hole from the active petal; the
+/// panel/viewport queue side has no petal handle by design. `None` (with a
+/// warn, N-8) drops petal-scoped actions when no petal is active; petal-free
+/// actions pass through untouched. Pure — the commit line is testable.
+pub(crate) fn thread_active_petal(
+    action: crate::actions::UiAction,
+    active_petal: Option<&str>,
+) -> Option<crate::actions::UiAction> {
+    use crate::actions::UiAction;
+    match action {
+        UiAction::SculptBrush {
+            center,
+            radius,
+            strength,
+            op,
+            ..
+        } => match active_petal {
+            Some(petal_id) => Some(UiAction::SculptBrush {
+                petal_id: petal_id.to_string(),
+                center,
+                radius,
+                strength,
+                op,
+            }),
+            None => {
+                bevy::log::warn!("SculptBrush dropped — no active petal (N-8)");
+                None
+            }
+        },
+        UiAction::SculptShapeRegion {
+            footprint,
+            op,
+            target_height,
+            delta,
+            material,
+            ..
+        } => match active_petal {
+            Some(petal_id) => Some(UiAction::SculptShapeRegion {
+                petal_id: petal_id.to_string(),
+                footprint,
+                op,
+                target_height,
+                delta,
+                material,
+            }),
+            None => {
+                bevy::log::warn!("SculptShapeRegion dropped — no active petal (N-8)");
+                None
+            }
+        },
+        other => Some(other),
+    }
+}
+
+/// Persist bake-reported volumes onto the region's node — ONLY when changed vs
+/// the last persisted pair (bake re-fires per revision; the DB must not be
+/// spammed). Unknown region → debug (the node may not exist yet; the next
+/// revision re-fires). Registered in `plugin.rs`.
+pub(crate) fn persist_earthwork_volumes(
+    mut reports: MessageReader<fe_renderer::terrain_overlay::EarthworkVolumeReport>,
+    mut map: ResMut<EarthworkNodeMap>,
+    db_sender: Res<DbCommandSender>,
+) {
+    for report in reports.read() {
+        let Some(node_id) = map.node_for(&report.region_id).map(str::to_string) else {
+            bevy::log::debug!(
+                "earthwork volume for unknown region {} — node not yet created/hydrated",
+                report.region_id
+            );
+            continue;
+        };
+        if !map.volume_changed(&report.region_id, report.cut_m3, report.fill_m3) {
+            continue;
+        }
+        let mut sent = true;
+        for (key, value) in [
+            (KEY_CUT_VOLUME, report.cut_m3),
+            (KEY_FILL_VOLUME, report.fill_m3),
+        ] {
+            if db_sender
+                .0
+                .send(DbCommand::SetNodeProperty {
+                    node_id: node_id.clone(),
+                    key: key.to_string(),
+                    value: serde_json::json!(value),
+                })
+                .is_err()
+            {
+                bevy::log::warn!("db_sender channel closed — earthwork volumes not persisted");
+                sent = false;
+                break;
+            }
+        }
+        if sent {
+            map.mark_volume_sent(&report.region_id, report.cut_m3, report.fill_m3);
+        }
+    }
+}
+
 /// Build the enriched earthwork-region JSON object (mirrors
 /// `fe_terrain::sculpt::EarthworkRegion`'s serde shape by contract). `op` is a
 /// snake tag; `material` defaults are the caller's concern. Pure.
@@ -330,12 +614,13 @@ fn remove_region(base: Option<&serde_json::Value>, id: &str) -> serde_json::Valu
 
 /// Persist a full terrain doc on the active petal (mirrors `persist`'s
 /// optimistic update: local state advances only after the command is queued).
+/// Returns whether the command was queued (gates the region-node follow-ups).
 fn persist_doc(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
     terrain: serde_json::Value,
     petal_id: String,
-) {
+) -> bool {
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
@@ -343,11 +628,13 @@ fn persist_doc(
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);
             petal_map.terrain_json = Some(terrain);
+            true
         }
         Err(_) => {
             bevy::log::warn!(
                 "db_sender channel closed — SetPetalTerrain (sculpt region) not dispatched; local state unchanged"
             );
+            false
         }
     }
 }
@@ -361,6 +648,7 @@ pub(crate) fn handle_brush(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
     sculpt_state: &mut SculptToolState,
+    earthwork_map: &mut EarthworkNodeMap,
     petal_id: String,
     center: [f32; 2],
     radius: f32,
@@ -374,11 +662,22 @@ pub(crate) fn handle_brush(
     }
     // Brush dab moves earth proportional to strength (planning-grade).
     let delta = Some(sculpt_state.delta * strength.clamp(0.0, 1.0));
-    let id = sculpt_state.mint_region_id();
+    let id = mint_unused_region_id(sculpt_state, petal_map.terrain_json.as_ref());
     let material = sculpt_state.material.clone();
     let region = region_json(&id, &op, &footprint, None, delta, &material);
     let terrain = embed_region(petal_map.terrain_json.as_ref(), region);
-    persist_doc(db_sender, petal_map, terrain, petal_id);
+    if persist_doc(db_sender, petal_map, terrain, petal_id.clone()) {
+        // D-A8/N-10: the committed region is also an addressable node row.
+        create_region_node(
+            db_sender,
+            earthwork_map,
+            &petal_id,
+            &id,
+            &op,
+            &footprint,
+            &material,
+        );
+    }
 }
 
 /// T3 FR-1 shape + FR-3 region + FR-4 volume: create a defined-shape earthwork
@@ -389,6 +688,7 @@ pub(crate) fn handle_shape_region(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
     sculpt_state: &mut SculptToolState,
+    earthwork_map: &mut EarthworkNodeMap,
     petal_id: String,
     footprint: Vec<[f32; 2]>,
     op: String,
@@ -400,10 +700,21 @@ pub(crate) fn handle_shape_region(
         bevy::log::warn!("SculptShapeRegion ignored — footprint has fewer than 3 points");
         return;
     }
-    let id = sculpt_state.mint_region_id();
+    let id = mint_unused_region_id(sculpt_state, petal_map.terrain_json.as_ref());
     let region = region_json(&id, &op, &footprint, target_height, delta, &material);
     let terrain = embed_region(petal_map.terrain_json.as_ref(), region);
-    persist_doc(db_sender, petal_map, terrain, petal_id);
+    if persist_doc(db_sender, petal_map, terrain, petal_id.clone()) {
+        // D-A8/N-10: the committed region is also an addressable node row.
+        create_region_node(
+            db_sender,
+            earthwork_map,
+            &petal_id,
+            &id,
+            &op,
+            &footprint,
+            &material,
+        );
+    }
     // The draft has been committed to a region — clear it for the next shape.
     sculpt_state.region_draft.clear();
 }
@@ -415,6 +726,7 @@ pub(crate) fn handle_delete_region(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
     _sculpt_state: &mut SculptToolState,
+    earthwork_map: &mut EarthworkNodeMap,
     active_petal: Option<String>,
     region_id: String,
 ) {
@@ -423,7 +735,23 @@ pub(crate) fn handle_delete_region(
         return;
     };
     let terrain = remove_region(petal_map.terrain_json.as_ref(), &region_id);
-    persist_doc(db_sender, petal_map, terrain, petal_id);
+    if persist_doc(db_sender, petal_map, terrain, petal_id) {
+        // Keep the endpoint contract honest: tombstone the region's node row
+        // (sync-safe, N-4) when the map knows it. Auth is `CallerAuth::Local`
+        // — the UI asserts no role (N-5).
+        if let Some(node_id) = earthwork_map.forget_region(&region_id) {
+            if db_sender
+                .0
+                .send(DbCommand::TombstoneNode {
+                    node_id,
+                    auth: CallerAuth::Local,
+                })
+                .is_err()
+            {
+                bevy::log::warn!("db_sender channel closed — earthwork node tombstone not sent");
+            }
+        }
+    }
 }
 
 /// A closed CCW brush disc footprint `[x, z]` (petal-local meters). Empty for a
@@ -637,5 +965,128 @@ mod tests {
         tags.sort_unstable();
         tags.dedup();
         assert_eq!(tags.len(), SculptOpKind::ALL.len());
+    }
+
+    // --- T3 integration: earthwork node rows + the commit line ---
+
+    #[test]
+    fn footprint_centroid_is_vertex_mean() {
+        let square = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        assert_eq!(footprint_centroid(&square), [5.0, 5.0]);
+        assert_eq!(footprint_centroid(&[[3.0, -4.0]]), [3.0, -4.0]);
+        assert_eq!(footprint_centroid(&[]), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn earthwork_correlation_round_trips_and_rejects_foreign_ids() {
+        let cid = format!("{EARTHWORK_CORRELATION_PREFIX}r7");
+        assert_eq!(earthwork_region_id_from_correlation(&cid), Some("r7"));
+        assert_eq!(earthwork_region_id_from_correlation("earthwork:"), None);
+        assert_eq!(earthwork_region_id_from_correlation("pen:42"), None);
+        assert_eq!(earthwork_region_id_from_correlation("r7"), None);
+    }
+
+    #[test]
+    fn earthwork_node_properties_carry_the_endpoint_contract() {
+        let props = earthwork_node_properties("r3", "gravel");
+        let bag: std::collections::HashMap<&str, serde_json::Value> = props.into_iter().collect();
+        assert_eq!(bag["node_kind"], json!("earthwork_region"));
+        assert_eq!(bag["material"], json!("gravel"));
+        assert_eq!(bag["region_id"], json!("r3"));
+        assert_eq!(bag[KEY_CUT_VOLUME], json!(0.0));
+        assert_eq!(bag[KEY_FILL_VOLUME], json!(0.0));
+    }
+
+    #[test]
+    fn volume_changed_gate_blocks_repeats_until_values_move() {
+        let mut map = EarthworkNodeMap::default();
+        assert!(
+            map.volume_changed("r1", 10.0, 2.0),
+            "first pair always sends"
+        );
+        map.mark_volume_sent("r1", 10.0, 2.0);
+        assert!(!map.volume_changed("r1", 10.0, 2.0), "repeat is gated");
+        assert!(map.volume_changed("r1", 10.0, 2.5), "moved fill re-sends");
+        assert!(
+            map.volume_changed("r2", 10.0, 2.0),
+            "other region unaffected"
+        );
+    }
+
+    #[test]
+    fn node_map_pending_and_forget_lifecycle() {
+        let mut map = EarthworkNodeMap::default();
+        map.stash_pending_material("r1", "earth");
+        assert_eq!(map.take_pending_material("r1").as_deref(), Some("earth"));
+        assert!(map.take_pending_material("r1").is_none(), "consumed once");
+        map.record("r1", "node-9");
+        map.mark_volume_sent("r1", 1.0, 2.0);
+        assert_eq!(map.node_for("r1"), Some("node-9"));
+        assert_eq!(map.forget_region("r1").as_deref(), Some("node-9"));
+        assert!(map.node_for("r1").is_none());
+        assert!(
+            map.volume_changed("r1", 1.0, 2.0),
+            "gate cleared with region"
+        );
+    }
+
+    #[test]
+    fn hydrate_earthwork_region_binds_and_seeds_gate() {
+        let mut map = EarthworkNodeMap::default();
+        let props = json!({
+            "node_kind": "earthwork_region",
+            "region_id": "r4",
+            "material": "earth",
+            "cut_volume_m3": 12.5,
+            "fill_volume_m3": 0.0,
+        });
+        hydrate_earthwork_region("node-4", &props, &mut map);
+        assert_eq!(map.node_for("r4"), Some("node-4"));
+        assert!(
+            !map.volume_changed("r4", 12.5, 0.0),
+            "persisted volumes seed the gate — an unchanged re-bake stays quiet"
+        );
+        // Non-earthwork / malformed bags are ignored.
+        hydrate_earthwork_region("n1", &json!({ "node_kind": "stamp" }), &mut map);
+        hydrate_earthwork_region("n2", &json!({ "node_kind": "earthwork_region" }), &mut map);
+        assert!(map.node_for("n1").is_none() && map.nodes.len() == 1);
+    }
+
+    #[test]
+    fn thread_active_petal_fills_hole_or_drops() {
+        let brush = crate::actions::UiAction::SculptBrush {
+            petal_id: String::new(),
+            center: [1.0, 2.0],
+            radius: 3.0,
+            strength: 0.5,
+            op: "raise".into(),
+        };
+        match thread_active_petal(brush.clone(), Some("petal-1")) {
+            Some(crate::actions::UiAction::SculptBrush {
+                petal_id, center, ..
+            }) => {
+                assert_eq!(petal_id, "petal-1");
+                assert_eq!(center, [1.0, 2.0]);
+            }
+            other => panic!("expected threaded SculptBrush, got {other:?}"),
+        }
+        assert!(thread_active_petal(brush, None).is_none(), "no petal drops");
+        // Petal-free actions pass through untouched.
+        let del = crate::actions::UiAction::SculptDeleteRegion {
+            region_id: "r1".into(),
+        };
+        assert!(matches!(
+            thread_active_petal(del, None),
+            Some(crate::actions::UiAction::SculptDeleteRegion { .. })
+        ));
+    }
+
+    #[test]
+    fn mint_unused_region_id_skips_rehydrated_ids() {
+        let mut s = SculptToolState::default();
+        // A reloaded doc already holds r1/r2 from a previous session.
+        let terrain = json!({ "proposals": [ { "id": "r1" }, { "id": "r2" } ] });
+        assert_eq!(mint_unused_region_id(&mut s, Some(&terrain)), "r3");
+        assert_eq!(mint_unused_region_id(&mut s, None), "r4");
     }
 }
