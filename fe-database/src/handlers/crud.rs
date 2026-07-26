@@ -396,10 +396,12 @@ pub(crate) async fn load_hierarchy_handler(
     // -----------------------------------------------------------------------
     let mut all_res: surrealdb::IndexedResults = db
         .query(
+            // FR-1: tombstoned nodes persist as soft-deleted rows but are
+            // filtered from the hierarchy so the delete survives reload.
             "SELECT * FROM verse ORDER BY created_at ASC;\
              SELECT * FROM fractal ORDER BY created_at ASC;\
              SELECT * FROM petal ORDER BY created_at ASC;\
-             SELECT * FROM node ORDER BY created_at ASC",
+             SELECT * FROM node WHERE tombstone = NONE ORDER BY created_at ASC",
         )
         .await?;
 
@@ -629,8 +631,11 @@ pub(crate) async fn load_nodes_by_petal_handler(
     blob_store: &BlobStoreHandle,
     petal_id: &str,
 ) -> anyhow::Result<Vec<fe_runtime::messages::NodeDto>> {
+    // FR-1: exclude tombstoned (soft-deleted) rows from the scene snapshot.
     let mut node_res: surrealdb::IndexedResults = db
-        .query("SELECT * FROM node WHERE petal_id = $pid ORDER BY created_at ASC")
+        .query(
+            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
+        )
         .bind(("pid", petal_id.to_string()))
         .await?;
     let nodes_raw: Vec<serde_json::Value> = node_res.take(0)?;
@@ -731,8 +736,12 @@ pub(crate) async fn get_node_transform_handler(
     db: &Db,
     node_id: &str,
 ) -> anyhow::Result<Option<NodeTransformRow>> {
+    // FR-1: a tombstoned node has no live transform to read.
     let mut res: surrealdb::IndexedResults = db
-        .query("SELECT position, elevation, rotation, scale FROM node WHERE node_id = $nid LIMIT 1")
+        .query(
+            "SELECT position, elevation, rotation, scale FROM node \
+             WHERE node_id = $nid AND tombstone = NONE LIMIT 1",
+        )
         .bind(("nid", node_id.to_string()))
         .await?;
     let rows: Vec<serde_json::Value> = res.take(0)?;
@@ -837,6 +846,323 @@ pub(crate) async fn resolve_node_scope_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Node lifecycle: sync-safe tombstone delete + lazy promotion
+// (node_lifecycle_addressing_20260725 FR-1/FR-2/FR-5) — see AGENTS.md §lifecycle
+// ---------------------------------------------------------------------------
+
+/// Outcome of a durable tombstone / cascade op — the data the dispatch loop
+/// needs to emit lifecycle events (FR-6) and re-flow hooks (FR-2).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TombstoneDurableOutcome {
+    /// Owning petal (scopes the `SceneChange::NodeRemoved` mirror).
+    pub petal_id: String,
+    /// Owning-path node id if a tombstoned node was a stamp (FR-2 re-flow hook).
+    pub reflow_path: Option<String>,
+    /// Node ids actually tombstoned by this op (empty on an idempotent no-op).
+    /// Read by the DB-thread arms to gate lifecycle-event emission (FR-6): a
+    /// no-op repeat must not re-emit. Also the basis for a future per-descendant
+    /// `PathReflow` on cascade (FR-2 follow-up).
+    pub tombstoned_ids: Vec<String>,
+}
+
+/// Read a node's `(petal_id, reflow_path, already_tombstoned)`, tolerating an
+/// absent `node` table (fresh DB). `None` = no such node (matched-no-node).
+async fn read_node_lifecycle_meta(
+    db: &Db,
+    node_id: &str,
+) -> anyhow::Result<Option<(String, Option<String>, bool)>> {
+    let lookup = db
+        .query("SELECT petal_id, properties, tombstone FROM node WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("tombstone lookup query failed: {e}"))?
+        .check();
+    let rows: Vec<serde_json::Value> = match lookup {
+        Ok(mut res) => res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("tombstone lookup take failed: {e}"))?,
+        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+        Err(e) => return Err(anyhow::anyhow!("tombstone lookup statement failed: {e}")),
+    };
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let petal_id = row
+        .get("petal_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    // A stamp records its owning path under `owning_path_id` (promoted instance)
+    // or `gpx_track_id` (waypoint) — either drives the FR-2 re-flow hook.
+    let reflow_path = row
+        .get("properties")
+        .and_then(|p| {
+            p.get("owning_path_id")
+                .or_else(|| p.get("gpx_track_id"))
+                .and_then(|v| v.as_str())
+        })
+        .map(|s| s.to_string());
+    let already_tombstoned = row.get("tombstone").map(|t| !t.is_null()).unwrap_or(false);
+    Ok(Some((petal_id, reflow_path, already_tombstoned)))
+}
+
+/// Build the durable tombstone marker object stamped onto a soft-deleted row.
+fn tombstone_marker(hlc: u64, source_did: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hlc": hlc,
+        "source_did": source_did,
+        "tombstoned_at": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Sync-safe delete (FR-1): **soft-delete** the node by stamping a durable
+/// `tombstone` marker (HLC + source) on the row — never a raw row drop (N-4) —
+/// and record a tombstone entry in the op-log. The row persists so the delete
+/// survives reload and P2P/HLC merge; a stale replica cannot resurrect it
+/// because the merge path honors the marker (see [`crate::merge`]). Reads filter
+/// `tombstone = NONE`. Its direct gpx waypoint children are tombstoned in the
+/// same atomic statement (inverse-orphan protection). See AGENTS.md §lifecycle.
+#[instrument(skip(db))]
+pub(crate) async fn tombstone_node_handler(
+    db: &Db,
+    node_id: &str,
+    source_did: &str,
+) -> anyhow::Result<TombstoneDurableOutcome> {
+    let Some((petal_id, reflow_path, already)) = read_node_lifecycle_meta(db, node_id).await?
+    else {
+        anyhow::bail!("TombstoneNode matched no node with node_id = {node_id}");
+    };
+    if already {
+        // Idempotent no-op — already tombstoned, nothing to re-record (N-4).
+        return Ok(TombstoneDurableOutcome {
+            petal_id,
+            reflow_path,
+            tombstoned_ids: Vec::new(),
+        });
+    }
+
+    let (lamport, hlc_ts) = crate::op_log::next_hlc_timestamp();
+    let marker = tombstone_marker(lamport, source_did);
+
+    // Soft-delete the node AND its direct gpx waypoints in one atomic statement.
+    db.query(
+        "UPDATE node SET tombstone = $ts \
+         WHERE (node_id = $nid OR properties.gpx_track_id = $nid) AND tombstone = NONE",
+    )
+    .bind(("ts", marker))
+    .bind(("nid", node_id.to_string()))
+    .await
+    .map_err(|e| anyhow::anyhow!("TombstoneNode soft-delete query failed: {e}"))?
+    .check()
+    .map_err(|e| anyhow::anyhow!("TombstoneNode soft-delete statement failed: {e}"))?;
+
+    let entry = crate::types::OpLogEntry {
+        lamport_clock: lamport,
+        node_id: crate::types::NodeId(node_id.to_string()),
+        op_type: crate::types::OpType::NodeTombstoned,
+        payload: serde_json::json!({
+            "node_id": node_id,
+            "petal_id": petal_id,
+            "source_did": source_did,
+        }),
+        sig: "00".repeat(64),
+        hlc_timestamp: hlc_ts,
+    };
+    crate::op_log::write_op_log(db, entry).await?;
+
+    tracing::info!("Tombstoned node {node_id} (petal {petal_id}) — durable soft-delete + op-log");
+    Ok(TombstoneDurableOutcome {
+        petal_id,
+        reflow_path,
+        tombstoned_ids: vec![node_id.to_string()],
+    })
+}
+
+/// Cascade delete (FR-2): tombstone `root` and its entire N-level descendant
+/// subtree as **one atomic transaction**, so a partial failure leaves no
+/// half-deleted subtree. Descendants are discovered by the durable parent edges
+/// `properties.parent_id`, `properties.gpx_track_id`, and
+/// `properties.owning_path_id` (BFS, de-duplicated, depth-capped). The subtree
+/// tombstone UPDATE and the op-log record commit together or not at all. See
+/// AGENTS.md §lifecycle.
+#[instrument(skip(db))]
+pub(crate) async fn cascade_tombstone_node_handler(
+    db: &Db,
+    node_id: &str,
+    source_did: &str,
+) -> anyhow::Result<TombstoneDurableOutcome> {
+    let Some((petal_id, _root_reflow, _)) = read_node_lifecycle_meta(db, node_id).await? else {
+        anyhow::bail!("CascadeTombstoneNode matched no node with node_id = {node_id}");
+    };
+
+    // BFS over the durable parent edges to collect the whole live subtree. Node
+    // children are `properties.parent_id`; gpx waypoints and promoted stamps
+    // reference their parent via `gpx_track_id` / `owning_path_id`.
+    let mut collected: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collected.insert(node_id.to_string());
+    let mut frontier: Vec<String> = vec![node_id.to_string()];
+    // Depth cap: guards against a pathological/self-referential parent edge.
+    for _ in 0..10_000 {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut child_res = db
+            .query(
+                "SELECT node_id FROM node \
+                 WHERE (properties.parent_id IN $frontier \
+                    OR properties.gpx_track_id IN $frontier \
+                    OR properties.owning_path_id IN $frontier) \
+                   AND tombstone = NONE",
+            )
+            .bind(("frontier", frontier.clone()))
+            .await
+            .map_err(|e| anyhow::anyhow!("Cascade child query failed: {e}"))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("Cascade child statement failed: {e}"))?;
+        let children: Vec<serde_json::Value> = child_res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("Cascade child take failed: {e}"))?;
+
+        let mut next: Vec<String> = Vec::new();
+        for c in &children {
+            let Some(cid) = c.get("node_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if collected.insert(cid.to_string()) {
+                next.push(cid.to_string());
+            }
+        }
+        frontier = next;
+    }
+
+    let ids: Vec<String> = collected.into_iter().collect();
+    let (lamport, hlc_ts) = crate::op_log::next_hlc_timestamp();
+    let marker = tombstone_marker(lamport, source_did);
+    let payload = serde_json::json!({
+        "node_id": node_id,
+        "petal_id": petal_id,
+        "source_did": source_did,
+        "cascade": true,
+        "tombstoned_ids": ids,
+    });
+
+    // All-or-nothing: the subtree soft-delete and the op-log record commit
+    // together. A failure in either rolls both back — no half-deleted subtree.
+    db.query(
+        "BEGIN TRANSACTION;\
+         UPDATE node SET tombstone = $ts WHERE node_id IN $ids;\
+         CREATE op_log CONTENT { \
+            lamport_clock: $lc, hlc_timestamp: $hlc, node_id: $root, \
+            op_type: 'NodeTombstoned', payload: $payload, sig: $sig };\
+         COMMIT TRANSACTION;",
+    )
+    .bind(("ts", marker))
+    .bind(("ids", ids.clone()))
+    .bind(("lc", lamport as i64))
+    .bind(("hlc", hlc_ts))
+    .bind(("root", node_id.to_string()))
+    .bind(("payload", payload))
+    .bind(("sig", "00".repeat(64)))
+    .await
+    .map_err(|e| anyhow::anyhow!("Cascade transaction query failed: {e}"))?
+    .check()
+    .map_err(|e| anyhow::anyhow!("Cascade transaction failed (rolled back): {e}"))?;
+
+    tracing::info!(
+        "Cascade-tombstoned {} node(s) rooted at {node_id} (petal {petal_id}) atomically",
+        ids.len()
+    );
+    Ok(TombstoneDurableOutcome {
+        petal_id,
+        reflow_path: None,
+        tombstoned_ids: ids,
+    })
+}
+
+/// Lazy promotion (FR-5): materialize a full node row for a single stamp
+/// instance on first individual select/edit. Idempotent — if the deterministic
+/// instance node already exists, this is a no-op. Returns
+/// `(node_id, newly_promoted)`.
+#[instrument(skip(db))]
+pub(crate) async fn promote_instance_handler(
+    db: &Db,
+    petal_id: &str,
+    path_id: &str,
+    instance_index: u32,
+) -> anyhow::Result<(String, bool)> {
+    let node_id = format!("{path_id}#inst-{instance_index}");
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Idempotency probe (tolerate an absent `node` table on a fresh DB).
+    let existing: Vec<serde_json::Value> = {
+        let lookup = db
+            .query("SELECT node_id FROM node WHERE node_id = $nid LIMIT 1")
+            .bind(("nid", node_id.clone()))
+            .await
+            .map_err(|e| anyhow::anyhow!("PromoteInstance lookup failed: {e}"))?
+            .check();
+        match lookup {
+            Ok(mut res) => res
+                .take(0)
+                .map_err(|e| anyhow::anyhow!("PromoteInstance take failed: {e}"))?,
+            Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "PromoteInstance lookup statement failed: {e}"
+                ))
+            }
+        }
+    };
+    if !existing.is_empty() {
+        return Ok((node_id, false)); // already promoted — idempotent no-op.
+    }
+
+    // Materialize a full node row (geometry cast per AGENTS.md §geometry-inserts).
+    db.query(
+        "CREATE node CONTENT {
+            node_id: $node_id,
+            petal_id: $petal_id,
+            display_name: $name,
+            asset_id: NONE,
+            position: <geometry<point>> [0.0, 0.0],
+            elevation: 0.0,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+            interactive: true,
+            created_at: $now,
+            properties: { owning_path_id: $path_id, instance_index: $idx },
+        }",
+    )
+    .bind(("node_id", node_id.clone()))
+    .bind(("petal_id", petal_id.to_string()))
+    .bind(("name", format!("{path_id} #{instance_index}")))
+    .bind(("path_id", path_id.to_string()))
+    .bind(("idx", instance_index as i64))
+    .bind(("now", now))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("PromoteInstance CREATE failed: {e}"))?;
+
+    let entry = crate::types::OpLogEntry {
+        lamport_clock: 0,
+        node_id: crate::types::NodeId(node_id.clone()),
+        op_type: crate::types::OpType::NodePromoted,
+        payload: serde_json::json!({
+            "node_id": node_id,
+            "petal_id": petal_id,
+            "path_id": path_id,
+            "instance_index": instance_index,
+        }),
+        sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
+    };
+    crate::op_log::write_op_log(db, entry).await?;
+
+    tracing::info!("Promoted stamp instance {node_id} (path {path_id}) in petal {petal_id}");
+    Ok((node_id, true))
+}
+
+// ---------------------------------------------------------------------------
 // FR-1 tests: DeleteNode cascade
 // ---------------------------------------------------------------------------
 
@@ -921,5 +1247,77 @@ mod delete_node_tests {
             .unwrap()
             .check()
             .unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Durable-path atomicity test. HLC-free (no op-log write) so it is safe as a
+// unit test; the HLC-touching tombstone/cascade/promote handlers are exercised
+// end-to-end against a real DB thread in `tests/node_lifecycle_test.rs`
+// (a separate binary — it must not share the process-global HLC with the
+// `op_log` tests that assert exact clock values).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod durable_atomicity_tests {
+    use super::*;
+
+    async fn setup_mem_db() -> Db {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        db
+    }
+
+    /// Count rows for `node_id` that the tombstone-filtered read path sees.
+    async fn visible_count(db: &Db, node_id: &str) -> usize {
+        let mut res = db
+            .query("SELECT node_id FROM node WHERE node_id = $nid AND tombstone = NONE")
+            .bind(("nid", node_id.to_string()))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        rows.len()
+    }
+
+    #[tokio::test]
+    async fn cascade_transaction_rolls_back_on_partial_failure() {
+        // Proves the atomicity the cascade relies on: if any statement in the
+        // tombstone transaction fails, the subtree UPDATE is rolled back so no
+        // half-deleted subtree is left behind. `create_node_handler` and this
+        // raw transaction do not write the op-log, so this test is HLC-free.
+        let db = setup_mem_db().await;
+        let a = create_node_handler(&db, "petal-1", "a", [0.0, 0.0, 0.0])
+            .await
+            .unwrap();
+        let b = create_node_handler(&db, "petal-1", "b", [0.0, 0.0, 0.0])
+            .await
+            .unwrap();
+        let ids = vec![a.clone(), b.clone()];
+        let marker = tombstone_marker(1, "did:key:z6MkA");
+
+        // Same transaction shape as the cascade, but a forced failure after the
+        // UPDATE must roll the whole thing back.
+        let res = db
+            .query(
+                "BEGIN TRANSACTION;\
+                 UPDATE node SET tombstone = $ts WHERE node_id IN $ids;\
+                 THROW 'injected failure';\
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("ts", marker))
+            .bind(("ids", ids))
+            .await
+            .unwrap()
+            .check();
+        assert!(
+            res.is_err(),
+            "the injected failure must fail the transaction"
+        );
+
+        // Neither node was tombstoned — the subtree is intact (no half-delete).
+        assert_eq!(visible_count(&db, &a).await, 1, "a must roll back to live");
+        assert_eq!(visible_count(&db, &b).await, 1, "b must roll back to live");
     }
 }

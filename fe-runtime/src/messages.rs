@@ -109,6 +109,46 @@ impl std::str::FromStr for EntityType {
 }
 
 // ---------------------------------------------------------------------------
+// Caller identity for authorized mutations (node_lifecycle_addressing FR-1/N-5)
+// ---------------------------------------------------------------------------
+
+/// Caller identity threaded into the authorized lifecycle mutations
+/// (`TombstoneNode` / `CascadeTombstoneNode` / `PromoteInstance`).
+///
+/// Carries the caller's *already-resolved* role at the target scope, mirroring
+/// how the API layer (T5) derives a `RoleLevel` from the session/relay token and
+/// the UI (T4) from the local role lookup. The DB thread maps this to a
+/// `fe_policy::AuthContext` and enforces Editor+ before mutating (N-5: authz in
+/// fe-policy, never the UI). See fe-policy/AGENTS.md §node-lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CallerAuth {
+    /// An identified caller (UI local user or API-token subject) whose role at
+    /// the target scope was already resolved. `role` is the lowercased role
+    /// string (`"owner"`/`"manager"`/`"editor"`/`"viewer"`/`"none"`).
+    Identified { did: String, role: String },
+    /// An unauthenticated caller — sub-Editor by construction, always denied.
+    Anonymous,
+}
+
+impl CallerAuth {
+    /// Convenience constructor for an identified caller with a resolved role.
+    pub fn identified(did: impl Into<String>, role: impl Into<String>) -> Self {
+        Self::Identified {
+            did: did.into(),
+            role: role.into(),
+        }
+    }
+
+    /// The caller's DID, or `"anonymous"` for the unauthenticated variant.
+    pub fn did(&self) -> &str {
+        match self {
+            CallerAuth::Identified { did, .. } => did,
+            CallerAuth::Anonymous => "anonymous",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Database command/result types
 // ---------------------------------------------------------------------------
 
@@ -281,6 +321,41 @@ pub enum DbCommand {
     /// Delete a node row and cascade to its child waypoint nodes.
     DeleteNode {
         node_id: String,
+    },
+    // --- Node lifecycle (node_lifecycle_addressing_20260725 spine) ---
+    /// FR-1 sync-safe delete: soft-deletes the node by stamping a durable
+    /// `tombstone` (HLC + source) on the row instead of dropping it, plus a
+    /// tombstone entry in the op-log. The row persists (surviving reload) but is
+    /// filtered from every read, so the delete survives P2P/HLC merge and a
+    /// stale replica cannot resurrect it (N-4). Authorized in fe-policy (Editor+,
+    /// via `auth`) before mutating. Distinct from the legacy hard-drop
+    /// `DeleteNode`; Wave-1 T4 sends this, T5 reports the resulting tombstone.
+    TombstoneNode {
+        node_id: String,
+        /// Caller identity — mapped to a `fe_policy::AuthContext` and checked
+        /// (Editor+ on the node's scope) before any mutation (N-5).
+        auth: CallerAuth,
+    },
+    /// FR-2 cascade delete: tombstones a node and every descendant as one
+    /// atomic (transactional) op. Confirm-gating is a UI concern (T4); this is
+    /// the data op. Authorized in fe-policy (Editor+, via `auth`).
+    CascadeTombstoneNode {
+        node_id: String,
+        /// Caller identity — authorized before mutating (see `TombstoneNode`).
+        auth: CallerAuth,
+    },
+    /// FR-5 lazy promotion: materialize a full addressable node for a single
+    /// stamp instance on first individual select/edit. Idempotent — promoting
+    /// an already-materialized instance is a no-op. Wave-1 T2 constructs this.
+    /// Authorized in fe-policy (Editor+, via `auth`) before materializing.
+    PromoteInstance {
+        petal_id: String,
+        /// Owning path node id whose curve the stamp follows.
+        path_id: String,
+        /// Zero-based index of the instance within the stamp group.
+        instance_index: u32,
+        /// Caller identity — authorized before materializing the node (N-5).
+        auth: CallerAuth,
     },
     // --- Field definition (property schema) management ---
     /// Create a new field definition for a scope.
@@ -509,6 +584,16 @@ pub enum DbResult {
         node_id: String,
         petal_id: String,
     },
+    /// Result of `PromoteInstance` (FR-5) — a stamp instance became a full node.
+    NodePromoted {
+        node_id: String,
+        petal_id: String,
+        path_id: String,
+        instance_index: u32,
+        /// `true` when this call materialized a new row; `false` when the
+        /// instance was already promoted (idempotent no-op).
+        newly_promoted: bool,
+    },
     // --- Field definition results ---
     /// Result of `CreateFieldDef`.
     FieldDefCreated {
@@ -692,6 +777,49 @@ pub enum SceneChange {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Node lifecycle events (node_lifecycle_addressing_20260725 FR-6)
+// ---------------------------------------------------------------------------
+
+/// Program-wide node lifecycle events emitted on the op-log/replication seam so
+/// sync and reporting (T5) observe the same truth (FR-6). The node-scoped
+/// variants carry the node's stable `fe://verse/fractal/petal/node` address
+/// (FR-4); `PathReflow` carries the owning path's node id, which is itself an
+/// addressable node. Wave-1: T2 consumes `NodePromoted`/`PathReflow`, T5 reports
+/// all variants. Serialized with `serde(tag = "lifecycle")` →
+/// `{"lifecycle": "node_created", ...}`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Message)]
+#[serde(tag = "lifecycle", rename_all = "snake_case")]
+pub enum LifecycleEvent {
+    /// A node was created (empty or with an asset).
+    NodeCreated { address: String, node_id: String },
+    /// A stamp instance was promoted to a full addressable node (FR-5).
+    NodePromoted {
+        address: String,
+        node_id: String,
+        path_id: String,
+        instance_index: u32,
+    },
+    /// A node was deleted via tombstone — sync-safe, survives merge (FR-1).
+    NodeDeleted { address: String, node_id: String },
+    /// A stamp delete asks the owning path to re-flow its remaining stamps
+    /// (FR-2). Geometry re-flow is T2's; this event is the lifecycle hook only.
+    PathReflow { path_id: String },
+}
+
+impl LifecycleEvent {
+    /// The stable `fe://` address the event refers to, when the variant carries
+    /// one. `PathReflow` returns `None` (it references a path by node id).
+    pub fn address(&self) -> Option<&str> {
+        match self {
+            LifecycleEvent::NodeCreated { address, .. }
+            | LifecycleEvent::NodePromoted { address, .. }
+            | LifecycleEvent::NodeDeleted { address, .. } => Some(address),
+            LifecycleEvent::PathReflow { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,6 +973,98 @@ mod scene_change_tests {
         let received = rx.try_recv().unwrap();
         match received {
             SceneChange::NodeRemoved { node_id } => assert_eq!(node_id, "test"),
+            _ => panic!("wrong variant"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_vocabulary_tests {
+    use super::*;
+
+    #[test]
+    fn new_db_command_variants_debug_clone() {
+        for cmd in [
+            DbCommand::TombstoneNode {
+                node_id: "n1".into(),
+                auth: CallerAuth::identified("did:key:z6MkA", "editor"),
+            },
+            DbCommand::CascadeTombstoneNode {
+                node_id: "n1".into(),
+                auth: CallerAuth::Anonymous,
+            },
+            DbCommand::PromoteInstance {
+                petal_id: "p1".into(),
+                path_id: "path1".into(),
+                instance_index: 7,
+                auth: CallerAuth::identified("did:key:z6MkA", "editor"),
+            },
+        ] {
+            let _ = format!("{:?}", cmd.clone());
+        }
+    }
+
+    #[test]
+    fn caller_auth_round_trips_and_reports_did() {
+        let id = CallerAuth::identified("did:key:z6MkA", "editor");
+        assert_eq!(id.did(), "did:key:z6MkA");
+        assert_eq!(CallerAuth::Anonymous.did(), "anonymous");
+        let json = serde_json::to_string(&id).unwrap();
+        let back: CallerAuth = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn node_promoted_result_debug_clone() {
+        let r = DbResult::NodePromoted {
+            node_id: "n1".into(),
+            petal_id: "p1".into(),
+            path_id: "path1".into(),
+            instance_index: 3,
+            newly_promoted: true,
+        };
+        let _ = format!("{:?}", r.clone());
+    }
+
+    #[test]
+    fn lifecycle_event_carries_address_and_round_trips() {
+        let events = [
+            LifecycleEvent::NodeCreated {
+                address: "fe://v1/f1/p1/n1".into(),
+                node_id: "n1".into(),
+            },
+            LifecycleEvent::NodePromoted {
+                address: "fe://v1/f1/p1/path1%23inst-3".into(),
+                node_id: "path1#inst-3".into(),
+                path_id: "path1".into(),
+                instance_index: 3,
+            },
+            LifecycleEvent::NodeDeleted {
+                address: "fe://v1/f1/p1/n1".into(),
+                node_id: "n1".into(),
+            },
+        ];
+        for ev in events {
+            // Every node-scoped variant must carry the stable address (FR-6).
+            assert!(ev.address().is_some(), "node event must carry address");
+            let json = serde_json::to_string(&ev).unwrap();
+            assert!(json.contains("\"lifecycle\":"), "tagged repr: {json}");
+            let back: LifecycleEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.address(), ev.address());
+        }
+    }
+
+    #[test]
+    fn path_reflow_has_no_address_but_carries_path_id() {
+        let ev = LifecycleEvent::PathReflow {
+            path_id: "path1".into(),
+        };
+        assert!(ev.address().is_none());
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"lifecycle\":\"path_reflow\""), "{json}");
+        let back: LifecycleEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            LifecycleEvent::PathReflow { path_id } => assert_eq!(path_id, "path1"),
             _ => panic!("wrong variant"),
         }
     }

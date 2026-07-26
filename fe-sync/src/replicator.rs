@@ -32,6 +32,17 @@ pub struct RowChange {
     pub is_tombstone: bool,
 }
 
+/// Whether a serialized row JSON represents a tombstoned (soft-deleted) node —
+/// i.e. it carries a non-null `tombstone` field (FR-1). Used to set
+/// [`RowChange::is_tombstone`] so the merge path honors deletes and never
+/// resurrects a tombstoned node (N-4).
+pub fn row_is_tombstone(data: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(data)
+        .ok()
+        .and_then(|v| v.get("tombstone").map(|t| !t.is_null()))
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // VerseReplicator trait
 // ---------------------------------------------------------------------------
@@ -116,7 +127,9 @@ impl VerseReplicator for MockVerseReplicator {
             .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
             .insert(key, data.to_vec());
 
-        // Notify subscribers
+        // Notify subscribers. `is_tombstone` is derived from the row content so
+        // a soft-deleted node propagates as a tombstone the merge path honors
+        // (N-4) — previously hardcoded `false`, which silently dropped deletes.
         let change = RowChange {
             table: table.to_string(),
             record_id: record_id.to_string(),
@@ -126,7 +139,7 @@ impl VerseReplicator for MockVerseReplicator {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
-            is_tombstone: false,
+            is_tombstone: row_is_tombstone(data),
         };
 
         let mut subs = self
@@ -182,16 +195,32 @@ impl IncomingEntryApplicator {
     ///
     /// Returns `false` if:
     /// - The change was authored by us (loop prevention, E.8)
+    /// - The change would resurrect a locally-tombstoned node (N-4)
     /// - The change loses the tiebreaker against an existing entry
+    ///
+    /// `local_is_tombstoned` is whether the local row for this record is already
+    /// soft-deleted (FR-1). A tombstone is never LWW: a delete dominates a
+    /// concurrent live write and can never be resurrected by one (D-A7/N-4).
     pub fn should_apply(
         &self,
         change: &RowChange,
         local_timestamp: Option<u64>,
         local_author: Option<&str>,
+        local_is_tombstoned: bool,
     ) -> bool {
         // E.8: loop prevention — skip our own writes
         if change.author_id == self.self_author_id {
             return false;
+        }
+
+        // N-4 tombstone dominance (independent of timestamps / LWW):
+        if local_is_tombstoned && !change.is_tombstone {
+            // Never resurrect a tombstoned node with a stale live write.
+            return false;
+        }
+        if change.is_tombstone && !local_is_tombstoned {
+            // A delete always wins over a concurrent live local row.
+            return true;
         }
 
         // E.9: tiebreaker for concurrent writes
@@ -493,28 +522,28 @@ mod tests {
     fn loop_prevention_skips_own_writes() {
         let applicator = IncomingEntryApplicator::new("author-a");
         let change = make_change("author-a", 100);
-        assert!(!applicator.should_apply(&change, None, None));
+        assert!(!applicator.should_apply(&change, None, None, false));
     }
 
     #[test]
     fn applies_remote_writes() {
         let applicator = IncomingEntryApplicator::new("author-a");
         let change = make_change("author-b", 100);
-        assert!(applicator.should_apply(&change, None, None));
+        assert!(applicator.should_apply(&change, None, None, false));
     }
 
     #[test]
     fn newer_remote_wins() {
         let applicator = IncomingEntryApplicator::new("author-a");
         let change = make_change("author-b", 200);
-        assert!(applicator.should_apply(&change, Some(100), Some("author-a")));
+        assert!(applicator.should_apply(&change, Some(100), Some("author-a"), false));
     }
 
     #[test]
     fn older_remote_loses() {
         let applicator = IncomingEntryApplicator::new("author-a");
         let change = make_change("author-b", 50);
-        assert!(!applicator.should_apply(&change, Some(100), Some("author-a")));
+        assert!(!applicator.should_apply(&change, Some(100), Some("author-a"), false));
     }
 
     #[test]
@@ -522,12 +551,49 @@ mod tests {
         let applicator = IncomingEntryApplicator::new("author-a");
         // "author-b" > "author-a" lexicographically, so remote wins
         let change = make_change("author-b", 100);
-        assert!(applicator.should_apply(&change, Some(100), Some("author-a")));
+        assert!(applicator.should_apply(&change, Some(100), Some("author-a"), false));
 
         // "author-a" < "author-c" so if local is "author-c", remote loses
         let applicator2 = IncomingEntryApplicator::new("author-z");
         let change2 = make_change("author-b", 100);
-        assert!(!applicator2.should_apply(&change2, Some(100), Some("author-z")));
+        assert!(!applicator2.should_apply(&change2, Some(100), Some("author-z"), false));
+    }
+
+    // --- N-4 tombstone dominance (FR-1 non-resurrection) ---
+
+    #[test]
+    fn row_is_tombstone_detects_soft_delete() {
+        assert!(row_is_tombstone(
+            br#"{"node_id":"n1","tombstone":{"hlc":42,"source_did":"did:key:z"}}"#
+        ));
+        assert!(!row_is_tombstone(br#"{"node_id":"n1"}"#));
+        assert!(!row_is_tombstone(br#"{"node_id":"n1","tombstone":null}"#));
+    }
+
+    #[test]
+    fn tombstone_row_propagates_is_tombstone_flag() {
+        let mock = MockVerseReplicator::new("author-a");
+        let mut rx = mock.subscribe().unwrap();
+        mock.write_row("node", "n1", br#"{"node_id":"n1","tombstone":{"hlc":1}}"#)
+            .unwrap();
+        let change = rx.try_recv().unwrap();
+        assert!(
+            change.is_tombstone,
+            "soft-deleted row must propagate as tombstone"
+        );
+    }
+
+    #[test]
+    fn tombstone_never_resurrected_and_delete_wins() {
+        let applicator = IncomingEntryApplicator::new("author-a");
+        // A stale LIVE remote write must NOT resurrect a locally tombstoned node.
+        let live = make_change("author-b", 999);
+        assert!(!applicator.should_apply(&live, Some(1), Some("author-a"), true));
+
+        // An incoming DELETE wins over a concurrent live local row.
+        let mut del = make_change("author-b", 1);
+        del.is_tombstone = true;
+        assert!(applicator.should_apply(&del, Some(999), Some("author-a"), false));
     }
 
     // --- IrohPetalReplicator tests ---

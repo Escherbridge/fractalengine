@@ -304,3 +304,47 @@ prefix of, the resource scope ending at a `-` keyword boundary" — the
 boundary check stops `VERSE#v1` from covering `VERSE#v10`. IDs may
 themselves contain `-`, so `parse_scope` splits on the literal markers
 `-FRACTAL#` / `-PETAL#`, never on bare `-`.
+
+## §lifecycle (node_lifecycle_addressing_20260725 FR-1/2/5/6)
+
+The **durable path is the source of truth**; the in-memory `fe_entity_store::EntityStore`
+mirror is driven by the `SceneChange` / `LifecycleEvent` seams the DB thread
+emits, not a parallel world.
+
+**Tombstone = soft delete, never a raw row drop (FR-1 / N-4).**
+`tombstone_node_handler` (crud.rs) stamps a durable `tombstone` object
+(`{ hlc, source_did, tombstoned_at }`) on the `node` row — the row *persists* so
+the delete survives reload and P2P merge — and records a `NodeTombstoned` op-log
+entry. Every scene read filters `WHERE tombstone = NONE` (`load_hierarchy`,
+`load_nodes_by_petal`, `get_node_transform`), so a tombstoned node is invisible
+without being physically gone. The node's direct gpx waypoints
+(`properties.gpx_track_id`) are tombstoned in the same atomic statement
+(inverse-orphan protection). The legacy `delete_node_handler` / `DeleteNode`
+retains a hard row drop — it is the pre-track hard-delete op, superseded by the
+tombstone for anything sync-safe.
+
+**Cascade = one atomic transaction (FR-2).** `cascade_tombstone_node_handler`
+BFS-collects the N-level descendant subtree over the durable parent edges
+(`properties.parent_id` / `gpx_track_id` / `owning_path_id`, de-duplicated,
+depth-capped) then tombstones the whole set **and** writes the op-log record
+inside one `BEGIN … COMMIT TRANSACTION`. A failure in either statement rolls both
+back — no half-deleted subtree (proved by `cascade_transaction_rolls_back_on_partial_failure`).
+
+**Merge non-resurrection (`merge.rs`, N-4).** `apply_replicated_node` is the
+durable counterpart of `EntityStore::upsert`'s tombstone guard: an incoming
+*live* row for a locally-tombstoned node is skipped (`SkippedTombstoned`), an
+incoming tombstone converges the local row to deleted. fe-sync's `reconcile_petal`
+drives this for inbound peer rows.
+
+**Authorization (N-5).** The dispatch loop maps each command's `CallerAuth` to a
+`fe_policy::AuthContext` (`caller_auth_to_context`), resolves the node/petal
+scope, and calls `authorize_node_delete` / `authorize_instance_promotion` before
+any mutation — sub-Editor callers get a `DbResult::Error`, no row touched.
+
+**Lifecycle events (FR-6).** With a lifecycle sender wired
+(`spawn_db_thread_with_sync_and_lifecycle`), each op emits exactly one
+`LifecycleEvent` carrying the stable `fe://` address (`lifecycle_uri`, a local
+mirror of `NodeAddress::to_uri` kept in lock-step to avoid a new crate dep):
+create → `NodeCreated`, promote → `NodePromoted`, tombstone → `NodeDeleted`
+(+ `PathReflow` for a stamp with an owning path). HLC init (`op_log::init_hlc`)
+is a precondition for the tombstone/promote op-log writes.

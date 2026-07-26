@@ -55,6 +55,7 @@ pub mod api_token_store;
 pub mod atlas;
 pub mod handlers;
 pub mod invite;
+pub mod merge;
 pub mod model_url_meta;
 pub mod op_log;
 pub mod queries;
@@ -193,6 +194,70 @@ pub fn replicate_row_with_petal(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Node-lifecycle dispatch helpers (node_lifecycle_addressing_20260725)
+// ---------------------------------------------------------------------------
+
+/// Map the wire `CallerAuth` to a `fe_policy::AuthContext` for enforcement
+/// (N-5: authz lives in fe-policy/fe-database, never the UI). The role string is
+/// parsed through the canonical `RoleLevel::from` (unknown/empty → `None`).
+fn caller_auth_to_context(auth: &fe_runtime::messages::CallerAuth) -> fe_policy::AuthContext {
+    use fe_runtime::messages::CallerAuth;
+    match auth {
+        CallerAuth::Identified { did, role } => fe_policy::AuthContext::Did {
+            did: did.clone(),
+            role: fe_policy::RoleLevel::from(role.as_str()),
+        },
+        CallerAuth::Anonymous => fe_policy::AuthContext::Anonymous,
+    }
+}
+
+/// Build the stable `fe://verse/fractal/petal/node` URI (FR-4) from a petal
+/// scope string + node id. Mirrors `fe_entity_store::NodeAddress::to_uri`
+/// byte-for-byte (kept local to avoid a new crate dependency; the two encoders
+/// must stay in lock-step so T5's round-trip holds).
+fn lifecycle_uri(scope: &str, node_id: &str) -> Option<String> {
+    let rest = scope.strip_prefix("VERSE#")?;
+    let vi = rest.find("-FRACTAL#")?;
+    let (verse, after_v) = (&rest[..vi], &rest[vi + "-FRACTAL#".len()..]);
+    let fi = after_v.find("-PETAL#")?;
+    let (fractal, petal) = (&after_v[..fi], &after_v[fi + "-PETAL#".len()..]);
+    if verse.is_empty() || fractal.is_empty() || petal.is_empty() || node_id.is_empty() {
+        return None;
+    }
+    fn enc(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                '%' => out.push_str("%25"),
+                '/' => out.push_str("%2F"),
+                '#' => out.push_str("%23"),
+                o => out.push(o),
+            }
+        }
+        out
+    }
+    Some(format!(
+        "fe://{}/{}/{}/{}",
+        enc(verse),
+        enc(fractal),
+        enc(petal),
+        enc(node_id)
+    ))
+}
+
+/// Forward one lifecycle event on the replication seam, non-blocking (N-5).
+fn emit_lifecycle(
+    lifecycle_tx: &Option<crossbeam::channel::Sender<fe_runtime::messages::LifecycleEvent>>,
+    event: fe_runtime::messages::LifecycleEvent,
+) {
+    if let Some(tx) = lifecycle_tx {
+        if let Err(e) = tx.try_send(event) {
+            tracing::warn!("lifecycle event dropped at DB seam: {e}");
+        }
+    }
+}
+
 #[allow(clippy::result_large_err)] // DbInitError is large only on the rare init-failure path
 pub fn spawn_db_thread(
     rx: crossbeam::channel::Receiver<DbCommand>,
@@ -206,6 +271,8 @@ pub fn spawn_db_thread(
 /// entity-change broadcast for scene streaming, and custom DB path.
 ///
 /// If `db_path` is `None`, defaults to `"data/fractalengine.db"`.
+/// Backwards-compatible shim: delegates to
+/// [`spawn_db_thread_with_sync_and_lifecycle`] with no lifecycle-event seam.
 #[allow(clippy::too_many_arguments, clippy::result_large_err)] // thread-spawn seam; see spawn_db_thread
 pub fn spawn_db_thread_with_sync(
     rx: crossbeam::channel::Receiver<DbCommand>,
@@ -216,6 +283,42 @@ pub fn spawn_db_thread_with_sync(
     secret_store: Option<std::sync::Arc<dyn fe_identity::SecretStore>>,
     entity_change_tx: Option<tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>>,
     db_path: Option<String>,
+) -> Result<std::thread::JoinHandle<()>, DbInitError> {
+    spawn_db_thread_with_sync_and_lifecycle(
+        rx,
+        tx,
+        blob_store,
+        repl_tx,
+        keypair,
+        secret_store,
+        entity_change_tx,
+        db_path,
+        None,
+    )
+}
+
+/// Sender half for node lifecycle events (FR-6) emitted by the DB thread onto
+/// the sync/replication seam. Mirrors `fe_sync::LifecycleEventSender` (the
+/// concrete type is defined in fe-sync, which wraps this same channel in its
+/// `LifecycleForwarder`) — fe-database can't depend on fe-sync (cycle), so the
+/// seam is expressed with the shared fe-runtime event type + crossbeam here.
+pub type LifecycleEventSender = crossbeam::channel::Sender<fe_runtime::messages::LifecycleEvent>;
+
+/// Spawn the DB thread, additionally forwarding node lifecycle events
+/// (create / promote / delete-tombstone / reflow) onto `lifecycle_tx` (FR-6).
+/// The binary wires `lifecycle_tx` to `fe_sync::LifecycleForwarder`'s channel so
+/// peers + reporting (T5) observe the same truth. `None` disables emission.
+#[allow(clippy::too_many_arguments, clippy::result_large_err)] // thread-spawn seam; see spawn_db_thread
+pub fn spawn_db_thread_with_sync_and_lifecycle(
+    rx: crossbeam::channel::Receiver<DbCommand>,
+    tx: crossbeam::channel::Sender<DbResult>,
+    blob_store: BlobStoreHandle,
+    repl_tx: Option<ReplicationSender>,
+    keypair: Option<fe_identity::NodeKeypair>,
+    secret_store: Option<std::sync::Arc<dyn fe_identity::SecretStore>>,
+    entity_change_tx: Option<tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>>,
+    db_path: Option<String>,
+    lifecycle_tx: Option<LifecycleEventSender>,
 ) -> Result<std::thread::JoinHandle<()>, DbInitError> {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
@@ -379,6 +482,14 @@ pub fn spawn_db_thread_with_sync(
                                 ).await {
                                     tracing::warn!("node_log append failed for {id}: {e}");
                                 }
+                                // FR-6: emit a NodeCreated lifecycle event carrying the stable address.
+                                if let Ok(Some(scope)) = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await {
+                                    if let Some(uri) = lifecycle_uri(&scope, &id) {
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeCreated {
+                                            address: uri, node_id: id.clone(),
+                                        });
+                                    }
+                                }
                                 send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false, correlation_id, position });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create node failed: {e}"))),
@@ -406,6 +517,14 @@ pub fn spawn_db_thread_with_sync(
                                     &serde_json::json!({"name": name, "position": position, "petal_id": petal_id, "asset_id": asset_id}),
                                 ).await {
                                     tracing::warn!("node_log append failed for {node_id}: {e}");
+                                }
+                                // FR-6: emit a NodeCreated lifecycle event for the imported node.
+                                if let Ok(Some(scope)) = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await {
+                                    if let Some(uri) = lifecycle_uri(&scope, &node_id) {
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeCreated {
+                                            address: uri, node_id: node_id.clone(),
+                                        });
+                                    }
                                 }
                                 send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position });
                             }
@@ -682,6 +801,130 @@ pub fn spawn_db_thread_with_sync(
                                 send_result(&tx, DbResult::NodeDeleted { node_id, petal_id });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Delete node failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::TombstoneNode { node_id, auth }) => {
+                        // N-5: authorize (Editor+ on the node's scope) BEFORE mutating.
+                        let ctx = caller_auth_to_context(&auth);
+                        let scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
+                        let Some(scope) = scope else {
+                            send_result(&tx, DbResult::Error(format!("TombstoneNode: cannot resolve scope for {node_id}")));
+                            continue;
+                        };
+                        let decision = fe_policy::authorize_node_delete(&ctx, &fe_policy::Scope::new(scope.clone()));
+                        if !decision.is_allow() {
+                            send_result(&tx, DbResult::Error(format!(
+                                "TombstoneNode denied for {}: {}", ctx.subject_label(),
+                                decision.reason().unwrap_or("unauthorized"),
+                            )));
+                            continue;
+                        }
+                        match handlers::crud::tombstone_node_handler(&db, &node_id, auth.did()).await {
+                            Ok(outcome) => {
+                                // FR-6 "exactly one event": side effects fire ONLY when this op
+                                // actually tombstoned something. A repeat on an already-tombstoned
+                                // node is an idempotent no-op (empty `tombstoned_ids`) — no scene
+                                // change, no lifecycle event.
+                                if !outcome.tombstoned_ids.is_empty() {
+                                    // Split reconcile: mirror to the in-memory store / scene subscribers.
+                                    if let Some(ref ect) = entity_change_tx {
+                                        let _ = ect.send(fe_runtime::messages::SceneChange::NodeRemoved {
+                                            node_id: node_id.clone(),
+                                        });
+                                    }
+                                    // one NodeDeleted per delete op (+ PathReflow for a stamp).
+                                    if let Some(uri) = lifecycle_uri(&scope, &node_id) {
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeDeleted {
+                                            address: uri, node_id: node_id.clone(),
+                                        });
+                                    }
+                                    if let Some(path) = outcome.reflow_path.clone() {
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::PathReflow { path_id: path });
+                                    }
+                                }
+                                send_result(&tx, DbResult::NodeDeleted { node_id, petal_id: outcome.petal_id });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Tombstone node failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::CascadeTombstoneNode { node_id, auth }) => {
+                        // N-5: authorize before mutating; then tombstone the whole subtree atomically (FR-2).
+                        let ctx = caller_auth_to_context(&auth);
+                        let scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
+                        let Some(scope) = scope else {
+                            send_result(&tx, DbResult::Error(format!("CascadeTombstoneNode: cannot resolve scope for {node_id}")));
+                            continue;
+                        };
+                        let decision = fe_policy::authorize_node_delete(&ctx, &fe_policy::Scope::new(scope.clone()));
+                        if !decision.is_allow() {
+                            send_result(&tx, DbResult::Error(format!(
+                                "CascadeTombstoneNode denied for {}: {}", ctx.subject_label(),
+                                decision.reason().unwrap_or("unauthorized"),
+                            )));
+                            continue;
+                        }
+                        match handlers::crud::cascade_tombstone_node_handler(&db, &node_id, auth.did()).await {
+                            Ok(outcome) => {
+                                // FR-6 "exactly one event": emit only when the cascade actually
+                                // tombstoned something (idempotent repeat on an already-tombstoned
+                                // subtree = no-op, empty `tombstoned_ids`).
+                                if !outcome.tombstoned_ids.is_empty() {
+                                    if let Some(ref ect) = entity_change_tx {
+                                        let _ = ect.send(fe_runtime::messages::SceneChange::NodeRemoved {
+                                            node_id: node_id.clone(),
+                                        });
+                                    }
+                                    // exactly one NodeDeleted for the cascade op (rooted at node_id).
+                                    if let Some(uri) = lifecycle_uri(&scope, &node_id) {
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeDeleted {
+                                            address: uri, node_id: node_id.clone(),
+                                        });
+                                    }
+                                }
+                                send_result(&tx, DbResult::NodeDeleted { node_id, petal_id: outcome.petal_id });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Cascade tombstone failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::PromoteInstance { petal_id, path_id, instance_index, auth }) => {
+                        // N-5: authorize (Editor+) BEFORE materializing the node.
+                        let ctx = caller_auth_to_context(&auth);
+                        let scope = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await.ok().flatten();
+                        let Some(scope) = scope else {
+                            send_result(&tx, DbResult::Error(format!("PromoteInstance: cannot resolve scope for petal {petal_id}")));
+                            continue;
+                        };
+                        let decision = fe_policy::authorize_instance_promotion(&ctx, &fe_policy::Scope::new(scope.clone()));
+                        if !decision.is_allow() {
+                            send_result(&tx, DbResult::Error(format!(
+                                "PromoteInstance denied for {}: {}", ctx.subject_label(),
+                                decision.reason().unwrap_or("unauthorized"),
+                            )));
+                            continue;
+                        }
+                        match handlers::crud::promote_instance_handler(&db, &petal_id, &path_id, instance_index).await {
+                            Ok((node_id, newly_promoted)) => {
+                                // FR-6: emit NodePromoted only when a row was actually materialized
+                                // (an idempotent no-op is not an op, so it emits nothing).
+                                if newly_promoted {
+                                    if let Some(uri) = lifecycle_uri(&scope, &node_id) {
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodePromoted {
+                                            address: uri,
+                                            node_id: node_id.clone(),
+                                            path_id: path_id.clone(),
+                                            instance_index,
+                                        });
+                                    }
+                                }
+                                send_result(&tx, DbResult::NodePromoted {
+                                    node_id,
+                                    petal_id,
+                                    path_id,
+                                    instance_index,
+                                    newly_promoted,
+                                });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Promote instance failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {
