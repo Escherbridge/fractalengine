@@ -198,9 +198,12 @@ pub fn replicate_row_with_petal(
 // Node-lifecycle dispatch helpers (node_lifecycle_addressing_20260725)
 // ---------------------------------------------------------------------------
 
-/// Map the wire `CallerAuth` to a `fe_policy::AuthContext` for enforcement
+/// Map a role-bearing `CallerAuth` to a `fe_policy::AuthContext` for enforcement
 /// (N-5: authz lives in fe-policy/fe-database, never the UI). The role string is
 /// parsed through the canonical `RoleLevel::from` (unknown/empty → `None`).
+/// `Local` carries no role — it is scope-resolved asynchronously by
+/// `lifecycle_auth_context`; a `Local` reaching this synchronous mapper is
+/// unresolved, so it maps deny-safe to `Anonymous`.
 fn caller_auth_to_context(auth: &fe_runtime::messages::CallerAuth) -> fe_policy::AuthContext {
     use fe_runtime::messages::CallerAuth;
     match auth {
@@ -208,7 +211,37 @@ fn caller_auth_to_context(auth: &fe_runtime::messages::CallerAuth) -> fe_policy:
             did: did.clone(),
             role: fe_policy::RoleLevel::from(role.as_str()),
         },
-        CallerAuth::Anonymous => fe_policy::AuthContext::Anonymous,
+        CallerAuth::Local | CallerAuth::Anonymous => fe_policy::AuthContext::Anonymous,
+    }
+}
+
+/// Resolve the caller's `AuthContext` for a lifecycle mutation at `scope`.
+/// `Identified`/`Anonymous` carry an already-resolved role (see
+/// `caller_auth_to_context`); a `Local` caller asserts none, so the DB thread
+/// resolves the local user's real role at the scope here (N-5: no UI-side role
+/// assertion). A failed lookup is treated as `none` → denied. See
+/// fe-database/src/AGENTS.md §Authorization (N-5).
+async fn lifecycle_auth_context(
+    db: &crate::repo::Db,
+    local_did: &str,
+    auth: &fe_runtime::messages::CallerAuth,
+    scope: &str,
+) -> fe_policy::AuthContext {
+    use fe_runtime::messages::CallerAuth;
+    match auth {
+        CallerAuth::Local => {
+            let role = handlers::rbac::resolve_local_role_handler(db, local_did, scope)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("lifecycle: local role resolution failed for {scope}: {e}");
+                    "none".to_string()
+                });
+            fe_policy::AuthContext::Did {
+                did: local_did.to_string(),
+                role: fe_policy::RoleLevel::from(role.as_str()),
+            }
+        }
+        other => caller_auth_to_context(other),
     }
 }
 
@@ -804,13 +837,16 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         }
                     }
                     Ok(DbCommand::TombstoneNode { node_id, auth }) => {
-                        // N-5: authorize (Editor+ on the node's scope) BEFORE mutating.
-                        let ctx = caller_auth_to_context(&auth);
+                        // N-5: resolve the node's scope, then the caller's real role at it,
+                        // then authorize (Editor+) BEFORE mutating. A `Local` caller asserts
+                        // no role — the DB resolves the local user's here so the UI can't
+                        // self-authorize.
                         let scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
                         let Some(scope) = scope else {
                             send_result(&tx, DbResult::Error(format!("TombstoneNode: cannot resolve scope for {node_id}")));
                             continue;
                         };
+                        let ctx = lifecycle_auth_context(&db, &local_did, &auth, &scope).await;
                         let decision = fe_policy::authorize_node_delete(&ctx, &fe_policy::Scope::new(scope.clone()));
                         if !decision.is_allow() {
                             send_result(&tx, DbResult::Error(format!(
@@ -819,7 +855,10 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             )));
                             continue;
                         }
-                        match handlers::crud::tombstone_node_handler(&db, &node_id, auth.did()).await {
+                        // The recorded actor is the resolved subject (external DID, or the
+                        // DB-resolved local DID for a `Local` caller).
+                        let actor = ctx.subject_label();
+                        match handlers::crud::tombstone_node_handler(&db, &node_id, &actor).await {
                             Ok(outcome) => {
                                 // FR-6 "exactly one event": side effects fire ONLY when this op
                                 // actually tombstoned something. A repeat on an already-tombstoned
@@ -848,13 +887,15 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         }
                     }
                     Ok(DbCommand::CascadeTombstoneNode { node_id, auth }) => {
-                        // N-5: authorize before mutating; then tombstone the whole subtree atomically (FR-2).
-                        let ctx = caller_auth_to_context(&auth);
+                        // N-5: resolve scope, then the caller's real role, then authorize
+                        // before mutating; then tombstone the whole subtree atomically (FR-2).
+                        // A `Local` caller's role is DB-resolved (no UI-side assertion).
                         let scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
                         let Some(scope) = scope else {
                             send_result(&tx, DbResult::Error(format!("CascadeTombstoneNode: cannot resolve scope for {node_id}")));
                             continue;
                         };
+                        let ctx = lifecycle_auth_context(&db, &local_did, &auth, &scope).await;
                         let decision = fe_policy::authorize_node_delete(&ctx, &fe_policy::Scope::new(scope.clone()));
                         if !decision.is_allow() {
                             send_result(&tx, DbResult::Error(format!(
@@ -863,7 +904,8 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             )));
                             continue;
                         }
-                        match handlers::crud::cascade_tombstone_node_handler(&db, &node_id, auth.did()).await {
+                        let actor = ctx.subject_label();
+                        match handlers::crud::cascade_tombstone_node_handler(&db, &node_id, &actor).await {
                             Ok(outcome) => {
                                 // FR-6 "exactly one event": emit only when the cascade actually
                                 // tombstoned something (idempotent repeat on an already-tombstoned
@@ -887,13 +929,15 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         }
                     }
                     Ok(DbCommand::PromoteInstance { petal_id, path_id, instance_index, auth }) => {
-                        // N-5: authorize (Editor+) BEFORE materializing the node.
-                        let ctx = caller_auth_to_context(&auth);
+                        // N-5: resolve the petal scope, then the caller's real role, then
+                        // authorize (Editor+) BEFORE materializing the node. A `Local` caller's
+                        // role is DB-resolved (no UI-side assertion).
                         let scope = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await.ok().flatten();
                         let Some(scope) = scope else {
                             send_result(&tx, DbResult::Error(format!("PromoteInstance: cannot resolve scope for petal {petal_id}")));
                             continue;
                         };
+                        let ctx = lifecycle_auth_context(&db, &local_did, &auth, &scope).await;
                         let decision = fe_policy::authorize_instance_promotion(&ctx, &fe_policy::Scope::new(scope.clone()));
                         if !decision.is_allow() {
                             send_result(&tx, DbResult::Error(format!(
