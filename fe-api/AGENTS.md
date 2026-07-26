@@ -34,6 +34,7 @@ when a route lands.
 |------|--------|
 | Hierarchy CRUD | `GET /api/v1/hierarchy`; `POST /api/v1/verses`, `POST …/verses/{v}/fractals`, `POST …/fractals/{f}/petals`, `POST …/petals/{p}/nodes`; legacy flat `POST /api/v1/nodes` |
 | Node ops | `PATCH\|GET /api/v1/nodes/{id}/transform`, `PATCH\|GET …/properties`, `DELETE …/properties/{key}`, `PATCH /api/v1/nodes/{waypoint_id}/move`, `GET /api/v1/nodes/{track_id}/elevation-profile`, `GET …/stats` |
+| Per-endpoint surface (§endpoint-surface, T5) | `GET\|DELETE /api/v1/nodes/{id}`, `GET /api/v1/nodes/{id}/address`, `GET /api/v1/address?uri=…`, `GET /api/v1/petals/{p}/nodes?kind=…`, `GET /api/v1/petals/{p}/earthwork/summary`, `POST /api/v1/petals/{p}/paths/{path}/instances/{i}/promote` |
 | Waypoints | `POST /api/v1/petals/{p}/waypoints` |
 | GIS reads (§gis) | `GET /api/v1/petals/{p}/gis/nodes`, `GET …/gis/tracks` |
 | Assets (§assets) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset` |
@@ -44,7 +45,49 @@ when a route lands.
 | IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install`, `DELETE /api/v1/hexons/tilesets/{id}`, `PATCH …/{id}/seeding`, `GET /api/v1/hexons/tilesets`, `GET /api/v1/hexons/storage` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install`, `DELETE …/{uri}/uninstall`, `GET /api/v1/crates/search`, `GET /api/v1/crates/installed`, `GET /api/v1/crates/{uri}`, `GET …/{uri}/entries`, `GET …/{uri}/entries/{entry_id}/asset`, `GET /api/v1/crates/available` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 10 tools: 6 base + per-endpoint CRUD `read_node` / `node_address` / `delete_node` / `promote_instance` (§endpoint-surface) |
+
+## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
+
+Makes every object a stable `fe://verse/fractal/petal/node` endpoint you can
+**read** (its full data) and **write** (drive it) over REST + MCP (D-A4).
+
+- **Addressing (FR-1).** The canonical URI is T1's `fe_entity_store::NodeAddress`
+  (defined at the data layer; Q-1 override). This crate *exposes* it —
+  `GET /api/v1/nodes/{id}/address` (id → URI) and `GET /api/v1/address?uri=…`
+  (URI → components) — and the render side reconciles via
+  `fe-renderer/src/addressing.rs::RenderNodeAddress`, a lock-step mirror pinned
+  byte-for-byte by test (fe-renderer can't depend on fe-entity-store). The URI is
+  a pure function of the four ids, so it survives rename/move.
+- **Read (FR-2).** `GET /api/v1/nodes/{id}` → `EndpointNodeDto` (address, scope,
+  `kind` tag, full row) via the tombstone-filtered `load_node`. Unknown/deleted →
+  typed `{"ok":false}`; never a panic. Shared with the MCP `read_node` tool.
+- **Write (FR-3).** `DELETE /api/v1/nodes/{id}[?cascade=true]` routes through T1's
+  sync-safe `TombstoneNode` / `CascadeTombstoneNode` ops (never a raw drop, N-4);
+  `POST …/paths/{path}/instances/{i}/promote` through `PromoteInstance`. The API
+  is a *client* of the same ops the UI uses.
+- **Auth model (FR-3/FR-4, Q-2).** API/MCP callers are
+  `CallerAuth::Identified { did, role }` — the token's already-resolved role
+  ceiling (never `CallerAuth::Local`, that is the desktop UI's). The handler does
+  the same scope-containment check every node op does (`require_scope` on the
+  resolved node/petal scope); **fe-policy is the authoritative Editor+ gate** at
+  the DB thread (N-5 — the API layer carries identity, does not decide policy).
+- **Generic node abstraction + type tags (FR-6, N-10).** Promoted stamps (T2) and
+  earthwork regions (T3) are ordinary `node` rows tagged by
+  `properties.node_kind` (`stamp` / `earthwork_region`). This track reads them
+  through `fe_query::spatial_nodes` (the tag vocabulary + type-specific keys are
+  the JSON contract T2/T3 write and T5 reads — no fe-api→T2/T3 file coupling):
+  `GET /api/v1/petals/{p}/nodes?kind=stamp&path_id=…` ("all stamps on path X") and
+  `GET /api/v1/petals/{p}/earthwork/summary` (real-unit total cut/fill). Both run
+  under the `limits` row cap + byte ceiling (`run_capped_select`).
+- **Egress seam (FR-5).** The analyst/context-menu (T4) copy-API-string and
+  report verbs call `fe-ui gis::egress_strings::{api_string_for, report_for}`
+  (pure string formatting, no `block_on`).
+- **Tombstone hygiene.** All REST/MCP/export node read surfaces filter
+  `tombstone = NONE` so soft-deleted nodes never leak
+  (`rest.rs`/`gis.rs`/`gpx.rs`/`format.rs`/`export.rs`, `endpoint.rs`). The raw
+  BI `/query` path is intentionally *not* filtered — an analyst may query
+  historical/tombstoned rows deliberately (documented open item).
 
 ## §gis
 

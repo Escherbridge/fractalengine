@@ -131,6 +131,34 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/verses/{verse_id}/fractals/{fractal_id}/petals/{petal_id}/nodes",
             post(crate::rest::create_node),
         )
+        // Per-endpoint read/write surface (endpoint_api_surface_20260725, T5)
+        // Read an object's full payload (FR-2); sync-safe tombstone delete (FR-3).
+        .route(
+            "/api/v1/nodes/{node_id}",
+            get(crate::endpoint::get_node).delete(crate::endpoint::delete_node),
+        )
+        // Resolve a node id → its stable fe:// endpoint URI (FR-1).
+        .route(
+            "/api/v1/nodes/{node_id}/address",
+            get(crate::endpoint::get_node_address),
+        )
+        // Parse a fe:// URI back into its components (FR-1 inverse).
+        .route("/api/v1/address", get(crate::endpoint::resolve_address))
+        // List live nodes of a type tag through the generic abstraction (FR-6).
+        .route(
+            "/api/v1/petals/{petal_id}/nodes",
+            get(crate::endpoint::list_nodes_by_kind),
+        )
+        // Aggregate real-unit cut/fill across earthwork regions (FR-6).
+        .route(
+            "/api/v1/petals/{petal_id}/earthwork/summary",
+            get(crate::endpoint::earthwork_summary),
+        )
+        // Lazily promote a stamp instance to a full addressable node (FR-3/FR-6).
+        .route(
+            "/api/v1/petals/{petal_id}/paths/{path_id}/instances/{instance_index}/promote",
+            post(crate::endpoint::promote_instance),
+        )
         // Node operations
         .route(
             "/api/v1/nodes/{node_id}/transform",

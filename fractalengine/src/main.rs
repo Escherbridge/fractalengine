@@ -80,7 +80,14 @@ fn main() {
     let (entity_change_tx, _) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::SceneChange>(256);
 
-    let _db_thread = match fe_database::spawn_db_thread_with_sync(
+    // Node lifecycle seam (node_lifecycle_addressing_20260725 FR-6): the DB
+    // thread emits create/promote/tombstone/reflow events onto `lifecycle_tx`;
+    // the binary owns the receiver half (fe-database can't depend on fe-sync, so
+    // it declares its own sender type and the binary bridges the two halves —
+    // see fe-sync/src/AGENTS.md §lifecycle-forwarding).
+    let (lifecycle_tx, lifecycle_rx) = fe_sync::lifecycle_channel(256);
+
+    let _db_thread = match fe_database::spawn_db_thread_with_sync_and_lifecycle(
         ch.db_cmd_rx,
         ch.db_res_tx,
         blob_store.clone(),
@@ -89,6 +96,7 @@ fn main() {
         Some(secret_store.clone()),
         Some(entity_change_tx.clone()),
         None, // use default db_path
+        Some(lifecycle_tx),
     ) {
         Ok(handle) => handle,
         Err(e) => {
@@ -98,6 +106,17 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // Drain lifecycle events in-process so create/promote/tombstone/reflow flow
+    // in the running app (FR-6). The op-log is the durable source of truth and
+    // P2P propagation rides the row-replication bridge above, so this consumer is
+    // the observation/reporting seam (T5) — currently a structured log; a richer
+    // reporting subscriber attaches here as a follow-up.
+    std::thread::spawn(move || {
+        while let Ok(ev) = lifecycle_rx.recv() {
+            tracing::debug!(address = ?ev.address(), event = ?ev, "node lifecycle event");
+        }
+    });
 
     // Send seed command so the DB populates initial data
     ch.db_cmd_tx.send(DbCommand::Seed).ok();

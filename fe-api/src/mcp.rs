@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 
-use crate::auth::{require_role, require_role_and_scope};
+use crate::auth::{require_role, require_role_and_scope, require_scope};
+use crate::endpoint::{caller_auth, is_addressable_node_id, load_node};
+use crate::rest::{resolve_node_scope, resolve_petal_scope};
 use crate::server::ApiState;
 
 // ---------------------------------------------------------------------------
@@ -147,6 +149,52 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["node_id", "position", "rotation", "scale"]
+            }),
+        },
+        // --- Per-endpoint CRUD (endpoint_api_surface_20260725 FR-4) ---
+        ToolDefinition {
+            name: "read_node".into(),
+            description: "Read an object's full payload by node id (common fields + type-specific stamp/earthwork/path data). Tombstoned nodes read as not found. Requires viewer role + scope.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": "string", "description": "Node ULID or promoted-stamp instance id (<ulid>#inst-<n>)" }
+                },
+                "required": ["node_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "node_address".into(),
+            description: "Resolve a node id to its stable fe://verse/fractal/petal/node endpoint URI. Requires viewer role + scope.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "node_id": { "type": "string" } },
+                "required": ["node_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "delete_node".into(),
+            description: "Sync-safe tombstone delete of a node (never a raw drop; survives P2P merge). Set cascade=true to tombstone the whole subtree atomically. Requires editor role + scope; authorized by fe-policy.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": "string" },
+                    "cascade": { "type": "boolean", "description": "Tombstone the node's whole descendant subtree in one atomic op" }
+                },
+                "required": ["node_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "promote_instance".into(),
+            description: "Materialize a full addressable node for a single stamp instance (lazy promotion, idempotent). Requires editor role + petal scope; authorized by fe-policy.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "petal_id": { "type": "string" },
+                    "path_id": { "type": "string", "description": "Owning path node id whose curve the stamp follows" },
+                    "instance_index": { "type": "integer", "minimum": 0, "description": "Zero-based instance index within the stamp group" }
+                },
+                "required": ["petal_id", "path_id", "instance_index"]
             }),
         },
     ]
@@ -445,6 +493,145 @@ async fn handle_tool_call(
 
             drop(reply_rx);
             tool_result(id, serde_json::json!({ "status": "ok" }))
+        }
+
+        // --- Per-endpoint CRUD (FR-4) ---
+        "read_node" => {
+            if require_role(claims, "viewer").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+            let node_id = str_arg(&args, "node_id");
+            if !is_addressable_node_id(&node_id) {
+                return tool_error(id, "invalid node_id");
+            }
+            let Some(scope) = resolve_node_scope(state, &node_id).await else {
+                return tool_error(id, "node not found");
+            };
+            if require_scope(claims, &scope).is_err() {
+                return tool_error(id, "insufficient scope");
+            }
+            match load_node(state, &node_id, &scope).await {
+                Ok(dto) => tool_result(id, serde_json::to_value(dto).unwrap_or_default()),
+                Err(e) => tool_error(id, &e),
+            }
+        }
+
+        "node_address" => {
+            if require_role(claims, "viewer").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+            let node_id = str_arg(&args, "node_id");
+            if !is_addressable_node_id(&node_id) {
+                return tool_error(id, "invalid node_id");
+            }
+            let Some(scope) = resolve_node_scope(state, &node_id).await else {
+                return tool_error(id, "node not found");
+            };
+            if require_scope(claims, &scope).is_err() {
+                return tool_error(id, "insufficient scope");
+            }
+            match fe_entity_store::NodeAddress::from_scope_and_id(&scope, &node_id) {
+                Ok(addr) => tool_result(
+                    id,
+                    serde_json::json!({ "node_id": node_id, "address": addr.to_uri(), "scope": scope }),
+                ),
+                Err(e) => tool_error(id, &format!("cannot address node: {e}")),
+            }
+        }
+
+        "delete_node" => {
+            if require_role(claims, "editor").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+            let node_id = str_arg(&args, "node_id");
+            if !is_addressable_node_id(&node_id) {
+                return tool_error(id, "invalid node_id");
+            }
+            let cascade = args
+                .get("cascade")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let Some(scope) = resolve_node_scope(state, &node_id).await else {
+                return tool_error(id, "node not found");
+            };
+            if require_scope(claims, &scope).is_err() {
+                return tool_error(id, "insufficient scope");
+            }
+            let cmd = if cascade {
+                DbCommand::CascadeTombstoneNode {
+                    node_id: node_id.clone(),
+                    auth: caller_auth(claims),
+                }
+            } else {
+                DbCommand::TombstoneNode {
+                    node_id: node_id.clone(),
+                    auth: caller_auth(claims),
+                }
+            };
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let _ = state
+                .api_cmd_tx
+                .send(ApiCommand::DbRequest { cmd, reply_tx });
+            match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+                Ok(Ok(DbResult::NodeDeleted { .. })) => tool_result(
+                    id,
+                    serde_json::json!({ "node_id": node_id, "cascade": cascade, "tombstoned": true }),
+                ),
+                Ok(Ok(DbResult::Error(e))) => {
+                    tracing::warn!("delete_node MCP denied/failed: {e}");
+                    tool_error(id, "operation failed or not permitted")
+                }
+                _ => tool_error(id, "delete_node failed"),
+            }
+        }
+
+        "promote_instance" => {
+            if require_role(claims, "editor").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+            let petal_id = str_arg(&args, "petal_id");
+            let path_id = str_arg(&args, "path_id");
+            let Some(instance_index) = args
+                .get("instance_index")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32)
+            else {
+                return tool_error(id, "instance_index is required");
+            };
+            if petal_id.is_empty() || path_id.is_empty() {
+                return tool_error(id, "petal_id and path_id are required");
+            }
+            let Some(scope) = resolve_petal_scope(state, &petal_id).await else {
+                return tool_error(id, "petal not found");
+            };
+            if require_scope(claims, &scope).is_err() {
+                return tool_error(id, "insufficient scope");
+            }
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
+                cmd: DbCommand::PromoteInstance {
+                    petal_id,
+                    path_id,
+                    instance_index,
+                    auth: caller_auth(claims),
+                },
+                reply_tx,
+            });
+            match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+                Ok(Ok(DbResult::NodePromoted {
+                    node_id,
+                    newly_promoted,
+                    ..
+                })) => tool_result(
+                    id,
+                    serde_json::json!({ "node_id": node_id, "newly_promoted": newly_promoted }),
+                ),
+                Ok(Ok(DbResult::Error(e))) => {
+                    tracing::warn!("promote_instance MCP denied/failed: {e}");
+                    tool_error(id, "operation failed or not permitted")
+                }
+                _ => tool_error(id, "promote_instance failed"),
+            }
         }
 
         _ => tool_error(id, &format!("unknown tool: {tool_name}")),

@@ -216,7 +216,7 @@ pub async fn list_gis_nodes(
     // `created_at` is projected only because SurrealDB 3 rejects ORDER BY on
     // a field absent from an explicit projection list.
     let sql = "SELECT node_id, display_name, position, elevation, properties, created_at \
-               FROM node WHERE petal_id = $pid ORDER BY created_at ASC";
+               FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC";
     let Some(rows) = run_select(&state, sql, vec![("pid".to_string(), json!(petal_id))]).await
     else {
         return err(StatusCode::BAD_GATEWAY, "node query failed");
@@ -259,7 +259,7 @@ pub async fn list_gis_tracks(
     }
 
     let sql = "SELECT node_id, display_name, position, elevation, properties, created_at \
-               FROM node WHERE petal_id = $pid AND properties.gpx_type = 'track' \
+               FROM node WHERE petal_id = $pid AND tombstone = NONE AND properties.gpx_type = 'track' \
                ORDER BY created_at ASC";
     let Some(rows) = run_select(&state, sql, vec![("pid".to_string(), json!(petal_id))]).await
     else {

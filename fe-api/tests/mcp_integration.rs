@@ -25,13 +25,18 @@ use fe_runtime::messages::{
 };
 use fractalengine_test_harness::api::ApiHarness;
 
-const EXPECTED_TOOLS: [&str; 6] = [
+const EXPECTED_TOOLS: [&str; 10] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
     "create_petal",
     "create_node",
     "update_transform",
+    // Per-endpoint CRUD (endpoint_api_surface_20260725 FR-4)
+    "read_node",
+    "node_address",
+    "delete_node",
+    "promote_instance",
 ];
 
 // ---------------------------------------------------------------------------
@@ -317,9 +322,12 @@ async fn tools_list_inventory() {
     assert_eq!(body["id"], 1);
     let tools = body["result"]["tools"].as_array().expect("tools array");
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    assert_eq!(names, EXPECTED_TOOLS, "exact 6-tool inventory");
-    // No delete tool exists yet — the round-trip test's delete leg is skipped.
-    assert!(!names.iter().any(|n| n.contains("delete")));
+    assert_eq!(
+        names, EXPECTED_TOOLS,
+        "exact 10-tool inventory (6 base + 4 CRUD)"
+    );
+    // FR-4: the per-endpoint delete tool now exists.
+    assert!(names.contains(&"delete_node"));
     for t in tools {
         assert!(t["description"].is_string(), "{t}");
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");
@@ -380,12 +388,12 @@ async fn unknown_method_and_unknown_tool() {
             Some(&token),
             &json!({
                 "jsonrpc": "2.0", "id": 10, "method": "tools/call",
-                "params": { "name": "delete_node", "arguments": {} }
+                "params": { "name": "nonexistent_tool", "arguments": {} }
             }),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_tool_error(&body, "unknown tool: delete_node");
+    assert_tool_error(&body, "unknown tool: nonexistent_tool");
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +633,50 @@ async fn round_trip_create_read_update_read() {
     assert_eq!(node_dto["position"], json!([100.5, -2.25, 0.125]));
 
     // Delete leg skipped: no delete tool exists (see tools_list_inventory).
+}
+
+// ---------------------------------------------------------------------------
+// (g) per-endpoint CRUD tools (FR-4): role floors + validation, no DB reader
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn per_endpoint_crud_tools_role_and_validation() {
+    let (state, _model) = emu_state(); // no db_reader — scope resolution yields None
+    let ulid = ulid::Ulid::new().to_string();
+
+    // delete_node / promote_instance require editor: a viewer is rejected before
+    // any channel send (fe-policy remains the authoritative gate server-side).
+    let viewer = claims("VERSE#v1", "viewer");
+    let resp = call_tool(&state, &viewer, "delete_node", json!({ "node_id": ulid })).await;
+    assert_tool_error(&resp, "insufficient permissions");
+    let resp = call_tool(
+        &state,
+        &viewer,
+        "promote_instance",
+        json!({ "petal_id": ulid, "path_id": "p", "instance_index": 0 }),
+    )
+    .await;
+    assert_tool_error(&resp, "insufficient permissions");
+
+    // read_node validates the node id shape (viewer+), rejecting junk ids.
+    let resp = call_tool(&state, &viewer, "read_node", json!({ "node_id": "junk" })).await;
+    assert_tool_error(&resp, "invalid node_id");
+
+    // A well-formed id with no backing store resolves to "node not found"
+    // (typed error, never a panic).
+    let editor = claims("VERSE#v1", "editor");
+    let resp = call_tool(&state, &editor, "read_node", json!({ "node_id": ulid })).await;
+    assert_tool_error(&resp, "node not found");
+
+    // promote_instance requires the instance index.
+    let resp = call_tool(
+        &state,
+        &editor,
+        "promote_instance",
+        json!({ "petal_id": ulid, "path_id": "path-1" }),
+    )
+    .await;
+    assert_tool_error(&resp, "instance_index is required");
 }
 
 // ---------------------------------------------------------------------------

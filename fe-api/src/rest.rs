@@ -761,7 +761,7 @@ pub(crate) async fn direct_get_node_transform(
     node_id: &str,
 ) -> anyhow::Result<Option<crate::types::TransformDto>> {
     let mut res = db
-        .query("SELECT position, elevation, rotation, scale FROM node WHERE node_id = $nid LIMIT 1")
+        .query("SELECT position, elevation, rotation, scale FROM node WHERE node_id = $nid AND tombstone = NONE LIMIT 1")
         .bind(("nid", node_id.to_string()))
         .await
         .map_err(|e| anyhow::anyhow!("direct query failed: {e}"))?;
@@ -829,7 +829,9 @@ pub(crate) async fn direct_resolve_node_scope(db: &Db, node_id: &str) -> Option<
 /// Load all nodes for a petal via direct DB query.
 pub(crate) async fn direct_load_petal_nodes(db: &Db, petal_id: &str) -> Vec<crate::types::NodeDto> {
     let query_result = db
-        .query("SELECT * FROM node WHERE petal_id = $pid ORDER BY created_at ASC")
+        .query(
+            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
+        )
         .bind(("pid", petal_id.to_string()))
         .await;
 

@@ -187,7 +187,7 @@ async fn load_gpx_export_nodes(
 ) -> Vec<fe_terrain::ExportNode> {
     // Load all nodes with gpx_type in their properties
     let mut res = match db
-        .query("SELECT * FROM node WHERE petal_id = $pid AND properties.gpx_type != NONE ORDER BY created_at ASC")
+        .query("SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE AND properties.gpx_type != NONE ORDER BY created_at ASC")
         .bind(("pid", petal_id.to_string()))
         .await
     {

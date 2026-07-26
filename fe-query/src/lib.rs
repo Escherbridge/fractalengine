@@ -16,6 +16,7 @@
 pub mod builder;
 pub mod geo;
 pub mod gis;
+pub mod spatial_nodes;
 
 #[cfg(feature = "graphql")]
 pub mod graphql;
@@ -38,3 +39,7 @@ pub use builder::{DeleteBuilder, InsertBuilder, QueryBuilder, UpdateBuilder};
 
 pub use geo::validate::GeoValidationError;
 pub use geo::{GeoPoint, GeoPolygon, CRS};
+
+pub use spatial_nodes::{
+    earthwork_volume_sql, nodes_of_kind_sql, stamps_on_path_sql, NodeKind, SpatialNodeQuery,
+};
