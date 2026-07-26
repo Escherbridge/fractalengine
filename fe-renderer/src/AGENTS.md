@@ -122,3 +122,32 @@ fe-renderer under `render`. The proposal *geometry* + records stay in fe-terrain
 - `sample_base(&TerrainHeightField, x, z)`: READ-ONLY passthrough to `height_at`
   for grounding a ghost. Takes `&TerrainHeightField` (shared ref) so it can never
   mutate the true heightfield — the NFR-1 analytics contract at the type level.
+
+## §instancing
+
+`instancing.rs` (stamped_asset_nodes_20260725 T2 FR-4 / D-A6 / N-9) is the
+CPU-side data layer for rendering + picking tens of thousands of path-asset
+stamps without a per-stamp ECS entity. Deliberately render-backend-agnostic:
+pure data + math, no bevy render internals, so it unit-tests headless and the
+concrete draw wiring stays in the app.
+
+- `StampInstanceData { position (m), rotation (xyzw), scale, stamp_index }` +
+  `to_matrix() -> [f32;16]` — a manually-composed column-major TRS matrix (no
+  external math dep, explicit + tested). Overrides (FR-3) fold into rotation/
+  scale here so the instanced draw agrees with the individually-addressed node.
+  Position is petal-local meters (N-1) — no `world_scale`.
+- `InstanceBatch` groups instances by asset (one mesh/material handle → one
+  instanced draw); `batch_by_asset` splits a mixed stream. `instance_matrices`
+  is the flat per-instance buffer a custom instanced pipeline uploads. Bevy's
+  automatic instancing already coalesces entities that share a `Mesh3d` +
+  material, so the app can start there and graduate to a custom pipeline later.
+- `StampSpatialIndex` — a uniform-grid hash over the XZ plane
+  (`DEFAULT_CELL_SIZE_M = 4 m`). `pick_nearest(x, z, radius)` scans only the
+  cells overlapping the radius (a constant 3×3 window at the default), so a
+  viewport pick is O(1) amortized regardless of total stamp count — this is the
+  FR-4 "pick returns the correct individual stamp at ≥10k" guarantee. The
+  returned index IS the stamp's instance index (feeds `PromoteInstance`).
+- `TARGET_INSTANCE_CEILING = 10_000` is the documented budget; the
+  `bench_10k_build_and_pick` test is the scale/correctness guard (a timed
+  criterion harness is a follow-up). Degenerate inputs (zero/NaN cell size,
+  empty index, zero radius) are guarded, never panic.

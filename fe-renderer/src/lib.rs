@@ -4,6 +4,7 @@ pub mod camera;
 pub mod dead_reckoning;
 pub mod grid;
 pub mod ingester;
+pub mod instancing;
 pub mod loader;
 pub mod terrain_height;
 pub mod terrain_overlay;

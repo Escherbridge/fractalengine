@@ -68,3 +68,34 @@ RDP-simplified, and pick-tested — none of those stages know curves exist.
   the `positions_pass_through_without_scaling` test guards it. A prior
   session's width×world_scale attempt collapsed GPX ribbons to hairlines —
   this is the #1 regression guard.
+
+## §curve-stamps — arc-length stamp sampler (`curve.rs`, stamped_asset_nodes_20260725 T2 FR-1)
+
+Fixes the "stamps don't follow curved paths" bug: path-asset stamps must sit ON
+the visible bezier, not on the straight anchor-to-anchor chords. The sampler is
+the render/pick-authoritative curve-follow contract; callers flatten anchors via
+`flatten_route` FIRST (§curve), then sample the DENSE polyline:
+
+- `arc_length_table(dense) -> (cum, total)` — per-vertex cumulative arc length.
+- `position_at_arc_length(dense, cum, total, s)` — position at meters `s`,
+  linearly interpolated between the two bracketing dense vertices → lands on the
+  bow, not the chord.
+- `tangent_at_arc_length` + `tangent_yaw` — the TRUE curve tangent (short
+  look-ahead along `dense`), converted to a yaw about +Y in the glTF `-Z`-forward
+  convention (`dx.atan2(dz)`, matching the fe-ui stamp convention). Gates Q-4
+  ("Align to path tangent" defaults OFF but, when on, uses the curve tangent).
+- `spacing_offsets(total, spacing)` / `count_offsets(total, count)` — the two
+  spacing modes as absolute arc-length offsets, capped at `MAX_STAMP_OFFSETS`
+  (mirrors the fe-ui `MAX_STAMPS`), degenerate-safe (no divide-by-zero).
+- `sample_stamps_along_curve(dense, offsets) -> Vec<([f32;3], yaw)>` — the FR-1
+  combined entry point.
+
+**Legacy identity (FR-1 acceptance).** An all-corner route flattens byte-
+identically (§curve straight passthrough), so arc-length sampling reduces to
+plain chord interpolation — straight paths are unchanged
+(`straight_route_samples_identically_to_chords`). Meters only, no `world_scale`
+(N-1). **Cross-crate wiring:** the fe-ui stamp materializer
+(`fe-ui/src/verse_manager/path_asset_reconcile.rs`, a fe-ui-local `[f32;3]`
+sampler that fe-terrain cannot call — NFR-4) must flatten its anchor rows through
+`fe_ui::node_manager::curve` before its own arc-length pass to gain the same
+curve-follow; this module is the canonical reference for that port.

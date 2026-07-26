@@ -402,18 +402,52 @@ pub(crate) fn apply_track_rows(
     path_state.tracks_pending = false;
 }
 
+/// Total arc length (petal-local meters) of an ordered point list — the sum of
+/// consecutive segment lengths. `0.0` for `< 2` points. Pure (no `world_scale`,
+/// N-1) so the slide clamp is unit-testable.
+pub(crate) fn path_arc_length(points: &[[f32; 3]]) -> f32 {
+    points
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        })
+        .sum()
+}
+
 /// Wave 1: T2 stamped_asset_nodes — slide a selected stamp along its curve by
-/// arc-length in petal-local meters (T2 FR-3, Q-1 ratified). Homed here (not
-/// `asset.rs`) because arc-length resampling is curve-domain. Body filled by
-/// T2; see the Wave-1 registration scaffold in `actions/mod.rs`.
+/// arc-length in petal-local METERS (T2 FR-3, Q-1 ratified: free translate stays
+/// off, this 1-D reposition is the only translate affordance). Homed here (not
+/// `asset.rs`) because arc-length is curve-domain. N-3: only acts on the track
+/// currently being edited (`editing_track_id`) whose live points buffer defines
+/// the curve; the requested `arc_length` is clamped to `[0, total]` and recorded
+/// as the stamp's sparse arc override (position stays path-derived — the
+/// materializer re-samples the curve at the new offset). Persisting the offset
+/// to the promoted node property (`STAMP_ARC_KEY`) is done by the scale/rotate
+/// persist path once a node id is known; see `actions/AGENTS.md` §stamped-assets.
 pub(crate) fn handle_slide_stamp(
-    _path_state: &mut PathEditorState,
-    _stamp_state: &mut crate::actions::asset::StampInteractionState,
-    _track_node_id: String,
-    _stamp_index: usize,
-    _arc_length: f32,
+    path_state: &mut PathEditorState,
+    stamp_state: &mut crate::actions::asset::StampInteractionState,
+    track_node_id: String,
+    stamp_index: usize,
+    arc_length: f32,
 ) {
-    // Wave 1: T2 stamped_asset_nodes fills this.
+    // N-3: the points buffer belongs to the edited track; slide only that one.
+    if path_state.editing_track_id.as_deref() != Some(track_node_id.as_str()) {
+        bevy::log::warn!(
+            "slide_stamp ignored: track {track_node_id} is not the edited track (N-3)"
+        );
+        return;
+    }
+    let points: Vec<[f32; 3]> = path_state.points.iter().map(|p| p.position).collect();
+    let total = path_arc_length(&points);
+    let clamped = arc_length.clamp(0.0, total);
+    let stamp = crate::actions::asset::StampRef {
+        track_node_id,
+        stamp_index,
+    };
+    stamp_state.set_arc_offset(&stamp, clamped);
 }
 
 #[cfg(test)]
@@ -975,6 +1009,77 @@ mod tests {
         append_shape(&mut ops, &mut state, vec![[1.0, 0.0, 1.0]]);
         assert!(ops.0.is_empty());
         assert!(state.points.is_empty());
+    }
+
+    #[test]
+    fn path_arc_length_sums_segments() {
+        // 3-4-5 style: +X 3 then +Z 4 = total 7.
+        let pts = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 0.0, 4.0]];
+        assert!((path_arc_length(&pts) - 7.0).abs() < 1e-4);
+        // Degenerate: < 2 points has no length.
+        assert_eq!(path_arc_length(&[]), 0.0);
+        assert_eq!(path_arc_length(&[[9.0, 9.0, 9.0]]), 0.0);
+    }
+
+    #[test]
+    fn slide_stamp_records_clamped_arc_offset_on_edited_track() {
+        use crate::actions::asset::{StampInteractionState, StampRef};
+        let mut path_state = PathEditorState::default();
+        path_state.start_editing("track-1".to_string());
+        path_state.points = vec![
+            PathPointRow {
+                position: [0.0, 0.0, 0.0],
+                ..Default::default()
+            },
+            PathPointRow {
+                position: [10.0, 0.0, 0.0],
+                ..Default::default()
+            },
+        ];
+        let mut stamp_state = StampInteractionState::default();
+        // Request an over-long slide → clamps to the total length (10 m).
+        handle_slide_stamp(
+            &mut path_state,
+            &mut stamp_state,
+            "track-1".to_string(),
+            0,
+            999.0,
+        );
+        let stamp = StampRef {
+            track_node_id: "track-1".to_string(),
+            stamp_index: 0,
+        };
+        assert_eq!(
+            stamp_state
+                .override_for(&stamp)
+                .and_then(|o| o.arc_offset_m),
+            Some(10.0)
+        );
+    }
+
+    #[test]
+    fn slide_stamp_ignores_non_edited_track() {
+        use crate::actions::asset::{StampInteractionState, StampRef};
+        let mut path_state = PathEditorState::default();
+        path_state.start_editing("track-1".to_string());
+        path_state.points = vec![PathPointRow {
+            position: [0.0, 0.0, 0.0],
+            ..Default::default()
+        }];
+        let mut stamp_state = StampInteractionState::default();
+        // N-3: sliding a stamp on a DIFFERENT track than the edited one is a no-op.
+        handle_slide_stamp(
+            &mut path_state,
+            &mut stamp_state,
+            "other".to_string(),
+            0,
+            5.0,
+        );
+        let stamp = StampRef {
+            track_node_id: "other".to_string(),
+            stamp_index: 0,
+        };
+        assert!(stamp_state.override_for(&stamp).is_none());
     }
 
     #[test]
