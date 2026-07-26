@@ -716,6 +716,39 @@ names + the `snake_case` op tags match the contract exactly; `target_height`/
   report panel are w4a. Proposal overlay *meshes* must spawn through the same
   residency/mesh-budget gating (NFR-2) — no bypass.
 
+### Sculpt & earthwork regions (sculpt_earthwork_regions_20260725, D-A8)
+
+The sculpt tool **evolves this proposal path, does not fork it** (FR-6): a
+defined-shape/brush earthwork edit is persisted as an *enriched* record in the
+SAME `terrain.proposals` block (adds a `material` tag), so it round-trips through
+`SetPetalTerrain` with no new config surface. `actions::terrain_proposal` owns:
+
+- `SculptToolState` (Resource): armed `shape_mode` (Brush/Circle/Rect/Polygon) +
+  `op` (Raise/Lower/Level/Smooth, fe-ui-local mirrors of
+  `fe_terrain::sculpt::SculptOp` — no fe-terrain dep), `radius`/`strength`/
+  `target_height`/`delta`, `material` (single-material `"earth"` default, Q-3),
+  `region_draft` (polygon points). Sculpt-UI actions buffer in `pending_actions`
+  (`queue_action`/`drain_pending`, mirroring `ToolPanelState`).
+- Pure helpers: `region_json` (mirrors `EarthworkRegion`'s serde shape by
+  contract), `embed_region` (additive append, same baseline guarantee as
+  `embed_proposals`), `remove_region` (the **Q-2 revert** — dropping the record
+  un-bakes the non-destructive overlay; the true heightfield was never written).
+- Handlers `handle_{brush,shape_region,delete_region}` persist via `persist_doc`.
+- The **cut/fill report** is in `panels::proposal_report_panel`
+  (`earthwork_kind` + `cut_fill_totals`): per-region fill/cut/net + totals across
+  all regions (FR-5). The true separated cut+fill over relief is
+  `fe_terrain::sculpt::cut_fill_volume` at bake.
+
+**Frozen scaffold seam (open):** `render_sculpt_placeholder` (the sculpt section)
+has no `ui_mgr`/petal handle, so it *configures* `SculptToolState` only. Wiring
+the viewport brush-paint + defined-shape COMMIT emit needs T6 to (a) thread the
+active petal id to the sculpt surface and (b) drain `SculptToolState`
+(`for a in sculpt_state.drain_pending() { ui_mgr.push_action(a) }` in
+`process_ui_actions`, the exact shape of the existing `tool_panel.drain_pending`
+line). Until then, region create/delete + reporting flow through the existing
+`TerrainProposalAdd/Delete` buttons (the evolved report shows the earthwork
+metrics).
+
 ## §geometry-mirror — fe-ui-local ruler math
 
 `geometry` is a verbatim copy of fe-terrain's pure ruler formulas

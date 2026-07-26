@@ -9,7 +9,7 @@
 
 use bevy_egui::egui;
 
-use crate::actions::terrain_proposal::SculptToolState;
+use crate::actions::terrain_proposal::{SculptOpKind, SculptShapeMode, SculptToolState};
 use crate::actions::{UiAction, UiManager};
 use crate::node_manager::curve;
 use crate::panels::tool_panel::{TerrainToolMode, ToolPanelState};
@@ -196,21 +196,203 @@ pub(crate) fn render_proposal_list(
     }
 }
 
-/// Wave-1 seam (T3 sculpt_earthwork_regions): T3's brush/shape sculpt UI folds
-/// in here (reads/writes `SculptToolState`); calm "Sculpt tools — Wave 1" hint
-/// until then (ui_ux §7). `_sculpt_state` is the threaded seam T3 un-underscores
-/// and fills — same stub idiom as `actions/terrain_proposal.rs` (T3 owns fields).
-pub(crate) fn render_sculpt_placeholder(ui: &mut egui::Ui, _sculpt_state: &mut SculptToolState) {
+/// Planar area (scene units²) of the armed sculpt footprint — πr² for a
+/// disc/circle, w×h for a rect, shoelace for the polygon draft. Pure so the
+/// sculpt section's live readout is unit-testable. Unscaled (the panel has no
+/// `world_scale`); the real-unit metric lives in the Proposal report (FR-5).
+pub(crate) fn sculpt_footprint_area(sculpt: &SculptToolState) -> f32 {
+    match sculpt.shape_mode {
+        SculptShapeMode::Brush | SculptShapeMode::Circle => {
+            std::f32::consts::PI * sculpt.radius * sculpt.radius
+        }
+        SculptShapeMode::Rect => {
+            // A Radius×Radius square centred on the origin (2r on a side).
+            (2.0 * sculpt.radius) * (2.0 * sculpt.radius)
+        }
+        SculptShapeMode::Polygon => {
+            let p = &sculpt.region_draft;
+            if p.len() < 3 {
+                return 0.0;
+            }
+            let mut sum = 0.0f32;
+            for i in 0..p.len() {
+                let [x1, z1] = p[i];
+                let [x2, z2] = p[(i + 1) % p.len()];
+                sum += x1 * z2 - x2 * z1;
+            }
+            sum.abs() * 0.5
+        }
+    }
+}
+
+/// T3 FR-1/FR-2 sculpt section (folded into TerrainTools — no new
+/// `RightSidebarSection`). Configures `SculptToolState` (shape mode, op, brush
+/// radius/strength, level target + delta, material, polygon draft) — the tactile
+/// area-selection controls (D-A8). NOTE the frozen scaffold seam: this fn has no
+/// `ui_mgr`/petal handle, so the actual brush-paint + defined-shape REGION
+/// COMMIT is viewport/interaction-driven (emits `UiAction::Sculpt*` once T6
+/// threads the active petal + drains `SculptToolState.pending_actions`, mirroring
+/// `ToolPanelState.drain_pending`). Region CREATE/DELETE + reporting work today
+/// through the evolved proposal path above (FR-6). See `panels/AGENTS.md`
+/// §terrain-tools. Kept named `render_sculpt_placeholder` (T6's frozen call site).
+pub(crate) fn render_sculpt_placeholder(ui: &mut egui::Ui, sculpt_state: &mut SculptToolState) {
     ui.label(
         egui::RichText::new("Sculpt")
             .strong()
             .color(theme::TEXT_SECTION),
     );
     ui.add_space(2.0);
+
+    // Shape mode — brush (tactile) vs defined circle/rect/polygon (reportable).
+    ui.label(egui::RichText::new("Shape").small().color(theme::TEXT_DIM));
+    ui.horizontal_wrapped(|ui| {
+        for mode in SculptShapeMode::ALL {
+            ui.selectable_value(&mut sculpt_state.shape_mode, mode, mode.label());
+        }
+    });
+    ui.add_space(4.0);
+
+    // Sculpt operation.
     ui.label(
-        egui::RichText::new("Sculpt tools — Wave 1")
+        egui::RichText::new("Operation")
             .small()
-            .color(theme::TEXT_MUTED)
-            .italics(),
+            .color(theme::TEXT_DIM),
     );
+    ui.horizontal_wrapped(|ui| {
+        for op in SculptOpKind::ALL {
+            ui.selectable_value(&mut sculpt_state.op, op, op.label());
+        }
+    });
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Radius").small().color(theme::TEXT_DIM));
+        ui.add(
+            egui::DragValue::new(&mut sculpt_state.radius)
+                .speed(0.1)
+                .range(0.1..=f32::MAX)
+                .suffix(" m"),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Strength")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add(egui::Slider::new(&mut sculpt_state.strength, 0.0..=1.0).show_value(true));
+    });
+
+    // Op-specific magnitude control.
+    match sculpt_state.op {
+        SculptOpKind::Level => {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Target height")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add(egui::DragValue::new(&mut sculpt_state.target_height).speed(0.1));
+            });
+        }
+        SculptOpKind::Raise | SculptOpKind::Lower => {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Delta").small().color(theme::TEXT_DIM));
+                ui.add(egui::DragValue::new(&mut sculpt_state.delta).speed(0.1));
+            });
+        }
+        SculptOpKind::Smooth => {
+            ui.label(
+                egui::RichText::new("Smooth relaxes toward the region's mean height.")
+                    .small()
+                    .color(theme::TEXT_MUTED)
+                    .italics(),
+            );
+        }
+    }
+    ui.add_space(4.0);
+
+    // Material tag (single-material this landing, Q-3) — baked into the region.
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Material")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        ui.add(egui::TextEdit::singleline(&mut sculpt_state.material).desired_width(120.0));
+    });
+    ui.add_space(4.0);
+
+    // Polygon draft management (defined-polygon footprints are painted in the
+    // viewport; the panel shows/clears the in-progress draft).
+    if sculpt_state.shape_mode == SculptShapeMode::Polygon {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Polygon draft: {} point(s)",
+                    sculpt_state.region_draft.len()
+                ))
+                .small()
+                .color(theme::TEXT_DIM),
+            );
+            if ui.small_button("Clear").clicked() {
+                sculpt_state.region_draft.clear();
+            }
+        });
+        ui.add_space(4.0);
+    }
+
+    // Live footprint area readout (scene units; the real-unit cut/fill is in the
+    // Proposal report — FR-5).
+    let area = sculpt_footprint_area(sculpt_state);
+    ui.label(
+        egui::RichText::new(format!("Footprint area \u{2248} {area:.1} u\u{b2}"))
+            .small()
+            .color(theme::TEXT_MUTED),
+    );
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(
+            "Paint the region in the viewport to commit; cut/fill volume shows in the Proposal report.",
+        )
+        .small()
+        .color(theme::TEXT_MUTED)
+        .italics(),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sculpt_area_disc_rect_and_polygon() {
+        // Circle: πr².
+        let circle = SculptToolState {
+            shape_mode: SculptShapeMode::Circle,
+            radius: 2.0,
+            ..Default::default()
+        };
+        assert!((sculpt_footprint_area(&circle) - std::f32::consts::PI * 4.0).abs() < 1e-3);
+        // Rect: a 2r-per-side square → (2r)².
+        let rect = SculptToolState {
+            shape_mode: SculptShapeMode::Rect,
+            radius: 3.0,
+            ..Default::default()
+        };
+        assert!((sculpt_footprint_area(&rect) - 36.0).abs() < 1e-3);
+        // Polygon: a 10×10 square draft → area 100; <3 points → 0.
+        let poly = SculptToolState {
+            shape_mode: SculptShapeMode::Polygon,
+            region_draft: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            ..Default::default()
+        };
+        assert!((sculpt_footprint_area(&poly) - 100.0).abs() < 1e-3);
+        let empty = SculptToolState {
+            shape_mode: SculptShapeMode::Polygon,
+            region_draft: vec![[0.0, 0.0], [1.0, 0.0]],
+            ..Default::default()
+        };
+        assert_eq!(sculpt_footprint_area(&empty), 0.0);
+    }
 }
