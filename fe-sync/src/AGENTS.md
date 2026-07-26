@@ -158,3 +158,31 @@ Deliberately not unit-tested for the "fires exactly once" property — `Once` is
 process-global static state, so asserting on it across `#[test]` functions in
 the same test binary would be order-dependent; the pure decision of *whether*
 to warn (`RelayConfig::is_default_infra`) is what's tested instead.
+
+## §lifecycle-forwarding (`lifecycle.rs`, track `node_lifecycle_addressing_20260725` FR-6)
+
+`LifecycleForwarder` wraps a `crossbeam::channel::Sender<LifecycleEvent>` (the
+`LifecycleEventSender` alias). The DB thread emits create / promote /
+delete-tombstone / reflow events on this seam (fe-database's
+`spawn_db_thread_with_sync_and_lifecycle` takes the sender half; the concrete
+channel is the same type — fe-database can't depend on fe-sync, so it declares
+its own `LifecycleEventSender = Sender<LifecycleEvent>` and the binary bridges
+the two halves). Forwarding is `try_send`: a full channel drops the event with a
+`warn` rather than stalling the emitting system (N-5 — no blocking on the seam).
+The op-log stays the durable source of truth, so a dropped in-process forward is
+a lost notification, never lost data. Each op emits exactly one event (a stamp
+delete additionally emits `PathReflow` for its owning path) — asserted in
+fe-database's `runtime_lifecycle_tests`.
+
+## §tombstone-honoring reconciliation (`reconciliation.rs` / `replicator.rs`, FR-1 / N-4)
+
+Inbound reconciliation is no longer a byte-count no-op. `reconcile_petal` applies
+each peer row to the durable store through `fe_database::merge::apply_replicated_node`,
+which **refuses to resurrect a locally-tombstoned node**: a stale replica that
+still holds a node we soft-deleted is skipped (`MergeApplied::SkippedTombstoned`),
+and an incoming tombstone converges the local row to deleted. `RowChange.is_tombstone`
+is derived from the row content (`row_is_tombstone` — a non-null `tombstone`
+field), not hardcoded `false`; `IncomingEntryApplicator::should_apply` gives
+tombstones dominance over concurrent live writes (never LWW, D-A7). The durable
+non-resurrection proof lives in `fe-database` `merge::tests`; the fe-sync layer
+tests the flag detection + `should_apply` dominance.

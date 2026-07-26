@@ -24,6 +24,11 @@ pub enum OpType {
     TransformUpdate,
     PropertySet,
     PropertyDeleted,
+    // Node lifecycle (node_lifecycle_addressing_20260725)
+    /// FR-1: a node was deleted via a sync-safe tombstone (survives P2P merge).
+    NodeTombstoned,
+    /// FR-5: a stamp instance was promoted to a full addressable node.
+    NodePromoted,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -191,8 +191,14 @@ define_table! {
         created_at:   String                    => "TYPE string",
         /// Monotonic edit counter for optimistic concurrency on node mutations.
         edit_seq:     i64                       => "TYPE int DEFAULT 0",
-        #[serde(skip_serializing_if = "Option::is_none")]
-        properties:   Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties:   Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
+        /// FR-1 durable tombstone: `NONE` = live; an object `{ hlc, source_did,
+        /// tombstoned_at }` = sync-safe soft delete. The row persists so the
+        /// delete survives reload/P2P merge (N-4); reads filter `tombstone = NONE`.
+        /// See fe-database/src/AGENTS.md §lifecycle.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tombstone:    Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
     }
 }
 
@@ -508,6 +514,15 @@ mod tests {
     #[test]
     fn node_schema_contains_geometry_point() {
         assert!(Node::schema().contains("geometry<point>"));
+    }
+
+    #[test]
+    fn node_schema_contains_durable_tombstone_field() {
+        // FR-1: the soft-delete marker must be a real (optional) column so the
+        // tombstone persists across reload rather than being a raw row drop.
+        let s = Node::schema();
+        assert!(s.contains("tombstone ON TABLE node"));
+        assert!(s.contains("option<object>"));
     }
 
     // --- Asset schema ---

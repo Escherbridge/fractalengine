@@ -56,3 +56,23 @@ denial and allows, so the gate ships before enforcement flips.
 Deferred (not this slice): `TokenScopePolicy`, `OwnershipPolicy`, the
 fe-api adapter, and causal-DAG membership ops (blocked on per-op signing,
 decisions §D5-1).
+
+## §node-lifecycle (`node_lifecycle.rs`)
+
+Track `node_lifecycle_addressing_20260725` FR-1. Node delete/cascade and stamp
+promotion are mutations, so they authorize at **Editor+** (`MIN_DELETE_ROLE`)
+through the existing `RoleLevelPolicy::standard()` `Write` gate — no new
+`Action` variant, no bespoke role math. A Viewer/Anonymous subject is denied by
+construction (deny-by-default).
+
+**Where they are invoked.** The DB dispatch loop (`fe-database/src/lib.rs`)
+calls `authorize_node_delete` / `authorize_instance_promotion` on the
+`TombstoneNode` / `CascadeTombstoneNode` / `PromoteInstance` arms *before* any
+mutation. Each command carries a `fe_runtime::messages::CallerAuth` (the caller's
+already-resolved role at the scope — UI local user or API-token subject); the
+loop maps it to an `AuthContext` (`caller_auth_to_context`), resolves the node's
+scope, and rejects sub-Editor callers with a `DbResult::Error` (no row touched).
+The rejection path is exercised end-to-end in
+`fe-database` `runtime_lifecycle_tests` (Anonymous + Viewer → denied, node
+survives). N-5: authz lives here, never in the UI; the UI receives only
+pre-authorized deletes.
