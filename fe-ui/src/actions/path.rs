@@ -402,6 +402,20 @@ pub(crate) fn apply_track_rows(
     path_state.tracks_pending = false;
 }
 
+/// Wave 1: T2 stamped_asset_nodes — slide a selected stamp along its curve by
+/// arc-length in petal-local meters (T2 FR-3, Q-1 ratified). Homed here (not
+/// `asset.rs`) because arc-length resampling is curve-domain. Body filled by
+/// T2; see the Wave-1 registration scaffold in `actions/mod.rs`.
+pub(crate) fn handle_slide_stamp(
+    _path_state: &mut PathEditorState,
+    _stamp_state: &mut crate::actions::asset::StampInteractionState,
+    _track_node_id: String,
+    _stamp_index: usize,
+    _arc_length: f32,
+) {
+    // Wave 1: T2 stamped_asset_nodes fills this.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

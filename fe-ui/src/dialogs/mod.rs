@@ -10,7 +10,6 @@ mod join;
 mod node_options;
 mod peer_debug;
 mod petal_manifest;
-mod settings;
 
 pub use context_menu::render_context_menu;
 pub use create_entity::{apply_create, render_create_dialog};
@@ -21,7 +20,6 @@ pub use join::render_join_dialog;
 pub use node_options::{node_options_save_url, render_node_options_dialog};
 pub use peer_debug::render_peer_debug_panel;
 pub use petal_manifest::render_petal_manifest;
-pub use settings::settings_window;
 
 use std::collections::HashMap;
 
@@ -115,11 +113,6 @@ pub enum ActiveDialog {
         invite_buf: String,
     },
     PeerDebug,
-    /// D-78 application settings window. No embedded state — the dialog
-    /// reads/writes `crate::settings::AppSettings` (w4b) directly, same as
-    /// `PeerDebug`'s stateless variant. See `dialogs/settings.rs` +
-    /// `dialogs/AGENTS.md` §settings.
-    Settings,
     HexonManager {
         installed_tilesets: Vec<InstalledTilesetDto>,
         available_tilesets: Vec<AvailableTilesetDto>,

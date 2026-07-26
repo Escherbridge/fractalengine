@@ -9,6 +9,7 @@
 
 use bevy_egui::egui;
 
+use crate::actions::terrain_proposal::SculptToolState;
 use crate::actions::{UiAction, UiManager};
 use crate::node_manager::curve;
 use crate::panels::tool_panel::{TerrainToolMode, ToolPanelState};
@@ -193,4 +194,23 @@ pub(crate) fn render_proposal_list(
         }
         ui_mgr.push_action(UiAction::TerrainProposalDelete { id });
     }
+}
+
+/// Wave-1 seam (T3 sculpt_earthwork_regions): T3's brush/shape sculpt UI folds
+/// in here (reads/writes `SculptToolState`); calm "Sculpt tools — Wave 1" hint
+/// until then (ui_ux §7). `_sculpt_state` is the threaded seam T3 un-underscores
+/// and fills — same stub idiom as `actions/terrain_proposal.rs` (T3 owns fields).
+pub(crate) fn render_sculpt_placeholder(ui: &mut egui::Ui, _sculpt_state: &mut SculptToolState) {
+    ui.label(
+        egui::RichText::new("Sculpt")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new("Sculpt tools — Wave 1")
+            .small()
+            .color(theme::TEXT_MUTED)
+            .italics(),
+    );
 }

@@ -623,6 +623,18 @@ impl TestPeer {
                         Ok(DbCommand::GetPetalTerrain { petal_id }) => {
                             db_result_tx.send(DbResult::PetalTerrainLoaded { petal_id, terrain: None }).ok();
                         }
+                        // Lifecycle ops (node_lifecycle_addressing_20260725) are covered by
+                        // fe-database/fe-sync tests, not this mock peer — surface, don't drop.
+                        Ok(DbCommand::TombstoneNode { .. })
+                        | Ok(DbCommand::CascadeTombstoneNode { .. })
+                        | Ok(DbCommand::PromoteInstance { .. }) => {
+                            db_result_tx
+                                .send(DbResult::Error(
+                                    "node lifecycle op not simulated by the test-harness peer"
+                                        .to_string(),
+                                ))
+                                .ok();
+                        }
                         Ok(DbCommand::Shutdown) | Err(_) => break,
                     }
                 }

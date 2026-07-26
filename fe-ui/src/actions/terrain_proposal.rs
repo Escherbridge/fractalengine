@@ -5,6 +5,7 @@
 //! terrain JSON, then round-trip via SetPetalTerrain" idiom. See
 //! `fe-ui/src/AGENTS.md` §terrain-proposal-editor.
 
+use bevy::prelude::Resource;
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::DbCommand;
 
@@ -107,6 +108,68 @@ pub(crate) fn delete(
     };
     proposals.remove(&id);
     persist(db_sender, petal_map, &proposals.proposals, petal_id);
+}
+
+// ---------------------------------------------------------------------------
+// Wave-1 sculpt & earthwork (T3) SCAFFOLD — resource stub + verb handler stubs.
+// T3 evolves the proposal path into region nodes with real cut/fill volume;
+// the sculpt UI folds into the existing TerrainTools section (no new
+// RightSidebarSection). T3 fills these bodies + its owned fe-terrain/renderer
+// files; it edits no central fe-ui file. See the Wave-1 registration scaffold.
+// ---------------------------------------------------------------------------
+
+/// Wave 1 (T3 sculpt_earthwork_regions): per-frame sculpt-tool state (active
+/// brush/shape mode, brush radius/strength, op, in-progress region draft).
+/// Body filled by T3; registered in `plugin.rs`.
+/// `pub` (not `pub(crate)`): flows through the `pub` `gardener_console` /
+/// `render_right_sidebar` render path — must be at least as visible as they are.
+#[derive(Resource, Default)]
+pub struct SculptToolState {
+    // Wave 1: T3 fills fields (brush params, active op/shape, region draft).
+}
+
+/// Wave 1: T3 — apply one freeform brush dab (T3 FR-1 brush + FR-2 op).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_brush(
+    _db_sender: &DbCommandSender,
+    _petal_map: &mut PetalMapState,
+    _sculpt_state: &mut SculptToolState,
+    _petal_id: String,
+    _center: [f32; 2],
+    _radius: f32,
+    _strength: f32,
+    _op: String,
+) {
+    // Wave 1: T3 sculpt_earthwork_regions fills this.
+}
+
+/// Wave 1: T3 — create/update a defined-shape earthwork region node with
+/// computed cut/fill volume (T3 FR-1 shape + FR-3 region + FR-4 volume).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_shape_region(
+    _db_sender: &DbCommandSender,
+    _petal_map: &mut PetalMapState,
+    _sculpt_state: &mut SculptToolState,
+    _petal_id: String,
+    _footprint: Vec<[f32; 2]>,
+    _op: String,
+    _target_height: Option<f32>,
+    _delta: Option<f32>,
+    _material: String,
+) {
+    // Wave 1: T3 sculpt_earthwork_regions fills this.
+}
+
+/// Wave 1: T3 — delete an earthwork region node, reverting its baked
+/// contribution (T3 FR-3, Q-2 ratified).
+pub(crate) fn handle_delete_region(
+    _db_sender: &DbCommandSender,
+    _petal_map: &mut PetalMapState,
+    _sculpt_state: &mut SculptToolState,
+    _active_petal: Option<String>,
+    _region_id: String,
+) {
+    // Wave 1: T3 sculpt_earthwork_regions fills this.
 }
 
 #[cfg(test)]
