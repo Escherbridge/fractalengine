@@ -101,11 +101,35 @@ pub(crate) fn delete(db_sender: &DbCommandSender, node_id: String, key: String) 
     }
 }
 
-/// Wave 1: T4 — clear ALL of an object's custom properties WITHOUT deleting the
-/// node. The distinct "clear properties ≠ delete" verb that clarifies the husk
-/// bug (T4 FR-2). Filled by T4. See the Wave-1 registration scaffold.
-pub(crate) fn handle_clear(_db_sender: &DbCommandSender, _node_id: String) {
-    // Wave 1: T4 contextual_controls fills this.
+/// Reserved custom-property keys this UI knows how to author (the Annotation
+/// card). `handle_clear` clears exactly these — a true "clear every arbitrary
+/// custom property" would need a bulk spine op (open item); these are the keys a
+/// user actually sets and then "removes", which is what surfaced the husk bug.
+const CLEARABLE_PROPERTY_KEYS: [&str; 3] = [
+    ANNOTATION_TITLE_KEY,
+    ANNOTATION_BODY_KEY,
+    ANNOTATION_COLOR_KEY,
+];
+
+/// T4 FR-2 — clear a node's custom properties WITHOUT deleting the node. This is
+/// the verb that makes the "clear ≠ delete" distinction concrete: the node
+/// itself survives (only its properties are removed), whereas
+/// `node::handle_delete` tombstones the node. Clears the reserved property keys
+/// via per-key `DeleteNodeProperty` (no bulk clear op exists on the spine yet).
+pub(crate) fn handle_clear(db_sender: &DbCommandSender, node_id: String) {
+    for key in CLEARABLE_PROPERTY_KEYS {
+        if db_sender
+            .0
+            .send(DbCommand::DeleteNodeProperty {
+                node_id: node_id.clone(),
+                key: key.to_string(),
+            })
+            .is_err()
+        {
+            bevy::log::warn!("db_sender channel closed — ClearNodeProperties not dispatched");
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -161,5 +185,22 @@ mod tests {
     #[test]
     fn annotation_field_for_key_none_for_unrelated_key() {
         assert_eq!(annotation_field_for_key("custom.other"), None);
+    }
+
+    #[test]
+    fn clearable_keys_are_the_annotation_reserved_keys() {
+        // `handle_clear` must target exactly the keys the UI can author, so a
+        // cleared node loses its annotations but survives (the husk distinction).
+        assert_eq!(
+            CLEARABLE_PROPERTY_KEYS,
+            [
+                ANNOTATION_TITLE_KEY,
+                ANNOTATION_BODY_KEY,
+                ANNOTATION_COLOR_KEY
+            ]
+        );
+        for k in CLEARABLE_PROPERTY_KEYS {
+            assert!(annotation_field_for_key(k).is_some(), "{k} not annotation");
+        }
     }
 }

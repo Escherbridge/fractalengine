@@ -191,6 +191,22 @@ pub const fn should_show_tooltip(hovered: bool, has_help: bool) -> bool {
     hovered && has_help
 }
 
+/// The confirm prompt for a cascade (parent) delete (contextual_controls FR-2,
+/// Q-2 ratified: always confirm, show the descendant count). Pure so the copy is
+/// testable. `descendant_count == 0` (unknown/none, when the UI can't resolve
+/// the subtree size locally) still warns that children are removed — never a
+/// silent cascade. Singular/plural is handled for a calm, exact message.
+#[must_use]
+pub fn cascade_confirm_message(descendant_count: usize) -> String {
+    match descendant_count {
+        0 => "Delete this node and all of its child nodes? This also removes any \
+              children and cannot be undone."
+            .to_string(),
+        1 => "Delete this node and its 1 child node? This cannot be undone.".to_string(),
+        n => format!("Delete this node and its {n} child nodes? This cannot be undone."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +373,24 @@ mod tests {
         assert!(should_show_tooltip(true, true));
         assert!(!should_show_tooltip(false, true));
         assert!(!should_show_tooltip(true, false));
+    }
+
+    #[test]
+    fn cascade_confirm_message_is_count_aware_and_never_silent() {
+        // Always names the cascade + is undoable-safe wording (Q-2 confirm).
+        assert!(cascade_confirm_message(0).contains("child nodes"));
+        assert_eq!(
+            cascade_confirm_message(1),
+            "Delete this node and its 1 child node? This cannot be undone."
+        );
+        assert_eq!(
+            cascade_confirm_message(3),
+            "Delete this node and its 3 child nodes? This cannot be undone."
+        );
+        // Every variant warns it cannot be undone / removes children.
+        for n in [0usize, 1, 2, 7] {
+            let m = cascade_confirm_message(n);
+            assert!(m.contains("cannot be undone") || m.contains("removes any children"));
+        }
     }
 }

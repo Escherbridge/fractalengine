@@ -1,10 +1,17 @@
-//! Node options dialog (rename + portal URL + delete).
+//! Node options dialog — the object-scoped comprehensive-verb surface for a
+//! single node (contextual_controls_20260725 FR-2/FR-3/FR-4). Homes rename +
+//! portal URL, plus the object verbs (delete-as-tombstone, duplicate, clear
+//! properties, copy-API, report). The right-click context menu shares this
+//! track's verb machinery (`context_menu::{Verb, render_verb_button}`); see
+//! `dialogs/AGENTS.md` §context-menu for the verb→action map.
 
 use bevy_egui::egui;
 
+use super::context_menu::{render_verb_button, verb_action, Verb};
 use super::ActiveDialog;
-use crate::actions::UiManager;
+use crate::actions::{UiAction, UiManager};
 use crate::theme;
+use crate::ui_shell::modal::cascade_confirm_message;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
 
@@ -25,7 +32,23 @@ pub fn render_node_options_dialog(
     };
 
     let current_node_id = node_id.clone();
+
+    // Resolve the node's (petal_id, name, position) up front for Duplicate — a
+    // read-only walk before the mutable-borrow window closure. `None` when the
+    // node isn't in the loaded hierarchy (Duplicate then shows disabled).
+    let dup_target: Option<(String, String, [f32; 3])> = hierarchy
+        .verses
+        .iter()
+        .flat_map(|v| &v.fractals)
+        .flat_map(|f| &f.petals)
+        .flat_map(|p| p.nodes.iter().map(move |n| (p.id.clone(), n)))
+        .find(|(_, n)| n.id == current_node_id)
+        .map(|(petal_id, n)| (petal_id, n.name.clone(), n.position));
+
     let mut close = false;
+    // Verbs that touch `ui_mgr` are queued here and flushed after the window, so
+    // they don't collide with the `active_dialog` borrow held by the destructure.
+    let mut pending_actions: Vec<UiAction> = Vec::new();
 
     let mut still_open = true;
     egui::Window::new("Node Options")
@@ -84,7 +107,61 @@ pub fn render_node_options_dialog(
                 }
             });
 
-            // --- Delete (two-step confirm; mirrors entity_settings.rs) ---
+            // --- Object verbs (FR-3): duplicate / clear-props / copy-API / report ---
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("Actions")
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
+            ui.horizontal_wrapped(|ui| {
+                // Duplicate — functional here (we resolved the source's petal +
+                // name + position); sends a fresh CreateNode offset nearby.
+                if render_verb_button(ui, Verb::Duplicate, dup_target.is_some()) {
+                    if let Some((petal_id, name, pos)) = &dup_target {
+                        let _ = db_tx.send(DbCommand::CreateNode {
+                            petal_id: petal_id.clone(),
+                            name: format!("{name} (copy)"),
+                            position: [pos[0] + 1.0, pos[1], pos[2] + 1.0],
+                            correlation_id: None,
+                        });
+                        close = true;
+                    }
+                }
+
+                // Clear properties — the husk distinction: keeps the node. Verb
+                // → action goes through the shared, documented `verb_action` map.
+                if render_verb_button(ui, Verb::ClearProperties, true) {
+                    pending_actions.extend(verb_action(
+                        Verb::ClearProperties,
+                        &current_node_id,
+                        false,
+                    ));
+                }
+
+                // Copy API string (FR-4) — seam-gated; the clipboard write is
+                // render-side (only egui `ctx` can touch the clipboard).
+                let api = crate::gis::egress_strings::api_string_for(&current_node_id);
+                if render_verb_button(ui, Verb::CopyApi, api.is_some()) {
+                    if let Some(s) = &api {
+                        ui.ctx().copy_text(s.clone());
+                        pending_actions.extend(verb_action(Verb::CopyApi, &current_node_id, false));
+                    }
+                }
+
+                // Report / query (FR-4) — seam-gated; report text to clipboard.
+                let report = crate::gis::egress_strings::report_for(&current_node_id);
+                if render_verb_button(ui, Verb::Report, report.is_some()) {
+                    if let Some(r) = &report {
+                        ui.ctx().copy_text(r.clone());
+                        pending_actions.extend(verb_action(Verb::Report, &current_node_id, false));
+                    }
+                }
+            });
+
+            // --- Delete (two-step confirm; sync-safe tombstone + cascade, FR-2) ---
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(6.0);
@@ -96,14 +173,19 @@ pub fn render_node_options_dialog(
                         )
                         .fill(theme::BG_DANGER),
                     )
+                    .on_hover_text(
+                        "Delete this node (sync-safe tombstone). Cascades to child nodes.",
+                    )
                     .clicked()
                 {
                     *pending_delete = true;
                 }
             } else {
+                // Descendant count isn't resolvable from the flat UI hierarchy;
+                // the confirm still names the cascade (Q-2: always confirm). An
+                // authoritative count is a T1/T5 query follow-up (see AGENTS.md).
                 ui.label(
-                    egui::RichText::new("Are you sure? This cannot be undone.")
-                        .color(theme::STATUS_OFFLINE),
+                    egui::RichText::new(cascade_confirm_message(0)).color(theme::STATUS_OFFLINE),
                 );
                 ui.horizontal(|ui| {
                     if ui
@@ -115,11 +197,12 @@ pub fn render_node_options_dialog(
                         )
                         .clicked()
                     {
-                        db_tx
-                            .send(DbCommand::DeleteNode {
-                                node_id: current_node_id.clone(),
-                            })
-                            .ok();
+                        // Real remove-a-node path (fixes the husk bug): route
+                        // through the tombstone-cascade handler, not a raw drop.
+                        pending_actions.push(UiAction::DeleteNode {
+                            node_id: current_node_id.clone(),
+                            cascade: true,
+                        });
                         close = true;
                     }
                     if ui
@@ -134,6 +217,9 @@ pub fn render_node_options_dialog(
 
     if !still_open || close {
         ui_mgr.close_dialog();
+    }
+    for action in pending_actions {
+        ui_mgr.push_action(action);
     }
 }
 
