@@ -1,4 +1,13 @@
-//! Map Manager dialog (hexon package UI): installed / available / downloads tabs.
+//! Map Manager (hexon package UI): installed / available / downloads tabs.
+//!
+//! FR-2 (shell_ux_sidebar_20260725, D-A10): rendered as a one-at-a-time
+//! RIGHT-SIDEBAR section (not a floating modal). `ActiveDialog::HexonManager`
+//! is retained ONLY as the state carrier (its fields are populated by the
+//! non-owned sync/bridge writers — `terrain_map/events.rs`, `actions/hexon.rs`,
+//! `terrain_bridge.rs`); `ui_shell::right_sidebar` owns the section lifecycle
+//! (self-seed on open, clear on close/switch). Returns `true` when the user
+//! requested close so the section manager can drop both the carrier and the
+//! `RightSidebarSection::Maps` request. See `dialogs/AGENTS.md` §hexon-manager.
 
 use bevy_egui::egui;
 
@@ -28,7 +37,7 @@ pub fn render_hexon_manager(
     ui_mgr: &mut UiManager,
     petal_map: &mut PetalMapState,
     active_petal_id: Option<&str>,
-) {
+) -> bool {
     let ActiveDialog::HexonManager {
         ref mut installed_tilesets,
         ref mut available_tilesets,
@@ -40,30 +49,34 @@ pub fn render_hexon_manager(
         ref mut pending_remove,
     } = ui_mgr.active_dialog
     else {
-        return;
+        return false;
     };
 
     let current_tab = *active_tab;
     let is_loading = *loading;
     let mut close = false;
-    let mut still_open = true;
     let mut actions: Vec<UiAction> = Vec::new();
 
-    egui::Window::new("Map Manager")
-        .open(&mut still_open)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(600.0)
-        .default_height(350.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+    let max_w = ctx.viewport_rect().width() * 0.8;
+    egui::SidePanel::right("right_section")
+        .resizable(true)
+        .default_width(440.0)
+        .width_range(320.0..=max_w)
         .frame(
             egui::Frame::NONE
-                .fill(theme::BG_DIALOG)
-                .inner_margin(egui::Margin::same(16))
-                .corner_radius(6.0)
-                .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
+                .fill(theme::BG_PANEL)
+                .inner_margin(egui::Margin::same(8))
+                .stroke(egui::Stroke::new(2.0_f32, theme::BG_BUTTON)),
         )
         .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Maps")
+                        .strong()
+                        .color(theme::TEXT_HEADING),
+                );
+            });
+            ui.separator();
             // Top bar: search + install from file
             ui.horizontal(|ui| {
                 ui.add(
@@ -195,9 +208,9 @@ pub fn render_hexon_manager(
         ui_mgr.push_action(action);
     }
 
-    if !still_open || close {
-        ui_mgr.close_dialog();
-    }
+    // The section manager (`ui_shell::right_sidebar`) owns tear-down: drop the
+    // carrier AND the `Maps` section request when the user clicks Close.
+    close
 }
 
 fn render_installed_tab(

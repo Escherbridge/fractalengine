@@ -98,6 +98,9 @@ pub fn gardener_console(
     // as `MiscUiParams`). See `panels/AGENTS.md` §terrain-tools.
     proposal_state: &mut crate::terrain_proposal_state::ProposalEditState,
     app_settings: &mut crate::settings::AppSettings,
+    // Wave-1 scaffold: sculpt-tool state, threaded through to the TerrainTools
+    // section so T3's folded sculpt UI reads/writes it (mirrors `proposal_state`).
+    sculpt_state: &mut crate::actions::terrain_proposal::SculptToolState,
     // ui_shell_architecture_20260724 Phase 2 (FR-4/5/6): area-manager state,
     // supplied by `plugin.rs::gardener_ui_system` via the `UiShellParams` bundle.
     topbar_state: &mut crate::ui_shell::topbar::TopbarState,
@@ -114,8 +117,8 @@ pub fn gardener_console(
             topbar_state,
             tool,
             node_mgr,
-            ui_mgr,
             gis_panel,
+            left_state,
             right_state,
         )
     });
@@ -123,16 +126,14 @@ pub fn gardener_console(
     // if this itself were quarantined, a disabled panel's error would vanish.
     status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr, modal);
 
-    // Left sidebar (FR-5): the manager owns the auto-collapse policy. `right_open`
-    // reproduces today's formula exactly; the manager's default policy applies it
-    // as `sidebar.open = !right_open` (replacing the old post-render stomp).
-    let right_open = ui_mgr.portal_is_open() || node_mgr.selected_entity().is_some();
+    // Left sidebar (FR-3 shell_ux_sidebar): user-sticky. The manager applies
+    // `sidebar.open = user_intent` only — the old per-frame `!right_open` stomp
+    // is GONE (D-A11). Selection / right-section open no longer collapse it.
     let _ = guarded(modal, "left_sidebar", || {
         crate::ui_shell::left_sidebar::render_left_sidebar(
             ctx,
             left_state,
             sidebar,
-            right_open,
             nav,
             dashboard,
             hierarchy,
@@ -165,7 +166,9 @@ pub fn gardener_console(
             tool_panel,
             path_state,
             proposal_state,
-            petal_map.world_scale,
+            sculpt_state,
+            petal_map,
+            app_settings,
             tool,
         )
     });
@@ -249,21 +252,15 @@ pub fn gardener_console(
                 let _ = guarded(modal, "dialog_entity_settings", || {
                     crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx)
                 });
-                let _ = guarded(modal, "dialog_hexon_manager", || {
-                    crate::dialogs::render_hexon_manager(
-                        ctx,
-                        ui_mgr,
-                        petal_map,
-                        nav.active_petal_id.as_deref(),
-                    )
-                });
+                // FR-2 (shell_ux_sidebar): the Map Manager is a right-sidebar
+                // section now (`ui_shell::right_sidebar::render_maps_section`),
+                // not a floating dialog — removed from the transient family here.
                 let _ = guarded(modal, "dialog_petal_manifest", || {
                     crate::dialogs::render_petal_manifest(ctx, ui_mgr)
                 });
-                // D-78: application settings window (see `dialogs/settings.rs`).
-                let _ = guarded(modal, "dialog_settings", || {
-                    crate::dialogs::settings_window(ctx, ui_mgr, app_settings)
-                });
+                // FR-1 (shell_ux_sidebar): application Settings is a right-sidebar
+                // section now (`render_settings_section`), not a floating window —
+                // the old `ActiveDialog::Settings` + `settings_window` are removed.
             }
             TransientLayer::ContextMenu => {
                 if !visibility.context_menu {

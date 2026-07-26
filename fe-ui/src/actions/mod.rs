@@ -2,16 +2,19 @@
 //! dispatches each action to its domain handler. See `fe-ui/src/AGENTS.md`
 //! §actions.
 
-mod asset;
+// `pub(crate)` on `asset`/`terrain_proposal` so `plugin.rs` can `init_resource`
+// the Wave-1 interaction-state stubs they home (StampInteractionState /
+// SculptToolState). See the Wave-1 registration scaffold below.
+pub(crate) mod asset;
 pub(crate) mod gis;
 mod gpx;
 mod hexon;
-mod node;
+pub(crate) mod node;
 pub(crate) mod node_props;
 pub(crate) mod path;
 pub(crate) mod portal;
 mod query;
-mod terrain_proposal;
+pub(crate) mod terrain_proposal;
 mod transform;
 
 use std::path::PathBuf;
@@ -251,11 +254,7 @@ pub enum UiAction {
     PathAppendShape {
         points: Vec<[f32; 3]>,
     },
-    // Application settings + terrain proposals — see `fe-ui/src/AGENTS.md`
-    // §app-settings and §terrain-proposal-editor.
-    /// Toggle the application Settings window (D-78). The window itself and the
-    /// `ActiveDialog::Settings` variant are owned by w4a; this only signals intent.
-    SettingsToggle,
+    // Terrain proposals — see `fe-ui/src/AGENTS.md` §terrain-proposal-editor.
     /// Add a proposed-overlay terrain edit (FR-5) to the active petal and persist
     /// the `proposals` block additively via `SetPetalTerrain`.
     TerrainProposalAdd {
@@ -267,6 +266,107 @@ pub enum UiAction {
     /// Delete a terrain proposal by id and re-persist the `proposals` block.
     TerrainProposalDelete {
         id: String,
+    },
+
+    // -----------------------------------------------------------------------
+    // Wave-1 registration SCAFFOLD (spatial-builder-program-20260725).
+    // T6 (shell_ux_sidebar) pre-declares every Wave-1 verb + a dispatch arm to
+    // a per-track handler stub so T2/T3/T4 fill ONLY their leaf handler bodies
+    // (`actions/{asset,path,node,node_props,terrain_proposal}.rs`) and never
+    // touch this enum. Payloads are primitives (String/usize/arrays), NOT
+    // Wave-1 types. See the anchor "Slice-time partition corrections".
+    // -----------------------------------------------------------------------
+
+    // --- T2 stamped_asset_nodes: individual stamp select + scale/rotate/slide ---
+    /// Select a single stamp on a path as an individual (promoting) node
+    /// (T2 FR-2). Identified pre-promotion by `(track_node_id, stamp_index)`.
+    SelectStamp {
+        track_node_id: String,
+        stamp_index: usize,
+    },
+    /// Set a stamp's per-node scale override (T2 FR-3). Position stays
+    /// path-derived; only scale/rotation are overridable.
+    SetStampScale {
+        track_node_id: String,
+        stamp_index: usize,
+        scale: [f32; 3],
+    },
+    /// Set a stamp's per-node rotation override (quaternion xyzw) (T2 FR-3).
+    SetStampRotation {
+        track_node_id: String,
+        stamp_index: usize,
+        rotation: [f32; 4],
+    },
+    /// Slide a stamp along its curve by arc-length in petal-local meters
+    /// (T2 FR-3, Q-1 ratified) — free translate stays off.
+    SlideStampAlongPath {
+        track_node_id: String,
+        stamp_index: usize,
+        arc_length: f32,
+    },
+
+    // --- T3 sculpt_earthwork_regions: brush + shape region + delete ---
+    /// Apply one freeform brush dab within a petal (T3 FR-1 brush + FR-2 op).
+    /// `op` is a mirrored string tag ("raise"|"lower"|"level"|"smooth").
+    SculptBrush {
+        petal_id: String,
+        center: [f32; 2],
+        radius: f32,
+        strength: f32,
+        op: String,
+    },
+    /// Create/update a defined-shape earthwork region node (T3 FR-1 shape +
+    /// FR-3 region node + FR-4 volume). Footprint is petal-local meters (N-1).
+    SculptShapeRegion {
+        petal_id: String,
+        footprint: Vec<[f32; 2]>,
+        op: String,
+        target_height: Option<f32>,
+        delta: Option<f32>,
+        material: String,
+    },
+    /// Delete an earthwork region node, reverting its baked contribution
+    /// (T3 FR-3, Q-2 ratified).
+    SculptDeleteRegion {
+        region_id: String,
+    },
+
+    // --- T4 contextual_controls: object-aware verbs ---
+    /// Delete an object via T1's sync-safe tombstone; `cascade` routes parent
+    /// deletes through T1's cascade with confirm (T4 FR-2). Fixes the husk bug.
+    DeleteNode {
+        node_id: String,
+        cascade: bool,
+    },
+    /// Duplicate an object (T4 FR-3).
+    DuplicateNode {
+        node_id: String,
+    },
+    /// Rename an object (T4 FR-3).
+    RenameNode {
+        node_id: String,
+        name: String,
+    },
+    /// Promote an un-promoted stamp to a full node (T4 FR-3 / T2 FR-5), via
+    /// T1 FR-5. Identified pre-promotion by `(track_node_id, stamp_index)`.
+    PromoteStamp {
+        track_node_id: String,
+        stamp_index: usize,
+    },
+    /// Clear an object's custom properties WITHOUT deleting it — the distinct
+    /// verb that is NOT delete (T4 FR-2 husk-bug clarification).
+    ClearNodeProperties {
+        node_id: String,
+    },
+    /// Copy the object's public API/egress string (T4 FR-3/FR-4). T4/T5 seam —
+    /// handler no-ops until `endpoint_api_surface` (T5) lands the seam.
+    CopyApiString {
+        node_id: String,
+    },
+    /// Open the object's report/query view (T4 FR-3/FR-4). T4/T5 seam —
+    /// handler no-ops until `endpoint_api_surface` (T5) lands the seam.
+    ReportObject {
+        node_id: String,
     },
 }
 
@@ -377,6 +477,19 @@ pub(crate) struct GisPathParams<'w> {
     path_ops: ResMut<'w, crate::path_ops::PendingPathOps>,
 }
 
+/// Tool-panel + proposal state PLUS the Wave-1 interaction-state stubs
+/// (`StampInteractionState`/`SculptToolState`), bundled so `process_ui_actions`
+/// stays under Bevy's 16-`SystemParam` tuple limit while the Wave-1 handler
+/// stubs (T2/T3) get their resources threaded in already. See the Wave-1
+/// registration scaffold + `plugin.rs` for registration.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct ToolStateParams<'w> {
+    tool_panel: ResMut<'w, crate::panels::tool_panel::ToolPanelState>,
+    proposal_state: ResMut<'w, ProposalEditState>,
+    stamp_state: ResMut<'w, asset::StampInteractionState>,
+    sculpt_state: ResMut<'w, terrain_proposal::SculptToolState>,
+}
+
 /// Drains all UiActions queued during the egui pass and processes them.
 /// Replaces: forward_webview_open_request, drain_portal_panel_actions, handle_url_save.
 pub(crate) fn process_ui_actions(
@@ -394,8 +507,7 @@ pub(crate) fn process_ui_actions(
     nav: Res<crate::navigation_manager::NavigationManager>,
     time: Res<Time>,
     gis: GisPathParams,
-    mut tool_panel: ResMut<crate::panels::tool_panel::ToolPanelState>,
-    mut proposal_state: ResMut<ProposalEditState>,
+    tool_state: ToolStateParams,
 ) {
     let GisPathParams {
         mut gis_panel,
@@ -403,6 +515,12 @@ pub(crate) fn process_ui_actions(
         mut path_state,
         mut path_ops,
     } = gis;
+    let ToolStateParams {
+        mut tool_panel,
+        mut proposal_state,
+        mut stamp_state,
+        mut sculpt_state,
+    } = tool_state;
     // Fold pen-tool actions queued by `render_tool_panel` into the main queue
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
     for pen_action in tool_panel.drain_pending() {
@@ -746,15 +864,6 @@ pub(crate) fn process_ui_actions(
             UiAction::PathAppendShape { points } => {
                 path::append_shape(&mut path_ops, &mut path_state, points);
             }
-            UiAction::SettingsToggle => {
-                // Toggle the D-78 Settings window (variant + `settings_window`
-                // owned by w4a; wired by the coordinator after the swarm).
-                if matches!(ui_mgr.active_dialog, ActiveDialog::Settings) {
-                    ui_mgr.close_dialog();
-                } else {
-                    ui_mgr.open_dialog(ActiveDialog::Settings);
-                }
-            }
             UiAction::TerrainProposalAdd {
                 op,
                 footprint,
@@ -780,6 +889,138 @@ pub(crate) fn process_ui_actions(
                     nav.active_petal_id.clone(),
                     id,
                 );
+            }
+
+            // ---- Wave-1 scaffold dispatch — each arm calls a per-track handler
+            // stub (empty until T2/T3/T4 fill it). See the enum block above. ----
+            // T2 stamped_asset_nodes (asset.rs):
+            UiAction::SelectStamp {
+                track_node_id,
+                stamp_index,
+            } => {
+                asset::handle_select_stamp(&mut stamp_state, track_node_id, stamp_index);
+            }
+            UiAction::SetStampScale {
+                track_node_id,
+                stamp_index,
+                scale,
+            } => {
+                asset::handle_set_stamp_scale(
+                    &db_sender,
+                    &mut stamp_state,
+                    track_node_id,
+                    stamp_index,
+                    scale,
+                );
+            }
+            UiAction::SetStampRotation {
+                track_node_id,
+                stamp_index,
+                rotation,
+            } => {
+                asset::handle_set_stamp_rotation(
+                    &db_sender,
+                    &mut stamp_state,
+                    track_node_id,
+                    stamp_index,
+                    rotation,
+                );
+            }
+            UiAction::SlideStampAlongPath {
+                track_node_id,
+                stamp_index,
+                arc_length,
+            } => {
+                // Arc-length slide is curve/path-domain → routed to path.rs (T2).
+                path::handle_slide_stamp(
+                    &mut path_state,
+                    &mut stamp_state,
+                    track_node_id,
+                    stamp_index,
+                    arc_length,
+                );
+            }
+            // T3 sculpt_earthwork_regions (terrain_proposal.rs):
+            UiAction::SculptBrush {
+                petal_id,
+                center,
+                radius,
+                strength,
+                op,
+            } => {
+                terrain_proposal::handle_brush(
+                    &db_sender,
+                    &mut petal_map,
+                    &mut sculpt_state,
+                    petal_id,
+                    center,
+                    radius,
+                    strength,
+                    op,
+                );
+            }
+            UiAction::SculptShapeRegion {
+                petal_id,
+                footprint,
+                op,
+                target_height,
+                delta,
+                material,
+            } => {
+                terrain_proposal::handle_shape_region(
+                    &db_sender,
+                    &mut petal_map,
+                    &mut sculpt_state,
+                    petal_id,
+                    footprint,
+                    op,
+                    target_height,
+                    delta,
+                    material,
+                );
+            }
+            UiAction::SculptDeleteRegion { region_id } => {
+                terrain_proposal::handle_delete_region(
+                    &db_sender,
+                    &mut petal_map,
+                    &mut sculpt_state,
+                    nav.active_petal_id.clone(),
+                    region_id,
+                );
+            }
+            // T4 contextual_controls (node.rs / node_props.rs):
+            UiAction::DeleteNode { node_id, cascade } => {
+                node::handle_delete(&db_sender, node_id, cascade);
+            }
+            UiAction::DuplicateNode { node_id } => {
+                node::handle_duplicate(&db_sender, node_id);
+            }
+            UiAction::RenameNode { node_id, name } => {
+                node::handle_rename(&db_sender, node_id, name);
+            }
+            UiAction::PromoteStamp {
+                track_node_id,
+                stamp_index,
+            } => {
+                node::handle_promote_stamp(
+                    &db_sender,
+                    &mut stamp_state,
+                    track_node_id,
+                    stamp_index,
+                );
+            }
+            UiAction::ClearNodeProperties { node_id } => {
+                node_props::handle_clear(&db_sender, node_id);
+            }
+            UiAction::CopyApiString { node_id } => {
+                // Wave 1 / needs T5: endpoint_api_surface supplies the address→
+                // string seam; handler no-ops (shown disabled-with-hint by T4).
+                node::handle_copy_api(&mut ui_mgr, node_id, now_secs);
+            }
+            UiAction::ReportObject { node_id } => {
+                // Wave 1 / needs T5: endpoint_api_surface supplies the report
+                // seam; handler no-ops (shown disabled-with-hint by T4).
+                node::handle_report(&mut ui_mgr, node_id, now_secs);
             }
         }
     }

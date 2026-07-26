@@ -446,6 +446,15 @@ impl Plugin for GardenerConsolePlugin {
         // Application settings (D-78) + terrain-proposal editor state (FR-5).
         app.init_resource::<crate::settings::AppSettings>();
         app.init_resource::<crate::terrain_proposal_state::ProposalEditState>();
+        // Wave-1 registration scaffold (spatial-builder-program-20260725):
+        // interaction-state stubs homed in the owned action leaf files so
+        // T2/T3 fill their bodies without editing plugin.rs. See actions/mod.rs.
+        // StampInteractionState is NOT threaded into the render path: promote-on-
+        // select routes stamps into `NodeManager.selected` (inspector/gimbal cover
+        // T2). If T2 later needs render-path access, that one-line signature change
+        // routes through T6 (this scaffold owns the console/right-sidebar seam).
+        app.init_resource::<crate::actions::asset::StampInteractionState>();
+        app.init_resource::<crate::actions::terrain_proposal::SculptToolState>();
         // ui_shell_architecture_20260724 (FR-4/5/6): area-manager state resources.
         app.init_resource::<crate::ui_shell::topbar::TopbarState>();
         app.init_resource::<crate::ui_shell::left_sidebar::LeftSidebarState>();
@@ -454,9 +463,6 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::ui_shell::modal::ModalManagerState>();
         // Mirror AppSettings.mesh_budget_ceiling → MeshInstanceBudget.ceiling live.
         app.add_systems(Update, crate::settings::sync_app_settings_to_mesh_budget);
-        // TODO(ultrapilot): register w4a's Settings/terrain-editor panel systems
-        // (`settings_window`, `terrain_tools_panel`, `proposal_report_panel`) in
-        // `EguiPrimaryContextPass` once they land — the coordinator reconciles.
         // Guarantee the renderer scale resource exists so fe-ui can drive it
         // (idempotent with CameraControllerPlugin's own init).
         app.init_resource::<fe_renderer::camera::CameraScaleSettings>();
@@ -563,6 +569,10 @@ struct MiscUiParams<'w> {
     // FR-5/D-78: terrain proposal editor state + app settings (w4b resources).
     proposal_state: ResMut<'w, crate::terrain_proposal_state::ProposalEditState>,
     app_settings: ResMut<'w, crate::settings::AppSettings>,
+    // Wave-1 scaffold: sculpt-tool state threaded to the TerrainTools section
+    // (T3 fold). Mirrors `proposal_state`; distinct schedule from
+    // `process_ui_actions`'s `ResMut`, so no resource-access conflict.
+    sculpt_state: ResMut<'w, crate::actions::terrain_proposal::SculptToolState>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -624,6 +634,7 @@ fn gardener_ui_system(
         &mut misc.tool_panel,
         &mut misc.proposal_state,
         &mut misc.app_settings,
+        &mut misc.sculpt_state,
         &mut ui_shell.topbar,
         &mut ui_shell.left_sidebar,
         &mut ui_shell.right_sidebar,

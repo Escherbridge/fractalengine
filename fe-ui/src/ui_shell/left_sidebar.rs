@@ -1,8 +1,10 @@
-//! Left-sidebar area manager (FR-5): owns the sidebar-visibility POLICY. The
-//! pure `left_visibility` replaces the old per-frame `sidebar.open = !right_open`
-//! stomp; its DEFAULT (`AutoCollapse`) reproduces that formula bit-for-bit so the
-//! prior manual-toggle no-op behavior is preserved exactly. See
-//! `fe-ui/src/ui_shell/AGENTS.md` §left.
+//! Left-sidebar area manager (FR-3 shell_ux_sidebar_20260725): owns the
+//! sidebar-visibility POLICY. Per D-A11 the auto-collapse-on-selection default
+//! is REMOVED entirely (Q-3 ratified) — the sidebar is now user-sticky: it
+//! stays exactly where the user last set it (`user_intent`), unaffected by
+//! selection, right-section open, or petal switch (session-scoped, Q-2). The
+//! explicit topbar toggle + shortcut (`ui_shell/topbar.rs`) flips `user_intent`.
+//! See `fe-ui/src/ui_shell/AGENTS.md` §left.
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
@@ -15,21 +17,19 @@ use crate::plugin::{CameraFocusTarget, SidebarState};
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
 
-/// Left-sidebar visibility policy.
+/// Left-sidebar visibility policy. Auto-collapse was removed (D-A11 / Q-3): the
+/// only policy is user-sticky `Manual`. The enum is retained as the decision
+/// seam so `left_visibility` stays a pure, testable function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeftSidebarPolicy {
-    /// Auto-collapse when the right region is open (portal OR selection).
-    /// Reproduces the pre-refactor `sidebar.open = !right_open` behavior exactly —
-    /// `user_intent` is ignored, matching the old manual-toggle no-op.
+    /// User-sticky: honor the user's explicit open/close intent, ignoring
+    /// selection / right-region state (D-A11). This is the only policy.
     #[default]
-    AutoCollapse,
-    /// Honor explicit user intent, ignoring the right region (NOT the default;
-    /// the seam for a future manual sidebar toggle).
     Manual,
 }
 
 /// Left-sidebar manager state: the visibility policy + the user's explicit
-/// open/close intent (honored only under `Manual`).
+/// session-scoped open/close intent.
 #[derive(Resource, Debug, Clone)]
 pub struct LeftSidebarState {
     pub policy: LeftSidebarPolicy,
@@ -38,8 +38,7 @@ pub struct LeftSidebarState {
 
 impl Default for LeftSidebarState {
     fn default() -> Self {
-        // `SidebarState` defaulted to open=true; keep intent=true so a later flip
-        // to `Manual` starts open.
+        // Start open (matches `SidebarState` default) and sticky.
         Self {
             policy: LeftSidebarPolicy::default(),
             user_intent: true,
@@ -47,23 +46,21 @@ impl Default for LeftSidebarState {
     }
 }
 
-/// Pure visibility decision. DEFAULT policy = today's `!right_open`, where
-/// `right_open == portal_is_open() || selected_entity().is_some()`.
-pub fn left_visibility(policy: LeftSidebarPolicy, right_open: bool, user_intent: bool) -> bool {
+/// Pure visibility decision. User-sticky: visibility is exactly `user_intent`,
+/// independent of selection / portal / right-section open (D-A11).
+pub fn left_visibility(policy: LeftSidebarPolicy, user_intent: bool) -> bool {
     match policy {
-        LeftSidebarPolicy::AutoCollapse => !right_open,
         LeftSidebarPolicy::Manual => user_intent,
     }
 }
 
-/// Applies the visibility policy, then renders the left sidebar. Replaces both
-/// the old `sidebar::left_sidebar(...)` call AND the post-render
-/// `sidebar.open = !right_open` stomp (the manager now owns that decision).
+/// Applies the visibility policy, then renders the left sidebar. The manager
+/// owns the open/close decision; there is NO per-frame `!right_open` stomp
+/// anymore (D-A11) — `sidebar.open` tracks the user's sticky intent only.
 pub fn render_left_sidebar(
     ctx: &egui::Context,
     state: &LeftSidebarState,
     sidebar_state: &mut SidebarState,
-    right_open: bool,
     nav: &mut NavigationManager,
     dashboard: &DashboardState,
     hierarchy: &mut VerseManager,
@@ -72,7 +69,7 @@ pub fn render_left_sidebar(
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
 ) {
-    sidebar_state.open = left_visibility(state.policy, right_open, state.user_intent);
+    sidebar_state.open = left_visibility(state.policy, state.user_intent);
     sidebar::left_sidebar(
         ctx,
         sidebar_state,
@@ -91,28 +88,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn autocollapse_default_reproduces_legacy_formula() {
-        // Legacy: sidebar.open = !(portal_is_open() || selected.is_some()) = !right_open,
-        // with `user_intent` a no-op. Reproduce that truth table bit-for-bit.
-        let p = LeftSidebarPolicy::default();
-        assert_eq!(p, LeftSidebarPolicy::AutoCollapse);
-        assert!(left_visibility(p, false, true)); // right closed -> visible
-        assert!(left_visibility(p, false, false)); // ... independent of intent
-        assert!(!left_visibility(p, true, true)); // right open -> collapsed
-        assert!(!left_visibility(p, true, false)); // ... independent of intent
-    }
-
-    #[test]
-    fn default_state_is_autocollapse_open() {
+    fn default_state_is_manual_and_open() {
         let s = LeftSidebarState::default();
-        assert_eq!(s.policy, LeftSidebarPolicy::AutoCollapse);
+        assert_eq!(s.policy, LeftSidebarPolicy::Manual);
         assert!(s.user_intent);
     }
 
     #[test]
-    fn manual_policy_honors_user_intent() {
+    fn open_intent_survives_selection_right_open_and_petal_switch() {
+        // Visibility depends ONLY on user_intent — selection / right-section
+        // open / petal switch are not inputs, so an open sidebar stays open
+        // through all of them (D-A11 sticky).
         let p = LeftSidebarPolicy::Manual;
-        assert!(left_visibility(p, true, true)); // stays open despite right open
-        assert!(!left_visibility(p, false, false)); // stays closed despite right closed
+        assert!(left_visibility(p, true));
+    }
+
+    #[test]
+    fn closed_intent_stays_closed() {
+        let p = LeftSidebarPolicy::Manual;
+        assert!(!left_visibility(p, false));
     }
 }

@@ -101,6 +101,13 @@ pub(crate) fn delete(db_sender: &DbCommandSender, node_id: String, key: String) 
     }
 }
 
+/// Wave 1: T4 — clear ALL of an object's custom properties WITHOUT deleting the
+/// node. The distinct "clear properties ≠ delete" verb that clarifies the husk
+/// bug (T4 FR-2). Filled by T4. See the Wave-1 registration scaffold.
+pub(crate) fn handle_clear(_db_sender: &DbCommandSender, _node_id: String) {
+    // Wave 1: T4 contextual_controls fills this.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
