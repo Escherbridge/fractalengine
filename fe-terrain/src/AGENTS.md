@@ -414,3 +414,65 @@ Persistence + rendering (render-gated):
   residency budget (`spawn_allowance`/`mesh_instance_watchdog`) lives in the
   fractalengine binary and is unreachable from fe-terrain — see the
   `TODO(ultrapilot)` seam in `render_terrain_proposals`.
+
+## §sculpt — earthwork region engine (sculpt_earthwork_regions_20260725, D-A8)
+
+`sculpt/mod.rs` is the BIM terraforming engine: area-selection footprints,
+sculpt operations, the addressable modification-region record, and cut/fill
+**volume in real units**. Bevy-free + always compiled (like `terrain_proposal`/
+`ruler`/`scale`) so it is headless-testable and the fe-ui side mirrors the region
+via JSON (fe-ui must NOT depend on fe-terrain). It **evolves the proposal path,
+does not fork it** (FR-6): a region is persisted as an enriched record in the
+same `terrain.proposals` block (adds a `material` tag).
+
+**NFR-1 (sacred, shared with proposals):** every fn takes the base surface as a
+read-only `&impl Fn(f32,f32)->Option<f32>`; the true `TerrainHeightField` is
+never written. The `nfr1_base_sampler_unmutated_after_apply_and_volume` test is
+the byte-identity proof. The "bake" is the non-destructive overlay recomputed
+from the record set, so **delete reverts by dropping the record** (Q-2 ratified —
+the region is the source of truth; the surface was never destructively edited).
+
+- `Footprint { Brush, Circle, Rect, Polygon }` in petal-local scene units (N-1:
+  raw geometry; `world_scale` enters only at the real-unit volume seam). `Brush`
+  and `Circle` are the same disc, kept distinct so the UI labels the tactile vs
+  the reportable origin (D-A8 "an actual shape you can report on"). `contains`
+  uses an exact radial test for discs / rect bounds / even-odd for polygons;
+  `to_polygon` tessellates discs (`DISC_SEGMENTS`); `bounds` is the AABB.
+- `SculptOp { Raise, Lower, Level, Smooth }` (FR-2). `proposed_height`: Raise/
+  Lower `base ± delta` (relative → `None` w/o base), Level `target` (absolute),
+  Smooth relaxes toward `region_mean` weighted by `strength` (planning-grade).
+  `from_snake` also accepts the terrain-proposal vocabulary (`flatten`==`level`,
+  `cut`→lower, `fill`/`pad`→raise, `ramp`/`slope`→level) so an evolved proposal
+  is a well-formed region without a fork.
+- `cut_fill_volume(base, proposed, footprint, grid_step, world_scale) -> CutFill`
+  (FR-4, Q-4 planning-grade): heightfield prism/grid integration. Each
+  `grid_step` cell centre inside the footprint with both samples contributes
+  `|dh_m| × cell_area_m²` to fill (`dh>0`) or **cut** (`dh<0`), where
+  `dh_m = (proposed−base)/scale` and `cell_area_m² = grid_step²/scale²` — the
+  SAME `/scale`, `/scale²` real-unit convention as `proposal_report` (evolve).
+  **Documented tolerance:** O(grid_step) discretisation — converges as
+  `grid_step→0`; use a step ≤ ¼ of the smallest relief feature. `scaled==false`
+  when `world_scale` is unusable → figures are scene-unit³, never fake meters
+  (NFR-4). Analytic tests: flat-fill (200 000 m³ @ 0.1 scale) and a ramp levelled
+  to its midline (cut≈fill, within 5% of the ∫|target−x| analytic).
+- `EarthworkRegion { id, op, footprint, material, target_height, delta }` (FR-3,
+  D-A8): the persistent, addressable region record; serde matches the enriched
+  `terrain.proposals` JSON (so fe-ui round-trips it via `SetPetalTerrain`).
+  `material` defaults to `"earth"` (single-material this landing, Q-3; per-layer
+  strata is the deferred phase). `parse_regions` drops malformed records with a
+  `warn!` (additive resilience, like `parse_proposals`).
+- `terrain_proposal::proposal_cut_fill(base, proposal, grid_step, world_scale)`
+  bridges an existing proposal to separated cut/fill by reusing the proposal's
+  own `apply_proposal_over_base` as the target surface — the FR-4/FR-6 evolution
+  of the report for every op, no op-semantics duplication.
+
+The brush cursor overlay is `fe_renderer::terrain_overlay::{brush_ring,
+brush_overlay_positions, BrushOverlay, BRUSH_OVERLAY_RGBA}` (folded into the
+existing overlay module — no new fe-renderer module; T2 owns that `lib.rs`
+line). It grounds the ring READ-ONLY on `TerrainHeightField` (NFR-1). The fe-ui
+sculpt UI (`panels/terrain_tools_panel.rs::render_sculpt_placeholder`) configures
+the region params; region create/delete + reporting flow through the evolved
+proposal path today, while the viewport brush-paint + defined-shape COMMIT emit
+(`UiAction::Sculpt{Brush,ShapeRegion,DeleteRegion}` → `actions::terrain_proposal::
+handle_*`) awaits the T6 scaffold seam that threads the active petal id + drains
+`SculptToolState.pending_actions` (mirror of `ToolPanelState.drain_pending`).

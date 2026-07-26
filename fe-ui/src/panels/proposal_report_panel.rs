@@ -13,8 +13,61 @@
 use bevy_egui::egui;
 
 use crate::geometry::{bearing_deg, polygon_area_m2, world_to_real_distance};
-use crate::terrain_proposal_state::ProposalEditState;
+use crate::terrain_proposal_state::{ProposalEditState, ProposalOp};
 use crate::theme;
+
+/// How an op's representative volume classifies as earthwork (T3 FR-5): added
+/// material (fill), removed material (cut), or a reshaping op whose net cut/fill
+/// needs the base surface to split (reported as "net" here — the true separated
+/// figure comes from `fe_terrain::sculpt::cut_fill_volume` at bake).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Earthwork {
+    Fill,
+    Cut,
+    Net,
+}
+
+/// Classify a proposal op as fill/cut/net for the earthwork report.
+fn earthwork_kind(op: ProposalOp) -> Earthwork {
+    match op {
+        ProposalOp::Raise | ProposalOp::Fill | ProposalOp::Pad => Earthwork::Fill,
+        ProposalOp::Lower | ProposalOp::Cut => Earthwork::Cut,
+        ProposalOp::Flatten | ProposalOp::Ramp | ProposalOp::Slope => Earthwork::Net,
+    }
+}
+
+/// Running cut/fill totals over a region set (real units when scaled).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct CutFillTotals {
+    cut: f64,
+    fill: f64,
+    net: f64,
+}
+
+/// Sum representative cut/fill across every proposal record (FR-5 "per-region
+/// and total"). Each record's magnitude is `area × |delta|` in real units via
+/// the shared `compute_report`; the op decides the cut/fill/net bucket. Pure.
+fn cut_fill_totals(state: &ProposalEditState, world_scale: f64) -> CutFillTotals {
+    let mut totals = CutFillTotals::default();
+    for record in &state.proposals {
+        let footprint: Vec<[f64; 3]> = record
+            .footprint
+            .iter()
+            .map(|p| [f64::from(p[0]), 0.0, f64::from(p[1])])
+            .collect();
+        let delta = f64::from(record.delta.unwrap_or(0.0));
+        let Some(report) = compute_report(&footprint, delta, world_scale) else {
+            continue;
+        };
+        let v = report.volume.abs();
+        match earthwork_kind(record.op) {
+            Earthwork::Fill => totals.fill += v,
+            Earthwork::Cut => totals.cut += v,
+            Earthwork::Net => totals.net += v,
+        }
+    }
+    totals
+}
 
 /// Section body (no window/chrome — the caller, `right_sidebar::section_chrome`
 /// via `render_proposal_report_section`, supplies that). Calm empty-state
@@ -26,6 +79,30 @@ pub(crate) fn render_report_body(
     proposal_state: &ProposalEditState,
     world_scale: f64,
 ) {
+    // FR-5: earthwork totals across ALL regions (per-region detail follows for
+    // the selection). Shown whenever any region exists, selected or not.
+    if !proposal_state.proposals.is_empty() {
+        let totals = cut_fill_totals(proposal_state, world_scale);
+        let has_scale = world_scale.is_finite() && world_scale > 0.0;
+        let vu = if has_scale { "m\u{b3}" } else { "wu\u{b3}" };
+        ui.label(
+            egui::RichText::new(format!(
+                "Earthwork totals ({} region(s))",
+                proposal_state.proposals.len()
+            ))
+            .strong()
+            .color(theme::TEXT_SECTION),
+        );
+        ui.label(format!("Fill: {:.2} {vu}", totals.fill));
+        ui.label(format!("Cut: {:.2} {vu}", totals.cut));
+        if totals.net > 0.0 {
+            ui.label(format!("Reshaped (net): {:.2} {vu}", totals.net));
+        }
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+    }
+
     let Some(selected) = proposal_state.selected.as_deref() else {
         ui.label(
             egui::RichText::new("Select a proposal to see its metrics here.")
@@ -80,10 +157,23 @@ pub(crate) fn render_report_body(
         u = report.length_unit
     ));
     ui.label(format!("Area: {:.2} {}", report.area, report.area_unit));
+    // FR-5: label the volume as cut/fill/net earthwork by op (the true separated
+    // cut+fill over relief is `fe_terrain::sculpt::cut_fill_volume` at bake).
+    let vol_label = match earthwork_kind(record.op) {
+        Earthwork::Fill => "Fill volume",
+        Earthwork::Cut => "Cut volume",
+        Earthwork::Net => "Reshaped volume (net)",
+    };
     ui.label(format!(
-        "Volume: {:.2} {}",
-        report.volume, report.volume_unit
+        "{vol_label}: {:.2} {}",
+        report.volume.abs(),
+        report.volume_unit
     ));
+    ui.label(
+        egui::RichText::new("Material: earth")
+            .small()
+            .color(theme::TEXT_DIM),
+    );
     ui.label(format!("Slope: {:.1}%", report.slope_pct));
     ui.label(format!("Bearing: {:.1}\u{00b0}", report.bearing_deg));
     if !report.has_scale {
@@ -230,6 +320,38 @@ mod tests {
             assert!((report.area - 100.0).abs() < 1e-9);
             assert!((report.volume - 500.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn earthwork_kind_classifies_ops() {
+        assert_eq!(earthwork_kind(ProposalOp::Raise), Earthwork::Fill);
+        assert_eq!(earthwork_kind(ProposalOp::Fill), Earthwork::Fill);
+        assert_eq!(earthwork_kind(ProposalOp::Pad), Earthwork::Fill);
+        assert_eq!(earthwork_kind(ProposalOp::Lower), Earthwork::Cut);
+        assert_eq!(earthwork_kind(ProposalOp::Cut), Earthwork::Cut);
+        assert_eq!(earthwork_kind(ProposalOp::Flatten), Earthwork::Net);
+        assert_eq!(earthwork_kind(ProposalOp::Ramp), Earthwork::Net);
+    }
+
+    #[test]
+    fn cut_fill_totals_bucket_by_op() {
+        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut state = ProposalEditState::default();
+        // Raise delta 2 → fill; Lower delta 3 → cut (world_scale 1 → wu³).
+        state.push_new(ProposalOp::Raise, square.clone(), None, Some(2.0));
+        state.push_new(ProposalOp::Lower, square.clone(), None, Some(3.0));
+        state.push_new(ProposalOp::Flatten, square, Some(5.0), Some(1.0));
+        let t = cut_fill_totals(&state, 1.0);
+        // area 100 × |delta|: fill = 100×2 = 200, cut = 100×3 = 300, net = 100×1.
+        assert!((t.fill - 200.0).abs() < 1e-6);
+        assert!((t.cut - 300.0).abs() < 1e-6);
+        assert!((t.net - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cut_fill_totals_empty_is_zero() {
+        let t = cut_fill_totals(&ProposalEditState::default(), 1.0);
+        assert_eq!(t, CutFillTotals::default());
     }
 
     #[test]

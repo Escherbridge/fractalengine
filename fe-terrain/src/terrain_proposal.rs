@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::sculpt::{CutFill, Footprint};
+
 /// A terrain edit operation kind. A proposal is an ANALYTICS overlay, never a
 /// destructive heightfield/tileset write (NFR-1); serde is snake_case to match
 /// the persisted `terrain.proposals` JSON contract the fe-ui side mirrors.
@@ -58,7 +60,8 @@ impl TerrainProposal {
 }
 
 /// Axis-aligned footprint bounds `(min_x, min_z, max_x, max_z)`; `None` when empty.
-fn footprint_bounds(footprint: &[[f32; 2]]) -> Option<(f32, f32, f32, f32)> {
+/// `pub(crate)` so the `sculpt` module reuses one tested bounds helper (N-7).
+pub(crate) fn footprint_bounds(footprint: &[[f32; 2]]) -> Option<(f32, f32, f32, f32)> {
     let mut it = footprint.iter();
     let &[fx, fz] = it.next()?;
     let (mut min_x, mut min_z, mut max_x, mut max_z) = (fx, fz, fx, fz);
@@ -87,7 +90,8 @@ fn ramp_params(x: f32, bounds: (f32, f32, f32, f32)) -> (f32, f32) {
 
 /// Even-odd (ray-cast) point-in-polygon test on the XZ plane. A point exactly
 /// on a vertex/edge may fall either way — acceptable for footprint gating.
-fn point_in_polygon(p: [f32; 2], polygon: &[[f32; 2]]) -> bool {
+/// `pub(crate)` so the `sculpt` module reuses one tested gate (N-7).
+pub(crate) fn point_in_polygon(p: [f32; 2], polygon: &[[f32; 2]]) -> bool {
     if polygon.len() < 3 {
         return false;
     }
@@ -316,6 +320,31 @@ pub fn proposal_report(proposal: &TerrainProposal, world_scale: f64) -> Proposal
     }
 }
 
+/// True cut/fill volume of a proposal against the READ-ONLY base surface,
+/// integrated on a `grid_step` lattice in real units (FR-4, Q-4 planning-grade).
+/// Reuses the proposal's own per-op proposed height ([`apply_proposal_over_base`])
+/// as the target surface, so every existing op (raise…fill) yields SEPARATED
+/// cut/fill without forking the sculpt engine (FR-6). Points where the proposal
+/// leaves the surface unchanged (outside the footprint, or a relative op with no
+/// base) contribute nothing. See `src/AGENTS.md` §sculpt.
+pub fn proposal_cut_fill(
+    base: &impl Fn(f32, f32) -> Option<f32>,
+    proposal: &TerrainProposal,
+    grid_step: f32,
+    world_scale: f64,
+) -> CutFill {
+    let footprint = Footprint::Polygon {
+        verts: proposal.footprint.clone(),
+    };
+    let proposed = |x: f32, z: f32| {
+        apply_proposal_over_base(base, proposal, &[[x, z]])
+            .into_iter()
+            .next()
+            .flatten()
+    };
+    crate::sculpt::cut_fill_volume(base, &proposed, &footprint, grid_step, world_scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +570,33 @@ mod tests {
         assert!((ru.area_m2 - 100.0).abs() < 1e-6);
         // slope unchanged (scale-invariant)
         assert!((ru.slope_pct - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn proposal_cut_fill_raise_is_all_fill() {
+        // Raise delta 2 over the flat 10×10 square at scale 1 → fill 200, cut 0
+        // (FR-4: separated cut/fill for an existing proposal op, FR-6 evolve).
+        let base = |_x: f32, _z: f32| Some(0.0);
+        let cf = proposal_cut_fill(&base, &raise(2.0), 0.25, 1.0);
+        assert!(cf.scaled);
+        assert!(cf.cut_m3.abs() < 1.0, "no cut, got {}", cf.cut_m3);
+        assert!((cf.fill_m3 - 200.0).abs() / 200.0 < 0.02);
+    }
+
+    #[test]
+    fn proposal_cut_fill_flatten_over_relief_splits_cut_and_fill() {
+        // Flatten to target 5 over a ramp base h=x on [0,10] → cut where x>5,
+        // fill where x<5, both > 0 and ~symmetric.
+        let base = |x: f32, _z: f32| Some(x);
+        let p = TerrainProposal {
+            op: TerrainOp::Flatten,
+            target_height: Some(5.0),
+            delta: None,
+            ..raise(0.0)
+        };
+        let cf = proposal_cut_fill(&base, &p, 0.1, 1.0);
+        assert!(cf.cut_m3 > 0.0 && cf.fill_m3 > 0.0);
+        assert!((cf.cut_m3 - cf.fill_m3).abs() < 5.0);
     }
 
     #[test]

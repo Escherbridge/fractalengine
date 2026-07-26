@@ -10,6 +10,7 @@ pub mod petal_binding;
 pub mod projection;
 pub mod ruler;
 pub mod scale;
+pub mod sculpt;
 pub mod simplify;
 pub mod splat;
 pub mod terrain_proposal;
