@@ -115,17 +115,23 @@ impl std::str::FromStr for EntityType {
 /// Caller identity threaded into the authorized lifecycle mutations
 /// (`TombstoneNode` / `CascadeTombstoneNode` / `PromoteInstance`).
 ///
-/// Carries the caller's *already-resolved* role at the target scope, mirroring
-/// how the API layer (T5) derives a `RoleLevel` from the session/relay token and
-/// the UI (T4) from the local role lookup. The DB thread maps this to a
-/// `fe_policy::AuthContext` and enforces Editor+ before mutating (N-5: authz in
-/// fe-policy, never the UI). See fe-policy/AGENTS.md §node-lifecycle.
+/// `Identified` carries an *already-resolved* role — the API layer (T5) derives
+/// it from the session/relay token upstream. `Local` is the local desktop
+/// session issuing its own lifecycle commands: it asserts NO role; the DB thread
+/// resolves the caller's identity and real role at the target scope (N-5: the UI
+/// must never self-authorize). `Anonymous` is sub-Editor by construction. The DB
+/// thread maps each to a `fe_policy::AuthContext` and enforces Editor+ before
+/// mutating. See fe-policy/AGENTS.md §node-lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CallerAuth {
-    /// An identified caller (UI local user or API-token subject) whose role at
-    /// the target scope was already resolved. `role` is the lowercased role
-    /// string (`"owner"`/`"manager"`/`"editor"`/`"viewer"`/`"none"`).
+    /// An external/API caller whose role at the target scope was already
+    /// validated upstream (T5). `role` is the lowercased role string
+    /// (`"owner"`/`"manager"`/`"editor"`/`"viewer"`/`"none"`).
     Identified { did: String, role: String },
+    /// The local desktop session; the DB thread resolves its identity + role for
+    /// the target scope. The UI sends this for its own lifecycle commands (N-5:
+    /// no UI-side role assertion).
+    Local,
     /// An unauthenticated caller — sub-Editor by construction, always denied.
     Anonymous,
 }
@@ -139,11 +145,17 @@ impl CallerAuth {
         }
     }
 
-    /// The caller's DID, or `"anonymous"` for the unauthenticated variant.
-    pub fn did(&self) -> &str {
+    /// The local desktop session; the DB resolves its identity + role (N-5).
+    pub fn local() -> Self {
+        Self::Local
+    }
+
+    /// The caller's self-asserted DID, or `None` when it asserts none — `Local`
+    /// (DB-resolved) or `Anonymous`.
+    pub fn did(&self) -> Option<&str> {
         match self {
-            CallerAuth::Identified { did, .. } => did,
-            CallerAuth::Anonymous => "anonymous",
+            CallerAuth::Identified { did, .. } => Some(did),
+            CallerAuth::Local | CallerAuth::Anonymous => None,
         }
     }
 }
@@ -1007,11 +1019,18 @@ mod lifecycle_vocabulary_tests {
     #[test]
     fn caller_auth_round_trips_and_reports_did() {
         let id = CallerAuth::identified("did:key:z6MkA", "editor");
-        assert_eq!(id.did(), "did:key:z6MkA");
-        assert_eq!(CallerAuth::Anonymous.did(), "anonymous");
+        assert_eq!(id.did(), Some("did:key:z6MkA"));
+        // Local + Anonymous assert no DID — the DB resolves Local's identity.
+        assert_eq!(CallerAuth::local().did(), None);
+        assert_eq!(CallerAuth::Anonymous.did(), None);
         let json = serde_json::to_string(&id).unwrap();
         let back: CallerAuth = serde_json::from_str(&json).unwrap();
         assert_eq!(id, back);
+        // The `Local` unit variant round-trips over the wire too.
+        let local = CallerAuth::Local;
+        let back: CallerAuth =
+            serde_json::from_str(&serde_json::to_string(&local).unwrap()).unwrap();
+        assert_eq!(local, back);
     }
 
     #[test]

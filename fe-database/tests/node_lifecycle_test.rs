@@ -19,6 +19,13 @@ fn editor() -> CallerAuth {
 fn viewer() -> CallerAuth {
     CallerAuth::identified("did:key:z6MkViewer", "viewer")
 }
+/// The local desktop session (N-5): asserts no role — the DB thread resolves the
+/// local user's identity + scope role. In this harness the local user
+/// (`"local-node"`, no keypair) owns every verse it creates, so `Local` resolves
+/// to Owner and is authorized.
+fn local() -> CallerAuth {
+    CallerAuth::Local
+}
 
 /// A running DB thread + its channels, over a temp on-disk DB. The `Drop` impl
 /// closes the command channel (breaking the loop) and joins the thread *before*
@@ -218,6 +225,41 @@ fn tombstone_is_authorized_survives_reload_and_emits_one_event() {
     assert!(
         !h.load_ids(&petal).contains(&node),
         "tombstoned node is hidden from the scene read"
+    );
+}
+
+// --- N-5: the local UI issues `CallerAuth::Local` and the DB resolves its role ---
+
+#[test]
+fn local_caller_is_authorized_by_db_resolved_role() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let node = h.create_node(&petal, "N");
+    h.drain_life();
+
+    // The UI sends `CallerAuth::Local` — it asserts NO role (N-5: no UI-side
+    // self-authorization). The DB thread resolves the local user's real role at
+    // the node's scope. Here the local user is the verse owner (it created the
+    // verse), so the tombstone is authorized and emits exactly one event.
+    h.send(DbCommand::TombstoneNode {
+        node_id: node.clone(),
+        auth: local(),
+    });
+    match h.recv() {
+        DbResult::NodeDeleted { node_id, .. } => assert_eq!(node_id, node),
+        o => panic!("local owner tombstone must succeed, got {o:?}"),
+    }
+    match h.recv_life() {
+        LifecycleEvent::NodeDeleted { node_id, .. } => assert_eq!(node_id, node),
+        o => panic!("expected NodeDeleted event, got {o:?}"),
+    }
+    assert!(
+        h.life_rx.try_recv().is_err(),
+        "an authorized local delete emits exactly one event"
+    );
+    assert!(
+        !h.load_ids(&petal).contains(&node),
+        "node tombstoned by the DB-resolved local owner"
     );
 }
 

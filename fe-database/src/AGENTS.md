@@ -336,10 +336,17 @@ durable counterpart of `EntityStore::upsert`'s tombstone guard: an incoming
 incoming tombstone converges the local row to deleted. fe-sync's `reconcile_petal`
 drives this for inbound peer rows.
 
-**Authorization (N-5).** The dispatch loop maps each command's `CallerAuth` to a
-`fe_policy::AuthContext` (`caller_auth_to_context`), resolves the node/petal
-scope, and calls `authorize_node_delete` / `authorize_instance_promotion` before
-any mutation — sub-Editor callers get a `DbResult::Error`, no row touched.
+**Authorization (N-5).** For each lifecycle command the dispatch loop resolves
+the node/petal scope *first*, then builds the caller's `fe_policy::AuthContext`
+(`lifecycle_auth_context`), then calls `authorize_node_delete` /
+`authorize_instance_promotion` before any mutation — sub-Editor callers get a
+`DbResult::Error`, no row touched. `CallerAuth::Identified`/`Anonymous` carry an
+already-resolved role and map synchronously (`caller_auth_to_context`).
+`CallerAuth::Local` is what the local desktop UI sends for its *own* commands: it
+asserts NO role, so the DB thread resolves the local user's real role at the
+target scope via `resolve_local_role_handler` (the UI never self-authorizes). The
+recorded actor DID is the resolved subject (`AuthContext::subject_label`), so a
+`Local` tombstone is attributed to the local DID, not a UI-supplied string.
 
 **Lifecycle events (FR-6).** With a lifecycle sender wired
 (`spawn_db_thread_with_sync_and_lifecycle`), each op emits exactly one
