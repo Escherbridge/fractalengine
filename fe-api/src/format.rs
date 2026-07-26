@@ -225,7 +225,9 @@ async fn load_export_nodes(
 ) -> Vec<fe_format::ExportNode> {
     // Load nodes with all fields
     let mut res = match db
-        .query("SELECT * FROM node WHERE petal_id = $pid ORDER BY created_at ASC")
+        .query(
+            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
+        )
         .bind(("pid", petal_id.to_string()))
         .await
     {

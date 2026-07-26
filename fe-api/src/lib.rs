@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod auth;
 pub mod crs;
+pub mod endpoint;
 pub mod export;
 pub mod format;
 pub mod gis;

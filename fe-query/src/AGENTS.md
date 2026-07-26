@@ -3,6 +3,24 @@
 Design rationale for fe-query source modules. Code carries terse one-line
 doc comments; the "why" lives here.
 
+## §spatial-nodes (`spatial_nodes.rs`, track `endpoint_api_surface_20260725`, T5 FR-6)
+
+Generic-node querying by **type tag**, so promoted stamps (T2) and earthwork
+regions (T3) are served through one abstraction without depending on their
+producers. The tag lives in `node.properties.node_kind` (`stamp` /
+`earthwork_region`; absent = plain node); `NodeKind::{as_tag, from_tag}` is the
+single vocabulary source. Type-specific property keys (`path_id`,
+`instance_index`, `cut_volume_m3`, `fill_volume_m3`, `material`) form the JSON
+contract T2/T3 write and T5 reads — the deliberate seam that keeps this crate
+free of any fe-terrain/fe-renderer coupling. Builders (`nodes_of_kind_sql`,
+`stamps_on_path_sql`, `earthwork_volume_sql`) return a `SpatialNodeQuery`
+(`(sql, binds)`): the SurrealQL text carries `$petal_id`/`$path_id` placeholders
+and the id values ride in `binds` — ids are ALWAYS bound, never interpolated, so
+they are not a SQL-injection surface (tag values stay inline as compile-time
+constants). Callers bind exactly like `fe-api::endpoint::load_node`. All are
+tombstone-filtered (`tombstone = NONE`). Volumes are already real m³ (computed
+through the terrain scale authority upstream, N-1) — this crate only sums them.
+
 ## §gis
 
 `gis.rs` provides petal-scoped SurrealQL builders for the

@@ -82,6 +82,24 @@ pub(crate) fn node_selection_sql(petal_id: &str, node_id: &str) -> String {
     )
 }
 
+/// Node-only SELECT (no petal context) — the read a copy-API/report string
+/// round-trips to (FR-5). `tombstone = NONE` hides soft-deleted rows.
+pub(crate) fn node_by_id_sql(node_id: &str) -> String {
+    format!(
+        "SELECT * FROM node WHERE node_id = '{}' AND tombstone = NONE",
+        escape_sql_str(node_id),
+    )
+}
+
+/// `GET /api/v1/nodes/:node_id` read-endpoint URL (T5 FR-2 per-object read).
+pub(crate) fn node_read_url(base: &str, node_id: &str) -> String {
+    format!(
+        "{}/api/v1/nodes/{}",
+        trim_base(base),
+        percent_encode(node_id)
+    )
+}
+
 /// Bbox-scoped SELECT over the local XZ plane; tolerates reversed min/max.
 /// Coordinate index contract: `position.coordinates = [x, z]` (see
 /// `gis::query::extract_xz`).
@@ -173,6 +191,42 @@ pub(crate) fn mint_share_curl(
         trim_base(base),
         body.replace('\\', "\\\\").replace('"', "\\\""),
     )
+}
+
+// ---------------------------------------------------------------------------
+// FR-5 seam: per-object copy-API-string / report (called by T4's context menu)
+// ---------------------------------------------------------------------------
+
+/// A node id is "addressable" for egress purposes if it is non-empty once
+/// trimmed. (The full `fe://verse/fractal/petal/node` URI additionally needs
+/// the scope, which is resolved server-side by T5's `/nodes/:id/address`; this
+/// pure seam has only the node id, so it emits the node-scoped SQL + REST URL.)
+fn addressable_id(node_id: &str) -> Option<&str> {
+    let t = node_id.trim();
+    (!t.is_empty()).then_some(t)
+}
+
+/// Copy-paste API/SQL string for a single object (FR-5). Pure formatting — no
+/// I/O, no `block_on` (N-5). Returns the node-scoped SurrealQL SELECT the
+/// analyst/agent pastes into an external tool; `None` if `node_id` is empty
+/// (not addressable). The string round-trips: pasting the SQL reads the same
+/// node. Called by T4's copy-API-string context-menu verb.
+pub(crate) fn api_string_for(node_id: &str) -> Option<String> {
+    let id = addressable_id(node_id)?;
+    Some(node_by_id_sql(id))
+}
+
+/// Human-readable report string for a single object (FR-5). Pure formatting.
+/// Returns a concise multi-line report with the node's read endpoint and the
+/// query that returns its live data; `None` if `node_id` is not reportable
+/// (empty). Called by T4's report context-menu verb.
+pub(crate) fn report_for(node_id: &str) -> Option<String> {
+    let id = addressable_id(node_id)?;
+    Some(format!(
+        "Node {id}\n  read:  GET {}\n  query: {}",
+        node_read_url(DEFAULT_API_BASE, id),
+        node_by_id_sql(id),
+    ))
 }
 
 #[cfg(test)]
@@ -285,5 +339,36 @@ mod tests {
         assert_eq!(s.base_url_buf, DEFAULT_API_BASE);
         assert_eq!(s.ttl_buf, "3600");
         assert!(s.node_id_buf.is_empty());
+    }
+
+    #[test]
+    fn api_string_for_returns_node_scoped_sql() {
+        assert_eq!(
+            api_string_for("node-9").as_deref(),
+            Some("SELECT * FROM node WHERE node_id = 'node-9' AND tombstone = NONE"),
+        );
+    }
+
+    #[test]
+    fn api_string_for_escapes_and_rejects_empty() {
+        assert_eq!(
+            api_string_for("n'x").as_deref(),
+            Some("SELECT * FROM node WHERE node_id = 'n''x' AND tombstone = NONE"),
+        );
+        assert_eq!(api_string_for("").as_deref(), None);
+        assert_eq!(
+            api_string_for("   ").as_deref(),
+            None,
+            "whitespace-only not addressable"
+        );
+    }
+
+    #[test]
+    fn report_for_contains_endpoint_and_query_and_rejects_empty() {
+        let r = report_for("node-9").expect("reportable");
+        assert!(r.contains("Node node-9"), "{r}");
+        assert!(r.contains("/api/v1/nodes/node-9"), "{r}");
+        assert!(r.contains("node_id = 'node-9'"), "{r}");
+        assert_eq!(report_for(""), None);
     }
 }

@@ -191,9 +191,9 @@ pub async fn export_parquet(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let sql = params
-        .query
-        .unwrap_or_else(|| format!("SELECT * FROM node WHERE petal_id = '{petal_id}'"));
+    let sql = params.query.unwrap_or_else(|| {
+        format!("SELECT * FROM node WHERE petal_id = '{petal_id}' AND tombstone = NONE")
+    });
     let rate_key = format!("export:{}", claims.sub);
     let out = match prepare_export(&state, &rate_key, &petal_id, &sql, coords).await {
         Ok(o) => o,
@@ -216,9 +216,9 @@ pub async fn export_csv(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let sql = params
-        .query
-        .unwrap_or_else(|| format!("SELECT * FROM node WHERE petal_id = '{petal_id}'"));
+    let sql = params.query.unwrap_or_else(|| {
+        format!("SELECT * FROM node WHERE petal_id = '{petal_id}' AND tombstone = NONE")
+    });
     let rate_key = format!("export:{}", claims.sub);
     let out = match prepare_export(&state, &rate_key, &petal_id, &sql, coords).await {
         Ok(o) => o,
