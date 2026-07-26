@@ -878,7 +878,11 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                         });
                                     }
                                     if let Some(path) = outcome.reflow_path.clone() {
-                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::PathReflow { path_id: path });
+                                        // deleted_index tells T2's re-flow which stamp slot vanished.
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::PathReflow {
+                                            path_id: path,
+                                            deleted_index: outcome.deleted_instance_index,
+                                        });
                                     }
                                 }
                                 send_result(&tx, DbResult::NodeDeleted { node_id, petal_id: outcome.petal_id });
@@ -969,6 +973,110 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                 });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Promote instance failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::RenameNode { node_id, new_name, auth }) => {
+                        // N-5: resolve the node's scope, then the caller's real role at it,
+                        // then authorize (Editor+) BEFORE mutating — see TombstoneNode.
+                        let scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
+                        let Some(scope) = scope else {
+                            send_result(&tx, DbResult::Error(format!("RenameNode: cannot resolve scope for {node_id}")));
+                            continue;
+                        };
+                        let ctx = lifecycle_auth_context(&db, &local_did, &auth, &scope).await;
+                        let decision = fe_policy::authorize_node_edit(&ctx, &fe_policy::Scope::new(scope.clone()));
+                        if !decision.is_allow() {
+                            send_result(&tx, DbResult::Error(format!(
+                                "RenameNode denied for {}: {}", ctx.subject_label(),
+                                decision.reason().unwrap_or("unauthorized"),
+                            )));
+                            continue;
+                        }
+                        match handlers::crud::rename_node_handler(&db, &node_id, &new_name).await {
+                            Ok(()) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeRenamed {
+                                        node_id: node_id.clone(),
+                                        new_name: new_name.clone(),
+                                    });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &node_id, "renamed", &local_did,
+                                    &serde_json::json!({"new_name": new_name}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {node_id}: {e}");
+                                }
+                                if let Some(uri) = lifecycle_uri(&scope, &node_id) {
+                                    emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeRenamed {
+                                        address: uri, node_id: node_id.clone(),
+                                    });
+                                }
+                                send_result(&tx, DbResult::NodeRenamed { node_id, new_name });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Rename node failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::DuplicateNode { node_id, auth }) => {
+                        // N-5: authorize (Editor+) at the source node's scope BEFORE copying.
+                        let scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
+                        let Some(scope) = scope else {
+                            send_result(&tx, DbResult::Error(format!("DuplicateNode: cannot resolve scope for {node_id}")));
+                            continue;
+                        };
+                        let ctx = lifecycle_auth_context(&db, &local_did, &auth, &scope).await;
+                        let decision = fe_policy::authorize_node_edit(&ctx, &fe_policy::Scope::new(scope.clone()));
+                        if !decision.is_allow() {
+                            send_result(&tx, DbResult::Error(format!(
+                                "DuplicateNode denied for {}: {}", ctx.subject_label(),
+                                decision.reason().unwrap_or("unauthorized"),
+                            )));
+                            continue;
+                        }
+                        match handlers::crud::duplicate_node_handler(&db, &node_id).await {
+                            Ok(copy) => {
+                                // Mirror the CreateNode side effects so subscribers treat the
+                                // copy as an ordinary new node (zero UI changes).
+                                if let Some(ref ect) = entity_change_tx {
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
+                                        node: fe_runtime::messages::NodeDto {
+                                            node_id: copy.node_id.clone(),
+                                            petal_id: copy.petal_id.clone(),
+                                            name: copy.name.clone(),
+                                            position: copy.position,
+                                            rotation: copy.rotation,
+                                            scale: copy.scale,
+                                            has_asset: copy.has_asset,
+                                            asset_path: None,
+                                        },
+                                    });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &copy.node_id, "created", &local_did,
+                                    &serde_json::json!({"name": copy.name, "position": copy.position, "petal_id": copy.petal_id, "duplicated_from": node_id}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {}: {e}", copy.node_id);
+                                }
+                                if let Some(uri) = lifecycle_uri(&scope, &copy.node_id) {
+                                    emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeCreated {
+                                        address: uri, node_id: copy.node_id.clone(),
+                                    });
+                                }
+                                send_result(&tx, DbResult::NodeCreated {
+                                    id: copy.node_id,
+                                    petal_id: copy.petal_id,
+                                    name: copy.name,
+                                    has_asset: copy.has_asset,
+                                    correlation_id: None,
+                                    position: copy.position,
+                                });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Duplicate node failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::CountNodeDescendants { node_id }) => {
+                        match handlers::crud::count_node_descendants_handler(&db, &node_id).await {
+                            Ok(count) => send_result(&tx, DbResult::NodeDescendantCount { node_id, count }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Count node descendants failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {

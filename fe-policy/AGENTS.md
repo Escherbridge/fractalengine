@@ -63,7 +63,10 @@ Track `node_lifecycle_addressing_20260725` FR-1. Node delete/cascade and stamp
 promotion are mutations, so they authorize at **Editor+** (`MIN_DELETE_ROLE`)
 through the existing `RoleLevelPolicy::standard()` `Write` gate — no new
 `Action` variant, no bespoke role math. A Viewer/Anonymous subject is denied by
-construction (deny-by-default).
+construction (deny-by-default). `authorize_node_edit` (spatial-builder Step 1)
+extends the same gate to rename/duplicate: one shared Editor+ write check for
+both verbs (`RenameNode` / `DuplicateNode` arms), so the threshold cannot
+drift per-command.
 
 **Where they are invoked.** The DB dispatch loop (`fe-database/src/lib.rs`)
 calls `authorize_node_delete` / `authorize_instance_promotion` on the

@@ -37,7 +37,6 @@ pub(crate) const STAMP_ROTATION_KEY: &str = "stamp.override.rotation";
 /// Property key: per-stamp arc-length offset (meters) along its owning curve —
 /// the "slide along path" reposition (FR-3, Q-1). Position stays path-locked;
 /// this only shifts WHERE on the curve the base transform is sampled.
-#[allow(dead_code)] // wired by the Wave-1 integration pass
 pub(crate) const STAMP_ARC_KEY: &str = "stamp.override.arc_m";
 
 /// A stamp identified pre-promotion by `(owning path/track node, instance index)`.
@@ -71,8 +70,10 @@ pub(crate) struct StampOverride {
 /// store cost until a stamp is addressed), and the sparse scale/rotate/slide
 /// overrides. Registered in `plugin.rs`; mutated by the handlers below +
 /// `path::handle_slide_stamp`. See `fe-ui/src/actions/AGENTS.md` §stamped-assets.
+// `pub` (not `pub(crate)`): appears in the `gardener_console`/
+// `render_context_menu` pub signatures — mirrors `SculptToolState`.
 #[derive(Resource, Default)]
-pub(crate) struct StampInteractionState {
+pub struct StampInteractionState {
     /// The individually-selected stamp (viewport click), if any. Distinct from
     /// `NodeManager.selected` and `PathEditorState.editing_track_id` (N-3): a
     /// stamp selection is its own authority until promotion yields a node id.
@@ -90,8 +91,8 @@ pub(crate) struct StampInteractionState {
 }
 
 impl StampInteractionState {
-    /// The currently individually-selected stamp, if any.
-    #[allow(dead_code)] // wired by the Wave-1 integration pass
+    /// The currently individually-selected stamp, if any. Read by the
+    /// right-click context menu to mark its stamp header (T4).
     pub(crate) fn selected(&self) -> Option<&StampRef> {
         self.selected.as_ref()
     }
@@ -109,22 +110,32 @@ impl StampInteractionState {
 
     /// Record a completed promotion (called by the db-results handler on
     /// `NodePromoted`). Flushes any overrides captured before the id was known.
-    #[allow(dead_code)] // wired by the Wave-1 integration pass
     pub(crate) fn mark_promoted(&mut self, stamp: StampRef, node_id: String) {
         self.promoted.insert(stamp, node_id);
     }
 
     /// Take the pending-promotion marker (the UI drains this to queue
     /// `PromoteStamp`). `None` once consumed.
-    #[allow(dead_code)] // wired by the Wave-1 integration pass
     pub(crate) fn take_pending_promotion(&mut self) -> Option<StampRef> {
         self.pending_promotion.take()
     }
 
     /// The sparse override for a stamp, if any control has been touched.
-    #[allow(dead_code)] // wired by the Wave-1 integration pass
     pub(crate) fn override_for(&self, stamp: &StampRef) -> Option<&StampOverride> {
         self.overrides.get(stamp)
+    }
+
+    /// One track's overrides as an index-sorted list — the materializer's read
+    /// view for override application + its applied-gate change fingerprint.
+    pub(crate) fn overrides_for_track(&self, track: &str) -> Vec<(usize, StampOverride)> {
+        let mut list: Vec<(usize, StampOverride)> = self
+            .overrides
+            .iter()
+            .filter(|(stamp, _)| stamp.track_node_id == track)
+            .map(|(stamp, ov)| (stamp.stamp_index, ov.clone()))
+            .collect();
+        list.sort_by_key(|(index, _)| *index);
+        list
     }
 
     /// Record the arc-length "slide" offset (meters) for a stamp — set by
@@ -145,7 +156,6 @@ impl StampInteractionState {
     /// index (indices `> deleted_index` decrement by 1; the deleted index is
     /// dropped). Positions are re-derived by re-running the sampler for the new
     /// count — this only fixes the identity→override binding. Idempotent-safe.
-    #[allow(dead_code)] // wired by the Wave-1 integration pass
     pub(crate) fn reflow_after_delete(&mut self, track: &str, deleted_index: usize) {
         self.overrides =
             remap_after_delete(std::mem::take(&mut self.overrides), track, deleted_index);
@@ -160,7 +170,6 @@ impl StampInteractionState {
 /// Remap a `StampRef`-keyed map for a delete of `(track, deleted_index)`:
 /// drop that key; decrement the index of same-track keys above it; leave other
 /// tracks untouched. Shared by the overrides + promotion maps (FR-5).
-#[allow(dead_code)] // wired by the Wave-1 integration pass
 fn remap_after_delete<V>(
     map: HashMap<StampRef, V>,
     track: &str,
@@ -185,7 +194,6 @@ fn remap_after_delete<V>(
 
 /// Shift a single optional `StampRef` for the same delete (`None` if it WAS the
 /// deleted stamp). Used for the live selection + pending-promotion markers.
-#[allow(dead_code)] // wired by the Wave-1 integration pass
 fn shift_ref(reference: Option<StampRef>, track: &str, deleted_index: usize) -> Option<StampRef> {
     let mut r = reference?;
     if r.track_node_id != track {
@@ -301,6 +309,119 @@ pub(crate) fn persist_override(
     }
 }
 
+/// db-results seam: record a completed `PromoteInstance` round-trip
+/// (`DbResult::NodePromoted`) and flush every override buffered before the node
+/// id was known — buffered values become durable exactly once (N-9). Idempotent
+/// replays re-flush the same values (a same-value `SetNodeProperty` is a no-op).
+pub(crate) fn handle_node_promoted(
+    db_sender: &DbCommandSender,
+    stamp_state: &mut StampInteractionState,
+    node_id: &str,
+    path_id: &str,
+    instance_index: usize,
+) {
+    let stamp = StampRef {
+        track_node_id: path_id.to_string(),
+        stamp_index: instance_index,
+    };
+    stamp_state.mark_promoted(stamp.clone(), node_id.to_string());
+    flush_buffered_overrides(db_sender, stamp_state, &stamp);
+}
+
+/// Write each buffered (`Some`) override field of `stamp` to its promoted node
+/// under its matching `stamp.override.*` key. No-op when nothing was touched.
+fn flush_buffered_overrides(
+    db_sender: &DbCommandSender,
+    stamp_state: &StampInteractionState,
+    stamp: &StampRef,
+) {
+    let Some(ov) = stamp_state.override_for(stamp) else {
+        return;
+    };
+    if let Some(scale) = ov.scale {
+        persist_override(
+            db_sender,
+            stamp_state,
+            stamp,
+            STAMP_SCALE_KEY,
+            serde_json::json!(scale),
+        );
+    }
+    if let Some(rotation) = ov.rotation {
+        persist_override(
+            db_sender,
+            stamp_state,
+            stamp,
+            STAMP_ROTATION_KEY,
+            serde_json::json!(rotation),
+        );
+    }
+    if let Some(arc_m) = ov.arc_offset_m {
+        persist_override(
+            db_sender,
+            stamp_state,
+            stamp,
+            STAMP_ARC_KEY,
+            serde_json::json!(arc_m),
+        );
+    }
+}
+
+/// Reload seam (`NodePropertiesLoaded`): a property bag whose `node_kind` is
+/// `"stamp"` is a promoted stamp node coming back from the store — re-bind its
+/// promoted id and load its persisted `stamp.override.*` values (overwrite: the
+/// DB is the durable truth), so overrides survive restart. The identity keys
+/// (`node_kind`/`path_id`/`instance_index`) are fe-database's promotion write
+/// contract. See `fe-ui/src/actions/AGENTS.md` §stamped-assets.
+pub(crate) fn hydrate_promoted_stamp(
+    node_id: &str,
+    properties: &serde_json::Value,
+    stamp_state: &mut StampInteractionState,
+) {
+    if properties.get("node_kind").and_then(|v| v.as_str()) != Some("stamp") {
+        return;
+    }
+    let Some(path_id) = properties.get("path_id").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let Some(index) = properties.get("instance_index").and_then(|v| v.as_u64()) else {
+        return;
+    };
+    let stamp = StampRef {
+        track_node_id: path_id.to_string(),
+        stamp_index: index as usize,
+    };
+    stamp_state.mark_promoted(stamp.clone(), node_id.to_string());
+    if let Some(scale) = properties
+        .get(STAMP_SCALE_KEY)
+        .and_then(json_f32_array::<3>)
+    {
+        stamp_state.override_mut(&stamp).scale = Some(scale);
+    }
+    if let Some(rotation) = properties
+        .get(STAMP_ROTATION_KEY)
+        .and_then(json_f32_array::<4>)
+    {
+        stamp_state.override_mut(&stamp).rotation = Some(rotation);
+    }
+    if let Some(arc_m) = properties.get(STAMP_ARC_KEY).and_then(|v| v.as_f64()) {
+        stamp_state.override_mut(&stamp).arc_offset_m = Some(arc_m as f32);
+    }
+}
+
+/// Parse a JSON `[f64; N]` array into `[f32; N]`; `None` on shape mismatch.
+fn json_f32_array<const N: usize>(value: &serde_json::Value) -> Option<[f32; N]> {
+    let arr = value.as_array()?;
+    if arr.len() != N {
+        return None;
+    }
+    let mut out = [0.0f32; N];
+    for (slot, v) in out.iter_mut().zip(arr) {
+        *slot = v.as_f64()? as f32;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,7 +510,13 @@ mod tests {
         let stamp = StampRef::new("t".into(), 0);
         st.mark_promoted(stamp.clone(), "n0".into());
         use std::f32::consts::FRAC_1_SQRT_2;
-        handle_set_stamp_rotation(&tx, &mut st, "t".into(), 0, [0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2]);
+        handle_set_stamp_rotation(
+            &tx,
+            &mut st,
+            "t".into(),
+            0,
+            [0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2],
+        );
         assert_eq!(
             st.override_for(&stamp).and_then(|o| o.rotation),
             Some([0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2])
@@ -412,6 +539,130 @@ mod tests {
         assert!(ov.scale.is_some());
         assert!(ov.rotation.is_none(), "rotation untouched → stays None");
         assert!(ov.arc_offset_m.is_none(), "arc untouched → stays None");
+    }
+
+    #[test]
+    fn node_promoted_flushes_pre_buffered_overrides() {
+        let (tx, rx) = sender();
+        let mut st = StampInteractionState::default();
+        // Buffered pre-promotion: scale + arc touched, rotation untouched.
+        handle_set_stamp_scale(&tx, &mut st, "t".into(), 2, [2.0, 2.0, 2.0]);
+        st.set_arc_offset(
+            &StampRef {
+                track_node_id: "t".into(),
+                stamp_index: 2,
+            },
+            7.5,
+        );
+        assert!(rx.try_recv().is_err(), "nothing persists before promotion");
+        // The DbResult::NodePromoted arm lands → mark + flush exactly the
+        // touched fields (scale first, then arc; rotation never written).
+        handle_node_promoted(&tx, &mut st, "node-2", "t", 2);
+        match rx.try_recv() {
+            Ok(DbCommand::SetNodeProperty {
+                node_id,
+                key,
+                value,
+            }) => {
+                assert_eq!(node_id, "node-2");
+                assert_eq!(key, STAMP_SCALE_KEY);
+                assert_eq!(value, serde_json::json!([2.0, 2.0, 2.0]));
+            }
+            other => panic!("expected buffered scale flush, got {other:?}"),
+        }
+        match rx.try_recv() {
+            Ok(DbCommand::SetNodeProperty { key, value, .. }) => {
+                assert_eq!(key, STAMP_ARC_KEY, "arc override flushes under its key");
+                assert_eq!(value, serde_json::json!(7.5));
+            }
+            other => panic!("expected buffered arc flush, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "untouched rotation never writes");
+        assert_eq!(
+            st.promoted_node_id(&StampRef {
+                track_node_id: "t".into(),
+                stamp_index: 2,
+            }),
+            Some("node-2")
+        );
+    }
+
+    #[test]
+    fn node_promoted_with_no_buffered_overrides_only_marks() {
+        let (tx, rx) = sender();
+        let mut st = StampInteractionState::default();
+        handle_node_promoted(&tx, &mut st, "node-0", "t", 0);
+        assert!(rx.try_recv().is_err(), "no overrides → no property writes");
+        assert!(st.is_promoted(&StampRef {
+            track_node_id: "t".into(),
+            stamp_index: 0,
+        }));
+    }
+
+    // --- hydration on reload (T2 integration 3d) ---
+
+    #[test]
+    fn hydrate_promoted_stamp_rebinds_id_and_loads_overrides() {
+        let mut st = StampInteractionState::default();
+        // A stale in-memory value the DB truth must overwrite.
+        let stamp = StampRef {
+            track_node_id: "path-1".into(),
+            stamp_index: 3,
+        };
+        st.override_mut(&stamp).scale = Some([9.0, 9.0, 9.0]);
+        let props = serde_json::json!({
+            "node_kind": "stamp",
+            "path_id": "path-1",
+            "instance_index": 3,
+            "stamp.override.scale": [1.5, 1.0, 1.5],
+            "stamp.override.rotation": [0.0, 1.0, 0.0, 0.0],
+            "stamp.override.arc_m": 4.25
+        });
+        hydrate_promoted_stamp("path-1#inst-3", &props, &mut st);
+        assert_eq!(st.promoted_node_id(&stamp), Some("path-1#inst-3"));
+        let ov = st.override_for(&stamp).expect("overrides hydrated");
+        assert_eq!(ov.scale, Some([1.5, 1.0, 1.5]), "DB overwrites in-memory");
+        assert_eq!(ov.rotation, Some([0.0, 1.0, 0.0, 0.0]));
+        assert_eq!(ov.arc_offset_m, Some(4.25));
+    }
+
+    #[test]
+    fn hydrate_ignores_non_stamp_and_malformed_bags() {
+        let mut st = StampInteractionState::default();
+        // Not a stamp node.
+        hydrate_promoted_stamp(
+            "n1",
+            &serde_json::json!({ "node_kind": "sculpt_region" }),
+            &mut st,
+        );
+        // Stamp missing its identity keys.
+        hydrate_promoted_stamp("n2", &serde_json::json!({ "node_kind": "stamp" }), &mut st);
+        hydrate_promoted_stamp(
+            "n3",
+            &serde_json::json!({ "node_kind": "stamp", "path_id": "p" }),
+            &mut st,
+        );
+        assert!(
+            st.overrides_for_track("p").is_empty()
+                && !st.is_promoted(&StampRef {
+                    track_node_id: "p".into(),
+                    stamp_index: 0,
+                }),
+            "malformed bags must not touch the state"
+        );
+    }
+
+    #[test]
+    fn overrides_for_track_is_index_sorted_and_track_scoped() {
+        let (tx, _rx) = sender();
+        let mut st = StampInteractionState::default();
+        handle_set_stamp_scale(&tx, &mut st, "a".into(), 5, [5.0, 5.0, 5.0]);
+        handle_set_stamp_scale(&tx, &mut st, "a".into(), 1, [1.0, 1.0, 1.0]);
+        handle_set_stamp_scale(&tx, &mut st, "b".into(), 0, [9.0, 9.0, 9.0]);
+        let list = st.overrides_for_track("a");
+        assert_eq!(list.len(), 2, "other tracks excluded");
+        assert_eq!(list[0].0, 1, "sorted by stamp index");
+        assert_eq!(list[1].0, 5);
     }
 
     #[test]

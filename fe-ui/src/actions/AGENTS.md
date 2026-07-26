@@ -23,7 +23,14 @@
   identically (ux hardening batch 2026-07-17).
 - `node.rs` — empty-node creation at a world position (context-menu "Add
   Empty Node" → `CreateNodeAt` → `DbCommand::CreateNode`, targeting
-  `nav.active_petal_id`; toast when no petal is active).
+  `nav.active_petal_id`; toast when no petal is active). Also the T4
+  object-verb handlers: `handle_delete` (tombstone/cascade), `handle_duplicate`
+  (→ `DbCommand::DuplicateNode`, replies `NodeCreated` — fe-database owns the
+  copy semantics), `handle_rename` (→ `DbCommand::RenameNode`; empty names
+  refused loudly, tree updates on the `NodeRenamed` result only),
+  `handle_promote_stamp`, `handle_copy_api`/`handle_report` (T5 seam). All
+  lifecycle sends carry `CallerAuth::Local` (N-5) and warn on channel-closed
+  (N-8).
 - `transform.rs` — inspector transform Apply. `apply` returns
   `Err(reason)` on a parse failure (naming the axis/field) and the
   dispatcher toasts "Transform not applied — …" so a bad field is never a
@@ -91,8 +98,73 @@ sparse per-stamp overrides.
   override under its new index; the selection/promotion markers shift too.
   Positions re-derive by re-running the sampler for the new count.
 
-**Cross-boundary wiring (open, not owned by T2):** recording promoted node ids
-into `StampInteractionState` on `DbResult::NodePromoted`, and dispatching
-`reflow_after_delete` from a `PathReflow` observer, land in the db-results /
-plugin systems (T6/T1 seam) — the handlers + state machine here are the leaf
-logic those systems call.
+**Cross-boundary wiring (LANDED, Wave-1 integration pass):**
+
+- **Promotion round-trip.** The `SelectStamp` dispatch arm (`mod.rs`) drains
+  `take_pending_promotion()` and queues `UiAction::PromoteStamp`;
+  `node::handle_promote_stamp` sends `PromoteInstance{petal_id, path_id,
+  instance_index, auth: CallerAuth::Local}` with `petal_id` =
+  `NavigationManager.active_petal_id` (missing petal → warn, never silent,
+  N-8; already-promoted → no send, N-9). The echo lands in
+  `verse_manager::db_results` (`DbResult::NodePromoted` arm) →
+  `asset::handle_node_promoted`: `mark_promoted` then
+  `flush_buffered_overrides` — each `Some` field of the buffered
+  `StampOverride` becomes one `SetNodeProperty` under its matching
+  `stamp.override.*` key (this is what wires `STAMP_ARC_KEY`).
+- **Hydration on reload.** `asset::hydrate_promoted_stamp` runs in the
+  `NodePropertiesLoaded` handler (`db_results/properties.rs`): a bag with
+  `node_kind == "stamp"` re-binds `(path_id, instance_index) → node_id` and
+  loads persisted `stamp.override.*` values into the overrides map (overwrite
+  — the DB is the durable truth), so overrides survive restart. The identity
+  keys are fe-database's promotion write contract.
+- **Reflow dispatch.** `verse_manager::lifecycle_events` consumes
+  `LifecycleEvent::PathReflow` and calls `reflow_after_delete` (see
+  `verse_manager/AGENTS.md` §path-asset-materialization).
+- **Materializer read view.** `overrides_for_track` (index-sorted) feeds
+  override application + the applied-gate overrides fingerprint in
+  `materialize_path_assets`. `selected()` is consumed by the right-click
+  context menu (stamp header "— selected" marker; `dialogs/context_menu.rs`)
+  — its dead-code marker is gone. Right-click on a stamp routes
+  `UiAction::SelectStamp` through the same handler as left-select
+  (idempotent, lazy promotion preserved).
+
+## §sculpt — commit line + earthwork endpoint rows (sculpt_earthwork_regions T3 integration, 2026-07-26)
+
+All in `terrain_proposal.rs`; region JSON mirrors `fe_terrain::sculpt::
+EarthworkRegion` by contract (fe-ui must NOT depend on fe-terrain).
+
+- **Commit line (was the missing seam).** `process_ui_actions` drains
+  `SculptToolState.pending_actions` and runs each item through
+  `thread_active_petal`: `SculptBrush`/`SculptShapeRegion` get their
+  `petal_id` hole filled from `NavigationManager.active_petal_id` (no petal →
+  warn + drop, N-8); petal-free actions pass through. Producers (panel /
+  future viewport paint) queue with an empty `petal_id` — they have no petal
+  handle by design.
+- **Endpoint rows (D-A8/N-10).** A committed region (`handle_brush` /
+  `handle_shape_region`, gated on the `SetPetalTerrain` queue succeeding) also
+  sends `CreateNode` at the footprint's vertex-mean centroid (raw petal-local
+  meters, N-1) with `correlation_id = "earthwork:{region_id}"`.
+  `db_results/nodes.rs` consumes the echo (pen-tool consume idiom: echoed-id
+  match only): binds `EarthworkNodeMap` (region_id→node_id), consumes the
+  stashed material, and writes the contract bag — literal fe-query keys
+  `node_kind="earthwork_region"`, `material`, `region_id`, and zeroed
+  `cut_volume_m3`/`fill_volume_m3`.
+- **Volumes.** fe-terrain's bake publishes `fe_renderer::terrain_overlay::
+  EarthworkVolumeReport`; `persist_earthwork_volumes` (registered in
+  `plugin.rs`, message add is idempotent) maps region→node and sends
+  `SetNodeProperty` ONLY when `(cut, fill)` differs from the last persisted
+  pair (`EarthworkNodeMap` cache; bake re-fires per revision — the DB is not
+  spammed). Unknown region → debug (node not created/hydrated yet; next
+  revision re-fires). Hydration seeds the gate from the persisted values.
+- **Delete.** `handle_delete_region` drops the record (Q-2 revert) AND
+  tombstones the node (`TombstoneNode{auth: CallerAuth::Local}`, N-4/N-5)
+  when the map knows it — the endpoint contract stays honest.
+- **Hydration.** `hydrate_earthwork_region` runs in the `NodePropertiesLoaded`
+  handler (mirrors `hydrate_promoted_stamp`): `node_kind=="earthwork_region"`
+  re-binds region_id→node_id. Region ids are minted collision-safe against a
+  reloaded doc (`mint_unused_region_id` — the counter restarts per session).
+- **Brush cursor.** `sculpt_cursor::draw_sculpt_brush_ring` (registered in
+  `plugin.rs`, PostSelection after the cursor system): immediate-mode `Gizmos`
+  linestrip of `fe_renderer::terrain_overlay::brush_overlay_positions` at the
+  viewport cursor, gated by the right sidebar's own `active_section ==
+  TerrainTools`; missing height field → cursor-plane fallback, no warn spam.

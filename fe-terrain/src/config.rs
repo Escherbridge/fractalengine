@@ -194,6 +194,7 @@ mod tests {
             footprint: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
             target_height: Some(5.0),
             delta: None,
+            material: None,
         });
         let value = serde_json::to_value(&cfg).unwrap();
         assert_eq!(value["proposals"][0]["op"], serde_json::json!("flatten"));

@@ -31,9 +31,19 @@ Node Options' Delete Node now routes through the sync-safe spine path
 raw `DbCommand::DeleteNode` drop — this is the real remove-a-node path that
 fixes the "empty husk" bug (contextual_controls_20260725 FR-2). The confirm
 copy comes from `ui_shell::modal::cascade_confirm_message` (Q-2: always
-confirm on cascade). The descendant count shown is currently `0` (the flat UI
-hierarchy can't resolve a node's subtree size); an authoritative count is a
-T1/T5 query follow-up.
+confirm on cascade). The descendant count is authoritative end-to-end: arming
+the confirm sends `DbCommand::CountNodeDescendants`; the
+`DbResult::NodeDescendantCount` arm stashes it into the open dialog's
+`descendant_count` field (Node Options or the context menu — stale/mismatched
+results are dropped); the generic `cascade_confirm_message(0)` copy shows until
+the count lands.
+
+Node Options is also the node RENAME surface: its Name field diff
+(`node_options::rename_request`, pure) sends `DbCommand::RenameNode { auth:
+CallerAuth::Local }` on Save; the tree updates on `DbResult::NodeRenamed`
+(never optimistically). Duplicate routes `UiAction::DuplicateNode` →
+`DbCommand::DuplicateNode` (the legacy fake `CreateNode "{name} (copy)"` path
+is gone; fe-database owns the copy semantics, replying `NodeCreated`).
 
 ## §context-menu
 
@@ -77,14 +87,30 @@ render-side — only egui `ctx` can touch the clipboard, no clipboard dep); on
 `None` the verb renders **disabled-with-an-explanatory-hint**, never silently
 absent (ui_ux §6). Verbs light up automatically when T5's seam yields `Some`.
 
-**Render coverage.** Node verbs are live now via the Node Options surface
-(`node_options.rs`), which is object-scoped (carries the `node_id`). The
-viewport right-click menu currently renders the empty-ground verbs because
-`ActiveDialog::ContextMenu` carries only the cursor world position; object
-menus light up through the same `menu_for`/`render_verb_button` machinery the
-moment that variant carries a `HitTarget` (a one-line change gated on enriching
-the `ContextMenu` variant + classifying the hit at the `viewport.rs` open site
-— both central/non-T4 files).
+**Render coverage (integration pass 2026-07-26).** `ActiveDialog::ContextMenu`
+now carries `target: Option<ContextTarget>` — `{ hit: HitTarget, node_id:
+Option<String>, stamp: Option<(track, index)> }` — filled by
+`node_manager::context_pick::classify_context_menu` (same pick machinery as
+left-click: ray/AABB + `TrackPickShape`, stamp ground fallback via
+`StampRenderIndex`; a dim `…` placeholder renders for the ≤1 unclassified
+frame). Wiring per verb:
+
+- Node hit: header shows the node name; classify also selects the node
+  (mirrors left-click), so Edit Properties' `LoadNodeProperties` result
+  delivers to the inspector. Rename opens the prefilled Node Options dialog
+  (`node_options_prefill` — Name field is the rename surface). Delete is a
+  two-step IN-MENU confirm with the live descendant count (same
+  `CountNodeDescendants`/`NodeDescendantCount` flow as Node Options).
+- Stamp hit: header `Stamp {i} — selected` reads the live
+  `StampInteractionState.selected()`; classify pushes `SelectStamp` (lazy
+  promotion, idempotent). Promote/Delete/Copy API/Report gate on the LIVE
+  promotion state (`render_gated_verb_button` — explicit hint, never silent);
+  Scale/Rotate + Slide route to the Tools-sidebar per-stamp editor
+  (`PathSelectTrack` + `ToolPanelState.stamp_edit_index`) with a toast.
+- The classifier only produces `Node`/`Stamp`/`Empty` today —
+  vertex/handle/segment/proposal menus render correctly if a future
+  classifier yields those hits; their unwired verbs toast instead of
+  silently no-oping (N-8).
 
 ## §settings
 

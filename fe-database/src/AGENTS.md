@@ -353,5 +353,38 @@ recorded actor DID is the resolved subject (`AuthContext::subject_label`), so a
 `LifecycleEvent` carrying the stable `fe://` address (`lifecycle_uri`, a local
 mirror of `NodeAddress::to_uri` kept in lock-step to avoid a new crate dep):
 create → `NodeCreated`, promote → `NodePromoted`, tombstone → `NodeDeleted`
-(+ `PathReflow` for a stamp with an owning path). HLC init (`op_log::init_hlc`)
-is a precondition for the tombstone/promote op-log writes.
+(+ `PathReflow` for a stamp with an owning path), rename → `NodeRenamed`,
+duplicate → `NodeCreated` (a copy is an ordinary new node to every subscriber).
+`PathReflow.deleted_index` carries the tombstoned stamp's
+`properties.instance_index` (read in `read_node_lifecycle_meta`, threaded via
+`TombstoneDurableOutcome.deleted_instance_index`) so T2's re-flow knows which
+slot vanished; the field is `Option` + serde-defaulted so pre-field payloads
+still parse. HLC init (`op_log::init_hlc`) is a precondition for the
+tombstone/promote op-log writes.
+
+**Rename / duplicate / descendant count (spatial-builder Step 1).**
+`RenameNode` / `DuplicateNode` authorize through the shared
+`fe_policy::authorize_node_edit` (Editor+, same gate as delete/promote — one
+threshold, no per-verb drift); both use the tombstone-aware scope-resolve →
+role-resolve → authorize → mutate order above, and a missing or tombstoned
+target is a `DbResult::Error`, never a silent success. `rename_node_handler`
+mirrors `rename_entity_handler` against `node.display_name`.
+`duplicate_node_handler` copies the full row under a fresh ulid with
+`"{source} (copy)"` and a +1.0 m x/z offset (raw petal-local meters, N-1), then
+strips the path-binding identity keys (`strip_path_identity_properties`):
+`owning_path_id`, `path_id`, `instance_index`, `stamp.override.arc_m`
+(curve-domain), and `node_kind` only when it is `"stamp"` — a copy is not
+path-bound so it must not claim a stamp identity, but other kinds
+(`earthwork_region`) and visual overrides (`stamp.override.scale` etc.) carry
+over. The dispatch arm replays the CreateNode side-effect set so the copy needs
+zero UI changes. `CountNodeDescendants` is read-only (no auth, like
+`GetNodeProperties`) and shares `collect_live_subtree` with the cascade BFS so
+the confirm-dialog count and the actual cascade can never drift; the root is
+excluded ("its N child nodes") and tombstoned rows don't count.
+
+**Promotion write-side contract.** `promote_instance_handler` writes
+`properties: { node_kind: 'stamp', path_id, owning_path_id, instance_index }` —
+`node_kind`/`path_id`/`instance_index` are fe-query's read contract
+(fe-query/src/spatial_nodes.rs `KIND_KEY`/`STAMP_PATH_ID_KEY`/
+`STAMP_INSTANCE_INDEX_KEY`); `owning_path_id` stays because the cascade BFS and
+the reflow hook traverse it as the durable parent edge.

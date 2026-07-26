@@ -240,3 +240,47 @@ Metric spacing (FR-3): `PathAssetDescriptor.spacing_value` is real METERS.
 config never zeroes or flips spacing. `world_scale` is folded into the applied
 gate so a scale change restamps. Pre-existing saved descriptors re-interpret in
 meters (identical at human scale `1.0`). `FixedCount` is scale-invariant.
+
+### T2 stamped-asset integration (`stamped_asset_nodes_20260725`, Wave-1 pass)
+
+**Curve-follow sampling:** both cache feeders now FLATTEN the bezier anchors
+before caching — `PathAssetCacheEntry.points` is the dense polyline from
+`node_manager::curve::flatten_anchor_path` (a byte-exact mirror of fe-terrain
+`flatten_route`, 16 samples per handle-carrying segment; fe-ui must not depend
+on fe-terrain), so stamps sit ON the visible curve. `note_properties` keeps the
+decoded rows' handles; `reconcile_path_asset` flattens the live
+`PathEditorState.points` buffer. The fingerprint is computed over the FLATTENED
+polyline, so a handle-only edit re-fingerprints and restamps. All-corner tracks
+flatten passthrough → legacy fingerprints/spacing unchanged.
+
+**Per-stamp overrides (FR-3):** `materialize_path_assets` reads
+`StampInteractionState` (third selection authority, N-3 — never
+`NodeManager.selected`). Sparse overrides win over descriptor defaults:
+`arc_offset_m` re-samples position+yaw at the absolute arc length (meters,
+clamped — `path_asset_reconcile::transform_at_arc_length`); `rotation`
+(absolute quat xyzw) replaces tangent yaw; `scale` sets the transform scale
+(`stamp_transform`, pure). The applied gate gains a 4th component — a
+per-track `overrides_fingerprint` — and the run gate adds
+`stamp_state.is_changed()`, so an override gesture restamps ONLY its track.
+
+**Reflow (`lifecycle_events.rs`):** `LifecycleEvent::PathReflow` (pumped from
+the DB thread by fe-runtime `drain_lifecycle_events`) shifts surviving stamp
+identities down one index (`StampInteractionState::reflow_after_delete`),
+invalidates the track in `PathAssetCache`/`PathAssetApplied` (the
+`handle_node_deleted` idiom) and re-fetches `GetNodeProperties` so the reload
+re-feeds the cache with the reflowed truth. Runs FIRST in the plugin chain so
+the invalidation lands before the same-frame materializer pass. Other
+lifecycle variants are ignored here — `NodePromoted` rides `DbResult`.
+
+**Pick index + instanced-draw seam (FR-4):** each restamp (inside the applied
+gate — never per frame) rebuilds the track's entry in the `StampRenderIndex`
+resource: `tracks: HashMap<track_node_id, StampTrackRenderData { petal_id,
+index: StampSpatialIndex, batches: Vec<InstanceBatch> }>` (types from
+`fe_renderer::instancing`). T4's right-click classification iterates
+active-petal entries and calls `index.pick_nearest(x, z, radius)` — a hit IS
+the `stamp_index`, yielding `(track_node_id, stamp_index)` for
+`HitTarget::Stamp`. Entries drop on orphan teardown and clear on petal change.
+The instanced DRAW currently rides Bevy auto-instancing over the shared GLB
+asset handles from `spawn_stamped_entity` (same `Mesh3d`+material = one batch);
+`InstanceBatch` (with overrides folded into its matrices) is the seam for a
+future custom pipeline.

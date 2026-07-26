@@ -7,12 +7,14 @@
 //!
 //! This module is deliberately render-backend-agnostic: it builds the CPU-side
 //! per-instance transform buffer (`InstanceBatch`) and the pick index
-//! (`StampSpatialIndex`) as pure data. Wiring the batch into a concrete draw is
-//! the app's job (Bevy's automatic instancing coalesces entities sharing one
-//! `Mesh3d` + material handle; a custom instanced pipeline can consume
-//! `InstanceBatch::instance_matrices`). All geometry is petal-local METERS
-//! (N-1) — `world_scale` never enters here. See `fe-renderer/AGENTS.md`
-//! §instancing.
+//! (`StampSpatialIndex`) as pure data. The consumer is fe-ui's
+//! `verse_manager::path_asset_materialize::StampRenderIndex` (built per track
+//! inside the materializer's applied-gate): today's DRAW rides Bevy's automatic
+//! instancing over the shared GLB handles from `spawn_stamped_entity` (same
+//! `Mesh3d` + material = one batch), while `InstanceBatch::instance_matrices`
+//! stays the seam for a future custom instanced pipeline. All geometry is
+//! petal-local METERS (N-1) — `world_scale` never enters here. See
+//! `fe-renderer/AGENTS.md` §instancing.
 
 use std::collections::HashMap;
 

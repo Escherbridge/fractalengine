@@ -47,7 +47,18 @@ pub(super) fn reconcile_path_asset(
         return;
     };
 
-    let points: Vec<[f32; 3]> = path_state.points.iter().map(|p| p.position).collect();
+    // T2 curve-follow: flatten the live anchors WITH their bezier handles
+    // (fe-terrain `flatten_route` mirror via `node_manager::curve`) so a
+    // handle-only drag re-fingerprints and restamps onto the visible curve.
+    let anchors: Vec<crate::node_manager::curve::BezierAnchor> = path_state
+        .points
+        .iter()
+        .map(|p| (p.position, p.handle_in, p.handle_out))
+        .collect();
+    let points = crate::node_manager::curve::flatten_anchor_path(
+        &anchors,
+        crate::node_manager::curve::FLATTEN_SAMPLES_PER_SEGMENT,
+    );
     let fingerprint = points_fingerprint(&points);
 
     // Conditional upsert: only mutate (and thus mark the cache changed) when the
@@ -248,6 +259,23 @@ pub(super) fn sample_transforms(
             (pos, yaw)
         })
         .collect()
+}
+
+/// `(position, yaw)` at absolute arc length `arc_m` (petal-local meters, N-1)
+/// along the flattened polyline, clamped to `[0, total]` — the T2 FR-3
+/// "slide along path" re-sample the materializer applies for a stamp's
+/// `arc_offset_m` override. Degenerate paths mirror `position_at_progress`.
+pub(super) fn transform_at_arc_length(points: &[[f32; 3]], arc_m: f32) -> ([f32; 3], f32) {
+    let (cumdist, total) = cumulative_distances(points);
+    let progress = if total > 0.0 {
+        (arc_m / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (
+        position_at_progress(points, &cumdist, total, progress),
+        tangent_yaw(points, &cumdist, total, progress),
+    )
 }
 
 /// Sanitize a `world_scale` (world units per meter) for the metric-spacing
@@ -479,6 +507,23 @@ mod tests {
         assert_ne!(
             points_fingerprint(&straight_path()),
             points_fingerprint(&reversed)
+        );
+    }
+
+    #[test]
+    fn transform_at_arc_length_samples_and_clamps() {
+        let p = straight_path(); // total 20 along +X
+        let (pos, yaw) = transform_at_arc_length(&p, 5.0);
+        assert!((pos[0] - 5.0).abs() < 1e-3, "5 m along +X, got {pos:?}");
+        assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-2);
+        // Overlong slide clamps to the end; negative clamps to the start.
+        assert_eq!(transform_at_arc_length(&p, 999.0).0, [20.0, 0.0, 0.0]);
+        assert_eq!(transform_at_arc_length(&p, -5.0).0, [0.0, 0.0, 0.0]);
+        // Degenerate paths never divide by zero.
+        assert_eq!(transform_at_arc_length(&[], 3.0).0, [0.0, 0.0, 0.0]);
+        assert_eq!(
+            transform_at_arc_length(&[[7.0, 8.0, 9.0]], 3.0).0,
+            [7.0, 8.0, 9.0]
         );
     }
 

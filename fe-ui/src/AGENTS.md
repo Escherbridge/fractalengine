@@ -739,15 +739,14 @@ SAME `terrain.proposals` block (adds a `material` tag), so it round-trips throug
   all regions (FR-5). The true separated cut+fill over relief is
   `fe_terrain::sculpt::cut_fill_volume` at bake.
 
-**Frozen scaffold seam (open):** `render_sculpt_placeholder` (the sculpt section)
-has no `ui_mgr`/petal handle, so it *configures* `SculptToolState` only. Wiring
-the viewport brush-paint + defined-shape COMMIT emit needs T6 to (a) thread the
-active petal id to the sculpt surface and (b) drain `SculptToolState`
-(`for a in sculpt_state.drain_pending() { ui_mgr.push_action(a) }` in
-`process_ui_actions`, the exact shape of the existing `tool_panel.drain_pending`
-line). Until then, region create/delete + reporting flow through the existing
-`TerrainProposalAdd/Delete` buttons (the evolved report shows the earthwork
-metrics).
+**Commit line (LIVE, integration pass 2026-07-26):** `render_sculpt_placeholder`
+still has no `ui_mgr`/petal handle by design — it *configures* `SculptToolState`
+and producers queue into `pending_actions`; `process_ui_actions` drains them
+through `thread_active_petal` (fills the `petal_id` hole from
+`NavigationManager.active_petal_id`, warn + drop when none). Committed regions
+also become addressable node rows (`EarthworkNodeMap`, `earthwork:{region_id}`
+correlation, tombstone-on-delete) and receive bake-reported cut/fill volumes —
+see `actions/AGENTS.md` §sculpt.
 
 ## §geometry-mirror — fe-ui-local ruler math
 

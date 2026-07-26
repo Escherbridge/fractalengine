@@ -77,6 +77,20 @@ pub struct ApiTokenEntry {
     pub sub: String,
 }
 
+/// The classified object a right-click context menu acts on (T4 FR-1): the
+/// viewport `HitTarget` (same taxonomy as left-click) plus the payloads its
+/// verbs need. Filled by `node_manager::context_pick::classify_context_menu`.
+/// See `dialogs/AGENTS.md` §context-menu.
+#[derive(Debug, Clone)]
+pub struct ContextTarget {
+    /// Classification driving `context_menu::menu_for`.
+    pub hit: crate::node_manager::HitTarget,
+    /// The object's node id when the hit is node-backed (node / track).
+    pub node_id: Option<String>,
+    /// `(track_node_id, stamp_index)` when the hit is a stamp (pre-promotion id).
+    pub stamp: Option<(String, usize)>,
+}
+
 /// Which floating dialog is currently open. At most one at a time.
 /// Replaces 7 separate dialog-state resources.
 #[derive(Debug, Clone, Default)]
@@ -91,6 +105,13 @@ pub enum ActiveDialog {
     ContextMenu {
         screen_pos: [f32; 2],
         world_pos: [f32; 3],
+        /// `None` until the classifier runs (≤1 frame); the menu renders a
+        /// placeholder until then — never a wrong-object menu.
+        target: Option<ContextTarget>,
+        /// Two-step delete confirmation state (armed inside the menu).
+        pending_delete: bool,
+        /// Live descendant count for the cascade confirm (`NodeDescendantCount`).
+        descendant_count: Option<usize>,
     },
     GltfImport {
         file_path_buf: String,
@@ -103,6 +124,8 @@ pub enum ActiveDialog {
         webpage_url_buf: String,
         /// Two-step delete confirmation state.
         pending_delete: bool,
+        /// Live descendant count for the cascade confirm (`NodeDescendantCount`).
+        descendant_count: Option<usize>,
     },
     InviteDialog {
         invite_string: String,

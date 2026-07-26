@@ -19,6 +19,13 @@ pub enum TerrainOp {
     Pad,
     Cut,
     Fill,
+    /// Sculpt-region vocabulary (T3): absolute flatten-to-target. Present so a
+    /// `terrain.proposals` block holding earthwork regions still parses as a
+    /// `TerrainConfig` — see `src/AGENTS.md` §sculpt.
+    Level,
+    /// Sculpt-region vocabulary (T3): relax toward the region mean. Identity at
+    /// this seam (the real math lives in `sculpt`; regions never ghost).
+    Smooth,
 }
 
 impl TerrainOp {
@@ -33,6 +40,8 @@ impl TerrainOp {
             TerrainOp::Pad => "pad",
             TerrainOp::Cut => "cut",
             TerrainOp::Fill => "fill",
+            TerrainOp::Level => "level",
+            TerrainOp::Smooth => "smooth",
         }
     }
 }
@@ -50,12 +59,23 @@ pub struct TerrainProposal {
     pub target_height: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta: Option<f32>,
+    /// Earthwork-region marker (T3): the sculpt commit path always writes a
+    /// `material` tag; the plain proposal path never does. Presence is THE
+    /// region-vs-proposal predicate — see `src/AGENTS.md` §sculpt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
 }
 
 impl TerrainProposal {
     /// Snake-case op tag for overlay tint / JSON parity.
     pub fn op_snake(&self) -> &'static str {
         self.op.as_snake()
+    }
+
+    /// Ghost-suppression predicate (T3): a record carrying a `material` tag is
+    /// a baked earthwork region, not a ghosted proposal.
+    pub fn is_earthwork_region(&self) -> bool {
+        self.material.is_some()
     }
 }
 
@@ -151,6 +171,11 @@ fn proposed_height_at(
         },
         // Slope: constant grade `delta` (rise per world-unit run) along +X.
         TerrainOp::Slope => base.map(|b| b + delta * run),
+        // Level: absolute flatten-to-target (sculpt vocabulary, == Flatten here).
+        TerrainOp::Level => target.or(base),
+        // Smooth: identity at this seam — the mean-relax math lives in `sculpt`
+        // and regions never render as ghosts (see `src/AGENTS.md` §sculpt).
+        TerrainOp::Smooth => base,
     }
 }
 
@@ -361,6 +386,7 @@ mod tests {
             footprint: unit_square(),
             target_height: None,
             delta: Some(delta),
+            material: None,
         }
     }
 
@@ -497,6 +523,7 @@ mod tests {
                 footprint: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
                 target_height: Some(12.5),
                 delta: Some(3.0),
+                material: None,
             },
             TerrainProposal {
                 id: "p2".into(),
@@ -504,6 +531,7 @@ mod tests {
                 footprint: vec![[2.0, 2.0], [3.0, 2.0], [3.0, 3.0], [2.0, 3.0]],
                 target_height: Some(4.0),
                 delta: None,
+                material: None,
             },
         ];
         let json = to_json(&proposals);
@@ -600,6 +628,56 @@ mod tests {
     }
 
     #[test]
+    fn earthwork_region_predicate_is_material_presence() {
+        // The T3 JSON contract: sculpt commits always carry `material`, plain
+        // proposals never do — presence IS the ghost-suppression predicate.
+        let plain = raise(1.0);
+        assert!(!plain.is_earthwork_region());
+        let region = TerrainProposal {
+            material: Some("earth".into()),
+            ..raise(1.0)
+        };
+        assert!(region.is_earthwork_region());
+        // Round-trip from the persisted JSON shapes.
+        let parsed = parse_proposals(&serde_json::json!([
+            { "id": "p1", "op": "raise", "footprint": [[0.0, 0.0]], "delta": 1.0 },
+            { "id": "r1", "op": "level", "footprint": [[0.0, 0.0]],
+              "target_height": 2.0, "material": "gravel" }
+        ]));
+        assert_eq!(parsed.len(), 2, "level op must parse (config robustness)");
+        assert!(!parsed[0].is_earthwork_region());
+        assert!(parsed[1].is_earthwork_region());
+        assert_eq!(parsed[1].op, TerrainOp::Level);
+    }
+
+    #[test]
+    fn sculpt_vocab_ops_parse_and_apply() {
+        // `level`/`smooth` records must not fail TerrainConfig parsing; Level is
+        // absolute, Smooth is identity at this seam (regions never ghost).
+        let base = |_x: f32, _z: f32| Some(5.0);
+        let level = TerrainProposal {
+            op: TerrainOp::Level,
+            target_height: Some(2.0),
+            delta: None,
+            ..raise(0.0)
+        };
+        assert_eq!(
+            apply_proposal_over_base(&base, &level, &[[5.0, 5.0]]),
+            vec![Some(2.0)]
+        );
+        let smooth = TerrainProposal {
+            op: TerrainOp::Smooth,
+            ..raise(0.0)
+        };
+        assert_eq!(
+            apply_proposal_over_base(&base, &smooth, &[[5.0, 5.0]]),
+            vec![Some(5.0)]
+        );
+        assert_eq!(TerrainOp::Level.as_snake(), "level");
+        assert_eq!(TerrainOp::Smooth.as_snake(), "smooth");
+    }
+
+    #[test]
     fn report_bearing_follows_first_edge() {
         // First edge (0,0)->(10,0) is due east in Bevy XZ (X=east) → 90°.
         let r = proposal_report(&raise(1.0), 1.0);
@@ -638,6 +716,7 @@ mod tests {
                 footprint: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]],
                 target_height: None,
                 delta: Some(9.0),
+                material: None,
             },
             &probe,
         );

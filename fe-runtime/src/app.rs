@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use crate::bevy_blob_reader::OnMissCallback;
 use crate::blob_store::BlobStoreHandle;
 use crate::messages::{
-    ApiCommand, DbCommand, DbResult, NetworkCommand, NetworkEvent, TransformUpdate,
+    ApiCommand, DbCommand, DbResult, LifecycleEvent, NetworkCommand, NetworkEvent, TransformUpdate,
     VerseHierarchyData,
 };
 
@@ -23,6 +23,11 @@ pub struct NetworkEventReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<Netwo
 #[derive(Resource)]
 pub struct DbResultReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<DbResult>>>);
 
+/// Receiver half of the DB thread's lifecycle-event seam, pumped into Bevy
+/// `Messages<LifecycleEvent>` (T2 integration; fe-ui consumes `PathReflow`).
+#[derive(Resource)]
+pub struct LifecycleEventReceiver(pub Arc<Mutex<crossbeam::channel::Receiver<LifecycleEvent>>>);
+
 /// Channel handles that the Bevy app needs to communicate with background
 /// threads (network, database). Constructed during engine wiring and passed
 /// to [`setup_core_systems`] to register the corresponding ECS resources.
@@ -36,6 +41,10 @@ pub struct BevyHandles {
     /// Optional callback fired when the blob asset reader encounters a cache
     /// miss.  Set by the sync layer (Phase D) to trigger peer fetch.
     pub on_blob_miss: Option<OnMissCallback>,
+    /// Optional receiver for DB-thread lifecycle events (create/promote/
+    /// tombstone/reflow), pumped into `Messages<LifecycleEvent>`. The GUI binary
+    /// passes `Some`; headless relay/tests pass `None`.
+    pub lifecycle_rx: Option<crossbeam::channel::Receiver<LifecycleEvent>>,
 }
 
 /// Register ECS resources and drain systems shared by both GUI and headless
@@ -44,13 +53,24 @@ pub struct BevyHandles {
 pub fn setup_core_systems(app: &mut App, handles: BevyHandles) {
     app.add_message::<NetworkEvent>();
     app.add_message::<DbResult>();
+    app.add_message::<LifecycleEvent>();
     app.insert_resource(NetworkCommandSender(handles.net_cmd_tx));
     app.insert_resource(DbCommandSender(handles.db_cmd_tx));
     app.insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(
         handles.net_evt_rx,
     ))));
     app.insert_resource(DbResultReceiver(Arc::new(Mutex::new(handles.db_res_rx))));
-    app.add_systems(Update, (drain_network_events, drain_db_results));
+    if let Some(lifecycle_rx) = handles.lifecycle_rx {
+        app.insert_resource(LifecycleEventReceiver(Arc::new(Mutex::new(lifecycle_rx))));
+    }
+    app.add_systems(
+        Update,
+        (
+            drain_network_events,
+            drain_db_results,
+            drain_lifecycle_events,
+        ),
+    );
 }
 
 /// Build a full GUI application with `DefaultPlugins`, blob asset source, and
@@ -121,6 +141,21 @@ fn drain_db_results(receiver: Res<DbResultReceiver>, mut writer: MessageWriter<D
             writer.write(result);
         }
     }
+}
+
+/// Drain-without-blocking pump mirroring `drain_db_results`; `Option` so apps
+/// wired without a lifecycle channel (relay, tests) run it as a no-op.
+fn drain_lifecycle_events(
+    receiver: Option<Res<LifecycleEventReceiver>>,
+    mut writer: MessageWriter<LifecycleEvent>,
+) {
+    let _span = tracing::debug_span!("drain_lifecycle_events").entered();
+    let Some(receiver) = receiver else { return };
+    if let Ok(rx) = receiver.0.lock() {
+        while let Ok(event) = rx.try_recv() {
+            writer.write(event);
+        }
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -264,12 +299,51 @@ mod tests {
                 db_res_rx: ch.db_res_rx,
                 blob_store: None,
                 on_blob_miss: None,
+                lifecycle_rx: None,
             },
         );
-        app.update(); // should not panic
+        app.update(); // should not panic (lifecycle pump is a no-op without rx)
         assert!(app.world().get_resource::<DbCommandSender>().is_some());
         assert!(app.world().get_resource::<NetworkCommandSender>().is_some());
         assert!(app.world().get_resource::<DbResultReceiver>().is_some());
         assert!(app.world().get_resource::<NetworkEventReceiver>().is_some());
+        assert!(app
+            .world()
+            .get_resource::<LifecycleEventReceiver>()
+            .is_none());
+    }
+
+    #[test]
+    fn lifecycle_pump_forwards_events_into_bevy_messages() {
+        let ch = crate::channels::ChannelHandles::new();
+        let (lifecycle_tx, lifecycle_rx) = crossbeam::channel::bounded(8);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        setup_core_systems(
+            &mut app,
+            BevyHandles {
+                net_cmd_tx: ch.net_cmd_tx,
+                net_evt_rx: ch.net_evt_rx,
+                db_cmd_tx: ch.db_cmd_tx,
+                db_res_rx: ch.db_res_rx,
+                blob_store: None,
+                on_blob_miss: None,
+                lifecycle_rx: Some(lifecycle_rx),
+            },
+        );
+        lifecycle_tx
+            .send(LifecycleEvent::PathReflow {
+                path_id: "path-1".into(),
+                deleted_index: Some(2),
+            })
+            .unwrap();
+        app.update();
+        let messages = app
+            .world()
+            .resource::<bevy::ecs::message::Messages<LifecycleEvent>>();
+        assert!(
+            !messages.is_empty(),
+            "pump must forward lifecycle events into Bevy messages"
+        );
     }
 }

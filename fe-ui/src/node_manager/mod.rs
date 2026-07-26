@@ -12,6 +12,8 @@
 //! See `fe-ui/src/node_manager/AGENTS.md` for the submodule map.
 
 mod billboard;
+/// T4 right-click → `ContextTarget` classification. See AGENTS.md §context-pick.
+mod context_pick;
 /// Pure curve + shape math for the pen tool (phase 2). See AGENTS.md §pen-tool.
 pub(crate) mod curve;
 /// FR-2 object-aware left-click dispatch model (truth table). See AGENTS.md §dispatch.
@@ -161,7 +163,13 @@ impl Plugin for NodeManagerPlugin {
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
                 path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
                 path_segment_interaction::handle_path_segment_interaction, // claims PathSegment — ribbon-segment select (FR-3)
-                viewport_pick::handle_viewport_click, // claims NodePick — entity pick / deselect
+                // Inner pair keeps the outer tuple at Bevy's 20-element ceiling:
+                // NodePick claim, then the T4 right-click ContextTarget fill.
+                (
+                    viewport_pick::handle_viewport_click, // claims NodePick — entity pick / deselect
+                    context_pick::classify_context_menu, // T4: fill a fresh context menu's ContextTarget
+                )
+                    .chain(),
                 pointer::open_track_on_select, // clicking a track ribbon opens it for editing (re-homed FR-3)
                 path_segment_interaction::sync_path_measurements, // live metric length readouts (FR-3)
                 inspector_sync::sync_manager_to_inspector,

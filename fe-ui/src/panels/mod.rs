@@ -101,6 +101,9 @@ pub fn gardener_console(
     // Wave-1 scaffold: sculpt-tool state, threaded through to the TerrainTools
     // section so T3's folded sculpt UI reads/writes it (mirrors `proposal_state`).
     sculpt_state: &mut crate::actions::terrain_proposal::SculptToolState,
+    // T4 contextual controls: the stamp-selection authority, read by the
+    // right-click context menu (selected marker + live promotion gates).
+    stamp_state: &crate::actions::asset::StampInteractionState,
     // ui_shell_architecture_20260724 Phase 2 (FR-4/5/6): area-manager state,
     // supplied by `plugin.rs::gardener_ui_system` via the `UiShellParams` bundle.
     topbar_state: &mut crate::ui_shell::topbar::TopbarState,
@@ -267,7 +270,14 @@ pub fn gardener_console(
                     continue;
                 }
                 let _ = guarded(modal, "context_menu", || {
-                    crate::dialogs::render_context_menu(ctx, ui_mgr)
+                    crate::dialogs::render_context_menu(
+                        ctx,
+                        ui_mgr,
+                        hierarchy,
+                        stamp_state,
+                        tool_panel,
+                        db_tx,
+                    )
                 });
             }
             TransientLayer::Toast => unreachable!("skipped by the `continue` above"),

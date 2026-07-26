@@ -627,7 +627,10 @@ impl TestPeer {
                         // fe-database/fe-sync tests, not this mock peer — surface, don't drop.
                         Ok(DbCommand::TombstoneNode { .. })
                         | Ok(DbCommand::CascadeTombstoneNode { .. })
-                        | Ok(DbCommand::PromoteInstance { .. }) => {
+                        | Ok(DbCommand::PromoteInstance { .. })
+                        | Ok(DbCommand::RenameNode { .. })
+                        | Ok(DbCommand::DuplicateNode { .. })
+                        | Ok(DbCommand::CountNodeDescendants { .. }) => {
                             db_result_tx
                                 .send(DbResult::Error(
                                     "node lifecycle op not simulated by the test-harness peer"

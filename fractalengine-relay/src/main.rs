@@ -120,6 +120,8 @@ fn main() -> anyhow::Result<()> {
             db_res_rx: ch.db_res_rx,
             blob_store: None,
             on_blob_miss: None,
+            // Headless relay has no in-app lifecycle consumers (fe-ui absent).
+            lifecycle_rx: None,
         },
     );
 

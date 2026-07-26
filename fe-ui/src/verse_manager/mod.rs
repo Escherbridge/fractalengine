@@ -12,6 +12,7 @@
 //! See `fe-ui/src/verse_manager/AGENTS.md` for the submodule map.
 
 mod db_results;
+mod lifecycle_events;
 mod node_index;
 mod path_asset_materialize;
 mod path_asset_reconcile;
@@ -24,10 +25,15 @@ use bevy::prelude::*;
 
 use crate::plugin::UiSet;
 
-pub use path_asset_materialize::{PathAssetApplied, PathAssetCache};
+pub use path_asset_materialize::{
+    PathAssetApplied, PathAssetCache, StampRenderIndex, StampTrackRenderData,
+};
+// T4 right-click classification: the stamp marker-id format + the per-instance
+// marker component, consumed by `node_manager::context_pick`.
+pub(crate) use path_asset_materialize::{parse_stamp_marker_id, stamp_marker_id};
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
-pub use spawn::{build_primitive_mesh, PrimitiveNode};
+pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode};
 
 // ---------------------------------------------------------------------------
 // Hierarchy tree types
@@ -145,15 +151,22 @@ impl Plugin for VerseManagerPlugin {
         app.init_resource::<PrimitiveMaterialAssets>();
         app.init_resource::<PathAssetApplied>();
         app.init_resource::<PathAssetCache>();
+        app.init_resource::<StampRenderIndex>();
         app.init_resource::<PrimitiveDescriptorCache>();
+        // Idempotent with fe-runtime `setup_core_systems` (same add-twice-is-ok
+        // idiom as BrowserCommand) — keeps fe-ui-only test apps runnable.
+        app.add_message::<fe_runtime::messages::LifecycleEvent>();
         // Chained: materialize must observe entities spawned via Commands by
         // the earlier systems (chain inserts the needed sync points).
+        // `apply_lifecycle_events` runs first so a PathReflow's invalidation
+        // lands before the same-frame materializer pass.
         // `reconcile_path_asset` only FEEDS the path-asset cache; the single
         // `materialize_path_assets` (last) does all stamp spawning so no
         // double-stamping is possible. See AGENTS.md §path-asset-materialization.
         app.add_systems(
             Update,
             (
+                lifecycle_events::apply_lifecycle_events,
                 db_results::apply_db_results,
                 petal_respawn::respawn_on_petal_change,
                 primitive_materialize::materialize_cached_primitives,

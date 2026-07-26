@@ -50,48 +50,85 @@ pub(crate) fn handle_delete(db_sender: &DbCommandSender, node_id: String, cascad
     }
 }
 
-/// T4 FR-3 — duplicate a node. The action-routed entry: a faithful duplicate
-/// needs the source node's petal/name/position (and ideally a spine
-/// `DuplicateNode` op, which does not exist yet), none of which is derivable
-/// from `node_id` alone here. The functional duplicate is therefore driven from
-/// the Node Options surface, which has the hierarchy to resolve that data (see
-/// `dialogs/node_options.rs`). Logged so an action-routed duplicate is never a
-/// silent no-op (ui_ux §6). Open item: a `DuplicateNode` spine op / a
-/// data-carrying payload would let this route directly.
-pub(crate) fn handle_duplicate(_db_sender: &DbCommandSender, node_id: String) {
-    bevy::log::warn!(
-        "duplicate for node {node_id} arrived via the action seam; drive it from a \
-         surface that carries the node's petal/name/position (contextual_controls FR-3)"
-    );
+/// T4 FR-3 — duplicate a node via the spine's `DuplicateNode` (full row copy,
+/// " (copy)" name, +1m x/z, path-binding keys stripped — fe-database owns the
+/// semantics). Replies with `NodeCreated`, which fe-ui already applies. Auth is
+/// `CallerAuth::Local` (N-5).
+pub(crate) fn handle_duplicate(db_sender: &DbCommandSender, node_id: String) {
+    if db_sender
+        .0
+        .send(DbCommand::DuplicateNode {
+            node_id,
+            auth: CallerAuth::Local,
+        })
+        .is_err()
+    {
+        bevy::log::warn!("db_sender channel closed — DuplicateNode not sent");
+    }
 }
 
-/// T4 FR-3 — rename a node. The spine currently exposes only `RenameEntity`
-/// (verse/fractal/petal); there is no scene-node rename op, so this cannot be
-/// persisted yet. The verb is shown disabled-with-hint on its surfaces; this
-/// logs (never a silent no-op) until a node-rename spine op lands. Open item.
-pub(crate) fn handle_rename(_db_sender: &DbCommandSender, node_id: String, name: String) {
-    bevy::log::warn!(
-        "rename node {node_id} -> '{name}': no scene-node rename spine op exists yet \
-         (RenameEntity covers only verse/fractal/petal) — contextual_controls FR-3 open item"
-    );
+/// T4 FR-3 — rename a node's `display_name` via the spine's `RenameNode`.
+/// Empty names are refused loudly (N-8); the tree updates on the `NodeRenamed`
+/// result, never optimistically. Auth is `CallerAuth::Local` (N-5).
+pub(crate) fn handle_rename(db_sender: &DbCommandSender, node_id: String, name: String) {
+    let new_name = name.trim().to_string();
+    if new_name.is_empty() {
+        bevy::log::warn!("rename node {node_id} skipped: empty name (N-8)");
+        return;
+    }
+    if db_sender
+        .0
+        .send(DbCommand::RenameNode {
+            node_id,
+            new_name,
+            auth: CallerAuth::Local,
+        })
+        .is_err()
+    {
+        bevy::log::warn!("db_sender channel closed — RenameNode not sent");
+    }
 }
 
 /// T4 FR-3 / T2 FR-5 — promote an un-promoted stamp to a full addressable node
-/// via the spine's `PromoteInstance` (T1 FR-5). That op needs `petal_id`
-/// alongside `path_id` (= `track_node_id`) and `instance_index` (= `stamp_index`);
-/// `petal_id` lives in T2's `StampInteractionState` (owner of stamp selection),
-/// which is empty until T2 fills it. Logged so the verb is never a silent
-/// no-op; T2 wires the `petal_id` resolution when it populates that state.
+/// via the spine's `PromoteInstance` (T1 FR-5). `petal_id` is the ACTIVE petal
+/// (stamps only materialize there — the dispatcher threads
+/// `NavigationManager.active_petal_id`); a missing petal warns, never a silent
+/// no-op (N-8). Auth is `CallerAuth::Local` — the UI asserts no role (N-5).
+/// Already-promoted stamps are skipped (idempotent, N-9).
 pub(crate) fn handle_promote_stamp(
-    _db_sender: &DbCommandSender,
-    _stamp_state: &mut StampInteractionState,
+    db_sender: &DbCommandSender,
+    stamp_state: &mut StampInteractionState,
+    active_petal_id: Option<&str>,
     track_node_id: String,
     stamp_index: usize,
 ) {
-    bevy::log::warn!(
-        "promote stamp {stamp_index} on path {track_node_id}: awaiting T2 \
-         StampInteractionState.petal_id to emit PromoteInstance (T1 FR-5)"
-    );
+    let stamp = crate::actions::asset::StampRef {
+        track_node_id,
+        stamp_index,
+    };
+    if stamp_state.is_promoted(&stamp) {
+        return; // already a full node — nothing to send (N-9)
+    }
+    let Some(petal_id) = active_petal_id else {
+        bevy::log::warn!(
+            "promote stamp {}::{} skipped: no active petal to scope PromoteInstance (N-8)",
+            stamp.track_node_id,
+            stamp.stamp_index
+        );
+        return;
+    };
+    if db_sender
+        .0
+        .send(DbCommand::PromoteInstance {
+            petal_id: petal_id.to_string(),
+            path_id: stamp.track_node_id.clone(),
+            instance_index: stamp.stamp_index as u32,
+            auth: CallerAuth::Local,
+        })
+        .is_err()
+    {
+        bevy::log::warn!("db_sender channel closed — PromoteInstance not sent");
+    }
 }
 
 /// T4 FR-4 — copy the object's public API/egress string. Calls the
@@ -115,5 +152,53 @@ pub(crate) fn handle_report(ui_mgr: &mut UiManager, node_id: String, now_secs: f
     match crate::gis::egress_strings::report_for(&node_id) {
         Some(_) => ui_mgr.show_toast("Report copied to clipboard", now_secs),
         None => ui_mgr.show_toast("Report not available yet", now_secs),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sender() -> (DbCommandSender, crossbeam::channel::Receiver<DbCommand>) {
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        (DbCommandSender(tx), rx)
+    }
+
+    #[test]
+    fn duplicate_routes_the_spine_op_with_local_auth() {
+        let (tx, rx) = sender();
+        handle_duplicate(&tx, "n1".into());
+        match rx.try_recv() {
+            Ok(DbCommand::DuplicateNode { node_id, auth }) => {
+                assert_eq!(node_id, "n1");
+                assert!(matches!(auth, CallerAuth::Local), "N-5: UI asserts no role");
+            }
+            other => panic!("expected DuplicateNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_routes_the_spine_op_trimmed_with_local_auth() {
+        let (tx, rx) = sender();
+        handle_rename(&tx, "n1".into(), "  New Name  ".into());
+        match rx.try_recv() {
+            Ok(DbCommand::RenameNode {
+                node_id,
+                new_name,
+                auth,
+            }) => {
+                assert_eq!(node_id, "n1");
+                assert_eq!(new_name, "New Name");
+                assert!(matches!(auth, CallerAuth::Local));
+            }
+            other => panic!("expected RenameNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_refuses_an_empty_name_without_sending() {
+        let (tx, rx) = sender();
+        handle_rename(&tx, "n1".into(), "   ".into());
+        assert!(rx.try_recv().is_err(), "empty rename must not reach the DB");
     }
 }

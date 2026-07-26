@@ -394,6 +394,7 @@ fn render_nodes(
             node_name_buf: nname,
             webpage_url_buf: url,
             pending_delete: false,
+            descendant_count: None,
         });
     }
 }

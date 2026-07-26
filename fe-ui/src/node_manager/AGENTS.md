@@ -127,6 +127,16 @@ needed — smooth = resample-then-replace, shape = append the generated ring.
 This post-hoc whole-track bake STAYS (ratified Q9) alongside the per-anchor
 bezier model below; deprecation deferred.
 
+`flatten_anchor_path` (`stamped_asset_nodes_20260725` T2): flattens
+`BezierAnchor = (position, handle_in, handle_out)` slices into the dense
+polyline the path-asset stamp materializer samples. It is a byte-exact MIRROR
+of fe-terrain `mesh::curve::flatten_route` (`FLATTEN_SAMPLES_PER_SEGMENT` = 16
+must equal fe-terrain's `SAMPLES_PER_SEGMENT`; both-handles-`None` segments
+pass through, else cubic `[P, P+out, Q+in, Q]`) so stamps land on the same
+curve the renderer draws — duplicated because fe-ui must not depend on
+fe-terrain. The tuple signature (not `PathPointRow`) keeps `curve.rs` free of
+a gis-module dependency.
+
 ### bezier anchors — Illustrator-style curves (`pen_curve_tool_20260722`, phases 1/3-6)
 
 All decision logic is pure + unit-tested; geometry stays raw petal-local
@@ -658,3 +668,25 @@ node_manager's write scope); (b) the emit target
 delta }` is owned by the p2p/terrain worker — once it lands, the terrain-cell
 consumer pushes it directly instead of returning `TerrainProposalEdit`. fe-ui
 must NOT depend on fe-terrain, so `TerrainBrush` is a local enum, not a re-export.
+
+## §context-pick — right-click classification (`context_pick.rs`, contextual_controls T4)
+
+`viewport.rs` opens `ActiveDialog::ContextMenu { target: None, .. }` on a
+secondary click; `classify_context_menu` (chained right after
+`handle_viewport_click`) fills `target` with a `dialogs::ContextTarget`. It
+REUSES the left-click pick machinery — the exact `handle_viewport_click` loop
+(`TrackPickShape` polyline else `pick_node_aabb` subtree DFS, active-petal
+filtered) over a fresh camera ray built from the stored `screen_pos` (right
+click never touches the left-click `ClickArbiter`). A hit whose entity carries
+`PathAssetInstance` is a stamp: `(track, index)` comes from
+`source_track_id` + `verse_manager::parse_stamp_marker_id` (the marker-id
+format has one producer, `stamp_marker_id`). When the ray misses, the T2
+`StampRenderIndex` ground pick at the click's `world_pos` (radius = one
+`DEFAULT_CELL_SIZE_M` grid cell) catches small stamps; its entity resolves by
+marker id (`Entity::PLACEHOLDER` mid-respawn — stamp verbs key on the payload,
+never the entity). The pure core `resolve_context_target` is unit-tested.
+Side effects mirror left-click: node hit → `NodeManager.select`; stamp hit →
+`UiAction::SelectStamp` (idempotent, lazy promotion — N-3/N-9). Produces only
+`Node`/`Stamp`/`Empty` today; vertex/handle/segment/proposal classification is
+future headroom (the menu table is already total over them). Always resolves —
+worst case `Empty` — so the menu can't hang unclassified (N-8).

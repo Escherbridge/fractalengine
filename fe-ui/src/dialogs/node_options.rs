@@ -13,7 +13,7 @@ use crate::actions::{UiAction, UiManager};
 use crate::theme;
 use crate::ui_shell::modal::cascade_confirm_message;
 use crate::verse_manager::VerseManager;
-use fe_runtime::messages::DbCommand;
+use fe_runtime::messages::{CallerAuth, DbCommand};
 
 pub fn render_node_options_dialog(
     ctx: &egui::Context,
@@ -26,6 +26,7 @@ pub fn render_node_options_dialog(
         ref mut node_name_buf,
         ref mut webpage_url_buf,
         ref mut pending_delete,
+        ref mut descendant_count,
     } = ui_mgr.active_dialog
     else {
         return;
@@ -33,17 +34,12 @@ pub fn render_node_options_dialog(
 
     let current_node_id = node_id.clone();
 
-    // Resolve the node's (petal_id, name, position) up front for Duplicate — a
-    // read-only walk before the mutable-borrow window closure. `None` when the
-    // node isn't in the loaded hierarchy (Duplicate then shows disabled).
-    let dup_target: Option<(String, String, [f32; 3])> = hierarchy
-        .verses
-        .iter()
-        .flat_map(|v| &v.fractals)
-        .flat_map(|f| &f.petals)
-        .flat_map(|p| p.nodes.iter().map(move |n| (p.id.clone(), n)))
-        .find(|(_, n)| n.id == current_node_id)
-        .map(|(petal_id, n)| (petal_id, n.name.clone(), n.position));
+    // Current display name, for the Save-time rename diff (a read-only walk
+    // before the mutable-borrow window closure).
+    let current_name: Option<String> = hierarchy
+        .all_nodes()
+        .find(|n| n.id == current_node_id)
+        .map(|n| n.name.clone());
 
     let mut close = false;
     // Verbs that touch `ui_mgr` are queued here and flushed after the window, so
@@ -97,6 +93,24 @@ pub fn render_node_options_dialog(
                     let url = webpage_url_buf.trim().to_string();
                     let url_opt = if url.is_empty() { None } else { Some(url) };
                     node_options_save_url(hierarchy, &current_node_id, url_opt, db_tx);
+                    // The Name field is the node-rename surface: a changed,
+                    // non-empty name routes the T4 spine op (Editor+ enforced
+                    // DB-side via CallerAuth::Local, N-5); the tree updates on
+                    // the NodeRenamed result, not optimistically.
+                    if let Some(new_name) = rename_request(current_name.as_deref(), node_name_buf) {
+                        if db_tx
+                            .send(DbCommand::RenameNode {
+                                node_id: current_node_id.clone(),
+                                new_name,
+                                auth: CallerAuth::Local,
+                            })
+                            .is_err()
+                        {
+                            bevy::log::warn!(
+                                "db_sender channel closed \u{2014} RenameNode not sent"
+                            );
+                        }
+                    }
                     close = true;
                 }
                 if ui
@@ -117,18 +131,12 @@ pub fn render_node_options_dialog(
                     .color(theme::TEXT_DIM),
             );
             ui.horizontal_wrapped(|ui| {
-                // Duplicate — functional here (we resolved the source's petal +
-                // name + position); sends a fresh CreateNode offset nearby.
-                if render_verb_button(ui, Verb::Duplicate, dup_target.is_some()) {
-                    if let Some((petal_id, name, pos)) = &dup_target {
-                        let _ = db_tx.send(DbCommand::CreateNode {
-                            petal_id: petal_id.clone(),
-                            name: format!("{name} (copy)"),
-                            position: [pos[0] + 1.0, pos[1], pos[2] + 1.0],
-                            correlation_id: None,
-                        });
-                        close = true;
-                    }
+                // Duplicate — the T4 spine op (full row copy, " (copy)" name,
+                // +1m x/z, path-binding keys stripped); replies NodeCreated,
+                // which fe-ui already applies. No fake CreateNode copy.
+                if render_verb_button(ui, Verb::Duplicate, true) {
+                    pending_actions.extend(verb_action(Verb::Duplicate, &current_node_id, false));
+                    close = true;
                 }
 
                 // Clear properties — the husk distinction: keeps the node. Verb
@@ -178,14 +186,27 @@ pub fn render_node_options_dialog(
                     )
                     .clicked()
                 {
+                    // Arm the confirm and fetch the authoritative subtree size
+                    // (spine query); the generic copy shows until it lands.
                     *pending_delete = true;
+                    *descendant_count = None;
+                    if db_tx
+                        .send(DbCommand::CountNodeDescendants {
+                            node_id: current_node_id.clone(),
+                        })
+                        .is_err()
+                    {
+                        bevy::log::warn!(
+                            "db_sender channel closed \u{2014} CountNodeDescendants not sent"
+                        );
+                    }
                 }
             } else {
-                // Descendant count isn't resolvable from the flat UI hierarchy;
-                // the confirm still names the cascade (Q-2: always confirm). An
-                // authoritative count is a T1/T5 query follow-up (see AGENTS.md).
+                // Q-2: always confirm, with the live descendant count once the
+                // NodeDescendantCount result lands (db_results stashes it here).
                 ui.label(
-                    egui::RichText::new(cascade_confirm_message(0)).color(theme::STATUS_OFFLINE),
+                    egui::RichText::new(cascade_confirm_message(descendant_count.unwrap_or(0)))
+                        .color(theme::STATUS_OFFLINE),
                 );
                 ui.horizontal(|ui| {
                     if ui
@@ -223,6 +244,17 @@ pub fn render_node_options_dialog(
     }
 }
 
+/// The rename to persist on Save, if any: the trimmed buffer when it is
+/// non-empty and differs from the current name. Pure — the Save wiring's
+/// decision is testable without egui.
+pub(crate) fn rename_request(current_name: Option<&str>, name_buf: &str) -> Option<String> {
+    let trimmed = name_buf.trim();
+    if trimmed.is_empty() || Some(trimmed) == current_name {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 pub fn node_options_save_url(
     hierarchy: &mut VerseManager,
     node_id: &str,
@@ -238,5 +270,27 @@ pub fn node_options_save_url(
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — UpdateNodeUrl (node options) not persisted");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_request_fires_only_on_a_real_change() {
+        assert_eq!(rename_request(Some("Old"), "New"), Some("New".to_string()));
+        assert_eq!(
+            rename_request(Some("Old"), "  New  "),
+            Some("New".to_string()),
+            "buffer is trimmed before the diff"
+        );
+        assert_eq!(rename_request(Some("Same"), "Same"), None);
+        assert_eq!(rename_request(Some("Same"), " Same "), None);
+        assert_eq!(rename_request(Some("Old"), ""), None, "empty never renames");
+        assert_eq!(rename_request(Some("Old"), "   "), None);
+        // Unknown current name (node not in the loaded tree): any non-empty
+        // buffer counts as a change.
+        assert_eq!(rename_request(None, "Name"), Some("Name".to_string()));
     }
 }

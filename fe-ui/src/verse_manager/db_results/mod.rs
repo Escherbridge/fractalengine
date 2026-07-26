@@ -17,9 +17,9 @@ use fe_runtime::messages::DbResult;
 use super::VerseManager;
 use crate::navigation_manager::NavigationManager;
 
-/// The two fe-ui-local descriptor caches plus the path-asset applied-gate and
-/// the spawn-guard state, grouped as one `SystemParam` so `apply_db_results`
-/// stays within Bevy's 16-tuple system-param limit. The caches are fed from the
+/// The two fe-ui-local descriptor caches plus the path-asset applied-gate,
+/// the T2 stamp interaction state, and the spawn-guard state, grouped as one
+/// `SystemParam` so `apply_db_results` stays within Bevy's 16-tuple limit. The caches are fed from the
 /// property handlers on `NodePropertiesLoaded`/`Set`/`Deleted`; `NodeDeleted`
 /// invalidates `path_asset` + `applied` so a deleted track's stamps cascade
 /// away (FR-4); `spawned`/`mesh_budget` gate `HierarchyLoaded`
@@ -29,6 +29,13 @@ pub(super) struct DescriptorCaches<'w, 's> {
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
     path_asset: ResMut<'w, super::PathAssetCache>,
     applied: ResMut<'w, super::PathAssetApplied>,
+    /// T2 stamp bookkeeping: `NodePromoted` marks + flushes buffered overrides;
+    /// `NodePropertiesLoaded` hydrates promoted stamps on reload (§stamped-assets).
+    stamp_state: ResMut<'w, crate::actions::asset::StampInteractionState>,
+    /// T3 earthwork bookkeeping: `NodeCreated` binds `earthwork:{region_id}`
+    /// correlations + writes the endpoint property bag; `NodePropertiesLoaded`
+    /// re-hydrates region→node on reload (§sculpt in actions/AGENTS.md).
+    earthwork_map: ResMut<'w, crate::actions::terrain_proposal::EarthworkNodeMap>,
     spawned: Query<
         'w,
         's,
@@ -150,6 +157,7 @@ pub(super) fn apply_db_results(
                 &mut ui_mgr,
                 &mut path_state,
                 &db_sender,
+                &mut caches.earthwork_map,
             ),
             DbResult::NodeDeleted { node_id, petal_id } => nodes::handle_node_deleted(
                 node_id,
@@ -160,6 +168,28 @@ pub(super) fn apply_db_results(
                 &db_sender,
                 &mut caches.path_asset,
                 &mut caches.applied,
+            ),
+            // T4: node display-name update (mirrors EntityRenamed for the tree).
+            DbResult::NodeRenamed { node_id, new_name } => {
+                nodes::handle_node_renamed(node_id, new_name, &mut verse_mgr)
+            }
+            // T4: authoritative subtree size for the cascade-delete confirm.
+            DbResult::NodeDescendantCount { node_id, count } => {
+                nodes::handle_node_descendant_count(node_id, *count, &mut ui_mgr)
+            }
+            // T2 FR-5: a completed PromoteInstance — record the stamp's node id
+            // and flush overrides buffered before it was known (§stamped-assets).
+            DbResult::NodePromoted {
+                node_id,
+                path_id,
+                instance_index,
+                ..
+            } => crate::actions::asset::handle_node_promoted(
+                &db_sender,
+                &mut caches.stamp_state,
+                node_id,
+                path_id,
+                *instance_index as usize,
             ),
             DbResult::VerseInviteGenerated { invite_string, .. } => {
                 roles::handle_verse_invite_generated(invite_string, &mut ui_mgr)
@@ -239,6 +269,8 @@ pub(super) fn apply_db_results(
                     &mut inspector,
                     &mut caches.primitive,
                     &mut caches.path_asset,
+                    &mut caches.stamp_state,
+                    &mut caches.earthwork_map,
                 ) {
                     continue;
                 }
@@ -451,6 +483,7 @@ mod tests {
             &mut ui,
             &mut path_state,
             &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(mgr.all_nodes().any(|n| n.id == "n2"));
         assert!(mgr.node_index.contains_key("n2"));
@@ -480,11 +513,67 @@ mod tests {
             &mut ui,
             &mut path_state,
             &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(
             rx.try_recv().is_ok(),
             "active-petal create must re-run the Paths query"
         );
+    }
+
+    #[test]
+    fn node_created_with_earthwork_correlation_binds_map_and_writes_contract() {
+        // T3 (D-A8/N-10): an `earthwork:{region_id}` echo binds region→node and
+        // writes the endpoint property bag (stashed material consumed once).
+        let (tx, rx) = sender();
+        let mut mgr = tree();
+        let nav = NavigationManager::default(); // inactive petal — no Paths re-query noise
+        let mut ui = UiManager::default();
+        let mut path_state = PathEditorState::default();
+        let mut map = crate::actions::terrain_proposal::EarthworkNodeMap::default();
+        map.stash_pending_material("r2", "gravel");
+        nodes::handle_node_created(
+            "node-7",
+            "p1",
+            "Earthwork raise r2",
+            false,
+            Some("earthwork:r2"),
+            [3.0, 0.0, 4.0],
+            &mut mgr,
+            &nav,
+            &mut ui,
+            &mut path_state,
+            &tx,
+            &mut map,
+        );
+        assert_eq!(map.node_for("r2"), Some("node-7"));
+        let mut keys = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            if let DbCommand::SetNodeProperty {
+                node_id,
+                key,
+                value,
+            } = cmd
+            {
+                assert_eq!(node_id, "node-7");
+                if key == "material" {
+                    assert_eq!(value, json!("gravel"), "stashed material consumed");
+                }
+                if key == "node_kind" {
+                    assert_eq!(value, json!("earthwork_region"));
+                }
+                keys.push(key);
+            }
+        }
+        for expected in [
+            "node_kind",
+            "material",
+            "region_id",
+            "cut_volume_m3",
+            "fill_volume_m3",
+        ] {
+            assert!(keys.iter().any(|k| k == expected), "missing key {expected}");
+        }
     }
 
     // --- pen auto-create flush (pen_autocreate_track FR-2 + pen_curve FR-4) ---
@@ -524,6 +613,7 @@ mod tests {
             &mut ui,
             &mut path_state,
             &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
         assert!(
@@ -578,6 +668,7 @@ mod tests {
             &mut ui,
             &mut path_state,
             &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         let actions = ui.drain_actions();
         assert_eq!(actions.len(), 1);
@@ -618,6 +709,7 @@ mod tests {
             &mut ui,
             &mut path_state,
             &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
         assert!(!path_state.has_pending_pen_create());
@@ -658,6 +750,7 @@ mod tests {
             &mut ui,
             &mut path_state,
             &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(
             ui.drain_actions().is_empty(),
@@ -690,6 +783,7 @@ mod tests {
             &mut ui,
             &mut path_state,
             &tx,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(ui.drain_actions().is_empty(), "id-less echo must not flush");
         assert!(path_state.has_pending_pen_create());
@@ -718,6 +812,89 @@ mod tests {
         assert!(mgr.all_nodes().all(|n| n.id != "n1"));
         assert!(!mgr.node_index.contains_key("n1"));
         assert!(path_state.editing_track_id.is_none());
+    }
+
+    // --- T4: node rename + cascade descendant count ---
+
+    #[test]
+    fn node_renamed_updates_the_tree_display_name() {
+        let mut mgr = tree();
+        nodes::handle_node_renamed("n1", "Renamed", &mut mgr);
+        assert_eq!(
+            mgr.all_nodes().find(|n| n.id == "n1").unwrap().name,
+            "Renamed"
+        );
+        // Unknown node: clean no-op.
+        nodes::handle_node_renamed("missing", "X", &mut mgr);
+        assert!(mgr.all_nodes().all(|n| n.name != "X"));
+    }
+
+    #[test]
+    fn descendant_count_stashes_into_the_open_node_options_confirm() {
+        let mut ui = UiManager::default();
+        ui.open_dialog(ActiveDialog::NodeOptions {
+            node_id: "n1".into(),
+            node_name_buf: "N".into(),
+            webpage_url_buf: String::new(),
+            pending_delete: true,
+            descendant_count: None,
+        });
+        nodes::handle_node_descendant_count("n1", 4, &mut ui);
+        match &ui.active_dialog {
+            ActiveDialog::NodeOptions {
+                descendant_count, ..
+            } => assert_eq!(*descendant_count, Some(4)),
+            other => panic!("expected NodeOptions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn descendant_count_stashes_into_a_matching_context_menu_target() {
+        use crate::dialogs::ContextTarget;
+        use crate::node_manager::HitTarget;
+        let mut ui = UiManager::default();
+        ui.open_dialog(ActiveDialog::ContextMenu {
+            screen_pos: [0.0, 0.0],
+            world_pos: [0.0; 3],
+            target: Some(ContextTarget {
+                hit: HitTarget::Node(Entity::from_bits(1)),
+                node_id: Some("n1".into()),
+                stamp: None,
+            }),
+            pending_delete: true,
+            descendant_count: None,
+        });
+        nodes::handle_node_descendant_count("n1", 2, &mut ui);
+        match &ui.active_dialog {
+            ActiveDialog::ContextMenu {
+                descendant_count, ..
+            } => assert_eq!(*descendant_count, Some(2)),
+            other => panic!("expected ContextMenu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn descendant_count_for_another_node_or_closed_dialog_is_dropped() {
+        // Mismatched node id → the open confirm keeps its unknown state.
+        let mut ui = UiManager::default();
+        ui.open_dialog(ActiveDialog::NodeOptions {
+            node_id: "n1".into(),
+            node_name_buf: "N".into(),
+            webpage_url_buf: String::new(),
+            pending_delete: true,
+            descendant_count: None,
+        });
+        nodes::handle_node_descendant_count("other", 9, &mut ui);
+        match &ui.active_dialog {
+            ActiveDialog::NodeOptions {
+                descendant_count, ..
+            } => assert!(descendant_count.is_none(), "stale count must not leak"),
+            other => panic!("expected NodeOptions, got {other:?}"),
+        }
+        // No dialog at all → clean no-op.
+        let mut ui = UiManager::default();
+        nodes::handle_node_descendant_count("n1", 9, &mut ui);
+        assert!(matches!(ui.active_dialog, ActiveDialog::None));
     }
 
     // --- roles / dialog handlers ---
@@ -815,6 +992,8 @@ mod tests {
             &mut ins,
             &mut cache,
             &mut pa_cache,
+            &mut crate::actions::asset::StampInteractionState::default(),
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(
             !delivered,
@@ -838,6 +1017,8 @@ mod tests {
             &mut ins,
             &mut cache,
             &mut pa_cache,
+            &mut crate::actions::asset::StampInteractionState::default(),
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(!delivered, "selection gate unchanged");
         assert!(
@@ -871,11 +1052,53 @@ mod tests {
             &mut ins,
             &mut prim,
             &mut pa,
+            &mut crate::actions::asset::StampInteractionState::default(),
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(!delivered, "selection gate unchanged");
         assert!(
             pa.get("t1").is_some(),
             "FR-1: path-asset cache fed without selection"
+        );
+    }
+
+    #[test]
+    fn properties_loaded_hydrates_promoted_stamp_state() {
+        // T2 hydration (3d): a promoted stamp node's property bag re-binds its
+        // node id + persisted overrides on reload — independent of selection.
+        use crate::actions::asset::{StampInteractionState, StampRef};
+        let mut path_state = PathEditorState::default();
+        let mut ins = InspectorFormState::default();
+        let mut prim = super::super::PrimitiveDescriptorCache::default();
+        let mut pa = super::super::PathAssetCache::default();
+        let mut stamps = StampInteractionState::default();
+        let props = json!({
+            "node_kind": "stamp",
+            "path_id": "path-1",
+            "instance_index": 4,
+            "stamp.override.scale": [2.0, 2.0, 2.0]
+        });
+        properties::handle_node_properties_loaded(
+            "path-1#inst-4",
+            Some("p1"),
+            &props,
+            &mut path_state,
+            &NodeManager::default(),
+            &mut ins,
+            &mut prim,
+            &mut pa,
+            &mut stamps,
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+        );
+        let stamp = StampRef {
+            track_node_id: "path-1".into(),
+            stamp_index: 4,
+        };
+        assert_eq!(stamps.promoted_node_id(&stamp), Some("path-1#inst-4"));
+        assert_eq!(
+            stamps.override_for(&stamp).and_then(|o| o.scale),
+            Some([2.0, 2.0, 2.0]),
+            "persisted override survives restart via hydration"
         );
     }
 
@@ -951,6 +1174,8 @@ mod tests {
             &mut ins,
             &mut cache,
             &mut pa_cache,
+            &mut crate::actions::asset::StampInteractionState::default(),
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
         );
         assert!(delivered);
         assert_eq!(ins.node_properties, props);

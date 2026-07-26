@@ -402,7 +402,8 @@ Persistence + rendering (render-gated):
   `ProposalOverlayEntity` ghosts. Revision-gated on `ActivePetalTerrain.revision`
   (a proposal edit bumps it via the round-trip), so it rebuilds only on change —
   it is NOT in `apply_terrain_assignments`' despawn query (avoids a double
-  despawn). Each ghost is a `ProposalGhost` mesh with a per-op tinted, blended,
+  despawn). T3: records that ARE earthwork regions (`is_earthwork_region`,
+  `material` present) are skipped here — they bake instead (§sculpt). Each ghost is a `ProposalGhost` mesh with a per-op tinted, blended,
   unlit, double-sided material from `fe_renderer::terrain_overlay`, tagged to the
   `MapLayer::ProposalOverlay` layer.
 - `MapLayer::ProposalOverlay` is parallel to satellite/terrain/gpx_track/
@@ -467,12 +468,45 @@ the region is the source of truth; the surface was never destructively edited).
   of the report for every op, no op-semantics duplication.
 
 The brush cursor overlay is `fe_renderer::terrain_overlay::{brush_ring,
-brush_overlay_positions, BrushOverlay, BRUSH_OVERLAY_RGBA}` (folded into the
-existing overlay module — no new fe-renderer module; T2 owns that `lib.rs`
-line). It grounds the ring READ-ONLY on `TerrainHeightField` (NFR-1). The fe-ui
-sculpt UI (`panels/terrain_tools_panel.rs::render_sculpt_placeholder`) configures
-the region params; region create/delete + reporting flow through the evolved
-proposal path today, while the viewport brush-paint + defined-shape COMMIT emit
-(`UiAction::Sculpt{Brush,ShapeRegion,DeleteRegion}` → `actions::terrain_proposal::
-handle_*`) awaits the T6 scaffold seam that threads the active petal id + drains
-`SculptToolState.pending_actions` (mirror of `ToolPanelState.drain_pending`).
+brush_overlay_positions, BRUSH_OVERLAY_RGBA}` (folded into the existing overlay
+module — no new fe-renderer module; T2 owns that `lib.rs` line; the `BrushOverlay`
+entity marker was removed once fe-ui consumed the ring via immediate-mode
+`Gizmos`). It grounds the ring READ-ONLY on `TerrainHeightField` (NFR-1). The
+fe-ui sculpt UI (`panels/terrain_tools_panel.rs::render_sculpt_placeholder`)
+configures the region params; the commit line is LIVE (integration pass
+2026-07-26): `process_ui_actions` drains `SculptToolState.pending_actions`,
+threads the active petal, and dispatches
+`UiAction::Sculpt{Brush,ShapeRegion,DeleteRegion}` →
+`actions::terrain_proposal::handle_*` (see `fe-ui/src/actions/AGENTS.md` §sculpt).
+
+### Earthwork bake (T3 integration, terrain_plugin.rs)
+
+Regions in `terrain.proposals` bake into resident chunk meshes; plain proposals
+keep ghosting. The **predicate is `material` presence** (`TerrainProposal::
+is_earthwork_region` — the fe-ui sculpt commit always writes `material`, the
+plain proposal path never does); `render_terrain_proposals` skips regions and
+`bake_earthwork_regions` handles only them. `TerrainOp` gained `Level`/`Smooth`
+so a region-holding proposals block still parses as `TerrainConfig` (a Level
+region must never invalidate the whole petal terrain JSON); at the proposal
+seam Level == Flatten and Smooth is identity (real math lives in `sculpt`).
+
+- **Pristine retention:** the first bake of a chunk snapshots its local vertex
+  Y into a `PristineChunkHeights` component; every re-bake (per-chunk
+  `EarthworkBaked{revision}` marker vs `ActivePetalTerrain.revision`, the same
+  gate as the ghosts — plus late-arriving chunks, which the ghost path still
+  lacks) restores the snapshot first, so edits/deletes revert cleanly (Q-2).
+- **Bake = pristine + surface delta:** per vertex, `dh(x,z)` is the sequential
+  `sculpt::proposed_height` of every containing region over the READ-ONLY
+  `TerrainHeightField` sample (strength 1.0, mirroring `EarthworkRegion::
+  cut_fill`), added to the vertex's pristine Y — mesh detail survives, and
+  skirt walls keep their depth (top and bottom get the same `dh`). Normals are
+  recomputed with the `terrain_mesh` accumulation.
+- **The height field stays PRE-BAKE by design:** it is the pristine base for
+  deltas, volumes, ghost grounding, and camera clamp; writing baked heights
+  into it would corrupt the Q-2 revert and the cut/fill base.
+- **Volumes:** per region, `EarthworkRegion::cut_fill(base, grid_step,
+  effective_world_scale())` with `grid_step = longest bound extent /
+  EARTHWORK_LATTICE (128)` (adaptive; O(step) tolerance, Q-4). Published as
+  `fe_renderer::terrain_overlay::EarthworkVolumeReport` once per revision and
+  again as late chunks extend coverage — fe-ui's changed-value gate absorbs
+  the re-fires before any DB write.
