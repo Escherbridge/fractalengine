@@ -1,5 +1,10 @@
 # fe-ui/src/ui_shell — area managers for the egui shell
 
+## 2026-07-26 routing
+
+Topbar **Tools** toggles `PathTools`, matching its stamping/Pen/shapes label.
+Brush activation requests the contextual `Tool` section for mutable controls.
+
 `ui_shell_architecture_20260724` Phase 2 (FR-4/5/6). The top-level shell is
 decomposed into per-area **managers**. Each manager module is: a small state
 **Resource** + **pure** decision helpers (unit-tested) + a thin render fn that

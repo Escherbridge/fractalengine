@@ -196,9 +196,7 @@ impl SculptOpKind {
 
 /// Per-frame sculpt-tool state (T3 FR-1/FR-2): the armed shape mode + op, brush
 /// radius/strength, level target + delta, material tag (single-material this
-/// landing, Q-3), and the in-progress polygon `region_draft`. Sculpt UI actions
-/// are buffered in `pending_actions` (drained by `process_ui_actions`, mirroring
-/// `ToolPanelState.drain_pending` — the sculpt section has no `ui_mgr` handle).
+/// landing, Q-3), and the in-progress polygon `region_draft`.
 /// `pub` (not `pub(crate)`): flows through the `pub` `gardener_console` /
 /// `render_right_sidebar` render path — must be at least as visible as they are.
 #[derive(Resource)]
@@ -221,11 +219,6 @@ pub struct SculptToolState {
     /// `pub(crate)`: reachable from `panels::terrain_tools_panel`'s `..Default`
     /// struct-update in tests (FRU needs every field visible; E0451 otherwise).
     pub(crate) next_region_id: u64,
-    /// Sculpt-UI actions queued during the egui pass; drained by
-    /// `process_ui_actions` (the sculpt section has no `ui_mgr`, mirroring
-    /// `ToolPanelState.pending_actions`). `pub(crate)` for the same FRU reason
-    /// as `next_region_id`.
-    pub(crate) pending_actions: Vec<crate::actions::UiAction>,
 }
 
 impl Default for SculptToolState {
@@ -240,21 +233,43 @@ impl Default for SculptToolState {
             material: "earth".to_string(),
             region_draft: Vec::new(),
             next_region_id: 0,
-            pending_actions: Vec::new(),
         }
     }
 }
 
+pub(crate) const MAX_SCULPT_DISTANCE: f32 = 1_000_000.0;
+
 impl SculptToolState {
-    /// Queue a sculpt `UiAction` for the drain in `process_ui_actions`.
-    pub fn queue_action(&mut self, action: crate::actions::UiAction) {
-        self.pending_actions.push(action);
+    pub(crate) fn sanitized_radius(&self) -> f32 {
+        if self.radius.is_finite() {
+            self.radius.clamp(0.1, MAX_SCULPT_DISTANCE)
+        } else {
+            5.0
+        }
     }
 
-    /// Drain queued sculpt actions (called by `process_ui_actions`, mirroring
-    /// `ToolPanelState.drain_pending`).
-    pub fn drain_pending(&mut self) -> Vec<crate::actions::UiAction> {
-        std::mem::take(&mut self.pending_actions)
+    /// Repair numeric buffers at the UI/interaction boundary.
+    pub(crate) fn sanitize_numeric_state(&mut self) {
+        self.radius = self.sanitized_radius();
+        self.strength = if self.strength.is_finite() {
+            self.strength.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        self.target_height = if self.target_height.is_finite() {
+            self.target_height
+                .clamp(-MAX_SCULPT_DISTANCE, MAX_SCULPT_DISTANCE)
+        } else {
+            0.0
+        };
+        self.delta = if self.delta.is_finite() {
+            self.delta.clamp(-MAX_SCULPT_DISTANCE, MAX_SCULPT_DISTANCE)
+        } else {
+            1.0
+        };
+        debug_assert!([self.radius, self.strength, self.target_height, self.delta]
+            .into_iter()
+            .all(f32::is_finite));
     }
 
     /// Mint a fresh region id (`r{n}`), monotonic so ids never collide with a
@@ -450,60 +465,6 @@ pub(crate) fn hydrate_earthwork_region(
     }
 }
 
-/// Fill a drained sculpt action's `petal_id` hole from the active petal; the
-/// panel/viewport queue side has no petal handle by design. `None` (with a
-/// warn, N-8) drops petal-scoped actions when no petal is active; petal-free
-/// actions pass through untouched. Pure — the commit line is testable.
-pub(crate) fn thread_active_petal(
-    action: crate::actions::UiAction,
-    active_petal: Option<&str>,
-) -> Option<crate::actions::UiAction> {
-    use crate::actions::UiAction;
-    match action {
-        UiAction::SculptBrush {
-            center,
-            radius,
-            strength,
-            op,
-            ..
-        } => match active_petal {
-            Some(petal_id) => Some(UiAction::SculptBrush {
-                petal_id: petal_id.to_string(),
-                center,
-                radius,
-                strength,
-                op,
-            }),
-            None => {
-                bevy::log::warn!("SculptBrush dropped — no active petal (N-8)");
-                None
-            }
-        },
-        UiAction::SculptShapeRegion {
-            footprint,
-            op,
-            target_height,
-            delta,
-            material,
-            ..
-        } => match active_petal {
-            Some(petal_id) => Some(UiAction::SculptShapeRegion {
-                petal_id: petal_id.to_string(),
-                footprint,
-                op,
-                target_height,
-                delta,
-                material,
-            }),
-            None => {
-                bevy::log::warn!("SculptShapeRegion dropped — no active petal (N-8)");
-                None
-            }
-        },
-        other => Some(other),
-    }
-}
-
 /// Persist bake-reported volumes onto the region's node — ONLY when changed vs
 /// the last persisted pair (bake re-fires per revision; the DB must not be
 /// spammed). Unknown region → debug (the node may not exist yet; the next
@@ -514,38 +475,47 @@ pub(crate) fn persist_earthwork_volumes(
     db_sender: Res<DbCommandSender>,
 ) {
     for report in reports.read() {
-        let Some(node_id) = map.node_for(&report.region_id).map(str::to_string) else {
-            bevy::log::debug!(
-                "earthwork volume for unknown region {} — node not yet created/hydrated",
-                report.region_id
-            );
-            continue;
-        };
-        if !map.volume_changed(&report.region_id, report.cut_m3, report.fill_m3) {
-            continue;
+        persist_earthwork_volume_report(report, &mut map, &db_sender);
+    }
+}
+
+/// One report's changed-value-gated persistence, extracted for composed seam tests.
+fn persist_earthwork_volume_report(
+    report: &fe_renderer::terrain_overlay::EarthworkVolumeReport,
+    map: &mut EarthworkNodeMap,
+    db_sender: &DbCommandSender,
+) {
+    let Some(node_id) = map.node_for(&report.region_id).map(str::to_string) else {
+        bevy::log::debug!(
+            "earthwork volume for unknown region {} — node not yet created/hydrated",
+            report.region_id
+        );
+        return;
+    };
+    if !map.volume_changed(&report.region_id, report.cut_m3, report.fill_m3) {
+        return;
+    }
+    let mut sent = true;
+    for (key, value) in [
+        (KEY_CUT_VOLUME, report.cut_m3),
+        (KEY_FILL_VOLUME, report.fill_m3),
+    ] {
+        if db_sender
+            .0
+            .send(DbCommand::SetNodeProperty {
+                node_id: node_id.clone(),
+                key: key.to_string(),
+                value: serde_json::json!(value),
+            })
+            .is_err()
+        {
+            bevy::log::warn!("db_sender channel closed — earthwork volumes not persisted");
+            sent = false;
+            break;
         }
-        let mut sent = true;
-        for (key, value) in [
-            (KEY_CUT_VOLUME, report.cut_m3),
-            (KEY_FILL_VOLUME, report.fill_m3),
-        ] {
-            if db_sender
-                .0
-                .send(DbCommand::SetNodeProperty {
-                    node_id: node_id.clone(),
-                    key: key.to_string(),
-                    value: serde_json::json!(value),
-                })
-                .is_err()
-            {
-                bevy::log::warn!("db_sender channel closed — earthwork volumes not persisted");
-                sent = false;
-                break;
-            }
-        }
-        if sent {
-            map.mark_volume_sent(&report.region_id, report.cut_m3, report.fill_m3);
-        }
+    }
+    if sent {
+        map.mark_volume_sent(&report.region_id, report.cut_m3, report.fill_m3);
     }
 }
 
@@ -639,44 +609,132 @@ fn persist_doc(
     }
 }
 
-/// T3 FR-1 brush + FR-2 op: one freeform brush dab becomes a small circular
-/// region record at `center` (evolving the proposal path). `strength` weights
-/// the `delta` so light dabs move less earth; the persisted footprint is the
-/// brush disc so it is reportable like any region (D-A8).
+pub(crate) fn petal_map_enabled(petal_map: &PetalMapState, petal_id: &str) -> bool {
+    petal_map.petal_id.as_deref() == Some(petal_id)
+        && petal_map
+            .terrain_json
+            .as_ref()
+            .and_then(|doc| doc.get("enabled"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+}
+
+/// Defense-in-depth cap shared with the viewport sampler.
+pub(crate) const MAX_BRUSH_DABS_PER_STROKE: usize = 4_096;
+
+/// Append all regions with one clone of the terrain document and one mutation
+/// of its proposals array.
+fn embed_regions(
+    base: Option<&serde_json::Value>,
+    regions: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut doc = match base {
+        Some(v @ serde_json::Value::Object(_)) => v.clone(),
+        _ => baseline_terrain_doc(),
+    };
+    match doc.get_mut("proposals") {
+        Some(serde_json::Value::Array(existing)) => existing.extend(regions),
+        _ => doc["proposals"] = serde_json::Value::Array(regions),
+    }
+    doc
+}
+
+/// Persist a distance-sampled brush stroke as one terrain document update,
+/// then create one addressable endpoint node per committed dab.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_brush(
+pub(crate) fn handle_brush_stroke(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
     sculpt_state: &mut SculptToolState,
     earthwork_map: &mut EarthworkNodeMap,
     petal_id: String,
-    center: [f32; 2],
+    centers: Vec<[f32; 2]>,
     radius: f32,
     strength: f32,
     op: String,
+    target_height: Option<f32>,
+    delta: Option<f32>,
+    material: String,
 ) {
-    let footprint = brush_disc(center, radius);
-    if footprint.len() < 3 {
-        bevy::log::warn!("SculptBrush ignored — degenerate brush footprint");
+    if !petal_map_enabled(petal_map, &petal_id) {
+        bevy::log::warn!("SculptBrushStroke ignored: active petal has no enabled map");
         return;
     }
-    // Brush dab moves earth proportional to strength (planning-grade).
-    let delta = Some(sculpt_state.delta * strength.clamp(0.0, 1.0));
-    let id = mint_unused_region_id(sculpt_state, petal_map.terrain_json.as_ref());
-    let material = sculpt_state.material.clone();
-    let region = region_json(&id, &op, &footprint, None, delta, &material);
-    let terrain = embed_region(petal_map.terrain_json.as_ref(), region);
-    if persist_doc(db_sender, petal_map, terrain, petal_id.clone()) {
-        // D-A8/N-10: the committed region is also an addressable node row.
-        create_region_node(
-            db_sender,
-            earthwork_map,
-            &petal_id,
+    if centers.is_empty() || !(radius.is_finite() && radius > 0.0) {
+        bevy::log::warn!("SculptBrushStroke ignored: empty or degenerate stroke");
+        return;
+    }
+    let strength = if strength.is_finite() {
+        strength.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let target_height = target_height.filter(|value| value.is_finite());
+    let delta = delta.filter(|value| value.is_finite());
+    let (target_height, delta) = match op.as_str() {
+        "level" => {
+            let Some(target) = target_height else {
+                bevy::log::warn!(
+                    "SculptBrushStroke ignored: Level requires a finite target height"
+                );
+                return;
+            };
+            (Some(target), Some(strength))
+        }
+        "raise" | "lower" => {
+            let Some(magnitude) = delta else {
+                bevy::log::warn!("SculptBrushStroke ignored: Raise/Lower requires a finite delta");
+                return;
+            };
+            (None, Some(magnitude.abs() * strength))
+        }
+        "smooth" => (None, Some(strength)),
+        _ => {
+            bevy::log::warn!("SculptBrushStroke ignored: unsupported operation {op}");
+            return;
+        }
+    };
+    let material = if material.trim().is_empty() {
+        "earth"
+    } else {
+        material.trim()
+    };
+    let dab_count = centers.len().min(MAX_BRUSH_DABS_PER_STROKE);
+    let mut regions = Vec::with_capacity(dab_count);
+    let mut endpoints = Vec::with_capacity(dab_count);
+    for center in centers.into_iter().take(MAX_BRUSH_DABS_PER_STROKE) {
+        let footprint = brush_disc(center, radius);
+        if footprint.len() < 3 {
+            continue;
+        }
+        let id = mint_unused_region_id(sculpt_state, petal_map.terrain_json.as_ref());
+        regions.push(region_json(
             &id,
             &op,
             &footprint,
-            &material,
-        );
+            target_height,
+            delta,
+            material,
+        ));
+        endpoints.push((id, footprint));
+    }
+    if regions.is_empty() {
+        bevy::log::warn!("SculptBrushStroke ignored: no finite dab footprints");
+        return;
+    }
+    let terrain = embed_regions(petal_map.terrain_json.as_ref(), regions);
+    if persist_doc(db_sender, petal_map, terrain, petal_id.clone()) {
+        for (id, footprint) in endpoints {
+            create_region_node(
+                db_sender,
+                earthwork_map,
+                &petal_id,
+                &id,
+                &op,
+                &footprint,
+                material,
+            );
+        }
     }
 }
 
@@ -758,7 +816,7 @@ pub(crate) fn handle_delete_region(
 /// non-positive radius so the caller drops a degenerate dab.
 fn brush_disc(center: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
     const SEGMENTS: usize = 24;
-    if !(radius.is_finite() && radius > 0.0) {
+    if !(radius.is_finite() && radius > 0.0 && center[0].is_finite() && center[1].is_finite()) {
         return Vec::new();
     }
     (0..SEGMENTS)
@@ -946,17 +1004,10 @@ mod tests {
     }
 
     #[test]
-    fn sculpt_state_mints_monotonic_ids_and_drains_actions() {
+    fn sculpt_state_mints_monotonic_ids() {
         let mut s = SculptToolState::default();
         assert_eq!(s.mint_region_id(), "r1");
         assert_eq!(s.mint_region_id(), "r2");
-        assert!(s.drain_pending().is_empty());
-        s.queue_action(crate::actions::UiAction::SculptDeleteRegion {
-            region_id: "r1".into(),
-        });
-        let drained = s.drain_pending();
-        assert_eq!(drained.len(), 1);
-        assert!(s.drain_pending().is_empty(), "drain empties the buffer");
     }
 
     #[test]
@@ -995,6 +1046,252 @@ mod tests {
         assert_eq!(bag["region_id"], json!("r3"));
         assert_eq!(bag[KEY_CUT_VOLUME], json!(0.0));
         assert_eq!(bag[KEY_FILL_VOLUME], json!(0.0));
+    }
+
+    #[test]
+    fn brush_commit_persists_region_and_creates_endpoint_node() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut petal_map = PetalMapState {
+            petal_id: Some("petal-1".into()),
+            terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
+            ..Default::default()
+        };
+        let mut sculpt = SculptToolState::default();
+        let mut earthwork = EarthworkNodeMap::default();
+        handle_brush_stroke(
+            &sender,
+            &mut petal_map,
+            &mut sculpt,
+            &mut earthwork,
+            "petal-1".into(),
+            vec![[2.0, 3.0]],
+            4.0,
+            0.25,
+            "raise".into(),
+            None,
+            Some(8.0),
+            "soil".into(),
+        );
+        match rx.try_recv().expect("terrain write") {
+            DbCommand::SetPetalTerrain {
+                petal_id,
+                terrain: Some(doc),
+            } => {
+                assert_eq!(petal_id, "petal-1");
+                assert_eq!(doc["proposals"][0]["delta"], json!(2.0));
+                assert_eq!(doc["proposals"][0]["material"], json!("soil"));
+            }
+            other => panic!("unexpected first brush command: {other:?}"),
+        }
+        assert!(matches!(
+            rx.try_recv().expect("endpoint node"),
+            DbCommand::CreateNode {
+                petal_id,
+                correlation_id: Some(_),
+                ..
+            } if petal_id == "petal-1"
+        ));
+    }
+
+    #[test]
+    fn brush_stroke_commits_one_document_and_one_node_per_dab() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut petal_map = PetalMapState {
+            petal_id: Some("petal-1".into()),
+            world_scale: 0.001,
+            terrain_json: Some(json!({
+                "enabled": true,
+                "world_scale": 0.001,
+                "proposals": []
+            })),
+            ..Default::default()
+        };
+        handle_brush_stroke(
+            &sender,
+            &mut petal_map,
+            &mut SculptToolState::default(),
+            &mut EarthworkNodeMap::default(),
+            "petal-1".into(),
+            vec![[0.0, 0.0], [0.001, 0.0], [0.002, 0.0]],
+            0.002,
+            0.5,
+            "raise".into(),
+            None,
+            Some(0.004),
+            "soil".into(),
+        );
+
+        let doc = match rx.try_recv().expect("single terrain write first") {
+            DbCommand::SetPetalTerrain {
+                terrain: Some(doc), ..
+            } => doc,
+            other => panic!("unexpected first stroke command: {other:?}"),
+        };
+        let proposals = doc["proposals"].as_array().expect("proposal array");
+        assert_eq!(proposals.len(), 3);
+        assert!((proposals[0]["footprint"][0][0].as_f64().unwrap() - 0.002).abs() < 1e-7);
+        assert!((proposals[0]["delta"].as_f64().unwrap() - 0.002).abs() < 1e-7);
+
+        let followups: Vec<_> = rx.try_iter().collect();
+        assert_eq!(followups.len(), 3);
+        assert!(followups
+            .iter()
+            .all(|command| matches!(command, DbCommand::CreateNode { .. })));
+    }
+
+    #[test]
+    fn brush_stroke_handler_caps_untrusted_sample_batches() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut petal_map = PetalMapState {
+            petal_id: Some("p".into()),
+            terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
+            ..Default::default()
+        };
+        handle_brush_stroke(
+            &sender,
+            &mut petal_map,
+            &mut SculptToolState::default(),
+            &mut EarthworkNodeMap::default(),
+            "p".into(),
+            vec![[0.0, 0.0]; MAX_BRUSH_DABS_PER_STROKE + 7],
+            1.0,
+            1.0,
+            "raise".into(),
+            None,
+            Some(1.0),
+            "earth".into(),
+        );
+        let doc = match rx.try_recv().expect("one terrain write") {
+            DbCommand::SetPetalTerrain {
+                terrain: Some(doc), ..
+            } => doc,
+            other => panic!("unexpected first stroke command: {other:?}"),
+        };
+        assert_eq!(
+            doc["proposals"].as_array().unwrap().len(),
+            MAX_BRUSH_DABS_PER_STROKE
+        );
+        assert_eq!(rx.try_iter().count(), MAX_BRUSH_DABS_PER_STROKE);
+    }
+
+    #[test]
+    fn brush_level_and_smooth_parameters_are_truthful() {
+        let run = |op: &str, strength: f32, target_height: Option<f32>| {
+            let (tx, _rx) = crossbeam::channel::unbounded();
+            let sender = DbCommandSender(tx);
+            let mut petal_map = PetalMapState {
+                petal_id: Some("p".into()),
+                terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
+                ..Default::default()
+            };
+            handle_brush_stroke(
+                &sender,
+                &mut petal_map,
+                &mut SculptToolState::default(),
+                &mut EarthworkNodeMap::default(),
+                "p".into(),
+                vec![[0.0, 0.0]],
+                1.0,
+                strength,
+                op.into(),
+                target_height,
+                Some(99.0),
+                "earth".into(),
+            );
+            petal_map.terrain_json.unwrap()["proposals"][0].clone()
+        };
+        let level = run("level", 0.2, Some(12.0));
+        assert_eq!(level["target_height"], json!(12.0));
+        assert!((level["delta"].as_f64().unwrap() - 0.2).abs() < 1e-6);
+        let smooth = run("smooth", 0.35, None);
+        assert!((smooth["delta"].as_f64().unwrap() - 0.35).abs() < 1e-6);
+        assert!(smooth.get("target_height").is_none());
+    }
+
+    #[test]
+    fn brush_without_enabled_map_is_a_noop() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut map = PetalMapState {
+            petal_id: Some("p".into()),
+            terrain_json: Some(json!({ "enabled": false })),
+            ..Default::default()
+        };
+        handle_brush_stroke(
+            &DbCommandSender(tx),
+            &mut map,
+            &mut SculptToolState::default(),
+            &mut EarthworkNodeMap::default(),
+            "p".into(),
+            vec![[0.0, 0.0]],
+            1.0,
+            1.0,
+            "raise".into(),
+            None,
+            Some(1.0),
+            "earth".into(),
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn brush_commit_bind_and_volume_gate_compose_without_repeat_writes() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut map = PetalMapState {
+            petal_id: Some("p".into()),
+            terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
+            ..Default::default()
+        };
+        let mut earthwork = EarthworkNodeMap::default();
+        handle_brush_stroke(
+            &sender,
+            &mut map,
+            &mut SculptToolState::default(),
+            &mut earthwork,
+            "p".into(),
+            vec![[2.0, 3.0]],
+            1.0,
+            1.0,
+            "raise".into(),
+            None,
+            Some(2.0),
+            "earth".into(),
+        );
+        assert!(matches!(
+            rx.try_recv().expect("terrain document"),
+            DbCommand::SetPetalTerrain { .. }
+        ));
+        let correlation_id = match rx.try_recv().expect("correlated endpoint") {
+            DbCommand::CreateNode {
+                correlation_id: Some(correlation_id),
+                ..
+            } => correlation_id,
+            other => panic!("unexpected endpoint command: {other:?}"),
+        };
+        let region_id = earthwork_region_id_from_correlation(&correlation_id)
+            .expect("earthwork correlation")
+            .to_string();
+        earthwork.record(&region_id, "node-1");
+
+        let report = fe_renderer::terrain_overlay::EarthworkVolumeReport {
+            petal_id: "p".into(),
+            region_id,
+            cut_m3: 4.0,
+            fill_m3: 9.0,
+        };
+        persist_earthwork_volume_report(&report, &mut earthwork, &sender);
+        let writes: Vec<_> = rx.try_iter().collect();
+        assert_eq!(writes.len(), 2);
+        assert!(writes.iter().all(|command| matches!(
+            command,
+            DbCommand::SetNodeProperty { node_id, .. } if node_id == "node-1"
+        )));
+
+        persist_earthwork_volume_report(&report, &mut earthwork, &sender);
+        assert!(rx.try_recv().is_err(), "unchanged report must be gated");
     }
 
     #[test]
@@ -1050,35 +1347,6 @@ mod tests {
         hydrate_earthwork_region("n1", &json!({ "node_kind": "stamp" }), &mut map);
         hydrate_earthwork_region("n2", &json!({ "node_kind": "earthwork_region" }), &mut map);
         assert!(map.node_for("n1").is_none() && map.nodes.len() == 1);
-    }
-
-    #[test]
-    fn thread_active_petal_fills_hole_or_drops() {
-        let brush = crate::actions::UiAction::SculptBrush {
-            petal_id: String::new(),
-            center: [1.0, 2.0],
-            radius: 3.0,
-            strength: 0.5,
-            op: "raise".into(),
-        };
-        match thread_active_petal(brush.clone(), Some("petal-1")) {
-            Some(crate::actions::UiAction::SculptBrush {
-                petal_id, center, ..
-            }) => {
-                assert_eq!(petal_id, "petal-1");
-                assert_eq!(center, [1.0, 2.0]);
-            }
-            other => panic!("expected threaded SculptBrush, got {other:?}"),
-        }
-        assert!(thread_active_petal(brush, None).is_none(), "no petal drops");
-        // Petal-free actions pass through untouched.
-        let del = crate::actions::UiAction::SculptDeleteRegion {
-            region_id: "r1".into(),
-        };
-        assert!(matches!(
-            thread_active_petal(del, None),
-            Some(crate::actions::UiAction::SculptDeleteRegion { .. })
-        ));
     }
 
     #[test]

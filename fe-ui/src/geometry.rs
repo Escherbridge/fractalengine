@@ -7,11 +7,22 @@
 
 /// Sanitize a world scale (world units per real meter): finite and `> 0`, else
 /// `1.0`. Mirror of `fe_terrain::scale::sanitize_world_scale` (do NOT import).
-fn sanitize_world_scale(scale: f64) -> f64 {
+pub(crate) fn sanitize_world_scale(scale: f64) -> f64 {
     if scale.is_finite() && scale > 0.0 {
         scale
     } else {
         1.0
+    }
+}
+
+/// Real meters to petal-local world units. A conversion that would overflow
+/// `f32` falls back to the human-scale value instead of leaking infinity.
+pub(crate) fn meters_to_world(meters: f32, scale: f64) -> f32 {
+    let converted = meters as f64 * sanitize_world_scale(scale);
+    if converted.is_finite() && converted.abs() <= f32::MAX as f64 {
+        converted as f32
+    } else {
+        meters
     }
 }
 
@@ -63,6 +74,12 @@ mod tests {
         assert_eq!(sanitize_world_scale(-2.0), 1.0);
         assert_eq!(sanitize_world_scale(f64::NAN), 1.0);
         assert_eq!(sanitize_world_scale(f64::INFINITY), 1.0);
+    }
+
+    #[test]
+    fn meters_to_world_uses_map_scale_and_human_fallback() {
+        assert_eq!(meters_to_world(5.0, 0.001), 0.005);
+        assert_eq!(meters_to_world(5.0, f64::NAN), 5.0);
     }
 
     #[test]

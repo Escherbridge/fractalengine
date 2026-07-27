@@ -10,8 +10,7 @@ use bevy::prelude::*;
 use super::dispatch::HitTarget;
 use super::path_segment_interaction::{ray_polyline_hit, TrackPickShape};
 use super::viewport_pick::pick_node_aabb;
-use super::NodeManager;
-use crate::actions::{UiAction, UiManager};
+use crate::actions::UiManager;
 use crate::dialogs::{ActiveDialog, ContextTarget};
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
@@ -76,13 +75,10 @@ pub(super) fn resolve_context_target(
 /// spawned-node set at the stored click position (identical loop to
 /// `viewport_pick::handle_viewport_click`), fall back to the T2 stamp ground
 /// index, then write the resolved [`ContextTarget`] back into the dialog.
-/// Side effects mirror left-click: a node hit selects the node; a stamp hit
-/// routes through the stamp authority's `SelectStamp` (idempotent + lazy
-/// promotion — N-3/N-9). Always resolves (worst case `Empty`), so the menu is
-/// never stuck unclassified (N-8).
+/// Classification is read-only and never changes either selection authority.
+/// Always resolves (worst case `Empty`), so the menu cannot hang unclassified.
 pub(super) fn classify_context_menu(
     mut ui_mgr: ResMut<UiManager>,
-    mut node_mgr: ResMut<NodeManager>,
     nav: Res<NavigationManager>,
     node_query: Query<(
         Entity,
@@ -160,15 +156,6 @@ pub(super) fn classify_context_menu(
 
     let resolved = resolve_context_target(best.map(|(_, hit)| hit), ground_stamp);
 
-    if let (HitTarget::Node(entity), Some(node_id)) = (&resolved.hit, &resolved.node_id) {
-        node_mgr.select(*entity, node_id.clone());
-    }
-    if let Some((track, index)) = &resolved.stamp {
-        ui_mgr.push_action(UiAction::SelectStamp {
-            track_node_id: track.clone(),
-            stamp_index: *index,
-        });
-    }
     if let ActiveDialog::ContextMenu { target, .. } = &mut ui_mgr.active_dialog {
         *target = Some(resolved);
     }

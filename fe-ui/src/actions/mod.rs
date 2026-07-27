@@ -306,14 +306,18 @@ pub enum UiAction {
     },
 
     // --- T3 sculpt_earthwork_regions: brush + shape region + delete ---
-    /// Apply one freeform brush dab within a petal (T3 FR-1 brush + FR-2 op).
-    /// `op` is a mirrored string tag ("raise"|"lower"|"level"|"smooth").
-    SculptBrush {
+    /// Apply one distance-sampled freeform stroke within a petal. Metric panel
+    /// values are already snapshotted into petal-local world units; the action
+    /// persists every dab in one terrain-document update.
+    SculptBrushStroke {
         petal_id: String,
-        center: [f32; 2],
+        centers: Vec<[f32; 2]>,
         radius: f32,
         strength: f32,
         op: String,
+        target_height: Option<f32>,
+        delta: Option<f32>,
+        material: String,
     },
     /// Create/update a defined-shape earthwork region node (T3 FR-1 shape +
     /// FR-3 region node + FR-4 volume). Footprint is petal-local meters (N-1).
@@ -528,16 +532,6 @@ pub(crate) fn process_ui_actions(
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
     for pen_action in tool_panel.drain_pending() {
         ui_mgr.push_action(pen_action);
-    }
-    // T3 commit line: fold sculpt actions queued during the egui pass into the
-    // main queue, filling each petal-shaped hole from the active petal (the
-    // sculpt section has no petal handle — see actions/terrain_proposal.rs).
-    for sculpt_action in sculpt_state.drain_pending() {
-        if let Some(action) =
-            terrain_proposal::thread_active_petal(sculpt_action, nav.active_petal_id.as_deref())
-        {
-            ui_mgr.push_action(action);
-        }
     }
     // egui reads toast time from the same Bevy clock (bevy_egui feeds
     // `raw_input.time` from `Time`), so this is the correct scale for show_toast.
@@ -963,23 +957,29 @@ pub(crate) fn process_ui_actions(
                 );
             }
             // T3 sculpt_earthwork_regions (terrain_proposal.rs):
-            UiAction::SculptBrush {
+            UiAction::SculptBrushStroke {
                 petal_id,
-                center,
+                centers,
                 radius,
                 strength,
                 op,
+                target_height,
+                delta,
+                material,
             } => {
-                terrain_proposal::handle_brush(
+                terrain_proposal::handle_brush_stroke(
                     &db_sender,
                     &mut petal_map,
                     &mut sculpt_state,
                     &mut earthwork_map,
                     petal_id,
-                    center,
+                    centers,
                     radius,
                     strength,
                     op,
+                    target_height,
+                    delta,
+                    material,
                 );
             }
             UiAction::SculptShapeRegion {

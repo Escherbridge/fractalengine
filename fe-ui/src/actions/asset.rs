@@ -542,6 +542,61 @@ mod tests {
     }
 
     #[test]
+    fn promotion_override_flush_and_hydration_round_trip_compose() {
+        let (db_sender, rx) = sender();
+        let stamp = StampRef::new("path-1".into(), 3);
+        let scale = [1.5, 1.0, 1.5];
+        let mut live = StampInteractionState::default();
+
+        handle_select_stamp(&mut live, "path-1".into(), 3);
+        handle_set_stamp_scale(&db_sender, &mut live, "path-1".into(), 3, scale);
+        assert_eq!(live.selected(), Some(&stamp));
+        assert_eq!(live.override_for(&stamp).and_then(|o| o.scale), Some(scale));
+        assert!(
+            live.take_pending_promotion().is_some(),
+            "unpromoted override requests lazy promotion"
+        );
+        let _promotion_commands: Vec<_> = rx.try_iter().collect();
+
+        handle_node_promoted(&db_sender, &mut live, "path-1#inst-3", "path-1", 3);
+        assert_eq!(
+            live.promoted_node_id(&stamp),
+            Some("path-1#inst-3"),
+            "promotion binds the same stamp identity"
+        );
+        let flushed: Vec<_> = rx.try_iter().collect();
+        assert!(flushed.iter().any(|command| matches!(
+            command,
+            DbCommand::SetNodeProperty {
+                node_id,
+                key,
+                value,
+            } if node_id == "path-1#inst-3"
+                && key == "stamp.override.scale"
+                && value == &serde_json::json!(scale)
+        )));
+
+        let mut hydrated = StampInteractionState::default();
+        hydrate_promoted_stamp(
+            "path-1#inst-3",
+            &serde_json::json!({
+                "node_kind": "stamp",
+                "path_id": "path-1",
+                "instance_index": 3,
+                "stamp.override.scale": scale,
+            }),
+            &mut hydrated,
+        );
+        handle_select_stamp(&mut hydrated, "path-1".into(), 3);
+        assert_eq!(hydrated.selected(), Some(&stamp));
+        assert_eq!(hydrated.promoted_node_id(&stamp), Some("path-1#inst-3"));
+        assert_eq!(
+            hydrated.override_for(&stamp).and_then(|o| o.scale),
+            Some(scale)
+        );
+    }
+
+    #[test]
     fn node_promoted_flushes_pre_buffered_overrides() {
         let (tx, rx) = sender();
         let mut st = StampInteractionState::default();

@@ -1,5 +1,19 @@
 # fe-ui/src/node_manager — single source of truth for selection
 
+## §brush-tool-and-context-hardening
+
+`brush_interaction.rs` claims before all scene interactions while Brush is
+active, converts meter controls through the active petal's sanitized
+`world_scale`, samples at half the converted radius, and emits one bounded
+`SculptBrushStroke` on release. Sampling is distance-based.
+Escape/right-click/tool/petal change cancels. Bare B activates Brush and opens
+its contextual controls;
+Ctrl/Cmd+B remains the sidebar toggle.
+
+Right-click classification only fills `ContextTarget`; it does not mutate
+`NodeManager` or select/promote stamps. Viewport pick stays in the main chain;
+classification is separately constrained after it and before track opening.
+
 - `mod.rs` — `NodeManager`/`NodeSelection`/`AxisDrag` types +
   `NodeManagerPlugin` (registers the `.chain()`-ed system order inside
   `UiSet::Selection`) + unit tests for the selection state machine.

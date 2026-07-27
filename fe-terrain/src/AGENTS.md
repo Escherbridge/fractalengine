@@ -3,6 +3,17 @@
 Design rationale for fe-terrain source modules. Code carries terse one-line doc
 comments; the "why" lives here.
 
+## §earthwork-validity-and-strength
+
+Ghost suppression requires a valid bake record, not merely a `material` key:
+non-empty id/material, at least three finite footprint points with nonzero
+shoelace area, sculpt vocabulary, and the op-required finite target/delta. Malformed
+material-bearing proposals remain ghosts instead of disappearing.
+
+Level and Smooth store their `[0,1]` strength compatibly in the region `delta` slot.
+`EarthworkRegion::effective_strength`, bake preparation, and volume math all
+consume that value; other operations keep the existing delta meaning.
+
 ## §petal_binding
 
 Runtime support for binding a terrain configuration to the active petal.
@@ -472,19 +483,20 @@ brush_overlay_positions, BRUSH_OVERLAY_RGBA}` (folded into the existing overlay
 module — no new fe-renderer module; T2 owns that `lib.rs` line; the `BrushOverlay`
 entity marker was removed once fe-ui consumed the ring via immediate-mode
 `Gizmos`). It grounds the ring READ-ONLY on `TerrainHeightField` (NFR-1). The
-fe-ui sculpt UI (`panels/terrain_tools_panel.rs::render_sculpt_placeholder`)
-configures the region params; the commit line is LIVE (integration pass
-2026-07-26): `process_ui_actions` drains `SculptToolState.pending_actions`,
-threads the active petal, and dispatches
-`UiAction::Sculpt{Brush,ShapeRegion,DeleteRegion}` →
-`actions::terrain_proposal::handle_*` (see `fe-ui/src/actions/AGENTS.md` §sculpt).
+fe-ui sculpt UI (`panels/terrain_tools_panel.rs::render_brush_controls`)
+configures meter-valued region params. The viewport snapshots them into
+petal-local world units and queues one batched stroke action on release.
+`process_ui_actions` dispatches `UiAction::SculptBrushStroke` to one terrain
+document write and one endpoint-node creation per dab (see
+`fe-ui/src/actions/AGENTS.md` §sculpt).
 
 ### Earthwork bake (T3 integration, terrain_plugin.rs)
 
 Regions in `terrain.proposals` bake into resident chunk meshes; plain proposals
-keep ghosting. The **predicate is `material` presence** (`TerrainProposal::
-is_earthwork_region` — the fe-ui sculpt commit always writes `material`, the
-plain proposal path never does); `render_terrain_proposals` skips regions and
+keep ghosting. `TerrainProposal::is_earthwork_region` requires non-empty
+identity/material, finite nonzero-area geometry, sculpt
+vocabulary, and valid op parameters; malformed records remain ghosts.
+`render_terrain_proposals` skips valid regions and
 `bake_earthwork_regions` handles only them. `TerrainOp` gained `Level`/`Smooth`
 so a region-holding proposals block still parses as `TerrainConfig` (a Level
 region must never invalidate the whole petal terrain JSON); at the proposal
@@ -497,8 +509,8 @@ seam Level == Flatten and Smooth is identity (real math lives in `sculpt`).
   lacks) restores the snapshot first, so edits/deletes revert cleanly (Q-2).
 - **Bake = pristine + surface delta:** per vertex, `dh(x,z)` is the sequential
   `sculpt::proposed_height` of every containing region over the READ-ONLY
-  `TerrainHeightField` sample (strength 1.0, mirroring `EarthworkRegion::
-  cut_fill`), added to the vertex's pristine Y — mesh detail survives, and
+  `TerrainHeightField` sample using `EarthworkRegion::effective_strength`;
+  the resulting delta is added to the vertex's pristine Y — mesh detail survives, and
   skirt walls keep their depth (top and bottom get the same `dh`). Normals are
   recomputed with the `terrain_mesh` accumulation.
 - **The height field stays PRE-BAKE by design:** it is the pristine base for

@@ -168,8 +168,8 @@ pub fn region_mean_height(
 
 /// The PROPOSED height for one sculpt op at a point, from the read-only base
 /// sample + params. Relative ops (Raise/Lower/Smooth) return `None` with no
-/// base; Level is absolute. `strength` in `[0,1]` weights Smooth's pull toward
-/// `region_mean`. See `src/AGENTS.md` §sculpt for the per-op table.
+/// base; Level falls back to its absolute target when no base exists.
+/// `strength` in `[0,1]` weights Level and Smooth blending.
 pub fn proposed_height(
     op: SculptOp,
     base: Option<f32>,
@@ -181,7 +181,10 @@ pub fn proposed_height(
     match op {
         SculptOp::Raise => base.map(|b| b + delta),
         SculptOp::Lower => base.map(|b| b - delta),
-        SculptOp::Level => Some(target),
+        SculptOp::Level => Some(match base {
+            Some(b) => b + (target - b) * strength.clamp(0.0, 1.0),
+            None => target,
+        }),
         SculptOp::Smooth => match (base, region_mean) {
             (Some(b), Some(m)) => Some(b + (m - b) * strength.clamp(0.0, 1.0)),
             (b, _) => b,
@@ -358,6 +361,23 @@ impl EarthworkRegion {
         }
     }
 
+    /// Level and Smooth store blend strength in the compatible `delta` slot.
+    pub fn effective_strength(&self) -> f32 {
+        if matches!(self.op, SculptOp::Level | SculptOp::Smooth) {
+            self.delta.unwrap_or(1.0).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+
+    fn effective_delta(&self) -> f32 {
+        if matches!(self.op, SculptOp::Level | SculptOp::Smooth) {
+            0.0
+        } else {
+            self.delta.unwrap_or(0.0)
+        }
+    }
+
     /// Cut/fill volume of this region against the read-only base surface.
     pub fn cut_fill(
         &self,
@@ -370,8 +390,8 @@ impl EarthworkRegion {
             &self.footprint_shape(),
             self.op,
             self.target_height.unwrap_or(0.0),
-            self.delta.unwrap_or(0.0),
-            1.0,
+            self.effective_delta(),
+            self.effective_strength(),
             grid_step,
             world_scale,
         )
@@ -459,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn level_is_absolute_lower_is_relative() {
+    fn level_at_full_strength_is_absolute_lower_is_relative() {
         let base = |_x: f32, _z: f32| Some(8.0);
         let fp = square(10.0);
         let level = apply_sculpt(
@@ -468,7 +488,7 @@ mod tests {
             SculptOp::Level,
             2.0,
             0.0,
-            0.0,
+            1.0,
             1.0,
             &[[5.0, 5.0]],
         );
@@ -542,7 +562,7 @@ mod tests {
             1.0,
             &[[4.0, 4.0]],
         );
-        let _ = sculpt_cut_fill(&base, &fp, SculptOp::Level, 3.0, 0.0, 0.0, 1.0, 1.0);
+        let _ = sculpt_cut_fill(&base, &fp, SculptOp::Level, 3.0, 0.0, 1.0, 1.0, 1.0);
         assert_eq!(grid, snap, "base heightfield mutated — NFR-1 violated");
     }
 
@@ -554,7 +574,7 @@ mod tests {
         // convention exactly (evolve, don't fork).
         let base = |_x: f32, _z: f32| Some(0.0);
         let fp = square(10.0);
-        let cf = sculpt_cut_fill(&base, &fp, SculptOp::Level, 2.0, 0.0, 0.0, 0.25, 0.1);
+        let cf = sculpt_cut_fill(&base, &fp, SculptOp::Level, 2.0, 0.0, 1.0, 0.25, 0.1);
         assert!(cf.scaled);
         assert!(cf.cut_m3.abs() < 1.0, "no cut expected, got {}", cf.cut_m3);
         // O(step) discretisation: 0.25-step over a 10-unit square is tight.
@@ -572,7 +592,7 @@ mod tests {
         // = 12.5·10 = 125 scene-unit³ (world_scale 1 → same in m³).
         let base = |x: f32, _z: f32| Some(x);
         let fp = square(10.0);
-        let cf = sculpt_cut_fill(&base, &fp, SculptOp::Level, 5.0, 0.0, 0.0, 0.1, 1.0);
+        let cf = sculpt_cut_fill(&base, &fp, SculptOp::Level, 5.0, 0.0, 1.0, 0.1, 1.0);
         assert!(cf.cut_m3 > 0.0 && cf.fill_m3 > 0.0);
         assert!(
             (cf.cut_m3 - cf.fill_m3).abs() < 5.0,
@@ -591,7 +611,7 @@ mod tests {
     fn cut_fill_unscaled_reports_scene_units_never_fake_meters() {
         let base = |_x: f32, _z: f32| Some(0.0);
         let fp = square(10.0);
-        let cf = sculpt_cut_fill(&base, &fp, SculptOp::Level, 2.0, 0.0, 0.0, 0.25, f64::NAN);
+        let cf = sculpt_cut_fill(&base, &fp, SculptOp::Level, 2.0, 0.0, 1.0, 0.25, f64::NAN);
         assert!(!cf.scaled, "bad scale must not claim meters");
         // scale sanitizes to 1.0 → raw scene units: 100 area × 2 rise = 200.
         assert!((cf.fill_m3 - 200.0).abs() / 200.0 < 0.02);
@@ -662,5 +682,68 @@ mod tests {
         let cf = region.cut_fill(&base, 0.25, 1.0);
         assert!(cf.cut_m3.abs() < 1.0);
         assert!((cf.fill_m3 - 200.0).abs() / 200.0 < 0.02);
+    }
+
+    #[test]
+    fn smooth_region_delta_slot_controls_strength() {
+        let base = |x: f32, _z: f32| Some(x);
+        let region = EarthworkRegion {
+            id: "smooth".into(),
+            op: SculptOp::Smooth,
+            footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            material: "earth".into(),
+            target_height: None,
+            delta: Some(0.25),
+        };
+        assert_eq!(region.effective_strength(), 0.25);
+        let shape = region.footprint_shape();
+        let weak = apply_sculpt(
+            &base,
+            &shape,
+            SculptOp::Smooth,
+            0.0,
+            0.0,
+            region.effective_strength(),
+            1.0,
+            &[[2.0, 5.0]],
+        )[0]
+        .unwrap();
+        let full = apply_sculpt(
+            &base,
+            &shape,
+            SculptOp::Smooth,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            &[[2.0, 5.0]],
+        )[0]
+        .unwrap();
+        assert!(weak > 2.0 && weak < full);
+    }
+
+    #[test]
+    fn level_region_delta_slot_controls_strength() {
+        let region = EarthworkRegion {
+            id: "level".into(),
+            op: SculptOp::Level,
+            footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            material: "earth".into(),
+            target_height: Some(10.0),
+            delta: Some(0.25),
+        };
+        assert_eq!(region.effective_strength(), 0.25);
+        let adjusted = apply_sculpt(
+            &|_, _| Some(2.0),
+            &region.footprint_shape(),
+            region.op,
+            region.target_height.unwrap(),
+            region.effective_delta(),
+            region.effective_strength(),
+            1.0,
+            &[[2.0, 5.0]],
+        )[0]
+        .unwrap();
+        assert_eq!(adjusted, 4.0);
     }
 }

@@ -1,5 +1,12 @@
 # fe-ui/src/actions — UiAction queue, split by domain
 
+## First-class Brush producer
+
+The sculpt pending-action bridge is removed. The viewport queues fully-threaded
+payloads directly. Level persists `target_height`; Raise/Lower persist
+strength-weighted magnitude; Level and Smooth store strength compatibly in `delta`.
+`handle_brush` refuses disabled terrain docs so invisible edits cannot persist.
+
 - `mod.rs` — `UiAction` enum, `UiManager` resource (queue + portal + active
   dialog + toast), `process_ui_actions` dispatcher.
 - `portal.rs` — portal open/close/go-back + `SaveUrl`. Pure decision
@@ -133,17 +140,15 @@ sparse per-stamp overrides.
 All in `terrain_proposal.rs`; region JSON mirrors `fe_terrain::sculpt::
 EarthworkRegion` by contract (fe-ui must NOT depend on fe-terrain).
 
-- **Commit line (was the missing seam).** `process_ui_actions` drains
-  `SculptToolState.pending_actions` and runs each item through
-  `thread_active_petal`: `SculptBrush`/`SculptShapeRegion` get their
-  `petal_id` hole filled from `NavigationManager.active_petal_id` (no petal →
-  warn + drop, N-8); petal-free actions pass through. Producers (panel /
-  future viewport paint) queue with an empty `petal_id` — they have no petal
-  handle by design.
-- **Endpoint rows (D-A8/N-10).** A committed region (`handle_brush` /
+- **Commit line (was the missing seam).** The viewport Brush snapshots the
+  active petal and converts sanitized meter controls through `world_scale` on
+  press, then queues one bounded `SculptBrushStroke` on release. Its handler
+  appends all region records with one terrain-doc clone/write. A missing petal
+  or disabled map warns, toasts, and produces no persistence action.
+- **Endpoint rows (D-A8/N-10).** Each committed dab (`handle_brush_stroke` /
   `handle_shape_region`, gated on the `SetPetalTerrain` queue succeeding) also
-  sends `CreateNode` at the footprint's vertex-mean centroid (raw petal-local
-  meters, N-1) with `correlation_id = "earthwork:{region_id}"`.
+  sends `CreateNode` at the footprint's vertex-mean centroid (petal-local
+  world units) with `correlation_id = "earthwork:{region_id}"`.
   `db_results/nodes.rs` consumes the echo (pen-tool consume idiom: echoed-id
   match only): binds `EarthworkNodeMap` (region_id→node_id), consumes the
   stashed material, and writes the contract bag — literal fe-query keys

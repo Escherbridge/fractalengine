@@ -21,7 +21,7 @@ pub struct TopbarState;
 
 /// Renders the top toolbar. Migrated verbatim from `panels::toolbar::top_toolbar`
 /// (FR-4). Phase 4 (FR-9) retired the Phase-2 compat shim: the Tools button
-/// now toggles the right-sidebar `Tool` section directly — that toggle is the
+/// now toggles the right-sidebar `PathTools` section directly — that toggle is the
 /// SOLE reveal path (no more mirrored `ToolPanelState.open` legacy flag).
 pub fn render_topbar(
     ctx: &egui::Context,
@@ -66,6 +66,9 @@ pub fn render_topbar(
                         .fill(mode_button_fill(active));
                     if ui.add(btn).on_hover_text(tool_tooltip_text(def)).clicked() {
                         tool.active_tool = def.tool;
+                        if def.tool == crate::panels::toolbar::Tool::Brush {
+                            right.requested = Some(RightSidebarSection::Tool);
+                        }
                     }
                 }
                 stash_active_tool(ui.ctx(), tool.active_tool);
@@ -101,7 +104,7 @@ pub fn render_topbar(
 
                     if ui
                         .add(egui::Button::new("\u{1F527} Tools").fill(
-                            if right.is_active(RightSidebarSection::Tool) {
+                            if right.is_active(RightSidebarSection::PathTools) {
                                 theme::BG_BUTTON_ACTIVE
                             } else {
                                 theme::BG_BUTTON
@@ -110,10 +113,7 @@ pub fn render_topbar(
                         .on_hover_text("Path-asset stamp, pen curves, and shape tools")
                         .clicked()
                     {
-                        // FR-4/FR-9: the Tools button toggles the right-sidebar
-                        // `Tool` section — the sole reveal path (Phase 4 retired
-                        // the Phase-2 compat shim).
-                        right.toggle(RightSidebarSection::Tool);
+                        right.toggle(RightSidebarSection::PathTools);
                     }
 
                     // FR-1 (D-A10): Settings is a one-at-a-time right-sidebar
@@ -151,4 +151,17 @@ pub fn render_topbar(
                 });
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tools_button_routes_to_path_tools() {
+        let mut right = RightSidebarState::default();
+        right.toggle(RightSidebarSection::PathTools);
+        assert!(right.is_active(RightSidebarSection::PathTools));
+        assert!(!right.is_active(RightSidebarSection::Tool));
+    }
 }

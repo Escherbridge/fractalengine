@@ -203,7 +203,67 @@ pub struct ToolPanelState {
     pub stamp_arc_m: f32,
 }
 
+const MAX_DISTANCE_INPUT: f32 = 1_000_000.0;
+const MAX_SCALE_INPUT: f32 = 10_000.0;
+const MAX_ANGLE_INPUT_DEG: f32 = 36_000.0;
+
+fn sanitize_f32(value: &mut f32, default: f32, min: f32, max: f32) {
+    *value = if !value.is_finite() || *value < min {
+        default
+    } else {
+        (*value).min(max)
+    };
+}
+
 impl ToolPanelState {
+    /// Repair numeric UI buffers before egui constructs widgets from them.
+    pub(crate) fn sanitize_numeric_state(&mut self) {
+        sanitize_f32(&mut self.spacing_value, 1.0, 0.01, MAX_DISTANCE_INPUT);
+        sanitize_f32(&mut self.pen_tension, 0.5, 0.0, 1.0);
+        sanitize_f32(&mut self.shape_radius, 5.0, 0.01, MAX_DISTANCE_INPUT);
+        sanitize_f32(&mut self.shape_radius_z, 3.0, 0.01, MAX_DISTANCE_INPUT);
+        sanitize_f32(
+            &mut self.terrain_footprint_radius,
+            5.0,
+            0.1,
+            MAX_DISTANCE_INPUT,
+        );
+        sanitize_f32(
+            &mut self.terrain_target_height,
+            0.0,
+            -MAX_DISTANCE_INPUT,
+            MAX_DISTANCE_INPUT,
+        );
+        sanitize_f32(
+            &mut self.terrain_delta,
+            1.0,
+            -MAX_DISTANCE_INPUT,
+            MAX_DISTANCE_INPUT,
+        );
+        sanitize_f32(&mut self.stamp_scale, 1.0, 0.01, MAX_SCALE_INPUT);
+        sanitize_f32(
+            &mut self.stamp_yaw_deg,
+            0.0,
+            -MAX_ANGLE_INPUT_DEG,
+            MAX_ANGLE_INPUT_DEG,
+        );
+        sanitize_f32(&mut self.stamp_arc_m, 0.0, 0.0, MAX_DISTANCE_INPUT);
+        debug_assert!([
+            self.spacing_value,
+            self.pen_tension,
+            self.shape_radius,
+            self.shape_radius_z,
+            self.terrain_footprint_radius,
+            self.terrain_target_height,
+            self.terrain_delta,
+            self.stamp_scale,
+            self.stamp_yaw_deg,
+            self.stamp_arc_m,
+        ]
+        .into_iter()
+        .all(f32::is_finite));
+    }
+
     /// Queues a pen-tool `UiAction` for the drain in `process_ui_actions`.
     pub fn queue_action(&mut self, action: UiAction) {
         self.pending_actions.push(action);
@@ -226,6 +286,7 @@ pub(crate) fn render_path_asset_section(
     path_state: &PathEditorState,
     verse_mgr: &VerseManager,
 ) {
+    state.sanitize_numeric_state();
     ui.label(
         egui::RichText::new("Path Asset")
             .strong()
@@ -263,7 +324,7 @@ pub(crate) fn render_path_asset_section(
                 ui.add(
                     egui::DragValue::new(&mut state.spacing_value)
                         .speed(0.1)
-                        .range(0.0..=f32::MAX)
+                        .range(0.01..=MAX_DISTANCE_INPUT)
                         .suffix(" m"),
                 )
                 .on_hover_text("Distance between stamped instances, in real-world meters");
@@ -351,10 +412,7 @@ fn render_stamp_editor(
     ui_mgr: &mut UiManager,
     track_id: String,
 ) {
-    // Seed a usable default scale on first paint (Default gives 0.0).
-    if state.stamp_scale <= 0.0 {
-        state.stamp_scale = 1.0;
-    }
+    state.sanitize_numeric_state();
 
     ui.label(
         egui::RichText::new("Selected Stamp")
@@ -396,7 +454,7 @@ fn render_stamp_editor(
         ui.add(
             egui::DragValue::new(&mut state.stamp_scale)
                 .speed(0.05)
-                .range(0.01..=f32::MAX),
+                .range(0.01..=MAX_SCALE_INPUT),
         );
         if ui.button("Apply").clicked() {
             let s = state.stamp_scale;
@@ -415,7 +473,11 @@ fn render_stamp_editor(
                 .small()
                 .color(theme::TEXT_DIM),
         );
-        ui.add(egui::DragValue::new(&mut state.stamp_yaw_deg).speed(1.0));
+        ui.add(
+            egui::DragValue::new(&mut state.stamp_yaw_deg)
+                .speed(1.0)
+                .range(-MAX_ANGLE_INPUT_DEG..=MAX_ANGLE_INPUT_DEG),
+        );
         if ui.button("Apply").clicked() {
             let quat = yaw_to_quat(state.stamp_yaw_deg.to_radians());
             ui_mgr.push_action(UiAction::SetStampRotation {
@@ -436,7 +498,7 @@ fn render_stamp_editor(
         ui.add(
             egui::DragValue::new(&mut state.stamp_arc_m)
                 .speed(0.1)
-                .range(0.0..=f32::MAX)
+                .range(0.0..=MAX_DISTANCE_INPUT)
                 .suffix(" m"),
         )
         .on_hover_text(
@@ -605,16 +667,11 @@ fn build_descriptor(
 /// `render_path_asset_section`'s doc for the Phase-4 window retirement). See
 /// `node_manager/AGENTS.md` §pen-tool.
 pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
+    state.sanitize_numeric_state();
     // `ToolPanelState` is `#[derive(Default)]` (shared with W4), so the pen
     // fields start at zero. Lazily seed usable defaults on first paint.
     if state.pen_samples_per_segment == 0 {
         state.pen_samples_per_segment = 12;
-    }
-    if state.shape_radius <= 0.0 {
-        state.shape_radius = 5.0;
-    }
-    if state.shape_radius_z <= 0.0 {
-        state.shape_radius_z = 3.0;
     }
     if state.shape_segments < 3 {
         state.shape_segments = 24;
@@ -729,7 +786,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
         ui.add(
             egui::DragValue::new(&mut state.shape_radius)
                 .speed(0.1)
-                .range(0.01..=f32::MAX),
+                .range(0.01..=MAX_DISTANCE_INPUT),
         );
         ui.label(
             egui::RichText::new("Radius Z")
@@ -739,7 +796,7 @@ pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) 
         ui.add(
             egui::DragValue::new(&mut state.shape_radius_z)
                 .speed(0.1)
-                .range(0.01..=f32::MAX),
+                .range(0.01..=MAX_DISTANCE_INPUT),
         );
     });
     ui.horizontal(|ui| {
@@ -972,5 +1029,39 @@ mod tests {
         assert_eq!(TerrainToolMode::Pad.to_proposal_op(), ProposalOp::Pad);
         assert_eq!(TerrainToolMode::Cut.to_proposal_op(), ProposalOp::Cut);
         assert_eq!(TerrainToolMode::Fill.to_proposal_op(), ProposalOp::Fill);
+    }
+
+    #[test]
+    fn numeric_state_recovers_from_nan_and_infinity() {
+        let mut state = ToolPanelState {
+            spacing_value: f32::NAN,
+            pen_tension: f32::INFINITY,
+            shape_radius: f32::NEG_INFINITY,
+            shape_radius_z: f32::NAN,
+            terrain_footprint_radius: f32::INFINITY,
+            terrain_target_height: f32::NAN,
+            terrain_delta: f32::NEG_INFINITY,
+            stamp_scale: f32::NAN,
+            stamp_yaw_deg: f32::INFINITY,
+            stamp_arc_m: f32::NEG_INFINITY,
+            ..Default::default()
+        };
+        state.sanitize_numeric_state();
+        assert_eq!(state.shape_radius_z, 3.0);
+        assert_eq!(state.stamp_scale, 1.0);
+        assert!([
+            state.spacing_value,
+            state.pen_tension,
+            state.shape_radius,
+            state.shape_radius_z,
+            state.terrain_footprint_radius,
+            state.terrain_target_height,
+            state.terrain_delta,
+            state.stamp_scale,
+            state.stamp_yaw_deg,
+            state.stamp_arc_m,
+        ]
+        .into_iter()
+        .all(f32::is_finite));
     }
 }
