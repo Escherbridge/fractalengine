@@ -341,3 +341,133 @@ fn render_toast(ctx: &egui::Context, ui_mgr: &UiManager) {
     // Request repaint while toast is visible so the fade animates
     ctx.request_repaint();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panels::toolbar::Tool;
+    use crate::terrain_proposal_state::ProposalOp;
+    use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
+
+    #[test]
+    fn gardener_console_render_smoke_sanitizes_all_numeric_tool_surfaces() {
+        let ctx = egui::Context::default();
+        let mut sidebar = crate::plugin::SidebarState::default();
+        let mut tool = crate::plugin::ToolState {
+            active_tool: Tool::Brush,
+        };
+        let mut inspector = crate::plugin::InspectorFormState::default();
+        let mut nav = NavigationManager {
+            active_petal_id: Some("petal-1".into()),
+            ..Default::default()
+        };
+        let dashboard = crate::atlas::DashboardState::default();
+        let mut hierarchy = VerseManager::default();
+        let (db_tx, _db_rx) = crossbeam::channel::unbounded();
+        let mut camera_focus = crate::plugin::CameraFocusTarget::default();
+        let cursor = crate::plugin::ViewportCursorWorld::default();
+        let mut node_mgr = crate::node_manager::NodeManager::default();
+        let mut ui_mgr = UiManager::default();
+        let role = crate::plugin::LocalUserRole::default();
+        let mut petal_map = crate::terrain_map::PetalMapState::default();
+        let asset_status = AssetDownloadStatus::default();
+        let mut gis_panel = crate::gis::GisPanelState::default();
+        let gpx_status = crate::gpx_ops::GpxImportStatus::default();
+        let mut path_state = crate::gis::PathEditorState {
+            editing_track_id: Some("track-1".into()),
+            ..Default::default()
+        };
+        let path_status = crate::path_ops::PathEditStatus::default();
+        let mut tool_panel = crate::panels::tool_panel::ToolPanelState {
+            spacing_value: f32::NAN,
+            shape_radius: f32::INFINITY,
+            shape_radius_z: f32::NAN,
+            stamp_scale: f32::NEG_INFINITY,
+            stamp_yaw_deg: f32::NAN,
+            stamp_arc_m: f32::INFINITY,
+            terrain_footprint_radius: f32::NAN,
+            terrain_target_height: f32::INFINITY,
+            terrain_delta: f32::NEG_INFINITY,
+            ..Default::default()
+        };
+        let mut proposal_state = crate::terrain_proposal_state::ProposalEditState::default();
+        proposal_state.push_new(
+            ProposalOp::Raise,
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            None,
+            Some(1.0),
+        );
+        let mut app_settings = crate::settings::AppSettings::default();
+        let mut sculpt = crate::actions::terrain_proposal::SculptToolState {
+            radius: f32::NAN,
+            strength: f32::INFINITY,
+            target_height: f32::NEG_INFINITY,
+            delta: f32::NAN,
+            ..Default::default()
+        };
+        let stamp_state = crate::actions::asset::StampInteractionState::default();
+        let mut topbar = crate::ui_shell::topbar::TopbarState;
+        let mut left = crate::ui_shell::left_sidebar::LeftSidebarState::default();
+        let mut right = RightSidebarState {
+            requested: Some(RightSidebarSection::PathTools),
+        };
+        let mut modal = crate::ui_shell::modal::ModalManagerState::default();
+
+        {
+            let mut render = |section: Option<RightSidebarSection>| {
+                right.requested = section;
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    ..Default::default()
+                };
+                let _ = ctx.run(raw, |ctx| {
+                    gardener_console(
+                        ctx,
+                        &mut sidebar,
+                        &mut tool,
+                        &mut inspector,
+                        &mut nav,
+                        &dashboard,
+                        &mut hierarchy,
+                        &db_tx,
+                        &mut camera_focus,
+                        &cursor,
+                        None,
+                        &mut node_mgr,
+                        &mut ui_mgr,
+                        &role,
+                        &mut petal_map,
+                        &asset_status,
+                        &mut gis_panel,
+                        &gpx_status,
+                        &mut path_state,
+                        &path_status,
+                        &mut tool_panel,
+                        &mut proposal_state,
+                        &mut app_settings,
+                        &mut sculpt,
+                        &stamp_state,
+                        &mut topbar,
+                        &mut left,
+                        &mut right,
+                        &mut modal,
+                    );
+                });
+            };
+
+            render(None);
+            render(Some(RightSidebarSection::PathTools));
+            render(Some(RightSidebarSection::TerrainTools));
+            render(Some(RightSidebarSection::Tool));
+        }
+
+        assert!(tool_panel.shape_radius_z.is_finite());
+        assert!(tool_panel.stamp_scale.is_finite());
+        assert!(tool_panel.terrain_footprint_radius.is_finite());
+        assert!(sculpt.radius.is_finite());
+        assert!(sculpt.strength.is_finite());
+    }
+}

@@ -26,6 +26,8 @@ pub(super) enum ClickPriority {
     /// FR-3). Outranks `NodePick` so while editing a click on the ribbon selects
     /// the segment instead of re-picking the whole track as a node.
     PathSegment,
+    /// First-class terrain brush; outranks node selection.
+    Brush,
     /// glTF / node selection (lowest priority).
     NodePick,
 }

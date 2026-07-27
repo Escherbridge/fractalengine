@@ -12,6 +12,7 @@
 //! See `fe-ui/src/node_manager/AGENTS.md` for the submodule map.
 
 mod billboard;
+mod brush_interaction;
 /// T4 right-click → `ContextTarget` classification. See AGENTS.md §context-pick.
 mod context_pick;
 /// Pure curve + shape math for the pen tool (phase 2). See AGENTS.md §pen-tool.
@@ -143,6 +144,7 @@ impl Plugin for NodeManagerPlugin {
         app.init_gizmo_group::<crate::gimbal::GimbalGizmoGroup>();
         app.init_resource::<NodeManager>();
         app.init_resource::<router::ClickArbiter>();
+        app.init_resource::<brush_interaction::BrushGesture>();
         app.init_resource::<path_point_interaction::PathPointDrag>();
         app.init_resource::<path_point_interaction::PenHandleDrag>();
         app.init_resource::<path_handle_interaction::PathHandleDrag>();
@@ -155,7 +157,8 @@ impl Plugin for NodeManagerPlugin {
                 shortcuts::handle_tool_shortcuts,
                 sidebar_sync::sync_sidebar_to_manager,
                 router::resolve_pointer_frame, // arbitrate left-click ownership for this frame (first)
-                gimbal_interaction::update_hovered_axis, // hover detection (before interaction)
+                brush_interaction::handle_brush_interaction, // Brush owns viewport gestures while active
+                gimbal_interaction::update_hovered_axis,     // hover detection (before interaction)
                 path_handle_interaction::sync_path_handle_markers, // keep handle markers current before their pick
                 path_handle_interaction::handle_path_handle_interaction, // claims PathHandle FIRST — Q7 handle > vertex > gimbal
                 path_gimbal_drag::handle_path_gimbal_drag, // FR-3: claims Gimbal FIRST for a selected vertex/segment
@@ -163,15 +166,8 @@ impl Plugin for NodeManagerPlugin {
                 path_point_interaction::sync_path_point_markers, // keep markers in sync with edit buffer
                 path_point_interaction::handle_path_point_interaction, // claims PathMarker / PathPlace
                 path_segment_interaction::handle_path_segment_interaction, // claims PathSegment — ribbon-segment select (FR-3)
-                // Inner pair keeps the outer tuple at Bevy's 20-element ceiling:
-                // NodePick claim, then the T4 right-click ContextTarget fill.
-                (
-                    viewport_pick::handle_viewport_click, // claims NodePick — entity pick / deselect
-                    context_pick::classify_context_menu, // T4: fill a fresh context menu's ContextTarget
-                )
-                    .chain(),
+                viewport_pick::handle_viewport_click, // claims NodePick — entity pick / deselect
                 pointer::open_track_on_select, // clicking a track ribbon opens it for editing (re-homed FR-3)
-                path_segment_interaction::sync_path_measurements, // live metric length readouts (FR-3)
                 inspector_sync::sync_manager_to_inspector,
                 selection::update_selection_state, // FR-1: project the read-model before the gimbal draws
                 path_handle_interaction::draw_handle_stems, // anchor→handle stems (draws only, steals no clicks)
@@ -180,6 +176,18 @@ impl Plugin for NodeManagerPlugin {
                 transform_broadcast::apply_inbound_transforms,
             )
                 .chain()
+                .in_set(UiSet::Selection),
+        );
+        app.add_systems(
+            Update,
+            (
+                context_pick::classify_context_menu
+                    .after(viewport_pick::handle_viewport_click)
+                    .before(pointer::open_track_on_select),
+                path_segment_interaction::sync_path_measurements
+                    .after(path_segment_interaction::handle_path_segment_interaction)
+                    .before(inspector_sync::sync_manager_to_inspector),
+            )
                 .in_set(UiSet::Selection),
         );
         // Billboard facing is orientation-only and order-independent of the

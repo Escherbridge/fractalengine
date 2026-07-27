@@ -108,11 +108,20 @@ pub fn viewport_petal_space(
     }
 
     // Tool hints at bottom — keys/labels come from `panels::toolbar::TOOL_DEFS`.
-    if toolbar::active_tool_hint(ui.ctx()) == Some(toolbar::Tool::Pen) {
+    let active_tool = toolbar::active_tool_hint(ui.ctx());
+    if active_tool == Some(toolbar::Tool::Pen) {
         ui.painter().text(
             egui::pos2(center.x, rect.max.y - 40.0),
             egui::Align2::CENTER_CENTER,
             "Pen: click terrain to add points  \u{2022}  drag a marker to move  \u{2022}  Ctrl+drag a marker = raise/lower height  \u{2022}  Shift/Alt+click a marker to annotate",
+            egui::FontId::proportional(12.0),
+            theme::TEXT_VIEWPORT_HINT,
+        );
+    } else if active_tool == Some(toolbar::Tool::Brush) {
+        ui.painter().text(
+            egui::pos2(center.x, rect.max.y - 40.0),
+            egui::Align2::CENTER_CENTER,
+            "Brush: press-drag to sample earthwork dabs  \u{2022}  release to commit  \u{2022}  Esc/right-click cancels",
             egui::FontId::proportional(12.0),
             theme::TEXT_VIEWPORT_HINT,
         );
@@ -159,7 +168,7 @@ pub fn viewport_petal_space(
     // Right-click for context menu — use input directly to avoid stealing clicks.
     // `target: None` = classification pending; `node_manager::context_pick`
     // fills it from the same pick machinery left-click uses (T4 FR-1).
-    if ui.input(|i| i.pointer.secondary_clicked()) {
+    if active_tool != Some(toolbar::Tool::Brush) && ui.input(|i| i.pointer.secondary_clicked()) {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             if rect.contains(pos) {
                 ui_mgr.open_dialog(ActiveDialog::ContextMenu {

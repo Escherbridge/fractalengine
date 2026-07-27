@@ -168,7 +168,7 @@ pub(super) fn handle_gimbal_interaction(
     // priority) on a press near a projected axis and start a no-op drag that
     // steals a click meant for PathPlace (pen append). The Pen drag branch below
     // is already a no-op, so early-returning loses nothing. See AGENTS.md §pen-tool.
-    if matches!(tool.active_tool, Tool::Select | Tool::Pen) {
+    if matches!(tool.active_tool, Tool::Select | Tool::Pen | Tool::Brush) {
         return;
     }
     let Some(sel) = manager.selected.as_mut() else {
@@ -237,7 +237,7 @@ pub(super) fn handle_gimbal_interaction(
                         Quat::from_axis_angle(axis_dir, movement * 0.01) * drag.start_rot;
                 }
                 // Pen is a path-drawing mode, not a transform gizmo — no drag.
-                Tool::Select | Tool::Pen => {}
+                Tool::Select | Tool::Pen | Tool::Brush => {}
             }
             return;
         }

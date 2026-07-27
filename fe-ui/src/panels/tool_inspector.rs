@@ -72,6 +72,16 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
                 "Corner settings — Paths tab, selected vertex",
             ],
         },
+        Tool::Brush => ToolPanelDescriptor {
+            title: "Brush",
+            subtitle: "Paint non-destructive earthwork regions",
+            use_zone: &[
+                "Press and drag on terrain to paint spaced dabs",
+                "Release to commit the sampled stroke",
+                "Escape or right-click cancels the stroke",
+            ],
+            settings_zone: &["Radius, strength, and operation below"],
+        },
     }
 }
 
@@ -150,13 +160,14 @@ mod tests {
     use super::*;
     use bevy::prelude::Entity;
 
-    fn all_tools() -> [Tool; 5] {
+    fn all_tools() -> [Tool; 6] {
         [
             Tool::Select,
             Tool::Move,
             Tool::Rotate,
             Tool::Scale,
             Tool::Pen,
+            Tool::Brush,
         ]
     }
 
@@ -224,6 +235,7 @@ mod tests {
         // Select / Pen keep the entity gimbal off, so no affordance.
         assert!(gimbal_affordance_label(Tool::Select, &node).is_none());
         assert!(gimbal_affordance_label(Tool::Pen, &node).is_none());
+        assert!(gimbal_affordance_label(Tool::Brush, &node).is_none());
     }
 
     #[test]

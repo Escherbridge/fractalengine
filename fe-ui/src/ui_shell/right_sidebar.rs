@@ -173,7 +173,7 @@ pub fn render_right_sidebar(
             asset_status,
         ),
         Some(RightSidebarSection::Tool) => {
-            render_tool_section(ctx, state, tool, node_mgr, path_state)
+            render_tool_section(ctx, state, tool, node_mgr, path_state, sculpt_state)
         }
         Some(RightSidebarSection::PathTools) => {
             render_path_tools_section(ctx, state, tool_panel_state, ui_mgr, path_state, hierarchy)
@@ -254,6 +254,7 @@ fn render_tool_section(
     tool: &ToolState,
     node_mgr: &NodeManager,
     path_state: &PathEditorState,
+    sculpt_state: &mut SculptToolState,
 ) {
     let kind = project_selection(
         node_mgr
@@ -295,6 +296,11 @@ fn render_tool_section(
                     .small()
                     .color(theme::TEXT_STRONG),
             );
+        }
+        if tool.active_tool == crate::panels::toolbar::Tool::Brush {
+            ui.add_space(8.0);
+            terrain_tools_panel::render_brush_controls(ui, sculpt_state);
+            return;
         }
         // FR-6: the active tool's per-tool settings. Typed models
         // (SnapSettings/TransformConstraints) are P2 backlog; shown as calm

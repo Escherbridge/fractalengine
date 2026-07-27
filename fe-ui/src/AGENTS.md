@@ -5,6 +5,20 @@ sidebar hierarchy, inspector, dialogs, the embedded webview ("portal"), and
 terrain/hexon map management. This doc replaces verbose inline comments —
 see each module's own doc-comment for the "what"; this file is the "why".
 
+## §brush-tool-and-numeric-boundary
+
+`Tool::Brush` converts the meter-valued radius/target/delta through the active
+petal's sanitized `world_scale` at press, then samples Y=0 ray hits at half the
+converted radius. Release queues one bounded `SculptBrushStroke`; its handler
+performs one terrain-document write and one endpoint-node creation per dab.
+Escape, right-click, tool/petal change, or a stranded release cancels without
+replay.
+
+Path Tools, Terrain Tools, stamp-editor, and sculpt `f32` buffers are sanitized
+before egui widget construction. Non-finite values recover to defaults and
+finite values clamp to practical caps. Brush cursor and commit share the same
+sanitized radius. Missing petal/map is a warned, visible no-op.
+
 ## Module map
 
 | Module | Owns |
@@ -727,23 +741,23 @@ SAME `terrain.proposals` block (adds a `material` tag), so it round-trips throug
   `op` (Raise/Lower/Level/Smooth, fe-ui-local mirrors of
   `fe_terrain::sculpt::SculptOp` — no fe-terrain dep), `radius`/`strength`/
   `target_height`/`delta`, `material` (single-material `"earth"` default, Q-3),
-  `region_draft` (polygon points). Sculpt-UI actions buffer in `pending_actions`
-  (`queue_action`/`drain_pending`, mirroring `ToolPanelState`).
+  `region_draft` (polygon points). Brush controls remain meters in UI state;
+  the viewport snapshot converts them to petal-local world units.
 - Pure helpers: `region_json` (mirrors `EarthworkRegion`'s serde shape by
   contract), `embed_region` (additive append, same baseline guarantee as
   `embed_proposals`), `remove_region` (the **Q-2 revert** — dropping the record
   un-bakes the non-destructive overlay; the true heightfield was never written).
-- Handlers `handle_{brush,shape_region,delete_region}` persist via `persist_doc`.
+- Handlers `handle_{brush_stroke,shape_region,delete_region}` persist via
+  `persist_doc`; a stroke appends all dabs with one document clone/write.
 - The **cut/fill report** is in `panels::proposal_report_panel`
   (`earthwork_kind` + `cut_fill_totals`): per-region fill/cut/net + totals across
   all regions (FR-5). The true separated cut+fill over relief is
   `fe_terrain::sculpt::cut_fill_volume` at bake.
 
-**Commit line (LIVE, integration pass 2026-07-26):** `render_sculpt_placeholder`
-still has no `ui_mgr`/petal handle by design — it *configures* `SculptToolState`
-and producers queue into `pending_actions`; `process_ui_actions` drains them
-through `thread_active_petal` (fills the `petal_id` hole from
-`NavigationManager.active_petal_id`, warn + drop when none). Committed regions
+**Commit line (LIVE, integration pass 2026-07-26):** `render_brush_controls`
+configures `SculptToolState`; viewport press snapshots the active petal,
+sanitized scale, and converted controls, and release directly queues one
+fully-threaded `SculptBrushStroke`. Committed regions
 also become addressable node rows (`EarthworkNodeMap`, `earthwork:{region_id}`
 correlation, tombstone-on-delete) and receive bake-reported cut/fill volumes —
 see `actions/AGENTS.md` §sculpt.

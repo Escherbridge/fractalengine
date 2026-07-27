@@ -59,9 +59,7 @@ pub struct TerrainProposal {
     pub target_height: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta: Option<f32>,
-    /// Earthwork-region marker (T3): the sculpt commit path always writes a
-    /// `material` tag; the plain proposal path never does. Presence is THE
-    /// region-vs-proposal predicate — see `src/AGENTS.md` §sculpt.
+    /// Earthwork-region marker; validity also requires bakeable geometry/op data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<String>,
 }
@@ -72,11 +70,54 @@ impl TerrainProposal {
         self.op.as_snake()
     }
 
-    /// Ghost-suppression predicate (T3): a record carrying a `material` tag is
-    /// a baked earthwork region, not a ghosted proposal.
+    /// Ghost-suppression predicate: only a complete, bakeable earthwork record
+    /// is removed from the proposal-ghost path.
     pub fn is_earthwork_region(&self) -> bool {
-        self.material.is_some()
+        let valid_identity = !self.id.trim().is_empty()
+            && self
+                .material
+                .as_deref()
+                .is_some_and(|material| !material.trim().is_empty());
+        let valid_footprint = self.footprint.len() >= 3
+            && self
+                .footprint
+                .iter()
+                .flatten()
+                .all(|coordinate| coordinate.is_finite())
+            && polygon_area_twice(&self.footprint).is_some_and(|area| area > 0.0);
+        let valid_params = match self.op {
+            TerrainOp::Raise | TerrainOp::Lower => self
+                .delta
+                .is_some_and(|delta| delta.is_finite() && delta >= 0.0),
+            TerrainOp::Level => {
+                self.target_height.is_some_and(f32::is_finite)
+                    && self.delta.is_none_or(|strength| {
+                        strength.is_finite() && (0.0..=1.0).contains(&strength)
+                    })
+            }
+            TerrainOp::Smooth => self
+                .delta
+                .is_none_or(|strength| strength.is_finite() && (0.0..=1.0).contains(&strength)),
+            TerrainOp::Flatten
+            | TerrainOp::Ramp
+            | TerrainOp::Slope
+            | TerrainOp::Pad
+            | TerrainOp::Cut
+            | TerrainOp::Fill => false,
+        };
+        valid_identity && valid_footprint && valid_params
     }
+}
+
+/// Absolute doubled shoelace area, or `None` when arithmetic is non-finite.
+fn polygon_area_twice(footprint: &[[f32; 2]]) -> Option<f64> {
+    let mut sum = 0.0f64;
+    for index in 0..footprint.len() {
+        let [x1, z1] = footprint[index];
+        let [x2, z2] = footprint[(index + 1) % footprint.len()];
+        sum += x1 as f64 * z2 as f64 - x2 as f64 * z1 as f64;
+    }
+    sum.is_finite().then_some(sum.abs())
 }
 
 /// Axis-aligned footprint bounds `(min_x, min_z, max_x, max_z)`; `None` when empty.
@@ -628,9 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn earthwork_region_predicate_is_material_presence() {
-        // The T3 JSON contract: sculpt commits always carry `material`, plain
-        // proposals never do — presence IS the ghost-suppression predicate.
+    fn earthwork_region_predicate_requires_a_valid_bake_record() {
         let plain = raise(1.0);
         assert!(!plain.is_earthwork_region());
         let region = TerrainProposal {
@@ -640,14 +679,50 @@ mod tests {
         assert!(region.is_earthwork_region());
         // Round-trip from the persisted JSON shapes.
         let parsed = parse_proposals(&serde_json::json!([
-            { "id": "p1", "op": "raise", "footprint": [[0.0, 0.0]], "delta": 1.0 },
-            { "id": "r1", "op": "level", "footprint": [[0.0, 0.0]],
+            { "id": "p1", "op": "raise",
+              "footprint": [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], "delta": 1.0 },
+            { "id": "r1", "op": "level",
+              "footprint": [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
               "target_height": 2.0, "material": "gravel" }
         ]));
         assert_eq!(parsed.len(), 2, "level op must parse (config robustness)");
         assert!(!parsed[0].is_earthwork_region());
         assert!(parsed[1].is_earthwork_region());
         assert_eq!(parsed[1].op, TerrainOp::Level);
+    }
+
+    #[test]
+    fn malformed_material_records_remain_ghost_proposals() {
+        let missing_delta = TerrainProposal {
+            material: Some("earth".into()),
+            delta: None,
+            ..raise(1.0)
+        };
+        assert!(!missing_delta.is_earthwork_region());
+        let degenerate = TerrainProposal {
+            material: Some("earth".into()),
+            footprint: vec![[0.0, 0.0], [1.0, 0.0]],
+            ..raise(1.0)
+        };
+        assert!(!degenerate.is_earthwork_region());
+        let duplicate = TerrainProposal {
+            material: Some("earth".into()),
+            footprint: vec![[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]],
+            ..raise(1.0)
+        };
+        assert!(!duplicate.is_earthwork_region());
+        let collinear = TerrainProposal {
+            material: Some("earth".into()),
+            footprint: vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]],
+            ..raise(1.0)
+        };
+        assert!(!collinear.is_earthwork_region());
+        let wrong_vocab = TerrainProposal {
+            material: Some("earth".into()),
+            op: TerrainOp::Fill,
+            ..raise(1.0)
+        };
+        assert!(!wrong_vocab.is_earthwork_region());
     }
 
     #[test]

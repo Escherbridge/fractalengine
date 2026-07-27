@@ -106,7 +106,7 @@ pub fn draw_gimbal(
     highlight: Option<GimbalAxis>,
     mut gizmos: Gizmos<GimbalGizmoGroup>,
 ) {
-    if tool == Tool::Select {
+    if matches!(tool, Tool::Select | Tool::Brush) {
         return;
     }
 
@@ -128,7 +128,7 @@ pub fn draw_gimbal(
 
     match tool {
         // Pen is a path-drawing mode, not a transform gizmo — draw nothing.
-        Tool::Select | Tool::Pen => {}
+        Tool::Select | Tool::Pen | Tool::Brush => {}
         Tool::Move => {
             draw_move_handle(&mut gizmos, center, Vec3::X, cx);
             draw_move_handle(&mut gizmos, center, Vec3::Y, cy);

@@ -1,5 +1,13 @@
 # fe-ui/src/panels — the egui shell
 
+## 2026-07-26 Brush and numeric hardening
+
+Topbar **Tools** routes to `PathTools`, which owns stamping, Pen curves, and
+generated shapes. Selecting Brush opens the contextual `Tool` section with
+mutable radius/strength/op controls. `ToolPanelState` and `SculptToolState`
+sanitize relevant `f32`s before widgets and use practical finite ranges.
+Circle/Rect/Polygon are labeled report-only; Brush is the live paint shape.
+
 **Shell layout moved to area managers** (`ui_shell_architecture_20260724`
 Phase 2). The topbar/left/right render bodies now live in `crate::ui_shell`
 (`topbar`, `left_sidebar`, `right_sidebar`); `gardener_console` just orders the

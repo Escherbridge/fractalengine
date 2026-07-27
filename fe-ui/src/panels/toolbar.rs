@@ -17,8 +17,9 @@ pub enum Tool {
     Move,
     Rotate,
     Scale,
-    /// Click-to-place polyline pen for path editing; see `node_manager/AGENTS.md` §pen-tool.
     Pen,
+    /// Paint spaced, non-destructive earthwork dabs in the viewport.
+    Brush,
 }
 
 /// One viewport tool: button glyph, user-facing name, shortcut, key binding.
@@ -34,7 +35,7 @@ pub(crate) struct ToolDef {
 
 /// Single source for toolbar buttons/tooltips, the keyboard bindings
 /// (`node_manager::shortcuts`), and the viewport hint line — so they can't drift.
-pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
+pub(crate) const TOOL_DEFS: [ToolDef; 6] = [
     ToolDef {
         tool: Tool::Select,
         glyph: "\u{2B1A}",
@@ -69,6 +70,13 @@ pub(crate) const TOOL_DEFS: [ToolDef; 5] = [
         name: "Pen",
         key: "P",
         key_code: KeyCode::KeyP,
+    },
+    ToolDef {
+        tool: Tool::Brush,
+        glyph: "\u{25CF}",
+        name: "Brush",
+        key: "B",
+        key_code: KeyCode::KeyB,
     },
 ];
 
@@ -157,6 +165,7 @@ mod tests {
             Tool::Rotate,
             Tool::Scale,
             Tool::Pen,
+            Tool::Brush,
         ] {
             assert!(
                 TOOL_DEFS.iter().any(|d| d.tool == t),

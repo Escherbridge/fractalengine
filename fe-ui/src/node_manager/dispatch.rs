@@ -153,6 +153,7 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
             // Pen intent dominates: an empty-ground append still wins over
             // selecting the node the ray grazed (matches §pen-tool routing).
             Tool::Pen => Operation::PlacePathPoint,
+            Tool::Brush => Operation::TerrainCellEdit,
             _ => Operation::SelectNode(entity),
         },
         // A concrete object hit selects that object regardless of tool; WHEN such
@@ -167,6 +168,7 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
         HitTarget::TerrainCell => Operation::TerrainCellEdit,
         HitTarget::Empty => match tool {
             Tool::Pen => Operation::PlacePathPoint,
+            Tool::Brush => Operation::TerrainCellEdit,
             _ => Operation::Deselect,
         },
     }
@@ -468,6 +470,22 @@ mod tests {
                 "{tool:?}"
             );
         }
+    }
+
+    #[test]
+    fn brush_node_or_empty_hit_edits_terrain_instead_of_selecting() {
+        assert_eq!(
+            resolve_operation(Tool::Brush, &SelectionKind::Empty, HitTarget::Empty),
+            Operation::TerrainCellEdit
+        );
+        assert_eq!(
+            resolve_operation(
+                Tool::Brush,
+                &SelectionKind::Empty,
+                HitTarget::Node(entity(9))
+            ),
+            Operation::TerrainCellEdit
+        );
     }
 
     // --- terrain proposal payload seam (FR-5) ---

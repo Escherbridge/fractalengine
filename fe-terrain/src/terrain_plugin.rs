@@ -984,7 +984,7 @@ fn render_terrain_proposals(
     let mut remaining = MAX_PROPOSAL_OVERLAYS;
     for proposal in &config.proposals {
         // T3: earthwork regions bake into the chunk meshes (`bake_earthwork_regions`)
-        // — never double-visualize them as ghosts. Predicate = `material` presence.
+        // — never double-visualize records that pass the complete region predicate.
         if proposal.is_earthwork_region() {
             continue;
         }
@@ -1055,10 +1055,11 @@ struct PreparedRegion {
     target: f32,
     delta: f32,
     mean: Option<f32>,
+    strength: f32,
     grid_step: f32,
 }
 
-/// Earthwork regions in the config's proposal block — the `material` predicate
+/// Valid earthwork regions in the config's proposal block — the bake predicate
 /// filter, parsed through the designated `sculpt::parse_regions`.
 fn config_earthwork_regions(config: &TerrainConfig) -> Vec<crate::sculpt::EarthworkRegion> {
     let raw: Vec<serde_json::Value> = config
@@ -1100,8 +1101,13 @@ fn prepare_regions(
                 bounds,
                 op: r.op,
                 target: r.target_height.unwrap_or(0.0),
-                delta: r.delta.unwrap_or(0.0),
+                delta: if r.op == crate::sculpt::SculptOp::Smooth {
+                    0.0
+                } else {
+                    r.delta.unwrap_or(0.0)
+                },
                 mean,
+                strength: r.effective_strength(),
                 grid_step,
             }
         })
@@ -1136,13 +1142,13 @@ fn positions_world_xz_bounds(
 }
 
 /// Net surface delta at `(x, z)` from applying every containing region in
-/// record order over `base_y` (strength 1.0 — mirrors `EarthworkRegion::cut_fill`).
+/// record order over `base_y`.
 fn earthwork_surface_delta(prepared: &[PreparedRegion], base_y: f32, x: f32, z: f32) -> f32 {
     let mut h = base_y;
     for r in prepared {
         if r.footprint.contains(x, z) {
             if let Some(p) =
-                crate::sculpt::proposed_height(r.op, Some(h), r.target, r.delta, r.mean, 1.0)
+                crate::sculpt::proposed_height(r.op, Some(h), r.target, r.delta, r.mean, r.strength)
             {
                 h = p;
             }
