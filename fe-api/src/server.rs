@@ -87,23 +87,6 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route("/ready", get(ready_handler))
         // WebSocket does its own auth after the upgrade handshake.
         .route("/ws", get(crate::ws::ws_handler))
-        // Tile serving (public, no auth)
-        .route(
-            "/api/v1/tiles/elevation/{tileset_id}/{z}/{x}/{y_png}",
-            get(crate::terrain::get_elevation_tile),
-        )
-        .route(
-            "/api/v1/tiles/satellite/{tileset_id}/{z}/{x}/{y_jpg}",
-            get(crate::terrain::get_satellite_tile),
-        )
-        .route(
-            "/api/v1/tilesets",
-            get(crate::terrain::list_available_tilesets),
-        )
-        .route(
-            "/api/v1/tilesets/{tileset_id}/meta",
-            get(crate::terrain::get_tileset_meta),
-        )
         // Shared-URL redemption: no session — the ed25519 signature IS the
         // credential and the token's scope ceiling bounds the result set.
         .route(
@@ -212,6 +195,23 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             get(crate::terrain::get_terrain_config)
                 .put(crate::terrain::set_terrain_config)
                 .delete(crate::terrain::delete_terrain_config),
+        )
+        // Petal-scoped tile data plane
+        .route(
+            "/api/v1/tiles/elevation/{tileset_id}/{z}/{x}/{y_png}",
+            get(crate::terrain::get_elevation_tile),
+        )
+        .route(
+            "/api/v1/tiles/satellite/{tileset_id}/{z}/{x}/{y_jpg}",
+            get(crate::terrain::get_satellite_tile),
+        )
+        .route(
+            "/api/v1/tilesets",
+            get(crate::terrain::list_available_tilesets),
+        )
+        .route(
+            "/api/v1/tilesets/{tileset_id}/meta",
+            get(crate::terrain::get_tileset_meta),
         )
         // Petal GIS reads (geo nodes + GPX tracks)
         .route(

@@ -10,9 +10,10 @@ use fe_identity::api_token::ApiClaims;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use crate::auth::require_role;
+use crate::auth::{require_role, require_scope};
 use crate::server::ApiState;
-use crate::types::ApiResponse;
+use crate::types::{is_valid_ulid, ApiResponse};
+use fe_policy::{Action, AuthContext, RoleLevel};
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -20,6 +21,7 @@ use crate::types::ApiResponse;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
+    petal_id: String,
     #[serde(default)]
     q: String,
     #[serde(default)]
@@ -30,6 +32,7 @@ pub struct SearchQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct AvailableQuery {
+    petal_id: String,
     #[serde(default)]
     q: String,
     #[serde(default)]
@@ -151,6 +154,38 @@ fn get_registry(
     state.hexon_registry.clone()
 }
 
+/// Resolve and authorize a petal-scoped Hexon operation for an API caller.
+pub(crate) async fn require_hexon_petal_access(
+    state: &ApiState,
+    claims: &ApiClaims,
+    petal_id: &str,
+    minimum_role: &str,
+    action: Action,
+) -> Result<AuthContext, &'static str> {
+    if !is_valid_ulid(petal_id) {
+        return Err("invalid petal_id");
+    }
+    if require_role(claims, minimum_role).is_err() {
+        return Err("insufficient permissions");
+    }
+
+    let Some(scope) = crate::rest::resolve_petal_scope(state, petal_id).await else {
+        return Err("could not resolve petal scope");
+    };
+    if require_scope(claims, &scope).is_err() {
+        return Err("insufficient scope");
+    }
+
+    let subject = AuthContext::ApiToken {
+        subject: claims.sub.clone(),
+        scopes: vec![claims.scope.clone()],
+        role: RoleLevel::from(claims.max_role.as_str()),
+    };
+    fe_hexon::authz::authorize(&subject, &action, &scope)
+        .map_err(|_| "insufficient permissions")?;
+    Ok(subject)
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -217,9 +252,18 @@ pub async fn install_crate(
     Path(hexon_uri): Path<String>,
     Query(query): Query<InstallQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "editor").is_err() {
-        return err("insufficient permissions");
-    }
+    let _subject = match require_hexon_petal_access(
+        &state,
+        &claims,
+        &query.petal_id,
+        "editor",
+        Action::Install,
+    )
+    .await
+    {
+        Ok(subject) => subject,
+        Err(message) => return err(message),
+    };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
@@ -260,9 +304,13 @@ pub async fn uninstall_crate(
     Path(hexon_uri): Path<String>,
     Query(query): Query<InstallQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "editor").is_err() {
-        return err("insufficient permissions");
-    }
+    let subject =
+        match require_hexon_petal_access(&state, &claims, &query.petal_id, "editor", Action::Write)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(message) => return err(message),
+        };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
@@ -270,7 +318,7 @@ pub async fn uninstall_crate(
 
     let mut reg = registry.lock().unwrap();
 
-    match reg.uninstall(&hexon_uri, &query.petal_id) {
+    match reg.uninstall_as(&subject, &hexon_uri, &query.petal_id) {
         Ok(()) => {
             info!("Uninstalled {} from petal {}", hexon_uri, query.petal_id);
             ok(serde_json::json!({ "hexon_uri": hexon_uri, "uninstalled": true }))
@@ -292,9 +340,13 @@ pub async fn search_crates(
     Extension(claims): Extension<ApiClaims>,
     Query(query): Query<SearchQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "viewer").is_err() {
-        return err("insufficient permissions");
-    }
+    let subject =
+        match require_hexon_petal_access(&state, &claims, &query.petal_id, "viewer", Action::Read)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(message) => return err(message),
+        };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
@@ -312,7 +364,16 @@ pub async fn search_crates(
         .and_then(|k| k.parse::<HexonKind>().ok());
 
     let reg = registry.lock().unwrap();
-    let manifests = reg.search_local(&query.q, &tags, kind);
+    let manifests = match reg.search_local_in_petal_as(
+        &subject,
+        Some(&query.petal_id),
+        &query.q,
+        &tags,
+        kind,
+    ) {
+        Ok(manifests) => manifests,
+        Err(error) => return err(&format!("search denied: {error}")),
+    };
 
     let dtos: Vec<CrateManifestDto> = manifests.iter().map(to_manifest_dto).collect();
     ok(dtos)
@@ -323,17 +384,25 @@ pub async fn search_crates(
 pub async fn list_installed(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
+    Query(query): Query<InstallQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "viewer").is_err() {
-        return err("insufficient permissions");
-    }
+    let subject =
+        match require_hexon_petal_access(&state, &claims, &query.petal_id, "viewer", Action::Read)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(message) => return err(message),
+        };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
     };
 
     let reg = registry.lock().unwrap();
-    let installed = reg.list_installed(None);
+    let installed = match reg.list_installed_as(&subject, Some(&query.petal_id)) {
+        Ok(installed) => installed,
+        Err(error) => return err(&format!("list denied: {error}")),
+    };
 
     let dtos: Vec<InstalledCrateDto> = installed.iter().map(to_installed_dto).collect();
     ok(dtos)
@@ -345,19 +414,25 @@ pub async fn get_crate_manifest(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(hexon_uri): Path<String>,
+    Query(query): Query<InstallQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "viewer").is_err() {
-        return err("insufficient permissions");
-    }
+    let subject =
+        match require_hexon_petal_access(&state, &claims, &query.petal_id, "viewer", Action::Read)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(message) => return err(message),
+        };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
     };
 
     let reg = registry.lock().unwrap();
-    match reg.get_installed(&hexon_uri) {
-        Some(ic) => ok(to_manifest_dto(&ic.manifest)),
-        None => err(&format!("crate {} not found", hexon_uri)),
+    match reg.get_installed_as(&subject, &hexon_uri, &query.petal_id) {
+        Ok(Some(ic)) => ok(to_manifest_dto(&ic.manifest)),
+        Ok(None) => err(&format!("crate {} not found", hexon_uri)),
+        Err(error) => err(&format!("read denied: {error}")),
     }
 }
 
@@ -367,22 +442,28 @@ pub async fn get_crate_entries(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(hexon_uri): Path<String>,
+    Query(query): Query<InstallQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "viewer").is_err() {
-        return err("insufficient permissions");
-    }
+    let subject =
+        match require_hexon_petal_access(&state, &claims, &query.petal_id, "viewer", Action::Read)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(message) => return err(message),
+        };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
     };
 
     let reg = registry.lock().unwrap();
-    match reg.get_installed(&hexon_uri) {
-        Some(ic) => {
+    match reg.get_installed_as(&subject, &hexon_uri, &query.petal_id) {
+        Ok(Some(ic)) => {
             let dtos: Vec<CrateEntryDto> = ic.entries.iter().map(to_entry_dto).collect();
             ok(dtos)
         }
-        None => err(&format!("crate {} not found", hexon_uri)),
+        Ok(None) => err(&format!("crate {} not found", hexon_uri)),
+        Err(error) => err(&format!("read denied: {error}")),
     }
 }
 
@@ -392,18 +473,25 @@ pub async fn get_crate_asset(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path((hexon_uri, entry_id)): Path<(String, String)>,
+    Query(query): Query<InstallQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "viewer").is_err() {
-        return err("insufficient permissions");
-    }
+    let subject =
+        match require_hexon_petal_access(&state, &claims, &query.petal_id, "viewer", Action::Read)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(message) => return err(message),
+        };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
     };
 
     let reg = registry.lock().unwrap();
-    let Some(installed) = reg.get_installed(&hexon_uri) else {
-        return err(&format!("crate {} not found", hexon_uri));
+    let installed = match reg.get_installed_as(&subject, &hexon_uri, &query.petal_id) {
+        Ok(Some(installed)) => installed,
+        Ok(None) => return err(&format!("crate {} not found", hexon_uri)),
+        Err(error) => return err(&format!("read denied: {error}")),
     };
 
     let Some(entry) = installed.entries.iter().find(|e| e.entry_id == entry_id) else {
@@ -430,7 +518,7 @@ pub async fn get_crate_asset(
 }
 
 // ---------------------------------------------------------------------------
-// Available crates (local + peer-discovered)
+// Available crates
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, serde::Serialize)]
@@ -440,17 +528,20 @@ struct AvailableCrateDto {
     available_from: Vec<String>,
 }
 
-/// GET /api/v1/crates/available — Search both local registry AND peer-discovered
-/// manifests. Returns unified results with install status and hosting peers.
+/// Search crates installed in one petal.
 /// Requires Viewer+ role.
 pub async fn available_crates(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Query(query): Query<AvailableQuery>,
 ) -> JsonResult {
-    if require_role(&claims, "viewer").is_err() {
-        return err("insufficient permissions");
-    }
+    let subject =
+        match require_hexon_petal_access(&state, &claims, &query.petal_id, "viewer", Action::Read)
+            .await
+        {
+            Ok(subject) => subject,
+            Err(message) => return err(message),
+        };
 
     let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
@@ -469,14 +560,18 @@ pub async fn available_crates(
 
     let reg = registry.lock().unwrap();
 
-    // 1. Search locally installed crates
-    let local_manifests = reg.search_local(&query.q, &tags, kind);
-    let installed_uris: std::collections::HashSet<String> = local_manifests
-        .iter()
-        .map(fe_hexon::package::hexon_uri)
-        .collect();
+    let local_manifests = match reg.search_local_in_petal_as(
+        &subject,
+        Some(&query.petal_id),
+        &query.q,
+        &tags,
+        kind,
+    ) {
+        Ok(manifests) => manifests,
+        Err(error) => return err(&format!("search denied: {error}")),
+    };
 
-    let mut results: Vec<AvailableCrateDto> = local_manifests
+    let results: Vec<AvailableCrateDto> = local_manifests
         .iter()
         .map(|m| AvailableCrateDto {
             manifest: to_manifest_dto(m),
@@ -484,41 +579,6 @@ pub async fn available_crates(
             available_from: vec!["local".to_string()],
         })
         .collect();
-
-    // 2. Search peer-discovered announcements (if announcement store is available)
-    if let Some(ref announcement_store) = state.announcement_store {
-        let store = announcement_store.lock().unwrap();
-        let search_query = fe_hexon::p2p::SearchQuery {
-            query: if query.q.is_empty() {
-                None
-            } else {
-                Some(query.q.clone())
-            },
-            tags: tags.iter().map(|t| t.to_string()).collect(),
-            kind,
-        };
-
-        let peer_results = fe_hexon::p2p::search_announcements(&store, &search_query);
-        for result in peer_results {
-            let uri = fe_hexon::package::hexon_uri(&result.manifest);
-            if installed_uris.contains(&uri) {
-                // Already in local results — merge hosting peers
-                if let Some(existing) = results.iter_mut().find(|r| r.manifest.hexon_uri == uri) {
-                    for peer in &result.hosting_peers {
-                        if !existing.available_from.contains(peer) {
-                            existing.available_from.push(peer.clone());
-                        }
-                    }
-                }
-            } else {
-                results.push(AvailableCrateDto {
-                    manifest: to_manifest_dto(&result.manifest),
-                    installed: false,
-                    available_from: result.hosting_peers,
-                });
-            }
-        }
-    }
 
     ok(results)
 }

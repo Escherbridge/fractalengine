@@ -283,8 +283,9 @@ pub struct QueryResultDto {
 #[derive(Debug, Deserialize)]
 pub struct AnalyticsQueryRequest {
     pub sql: String,
-    /// Optional petal_id to scope the query to a single petal's nodes.
-    pub petal_id: Option<String>,
+    /// Required petal scope for the query. Analytics never exposes an
+    /// all-petals table to a caller.
+    pub petal_id: String,
 }
 
 // ---------------------------------------------------------------------------

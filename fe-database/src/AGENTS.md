@@ -158,9 +158,9 @@ bridge with no consumers). Rationale carried over from the deleted crate:
 - `SESSION_TTL_SECS = 60` bounds how long a stale role can be served after a
   role change elsewhere; `get` treats expired entries as absent and
   `prune_expired` reclaims them.
-- `revoke_session` is log-first: it writes a `RevokeSession` op-log entry
-  *before* evicting the cache entry, so revocation survives restarts and can
-  replicate. Its `sig: "00".repeat(64)` is one of the workspace's known
+- `revoke_session` enters `op_log::commit_operation` before evicting the
+  cache entry, so a failed append leaves the cache unchanged. Its
+  `sig: "00".repeat(64)` is one of the workspace's known
   placeholder op-log signatures (13 sites tracked by the hexon-p2p-commons
   research); broadcasting the revocation to peers
   (`NetworkCommand::BroadcastRevocation`) is still deferred (Sprint 5B).
@@ -202,6 +202,47 @@ for debugging / external tooling. HLC state sits in a `Mutex` purely for
 `static` safety — the DB thread is single-threaded (current_thread tokio),
 so contention is zero in practice.
 
+## §log-first-commit
+
+Every current op-log mutation enters `op_log::commit_operation`. The seam
+assigns the local HLC, persists the op-log row, then invokes the local
+materialization closure. An append error means the closure is never called;
+callers return that error to their command path. A materialization error can
+leave an already-appended operation without its local row update, which is a
+recoverable pending replay until the verified materializer and its atomic
+boundary arrive. `append_operation_log` is private so handlers cannot bypass
+this order.
+
+**PRECONDITION VALIDATION PRECEDES APPEND.** A caller must verify every cheap,
+locally decidable precondition — including the target's existence and its
+authorized scope — before it builds or appends an `OpLogEntry`. A normal
+not-found or invalid-scope request therefore returns its original command
+error and never creates a replay-poisoning log row. The materializer still
+asserts its matched rows as the TOCTOU backstop: only a crash or a target that
+vanishes after the precheck may return the appended-but-materialization-failed
+outcome, which recovery handles by replay and discard.
+
+Caller coverage is deliberate: node property and transform mutations preflight
+their node; room/model creation resolves and authorizes the real petal scope
+(and model placement requires its asset); SpaceManager metadata mutations bind
+the target record to that same scope before append; and role assignment or
+revocation verifies the entire verse/fractal/petal chain. Node hard-delete and
+tombstone callers already resolve their targets before append; session-cache
+revocation deliberately has no cache-entry-exists precondition because a cold
+cache must still retain its durable revocation. Legacy Verse/Fractal/Petal
+creation contracts remain the D-CL20 / SPEC-4 §10 deferral and MUST NOT be
+used as canonical admission paths until their parent-scope and authority
+contracts are specified.
+
+Legacy `CreateNode` and hard `DeleteNode` now record `NodeCreated` and
+`NodeDeleted` intentions through this seam as well. `DeleteNode` retains its
+pre-track physical-row semantics, including its direct-GPX-waypoint cascade;
+the newer tombstone commands remain the only sync-safe deletion path.
+
+This is substrate hardening only. `OpLogEntry` still uses the legacy local
+format and placeholder signatures; do not add canonical-envelope, signature,
+or wire semantics here.
+
 ## §handlers
 
 `handlers/` holds the command handlers extracted from the DB dispatch loop,
@@ -212,6 +253,7 @@ one sub-module per domain:
 - `entity_property` — custom property CRUD for nodes
 - `field_def` — field definition schema CRUD
 - `transform` — node position/rotation/scale and URL persistence
+- `preconditions` — shared cheap target/scope checks required before append
 - `rbac` — role resolution, assignment, revocation
 - `invite` — verse invite generation and join-by-invite
 - `api_token` — API token minting, revocation, and listing
@@ -323,12 +365,19 @@ without being physically gone. The node's direct gpx waypoints
 retains a hard row drop — it is the pre-track hard-delete op, superseded by the
 tombstone for anything sync-safe.
 
-**Cascade = one atomic transaction (FR-2).** `cascade_tombstone_node_handler`
-BFS-collects the N-level descendant subtree over the durable parent edges
-(`properties.parent_id` / `gpx_track_id` / `owning_path_id`, de-duplicated,
-depth-capped) then tombstones the whole set **and** writes the op-log record
-inside one `BEGIN … COMMIT TRANSACTION`. A failure in either statement rolls both
-back — no half-deleted subtree (proved by `cascade_transaction_rolls_back_on_partial_failure`).
+**Cascade = one materialized subtree update (FR-2).**
+`cascade_tombstone_node_handler` BFS-collects the N-level descendant subtree
+over the durable parent edges (`properties.parent_id` / `gpx_track_id` /
+`owning_path_id`, de-duplicated, depth-capped), appends its operation through
+§log-first-commit, then stamps the whole set in one UPDATE statement. The
+operation append and row update are not yet one transaction: a failed update
+leaves a replayable pending operation rather than unlogged state.
+The dispatcher emits one petal-scoped `SceneChange::NodeRemoved` per id in the
+materialized subtree, so `EntityStore` and WebSocket mirrors discard every
+affected descendant rather than only the cascade root.
+An already-tombstoned root is an idempotent no-op: the handler returns an empty
+affected set before `commit_operation`, so it appends no second operation,
+updates no rows, and emits no duplicate scene or lifecycle event.
 
 **Merge non-resurrection (`merge.rs`, N-4).** `apply_replicated_node` is the
 durable counterpart of `EntityStore::upsert`'s tombstone guard: an incoming
@@ -359,8 +408,15 @@ duplicate → `NodeCreated` (a copy is an ordinary new node to every subscriber)
 `properties.instance_index` (read in `read_node_lifecycle_meta`, threaded via
 `TombstoneDurableOutcome.deleted_instance_index`) so T2's re-flow knows which
 slot vanished; the field is `Option` + serde-defaulted so pre-field payloads
-still parse. HLC init (`op_log::init_hlc`) is a precondition for the
-tombstone/promote op-log writes.
+still parse. HLC init (`op_log::init_hlc`) is a precondition for all op-log
+writes, including legacy node creation and hard deletion.
+
+**Scene-change attribution.** Every node-scoped `SceneChange` emitted by the
+DB dispatcher carries an owning `petal_id`. Delete and tombstone paths use
+their handler outcome; transform, property, and node-rename paths resolve the
+petal after the durable write. A failed or absent lookup suppresses that scene
+event rather than broadcasting an unscoped delta. Generic `RenameEntity` has
+no node variant and emits no node scene change.
 
 **Rename / duplicate / descendant count (spatial-builder Step 1).**
 `RenameNode` / `DuplicateNode` authorize through the shared

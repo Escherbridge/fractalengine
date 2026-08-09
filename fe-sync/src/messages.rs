@@ -61,7 +61,11 @@ pub enum SyncCommand {
     CancelTilesetDownload { tileset_id: String },
     /// Gracefully shut down the sync thread.
     Shutdown,
-    /// Broadcast a node transform change to peers in real time.
+    /// Legacy unsigned transform command.
+    ///
+    /// The sync thread deliberately drops this command. Networked transform
+    /// replication must use a signed canonical operation rather than this
+    /// preview-shaped payload.
     UpdateNodeTransform {
         verse_id: String,
         node_id: String,

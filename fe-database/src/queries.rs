@@ -1,4 +1,5 @@
-use crate::op_log::write_op_log;
+use crate::handlers::preconditions::{require_asset_exists, require_petal_scope};
+use crate::op_log::commit_operation;
 use crate::repo::Repo;
 use crate::schema::{Model, Petal, Room};
 use crate::types::{NodeId, OpLogEntry, OpType, PetalId};
@@ -20,7 +21,6 @@ pub async fn create_petal(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    write_op_log(db, entry).await?;
     let petal = Petal {
         petal_id: petal_id.0.to_string(),
         name: name.to_string(),
@@ -34,7 +34,10 @@ pub async fn create_petal(
         hexon_manifest: None,
         terrain: None,
     };
-    Repo::<Petal>::create(db, &petal).await?;
+    commit_operation(db, entry, |_| async {
+        Repo::<Petal>::create(db, &petal).await
+    })
+    .await?;
     Ok(petal_id)
 }
 
@@ -44,9 +47,8 @@ pub async fn create_room(
     petal_id: &PetalId,
     name: &str,
 ) -> anyhow::Result<()> {
-    // Migration bridge: queries only have petal_id context.
-    // Full hierarchical scope will be used once verse/fractal context is available here.
-    let scope = format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0);
+    // Resolve the stored hierarchy rather than authorizing a caller-supplied scope.
+    let scope = require_petal_scope(db, &petal_id.0.to_string(), "CreateRoom").await?;
     crate::rbac::require_write_role(db, &caller_node_id.0, &scope).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
@@ -56,7 +58,6 @@ pub async fn create_room(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    write_op_log(db, entry).await?;
     let room = Room {
         petal_id: petal_id.0.to_string(),
         name: name.to_string(),
@@ -64,7 +65,10 @@ pub async fn create_room(
         bounds: None,
         spawn_point: None,
     };
-    Repo::<Room>::create(db, &room).await?;
+    commit_operation(db, entry, |_| async {
+        Repo::<Room>::create(db, &room).await
+    })
+    .await?;
     Ok(())
 }
 
@@ -75,10 +79,10 @@ pub async fn place_model(
     asset_id: &str,
     transform: serde_json::Value,
 ) -> anyhow::Result<()> {
-    // Migration bridge: queries only have petal_id context.
-    // Full hierarchical scope will be used once verse/fractal context is available here.
-    let scope = format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0);
+    // Resolve the stored hierarchy rather than authorizing a caller-supplied scope.
+    let scope = require_petal_scope(db, &petal_id.0.to_string(), "PlaceModel").await?;
     crate::rbac::require_write_role(db, &caller_node_id.0, &scope).await?;
+    require_asset_exists(db, asset_id, "PlaceModel").await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
         node_id: caller_node_id.clone(),
@@ -86,12 +90,11 @@ pub async fn place_model(
         payload: serde_json::json!({
             "petal_id": petal_id.0.to_string(),
             "asset_id": asset_id,
-            "transform": transform,
+            "transform": transform.clone(),
         }),
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    write_op_log(db, entry).await?;
     let model = Model {
         petal_id: petal_id.0.to_string(),
         asset_id: asset_id.to_string(),
@@ -103,6 +106,9 @@ pub async fn place_model(
         tags: vec![],
         metadata: None,
     };
-    Repo::<Model>::create(db, &model).await?;
+    commit_operation(db, entry, |_| async {
+        Repo::<Model>::create(db, &model).await
+    })
+    .await?;
     Ok(())
 }

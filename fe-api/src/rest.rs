@@ -826,45 +826,6 @@ pub(crate) async fn direct_resolve_node_scope(db: &Db, node_id: &str) -> Option<
     direct_resolve_petal_scope(db, petal_id).await
 }
 
-/// Load all nodes for a petal via direct DB query.
-pub(crate) async fn direct_load_petal_nodes(db: &Db, petal_id: &str) -> Vec<crate::types::NodeDto> {
-    let query_result = db
-        .query(
-            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
-        )
-        .bind(("pid", petal_id.to_string()))
-        .await;
-
-    let mut res = match query_result {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
-    let nodes_raw: Vec<serde_json::Value> = match res.take(0) {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
-
-    nodes_raw
-        .iter()
-        .map(|n| {
-            let coords = &n["position"]["coordinates"];
-            let x = coords[0].as_f64().unwrap_or(0.0) as f32;
-            let z = coords[1].as_f64().unwrap_or(0.0) as f32;
-            let y = n["elevation"].as_f64().unwrap_or(0.0) as f32;
-
-            crate::types::NodeDto {
-                id: n["node_id"].as_str().unwrap_or("").to_string(),
-                name: n["name"].as_str().unwrap_or("").to_string(),
-                petal_id: n["petal_id"].as_str().unwrap_or("").to_string(),
-                position: [x, y, z],
-                has_asset: n["asset_id"].as_str().is_some(),
-                asset_path: n["asset_path"].as_str().map(|s| s.to_string()),
-                webpage_url: None,
-            }
-        })
-        .collect()
-}
-
 /// Parse a JSON value as a `[f32; 3]` array, using `default` for missing elements.
 pub(crate) fn parse_f32_array3(val: &serde_json::Value, default: f32) -> [f32; 3] {
     if let Some(arr) = val.as_array() {
@@ -1067,10 +1028,12 @@ pub async fn execute_elevated_query(
 
 /// POST /api/v1/analytics/query — execute a DataFusion SQL query over the in-memory EntityStore.
 ///
-/// RBAC: Viewer+ required. Scope enforced via petal_id scoping.
+/// RBAC: Viewer+ required. A required petal identifier is resolved through
+/// the direct DB reader and must be covered by the token scope before the
+/// in-memory table is constructed.
 /// Rate limited to 10 req/s per user (shared with `/query` limiter).
 ///
-/// Accepts `{ "sql": "SELECT ...", "petal_id": "optional-scope" }`.
+/// Accepts `{ "sql": "SELECT ...", "petal_id": "required-petal" }`.
 /// Returns JSON rows from the DataFusion result.
 pub async fn execute_analytics_query(
     State(state): State<Arc<crate::server::ApiState>>,
@@ -1083,6 +1046,25 @@ pub async fn execute_analytics_query(
         return Json(ApiResponse::<QueryResultDto>::error(
             "insufficient permissions",
         ));
+    }
+
+    if !crate::types::is_valid_ulid(&req.petal_id) {
+        return Json(ApiResponse::<QueryResultDto>::error("invalid petal_id"));
+    }
+
+    // Require direct scope resolution; see fe-api/AGENTS.md §analytics-query.
+    let Some(ref db) = state.db_reader else {
+        return Json(ApiResponse::<QueryResultDto>::error(
+            "analytics authorization unavailable (no direct DB reader)",
+        ));
+    };
+    let Some(scope) = direct_resolve_petal_scope(db, &req.petal_id).await else {
+        return Json(ApiResponse::<QueryResultDto>::error(
+            "analytics authorization unavailable (petal scope could not be resolved)",
+        ));
+    };
+    if require_scope(&claims, &scope).is_err() {
+        return Json(ApiResponse::<QueryResultDto>::error("insufficient scope"));
     }
 
     // Rate limiting (shared bucket with /query)
@@ -1123,8 +1105,9 @@ pub async fn execute_analytics_query(
 
     let analytics_ctx = fe_query::columnar::context::AnalyticsContext::new(store.clone());
 
-    // Register node table scoped to petal if provided
-    if let Err(e) = analytics_ctx.register_node_table("nodes", req.petal_id.as_deref()) {
+    // `petal_id` is required and authorized above. The provider sees only this
+    // petal, independently of whether client SQL contains a WHERE clause.
+    if let Err(e) = analytics_ctx.register_node_table("nodes", Some(&req.petal_id)) {
         return Json(ApiResponse::<QueryResultDto>::error(format!(
             "failed to register node table: {e}"
         )));

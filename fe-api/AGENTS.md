@@ -9,6 +9,21 @@ handlers may bypass that round-trip entirely with a direct SurrealDB query
 (`direct_*` helpers in `rest.rs`/`assets.rs`) — this is the established escape
 hatch for reads that don't have (or don't need) a dedicated `DbCommand`.
 
+## §websocket
+
+`ws.rs` treats every petal and node target as deny-by-default: resolve its
+hierarchical scope, require token containment, then subscribe or mutate. A
+transform broadcast carries the resolved petal identifier rather than trusting
+client attribution. `SceneChange` events are filtered by their mandatory
+petal attribution; transform rollbacks use the same filter. When either
+broadcast receiver lags, the connection receives fresh snapshots for its
+currently subscribed petals. This is lag hygiene only: scene versions remain
+connection-local until the canonical commit-cursor protocol exists. An empty
+petal is a valid snapshot; database, channel, timeout, decode, or unexpected
+result failures are instead reported as `resync_required` and emit no snapshot.
+Lag recovery clears the connection's scene subscriptions before that error so
+no incremental changes resume until the client explicitly resubscribes.
+
 ## §routes
 
 Route inventory for `server.rs::build_router`. The `.route()` registrations
@@ -22,10 +37,6 @@ when a route lands.
 | GET | `/api/v1/health` | inline |
 | GET | `/ready` | `ready_handler` (DB ping) |
 | GET | `/ws` | `ws::ws_handler` |
-| GET | `/api/v1/tiles/elevation/{tileset_id}/{z}/{x}/{y_png}` | `terrain::get_elevation_tile` |
-| GET | `/api/v1/tiles/satellite/{tileset_id}/{z}/{x}/{y_jpg}` | `terrain::get_satellite_tile` |
-| GET | `/api/v1/tilesets` | `terrain::list_available_tilesets` |
-| GET | `/api/v1/tilesets/{tileset_id}/meta` | `terrain::get_tileset_meta` |
 | GET | `/api/v1/shared/{token}` | `share::redeem_share_url` (§share — the signature is the credential) |
 
 **Authenticated** (Bearer JWT via `auth::auth_middleware`):
@@ -40,11 +51,12 @@ when a route lands.
 | Assets (§assets) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset` |
 | Petal archive / GPX | `GET /api/v1/petals/{p}/export`, `POST …/import`, `POST …/import/gpx`, `GET …/export/gpx` |
 | Terrain config | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
+| Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
 | Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query`, `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` |
 | IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
-| Hexon tilesets | `POST /api/v1/hexons/tilesets/install`, `DELETE /api/v1/hexons/tilesets/{id}`, `PATCH …/{id}/seeding`, `GET /api/v1/hexons/tilesets`, `GET /api/v1/hexons/storage` |
-| Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install`, `DELETE …/{uri}/uninstall`, `GET /api/v1/crates/search`, `GET /api/v1/crates/installed`, `GET /api/v1/crates/{uri}`, `GET …/{uri}/entries`, `GET …/{uri}/entries/{entry_id}/asset`, `GET /api/v1/crates/available` |
+| Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
+| Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | MCP | `POST /mcp` (`mcp::mcp_handler`) — 10 tools: 6 base + per-endpoint CRUD `read_node` / `node_address` / `delete_node` / `promote_instance` (§endpoint-surface) |
 
 ## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
@@ -208,6 +220,24 @@ one branch grows.
 
 ## §query-guard + §limits
 
+## §analytics-query
+
+`POST /api/v1/analytics/query` is a deliberately narrower DataFusion surface
+than `/api/v1/query`: its body requires both `sql` and a concrete `petal_id`.
+The handler requires Viewer+, validates and directly resolves that petal's
+hierarchical scope, then requires token containment *before* registering the
+`EntityStore` table. The table is always registered with the authorized petal
+filter; caller SQL can never select an all-petals table. Analytics has no
+crossbeam scope-resolution fallback: without a direct DB reader, or when the
+petal cannot be resolved, it returns an explicit unavailable error.
+
+The `EntityStore` is hydrated before the desktop API starts, but remains a hot,
+eventually refreshed cache rather than the canonical database. Authorization is
+fresh from the direct reader, while data can lag a just-committed mutation until
+the cache receives its scene change; the bounded bridge has no automatic
+resync after a drop. Callers requiring read-after-write semantics must use the
+scoped DB/export surfaces instead.
+
 **Subquery/whitespace hardening (2026-07-15 security review):** the table
 whitelist is enforced on EVERY `FROM` clause via `from_clause_tables`
 (subqueries included; non-identifier FROM targets like `$var` or
@@ -325,6 +355,28 @@ requests rather than done here):
 - Share-URL signing key persistence (§share): pass the node's `NodeKeypair`
   into `ApiConfig`/`run_server` from `fractalengine/src/main.rs` so shareable
   links survive a restart; today the key is ephemeral per process.
+
+## §hexon-scope
+
+All authenticated Hexon crate and tileset-management routes require a
+`petal_id` query parameter. `hexon::require_hexon_petal_access` validates the
+identifier, resolves its hierarchy scope, checks token containment, and enters
+the `fe_hexon::authz` policy gate. Crate discovery and reads are filtered to
+the requested petal binding; peer announcements are deliberately not exposed
+through this surface because they carry no verifiable petal scope.
+
+Tileset installation and removal both require an **exclusive existing terrain
+binding**: the archive's declared ID (for install) or route ID (for removal)
+must appear in the requested petal's `terrain.tileset_hexon_uris`, and no other
+petal may reference it. This is checked before any local-store mutation, so an
+editor for Petal A cannot create, overwrite, or remove an unbound ID or an ID
+owned by Petal B. Listing and storage summaries are filtered to the requested
+petal's bindings. API seeding changes are denied while P2P distribution is
+disabled. The tile data plane is authenticated and requires the same
+`petal_id`: each list, metadata, and tile-byte request re-resolves the petal
+scope and permits only IDs bound in that petal's terrain configuration. Unbound
+or unknown IDs both return 404, and byte responses are `private, no-store` so a
+shared cache cannot replay a scoped tile to another caller.
 
 ## §iot-ingest (iot_spatial_reporting_20260714)
 

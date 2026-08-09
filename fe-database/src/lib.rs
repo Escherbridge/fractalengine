@@ -592,12 +592,19 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         match handlers::transform::update_node_transform_handler(&db, &node_id, position, rotation, scale).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
-                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeTransform {
-                                        node_id: node_id.clone(),
-                                        position,
-                                        rotation,
-                                        scale,
-                                    });
+                                    match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
+                                        Ok(Some(petal_id)) => {
+                                            let _ = ect.send(fe_runtime::messages::SceneChange::NodeTransform {
+                                                node_id: node_id.clone(),
+                                                petal_id,
+                                                position,
+                                                rotation,
+                                                scale,
+                                            });
+                                        }
+                                        Ok(None) => tracing::warn!(node_id, "omitting transform scene change without petal scope"),
+                                        Err(e) => tracing::warn!(node_id, "omitting transform scene change after petal lookup failure: {e}"),
+                                    }
                                 }
                                 if let Err(e) = handlers::node_log::append_node_log(
                                     &db, &node_id, "transform_update", &local_did,
@@ -610,26 +617,34 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                 tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
                                 // Emit rollback with last-known-good values from DB
                                 if let Some(ref ect) = entity_change_tx {
-                                    let rollback = match handlers::crud::get_node_transform_handler(&db, &node_id).await {
-                                        Ok(Some((pos, rot, sc))) => {
-                                            fe_runtime::messages::SceneChange::TransformFailed {
-                                                node_id,
-                                                position: pos,
-                                                rotation: rot,
-                                                scale: sc,
-                                            }
+                                    match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
+                                        Ok(Some(petal_id)) => {
+                                            let rollback = match handlers::crud::get_node_transform_handler(&db, &node_id).await {
+                                                Ok(Some((pos, rot, sc))) => {
+                                                    fe_runtime::messages::SceneChange::TransformFailed {
+                                                        node_id: node_id.clone(),
+                                                        petal_id,
+                                                        position: pos,
+                                                        rotation: rot,
+                                                        scale: sc,
+                                                    }
+                                                }
+                                                _ => {
+                                                    // Can't read old values — send back zeros as a signal
+                                                    fe_runtime::messages::SceneChange::TransformFailed {
+                                                        node_id: node_id.clone(),
+                                                        petal_id,
+                                                        position: [0.0; 3],
+                                                        rotation: [0.0; 3],
+                                                        scale: [1.0, 1.0, 1.0],
+                                                    }
+                                                }
+                                            };
+                                            let _ = ect.send(rollback);
                                         }
-                                        _ => {
-                                            // Can't read old values — send back zeros as a signal
-                                            fe_runtime::messages::SceneChange::TransformFailed {
-                                                node_id,
-                                                position: [0.0; 3],
-                                                rotation: [0.0; 3],
-                                                scale: [1.0, 1.0, 1.0],
-                                            }
-                                        }
-                                    };
-                                    let _ = ect.send(rollback);
+                                        Ok(None) => tracing::warn!(node_id, "omitting transform rollback without petal scope"),
+                                        Err(lookup_error) => tracing::warn!(node_id, "omitting transform rollback after petal lookup failure: {lookup_error}"),
+                                    }
                                 }
                             }
                         }
@@ -642,14 +657,7 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                     Ok(DbCommand::RenameEntity { entity_type, entity_id, new_name }) => {
                         match handlers::entity::rename_entity_handler(&db, entity_type, &entity_id, &new_name).await {
                             Ok(()) => {
-                                if let Some(ref ect) = entity_change_tx {
-                                    // entity_id is a verse/fractal/petal id (EntityType has no
-                                    // Node variant); subscribers no-op on unknown node ids.
-                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeRenamed {
-                                        node_id: entity_id.clone(),
-                                        new_name: new_name.clone(),
-                                    });
-                                }
+                                // EntityType has no Node variant, so no node-scoped scene change exists.
                                 send_result(&tx, DbResult::EntityRenamed { entity_type, entity_id, new_name });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(e)),
@@ -773,11 +781,18 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         match handlers::entity_property::set_entity_property_handler(&db, &node_id, &key, &value).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
-                                    let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
-                                        node_id: node_id.clone(),
-                                        key: key.clone(),
-                                        value: value.clone(),
-                                    });
+                                    match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
+                                        Ok(Some(petal_id)) => {
+                                            let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
+                                                node_id: node_id.clone(),
+                                                petal_id,
+                                                key: key.clone(),
+                                                value: value.clone(),
+                                            });
+                                        }
+                                        Ok(None) => tracing::warn!(node_id, "omitting property scene change without petal scope"),
+                                        Err(e) => tracing::warn!(node_id, "omitting property scene change after petal lookup failure: {e}"),
+                                    }
                                 }
                                 if let Err(e) = handlers::node_log::append_node_log(
                                     &db, &node_id, "property_set", &local_did,
@@ -800,11 +815,18 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         match handlers::entity_property::delete_entity_property_handler(&db, &node_id, &key).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
-                                    let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
-                                        node_id: node_id.clone(),
-                                        key: key.clone(),
-                                        value: serde_json::Value::Null,
-                                    });
+                                    match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
+                                        Ok(Some(petal_id)) => {
+                                            let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
+                                                node_id: node_id.clone(),
+                                                petal_id,
+                                                key: key.clone(),
+                                                value: serde_json::Value::Null,
+                                            });
+                                        }
+                                        Ok(None) => tracing::warn!(node_id, "omitting property scene change without petal scope"),
+                                        Err(e) => tracing::warn!(node_id, "omitting property scene change after petal lookup failure: {e}"),
+                                    }
                                 }
                                 if let Err(e) = handlers::node_log::append_node_log(
                                     &db, &node_id, "property_deleted", &local_did,
@@ -823,6 +845,7 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeRemoved {
                                         node_id: node_id.clone(),
+                                        petal_id: petal_id.clone(),
                                     });
                                 }
                                 if let Err(e) = handlers::node_log::append_node_log(
@@ -869,6 +892,7 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                     if let Some(ref ect) = entity_change_tx {
                                         let _ = ect.send(fe_runtime::messages::SceneChange::NodeRemoved {
                                             node_id: node_id.clone(),
+                                            petal_id: outcome.petal_id.clone(),
                                         });
                                     }
                                     // one NodeDeleted per delete op (+ PathReflow for a stamp).
@@ -892,7 +916,7 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                     }
                     Ok(DbCommand::CascadeTombstoneNode { node_id, auth }) => {
                         // N-5: resolve scope, then the caller's real role, then authorize
-                        // before mutating; then tombstone the whole subtree atomically (FR-2).
+                        // before mutating; then tombstone the whole subtree through the log-first seam.
                         // A `Local` caller's role is DB-resolved (no UI-side assertion).
                         let scope = handlers::crud::resolve_node_scope_handler(&db, &node_id).await.ok().flatten();
                         let Some(scope) = scope else {
@@ -916,9 +940,12 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                 // subtree = no-op, empty `tombstoned_ids`).
                                 if !outcome.tombstoned_ids.is_empty() {
                                     if let Some(ref ect) = entity_change_tx {
-                                        let _ = ect.send(fe_runtime::messages::SceneChange::NodeRemoved {
-                                            node_id: node_id.clone(),
-                                        });
+                                        for tombstoned_node_id in &outcome.tombstoned_ids {
+                                            let _ = ect.send(fe_runtime::messages::SceneChange::NodeRemoved {
+                                                node_id: tombstoned_node_id.clone(),
+                                                petal_id: outcome.petal_id.clone(),
+                                            });
+                                        }
                                     }
                                     // exactly one NodeDeleted for the cascade op (rooted at node_id).
                                     if let Some(uri) = lifecycle_uri(&scope, &node_id) {
@@ -995,10 +1022,17 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         match handlers::crud::rename_node_handler(&db, &node_id, &new_name).await {
                             Ok(()) => {
                                 if let Some(ref ect) = entity_change_tx {
-                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeRenamed {
-                                        node_id: node_id.clone(),
-                                        new_name: new_name.clone(),
-                                    });
+                                    match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
+                                        Ok(Some(petal_id)) => {
+                                            let _ = ect.send(fe_runtime::messages::SceneChange::NodeRenamed {
+                                                node_id: node_id.clone(),
+                                                petal_id,
+                                                new_name: new_name.clone(),
+                                            });
+                                        }
+                                        Ok(None) => tracing::warn!(node_id, "omitting rename scene change without petal scope"),
+                                        Err(e) => tracing::warn!(node_id, "omitting rename scene change after petal lookup failure: {e}"),
+                                    }
                                 }
                                 if let Err(e) = handlers::node_log::append_node_log(
                                     &db, &node_id, "renamed", &local_did,

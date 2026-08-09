@@ -198,7 +198,7 @@ pub async fn seed_default_data(
         db,
         &Role {
             peer_did: node_id.0.clone(),
-            scope: format!("VERSE#_-FRACTAL#_-PETAL#{}", petal_id.0.to_string()),
+            scope: crate::build_scope(&verse_id, Some(&fractal_id), Some(&petal_id.0.to_string())),
             role: "owner".to_string(),
         },
     )

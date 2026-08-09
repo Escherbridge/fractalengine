@@ -49,8 +49,9 @@ The old `iroh_gossip::{Host, Topic, TopicId}` surface was removed upstream. Curr
 - Subscription: `gossip.subscribe(topic_id, bootstrap) -> GossipTopic`. We hold the live
   `GossipTopic` handles in `gossip_topics: HashMap<String, GossipTopic>`; **dropping a handle
   is how you leave a topic** (there is no `unsubscribe(topic_id)` anymore).
-- Broadcast: `GossipTopic::broadcast(Bytes).await` (now async — the transform/tileset
-  advertise handlers are therefore `async`).
+- Broadcast: `GossipTopic::broadcast(Bytes).await` (now async — the tileset
+  advertisement handler is therefore `async`). Unsigned transform broadcasts
+  are intentionally absent.
 
 Deferred: no `iroh::protocol::Router` is registered for `GOSSIP_ALPN`, so **inbound** gossip
 connections are not yet routed. Outbound `broadcast` is best-effort (messages queue until a
@@ -79,17 +80,23 @@ network paths are no-ops when offline (which is every current test path).
 ## §write-policy (auth_policy_pattern_20260710 §D1)
 
 `write_policy.rs` gates `handle_write_row_entry` (sync_thread.rs): no row is
-applied to a verse replica without a `Policy::evaluate` decision. Today the
-sync thread has **no role data plumbed** (roles live in the DB thread), so the
-default `PolicyHandle::permissive_migration()` wraps the strict
-`RoleLevelPolicy` in `fe_policy::PermissiveMigrationPolicy` — every would-be
-denial is logged at `warn` and allowed. Enforcement flips by swapping in
-`PolicyHandle::strict()` once role plumbing lands (roles must reach the sync
-thread before real iroh-docs replication ships — decisions §D1/§D5).
-`PolicyHandle` derives `Resource` so the app side can insert/override it;
-`spawn_sync_thread` constructs the default internally to avoid churning its
-signature (3 call sites). The causal-DAG membership resolver from the §D1
-amendment is NOT here — blocked on per-op ed25519 signing (hexon_delta_format).
+applied to a verse replica without a `Policy::evaluate` decision. The default
+is `PolicyHandle::strict()`. Because peer roles are not yet plumbed to the sync
+thread, every remote row write currently carries `RoleLevel::None` and is
+denied. This preserves local editor behavior while the mock-backed network
+path remains dormant; role propagation and signed operation admission must
+land before real replication is enabled.
+
+`PolicyHandle` derives `Resource` so the app side can insert a stricter policy
+for tests or future admission work; `spawn_sync_thread` constructs the default
+internally to avoid churning its signature. The causal-DAG membership resolver
+is not here; it remains blocked on per-operation signing.
+
+`SyncCommand::UpdateNodeTransform` is a legacy compatibility command, not a
+transport path: the sync thread logs and drops it, and the UI no longer sends
+it. Local gimbal commits still update the in-memory view and local DB. A
+networked transform must be represented as a signed canonical operation that
+passes the same admission model before it can enter gossip or a replica.
 
 ## §relay-health (track `p2p_asset_streaming_20260718` FR-1 / decision D-77)
 

@@ -3,6 +3,13 @@
 Design rationale for the in-memory entity hot cache. Code carries terse
 one-line doc comments; the "why" lives here.
 
+## Scene-change attribution
+
+`fe_runtime::messages::SceneChange` carries `petal_id` on every node-scoped
+delta so API subscribers can filter before delivery. The desktop bridge drops
+that runtime-only routing field when converting to this crate's local
+`SceneChange`, because `EntityStore` already owns the node-to-petal projection.
+
 ## §node-log-cap
 
 `EntitySnapshot::node_log` is a **last-K window**, not a full history

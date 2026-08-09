@@ -60,10 +60,11 @@ pub async fn revoke_session(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    crate::op_log::write_op_log(&db_handle.0, entry).await?;
-    // CROSS-CRATE: send NetworkCommand::BroadcastRevocation to network thread — deferred Sprint 5B
-    cache.revoke(&peer_pub_key_bytes);
-    Ok(())
+    crate::op_log::commit_operation(&db_handle.0, entry, |_| async {
+        cache.revoke(&peer_pub_key_bytes);
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

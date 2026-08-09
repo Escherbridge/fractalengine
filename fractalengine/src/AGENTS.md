@@ -7,6 +7,23 @@ terrain + webview), and bridges the background threads to Bevy resources.
 turn fe-ui's queued ops into real side effects (the UI crate has no DB / blob /
 filesystem access by design).
 
+## §entity-store-analytics
+
+`main.rs` creates one `Arc<EntityStore>` before spawning the local API thread.
+`SharedEntityStore` is the Bevy resource handle over that same allocation, and
+`drain_scene_changes_to_store` updates it from the DB scene-change bridge.
+Before hydration, startup subscribes the scene-change bridge; then it waits for
+the local seed command, replays its DB results for Bevy, queries every live
+node through the optional direct local SurrealKV reader, and then starts the
+API thread. The seed barrier prevents a first-run empty snapshot and the early
+subscription prevents a change-event gap. Seed failure remains fatal, but a
+malformed row, reader failure, or 10-second hydration timeout leaves the editor
+running with `api_db_reader = None`; the analytics endpoint fails unavailable
+rather than exposing a partial cache. A successful hydration gives
+`/api/v1/analytics/query` the same lock-free hot-cache view as the desktop app;
+it is not a canonical history store and must not replace the future verified-log
+materializer.
+
 ## §panic-hook
 
 `panic_log.rs` (GUI binary only — `fe-relay` has no egui pass and stays
@@ -339,16 +356,17 @@ no version field, no object wrap, no migration pass:
   clickable polyline is the visible curve.
 
 **§track-styling (track_styling_20260713).** Per-track color / thickness /
-visibility, edited in the Paths tab, persisted as `gis.track.*` node props
+visibility and zone fill, edited in the Paths tab, persisted as `gis.track.*` node props
 (`gis.track.color` = `#rrggbbaa` hex, `gis.track.width` = number,
-`gis.track.visible` = bool). `style_from_properties(&Value) -> TrackStyle` (pure,
+`gis.track.visible` = bool, `gis.track.closed` = bool,
+`gis.track.fill.color` = `#rrggbbaa`). `style_from_properties(&Value) -> TrackStyle` (pure,
 unit-tested) parses them field-by-field, each falling back to its default on
 missing/invalid input (FR-4, never panics). `advance_path_materialization` now
 also threads `ResMut<TrackStyleMap>` + `Res<DbCommandSender>`:
 
 - On a track's `NodePropertiesLoaded`, it refreshes `TrackStyleMap[node_id]`
   from the style props BEFORE reconciling. If the style actually changed and a
-  `GpxTrackLine` already exists, it despawns that line so the reconcile
+  `GpxTrackLine` already exists, it despawns every matching line so the reconcile
   respawns it `Without<Mesh3d>` and `render_gpx_tracks` rebuilds the ribbon with
   the new color/width (its build is gated on `Without<Mesh3d>` — same
   force-redraw mechanism the point-edit path uses).
@@ -357,7 +375,8 @@ also threads `ResMut<TrackStyleMap>` + `Res<DbCommandSender>`:
   with the fresh values. Non-style keys don't trigger the round trip.
 - `NodeDeleted` also drops the `TrackStyleMap` entry.
 
-fe-ui side: `UiAction::PathSetStyle { track_node_id, color?, width?, visible? }`
+fe-ui side: `UiAction::PathSetStyle { track_node_id, color?, width?, visible?,
+closed?, fill_color? }`
 writes the changed keys via `SetNodeProperty` directly (mirrors
 `PathAssetApply`; `actions::path::style_property_writes` is the pure, tested
 `(key,value)` builder — only `Some` fields write, so an untouched control never
@@ -365,6 +384,14 @@ clobbers a stored value). The Paths-tab edit view seeds its controls from
 `PathEditorState::edited_track_style` (a fe-ui-local `TrackStyleFields` mirror —
 fe-ui must not depend on fe-terrain), populated at the same
 `NodePropertiesLoaded` seam that seeds `points`.
+
+`PathOp::DeleteTrack` tears down route and stamp projections only after the
+`DeleteNode` command is successfully queued. Channel failure leaves projections
+visible and reports an error. Generated unpromoted stamps follow the path
+lifecycle; promoted stamp rows are preserved by the database and projection
+cleanup never deletes `owning_path_id` records.
+Successful enqueue also despawns every matching ribbon and
+`SinglePointTrackNode` immediately.
 
 **§track-picking (in-app fix).** A rendered track ribbon
 (`fe_terrain::terrain_plugin::GpxTrackLine` + `Mesh3d`) wasn't viewport-selectable:

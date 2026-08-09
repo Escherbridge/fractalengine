@@ -77,6 +77,8 @@ pub async fn assign_role_checked(
     scope: &str,
     role: RoleLevel,
 ) -> anyhow::Result<()> {
+    crate::handlers::preconditions::require_scope_exists(db, scope, "AssignRole").await?;
+
     // Check caller privilege.
     let caller_role = resolve_role(db, caller_did, scope).await?;
     if !caller_role.can_manage() {
@@ -95,23 +97,23 @@ pub async fn assign_role_checked(
         );
     }
 
-    // Write the role.
-    rbac::assign_role(db, peer_did, scope, &role.to_string()).await?;
-
-    // Write audit trail.
+    let role_value = role.to_string();
     let entry = OpLogEntry {
-        lamport_clock: 0, // auto-incremented by write_op_log
+        lamport_clock: 0,
         node_id: NodeId(caller_did.to_string()),
         op_type: OpType::AssignRole,
         payload: serde_json::json!({
             "peer_did": peer_did,
             "scope": scope,
-            "role": role.to_string(),
+            "role": role_value.clone(),
         }),
-        sig: "00".repeat(64), // placeholder signature
+        sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    op_log::write_op_log(db, entry).await?;
+    op_log::commit_operation(db, entry, move |_| async move {
+        rbac::assign_role(db, peer_did, scope, &role_value).await
+    })
+    .await?;
 
     Ok(())
 }
@@ -125,6 +127,8 @@ pub async fn revoke_role_checked(
     peer_did: &str,
     scope: &str,
 ) -> anyhow::Result<()> {
+    crate::handlers::preconditions::require_scope_exists(db, scope, "RevokeRole").await?;
+
     let caller_role = resolve_role(db, caller_did, scope).await?;
     if !caller_role.can_manage() {
         anyhow::bail!(
@@ -132,8 +136,6 @@ pub async fn revoke_role_checked(
             caller_role
         );
     }
-
-    rbac::revoke_role(db, peer_did, scope).await?;
 
     let entry = OpLogEntry {
         lamport_clock: 0,
@@ -147,7 +149,10 @@ pub async fn revoke_role_checked(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    op_log::write_op_log(db, entry).await?;
+    op_log::commit_operation(db, entry, |_| async {
+        rbac::revoke_role(db, peer_did, scope).await
+    })
+    .await?;
 
     Ok(())
 }

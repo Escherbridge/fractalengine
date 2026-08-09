@@ -258,11 +258,25 @@ impl HexonRegistry {
         tags: &[&str],
         kind: Option<HexonKind>,
     ) -> Vec<HexonManifest> {
+        self.search_local_in_petal(None, query, tags, kind)
+    }
+
+    /// Search local crates, optionally constrained to a petal binding.
+    pub fn search_local_in_petal(
+        &self,
+        petal_id: Option<&str>,
+        query: &str,
+        tags: &[&str],
+        kind: Option<HexonKind>,
+    ) -> Vec<HexonManifest> {
         let query_lower = query.to_lowercase();
 
         self.installed
             .values()
             .filter(|c| {
+                if petal_id.is_some_and(|pid| c.petal_id != pid) {
+                    return false;
+                }
                 // Match on kind
                 if let Some(k) = kind {
                     if c.manifest.hexon_type != k {

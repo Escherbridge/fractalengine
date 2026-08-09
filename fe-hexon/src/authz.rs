@@ -48,6 +48,12 @@ impl HexonRegistry {
         petal_id: &str,
     ) -> Result<(), RegistryError> {
         authorize(subject, &Action::Write, petal_id)?;
+        if self
+            .get_installed(hexon_uri)
+            .is_some_and(|installed| installed.petal_id != petal_id)
+        {
+            return Err(RegistryError::NotFound(hexon_uri.to_string()));
+        }
         self.uninstall(hexon_uri, petal_id)
     }
 
@@ -69,8 +75,34 @@ impl HexonRegistry {
         tags: &[&str],
         kind: Option<HexonKind>,
     ) -> Result<Vec<HexonManifest>, RegistryError> {
-        authorize(subject, &Action::Read, "*")?;
-        Ok(self.search_local(query, tags, kind))
+        self.search_local_in_petal_as(subject, None, query, tags, kind)
+    }
+
+    /// Policy-gated search constrained to an optional petal binding.
+    pub fn search_local_in_petal_as(
+        &self,
+        subject: &AuthContext,
+        petal_id: Option<&str>,
+        query: &str,
+        tags: &[&str],
+        kind: Option<HexonKind>,
+    ) -> Result<Vec<HexonManifest>, RegistryError> {
+        authorize(subject, &Action::Read, petal_id.unwrap_or("*"))?;
+        Ok(self.search_local_in_petal(petal_id, query, tags, kind))
+    }
+
+    /// Policy-gated crate lookup constrained to a petal binding.
+    pub fn get_installed_as(
+        &self,
+        subject: &AuthContext,
+        hexon_uri: &str,
+        petal_id: &str,
+    ) -> Result<Option<InstalledCrate>, RegistryError> {
+        authorize(subject, &Action::Read, petal_id)?;
+        Ok(self
+            .get_installed(hexon_uri)
+            .filter(|installed| installed.petal_id == petal_id)
+            .cloned())
     }
 }
 
@@ -222,6 +254,48 @@ mod tests {
             .uninstall_as(&did(RoleLevel::Editor), &uri, "petal-1")
             .expect("editor uninstall must pass");
         assert!(registry.list_installed(None).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scoped_lookups_and_uninstall_do_not_cross_petal_bindings() {
+        let (mut registry, dir) = temp_registry("scope");
+        let package = test_package();
+        let uri = hexon_uri(&package.manifest);
+        registry
+            .install_as(&did(RoleLevel::Editor), package, "petal-1")
+            .expect("install");
+
+        assert!(registry
+            .get_installed_as(&did(RoleLevel::Viewer), &uri, "petal-2")
+            .expect("read policy")
+            .is_none());
+        assert!(matches!(
+            registry.uninstall_as(&did(RoleLevel::Editor), &uri, "petal-2"),
+            Err(RegistryError::NotFound(_))
+        ));
+        assert_eq!(registry.list_installed(Some("petal-1")).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scoped_search_only_returns_petal_bound_crates() {
+        let (mut registry, dir) = temp_registry("search_scope");
+        registry
+            .install_as(&did(RoleLevel::Editor), test_package(), "petal-1")
+            .expect("install");
+
+        assert_eq!(
+            registry
+                .search_local_in_petal_as(&did(RoleLevel::Viewer), Some("petal-1"), "", &[], None,)
+                .expect("scoped search")
+                .len(),
+            1
+        );
+        assert!(registry
+            .search_local_in_petal_as(&did(RoleLevel::Viewer), Some("petal-2"), "", &[], None)
+            .expect("scoped search")
+            .is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

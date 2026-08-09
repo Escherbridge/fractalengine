@@ -219,14 +219,19 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                 match msg {
                     Some(WsClientMsg::Subscribe { channel, petal_id }) => {
                         // Resolve petal scope and enforce against token scope
-                        if let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await {
-                            if !fe_database::scope_contains(&claims.scope, &scope) {
-                                send_msg(&mut socket, &WsServerMsg::Error {
-                                    code: "forbidden".into(),
-                                    message: "subscription outside token scope".into(),
-                                }).await;
-                                continue;
-                            }
+                        let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await else {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "not_found".into(),
+                                message: "could not resolve subscription scope".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !fe_database::scope_contains(&claims.scope, &scope) {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "forbidden".into(),
+                                message: "subscription outside token scope".into(),
+                            }).await;
+                            continue;
                         }
                         subscribed_petals.insert(petal_id.clone());
                         let resp = WsServerMsg::Subscribed { channel, petal_id };
@@ -260,11 +265,39 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             }).await;
                             continue;
                         }
+                        if !crate::types::is_valid_ulid(&node_id) {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "invalid_request".into(),
+                                message: "invalid node_id".into(),
+                            }).await;
+                            continue;
+                        }
+                        let Some(scope) = crate::rest::resolve_node_scope(&state, &node_id).await else {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "not_found".into(),
+                                message: "could not resolve transform target scope".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !fe_database::scope_contains(&claims.scope, &scope) {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "forbidden".into(),
+                                message: "transform target outside token scope".into(),
+                            }).await;
+                            continue;
+                        }
+                        let Some(petal_id) = petal_id_from_scope(&scope) else {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "not_found".into(),
+                                message: "transform target has no petal scope".into(),
+                            }).await;
+                            continue;
+                        };
                         let now = unix_now_ms();
                         // Optimistic broadcast — subscribers see the update immediately.
                         let _ = state.transform_broadcast_tx.send(TransformUpdate {
                             node_id: node_id.clone(),
-                            petal_id: String::new(),
+                            petal_id,
                             position,
                             rotation,
                             scale,
@@ -279,25 +312,38 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                     }
                     Some(WsClientMsg::SceneSubscribe { petal_id, .. }) => {
                         // Resolve petal scope and enforce against token scope
-                        if let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await {
-                            if !fe_database::scope_contains(&claims.scope, &scope) {
-                                send_msg(&mut socket, &WsServerMsg::Error {
-                                    code: "forbidden".into(),
-                                    message: "scene subscription outside token scope".into(),
-                                }).await;
+                        let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await else {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "not_found".into(),
+                                message: "could not resolve scene subscription scope".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !fe_database::scope_contains(&claims.scope, &scope) {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "forbidden".into(),
+                                message: "scene subscription outside token scope".into(),
+                            }).await;
+                            continue;
+                        }
+                        let next_version = scene_version + 1;
+                        let snapshot = scene_snapshot_message(
+                            petal_id.clone(),
+                            next_version,
+                            load_petal_nodes(&state, &petal_id).await,
+                        );
+                        let snapshot = match snapshot {
+                            Ok(snapshot) => snapshot,
+                            Err(error) => {
+                                tracing::warn!(?error, %petal_id, "WS scene subscription snapshot failed");
+                                subscribed_petals.remove(&petal_id);
+                                send_resync_required(&mut socket).await;
                                 continue;
                             }
-                        }
-                        subscribed_petals.insert(petal_id.clone());
-
-                        // Query current nodes for this petal from DB
-                        let nodes = load_petal_nodes(&state, &petal_id).await;
-                        scene_version += 1;
-                        send_msg(&mut socket, &WsServerMsg::SceneSnapshot {
-                            petal_id,
-                            version: scene_version,
-                            nodes,
-                        }).await;
+                        };
+                        subscribed_petals.insert(petal_id);
+                        scene_version = next_version;
+                        send_msg(&mut socket, &snapshot).await;
                     }
                     Some(WsClientMsg::EntityCommand { request_id, command }) => {
                         let msg = match handle_entity_command(&state, &claims, command).await {
@@ -336,6 +382,18 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                     Ok(_) => {} // filtered out by subscription
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("WS client lagged by {n} transform updates");
+                        if let Err(error) = send_scene_snapshots(
+                            &mut socket,
+                            &state,
+                            &subscribed_petals,
+                            &mut scene_version,
+                        )
+                        .await
+                        {
+                            tracing::warn!(?error, "WS transform lag snapshot recovery failed");
+                            subscribed_petals.clear();
+                            send_resync_required(&mut socket).await;
+                        }
                     }
                     Err(_) => break,
                 }
@@ -346,7 +404,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                 match change {
                     Ok(ref sc) if !subscribed_petals.is_empty() => {
                         // TransformFailed → send rollback instead of a delta
-                        if let SceneChange::TransformFailed { node_id, position, rotation, scale } = sc {
+                        let petal_id = sc.petal_id();
+                        if !subscribed_petals.contains(petal_id) {
+                            continue;
+                        }
+                        if let SceneChange::TransformFailed { node_id, position, rotation, scale, .. } = sc {
                             send_msg(&mut socket, &WsServerMsg::TransformRollback {
                                 node_id: node_id.clone(),
                                 position: *position,
@@ -355,30 +417,28 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             }).await;
                             continue;
                         }
-                        // Extract the petal_id from the change to filter by subscription
-                        let petal_id = match sc {
-                            SceneChange::NodeAdded { node } => Some(node.petal_id.clone()),
-                            // NodeRemoved/NodeRenamed/NodeTransform don't carry petal_id;
-                            // broadcast to all subscribed petals (clients filter locally).
-                            _ => None,
-                        };
-                        let should_send = match &petal_id {
-                            Some(pid) => subscribed_petals.contains(pid),
-                            None => true, // broadcast to all subscribers
-                        };
-                        if should_send {
-                            scene_version += 1;
-                            let pid = petal_id.unwrap_or_default();
-                            send_msg(&mut socket, &WsServerMsg::SceneDelta {
-                                petal_id: pid,
-                                version: scene_version,
-                                changes: vec![sc.clone()],
-                            }).await;
-                        }
+                        scene_version += 1;
+                        send_msg(&mut socket, &WsServerMsg::SceneDelta {
+                            petal_id: petal_id.to_owned(),
+                            version: scene_version,
+                            changes: vec![sc.clone()],
+                        }).await;
                     }
                     Ok(_) => {} // no subscriptions
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("WS client lagged by {n} entity change updates");
+                        if let Err(error) = send_scene_snapshots(
+                            &mut socket,
+                            &state,
+                            &subscribed_petals,
+                            &mut scene_version,
+                        )
+                        .await
+                        {
+                            tracing::warn!(?error, "WS scene lag snapshot recovery failed");
+                            subscribed_petals.clear();
+                            send_resync_required(&mut socket).await;
+                        }
                     }
                     Err(_) => break,
                 }
@@ -425,18 +485,29 @@ async fn recv_msg(socket: &mut WebSocket) -> Option<WsClientMsg> {
     }
 }
 
-/// Load all nodes for a petal.
-///
-/// When a direct `db_reader` is available, queries SurrealDB directly and
-/// bypasses the crossbeam channel. Falls back to the channel-based
-/// `DbCommand::LoadNodesByPetal` otherwise.
-async fn load_petal_nodes(state: &ApiState, petal_id: &str) -> Vec<crate::types::NodeDto> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneSnapshotLoadError {
+    DirectQuery,
+    DirectResult,
+    MalformedNode,
+    ChannelClosed,
+    ReplyCancelled,
+    TimedOut,
+    DatabaseError,
+    UnexpectedResult,
+}
+
+/// Load all nodes for a petal, distinguishing an empty petal from a read failure.
+async fn load_petal_nodes(
+    state: &ApiState,
+    petal_id: &str,
+) -> Result<Vec<crate::types::NodeDto>, SceneSnapshotLoadError> {
     if let Some(ref db) = state.db_reader {
-        return crate::rest::direct_load_petal_nodes(db, petal_id).await;
+        return load_petal_nodes_direct(db, petal_id).await;
     }
-    // Fallback: channel-based query
+
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
+    state
         .api_cmd_tx
         .send(ApiCommand::DbRequest {
             cmd: DbCommand::LoadNodesByPetal {
@@ -444,25 +515,155 @@ async fn load_petal_nodes(state: &ApiState, petal_id: &str) -> Vec<crate::types:
             },
             reply_tx,
         })
-        .is_err()
-    {
-        return vec![];
-    }
+        .map_err(|_| SceneSnapshotLoadError::ChannelClosed)?;
+
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodesLoaded { nodes, .. })) => nodes
+        Ok(Ok(DbResult::NodesLoaded {
+            petal_id: result_petal_id,
+            nodes,
+        })) if result_petal_id == petal_id => Ok(nodes
             .into_iter()
-            .map(|n| crate::types::NodeDto {
-                id: n.node_id,
-                name: n.name,
-                petal_id: n.petal_id,
-                position: n.position,
-                has_asset: n.has_asset,
-                asset_path: n.asset_path,
+            .map(|node| crate::types::NodeDto {
+                id: node.node_id,
+                name: node.name,
+                petal_id: node.petal_id,
+                position: node.position,
+                has_asset: node.has_asset,
+                asset_path: node.asset_path,
                 webpage_url: None,
             })
-            .collect(),
-        _ => vec![],
+            .collect()),
+        Ok(Ok(DbResult::Error(_))) => Err(SceneSnapshotLoadError::DatabaseError),
+        Ok(Ok(_)) => Err(SceneSnapshotLoadError::UnexpectedResult),
+        Ok(Err(_)) => Err(SceneSnapshotLoadError::ReplyCancelled),
+        Err(_) => Err(SceneSnapshotLoadError::TimedOut),
     }
+}
+
+/// Query a direct reader without converting database failures into empty snapshots.
+async fn load_petal_nodes_direct(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    petal_id: &str,
+) -> Result<Vec<crate::types::NodeDto>, SceneSnapshotLoadError> {
+    let mut result = db
+        .query(
+            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
+        )
+        .bind(("pid", petal_id.to_string()))
+        .await
+        .map_err(|_| SceneSnapshotLoadError::DirectQuery)?;
+    let rows: Vec<serde_json::Value> = result
+        .take(0)
+        .map_err(|_| SceneSnapshotLoadError::DirectResult)?;
+
+    rows.iter()
+        .map(snapshot_node_from_row)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// Decode one direct-query node row for a scene snapshot.
+fn snapshot_node_from_row(
+    row: &serde_json::Value,
+) -> Result<crate::types::NodeDto, SceneSnapshotLoadError> {
+    let node_id = row
+        .get("node_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(SceneSnapshotLoadError::MalformedNode)?;
+    let name = row
+        .get("display_name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(SceneSnapshotLoadError::MalformedNode)?;
+    let petal_id = row
+        .get("petal_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(SceneSnapshotLoadError::MalformedNode)?;
+    let coordinates = row
+        .get("position")
+        .and_then(|position| position.get("coordinates"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or(SceneSnapshotLoadError::MalformedNode)?;
+    let x = coordinates
+        .first()
+        .and_then(serde_json::Value::as_f64)
+        .ok_or(SceneSnapshotLoadError::MalformedNode)? as f32;
+    let z = coordinates
+        .get(1)
+        .and_then(serde_json::Value::as_f64)
+        .ok_or(SceneSnapshotLoadError::MalformedNode)? as f32;
+    let y = row
+        .get("elevation")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or(SceneSnapshotLoadError::MalformedNode)? as f32;
+
+    Ok(crate::types::NodeDto {
+        id: node_id.to_string(),
+        name: name.to_string(),
+        petal_id: petal_id.to_string(),
+        position: [x, y, z],
+        has_asset: row
+            .get("asset_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        asset_path: row
+            .get("asset_path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        webpage_url: None,
+    })
+}
+
+/// Send a fresh scene snapshot for each subscribed petal after broadcast lag.
+async fn send_scene_snapshots(
+    socket: &mut WebSocket,
+    state: &ApiState,
+    subscribed_petals: &HashSet<String>,
+    scene_version: &mut u64,
+) -> Result<(), SceneSnapshotLoadError> {
+    let mut petal_ids: Vec<_> = subscribed_petals.iter().collect();
+    petal_ids.sort_unstable();
+    let mut snapshots = Vec::with_capacity(petal_ids.len());
+    for petal_id in petal_ids {
+        let nodes = load_petal_nodes(state, petal_id).await?;
+        snapshots.push((petal_id.clone(), nodes));
+    }
+    for (petal_id, nodes) in snapshots {
+        *scene_version += 1;
+        send_msg(
+            socket,
+            &WsServerMsg::SceneSnapshot {
+                petal_id,
+                version: *scene_version,
+                nodes,
+            },
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// Require the client to resubscribe after an authoritative snapshot load fails.
+async fn send_resync_required(socket: &mut WebSocket) {
+    send_msg(
+        socket,
+        &WsServerMsg::Error {
+            code: "resync_required".into(),
+            message: "scene state is unavailable; resubscribe required".into(),
+        },
+    )
+    .await;
+}
+
+/// Construct a snapshot only from a successful node load.
+fn scene_snapshot_message(
+    petal_id: String,
+    version: u64,
+    nodes: Result<Vec<crate::types::NodeDto>, SceneSnapshotLoadError>,
+) -> Result<WsServerMsg, SceneSnapshotLoadError> {
+    nodes.map(|nodes| WsServerMsg::SceneSnapshot {
+        petal_id,
+        version,
+        nodes,
+    })
 }
 
 /// Execute one `EntityCommand`: role + scope enforcement, then a `DbRequest`
@@ -583,6 +784,11 @@ async fn resolve_petal_scope_ws(state: &ApiState, petal_id: &str) -> Option<Stri
     }
 }
 
+/// Extract the petal component from a fully-resolved node scope.
+fn petal_id_from_scope(scope: &str) -> Option<String> {
+    fe_database::parse_scope(scope).ok()?.petal_id
+}
+
 /// Current Unix time in milliseconds.
 fn unix_now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -594,6 +800,67 @@ fn unix_now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn petal_id_from_scope_requires_a_petal_component() {
+        let petal_scope = fe_database::build_scope("verse", Some("fractal"), Some("petal"));
+        assert_eq!(petal_id_from_scope(&petal_scope), Some("petal".into()));
+
+        let verse_scope = fe_database::build_scope("verse", None, None);
+        assert_eq!(petal_id_from_scope(&verse_scope), None);
+    }
+
+    #[test]
+    fn scene_snapshot_requires_a_successful_load() {
+        let failed = scene_snapshot_message("p1".into(), 1, Err(SceneSnapshotLoadError::TimedOut));
+        assert!(matches!(failed, Err(SceneSnapshotLoadError::TimedOut)));
+
+        let empty_petal = scene_snapshot_message("p1".into(), 1, Ok(Vec::new())).unwrap();
+        match empty_petal {
+            WsServerMsg::SceneSnapshot {
+                petal_id, nodes, ..
+            } => {
+                assert_eq!(petal_id, "p1");
+                assert!(nodes.is_empty());
+            }
+            _ => panic!("expected scene snapshot"),
+        }
+    }
+
+    #[test]
+    fn direct_snapshot_row_rejects_malformed_coordinates() {
+        let row = serde_json::json!({
+            "node_id": "n1",
+            "display_name": "Node",
+            "petal_id": "p1",
+            "position": { "coordinates": [1.0] },
+            "elevation": 2.0,
+        });
+
+        assert!(matches!(
+            snapshot_node_from_row(&row),
+            Err(SceneSnapshotLoadError::MalformedNode)
+        ));
+    }
+
+    #[test]
+    fn direct_snapshot_row_decodes_a_valid_empty_asset_node() {
+        let row = serde_json::json!({
+            "node_id": "n1",
+            "display_name": "Node",
+            "petal_id": "p1",
+            "position": { "coordinates": [1.0, 3.0] },
+            "elevation": 2.0,
+            "asset_id": null,
+        });
+
+        let node = snapshot_node_from_row(&row).unwrap();
+        assert_eq!(node.id, "n1");
+        assert_eq!(node.name, "Node");
+        assert_eq!(node.petal_id, "p1");
+        assert_eq!(node.position, [1.0, 2.0, 3.0]);
+        assert!(!node.has_asset);
+    }
 
     #[test]
     fn scene_subscribe_serde() {
@@ -765,6 +1032,7 @@ mod tests {
             version: 2,
             changes: vec![fe_runtime::messages::SceneChange::NodeRemoved {
                 node_id: "n1".into(),
+                petal_id: "p1".into(),
             }],
         };
         let json = serde_json::to_string(&msg).unwrap();

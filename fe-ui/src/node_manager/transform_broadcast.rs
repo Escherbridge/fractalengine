@@ -1,10 +1,8 @@
-//! Broadcast committed gimbal transforms to DB + P2P sync, and apply inbound
-//! transforms coming from the API bridge.
+//! Commit gimbal transforms locally and apply inbound API transforms.
 
 use bevy::prelude::*;
 
 use super::NodeManager;
-use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
 
 /// FR-4 (path_interaction_20260716): bake the whole-path gimbal into one point.
@@ -17,11 +15,9 @@ fn bake_transformed_point(world: Vec3, centroid: Vec3, transform: &Transform) ->
 
 pub(super) fn broadcast_transform(
     mut manager: ResMut<NodeManager>,
-    nav: Res<NavigationManager>,
     mut transform_query: Query<(&mut Transform, &SpawnedNodeMarker)>,
     pick_shapes: Query<&super::TrackPickShape>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
-    sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     mut verse_mgr: ResMut<crate::verse_manager::VerseManager>,
     mut ui_mgr: ResMut<crate::actions::UiManager>,
 ) {
@@ -86,24 +82,6 @@ pub(super) fn broadcast_transform(
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — DB thread may have crashed");
-    }
-
-    if let Some(sync) = sync_sender {
-        if let Some(ref verse_id) = nav.active_verse_id {
-            if sync
-                .0
-                .send(fe_sync::SyncCommand::UpdateNodeTransform {
-                    verse_id: verse_id.clone(),
-                    node_id: marker.node_id.clone(),
-                    position: [pos.x, pos.y, pos.z],
-                    rotation: [rx, ry, rz],
-                    scale: [sc.x, sc.y, sc.z],
-                })
-                .is_err()
-            {
-                bevy::log::warn!("sync_sender channel closed — sync thread may have crashed");
-            }
-        }
     }
 }
 

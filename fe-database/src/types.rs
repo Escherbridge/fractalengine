@@ -24,6 +24,10 @@ pub enum OpType {
     TransformUpdate,
     PropertySet,
     PropertyDeleted,
+    /// Legacy `CreateNode` materialized a durable node row.
+    NodeCreated,
+    /// Legacy `DeleteNode` physically removed a node row and direct waypoints.
+    NodeDeleted,
     // Node lifecycle (node_lifecycle_addressing_20260725)
     /// FR-1: a node was deleted via a sync-safe tombstone (survives P2P merge).
     NodeTombstoned,

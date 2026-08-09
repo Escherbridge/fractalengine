@@ -15,9 +15,7 @@ use iroh_gossip::net::{Gossip, GossipTopic};
 use iroh_gossip::proto::TopicId;
 
 use crate::endpoint::SyncEndpoint;
-use crate::messages::{
-    SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender, TransformUpdate,
-};
+use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
 use crate::relay_config::{RelayConfig, RelayHealth};
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator, VerseReplicator,
@@ -148,9 +146,8 @@ pub fn spawn_sync_thread(
             // Phase F.5: tileset download tracker
             let mut download_tracker = TilesetDownloadTracker::new();
 
-            // §D1: policy gate for replica row writes. Defaults to migration
-            // mode (warn-logs would-be denies) until peer roles are plumbed —
-            // see AGENTS.md §write-policy.
+            // §D1: policy gate for replica row writes. The strict default
+            // denies until peer roles are plumbed — see AGENTS.md §write-policy.
             let write_policy = crate::write_policy::PolicyHandle::default();
 
             // Command loop
@@ -215,21 +212,13 @@ pub fn spawn_sync_thread(
                     Ok(SyncCommand::UpdateNodeTransform {
                         verse_id,
                         node_id,
-                        position,
-                        rotation,
-                        scale,
+                        ..
                     }) => {
-                        handle_update_node_transform(
-                            &gossip_host,
-                            &mut gossip_topics,
-                            &verse_id,
-                            &node_id,
-                            position,
-                            rotation,
-                            scale,
-                            &local_did,
-                        )
-                        .await;
+                        tracing::warn!(
+                            verse_id,
+                            node_id,
+                            "dropped unsigned transform sync command; a signed canonical operation is required before network forwarding"
+                        );
                     }
                     Ok(SyncCommand::SubscribePetal { petal_id }) => {
                         handle_subscribe_petal(
@@ -401,9 +390,7 @@ async fn handle_write_row_entry(
     record_id: &str,
     content_hash: &fe_runtime::blob_store::BlobHash,
 ) {
-    // §D1 gate: no row applies to a replica without a Policy::evaluate decision.
-    // Role is not plumbed to this thread yet (None) — enforcement flips with
-    // the strict PolicyHandle once it is. See AGENTS.md §write-policy.
+    // §D1 gate: unplumbed peer roles are None and therefore fail closed.
     if !write_policy.allow_write(author_did, None, verse_id) {
         return;
     }
@@ -536,85 +523,16 @@ fn handle_unsubscribe_petal(
 
 /// Derive a gossip topic from a verse ID.
 ///
-/// The topic is used for real-time transform sync among peers
-/// viewing the same verse.
+/// The topic is used for allowed verse-scoped gossip such as tileset
+/// announcements.
 fn derive_gossip_topic(verse_id: &str) -> String {
     format!("verse:{}", verse_id)
 }
 
-/// Handle [`SyncCommand::UpdateNodeTransform`].
-///
-/// Broadcasts the transform update to peers via iroh-gossip.
-/// If gossip is not available, logs a warning and skips broadcast.
-#[allow(clippy::too_many_arguments)] // gossip broadcast seam — params mirror the command
-async fn handle_update_node_transform(
-    gossip_host: &Option<Gossip>,
-    gossip_topics: &mut HashMap<String, GossipTopic>,
-    verse_id: &str,
-    node_id: &str,
-    position: [f32; 3],
-    rotation: [f32; 3],
-    scale: [f32; 3],
-    local_did: &str,
-) {
-    let Some(ref gossip) = gossip_host else {
-        tracing::debug!(verse_id, node_id, "No gossip, skipping transform broadcast");
-        return;
-    };
-
-    // Get or create the live subscription handle for this verse.
-    let topic_key = derive_gossip_topic(verse_id);
-    if !gossip_topics.contains_key(&topic_key) {
-        match gossip.subscribe(gossip_topic_id(&topic_key), Vec::new()) {
-            Ok(handle) => {
-                tracing::debug!(verse_id, "Subscribed to gossip topic");
-                gossip_topics.insert(topic_key.clone(), handle);
-            }
-            Err(e) => {
-                tracing::warn!(verse_id, "Failed to subscribe to gossip topic: {e}");
-                return;
-            }
-        }
-    }
-    let topic = gossip_topics.get(&topic_key).expect("just inserted");
-
-    // Create the transform update message
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    let update = TransformUpdate {
-        verse_id: verse_id.to_string(),
-        node_id: node_id.to_string(),
-        position,
-        rotation,
-        scale,
-        author_id: local_did.to_string(),
-        timestamp,
-    };
-
-    // Serialize and broadcast
-    let payload = match serde_json::to_vec(&update) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!(node_id, "Failed to serialize TransformUpdate: {e}");
-            return;
-        }
-    };
-
-    // Broadcast to topic (best-effort; queued until a neighbor is available).
-    if let Err(e) = topic.broadcast(payload.into()).await {
-        tracing::warn!(node_id, "Failed to broadcast transform: {e}");
-    } else {
-        tracing::debug!(node_id, verse_id, "Broadcasted transform update");
-    }
-}
-
 /// Subscribe to a verse gossip topic.
 ///
-/// This is called when opening a verse replica to ensure we receive
-/// transform updates from other peers viewing the same verse.
+/// This is called when opening a verse replica to make its permitted gossip
+/// controls available.
 fn subscribe_to_verse_gossip_topic(
     gossip_host: &Option<Gossip>,
     gossip_topics: &mut HashMap<String, GossipTopic>,
@@ -1013,10 +931,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Phase 3: Real-Time Transform Sync Tests (TDD)
-    // -------------------------------------------------------------------------
-
     #[test]
     fn derive_gossip_topic_is_deterministic() {
         let topic1 = derive_gossip_topic("verse-abc");
@@ -1039,32 +953,6 @@ mod tests {
             "topic should start with 'verse:', got: {}",
             topic
         );
-    }
-
-    #[test]
-    fn handle_update_node_transform_no_host_is_noop() {
-        let gossip_host: Option<Gossip> = None;
-        let mut gossip_topics: HashMap<String, GossipTopic> = HashMap::new();
-        let local_did = "did:test:author";
-
-        // Should not panic, just skip
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(handle_update_node_transform(
-            &gossip_host,
-            &mut gossip_topics,
-            "verse-1",
-            "node-123",
-            [1.0, 2.0, 3.0],
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-            local_did,
-        ));
-
-        // No topics should be created without a host
-        assert!(gossip_topics.is_empty(), "no topics without gossip host");
     }
 
     // -------------------------------------------------------------------------

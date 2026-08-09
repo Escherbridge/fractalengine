@@ -788,19 +788,18 @@ pub struct NodeDto {
 pub enum SceneChange {
     /// A new node was created in a petal.
     NodeAdded { node: NodeDto },
-    /// A node was removed from the scene.
-    ///
-    /// `petal_id` deviates from the spec's exact mirror-of-NodeAdded shape:
-    /// dropped to avoid a breaking change in `fractalengine/src/main.rs` and
-    /// `fe-api/src/ws.rs`. Consumers needing petal scoping should resolve it
-    /// via `DbResult::NodeDeleted { node_id, petal_id }` instead, which is
-    /// emitted alongside this event on the same delete.
-    NodeRemoved { node_id: String },
+    /// A node was removed from its owning petal.
+    NodeRemoved { node_id: String, petal_id: String },
     /// A node was renamed.
-    NodeRenamed { node_id: String, new_name: String },
+    NodeRenamed {
+        node_id: String,
+        petal_id: String,
+        new_name: String,
+    },
     /// A node's transform was updated.
     NodeTransform {
         node_id: String,
+        petal_id: String,
         position: [f32; 3],
         rotation: [f32; 3],
         scale: [f32; 3],
@@ -809,6 +808,7 @@ pub enum SceneChange {
     /// Contains the last-known-good values read from the DB before the failed write.
     TransformFailed {
         node_id: String,
+        petal_id: String,
         position: [f32; 3],
         rotation: [f32; 3],
         scale: [f32; 3],
@@ -816,9 +816,24 @@ pub enum SceneChange {
     /// A custom property was changed on a node.
     PropertyChanged {
         node_id: String,
+        petal_id: String,
         key: String,
         value: serde_json::Value,
     },
+}
+
+impl SceneChange {
+    /// Returns the petal that owns this node-scoped change.
+    pub fn petal_id(&self) -> &str {
+        match self {
+            Self::NodeAdded { node } => &node.petal_id,
+            Self::NodeRemoved { petal_id, .. }
+            | Self::NodeRenamed { petal_id, .. }
+            | Self::NodeTransform { petal_id, .. }
+            | Self::TransformFailed { petal_id, .. }
+            | Self::PropertyChanged { petal_id, .. } => petal_id,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -982,12 +997,16 @@ mod scene_change_tests {
     fn scene_change_node_removed_serde_roundtrip() {
         let change = SceneChange::NodeRemoved {
             node_id: "n1".into(),
+            petal_id: "p1".into(),
         };
         let json = serde_json::to_string(&change).unwrap();
         assert!(json.contains("\"op\":\"node_removed\""));
         let deserialized: SceneChange = serde_json::from_str(&json).unwrap();
         match deserialized {
-            SceneChange::NodeRemoved { node_id } => assert_eq!(node_id, "n1"),
+            SceneChange::NodeRemoved { node_id, petal_id } => {
+                assert_eq!(node_id, "n1");
+                assert_eq!(petal_id, "p1");
+            }
             _ => panic!("wrong variant"),
         }
     }
@@ -996,6 +1015,7 @@ mod scene_change_tests {
     fn scene_change_node_renamed_serde_roundtrip() {
         let change = SceneChange::NodeRenamed {
             node_id: "n1".into(),
+            petal_id: "p1".into(),
             new_name: "New Name".into(),
         };
         let json = serde_json::to_string(&change).unwrap();
@@ -1007,6 +1027,7 @@ mod scene_change_tests {
     fn scene_change_node_transform_serde_roundtrip() {
         let change = SceneChange::NodeTransform {
             node_id: "n1".into(),
+            petal_id: "p1".into(),
             position: [1.0, 2.0, 3.0],
             rotation: [0.0, 90.0, 0.0],
             scale: [2.0, 2.0, 2.0],
@@ -1017,15 +1038,58 @@ mod scene_change_tests {
     }
 
     #[test]
+    fn scene_change_attribution_is_available_for_every_variant() {
+        let changes = [
+            SceneChange::NodeRemoved {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+            },
+            SceneChange::NodeRenamed {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                new_name: "N2".into(),
+            },
+            SceneChange::NodeTransform {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                position: [0.0; 3],
+                rotation: [0.0; 3],
+                scale: [1.0; 3],
+            },
+            SceneChange::TransformFailed {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                position: [0.0; 3],
+                rotation: [0.0; 3],
+                scale: [1.0; 3],
+            },
+            SceneChange::PropertyChanged {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                key: "opacity".into(),
+                value: serde_json::Value::Null,
+            },
+        ];
+
+        for change in changes {
+            assert_eq!(change.petal_id(), "p1");
+        }
+    }
+
+    #[test]
     fn scene_change_broadcast_send_recv() {
         let (tx, mut rx) = tokio::sync::broadcast::channel::<SceneChange>(16);
         let change = SceneChange::NodeRemoved {
             node_id: "test".into(),
+            petal_id: "p1".into(),
         };
         tx.send(change.clone()).unwrap();
         let received = rx.try_recv().unwrap();
         match received {
-            SceneChange::NodeRemoved { node_id } => assert_eq!(node_id, "test"),
+            SceneChange::NodeRemoved { node_id, petal_id } => {
+                assert_eq!(node_id, "test");
+                assert_eq!(petal_id, "p1");
+            }
             _ => panic!("wrong variant"),
         }
     }

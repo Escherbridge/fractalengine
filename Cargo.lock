@@ -5220,6 +5220,7 @@ dependencies = [
  "fe-format",
  "fe-hexon",
  "fe-identity",
+ "fe-policy",
  "fe-query",
  "fe-runtime",
  "fe-terrain",

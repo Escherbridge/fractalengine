@@ -309,6 +309,18 @@ fn cascade_tombstones_whole_subtree() {
         "cascade emits exactly one event"
     );
 
+    // A repeat on the same tombstoned root acknowledges the command but must
+    // not append another durable action or re-emit lifecycle side effects.
+    h.send(DbCommand::CascadeTombstoneNode {
+        node_id: root.clone(),
+        auth: editor(),
+    });
+    assert!(matches!(h.recv(), DbResult::NodeDeleted { .. }));
+    assert!(
+        h.life_rx.try_recv().is_err(),
+        "idempotent cascade must not emit a duplicate lifecycle event"
+    );
+
     let ids = h.load_ids(&petal);
     for n in [&root, &child, &grand] {
         assert!(!ids.contains(n), "{n} must be tombstoned by the cascade");
