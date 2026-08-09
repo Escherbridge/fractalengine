@@ -350,7 +350,7 @@ function assertEnvelopeSemantics(envelope, vector) {
     expectNumericMap(payload.get(2n), [0n, 1n, 2n], `${vector.name}: encryption`);
     assert.ok(asBigInt(payload.get(2n).get(0n)) > 0n, `${vector.name}: suite id`);
     expectBytes(payload.get(2n).get(1n), 32, `${vector.name}: scope key id`);
-    assert.ok(Buffer.isBuffer(payload.get(2n).get(2n)), `${vector.name}: nonce`);
+    expectBytes(payload.get(2n).get(2n), 24, `${vector.name}: nonce`);
   }
 
   if (kind === 2n) {
