@@ -1,27 +1,16 @@
-//! Sync write-path policy gate (§D1 amendment) — see fe-sync/src/AGENTS.md §write-policy.
+//! Sync write-path policy gate. See fe-sync/src/AGENTS.md §write-policy.
 
 use std::sync::Arc;
 
 use bevy::prelude::Resource;
-use fe_policy::{
-    Action, AuthContext, Decision, PermissiveMigrationPolicy, Policy, RoleLevel, RoleLevelPolicy,
-    Scope,
-};
+use fe_policy::{Action, AuthContext, Decision, Policy, RoleLevel, RoleLevelPolicy, Scope};
 
 /// Shared handle to the policy engine gating replica row writes.
 #[derive(Resource, Clone)]
 pub struct PolicyHandle(pub Arc<dyn Policy>);
 
 impl PolicyHandle {
-    /// Migration default: strict RoleLevelPolicy underneath, but denials are
-    /// warn-logged and allowed until peer roles are plumbed to the sync thread.
-    pub fn permissive_migration() -> Self {
-        Self(Arc::new(PermissiveMigrationPolicy::new(Arc::new(
-            RoleLevelPolicy::standard(),
-        ))))
-    }
-
-    /// Strict enforcement (flips on once role plumbing lands).
+    /// Strict role-based enforcement for replica writes.
     pub fn strict() -> Self {
         Self(Arc::new(RoleLevelPolicy::standard()))
     }
@@ -46,7 +35,7 @@ impl PolicyHandle {
 
 impl Default for PolicyHandle {
     fn default() -> Self {
-        Self::permissive_migration()
+        Self::strict()
     }
 }
 
@@ -55,10 +44,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migration_default_allows_unplumbed_writes() {
+    fn default_denies_unplumbed_writes() {
         let policy = PolicyHandle::default();
-        // No role plumbed yet — migration mode warn-logs the would-be deny and allows.
-        assert!(policy.allow_write("did:key:z6MkPeer", None, "verse-1"));
+        assert!(!policy.allow_write("did:key:z6MkPeer", None, "verse-1"));
     }
 
     #[test]

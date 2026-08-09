@@ -87,6 +87,8 @@ fn main() {
     // see fe-sync/src/AGENTS.md §lifecycle-forwarding).
     let (lifecycle_tx, lifecycle_rx) = fe_sync::lifecycle_channel(256);
 
+    // Cloned for the seed-gate replay below — the original moves into the DB thread.
+    let db_res_tx_replay = ch.db_res_tx.clone();
     let _db_thread = match fe_database::spawn_db_thread_with_sync_and_lifecycle(
         ch.db_cmd_rx,
         ch.db_res_tx,
@@ -112,8 +114,47 @@ fn main() {
     // T5 reporting) observe create/promote/tombstone/reflow (FR-6). The op-log
     // stays the durable source of truth.
 
-    // Send seed command so the DB populates initial data
-    ch.db_cmd_tx.send(DbCommand::Seed).ok();
+    // Gate seed and preserve its DB results; see AGENTS.md §entity-store-analytics.
+    if ch.db_cmd_tx.send(DbCommand::Seed).is_err() {
+        tracing::error!("Database command channel closed before seed");
+        eprintln!("Fatal error: database command channel closed before seed.");
+        std::process::exit(1);
+    }
+    let mut startup_db_results = Vec::new();
+    loop {
+        match ch
+            .db_res_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+        {
+            Ok(result @ fe_runtime::messages::DbResult::Seeded { .. }) => {
+                startup_db_results.push(result);
+                break;
+            }
+            Ok(fe_runtime::messages::DbResult::Error(error)) => {
+                tracing::error!(%error, "Database seed failed");
+                eprintln!("Fatal error: database seed failed: {error}");
+                std::process::exit(1);
+            }
+            Ok(result) => startup_db_results.push(result),
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                tracing::error!("Database seed did not complete within 30 seconds");
+                eprintln!("Fatal error: database seed timed out during startup.");
+                std::process::exit(1);
+            }
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                tracing::error!("Database result channel closed during seed");
+                eprintln!("Fatal error: database result channel closed during startup.");
+                std::process::exit(1);
+            }
+        }
+    }
+    for result in startup_db_results {
+        if db_res_tx_replay.send(result).is_err() {
+            tracing::error!("Database result channel closed while replaying startup result");
+            eprintln!("Fatal error: database result channel closed during startup.");
+            std::process::exit(1);
+        }
+    }
 
     // ---- P2P Mycelium Phase D: sync thread (iroh endpoint) ----
     let (sync_cmd_tx, sync_cmd_rx) = crossbeam::channel::bounded(256);
@@ -216,8 +257,40 @@ fn main() {
     // Revocation broadcast: Bevy sends revoked JTIs, API thread updates its cache.
     let (revocation_tx, revocation_rx) = tokio::sync::broadcast::channel::<String>(64);
 
-    // Open a second read-only SurrealKV connection for direct API reads.
-    // SurrealKV supports concurrent readers; this bypasses the crossbeam channel.
+    // One shared cache; see AGENTS.md §entity-store-analytics.
+    let entity_store = Arc::new(fe_entity_store::EntityStore::new());
+
+    let (scene_change_tx_bevy, scene_change_rx_bevy) =
+        crossbeam::channel::bounded::<fe_runtime::messages::SceneChange>(256);
+    {
+        let mut entity_change_rx = entity_change_tx.subscribe();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("scene change bridge runtime");
+            rt.block_on(async move {
+                tracing::info!("Scene change bridge started — feeding EntityStore");
+                loop {
+                    match entity_change_rx.recv().await {
+                        Ok(change) => match scene_change_tx_bevy.try_send(change) {
+                            Ok(()) => {}
+                            Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                tracing::warn!("Scene change bridge: channel full — dropping");
+                            }
+                            Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
+                        },
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Scene change bridge lagged by {n}");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        });
+    }
+
+    // Optional direct reader backs analytics auth/hydration; failure must not block the editor. See AGENTS.md §entity-store-analytics.
     let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -229,12 +302,26 @@ fn main() {
             db.use_ns("fractalengine").use_db("fractalengine").await?;
             Ok::<_, surrealdb::Error>(db)
         }) {
-            Ok(db) => {
-                tracing::info!("Opened read-only SurrealKV connection for API gateway");
-                Some(Arc::new(db))
-            }
+            Ok(db) => match rt.block_on(hydrate_entity_store(&db, &entity_store)) {
+                Ok(node_count) => {
+                    tracing::info!(
+                        node_count,
+                        "Opened read-only SurrealKV connection and hydrated EntityStore for API gateway"
+                    );
+                    Some(Arc::new(db))
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "Could not hydrate EntityStore; analytics API will remain unavailable"
+                    );
+                    None
+                }
+            },
             Err(e) => {
-                tracing::warn!("Could not open API read connection, falling back to channel: {e}");
+                tracing::error!(
+                    "Could not open local API read connection; analytics API will remain unavailable: {e}"
+                );
                 None
             }
         }
@@ -265,46 +352,15 @@ fn main() {
         cors_origins: None, // defaults to localhost-only
         entity_change_tx: entity_change_tx.clone(),
         api_db_reader,
-        entity_store: None, // TODO: share Arc<EntityStore> with Bevy once resource type is Arc-wrapped
+        entity_store: Some(Arc::clone(&entity_store)),
         tileset_registry: tileset_registry.clone(),
         hexon_registry: None,
         announcement_store: None,
     });
 
     // ---- Entity Store (in-memory hot cache) ----
-    app.insert_resource(fe_entity_store::EntityStore::new());
+    app.insert_resource(SharedEntityStore(entity_store));
 
-    // Bridge: tokio broadcast → crossbeam channel so Bevy can drain scene changes
-    // into the EntityStore without a tokio runtime.
-    let (scene_change_tx_bevy, scene_change_rx_bevy) =
-        crossbeam::channel::bounded::<fe_runtime::messages::SceneChange>(256);
-    {
-        let mut entity_change_rx = entity_change_tx.subscribe();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("scene change bridge runtime");
-            rt.block_on(async move {
-                tracing::info!("Scene change bridge started — feeding EntityStore");
-                loop {
-                    match entity_change_rx.recv().await {
-                        Ok(change) => match scene_change_tx_bevy.try_send(change) {
-                            Ok(()) => {}
-                            Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                tracing::warn!("Scene change bridge: channel full — dropping");
-                            }
-                            Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
-                        },
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!("Scene change bridge lagged by {n}");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            });
-        });
-    }
     app.insert_resource(SceneChangeReceiver(scene_change_rx_bevy));
 
     app.insert_resource(fe_runtime::app::RevocationBroadcastSender(revocation_tx));
@@ -424,11 +480,122 @@ fn main() {
 #[derive(bevy::prelude::Resource)]
 struct SceneChangeReceiver(crossbeam::channel::Receiver<fe_runtime::messages::SceneChange>);
 
+/// Arc-backed Bevy handle for the API and scene-change hot cache.
+#[derive(bevy::prelude::Resource, Clone)]
+struct SharedEntityStore(Arc<fe_entity_store::EntityStore>);
+
+/// Hydrate the shared analytics cache from every live local node before API startup.
+async fn hydrate_entity_store(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    store: &fe_entity_store::EntityStore,
+) -> anyhow::Result<usize> {
+    let query = db.query(
+        "SELECT node_id, petal_id, position, elevation, rotation, scale, properties \
+         FROM node WHERE tombstone = NONE ORDER BY created_at ASC",
+    );
+    let mut response = tokio::time::timeout(std::time::Duration::from_secs(10), query)
+        .await
+        .map_err(|_| anyhow::anyhow!("local node hydration query timed out"))?
+        .map_err(|error| anyhow::anyhow!("local node hydration query failed: {error}"))?;
+    let rows: Vec<serde_json::Value> = response
+        .take(0)
+        .map_err(|error| anyhow::anyhow!("local node hydration response failed: {error}"))?;
+    let hydrated_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    for row in &rows {
+        store.upsert(snapshot_from_node_row(row, hydrated_at_ms)?);
+    }
+    Ok(rows.len())
+}
+
+/// Convert a validated local node row into the EntityStore's analytics shape.
+fn snapshot_from_node_row(
+    row: &serde_json::Value,
+    updated_at_ms: u64,
+) -> anyhow::Result<fe_entity_store::EntitySnapshot> {
+    let node_id = required_row_string(row, "node_id")?;
+    let petal_id = required_row_string(row, "petal_id")?;
+    let coordinates = row
+        .pointer("/position/coordinates")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("node {node_id} has no position.coordinates array"))?;
+    let position = [
+        required_row_number(coordinates, 0, "position.coordinates")?,
+        row.get("elevation")
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| anyhow::anyhow!("node {node_id} has no elevation"))? as f32,
+        required_row_number(coordinates, 1, "position.coordinates")?,
+    ];
+    let rotation = required_row_array3(row, "rotation")?;
+    let scale = required_row_array3(row, "scale")?;
+    let properties = match row.get("properties") {
+        Some(value) if value.is_null() => None,
+        Some(value) if value.is_object() => Some(value.clone()),
+        Some(_) => anyhow::bail!("node {node_id} has non-object properties"),
+        None => None,
+    };
+
+    Ok(fe_entity_store::EntitySnapshot {
+        node_id,
+        petal_id,
+        position,
+        rotation,
+        scale,
+        properties,
+        updated_at_ms,
+        node_log: Vec::new(),
+    })
+}
+
+/// Read a nonempty string field from a direct local node row.
+fn required_row_string(row: &serde_json::Value, field: &str) -> anyhow::Result<String> {
+    let value = row
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("node row has no {field}"))?;
+    Ok(value.to_string())
+}
+
+/// Read one finite f32 from a direct local node row array.
+fn required_row_number(
+    values: &[serde_json::Value],
+    index: usize,
+    field: &str,
+) -> anyhow::Result<f32> {
+    let value = values
+        .get(index)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| anyhow::anyhow!("node row has invalid {field}[{index}]"))?;
+    let value = value as f32;
+    if !value.is_finite() {
+        anyhow::bail!("node row has invalid {field}[{index}]");
+    }
+    Ok(value)
+}
+
+/// Read the three visible transform components used by the analytics snapshot.
+fn required_row_array3(row: &serde_json::Value, field: &str) -> anyhow::Result<[f32; 3]> {
+    let values = row
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("node row has no {field} array"))?;
+    Ok([
+        required_row_number(values, 0, field)?,
+        required_row_number(values, 1, field)?,
+        required_row_number(values, 2, field)?,
+    ])
+}
+
 /// Bevy system: drain scene change events from the bridge channel into the
 /// `EntityStore` hot cache each frame.
 fn drain_scene_changes_to_store(
     receiver: bevy::prelude::Res<SceneChangeReceiver>,
-    store: bevy::prelude::Res<fe_entity_store::EntityStore>,
+    store: bevy::prelude::Res<SharedEntityStore>,
 ) {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -452,17 +619,18 @@ fn drain_scene_changes_to_store(
                     },
                 }
             }
-            fe_runtime::messages::SceneChange::NodeRemoved { node_id } => {
+            fe_runtime::messages::SceneChange::NodeRemoved { node_id, .. } => {
                 fe_entity_store::SceneChange::NodeRemoved { node_id }
             }
-            fe_runtime::messages::SceneChange::NodeRenamed { node_id, new_name } => {
-                fe_entity_store::SceneChange::NodeRenamed { node_id, new_name }
-            }
+            fe_runtime::messages::SceneChange::NodeRenamed {
+                node_id, new_name, ..
+            } => fe_entity_store::SceneChange::NodeRenamed { node_id, new_name },
             fe_runtime::messages::SceneChange::NodeTransform {
                 node_id,
                 position,
                 rotation,
                 scale,
+                ..
             } => fe_entity_store::SceneChange::NodeTransform {
                 node_id,
                 position,
@@ -474,6 +642,7 @@ fn drain_scene_changes_to_store(
                 position,
                 rotation,
                 scale,
+                ..
             } => fe_entity_store::SceneChange::TransformFailed {
                 node_id,
                 position,
@@ -484,12 +653,102 @@ fn drain_scene_changes_to_store(
                 node_id,
                 key,
                 value,
+                ..
             } => fe_entity_store::SceneChange::PropertyChanged {
                 node_id,
                 key,
                 value,
             },
         };
-        store.apply_scene_change(&store_change, now_ms);
+        store.0.apply_scene_change(&store_change, now_ms);
+    }
+}
+
+#[cfg(test)]
+mod analytics_hydration_tests {
+    use super::*;
+
+    #[test]
+    fn node_row_hydrates_the_entity_store_shape() {
+        let row = serde_json::json!({
+            "node_id": "node-1",
+            "petal_id": "petal-1",
+            "position": { "coordinates": [1.0, 3.0] },
+            "elevation": 2.0,
+            "rotation": [0.1, 0.2, 0.3, 1.0],
+            "scale": [1.0, 2.0, 3.0],
+            "properties": { "kind": "marker" }
+        });
+
+        let snapshot = snapshot_from_node_row(&row, 42).expect("valid node row");
+
+        assert_eq!(snapshot.node_id, "node-1");
+        assert_eq!(snapshot.petal_id, "petal-1");
+        assert_eq!(snapshot.position, [1.0, 2.0, 3.0]);
+        assert_eq!(snapshot.rotation, [0.1, 0.2, 0.3]);
+        assert_eq!(snapshot.scale, [1.0, 2.0, 3.0]);
+        assert_eq!(
+            snapshot.properties,
+            Some(serde_json::json!({ "kind": "marker" }))
+        );
+        assert_eq!(snapshot.updated_at_ms, 42);
+    }
+
+    #[test]
+    fn malformed_node_row_rejects_startup_hydration() {
+        let row = serde_json::json!({
+            "node_id": "node-1",
+            "petal_id": "petal-1",
+            "position": { "coordinates": [1.0] },
+            "elevation": 2.0,
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0]
+        });
+
+        assert!(snapshot_from_node_row(&row, 42).is_err());
+    }
+
+    #[tokio::test]
+    async fn hydration_loads_each_live_node_before_api_startup() {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        fe_database::schema::apply_all(&db)
+            .await
+            .expect("apply schema");
+        db.query(
+            "CREATE node CONTENT { \
+             node_id: 'live-node', petal_id: 'petal-1', \
+             position: <geometry<point>> [1.0, 3.0], elevation: 2.0, \
+             rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0], \
+             interactive: true, created_at: '2026-08-08T00:00:00Z' }",
+        )
+        .await
+        .expect("create live node")
+        .check()
+        .expect("live node query succeeded");
+        db.query(
+            "CREATE node CONTENT { \
+             node_id: 'deleted-node', petal_id: 'petal-1', \
+             position: <geometry<point>> [4.0, 6.0], elevation: 5.0, \
+             rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0], \
+             interactive: true, created_at: '2026-08-08T00:00:00Z', \
+             tombstone: { hlc: 1, source_did: 'did:key:test' } }",
+        )
+        .await
+        .expect("create tombstoned node")
+        .check()
+        .expect("tombstoned node query succeeded");
+
+        let store = fe_entity_store::EntityStore::new();
+        let count = hydrate_entity_store(&db, &store)
+            .await
+            .expect("hydrate live nodes");
+
+        assert_eq!(count, 1);
+        assert_eq!(store.node_count(), 1);
+        assert_eq!(store.get("live-node").unwrap().position, [1.0, 2.0, 3.0]);
+        assert!(store.get("deleted-node").is_none());
     }
 }

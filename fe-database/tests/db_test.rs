@@ -1,6 +1,7 @@
 use fe_database::BlobStoreHandle;
 use fe_runtime::blob_store::mock::MockBlobStore;
-use fe_runtime::messages::{DbCommand, DbResult, EntityType, SceneChange};
+use fe_runtime::messages::{CallerAuth, DbCommand, DbResult, EntityType, SceneChange};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -355,6 +356,238 @@ fn test_created_node_is_persisted_with_geometry() {
     }
 }
 
+/// Legacy node creation and hard deletion must append durable intentions before
+/// their local rows are materialized or removed.
+#[test]
+fn test_legacy_node_create_and_delete_record_oplog() {
+    let _guard = db_lock();
+    let db = shared_scene_db();
+    let petal_id = seed_hierarchy(&db.cmd_tx, &db.res_rx);
+    let node_id = create_node(&db.cmd_tx, &db.res_rx, &petal_id);
+
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("nid".to_string(), serde_json::json!(node_id.clone()));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid".to_string(),
+            vars,
+        })
+        .unwrap();
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("CreateNode op-log query")
+    {
+        DbResult::QueryResult { data } => assert!(
+            data.iter().any(|row| row["op_type"] == "NodeCreated"),
+            "CreateNode must persist NodeCreated before materialization, got {data:?}"
+        ),
+        other => panic!("expected QueryResult, got {other:?}"),
+    }
+
+    db.cmd_tx
+        .send(DbCommand::DeleteNode {
+            node_id: node_id.clone(),
+        })
+        .unwrap();
+    assert!(matches!(
+        db.res_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("DeleteNode result"),
+        DbResult::NodeDeleted { .. }
+    ));
+
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("nid".to_string(), serde_json::json!(node_id));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid".to_string(),
+            vars,
+        })
+        .unwrap();
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("DeleteNode op-log query")
+    {
+        DbResult::QueryResult { data } => assert!(
+            data.iter().any(|row| row["op_type"] == "NodeDeleted"),
+            "DeleteNode must persist NodeDeleted before materialization, got {data:?}"
+        ),
+        other => panic!("expected QueryResult, got {other:?}"),
+    }
+}
+
+/// A cascade must identify every affected node to the scene mirror, each with
+/// the owning petal. A root-only notification leaves detached descendants in
+/// the WebSocket/entity-store view.
+#[test]
+fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
+    let _guard = db_lock();
+    let db = shared_scene_db();
+    let petal_id = seed_hierarchy(&db.cmd_tx, &db.res_rx);
+    let root = create_node(&db.cmd_tx, &db.res_rx, &petal_id);
+    let child = create_node(&db.cmd_tx, &db.res_rx, &petal_id);
+    let grandchild = create_node(&db.cmd_tx, &db.res_rx, &petal_id);
+
+    for (node_id, parent_id) in [(&child, &root), (&grandchild, &child)] {
+        db.cmd_tx
+            .send(DbCommand::SetNodeProperty {
+                node_id: node_id.clone(),
+                key: "parent_id".to_string(),
+                value: serde_json::json!(parent_id),
+            })
+            .unwrap();
+        assert!(matches!(
+            db.res_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("SetNodeProperty result"),
+            DbResult::NodePropertySet { .. }
+        ));
+    }
+
+    let mut ecr = db.scene_tx.subscribe();
+    db.cmd_tx
+        .send(DbCommand::CascadeTombstoneNode {
+            node_id: root.clone(),
+            auth: CallerAuth::Local,
+        })
+        .unwrap();
+    assert!(matches!(
+        db.res_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("CascadeTombstoneNode result"),
+        DbResult::NodeDeleted { .. }
+    ));
+
+    let mut removed = std::collections::BTreeSet::new();
+    for _ in 0..3 {
+        match recv_broadcast(&mut ecr, Duration::from_secs(5)) {
+            SceneChange::NodeRemoved {
+                node_id,
+                petal_id: event_petal_id,
+            } => {
+                assert_eq!(
+                    event_petal_id, petal_id,
+                    "NodeRemoved must retain petal scope"
+                );
+                assert!(
+                    removed.insert(node_id),
+                    "cascade must not emit duplicate removals"
+                );
+            }
+            other => panic!("expected SceneChange::NodeRemoved, got {other:?}"),
+        }
+    }
+    let expected_removed = BTreeSet::from([root.clone(), child.clone(), grandchild.clone()]);
+    assert_eq!(
+        removed, expected_removed,
+        "cascade must mirror every tombstoned node"
+    );
+    assert!(matches!(
+        ecr.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("nid".to_string(), serde_json::json!(root.clone()));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid AND op_type = 'NodeTombstoned'".to_string(),
+            vars,
+        })
+        .unwrap();
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first cascade op-log query")
+    {
+        DbResult::QueryResult { data } => assert_eq!(data.len(), 1),
+        other => panic!("expected QueryResult, got {other:?}"),
+    }
+
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("nid".to_string(), serde_json::json!(root.clone()));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT tombstone FROM node WHERE node_id = $nid".to_string(),
+            vars,
+        })
+        .unwrap();
+    let tombstone_before_repeat = match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first cascade tombstone query")
+    {
+        DbResult::QueryResult { data } => data
+            .first()
+            .map(|row| row["tombstone"].clone())
+            .expect("cascade root must retain its tombstone row"),
+        other => panic!("expected QueryResult, got {other:?}"),
+    };
+
+    // Same root = no-op: the existing DbResult acknowledgement is preserved,
+    // but it must append no operation and emit no mirrored removal.
+    db.cmd_tx
+        .send(DbCommand::CascadeTombstoneNode {
+            node_id: root.clone(),
+            auth: CallerAuth::Local,
+        })
+        .unwrap();
+    assert!(matches!(
+        db.res_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("repeat CascadeTombstoneNode result"),
+        DbResult::NodeDeleted { .. }
+    ));
+    assert!(matches!(
+        ecr.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("nid".to_string(), serde_json::json!(root.clone()));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT tombstone FROM node WHERE node_id = $nid".to_string(),
+            vars,
+        })
+        .unwrap();
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("repeat cascade tombstone query")
+    {
+        DbResult::QueryResult { data } => assert_eq!(
+            data.first().map(|row| row["tombstone"].clone()),
+            Some(tombstone_before_repeat),
+            "an idempotent cascade must not rewrite the tombstone row"
+        ),
+        other => panic!("expected QueryResult, got {other:?}"),
+    }
+
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("nid".to_string(), serde_json::json!(root));
+    db.cmd_tx
+        .send(DbCommand::RawQuery {
+            sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid AND op_type = 'NodeTombstoned'".to_string(),
+            vars,
+        })
+        .unwrap();
+    match db
+        .res_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("repeat cascade op-log query")
+    {
+        DbResult::QueryResult { data } => assert_eq!(
+            data.len(),
+            1,
+            "an idempotent cascade must not append another NodeTombstoned operation"
+        ),
+        other => panic!("expected QueryResult, got {other:?}"),
+    }
+}
+
 /// `UpdateNodeTransform` must emit `SceneChange::NodeTransform` on the broadcast
 /// channel.  Note: this command does NOT send a `DbResult` on success — the
 /// broadcast event is the only observable outcome from the caller's perspective.
@@ -388,11 +621,13 @@ fn test_update_transform_emits_scene_change() {
     match change {
         SceneChange::NodeTransform {
             node_id: nid,
+            petal_id: event_petal_id,
             position,
             rotation,
             scale,
         } => {
             assert_eq!(nid, node_id, "NodeTransform.node_id mismatch");
+            assert_eq!(event_petal_id, petal_id, "NodeTransform.petal_id mismatch");
             assert_eq!(position, new_pos, "NodeTransform.position mismatch");
             assert_eq!(rotation, new_rot, "NodeTransform.rotation mismatch");
             assert_eq!(scale, new_scale, "NodeTransform.scale mismatch");
@@ -442,10 +677,15 @@ fn test_set_property_emits_scene_change() {
     match change {
         SceneChange::PropertyChanged {
             node_id: nid,
+            petal_id: event_petal_id,
             key,
             value,
         } => {
             assert_eq!(nid, node_id, "PropertyChanged.node_id mismatch");
+            assert_eq!(
+                event_petal_id, petal_id,
+                "PropertyChanged.petal_id mismatch"
+            );
             assert_eq!(key, prop_key, "PropertyChanged.key mismatch");
             assert_eq!(value, prop_val, "PropertyChanged.value mismatch");
         }
@@ -504,10 +744,15 @@ fn test_delete_property_emits_scene_change() {
     match change {
         SceneChange::PropertyChanged {
             node_id: nid,
+            petal_id: event_petal_id,
             key,
             value,
         } => {
             assert_eq!(nid, node_id, "PropertyChanged.node_id mismatch");
+            assert_eq!(
+                event_petal_id, petal_id,
+                "PropertyChanged.petal_id mismatch"
+            );
             assert_eq!(key, prop_key, "PropertyChanged.key mismatch");
             assert_eq!(
                 value,
@@ -519,11 +764,9 @@ fn test_delete_property_emits_scene_change() {
     }
 }
 
-/// `RenameEntity` must emit `SceneChange::NodeRenamed` on the broadcast channel
-/// and the new name must be readable back from the DB (persist proof, not just
-/// handler `Ok` — see fe-database/src/AGENTS.md).
+/// `RenameEntity` must not emit an unscoped node scene change.
 #[test]
-fn test_rename_entity_emits_scene_change() {
+fn test_rename_entity_omits_node_scene_change() {
     let _guard = db_lock();
     let db = shared_scene_db();
 
@@ -556,14 +799,10 @@ fn test_rename_entity_emits_scene_change() {
         other => panic!("expected EntityRenamed, got {other:?}"),
     }
 
-    let change = recv_broadcast(&mut ecr, Duration::from_secs(5));
-    match change {
-        SceneChange::NodeRenamed { node_id, new_name } => {
-            assert_eq!(node_id, petal_id, "NodeRenamed.node_id mismatch");
-            assert_eq!(new_name, "renamed-petal", "NodeRenamed.new_name mismatch");
-        }
-        other => panic!("expected SceneChange::NodeRenamed, got {other:?}"),
-    }
+    assert!(matches!(
+        ecr.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 
     // Read-back: the rename must be persisted, not just acknowledged.
     let mut vars = std::collections::HashMap::new();

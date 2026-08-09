@@ -16,6 +16,7 @@ fe-query = { path = "../fe-query", features = ["datafusion"] }
 fe-entity-store = { path = "../fe-entity-store" }
 fe-terrain = { path = "../fe-terrain" }
 fe-hexon = { path = "../fe-hexon" }
+fe-policy = { path = "../fe-policy" }
 axum-extra = { version = "0.10", features = ["multipart"] }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -39,6 +40,5 @@ hex = "0.4"
 # Dev-dep cycle is legal cargo: the API-integration harness lives in the
 # harness crate's lib target (see fe-test-harness/src/AGENTS.md §api-harness).
 fractalengine-test-harness = { path = "../fe-test-harness" }
-
 
 

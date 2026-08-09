@@ -1,9 +1,13 @@
 //! Hybrid Logical Clock (HLC) + operation-log writer (design:
 //! fe-database/src/AGENTS.md §hlc).
 
+use std::future::Future;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use anyhow::Context;
+
+use crate::repo::Db;
 use crate::repo::Repo;
 use crate::schema::OpLog;
 use crate::types::{OpLogEntry, PetalId};
@@ -81,13 +85,39 @@ pub fn next_hlc_timestamp() -> (u64, String) {
 // Op-log persistence
 // ---------------------------------------------------------------------------
 
-pub async fn write_op_log(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+/// Append an operation before materializing its local state.
+///
+/// Until the verified materializer lands, a materialization failure can leave
+/// an appended operation pending replay; an append failure never invokes the
+/// materializer. See `src/AGENTS.md` §log-first-commit.
+pub async fn commit_operation<T, F, Fut>(
+    db: &Db,
     mut entry: OpLogEntry,
-) -> anyhow::Result<()> {
+    materialize: F,
+) -> anyhow::Result<T>
+where
+    F: FnOnce(u64) -> Fut,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
     let (lamport, hlc_ts) = next_hlc_timestamp();
     entry.lamport_clock = lamport;
     entry.hlc_timestamp = hlc_ts;
+
+    append_operation_log(db, entry)
+        .await
+        .context("operation log append failed; local materialization was not attempted")?;
+
+    materialize(lamport).await.map_err(|error| {
+        // Preserve the full cause for DbCommand's outer error rendering; see AGENTS.md §log-first-commit.
+        let cause = format!("{error:#}");
+        error.context(format!(
+            "operation was appended but local materialization failed; recovery must replay the operation; cause: {cause}"
+        ))
+    })
+}
+
+/// Persist a pre-stamped operation entry. Only [`commit_operation`] may call this.
+async fn append_operation_log(db: &Db, entry: OpLogEntry) -> anyhow::Result<()> {
     let val = serde_json::to_value(entry)?;
     Repo::<OpLog>::create_raw(db, val).await?;
     Ok(())

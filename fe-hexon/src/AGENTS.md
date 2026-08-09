@@ -20,13 +20,11 @@ sync blob store.
 
 ## §authz (auth_policy_pattern_20260710 — Phase 8.4 gap closure)
 
-`authz.rs` adds the policy gate the 8.4 review flagged as missing: registry
-mutations (`install_as`, `uninstall_as`) require Editor+ at the petal scope
-via `fe_policy::RoleLevelPolicy::standard()`, while discovery reads
-(`list_installed_as`, `search_local_as`) are public — `PublicReadPolicy`
-composed into the same engine allows anonymous `Action::Read` only. Denials
-surface as `RegistryError::PermissionDenied`. The ungated `install`/
-`uninstall`/`list_installed`/`search_local` remain for the local trusted path
-(the user's own machine, UI-driven installs); the hosted registry service
-(`fe-hexon-registry` crate) must route through the `*_as` variants — that
-wiring is a logged follow-up, same as the fe-api adapter.
+`authz.rs` gates registry mutations (`install_as`, `uninstall_as`) at a petal
+scope and exposes petal-constrained discovery helpers
+(`list_installed_as`, `search_local_in_petal_as`, `get_installed_as`). The API adapter
+resolves the caller's petal scope and checks token containment before invoking
+these methods; an installed crate bound to one petal cannot be read or removed
+through another petal's API scope. The ungated `install`/`uninstall`/
+`list_installed`/`search_local` methods remain only for the trusted local
+desktop path. Network-facing callers must use the `*_as` methods.

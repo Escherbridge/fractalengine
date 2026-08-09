@@ -12,6 +12,7 @@ pub mod invite;
 pub mod iot_reading;
 pub mod node_log;
 pub mod petal_terrain;
+pub(crate) mod preconditions;
 pub mod rbac;
 pub mod seed;
 pub mod transform;

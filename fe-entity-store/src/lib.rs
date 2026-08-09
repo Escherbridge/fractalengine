@@ -629,7 +629,7 @@ impl EntityStore {
                 );
                 self.upsert(snapshot);
             }
-            SceneChange::NodeRemoved { node_id } => {
+            SceneChange::NodeRemoved { node_id, .. } => {
                 // FR-1: a removal is a merge-safe tombstone, not a hard drop —
                 // a stale replica cannot resurrect it. The node stays invisible
                 // to normal reads (`get`/`get_by_petal` filter tombstones).
@@ -640,6 +640,7 @@ impl EntityStore {
                 position,
                 rotation,
                 scale,
+                ..
             } => {
                 if let Some(mut snapshot) = self.get(node_id) {
                     snapshot.position = *position;
@@ -673,6 +674,7 @@ impl EntityStore {
                 position,
                 rotation,
                 scale,
+                ..
             } => {
                 if let Some(mut snapshot) = self.get(node_id) {
                     snapshot.position = *position;
@@ -687,6 +689,7 @@ impl EntityStore {
                 node_id,
                 key,
                 value,
+                ..
             } => {
                 if let Some(mut snapshot) = self.get(node_id) {
                     let props = snapshot
@@ -717,7 +720,9 @@ impl EntityStore {
                     self.upsert(snapshot);
                 }
             }
-            SceneChange::NodeRenamed { node_id, new_name } => {
+            SceneChange::NodeRenamed {
+                node_id, new_name, ..
+            } => {
                 if let Some(mut snapshot) = self.get(node_id) {
                     let rv = snapshot
                         .node_log

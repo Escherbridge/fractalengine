@@ -1,6 +1,8 @@
 use crate::atlas::{ModelMetadataUpdate, PetalMetadata, RoomMetadata, SpaceOverview, Visibility};
-use crate::op_log::write_op_log;
-use crate::repo::Repo;
+use crate::handlers::preconditions::{
+    require_model_in_petal, require_petal_scope, require_room_in_petal,
+};
+use crate::op_log::commit_operation;
 use crate::schema::{Model, Petal, Room};
 use crate::types::{NodeId, OpLogEntry, OpType, PetalId};
 
@@ -17,38 +19,59 @@ impl SpaceManager {
         petal_id: PetalId,
         meta: PetalMetadata,
     ) -> anyhow::Result<()> {
-        crate::rbac::require_write_role(db, caller_node_id, &petal_id.0.to_string()).await?;
+        let scope = require_petal_scope(db, &petal_id.0.to_string(), "UpdatePetalMetadata").await?;
+        crate::rbac::require_write_role(db, caller_node_id, &scope).await?;
         let vis_str = match meta.visibility {
             Visibility::Public => "public",
             Visibility::Private => "private",
             Visibility::Unlisted => "unlisted",
         };
-        Repo::<Petal>::merge_by_id(
-            db,
-            &petal_id.0.to_string(),
-            serde_json::json!({
-                "description": meta.description.clone(),
-                "visibility": vis_str,
-                "tags": meta.tags.clone(),
-            }),
-        )
-        .await?;
+        let petal_id_string = petal_id.0.to_string();
+        let description = meta.description;
+        let tags = meta.tags;
 
         let entry = OpLogEntry {
             lamport_clock: 0,
             node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdatePetalMeta,
             payload: serde_json::json!({
-                "petal_id": petal_id.0.to_string(),
-                "target": petal_id.0.to_string(),
-                "description": meta.description,
+                "petal_id": petal_id_string.clone(),
+                "target": petal_id_string.clone(),
+                "description": description.clone(),
                 "visibility": vis_str,
-                "tags": meta.tags,
+                "tags": tags.clone(),
             }),
             sig: "00".repeat(64),
             hlc_timestamp: String::new(),
         };
-        write_op_log(db, entry).await?;
+        commit_operation(db, entry, move |_| async move {
+            let mut result = db
+                .query("UPDATE petal MERGE $data WHERE petal_id = $id")
+                .bind((
+                    "data",
+                    serde_json::json!({
+                        "description": description,
+                        "visibility": vis_str,
+                        "tags": tags,
+                    }),
+                ))
+                .bind(("id", petal_id_string.clone()))
+                .await?
+                .check()
+                .map_err(|error| {
+                    anyhow::anyhow!("UpdatePetalMetadata statement failed: {error}")
+                })?;
+            let updated: Vec<serde_json::Value> = result.take(0).map_err(|error| {
+                anyhow::anyhow!("UpdatePetalMetadata result read failed: {error}")
+            })?;
+            if updated.is_empty() {
+                anyhow::bail!(
+                    "UpdatePetalMetadata matched no petal with petal_id = {petal_id_string}"
+                );
+            }
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -59,32 +82,46 @@ impl SpaceManager {
         petal_id: PetalId,
         visibility: Visibility,
     ) -> anyhow::Result<()> {
-        crate::rbac::require_write_role(db, caller_node_id, &petal_id.0.to_string()).await?;
+        let scope = require_petal_scope(db, &petal_id.0.to_string(), "SetPetalVisibility").await?;
+        crate::rbac::require_write_role(db, caller_node_id, &scope).await?;
         let vis_str = match visibility {
             Visibility::Public => "public",
             Visibility::Private => "private",
             Visibility::Unlisted => "unlisted",
         };
-        Repo::<Petal>::merge_by_id(
-            db,
-            &petal_id.0.to_string(),
-            serde_json::json!({ "visibility": vis_str }),
-        )
-        .await?;
+        let petal_id_string = petal_id.0.to_string();
 
         let entry = OpLogEntry {
             lamport_clock: 0,
             node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdatePetalMeta,
             payload: serde_json::json!({
-                "petal_id": petal_id.0.to_string(),
-                "target": petal_id.0.to_string(),
+                "petal_id": petal_id_string.clone(),
+                "target": petal_id_string.clone(),
                 "visibility": vis_str,
             }),
             sig: "00".repeat(64),
             hlc_timestamp: String::new(),
         };
-        write_op_log(db, entry).await?;
+        commit_operation(db, entry, move |_| async move {
+            let mut result = db
+                .query("UPDATE petal MERGE $data WHERE petal_id = $id")
+                .bind(("data", serde_json::json!({ "visibility": vis_str })))
+                .bind(("id", petal_id_string.clone()))
+                .await?
+                .check()
+                .map_err(|error| anyhow::anyhow!("SetPetalVisibility statement failed: {error}"))?;
+            let updated: Vec<serde_json::Value> = result.take(0).map_err(|error| {
+                anyhow::anyhow!("SetPetalVisibility result read failed: {error}")
+            })?;
+            if updated.is_empty() {
+                anyhow::bail!(
+                    "SetPetalVisibility matched no petal with petal_id = {petal_id_string}"
+                );
+            }
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -144,7 +181,10 @@ impl SpaceManager {
         room_id: String,
         meta: RoomMetadata,
     ) -> anyhow::Result<()> {
-        crate::rbac::require_write_role(db, caller_node_id, petal_id).await?;
+        let target_petal_id =
+            require_room_in_petal(db, &room_id, petal_id, "UpdateRoomMetadata").await?;
+        let scope = require_petal_scope(db, &target_petal_id, "UpdateRoomMetadata").await?;
+        crate::rbac::require_write_role(db, caller_node_id, &scope).await?;
         let bounds_val = meta
             .bounds
             .as_ref()
@@ -156,25 +196,37 @@ impl SpaceManager {
             .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
             .unwrap_or(serde_json::Value::Null);
 
-        db.query(
-            "UPDATE room SET description = $desc, bounds = $bounds, spawn_point = $spawn \
-             WHERE id = $id",
-        )
-        .bind(("desc", meta.description))
-        .bind(("bounds", bounds_val))
-        .bind(("spawn", spawn_val))
-        .bind(("id", room_id.clone()))
-        .await?;
-
         let entry = OpLogEntry {
             lamport_clock: 0,
             node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdateRoomMeta,
-            payload: serde_json::json!({ "room_id": room_id }),
+            payload: serde_json::json!({ "room_id": room_id.clone() }),
             sig: "00".repeat(64),
             hlc_timestamp: String::new(),
         };
-        write_op_log(db, entry).await?;
+        commit_operation(db, entry, move |_| async move {
+            let mut result = db
+                .query(
+                    "UPDATE room SET description = $desc, bounds = $bounds, spawn_point = $spawn \
+                 WHERE id = $id AND petal_id = $petal_id",
+                )
+                .bind(("desc", meta.description))
+                .bind(("bounds", bounds_val))
+                .bind(("spawn", spawn_val))
+                .bind(("id", room_id.clone()))
+                .bind(("petal_id", target_petal_id))
+                .await?
+                .check()
+                .map_err(|e| anyhow::anyhow!("UpdateRoomMetadata statement failed: {e}"))?;
+            let updated: Vec<serde_json::Value> = result
+                .take(0)
+                .map_err(|e| anyhow::anyhow!("UpdateRoomMetadata result read failed: {e}"))?;
+            if updated.is_empty() {
+                anyhow::bail!("UpdateRoomMetadata matched no room with id = {room_id}");
+            }
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -206,35 +258,50 @@ impl SpaceManager {
         model_id: String,
         update: ModelMetadataUpdate,
     ) -> anyhow::Result<()> {
-        crate::rbac::require_write_role(db, caller_node_id, petal_id).await?;
-        db.query(
-            "UPDATE model SET \
-             display_name = $display_name, \
-             description = $description, \
-             external_url = $external_url, \
-             config_url = $config_url, \
-             tags = $tags, \
-             metadata = $metadata \
-             WHERE id = $id",
-        )
-        .bind(("display_name", update.display_name))
-        .bind(("description", update.description))
-        .bind(("external_url", update.external_url))
-        .bind(("config_url", update.config_url))
-        .bind(("tags", update.tags))
-        .bind(("metadata", update.metadata))
-        .bind(("id", model_id.clone()))
-        .await?;
-
+        let target_petal_id =
+            require_model_in_petal(db, &model_id, petal_id, "UpdateModelMetadata").await?;
+        let scope = require_petal_scope(db, &target_petal_id, "UpdateModelMetadata").await?;
+        crate::rbac::require_write_role(db, caller_node_id, &scope).await?;
         let entry = OpLogEntry {
             lamport_clock: 0,
             node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdateModelMeta,
-            payload: serde_json::json!({ "model_id": model_id }),
+            payload: serde_json::json!({ "model_id": model_id.clone() }),
             sig: "00".repeat(64),
             hlc_timestamp: String::new(),
         };
-        write_op_log(db, entry).await?;
+        commit_operation(db, entry, move |_| async move {
+            let mut result = db
+                .query(
+                    "UPDATE model SET \
+                 display_name = $display_name, \
+                 description = $description, \
+                 external_url = $external_url, \
+                 config_url = $config_url, \
+                 tags = $tags, \
+                 metadata = $metadata \
+                 WHERE id = $id AND petal_id = $petal_id",
+                )
+                .bind(("display_name", update.display_name))
+                .bind(("description", update.description))
+                .bind(("external_url", update.external_url))
+                .bind(("config_url", update.config_url))
+                .bind(("tags", update.tags))
+                .bind(("metadata", update.metadata))
+                .bind(("id", model_id.clone()))
+                .bind(("petal_id", target_petal_id))
+                .await?
+                .check()
+                .map_err(|e| anyhow::anyhow!("UpdateModelMetadata statement failed: {e}"))?;
+            let updated: Vec<serde_json::Value> = result
+                .take(0)
+                .map_err(|e| anyhow::anyhow!("UpdateModelMetadata result read failed: {e}"))?;
+            if updated.is_empty() {
+                anyhow::bail!("UpdateModelMetadata matched no model with id = {model_id}");
+            }
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -250,15 +317,48 @@ impl SpaceManager {
         key: &str,
         value: serde_json::Value,
     ) -> anyhow::Result<()> {
-        crate::rbac::require_write_role(db, caller_node_id, petal_id).await?;
         if !is_valid_field_key(key) {
             anyhow::bail!("invalid metadata key {key:?}: must match [a-zA-Z_][a-zA-Z0-9_]*");
         }
-        let q = format!("UPDATE model SET metadata.{key} = $value WHERE id = $id");
-        db.query(q)
-            .bind(("value", value))
-            .bind(("id", model_id))
-            .await?;
+        let target_petal_id =
+            require_model_in_petal(db, &model_id, petal_id, "UpsertModelKv").await?;
+        let scope = require_petal_scope(db, &target_petal_id, "UpsertModelKv").await?;
+        crate::rbac::require_write_role(db, caller_node_id, &scope).await?;
+        let key = key.to_string();
+        let q = format!(
+            "UPDATE model SET metadata.{key} = $value WHERE id = $id AND petal_id = $petal_id"
+        );
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(key, value.clone());
+        let entry = OpLogEntry {
+            lamport_clock: 0,
+            node_id: NodeId(caller_node_id.to_string()),
+            op_type: OpType::UpdateModelMeta,
+            payload: serde_json::json!({
+                "model_id": model_id.clone(),
+                "metadata": metadata,
+            }),
+            sig: "00".repeat(64),
+            hlc_timestamp: String::new(),
+        };
+        commit_operation(db, entry, move |_| async move {
+            let mut result = db
+                .query(q)
+                .bind(("value", value))
+                .bind(("id", model_id.clone()))
+                .bind(("petal_id", target_petal_id))
+                .await?
+                .check()
+                .map_err(|e| anyhow::anyhow!("UpsertModelKv statement failed: {e}"))?;
+            let updated: Vec<serde_json::Value> = result
+                .take(0)
+                .map_err(|e| anyhow::anyhow!("UpsertModelKv result read failed: {e}"))?;
+            if updated.is_empty() {
+                anyhow::bail!("UpsertModelKv matched no model with id = {model_id}");
+            }
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 

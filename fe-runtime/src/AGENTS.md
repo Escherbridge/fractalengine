@@ -1,5 +1,14 @@
 # fe-runtime/src — module rationale
 
+## §scene-change
+
+`messages.rs::SceneChange` is the process-wide scene-delta contract. Every
+node-scoped variant carries its owning `petal_id`; a WebSocket receiver must
+use `SceneChange::petal_id()` to scope both deltas and transform rollbacks.
+Producers must not emit a node-scoped scene change when they cannot determine
+that petal. This makes deleted-node events safe to filter without a post-delete
+database lookup.
+
 ## §property-bridge (`bim_primitives_on_paths_20260712`, C5)
 
 `shared_node.rs::PropertyValue` is the Tauri↔Bevy bridge's authoritative
