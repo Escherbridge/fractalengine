@@ -116,9 +116,14 @@ byte-equality assertion, the structural rules, and the suite check. They are for
 **locally-constructed** envelopes only, where this process built the value and the bytes do
 not exist yet.
 
-`EncryptionParams::assert_production_suite` has exactly one caller, and it is
-`decode_and_admit`. Keep it that way: a suite check reachable only by opt-in reads as enforced
-without being enforced, which is how this repository has previously shipped dormant gates.
+`EncryptionParams::assert_production_suite` is called from every path that admits or seals bytes
+and from no path that is reachable only by opt-in: `decode_and_admit` (SPEC-1 ingress),
+`segment::artifact::admit_sealed` (SPEC-6 ingress), and
+`segment::relay_policy::assert_seals_under_current_key`, which every seal reaches through
+`seal_artifact`. That is the invariant — mandatory on each such path — not a caller count. A suite
+check reachable only by opt-in reads as enforced without being enforced, which is how this
+repository has previously shipped dormant gates; adding a fourth mandatory path is fine, making
+any of these three optional is not.
 
 `SigningError::NonCanonicalAuthorDid` is the same kind of guard one level down. §3.2 accepts
 canonical `did:key` only, so the binding check compares the derived key bytes *and* asserts
@@ -162,19 +167,311 @@ code parses JSON.
 | `signing` | SPEC-1 §5.1 | W1b |
 | `payload_aad` | SPEC-1 §5.2 | W1b |
 | `frontier` | SPEC-1 §6 | W1b |
-| `author_key` | SPEC-2 | later slice, unassigned at W1a |
-| `capability` | SPEC-3 | later slice, unassigned at W1a |
-| `crypto` | SPEC-1 §9, SPEC-3 §10 | later slice, unassigned at W1a |
-| `materialize` | SPEC-4 | later slice, unassigned at W1a |
-| `branch` | SPEC-5 | later slice, unassigned at W1a |
-| `retention` | SPEC-5 | later slice, unassigned at W1a |
-| `checkpoint` | SPEC-5 | later slice, unassigned at W1a |
-| `segment` | SPEC-6 | later slice, unassigned at W1a |
-| `wire` | SPEC-6 | later slice, unassigned at W1a |
-| `compose` | cross-cutting facade | later slice, unassigned at W1a |
+| `author_key` | SPEC-2 | W2-author-key-lifecycle — implemented |
+| `capability` | SPEC-3 | W2-capability-chain — implemented |
+| `crypto` | SPEC-1 §9, SPEC-3 §10 | later slice, unassigned |
+| `materialize` | SPEC-4 | W2-materialize — implemented |
+| `branch` | SPEC-5 | W2-branch-checkpoint — implemented |
+| `retention` | SPEC-5 | W2-retention — implemented |
+| `checkpoint` | SPEC-5 | W2-branch-checkpoint — implemented |
+| `segment` | SPEC-6 | W2-segment — implemented |
+| `wire` | SPEC-7 | W2-wire — implemented |
+| `compose` | cross-cutting facade | Wave 3 integration |
 
 Unimplemented modules are one-line doc-comment placeholders. They exist so `lib.rs` compiles
 today and so module boundaries are settled before parallel slices start writing code.
+
+Each implemented module carries its own `AGENTS.md` holding that module's rationale. This
+file stays the crate-wide register: read it first, then the module file.
+
+`compose` stopped being a placeholder in the R-unify pass. It is not a "high-level facade" any
+more; it is the one place a vocabulary or a binding that spans two modules is defined, so that
+two leaf slices cannot each invent their own. See §unified-vocabularies.
+
+## §unified-vocabularies — one name per concept, defined in `compose`
+
+Wave 2 shipped three parallel `QuarantineReason` enums and three unbound checkpoint
+vocabularies. Duplicated vocabularies are not a cosmetic problem here: a two-variant local
+stand-in for a real verification result is a gate that anyone can satisfy by typing the word
+`Verified`, and two enums for one concept mean a reviewer who checks one has not checked the
+other.
+
+- **`compose::QuarantineReason` is the crate's only quarantine vocabulary.**
+  `author_key::admission`, `retention::quarantine`, and `segment::store` each `pub use` it and
+  none defines its own. It retains `AuthorEquivocation` per D-CL25, and that variant now names
+  **both** conflicting operations rather than "the other one": an asymmetric reason invited a
+  reader to treat the named side as the loser, which is precisely the fork §3.4 forbids
+  adjudicating. The reason never carries the candidate's own `op_id` — every store already keys
+  it by that.
+- **`checkpoint::compaction_decision` is the crate's only compaction gate.** It takes the real
+  `CheckpointVerification` produced by `verify_checkpoint_claim` (signature, Manager+ authority,
+  frontier and manifest bindings, independent replay), plus the tombstone records themselves as
+  a required parameter, and runs `retention::tombstone::assert_no_resurrection` over each. The
+  old `retention::tombstone::CheckpointVerdict{Verified,NotVerified}` stand-in is deleted, and
+  `BootstrapCoverage` no longer carries an `every_suppression_effect_is_checkpoint_proved` bool
+  — that evidence is inspectable, so it is inspected. `may_compact_tombstone` survives only as
+  a single-record spelling that delegates to the same function.
+- **`segment::checkpoint_proof::CheckpointView` binds to a real signed claim through
+  `compose::SignedCheckpointProofView`.** The trait gained a required `frontier_commitment()`
+  method with **no default**: `run_proof` recomputes `SortedFrontier::commitment` over the heads
+  it is about to walk and refuses `FrontierCommitmentMismatch` when the signature covered a
+  different selection. A defaulted method returning the recomputation would have made the check
+  vacuous, which is why it is required.
+- **`materialize::CheckpointBinding` is derived from the claim, not restated beside it.**
+  `compose::checkpoint_binding_for_selection` is the one function that turns a SPEC-5
+  `CheckpointClaimV1` into a SPEC-4 §6.3 binding, and it is **fallible**: it builds the binding
+  from the claim's own fields, so the two vocabularies cannot disagree by construction, and then
+  refuses to hand it back unless `CheckpointBinding::validate` has recomputed the frontier
+  commitment over the caller's own frontier and matched branch, manifest and materializer against
+  the caller's current values. There is deliberately no separate "and also check these agree"
+  helper — that would be exactly the gate a future author forgets. SPEC-5 names a materializer by
+  32-byte identifier and SPEC-4 by hand-authored name/number, so `BindingSelection` carries both
+  and only the caller holds the mapping.
+
+## §single-seal-entry-point — all four lanes seal through one door
+
+`segment::artifact::seal_artifact` is the ONLY way to obtain a `SealedArtifact`;
+`SealedArtifact::seal` is `pub(crate)`. In order it refuses a lane/body-class mismatch, then the
+production suite plus the lane's current scope epoch and current key through
+`relay_policy::assert_seals_under_current_key`, then a nonce already seen under that key through
+`NonceLedger::record_fresh`.
+
+Before R-unify only the payload shard was checked, and only partially: `seal_payload_shard` took
+a bare `current_key_id` and could not see the lane's epoch, the header segment, HashSeq nodes
+and the manifest went through the ungated `SealedArtifact::seal`, and
+`assert_seals_under_current_key` had no caller at all. Nonce reuse under XChaCha20-Poly1305 is a
+keystream-recovery break and sealing under a retired epoch key defeats the whole D-CL17
+revocation story, so neither check may be reachable only by opt-in.
+
+`seal_payload_shard` now takes the `RelayAuthorizationView` and derives its lane and epoch from
+the shard's own topic, so it cannot be asked about a lane the shard does not belong to. It no
+longer records the nonce: the nonce belongs to the sealed artifact, so packing a candidate twice
+must not burn a nonce the AEAD never used.
+
+## Provisional wire numbering
+
+D-CL24 register. Every CBOR integer key this crate invented — because its spec describes a map
+in prose without a normative key table — is recorded below. **No cross-implementation interop
+is claimed for any provisional key.** The owner ratifies or replaces them before any second
+implementation reads these bytes.
+
+**This section is the single ratification surface.** Every row is here, in full. The earlier
+arrangement — an index here, the row-by-row tables in five module files — meant the owner had to
+visit six documents to ratify one numbering scheme, and a slice could add a key without ever
+touching the register. Module `AGENTS.md` files must carry a pointer to this section, not a
+second copy of a table; two copies of a key table drift exactly the way two canonical encoders
+drift.
+
+`retention` and `compose` assign no wire numbers at all; nothing in either is CBOR-encoded,
+signed, or hashed as a wire artifact.
+
+### Normative, not ours to renumber
+
+| Artifact | Spec table |
+| --- | --- |
+| Operation envelope, keys 0..10 | SPEC-1 §3 (see §W1b below and `envelope.rs`) |
+| Capability certificate | SPEC-3 §2.2 keys 0..14 |
+| Capability caveats | SPEC-3 §2.3 keys 0..5 |
+| Capability chain | SPEC-3 §2.4 keys 0..2 |
+| Topic label | SPEC-3 §6.1 keys 0..4 |
+| Rotation payload, rotation statement | SPEC-2 §3, §3.1 |
+| Disavow payload | SPEC-2 §6.2 |
+| Branch-control payload, keys 0..3 | SPEC-5 §2.2 rule 4 (`0` action, `1` target_branch_id, `2` selected_frontier, `3` source_branch_id) |
+| Wire common frame | SPEC-7 §2.1: `0` wire_version, `1` message_type, `2` request_id, `3` body |
+| `commit_submit` | SPEC-7 §4.1: `0` session_generation, `1` authorization_binding_id, `2` claimed_op_id, `3` complete_envelope, `4` payload_ciphertext |
+
+### Provisional — SPEC-2 (`author_key`)
+
+`disavow_rescind_payload` (§6.1 rule 1 is prose):
+
+| Key | Name | Representation |
+| ---: | --- | --- |
+| 0 | `disavow_op_id` | byte string, 32 bytes |
+| 1 | `reason_code` | unsigned `u16` |
+
+`continuity_grant_statement` (§9.2 is prose):
+
+| Key | Name | Representation |
+| ---: | --- | --- |
+| 0 | `protocol_version` | unsigned integer, MUST be 1 |
+| 1 | `verse_scope` | map, SPEC-1 §3.1 grammar, MUST be verse-wide |
+| 2 | `lost_principal_did` | UTF-8 text |
+| 3 | `lost_principal_public_key` | byte string, 32 bytes |
+| 4 | `new_principal_did` | UTF-8 text |
+| 5 | `new_principal_public_key` | byte string, 32 bytes |
+| 6 | `reason_code` | unsigned `u16` |
+
+`continuity_grant_payload` (§9.2 is prose):
+
+| Key | Name | Representation |
+| ---: | --- | --- |
+| 0 | `statement` | the map above |
+| 1 | `new_principal_signature` | byte string, 64 bytes |
+
+### Provisional — SPEC-3 (`capability`)
+
+| Structure | Spec text | Provisional encoding | Why a choice was needed |
+| --- | --- | --- | --- |
+| `canonical_scope_key_context` | §6, "the deterministic-CBOR pair of the exact scope map and its epoch" | two-element CBOR array `[scope_map, topic_epoch]`, epoch unsigned | "pair" names no container; an array is smaller and order-fixed against a two-key map whose keys would themselves need numbering |
+
+### Provisional — SPEC-5 checkpoint claim v1 (`checkpoint.rs`)
+
+§3.1 rule 2 gives the bindings as a prose table with no integer keys and rule 3 defers them to
+"the implementation package", so the keys follow that table's row order, flattening rows that
+name two or three values. The signature sits one past the last unsigned key, mirroring the
+operation envelope's key 10.
+
+| Key | Field | Key | Field |
+| ---: | --- | ---: | --- |
+| 0 | `checkpoint_version` | 7 | `projection_root_hash` |
+| 1 | `verse_id` | 8 | `authorization_view_root` |
+| 2 | `branch_id` | 9 | `snapshot_manifest_id` |
+| 3 | `frontier_commitment` | 10 | `signer` |
+| 4 | `segment_manifest_id` | 11 | `capability` |
+| 5 | `materializer_id` | 12 | `issued_hlc` |
+| 6 | `materializer_version` | 13 | signature |
+
+### Provisional — SPEC-6 (`segment`)
+
+SPEC-6 describes every one of these maps in prose and gives no normative integer-key table.
+
+Sealed outer map (§2.1.2) — `artifact::SealedArtifact`. It carries nothing else: no verse ID,
+petal ID, resource ID, Hexon URI, capability chain, or unblinded topic name.
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | `format_version` (always 1) | uint |
+| 1 | `lane_class` | uint |
+| 2 | `ciphertext_length` | uint |
+| 3 | `encryption` descriptor | map (SPEC-1 §3.5 shape, reused verbatim) |
+| 4 | `ciphertext` | bytes |
+
+Lane class values — `artifact::LaneClass`. Each inner body restates its own lane class at key 0,
+which is how the §2.1.5 lane/body mismatch is detected without a second discriminant.
+
+| Value | Lane | Value | Lane |
+| ---: | --- | ---: | --- |
+| 1 | header segment | 3 | HashSeq node |
+| 2 | payload shard | 4 | segment manifest |
+
+Header segment body (§3.1) — `header_lane::HeaderSegmentBody`. `op_id` is not carried: it is
+BLAKE3 of the record's own bytes and is always recomputed, so there is nothing for a sender to
+lie about. Records are ordered strictly ascending by derived `op_id` — also provisional, since
+§3.1.1 says "ordered set" without fixing the order.
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | lane class (always 1) | uint |
+| 1 | `verse_id` | bytes(32) |
+| 2 | records | array of complete SPEC-1 envelope byte strings |
+
+Payload topic scope (§3.2.2) — `payload_shard::PayloadTopicScope`:
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | `verse_id` | bytes(32) |
+| 1 | `petal_id` | bytes(32) |
+| 2 | `scope_epoch` | uint |
+| 3 | `key_id` | bytes(32) |
+
+Payload shard record (§3.2.1) — `payload_shard::PayloadShardRecord`:
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | `op_id` | bytes(32) |
+| 1 | `ciphertext_hash` | bytes(32) |
+| 2 | `ciphertext_length` | uint |
+| 3 | `ciphertext` | bytes |
+
+Payload shard body (§3.2) — `payload_shard::PayloadShardBody`. Strict ascending record order is
+provisional: §3.2.3 fixes uniqueness but not order, and a fixed order makes the body canonical
+and duplicate detection a single comparison.
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | lane class (always 2) | uint |
+| 1 | topic scope | map |
+| 2 | records | array, strictly ascending by `op_id` |
+
+HashSeq node body (§4.1.1) — `hashseq::HashSeqNode`. Entry map: key 0 `artifact_id` bytes(32),
+key 1 `stored_length` uint.
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | lane class (always 3) | uint |
+| 1 | indexed lane key | array |
+| 2 | `predecessor_id` | bytes(32) or null |
+| 3 | entries | array of maps, sealing order preserved |
+
+Lane key — `hashseq::LaneKey`, encoded as a two-element array so it can serve as a canonical CBOR
+map key in the manifest: header lane `[0, verse_id]`, payload lane
+`[1, payload_topic_scope_map]`.
+
+Segment manifest body (§3.3) — `manifest::SegmentManifestBody`. Boundary map: key 0
+`oldest_required_node` bytes(32), key 1 `stored_length` uint.
+
+| Key | Field | CBOR type |
+| ---: | --- | --- |
+| 0 | lane class (always 4) | uint |
+| 1 | `protocol_version` | uint |
+| 2 | `verse_id` | bytes(32) |
+| 3 | `branch_id` | bytes(32) |
+| 4 | header roots | map: artifact ID bytes(32) → stored length uint |
+| 5 | payload roots | map: topic map → root-set map |
+| 6 | availability boundary | map: lane key array → boundary map |
+
+Two manifest shapes are provisional beyond the numbering. §3.3.1 requires "a sorted set of
+header HashSeq roots" and §3.3.2 requires exact stored byte lengths; a *set* cannot carry
+lengths, so roots are a map from artifact ID to stored length and a repeated ID with a
+conflicting length is refused rather than deduplicated. §4.1.4 requires a declared availability
+boundary without fixing its shape; the shape chosen is one oldest-required node per lane, and a
+manifest is invalid unless the boundary covers exactly the lanes that carry roots.
+
+Per-lane AEAD AAD domains (§9.1), reserved for Wave 3. Each lane's authenticated encryption binds
+`ASCII(domain) || 0x00 || canonical_outer_metadata`, where the metadata is the sealed outer map
+with the ciphertext (key 4) omitted. The domains are NUL-terminated so no domain can be a prefix
+of another, matching the SPEC-1 §5.1 convention.
+
+| Lane | Domain | Lane | Domain |
+| --- | --- | --- | --- |
+| header segment | `fe-segment-header-v1` | HashSeq node | `fe-segment-hashseq-v1` |
+| payload shard | `fe-segment-payload-shard-v1` | segment manifest | `fe-segment-manifest-v1` |
+
+SPEC-6 §7 discovery contributes **no** labels of its own any more. The four §7 traffic kinds map
+onto the three normative SPEC-3 §6.1 lanes; see `segment/AGENTS.md` §discovery-lanes.
+
+### Provisional — SPEC-7 bodies (`wire`)
+
+Every body below is that slice's own assignment, in declaration order, and is not an interop
+claim. §2.2/§4.2/§4.3/§5.1/§5.2/§7.1 carry no key tables.
+
+| Body | Keys |
+| --- | --- |
+| `authorize` | `0` capability_chain_bytes, `1` authorization_binding_id, `2` requested_verb, `3` requested_object_class, `4` requested_scope |
+| `authorized` | `0` authorization_binding_id, `1` session_generation, `2` leaf_principal, `3` chain_id, `4` epoch_scope, `5` scope_epoch, `6` expires_at_ms |
+| `authorization_revalidation_required` | `0` authorization_binding_id, `1` scope, `2` invalidated_session_generation, `3` reason |
+| `commit_ack` | `0` session_generation, `1` authorization_binding_id, `2` claimed_op_id, `3` state (`0` rejected, `1` accepted_pending_materialization, `2` committed, `3` already_committed), `4` category (rejected only), `5` branch_id, `6` scope, `7` projection_identity, `8` cursor (committed/already_committed only). Keys `5`..`8` are structurally ABSENT, not null, for every other state |
+| `commit_delta` | `0` subscription_id, `1` session_generation, `2` op_id, `3` branch_id, `4` scope, `5` projection_identity, `6` cursor, `7` change_summary |
+| `subscribe` | `0` session_generation, `1` authorization_binding_id, `2` subscription_id, `3` branch_id, `4` scope, `5` projection_identity |
+| `resume` | `0` session_generation, `1` subscription_id, `2` prior_cursor |
+| `replay_complete` | `0` subscription_id, `1` session_generation, `2` cursor |
+| `snapshot_required` | `0` subscription_id, `1` session_generation, `2` reason (`0` broadcast_lagged, `1` cursor_unavailable, `2` cursor_invalid, `3` projection_changed, `4` replay_limit, `5` authorization_changed) |
+| `scene_snapshot` | `0` subscription_id, `1` session_generation, `2` branch_id, `3` scope, `4` projection_identity, `5` snapshot_cursor, `6` view_bytes |
+| `snapshot_ack` | `0` session_generation, `1` subscription_id, `2` snapshot_cursor |
+| `preview_send` | `0` session_generation, `1` authorization_binding_id, `2` scope, `3` preview_sequence, `4` preview_kind, `5` expires_at_ms, `6` preview_data |
+| `preview_delta` | `0` sender_principal, `1` scope, `2` preview_sequence, `3` preview_kind, `4` expires_at_ms, `5` preview_data |
+| `preview_dropped` | `0` scope, `1` preview_sequence (key ABSENT, not null, when unknown), `2` reason (`0` rate_limited, `1` overloaded) |
+| `protocol_error` | `0` category, and nothing else by design (§6.3 rule 3 — any further diagnostic could disclose whether a private operation, artifact, branch, or cursor exists). Discriminants `0`..`19` live in `wire/error.rs`'s `to_u64`/`from_u64` |
+
+Reserved preview keys (`wire/preview.rs::RESERVED_PREVIEW_KEYS`), permanent and never assignable
+to a real field in any preview body: `90` op_id, `91` signed_envelope_bytes, `92` parent_ids,
+`93` branch_id, `94` hlc, `95` payload_ciphertext, `96` payload_hash, `97` checkpoint_identity,
+`98` durable_cursor.
+
+Two product numbers SPEC-7 requires but never states — the default preview rate cap and the
+resume replay limit — are caller-supplied constructor parameters with no `Default` picking a
+value, per D-CL24/M7. The same rule governs every quarantine bound, GC lease duration and
+retention window in `retention`.
 
 ## Fixture suite 65535 is a runtime assertion, not a feature
 
