@@ -1,6 +1,6 @@
 # Canonical log author key and identity lifecycle v1
 
-**Status:** Draft — owner approval required before implementation.
+**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P remain owner-gated.
 
 This document defines the author-key lifecycle for the Canonical Fractal Data
 Log. It implements D-CL11 using the operation envelope in

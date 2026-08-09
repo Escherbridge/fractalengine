@@ -1,6 +1,6 @@
 # Canonical log operation envelope v1
 
-**Status:** Draft — owner approval required before implementation.
+**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P remain owner-gated.
 
 This document defines the immutable operation artifact for the Canonical
 Fractal Data Log. It implements D-CL1 through D-CL9 at the envelope boundary.
@@ -30,14 +30,19 @@ SPEC-5; and segment/relay behavior belongs to SPEC-6.
 3. Integers MUST use the shortest permitted CBOR representation. Floating-point
    values, indefinite lengths, tags, `undefined`, and simple values other than
    `null` are forbidden in signed bytes.
-4. Envelope maps use only the unsigned integer keys listed in this document.
+4. A major type 1 (negative integer) argument above `i64::MAX` decodes to a
+   value below `i64::MIN` and is outside the v1 profile. Implementations
+   MUST reject such an argument rather than decode it.
+5. Envelope maps use only the unsigned integer keys listed in this document.
    They MUST contain every listed key exactly once and no other key.
-5. Maps with application-defined text keys are allowed only inside a schema
-   payload. Their keys MUST be valid UTF-8 normalized to Unicode NFC before
-   encoding and MUST be ordered by their complete encoded CBOR key bytes.
-   Implementations MUST reject, rather than normalize, non-NFC bytes received
-   from a peer.
-6. Byte strings and text strings MUST be minimally encoded. A text string is
+6. Every text string in the profile MUST be valid UTF-8 normalized to Unicode
+   NFC before encoding, not only application-defined text keys inside a
+   schema payload. Non-NFC user text MUST be carried as a CBOR byte string;
+   it MUST NOT be carried as a text string. Maps with application-defined
+   text keys are allowed only inside a schema payload, and their keys MUST
+   be ordered by their complete encoded CBOR key bytes. Implementations
+   MUST reject, rather than normalize, non-NFC bytes received from a peer.
+7. Byte strings and text strings MUST be minimally encoded. A text string is
    UTF-8; identifiers are never text strings unless their table says so.
 
 ## 3. Envelope grammar
@@ -206,7 +211,7 @@ this exact AAD; it MUST verify AEAD authentication before materialization.
 4. A normal intent operation has `operation_kind = 1`, at least one parent, and
    an encrypted non-empty payload reference.
 5. A detached-to-tracking merge has `operation_kind = 3`, at least two parents,
-   and MAY have the no-payload form in §3.5. Its `branch_id` is the tracking
+   and MUST use the no-payload form in §3.5. Its `branch_id` is the tracking
    target. The actual merge admissibility policy is specified by SPEC-5.
 6. A `scope_epoch_bump` operation has `operation_kind = 4`, exactly one parent,
    an exact revoked scope in its header, and the no-payload form in §3.5. The
@@ -253,11 +258,25 @@ production AEAD choice.
 - **Intent-only payloads:** Undo is a derived log index. Capturing an old row
   value would make a signed intent depend on one materialization order.
 
+### Errata
+
+- **E1 (2026-08-09):** §6 rule 5 changed the detached-merge no-payload form
+  from MAY to MUST. A merge reconciles lineage and does not carry new
+  intent; intent belongs in a separate operation whose parent is the merge.
+- **E2 (2026-08-09):** §2 rule 6 extended the NFC requirement to every text
+  string in the profile, not only application-defined text keys inside a
+  schema payload, and required non-NFC user text to be carried as a byte
+  string rather than a text string. The oracle and the Rust decoder already
+  enforced the broader rule.
+- **E3 (2026-08-09):** §2 rule 4 added a normative rejection of major-type-1
+  arguments above `i64::MAX`. The Rust decoder already rejected them; this
+  makes the restriction normative rather than an implementation artifact.
+
 ## 9. Ratified encryption contract
 
 D-CL17 fixes V1 payload encryption as XChaCha20-Poly1305 with a fresh random
 192-bit nonce and a 32-byte scope key. The scope key is delivered only in a
 recipient-device X25519 HPKE-style wrap after current authorization validation,
 and it rotates on every epoch bump. `suite_id = 65535` remains test-only. This
-document does not authorize implementation, peer delivery, relay service, or
-network enablement; those remain blocked by the Workstream G owner gate.
+document authorizes local implementation only. Peer delivery, relay service, and
+network enablement remain blocked by a separate owner gate.

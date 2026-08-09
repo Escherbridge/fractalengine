@@ -1,6 +1,6 @@
 # Canonical log segment, shard, and relay trust model v1
 
-**Status:** Draft — owner approval required before implementation.
+**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P remain owner-gated.
 
 This document defines immutable BLAKE3-addressed delivery artifacts for the
 Canonical Fractal Data Log. It implements the segment and relay parts of

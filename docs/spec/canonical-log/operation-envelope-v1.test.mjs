@@ -22,6 +22,7 @@ const CHUNK_START = 1;
 const CHUNK_END = 2;
 const ROOT = 8;
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
+const I64_MAX = 0x7fff_ffff_ffff_ffffn;
 
 function add32(...values) {
   return values.reduce((sum, value) => (sum + value) >>> 0, 0);
@@ -229,7 +230,9 @@ function decodeCanonical(bytes) {
       return readArgument(additional);
     }
     if (major === 1) {
-      return -1n - readArgument(additional);
+      const argument = readArgument(additional);
+      assert.ok(argument <= I64_MAX, "CBOR major-type-1 argument above i64::MAX is outside the v1 profile");
+      return -1n - argument;
     }
     if (major === 2) {
       return Buffer.from(read(safeLength(readArgument(additional))));
