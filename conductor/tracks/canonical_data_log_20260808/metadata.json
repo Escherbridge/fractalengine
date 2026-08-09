@@ -19,12 +19,13 @@
     "SPEC-6": "revised_after_dcl17_dcl19_ratification_pending_owner_spec_approval",
     "SPEC-7": "revised_after_dcl19_ratification_pending_owner_spec_approval",
     "SPEC-8": "revised_after_dcl20_ratification_pending_owner_spec_approval",
-    "HARD-1": "partially_implemented_pending_SPEC-4_contracts_and_verification",
-    "HARD-2": "implemented_pending_integrated_verification",
-    "HARD-3": "implemented_pending_integrated_verification",
-    "HARD-4": "implemented_pending_integrated_verification",
-    "HARD-5": "implemented_pending_integrated_verification",
-    "HARD-6": "implemented_pending_integrated_verification"
+    "HARD-1": "complete_verified_committed",
+    "HARD-2": "complete_verified_committed",
+    "HARD-3": "complete_verified_committed",
+    "HARD-4": "complete_verified_committed",
+    "HARD-5": "complete_verified_committed",
+    "HARD-6": "complete_verified_committed"
   },
+  "verification": "2026-08-08 orchestrator serial gate: cargo test --workspace 2035 passed (sole failure external to workstream: ui_semantics in-progress TDD test), clippy -D warnings clean, spec conformance test green. Committed local-only @ 88da549 (specs/conductor) + 916a3ae (code); NOT pushed.",
   "notes": "Fable review ratified D-CL1 through D-CL20 on 2026-08-08 and authorized specification completion plus safe local hardening only. D-CL17 selects XChaCha20-Poly1305, 192-bit random nonces, X25519 HPKE-style per-device scope-key wraps, and rotation on epoch bump. D-CL18 selects new-principal lost-key recovery with an attribution-only Owner-countersigned continuity grant and final Owner disavows. D-CL19 selects the sorted-frontier BLAKE3 commitment and Manager+-authorized verse-scoped branch controls. D-CL20 approves deferral of legacy multi-row canonical contracts to SPEC-4/SPEC-8. Workstream G remains blocked until the project owner approves the completed SPEC set. HARD-1 has a shared log-first seam but remains incomplete for the D-CL20 mutation families; HARD-2 through HARD-6 await the orchestrator-owned serial verification gate."
 }
