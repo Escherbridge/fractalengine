@@ -190,6 +190,7 @@ batch; **[adopt-when-touched]** = apply whenever you edit the surface; **[future
 | Terrain artifact | **map** / **Map Manager** | "tileset"; "hexon" as the artifact | "hexon" reserved for the package format in publish/import contexts ("Install map from .hexon file") |
 | Node webpage field | **Portal URL** | "Webpage URL", "External URL" | one label in Node Options and inspector (`node_options.rs:49,73`, `inspector.rs:535-599`); both save paths trim identically |
 | Petal contents | (per existing labels) | "room" | "room" removed from status bar, viewport, and sidebar Space overview (2026-07-17) |
+| Named visibility set of nodes | **Group** | — | left sidebar lists + toggles; management lives in right-sidebar Options surface; distinct from terrain "Layer" |
 | Dev internals | — | crate names, `AGENTS.md`, "residual", repo paths | see §6 |
 
 The verse/fractal/petal vocabulary is **canon** (D-72 RATIFIED 2026-07-17: keep the

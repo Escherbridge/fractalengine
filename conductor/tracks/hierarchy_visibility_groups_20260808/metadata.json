@@ -1,0 +1,23 @@
+{
+  "id": "hierarchy_visibility_groups_20260808",
+  "description": "Left-sidebar hierarchy visibility: per-level eye toggles (node/petal/fractal/verse) + named visibility groups for nodes; B+C hybrid architecture (persisted petal-scoped group registry + node-property membership + session-only solo)",
+  "type": "feature",
+  "created_at": "2026-08-08T00:00:00Z",
+  "status": "ratified_in_progress",
+  "phase": "phases_0_1_implementing",
+  "depends_on": ["ui_semantics_unification_20260808"],
+  "blocks": [],
+  "owner_approval_required_for": [],
+  "ratified": "2026-08-08 all 18 decisions (spec.md Ratification section). OVERRIDES vs recommendations: D-7 SPAWN-THEN-HIDE (not hidden=>not-spawned) - picker/camera visibility filters become mandatory core work, hidden nodes still consume mesh budget; D-1 fractal/verse eyes PERSISTED (schema migration for both tables). D-3 new petal.visibility_groups column + auth-carrying DbCommand. Terminology: Group.",
+  "tasks": {
+    "DESIGN": "complete",
+    "PHASE-0-resolver-state-types": "complete_2026-08-08_sweep_green",
+    "PHASE-1-sidebar-readonly-eyes": "complete_2026-08-08_sweep_green_plus_apply_system_and_D13_D14_viewport_pick_camera_filters",
+    "PHASE-2-remaining-picker-filters": "pending_context_pick_pointer_sidebar_sync_pathsegment_plus_H_keys_row_menu_esc_solo_rung",
+    "PHASE-3-node-property-persistence-cache": "pending_ratification_gated",
+    "PHASE-4-group-registry-authed-dbcommand": "pending_ratification_gated",
+    "PHASE-5-options-groups-section-layer-registry-unification": "pending_ratification_gated_on_RevealSection",
+    "PHASE-6-api-mcp-endpoints": "pending_ratification_gated"
+  },
+  "notes": "Opus design lane 2026-08-08. Headline: NO visibility concept exists in the codebase today; the one per-node flag (gis.track.visible, GPX ribbons only) is a live bug demo - hidden ribbons remain fully pickable/draggable because no picker filters on Bevy Visibility. fe-terrain LayerStack is the one real end-to-end visibility pipeline and should be generalized (ui_ux.md 167-172 already mandates a unified overlay registry). Recommended architecture: B+C hybrid (group registry = persisted petal-scoped addressable; membership = node property view.groups; per-node tri-state override view.state; solo = session-only resource). Non-negotiable rules: hidden => not spawned (guard the three spawners); one pure effective_visibility() resolver consumed everywhere; auth-carrying DbCommand for group writes (SetNodeProperty has zero data-layer authz). Phases 0-1 are file-disjoint from ui_semantics_unification waves and parallel-safe immediately; Phases 2-6 must serialize after it (plugin.rs 16-param ceiling, actions/mod.rs, pickers all mid-edit; Phase 5 needs UiAction::RevealSection from unification Phase 4)."
+}

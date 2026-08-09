@@ -1,0 +1,24 @@
+{
+  "id": "ui_semantics_unification_20260808",
+  "description": "Unified editing-surface semantics: one tool-toggle semantic + one addressable active-tool Options surface; 18-finding audit of pen/brush/terrain inconsistencies",
+  "type": "feature",
+  "created_at": "2026-08-08T00:00:00Z",
+  "status": "implemented_sweep_green_pending_inapp_verify",
+  "phase": "complete_local_only",
+  "sweep": "2026-08-08: cargo test -p fe-ui 890/890 green; clippy -D warnings clean; cargo fmt clean. Adversarial review: 20 findings all fixed/accepted (see notes). NOT committed, NOT in-app verified.",
+  "depends_on": [],
+  "blocks": [],
+  "owner_approval_required_for": ["D-1 through D-18 in spec.md §4"],
+  "tasks": {
+    "AUDIT": "complete",
+    "CRASH-NAN": "closed_already_fixed_631f389_plus_wip_adversarially_verified",
+    "PHASE-0-docs-deadcode": "landed_wave1_S2_docs_in_wave4",
+    "PHASE-1-proposal-dataloss-fix": "landed_wave1_S1",
+    "PHASE-2-toggle-semantics": "landed_wave1_S2",
+    "PHASE-3-options-surface": "landed_wave2_S3",
+    "PHASE-4-reachability-surface-handle": "landed_wave2_S3",
+    "PHASE-5-rightclick-classifier": "landed_wave3_S4",
+    "PHASE-6-units-preview": "landed_wave3_S5_SculptDeleteRegion_unwired_followup"
+  },
+  "notes": "Produced by a 7-agent fan-out (4 audit lanes + crash scout + adversarial verify + opus synthesis) on 2026-08-08. The terrain-editing emath smart_aim NaN crash was found ALREADY FIXED on the tree (631f389 + uncommitted WIP): unbounded f32::MAX DragValue ranges overflowed egui's internal step arithmetic; guarded at both the sanitize_numeric_state layer and finite .range() bounds; adversarial verify found zero residual NaN paths. Follow-up guard idea: lint/CI grep forbidding f32::MAX inside .range( in fe-ui. Phase 1 (ProposalEditState rehydration data loss, finding #1) fixes active silent data loss and is independent of all UI decisions - candidate to ship before ratification of the rest."
+}
