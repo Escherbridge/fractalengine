@@ -25,7 +25,11 @@
     "HARD-4": "complete_verified_committed",
     "HARD-5": "complete_verified_committed",
     "HARD-6": "complete_verified_committed",
-    "WORKSTREAM-G": "unlocked_2026-08-08_planning_in_progress"
+    "WORKSTREAM-G": "wave_1_complete_committed_2026-08-09",
+    "G-WAVE-1": "complete_verified_committed @c2cea84 — fe-canonical-log foundation (SPEC-1): canonical CBOR codec, envelope grammar, decode_and_admit ingress, signing/AAD/kind/frontier, fe-sdk nano-units. 90+6+36 tests, clippy clean, oracle green, workspace check green.",
+    "G-WAVE-2": "planned_not_started — 7 parallel leaf slices (capability chain, author-key lifecycle, branch/checkpoint, retention, segment, wire, materialize)",
+    "G-WAVE-3": "planned_not_started — crypto AEAD/keywrap, db canon_log, db migration, identity x25519, api canonical WS, sync network guard",
+    "G-WAVE-4": "planned_not_started — serial integration"
   },
   "verification": "2026-08-08 orchestrator serial gate: cargo test --workspace 2035 passed (sole failure external to workstream: ui_semantics in-progress TDD test), clippy -D warnings clean, spec conformance test green (node --test operation-envelope-v1.test.mjs). Committed local-only @ 88da549 (specs/conductor) + 916a3ae (code) + 7f19f3f (status); NOT pushed.",
   "notes": "Owner APPROVED the complete SPEC-1..8 set on 2026-08-08, unlocking Workstream G (implementation). D-CL1 through D-CL20 are ratified and canonical; see conductor/decisions/canonical-data-log-20260808.md. D-CL17 selects XChaCha20-Poly1305 with 192-bit random nonces, X25519 HPKE-style per-device scope-key wraps, and rotation on epoch bump. D-CL18 selects new-principal lost-key recovery with an attribution-only Owner-countersigned continuity grant and final Owner disavows. D-CL19 selects the sorted-frontier BLAKE3 commitment and Manager+-authorized verse-scoped branch controls. D-CL20 approves deferral of legacy multi-row canonical contracts (GLTF import, node duplicate/rename, verse/fractal/petal create) to SPEC-4/SPEC-8. HARD-1..6 are complete, gate-verified, and committed; HARD-1 remains intentionally incomplete for the D-CL20 mutation families. Workstream G scope is LOCAL implementation only: network rollout, relay seeding, and inbound P2P stay owner-gated and IrohDocsEngineHolder::is_available() must keep returning false. The local editor's legacy path must keep working until SPEC-8 dual-emit equivalence is validated."
