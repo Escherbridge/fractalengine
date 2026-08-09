@@ -1,6 +1,6 @@
 # Canonical log commit and preview wire protocol v1
 
-**Status:** Draft — owner approval required before implementation.
+**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P remain owner-gated.
 
 This document defines the API and WebSocket behavior for submitting and
 observing Canonical Fractal Data Log operations. It implements D-CL13 and

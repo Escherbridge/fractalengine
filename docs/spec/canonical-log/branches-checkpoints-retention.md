@@ -1,6 +1,6 @@
 # Canonical log branch, checkpoint, and retention state machine v1
 
-**Status:** Draft — owner approval required before implementation.
+**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P remain owner-gated.
 
 This document defines branch selection, signed checkpoint claims, bounded
 quarantine, and local retention obligations for the Canonical Fractal Data Log.

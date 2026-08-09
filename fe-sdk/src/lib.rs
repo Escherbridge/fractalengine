@@ -18,6 +18,7 @@ pub mod storage;
 pub mod texture;
 pub mod transaction;
 pub mod ui;
+pub mod units;
 
 // Re-exports for convenience
 pub use api::{ApiExtensionHandle, ExtensionRoute, HttpMethod};

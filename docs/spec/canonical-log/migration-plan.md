@@ -1,6 +1,6 @@
 # Canonical log migration plan v1
 
-**Status:** Draft — owner approval required before implementation.
+**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P remain owner-gated.
 
 This document defines the staged migration from FractalEngine's current
 local-first SurrealDB write path to the Canonical Fractal Data Log. It is

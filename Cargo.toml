@@ -22,6 +22,7 @@ members = [
     "fe-plugin-test",
     "fe-sdk",
     "fe-policy",
+    "fe-canonical-log",
 ]
 resolver = "2"
 
