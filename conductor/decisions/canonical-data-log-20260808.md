@@ -55,8 +55,22 @@ approval of the complete normative specification set.
    D-78 live-transform feature. No send or receive path may be restored until a
    separately approved signed durable path exists.
 
+## Workstream G unlock and implementation-phase decisions (2026-08-09)
+
+The project owner approved the complete SPEC-1..8 set, unlocking Workstream G.
+Owner approval now applies only to network rollout, relay seeding, and inbound
+P2P. The following were ratified at unlock.
+
+| ID | Decision |
+| --- | --- |
+| D-CL21 | `chacha20poly1305` (~0.10) and `x25519-dalek` (~2) are approved as normal, non-optional dependencies of `fe-canonical-log`. Both are MIT/Apache-2.0 and on the `deny.toml` allow list. Verified absent from `Cargo.lock` beforehand: iroh vendors chacha20/curve25519-dalek transitively but exposes no importable AEAD or X25519 API. |
+| D-CL22 | ERRATA to `operation-envelope.md` §3.5: the nonce rule stays a single **unconditional 24 bytes**. The payload-bearing golden vector, which encoded 12 bytes, was regenerated rather than making the rule suite-conditional — nonce, signature, complete envelope, `op_id`, `payload_aad_envelope`, and `payload_aad_preimage` were all re-derived using the committed `.mjs` encoder so the bytes cannot diverge from the validator. The oracle now asserts the length. |
+| D-CL23 | Workstream G proceeds on `main`, not in an isolated worktree. Wave gates are therefore scoped per package (`cargo check/test -p <crate>`) rather than `--workspace`, because a concurrent session holds uncommitted work in `fe-ui/**` and `fe-terrain/**`. |
+| D-CL24 | Five deferrals ratified: (1) D-CL5's **WIT `s64` exposure** waits for a plugin-facing canonical operation API — the Rust `fe-sdk` newtypes land now, but wiring the WIT would ripple into `fe-terrain`, which a concurrent session owns; (2) SPEC-2 §4.6's **rotation-fork resolver** is deferred — forks are detected and retained with both successors inactive and no resolver; (3) **provisional CBOR key numbers** may ship for the four specs whose maps lack normative key tables, consolidated into one ratification index, with no cross-implementation interop claimed; (4) reserved **policy numbers** (preview rate cap, quarantine bounds, GC lease durations, retention) stay caller-parameterized with no hardcoded defaults; (5) all **pre-canonical `op_log` rows are inherently unsigned and untrusted** — no signature backfill and no dual-read, because those rows carry a placeholder `"00" x 64` signature and were never actually signed. `update_node_url_handler` remains a documented no-op-log carve-out. |
+| D-CL25 | Author equivocation (SPEC-1 §3.4) is a first-class primitive, not an emergent property. `EquivocationKey { author_public_key, wall_ms, counter }` lives in the envelope module; two distinct `op_id`s sharing one key must quarantine **both** candidates and materialize neither. This was silently absent from the first implementation plan and was recovered by adversarial review. |
+
 ## Pending ratification
 
-None. D-CL1 through D-CL20 are canonical as of 2026-08-08. Product retention
-durations and implementation/cutover gates remain work items, not unrecorded
+None. D-CL1 through D-CL25 are canonical as of 2026-08-09. Product retention
+durations and the network-rollout gate remain work items, not unrecorded
 protocol decisions.
