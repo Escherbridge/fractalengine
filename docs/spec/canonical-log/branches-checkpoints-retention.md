@@ -180,35 +180,56 @@ is fixed by SPEC-3 section 10; implementation remains gated as stated below.
 
 ## 4. Bounded pre-admission quarantine
 
-1. A candidate with `missing_parent` or `unknown_schema` is stored, if at all,
-   in a **pre-admission quarantine** outside the verified log, projection,
-   branch frontier, checkpoint closure, and analytics input. `opaque_payload`
-   is not a reason to reinterpret or promote a header; it follows SPEC-4's
-   header/payload rules.
+1. A candidate with `missing_parent`, `unknown_schema`, or `unknown_kind` is
+   stored, if at all, in a **pre-admission quarantine** outside the verified
+   log, projection, branch frontier, checkpoint closure, and analytics input.
+   `opaque_payload` is not a reason to reinterpret or promote a header; it
+   follows SPEC-4's header/payload rules.
 2. A quarantine record MUST retain the exact candidate bytes, claimed/derived
    identifier, reason, first-seen time, last-validation time, required parent
-   IDs or schema hash, and bounded provenance diagnostics. It MUST NOT contain
-   an invented projected value or inferred parent edge.
+   IDs, schema hash, or unrecognized `operation_kind`, and bounded provenance
+   diagnostics. It MUST NOT contain an invented projected value or inferred
+   parent edge.
 3. An implementation MUST persist local bounds for entry count, total bytes,
    maximum record age, maximum parent-depth walk, and retry cadence. When any
    bound is reached, it MUST decline further quarantine admission with an
    explicit resource-exhausted result rather than evict an admitted artifact
    or silently materialize a candidate.
-4. Expiry or capacity eviction removes only the local quarantine copy. It MUST
+4. The entry-count and total-byte bounds in rule 3 MUST be **partitioned by
+   reason class**, not held as one shared pool. `missing_parent`,
+   `unknown_schema`, and `unknown_kind` are each their own class with their own
+   entry and byte budget; every remaining reason shares one residual class. A
+   candidate is declined against its own class's budget first, and the
+   whole-pool bounds apply on top. Capacity eviction MUST likewise bring an
+   over-budget class within its own budget by removing records of that class
+   only, before any pool-wide eviction. A reason-blind pool is non-conforming:
+   under D-CL2 headers replicate verse-wide with no version gate, so an
+   un-upgraded peer receives every operation of a kind it cannot interpret, and
+   in a shared pool that traffic displaces the same peer's own legitimate
+   `missing_parent` backlog.
+5. Expiry or capacity eviction removes only the local quarantine copy. It MUST
    NOT emit a tombstone, alter a branch frontier, produce a negative
    availability claim, or imply that the candidate was invalid.
-5. A missing-parent candidate may be re-evaluated only after every parent in
+6. A missing-parent candidate may be re-evaluated only after every parent in
    its full transitive closure is locally admitted. An unknown-schema candidate
    may be re-evaluated only after the exact `schema_hash` and deterministic
-   interpreter are available. Receipt of a similarly named schema, an unsigned
-   schema, or an arrival-order guess is insufficient.
-6. Invalid, unauthorized, or payload-invalid candidates follow SPEC-4's reject
+   interpreter are available. An unknown-kind candidate may be re-evaluated
+   only after this build has the registered structural rule, schema, and
+   deterministic reduction for that exact `operation_kind`. Receipt of a
+   similarly named schema, a similarly numbered kind, an unsigned schema, or an
+   arrival-order guess is insufficient.
+7. `unknown_kind` and `unknown_schema` are separate reasons and MUST NOT be
+   collapsed into one. They have different producers and different resolutions:
+   a schema arrives through the registry, an operation kind arrives through a
+   build upgrade. Collapsing them makes the retry condition in rule 6
+   unstatable and re-merges the budgets rule 4 separates.
+8. Invalid, unauthorized, or payload-invalid candidates follow SPEC-4's reject
    disposition, not this retry quarantine. A relay or later child reference
    cannot promote them.
-7. The actual values for the bounds in rule 3 are local operational policy,
-   not canonical semantics. Each supported device/relay profile records them
-   before enablement; changing a bound MUST NOT change the verified log or the
-   deterministic result for a complete admissible history.
+9. The actual values for the bounds in rules 3 and 4 are local operational
+   policy, not canonical semantics. Each supported device/relay profile records
+   them before enablement; changing a bound MUST NOT change the verified log or
+   the deterministic result for a complete admissible history.
 
 ## 5. Retention, leases, and garbage collection
 
@@ -237,7 +258,7 @@ is fixed by SPEC-3 section 10; implementation remains gated as stated below.
 
 | Role | Minimum obligation | Explicit non-obligation |
 | --- | --- | --- |
-| Mobile peer | Retain the selected branch registry state, active frontier evidence, authorization facts needed to revalidate local capabilities, and authorized recent payload/snapshot/tail data for its declared interest. It MUST retain enough header/manifest evidence to detect a missing causal closure rather than invent a current state. | It is not an archive and need not retain unrelated petal payload ciphertext or serve after local eviction. |
+| Mobile peer | Retain the selected branch registry state, active frontier evidence, authorization facts needed to revalidate local capabilities, and authorized recent payload/snapshot/tail data for its declared interest. It MUST retain enough header/manifest evidence to detect a missing causal closure rather than invent a current state. | It is not an archive and need not retain unrelated petal payload ciphertext, retain verified headers causally behind a checkpoint it holds (rule 4 below), or serve after local eviction. |
 | Relay/seeder | Retain exactly the immutable artifacts covered by an active accepted GC lease, their address-to-bytes bindings, and enough lease/capability evidence to serve only an authorized `fetch` requester. It MUST durably acknowledge a lease before advertising that lease's availability. | It is not a log authority, materializer, decryptor, or source of a valid checkpoint merely because it has bytes. |
 | Archive | Retain the complete authorized header plane, encrypted payload/snapshot/segment artifacts, manifests, authorization and identity evidence, and checkpoints for each accepted retention domain, so it can replay or serve an authorized historical selection. | It cannot promise physical deletion of copies it never controlled or plaintext already disclosed to another principal. |
 
@@ -251,6 +272,25 @@ is fixed by SPEC-3 section 10; implementation remains gated as stated below.
    authorization and manifest evidence as well as payload bytes. Retaining only
    a projection database or only an unproven checkpoint is not archival
    retention.
+4. **A mobile peer MAY release verified headers causally behind a checkpoint it
+   has itself replay-verified**, retaining that checkpoint plus the operation
+   closure from it to the peer's selected frontier. This is an affirmative
+   permission, not merely the absence of a prohibition: a mobile peer's storage
+   floor is a replay tail from its last verified checkpoint, and reconstructing
+   genesis-to-now is the archive role's duty alone. Releasing headers is
+   permitted only while all of the following hold.
+
+   | Condition | Requirement |
+   | --- | --- |
+   | Bootstrap honesty | The peer MUST NOT advertise a branch bootstrap, checkpoint, or `seed` commitment covering any released header, per section 5.1 rule 4. Releasing headers therefore costs the peer its bootstrap-advertising rights over that range, and it MUST withdraw any such advertisement before releasing. |
+   | Checkpoint retention | The peer MUST retain the verifying checkpoint and enough manifest/reachability evidence to prove the released range's closure was covered, per section 3.2 and section 5.1 rule 5. A checkpoint it cannot itself re-verify does not authorize release. |
+   | Tombstone continuity | The peer MUST retain tombstone evidence for every suppression whose effect a retained bootstrap path could otherwise undo, per section 5.4 rules 1 and 2. Header release MUST NOT resurrect a suppressed operation. |
+   | Closure detectability | The peer MUST still be able to detect a missing causal closure rather than present a released range as complete history, per the mobile-peer obligation above. |
+
+5. The size of the recent window a mobile peer keeps behind its frontier, and
+   any product promise about it, are owner-approved operational policy under
+   section 8 rule 3. This specification fixes only that releasing headers is
+   permitted and what it costs, never how much a device keeps.
 
 ### 5.3 GC leases
 
@@ -381,6 +421,23 @@ at least the following names and outcomes.
     — after a ratified key-destruction workflow, ciphertext/header evidence is
     not misrepresented as deleted while controlled key resolution and future
     delivery fail.
+16. **`an_unknown_kind_flood_cannot_starve_the_missing_parent_backlog`** — a
+    flood of candidates carrying an operation kind this build cannot interpret
+    exhausts only the `unknown_kind` class budget; further unknown-kind
+    admission is declined against that class while missing-parent admission
+    still succeeds, and capacity eviction removes only over-budget
+    `unknown_kind` records even when they are the newest in the pool.
+17. **`unknown_kind_promotes_only_when_this_build_learns_the_kind`** — an
+    `unknown_kind` record is re-evaluated only once the exact `operation_kind`
+    has a registered structural rule, schema, and reduction here; it never
+    promotes through the missing-parent or unknown-schema condition, and no
+    other reason promotes through its condition.
+18. **`mobile_header_release_behind_checkpoint_is_permitted_and_costed`** — a
+    mobile peer releasing headers behind a replay-verified checkpoint retains
+    that checkpoint, its manifest evidence, and tombstone-suppression
+    continuity, has withdrawn any bootstrap/seed advertisement covering the
+    released range, and still reports a missing causal closure rather than
+    presenting the released range as complete history.
 
 ## 7. Design notes
 
@@ -401,6 +458,36 @@ at least the following names and outcomes.
   make a holder accountable for bytes it agreed to preserve. It cannot prove
   global replication, remove an adversarial copy, or make a relay a history
   authority.
+- **A quarantine budget is an availability control, not a correctness one:**
+  Section 4 rule 4 changes nothing about which candidates are valid. It decides
+  whose backlog survives contention, and that is exactly why one shared pool is
+  wrong: correctness-safe starvation is still starvation.
+
+### Errata
+
+Owner-ratified under D-CL28, 2026-08-16. Each was a gate on Workstream G Wave 3
+because the shapes involved get materially more expensive to change once the
+implementation depends on them.
+
+- **G1 (2026-08-16):** §4 gained `unknown_kind` as a first-class quarantine
+  reason (rules 1, 2, 6, 7) and gained rule 4, which partitions the entry and
+  byte budgets by reason class and makes capacity eviction shed only the
+  over-budget class. Previously §4 named only `missing_parent` and
+  `unknown_schema`, and its bounds were one reason-blind pool that declined new
+  candidates on overflow and evicted oldest-first. Under D-CL2 headers
+  replicate verse-wide with no version gate, so a high-volume future operation
+  kind would consume an un-upgraded peer's whole quarantine and starve its own
+  legitimate missing-parent backlog. SPEC-1 §6 rule 7 already required unknown
+  kinds to be quarantined; it did not say out of which budget. Renumbers former
+  rules 4-7 to 5, 6, 8, 9.
+- **G5 (2026-08-16):** §5.2 gained rule 4, which affirmatively permits a mobile
+  peer to release verified headers causally behind a checkpoint it has
+  replay-verified, subject to four named conditions, and rule 5, which keeps the
+  numeric recent window as operational policy. The permission was previously
+  inferable only from conformance test 14, which names "a mobile peer that
+  releases … header data" as a tested path — a tested behaviour with no
+  normative rule authorizing it. The §5.2 mobile-peer non-obligation cell now
+  names header release explicitly.
 
 ## 8. Remaining implementation gates
 

@@ -146,6 +146,32 @@ and four `fe-lane-*-v1` label strings that appear in no spec, and its trait sign
 `object_class` at all, so §6.1 key 2 was unsatisfiable. The seam is now structurally implementable
 from `derive_topic_name` alone.
 
+## G4 -- statistics are tiered by derivation, not by usefulness
+
+Erratum G4, SPEC-6 §3.3 rules 5-7. `SegmentManifestBody` carries two statistics tiers, and the
+line between them is where a value came from, not how useful it is.
+
+The clear tier (`SegmentStatistics`: inclusive HLC range, petal set, operation count) is derived
+from signed header fields only. A manifest is sealed under the **verse-wide header scope**
+(§2.2.2), so its body is legible to every authorized verse member — including one holding no
+payload capability for any petal indexed. Header-derived values are already visible to that
+reader, so publishing them here discloses nothing new, and they are exactly what a peer needs to
+decide a segment cannot contain the range it wants without fetching it.
+
+The sealed tier (`SealedStatisticsRef`) is everything derived from payload plaintext: per-column
+minima and maxima, histograms, distinct counts, bloom filters. Those live in a separate artifact
+sealed under the lane's own scope key and appear here only as an artifact ID and a stored length.
+This is not fastidiousness — a minimum and maximum on a position column publishes a project's
+real-world coordinates verse-wide, to readers who cannot decrypt a byte of the data those
+coordinates came from. The sealed artifact's interior format is deliberately unspecified; the
+wire slot is the part that is expensive to add after Wave 3.
+
+`statistics` is a required `SegmentManifestBody::new` parameter, never an `Option`. A manifest
+with no range is a manifest no peer can skip, so an optional block would let a publisher degrade
+every consumer to fetch-everything by omission, silently. `validate` additionally refuses an
+inverted range, a count that disagrees with whether any lane is claimed, and a sealed reference
+naming a lane the manifest does not claim.
+
 ## Provisional wire numbering
 
 Every number this module assigned now lives in the crate-root register,

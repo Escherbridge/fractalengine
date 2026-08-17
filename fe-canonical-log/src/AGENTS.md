@@ -203,6 +203,13 @@ other.
   reader to treat the named side as the loser, which is precisely the fork §3.4 forbids
   adjudicating. The reason never carries the candidate's own `op_id` — every store already keys
   it by that.
+- **`QuarantineReason::class` is the crate's only budget mapping** (erratum G1). Every reason
+  maps to exactly one `QuarantineReasonClass`, through a total match with **no wildcard arm**:
+  a new reason variant does not compile until its author states which budget it spends, so no
+  future reason can quietly join and dilute the residual class. `retention::PerReasonBudgets`
+  is a struct with a field per class rather than a map, because a map can omit a class and an
+  omitted class is either unbounded or silently zero — neither being a decision an operator
+  should make by accident.
 - **`checkpoint::compaction_decision` is the crate's only compaction gate.** It takes the real
   `CheckpointVerification` produced by `verify_checkpoint_claim` (signature, Manager+ authority,
   frontier and manifest bindings, independent replay), plus the tombstone records themselves as
@@ -419,6 +426,12 @@ Segment manifest body (§3.3) — `manifest::SegmentManifestBody`. Boundary map:
 | 4 | header roots | map: artifact ID bytes(32) → stored length uint |
 | 5 | payload roots | map: topic map → root-set map |
 | 6 | availability boundary | map: lane key array → boundary map |
+| 7 | clear statistics (§3.3.5) | map, see below |
+| 8 | sealed statistics refs (§3.3.6) | map: lane key array → reference map |
+
+Clear statistics map: key 0 `min_hlc` HLC map, key 1 `max_hlc` HLC map, key 2 `petals`
+array of bytes(32) **strictly ascending**, key 3 `operation_count` uint. Sealed statistics
+reference map: key 0 `artifact_id` bytes(32), key 1 `stored_length` uint.
 
 Two manifest shapes are provisional beyond the numbering. §3.3.1 requires "a sorted set of
 header HashSeq roots" and §3.3.2 requires exact stored byte lengths; a *set* cannot carry
@@ -426,6 +439,18 @@ lengths, so roots are a map from artifact ID to stored length and a repeated ID 
 conflicting length is refused rather than deduplicated. §4.1.4 requires a declared availability
 boundary without fixing its shape; the shape chosen is one oldest-required node per lane, and a
 manifest is invalid unless the boundary covers exactly the lanes that carry roots.
+
+Keys 7 and 8 are erratum G4. The split is on **derivation**, not usefulness: HLC, scope, and
+count come from signed header fields, so they may sit in a manifest body that §2.2.2 seals under
+the verse-wide header scope and every verse member can read; anything derived from payload
+plaintext — column minima/maxima, histograms, bloom filters — must live in a separate artifact
+sealed under the lane's own scope key, reachable from here only as an artifact ID and a length.
+A minimum and maximum on a position column would otherwise publish a project's real-world
+coordinates to every verse member with no payload capability. `SegmentStatistics` is a required
+constructor parameter rather than an `Option` because a manifest with no range is one no peer
+can skip, so an omitted block would degrade selective fetch to fetch-everything silently. The
+petal array is decoded with an explicit strictly-ascending check rather than left to the
+manifest's re-encode pin, so the diagnostic names the real defect.
 
 Per-lane AEAD AAD domains (§9.1), reserved for Wave 3. Each lane's authenticated encryption binds
 `ASCII(domain) || 0x00 || canonical_outer_metadata`, where the metadata is the sealed outer map
@@ -550,3 +575,33 @@ must not drift back:
 - **E3** — §2: CBOR major-type-1 arguments above `i64::MAX` (values below `i64::MIN`) are
   outside the v1 profile and MUST be rejected. The decoder already rejected them; the
   restriction is now normative rather than an implementation artifact.
+
+## Owner-ratified errata, 2026-08-16 (D-CL28 gates)
+
+Four gates on Wave 3, all landed before it. Unlike E1-E3 these are spec *additions*, not
+implementation-vs-prose reconciliations, and each is here because it is cheap to add now and a
+migration afterwards.
+
+- **G1** — unknown operation kinds are their own quarantine reason with their own budget.
+  `compose::QuarantineReason::UnknownKind` plus `QuarantineReasonClass` and
+  `retention::PerReasonBudgets`; `retention::admit_candidate` checks the class budget before the
+  pool, and `evict_expired_or_over_capacity` sheds an over-budget class from that class only.
+  The defect this closes is availability, not correctness: under D-CL2 headers replicate
+  verse-wide with no version gate, so an un-upgraded peer receives every operation of a kind it
+  cannot interpret, and one reason-blind pool let that traffic evict the same peer's legitimate
+  `MissingParent` backlog. Normative text: SPEC-5 §4 rules 1, 2, 4, 6, 7; SPEC-4 §5
+  `unknown_kind`; SPEC-1 §6 rule 7 cross-reference (E4).
+- **G2** — a reduction writes references, never reads artifacts.
+  `ProjectionMutation::ReferencedArtifactUnavailable` makes the third outcome expressible; the
+  enum previously offered only `Apply` and `Excluded`, so a materializer that could not resolve
+  a reference had to encode an availability gap as a settled decision, and two peers would then
+  disagree about a result one never computed. Normative text: SPEC-4 §4 rules 8-9, §5
+  `referenced_artifact_unavailable`, §6 rule 7. **The rule that matters for Wave 3:** `meta` and
+  `envelope_bytes` are the only admissible inputs to `CausalMaterializer::reduce`.
+- **G4** — manifest statistics are tiered by derivation. See §Provisional wire numbering, keys 7
+  and 8. Normative text: SPEC-6 §3.3 rules 1, 5, 6, 7.
+- **G5** — spec-text only, no code in this crate: a mobile peer may affirmatively release
+  headers behind a replay-verified checkpoint, at the cost of its bootstrap-advertising rights
+  over that range. Normative text: SPEC-5 §5.2 rules 4-5. The retention module models
+  quarantine and leases, not device storage profiles, so nothing here implements it; Wave 3's
+  `fe-database` retention work is where it becomes callable.

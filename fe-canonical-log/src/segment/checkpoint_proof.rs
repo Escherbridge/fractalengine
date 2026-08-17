@@ -792,6 +792,13 @@ mod tests {
                     },
                 ),
             ]),
+            crate::segment::manifest::SegmentStatistics {
+                min_hlc: first.envelope.unsigned.hlc,
+                max_hlc: second.envelope.unsigned.hlc,
+                petals: BTreeSet::from([topic.petal_id]),
+                operation_count: 2,
+            },
+            BTreeMap::new(),
         )
         .expect("manifest");
         let (segment_manifest_id, _) = world.add_manifest(manifest);

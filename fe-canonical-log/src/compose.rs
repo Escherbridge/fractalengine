@@ -39,6 +39,19 @@ pub enum QuarantineReason {
         /// The unrecognized schema hash.
         schema_hash: Hash32,
     },
+    /// The declared `operation_kind` is not one this build can interpret (SPEC-1 §6 rule 7).
+    ///
+    /// Distinct from [`Self::UnknownSchema`] because the two have different producers and
+    /// different promotion paths: a schema arrives through the registry, a kind arrives through
+    /// a build upgrade. Under D-CL2 headers replicate verse-wide with no version gate, so an
+    /// un-upgraded peer receives every operation of a kind it cannot yet interpret. D-CL28 gate
+    /// G1 gives that traffic its own budget class so it cannot consume the room the same peer
+    /// needs for its own [`Self::MissingParent`] backlog.
+    #[error("operation kind {operation_kind} is not known to this build")]
+    UnknownKind {
+        /// The unrecognized non-zero wire operation kind.
+        operation_kind: u16,
+    },
     /// The scope payload key could not be resolved, so the payload stayed encrypted.
     #[error("the scope payload key is unavailable")]
     PayloadKeyUnavailable,
@@ -98,6 +111,62 @@ pub enum QuarantineReason {
     /// No current capability or scope key covered the candidate.
     #[error("no current capability or scope key covers this candidate")]
     Unauthorized,
+}
+
+/// The bounded budget a [`QuarantineReason`] draws against (SPEC-5 §4 rule 3, D-CL28 gate G1).
+///
+/// Each class carries its own entry and byte budget in `retention::QuarantineBounds`, so one
+/// retryable reason cannot exhaust the room another needs. The three named classes are the ones
+/// a remote sender can drive independently of the receiver; `Other` is the shared residual. The
+/// pool-wide bounds still apply on top of every class budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QuarantineReasonClass {
+    /// Retryable once the declared parent closure is locally admitted.
+    MissingParent,
+    /// Retryable once the exact registered schema resolves.
+    UnknownSchema,
+    /// Retryable once this build learns to interpret the operation kind.
+    UnknownKind,
+    /// Every reason outside the three independently driven retry classes.
+    Other,
+}
+
+impl QuarantineReasonClass {
+    /// Every class, for iterating budgets. Exhaustive by construction.
+    pub const ALL: [Self; 4] = [
+        Self::MissingParent,
+        Self::UnknownSchema,
+        Self::UnknownKind,
+        Self::Other,
+    ];
+}
+
+impl QuarantineReason {
+    /// The budget class this reason spends.
+    ///
+    /// A total match with no wildcard arm on purpose: a new [`QuarantineReason`] variant does
+    /// not compile until it declares which budget it draws against, so no future reason can
+    /// silently join — and dilute — the residual class.
+    pub fn class(&self) -> QuarantineReasonClass {
+        match self {
+            Self::MissingParent { .. } => QuarantineReasonClass::MissingParent,
+            Self::UnknownSchema { .. } => QuarantineReasonClass::UnknownSchema,
+            Self::UnknownKind { .. } => QuarantineReasonClass::UnknownKind,
+            Self::ParentNotAdmitted { .. }
+            | Self::PayloadKeyUnavailable
+            | Self::CapabilityChainUnavailable
+            | Self::EpochStateUnavailable
+            | Self::ReferencedDisavowUnavailable { .. }
+            | Self::AuthorEquivocation { .. }
+            | Self::ArtifactIdMismatch { .. }
+            | Self::StoredLengthMismatch
+            | Self::MalformedSealedArtifact
+            | Self::FailedDecryption
+            | Self::MalformedLaneBody
+            | Self::CrossCheckFailure { .. }
+            | Self::Unauthorized => QuarantineReasonClass::Other,
+        }
+    }
 }
 
 /// Every reason a signed SPEC-5 claim does not describe the caller's own selected projection.

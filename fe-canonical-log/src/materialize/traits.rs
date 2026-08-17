@@ -74,9 +74,9 @@ pub fn verified_envelope_meta_from(
     }
 }
 
-/// One deterministic reduction step, or an explicit record of why a verified operation was
-/// excluded from the projection. §4.6 requires an excluded operation's evidence to remain
-/// representable, never silently dropped.
+/// One deterministic reduction step, an explicit record of why a verified operation was
+/// excluded from the projection, or an availability state that blocks reduction entirely. §4.6
+/// requires an excluded operation's evidence to remain representable, never silently dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectionMutation {
     /// Apply these statements with these bindings to the projection.
@@ -92,6 +92,25 @@ pub enum ProjectionMutation {
     Excluded {
         /// Why this operation is excluded. Evidence, never destroyed, only never applied.
         reason: String,
+    },
+    /// The operation names an external artifact whose identity this process cannot currently
+    /// resolve, so no deterministic reduction is possible here yet (SPEC-4 §5
+    /// `referenced_artifact_unavailable`, D-CL28 gate G2).
+    ///
+    /// An availability state, never a decision, and the opposite of [`Self::Excluded`]: the
+    /// caller MUST leave the projection position pending replay rather than advance its apply
+    /// marker, and MUST NOT substitute a default, a partial value, or an empty reference. It is
+    /// a distinct variant precisely so that "cannot compute yet" cannot be encoded as
+    /// "deliberately not projected", which would let two peers disagree about a settled result.
+    ///
+    /// This is NOT the state of having failed to read an artifact's contents. §4 rule 8 forbids
+    /// a reduction from reading into an external artifact to compute projected state at all; a
+    /// reduction writes only a deterministic *reference*. This outcome arises when the reference
+    /// itself cannot be constructed as a verified artifact identity — for example when the
+    /// segment manifest binding the artifact ID and its stored length is not locally held.
+    ReferencedArtifactUnavailable {
+        /// The artifact the operation names.
+        artifact_id: Hash32,
     },
 }
 
@@ -139,12 +158,21 @@ pub trait VerifiedLogStore: Send + Sync {
     async fn parents_of(&self, op_id: Hash32) -> Option<Vec<Hash32>>;
 }
 
-/// One deterministic reduction step (§4.1-§4.7): given the facts of an admitted operation and
+/// One deterministic reduction step (§4.1-§4.8): given the facts of an admitted operation and
 /// its complete bytes, produce the projection mutation. Calling this twice with the same
 /// inputs MUST produce an equal [`ProjectionMutation`] -- that equality is what makes replay
 /// idempotent: a caller can rebuild projected state from verified operations plus checkpoints
 /// alone by replaying `VerifiedLogStore` contents, in `ordering::deterministic_causal_order`,
 /// through this trait.
+///
+/// **The §4 rule 8 bright line (D-CL28 gate G2).** `meta` and `envelope_bytes` are the ONLY
+/// admissible inputs to a reduction. An implementation MUST NOT read an external artifact --
+/// a snapshot, a segment shard, a columnar hexon, another peer's bytes -- to compute projected
+/// state, because local availability of that artifact differs per peer and §4.5/§6.1 require
+/// the same operation set to produce the same projection everywhere. A reduction may write a
+/// deterministic *reference* to such an artifact (its content address, derived from the signed
+/// envelope), and when that reference cannot itself be resolved to a verified identity it
+/// returns [`ProjectionMutation::ReferencedArtifactUnavailable`] rather than guessing.
 #[async_trait]
 pub trait CausalMaterializer: Send + Sync {
     /// Reduces one verified operation into a projection mutation.
@@ -441,6 +469,70 @@ mod tests {
             "replaying the same operation must reduce identically"
         );
         assert_eq!(*materializer.calls.lock().expect("lock"), 2);
+    }
+
+    /// Gate G2: a materializer that cannot resolve a referenced artifact has a state to say so,
+    /// and that state is not confusable with a deliberate exclusion. Determinism is preserved
+    /// because the outcome depends only on the operation, never on what this peer happens to
+    /// hold: the same materializer returns the same unavailable outcome on every replay.
+    struct ArtifactReferencingMaterializer {
+        resolvable: bool,
+    }
+
+    #[async_trait]
+    impl CausalMaterializer for ArtifactReferencingMaterializer {
+        async fn reduce(
+            &self,
+            meta: &VerifiedEnvelopeMeta,
+            _envelope_bytes: &[u8],
+        ) -> ProjectionMutation {
+            if !self.resolvable {
+                return ProjectionMutation::ReferencedArtifactUnavailable {
+                    artifact_id: meta.schema_hash,
+                };
+            }
+            // Only a reference is written. The artifact's CONTENTS are never read to compute
+            // this mutation -- that is the §4 rule 8 bright line.
+            ProjectionMutation::Apply {
+                statements: vec!["-- reference only".to_string()],
+                bindings: vec![(
+                    "artifact_id".to_string(),
+                    CborValue::Bytes(meta.schema_hash.as_bytes().to_vec()),
+                )],
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn referenced_artifact_unavailable_is_expressible_and_distinct_from_exclusion() {
+        let meta = sample_meta(0x50, 0x60, vec![]);
+
+        let blocked = ArtifactReferencingMaterializer { resolvable: false };
+        let outcome = blocked.reduce(&meta, b"bytes").await;
+        assert_eq!(
+            outcome,
+            ProjectionMutation::ReferencedArtifactUnavailable {
+                artifact_id: meta.schema_hash,
+            }
+        );
+        assert_ne!(
+            outcome,
+            ProjectionMutation::Excluded {
+                reason: "referenced artifact unavailable".to_string(),
+            },
+            "an availability state must not be representable as a settled exclusion"
+        );
+        assert_eq!(
+            outcome,
+            blocked.reduce(&meta, b"bytes").await,
+            "the unavailable outcome replays identically"
+        );
+
+        let resolved = ArtifactReferencingMaterializer { resolvable: true };
+        assert!(matches!(
+            resolved.reduce(&meta, b"bytes").await,
+            ProjectionMutation::Apply { .. }
+        ));
     }
 
     #[test]

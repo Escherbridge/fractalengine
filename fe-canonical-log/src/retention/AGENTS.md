@@ -10,10 +10,13 @@ SPEC-5 §4, §5.1-§5.5. Pure logic only: no persistence, no networking, no AEAD
 module defines no enum of its own. See `src/AGENTS.md` §unified-vocabularies for why three
 parallel quarantine enums were collapsed into one.
 
-The variants this module reaches are `MissingParent`, `UnknownSchema`, and `AuthorEquivocation`.
-The first two have promotion paths (`missing_parent_promotion_ready`,
-`unknown_schema_promotion_ready`) driven by injected views this module never queries a database
-through. `AuthorEquivocation` deliberately has **no** promotion path anywhere in this module —
+The variants this module reaches are `MissingParent`, `UnknownSchema`, `UnknownKind`, and
+`AuthorEquivocation`. The first three have promotion paths (`missing_parent_promotion_ready`,
+`unknown_schema_promotion_ready`, `unknown_kind_promotion_ready`) driven by injected views this
+module never queries a database through, and each returns `false` for every reason but its own —
+a test pins the full cross-product, because a helper that quietly accepted a neighbouring reason
+would promote a candidate whose actual precondition never arrived.
+`AuthorEquivocation` deliberately has **no** promotion path anywhere in this module —
 both helpers return `false` for it unconditionally, and a test pins that. It now names both
 conflicting operations (`first_op_id`, `second_op_id`) rather than "the other one", because an
 asymmetric reason invited a reader to treat the named side as the loser. Per SPEC-1 §3.4 and
@@ -24,10 +27,34 @@ add a generic "resolve" path here that would let a receiver pick a winner.
 The reason carries no `op_id` of its own: `QuarantineRecord` is keyed by `claimed_op_id`, so a
 copy inside the reason could disagree with the key it is stored under.
 
+## §budget-partition — one flood may not evict another's backlog (G1)
+
+Erratum G1, SPEC-5 §4 rule 4. The entry and byte budgets are partitioned by
+`QuarantineReasonClass` — `MissingParent`, `UnknownSchema`, `UnknownKind`, and one residual
+`Other` — and `QuarantineBounds::per_reason` carries a `ReasonBudget` for each. `admit_candidate`
+checks the candidate's own class **before** the pool-wide bounds, so an exhausted class is
+declined by name while the pool still has room; `evict_expired_or_over_capacity` runs a per-class
+pass before the pool-wide one, so an over-budget class sheds only its own records even when
+those records are the newest in the pool.
+
+The defect this closes is availability, not correctness. Under D-CL2 headers replicate
+verse-wide with no version gate: an un-upgraded peer receives every operation of a kind it
+cannot interpret, and against one shared pool that traffic evicts the peer's own legitimate
+`MissingParent` backlog oldest-first. Every candidate involved is validly signed, so no
+authentication check catches it.
+
+`PerReasonBudgets` is a struct with a field per class rather than a `BTreeMap` keyed by class
+precisely because a map can omit a class, and the omission is invisible — the reader cannot tell
+whether the missing class was meant to be unbounded or zero. `QuarantineStore::class_len` and
+`class_total_bytes` have default implementations derived from `entries()`; Wave 3's
+`fe-database` store should override both with an indexed query rather than scanning the pool on
+every admission.
+
 ## §reserved-policy — bounds are never invented here (M7, D-CL24)
 
 `QuarantineBounds` (`max_entries`, `max_total_bytes`, `max_age_ms`, `max_parent_depth`,
-`retry_cadence_ms`) and every GC-lease duration are plain fields on caller-constructed structs.
+`retry_cadence_ms`, and every `per_reason` budget) and every GC-lease duration are plain fields
+on caller-constructed structs.
 Neither type carries a `Default` impl or an associated constant. `admit_candidate` fails closed
 on any bound rather than evicting existing history; `evict_expired_or_over_capacity` is the only
 function that removes local quarantine copies to satisfy a bound, and it never runs implicitly —
@@ -113,7 +140,7 @@ than silently decided:
   parent-depth are properties of the CANDIDATE being admitted, so `admit_candidate` checks them
   synchronously and fails closed. Age is a property of elapsed wall-clock time acting on
   records ALREADY held, so this module surfaces it through
-  `evict_expired_or_over_capacity` instead — consistent with §4 rule 4's explicit allowance
+  `evict_expired_or_over_capacity` instead — consistent with §4 rule 5's explicit allowance
   for expiry eviction removing only the local quarantine copy. `admit_candidate` does not
   itself reject a new candidate merely because an unrelated existing record has aged out.
 - **§5.3 rule 1's descriptor field list ("lease identifier, holder principal, authorized

@@ -116,6 +116,30 @@ validate candidate
    prior projected operations MUST trigger deterministic replay of the affected
    causal history. It MUST NOT be implemented as an ad hoc compensating
    SurrealDB row edit.
+8. **A reduction MUST NOT read an external artifact to compute projected
+   state.** The admitted operation's own verified bytes and extracted facts are
+   the only admissible inputs. A reduction MAY write a deterministic
+   *reference* to an external artifact — a snapshot component, segment shard,
+   payload artifact, or bulk columnar artifact — where the referenced identity
+   is a content address derived from those same signed bytes. It MUST NOT
+   dereference that artifact and fold its contents, length, statistics,
+   presence, or absence into the projected value.
+
+   This is the bright line that keeps rule 5 and section 6 rule 1 satisfiable.
+   Which external artifacts a peer holds is local availability, and it differs
+   between peers by design under D-CL2 sparse payload replication. A reduction
+   that reads one produces a projection that is a function of local storage
+   rather than of the admitted operation set, so two conforming peers with the
+   same closure would materialize different state and neither could rebuild the
+   other's from verified history.
+9. When a reduction cannot construct the verified reference required by rule 8
+   — for example the segment manifest binding the artifact ID and its stored
+   length is not locally held — it MUST return the
+   `referenced_artifact_unavailable` state in section 5 rather than substitute a
+   default, an empty reference, a partial value, or a semantic exclusion. That
+   state MUST be expressible in the reduction's own result type: an
+   implementation whose reduction signature can only apply or exclude cannot
+   represent it, and will encode an availability gap as a settled decision.
 
 ## 5. Admission, quarantine, and materializer errors
 
@@ -131,7 +155,9 @@ attach implementation-specific diagnostics without changing their meaning.
 | `precondition_failed` | A cheap, locally decidable target-existence, target-scope, or lifecycle precondition fails before admission. | Return the original command/API error; do not construct or append an operation. This is the required local implementation rule in `fe-database/src/AGENTS.md` §log-first-commit. |
 | `missing_parent` | A syntactically valid candidate references a parent not yet admitted locally. | Place outside the verified log in pending quarantine; do not materialize. Re-evaluate only after its full parent closure arrives. Bounds and expiry are SPEC-5 decisions. |
 | `unknown_schema` | The schema hash or required deterministic interpreter is unavailable. | Quarantine outside the verified log; do not materialize or reinterpret. Re-evaluate only after the exact registered schema is available and validates. Bounds and expiry are SPEC-5 decisions. |
+| `unknown_kind` | The candidate's `operation_kind` has no registered structural rule, schema, and reduction in this build (SPEC-1 §6 rule 7). | Quarantine outside the verified log; do not materialize or reinterpret as a neighbouring kind. Re-evaluate only after this build gains that exact kind. Distinct from `unknown_schema`: a schema arrives through the registry, a kind through a build upgrade. Its budget is partitioned from every other reason per SPEC-5 §4 rule 4. |
 | `opaque_payload` | The header is available but the local materializer lacks an authorized, verified payload artifact. | Retain only the non-admitted header/index evidence; do not materialize. Fetch and key-distribution policy is SPEC-3/SPEC-6. |
+| `referenced_artifact_unavailable` | A deterministic reduction cannot construct the verified reference section 4 rule 8 permits it to write, because the artifact's binding evidence is not locally held. | Mark the projection position pending replay; do not advance the apply marker, substitute a default or empty reference, or record a semantic exclusion. Retryable, like `missing_parent`. Fetch and key-distribution policy is SPEC-3/SPEC-6. |
 | `materialization_failed` | A verified append succeeded but deterministic reduction or SurrealDB commit did not finish. | Mark pending replay; do not expose the affected projection position as committed. Retry or rebuild solely from verified history. |
 | `checkpoint_mismatch` | A checkpoint identity, signature, projection root, or replay result disagrees with verified history. | Reject the checkpoint as an accelerator; retain the log and rebuild from an earlier verified checkpoint or empty state. |
 
@@ -139,8 +165,9 @@ attach implementation-specific diagnostics without changing their meaning.
    materializer to skip that candidate and continue as though the history were
    complete. The affected head remains unresolved for that projection until the
    error has the required disposition above.
-2. Missing parents and unknown schemas are retryable availability states, not
-   proof that a candidate is valid. They MUST NOT be provisionally applied.
+2. Missing parents, unknown schemas, unknown operation kinds, and unavailable
+   referenced artifacts are retryable availability states, not proof that a
+   candidate is valid. They MUST NOT be provisionally applied.
 3. Invalid and unauthorized candidates MUST never be promoted to valid merely
    because a later operation refers to them or because a relay stored them.
 4. Materializer failure after append is recoverable only by deterministic retry
@@ -176,6 +203,13 @@ attach implementation-specific diagnostics without changing their meaning.
 6. The checkpoint signature format, Manager+ signing threshold, sorted-frontier
    selection, segment reachability proof, storage duration, and garbage
    collection rules are defined or constrained by SPEC-5 and SPEC-6.
+7. Rule 1 is only satisfiable because of section 4 rule 8. A rebuild replays
+   verified operations, and nothing else is guaranteed to be present at rebuild
+   time — so a projection whose values were computed by reading external
+   artifacts is not rebuildable, whatever a rebuild appears to produce on the
+   machine that first materialized it. A projection MAY carry deterministic
+   references to external artifacts, because a reference replays to the same
+   value whether or not the artifact is held.
 
 ## 7. Reproducible analytics outcome
 
@@ -228,6 +262,15 @@ at least the following names and outcomes.
 11. **`analytics_source_identity_is_reproducible`** — two independent
     materializations with the same declared source identity expose identical
     canonical analytics input relations.
+12. **`reduction_writes_references_and_never_reads_external_artifacts`** — two
+    peers replaying the same admitted closure, one holding every referenced
+    external artifact and one holding none, produce identical canonical
+    projection roots for every operation either of them reduced.
+13. **`referenced_artifact_unavailable_is_expressible_and_distinct_from_exclusion`**
+    — a reduction that cannot construct its verified reference returns the
+    `referenced_artifact_unavailable` state, that state is not equal to any
+    semantic exclusion, the apply marker does not advance, and re-reducing the
+    same operation returns the same state.
 
 ## 9. Design notes
 
@@ -245,6 +288,30 @@ at least the following names and outcomes.
 - **No branch or storage policy here:** This contract intentionally does not
    choose what a mobile peer retains, when a head advances, how detached work is
    merged, or when quarantine expires. Those choices remain with SPEC-5.
+- **A reference replays; a read does not:** Section 4 rule 8 is what lets the
+  canonical log commit bulk artifacts — snapshots, and under D-CL26 columnar
+  observation hexons — by reference without making the projection a function of
+  what this machine happens to have on disk. The distinction is not stylistic:
+  it is the difference between a projection two peers can both rebuild and one
+  only its author can.
+
+### Errata
+
+Owner-ratified under D-CL28, 2026-08-16.
+
+- **G2 (2026-08-16):** §4 gained rules 8 and 9, §5 gained the
+  `referenced_artifact_unavailable` category, §5 note 2 was widened, and §6
+  gained rule 7. §4 previously stated that a materializer must not read a
+  mutable pre-existing SurrealDB value (rule 1) and must produce identical state
+  everywhere (rule 5), but never stated the general rule those two imply: an
+  external artifact is as much a local-availability input as a local row. Rule 9
+  additionally requires the unavailable state to be *expressible in the
+  reduction's own result type*, because a reduction that can only apply or
+  exclude will encode an availability gap as a settled decision, and two peers
+  will then disagree about a result one of them never actually computed.
+- **G1 companion (2026-08-16):** §5 gained the `unknown_kind` category, so
+  SPEC-5 §4's partitioned quarantine reasons have canonical names here. See
+  `branches-checkpoints-retention.md` §7 erratum G1.
 
 ## 10. D-CL20 approved legacy-operation deferral
 
