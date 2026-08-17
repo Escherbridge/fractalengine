@@ -1,8 +1,8 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-08-16
-head: ee1d125
+updated: 2026-08-17
+head: 5b4d12b
 ---
 
 # RUNBOOK — Canonical Fractal Data Log (Workstream G)
@@ -42,10 +42,9 @@ Standing constraints, all still in force:
 
 ## 2. State
 
-`origin/main` is at **`307c2df`** (the runbook's own first commit). Local `main`
-is **2 commits ahead**: `ee1d125` (the errata) and this update. The owner
-directed pushing on 2026-08-16, so **`git push` is a live pending action, not a
-decision to re-litigate.**
+`main` @ **`5b4d12b`**, **pushed** — `origin/main` matches local HEAD exactly,
+zero unpushed commits as of 2026-08-17. All dirty files in the tree belong to
+the concurrent session.
 
 ### Verified and committed
 
@@ -79,12 +78,13 @@ session.
 
 Nothing is mid-edit. Everything below is not started:
 
-- **Errata G1, G2, G4, G5** — **DONE 2026-08-16 @`ee1d125`**, local-only (not
-  pushed). 381 tests, clippy `-D warnings` clean, fmt clean, oracle green,
+- **Errata G1, G2, G4, G5** — **DONE and PUSHED** @`ee1d125` (2026-08-16).
+  381 tests, clippy `-D warnings` clean, fmt clean, oracle green,
   `/security-review` 0 findings. Wave 3 is unblocked.
 - **Errata G3, G6** — go with SPEC-10, not Wave 3.
-- **G Wave 3** — operation-plane integration. Partition already grilled and
-  ratified; scope unchanged by the 2026-08-16 expansion.
+- **G Wave 3** — operation-plane integration, **the head of the queue**.
+  Partition grilled and ratified; scope unchanged by the 2026-08-16 expansion.
+  Execution mode and gate settled 2026-08-17 — see §4 and §7 step 6.
 - **G Wave 4** — serial integration.
 - **SPEC-9** — peer N-of-M durability protocol (new, greenfield).
 - **SPEC-10** — observation plane / columnar hexon format (new).
@@ -228,7 +228,34 @@ Full register with rationale: `conductor/decisions/canonical-data-log-20260808.m
   (**owner override**), roughly tripling remaining scope. Wave 3's already-grilled
   scope is preserved intact.
 - **Push posture** — as of 2026-08-16 the owner directed pushing; `main` is
-  published through 4b63c53. Prior waves were deliberately local-only.
+  published through `5b4d12b` as of 2026-08-17. Prior waves were deliberately
+  local-only. Push finished, gated work; do not ask again.
+
+### Owner calls, 2026-08-17 — how Wave 3 runs
+
+Settled at the Wave 3 boundary. Do not re-litigate these.
+
+- **Wave 3 executes as a `/slice` fan-out**, not serially. Chosen because the
+  six-slice partition is already grilled, ratified, and carries disjoint
+  `owned_files` — the condition `/slice` exists for. Serial was rejected because
+  Wave 3 spans 6 slices across 5 crates and would outlive one context, forcing a
+  second handoff mid-wave. **Agents do not run cargo**; every slice brief already
+  says so, and concurrent builds deadlock on the shared build lock. The
+  orchestrator runs one serial gate at the wave barrier.
+- **Wave 3 gates on the FULL WORKSPACE**, not per-package. D-CL23's per-package
+  scoping was valid for Waves 1-2 only because *nothing depends on
+  `fe-canonical-log`*. Wave 3 lands in `fe-database` and `fe-api`, and **7 crates
+  depend on those** (`fe-renderer`, `fe-sync`, `fe-test-harness`, `fe-ui`,
+  `fe-webview`, `fractalengine`, `fractalengine-relay`, plus the workspace root).
+  Per-package would defer real dependent breakage to Wave 4. Run
+  `cargo test --workspace` at **`-j2`** — `-j4` hits `os error 1455` here.
+- **D-CL21 already approved `chacha20poly1305` and `x25519-dalek`.**
+  `workstream-g-plan.json`'s `W3-crypto-aead-keywrap` brief predates D-CL21 and
+  still says they are "pending owner approval" with an instruction to hold the
+  slice. **That instruction is stale — the plan JSON is wrong, the decision
+  register is right.** Both deps are already declared in
+  `fe-canonical-log/Cargo.toml` by the Wave 1 foundation. Do not hold the slice
+  and do not re-ask.
 
 ---
 
@@ -236,25 +263,38 @@ Full register with rationale: `conductor/decisions/canonical-data-log-20260808.m
 
 `<assumption> · default taken · to reverse`
 
-1. **The concurrent session is still active and still owns `fe-ui/**`,
-   `fe-terrain/**`, `fractalengine/src/gpx_bridge.rs`** · default: treat them as
-   untouchable and scope all gates per-package · to reverse: cheap if they've
-   finished (check `git status`), but editing their files mid-flight would cause
-   a real conflict, so verify before assuming they're done.
-2. **Their in-progress `terrain_proposal` rehydration test may still be red** ·
-   default: a full `cargo test --workspace` may show one external failure that is
-   not this workstream's · to reverse: cheap — attribute by file path before
-   investigating.
-3. **SPEC-9's availability floor is undecided** · default: none chosen; the spec
+1. **SPEC-9's availability floor is undecided** · default: none chosen; the spec
    must name one · to reverse: expensive if built the wrong way — peers alone
    cannot underwrite availability, so the choice between accountable seeders, a
    registry floor, and a declared best-effort promise shapes the whole protocol.
-   **Confirm this before writing SPEC-9.**
+   **Confirm this before writing SPEC-9.** Deliberately not asked at the Wave 3
+   boundary: it gates step 7, not step 6, and asking early would have spent the
+   round on work the next session will not reach.
+2. **The concurrent session is still active and still owns `fe-ui/**`,
+   `fe-terrain/**`, `fractalengine/src/gpx_bridge.rs`** · default: treat them as
+   untouchable; Wave 3 does not overlap them, so no slice needs their files · to
+   reverse: cheap if they've finished (check `git status`), but editing their
+   files mid-flight would cause a real conflict, so verify before assuming.
+   **Note the interaction with the workspace gate:** `fe-ui` depends on
+   `fe-database`, so `cargo test --workspace` WILL compile their in-progress
+   work. Compile errors from `fe-ui/**` are theirs, not Wave 3's.
+3. **Their in-progress `terrain_proposal` rehydration test may still be red** ·
+   default: the workspace gate may show one external failure that is not this
+   workstream's · to reverse: cheap — attribute by file path before investigating.
+   This is the known-noise line for the Wave 3 gate.
 4. **The 15 documented Wave 3 contracts in the module `AGENTS.md` files are
    complete and accurate** · default: trust them as the Wave 3 obligation list ·
    to reverse: moderate — re-run the enforcement census to regenerate.
-5. **Ultracode is off** · default: use the standard Workflow opt-in rule; do not
+5. **`workstream-g-plan.json`'s Wave 3 briefs are otherwise current** · default:
+   use them verbatim except for the two known staleness points — the D-CL21
+   dependency-approval instruction (see §4) and the errata G1/G2/G4/G5 shape
+   changes the briefs predate · to reverse: cheap per slice, but a slice that
+   follows a stale brief writes code against the pre-errata API and the wave
+   barrier is where you find out.
+6. **Ultracode is off** · default: use the standard Workflow opt-in rule; do not
    launch multi-agent fan-outs without the user asking · to reverse: trivial.
+   **The Wave 3 `/slice` fan-out IS user-authorized** (2026-08-17, §4) — that
+   authorization covers Wave 3 and does not extend to later waves.
 
 ---
 
@@ -319,13 +359,34 @@ reader needs the shapes without re-reading the diff:
 - Nine new conformance-test names were added across SPEC-4/5/6; the Rust tests
   matching them are in place, so the §6/§8 lists and the code agree.
 
-**Step 6 is now the head of the queue.**
+**Step 6 is now the head of the queue.** Execution mode and gate are settled —
+see §4 "Owner calls, 2026-08-17".
 
-6. **Wave 3** — operation-plane integration from the existing partition
-   (fe-database `canon_log` + migration, fe-api canonical WS, crypto
-   AEAD/keywrap, identity x25519, sync guard). It must honour the 15 documented
-   Wave 3 contracts in the module `AGENTS.md` files **plus** errata G1/G2/G4/G5.
-   Wave 3 touches auth and crypto paths — plan `/security-review` as its phase
+6. **Wave 3** — operation-plane integration. Run `/slice` against the six
+   ratified slices in `workstream-g-plan.json` → `waves[wave==3].slices`, each of
+   which already carries a full brief, `owned_files`, `model`, `spec_refs`, and
+   `acceptance`:
+
+   | Slice | Model | Owns |
+   |---|---|---|
+   | `W3-crypto-aead-keywrap` | opus | `fe-canonical-log/src/crypto/**` (new dir) |
+   | `W3-db-canon-log` | opus | `fe-database` canonical persistence |
+   | `W3-dual-emit` (SPEC-8) | sonnet | dual-emit flag surface, shadow ledger, comparator |
+   | `W3-identity-x25519` | sonnet | `fe-identity` device key + rotation |
+   | `W3-api-canonical-ws` | sonnet | `fe-api` `/ws/canonical`, compiled but **not mounted** |
+   | `W3-sync-guard` | haiku | `fe-sync` test: every migration mode keeps iroh unavailable |
+
+   Two obligations beyond the briefs, because the briefs predate them:
+   **(a)** the 15 documented Wave 3 contracts in the module `AGENTS.md` files;
+   **(b)** errata G1/G2/G4/G5 — in particular `CausalMaterializer::reduce` may
+   read *only* `meta` and `envelope_bytes` (SPEC-4 §4 rule 8), the quarantine
+   store must budget per `QuarantineReasonClass`, and `SegmentManifestBody::new`
+   now takes 7 arguments.
+   Two named Wave 3 obligations are easy to miss because they are gates with no
+   caller yet: `wire::cursor::verify_frontier_commitment` MUST be called on
+   every peer-supplied cursor (`wire/AGENTS.md` §Wave 3 obligation), and
+   `capability/AGENTS.md` §5.3 lists three more.
+   Wave 3 touches auth and crypto paths — `/security-review` is its phase
    verdict, not `/code-review` alone.
 7. **SPEC-9 and SPEC-10** can run concurrently with Wave 3 since they touch
    different surfaces. SPEC-9 must resolve assumption 5.3 (the availability
