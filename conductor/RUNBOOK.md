@@ -2,7 +2,7 @@
 type: runbook
 title: FractalEngine session runbook
 updated: 2026-08-17
-head: 5b4d12b
+head: b820b67
 ---
 
 # RUNBOOK — Canonical Fractal Data Log (Workstream G)
@@ -42,9 +42,16 @@ Standing constraints, all still in force:
 
 ## 2. State
 
-`main` @ **`5b4d12b`**, **pushed** — `origin/main` matches local HEAD exactly,
-zero unpushed commits as of 2026-08-17. All dirty files in the tree belong to
-the concurrent session.
+`main` @ **`b820b67`**, **NOT pushed** — `origin/main` is at `b8b2e0a`, so there
+are **three unpushed commits**: `29cadd9` (pre-existing repairs, §11), `b820b67`
+(Wave 3 code), and this runbook update. Wave 3 is deliberately held local: the
+standing push authorization covers *finished, gated* work, and a wave whose
+phase verdict is FAIL (§10) is not that. **Push once §10 items 1-3 are closed
+and re-reviewed** — do not push a FAIL verdict to `origin`.
+
+All other dirty files in the tree belong to the concurrent session
+(`fe-ui/**`, `fe-terrain/**`, `fractalengine/src/gpx_bridge.rs` — 56 files,
+verified untouched by this wave and by `cargo fmt -p`).
 
 ### Verified and committed
 
@@ -57,6 +64,8 @@ the concurrent session.
 | **G Wave 2** — 7 leaf slices + remediation | `5675fcb` | 373 tests, clippy clean, fmt clean, workspace check green |
 | D-CL26..29 direction ratification | `4b63c53` | — |
 | **Errata G1/G2/G4/G5** | `ee1d125` | 381 tests (was 373), clippy `-D warnings` clean, fmt clean, oracle green; per-package gates per D-CL23 — nothing depends on `fe-canonical-log` |
+| Two pre-existing test defects | `29cadd9` | see §11; not Workstream G work |
+| **G Wave 3** — operation-plane integration | `b820b67` | **2846 workspace tests, 0 failed**; clippy `-D warnings` clean; fmt clean; oracle green. **Security verdict FAIL — see §10.** Committed because every finding is dormant; **NOT pushed** |
 
 `fe-canonical-log`, `fe-sdk`, `docs/spec/`, and `conductor/` are **fully
 committed and clean**. All dirty files in the tree belong to the concurrent
@@ -73,6 +82,7 @@ session.
 | G Wave 2 remediation | enforcement census: 66 checks, 51 production callers, 15 documented Wave 3 contracts, **0 dormant** | re-audit |
 | Time-series direction | **GO** + 1 structural correction + 6 gates | 7-scout evidence review, every claim cited to spec/code |
 | Errata G1/G2/G4/G5 | **PASS — 0 findings** | `/security-review` @ `ee1d125`; see §9 for what was cleared and the one hardening item deferred to Wave 3 |
+| **G Wave 3 leaves + integration** | **FAIL — 2 CRITICAL, 9+ HIGH, all dormant** | `/security-review` @ `b820b67`, separate context, prompted to refute; 4 hard constraints VERIFIED. Full verdict in §10 |
 
 ### In flight / not started
 
@@ -82,10 +92,15 @@ Nothing is mid-edit. Everything below is not started:
   381 tests, clippy `-D warnings` clean, fmt clean, oracle green,
   `/security-review` 0 findings. Wave 3 is unblocked.
 - **Errata G3, G6** — go with SPEC-10, not Wave 3.
-- **G Wave 3** — operation-plane integration, **the head of the queue**.
-  Partition grilled and ratified; scope unchanged by the 2026-08-16 expansion.
-  Execution mode and gate settled 2026-08-17 — see §4 and §7 step 6.
-- **G Wave 4** — serial integration.
+- **G Wave 3** — **CODE LANDED @`b820b67`, LOCAL ONLY, SECURITY VERDICT FAIL.**
+  All six slices executed, full-workspace gate green (2846/0). Not pushed. The
+  wave is *not* done: remediation of §10's must-close set is the head of the
+  queue, following the same NEEDS_FIXES → remediated → re-audited path Waves 1
+  and 2 took.
+- **G Wave 3 remediation** — **THE HEAD OF THE QUEUE.** §10 carries the findings
+  and a four-way disjoint partition ready for `/slice`.
+- **G Wave 4** — serial integration. **Do not wire any caller to the canonical
+  append, epoch, or WS surfaces until §10 items 1-3 are closed and re-reviewed.**
 - **SPEC-9** — peer N-of-M durability protocol (new, greenfield).
 - **SPEC-10** — observation plane / columnar hexon format (new).
 
@@ -184,7 +199,23 @@ against spec text and shipped code by a dedicated scout):
 **Environment gotchas that cost real time this session:**
 
 - **Piping cargo through `tail`/`grep` masks the exit code.** Always append
-  `; echo "EXIT:$?"`. A background run reported "exit 0" while actually failing.
+  `; echo "EXIT:$?"` — and when the pipe is *inside* the command, `${PIPESTATUS[0]}`,
+  not `$?`. This fired again in Wave 3: the harness reported "exit code 0" for a
+  run that had actually exited **101**. Redirect to a log file and grep the file
+  instead of piping; you also get the whole error list rather than a tail.
+- **`cargo test -p <crate>` resolves features differently from `--workspace`**
+  and forces a cold `surrealdb-core` rebuild — two Wave 3 runs looked like hangs
+  and were 10-minute rebuilds. Stay in `--workspace` mode and narrow with a test
+  filter (`cargo test --workspace -- <name>`), which reuses the warm build.
+- **`cargo test` stops at the first failing test binary.** Use `--no-fail-fast`
+  at a wave barrier or you will triage one crate at a time and never see the rest.
+- **`cargo test --workspace --lib -- --test-threads=1` appears to deadlock here.**
+  Not diagnosed; avoid it, use filters instead.
+- **A global mutex poisoned by one panicking test cascades.** Eight red tests in
+  Wave 3 traced to a single missing `init_hlc(0)`: the panic happened *while
+  holding* `HLC_STATE`, so every later test died on `PoisonError`. When many
+  tests fail at one `.lock().unwrap()`, find the one that panicked *inside* the
+  critical section — the rest are victims. Run a suspect alone to confirm.
 - `os error 1455` (paging file too small) on `cargo test --workspace -j4` →
   retry at `-j2`. Full test execution needs free RAM; `cargo check --workspace
   --tests` works under memory pressure.
@@ -359,8 +390,9 @@ reader needs the shapes without re-reading the diff:
 - Nine new conformance-test names were added across SPEC-4/5/6; the Rust tests
   matching them are in place, so the §6/§8 lists and the code agree.
 
-**Step 6 is now the head of the queue.** Execution mode and gate are settled —
-see §4 "Owner calls, 2026-08-17".
+**Step 6 is DONE** @`b820b67` (local only) — all six slices landed, full-workspace
+gate green, but its `/security-review` returned **FAIL**. Remediation (§10) is
+now the head of the queue; step 7 follows it. What step 6 said, for reference:
 
 6. **Wave 3** — operation-plane integration. Run `/slice` against the six
    ratified slices in `workstream-g-plan.json` → `waves[wave==3].slices`, each of
@@ -456,3 +488,112 @@ holds no header bodies at manifest-validation time; and there is no consumer of
 `statistics()` yet. **Wave 3's selective-fetch consumer is where this becomes
 real** — whoever builds segment skipping must validate the range against the
 headers it actually receives rather than trusting the manifest's claim.
+
+---
+
+## 10. Wave 3 security verdict — **FAIL** @ `b820b67`
+
+`/security-review`, separate context, prompted to refute rather than confirm.
+**2 CRITICAL, 9+ HIGH, 14 MEDIUM.** Code is committed anyway and **not pushed**,
+because every finding is **dormant**: `/ws/canonical` is unmounted and no
+production caller reaches the canonical append, epoch, or key-wrap paths.
+
+**All four hard constraints VERIFIED**, with the evidence that settles each:
+
+| # | Constraint | Evidence |
+|---|---|---|
+| 1 | No network enablement | `IrohDocsEngineHolder.available` is a private `AtomicBool` with **no `store` call anywhere** — `is_available()` is structurally incapable of returning true. No network primitive in any new code. |
+| 2 | `/ws/canonical` unmounted | Only `build_router_with_canonical_log` call sites are the two under `#[cfg(test)]` in `router.rs`. No binary references it. |
+| 3 | Legacy editor path unchanged | `op_log.rs` untouched; the one `crud.rs` hunk is `init_hlc(0)` inside `#[cfg(test)] mod cascade_batch_update_tests`. |
+| 4 | No shadow-side projection mutation | `migration/rebuild.rs` holds no `Db`; `shadow_store.rs` writes only the const ledger table. |
+
+**Clean on traced evidence** — do not re-litigate these: the AEAD core (four-lane
+domain separation, `assert_production_suite` unconditional on all four entry
+points, keys zeroized and constant-time compared); SurrealQL injection (every
+query a `&'static str` with bound placeholders); exactly-once append (UNIQUE
+indexes at `schema.rs:443` plus content-addressing); SPEC-4 §4 rule 8 `reduce`
+input purity (one call site workspace-wide); WS error disclosure.
+
+### Must close before ANY Wave 4 caller is wired
+
+Ordered by what a caller trips over first. **1-3 are blocking; do not wire a
+caller to the canonical append, epoch, or WS surfaces until they are closed and
+re-reviewed.**
+
+1. **C1** `handler.rs` `dispatch_subscribe` — pushes the peer-supplied
+   `body.scope` into the same `subscribed_scopes` set that `PinnedSession::covers`
+   reads, with no check against `session.epoch_scope`, no capability
+   re-verification, and no resolution of `authorization_binding_id`. Subscribe
+   writes its own authorization. The `.map_err(|_| ScopeNotAuthorized)` looks
+   like a check but `bind` only fails on ID collision. *Independently verified.*
+2. **C2** `state.rs` `cached_verification` — validates the **stored** `CacheKey`
+   by set membership without recomputing it against the live view version,
+   epoch, or expiry, and fe-api has **no production gate-invalidation path**.
+   The timer detects revocation; re-sending identical `authorize` bytes hits the
+   cache and skips verification. *Independently verified.*
+3. **H1** `append_store.rs` — the `VerifiedLogStore::append` impl reaches the log
+   through `decode_canonical` alone, skipping signature verification. Two doors
+   into one log; only `admission.rs:181` is guarded. **H2** `canonical_epoch.rs`
+   `admit_epoch_bump` performs no Manager+ authority check and takes no view that
+   could answer. H1 supplies the unsigned envelope H2 admits; together, one
+   unsigned envelope advances an epoch and locks out every legitimate actor.
+4. **H3/H4** `key_wrap.rs` — `open_scope_key` never verifies issuer authority
+   (`issuer_capability` is signed over and then never read), and
+   `issue_scope_key_wrap` never verifies the recipient **device** binding (it
+   authorizes against the Ed25519 principal while sealing to a caller-supplied
+   X25519 key; no device-enrolment registry exists). Both are spec MUSTs.
+5. **H5/H6** `canon_log/rebuild.rs` — an unverified checkpoint suppresses the
+   empty-state reset, and the computed root is never compared against the
+   claimed one; `record_replay_verified` then fires for a replay that reduced
+   nothing. `canon_log_materialization_test.rs:980` currently *encodes the
+   forged-checkpoint acceptance as expected behaviour* — fix the test too.
+6. **M1** `crypto/aead.rs` — `FreshNonce`'s one-shot guarantee is defeated by its
+   own public `from_params`/`params` pair. Cheap, and it removes a false claim
+   from two documents.
+
+### Suggested remediation partition (four disjoint `owned_files` sets)
+
+| Slice | Owns | Findings |
+|---|---|---|
+| `W3R-api-authz` | `fe-api/src/canonical_ws/{handler,state}.rs` | C1, C2, H9, H10, M7, M14 |
+| `W3R-db-canon` | `fe-database/src/canon_log/**`, `fe-database/tests/canon_log_materialization_test.rs` | H1, H2, H5, H6, H7, M3, M4, M5 |
+| `W3R-crypto` | `fe-canonical-log/src/crypto/**` | H3, H4, M1, M6 |
+| `W3R-leaf-seams` | `fe-canonical-log/src/{materialize/traits.rs,capability/**}` | `VerifiedEnvelopeMeta` constructibility (H1's other half), `AppendError` erratum, H8 |
+
+Same rules as Wave 3: agents do not run cargo, the orchestrator runs one serial
+`cargo test --workspace -j2` at the barrier, and `fe-ui/**`, `fe-terrain/**`,
+`fractalengine/src/gpx_bridge.rs` stay untouchable.
+
+### Carried items, not yet filed anywhere else
+
+- **`AppendError` needs a `StorageUnavailable`/`Indeterminate` variant.** A
+  storage fault is currently indistinguishable from "absent"; the impl refuses
+  conservatively and records causes out-of-band. Worse than first filed:
+  `append_store.rs:340` returns `IntegrityConflict` when bytes merely fail to
+  *decode*, which per §3.3 permanently blacklists an op_id that may only be
+  undecodable *here* (e.g. a future protocol version). `NotAnEnvelope` exists and
+  is discarded. Needs a `fe-canonical-log` erratum.
+- **Three provisional wire-number assignments** (`ScopeKeyWrapBody` keys 0-4,
+  `ScopeKeyWrap` key 5, and reading §10.2.3's `canonical_complete_wrap` as
+  signature-excluding) live only in `crypto/AGENTS.md`. Lift them into the
+  crate-root "Provisional wire numbering" ratification surface.
+- **Four traits marked "Wave 3" in the module AGENTS.md files have no owner and
+  were routed to Wave 4**: `SealedArtifactStore`, `ArtifactSetMembership`,
+  `BlindedTopicDerivation`, and the `fe-database` `QuarantineStore` override plus
+  its GC driver. Wave 3's six slices had no home for them.
+- **The deferred manifest-statistics cross-check** (§9) still has no home: Wave 3
+  built no selective-fetch consumer.
+
+## 11. Pre-existing defects repaired at the Wave 3 barrier — `29cadd9`
+
+Not Workstream G work; recorded so they are not misattributed. Both were
+invisible until now because D-CL23 scoped Waves 1-2 to per-package gates, so no
+`cargo test --workspace` had run since `916a3ae`. **This is the concrete
+vindication of the 2026-08-17 owner call to widen the Wave 3 gate** — under
+per-package scoping both would have shipped silently into Wave 4.
+
+- `handlers/crud.rs` — two `setup_mem_db` helpers; the `cascade_batch_update_tests`
+  copy omitted `init_hlc(0)`, panicking inside the `HLC_STATE` critical section
+  and poisoning it. One omission, eight red tests.
+- `fractalengine/src/main.rs` — hydration query ordered by `created_at` without
+  carrying it in the projection; SurrealDB 3.x rejects that at parse time.
