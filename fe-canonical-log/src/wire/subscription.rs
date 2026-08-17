@@ -227,7 +227,7 @@ pub enum ResumeOutcome {
 ///
 /// `sessions` is required, not optional: §6 rule 3 stops a stale generation before any replay
 /// work, and no caller may skip that by omitting an argument.
-pub async fn resolve_resume<R: BranchRegistry>(
+pub async fn resolve_resume<R: BranchRegistry + ?Sized>(
     registry: &R,
     subscriptions: &SubscriptionTable,
     sessions: &SessionAuthorizationTable,

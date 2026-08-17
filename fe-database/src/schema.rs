@@ -295,6 +295,75 @@ define_table! {
 }
 
 // ---------------------------------------------------------------------------
+// Canonical Fractal Data Log tables (SPEC-4 / SPEC-3 §5, Workstream G)
+//
+// Appended, never interleaved with the legacy tables above. Nothing in the
+// existing dispatch loop reads or writes them — see
+// `fe-database/src/canon_log/AGENTS.md` §parallel-and-dormant.
+// ---------------------------------------------------------------------------
+
+define_table! {
+    /// SPEC-4 §3 verified log: the durable, content-addressed, append-only set of
+    /// admitted operation bytes (rationale: `canon_log/AGENTS.md` §verified-log).
+    ///
+    /// `envelope_bytes` is the authority; every other column is a durable index
+    /// derived from it so parents and ordering keys are findable without decoding.
+    table "verified_op_log" => VerifiedOpLog (id: op_id_hex) {
+        op_id_hex:             String      => "TYPE string",
+        /// Standard base64 of the exact complete-envelope bytes.
+        envelope_bytes:        String      => "TYPE string",
+        operation_kind:        i64         => "TYPE int",
+        branch_id:             String      => "TYPE string",
+        parent_op_ids:         Vec<String> => "TYPE array<string> VALUE $value OR []",
+        author_public_key_hex: String      => "TYPE string",
+        wall_ms:               i64         => "TYPE int",
+        hlc_counter:           i64         => "TYPE int",
+        appended_at_hlc:       String      => "TYPE string DEFAULT ''",
+    }
+}
+
+define_table! {
+    /// SPEC-4 §3.4 apply marker: one row per (materializer, version, branch, operation)
+    /// recording that the operation was processed for that exact projection identity.
+    table "materializer_apply_marker" => MaterializerApplyMarker (id: marker_key) {
+        /// Colon-joined `{materializer_id}:{version}:{branch_id}:{op_id_hex}`.
+        marker_key:           String => "TYPE string",
+        materializer_id:      String => "TYPE string",
+        materializer_version: i64    => "TYPE int",
+        branch_id:            String => "TYPE string",
+        op_id_hex:            String => "TYPE string",
+        /// `applied`, or `excluded:{reason}` for a §4.6 recorded exclusion.
+        disposition:          String => "TYPE string ASSERT $value = 'applied' OR string::starts_with($value, 'excluded:')",
+        applied_at_hlc:       String => "TYPE string DEFAULT ''",
+    }
+}
+
+define_table! {
+    /// SPEC-3 §5.1 persistent epoch state, keyed by the hex of the canonical scope encoding.
+    table "scope_epoch_state" => ScopeEpochState (id: scope_key) {
+        scope_key:            String      => "TYPE string",
+        current_epoch:        i64         => "TYPE int",
+        admitted_bump_op_ids: Vec<String> => "TYPE array<string> VALUE $value OR []",
+    }
+}
+
+define_table! {
+    /// SPEC-8 shadow ledger for the legacy-to-canonical migration run; written and read by
+    /// `fe-database/src/migration/`, defined here so every table lives in one module.
+    table "migration_shadow_ledger" => MigrationShadowLedger (id: entry_id) {
+        entry_id:                   String => "TYPE string",
+        run_id:                     String => "TYPE string",
+        intent_digest_hex:          String => "TYPE string",
+        mutation_kind:              String => "TYPE string",
+        run_local_correlation_id:   String => "TYPE string",
+        member_op_ids_json:         String => "TYPE string DEFAULT '[]'",
+        candidate_byte_hashes_json: String => "TYPE string DEFAULT '[]'",
+        disposition:                String => "TYPE string",
+        created_at:                 String => "TYPE string",
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Convenience helpers
 // ---------------------------------------------------------------------------
 
@@ -326,6 +395,10 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<IotReading>::apply_schema(db).await?;
     Repo::<CrateRegistry>::apply_schema(db).await?;
     Repo::<CrateEntry>::apply_schema(db).await?;
+    Repo::<VerifiedOpLog>::apply_schema(db).await?;
+    Repo::<MaterializerApplyMarker>::apply_schema(db).await?;
+    Repo::<ScopeEpochState>::apply_schema(db).await?;
+    Repo::<MigrationShadowLedger>::apply_schema(db).await?;
 
     // Critical indexes for query performance
     db.query("DEFINE INDEX IF NOT EXISTS idx_node_petal ON TABLE node FIELDS petal_id")
@@ -367,10 +440,33 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     db.query("DEFINE INDEX IF NOT EXISTS idx_crate_entry_hexon_uri ON TABLE crate_entry FIELDS hexon_uri")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_crate_entry_hexon_uri: {e}"))?;
 
+    // Canonical-log indexes. The two UNIQUE ones are load-bearing, not tuning:
+    // exactly-once append (SPEC-4 §3.1) and one apply marker per projection
+    // position (§3.4) are enforced by the storage layer, not only by read-then-write.
+    db.query("DEFINE INDEX IF NOT EXISTS idx_verified_op_log_op_id ON TABLE verified_op_log FIELDS op_id_hex UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_verified_op_log_op_id: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_verified_op_log_branch ON TABLE verified_op_log FIELDS branch_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_verified_op_log_branch: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_verified_op_log_equivocation ON TABLE verified_op_log FIELDS author_public_key_hex, wall_ms, hlc_counter")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_verified_op_log_equivocation: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_apply_marker_key ON TABLE materializer_apply_marker FIELDS marker_key UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_apply_marker_key: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_apply_marker_projection ON TABLE materializer_apply_marker FIELDS materializer_id, materializer_version, branch_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_apply_marker_projection: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_scope_epoch_state_key ON TABLE scope_epoch_state FIELDS scope_key UNIQUE")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_scope_epoch_state_key: {e}"))?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_migration_shadow_ledger_run ON TABLE migration_shadow_ledger FIELDS run_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_migration_shadow_ledger_run: {e}"))?;
+
     Ok(())
 }
 
 /// All table names, for admin operations like dump / clear.
+///
+/// Deliberately excludes the canonical-log tables: SPEC-4 §1.4 makes the verified log the
+/// authority and the SurrealDB projection derivative, so an admin "clear everything" that
+/// erased `verified_op_log` would destroy history a rebuild cannot recover. The projection
+/// tables listed here are rebuildable from the log; the log is not rebuildable from them.
 pub const ALL_TABLE_NAMES: &[&str] = &[
     Petal::TABLE_NAME,
     Room::TABLE_NAME,
@@ -577,6 +673,75 @@ mod tests {
     fn iot_reading_has_no_geometry_column() {
         // Position joins through the anchor node — see AGENTS.md §iot-readings.
         assert!(!IotReading::schema().contains("geometry"));
+    }
+
+    // --- Canonical-log tables ---
+
+    #[test]
+    fn verified_op_log_schema_carries_the_bytes_and_the_parent_index() {
+        let s = VerifiedOpLog::schema();
+        assert!(s.contains("DEFINE TABLE IF NOT EXISTS verified_op_log SCHEMAFULL"));
+        assert!(s.contains("op_id_hex ON TABLE verified_op_log TYPE string"));
+        assert!(s.contains("envelope_bytes ON TABLE verified_op_log TYPE string"));
+        assert!(s.contains("parent_op_ids ON TABLE verified_op_log TYPE array<string>"));
+        assert!(s.contains("author_public_key_hex ON TABLE verified_op_log TYPE string"));
+        assert!(s.contains("wall_ms ON TABLE verified_op_log TYPE int"));
+        assert!(s.contains("hlc_counter ON TABLE verified_op_log TYPE int"));
+        assert!(s.contains("appended_at_hlc ON TABLE verified_op_log TYPE string DEFAULT ''"));
+    }
+
+    #[test]
+    fn apply_marker_disposition_is_constrained_to_applied_or_excluded() {
+        let s = MaterializerApplyMarker::schema();
+        assert!(s.contains("marker_key ON TABLE materializer_apply_marker TYPE string"));
+        assert!(s.contains("materializer_version ON TABLE materializer_apply_marker TYPE int"));
+        assert!(s.contains("ASSERT $value = 'applied'"));
+        assert!(s.contains("string::starts_with($value, 'excluded:')"));
+    }
+
+    #[test]
+    fn scope_epoch_state_keeps_the_epoch_and_its_admitted_bump_evidence() {
+        let s = ScopeEpochState::schema();
+        assert!(s.contains("scope_key ON TABLE scope_epoch_state TYPE string"));
+        assert!(s.contains("current_epoch ON TABLE scope_epoch_state TYPE int"));
+        assert!(s.contains("admitted_bump_op_ids ON TABLE scope_epoch_state TYPE array<string>"));
+    }
+
+    #[test]
+    fn migration_shadow_ledger_columns_match_the_contract_the_migration_module_codes_against() {
+        // These names are a cross-module contract; renaming one silently breaks
+        // `fe-database/src/migration/`, which writes these rows blind.
+        let s = MigrationShadowLedger::schema();
+        for column in [
+            "entry_id",
+            "run_id",
+            "intent_digest_hex",
+            "mutation_kind",
+            "run_local_correlation_id",
+            "member_op_ids_json",
+            "candidate_byte_hashes_json",
+            "disposition",
+            "created_at",
+        ] {
+            assert!(
+                s.contains(&format!("{column} ON TABLE migration_shadow_ledger")),
+                "migration_shadow_ledger lost its {column} column"
+            );
+        }
+        assert!(s.contains(
+            "member_op_ids_json ON TABLE migration_shadow_ledger TYPE string DEFAULT '[]'"
+        ));
+        assert!(s.contains(
+            "candidate_byte_hashes_json ON TABLE migration_shadow_ledger TYPE string DEFAULT '[]'"
+        ));
+    }
+
+    #[test]
+    fn the_verified_log_is_not_an_admin_clearable_table() {
+        // SPEC-4 §1.4: the log is authority, the projection is derivative.
+        assert!(!ALL_TABLE_NAMES.contains(&VerifiedOpLog::TABLE_NAME));
+        assert!(!ALL_TABLE_NAMES.contains(&MaterializerApplyMarker::TABLE_NAME));
+        assert!(!ALL_TABLE_NAMES.contains(&ScopeEpochState::TABLE_NAME));
     }
 
     #[test]

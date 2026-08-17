@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod auth;
+pub mod canonical_ws;
 pub mod crs;
 pub mod endpoint;
 pub mod export;

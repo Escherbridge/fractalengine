@@ -17,6 +17,9 @@ fe-entity-store = { path = "../fe-entity-store" }
 fe-terrain = { path = "../fe-terrain" }
 fe-hexon = { path = "../fe-hexon" }
 fe-policy = { path = "../fe-policy" }
+# SPEC-7 commit/preview wire protocol (canonical_ws module, unmounted — see
+# fe-api/src/canonical_ws/AGENTS.md).
+fe-canonical-log = { path = "../fe-canonical-log" }
 axum-extra = { version = "0.10", features = ["multipart"] }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -40,5 +43,8 @@ hex = "0.4"
 # Dev-dep cycle is legal cargo: the API-integration harness lives in the
 # harness crate's lib target (see fe-test-harness/src/AGENTS.md §api-harness).
 fractalengine-test-harness = { path = "../fe-test-harness" }
+# Router-nesting shape test (canonical_ws::router) — same pattern and version as
+# fe-test-harness/src/api.rs's ApiHarness::request.
+tower = { version = "0.5", features = ["util"] }
 
 
