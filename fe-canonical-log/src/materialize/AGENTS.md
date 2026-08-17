@@ -28,6 +28,30 @@ decisions). Keeping this crate storage-free is what lets every property below be
 with in-memory fakes in milliseconds, and what keeps `fe-api`/`fe-sync` from inheriting an
 embedded database transitively through a types crate.
 
+## G2 -- a reduction writes references, it never reads artifacts
+
+Erratum G2, SPEC-4 §4 rules 8-9. `meta` and `envelope_bytes` are the ONLY admissible inputs to
+`CausalMaterializer::reduce`. A reduction may write a deterministic *reference* to an external
+artifact — a snapshot component, a segment shard, a D-CL26 columnar observation hexon — where
+the referenced identity is a content address derived from the same signed bytes. It may not
+dereference that artifact and fold its contents, length, statistics, presence, or absence into
+the projected value.
+
+Which artifacts a peer holds is local availability, and under D-CL2 sparse payload replication
+it differs between peers by design. A reduction that reads one makes the projection a function
+of local storage rather than of the admitted operation set, so §4 rule 5 (identical state
+everywhere) and §6 rule 1 (rebuildable from verified history alone) both stop holding — and the
+failure is invisible on the machine that first materialized it, because there the artifact is
+present.
+
+`ProjectionMutation::ReferencedArtifactUnavailable` exists so the third outcome is
+*representable*. The enum previously offered only `Apply` and `Excluded`; a materializer that
+could not resolve a reference therefore had to spell an availability gap as a settled decision,
+and `Excluded` is terminal evidence under §4.6. Two peers would then disagree about a result one
+of them never computed. The variant is deliberately not a `Result`: the caller must handle it as
+one of the reduction's ordinary outcomes and leave the apply marker where it is, never advance
+past it with a default, an empty reference, or a partial value.
+
 ## M2 -- `VerifiedEnvelopeMeta` carries `scope`
 
 The brief's field list for `VerifiedEnvelopeMeta` omitted scope; amendment M2 requires it.

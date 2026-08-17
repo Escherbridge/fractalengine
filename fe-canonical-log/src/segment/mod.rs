@@ -263,6 +263,16 @@ pub enum SegmentError {
         /// The contested identifier.
         artifact_id: Hash32,
     },
+    /// A manifest's clear statistics disagreed with the lanes it claims (§3.3.5).
+    #[error("manifest clear statistics are inconsistent with the lanes the manifest claims")]
+    ManifestStatisticsInconsistent,
+    /// A statistics petal set was not strictly ascending, so its bytes are non-canonical
+    /// (§3.3.5).
+    #[error("manifest statistics petal set is not strictly ascending")]
+    ManifestStatisticsPetalsNotAscending,
+    /// A sealed statistics reference named a lane the manifest does not claim (§3.3.6).
+    #[error("manifest sealed statistics reference names a lane the manifest does not claim")]
+    ManifestStatisticsForeignLane,
     /// A HashSeq node carried no entries, which §4.1.1 forbids.
     #[error("a HashSeq node must carry at least one entry")]
     EmptyHashSeqNode,

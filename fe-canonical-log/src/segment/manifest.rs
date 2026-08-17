@@ -3,14 +3,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cbor::{decode_canonical, encode_canonical_checked, CborValue};
-use crate::envelope::{Hash32, Identifier32, PROTOCOL_VERSION};
+use crate::envelope::{Hash32, Hlc, Identifier32, PROTOCOL_VERSION};
 
 use super::artifact::LaneClass;
 use super::hashseq::LaneKey;
 use super::payload_shard::PayloadTopicScope;
 use super::{
-    assert_canonical_bytes, hash32_at, identifier32_at, map_at, require_uint_keys, uint_at,
-    SegmentError,
+    array_at, assert_canonical_bytes, hash32_at, identifier32_at, map_at, require_uint_keys,
+    uint_at, value_at, SegmentError,
 };
 
 /// The oldest node a lane's coverage claim depends on (§4.1.4).
@@ -59,6 +59,145 @@ pub type PayloadRootMap = BTreeMap<PayloadTopicScope, RootSet>;
 /// The declared availability boundary, one entry per lane the manifest claims (§4.1.4).
 pub type BoundaryMap = BTreeMap<LaneKey, BoundaryNode>;
 
+/// Coarse statistics over the operations a manifest indexes, in the manifest's own clear text
+/// (§3.3.5, D-CL28 gate G4).
+///
+/// **Why only these three fields.** A segment manifest is sealed under the *verse-wide header*
+/// scope (§2.2.2), so everything in this struct is legible to every authorized verse member,
+/// including one with no payload capability for any petal the manifest indexes. That is the
+/// right visibility for segment skipping — a peer must be able to decide "this segment cannot
+/// contain the range I want" without fetching it — and the wrong visibility for anything
+/// derived from payload contents. A per-column minimum and maximum on a position column would
+/// disclose a project's real-world location verse-wide; those statistics live in a separate
+/// artifact sealed under the lane's own scope key instead (see [`SealedStatisticsRef`]).
+///
+/// Every field here is derivable from header-plane facts alone: HLC and scope are signed
+/// envelope header fields, never payload plaintext.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SegmentStatistics {
+    /// Lowest author HLC across the indexed operations, inclusive.
+    pub min_hlc: Hlc,
+    /// Highest author HLC across the indexed operations, inclusive.
+    pub max_hlc: Hlc,
+    /// Petals the indexed operations name. Empty when every indexed operation is verse-scoped.
+    pub petals: BTreeSet<Identifier32>,
+    /// Number of operations the manifest indexes.
+    pub operation_count: u64,
+}
+
+const STATISTICS_CONTEXT: &str = "segment statistics";
+const STATISTICS_KEYS: &[u64] = &[0, 1, 2, 3];
+
+impl SegmentStatistics {
+    /// Encodes the clear statistics block.
+    pub fn to_cbor(&self) -> CborValue {
+        CborValue::Map(vec![
+            (CborValue::Uint(0), self.min_hlc.to_cbor()),
+            (CborValue::Uint(1), self.max_hlc.to_cbor()),
+            (
+                CborValue::Uint(2),
+                CborValue::Array(
+                    self.petals
+                        .iter()
+                        .map(|petal| CborValue::Bytes(petal.0.to_vec()))
+                        .collect(),
+                ),
+            ),
+            (CborValue::Uint(3), CborValue::Uint(self.operation_count)),
+        ])
+    }
+
+    /// Decodes the clear statistics block, refusing a non-ascending petal set.
+    ///
+    /// `BTreeSet` would silently absorb an out-of-order or duplicated petal, and the manifest's
+    /// own re-encode pin would then reject the bytes with a generic non-canonical error. The
+    /// explicit check keeps the diagnostic specific and does not rely on the pin.
+    pub fn from_cbor(value: &CborValue) -> Result<Self, SegmentError> {
+        require_uint_keys(value, STATISTICS_KEYS, STATISTICS_CONTEXT)?;
+        let min_hlc = hlc_at(value, 0)?;
+        let max_hlc = hlc_at(value, 1)?;
+        let entries = array_at(value, 2, STATISTICS_CONTEXT)?;
+
+        let mut petals = BTreeSet::new();
+        let mut previous: Option<Identifier32> = None;
+        for entry in entries {
+            let raw = entry.as_bytes().ok_or(SegmentError::FieldTypeMismatch {
+                context: STATISTICS_CONTEXT,
+                key: 2,
+            })?;
+            let petal = Identifier32(<[u8; 32]>::try_from(raw).map_err(|_| {
+                SegmentError::WrongByteLength {
+                    context: STATISTICS_CONTEXT,
+                    key: 2,
+                    expected: 32,
+                    actual: raw.len(),
+                }
+            })?);
+            if previous.is_some_and(|previous| previous >= petal) {
+                return Err(SegmentError::ManifestStatisticsPetalsNotAscending);
+            }
+            previous = Some(petal);
+            petals.insert(petal);
+        }
+
+        Ok(Self {
+            min_hlc,
+            max_hlc,
+            petals,
+            operation_count: uint_at(value, 3, STATISTICS_CONTEXT)?,
+        })
+    }
+}
+
+/// A reference to the fine-grained statistics artifact for one lane (§3.3.6, gate G4).
+///
+/// Column-level statistics — per-column minima and maxima, histograms, distinct counts, bloom
+/// filters — are derived from payload contents, so they are sealed under that lane's own scope
+/// key and reachable only by content address from here. A holder that can already decrypt the
+/// lane learns nothing new; a holder that cannot learns only that the artifact exists and how
+/// many bytes it occupies. The artifact's interior shape is deliberately unspecified by this
+/// erratum: the wire slot is what is expensive to add later, not the statistics format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SealedStatisticsRef {
+    /// Artifact ID of the sealed statistics artifact.
+    pub artifact_id: Hash32,
+    /// Its exact stored byte length (§3.3.2).
+    pub stored_length: u64,
+}
+
+const SEALED_STATISTICS_CONTEXT: &str = "sealed statistics reference";
+const SEALED_STATISTICS_KEYS: &[u64] = &[0, 1];
+
+impl SealedStatisticsRef {
+    /// Encodes the reference map.
+    pub fn to_cbor(&self) -> CborValue {
+        CborValue::Map(vec![
+            (
+                CborValue::Uint(0),
+                CborValue::Bytes(self.artifact_id.0.to_vec()),
+            ),
+            (CborValue::Uint(1), CborValue::Uint(self.stored_length)),
+        ])
+    }
+
+    /// Decodes the reference map.
+    pub fn from_cbor(value: &CborValue) -> Result<Self, SegmentError> {
+        require_uint_keys(value, SEALED_STATISTICS_KEYS, SEALED_STATISTICS_CONTEXT)?;
+        Ok(Self {
+            artifact_id: hash32_at(value, 0, SEALED_STATISTICS_CONTEXT)?,
+            stored_length: uint_at(value, 1, SEALED_STATISTICS_CONTEXT)?,
+        })
+    }
+}
+
+/// Sealed fine-grained statistics artifacts, at most one per lane the manifest claims (§3.3.6).
+pub type SealedStatisticsMap = BTreeMap<LaneKey, SealedStatisticsRef>;
+
+/// Decodes an HLC sub-map inside the statistics block.
+fn hlc_at(value: &CborValue, key: u64) -> Result<Hlc, SegmentError> {
+    Ok(Hlc::from_cbor(value_at(value, key, STATISTICS_CONTEXT)?)?)
+}
+
 /// A sealed immutable index over one branch's HashSeq roots (§3.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SegmentManifestBody {
@@ -68,20 +207,29 @@ pub struct SegmentManifestBody {
     header_roots: RootSet,
     payload_roots: PayloadRootMap,
     availability_boundary: BoundaryMap,
+    statistics: SegmentStatistics,
+    sealed_statistics: SealedStatisticsMap,
 }
 
 const MANIFEST_CONTEXT: &str = "segment manifest body";
-const MANIFEST_KEYS: &[u64] = &[0, 1, 2, 3, 4, 5, 6];
+const MANIFEST_KEYS: &[u64] = &[0, 1, 2, 3, 4, 5, 6, 7, 8];
 const ROOT_SET_CONTEXT: &str = "hashseq root set";
 
 impl SegmentManifestBody {
     /// Builds a manifest and enforces the §3.3 binding rules.
+    ///
+    /// `statistics` is a required parameter, never an `Option`: a manifest without a range is
+    /// one no peer can skip, so segment skipping would silently degrade to fetch-everything
+    /// wherever a publisher omitted it (§3.3.5).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         verse_id: Identifier32,
         branch_id: Identifier32,
         header_roots: RootSet,
         payload_roots: PayloadRootMap,
         availability_boundary: BoundaryMap,
+        statistics: SegmentStatistics,
+        sealed_statistics: SealedStatisticsMap,
     ) -> Result<Self, SegmentError> {
         let manifest = Self {
             protocol_version: PROTOCOL_VERSION,
@@ -90,12 +238,15 @@ impl SegmentManifestBody {
             header_roots,
             payload_roots,
             availability_boundary,
+            statistics,
+            sealed_statistics,
         };
         manifest.validate()?;
         Ok(manifest)
     }
 
-    /// Enforces the protocol version, verse affinity, and boundary-covers-every-lane rule.
+    /// Enforces the protocol version, verse affinity, boundary-covers-every-lane rule, and the
+    /// §3.3.5/§3.3.6 statistics consistency rules.
     pub fn validate(&self) -> Result<(), SegmentError> {
         if self.protocol_version != PROTOCOL_VERSION {
             return Err(SegmentError::UnsupportedArtifactFormatVersion {
@@ -124,6 +275,23 @@ impl SegmentManifestBody {
         let declared: BTreeSet<LaneKey> = self.availability_boundary.keys().copied().collect();
         if declared != lanes {
             return Err(SegmentError::ManifestBoundaryLaneMismatch);
+        }
+
+        if self.statistics.min_hlc > self.statistics.max_hlc {
+            return Err(SegmentError::ManifestStatisticsInconsistent);
+        }
+        // A count and a lane set must agree about whether this manifest indexes anything, so a
+        // manifest cannot advertise a range it has no roots to serve, or claim emptiness while
+        // carrying roots.
+        if lanes.is_empty() != (self.statistics.operation_count == 0) {
+            return Err(SegmentError::ManifestStatisticsInconsistent);
+        }
+        if !self
+            .sealed_statistics
+            .keys()
+            .all(|lane| lanes.contains(lane))
+        {
+            return Err(SegmentError::ManifestStatisticsForeignLane);
         }
         Ok(())
     }
@@ -169,6 +337,17 @@ impl SegmentManifestBody {
         self.availability_boundary.get(lane).copied()
     }
 
+    /// The coarse clear statistics every authorized verse member may read (§3.3.5).
+    pub fn statistics(&self) -> &SegmentStatistics {
+        &self.statistics
+    }
+
+    /// The sealed fine-grained statistics artifact for one lane, if the publisher wrote one
+    /// (§3.3.6). Resolving its contents requires that lane's scope key.
+    pub fn sealed_statistics_for(&self, lane: &LaneKey) -> Option<SealedStatisticsRef> {
+        self.sealed_statistics.get(lane).copied()
+    }
+
     /// Encodes the inner body.
     pub fn to_cbor(&self) -> Result<CborValue, SegmentError> {
         self.validate()?;
@@ -202,6 +381,16 @@ impl SegmentManifestBody {
                     self.availability_boundary
                         .iter()
                         .map(|(lane, boundary)| (lane.to_cbor(), boundary.to_cbor()))
+                        .collect(),
+                ),
+            ),
+            (CborValue::Uint(7), self.statistics.to_cbor()),
+            (
+                CborValue::Uint(8),
+                CborValue::Map(
+                    self.sealed_statistics
+                        .iter()
+                        .map(|(lane, reference)| (lane.to_cbor(), reference.to_cbor()))
                         .collect(),
                 ),
             ),
@@ -249,12 +438,24 @@ impl SegmentManifestBody {
             );
         }
 
+        let statistics = SegmentStatistics::from_cbor(value_at(&value, 7, MANIFEST_CONTEXT)?)?;
+
+        let mut sealed_statistics = BTreeMap::new();
+        for (lane, reference) in map_at(&value, 8, MANIFEST_CONTEXT)? {
+            sealed_statistics.insert(
+                LaneKey::from_cbor(lane)?,
+                SealedStatisticsRef::from_cbor(reference)?,
+            );
+        }
+
         let manifest = Self::new(
             verse_id,
             branch_id,
             header_roots,
             payload_roots,
             availability_boundary,
+            statistics,
+            sealed_statistics,
         )?;
         assert_canonical_bytes(&value, bytes, MANIFEST_CONTEXT)?;
         Ok(manifest)
@@ -338,6 +539,24 @@ mod tests {
         }
     }
 
+    fn statistics(operation_count: u64) -> SegmentStatistics {
+        SegmentStatistics {
+            min_hlc: Hlc::new(1_700_000_000_000, 0),
+            max_hlc: Hlc::new(1_700_000_060_000, 3),
+            petals: BTreeSet::from([identifier(0x21), identifier(0x22)]),
+            operation_count,
+        }
+    }
+
+    fn empty_statistics() -> SegmentStatistics {
+        SegmentStatistics {
+            min_hlc: Hlc::new(0, 0),
+            max_hlc: Hlc::new(0, 0),
+            petals: BTreeSet::new(),
+            operation_count: 0,
+        }
+    }
+
     fn manifest() -> SegmentManifestBody {
         let verse = identifier(0x11);
         let header_lane = LaneKey::Header { verse_id: verse };
@@ -356,6 +575,14 @@ mod tests {
                 (LaneKey::Payload(first), boundary(0xC1)),
                 (LaneKey::Payload(second), boundary(0xC2)),
             ]),
+            statistics(42),
+            BTreeMap::from([(
+                LaneKey::Payload(first),
+                SealedStatisticsRef {
+                    artifact_id: digest(0xD1),
+                    stored_length: 900,
+                },
+            )]),
         )
         .expect("manifest")
     }
@@ -397,6 +624,8 @@ mod tests {
             roots(&[(0xA1, 100)]),
             BTreeMap::new(),
             BTreeMap::new(),
+            statistics(1),
+            BTreeMap::new(),
         );
         assert_eq!(uncovered, Err(SegmentError::ManifestBoundaryLaneMismatch));
 
@@ -406,6 +635,8 @@ mod tests {
             BTreeMap::new(),
             BTreeMap::new(),
             BTreeMap::from([(LaneKey::Header { verse_id: verse }, boundary(0xA2))]),
+            statistics(1),
+            BTreeMap::new(),
         );
         assert_eq!(
             stray_boundary,
@@ -422,12 +653,177 @@ mod tests {
             BTreeMap::new(),
             BTreeMap::from([(foreign_topic, roots(&[(0xC1, 300)]))]),
             BTreeMap::from([(LaneKey::Payload(foreign_topic), boundary(0xC1))]),
+            statistics(1),
+            BTreeMap::new(),
         );
         assert_eq!(
             foreign,
             Err(SegmentError::ManifestForeignPayloadTopic {
                 petal_id: identifier(0x21)
             })
+        );
+    }
+
+    /// Gate G4: the tiering itself. Coarse range/petals/count are legible to any verse member
+    /// so segments can be skipped; anything finer is only reachable by content address through
+    /// an artifact sealed under the lane's own scope key.
+    #[test]
+    fn manifest_carries_coarse_clear_statistics_and_only_a_sealed_reference_for_fine_ones() {
+        let manifest = manifest();
+        let first = LaneKey::Payload(topic(0x21, 7));
+        let second = LaneKey::Payload(topic(0x22, 7));
+
+        assert_eq!(manifest.statistics().operation_count, 42);
+        assert_eq!(
+            manifest.statistics().min_hlc,
+            Hlc::new(1_700_000_000_000, 0)
+        );
+        assert_eq!(
+            manifest.statistics().max_hlc,
+            Hlc::new(1_700_000_060_000, 3)
+        );
+        assert_eq!(
+            manifest.statistics().petals,
+            BTreeSet::from([identifier(0x21), identifier(0x22)])
+        );
+
+        // The fine-grained tier is a content address and a length -- never a value.
+        assert_eq!(
+            manifest.sealed_statistics_for(&first),
+            Some(SealedStatisticsRef {
+                artifact_id: digest(0xD1),
+                stored_length: 900,
+            })
+        );
+        assert_eq!(manifest.sealed_statistics_for(&second), None);
+
+        let bytes = manifest.encode_canonical().expect("bytes");
+        assert_eq!(
+            SegmentManifestBody::decode_canonical(&bytes).expect("round trip"),
+            manifest
+        );
+    }
+
+    #[test]
+    fn manifest_refuses_inconsistent_or_foreign_statistics() {
+        let verse = identifier(0x11);
+        let header_lane = LaneKey::Header { verse_id: verse };
+
+        let inverted = SegmentManifestBody::new(
+            verse,
+            identifier(0xB1),
+            roots(&[(0xA1, 100)]),
+            BTreeMap::new(),
+            BTreeMap::from([(header_lane, boundary(0xA1))]),
+            SegmentStatistics {
+                min_hlc: Hlc::new(1_000, 0),
+                max_hlc: Hlc::new(999, 0),
+                petals: BTreeSet::new(),
+                operation_count: 1,
+            },
+            BTreeMap::new(),
+        );
+        assert_eq!(inverted, Err(SegmentError::ManifestStatisticsInconsistent));
+
+        // Roots but a zero count: a manifest may not claim to index nothing while serving roots.
+        let zero_count = SegmentManifestBody::new(
+            verse,
+            identifier(0xB1),
+            roots(&[(0xA1, 100)]),
+            BTreeMap::new(),
+            BTreeMap::from([(header_lane, boundary(0xA1))]),
+            empty_statistics(),
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            zero_count,
+            Err(SegmentError::ManifestStatisticsInconsistent)
+        );
+
+        // ...and the converse: no lanes but a non-zero count.
+        let empty_with_count = SegmentManifestBody::new(
+            verse,
+            identifier(0xB1),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            statistics(7),
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            empty_with_count,
+            Err(SegmentError::ManifestStatisticsInconsistent)
+        );
+
+        // A wholly empty manifest with a zero count is coherent.
+        SegmentManifestBody::new(
+            verse,
+            identifier(0xB1),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            empty_statistics(),
+            BTreeMap::new(),
+        )
+        .expect("an empty manifest indexing zero operations is coherent");
+
+        // A sealed statistics artifact for a lane this manifest does not claim is refused: it
+        // would advertise coverage the manifest cannot serve.
+        let foreign_lane = SegmentManifestBody::new(
+            verse,
+            identifier(0xB1),
+            roots(&[(0xA1, 100)]),
+            BTreeMap::new(),
+            BTreeMap::from([(header_lane, boundary(0xA1))]),
+            statistics(1),
+            BTreeMap::from([(
+                LaneKey::Payload(topic(0x21, 7)),
+                SealedStatisticsRef {
+                    artifact_id: digest(0xD1),
+                    stored_length: 900,
+                },
+            )]),
+        );
+        assert_eq!(
+            foreign_lane,
+            Err(SegmentError::ManifestStatisticsForeignLane)
+        );
+    }
+
+    #[test]
+    fn statistics_refuse_a_non_ascending_petal_set() {
+        let descending = CborValue::Map(vec![
+            (CborValue::Uint(0), Hlc::new(1, 0).to_cbor()),
+            (CborValue::Uint(1), Hlc::new(2, 0).to_cbor()),
+            (
+                CborValue::Uint(2),
+                CborValue::Array(vec![
+                    CborValue::Bytes(identifier(0x22).0.to_vec()),
+                    CborValue::Bytes(identifier(0x21).0.to_vec()),
+                ]),
+            ),
+            (CborValue::Uint(3), CborValue::Uint(2)),
+        ]);
+        assert_eq!(
+            SegmentStatistics::from_cbor(&descending),
+            Err(SegmentError::ManifestStatisticsPetalsNotAscending)
+        );
+
+        let duplicated = CborValue::Map(vec![
+            (CborValue::Uint(0), Hlc::new(1, 0).to_cbor()),
+            (CborValue::Uint(1), Hlc::new(2, 0).to_cbor()),
+            (
+                CborValue::Uint(2),
+                CborValue::Array(vec![
+                    CborValue::Bytes(identifier(0x21).0.to_vec()),
+                    CborValue::Bytes(identifier(0x21).0.to_vec()),
+                ]),
+            ),
+            (CborValue::Uint(3), CborValue::Uint(2)),
+        ]);
+        assert_eq!(
+            SegmentStatistics::from_cbor(&duplicated),
+            Err(SegmentError::ManifestStatisticsPetalsNotAscending)
         );
     }
 

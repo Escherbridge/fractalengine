@@ -219,7 +219,10 @@ this exact AAD; it MUST verify AEAD authentication before materialization.
    `e + 1`. Its authority, replay, and observer rules are specified by SPEC-3.
 7. Other non-zero operation kinds require a registered schema and payload rule.
    Unknown kinds or unknown `schema_hash` values MUST be quarantined, never
-   materialized or silently reinterpreted.
+   materialized or silently reinterpreted. They are two distinct quarantine
+   reasons with separate budgets, not one: see SPEC-4 section 5 for the
+   `unknown_kind`/`unknown_schema` categories and SPEC-5 section 4 rule 4 for
+   the partition.
 8. Parent reachability, not HLC order, establishes causality. HLC provides a
    deterministic concurrent ordering used by the CRDT materializer.
 
@@ -271,6 +274,13 @@ production AEAD choice.
 - **E3 (2026-08-09):** §2 rule 4 added a normative rejection of major-type-1
   arguments above `i64::MAX`. The Rust decoder already rejected them; this
   makes the restriction normative rather than an implementation artifact.
+- **E4 (2026-08-16):** §6 rule 7 now names where the unknown-kind quarantine it
+  mandates is actually specified. The rule required unknown kinds to be
+  quarantined without saying whether that shared the unknown-schema disposition
+  or its budget; D-CL28 gate G1 makes them separate reasons with partitioned
+  budgets in SPEC-4 §5 and SPEC-5 §4. No structural rule changed — this build
+  still passes kinds 5 and above through `validate_structural_rules` unvalidated
+  and defers them to the admission layer.
 
 ## 9. Ratified encryption contract
 

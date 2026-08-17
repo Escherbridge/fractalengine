@@ -128,8 +128,9 @@ network wiring or a change to the currently disabled iroh paths.
 
 1. A segment manifest body MUST bind: `protocol_version`, verse scope,
    `branch_id`, a sorted set of header HashSeq roots, a sorted mapping of
-   payload-topic scope to HashSeq roots, and the declared availability
-   boundary. IDs and maps are canonical byte-sorted.
+   payload-topic scope to HashSeq roots, the declared availability boundary,
+   the clear statistics block of rule 5, and the sealed statistics mapping of
+   rule 6. IDs and maps are canonical byte-sorted.
 2. A manifest MUST reference artifact IDs and exact stored byte lengths. It
    MUST NOT restate mutable storage locations as history facts.
 3. A payload-root mapping MUST use a petal-affine payload-topic scope. The
@@ -139,6 +140,32 @@ network wiring or a change to the currently disabled iroh paths.
    immutable sequences concurrently. The root set is canonical and deduped by
    artifact ID. No relay or publisher may hide a required root by changing a
    signed checkpoint's bound manifest.
+5. **Statistics are tiered.** A manifest body MUST carry a clear statistics
+   block containing exactly: the inclusive minimum and maximum author HLC over
+   the operations it indexes, the canonically sorted set of petal identifiers
+   those operations name, and the operation count. It MUST be present, not
+   optional: a manifest without a range is one no peer can skip, so an omitted
+   block silently degrades selective fetch to fetch-everything. The block MUST
+   be internally consistent — minimum not after maximum, and a zero count if
+   and only if the manifest claims no lane — and its petal set MUST be strictly
+   ascending. Every value in it is derivable from signed header fields alone;
+   nothing in it may be derived from payload plaintext.
+6. **Fine-grained statistics MUST NOT appear in the clear.** Per-column minima
+   and maxima, histograms, distinct counts, bloom filters, and any other
+   statistic derived from payload contents MUST be carried in a separate sealed
+   artifact under the lane's own scope key, referenced from the manifest by
+   `artifact_id` and exact stored byte length only. A manifest MAY carry at most
+   one such reference per lane it claims, and MUST NOT reference a lane it does
+   not claim. A manifest is sealed under the verse-wide header scope (§2.2.2),
+   so anything placed in its clear body is legible to every authorized verse
+   member including one with no payload capability for the petals indexed; a
+   minimum and maximum on a position column would disclose a project's
+   real-world location verse-wide. This specification fixes the tier boundary
+   and the reference shape, not the sealed artifact's interior format.
+7. The clear block of rule 5 is the only statistic a peer may use to skip a
+   segment without a capability check. Resolving a rule 6 reference is a normal
+   authorized `fetch` plus `decrypt` under SPEC-3; possession of the manifest
+   confers neither.
 
 ## 4. HashSeq and reachability proofs
 
@@ -316,6 +343,15 @@ named tests:
 15. **`key_wrap_rotation_blocks_old_epoch_segment_service`** — after an epoch
      bump, no old-key artifact is newly sealed or served as current, and only
      current authorized recipient-device wraps can obtain the e+1 key.
+16. **`manifest_carries_coarse_clear_statistics_and_only_a_sealed_reference_for_fine_ones`**
+     — a decoded manifest exposes the §3.3.5 HLC range, petal set, and count in
+     the clear and exposes fine-grained statistics only as an `artifact_id` and
+     stored length; no per-column value appears anywhere in the manifest's
+     plaintext body.
+17. **`manifest_refuses_inconsistent_or_foreign_statistics`** — an inverted HLC
+     range, a non-zero count with no claimed lane, a zero count with claimed
+     roots, a non-ascending petal set, or a sealed statistics reference naming
+     an unclaimed lane is rejected rather than normalized.
 
 ## 9. D-CL17 sealed-artifact key lifecycle
 
@@ -351,3 +387,21 @@ named tests:
 - **No erase promise from storage:** Immutable ciphertext can outlive access.
   The strongest future erasure property is crypto-shredding under the ratified
   scope-key lifecycle, not physical deletion from every historical peer.
+- **Skipping is a privilege boundary, not just an index:** Every statistic that
+  makes a segment skippable is also a statistic that leaks. §3.3 answers that by
+  splitting on *derivation*, not on usefulness: what a signed header already
+  discloses to a verse member may be clear, and what payload plaintext would
+  disclose must be sealed — even when the sealed tier is the more useful one.
+
+### Errata
+
+Owner-ratified under D-CL28, 2026-08-16.
+
+- **G4 (2026-08-16):** §3.3 gained rules 5, 6, and 7, and rule 1's binding list
+  now names both statistics tiers. The manifest previously bound roots, lengths,
+  and an availability boundary but carried no time range and no statistics at
+  all, so a peer could not decide whether a segment was worth fetching without
+  fetching it — while the obvious fix, putting column statistics in the manifest,
+  would have published payload-derived values under the verse-wide header scope.
+  The rules land before Wave 3 because this is a wire format: adding the slots
+  now is an addition, and adding them afterwards is a migration.
