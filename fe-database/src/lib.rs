@@ -53,9 +53,11 @@ pub use fe_runtime::blob_store::{
 pub mod admin;
 pub mod api_token_store;
 pub mod atlas;
+pub mod canon_log;
 pub mod handlers;
 pub mod invite;
 pub mod merge;
+pub mod migration;
 pub mod model_url_meta;
 pub mod op_log;
 pub mod queries;

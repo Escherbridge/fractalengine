@@ -192,7 +192,7 @@ pub async fn snapshot_all_authorized_subscriptions<S, IsAuthorized>(
     is_still_authorized: IsAuthorized,
 ) -> Result<Vec<([u8; 16], SnapshotDispatchOutcome)>, WireError>
 where
-    S: ScopeSnapshotSource,
+    S: ScopeSnapshotSource + ?Sized,
     IsAuthorized: Fn(&SubscriptionRecord) -> bool,
 {
     require_current_session_generation(sessions, session_generation)?;

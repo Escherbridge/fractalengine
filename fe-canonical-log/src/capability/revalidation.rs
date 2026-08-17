@@ -40,7 +40,12 @@ pub enum SessionValidity {
 /// The persistent, verified projection of identity, authority, and epoch state (§1.6).
 ///
 /// Wave 3 implements this over durable storage; this crate only ever reads through it.
-pub trait AuthorizationView {
+///
+/// `Send + Sync` matches every sibling trait a transport holds behind an `Arc`
+/// (`CanonicalCommitPipeline`, `BranchRegistry`, `CapabilityVerifier`, `ScopeSnapshotSource`):
+/// a §5.3 revalidation timer reads this view from a task other than the one that pinned the
+/// session, so the bound belongs here rather than at each `dyn` site a future author can forget.
+pub trait AuthorizationView: Send + Sync {
     /// The epoch the view currently records for `epoch_scope`, or `None` if it knows none.
     fn current_epoch(&self, epoch_scope: &Scope) -> Option<u64>;
 

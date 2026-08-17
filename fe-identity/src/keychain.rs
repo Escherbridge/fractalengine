@@ -3,7 +3,9 @@ use std::sync::Arc;
 use crate::keypair::NodeKeypair;
 use crate::secret_store::SecretStore;
 
-const SERVICE: &str = "fractalengine";
+/// Secret-store service name for all fe-identity key material (rationale + which
+/// modules share it: AGENTS.md §secret-store-service).
+pub(crate) const SERVICE: &str = "fractalengine";
 
 /// Store a node keypair's 32-byte seed as hex in the given secret store.
 pub fn store_keypair(

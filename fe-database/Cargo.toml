@@ -12,7 +12,9 @@ fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
 fe-query = { path = "../fe-query" }
 fe-policy = { path = "../fe-policy" }
+fe-canonical-log = { path = "../fe-canonical-log" }
 surrealdb = { workspace = true }
+async-trait = "0.1"
 tokio = { workspace = true }
 tracing = { workspace = true }
 crossbeam = { workspace = true }

@@ -456,7 +456,7 @@ pub fn is_delta_authorized_for_subscription(
 
 /// Handles one `commit_submit`: revalidates the session generation, rejects a claimed `op_id`
 /// mismatch BEFORE calling the pipeline, then delegates admission to `pipeline`.
-pub async fn handle_commit_submit<P: CanonicalCommitPipeline>(
+pub async fn handle_commit_submit<P: CanonicalCommitPipeline + ?Sized>(
     pipeline: &P,
     sessions: &SessionAuthorizationTable,
     body: &CommitSubmitBody,
