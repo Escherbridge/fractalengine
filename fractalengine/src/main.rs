@@ -490,7 +490,10 @@ async fn hydrate_entity_store(
     store: &fe_entity_store::EntityStore,
 ) -> anyhow::Result<usize> {
     let query = db.query(
-        "SELECT node_id, petal_id, position, elevation, rotation, scale, properties \
+        // `created_at` is selected only to satisfy SurrealDB 3.x, which rejects an ORDER BY
+        // idiom that the projection does not carry. Rows land as `serde_json::Value` and
+        // `snapshot_from_node_row` reads keys by name, so the extra column is inert.
+        "SELECT node_id, petal_id, position, elevation, rotation, scale, properties, created_at \
          FROM node WHERE tombstone = NONE ORDER BY created_at ASC",
     );
     let mut response = tokio::time::timeout(std::time::Duration::from_secs(10), query)

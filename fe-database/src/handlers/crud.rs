@@ -1618,6 +1618,10 @@ mod cascade_batch_update_tests {
         )
         .await
         .expect("seed scope chain");
+        // Every write path here reaches `next_hlc_timestamp`, which panics *while holding*
+        // the process-global `HLC_STATE` lock when uninitialised — poisoning it for every
+        // other test in this binary. The sibling `setup_mem_db` above does the same.
+        crate::op_log::init_hlc(0);
         db
     }
 
