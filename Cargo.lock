@@ -5228,6 +5228,7 @@ dependencies = [
  "chrono",
  "crossbeam",
  "ed25519-dalek",
+ "fe-canonical-log",
  "fe-database",
  "fe-entity-store",
  "fe-format",
@@ -5244,6 +5245,7 @@ dependencies = [
  "surrealdb",
  "tempfile",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "ulid",
@@ -5277,12 +5279,14 @@ name = "fe-database"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "bevy",
  "blake3",
  "chrono",
  "crossbeam",
  "ed25519-dalek",
+ "fe-canonical-log",
  "fe-identity",
  "fe-policy",
  "fe-query",
@@ -5395,6 +5399,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "x25519-dalek",
 ]
 
 [[package]]
