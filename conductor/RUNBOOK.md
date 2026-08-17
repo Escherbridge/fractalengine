@@ -2,7 +2,7 @@
 type: runbook
 title: FractalEngine session runbook
 updated: 2026-08-16
-head: 4b63c53
+head: ee1d125
 ---
 
 # RUNBOOK — Canonical Fractal Data Log (Workstream G)
@@ -42,8 +42,10 @@ Standing constraints, all still in force:
 
 ## 2. State
 
-`main` @ **4b63c53**, pushed — `origin/main` matches local HEAD exactly, zero
-unpushed commits as of 2026-08-16.
+`origin/main` is at **`307c2df`** (the runbook's own first commit). Local `main`
+is **2 commits ahead**: `ee1d125` (the errata) and this update. The owner
+directed pushing on 2026-08-16, so **`git push` is a live pending action, not a
+decision to re-litigate.**
 
 ### Verified and committed
 
@@ -55,6 +57,7 @@ unpushed commits as of 2026-08-16.
 | **G Wave 1** — fe-canonical-log foundation | `c2cea84` | 90 + 6 + 36 tests, clippy `-D warnings` clean, fmt clean, oracle green, `cargo check --workspace` green |
 | **G Wave 2** — 7 leaf slices + remediation | `5675fcb` | 373 tests, clippy clean, fmt clean, workspace check green |
 | D-CL26..29 direction ratification | `4b63c53` | — |
+| **Errata G1/G2/G4/G5** | `ee1d125` | 381 tests (was 373), clippy `-D warnings` clean, fmt clean, oracle green; per-package gates per D-CL23 — nothing depends on `fe-canonical-log` |
 
 `fe-canonical-log`, `fe-sdk`, `docs/spec/`, and `conductor/` are **fully
 committed and clean**. All dirty files in the tree belong to the concurrent
@@ -70,12 +73,15 @@ session.
 | G Wave 2 leaves | NEEDS_FIXES → remediated → clean | adversarial audit, 3 high / 5 med / 5 low |
 | G Wave 2 remediation | enforcement census: 66 checks, 51 production callers, 15 documented Wave 3 contracts, **0 dormant** | re-audit |
 | Time-series direction | **GO** + 1 structural correction + 6 gates | 7-scout evidence review, every claim cited to spec/code |
+| Errata G1/G2/G4/G5 | **PASS — 0 findings** | `/security-review` @ `ee1d125`; see §9 for what was cleared and the one hardening item deferred to Wave 3 |
 
 ### In flight / not started
 
 Nothing is mid-edit. Everything below is not started:
 
-- **Errata G1, G2, G4, G5** — block Wave 3. Spec-text-sized. **This is step 1.**
+- **Errata G1, G2, G4, G5** — **DONE 2026-08-16 @`ee1d125`**, local-only (not
+  pushed). 381 tests, clippy `-D warnings` clean, fmt clean, oracle green,
+  `/security-review` 0 findings. Wave 3 is unblocked.
 - **Errata G3, G6** — go with SPEC-10, not Wave 3.
 - **G Wave 3** — operation-plane integration. Partition already grilled and
   ratified; scope unchanged by the 2026-08-16 expansion.
@@ -293,44 +299,29 @@ Open these first.
 
 ## 7. Continuation plan
 
-**Step 1 is the four blocking errata** (owner-directed 2026-08-16). They are
-spec-text plus small code changes, and each gets materially more expensive once
-Wave 3 depends on the current shapes.
+**Steps 1-5 are DONE** (`ee1d125`, local-only). What landed, in case a later
+reader needs the shapes without re-reading the diff:
 
-1. **G1 — unknown-kind quarantine.** Add an `UnknownKind { operation_kind }`
-   variant to `compose::QuarantineReason` and partition `QuarantineBounds` per
-   reason class in `retention/quarantine.rs`, so a flood of future-kind headers
-   cannot starve the `MissingParent` backlog. Add the matching erratum to
-   `branches-checkpoints-retention.md` §4 naming unknown-kind as its own
-   retryable reason with its own budget. **Do this first**: the generic
-   `CandidateVerifier` has no implementation yet, and Wave 3 is what wires it —
-   after that this becomes a migration instead of an addition.
-2. **G2 — materializer determinism.** Add the erratum to
-   `log-first-materialization.md` §6 stating that a reduction may write only a
-   deterministic *reference* to an external artifact and must never read into one
-   to compute projected state (reading it makes projections diverge on local
-   availability, breaking §4.5/§6.1). Then give `CausalMaterializer::reduce` an
-   expressible "referenced artifact unavailable" outcome — it is currently
-   infallible with only `Apply`/`Excluded`, so the state cannot be represented.
-3. **G4 — manifest statistics tiering.** Add to `SegmentManifestBody` a
-   clear-text statistics block (HLC min/max, petal set, operation count) and
-   specify that fine-grained column statistics are sealed under the scope key,
-   because min/max on a position column leaks project location to a peer that
-   cannot decrypt. Update `segment-shard-relay.md` §3.3. This is the prerequisite
-   for every kind of segment skipping.
-4. **G5 — mobile header pruning.** Make `branches-checkpoints-retention.md` §5.2
-   state affirmatively that a mobile peer may release headers behind a verified
-   checkpoint, gated on not advertising bootstrap/seed availability it can no
-   longer back and on tombstone-suppression continuity. Keep the numeric
-   recent-window deferred as policy.
-5. **Gate.** `cargo check -p fe-canonical-log --all-targets`,
-   `cargo test -p fe-canonical-log`,
-   `cargo clippy -p fe-canonical-log --all-targets -- -D warnings`,
-   `cargo fmt --check`, and
-   `node --test docs/spec/canonical-log/operation-envelope-v1.test.mjs`.
-   Append `; echo "EXIT:$?"` to every command. Then commit and update
-   `metadata.json`.
-6. **Then Wave 3** — operation-plane integration from the existing partition
+- **G1** — `compose::QuarantineReason::UnknownKind` + `QuarantineReasonClass`
+  (4 classes: the three independently-driven retry reasons plus one residual
+  `Other`) + `retention::PerReasonBudgets`/`ReasonBudget` on `QuarantineBounds`.
+  `admit_candidate` checks the class budget before the pool; eviction runs a
+  per-class pass before the pool-wide one. `unknown_kind_promotion_ready` +
+  `OperationKindAvailability` added. SPEC-5 §4 rules renumbered — former 4-7 are
+  now 5, 6, 8, 9; two stale `§4 rule 4` citations were repointed.
+- **G2** — `ProjectionMutation::ReferencedArtifactUnavailable { artifact_id }`.
+  SPEC-4 §4 gained rules 8-9, §5 gained the `referenced_artifact_unavailable`
+  and `unknown_kind` rows, §6 gained rule 7.
+- **G4** — manifest wire keys **7** (`SegmentStatistics`) and **8**
+  (`SealedStatisticsRef` per lane). `SegmentManifestBody::new` now takes 7
+  arguments. SPEC-6 §3.3 gained rules 5-7.
+- **G5** — SPEC-5 §5.2 rules 4-5, spec text only, no code in this crate.
+- Nine new conformance-test names were added across SPEC-4/5/6; the Rust tests
+  matching them are in place, so the §6/§8 lists and the code agree.
+
+**Step 6 is now the head of the queue.**
+
+6. **Wave 3** — operation-plane integration from the existing partition
    (fe-database `canon_log` + migration, fe-api canonical WS, crypto
    AEAD/keywrap, identity x25519, sync guard). It must honour the 15 documented
    Wave 3 contracts in the module `AGENTS.md` files **plus** errata G1/G2/G4/G5.
@@ -357,3 +348,50 @@ Wave 3 depends on the current shapes.
 - **The two coexisting hexon formats** (`.fecrate` with raw-JSON signing,
   `.hexon` with canonical-JSON signing) are pre-existing debt that SPEC-10 will
   have to reconcile or explicitly leave separate. Trigger: SPEC-10 format design.
+
+---
+
+## 9. Security review verdict — errata G1/G2/G4/G5 @ `ee1d125`
+
+`/security-review`, **0 findings**. Recorded here rather than left in a
+transcript because the cleared items are exactly the questions a later reader
+will re-ask about G4.
+
+**Cleared, with the reasoning that made each clean:**
+
+- **The new clear-text `petals` set is not a new disclosure.** The manifest body
+  already carries raw petal IDs through key 5 (`PayloadTopicScope.petal_id`) and
+  key 6 (`LaneKey::Payload`). Separately, SPEC-6 §2.2 rule 2 seals manifests and
+  header segments under the *same* verse-wide header scope, so any reader who
+  can decrypt a manifest can decrypt the headers it indexes and derive the same
+  petal set from signed `scope` fields — there is no reader who gets manifests
+  but not headers. SPEC-3 §7's raw-ID prohibition applies to the sealed **outer**
+  map and blinded topic names (relay-visible surfaces), not to sealed plaintext
+  bodies, and its risk table already records verse-wide cross-petal metadata
+  exposure as an accepted D-CL2 consequence.
+- **No decode asymmetry in the new paths.** `SegmentStatistics::from_cbor` uses
+  the same exact-key-set `require_uint_keys` as every sibling; the
+  `BTreeSet` dedup hazard is foreclosed by the explicit strictly-ascending check
+  *before* insertion; `Hlc::from_cbor`'s `u32_at` returns `IntegerOutOfRange`
+  rather than truncating; `assert_canonical_bytes` re-encodes the whole tree, so
+  it does cover keys 7 and 8.
+- **Validation is not bypassable.** All `SegmentManifestBody` fields are private,
+  the only constructors are `new()` (validates) and `decode_canonical()` (routes
+  through `new()` then pins bytes), there is no serde derive or mutable accessor,
+  and `to_cbor()` re-validates.
+- **G1/G2 weaken nothing.** `class()` maps every security-relevant reason
+  (`Unauthorized`, `AuthorEquivocation`, `ArtifactIdMismatch`, `FailedDecryption`)
+  to `Other`, none of which gains a promotion path; the new admission checks are
+  additive and fail-closed, so they can only reject more. No `match` on
+  `ProjectionMutation` exists outside `materialize/traits.rs`, so no wildcard arm
+  can swallow `ReferencedArtifactUnavailable` and treat it as applied.
+
+**One hardening item deferred to Wave 3, deliberately not filed as a defect:**
+`validate()` does not cross-check `statistics` against the lanes and roots the
+manifest actually carries, so a publisher could under-report a range and cause a
+§3.3.7-conformant consumer to skip a segment it needs. It is implemented exactly
+as §3.3.5 is written; the check is not locally decidable here because the crate
+holds no header bodies at manifest-validation time; and there is no consumer of
+`statistics()` yet. **Wave 3's selective-fetch consumer is where this becomes
+real** — whoever builds segment skipping must validate the range against the
+headers it actually receives rather than trusting the manifest's claim.
