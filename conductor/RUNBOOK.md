@@ -1,8 +1,8 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-08-17
-head: b820b67
+updated: 2026-08-18
+head: d01b098
 ---
 
 # RUNBOOK — Canonical Fractal Data Log (Workstream G)
@@ -583,6 +583,85 @@ Same rules as Wave 3: agents do not run cargo, the orchestrator runs one serial
   its GC driver. Wave 3's six slices had no home for them.
 - **The deferred manifest-statistics cross-check** (§9) still has no home: Wave 3
   built no selective-fetch consumer.
+
+## 10a. Wave 3R remediation — verdict **PASS (conditional)** @ `d01b098`
+
+Ran 2026-08-18 as a four-slice `/slice` fan-out against the §10 partition, plus
+a serial integration pass, then one independent fable-tier adversarial review
+prompted to refute. **The §10 FAIL is closed.** Gate: **2893 passed / 0 failed /
+20 ignored** (baseline 2846), clippy `-D warnings` clean, fmt clean, Cargo.lock
+untouched — zero packages enter or leave the graph.
+
+Commits: `fa0d9d9` (remediation), `d01b098` (adversarial fix round).
+
+### What closed
+
+| # | Finding | Now |
+|---|---|---|
+| 1 | **C1** subscribe wrote its own authorization | Five in-order gates before a scope enters the set `covers` reads: binding resolved in the connection's table, pinned session valid against the live view, `epoch_scope.contains`, real `CapabilityVerifier` over the handshake's exact chain bytes. Sole write site confirmed by grep. |
+| 2 | **C2** cache defeated revocation | fe-api stores **no `CacheKey` and builds none**. Entries hold an `AdmittedDecision` that deliberately omits `authority_view_version`, so there is no stale value to supply; `RevalidationGate::admitted_now` reads expiry, epoch and version off the live view itself. Four invalidation paths; `sweep_revocations` runs every tick. |
+| 3 | **H1/H2** one unsigned envelope could advance an epoch | Both append doors route through `signing::decode_and_admit`; `meta_of` re-verifies on **read**, so a hand-written row is unreadable. `admit_epoch_bump` requires Manager+ and its lost-update `UPDATE` became a compare-and-swap preserving the §5.1 rule 6 evidence row. |
+| 4 | **H3/H4** possession was authority in key_wrap | `open_scope_key` reads the previously-signed-and-discarded `issuer_capability` against a required `IssuerAuthorityView`; `RecipientDeviceBinding` (private fields, one constructor) gives recipient/device key/scope/epoch one source that **cannot disagree**. |
+| 5 | **H5/H6** forged checkpoints | `AdmittedCheckpoint` (private fields, one constructor); an admitted checkpoint must also **reproduce** the claimed projection root or the rebuild falls back to empty. `record_replay_verified` cannot fire on an accelerated pass. |
+| 6 | **M1 + AppendError** | `FreshNonce` seal door closed; `AppendError` gains `NotAnEnvelope` / `StorageUnavailable` + `is_definite()`. Decode failure no longer returns `IntegrityConflict`, which §3.3 makes a permanent blacklist of an op_id this build may merely predate. |
+
+### Found beyond the brief (the audit half earned its cost)
+
+- Caveat rows were **fail-open while allowlist rows were fail-closed**: `unwrap_or(0)` let a request satisfy a `max_payload_bytes` caveat by declining to state its size.
+- A request carried **two independent resource identifiers with only one scope-checked** — authorized against resource A while naming resource B.
+- **Equivocation evidence was fail-open**: `None` admitted, so a storage fault admitted exactly when the substrate was sick.
+- **Delta fan-out and preview send were unprotected paths**; `snapshot_ack` let a peer nominate its own trusted baseline.
+- `wrap_scope_key` accepted **any** `SigningKey` while the body named a different issuer.
+
+### The through-line, and the irony
+
+The §10 review's real finding was *gates documented as structural that are only
+conventional*. The remediation **shipped one new instance of it** and the
+adversarial round caught it: `canon_log/AGENTS.md` claimed both append doors
+verify a signature, justified by "a `VerifiedEnvelopeMeta` only exists
+downstream of `admit_candidate`" — false, and contradicted by
+`materialize/traits.rs` written in the same wave. `append_admitted` verifies
+content-addressing only. The property holds via the **read** side, not the
+claimed mechanism. Retracted in place, per the house style.
+
+`crypto/AGENTS.md` now carries an **8-row Structural / at-the-seam / absent
+table**, with the rule that a row moves left only when code moves with it. That
+converts the named defect into a standing mechanism rather than a one-off fix.
+Four false claims were retracted, including "the type system refuses it" and a
+no-copy claim the module's own test helper disproved.
+
+### Residual — open by decision, not by oversight
+
+1. **`VerifiedEnvelopeMeta` remains forgeable.** All fields `pub`; sealing it
+   would have broken `admission.rs:245`'s `#[cfg(test)]` struct literal in a
+   concurrently-edited sibling. One line (`#[non_exhaustive]`) once that literal
+   goes — `VerifiedCapability` was sealed exactly that way, zero call-site churn.
+2. **No production `DeviceEnrolmentView` or `IssuerAuthorityView` implementor.**
+   H3's seam is structural; **its answer is not yet trustworthy.** Wave 4.
+3. **`AeadSuite` remains nonce-reuse-capable** — cannot close without breaking
+   `open`. Documented, not claimed shut.
+4. **`SurrealVerseDagView::load` fail-closed amplifier** — one unreadable row
+   denies a whole verse. Correct direction; documented, behaviour unchanged.
+5. **Hazardous `pub` surface retained** (`RevalidationGate::admit`/`is_admitted`,
+   `wrap_scope_key`, `append_admitted`) — documented, unused in production.
+   Re-introduction risk for a future author.
+6. **`MockCapabilityVerifier` still ignores scope in its accept/reject logic.**
+   It now *records* the full request and the C1 test asserts on it, but no
+   end-to-end scope-sensitivity proof exists in fe-api (needs `async-trait` in
+   its `[dev-dependencies]` to build a real double).
+7. **CAS untested under real concurrency** — the `ConcurrentModification` path
+   itself is unexercised; a true interleaving test would be flaky.
+
+### Still true, re-verified from code by the adversarial pass
+
+All four hard constraints hold. `fe-sync` is **not in the diff at all**;
+`IrohDocsEngineHolder.available` still has **zero `.store(` calls**, so
+`is_available()` remains structurally incapable of returning true.
+`/ws/canonical` stays unmounted (only `#[cfg(test)]` call sites). `op_log.rs`
+and the non-test half of `crud.rs` untouched. No shadow-side projection mutation.
+
+**Wave 4 may now wire a caller to the canonical append, epoch and WS surfaces**,
+subject to residual items 1-2 above being understood as still open.
 
 ## 11. Pre-existing defects repaired at the Wave 3 barrier — `29cadd9`
 
