@@ -31,6 +31,21 @@ pub trait CheapPrecondition: Send + Sync {
     async fn check(&self, meta: &VerifiedEnvelopeMeta) -> anyhow::Result<()>;
 }
 
+/// The fault channel every admission-evidence source must expose.
+///
+/// `EquivocationIndex::op_id_at` answers `Option<Hash32>` and `None` **admits**: a source that
+/// could not distinguish "no conflicting operation" from "I could not read" would fail OPEN on
+/// a storage fault, letting a D-CL25 equivocation through exactly when the substrate is sick.
+/// [`admit_and_append`] therefore refuses to take an index or a parent-verse lookup that does
+/// not implement this trait — the fault channel is a type requirement, not a caller's promise.
+///
+/// [`admit_and_append`] drains this channel before it starts, so a fault raised earlier cannot
+/// decide a later candidate; a caller that wants those earlier faults drains them first.
+pub trait EvidenceAvailability {
+    /// Drains and returns every evidence fault observed since the last drain, in order.
+    fn take_evidence_faults(&self) -> Vec<String>;
+}
+
 /// The explicit "this operation has no cheap local precondition" choice.
 ///
 /// [`admit_and_append`] takes a precondition by required parameter rather than `Option`, so
@@ -104,6 +119,16 @@ pub enum AdmissionRejection {
         /// The stable §5 conformance category.
         outcome: AdmissionOutcome,
     },
+    /// The evidence admission relies on could not be read, so no decision was reachable.
+    ///
+    /// Retryable, and NOT a §5.1 reject: an unreadable equivocation index answers `None`, which
+    /// would otherwise admit. Nothing is appended; the caller retries the same immutable bytes
+    /// once the source recovers (§3.4).
+    #[error("admission evidence was unavailable: {detail}")]
+    EvidenceUnavailable {
+        /// The faults the evidence sources reported, joined in order.
+        detail: String,
+    },
     /// §2.3 log-first-strict: the append failed, so the mutation fails and SurrealDB is
     /// unchanged. The caller retries the exact same immutable bytes; it never mints a
     /// replacement operation (§3.4).
@@ -118,7 +143,7 @@ impl AdmissionRejection {
             Self::Rejected { outcome, .. }
             | Self::Quarantined { outcome }
             | Self::Deferred { outcome } => Some(outcome),
-            Self::AppendFailed(_) => None,
+            Self::AppendFailed(_) | Self::EvidenceUnavailable { .. } => None,
         }
     }
 
@@ -141,6 +166,11 @@ impl AdmissionRejection {
 ///
 /// `missing_parent`, `unknown_schema`, and `opaque_payload` reach the caller as
 /// [`AdmissionRejection::Quarantined`]; §5 note 2 forbids provisionally applying any of them.
+///
+/// An `Ok` from `admit_candidate` is only trusted when the evidence sources report no fault:
+/// see [`EvidenceAvailability`] for why an unreadable equivocation index would otherwise admit.
+/// The check guards the `Ok` path only — a genuine §5.1 reject is a decision about the
+/// candidate's own bytes and must stay permanent rather than becoming retryable.
 pub async fn admit_and_append<V, E, P, C>(
     verifier: &V,
     equivocation_index: &E,
@@ -151,8 +181,8 @@ pub async fn admit_and_append<V, E, P, C>(
 ) -> Result<AdmittedAppend, AdmissionRejection>
 where
     V: CandidateVerifier + ?Sized,
-    E: EquivocationIndex + ?Sized,
-    P: ParentVerseLookup + ?Sized,
+    E: EquivocationIndex + EvidenceAvailability + ?Sized,
+    P: ParentVerseLookup + EvidenceAvailability + ?Sized,
     C: CheapPrecondition + ?Sized,
 {
     let guarded = PreconditionGuardedVerifier {
@@ -160,6 +190,10 @@ where
         precondition,
         failure: Mutex::new(None),
     };
+
+    // Only faults raised while deciding THIS candidate may decide it.
+    drop(equivocation_index.take_evidence_faults());
+    drop(parent_verse_lookup.take_evidence_faults());
 
     let meta = match admit_candidate(
         &guarded,
@@ -177,6 +211,14 @@ where
             ))
         }
     };
+
+    let mut faults = equivocation_index.take_evidence_faults();
+    faults.extend(parent_verse_lookup.take_evidence_faults());
+    if !faults.is_empty() {
+        return Err(AdmissionRejection::EvidenceUnavailable {
+            detail: faults.join("; "),
+        });
+    }
 
     let append_outcome = store.append_admitted(&meta, candidate_bytes).await?;
     Ok(AdmittedAppend {

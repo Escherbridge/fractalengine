@@ -87,6 +87,43 @@ layer that owns both, not in either definition.
 - **The verifier asks the authorization view; it is never handed an answer.** SPEC-2 still owns
   Manager+ history and epoch state, but this module poses each question itself, keyed by the
   chain's own fields. See §step-3-asks-the-view-itself.
+- **Absence is refusal wherever the request must know the answer.** Every allowlist caveat row
+  denies a request that names nothing. The two numeric size rows now behave the same way for the
+  request shapes that necessarily carry the quantity (`append`/`op` for `max_payload_bytes`,
+  `append`/`segment` for `max_segment_bytes`): an unstated size is `PayloadSizeUnstated` /
+  `SegmentSizeUnstated`, never an implicit zero that satisfies the bound. For every other shape
+  `None` honestly means "this request carries no payload / seals no segment" and is allowed.
+  `max_preview_hz` keeps `unwrap_or(0)` and is unreachable: §3.3 dashes the entire preview row,
+  so a `Verb::Preview` request never reaches the caveat.
+- **A request's two resource identifiers must agree.** `target_scope`'s third slot is
+  scope-checked against `grant_scope`; the bare `resource_id` is only allowlist-checked. When
+  `target_scope` names a resource, `resource_id` must be `None` or that same resource, or step 8
+  returns `ResourceScopeMismatch` — otherwise a request could be authorized against one resource
+  while naming another.
+
+## §possession-is-never-authority
+
+Two types in this crate carry authority out of the module, and their names assert something
+their fields cannot.
+
+`VerifiedCapability` is now `#[non_exhaustive]`. That is load-bearing, not
+forward-compatibility boilerplate: it makes the struct literal writable only inside
+`fe-canonical-log`, so `fe-api`, `fe-database`, and every future consumer can obtain one only
+from `verify_chain`/`verify_chain_bytes`. Field reads are unaffected and no call site changed.
+The same treatment is NOT applied to `materialize::VerifiedEnvelopeMeta`, which `fe-database`
+builds with struct literals in a test helper; that type's guarantee remains a documented
+obligation and its own doc comment says so rather than implying otherwise.
+
+`PinnedSession` is the weaker of the two and the honest statement is that **it does not carry
+the grant it was pinned from**. It records the leaf principal, chain, certificate, epoch scope,
+epoch, expiry, and the subscribed scopes — but not `effective_verbs`, not
+`effective_object_classes`, not `effective_caveats`, and not `effective_scope`. A handler
+holding a `Valid` session therefore cannot tell whether that session may append, only fetch, or
+merely seed, and `covers` answers a question about subscription, never about verbs, classes, or
+caveats. Until those fields exist, `covers` + `is_still_valid` is NOT an authorization decision
+and no call site may treat it as one; the sufficient check is re-verifying the chain for the
+specific `AuthorizationRequest`. Adding the fields is a breaking change to a struct literal in
+`fe-api/src/canonical_ws/handler.rs` and belongs to whoever owns both files at once.
 
 ## §step-3-asks-the-view-itself
 
@@ -132,18 +169,42 @@ cannot have a real caller here: the paths it protects — API request authorizat
 disclosure, and WebSocket session pinning — live in `fe-api`, `fe-network`, and `fe-database`,
 which this crate is forbidden to depend on.
 
-The obligation is therefore explicit rather than implied. Wave 3 MUST, per §5.3:
+The obligation is therefore explicit rather than implied. A caller MUST, per §5.3:
 
 1. key every authorization cache by `CacheKey` (chain, epoch scope, epoch, expiry, and
-   authority-view version) and consult `RevalidationGate::is_admitted` before any cached allow;
+   authority-view version) and reach the cache through `RevalidationGate::admitted_now` before
+   any cached allow;
 2. call `RevalidationGate::on_epoch_bump` on every admitted `scope_epoch_bump`;
 3. call `PinnedSession::is_still_valid` on a timer, not only on traffic, and stop commits,
    previews, payload delivery, and snapshots on anything other than `Valid`, and
-   `PinnedSession::covers` before serving any scope the handshake did not pin;
+   `PinnedSession::covers` before serving any scope the handshake did not pin — remembering that
+   `covers` is a subscription check and **not** an authorization one (§possession-is-never-authority);
 4. read durable epoch state at startup, treating a missed notification as a cache miss.
 
-Until those call sites exist, this module is a contract, not an enforcement point, and must not
-be described as one.
+**Which half of that is now structural.** Obligations 1 and 4 used to be prose only: the
+Wave 2 API was `admit(CacheKey)` / `is_admitted(&CacheKey)`, both pure set operations over a key
+the caller assembled, including its `authority_view_version`. A caller that stored a key and
+compared it back — which is exactly what `fe-api` `state.rs` did — got a permanent allow, because
+no code path read the view at question time. The `_now` pair closes that in the type system's
+reach:
+
+| Door | Reads the view? | Use |
+| --- | --- | --- |
+| `RevalidationGate::admitted_now(&AdmittedDecision, now_ms, &view)` | yes: expiry, `current_epoch`, `version` | the only door that may gate an allow |
+| `RevalidationGate::admit_verified(&AdmittedDecision, &view)` | yes: `version` | record a fresh full verification |
+| `RevalidationGate::is_admitted(&CacheKey)` | no | set membership; the caller owes the view read |
+| `RevalidationGate::admit(CacheKey)` | no | set insertion; the caller owes the version |
+| `PinnedSession::cache_key(version)` | no | the caller chooses the invalidation dimension |
+
+`AdmittedDecision` exists to make the safe call the short one: it carries the four dimensions a
+verification establishes and deliberately omits `authority_view_version`, so there is no
+caller-supplied version to get stale. `CacheRefusal` distinguishes `Expired`,
+`EpochScopeUnknown`, `EpochMoved`, `AuthorityViewChanged`, and `NeverAdmitted`, and every one of
+them denies — an unanswered question is a refusal here as it is at §2.4 step 3.
+
+Obligations 2 and 3 remain conventional: nothing in this crate can force a timer to run or an
+epoch bump to reach `on_epoch_bump`. Until those call sites exist, this module is a contract for
+them, not an enforcement point, and must not be described as one.
 
 ## Provisional wire numbering
 

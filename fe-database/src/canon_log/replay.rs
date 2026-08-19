@@ -183,6 +183,20 @@ pub async fn replay_to_frontier(
             )
             .into());
         };
+        // The closure load verified this row through `meta_of`; these are a SECOND read of it.
+        // Content addressing closes the window between the two: bytes that still hash to
+        // `op_id` are the bytes that were verified, so `reduce` cannot be handed a substituted
+        // envelope by a writer that changed the row in between.
+        if Hash32::of(&bytes) != op_id {
+            return Err(StorageError::malformed(
+                "replay",
+                format!(
+                    "{} was substituted between closure and reduce",
+                    op_id_to_hex(op_id)
+                ),
+            )
+            .into());
+        }
 
         let mutation = materializer.reduce(&meta, &bytes).await;
         let committable = match CommittableMutation::try_from_projection(&mutation) {

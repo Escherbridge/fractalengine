@@ -169,7 +169,7 @@ code parses JSON.
 | `frontier` | SPEC-1 §6 | W1b |
 | `author_key` | SPEC-2 | W2-author-key-lifecycle — implemented |
 | `capability` | SPEC-3 | W2-capability-chain — implemented |
-| `crypto` | SPEC-1 §9, SPEC-3 §10 | later slice, unassigned |
+| `crypto` | SPEC-1 §9, SPEC-3 §10 | W3-crypto-aead-keywrap — implemented; W3R-crypto — authority hardening |
 | `materialize` | SPEC-4 | W2-materialize — implemented |
 | `branch` | SPEC-5 | W2-branch-checkpoint — implemented |
 | `retention` | SPEC-5 | W2-retention — implemented |
@@ -320,6 +320,28 @@ signed, or hashed as a wire artifact.
 | Structure | Spec text | Provisional encoding | Why a choice was needed |
 | --- | --- | --- | --- |
 | `canonical_scope_key_context` | §6, "the deterministic-CBOR pair of the exact scope map and its epoch" | two-element CBOR array `[scope_map, topic_epoch]`, epoch unsigned | "pair" names no container; an array is smaller and order-fixed against a two-key map whose keys would themselves need numbering |
+
+### Provisional — SPEC-3 §10.2 scope-key wrap (`crypto/key_wrap.rs`)
+
+Lifted here from `crypto/AGENTS.md` by W3R-crypto; that file now carries only a pointer.
+**Ours, unratified, no interop claimed.**
+
+| Key | Name | Representation |
+| ---: | --- | --- |
+| 0 | `associated_data` | map |
+| 1 | `wrap_nonce` | byte string, 24 bytes |
+| 2 | `sealed_key` | byte string, 48 bytes |
+| 3 | `issuer` | principal |
+| 4 | `issuer_capability` | capability reference |
+
+`ScopeKeyWrap` is keys 0..4 of the body above, plus key 5 `signature`, byte string 64 bytes.
+
+**The signed preimage is our reading, and it is unratified.** §10.2.3's phrase
+`canonical_complete_wrap` read literally is circular — the complete wrap cannot contain the
+signature computed over the complete wrap. Per SPEC-1 §5.1's unsigned/complete convention we
+read the signed preimage as the five-key body *without* the signature slot, with the artifact
+adding key 5; on that reading `ScopeKeyWrapBody` is what the spec calls the complete wrap.
+A second implementation following the literal text would compute a different preimage.
 
 ### Provisional — SPEC-5 checkpoint claim v1 (`checkpoint.rs`)
 

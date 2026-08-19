@@ -9,14 +9,16 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use fe_canonical_log::branch::{HeadAdmission, VerseDagView};
-use fe_canonical_log::envelope::{CompleteEnvelope, EquivocationKey, Hash32, Identifier32};
+use fe_canonical_log::envelope::{EquivocationKey, Hash32, Identifier32};
 use fe_canonical_log::frontier::SortedFrontier;
 use fe_canonical_log::materialize::errors::{AppendError, AppendOutcome};
 use fe_canonical_log::materialize::traits::{
     verified_envelope_meta_from, EquivocationIndex, ParentVerseLookup, VerifiedEnvelopeMeta,
     VerifiedLogStore,
 };
+use fe_canonical_log::signing::decode_and_admit;
 
+use crate::canon_log::admission::EvidenceAvailability;
 use crate::canon_log::{
     identifier_to_hex, local_stamp, op_id_from_hex, op_id_to_hex, StorageError,
 };
@@ -35,9 +37,14 @@ pub enum VerifiedLogStoreError {
     /// identity already names different bytes.
     #[error(transparent)]
     Append(#[from] AppendError),
-    /// The candidate bytes are not a decodable canonical envelope, so no admitted operation
-    /// could have produced them.
-    #[error("candidate bytes are not a decodable canonical envelope: {0}")]
+    /// The candidate bytes are not an ADMISSIBLE canonical envelope: they failed canonical
+    /// re-encoding, the §3.2 author binding, the §5.1 signature, a §6 structural rule, or the
+    /// production payload-suite rule. No admitted operation could have produced them.
+    ///
+    /// Distinct from [`Self::Append`] on purpose: unadmissible bytes say nothing about the
+    /// identity they claim, so this must never be reported as an integrity conflict (SPEC-4
+    /// §3.3 makes an integrity conflict a permanent blacklist of the `op_id`).
+    #[error("candidate bytes are not an admissible canonical envelope: {0}")]
     NotAnEnvelope(String),
     /// The substrate failed. §2.3 log-first-strict: the mutation fails and SurrealDB is
     /// unmodified; the caller retries the exact same immutable bytes (§3.4).
@@ -54,6 +61,7 @@ pub enum VerifiedLogStoreError {
 pub struct SurrealVerifiedLogStore {
     db: Db,
     storage_faults: Mutex<Vec<String>>,
+    append_refusals: Mutex<Vec<String>>,
 }
 
 impl SurrealVerifiedLogStore {
@@ -62,6 +70,7 @@ impl SurrealVerifiedLogStore {
         Self {
             db,
             storage_faults: Mutex::new(Vec::new()),
+            append_refusals: Mutex::new(Vec::new()),
         }
     }
 
@@ -135,6 +144,28 @@ impl SurrealVerifiedLogStore {
         }
     }
 
+    /// Appends bytes that arrive WITHOUT an admission decision, through the one verifying door.
+    ///
+    /// `signing::decode_and_admit` is the whole check — canonical re-encoding, the §3.2 author
+    /// binding, the §5.1 signature, the §6 structural rules, and the production payload suite —
+    /// and the `op_id` it returns is computed over the RECEIVED bytes. The only other entrance
+    /// to the log, [`Self::append_admitted`], demands a `VerifiedEnvelopeMeta` that exists only
+    /// downstream of `admit_candidate`. There is therefore no unguarded door: every path into
+    /// `verified_op_log` has verified a signature first.
+    pub async fn append_received(
+        &self,
+        claimed_op_id: Hash32,
+        bytes: &[u8],
+    ) -> Result<AppendOutcome, VerifiedLogStoreError> {
+        let (complete, op_id) = decode_and_admit(bytes)
+            .map_err(|error| VerifiedLogStoreError::NotAnEnvelope(error.to_string()))?;
+        if op_id != claimed_op_id {
+            return Err(AppendError::HashMismatch.into());
+        }
+        let meta = verified_envelope_meta_from(&complete, op_id);
+        self.append_admitted(&meta, bytes).await
+    }
+
     /// §3.2/§3.3: byte-identical is `AlreadyPresent`; anything else is an integrity conflict in
     /// which neither candidate may be materialized.
     fn reconcile_existing(
@@ -160,6 +191,11 @@ impl SurrealVerifiedLogStore {
     /// The indexed columns are a lookup aid, never the source: `scope` and `schema_hash` are
     /// only in the signed bytes, and re-deriving every field from them means a corrupted index
     /// column can never change what a materializer sees.
+    ///
+    /// The read re-runs `signing::decode_and_admit`, so a row that some other writer put into
+    /// `verified_op_log` without a valid signature is unreadable rather than merely suspect:
+    /// content addressing alone cannot tell a signed operation from self-consistent garbage,
+    /// because a forger picks both the bytes and the address they hash to.
     pub async fn meta_of(
         &self,
         op_id: Hash32,
@@ -176,8 +212,14 @@ impl SurrealVerifiedLogStore {
                 ),
             ));
         }
-        let complete = CompleteEnvelope::decode_canonical(&bytes).map_err(|error| {
-            StorageError::malformed("verified log read", format!("{error} (canonical decode)"))
+        let (complete, _) = decode_and_admit(&bytes).map_err(|error| {
+            StorageError::malformed(
+                "verified log read",
+                format!(
+                    "{} is not an admissible envelope: {error}",
+                    op_id_to_hex(op_id)
+                ),
+            )
         })?;
         Ok(Some(verified_envelope_meta_from(&complete, op_id)))
     }
@@ -276,11 +318,36 @@ impl SurrealVerifiedLogStore {
             .is_empty()
     }
 
+    /// Append refusals the trait impl could not name honestly, in order.
+    ///
+    /// `AppendError` has neither a "these bytes are not an admissible envelope" variant nor an
+    /// indeterminate one, so the trait impl answers with the least damaging variant available
+    /// and records the real reason here. See `canon_log/AGENTS.md` §storage-faults.
+    pub fn take_append_refusals(&self) -> Vec<String> {
+        std::mem::take(&mut *self.append_refusals.lock().expect("append refusal lock"))
+    }
+
+    /// Whether any append refusal has been recorded and not yet drained.
+    pub fn has_append_refusal(&self) -> bool {
+        !self
+            .append_refusals
+            .lock()
+            .expect("append refusal lock")
+            .is_empty()
+    }
+
     fn record_fault(&self, error: &impl std::fmt::Display) {
         self.storage_faults
             .lock()
             .expect("storage fault lock")
             .push(error.to_string());
+    }
+
+    fn record_append_refusal(&self, claimed_op_id: Hash32, error: &impl std::fmt::Display) {
+        self.append_refusals
+            .lock()
+            .expect("append refusal lock")
+            .push(format!("{}: {error}", op_id_to_hex(claimed_op_id)));
     }
 
     async fn stored_bytes(&self, op_id_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
@@ -329,34 +396,43 @@ impl SurrealVerifiedLogStore {
 
 #[async_trait]
 impl VerifiedLogStore for SurrealVerifiedLogStore {
+    /// The seam-only entrance, routed through the same verifying door as every other one.
+    ///
+    /// It calls [`SurrealVerifiedLogStore::append_received`], so unsigned bytes cannot reach
+    /// the log through the trait any more than through the inherent API.
+    ///
+    /// Both refusals below are indeterminate and neither condemns the `op_id`.
+    /// `IntegrityConflict` is NOT usable for either: SPEC-4 §3.3 makes it a permanent blacklist,
+    /// and neither an envelope this build cannot admit nor an unavailable database says anything
+    /// about that identity — a future protocol version would be poisoned network-wide by a purely
+    /// local refusal. The `AppendError` erratum landed at the wave barrier, so these now answer
+    /// honestly with [`AppendError::NotAnEnvelope`] and [`AppendError::StorageUnavailable`]
+    /// instead of the former `HashMismatch` stand-in; the cause is still recorded in
+    /// [`SurrealVerifiedLogStore::take_append_refusals`] and
+    /// [`SurrealVerifiedLogStore::take_storage_faults`].
     async fn append(
         &self,
         claimed_op_id: Hash32,
         bytes: Vec<u8>,
     ) -> Result<AppendOutcome, AppendError> {
-        if Hash32::of(&bytes) != claimed_op_id {
-            return Err(AppendError::HashMismatch);
-        }
-        let complete = match CompleteEnvelope::decode_canonical(&bytes) {
-            Ok(complete) => complete,
-            Err(error) => {
-                self.record_fault(&error);
-                return Err(AppendError::IntegrityConflict {
-                    op_id: claimed_op_id,
-                });
-            }
-        };
-        let meta = verified_envelope_meta_from(&complete, claimed_op_id);
-        match self.append_admitted(&meta, &bytes).await {
+        match self.append_received(claimed_op_id, &bytes).await {
             Ok(outcome) => Ok(outcome),
             Err(VerifiedLogStoreError::Append(error)) => Err(error),
-            Err(other) => {
-                self.record_fault(&other);
-                // The trait has no "indeterminate" answer. Refusing is the only §2.3-compliant
-                // reply, and `IntegrityConflict` is the refusal that forbids materializing
-                // either candidate — conservative, and recoverable by retrying the same bytes.
-                Err(AppendError::IntegrityConflict {
+            Err(refusal @ VerifiedLogStoreError::NotAnEnvelope(_)) => {
+                let reason = refusal.to_string();
+                self.record_append_refusal(claimed_op_id, &refusal);
+                Err(AppendError::NotAnEnvelope {
                     op_id: claimed_op_id,
+                    reason,
+                })
+            }
+            Err(fault @ VerifiedLogStoreError::Storage(_)) => {
+                let reason = fault.to_string();
+                self.record_fault(&fault);
+                self.record_append_refusal(claimed_op_id, &fault);
+                Err(AppendError::StorageUnavailable {
+                    op_id: claimed_op_id,
+                    reason,
                 })
             }
         }
@@ -386,6 +462,15 @@ impl EquivocationIndex for SurrealVerifiedLogStore {
 impl ParentVerseLookup for SurrealVerifiedLogStore {
     async fn verse_id_of(&self, parent_op_id: Hash32) -> Option<Identifier32> {
         self.absent_on_fault(self.verse_of(parent_op_id).await)
+    }
+}
+
+impl EvidenceAvailability for SurrealVerifiedLogStore {
+    /// The same channel `take_storage_faults` drains: a fault raised while answering an
+    /// equivocation or parent-verse question IS an evidence fault, and `admit_and_append`
+    /// refuses rather than treating an unreadable index as "no conflicting operation".
+    fn take_evidence_faults(&self) -> Vec<String> {
+        self.take_storage_faults()
     }
 }
 
@@ -487,9 +572,14 @@ impl SurrealVerseDagView {
 
     /// Records that a deterministic SPEC-4 replay reproduced `frontier` for `branch_id`.
     ///
-    /// Only `rebuild::rebuild_projection` calls this, and only after an actual replay: the
-    /// third DAG fact is evidence this process produced, never an assumption.
-    pub fn record_replay_verified(&mut self, branch_id: Identifier32, frontier: &SortedFrontier) {
+    /// `pub(crate)` on purpose: `rebuild::rebuild_projection` is the only caller that can
+    /// exist, so "only a completed replay records this" is a visibility rule rather than a
+    /// comment a future caller outside this crate could ignore.
+    pub(crate) fn record_replay_verified(
+        &mut self,
+        branch_id: Identifier32,
+        frontier: &SortedFrontier,
+    ) {
         self.replay_verified
             .insert((branch_id, frontier.commitment()));
     }

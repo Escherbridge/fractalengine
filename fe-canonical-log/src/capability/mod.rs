@@ -31,7 +31,8 @@ pub use permissions::{
     PermissionError,
 };
 pub use revalidation::{
-    AuthorizationView, CacheKey, PinnedSession, RevalidationGate, SessionValidity,
+    AdmittedDecision, AuthorizationView, CacheKey, CacheRefusal, PinnedSession, RevalidationGate,
+    SessionValidity,
 };
 pub use topic::{TopicLabel, TopicLane};
 pub use verbs::{ObjectClass, ObjectClassSet, Verb, VerbSet};

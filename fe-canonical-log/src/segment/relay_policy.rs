@@ -36,10 +36,16 @@ pub trait RelayAuthorizationView {
     /// Whether the peer holds a currently valid `fetch` capability for the lane and epoch.
     fn has_fetch_capability(&self, peer: &PeerIdentity, lane: &LaneKey, scope_epoch: u64) -> bool;
 
-    /// Whether a Manager+ issuer may wrap the lane's current scope key for this device (§9.3).
-    fn may_wrap_scope_key_for_device(
+    /// Whether a Manager+ issuer may wrap the lane's current scope key for this peer (§9.3).
+    ///
+    /// `peer` is an Ed25519 **principal**, not a device key: this answers "may this principal
+    /// receive a wrap at all", never "is this device enrolled to that principal". The
+    /// recipient-device binding is `crypto::key_wrap::RecipientDeviceBinding`. The former
+    /// parameter name `device` is what made SPEC-3 §10.2's device binding look already
+    /// enforced here; it never was. See `src/AGENTS.md` §possession-is-never-authority.
+    fn may_wrap_scope_key_for_peer(
         &self,
-        device: &PeerIdentity,
+        peer: &PeerIdentity,
         lane: &LaneKey,
         scope_epoch: u64,
     ) -> bool;
@@ -227,10 +233,12 @@ pub fn assert_seals_under_current_key(
     descriptor.assert_current_key(current_key)
 }
 
-/// Refuses a device wrap of a scope key that is not the lane's current authorized key (§9.3).
+/// Refuses a wrap of a scope key that is not the lane's current authorized key (§9.3).
+///
+/// Epoch and principal only. Device enrolment is not checked here and never was.
 pub fn authorize_scope_key_wrap(
     view: &impl RelayAuthorizationView,
-    device: &PeerIdentity,
+    peer: &PeerIdentity,
     lane: &LaneKey,
     requested_epoch: u64,
 ) -> Result<Identifier32, SegmentError> {
@@ -243,7 +251,7 @@ pub fn authorize_scope_key_wrap(
             current,
         });
     }
-    if !view.may_wrap_scope_key_for_device(device, lane, current) {
+    if !view.may_wrap_scope_key_for_peer(peer, lane, current) {
         return Err(SegmentError::Unauthorized);
     }
     view.current_key_id(lane).ok_or(SegmentError::UnknownLane)
@@ -273,7 +281,7 @@ mod tests {
         key_id: Identifier32,
         seeders: BTreeSet<PeerIdentity>,
         fetchers: BTreeSet<PeerIdentity>,
-        wrappable_devices: BTreeSet<PeerIdentity>,
+        wrappable_peers: BTreeSet<PeerIdentity>,
     }
 
     impl View {
@@ -283,7 +291,7 @@ mod tests {
                 key_id,
                 seeders: BTreeSet::new(),
                 fetchers: BTreeSet::new(),
-                wrappable_devices: BTreeSet::new(),
+                wrappable_peers: BTreeSet::new(),
             }
         }
     }
@@ -315,13 +323,13 @@ mod tests {
             scope_epoch == self.epoch && self.fetchers.contains(peer)
         }
 
-        fn may_wrap_scope_key_for_device(
+        fn may_wrap_scope_key_for_peer(
             &self,
-            device: &PeerIdentity,
+            peer: &PeerIdentity,
             _lane: &LaneKey,
             scope_epoch: u64,
         ) -> bool {
-            scope_epoch == self.epoch && self.wrappable_devices.contains(device)
+            scope_epoch == self.epoch && self.wrappable_peers.contains(peer)
         }
     }
 
@@ -457,8 +465,8 @@ mod tests {
 
         let mut before = View::at_epoch(7, old_key);
         before.fetchers.insert(device);
-        before.wrappable_devices.insert(device);
-        before.wrappable_devices.insert(removed_device);
+        before.wrappable_peers.insert(device);
+        before.wrappable_peers.insert(removed_device);
         let old_descriptor =
             EncryptionDescriptor::new(PRODUCTION_SUITE_ID, old_key, [3; NONCE_LENGTH]);
         assert_eq!(
@@ -472,7 +480,7 @@ mod tests {
 
         let mut after = View::at_epoch(8, new_key);
         after.fetchers.insert(device);
-        after.wrappable_devices.insert(device);
+        after.wrappable_peers.insert(device);
 
         assert_eq!(
             assert_seals_under_current_key(&after, &lane, 8, &old_descriptor),

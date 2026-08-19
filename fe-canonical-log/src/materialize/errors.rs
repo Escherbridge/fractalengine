@@ -123,17 +123,63 @@ pub enum AppendOutcome {
 }
 
 /// Every reason an append attempt does not succeed.
+///
+/// Two dispositions, and callers must not confuse them. `HashMismatch` and `IntegrityConflict`
+/// are DEFINITE answers about the candidate bytes, which SPEC §3.3 treats as permanently
+/// blacklisting the `op_id`. `StorageUnavailable` is INDETERMINATE: presence and integrity are
+/// simply unknown, and the only correct response is to retry. See `src/AGENTS.md` §append-errors.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum AppendError {
     /// The claimed `op_id` is not `BLAKE3(candidate_bytes)`.
     #[error("claimed op_id does not equal BLAKE3 of the candidate bytes")]
     HashMismatch,
     /// `op_id` is already present with a different byte string than the candidate's.
+    ///
+    /// Definite, and permanently blacklisting. This is NOT the variant for bytes that merely
+    /// failed to decode locally -- a future protocol version is undecodable here without being
+    /// corrupt, and blacklisting it would refuse an operation that is valid on the network.
+    /// Report that as [`AppendError::StorageUnavailable`].
     #[error("op_id {op_id:?} is already present with different bytes")]
     IntegrityConflict {
         /// The conflicting operation ID.
         op_id: Hash32,
     },
+    /// The store could not answer: an I/O fault, a decode failure in already-stored bytes, or
+    /// any other condition under which presence and integrity are simply unknown.
+    ///
+    /// Indeterminate, never a decision. The caller MUST retry the exact same immutable bytes; it
+    /// MUST NOT treat this as "absent", as a SPEC §5.1 reject, or as a SPEC §5.2 quarantine.
+    #[error("the log could not answer for op_id {op_id:?}: {reason}")]
+    StorageUnavailable {
+        /// The operation whose append could not be resolved.
+        op_id: Hash32,
+        /// Human-readable cause, for the operator; never a control-flow input.
+        reason: String,
+    },
+    /// Not an admissible envelope *here*: undecodable, unsigned, structurally invalid, or a
+    /// protocol version this build predates.
+    ///
+    /// Local and indeterminate. It says nothing about the `op_id`, which may be perfectly valid
+    /// to a peer that understands it, so it MUST NOT blacklist the identity. This is the variant
+    /// for a failed decode -- never [`AppendError::IntegrityConflict`].
+    #[error("op_id {op_id:?} is not an envelope this build can admit: {reason}")]
+    NotAnEnvelope {
+        /// The operation that could not be admitted.
+        op_id: Hash32,
+        /// Human-readable cause, for the operator; never a control-flow input.
+        reason: String,
+    },
+}
+
+impl AppendError {
+    /// True when the error is a definite answer about the candidate bytes, and therefore
+    /// eligible for the SPEC §3.3 permanent blacklist. False for indeterminate answers.
+    pub fn is_definite(&self) -> bool {
+        match self {
+            AppendError::HashMismatch | AppendError::IntegrityConflict { .. } => true,
+            AppendError::StorageUnavailable { .. } | AppendError::NotAnEnvelope { .. } => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -208,5 +254,21 @@ mod tests {
         let hash_mismatch = AppendError::HashMismatch;
         let integrity_conflict = AppendError::IntegrityConflict { op_id: hash(9) };
         assert_ne!(hash_mismatch, integrity_conflict);
+    }
+
+    #[test]
+    fn storage_unavailable_is_indeterminate_and_distinct_from_both_definite_answers() {
+        let unavailable = AppendError::StorageUnavailable {
+            op_id: hash(9),
+            reason: "datastore refused the read".to_string(),
+        };
+        assert_ne!(unavailable, AppendError::HashMismatch);
+        assert_ne!(
+            unavailable,
+            AppendError::IntegrityConflict { op_id: hash(9) }
+        );
+        assert!(!unavailable.is_definite());
+        assert!(AppendError::HashMismatch.is_definite());
+        assert!(AppendError::IntegrityConflict { op_id: hash(9) }.is_definite());
     }
 }

@@ -35,9 +35,10 @@ pub const fn ciphertext_length_for(plaintext_length: usize) -> usize {
 
 /// A 32-byte symmetric key: a scope key, a derived wrap key, or a derived topic key.
 ///
-/// Zeroized on drop, redacted by `Debug`, and compared in constant time. `expose_bytes` is the
-/// one disclosure point, named so every call site reads as a deliberate one.
-#[derive(Clone)]
+/// Zeroized on drop, redacted by `Debug`, and compared in constant time. Deliberately not
+/// `Clone`: a duplicate that outlives the original's zeroizing drop must not be producible by a
+/// derive. `expose_bytes` remains the one disclosure point — `*key.expose_bytes()` still copies
+/// the bytes, so the guarantee is that no copy is accidental, not that none exists.
 pub struct SealingKey([u8; SEALING_KEY_LENGTH]);
 
 impl SealingKey {
@@ -96,11 +97,17 @@ impl Drop for SealingKey {
     }
 }
 
-/// A one-shot sealing grant: one CSPRNG nonce and the §3.5 parameters naming it.
+/// A one-shot [`seal`] grant: one CSPRNG nonce and the §3.5 parameters naming it.
 ///
-/// Neither `Clone` nor `Copy`, and [`seal`] consumes it, so one grant seals at most one
-/// plaintext. Nonce reuse under one XChaCha20-Poly1305 key is a keystream-recovery break, so
-/// the type system refuses it rather than a ledger detecting it after the fact.
+/// Neither `Clone` nor `Copy`, [`draw`](Self::draw) is its only constructor outside this crate's
+/// own tests, and [`seal`] consumes it, so one grant reaches [`seal`] at most once. Nonce reuse
+/// under one XChaCha20-Poly1305 key is a keystream-recovery break.
+///
+/// The guarantee covers the [`seal`] door and nothing else. [`params`](Self::params) hands out a
+/// `Copy` value and [`AeadSuite`] is a public trait taking `&EncryptionParams`, so a caller that
+/// reaches the cipher through the trait can still present one nonce twice; that path is what
+/// `segment::artifact::NonceLedger` guards, and a bounded evicting ledger is a guard, never a
+/// proof. See `src/crypto/AGENTS.md` §aead.
 #[derive(Debug)]
 pub struct FreshNonce {
     params: EncryptionParams,
@@ -120,11 +127,13 @@ impl FreshNonce {
         })
     }
 
-    /// Wraps caller-supplied parameters, for the golden-vector oracle and negative tests only.
+    /// Wraps caller-supplied parameters; this crate's negative tests only, never a shipped build.
     ///
-    /// [`seal`] still runs `assert_production_suite`, so this cannot smuggle suite 65535 or any
-    /// other suite onto a production path.
-    pub fn from_params(params: EncryptionParams) -> Self {
+    /// A public constructor here would let anyone round-trip [`params`](Self::params) back into a
+    /// grant and seal a second plaintext under the same nonce, which is exactly the reuse the
+    /// one-shot type exists to refuse.
+    #[cfg(test)]
+    pub(crate) fn from_params(params: EncryptionParams) -> Self {
         Self { params }
     }
 

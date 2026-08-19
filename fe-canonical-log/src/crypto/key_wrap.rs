@@ -1,8 +1,10 @@
 //! X25519 HPKE-style recipient-device scope-key wrap (SPEC-3 §10.2); see
 //! `src/crypto/AGENTS.md` §key-wrap for the provisional numbering and the no-`hpke`-crate note.
 //!
-//! Protocol only. Device enrolment, wrap delivery, and every transport remain owner-gated and
-//! unbuilt: nothing here opens a socket or names `fe-network`, `fe-sync`, iroh, or libp2p.
+//! Protocol only. The device-enrolment *registry*, wrap delivery, and every transport remain
+//! owner-gated and unbuilt: nothing here opens a socket or names `fe-network`, `fe-sync`, iroh,
+//! or libp2p. [`DeviceEnrolmentView`] and [`IssuerAuthorityView`] are the seams that registry
+//! and a recipient's persistent view will answer through; they are questions, not storage.
 
 use std::fmt;
 
@@ -91,6 +93,128 @@ impl fmt::Debug for DeviceSecretKey {
     /// Never prints key material.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("DeviceSecretKey(redacted)")
+    }
+}
+
+/// What a persistent view records for one §10.2.1 binding or authority question.
+///
+/// Three answers rather than a bool: a view that holds no record has not said "no", and keeping
+/// the two apart is what stops a missing answer from being read as an allow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthorizationRecord {
+    /// The view resolves the subject and currently records the binding or authority.
+    Granted,
+    /// The view resolves the subject and does not record it.
+    Refused,
+    /// The view holds no record to answer with; a missing answer is never an allow.
+    Unknown,
+}
+
+impl AuthorizationRecord {
+    /// Whether this is the one answer that authorizes.
+    pub const fn is_granted(self) -> bool {
+        matches!(self, Self::Granted)
+    }
+}
+
+/// The recipient-side view §10.2.3 requires: "validate the issuer's authority before unwrapping".
+///
+/// A wrap carries its issuer's capability reference in the signed body, but a reference is a
+/// claim, not an answer; only a persistent view can say whether that issuer is Manager+ for the
+/// scope and epoch *now*. [`open_scope_key`] takes one, so possession of a wrap cannot be the
+/// thing that opens it.
+pub trait IssuerAuthorityView {
+    /// Whether `issuer` currently holds Manager+ authority for `scope` at `scope_epoch` under
+    /// the chain `capability` names (§10.2.1, §10.3.1).
+    fn issuer_manager_authority(
+        &self,
+        issuer: &Principal,
+        capability: &CapabilityRef,
+        scope: &Scope,
+        scope_epoch: u64,
+    ) -> AuthorizationRecord;
+}
+
+/// The §10.2.1 record of which X25519 device keys a principal has enrolled.
+///
+/// No such registry exists in this workspace: §10.2.4 delivery and device enrolment are
+/// owner-gated and unbuilt. This trait is here so the absence is a view a caller must name and
+/// implement rather than a check nobody notices is missing.
+pub trait DeviceEnrolmentView {
+    /// Whether `recipient` currently enrols exactly `device_key` as one of its devices.
+    fn device_enrolment(
+        &self,
+        recipient: &Principal,
+        device_key: DevicePublicKey,
+    ) -> AuthorizationRecord;
+}
+
+/// Everything a delivery issuer MUST consult before any key material is touched (§10.2.1).
+pub trait DeliveryAuthorizationView: IssuerAuthorityView + DeviceEnrolmentView {
+    /// Whether `recipient` holds a currently valid `decrypt` capability for this exact scope
+    /// and epoch.
+    fn recipient_decrypt_authority(
+        &self,
+        recipient: &Principal,
+        scope: &Scope,
+        scope_epoch: u64,
+    ) -> AuthorizationRecord;
+}
+
+/// A device key an enrolment view confirmed, bound to the one delivery it was resolved for.
+///
+/// Fields are private and [`RecipientDeviceBinding::resolve`] is the only constructor, so a
+/// caller cannot hand [`wrap_scope_key`] a device key the recipient never enrolled: that call
+/// has no spelling. The scope and epoch travel inside the binding and are the wrap's only
+/// source for them, so a binding resolved for one epoch cannot be re-aimed at another either.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecipientDeviceBinding {
+    recipient: Principal,
+    device_key: DevicePublicKey,
+    scope: Scope,
+    scope_epoch: u64,
+}
+
+impl RecipientDeviceBinding {
+    /// Resolves one delivery's device binding, refusing anything but a recorded enrolment.
+    pub fn resolve(
+        enrolment: &impl DeviceEnrolmentView,
+        recipient: &Principal,
+        device_key: DevicePublicKey,
+        scope: &Scope,
+        scope_epoch: u64,
+    ) -> Result<Self, CryptoError> {
+        verify_author_binding(&recipient.did, &recipient.public_key)?;
+        let record = enrolment.device_enrolment(recipient, device_key);
+        if !record.is_granted() {
+            return Err(CryptoError::DeviceNotEnrolled { record });
+        }
+        Ok(Self {
+            recipient: recipient.clone(),
+            device_key,
+            scope: *scope,
+            scope_epoch,
+        })
+    }
+
+    /// The principal this device is enrolled under.
+    pub fn recipient(&self) -> &Principal {
+        &self.recipient
+    }
+
+    /// The enrolled X25519 device key the wrap seals to.
+    pub const fn device_key(&self) -> DevicePublicKey {
+        self.device_key
+    }
+
+    /// Scope the delivery seals for.
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
+
+    /// Epoch the delivery seals for.
+    pub const fn scope_epoch(&self) -> u64 {
+        self.scope_epoch
     }
 }
 
@@ -303,22 +427,37 @@ impl ScopeKeyWrap {
 }
 
 /// Everything one delivery needs, so the entry points stay a single argument.
+///
+/// The recipient, its device key, the scope, and the epoch all come from one resolved
+/// [`RecipientDeviceBinding`]. There is no second place to state them, so no two of them can
+/// disagree and no caller can address a wrap to a device the enrolment view never confirmed.
 #[derive(Clone, Debug)]
 pub struct ScopeKeyWrapRequest<'a> {
-    /// Scope the wrapped key seals.
-    pub scope: &'a Scope,
-    /// Epoch the wrapped key belongs to.
-    pub scope_epoch: u64,
+    /// The resolved recipient, device key, scope, and epoch this delivery is addressed to.
+    pub recipient_device_binding: &'a RecipientDeviceBinding,
     /// The 32-byte scope key being delivered.
     pub scope_key: &'a SealingKey,
-    /// Principal the wrap is addressed to.
-    pub recipient: &'a Principal,
-    /// The recipient device's enrolled X25519 public key.
-    pub recipient_device_key: DevicePublicKey,
     /// The Manager+ principal issuing the delivery.
     pub issuer: &'a Principal,
     /// The issuer's capability chain reference for the epoch scope.
     pub issuer_capability: CapabilityRef,
+}
+
+impl ScopeKeyWrapRequest<'_> {
+    /// Principal the wrap is addressed to, read from the resolved binding.
+    pub fn recipient(&self) -> &Principal {
+        self.recipient_device_binding.recipient()
+    }
+
+    /// Scope the wrapped key seals, read from the resolved binding.
+    pub fn scope(&self) -> &Scope {
+        self.recipient_device_binding.scope()
+    }
+
+    /// Epoch the wrapped key belongs to, read from the resolved binding.
+    pub fn scope_epoch(&self) -> u64 {
+        self.recipient_device_binding.scope_epoch()
+    }
 }
 
 /// `BLAKE3_keyed(shared_secret, "fe-scope-key-wrap-v1" || 0x00 || canonical_key_wrap_aad)`.
@@ -362,23 +501,75 @@ fn seal_scope_key(
     Ok((wrap_nonce, sealed_key))
 }
 
+/// Refuses a signing key that is not the named issuer's own key.
+///
+/// Without this, issuance produces a well-formed wrap whose signature no recipient can verify,
+/// and the defect surfaces only at the far end of a delivery channel — or, worse, is read as a
+/// recipient-side fault.
+fn assert_issuer_signs_as_itself(
+    issuer_signing_key: &SigningKey,
+    issuer: &Principal,
+) -> Result<(), CryptoError> {
+    verify_author_binding(&issuer.did, &issuer.public_key)?;
+    if issuer_signing_key.verifying_key().to_bytes() != issuer.public_key {
+        return Err(CryptoError::IssuerSigningKeyMismatch);
+    }
+    Ok(())
+}
+
+/// Refuses a capability reference naming any epoch but the one the wrap seals (§10.2.3).
+///
+/// The reference is signed over, so an issuer citing epoch `e` while delivering the `e + 1` key
+/// would otherwise be authenticated by a check that never read it.
+fn assert_capability_names_this_epoch(
+    capability: &CapabilityRef,
+    scope_epoch: u64,
+) -> Result<(), CryptoError> {
+    if capability.scope_epoch != scope_epoch {
+        return Err(CryptoError::IssuerCapabilityEpochMismatch {
+            capability_epoch: capability.scope_epoch,
+            wrap_epoch: scope_epoch,
+        });
+    }
+    Ok(())
+}
+
+/// Turns one view answer into a refusal, so `Unknown` has no path to an allow.
+fn require_granted(
+    record: AuthorizationRecord,
+    refusal: impl FnOnce(AuthorizationRecord) -> CryptoError,
+) -> Result<(), CryptoError> {
+    if record.is_granted() {
+        Ok(())
+    } else {
+        Err(refusal(record))
+    }
+}
+
 /// Builds and signs one §10.2 recipient-device wrap with a fresh ephemeral key pair.
 ///
-/// This performs no authorization check of its own. [`issue_scope_key_wrap`] is the entry point
-/// a delivery issuer uses; this one exists for callers that have already run §10.2.1 through a
-/// different authorization surface, and for the conformance vectors.
+/// The recipient-device binding is structural here — [`ScopeKeyWrapRequest`] cannot carry an
+/// unresolved one — and the issuer must hold the key it signs under. This function still asks
+/// **no authority question**: it never checks whether the issuer is Manager+ or whether the
+/// recipient may decrypt. [`issue_scope_key_wrap`] is the entry point a delivery issuer uses;
+/// this one exists for callers that have already run §10.2.1 through a different authorization
+/// surface, and for the conformance vectors. A new caller reaching for it is the thing to
+/// question — this codebase's recurring defect is the gate that is built but never wired.
 pub fn wrap_scope_key(
     issuer_signing_key: &SigningKey,
     request: &ScopeKeyWrapRequest<'_>,
 ) -> Result<ScopeKeyWrap, CryptoError> {
+    let binding = request.recipient_device_binding;
+    assert_issuer_signs_as_itself(issuer_signing_key, request.issuer)?;
+    assert_capability_names_this_epoch(&request.issuer_capability, binding.scope_epoch())?;
     let ephemeral = DeviceSecretKey::generate()?;
     let associated_data = KeyWrapAad {
         protocol_version: KEY_WRAP_PROTOCOL_VERSION,
-        scope: *request.scope,
-        scope_epoch: request.scope_epoch,
-        key_id: derive_key_id(request.scope, request.scope_epoch, request.scope_key)?,
-        recipient: request.recipient.clone(),
-        recipient_device_key: request.recipient_device_key,
+        scope: *binding.scope(),
+        scope_epoch: binding.scope_epoch(),
+        key_id: derive_key_id(binding.scope(), binding.scope_epoch(), request.scope_key)?,
+        recipient: binding.recipient().clone(),
+        recipient_device_key: binding.device_key(),
         ephemeral_public_key: ephemeral.public_key(),
     };
     let (wrap_nonce, sealed_key) = seal_scope_key(&ephemeral, request.scope_key, &associated_data)?;
@@ -399,18 +590,43 @@ pub fn wrap_scope_key(
 
 /// The ONE issuance entry point (§10.2.1, §10.3.1): authorization first, key material second.
 ///
-/// The persistent SPEC-3 view must still report this exact device as wrappable for the lane's
-/// current epoch, and the key the caller supplies must derive the identifier that view reports.
-/// A wrap of a superseded key or for a removed member is refused before anything is derived.
+/// In order: the capability reference names the epoch being sealed, the persistent §10.2.1 view
+/// records the issuer as Manager+ for that epoch scope and the recipient as currently able to
+/// decrypt it, the SPEC-6 view still reports this peer as wrappable for the lane's current
+/// epoch, and the key the caller supplies derives the identifier that view reports. Nothing is
+/// derived until every one of them passes.
+///
+/// The device binding needs no check here: `request` cannot carry an unresolved one. The two
+/// views are separate arguments because they are separate persistent surfaces — SPEC-6 §9.3
+/// lane currency is not SPEC-3 §10.2.1 enrolment, and neither can answer the other's question.
 pub fn issue_scope_key_wrap(
     view: &impl RelayAuthorizationView,
+    delivery: &impl DeliveryAuthorizationView,
     lane: &LaneKey,
     issuer_signing_key: &SigningKey,
     request: &ScopeKeyWrapRequest<'_>,
 ) -> Result<ScopeKeyWrap, CryptoError> {
-    let device = PeerIdentity(request.recipient.public_key);
-    let current_key_id = authorize_scope_key_wrap(view, &device, lane, request.scope_epoch)?;
-    let derived = derive_key_id(request.scope, request.scope_epoch, request.scope_key)?;
+    let binding = request.recipient_device_binding;
+    let scope_epoch = binding.scope_epoch();
+    assert_capability_names_this_epoch(&request.issuer_capability, scope_epoch)?;
+    require_granted(
+        delivery.issuer_manager_authority(
+            request.issuer,
+            &request.issuer_capability,
+            binding.scope(),
+            scope_epoch,
+        ),
+        |record| CryptoError::IssuerNotAuthorized { record },
+    )?;
+    require_granted(
+        delivery.recipient_decrypt_authority(binding.recipient(), binding.scope(), scope_epoch),
+        |record| CryptoError::RecipientNotAuthorized { record },
+    )?;
+    // SPEC-6 §9.3 identifies a peer by its Ed25519 principal key; the X25519 device key is the
+    // separate §10.2.1 binding above. Reading this one check as covering both was the defect.
+    let peer = PeerIdentity(binding.recipient().public_key);
+    let current_key_id = authorize_scope_key_wrap(view, &peer, lane, scope_epoch)?;
+    let derived = derive_key_id(binding.scope(), scope_epoch, request.scope_key)?;
     if derived != current_key_id {
         return Err(CryptoError::KeyIdentifierMismatch {
             declared: current_key_id,
@@ -420,15 +636,27 @@ pub fn issue_scope_key_wrap(
     wrap_scope_key(issuer_signing_key, request)
 }
 
-/// Recovers the scope key from a wrap, verifying every §10.2.3 binding before trusting it.
+/// Recovers the scope key from a wrap, verifying every §10.2.3 binding and the issuer's
+/// authority before trusting it.
 ///
-/// Possession proves nothing: the issuer DID binding and signature, the protocol version, the
-/// recipient principal binding, this device's key, the contributory X25519 exchange, and the
-/// recovered key's own derived `key_id` are all checked. The last of those is what stops a
-/// malicious issuer from delivering key material under someone else's advertised identifier.
+/// Possession proves nothing, and neither does a valid signature: a signature says only that the
+/// named issuer produced these bytes, not that it was ever entitled to. `issuer_authority` is the
+/// persistent view that answers the second question, and there is no way to call this without
+/// one. Checked, in order: the issuer DID binding and signature, the protocol version, the
+/// recipient principal binding, this device's key, that the signed capability reference names the
+/// epoch being delivered, that the view records the issuer as Manager+ for that scope and epoch,
+/// the contributory X25519 exchange, the AEAD tag, the recovered plaintext length, and the
+/// recovered key's own derived `key_id`. The last is what stops a *properly authorized* issuer
+/// from delivering key material under someone else's advertised identifier.
+///
+/// One binding is deliberately not checked: that the wrap's recipient principal is this device's
+/// own principal. `DeviceSecretKey` carries no principal, the AAD's recipient key is what the
+/// wrap key derives from, and the `key_id` check already pins the recovered material to the
+/// scope and epoch — so a mis-named recipient yields the same genuine key, not a foreign one.
 pub fn open_scope_key(
     wrap: &ScopeKeyWrap,
     recipient_device_secret: &DeviceSecretKey,
+    issuer_authority: &impl IssuerAuthorityView,
 ) -> Result<SealingKey, CryptoError> {
     wrap.verify_issuer_signature()?;
     let associated_data = &wrap.body.associated_data;
@@ -444,6 +672,16 @@ pub fn open_scope_key(
     if recipient_device_secret.public_key() != associated_data.recipient_device_key {
         return Err(CryptoError::RecipientDeviceMismatch);
     }
+    assert_capability_names_this_epoch(&wrap.body.issuer_capability, associated_data.scope_epoch)?;
+    require_granted(
+        issuer_authority.issuer_manager_authority(
+            &wrap.body.issuer,
+            &wrap.body.issuer_capability,
+            &associated_data.scope,
+            associated_data.scope_epoch,
+        ),
+        |record| CryptoError::IssuerNotAuthorized { record },
+    )?;
 
     let shared_secret =
         recipient_device_secret.diffie_hellman(associated_data.ephemeral_public_key)?;
@@ -518,10 +756,10 @@ mod tests {
         SealingKey::from_bytes([0x5a; SEALING_KEY_LENGTH])
     }
 
-    fn capability_reference() -> CapabilityRef {
+    fn capability_reference(scope_epoch: u64) -> CapabilityRef {
         CapabilityRef {
             chain_id: Hash32([0x33; 32]),
-            scope_epoch: 4,
+            scope_epoch,
         }
     }
 
@@ -529,44 +767,113 @@ mod tests {
         DeviceSecretKey::from_bytes([0x0d; DEVICE_PUBLIC_KEY_LENGTH])
     }
 
+    /// A stand-in for the persistent §10.2.1 view; every list is deny-by-default.
+    ///
+    /// `unrecorded` is the third answer: a principal the view cannot resolve at all, which must
+    /// refuse exactly as loudly as one it resolves and denies.
+    #[derive(Clone, Debug, Default)]
+    struct DeliveryView {
+        enrolments: Vec<(Principal, DevicePublicKey)>,
+        manager_issuers: Vec<Principal>,
+        decrypting_recipients: Vec<Principal>,
+        unrecorded: Vec<Principal>,
+    }
+
+    impl DeliveryView {
+        /// The view every happy path runs against: issuer 0x01 manages, recipient 0x02 decrypts
+        /// and enrols `device()`.
+        fn permissive() -> Self {
+            Self {
+                enrolments: vec![(principal(0x02), device().public_key())],
+                manager_issuers: vec![principal(0x01)],
+                decrypting_recipients: vec![principal(0x02)],
+                unrecorded: Vec::new(),
+            }
+        }
+
+        fn answer(&self, subject: &Principal, granted: bool) -> AuthorizationRecord {
+            if self.unrecorded.contains(subject) {
+                AuthorizationRecord::Unknown
+            } else if granted {
+                AuthorizationRecord::Granted
+            } else {
+                AuthorizationRecord::Refused
+            }
+        }
+    }
+
+    impl IssuerAuthorityView for DeliveryView {
+        fn issuer_manager_authority(
+            &self,
+            issuer: &Principal,
+            _: &CapabilityRef,
+            _: &Scope,
+            _: u64,
+        ) -> AuthorizationRecord {
+            self.answer(issuer, self.manager_issuers.contains(issuer))
+        }
+    }
+
+    impl DeviceEnrolmentView for DeliveryView {
+        fn device_enrolment(
+            &self,
+            recipient: &Principal,
+            device_key: DevicePublicKey,
+        ) -> AuthorizationRecord {
+            let enrolled = self
+                .enrolments
+                .iter()
+                .any(|(enrolled_by, key)| enrolled_by == recipient && *key == device_key);
+            self.answer(recipient, enrolled)
+        }
+    }
+
+    impl DeliveryAuthorizationView for DeliveryView {
+        fn recipient_decrypt_authority(
+            &self,
+            recipient: &Principal,
+            _: &Scope,
+            _: u64,
+        ) -> AuthorizationRecord {
+            self.answer(recipient, self.decrypting_recipients.contains(recipient))
+        }
+    }
+
+    /// Recipient 0x02 on `device()`, resolved against the permissive view.
+    fn enrolled_binding(scope: &Scope, scope_epoch: u64) -> RecipientDeviceBinding {
+        RecipientDeviceBinding::resolve(
+            &DeliveryView::permissive(),
+            &principal(0x02),
+            device().public_key(),
+            scope,
+            scope_epoch,
+        )
+        .expect("the permissive view enrols this device")
+    }
+
     fn request<'a>(
-        scope: &'a Scope,
+        binding: &'a RecipientDeviceBinding,
         scope_key: &'a SealingKey,
-        recipient: &'a Principal,
-        recipient_device_key: DevicePublicKey,
         issuer: &'a Principal,
     ) -> ScopeKeyWrapRequest<'a> {
         ScopeKeyWrapRequest {
-            scope,
-            scope_epoch: 4,
+            recipient_device_binding: binding,
             scope_key,
-            recipient,
-            recipient_device_key,
             issuer,
-            issuer_capability: capability_reference(),
+            issuer_capability: capability_reference(binding.scope_epoch()),
         }
     }
 
     /// A wrap addressed to `device()` under scope `verse(0x11)` epoch 4.
     fn wrap() -> ScopeKeyWrap {
         let scope = verse(0x11);
+        let binding = enrolled_binding(&scope, 4);
         let material = scope_key();
-        let recipient = principal(0x02);
         let issuer = principal(0x01);
-        wrap_scope_key(
-            &signing_key(0x01),
-            &request(
-                &scope,
-                &material,
-                &recipient,
-                device().public_key(),
-                &issuer,
-            ),
-        )
-        .expect("wrap")
+        wrap_scope_key(&signing_key(0x01), &request(&binding, &material, &issuer)).expect("wrap")
     }
 
-    /// A persistent authorization view with one wrappable device and one current key.
+    /// A persistent SPEC-6 lane view with one wrappable device and one current key.
     struct View {
         lane: LaneKey,
         current_epoch: u64,
@@ -591,7 +898,7 @@ mod tests {
             false
         }
 
-        fn may_wrap_scope_key_for_device(
+        fn may_wrap_scope_key_for_peer(
             &self,
             device: &PeerIdentity,
             lane: &LaneKey,
@@ -609,6 +916,16 @@ mod tests {
         }
     }
 
+    /// The lane view every issuance happy path runs against.
+    fn lane_view(current_key_id: Identifier32) -> View {
+        View {
+            lane: header_lane(),
+            current_epoch: 4,
+            current_key_id,
+            wrappable: vec![PeerIdentity(principal(0x02).public_key)],
+        }
+    }
+
     #[test]
     fn the_domain_separator_is_nul_terminated_ascii() {
         assert_eq!(
@@ -621,7 +938,10 @@ mod tests {
     #[test]
     fn wrap_and_open_round_trip_the_scope_key() {
         let wrap = wrap();
-        assert_eq!(open_scope_key(&wrap, &device()).expect("open"), scope_key());
+        assert_eq!(
+            open_scope_key(&wrap, &device(), &DeliveryView::permissive()).expect("open"),
+            scope_key()
+        );
     }
 
     #[test]
@@ -642,8 +962,8 @@ mod tests {
         assert_ne!(first.body.sealed_key, second.body.sealed_key);
         // Both still open to the same key: the wrap is randomized, not the material.
         assert_eq!(
-            open_scope_key(&first, &device()).expect("open"),
-            open_scope_key(&second, &device()).expect("open")
+            open_scope_key(&first, &device(), &DeliveryView::permissive()).expect("open"),
+            open_scope_key(&second, &device(), &DeliveryView::permissive()).expect("open")
         );
     }
 
@@ -661,7 +981,37 @@ mod tests {
         assert_eq!(associated_data.recipient, principal(0x02));
         assert_eq!(associated_data.recipient_device_key, device().public_key());
         assert_eq!(wrap.body.issuer, principal(0x01));
-        assert_eq!(wrap.body.issuer_capability, capability_reference());
+        assert_eq!(wrap.body.issuer_capability, capability_reference(4));
+    }
+
+    /// The recipient, device key, scope, and epoch have exactly one source: the resolved binding.
+    #[test]
+    fn a_wrap_addresses_exactly_the_binding_that_was_resolved() {
+        let scope = Scope::new(
+            Identifier32([0x11; 32]),
+            Some(Identifier32([0x22; 32])),
+            None,
+        )
+        .expect("petal scope");
+        let binding = enrolled_binding(&scope, 9);
+        let material = scope_key();
+        let issuer = principal(0x01);
+        let wrap = wrap_scope_key(
+            &signing_key(0x01),
+            &ScopeKeyWrapRequest {
+                recipient_device_binding: &binding,
+                scope_key: &material,
+                issuer: &issuer,
+                issuer_capability: capability_reference(9),
+            },
+        )
+        .expect("wrap");
+
+        let associated_data = &wrap.body.associated_data;
+        assert_eq!(&associated_data.scope, binding.scope());
+        assert_eq!(associated_data.scope_epoch, binding.scope_epoch());
+        assert_eq!(&associated_data.recipient, binding.recipient());
+        assert_eq!(associated_data.recipient_device_key, binding.device_key());
     }
 
     #[test]
@@ -688,13 +1038,173 @@ mod tests {
         );
     }
 
+    // §10.2.1 device binding: sealing to an unenrolled device has no spelling.
+
+    #[test]
+    fn a_device_the_recipient_never_enrolled_cannot_be_bound() {
+        let stranger_device = DeviceSecretKey::from_bytes([0x0e; DEVICE_PUBLIC_KEY_LENGTH]);
+        assert_eq!(
+            RecipientDeviceBinding::resolve(
+                &DeliveryView::permissive(),
+                &principal(0x02),
+                stranger_device.public_key(),
+                &verse(0x11),
+                4,
+            ),
+            Err(CryptoError::DeviceNotEnrolled {
+                record: AuthorizationRecord::Refused
+            })
+        );
+    }
+
+    #[test]
+    fn one_principals_device_key_does_not_bind_to_another_principal() {
+        // `device()` is enrolled, but by principal 0x02 and not by 0x03.
+        assert_eq!(
+            RecipientDeviceBinding::resolve(
+                &DeliveryView::permissive(),
+                &principal(0x03),
+                device().public_key(),
+                &verse(0x11),
+                4,
+            ),
+            Err(CryptoError::DeviceNotEnrolled {
+                record: AuthorizationRecord::Refused
+            })
+        );
+    }
+
+    #[test]
+    fn a_view_that_cannot_answer_refuses_the_binding_rather_than_allowing_it() {
+        let mut view = DeliveryView::permissive();
+        view.unrecorded.push(principal(0x02));
+        assert_eq!(
+            RecipientDeviceBinding::resolve(
+                &view,
+                &principal(0x02),
+                device().public_key(),
+                &verse(0x11),
+                4,
+            ),
+            Err(CryptoError::DeviceNotEnrolled {
+                record: AuthorizationRecord::Unknown
+            })
+        );
+    }
+
+    #[test]
+    fn a_binding_refuses_a_recipient_whose_did_does_not_bind_to_its_key() {
+        let impostor = Principal {
+            did: principal(0x02).did,
+            public_key: principal(0x03).public_key,
+        };
+        assert!(matches!(
+            RecipientDeviceBinding::resolve(
+                &DeliveryView::permissive(),
+                &impostor,
+                device().public_key(),
+                &verse(0x11),
+                4,
+            ),
+            Err(CryptoError::Signing(_))
+        ));
+    }
+
+    // §10.2.3 issuance: the issuer signs as itself, for the epoch it cites.
+
+    #[test]
+    fn wrapping_refuses_a_signing_key_that_is_not_the_issuers() {
+        let scope = verse(0x11);
+        let binding = enrolled_binding(&scope, 4);
+        let material = scope_key();
+        let issuer = principal(0x01);
+        assert_eq!(
+            wrap_scope_key(&signing_key(0x09), &request(&binding, &material, &issuer)),
+            Err(CryptoError::IssuerSigningKeyMismatch)
+        );
+    }
+
+    #[test]
+    fn wrapping_refuses_a_capability_reference_for_another_epoch() {
+        let scope = verse(0x11);
+        let binding = enrolled_binding(&scope, 4);
+        let material = scope_key();
+        let issuer = principal(0x01);
+        assert_eq!(
+            wrap_scope_key(
+                &signing_key(0x01),
+                &ScopeKeyWrapRequest {
+                    recipient_device_binding: &binding,
+                    scope_key: &material,
+                    issuer: &issuer,
+                    issuer_capability: capability_reference(3),
+                },
+            ),
+            Err(CryptoError::IssuerCapabilityEpochMismatch {
+                capability_epoch: 3,
+                wrap_epoch: 4,
+            })
+        );
+    }
+
+    // §10.2.3 opening: possession is not authority.
+
     #[test]
     fn open_refuses_a_wrap_addressed_to_another_device() {
         let wrap = wrap();
         let stranger = DeviceSecretKey::from_bytes([0x0e; DEVICE_PUBLIC_KEY_LENGTH]);
         assert_eq!(
-            open_scope_key(&wrap, &stranger),
+            open_scope_key(&wrap, &stranger, &DeliveryView::permissive()),
             Err(CryptoError::RecipientDeviceMismatch)
+        );
+    }
+
+    /// The wrap is intact and its signature verifies; only the issuer's standing is gone.
+    #[test]
+    fn open_refuses_a_wrap_whose_issuer_the_view_no_longer_records_as_manager_plus() {
+        let wrap = wrap();
+        wrap.verify_issuer_signature()
+            .expect("the artifact itself is sound");
+
+        let mut demoted = DeliveryView::permissive();
+        demoted.manager_issuers.clear();
+        assert_eq!(
+            open_scope_key(&wrap, &device(), &demoted),
+            Err(CryptoError::IssuerNotAuthorized {
+                record: AuthorizationRecord::Refused
+            })
+        );
+    }
+
+    #[test]
+    fn open_refuses_a_wrap_whose_issuer_the_view_cannot_resolve_at_all() {
+        let wrap = wrap();
+        let mut silent = DeliveryView::permissive();
+        silent.unrecorded.push(principal(0x01));
+        assert_eq!(
+            open_scope_key(&wrap, &device(), &silent),
+            Err(CryptoError::IssuerNotAuthorized {
+                record: AuthorizationRecord::Unknown
+            })
+        );
+    }
+
+    /// A signed capability reference nobody reads is not a check; this is the read.
+    #[test]
+    fn open_refuses_a_wrap_whose_capability_reference_names_another_epoch() {
+        let mut wrap = wrap();
+        wrap.body.issuer_capability = capability_reference(3);
+        wrap.signature = sign_domain(
+            &signing_key(0x01),
+            SCOPE_KEY_WRAP_DOMAIN,
+            &wrap.body.encode_canonical().expect("body"),
+        );
+        assert_eq!(
+            open_scope_key(&wrap, &device(), &DeliveryView::permissive()),
+            Err(CryptoError::IssuerCapabilityEpochMismatch {
+                capability_epoch: 3,
+                wrap_epoch: 4,
+            })
         );
     }
 
@@ -703,7 +1213,7 @@ mod tests {
         let mut wrap = wrap();
         wrap.signature[0] ^= 0x01;
         assert_eq!(
-            open_scope_key(&wrap, &device()),
+            open_scope_key(&wrap, &device(), &DeliveryView::permissive()),
             Err(CryptoError::Signing(
                 SigningError::SignatureVerificationFailed
             ))
@@ -712,24 +1222,15 @@ mod tests {
 
     #[test]
     fn open_refuses_a_signature_from_another_issuer() {
-        let scope = verse(0x11);
-        let material = scope_key();
-        let recipient = principal(0x02);
-        let issuer = principal(0x01);
-        // The body names issuer 0x01 but a different key signed it.
-        let wrap = wrap_scope_key(
+        // The body names issuer 0x01; a different key re-signed it after the fact.
+        let mut wrap = wrap();
+        wrap.signature = sign_domain(
             &signing_key(0x09),
-            &request(
-                &scope,
-                &material,
-                &recipient,
-                device().public_key(),
-                &issuer,
-            ),
-        )
-        .expect("wrap");
+            SCOPE_KEY_WRAP_DOMAIN,
+            &wrap.body.encode_canonical().expect("body"),
+        );
         assert_eq!(
-            open_scope_key(&wrap, &device()),
+            open_scope_key(&wrap, &device(), &DeliveryView::permissive()),
             Err(CryptoError::Signing(
                 SigningError::SignatureVerificationFailed
             ))
@@ -747,7 +1248,7 @@ mod tests {
             &wrap.body.encode_canonical().expect("body"),
         );
         assert_eq!(
-            open_scope_key(&wrap, &device()),
+            open_scope_key(&wrap, &device(), &DeliveryView::permissive()),
             Err(CryptoError::AuthenticationFailed)
         );
     }
@@ -755,7 +1256,10 @@ mod tests {
     #[test]
     fn open_refuses_a_tampered_associated_data_binding() {
         let mut wrap = wrap();
+        // Move the epoch coherently, capability reference included, so the AEAD is what refuses
+        // rather than one of the cheap structural checks in front of it.
         wrap.body.associated_data.scope_epoch = 5;
+        wrap.body.issuer_capability = capability_reference(5);
         wrap.signature = sign_domain(
             &signing_key(0x01),
             SCOPE_KEY_WRAP_DOMAIN,
@@ -763,7 +1267,7 @@ mod tests {
         );
         // The wrap key derives from the AAD, so altering a binding also destroys decryption.
         assert_eq!(
-            open_scope_key(&wrap, &device()),
+            open_scope_key(&wrap, &device(), &DeliveryView::permissive()),
             Err(CryptoError::AuthenticationFailed)
         );
     }
@@ -794,7 +1298,7 @@ mod tests {
             wrap_nonce,
             sealed_key,
             issuer: principal(0x01),
-            issuer_capability: capability_reference(),
+            issuer_capability: capability_reference(4),
         };
         let signature = sign_domain(
             &signing_key(0x01),
@@ -803,7 +1307,11 @@ mod tests {
         );
 
         assert_eq!(
-            open_scope_key(&ScopeKeyWrap { body, signature }, &device()),
+            open_scope_key(
+                &ScopeKeyWrap { body, signature },
+                &device(),
+                &DeliveryView::permissive()
+            ),
             Err(CryptoError::KeyIdentifierMismatch {
                 declared: lying,
                 derived: honest,
@@ -829,57 +1337,59 @@ mod tests {
         );
     }
 
+    // §10.2.1 issuance: three persistent views, none of them optional.
+
     #[test]
     fn scope_key_wrap_requires_current_recipient_authorization() {
         let scope = verse(0x11);
         let material = scope_key();
-        let recipient = principal(0x02);
         let removed = principal(0x03);
         let issuer = principal(0x01);
-        let current_key_id = derive_key_id(&scope, 4, &material).expect("key id");
-        let view = View {
-            lane: header_lane(),
-            current_epoch: 4,
-            current_key_id,
-            wrappable: vec![PeerIdentity(recipient.public_key)],
-        };
+        let view = lane_view(derive_key_id(&scope, 4, &material).expect("key id"));
 
+        // The §10.2.1 view is content with both principals, so the SPEC-6 lane view is the only
+        // surface that can refuse either of them.
+        let mut delivery = DeliveryView::permissive();
+        delivery
+            .enrolments
+            .push((removed.clone(), device().public_key()));
+        delivery.decrypting_recipients.push(removed.clone());
+
+        let binding = enrolled_binding(&scope, 4);
         issue_scope_key_wrap(
             &view,
+            &delivery,
             &header_lane(),
             &signing_key(0x01),
-            &request(
-                &scope,
-                &material,
-                &recipient,
-                device().public_key(),
-                &issuer,
-            ),
+            &request(&binding, &material, &issuer),
         )
         .expect("the authorized recipient receives a wrap");
 
-        // A principal the view no longer reports as wrappable gets nothing.
+        // A principal the lane view no longer reports as wrappable gets nothing.
+        let removed_binding =
+            RecipientDeviceBinding::resolve(&delivery, &removed, device().public_key(), &scope, 4)
+                .expect("the removed member is still enrolled; only the lane view refuses");
         assert_eq!(
             issue_scope_key_wrap(
                 &view,
+                &delivery,
                 &header_lane(),
                 &signing_key(0x01),
-                &request(&scope, &material, &removed, device().public_key(), &issuer),
+                &request(&removed_binding, &material, &issuer),
             ),
             Err(CryptoError::Segment(Box::new(SegmentError::Unauthorized)))
         );
 
         // A superseded epoch gets nothing either, even for an authorized recipient.
-        let mut stale = request(
-            &scope,
-            &material,
-            &recipient,
-            device().public_key(),
-            &issuer,
-        );
-        stale.scope_epoch = 3;
+        let stale_binding = enrolled_binding(&scope, 3);
         assert_eq!(
-            issue_scope_key_wrap(&view, &header_lane(), &signing_key(0x01), &stale),
+            issue_scope_key_wrap(
+                &view,
+                &delivery,
+                &header_lane(),
+                &signing_key(0x01),
+                &request(&stale_binding, &material, &issuer),
+            ),
             Err(CryptoError::Segment(Box::new(
                 SegmentError::StaleScopeEpoch {
                     requested: 3,
@@ -890,31 +1400,69 @@ mod tests {
     }
 
     #[test]
-    fn issuance_refuses_a_key_that_is_not_the_lanes_current_key() {
+    fn issuance_refuses_an_issuer_without_current_manager_authority() {
         let scope = verse(0x11);
         let material = scope_key();
-        let recipient = principal(0x02);
         let issuer = principal(0x01);
-        let stale_key_id = Identifier32([0xee; 32]);
-        let view = View {
-            lane: header_lane(),
-            current_epoch: 4,
-            current_key_id: stale_key_id,
-            wrappable: vec![PeerIdentity(recipient.public_key)],
-        };
+        let binding = enrolled_binding(&scope, 4);
+        let view = lane_view(derive_key_id(&scope, 4, &material).expect("key id"));
+        let mut demoted = DeliveryView::permissive();
+        demoted.manager_issuers.clear();
 
         assert_eq!(
             issue_scope_key_wrap(
                 &view,
+                &demoted,
                 &header_lane(),
                 &signing_key(0x01),
-                &request(
-                    &scope,
-                    &material,
-                    &recipient,
-                    device().public_key(),
-                    &issuer
-                ),
+                &request(&binding, &material, &issuer),
+            ),
+            Err(CryptoError::IssuerNotAuthorized {
+                record: AuthorizationRecord::Refused
+            })
+        );
+    }
+
+    #[test]
+    fn issuance_refuses_a_recipient_without_a_current_decrypt_capability() {
+        let scope = verse(0x11);
+        let material = scope_key();
+        let issuer = principal(0x01);
+        let binding = enrolled_binding(&scope, 4);
+        let view = lane_view(derive_key_id(&scope, 4, &material).expect("key id"));
+        let mut no_decrypt = DeliveryView::permissive();
+        no_decrypt.decrypting_recipients.clear();
+
+        assert_eq!(
+            issue_scope_key_wrap(
+                &view,
+                &no_decrypt,
+                &header_lane(),
+                &signing_key(0x01),
+                &request(&binding, &material, &issuer),
+            ),
+            Err(CryptoError::RecipientNotAuthorized {
+                record: AuthorizationRecord::Refused
+            })
+        );
+    }
+
+    #[test]
+    fn issuance_refuses_a_key_that_is_not_the_lanes_current_key() {
+        let scope = verse(0x11);
+        let material = scope_key();
+        let issuer = principal(0x01);
+        let binding = enrolled_binding(&scope, 4);
+        let stale_key_id = Identifier32([0xee; 32]);
+        let view = lane_view(stale_key_id);
+
+        assert_eq!(
+            issue_scope_key_wrap(
+                &view,
+                &DeliveryView::permissive(),
+                &header_lane(),
+                &signing_key(0x01),
+                &request(&binding, &material, &issuer),
             ),
             Err(CryptoError::KeyIdentifierMismatch {
                 declared: stale_key_id,
@@ -927,14 +1475,9 @@ mod tests {
     fn issuance_refuses_a_lane_the_view_does_not_know() {
         let scope = verse(0x11);
         let material = scope_key();
-        let recipient = principal(0x02);
         let issuer = principal(0x01);
-        let view = View {
-            lane: header_lane(),
-            current_epoch: 4,
-            current_key_id: derive_key_id(&scope, 4, &material).expect("key id"),
-            wrappable: vec![PeerIdentity(recipient.public_key)],
-        };
+        let binding = enrolled_binding(&scope, 4);
+        let view = lane_view(derive_key_id(&scope, 4, &material).expect("key id"));
         let other_lane = LaneKey::Payload(PayloadTopicScope {
             verse_id: Identifier32([0x11; 32]),
             petal_id: Identifier32([0x22; 32]),
@@ -945,18 +1488,20 @@ mod tests {
         assert_eq!(
             issue_scope_key_wrap(
                 &view,
+                &DeliveryView::permissive(),
                 &other_lane,
                 &signing_key(0x01),
-                &request(
-                    &scope,
-                    &material,
-                    &recipient,
-                    device().public_key(),
-                    &issuer
-                ),
+                &request(&binding, &material, &issuer),
             ),
             Err(CryptoError::Segment(Box::new(SegmentError::UnknownLane)))
         );
+    }
+
+    #[test]
+    fn an_authorization_record_authorizes_in_exactly_one_state() {
+        assert!(AuthorizationRecord::Granted.is_granted());
+        assert!(!AuthorizationRecord::Refused.is_granted());
+        assert!(!AuthorizationRecord::Unknown.is_granted());
     }
 
     #[test]

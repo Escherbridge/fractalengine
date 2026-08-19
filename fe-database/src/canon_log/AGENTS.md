@@ -32,15 +32,37 @@ would destroy history no rebuild could recover.
 metadata to find parents without decoding every envelope on every traversal.
 
 `meta_of` therefore never trusts the index columns. It reads the bytes, recomputes
-`BLAKE3(bytes)` and refuses a row whose bytes no longer hash to its own `op_id`, then decodes
-and projects the envelope. A corrupted index column can slow a query down; it cannot change
-what a materializer sees. `scope` and `schema_hash` have no columns at all for the same reason:
-they exist only inside the signature preimage.
+`BLAKE3(bytes)` and refuses a row whose bytes no longer hash to its own `op_id`, then re-runs
+`signing::decode_and_admit` over them and projects the envelope. A corrupted index column can
+slow a query down; it cannot change what a materializer sees. `scope` and `schema_hash` have no
+columns at all for the same reason: they exist only inside the signature preimage.
 
-`append_admitted` takes a `&VerifiedEnvelopeMeta`, not a bare `op_id`. A `VerifiedEnvelopeMeta`
-only exists downstream of `admit_candidate`, so §2.1's "validate before you append" is a
-property of the signature rather than a rule a caller is asked to remember. The order inside is
-also load-bearing: the BLAKE3 recomputation happens **before any row is read or written**, so a
+The re-verification on **read** is not belt-and-braces. Content addressing alone cannot tell a
+signed operation from self-consistent garbage, because a forger who writes a row picks both the
+bytes and the address they hash to; `op_id_hex` is a name the row chose for itself. Only the
+signature makes the row an operation, so every read that produces a `VerifiedEnvelopeMeta`
+re-checks it, and a row that fails is unreadable rather than merely suspect. `replay` then adds
+a `BLAKE3` re-check at its second read of the same row, which is enough there because the
+closure load already verified the signature for that exact address.
+
+### Two doors, one guard
+
+There are exactly two entrances to `verified_op_log`, and both verify:
+
+- `append_admitted(&VerifiedEnvelopeMeta, bytes)` — a `VerifiedEnvelopeMeta` only exists
+  downstream of `admit_candidate`, so §2.1's "validate before you append" is a property of the
+  signature rather than a rule a caller is asked to remember.
+- `append_received(claimed_op_id, bytes)` — the door for bytes with no admission decision
+  behind them. It calls `signing::decode_and_admit`, which is canonical re-encoding, the §3.2
+  author binding, the §5.1 signature, the §6 structural rules, and the production payload
+  suite, and which content-addresses the RECEIVED bytes.
+
+`VerifiedLogStore::append`, the trait seam, is a thin wrapper over `append_received`. It used to
+reach the log through `CompleteEnvelope::decode_canonical` plus `verified_envelope_meta_from` —
+neither of which verifies anything, as the latter's own doc-comment says — which made the trait
+an unguarded second door onto the same table. It is not one now.
+
+In both cases the BLAKE3 recomputation happens **before any row is read or written**, so a
 mismatched claim cannot touch storage at all.
 
 Exactly-once is enforced twice: `idx_verified_op_log_op_id` is UNIQUE, so a second row for one
@@ -56,22 +78,53 @@ true of `get_bytes`/`get_meta`/`parents_of`, which return bare `Option`.
 
 Rather than lie in either direction, this module does three things:
 
-1. The **inherent** API (`append_admitted`, `meta_of`, `parents`, `envelope_bytes`,
-   `op_id_at_equivocation_key`) is the primary one and returns `VerifiedLogStoreError` /
-   `StorageError`, which name the fault honestly. Everything inside `canon_log` uses it.
-2. The **trait** impl exists for callers that only have the seam. On a substrate fault it
-   refuses — never succeeds — because §2.3 requires the mutation to fail and SurrealDB to stay
-   unmodified. `IntegrityConflict` is the refusal it uses, since that is the variant that
-   forbids materializing either candidate; the reply is over-strong but conservative, and §3.4
-   makes it recoverable by retrying the exact same immutable bytes. Read methods answer
-   `None`, which is the pending-safe direction: replay halts the affected head rather than
-   applying an operation whose history it could not read.
-3. Either way the real cause is recorded and drainable through `take_storage_faults`, so a
-   fault is observable rather than silently rounded off.
+1. The **inherent** API (`append_admitted`, `append_received`, `meta_of`, `parents`,
+   `envelope_bytes`, `op_id_at_equivocation_key`) is the primary one and returns
+   `VerifiedLogStoreError` / `StorageError`, which name the fault honestly. Everything inside
+   `canon_log` uses it.
+2. The **trait** impl exists for callers that only have the seam. On a substrate fault, and on
+   bytes this build cannot admit, it refuses — never succeeds — because §2.3 requires the
+   mutation to fail and SurrealDB to stay unmodified. The refusal it uses is `HashMismatch`,
+   which is the **least damaging of two wrong answers**, not a correct one. `IntegrityConflict`
+   is specifically unusable: SPEC-4 §3.3 makes it a permanent blacklist of the `op_id`, so a
+   purely local refusal — an unavailable database, or an envelope from a protocol version this
+   build predates — would poison a legitimate identity network-wide and forever. `HashMismatch`
+   refuses this submission without condemning the identity. Read methods answer `None`, which
+   is the pending-safe direction: replay halts the affected head rather than applying an
+   operation whose history it could not read.
+3. Either way the real cause is recorded and drainable: substrate faults through
+   `take_storage_faults`, refused appends through `take_append_refusals`. A fault is observable
+   rather than silently rounded off.
 
-**This is a seam gap, not a design preference.** `AppendError` needs a
-`StorageUnavailable`/`Indeterminate` variant for the trait to be honest; adding one is a
-`fe-canonical-log` change and belongs in an erratum, not here.
+**This is a seam gap, not a design preference, and the workaround above is a wrong answer we
+chose deliberately.** ERRATUM, owed to `fe-canonical-log/src/materialize/errors.rs` (outside
+this slice's file boundary):
+
+```rust
+pub enum AppendError {
+    HashMismatch,
+    IntegrityConflict { op_id: Hash32 },
+    /// The bytes are not an admissible envelope HERE — undecodable, unsigned, structurally
+    /// invalid, or a protocol version this build predates. Says nothing about `op_id`, so it
+    /// MUST NOT blacklist it (contrast `IntegrityConflict`).
+    NotAnEnvelope { op_id: Hash32, reason: String },
+    /// The store could not answer. Neither a protocol reject nor a quarantine: retry the exact
+    /// same immutable bytes (§3.4).
+    Indeterminate { op_id: Hash32, detail: String },
+}
+```
+
+Until those variants exist, `take_append_refusals` is the only honest channel and callers of the
+trait seam cannot tell the four cases apart.
+
+A related fail-open, closed here rather than deferred: `EquivocationIndex::op_id_at` returns
+`Option<Hash32>`, and `None` **admits**. Answering `None` on a storage fault therefore lets a
+D-CL25 equivocation through exactly when the substrate is sick. `admit_and_append` now requires
+its evidence sources to implement `admission::EvidenceAvailability` and refuses with
+`AdmissionRejection::EvidenceUnavailable` when a fault was raised while deciding the candidate,
+so the fail-open direction is unreachable. That gate is on the `Ok` path only: a genuine §5.1
+reject is a decision about the candidate's own bytes and must stay permanent rather than
+becoming retryable.
 
 ## §admission-order
 
@@ -156,12 +209,30 @@ skipped without re-invoking `reduce`.
 
 ## §rebuild-and-checkpoints
 
-`rebuild_projection` treats a checkpoint as an accelerator and never an authority (§6.2). It
-validates the offered `CheckpointBinding` against the caller's **own** branch, frontier,
-segment manifest, and materializer version; a binding that fails is recorded in
-`RebuildReport::rejected_checkpoint` and then ignored, and the empty-state path runs instead.
-There is no signature parameter anywhere on this path, so "the Manager+ signature matched" can
-never stand in for the check §6.4 requires.
+`rebuild_projection` treats a checkpoint as an accelerator and never an authority (§6.2), and it
+spends that sentence twice.
+
+**First, an unverified checkpoint cannot reach it.** The parameter is an `AdmittedCheckpoint`,
+whose fields are private and whose only constructor — `AdmittedCheckpoint::admit` — runs
+`checkpoint::decode_and_admit_checkpoint` (canonical re-encoding plus the SPEC-5 §3.1 rule 4
+signature), asks the two §3.2 authority questions through `ManagerPlusAuthorizationView`, and
+then derives the §6.3 binding through `compose::checkpoint_binding_for_selection`, which
+validates it against the caller's own branch, frontier, segment manifest, and materializer
+version. A signature never substitutes for the binding comparison and the binding comparison
+never substitutes for the signature.
+
+The parameter used to be a bare `CheckpointBinding`. That type carries no signature at all and
+every field in it is derivable by anyone who can see the branch, so **offering one was free**,
+and offering one suppressed the empty-state reset. This paragraph previously claimed the
+absence of a signature parameter was the safety property; it was the vulnerability.
+
+**Second, an admitted checkpoint still has to reproduce.** The accelerated pass replays the
+tail, then the surface's projection root is compared against the root the checkpoint CLAIMS. On
+any disagreement — or on a replay that did not resolve every selected head — the projection is
+thrown away and rebuilt from empty state, and the refusal is reported in
+`RebuildReport::refused_accelerator`. The accelerated attempt necessarily writes its tail before
+that comparison can be made (a projection root is a commitment to projected state), and the
+empty-state fallback clears exactly those rows, so a refused accelerator leaves no trace.
 
 The empty-state path clears the materializer's own rows through the `ProjectionSurface` seam
 and then clears that projection's markers, so §6.1's "no unpublished SurrealDB row may be
@@ -170,8 +241,11 @@ exactly this one caller; §5 note 4 forbids advancing or retracting a marker by 
 projection.
 
 `dag_view` is a required parameter because a completed replay is the only admissible evidence
-for `VerseDagView::frontier_is_replay_verified`. Making it a parameter means the evidence is
-recorded wherever a rebuild happens, instead of some later caller assuming it.
+for `VerseDagView::frontier_is_replay_verified`, and `record_replay_verified` is `pub(crate)`
+so `rebuild_projection` is the only caller that can exist. **Only the from-empty pass records
+it.** A checkpoint-accelerated pass replayed a tail on top of rows this process did not derive
+from verified operations, so presenting its frontier as replay-verified would be presenting a
+signature as a replay. The report says which happened in `replay_verified_recorded`.
 
 ## §epoch-state
 
@@ -179,11 +253,26 @@ recorded wherever a rebuild happens, instead of some later caller assuming it.
 scope, keyed by the hex of the canonical CBOR scope map — the same bytes the signature covers,
 so two peers derive the same key.
 
-`admit_epoch_bump` takes an `op_id` that must already be in the verified log and reads the
-declared epoch from **that operation's own signed capability reference**. Nobody can bump an
-epoch with a number the author never signed, and nobody can bump one with an operation that was
-never appended. It then enforces §5.1: kind 4 only, exactly one parent, `e -> e + 1` with no
-skips and no decreases.
+`admit_epoch_bump` takes an `op_id` that must already be in the verified log, reads that row
+back through `signing::decode_and_admit`, and reads the declared epoch from **that operation's
+own signed capability reference**. Nobody can bump an epoch with a number the author never
+signed, nobody can bump one with an operation that was never appended, and an unsigned envelope
+authorizes nothing here even if it reached the table by some other route.
+
+`authority: &dyn ManagerAuthorityView` is a **required parameter**, and the SPEC-3 §5.1
+Manager+ question is asked before any state is read or written. Until this remediation the
+function performed no authority check at all and took no parameter that could have answered
+one, so any appended kind-4 envelope moved the epoch — which, composed with the unguarded trait
+append door above, meant one unsigned envelope could advance an epoch and lock out every
+legitimate actor. `AuthorityState::Unknown` refuses exactly as `NotManagerPlus` does: an
+unanswerable authority question is never an allow (§5.3 rule 5).
+
+It then enforces §5.1: kind 4 only, exactly one parent, `e -> e + 1` with no skips and no
+decreases. The write is a **compare-and-swap** on the epoch the decision was made against
+(`WHERE scope_key = $key AND current_epoch = $expected`); a plain `UPDATE` let two concurrent
+admissions each read `e`, each write `e + 1`, and the second silently discard the first's
+evidence row, which §5.1 rule 6 requires retained. Matching zero rows is
+`EpochBumpRejection::ConcurrentModification`, and nothing was changed.
 
 §5.1 rule 6 needs the DAG, not just the counter. A second bump declaring the same `e` is
 auditable evidence when it is *concurrent* with the bump that already applied, and stale when it
@@ -221,7 +310,8 @@ fresh durable read at startup regardless.
 | --- | --- | --- |
 | Call `RevalidationGate::on_epoch_bump` on every admitted bump | `capability/AGENTS.md` §5.3 obligation 2 | `canonical_epoch::SurrealScopeEpochStore::admit_epoch_bump` — the gate is a required `&mut` parameter and the call is inside, so no admission path can skip it |
 | Read durable epoch state at startup; a missed notification is a cache miss | §5.3 obligation 4 | `canonical_epoch::DurableAuthorizationView::load`, whose unknown-scope answer is `None`/`Unknown`, never an allow |
-| Implement `VerseDagView` over `fe-database` | `branch/AGENTS.md` | `append_store::SurrealVerseDagView` — admission and equivocation from `verified_op_log`, genesis from admitted kind-2 rows (ambiguous genesis answers `None`), replay-verified recorded only by an actually-completed rebuild |
+| Ask the SPEC-3 §5.1 Manager+ question on every epoch bump | SPEC-3 §5.1 | `canonical_epoch::SurrealScopeEpochStore::admit_epoch_bump` — `authority: &dyn ManagerAuthorityView` is a required parameter and the question is asked before any state is touched |
+| Implement `VerseDagView` over `fe-database` | `branch/AGENTS.md` | `append_store::SurrealVerseDagView` — admission and equivocation from `verified_op_log`, genesis from admitted kind-2 rows (ambiguous genesis answers `None`), replay-verified recorded only by an actually-completed **from-empty** rebuild, through a `pub(crate)` setter |
 
 Still open, and not this module's to close: `CacheKey`/`PinnedSession` wiring in `fe-api` and
 `fe-network` (§5.3 obligations 1 and 3), and the SPEC-2 authority history that replaces
