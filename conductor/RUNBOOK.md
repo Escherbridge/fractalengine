@@ -663,6 +663,40 @@ and the non-test half of `crud.rs` untouched. No shadow-side projection mutation
 **Wave 4 may now wire a caller to the canonical append, epoch and WS surfaces**,
 subject to residual items 1-2 above being understood as still open.
 
+## 10b. In-app run check, 2026-08-18 — no regression; one pre-existing runtime defect
+
+`cargo build -p fractalengine` exit 0; ran the GUI twice for 40-45s under
+`RUST_LOG=info`. **Both runs stayed alive and had to be terminated** — no crash,
+no abort, and `data/panic.log` was never created (the panic hook writes it on
+any panic, so its absence is real evidence, not a silent failure).
+
+**Scope of this check, stated honestly:** the canonical paths are dormant
+(`/ws/canonical` unmounted), so this proves *builds, boots, survives* — not that
+the Wave 3R code works. It also exercises the concurrent session's dirty
+`fe-ui`/`fe-terrain` tree, so a fault here would not necessarily be ours.
+
+Three log lines, none a Wave 3R regression:
+
+1. `WARN fe_network: Kademlia bootstrap failed: NoKnownPeers` — expected with no
+   peers configured, and consistent with the no-network constraint.
+2. `ERROR bevy_log: Could not set global logger ... already set. Consider
+   disabling LogPlugin.` — `main.rs` installs `tracing_subscriber` before
+   `DefaultPlugins`, whose `LogPlugin` then loses the race. Cosmetic, noisy,
+   long-standing.
+3. **`ERROR fractalengine: Could not open local API read connection; analytics
+   API will remain unavailable: ... os error 33` (file locked).** Reproduced on a
+   clean run with no other `fractalengine` process, so the app is locking its own
+   datastore: the DB thread holds `data/fractalengine.db` under SurrealKV's
+   exclusive file lock, and `main.rs:323` then opens a *second* read connection to
+   the same path. **Pre-existing** — `git log -L 315,325:fractalengine/src/main.rs`
+   attributes the region to `916a3ae` and `51bc90e`; `main.rs` is not in the Wave
+   3R diff at all.
+
+   **Worth prioritising independently of Workstream G:** the roadmap makes BI
+   egress / spatial analytics the primary product direction, and this error means
+   the analytics read API is unavailable at every launch. Not fixed here because
+   it is outside this wave's remit; filed rather than folded in silently.
+
 ## 11. Pre-existing defects repaired at the Wave 3 barrier — `29cadd9`
 
 Not Workstream G work; recorded so they are not misattributed. Both were
