@@ -300,11 +300,28 @@ struct ChainRecord {
     expired: bool,
 }
 
+/// One presented call to [`CapabilityVerifier::verify`]: the chain bytes plus the verb, object
+/// class, and scope actually asked for. `calls()` predates this and records chain bytes only;
+/// this is the richer record for a test that must prove which verb/class/scope was requested,
+/// not merely that the verifier was consulted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifyRequest {
+    /// The exact capability-chain bytes presented.
+    pub capability_chain_bytes: Vec<u8>,
+    /// The verb bitmask presented.
+    pub requested_verb: VerbBits,
+    /// The object-class bitmask presented.
+    pub requested_object_class: ObjectClassBits,
+    /// The scope presented.
+    pub requested_scope: Scope,
+}
+
 /// A [`CapabilityVerifier`] over a registered table of chain bytes, each independently
 /// expirable to exercise revalidation-on-expiry behavior.
 pub struct MockCapabilityVerifier {
     chains: Mutex<HashMap<Vec<u8>, ChainRecord>>,
     calls: Mutex<VecDeque<Vec<u8>>>,
+    requests: Mutex<VecDeque<VerifyRequest>>,
 }
 
 impl Default for MockCapabilityVerifier {
@@ -319,6 +336,7 @@ impl MockCapabilityVerifier {
         Self {
             chains: Mutex::new(HashMap::new()),
             calls: Mutex::new(VecDeque::new()),
+            requests: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -354,6 +372,19 @@ impl MockCapabilityVerifier {
             .cloned()
             .collect()
     }
+
+    /// Every full request presented to [`CapabilityVerifier::verify`], in call order — chain
+    /// bytes plus the verb, object class, and scope actually asked for. Use this over `calls()`
+    /// when a test must prove the correct verb/class/scope was requested, not merely that the
+    /// verifier was consulted.
+    pub fn requests(&self) -> Vec<VerifyRequest> {
+        self.requests
+            .lock()
+            .expect("verifier lock")
+            .iter()
+            .cloned()
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -361,14 +392,23 @@ impl CapabilityVerifier for MockCapabilityVerifier {
     async fn verify(
         &self,
         capability_chain_bytes: &[u8],
-        _requested_verb: VerbBits,
-        _requested_object_class: ObjectClassBits,
-        _requested_scope: &Scope,
+        requested_verb: VerbBits,
+        requested_object_class: ObjectClassBits,
+        requested_scope: &Scope,
     ) -> Result<VerifiedAuthorization, WireError> {
         self.calls
             .lock()
             .expect("verifier lock")
             .push_back(capability_chain_bytes.to_vec());
+        self.requests
+            .lock()
+            .expect("verifier lock")
+            .push_back(VerifyRequest {
+                capability_chain_bytes: capability_chain_bytes.to_vec(),
+                requested_verb,
+                requested_object_class,
+                requested_scope: *requested_scope,
+            });
         let chains = self.chains.lock().expect("verifier lock");
         match chains.get(capability_chain_bytes) {
             Some(record) if !record.expired => Ok(record.authorization.clone()),
