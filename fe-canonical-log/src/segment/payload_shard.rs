@@ -188,7 +188,7 @@ impl PayloadShardBody {
             }
         }
         let mut records = records;
-        records.sort_by(|left, right| left.op_id.cmp(&right.op_id));
+        records.sort_by_key(|record| record.op_id);
         Ok(Self { topic, records })
     }
 

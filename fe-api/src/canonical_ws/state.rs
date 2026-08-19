@@ -171,10 +171,7 @@ impl CanonicalLogState {
             .verification_cache
             .lock()
             .expect("verification cache lock");
-        let decision = match cache.entries.get(request) {
-            Some(entry) => entry.decision,
-            None => return None,
-        };
+        let decision = cache.entries.get(request)?.decision;
         if cache
             .gate
             .admitted_now(&decision, now_ms, self.authorization_view.as_ref())
