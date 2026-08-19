@@ -165,8 +165,11 @@ jobs:
   macos:
     name: macOS (build + test + artifacts)
     runs-on: macos-latest
-    # 150: same cold-cache rationale as the Linux job.
-    timeout-minutes: 150
+    # 240, not 150: a timeout CANCELS the job, which SKIPS the rust-cache post
+    # step, so the cache is never saved and the next run is cold again -- a loop
+    # this job has not escaped since 2026-07-27. The ceiling has to clear one
+    # cold build+sweep so a cache exists; warm runs finish far under it.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
