@@ -45,25 +45,42 @@ re-checks it, and a row that fails is unreadable rather than merely suspect. `re
 a `BLAKE3` re-check at its second read of the same row, which is enough there because the
 closure load already verified the signature for that exact address.
 
-### Two doors, one guard
+### Two doors; the guard is on read
 
-There are exactly two entrances to `verified_op_log`, and both verify:
+**This section previously claimed "there are exactly two entrances to `verified_op_log`, and
+both verify [a signature]," and justified `append_admitted` on the grounds that "a
+`VerifiedEnvelopeMeta` only exists downstream of `admit_candidate`." That justification was
+false, and so is the fact it argued from.** `VerifiedEnvelopeMeta`'s own doc-comment
+(`fe_canonical_log::materialize::traits`) says its name "is a claim about provenance, and the
+type does not enforce it" — every field is `pub`, the type is deliberately not
+`#[non_exhaustive]`, and a value built by struct literal "carries no cryptographic weight
+whatsoever." Nothing stops a caller from constructing one and calling `append_admitted` with it.
 
-- `append_admitted(&VerifiedEnvelopeMeta, bytes)` — a `VerifiedEnvelopeMeta` only exists
-  downstream of `admit_candidate`, so §2.1's "validate before you append" is a property of the
-  signature rather than a rule a caller is asked to remember.
-- `append_received(claimed_op_id, bytes)` — the door for bytes with no admission decision
-  behind them. It calls `signing::decode_and_admit`, which is canonical re-encoding, the §3.2
-  author binding, the §5.1 signature, the §6 structural rules, and the production payload
-  suite, and which content-addresses the RECEIVED bytes.
+- `append_admitted(&VerifiedEnvelopeMeta, bytes)` verifies content-addressing ONLY —
+  `Hash32::of(bytes) == meta.op_id` — and writes `meta`'s fields straight into the index
+  columns. It trusts its `meta` argument. A caller that hand-builds one can make it write a row
+  with attacker-chosen index columns and unsigned bytes.
+- `append_received(claimed_op_id, bytes)` is the door for bytes with no admission decision
+  behind them, and the one call site that actually runs `signing::decode_and_admit` — canonical
+  re-encoding, the §3.2 author binding, the §5.1 signature, the §6 structural rules, and the
+  production payload suite — before handing the derived `meta` to `append_admitted`.
+
+The signature guarantee does not live at either append door. It lives on **read**: `meta_of`
+re-runs `decode_and_admit` against the stored bytes and re-derives every field from them (see
+§verified-log above), so a row written through a forged `meta` is unreadable rather than merely
+suspect — forged index columns are ignored, and bytes that do not carry a valid signature are
+refused. In production the only caller of `append_admitted` is `admission::admit_and_append`,
+which always passes a `decode_and_admit`-derived `meta`, so the property holds today — but by
+the read-side mechanism, not by any check the append door itself makes.
 
 `VerifiedLogStore::append`, the trait seam, is a thin wrapper over `append_received`. It used to
 reach the log through `CompleteEnvelope::decode_canonical` plus `verified_envelope_meta_from` —
 neither of which verifies anything, as the latter's own doc-comment says — which made the trait
 an unguarded second door onto the same table. It is not one now.
 
-In both cases the BLAKE3 recomputation happens **before any row is read or written**, so a
-mismatched claim cannot touch storage at all.
+`append_received`'s BLAKE3 recomputation happens **before any row is read or written**, so a
+mismatched claim there cannot touch storage at all; `append_admitted`'s recomputation is the
+same content-addressing check, run again on whatever `meta` it was actually given.
 
 Exactly-once is enforced twice: `idx_verified_op_log_op_id` is UNIQUE, so a second row for one
 `op_id` is impossible at the storage layer, and the write path read-compares first so a

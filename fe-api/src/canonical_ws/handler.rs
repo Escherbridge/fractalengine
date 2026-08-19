@@ -1341,7 +1341,7 @@ mod tests {
     use fe_canonical_log::wire::snapshot::ScopeSnapshotSource;
     use fe_canonical_log::wire::test_support::{
         cursor_with_claim, test_principal, InMemoryBranchRegistry, MockCapabilityVerifier,
-        MockCommitPipeline, MockScopeSnapshotSource, ScriptedCommitPipeline,
+        MockCommitPipeline, MockScopeSnapshotSource, ScriptedCommitPipeline, VerifyRequest,
     };
 
     /// The durable view as it stands while a session is live: epoch 1, version 1.
@@ -1760,6 +1760,17 @@ mod tests {
             verifier.calls(),
             vec![sample_chain_bytes()],
             "the subscribe path presented the handshake's chain bytes to the real verifier"
+        );
+        assert_eq!(
+            verifier.requests(),
+            vec![VerifyRequest {
+                capability_chain_bytes: sample_chain_bytes(),
+                requested_verb: 0x01,
+                requested_object_class: 0x01,
+                requested_scope: narrow_scope(),
+            }],
+            "the subscribe path re-verified the chain against the scope that was subscribed \
+             (narrow_scope), not merely the handshake's authorized epoch_scope"
         );
         assert!(covers(&auth, narrow_scope()).await);
         assert!(auth.subscriptions.get([7; 16]).is_some());

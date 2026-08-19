@@ -81,9 +81,16 @@ impl SurrealVerifiedLogStore {
 
     /// Appends already-admitted bytes under the identity their admission produced.
     ///
-    /// Taking `meta` rather than a bare `op_id` is the construction that makes §2.1 unavoidable:
-    /// a `VerifiedEnvelopeMeta` only exists downstream of `admit_candidate`, so there is no way
-    /// to append bytes nobody verified.
+    /// Verifies content-addressing ONLY: `Hash32::of(bytes)` must equal `meta.op_id`. It does
+    /// NOT verify a signature, and it writes `meta`'s fields straight into the index columns.
+    /// `VerifiedEnvelopeMeta`'s own doc-comment (`fe_canonical_log::materialize::traits`) says
+    /// its name is a claim about provenance the type does not enforce -- every field is `pub`
+    /// and the type is not `#[non_exhaustive]` -- so a caller that hand-builds one by struct
+    /// literal can make this door write a row with attacker-chosen index columns and unsigned
+    /// bytes. The only production caller, `admission::admit_and_append`, always passes a
+    /// `decode_and_admit`-derived `meta`, so the property holds in practice; the guarantee that
+    /// actually enforces it lives on the READ side, in [`Self::meta_of`], not here. See
+    /// `canon_log/AGENTS.md` §"Two doors; the guard is on read".
     pub async fn append_admitted(
         &self,
         meta: &VerifiedEnvelopeMeta,
@@ -144,14 +151,15 @@ impl SurrealVerifiedLogStore {
         }
     }
 
-    /// Appends bytes that arrive WITHOUT an admission decision, through the one verifying door.
+    /// Appends bytes that arrive WITHOUT an admission decision, verifying them first.
     ///
     /// `signing::decode_and_admit` is the whole check — canonical re-encoding, the §3.2 author
     /// binding, the §5.1 signature, the §6 structural rules, and the production payload suite —
-    /// and the `op_id` it returns is computed over the RECEIVED bytes. The only other entrance
-    /// to the log, [`Self::append_admitted`], demands a `VerifiedEnvelopeMeta` that exists only
-    /// downstream of `admit_candidate`. There is therefore no unguarded door: every path into
-    /// `verified_op_log` has verified a signature first.
+    /// and the `op_id` it returns is computed over the RECEIVED bytes. It then hands the
+    /// derived `meta` to [`Self::append_admitted`], which trusts that argument and re-checks
+    /// only content-addressing; the safety of this call comes from `meta` having just come out
+    /// of `decode_and_admit` here, not from any check `append_admitted` itself makes. See
+    /// `canon_log/AGENTS.md` §"Two doors; the guard is on read".
     pub async fn append_received(
         &self,
         claimed_op_id: Hash32,
@@ -488,6 +496,12 @@ pub struct SurrealVerseDagView {
 
 impl SurrealVerseDagView {
     /// Loads every admitted operation of `verse_id` and derives its §3.4 equivocation state.
+    ///
+    /// Reads through the inherent [`SurrealVerifiedLogStore::meta_of`], which propagates `Err`,
+    /// so one row whose bytes fail re-verification fails `load` for the entire verse rather than
+    /// being skipped. Deliberate and fail-closed -- it denies rather than admitting forged
+    /// state -- but it is a one-bad-row-denies-everything amplifier: a single corrupted or
+    /// hand-inserted row anywhere in the verse takes the whole DAG view down.
     pub async fn load(
         store: &SurrealVerifiedLogStore,
         verse_id: Identifier32,

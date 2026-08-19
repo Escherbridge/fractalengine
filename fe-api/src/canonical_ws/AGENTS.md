@@ -285,9 +285,13 @@ Both checks are meant to compose: this one is cheap and connection-local,
   the route exists/doesn't exist, not full protocol behavior over a socket. Delta fan-out's
   authorization decision is testable anyway because it is a pure function
   (`subscriptions_authorized_for_delta`); the send loop around it is not.
-- **`MockCapabilityVerifier` ignores `requested_scope`.** It answers by chain bytes alone, so no
-  test in this module can prove that the `subscribe` re-verification is *scope-sensitive* — only
-  that the verifier is consulted and that its verdict is load-bearing (an unregistered chain is
-  refused). Scope sensitivity in this module is carried by the `epoch_scope.contains` check,
-  which is tested directly. A scope-aware double would need `async-trait`, which `fe-api` does
-  not depend on.
+- **`MockCapabilityVerifier`'s accept/reject decision still ignores `requested_scope`** — it
+  matches on chain bytes alone, same as before. What changed: the mock now also *records* the
+  full request (chain bytes, verb, object class, scope) behind a `requests()` accessor separate
+  from the pre-existing `calls()`, and
+  `an_authorized_subscribe_re_verifies_the_chain_before_the_scope_becomes_covered` asserts on it.
+  That closes the gap this note used to describe: the test now proves `subscribe`'s
+  re-verification call carried the scope that was actually subscribed (`narrow_scope`), not just
+  that the verifier was consulted with the right chain bytes. `epoch_scope.contains` remains the
+  thing that makes containment itself scope-sensitive; this assertion is about what
+  `dispatch_subscribe` forwards to the verifier, a distinct property.
