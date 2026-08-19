@@ -4,8 +4,35 @@ SPEC-1 §3.5/§5.2/§9, SPEC-3 §10.1–§10.3, SPEC-6 §9.1. Every other module
 ciphertext as opaque bytes; this is the only place a key, a nonce, or an AEAD call exists.
 
 Scope boundary: protocol only. No socket, listener, connection, iroh, libp2p, `fe-network` or
-`fe-sync` reference; no device enrolment, no wrap delivery transport, no relay seeding. §10.2.4
-delivery and §10.3.4 network enablement remain owner-gated and are deliberately unbuilt here.
+`fe-sync` reference; no device-enrolment *registry*, no wrap delivery transport, no relay seeding.
+§10.2.4 delivery and §10.3.4 network enablement remain owner-gated and are deliberately unbuilt
+here. `key_wrap`'s three view traits are the seams those absent surfaces will answer through: they
+ask questions, they store nothing, and each is deny-by-default until something answers.
+
+## §what-is-structural-and-what-is-not
+
+Wave 3's security review found eleven gates that this repo's AGENTS.md files described as
+structural and that were in fact merely conventional — and named the earlier version of this file
+as the exhibit, because it listed eight checks under "Possession is never authority" while
+authority was the one check the code did not make. Confident documentation was concealing the gap.
+This table is therefore part of the module's contract, and a row may only move left when the code
+moves with it:
+
+| §10.2 requirement | Enforcement after the W3R-crypto remediation |
+| --- | --- |
+| A wrap is sealed only to a device its recipient enrolled | **Structural.** `ScopeKeyWrapRequest` carries a `RecipientDeviceBinding` whose fields are private and whose only constructor asks a `DeviceEnrolmentView`. The unsafe call has no spelling. |
+| The scope, epoch, recipient, and device key of one delivery agree | **Structural.** All four come from the binding; the request has no second place to state them, so no two can disagree. |
+| The issuer signs as the principal the body names | **Structural.** `wrap_scope_key` compares the offered `SigningKey` against `issuer.public_key`. |
+| The signed `issuer_capability` names the epoch being sealed | **Structural**, checked on both the issuing and the opening side. |
+| A recipient validates the issuer's authority before unwrapping | **Structural at the seam, conventional in substance.** `open_scope_key` cannot be called without an `IssuerAuthorityView` and refuses anything but `Granted` — but what that view answers with is the caller's implementation, and no persistent recipient-side view exists yet. |
+| The issuer holds current Manager+ authority and the recipient a current `decrypt` capability | **Structural at `issue_scope_key_wrap`, absent at `wrap_scope_key`.** The primitive underneath asks no authority question, and its own doc comment says so rather than implying otherwise. |
+| A device-enrolment registry exists | **Not built.** `DeviceEnrolmentView` has no production implementor in this workspace. A caller can satisfy it with a view that answers `Granted` to everything — but that is a visible, reviewable act of writing a permissive view, not an omission nobody notices. Wave 4 follow-up. |
+| A recipient checks that the wrap's recipient principal is its own | **Deliberately not checked.** `DeviceSecretKey` carries no principal; the AAD's device key is what the wrap key derives from, and the `key_id` check pins the recovered material to its scope and epoch, so a mis-named recipient yields the same genuine key rather than a foreign one. Documented, not silently absent. |
+
+`AuthorizationRecord` has three states rather than two for the same reason
+`capability::AuthorityState` does: a view holding no record has not said "no". It is a separate
+enum only because `AuthorityState::ManagerPlus` is the wrong name for "this device is enrolled".
+Both non-`Granted` states refuse.
 
 ## §dependencies — approved under D-CL21
 
@@ -54,17 +81,28 @@ stored-artifact decode path; all of them must stay.
 `artifact_aad::StoredArtifactAad::preimage`. Keeping the construction outside means neither
 function can be specialized into a variant that quietly skips one of them.
 
-**`FreshNonce` is a one-shot grant, not a value.** It is neither `Clone` nor `Copy`, and `seal`
-consumes it by value, so one draw seals at most one plaintext. XChaCha20-Poly1305 nonce reuse
-under one key is a keystream-recovery break, so this is enforced by the type system rather than
-detected afterwards by a ledger. `segment::artifact::NonceLedger` remains the *second* line of
-defence for the sealing path that goes through `seal_artifact`; it is bounded and evicts, so it
-is a guard, never a proof. `FreshNonce::from_params` exists for the golden-vector oracle and the
-negative tests; it cannot smuggle a non-production suite past `seal`, which still asserts.
+**`FreshNonce` is a one-shot grant for `seal`, and for nothing else.** It is neither `Clone` nor
+`Copy`, `draw` is its only constructor outside this crate's own tests, and `seal` consumes it by
+value — so one draw reaches `seal` at most once. XChaCha20-Poly1305 nonce reuse under one key is
+a keystream-recovery break, which is why the constructor is closed rather than the reuse being
+detected afterwards.
+
+The earlier version of this paragraph claimed the type system refused nonce reuse outright. It
+did not, and the code did not either: `from_params` was `pub`, so anyone could round-trip
+`params()` back into a second grant, and the one-shot property was decorative. `from_params` is
+now `#[cfg(test)] pub(crate)`. Two limits survive and are stated rather than papered over.
+`params()` still hands out a `Copy` value, and `AeadSuite` is a public trait taking
+`&EncryptionParams`, so a caller reaching the cipher *through the trait* can still present one
+nonce twice — the trait must stay open because `open` legitimately re-presents a stored nonce.
+And `segment::artifact::NonceLedger` guards only the `seal_artifact` path; it is bounded and
+evicts, so it is a guard, never a proof.
 
 `SealingKey` is the single 32-byte secret type — scope keys, derived wrap keys, and derived topic
 keys are all one concept ("a key an AEAD suite seals under") rather than three near-identical
-newtypes. It zeroizes on drop, redacts itself in `Debug`, and compares in constant time. No key
+newtypes. It zeroizes on drop, redacts itself in `Debug`, compares in constant time, and is
+deliberately **not** `Clone`: a duplicate outliving the original's zeroizing drop must not be
+producible by a derive. `expose_bytes` remains the one disclosure point, so `*key.expose_bytes()`
+still copies the bytes — the guarantee is that no copy is accidental, not that none exists. No key
 type in this module derives `Debug`, and no error variant carries key bytes.
 
 ## §artifact-aad — the pre-seal construction, and why it duplicates a shape
@@ -105,19 +143,20 @@ The BLAKE3 preimage carries raw key bytes and is zeroized before `derive_key_id`
 ## §key-wrap — provisional numbering and what "complete wrap" means
 
 §10.2.3 fixes the seven-key associated-data map. Everything else about the artifact's encoding is
-this slice's own assignment, provisional, and belongs in the `src/AGENTS.md` provisional
-numbering surface the owner ratifies:
+this module's own assignment. **Three of those assignments are provisional and UNRATIFIED**: the
+`ScopeKeyWrapBody` rows, the `ScopeKeyWrap` row, and this module's reading of what
+`canonical_complete_wrap` signs.
+
+**They are recorded in the crate-root `src/AGENTS.md` §"Provisional wire numbering", which is the
+single ratification surface. This file deliberately does not repeat them** — two copies of a key
+table drift exactly the way two canonical encoders drift. Only the normative row below lives here,
+because it is not ours to renumber. Until the owner ratifies those rows, nothing outside this
+crate may encode or decode the wrap maps as if their numbering were fixed.
 
 | Map | Keys |
 | --- | --- |
 | `KeyWrapAad` (§10.2.3, **normative**) | `0` protocol_version, `1` scope, `2` scope_epoch, `3` key_id, `4` recipient principal, `5` recipient X25519 public key, `6` ephemeral X25519 public key |
-| `ScopeKeyWrapBody` (provisional) | `0` associated_data map, `1` wrap_nonce bytes(24), `2` sealed_key bytes(48), `3` issuer principal, `4` issuer capability reference |
-| `ScopeKeyWrap` (provisional) | keys `0`..`4` of the body, plus `5` signature bytes(64) |
 
-§10.2.3 says the signature covers `canonical_complete_wrap`. Read literally that would be
-circular, so — following the SPEC-1 §5.1 unsigned/complete convention — the signed preimage is
-the five-key body **without** the signature slot, and the artifact adds key 5. `ScopeKeyWrapBody`
-is therefore what the spec calls the complete wrap.
 
 `SCOPE_KEY_WRAP_DOMAIN` is deliberately the same string for two constructions: §10.2.2 uses it
 for the BLAKE3-keyed wrap-key KDF and §10.2.3 uses it for the Ed25519 signature. That is what the
@@ -131,30 +170,57 @@ test vector. `StaticSecret` is used instead; it zeroizes on drop under the crate
 `zeroize` feature, and `wrap_scope_key` generates a new one on every call, which is what actually
 makes the key per-delivery.
 
-**Possession is never authority.** `open_scope_key` checks, in order: the issuer DID binding and
-signature, the protocol version, the recipient principal binding, that this device's public key
-is the one the AAD names, that the X25519 exchange was contributory, the AEAD tag, the recovered
-plaintext length, and finally that the recovered key derives the `key_id` the AAD advertises.
-That last check is the only defence against a malicious issuer delivering key material under
-someone else's advertised identifier; a test builds exactly that artifact, because the check is
-otherwise unreachable (any recipient-side tamper of the AAD breaks decryption first).
+**Possession is never authority — and neither is a valid signature.** A signature says the named
+issuer produced these bytes; it says nothing about whether that issuer was ever entitled to
+produce them. Wave 3 shipped an `open_scope_key` that verified the first and read the second — the
+signed `issuer_capability` field — never. It was signed over and then discarded, which is the
+purest form of the defect this workstream keeps rediscovering: a field that looks like a check.
 
-`issue_scope_key_wrap` is the entry point a delivery issuer uses: it runs
-`segment::relay_policy::authorize_scope_key_wrap` against the persistent SPEC-3 view **before**
-deriving anything, so a removed member or a superseded epoch is refused with no key material
-touched. `wrap_scope_key` is the unauthorized primitive underneath it, kept public only for
-callers that have already satisfied §10.2.1 through a different authorization surface and for
-conformance vectors. If a future caller reaches for `wrap_scope_key` directly, that is the thing
-to question — this codebase's recurring defect is the gate that is built but never wired.
+`open_scope_key` now takes an `IssuerAuthorityView` and checks, in order: the issuer DID binding
+and signature, the protocol version, the recipient principal binding, that this device's public
+key is the one the AAD names, that the signed `issuer_capability` names the epoch being delivered,
+that the view records the issuer as Manager+ for that scope and epoch, that the X25519 exchange
+was contributory, the AEAD tag, the recovered plaintext length, and finally that the recovered key
+derives the `key_id` the AAD advertises. The last check is the only defence against an issuer that
+is *properly authorized* and still delivers key material under someone else's advertised
+identifier; a test builds exactly that artifact, because the check is otherwise unreachable (any
+recipient-side tamper of the AAD breaks decryption first). What the view answers with is the
+caller's business — see §what-is-structural-and-what-is-not for how far that goes.
+
+`issue_scope_key_wrap` is the entry point a delivery issuer uses, and it now consults two
+persistent surfaces rather than one, because §10.2.1 asks two different questions. The
+`DeliveryAuthorizationView` answers SPEC-3: is this issuer Manager+ here, may this recipient
+decrypt here. `segment::relay_policy::authorize_scope_key_wrap` answers SPEC-6 §9.3: is this peer
+still wrappable for the lane's current epoch. Neither can answer the other's question, which is
+why they are two arguments and not one. Everything runs **before** anything is derived, so a
+removed member, a demoted issuer, or a superseded epoch is refused with no key material touched.
+
+Note what the SPEC-6 call actually identifies: `PeerIdentity` is an *Ed25519 principal* key. Wave
+3 passed the recipient principal into it and sealed to a caller-supplied *X25519* key, so a caller
+could have a wrap sealed to a device the principal never enrolled while the one authorization call
+looked satisfied. The two identifiers are now separate: the principal goes to the relay view, the
+device key comes from a `RecipientDeviceBinding` the enrolment view resolved.
+
+`wrap_scope_key` is the primitive underneath, kept public for callers that have already satisfied
+§10.2.1 through a different authorization surface and for conformance vectors. It is no longer
+fully unguarded — the binding is structural and the issuer must hold the key it signs under — but
+it still asks **no authority question at all**. If a future caller reaches for it directly, that
+is the thing to question: this codebase's recurring defect is the gate that is built but never
+wired.
 
 ## §scope-key-lifecycle — custody, rotation, and the limits of shredding
 
 `ScopeKeyStore` (this module) is custody of key *material* keyed by `(scope, epoch)`;
 `retention::crypto_shred::ScopeKeyStore` is the SPEC-5 destruction contract. They are two traits
 with one name in two modules on purpose: they answer different questions and Wave 3's
-`fe-database` store implements both, exactly as `InMemoryScopeKeyStore` does here. Reads hand out
-a borrowed `SealingKey`, never a copy, so no implementation can produce key bytes that outlive
-the store's zeroizing drop.
+`fe-database` store implements both, exactly as `InMemoryScopeKeyStore` does here.
+
+Reads hand out a borrowed `SealingKey` rather than an owned one, and `SealingKey` is no longer
+`Clone`, so the store's API produces no *accidental* copy. The stronger claim this paragraph used
+to make — that no implementation can produce key bytes outliving the store's zeroizing drop — was
+false: `expose_bytes` returns `&[u8; 32]`, and `*store.scope_key(k).expose_bytes()` copies it in
+one deref, which is exactly what this module's own `material_of` test helper does. Custody here is
+a convention enforced by a named disclosure point, not a guarantee enforced by the borrow checker.
 
 `ScopeKeyLifecycle::on_epoch_bump` generates the `e + 1` key **before** stopping `e` issuance:
 stopping first would leave the scope with no issuable key at all if generation failed.

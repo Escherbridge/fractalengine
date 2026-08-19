@@ -10,8 +10,9 @@ use fe_canonical_log::capability::{
     RevalidationGate,
 };
 use fe_canonical_log::cbor;
-use fe_canonical_log::envelope::{CompleteEnvelope, Hash32, Scope};
+use fe_canonical_log::envelope::{Hash32, Scope};
 use fe_canonical_log::kind::OperationKind;
+use fe_canonical_log::signing::decode_and_admit;
 use fe_policy::RoleLevel;
 
 use crate::canon_log::append_store::SurrealVerifiedLogStore;
@@ -73,6 +74,34 @@ pub enum EpochBumpRejection {
     /// The operation is not in the verified log, so it cannot move authorization state.
     #[error("operation {0} is not in the verified log")]
     NotAppended(String),
+    /// The stored bytes are not an admissible signed envelope, so they authorize nothing.
+    ///
+    /// A row can only be read back through `signing::decode_and_admit` here, so an unsigned or
+    /// tampered envelope cannot move an epoch even if some other writer got it into the table.
+    #[error("operation {op_id} is not an admissible signed envelope: {detail}")]
+    Unverified {
+        /// Hex of the operation identity that was asked for.
+        op_id: String,
+        /// Why the stored bytes were not admissible.
+        detail: String,
+    },
+    /// SPEC-3 §5.1: only a Manager+ identity at THIS epoch scope may move its epoch.
+    ///
+    /// `AuthorityState::Unknown` lands here too: an unanswered authority question is a refusal,
+    /// never an allow.
+    #[error("author {author_did} may not bump this epoch scope: {authority:?}")]
+    NotManagerPlus {
+        /// The DID of the operation's own author.
+        author_did: String,
+        /// What the authorization view actually answered.
+        authority: AuthorityState,
+    },
+    /// Another admission moved this scope between the read and the write; nothing changed.
+    #[error("scope {scope_key} was modified concurrently; retry the same operation")]
+    ConcurrentModification {
+        /// The durable scope key whose compare-and-swap failed.
+        scope_key: String,
+    },
     /// SPEC-1 reserves kind 4 for `scope_epoch_bump`; nothing else may bump an epoch.
     #[error("operation_kind {operation_kind} is not a scope_epoch_bump (kind 4)")]
     NotAnEpochBump {
@@ -151,20 +180,37 @@ impl SurrealScopeEpochStore {
     /// `capability/AGENTS.md` §revalidation obligation 2 cannot be forgotten at a call site:
     /// there is no admission path that does not take the gate.
     ///
+    /// `authority` is a required parameter and the Manager+ question is asked here, so SPEC-3
+    /// §5.1's authority rule cannot be forgotten at a call site: there is no admission path
+    /// that does not take the view. `AuthorityState::Unknown` refuses, exactly like
+    /// `NotManagerPlus` — an unanswerable authority question is never an allow (§5.3 rule 5).
+    ///
     /// `op_id` names an operation that must already be in the verified log; the declared epoch
     /// is read from its own signed capability reference rather than from a caller argument, so
-    /// nobody can bump an epoch with a number the author never signed.
+    /// nobody can bump an epoch with a number the author never signed. The stored bytes go back
+    /// through `signing::decode_and_admit`, so an unsigned envelope authorizes nothing here
+    /// even if it reached the table by some other route.
     pub async fn admit_epoch_bump(
         &self,
         store: &SurrealVerifiedLogStore,
+        authority: &dyn ManagerAuthorityView,
         op_id: Hash32,
         gate: &mut RevalidationGate,
     ) -> Result<EpochBumpAdmission, EpochBumpRejection> {
         let Some(bytes) = store.envelope_bytes(op_id).await? else {
             return Err(EpochBumpRejection::NotAppended(op_id_to_hex(op_id)));
         };
-        let complete = CompleteEnvelope::decode_canonical(&bytes)
-            .map_err(|error| EpochBumpRejection::Encoding(error.to_string()))?;
+        let (complete, computed_op_id) =
+            decode_and_admit(&bytes).map_err(|error| EpochBumpRejection::Unverified {
+                op_id: op_id_to_hex(op_id),
+                detail: error.to_string(),
+            })?;
+        if computed_op_id != op_id {
+            return Err(EpochBumpRejection::Unverified {
+                op_id: op_id_to_hex(op_id),
+                detail: format!("bytes address {}", op_id_to_hex(computed_op_id)),
+            });
+        }
         let unsigned = &complete.unsigned;
 
         match OperationKind::from_u16(unsigned.operation_kind) {
@@ -184,9 +230,27 @@ impl SurrealScopeEpochStore {
         // §5.1 rule 1: the header scope IS the epoch scope being bumped.
         let scope = unsigned.scope;
         let declared = unsigned.capability.scope_epoch;
+
+        // SPEC-3 §5.1: only a Manager+ identity at this exact epoch scope may move it. Asked
+        // BEFORE any state is read or written, so an unauthorized bump touches nothing at all
+        // and cannot even invalidate a revalidation cache.
+        let authority_state =
+            authority.principal_is_manager_plus(&unsigned.author, &scope, declared);
+        if !authority_state.is_manager_plus() {
+            return Err(EpochBumpRejection::NotManagerPlus {
+                author_did: unsigned.author.did.clone(),
+                authority: authority_state,
+            });
+        }
+
         let key = scope_key(&scope).map_err(EpochBumpRejection::Encoding)?;
+        // One read, not two: re-reading the row for the record would open a window in which the
+        // epoch the compare-and-swap below expects is not the epoch this decision used.
         let existing_row = self.row_by_key(&key).await?;
-        let state = self.record_by_key(&key).await?;
+        let state = match &existing_row {
+            Some(row) => record_from_row(row)?,
+            None => ScopeEpochRecord::default(),
+        };
 
         if state.admitted_bump_op_ids.contains(&op_id) {
             gate.on_epoch_bump(&scope, state.current_epoch);
@@ -240,18 +304,31 @@ impl SurrealScopeEpochStore {
         let admitted_hex: Vec<String> = admitted.iter().map(|id| op_id_to_hex(*id)).collect();
 
         if existing_row.is_some() {
-            self.db
+            // Compare-and-swap on the epoch this decision was made against. A plain UPDATE
+            // would let two concurrent admissions each read `e`, each write `e + 1`, and the
+            // second silently discard the first one's evidence row (§5.1 rule 6 keeps every
+            // admitted bump). Matching zero rows means the state moved underneath us.
+            let mut response = self
+                .db
                 .query(
                     "UPDATE scope_epoch_state SET current_epoch = $epoch, \
-                     admitted_bump_op_ids = $ids WHERE scope_key = $key",
+                     admitted_bump_op_ids = $ids \
+                     WHERE scope_key = $key AND current_epoch = $expected RETURN AFTER",
                 )
                 .bind(("epoch", next_epoch as i64))
                 .bind(("ids", admitted_hex))
                 .bind(("key", key.clone()))
+                .bind(("expected", state.current_epoch as i64))
                 .await
                 .map_err(|error| StorageError::query("epoch state write", error))?
                 .check()
                 .map_err(|error| StorageError::query("epoch state write", error))?;
+            let updated: Vec<serde_json::Value> = response
+                .take(0)
+                .map_err(|error| StorageError::query("epoch state write", error))?;
+            if updated.is_empty() {
+                return Err(EpochBumpRejection::ConcurrentModification { scope_key: key });
+            }
         } else {
             self.db
                 .query("CREATE scope_epoch_state CONTENT $row")
@@ -549,7 +626,72 @@ impl ManagerAuthorityView for DurableAuthorizationView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fe_canonical_log::envelope::Identifier32;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use ed25519_dalek::SigningKey;
+    use fe_canonical_log::envelope::{
+        Author, CapabilityRef, CompleteEnvelope, Hlc, Identifier32, PayloadRef, UnsignedEnvelope,
+        PROTOCOL_VERSION,
+    };
+    use fe_canonical_log::signing::sign_envelope;
+
+    /// An authorization view that answers every Manager+ question the same way.
+    struct FixtureAuthority(AuthorityState);
+
+    impl AuthorizationView for FixtureAuthority {
+        fn current_epoch(&self, _epoch_scope: &Scope) -> Option<u64> {
+            None
+        }
+
+        fn version(&self) -> u64 {
+            1
+        }
+    }
+
+    impl ManagerAuthorityView for FixtureAuthority {
+        fn authority_is_manager_plus(
+            &self,
+            _authority_id: &Hash32,
+            _issuer: &Principal,
+            _epoch_scope: &Scope,
+            _scope_epoch: u64,
+        ) -> AuthorityState {
+            self.0
+        }
+
+        fn principal_is_manager_plus(
+            &self,
+            _principal: &Principal,
+            _epoch_scope: &Scope,
+            _scope_epoch: u64,
+        ) -> AuthorityState {
+            self.0
+        }
+    }
+
+    /// A signed kind-4 `scope_epoch_bump` for [`verse_scope`] declaring `scope_epoch`.
+    fn epoch_bump(author_seed: u8, scope_epoch: u64) -> (Hash32, Vec<u8>, String) {
+        let signing_key = SigningKey::from_bytes(&[author_seed; 32]);
+        let unsigned = UnsignedEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            operation_kind: OperationKind::ScopeEpochBump.to_u16(),
+            scope: verse_scope(),
+            author: Author::from_public_key(signing_key.verifying_key().to_bytes()),
+            capability: CapabilityRef {
+                chain_id: Hash32([0x33; 32]),
+                scope_epoch,
+            },
+            schema_hash: Hash32([0x44; 32]),
+            branch_id: Identifier32([0x55; 32]),
+            parents: vec![Hash32([0x66; 32])],
+            hlc: Hlc::new(1_000, 0),
+            payload: PayloadRef::empty(),
+        };
+        let complete = sign_envelope(&signing_key, &unsigned).expect("sign bump");
+        let bytes = complete.encode_canonical().expect("encode bump");
+        let did = complete.unsigned.author.did.clone();
+        (Hash32::of(&bytes), bytes, did)
+    }
 
     fn verse_scope() -> Scope {
         Scope::verse_wide(Identifier32([0x11; 32]))
@@ -677,6 +819,148 @@ mod tests {
             AuthorityState::Unknown,
             "a verse-scoped role does not answer a petal-scoped question"
         );
+    }
+
+    #[tokio::test]
+    async fn an_epoch_bump_without_manager_authority_changes_nothing() {
+        let db = memory_database().await;
+        let store = SurrealVerifiedLogStore::new(db.clone());
+        let epochs = SurrealScopeEpochStore::new(db);
+        let (op_id, bytes, author_did) = epoch_bump(0x21, 0);
+        store
+            .append_received(op_id, &bytes)
+            .await
+            .expect("append the bump");
+
+        let mut gate = RevalidationGate::new();
+        for state in [AuthorityState::Unknown, AuthorityState::NotManagerPlus] {
+            let rejection = epochs
+                .admit_epoch_bump(&store, &FixtureAuthority(state), op_id, &mut gate)
+                .await
+                .expect_err("only a Manager+ identity may bump an epoch");
+            assert_eq!(
+                rejection,
+                EpochBumpRejection::NotManagerPlus {
+                    author_did: author_did.clone(),
+                    authority: state,
+                }
+            );
+            assert_eq!(
+                epochs.current_epoch(&verse_scope()).await.expect("read"),
+                None,
+                "an unauthorized bump must not even create the scope row"
+            );
+        }
+
+        // The identical operation, once the view can answer Manager+.
+        let admission = epochs
+            .admit_epoch_bump(
+                &store,
+                &FixtureAuthority(AuthorityState::ManagerPlus),
+                op_id,
+                &mut gate,
+            )
+            .await
+            .expect("an authorized bump admits");
+        assert_eq!(
+            admission,
+            EpochBumpAdmission::Bumped {
+                previous_epoch: 0,
+                current_epoch: 1,
+            }
+        );
+        assert_eq!(
+            epochs.current_epoch(&verse_scope()).await.expect("read"),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_row_cannot_move_an_epoch() {
+        let db = memory_database().await;
+        let store = SurrealVerifiedLogStore::new(db.clone());
+        let epochs = SurrealScopeEpochStore::new(db.clone());
+        let (op_id, bytes, _) = epoch_bump(0x21, 0);
+        store
+            .append_received(op_id, &bytes)
+            .await
+            .expect("append the bump");
+
+        // Substitute the stored bytes with a canonically-encoded envelope nobody signed. It
+        // still decodes; only the signature check can tell the difference.
+        let mut complete = CompleteEnvelope::decode_canonical(&bytes).expect("decode");
+        complete.signature[0] ^= 0xff;
+        let forged = complete.encode_canonical().expect("encode");
+        db.query("UPDATE verified_op_log SET envelope_bytes = $bytes WHERE op_id_hex = $id")
+            .bind(("bytes", BASE64.encode(&forged)))
+            .bind(("id", op_id_to_hex(op_id)))
+            .await
+            .expect("substitute stored bytes")
+            .check()
+            .expect("substitute check");
+
+        let mut gate = RevalidationGate::new();
+        let rejection = epochs
+            .admit_epoch_bump(
+                &store,
+                &FixtureAuthority(AuthorityState::ManagerPlus),
+                op_id,
+                &mut gate,
+            )
+            .await
+            .expect_err("an unsigned envelope authorizes nothing");
+        assert!(
+            matches!(rejection, EpochBumpRejection::Unverified { .. }),
+            "{rejection:?}"
+        );
+        assert_eq!(
+            epochs.current_epoch(&verse_scope()).await.expect("read"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_second_bump_is_evidence_and_does_not_move_the_epoch() {
+        let db = memory_database().await;
+        let store = SurrealVerifiedLogStore::new(db.clone());
+        let epochs = SurrealScopeEpochStore::new(db);
+        let (first_op_id, first_bytes, _) = epoch_bump(0x21, 0);
+        let (second_op_id, second_bytes, _) = epoch_bump(0x22, 0);
+        for (op_id, bytes) in [(first_op_id, &first_bytes), (second_op_id, &second_bytes)] {
+            store
+                .append_received(op_id, bytes)
+                .await
+                .expect("append the bump");
+        }
+
+        let authority = FixtureAuthority(AuthorityState::ManagerPlus);
+        let mut gate = RevalidationGate::new();
+        assert_eq!(
+            epochs
+                .admit_epoch_bump(&store, &authority, first_op_id, &mut gate)
+                .await
+                .expect("first bump"),
+            EpochBumpAdmission::Bumped {
+                previous_epoch: 0,
+                current_epoch: 1,
+            }
+        );
+        assert_eq!(
+            epochs
+                .admit_epoch_bump(&store, &authority, second_op_id, &mut gate)
+                .await
+                .expect("second bump"),
+            EpochBumpAdmission::ConcurrentDuplicate { current_epoch: 1 }
+        );
+
+        // §5.1 rule 6: the epoch moved once, and BOTH bumps survive as auditable evidence.
+        // The compare-and-swap on `current_epoch` is what keeps the second write from
+        // overwriting the first one's evidence list wholesale.
+        let record = epochs.record(&verse_scope()).await.expect("record");
+        assert_eq!(record.current_epoch, 1);
+        assert_eq!(record.admitted_bump_op_ids.len(), 2);
+        assert!(record.admitted_bump_op_ids.contains(&first_op_id));
+        assert!(record.admitted_bump_op_ids.contains(&second_op_id));
     }
 
     #[tokio::test]

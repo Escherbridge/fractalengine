@@ -207,6 +207,21 @@ pub enum ChainError {
     /// Step 8: the requested resource is outside the `resource_allowlist` caveat.
     #[error("the requested resource is not in the resource_allowlist caveat")]
     ResourceNotAllowed,
+    /// Step 8: `resource_id` names a different resource than `target_scope` does.
+    #[error("resource_id does not match the resource named by target_scope")]
+    ResourceScopeMismatch,
+    /// Step 8: a `max_payload_bytes` caveat is in force and the request stated no payload size.
+    #[error("a max_payload_bytes caveat of {limit} is in force but the request stated no size")]
+    PayloadSizeUnstated {
+        /// Caveat limit the request never demonstrated it satisfies.
+        limit: u64,
+    },
+    /// Step 8: a `max_segment_bytes` caveat is in force and the request stated no segment size.
+    #[error("a max_segment_bytes caveat of {limit} is in force but the request stated no size")]
+    SegmentSizeUnstated {
+        /// Caveat limit the request never demonstrated it satisfies.
+        limit: u64,
+    },
     /// Step 8: the request exceeds the `max_payload_bytes` caveat.
     #[error("payload of {actual} bytes exceeds the max_payload_bytes caveat of {limit}")]
     PayloadTooLarge {
@@ -487,7 +502,14 @@ impl VerificationOptions {
 }
 
 /// What a chain proves once all nine §2.4 steps pass.
+///
+/// `#[non_exhaustive]` is load-bearing, not forward-compatibility boilerplate: it makes the
+/// struct literal writable only inside this crate, so no consumer crate can mint a
+/// "verified" capability that no verification produced. [`verify_chain_bytes`] is the only
+/// constructor, and possession of this type is therefore evidence that the nine steps ran.
+/// Field reads are unaffected. See `src/capability/AGENTS.md` §possession-is-never-authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VerifiedCapability {
     /// BLAKE3 identifier of the chain artifact.
     pub chain_id: ChainId,
@@ -760,7 +782,32 @@ fn verify_binding(
     })
 }
 
+/// Whether this request necessarily carries an intent payload, so `payload_bytes: None` is a
+/// caller omission rather than an honest "this request has no payload".
+fn states_a_payload(request: &AuthorizationRequest) -> bool {
+    matches!(
+        (request.verb, request.object_class),
+        (Verb::Append, ObjectClass::Operation)
+    )
+}
+
+/// Whether this request necessarily seals a segment, so `segment_bytes: None` is an omission.
+fn states_a_segment(request: &AuthorizationRequest) -> bool {
+    matches!(
+        (request.verb, request.object_class),
+        (Verb::Append, ObjectClass::Segment)
+    )
+}
+
 /// §2.4 step 8: verb, class, table, scope, resource, sizes, schema, kind, and preview rate.
+///
+/// **Absence is refusal, not zero, wherever the request must know the answer.** Every allowlist
+/// row (`resource_allowlist`, `allowed_schema_hashes`, `allowed_operation_kinds`) already denies
+/// a request that names nothing; the numeric rows now match, but only for the request shapes
+/// that necessarily carry the quantity, because for every other shape `None` honestly means "no
+/// payload"/"no segment". `max_preview_hz` keeps its `unwrap_or(0)` and is unreachable in
+/// practice: §3.3 dashes the whole preview row, so a `Verb::Preview` request never gets past
+/// `permissions::evaluate` above.
 fn check_request_fits_leaf(
     leaf: &super::certificate::UnsignedCertificate,
     request: &AuthorizationRequest,
@@ -785,6 +832,14 @@ fn check_request_fits_leaf(
     if !leaf.grant_scope.contains(&request.target_scope) {
         return Err(ChainError::ScopeNotContained);
     }
+    // A request carries two independent resource identifiers -- `target_scope`'s third slot and
+    // `resource_id` -- and only the first is scope-checked. Requiring them to agree stops a
+    // request from being authorized against one resource while naming another.
+    if let Some(scoped_resource) = request.target_scope.resource_id() {
+        if matches!(request.resource_id, Some(named) if named != scoped_resource) {
+            return Err(ChainError::ResourceScopeMismatch);
+        }
+    }
     if let Some(allowlist) = &leaf.caveats.resource_allowlist {
         match request.resource_id {
             Some(resource) if allowlist.contains(&resource) => {}
@@ -792,15 +847,28 @@ fn check_request_fits_leaf(
         }
     }
     if let Some(limit) = leaf.caveats.max_payload_bytes {
-        let actual = request.payload_bytes.unwrap_or(0);
-        if actual > limit {
-            return Err(ChainError::PayloadTooLarge { limit, actual });
+        match request.payload_bytes {
+            Some(actual) if actual > limit => {
+                return Err(ChainError::PayloadTooLarge { limit, actual })
+            }
+            Some(_) => {}
+            // Silence is not compliance for a request that necessarily carries a payload slot.
+            None if states_a_payload(request) => {
+                return Err(ChainError::PayloadSizeUnstated { limit })
+            }
+            None => {}
         }
     }
     if let Some(limit) = leaf.caveats.max_segment_bytes {
-        let actual = request.segment_bytes.unwrap_or(0);
-        if actual > limit {
-            return Err(ChainError::SegmentTooLarge { limit, actual });
+        match request.segment_bytes {
+            Some(actual) if actual > limit => {
+                return Err(ChainError::SegmentTooLarge { limit, actual })
+            }
+            Some(_) => {}
+            None if states_a_segment(request) => {
+                return Err(ChainError::SegmentSizeUnstated { limit })
+            }
+            None => {}
         }
     }
     if let Some(allowlist) = &leaf.caveats.allowed_schema_hashes {
@@ -2088,7 +2156,7 @@ mod tests {
             false
         }
 
-        fn may_wrap_scope_key_for_device(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
+        fn may_wrap_scope_key_for_peer(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
             false
         }
     }
@@ -2179,6 +2247,160 @@ mod tests {
             authorize_scope_key_wrap(&relay_view, &seeder, &lane, SCOPE_EPOCH),
             Err(SegmentError::Unauthorized),
             "a seed-authorized peer obtains no scope-key wrap"
+        );
+    }
+
+    #[test]
+    fn an_unstated_size_never_satisfies_a_numeric_caveat_that_binds_the_request() {
+        let chain = sample_chain();
+
+        let mut silent = append_request();
+        silent.payload_bytes = None;
+        assert_eq!(
+            verify_chain(
+                &chain,
+                &silent,
+                &view(),
+                &snapshot(),
+                &VerificationOptions::live()
+            ),
+            Err(ChainError::PayloadSizeUnstated { limit: 4096 }),
+            "an operation append that declines to state its payload size has not shown it fits"
+        );
+
+        let mut explicit_zero = append_request();
+        explicit_zero.payload_bytes = Some(0);
+        assert!(
+            verify_chain(
+                &chain,
+                &explicit_zero,
+                &view(),
+                &snapshot(),
+                &VerificationOptions::live()
+            )
+            .is_ok(),
+            "an explicit zero is a statement, and it satisfies the bound"
+        );
+
+        // A request that carries no payload at all is not asked to state one.
+        let mut fetch = append_request();
+        fetch.verb = Verb::Fetch;
+        fetch.payload_bytes = None;
+        assert!(
+            verify_chain(
+                &chain,
+                &fetch,
+                &view(),
+                &snapshot(),
+                &VerificationOptions::live()
+            )
+            .is_ok(),
+            "None honestly means 'this request carries no payload' for every other shape"
+        );
+
+        let segment_bound = chain_with(
+            |root| {
+                root.caveats.max_segment_bytes = Some(1024);
+                root.object_classes =
+                    ObjectClassSet::from_classes([ObjectClass::Operation, ObjectClass::Segment])
+                        .expect("classes");
+            },
+            |delegate| {
+                delegate.caveats.max_segment_bytes = Some(1024);
+                delegate.object_classes =
+                    ObjectClassSet::from_classes([ObjectClass::Operation, ObjectClass::Segment])
+                        .expect("classes");
+            },
+        );
+        let mut silent_segment = append_request();
+        silent_segment.object_class = ObjectClass::Segment;
+        silent_segment.segment_bytes = None;
+        assert_eq!(
+            verify_chain(
+                &segment_bound,
+                &silent_segment,
+                &view(),
+                &snapshot(),
+                &VerificationOptions::live()
+            ),
+            Err(ChainError::SegmentSizeUnstated { limit: 1024 })
+        );
+
+        silent_segment.segment_bytes = Some(1024);
+        assert!(verify_chain(
+            &segment_bound,
+            &silent_segment,
+            &view(),
+            &snapshot(),
+            &VerificationOptions::live()
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn a_request_may_not_name_one_resource_and_be_scoped_to_another() {
+        let chain = sample_chain();
+        let resource_scope = |filler: u8| {
+            Scope::new(verse(), Some(identifier(0x22)), Some(identifier(filler)))
+                .expect("resource scope")
+        };
+
+        let mut disagreeing = append_request();
+        disagreeing.target_scope = resource_scope(0x31);
+        disagreeing.resource_id = Some(identifier(0x32));
+        assert_eq!(
+            verify_chain(
+                &chain,
+                &disagreeing,
+                &view(),
+                &snapshot(),
+                &VerificationOptions::live()
+            ),
+            Err(ChainError::ResourceScopeMismatch),
+            "only target_scope is scope-checked, so the two identifiers must agree"
+        );
+
+        let mut agreeing = append_request();
+        agreeing.target_scope = resource_scope(0x31);
+        agreeing.resource_id = Some(identifier(0x31));
+        assert!(verify_chain(
+            &chain,
+            &agreeing,
+            &view(),
+            &snapshot(),
+            &VerificationOptions::live()
+        )
+        .is_ok());
+
+        let mut unnamed = append_request();
+        unnamed.target_scope = resource_scope(0x31);
+        unnamed.resource_id = None;
+        assert!(
+            verify_chain(
+                &chain,
+                &unnamed,
+                &view(),
+                &snapshot(),
+                &VerificationOptions::live()
+            )
+            .is_ok(),
+            "naming no resource beside a resource-scoped target is not a disagreement"
+        );
+
+        // Belt and braces: the disagreement is caught even when a resource_allowlist would
+        // have admitted the named identifier on its own.
+        let allowlisted = chain_with_delegate(|delegate| {
+            delegate.caveats.resource_allowlist = Some(vec![identifier(0x32)]);
+        });
+        assert_eq!(
+            verify_chain(
+                &allowlisted,
+                &disagreeing,
+                &view(),
+                &snapshot(),
+                &VerificationOptions::live()
+            ),
+            Err(ChainError::ResourceScopeMismatch)
         );
     }
 

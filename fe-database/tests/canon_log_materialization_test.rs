@@ -14,26 +14,34 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 
+use fe_canonical_log::branch::VerseDagView;
 use fe_canonical_log::cbor::CborValue;
+use fe_canonical_log::checkpoint::{
+    sign_checkpoint_claim, CheckpointClaimV1, ManagerPlusAuthorizationView, CHECKPOINT_VERSION,
+};
+use fe_canonical_log::compose::{BindingSelection, CompositionError};
 use fe_canonical_log::envelope::{
-    Author, CapabilityRef, Hash32, Hlc, Identifier32, PayloadRef, Scope, UnsignedEnvelope,
-    PROTOCOL_VERSION,
+    Author, CapabilityRef, CompleteEnvelope, EquivocationKey, Hash32, Hlc, Identifier32,
+    PayloadRef, Scope, UnsignedEnvelope, PROTOCOL_VERSION,
 };
 use fe_canonical_log::frontier::SortedFrontier;
 use fe_canonical_log::materialize::{
-    verified_envelope_meta_from, AdmissionOutcome, AppendOutcome, CandidateVerifier,
-    CausalMaterializer, CheckpointBinding, CheckpointBindingMismatch, MaterializerVersion,
-    ProjectionIdentity, ProjectionMutation, VerifiedEnvelopeMeta,
+    verified_envelope_meta_from, AdmissionOutcome, AppendError, AppendOutcome, CandidateVerifier,
+    CausalMaterializer, CheckpointBindingMismatch, EquivocationIndex, MaterializerVersion,
+    ProjectionIdentity, ProjectionMutation, VerifiedEnvelopeMeta, VerifiedLogStore,
 };
 use fe_canonical_log::signing::{decode_and_admit, op_id as op_id_of_bytes, sign_envelope};
 
 use fe_database::canon_log::admission::{
-    admit_and_append, AdmissionRejection, AdmittedAppend, NoPrecondition,
+    admit_and_append, AdmissionRejection, AdmittedAppend, EvidenceAvailability, NoPrecondition,
 };
-use fe_database::canon_log::append_store::{SurrealVerifiedLogStore, SurrealVerseDagView};
+use fe_database::canon_log::append_store::{
+    SurrealVerifiedLogStore, SurrealVerseDagView, VerifiedLogStoreError,
+};
 use fe_database::canon_log::apply_marker_store::SurrealApplyMarkerStore;
 use fe_database::canon_log::rebuild::{
-    rebuild_projection, ProjectionSurface, RebuildRequest, RebuildSource,
+    rebuild_projection, AcceleratorRefusal, AdmittedCheckpoint, CheckpointOfferRejection,
+    ProjectionSurface, RebuildRequest, RebuildSource,
 };
 use fe_database::canon_log::replay::{replay_to_frontier, PendingReason, ReplayOutcome};
 
@@ -47,6 +55,12 @@ const FIXTURE_KIND: u16 = 100;
 const VERSE: Identifier32 = Identifier32([0x11; 32]);
 const BRANCH: Identifier32 = Identifier32([0x22; 32]);
 const SEGMENT_MANIFEST: Hash32 = Hash32([0x33; 32]);
+/// The registry identifier of the fixture materializer, as a SPEC-5 claim names it.
+const MATERIALIZER_ID: Identifier32 = Identifier32([0x44; 32]);
+/// Seed of the one signing key the fixture authorization view recognises as Manager+.
+const CHECKPOINT_MANAGER_SEED: u8 = 0xc1;
+/// Seed of a signing key that is a perfectly good signer and not Manager+ anywhere.
+const CHECKPOINT_OUTSIDER_SEED: u8 = 0xc2;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -87,6 +101,119 @@ fn build_operation(author_seed: u8, parents: &[Hash32], wall_ms: u64, counter: u
     let op_id = op_id_of_bytes(&bytes);
     let meta = verified_envelope_meta_from(&complete, op_id);
     Operation { op_id, bytes, meta }
+}
+
+/// The authorization facts SPEC-5 §3.2 asks about a checkpoint signer: exactly one key is
+/// Manager+ for [`VERSE`], and every other question answers no.
+struct FixtureCheckpointAuthority {
+    manager_public_key: [u8; 32],
+}
+
+impl Default for FixtureCheckpointAuthority {
+    fn default() -> Self {
+        Self {
+            manager_public_key: SigningKey::from_bytes(&[CHECKPOINT_MANAGER_SEED; 32])
+                .verifying_key()
+                .to_bytes(),
+        }
+    }
+}
+
+impl ManagerPlusAuthorizationView for FixtureCheckpointAuthority {
+    fn is_manager_plus_for_checkpoint(
+        &self,
+        verse_id: Identifier32,
+        signer: &Author,
+        _capability: &CapabilityRef,
+    ) -> bool {
+        verse_id == VERSE && signer.public_key == self.manager_public_key
+    }
+
+    fn capability_permits_append_checkpoint(
+        &self,
+        verse_scope: &Scope,
+        signer: &Author,
+        _capability: &CapabilityRef,
+    ) -> bool {
+        *verse_scope == Scope::verse_wide(VERSE) && signer.public_key == self.manager_public_key
+    }
+
+    fn authorization_view_root(
+        &self,
+        _verse_id: Identifier32,
+        _branch_id: Identifier32,
+        _frontier_commitment: Hash32,
+    ) -> Option<Hash32> {
+        None
+    }
+}
+
+/// Everything a checkpoint claim can lie about, so one builder covers every case.
+#[derive(Clone)]
+struct CheckpointFixture {
+    signer_seed: u8,
+    branch_id: Identifier32,
+    frontier_commitment: Hash32,
+    segment_manifest_id: Hash32,
+    materializer_id: Identifier32,
+    materializer_version: u64,
+    projection_root_hash: Hash32,
+}
+
+impl CheckpointFixture {
+    /// An honest claim: Manager+ signer, every binding equal to the caller's own selection.
+    fn honest(frontier: &SortedFrontier, projection_root_hash: Hash32) -> Self {
+        Self {
+            signer_seed: CHECKPOINT_MANAGER_SEED,
+            branch_id: BRANCH,
+            frontier_commitment: frontier.commitment(),
+            segment_manifest_id: SEGMENT_MANIFEST,
+            materializer_id: MATERIALIZER_ID,
+            materializer_version: u64::from(identity().materializer_version.version),
+            projection_root_hash,
+        }
+    }
+
+    /// The complete, canonically-encoded, signed claim bytes.
+    fn signed_bytes(&self) -> Vec<u8> {
+        let signing_key = SigningKey::from_bytes(&[self.signer_seed; 32]);
+        let claim = CheckpointClaimV1 {
+            checkpoint_version: CHECKPOINT_VERSION,
+            verse_id: VERSE,
+            branch_id: self.branch_id,
+            frontier_commitment: self.frontier_commitment,
+            segment_manifest_id: self.segment_manifest_id,
+            materializer_id: self.materializer_id,
+            materializer_version: self.materializer_version,
+            projection_root_hash: self.projection_root_hash,
+            authorization_view_root: Hash32([0x00; 32]),
+            snapshot_manifest_id: None,
+            signer: Author::from_public_key(signing_key.verifying_key().to_bytes()),
+            capability: CapabilityRef {
+                chain_id: Hash32([0x77; 32]),
+                scope_epoch: 0,
+            },
+            issued_hlc: Hlc::new(400, 0),
+        };
+        sign_checkpoint_claim(&signing_key, &claim)
+            .expect("sign checkpoint claim")
+            .encode_canonical()
+            .expect("encode checkpoint claim")
+    }
+}
+
+/// The caller's own current selection, which every offered claim is compared against.
+fn binding_selection<'a>(
+    frontier: &'a SortedFrontier,
+    materializer_version: &'a MaterializerVersion,
+) -> BindingSelection<'a> {
+    BindingSelection {
+        branch_id: BRANCH,
+        frontier,
+        segment_manifest_id: SEGMENT_MANIFEST,
+        materializer_id: MATERIALIZER_ID,
+        materializer_version,
+    }
 }
 
 /// A verifier that runs the REAL canonical admission for envelope structure, and injects the
@@ -873,13 +1000,19 @@ async fn checkpoint_binds_frontier_manifest_and_materializer() {
     .expect("replay");
     let projection_root_hash = projection_root(&harness.db).await;
 
-    let honest = CheckpointBinding {
-        branch_id: BRANCH,
-        frontier_commitment: frontier.commitment(),
-        segment_manifest_id: SEGMENT_MANIFEST,
-        materializer_version: identity.materializer_version.clone(),
-        projection_root_hash,
-    };
+    let selection_version = identity.materializer_version.clone();
+    let authority = FixtureCheckpointAuthority::default();
+    let honest = CheckpointFixture::honest(&frontier, projection_root_hash);
+    let admitted = AdmittedCheckpoint::admit(
+        &honest.signed_bytes(),
+        &authority,
+        &binding_selection(&frontier, &selection_version),
+    )
+    .expect("an honest Manager+ checkpoint admits");
+    assert_eq!(
+        admitted.claimed_projection_root_hash(),
+        projection_root_hash
+    );
 
     let mut dag_view = SurrealVerseDagView::load(&harness.store, VERSE)
         .await
@@ -897,89 +1030,159 @@ async fn checkpoint_binds_frontier_manifest_and_materializer() {
         RebuildRequest {
             identity: &identity,
             frontier: &frontier,
-            segment_manifest_id: SEGMENT_MANIFEST,
-            checkpoint: Some(&honest),
+            checkpoint: Some(&admitted),
         },
     )
     .await
     .expect("rebuild");
-    assert_eq!(accepted.rejected_checkpoint, None);
+    assert_eq!(accepted.refused_accelerator, None);
     assert_eq!(
         accepted.source,
         RebuildSource::VerifiedCheckpoint {
-            claimed_projection_root_hash: projection_root_hash
+            checkpoint_id: admitted.checkpoint_id(),
+            claimed_projection_root_hash: projection_root_hash,
         }
     );
+    assert!(
+        !accepted.replay_verified_recorded,
+        "a checkpoint-accelerated pass is not the replay this process ran (§6.2)"
+    );
 
-    // Changing any bound field invalidates the checkpoint for reuse.
+    // Changing any bound field makes the claim unadmissible, so the rebuild never sees it: a
+    // signature over the wrong selection is refused at the door rather than reported afterwards.
     let other_frontier = frontier_of(&[dag[1].op_id, dag[2].op_id]);
-    let cases: Vec<(CheckpointBinding, CheckpointBindingMismatch)> = vec![
+    let cases: Vec<(CheckpointFixture, CheckpointOfferRejection)> = vec![
         (
-            CheckpointBinding {
+            CheckpointFixture {
                 frontier_commitment: other_frontier.commitment(),
                 ..honest.clone()
             },
-            CheckpointBindingMismatch::FrontierCommitmentMismatch,
+            CheckpointOfferRejection::Binding(CompositionError::Binding(
+                CheckpointBindingMismatch::FrontierCommitmentMismatch,
+            )),
         ),
         (
-            CheckpointBinding {
+            CheckpointFixture {
                 segment_manifest_id: Hash32([0x34; 32]),
                 ..honest.clone()
             },
-            CheckpointBindingMismatch::SegmentManifestMismatch,
+            CheckpointOfferRejection::Binding(CompositionError::Binding(
+                CheckpointBindingMismatch::SegmentManifestMismatch,
+            )),
         ),
         (
-            CheckpointBinding {
-                materializer_version: MaterializerVersion::new("scene-graph", 2),
+            CheckpointFixture {
+                materializer_version: 2,
                 ..honest.clone()
             },
-            CheckpointBindingMismatch::MaterializerVersionMismatch,
+            CheckpointOfferRejection::Binding(CompositionError::MaterializerVersionMismatch {
+                claimed: 2,
+                current: 1,
+            }),
         ),
         (
-            CheckpointBinding {
-                materializer_version: MaterializerVersion::new("terrain-index", 1),
+            CheckpointFixture {
+                materializer_id: Identifier32([0x45; 32]),
                 ..honest.clone()
             },
-            CheckpointBindingMismatch::MaterializerVersionMismatch,
+            CheckpointOfferRejection::Binding(CompositionError::MaterializerIdentifierMismatch),
         ),
         (
-            CheckpointBinding {
+            CheckpointFixture {
                 branch_id: Identifier32([0x23; 32]),
                 ..honest.clone()
             },
-            CheckpointBindingMismatch::BranchMismatch,
+            CheckpointOfferRejection::Binding(CompositionError::Binding(
+                CheckpointBindingMismatch::BranchMismatch,
+            )),
+        ),
+        (
+            CheckpointFixture {
+                signer_seed: CHECKPOINT_OUTSIDER_SEED,
+                ..honest.clone()
+            },
+            CheckpointOfferRejection::NotManagerPlus,
         ),
     ];
 
     for (tampered, expected) in cases {
-        let report = rebuild_projection(
-            &harness.store,
-            &harness.markers,
-            &materializer,
-            &surface,
-            &mut dag_view,
-            RebuildRequest {
-                identity: &identity,
-                frontier: &frontier,
-                segment_manifest_id: SEGMENT_MANIFEST,
-                checkpoint: Some(&tampered),
-            },
-        )
-        .await
-        .expect("rebuild");
-        assert_eq!(report.rejected_checkpoint, Some(expected));
         assert_eq!(
-            report.source,
-            RebuildSource::EmptyState,
-            "a rejected checkpoint must fall back to a full replay"
+            AdmittedCheckpoint::admit(
+                &tampered.signed_bytes(),
+                &authority,
+                &binding_selection(&frontier, &selection_version),
+            )
+            .expect_err("a claim that does not match this selection must be refused"),
+            expected
         );
     }
 
-    // A checkpoint whose projection root disagrees with the replayed one is detectable: the
-    // binding validates on its five fields, but the accelerator's claim does not reproduce.
-    let lying = CheckpointBinding {
-        projection_root_hash: Hash32([0x99; 32]),
-        ..honest.clone()
+    // An unsigned claim never reaches a binding comparison at all.
+    let mut forged_signature = honest.signed_bytes();
+    let last = forged_signature.len() - 1;
+    forged_signature[last] ^= 0x01;
+    assert!(matches!(
+        AdmittedCheckpoint::admit(
+            &forged_signature,
+            &authority,
+            &binding_selection(&frontier, &selection_version),
+        ),
+        Err(CheckpointOfferRejection::Malformed(_))
+    ));
+}
+
+/// H5/H6 regression. This test previously asserted that a checkpoint claiming a projection
+/// root the replay did NOT reproduce still yielded `RebuildSource::VerifiedCheckpoint` — it
+/// encoded the vulnerability as the expected behaviour, and would have fought the fix. A
+/// checkpoint that does not reproduce is now refused and the projection is rebuilt from empty
+/// state, which is the only §6.1 starting point that needs nothing but verified operations.
+#[tokio::test]
+async fn a_checkpoint_that_does_not_reproduce_is_refused_and_the_rebuild_falls_back_to_empty() {
+    let harness = harness().await;
+    let materializer = FixtureMaterializer::default();
+    let dag = sample_dag();
+    let identity = identity();
+    let frontier = frontier_of(&[dag[3].op_id]);
+    let selection_version = identity.materializer_version.clone();
+    let authority = FixtureCheckpointAuthority::default();
+
+    for operation in &dag {
+        harness
+            .store
+            .append_admitted(&operation.meta, &operation.bytes)
+            .await
+            .expect("append");
+    }
+    replay_to_frontier(
+        &harness.store,
+        &harness.markers,
+        &materializer,
+        &identity,
+        &frontier,
+    )
+    .await
+    .expect("replay");
+    let honest_root = projection_root(&harness.db).await;
+
+    // Correctly signed by a Manager+ identity, correctly bound to this exact selection, and
+    // lying about the one field §6.4's binding comparison cannot check.
+    let claimed = Hash32([0x99; 32]);
+    let lying = CheckpointFixture {
+        projection_root_hash: claimed,
+        ..CheckpointFixture::honest(&frontier, honest_root)
+    };
+    let admitted = AdmittedCheckpoint::admit(
+        &lying.signed_bytes(),
+        &authority,
+        &binding_selection(&frontier, &selection_version),
+    )
+    .expect("the five bound fields do match, so the claim is admissible");
+
+    let mut dag_view = SurrealVerseDagView::load(&harness.store, VERSE)
+        .await
+        .expect("dag view");
+    let surface = FixtureSurface {
+        db: harness.db.clone(),
     };
     let report = rebuild_projection(
         &harness.store,
@@ -990,23 +1193,36 @@ async fn checkpoint_binds_frontier_manifest_and_materializer() {
         RebuildRequest {
             identity: &identity,
             frontier: &frontier,
-            segment_manifest_id: SEGMENT_MANIFEST,
-            checkpoint: Some(&lying),
+            checkpoint: Some(&admitted),
         },
     )
     .await
     .expect("rebuild");
+
     assert_eq!(
         report.source,
-        RebuildSource::VerifiedCheckpoint {
-            claimed_projection_root_hash: Hash32([0x99; 32])
-        }
+        RebuildSource::EmptyState,
+        "a checkpoint that does not reproduce must never be the starting point"
     );
-    assert_ne!(
-        report.projection_root_hash,
-        Hash32([0x99; 32]),
-        "replay must be able to contradict a checkpoint's claimed projection root"
+    assert_eq!(
+        report.refused_accelerator,
+        Some(AcceleratorRefusal {
+            checkpoint_id: admitted.checkpoint_id(),
+            claimed_projection_root_hash: claimed,
+            computed_projection_root_hash: honest_root,
+            replay_was_complete: true,
+        })
     );
+    assert_eq!(
+        report.projection_root_hash, honest_root,
+        "the projection is what the verified operations say it is"
+    );
+    assert!(
+        report.replay_verified_recorded,
+        "the fallback DID replay the whole closure from empty state"
+    );
+    assert!(report.replay.is_complete());
+    assert!(dag_view.frontier_is_replay_verified(VERSE, BRANCH, &frontier));
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,7 +1260,6 @@ async fn empty_rebuild_matches_checkpoint_replay() {
         RebuildRequest {
             identity: &identity,
             frontier: &frontier,
-            segment_manifest_id: SEGMENT_MANIFEST,
             checkpoint: None,
         },
     )
@@ -1052,6 +1267,10 @@ async fn empty_rebuild_matches_checkpoint_replay() {
     .expect("empty rebuild");
     assert_eq!(empty_report.source, RebuildSource::EmptyState);
     assert!(empty_report.replay.is_complete());
+    assert!(
+        empty_report.replay_verified_recorded,
+        "only a from-empty pass is evidence for frontier_is_replay_verified"
+    );
 
     // Pass two: an independent database, the genesis prefix already checkpointed, and the tail
     // replayed on top of a verified checkpoint binding.
@@ -1075,13 +1294,14 @@ async fn empty_rebuild_matches_checkpoint_replay() {
     .await
     .expect("prefix replay");
 
-    let binding = CheckpointBinding {
-        branch_id: BRANCH,
-        frontier_commitment: frontier.commitment(),
-        segment_manifest_id: SEGMENT_MANIFEST,
-        materializer_version: identity.materializer_version.clone(),
-        projection_root_hash: empty_report.projection_root_hash,
-    };
+    let selection_version = identity.materializer_version.clone();
+    let authority = FixtureCheckpointAuthority::default();
+    let admitted = AdmittedCheckpoint::admit(
+        &CheckpointFixture::honest(&frontier, empty_report.projection_root_hash).signed_bytes(),
+        &authority,
+        &binding_selection(&frontier, &selection_version),
+    )
+    .expect("an honest Manager+ checkpoint admits");
     let mut checkpoint_dag_view = SurrealVerseDagView::load(&checkpoint_harness.store, VERSE)
         .await
         .expect("dag view");
@@ -1097,13 +1317,12 @@ async fn empty_rebuild_matches_checkpoint_replay() {
         RebuildRequest {
             identity: &identity,
             frontier: &frontier,
-            segment_manifest_id: SEGMENT_MANIFEST,
-            checkpoint: Some(&binding),
+            checkpoint: Some(&admitted),
         },
     )
     .await
     .expect("checkpoint rebuild");
-    assert_eq!(checkpoint_report.rejected_checkpoint, None);
+    assert_eq!(checkpoint_report.refused_accelerator, None);
     assert!(checkpoint_report.replay.is_complete());
 
     assert_eq!(
@@ -1115,8 +1334,17 @@ async fn empty_rebuild_matches_checkpoint_replay() {
     assert_eq!(
         checkpoint_report.source,
         RebuildSource::VerifiedCheckpoint {
-            claimed_projection_root_hash: empty_report.projection_root_hash
+            checkpoint_id: admitted.checkpoint_id(),
+            claimed_projection_root_hash: empty_report.projection_root_hash,
         }
+    );
+    assert!(
+        !checkpoint_report.replay_verified_recorded,
+        "the accelerated pass trusted rows it did not derive, so it is not replay evidence"
+    );
+    assert!(
+        !checkpoint_dag_view.frontier_is_replay_verified(VERSE, BRANCH, &frontier),
+        "a Manager+ signature is not the replay this process ran (§6.2)"
     );
 }
 
@@ -1294,4 +1522,200 @@ async fn an_exclusion_is_recorded_as_evidence_and_still_makes_children_eligible(
         Some("excluded:fixture exclusion".to_string())
     );
     assert_eq!(projection_rows(&harness.db).await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// H1 regression: one verifying door into the log, and no fail-open evidence
+// ---------------------------------------------------------------------------
+
+/// H1 regression. `VerifiedLogStore::append` used to reach the log through
+/// `CompleteEnvelope::decode_canonical` plus `verified_envelope_meta_from`, neither of which
+/// verifies anything, so an unsigned envelope could be appended through the trait seam while
+/// the admission path next door verified everything. Both doors now go through
+/// `signing::decode_and_admit`.
+#[tokio::test]
+async fn the_trait_append_door_refuses_an_envelope_nobody_signed() {
+    let harness = harness().await;
+    let operation = build_operation(0x10, &[], 100, 0);
+
+    // The same envelope with its signature flipped: still canonical CBOR, still decodable, and
+    // it still content-addresses consistently. Only a signature check can tell the difference.
+    let mut complete = CompleteEnvelope::decode_canonical(&operation.bytes).expect("decode");
+    complete.signature[0] ^= 0xff;
+    let forged_bytes = complete.encode_canonical().expect("encode");
+    let forged_op_id = op_id_of_bytes(&forged_bytes);
+    assert!(CompleteEnvelope::decode_canonical(&forged_bytes).is_ok());
+    assert_eq!(Hash32::of(&forged_bytes), forged_op_id);
+
+    let refusal = VerifiedLogStore::append(&harness.store, forged_op_id, forged_bytes.clone())
+        .await
+        .expect_err("an unsigned envelope must never enter the verified log");
+    // SPEC-4 3.3 makes IntegrityConflict a permanent blacklist. An envelope this build cannot
+    // admit says nothing about the identity, so the refusal must be the indeterminate variant.
+    assert!(
+        matches!(refusal, AppendError::NotAnEnvelope { op_id, .. } if op_id == forged_op_id),
+        "expected NotAnEnvelope naming the op_id, got {refusal:?}"
+    );
+    assert!(!refusal.is_definite(), "{refusal:?} must not be a verdict");
+    assert_eq!(verified_log_row_count(&harness.db).await, 0);
+
+    // The true reason is recorded rather than rounded off, and drains once.
+    let refusals = harness.store.take_append_refusals();
+    assert_eq!(refusals.len(), 1);
+    assert!(refusals[0].contains("signature"), "{refusals:?}");
+    assert!(!harness.store.has_append_refusal());
+
+    // The inherent door can say what happened without lying about it.
+    let honest = harness
+        .store
+        .append_received(forged_op_id, &forged_bytes)
+        .await
+        .expect_err("the inherent door refuses too");
+    assert!(
+        matches!(honest, VerifiedLogStoreError::NotAnEnvelope(_)),
+        "{honest:?}"
+    );
+    assert_eq!(verified_log_row_count(&harness.db).await, 0);
+
+    // A genuinely signed envelope still goes through that same one door.
+    assert_eq!(
+        VerifiedLogStore::append(&harness.store, operation.op_id, operation.bytes.clone())
+            .await
+            .expect("a signed envelope appends"),
+        AppendOutcome::Appended
+    );
+    assert_eq!(verified_log_row_count(&harness.db).await, 1);
+
+    // And a claimed identity that is not BLAKE3 of the bytes is still refused up front.
+    assert_eq!(
+        VerifiedLogStore::append(&harness.store, Hash32([0xfe; 32]), operation.bytes.clone())
+            .await
+            .expect_err("a mismatched claim is refused"),
+        AppendError::HashMismatch
+    );
+    assert_eq!(verified_log_row_count(&harness.db).await, 1);
+}
+
+/// A row written past both append doors is unreadable rather than merely suspect: content
+/// addressing alone cannot tell a signed operation from self-consistent garbage, because a
+/// forger picks both the bytes and the address they hash to.
+#[tokio::test]
+async fn a_hand_written_unsigned_row_cannot_be_read_back_as_an_operation() {
+    let harness = harness().await;
+    let operation = build_operation(0x10, &[], 100, 0);
+    harness
+        .store
+        .append_admitted(&operation.meta, &operation.bytes)
+        .await
+        .expect("append");
+
+    let mut complete = CompleteEnvelope::decode_canonical(&operation.bytes).expect("decode");
+    complete.signature[0] ^= 0xff;
+    let forged = complete.encode_canonical().expect("encode");
+    let forged_op_id = op_id_of_bytes(&forged);
+    harness
+        .db
+        .query("CREATE verified_op_log CONTENT $row")
+        .bind((
+            "row",
+            serde_json::json!({
+                "op_id_hex": hex::encode(forged_op_id.as_bytes()),
+                "envelope_bytes": BASE64.encode(&forged),
+                "operation_kind": i64::from(FIXTURE_KIND),
+                "branch_id": hex::encode(BRANCH.as_bytes()),
+                "parent_op_ids": Vec::<String>::new(),
+                "author_public_key_hex": hex::encode(operation.meta.author_public_key),
+                "wall_ms": 100_i64,
+                "hlc_counter": 0_i64,
+                "appended_at_hlc": "",
+            }),
+        ))
+        .await
+        .expect("hand-written row")
+        .check()
+        .expect("hand-written row check");
+
+    // The bytes are there and they hash to their own name; they are still not an operation.
+    assert_eq!(
+        harness
+            .store
+            .envelope_bytes(forged_op_id)
+            .await
+            .expect("read"),
+        Some(forged.clone())
+    );
+    let error = harness
+        .store
+        .meta_of(forged_op_id)
+        .await
+        .expect_err("an unsigned row is not readable as an operation");
+    assert!(
+        format!("{error}").contains("not an admissible envelope"),
+        "{error}"
+    );
+
+    // Through the trait seam the same row reads as absent, which is the pending-safe direction.
+    assert_eq!(
+        VerifiedLogStore::get_meta(&harness.store, forged_op_id).await,
+        None
+    );
+    assert!(harness.store.has_storage_fault());
+
+    // The honestly-appended operation next to it is unaffected.
+    harness.store.take_storage_faults();
+    assert_eq!(
+        harness.store.meta_of(operation.op_id).await.expect("meta"),
+        Some(operation.meta.clone())
+    );
+}
+
+/// An evidence source that answers "no conflicting operation" while reporting that it could not
+/// read — the shape a storage fault takes at `EquivocationIndex::op_id_at`, whose `None` admits.
+struct UnreadableEquivocationIndex;
+
+#[async_trait]
+impl EquivocationIndex for UnreadableEquivocationIndex {
+    async fn op_id_at(&self, _key: EquivocationKey) -> Option<Hash32> {
+        None
+    }
+}
+
+impl EvidenceAvailability for UnreadableEquivocationIndex {
+    fn take_evidence_faults(&self) -> Vec<String> {
+        vec!["equivocation lookup: connection reset".to_string()]
+    }
+}
+
+#[tokio::test]
+async fn an_unreadable_equivocation_index_refuses_rather_than_admitting() {
+    let harness = harness().await;
+    let verifier = FixtureVerifier::default();
+    let operation = build_operation(0x10, &[], 100, 0);
+
+    let rejection = admit_and_append(
+        &verifier,
+        &UnreadableEquivocationIndex,
+        &harness.store,
+        &NoPrecondition,
+        &harness.store,
+        &operation.bytes,
+    )
+    .await
+    .expect_err("an unreadable equivocation index must not admit");
+    assert!(
+        matches!(rejection, AdmissionRejection::EvidenceUnavailable { .. }),
+        "{rejection:?}"
+    );
+    assert_eq!(
+        rejection.outcome(),
+        None,
+        "an unreadable source is not a spec-5 decision about the candidate"
+    );
+    assert_eq!(verified_log_row_count(&harness.db).await, 0);
+
+    // Retryable, not permanent: the same immutable bytes admit once the index can answer.
+    admit_bytes(&harness.store, &verifier, &operation.bytes)
+        .await
+        .expect("admission once the evidence is readable");
+    assert_eq!(verified_log_row_count(&harness.db).await, 1);
 }

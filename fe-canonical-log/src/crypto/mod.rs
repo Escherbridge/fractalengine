@@ -6,7 +6,9 @@
 //! live in `src/crypto/AGENTS.md`.
 //!
 //! Pure local key handling: no socket, no listener, no iroh, no libp2p, no `fe-network` and no
-//! `fe-sync`. Device enrolment and wrap delivery transport are deliberately absent.
+//! `fe-sync`. The device-enrolment registry and wrap delivery transport are deliberately absent;
+//! `key_wrap`'s view traits are the seams they will answer through, and every one of them is
+//! deny-by-default in the meantime.
 
 pub mod aead;
 pub mod artifact_aad;
@@ -29,9 +31,11 @@ pub use aead::{
 pub use artifact_aad::StoredArtifactAad;
 pub use key_id::{derive_key_id, SCOPE_KEY_ID_DOMAIN};
 pub use key_wrap::{
-    issue_scope_key_wrap, open_scope_key, wrap_scope_key, DevicePublicKey, DeviceSecretKey,
-    KeyWrapAad, ScopeKeyWrap, ScopeKeyWrapBody, ScopeKeyWrapRequest, DEVICE_PUBLIC_KEY_LENGTH,
-    KEY_WRAP_PROTOCOL_VERSION, SCOPE_KEY_WRAP_DOMAIN, SEALED_SCOPE_KEY_LENGTH,
+    issue_scope_key_wrap, open_scope_key, wrap_scope_key, AuthorizationRecord,
+    DeliveryAuthorizationView, DeviceEnrolmentView, DevicePublicKey, DeviceSecretKey,
+    IssuerAuthorityView, KeyWrapAad, RecipientDeviceBinding, ScopeKeyWrap, ScopeKeyWrapBody,
+    ScopeKeyWrapRequest, DEVICE_PUBLIC_KEY_LENGTH, KEY_WRAP_PROTOCOL_VERSION,
+    SCOPE_KEY_WRAP_DOMAIN, SEALED_SCOPE_KEY_LENGTH,
 };
 pub use scope_key::{
     EpochBump, InMemoryScopeKeyStore, LaneScopeKeyResolver, ScopeKeyLifecycle, ScopeKeyStore,
@@ -79,6 +83,35 @@ pub enum CryptoError {
     /// The device holding this secret is not the device the wrap's associated data names (§10.2.4).
     #[error("this device is not the recipient the key wrap is addressed to")]
     RecipientDeviceMismatch,
+    /// The recipient principal does not enrol this X25519 device key (§10.2.1).
+    #[error("the recipient principal does not enrol this X25519 device key: {record:?}")]
+    DeviceNotEnrolled {
+        /// What the enrolment view actually recorded.
+        record: AuthorizationRecord,
+    },
+    /// The persistent view does not record the issuer as Manager+ for this epoch scope (§10.2.1).
+    #[error("the key-wrap issuer holds no current Manager+ authority here: {record:?}")]
+    IssuerNotAuthorized {
+        /// What the authority view actually recorded.
+        record: AuthorizationRecord,
+    },
+    /// The view records no current `decrypt` capability for the wrap recipient (§10.2.1).
+    #[error("the key-wrap recipient holds no current decrypt capability here: {record:?}")]
+    RecipientNotAuthorized {
+        /// What the authority view actually recorded.
+        record: AuthorizationRecord,
+    },
+    /// The signed issuer capability reference names an epoch the wrap does not seal (§10.2.3).
+    #[error("the issuer capability names epoch {capability_epoch}; the wrap seals {wrap_epoch}")]
+    IssuerCapabilityEpochMismatch {
+        /// Epoch the capability reference cites.
+        capability_epoch: u64,
+        /// Epoch the wrap's associated data actually seals.
+        wrap_epoch: u64,
+    },
+    /// The signing key offered for issuance is not the named issuer principal's key (§10.2.3).
+    #[error("the offered signing key is not the issuer principal's own key")]
+    IssuerSigningKeyMismatch,
     /// An X25519 exchange produced the all-zero shared secret, so a small-order point was supplied.
     #[error("the X25519 exchange was non-contributory")]
     NonContributoryKeyExchange,

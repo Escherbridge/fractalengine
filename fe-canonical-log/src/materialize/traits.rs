@@ -13,12 +13,27 @@ use async_trait::async_trait;
 use crate::cbor::CborValue;
 use crate::envelope::{CompleteEnvelope, EquivocationKey, Hash32, Identifier32, Scope};
 use crate::materialize::errors::{AdmissionOutcome, AppendError, AppendOutcome};
+use crate::signing::SigningError;
 
 /// The materializer-facing facts extracted from one admitted envelope (SPEC-4 §2).
 ///
 /// Amended by M2 to carry `scope`: SPEC-1 §6.2 same-verse parent checking, SPEC-2 disavow
 /// scope matching, SPEC-2 scope-propagated lineage resolution, and SPEC-3 permission cells are
 /// all unimplementable without it.
+///
+/// **The name is a claim about provenance, and the type does not enforce it.** Every field is
+/// `pub`, so a value of this type is evidence of verification only when it came out of
+/// [`VerifiedEnvelopeMeta::verify_from_bytes`], [`verify_envelope_meta`], or
+/// [`verify_and_project_envelope`] -- the three doors that run `signing::decode_and_admit`
+/// first. A value built by struct literal, or by the hazardous projection
+/// [`verified_envelope_meta_from`], carries no cryptographic weight whatsoever; treating one as
+/// admitted is the mistake this note exists to prevent.
+///
+/// The fields stay public, and the type is deliberately NOT `#[non_exhaustive]`, because
+/// out-of-crate test harnesses in `fe-database` build fixture values with struct literals.
+/// `capability::VerifiedCapability` closes the same seam structurally precisely because it has
+/// no such consumer; until this one's literals are gone, the guarantee here is a documented
+/// obligation, not a type-level one, and must not be described as anything stronger.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedEnvelopeMeta {
     /// Content address of the complete envelope.
@@ -50,12 +65,68 @@ impl VerifiedEnvelopeMeta {
             counter: self.counter,
         }
     }
+
+    /// The default constructor: verifies `candidate_bytes` through the mandatory ingress, then
+    /// projects them. Reach for this, not [`verified_envelope_meta_from`].
+    pub fn verify_from_bytes(candidate_bytes: &[u8]) -> Result<Self, SigningError> {
+        verify_and_project_envelope(candidate_bytes).map(|(_, meta)| meta)
+    }
 }
 
-/// Builds [`VerifiedEnvelopeMeta`] from an envelope already admitted by
-/// `signing::decode_and_admit`. This function verifies nothing itself -- it is a pure
-/// projection of already-verified fields; the caller supplies the `op_id` computed over the
-/// received bytes.
+/// Verifies `candidate_bytes` through `signing::decode_and_admit` and projects the result.
+///
+/// This is the construction path that earns the type's name. `decode_and_admit` decodes
+/// canonically, asserts the received bytes are their own canonical re-encoding, checks the §3.2
+/// author binding, verifies the §5.1 signature, applies the §6 structural rules, refuses every
+/// non-production payload suite, and content-addresses the bytes AS RECEIVED -- so the returned
+/// `op_id` is derived, never chosen by the caller.
+///
+/// The [`CompleteEnvelope`] is returned alongside the facts so a caller that must also append or
+/// re-encode the operation does not decode it a second time, and so no second decode can
+/// disagree with the one the signature was checked against.
+pub fn verify_and_project_envelope(
+    candidate_bytes: &[u8],
+) -> Result<(CompleteEnvelope, VerifiedEnvelopeMeta), SigningError> {
+    let (complete, op_id) = crate::signing::decode_and_admit(candidate_bytes)?;
+    let meta = verified_envelope_meta_from(&complete, op_id);
+    Ok((complete, meta))
+}
+
+/// [`verify_and_project_envelope`] with its failure mapped onto the §5.1 `InvalidEnvelope`
+/// reject: the whole body a [`CandidateVerifier::verify_envelope`] implementation needs.
+pub fn verify_envelope_meta(
+    candidate_bytes: &[u8],
+) -> Result<VerifiedEnvelopeMeta, AdmissionOutcome> {
+    VerifiedEnvelopeMeta::verify_from_bytes(candidate_bytes).map_err(|error| {
+        AdmissionOutcome::InvalidEnvelope {
+            reason: error.to_string(),
+        }
+    })
+}
+
+/// Projects an envelope's fields into [`VerifiedEnvelopeMeta`] **without verifying anything**.
+///
+/// # HAZARD — the precondition this function does not check
+///
+/// This is not an admission check and never was. It performs no signature check, no canonical
+/// re-encoding check, no §3.2 author binding check, no §6 structural check, and no payload-suite
+/// check, and it does not derive `op_id` -- it copies the one it is handed. Calling it on an
+/// envelope that has not already been through `signing::decode_and_admit` mints a
+/// `VerifiedEnvelopeMeta` whose name is a lie, and every downstream check that trusts the type
+/// (equivocation identity, same-verse parents, authorization, ordering) then runs on
+/// attacker-chosen facts.
+///
+/// The caller MUST have already discharged BOTH of these, for these exact bytes:
+///
+/// 1. `complete` is the value returned by `signing::decode_and_admit` (or by
+///    [`verify_and_project_envelope`], which wraps it); and
+/// 2. `op_id` is the hash that same call returned, computed over the bytes as received.
+///
+/// If you cannot point at the `decode_and_admit` call that produced both arguments, you are
+/// using the wrong function: use [`VerifiedEnvelopeMeta::verify_from_bytes`] or
+/// [`verify_envelope_meta`] instead. This door survives only for callers reading back bytes
+/// this process already admitted and stored, where re-verification is redundant rather than
+/// absent -- and even there, re-verifying is the safer default.
 pub fn verified_envelope_meta_from(
     complete: &CompleteEnvelope,
     op_id: Hash32,
@@ -120,7 +191,8 @@ pub enum ProjectionMutation {
 #[async_trait]
 pub trait CandidateVerifier: Send + Sync {
     /// Decodes, verifies signature/structure/suite, and extracts materializer-facing facts.
-    /// Implementers use `signing::decode_and_admit` plus [`verified_envelope_meta_from`].
+    /// Implementers call [`verify_envelope_meta`] and add nothing; reaching for
+    /// [`verified_envelope_meta_from`] here skips every check this method's name promises.
     async fn verify_envelope(
         &self,
         candidate_bytes: &[u8],
@@ -140,8 +212,16 @@ pub trait CandidateVerifier: Send + Sync {
 /// SurrealDB in `fe-database/src/canon_log/`; this crate defines only the seam.
 #[async_trait]
 pub trait VerifiedLogStore: Send + Sync {
-    /// Appends `bytes` under `claimed_op_id`. `AlreadyPresent` (byte-identical) is success;
-    /// `HashMismatch`/`IntegrityConflict` are the only failure modes (§3.1).
+    /// Appends `bytes` under `claimed_op_id`. `AlreadyPresent` (byte-identical) is success.
+    ///
+    /// `AppendError` currently offers only `HashMismatch` and `IntegrityConflict`, both of which
+    /// are DEFINITE answers that §3.3 treats as permanently blacklisting the `op_id`. It has no
+    /// indeterminate variant, so an implementer whose storage could not answer -- an I/O fault,
+    /// or stored bytes that fail to decode in THIS process for a reason as innocent as a future
+    /// protocol version -- has nothing honest to return and, today, reports a definite failure
+    /// for an operation it never actually examined. Filed as a `fe-canonical-log` erratum:
+    /// `AppendError` needs a `StorageUnavailable` variant, and until it lands an implementer
+    /// MUST NOT map a local decode failure onto `IntegrityConflict`.
     async fn append(
         &self,
         claimed_op_id: Hash32,
@@ -573,5 +653,96 @@ mod tests {
         assert_eq!(meta.author_public_key, unsigned.author.public_key);
         assert_eq!(meta.wall_ms, 42);
         assert_eq!(meta.counter, 7);
+    }
+
+    /// Builds a signed, admissible envelope and its canonical bytes.
+    fn signed_sample() -> (crate::envelope::CompleteEnvelope, Vec<u8>) {
+        use crate::envelope::{
+            Author, CapabilityRef, Hlc, PayloadRef, UnsignedEnvelope, PROTOCOL_VERSION,
+        };
+        use crate::signing::sign_envelope;
+        use ed25519_dalek::SigningKey;
+
+        let signing_key = SigningKey::from_bytes(&[0x42; 32]);
+        let unsigned = UnsignedEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            operation_kind: 2,
+            scope: Scope::verse_wide(identifier(0x11)),
+            author: Author::from_public_key(signing_key.verifying_key().to_bytes()),
+            capability: CapabilityRef {
+                chain_id: hash(0x33),
+                scope_epoch: 5,
+            },
+            schema_hash: hash(0x44),
+            branch_id: identifier(0x55),
+            parents: Vec::new(),
+            hlc: Hlc::new(42, 7),
+            payload: PayloadRef::empty(),
+        };
+        let complete = sign_envelope(&signing_key, &unsigned).expect("sign");
+        let bytes = complete.encode_canonical().expect("encode");
+        (complete, bytes)
+    }
+
+    #[test]
+    fn verify_from_bytes_derives_the_op_id_rather_than_accepting_one() {
+        let (complete, bytes) = signed_sample();
+
+        let meta = VerifiedEnvelopeMeta::verify_from_bytes(&bytes).expect("admissible bytes");
+        assert_eq!(meta.op_id, crate::signing::op_id(&bytes));
+        assert_eq!(meta, verified_envelope_meta_from(&complete, meta.op_id));
+
+        let (returned_envelope, same_meta) =
+            verify_and_project_envelope(&bytes).expect("admissible bytes");
+        assert_eq!(returned_envelope, complete);
+        assert_eq!(same_meta, meta);
+
+        assert_eq!(verify_envelope_meta(&bytes), Ok(meta));
+    }
+
+    #[test]
+    fn the_projection_mints_meta_for_an_envelope_the_verifying_door_refuses() {
+        use crate::envelope::Hlc;
+
+        // A forged envelope: the HLC is moved after signing, so the signature no longer covers
+        // the bytes. The projection cannot tell; the verifying door refuses outright.
+        let (mut forged, _) = signed_sample();
+        forged.unsigned.hlc = Hlc::new(43, 7);
+        let forged_bytes = forged.encode_canonical().expect("encode");
+        let forged_op_id = crate::signing::op_id(&forged_bytes);
+
+        let minted = verified_envelope_meta_from(&forged, forged_op_id);
+        assert_eq!(
+            minted.wall_ms, 43,
+            "the projection happily reports a field no signature covers"
+        );
+
+        assert_eq!(
+            VerifiedEnvelopeMeta::verify_from_bytes(&forged_bytes),
+            Err(SigningError::SignatureVerificationFailed),
+        );
+        assert_eq!(
+            verify_envelope_meta(&forged_bytes),
+            Err(AdmissionOutcome::InvalidEnvelope {
+                reason: SigningError::SignatureVerificationFailed.to_string(),
+            }),
+            "the verifying door maps a forged envelope onto the §5.1 reject"
+        );
+        assert!(verify_envelope_meta(&forged_bytes)
+            .expect_err("forged")
+            .is_reject());
+    }
+
+    #[test]
+    fn the_verifying_door_refuses_bytes_that_are_not_their_own_canonical_re_encoding() {
+        let (_, bytes) = signed_sample();
+        let mut trailing = bytes.clone();
+        trailing.push(0x00);
+
+        assert!(
+            VerifiedEnvelopeMeta::verify_from_bytes(&trailing).is_err(),
+            "trailing bytes are never admissible"
+        );
+        assert!(VerifiedEnvelopeMeta::verify_from_bytes(&bytes[..bytes.len() - 1]).is_err());
     }
 }

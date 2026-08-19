@@ -15,6 +15,7 @@ pub use identity::{ApplyMarkerKey, MaterializerVersion, ProjectionIdentity};
 pub use ordering::{deterministic_causal_order, ordering_key, OrderingError, OrderingKey};
 pub use traits::{
     admit_candidate, check_author_equivocation, validate_same_verse_parents,
-    verified_envelope_meta_from, CandidateVerifier, CausalMaterializer, EquivocationIndex,
-    ParentVerseLookup, ProjectionMutation, VerifiedEnvelopeMeta, VerifiedLogStore,
+    verified_envelope_meta_from, verify_and_project_envelope, verify_envelope_meta,
+    CandidateVerifier, CausalMaterializer, EquivocationIndex, ParentVerseLookup,
+    ProjectionMutation, VerifiedEnvelopeMeta, VerifiedLogStore,
 };

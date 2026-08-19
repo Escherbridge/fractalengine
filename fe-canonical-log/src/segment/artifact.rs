@@ -557,7 +557,7 @@ mod tests {
             true
         }
 
-        fn may_wrap_scope_key_for_device(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
+        fn may_wrap_scope_key_for_peer(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
             true
         }
     }
