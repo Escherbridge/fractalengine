@@ -1,8 +1,8 @@
 name: Release
 
 # Tag-triggered release pipeline (release_ci_20260429, plan Tasks 2.1-2.3, 2.6).
-# Builds the 8-target artifact matrix, assembles a macOS universal binary via
-# lipo, publishes a GitHub Release with a SHA256SUMS manifest, and pushes the
+# Builds the Linux and Windows artifact matrix, publishes a GitHub Release with
+# a SHA256SUMS manifest, and pushes the
 # relay Docker image to GHCR. Tags containing '-' (e.g. v0.3.0-rc1) publish as
 # pre-releases. `workflow_dispatch` runs the builds without publishing.
 
@@ -129,73 +129,9 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  macos:
-    name: macOS ${{ matrix.arch }} (GUI)
-    runs-on: macos-latest
-    timeout-minutes: 150
-    strategy:
-      matrix:
-        include:
-          - arch: aarch64
-            target: aarch64-apple-darwin
-          - arch: x86_64
-            target: x86_64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo + target
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-macos-${{ matrix.arch }}
-
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin fractalengine
-
-      - name: Package artifacts
-        run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/fractalengine \
-            dist/fractalengine-macos-${{ matrix.arch }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-${{ matrix.arch }}
-          path: dist/*
-          if-no-files-found: error
-
-  # FR-5: combine both macOS slices into a universal binary via lipo.
-  macos-universal:
-    name: macOS universal (lipo)
-    runs-on: macos-latest
-    needs: [macos]
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: macos-*
-          merge-multiple: true
-          path: slices
-
-      - name: Create universal binary
-        run: |
-          mkdir -p dist
-          lipo -create \
-            slices/fractalengine-macos-aarch64 \
-            slices/fractalengine-macos-x86_64 \
-            -output dist/fractalengine-macos-universal
-          chmod +x dist/fractalengine-macos-universal
-          file dist/fractalengine-macos-universal | tee /dev/stderr \
-            | grep -q "Mach-O universal binary"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-universal
-          path: dist/*
-          if-no-files-found: error
+  # macOS GUI matrix and the lipo universal-binary job were REMOVED 2026-08-19
+  # at the owner's direction; see the build-artifacts.yml note. Restore from git
+  # history if macOS artifacts are wanted again.
 
   # Static musl relay binaries via cargo-zigbuild (no glibc dependency).
   musl-relay:
@@ -291,8 +227,6 @@ jobs:
       - linux-x86_64
       - windows-x86_64
       - windows-arm64
-      - macos
-      - macos-universal
       - musl-relay
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -324,9 +258,6 @@ jobs:
             | `fractalengine-windows-x86_64.exe` | Windows x86_64 | GUI |
             | `fe-relay-windows-x86_64.exe` | Windows x86_64 | Headless relay |
             | `fractalengine-windows-aarch64.exe` | Windows ARM64 | GUI |
-            | `fractalengine-macos-aarch64` | macOS Apple Silicon | GUI |
-            | `fractalengine-macos-x86_64` | macOS Intel | GUI |
-            | `fractalengine-macos-universal` | macOS universal (lipo) | GUI |
             | `fe-relay-linux-musl-x86_64` | Linux x86_64 (static musl) | Headless relay |
             | `fe-relay-linux-musl-aarch64` | Linux ARM64 (static musl) | Headless relay |
             | `SHA256SUMS` | — | Checksums |
