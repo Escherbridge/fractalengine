@@ -162,45 +162,9 @@ jobs:
           path: target/release/fe-relay.exe
           if-no-files-found: error
 
-  macos:
-    name: macOS (build + test + artifacts)
-    runs-on: macos-latest
-    # 240, not 150: a timeout CANCELS the job, which SKIPS the rust-cache post
-    # step, so the cache is never saved and the next run is cold again -- a loop
-    # this job has not escaped since 2026-07-27. The ceiling has to clear one
-    # cold build+sweep so a cache exists; warm runs finish far under it.
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@v4
-
-      # macos-latest is Apple Silicon; native target is aarch64-apple-darwin.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo + target
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: macos-build
-
-      - name: Build release binaries
-        run: cargo build --release --bin fractalengine --bin fe-relay
-
-      # Same scoped sweep as the Linux job — see that job's comment.
-      - name: Test sweep
-        env:
-          FE_KEYSTORE_BACKEND: env
-        run: cargo test --release -p fe-ui -p fe-terrain -p fractalengine
-
-      - name: Upload fractalengine (GUI) binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: fractalengine-macos-aarch64
-          path: target/release/fractalengine
-          if-no-files-found: error
-
-      - name: Upload fe-relay (headless) binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: fe-relay-macos-aarch64
-          path: target/release/fe-relay
-          if-no-files-found: error
+  # macOS (build + test + artifacts) was REMOVED 2026-08-19 at the owner's
+  # direction. It had not completed since 2026-07-27: the job hit its timeout
+  # during the test sweep, a timeout cancels the job, and a cancelled job skips
+  # the rust-cache post step -- so the cache never saved and every run restarted
+  # cold into the same wall. macos-latest also bills at ~10x. Restore from git
+  # history (see the commit that removed this) if macOS coverage is wanted again.
