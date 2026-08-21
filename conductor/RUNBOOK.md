@@ -1,8 +1,8 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-08-18
-head: d01b098
+updated: 2026-08-20
+head: ca338bc
 ---
 
 # RUNBOOK — Canonical Fractal Data Log (Workstream G)
@@ -42,12 +42,14 @@ Standing constraints, all still in force:
 
 ## 2. State
 
-`main` @ **`b820b67`**, **NOT pushed** — `origin/main` is at `b8b2e0a`, so there
-are **three unpushed commits**: `29cadd9` (pre-existing repairs, §11), `b820b67`
-(Wave 3 code), and this runbook update. Wave 3 is deliberately held local: the
-standing push authorization covers *finished, gated* work, and a wave whose
-phase verdict is FAIL (§10) is not that. **Push once §10 items 1-3 are closed
-and re-reviewed** — do not push a FAIL verdict to `origin`.
+`main` @ **`ca338bc`**, **fully pushed — zero unpushed commits.** The §10 FAIL
+that held Wave 3 local is CLOSED (§10a), so the whole backlog went up together:
+`29cadd9` (pre-existing repairs, §11), `b820b67` (Wave 3), `fa0d9d9` + `d01b098`
+(Wave 3R remediation + adversarial round), and the CI commits in §12.
+
+Superseded: the old instruction here was "do not push a FAIL verdict to
+`origin`." That was correct and was honoured — the wave was held until its
+verdict flipped, then pushed.
 
 All other dirty files in the tree belong to the concurrent session
 (`fe-ui/**`, `fe-terrain/**`, `fractalengine/src/gpx_bridge.rs` — 56 files,
@@ -710,3 +712,124 @@ per-package scoping both would have shipped silently into Wave 4.
   and poisoning it. One omission, eight red tests.
 - `fractalengine/src/main.rs` — hydration query ordered by `created_at` without
   carrying it in the projection; SurrealDB 3.x rejects that at parse time.
+
+---
+
+## 12. Session close 2026-08-20 — CI restored, macOS dropped, next steps decided
+
+### What happened after the Wave 3R barrier
+
+Everything landed and pushed. Then CI turned into the session's real work.
+
+**CI was already red before this session** — last green on `main` was
+2026-07-27. Pre-session runs (2026-08-17) had Lint FAIL, Linux FAIL, macOS
+FAIL/cancelled, Windows pass. Now: **Lint, Linux, Windows green; macOS removed.**
+
+**Three CI failures, three different causes. Only one was ours.**
+
+| Commit | Failure | Cause |
+|---|---|---|
+| `bf459a8` | Lint: 2 clippy errors | **Toolchain drift.** CI ran rustc **1.97.1**, local default is **1.94.0**, where the same command exits 0. One finding (`unnecessary_sort_by`, `payload_shard.rs:191`) was **pre-existing from Wave 2 `5675fcb`**; one (`question_mark`, `state.rs:174`) was **ours**, from the C2 fix. |
+| `6aaeabd` | macOS: cancelled | **Cold-cache deadlock**, see below. Removed at owner direction. |
+| `ca338bc` | Lint: 4 `result_large_err` | **Toolchain drift again.** CI's floating `@stable` moved **1.97.1 → 1.98.0 between two pushes**, reddening `main` with *identical Rust source* — only YAML and markdown had changed. Fired on `fe-api/src/export.rs`, untouched code. |
+
+**The macOS defect, fully diagnosed.** The job hit `timeout-minutes: 150`
+*exactly* (run 32221166522: 05:54:08Z → 08:24:43Z), cancelled during `Test
+sweep` after `Build release binaries` succeeded. The fatal step is the next one:
+**`Post Cache cargo + target` — skipped.** A timeout *cancels* the job, a
+cancelled job skips post-steps, so `Swatinem/rust-cache` never writes. Every
+subsequent run started cold, burned its budget rebuilding, died at the same wall,
+and saved nothing — a closed loop it had been stuck in since 2026-07-27.
+**Not diagnosed:** *why* a cold build+release-sweep exceeds 150 min on
+`macos-latest` when Linux fits the same budget (candidates: release profile with
+thin-LTO, `cargo test --release` over three crates, runner speed). The fix
+targeted the loop, not the slowness. Owner then chose to drop the platform.
+
+**Lint-scope lesson worth keeping:** clippy **halts at the first failing crate**,
+so CI only ever shows one crate's findings. Fixing that one and re-pushing
+surfaces the next. Running CI's exact command under CI's exact toolchain locally
+found both in one pass. The 1.97.1 toolchain is already installed locally
+(`cargo +1.97.1-x86_64-pc-windows-msvc clippy --workspace --all-targets -- -D warnings`);
+**1.98.0 is not.**
+
+### Decisions ratified 2026-08-20
+
+- **D-CI1 — Pin the toolchain via `rust-toolchain.toml`.** Chosen over pinning
+  only the CI action, because that would leave local at 1.94.0 and local gates
+  would keep under-reporting what CI enforces — the exact gap that let two lints
+  reach `origin`. **Known cost: forces a full rebuild in every worktree, and a
+  concurrent session is live in this tree.** Sequence it deliberately.
+- **D-CI2 — macOS support removed** from both workflows (`6aaeabd`), not merely
+  timeout-raised. `macos-latest` bills at ~10x and the job had not completed in
+  three weeks. Restorable via `git revert 6aaeabd`; each workflow carries a
+  pointer comment.
+- **D-CI3 — Publish BOTH a rolling `latest` prerelease and tagged releases.**
+  Rolling = bleeding edge on every green `main`; tags = the stable line.
+- **D-CI4 — Next session builds the artifact publishing pipeline first**, ahead
+  of the analytics defect and Wave 4.
+
+### Why artifact publishing needs new work (do not assume it exists)
+
+`build-artifacts.yml` uses `actions/upload-artifact`, which **requires a GitHub
+login and expires after 90 days** — unusable for public download.
+`release.yml` publishes real public Releases but **only on version tags**. The
+rolling channel does not exist at all.
+
+### Continuation plan
+
+1. **Build the rolling `latest` release job** (D-CI3). In
+   `.github/workflows/build-artifacts.yml`, add a job gated on
+   `needs: [lint, linux, windows]` and `if: github.ref == 'refs/heads/main'`
+   that publishes/overwrites a **prerelease** tagged `latest` carrying the
+   Windows `.exe` and the Linux binary. Target URL to verify by hand afterwards:
+   `https://github.com/Escherbridge/fractalengine/releases/latest/download/fractalengine-windows-x86_64.exe`.
+   Needs `permissions: contents: write`. Keep `release.yml`'s tag pipeline as
+   the stable line. **Gotcha:** a rolling tag must be force-updated; use an
+   action that moves the tag and replaces assets, or the second run fails on an
+   existing release.
+2. **Pin the toolchain** (D-CI1). Add `rust-toolchain.toml` with
+   `channel = "1.98.0"` (CI's current stable — confirm it has not moved again
+   first). Then take both workflows off `dtolnay/rust-toolchain@stable` so the
+   action honours the file. **Coordinate with the concurrent session before
+   landing** — it forces a full rebuild. Afterwards
+   `cargo clippy --workspace --all-targets -- -D warnings` locally is finally an
+   honest predictor of CI.
+3. **Fix the analytics API lock defect** (§10b). `fractalengine/src/main.rs:323`
+   opens a second read connection to `data/fractalengine.db` while the DB thread
+   already holds SurrealKV's exclusive file lock → `os error 33` at *every*
+   launch, so the analytics API is never available. Pre-existing (`916a3ae`,
+   `51bc90e`), reproduced on a clean run. Blocks the BI-egress direction
+   `product.md` calls primary. Likely fix: share the existing connection/handle
+   rather than opening a second, or route the read path through the DB thread.
+4. **Only then Wave 4** — wire the first production caller to the canonical
+   append/epoch/WS surfaces. Re-read §10a residuals first: `VerifiedEnvelopeMeta`
+   is still forgeable, and **no production `DeviceEnrolmentView` or
+   `IssuerAuthorityView` implementor exists**, so H3's seam is structural but its
+   answer is not yet trustworthy.
+
+### Environment
+
+- Branch `main`, clean of this work, **0 unpushed**. The only dirty files are the
+  concurrent session's 56 (`fe-ui/**`, `fe-terrain/**`,
+  `fractalengine/src/gpx_bridge.rs`) plus untracked
+  `fe-ui/src/panels/tool_options.rs` and `fe-ui/src/visibility/`.
+  **Do not touch or commit these.**
+- **Disk is the recurring hazard.** `target/` reached **222 GB** and the gate
+  died on `os error 112` with 1.4 GB free. Freed 166 GB by deleting
+  `target/debug/deps/*.pdb` (regenerable; costs unsymbolized backtraces until
+  relink) and 36 GB of `target/debug/incremental`. **Check free space before any
+  full build.** Build with `CARGO_INCREMENTAL=0 RUST_MIN_STACK=67108864 -j2`
+  (`-j4` hits `os error 1455`).
+- Full workspace gate takes >10 min — run it backgrounded.
+- Logs from this session: `.omc/logs/` (`w3r-test*.log`, `ci-lint*.log`,
+  `app-run*.log`).
+- Run the app:
+  `RUST_LOG=info,wgpu=warn,naga=warn ./target/debug/fractalengine.exe`;
+  panics append to `data/panic.log`.
+
+### Open questions
+
+- **Artifact platform scope** — assumed Windows + Linux (both green). Narrow to
+  Windows-only if the Linux binary is not wanted.
+- **Does `latest` need a checksum manifest?** `release.yml` ships `SHA256SUMS`
+  for tags; the rolling channel has no equivalent decision yet.
