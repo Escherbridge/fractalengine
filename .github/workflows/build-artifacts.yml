@@ -168,3 +168,104 @@ jobs:
   # the rust-cache post step -- so the cache never saved and every run restarted
   # cold into the same wall. macos-latest also bills at ~10x. Restore from git
   # history (see the commit that removed this) if macOS coverage is wanted again.
+
+  # D-CI3: the rolling `latest` prerelease -- a public, login-free download
+  # channel that tracks the newest green commit on `main`. `release.yml` stays
+  # the stable, version-tagged line; this is the bleeding edge.
+  #
+  # Why this job exists at all: the `actions/upload-artifact` uploads above
+  # require a GitHub login to download and expire after 90 days, so they cannot
+  # serve as a public download. A Release asset can.
+  #
+  # DOWNLOAD URL -- note the shape, it is not the obvious one:
+  #   .../releases/download/latest/fractalengine-windows-x86_64.exe
+  # NOT `.../releases/latest/download/...`. GitHub computes "latest release" as
+  # the newest release that is *not* a prerelease, so a prerelease is
+  # unreachable through `/releases/latest/`. The tag is literally named
+  # `latest`, so the tag-addressed form above is stable and always correct --
+  # and it leaves the "Latest" badge free for the real `v*` releases.
+  rolling-release:
+    name: Publish rolling `latest` prerelease
+    runs-on: ubuntu-latest
+    needs: [lint, linux, windows]
+    # `main` only -- a PR run must never move the public rolling channel.
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      # An explicit `permissions:` block zeroes every scope it omits, so
+      # `actions: read` has to be restated for download-artifact.
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # This job deliberately does not check out the repo, so `gh` has no git
+      # remote to infer from -- GH_REPO is what makes every `gh` call below work.
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download this run's build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+
+      # Rename to the platform-suffixed scheme release.yml already publishes, so
+      # a rolling download and a tagged download have the same filename.
+      # upload-artifact@v4 zips without Unix permissions, so the Linux binaries
+      # arrive non-executable -- restore the bit here.
+      - name: Stage release assets
+        run: |
+          mkdir -p dist
+          cp staging/fractalengine-linux-x86_64/fractalengine       dist/fractalengine-linux-x86_64
+          cp staging/fe-relay-linux-x86_64/fe-relay                 dist/fe-relay-linux-x86_64
+          cp staging/fractalengine-windows-x86_64/fractalengine.exe dist/fractalengine-windows-x86_64.exe
+          cp staging/fe-relay-windows-x86_64/fe-relay.exe           dist/fe-relay-windows-x86_64.exe
+          chmod +x dist/fractalengine-linux-x86_64 dist/fe-relay-linux-x86_64
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Write release notes
+        run: |
+          {
+            echo "Rolling build of \`main\` -- **not a stable release.** This release is"
+            echo "republished and its assets replaced on every commit that passes lint,"
+            echo "Linux and Windows. For a supported build, use the newest \`v*\` release."
+            echo
+            echo "| Asset | Platform | Type |"
+            echo "|---|---|---|"
+            echo "| \`fractalengine-windows-x86_64.exe\` | Windows x86_64 | GUI |"
+            echo "| \`fractalengine-linux-x86_64\` | Linux x86_64 (glibc) | GUI |"
+            echo "| \`fe-relay-windows-x86_64.exe\` | Windows x86_64 | Headless relay |"
+            echo "| \`fe-relay-linux-x86_64\` | Linux x86_64 (glibc) | Headless relay |"
+            echo "| \`SHA256SUMS\` | -- | Checksums |"
+            echo
+            echo "Verify with \`sha256sum -c SHA256SUMS --ignore-missing\`."
+            echo "On Linux, \`chmod +x fractalengine-linux-x86_64\` before running."
+            echo
+            echo "Built from \`${GITHUB_SHA}\` by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+          } > NOTES.md
+
+      # A rolling tag must be FORCE-moved. `gh release create` only creates a tag
+      # that does not already exist, so without this step the `latest` release
+      # would go on pointing at whichever commit first published it.
+      - name: Force-move the `latest` tag to this commit
+        run: |
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" \
+               -f sha="${GITHUB_SHA}" -F force=true \
+            || gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+               -f ref="refs/tags/latest" -f sha="${GITHUB_SHA}"
+
+      # Create on the first run, overwrite on every run after -- the whole point
+      # of a rolling channel, and the half that a create-only action gets wrong.
+      # `--clobber` replaces same-named assets instead of failing on them.
+      - name: Publish / overwrite the `latest` prerelease
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --prerelease \
+              --title "Rolling build (latest)" --notes-file NOTES.md
+            gh release upload latest dist/* --clobber
+          else
+            gh release create latest --prerelease --target "${GITHUB_SHA}" \
+              --title "Rolling build (latest)" --notes-file NOTES.md \
+              dist/*
+          fi
+          gh release view latest --json tagName,isPrerelease,assets \
+            --jq '{tag: .tagName, prerelease: .isPrerelease, assets: [.assets[].name]}'
