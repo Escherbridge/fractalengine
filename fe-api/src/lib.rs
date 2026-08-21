@@ -1,3 +1,11 @@
+// `Response` is axum's own error carrier for handlers, so `Result<T, Response>` is the idiomatic
+// shape throughout this crate and boxing it would add indirection at every signature and call site
+// for no benefit. clippy 1.98 began flagging it as `result_large_err` (axum's `Response` is exactly
+// the lint's 128-byte threshold). Allowed at crate scope rather than distorting the API -- and
+// rather than chasing it module by module, which reddened CI twice: `export.rs` at `ca338bc`, then
+// `gis.rs` on the very next run, because clippy stops at the first failing crate.
+#![allow(clippy::result_large_err)]
+
 pub mod assets;
 pub mod auth;
 pub mod canonical_ws;
