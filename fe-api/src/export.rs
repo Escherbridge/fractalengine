@@ -1,11 +1,5 @@
 //! Parquet/CSV export endpoints (FR-2, plan Tasks 2.3/2.4/5.2) — see `fe-api/AGENTS.md` §export.
 
-// `Response` is axum's own error carrier for handlers, so `Result<T, Response>` is the idiomatic
-// shape here and boxing it would add indirection at every call site for no benefit. clippy 1.98
-// began flagging it as `result_large_err`; allowed at module scope rather than distorting four
-// signatures to satisfy a lint that does not apply to axum's conventions.
-#![allow(clippy::result_large_err)]
-
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
