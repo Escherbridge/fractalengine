@@ -228,6 +228,8 @@ pub enum UiAction {
         color: Option<[f32; 4]>,
         width: Option<f32>,
         visible: Option<bool>,
+        closed: Option<bool>,
+        fill_color: Option<[f32; 4]>,
     },
     /// Write a path-asset stamp descriptor to a track node's `path_asset`
     /// property (via `SetNodeProperty`). The `reconcile_path_asset` system
@@ -265,6 +267,15 @@ pub enum UiAction {
     },
     /// Delete a terrain proposal by id and re-persist the `proposals` block.
     TerrainProposalDelete {
+        id: String,
+    },
+    /// D16 (ui_semantics_unification_20260808 finding #4): select a proposal
+    /// for editing — the context menu's `EditRegionParams` verb pairs this
+    /// with `RevealSection { slug: "terrain" }` so the Terrain section opens
+    /// already aimed at the region the user right-clicked. A pure state write
+    /// (`ProposalEditState.selected`), same pattern as the panel's own
+    /// select-on-click (`panels::terrain_tools_panel`).
+    TerrainProposalSelect {
         id: String,
     },
 
@@ -320,7 +331,14 @@ pub enum UiAction {
         material: String,
     },
     /// Create/update a defined-shape earthwork region node (T3 FR-1 shape +
-    /// FR-3 region node + FR-4 volume). Footprint is petal-local meters (N-1).
+    /// FR-3 region node + FR-4 volume). `footprint`/`target_height`/`delta`
+    /// are queued in petal-local meters (N-1) — the handler
+    /// (`actions::terrain_proposal::handle_shape_region`) converts them to
+    /// world units via `PetalMapState.world_scale` before persisting,
+    /// mirroring `BrushSnapshot::from_state`'s conversion, so every
+    /// downstream consumer of `terrain.proposals` (context-menu pick, report
+    /// totals, sibling Brush regions) sees consistent world units (finding
+    /// #11 fix, `ui_semantics_unification_20260808`).
     SculptShapeRegion {
         petal_id: String,
         footprint: Vec<[f32; 2]>,
@@ -371,6 +389,18 @@ pub enum UiAction {
     /// handler no-ops until `endpoint_api_surface` (T5) lands the seam.
     ReportObject {
         node_id: String,
+    },
+
+    // --- ui_semantics_unification_20260808: addressable UI surfaces ---
+    /// D11: reveal a right-sidebar surface by its stable machine handle
+    /// (`RightSidebarSection::slug`). The ONE addressable reveal path — panel
+    /// cross-links, the context menu, and later fe-api/MCP all address a
+    /// surface by string rather than reaching into `RightSidebarState`.
+    /// Idempotent by design (a reveal never closes what it addressed); the
+    /// topbar/rail keep their local `toggle`, and `ToolState::activate` keeps
+    /// its same-frame direct write. An unknown slug is a logged no-op.
+    RevealSection {
+        slug: String,
     },
 }
 
@@ -494,6 +524,12 @@ pub(crate) struct ToolStateParams<'w> {
     sculpt_state: ResMut<'w, terrain_proposal::SculptToolState>,
     /// T3: region_id↔node_id bookkeeping for earthwork endpoint rows (D-A8).
     earthwork_map: ResMut<'w, terrain_proposal::EarthworkNodeMap>,
+    /// D11: the right-sidebar surface `UiAction::RevealSection` addresses.
+    /// Bundled here (rather than as a 16th top-level param) so this system
+    /// keeps headroom under Bevy's `SystemParam` tuple ceiling; the egui pass
+    /// holds the same resource in a different schedule, so there is no
+    /// same-frame access conflict.
+    right_sidebar: ResMut<'w, crate::ui_shell::right_sidebar::RightSidebarState>,
 }
 
 /// Drains all UiActions queued during the egui pass and processes them.
@@ -527,6 +563,7 @@ pub(crate) fn process_ui_actions(
         mut stamp_state,
         mut sculpt_state,
         mut earthwork_map,
+        mut right_sidebar,
     } = tool_state;
     // Fold pen-tool actions queued by `render_tool_panel` into the main queue
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
@@ -734,6 +771,12 @@ pub(crate) fn process_ui_actions(
                 }
             }
             UiAction::PathDeleteTrack { track_node_id } => {
+                // Synchronous close (finding #17 fix,
+                // `ui_semantics_unification_20260808`): closing the editing
+                // session must not wait on the DB round trip — the DB-result
+                // path also closes it, but only after the round trip, which
+                // leaves a same-frame window where `editing_track_id` still
+                // points at a track that's mid-delete.
                 if path_state.editing_track_id.as_deref() == Some(track_node_id.as_str()) {
                     path_state.stop_editing();
                 }
@@ -839,8 +882,18 @@ pub(crate) fn process_ui_actions(
                 color,
                 width,
                 visible,
+                closed,
+                fill_color,
             } => {
-                path::set_style(&db_sender, track_node_id, color, width, visible);
+                path::set_style(
+                    &db_sender,
+                    track_node_id,
+                    color,
+                    width,
+                    visible,
+                    closed,
+                    fill_color,
+                );
             }
             UiAction::PathAssetApply {
                 track_node_id,
@@ -896,6 +949,9 @@ pub(crate) fn process_ui_actions(
                     nav.active_petal_id.clone(),
                     id,
                 );
+            }
+            UiAction::TerrainProposalSelect { id } => {
+                proposal_state.selected = Some(id);
             }
 
             // ---- Wave-1 dispatch — each arm calls its per-track handler
@@ -1048,6 +1104,13 @@ pub(crate) fn process_ui_actions(
                 // seam; handler no-ops (shown disabled-with-hint by T4).
                 node::handle_report(&mut ui_mgr, node_id, now_secs);
             }
+            UiAction::RevealSection { slug } => {
+                // D11: the whole handler is `reveal_slug` — the slug table and
+                // its round-trip live with the enum in `right_sidebar.rs`.
+                if !right_sidebar.reveal_slug(&slug) {
+                    bevy::log::warn!("UiAction::RevealSection: unknown surface slug {slug:?}");
+                }
+            }
         }
     }
 }
@@ -1184,5 +1247,140 @@ mod tests {
         ));
         mgr.close_dialog();
         assert!(!mgr.any_dialog_open());
+    }
+
+    // ---- D11: UiAction::RevealSection ------------------------------------
+
+    /// The `RevealSection` arm of `process_ui_actions`, verbatim. Mirrored here
+    /// so the routing is testable without spinning a Bevy `App` — if the
+    /// handler body changes, this must change with it.
+    fn apply_reveal(
+        right: &mut crate::ui_shell::right_sidebar::RightSidebarState,
+        action: UiAction,
+    ) -> bool {
+        match action {
+            UiAction::RevealSection { slug } => right.reveal_slug(&slug),
+            other => panic!("expected RevealSection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reveal_section_routes_every_surface_through_its_slug() {
+        use crate::ui_shell::right_sidebar::{RightSidebarState, ALL_SECTIONS};
+        for section in ALL_SECTIONS {
+            let mut right = RightSidebarState::default();
+            let action = UiAction::RevealSection {
+                slug: section.slug().to_string(),
+            };
+            assert!(apply_reveal(&mut right, action), "{section:?}");
+            assert_eq!(right.requested, Some(section));
+        }
+    }
+
+    #[test]
+    fn reveal_section_is_idempotent_and_ignores_unknown_slugs() {
+        use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
+        let mut right = RightSidebarState::default();
+        let terrain = || UiAction::RevealSection {
+            slug: RightSidebarSection::TerrainTools.slug().to_string(),
+        };
+        assert!(apply_reveal(&mut right, terrain()));
+        // Addressing the same surface twice must NOT toggle it shut.
+        assert!(apply_reveal(&mut right, terrain()));
+        assert_eq!(right.requested, Some(RightSidebarSection::TerrainTools));
+        // An unknown handle is a no-op, not a state wipe.
+        assert!(!apply_reveal(
+            &mut right,
+            UiAction::RevealSection {
+                slug: "path_tools".to_string(),
+            }
+        ));
+        assert_eq!(right.requested, Some(RightSidebarSection::TerrainTools));
+    }
+
+    // ---- D16: UiAction::TerrainProposalSelect ------------------------------
+
+    /// The `TerrainProposalSelect` arm of `process_ui_actions`, verbatim
+    /// (mirrors `apply_reveal`'s pattern) — a one-line state write, kept
+    /// testable without spinning a Bevy `App`.
+    fn apply_select_proposal(
+        proposal_state: &mut crate::terrain_proposal_state::ProposalEditState,
+        action: UiAction,
+    ) {
+        match action {
+            UiAction::TerrainProposalSelect { id } => proposal_state.selected = Some(id),
+            other => panic!("expected TerrainProposalSelect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terrain_proposal_select_sets_the_selection() {
+        let mut proposal_state = crate::terrain_proposal_state::ProposalEditState::default();
+        assert!(proposal_state.selected.is_none());
+        apply_select_proposal(
+            &mut proposal_state,
+            UiAction::TerrainProposalSelect {
+                id: "p3".to_string(),
+            },
+        );
+        assert_eq!(proposal_state.selected.as_deref(), Some("p3"));
+    }
+
+    #[test]
+    fn terrain_proposal_select_overwrites_a_prior_selection() {
+        let mut proposal_state = crate::terrain_proposal_state::ProposalEditState::default();
+        proposal_state.selected = Some("p1".to_string());
+        apply_select_proposal(
+            &mut proposal_state,
+            UiAction::TerrainProposalSelect {
+                id: "p2".to_string(),
+            },
+        );
+        assert_eq!(proposal_state.selected.as_deref(), Some("p2"));
+    }
+
+    // ---- Finding #17 fix: PathDeleteTrack synchronously closes a matching
+    // editing session ------------------------------------------------------
+
+    /// The `PathDeleteTrack` arm of `process_ui_actions`, verbatim.
+    fn apply_path_delete_track(
+        path_state: &mut crate::gis::PathEditorState,
+        path_ops: &mut crate::path_ops::PendingPathOps,
+        track_node_id: String,
+    ) {
+        if path_state.editing_track_id.as_deref() == Some(track_node_id.as_str()) {
+            path_state.stop_editing();
+        }
+        path::delete_track(path_ops, track_node_id);
+    }
+
+    #[test]
+    fn path_delete_track_synchronously_closes_the_matching_editing_session() {
+        let mut path_state = crate::gis::PathEditorState::default();
+        path_state.start_editing("track-1".to_string());
+        let mut path_ops = crate::path_ops::PendingPathOps::default();
+
+        apply_path_delete_track(&mut path_state, &mut path_ops, "track-1".to_string());
+
+        assert!(
+            path_state.editing_track_id.is_none(),
+            "the session must close in the SAME frame, not wait on the DB round trip"
+        );
+        assert_eq!(path_ops.0.len(), 1, "the delete op still queues");
+    }
+
+    #[test]
+    fn path_delete_track_leaves_an_unrelated_editing_session_open() {
+        let mut path_state = crate::gis::PathEditorState::default();
+        path_state.start_editing("track-1".to_string());
+        let mut path_ops = crate::path_ops::PendingPathOps::default();
+
+        apply_path_delete_track(&mut path_state, &mut path_ops, "track-2".to_string());
+
+        assert_eq!(
+            path_state.editing_track_id.as_deref(),
+            Some("track-1"),
+            "deleting a DIFFERENT track must not touch the active editing session"
+        );
     }
 }

@@ -156,10 +156,50 @@ impl Default for SidebarState {
     }
 }
 
-/// Currently active editor tool.
+/// Currently active editor tool. `activate` is its SINGLE writer.
 #[derive(Resource, Default)]
 pub struct ToolState {
     pub active_tool: Tool,
+}
+
+impl ToolState {
+    /// The SINGLE tool-activation writer (D1/D9). Re-pressing the already-active
+    /// non-Select tool toggles back to `Select` (the neutral rest tool); anything
+    /// else switches to `tool`. Then it writes a ONE-SHOT reveal of the
+    /// `Options` surface — same rule for every tool, at the activation edge
+    /// only. Never re-assert `right.requested` per frame: that would pin the
+    /// panel and turn tool activation into a mode.
+    ///
+    /// This writes the enum directly rather than queueing
+    /// `UiAction::RevealSection` (D11): it already holds `&mut
+    /// RightSidebarState`, and the reveal must land on the SAME frame as the
+    /// activation edge — an action round-trip would arrive a frame later and,
+    /// worse, could re-assert the request after the user had toggled it away.
+    ///
+    /// Landing on Select UN-REVEALS, it does not close (finding F9): it clears
+    /// `requested` only when it is still the `Options` section this activation
+    /// path opened. A section the USER opened — Maps, Settings, the Inspector —
+    /// is never touched, because D9 ratified the reveal, not a blanket close.
+    pub fn activate(
+        &mut self,
+        tool: Tool,
+        right: &mut crate::ui_shell::right_sidebar::RightSidebarState,
+    ) {
+        use crate::ui_shell::right_sidebar::RightSidebarSection;
+
+        self.active_tool = if self.active_tool == tool && tool != Tool::Select {
+            Tool::Select
+        } else {
+            tool
+        };
+        if self.active_tool == Tool::Select {
+            if right.requested == Some(RightSidebarSection::Options) {
+                right.requested = None;
+            }
+        } else {
+            right.reveal(RightSidebarSection::Options);
+        }
+    }
 }
 
 /// Which tab is active in the inspector panel.
@@ -404,6 +444,186 @@ mod tests {
         assert_eq!(b.ceiling, MAX_MESH_INSTANCES);
         assert!(!b.exceeded);
     }
+
+    // --- ToolState::activate — the single tool-activation writer (D1/D9) ---
+
+    use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
+
+    #[test]
+    fn activate_switches_to_a_different_tool() {
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        tool.activate(Tool::Pen, &mut right);
+        assert_eq!(tool.active_tool, Tool::Pen);
+    }
+
+    #[test]
+    fn re_press_toggles_the_active_tool_off_to_select() {
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        for t in [
+            Tool::Move,
+            Tool::Rotate,
+            Tool::Scale,
+            Tool::Pen,
+            Tool::Brush,
+        ] {
+            tool.activate(t, &mut right);
+            assert_eq!(tool.active_tool, t, "{t:?} should activate");
+            tool.activate(t, &mut right);
+            assert_eq!(
+                tool.active_tool,
+                Tool::Select,
+                "re-press of {t:?} must rest"
+            );
+        }
+    }
+
+    #[test]
+    fn re_press_of_select_stays_select_never_toggles_to_nothing() {
+        // Select is the rest tool — there is no tool-less state to toggle into.
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        tool.activate(Tool::Select, &mut right);
+        assert_eq!(tool.active_tool, Tool::Select);
+        tool.activate(Tool::Select, &mut right);
+        assert_eq!(tool.active_tool, Tool::Select);
+    }
+
+    #[test]
+    fn activation_reveals_options_for_every_non_select_tool() {
+        // One rule for ALL tools — this replaces Brush's old special-case
+        // auto-open (finding #8).
+        for t in [
+            Tool::Move,
+            Tool::Rotate,
+            Tool::Scale,
+            Tool::Pen,
+            Tool::Brush,
+        ] {
+            let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+            tool.activate(t, &mut right);
+            assert_eq!(
+                right.requested,
+                Some(RightSidebarSection::Options),
+                "{t:?} must reveal the options section"
+            );
+        }
+    }
+
+    #[test]
+    fn resting_on_select_un_reveals_only_the_options_section_it_opened() {
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        tool.activate(Tool::Brush, &mut right);
+        assert_eq!(right.requested, Some(RightSidebarSection::Options));
+        tool.activate(Tool::Brush, &mut right); // toggle off → Select
+        assert_eq!(tool.active_tool, Tool::Select);
+        assert_eq!(right.requested, None, "its own reveal is undone");
+    }
+
+    #[test]
+    fn resting_on_select_leaves_a_user_opened_section_alone() {
+        // F9: pressing S (or Escape rung 3) used to close whatever the user had
+        // open — Maps, Settings, the Inspector. D9 ratified the reveal only, so
+        // activation may un-reveal Options and nothing else.
+        for section in [
+            RightSidebarSection::Maps,
+            RightSidebarSection::Settings,
+            RightSidebarSection::Inspector,
+            RightSidebarSection::TerrainTools,
+        ] {
+            let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+            right.reveal(section);
+            tool.activate(Tool::Select, &mut right);
+            assert_eq!(tool.active_tool, Tool::Select);
+            assert_eq!(
+                right.requested,
+                Some(section),
+                "{section:?} was opened by the user and must survive"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tool_toggle_off_leaves_a_section_the_user_opened_mid_tool() {
+        // The realistic sequence: activate Brush (reveals Options), user opens
+        // Maps, user re-presses B to rest on Select. Maps stays open.
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        tool.activate(Tool::Brush, &mut right);
+        right.reveal(RightSidebarSection::Maps);
+        tool.activate(Tool::Brush, &mut right); // toggle off → Select
+        assert_eq!(tool.active_tool, Tool::Select);
+        assert_eq!(right.requested, Some(RightSidebarSection::Maps));
+    }
+
+    #[test]
+    fn resting_on_select_with_nothing_open_stays_closed() {
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        tool.activate(Tool::Select, &mut right);
+        assert_eq!(right.requested, None);
+    }
+
+    // --- D-13/D-14: camera focus refuses an effectively-hidden node ---
+
+    #[test]
+    fn focus_is_refused_for_an_effectively_hidden_node() {
+        use crate::visibility::{NodeAncestry, OverrideState, VisibilityState};
+
+        let ancestry = NodeAncestry {
+            verse_id: "v1",
+            fractal_id: "f1",
+            petal_id: "p1",
+        };
+        let mut visibility = VisibilityState::default();
+        assert!(focus_target_visible("n1", ancestry, &visibility));
+        visibility
+            .node_overrides
+            .insert("n1".into(), OverrideState::Hide);
+        assert!(!focus_target_visible("n1", ancestry, &visibility));
+        assert!(
+            focus_target_visible("n2", ancestry, &visibility),
+            "only the hidden node refuses focus"
+        );
+    }
+
+    #[test]
+    fn focus_is_refused_under_a_hidden_ancestor_scope() {
+        use crate::visibility::{NodeAncestry, VisibilityState};
+
+        let ancestry = NodeAncestry {
+            verse_id: "v1",
+            fractal_id: "f1",
+            petal_id: "p1",
+        };
+        let mut visibility = VisibilityState::default();
+        visibility.hidden_fractals.insert("f1".into());
+        assert!(!focus_target_visible("n1", ancestry, &visibility));
+    }
+
+    #[test]
+    fn reveal_is_one_shot_a_user_toggle_survives_until_the_next_activation() {
+        // Mode-risk mitigation: `requested` is written only at the activation
+        // edge, so the rail/topbar toggle wins in between.
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        tool.activate(Tool::Pen, &mut right);
+        right.toggle(RightSidebarSection::Options); // user closes it
+        assert_eq!(right.requested, None);
+        assert_eq!(
+            tool.active_tool,
+            Tool::Pen,
+            "closing the panel keeps the tool"
+        );
+        // Only the next activation re-requests it.
+        tool.activate(Tool::Move, &mut right);
+        assert_eq!(right.requested, Some(RightSidebarSection::Options));
+    }
+
+    #[test]
+    fn activation_reveal_survives_the_user_parking_on_another_section() {
+        // D11 interplay: a cross-link/rail reveal of another surface is replaced
+        // (never stacked) by the next tool activation — one section at a time.
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        right.reveal(RightSidebarSection::TerrainTools);
+        tool.activate(Tool::Brush, &mut right);
+        assert_eq!(right.requested, Some(RightSidebarSection::Options));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +681,12 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::ui_shell::right_sidebar::RightSidebarState>();
         // Phase 3 (FR-7/Q-5): panel panic guard + transient-layer state.
         app.init_resource::<crate::ui_shell::modal::ModalManagerState>();
+        // hierarchy_visibility_groups_20260808 Phases 0-1: session-only
+        // per-node/petal/fractal/verse visibility + Group placeholder state,
+        // and the spawn-then-hide apply system (RATIFICATION #7). See
+        // `visibility/mod.rs`.
+        app.init_resource::<crate::visibility::VisibilityState>();
+        app.add_systems(Update, crate::visibility::sync_node_visibility);
         // Mirror AppSettings.mesh_budget_ceiling → MeshInstanceBudget.ceiling live.
         app.add_systems(Update, crate::settings::sync_app_settings_to_mesh_budget);
         // Guarantee the renderer scale resource exists so fe-ui can drive it
@@ -588,6 +814,11 @@ struct MiscUiParams<'w> {
     // T4: stamp-selection authority, read-only for the context menu's selected
     // marker + live promotion gates (mutation stays in `process_ui_actions`).
     stamp_state: Res<'w, crate::actions::asset::StampInteractionState>,
+    // hierarchy_visibility_groups_20260808 Phase 1: sidebar eye toggles +
+    // status-bar "N hidden" chip read/write this. Bundled here (rather than a
+    // new top-level `gardener_ui_system` param) — that system is already at
+    // Bevy's 16-`SystemParam` ceiling.
+    vis_state: ResMut<'w, crate::visibility::VisibilityState>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -655,6 +886,7 @@ fn gardener_ui_system(
         &mut ui_shell.left_sidebar,
         &mut ui_shell.right_sidebar,
         &mut ui_shell.modal,
+        &mut misc.vis_state,
     );
     viewport_rect.0 = rect;
 
@@ -699,15 +931,46 @@ fn strip_gltf_embedded_cameras(
     }
 }
 
+/// Whether a pending camera-focus request may fly: an EFFECTIVELY hidden node
+/// (own override, hidden ancestor scope, group, or a solo lens it is not in)
+/// refuses focus — ratified D-13/D-14, `hierarchy_visibility_groups_20260808`.
+/// Pure wrapper so the camera's own rule is named and testable.
+fn focus_target_visible(
+    node_id: &str,
+    ancestry: crate::visibility::NodeAncestry,
+    visibility: &crate::visibility::VisibilityState,
+) -> bool {
+    crate::visibility::effective_visibility(node_id, ancestry, visibility)
+}
+
 /// Resolves a pending focus request to a world position, preferring the live
 /// spawned entity's transform over the cached fallback (camera_focus_clip_20260716
 /// FR-2 — see `SpawnedNodeMarker` resolution idiom in `node_manager/sidebar_sync.rs`).
+///
+/// NOTE: the visibility refusal below is the minimal D-13/D-14 slice alongside
+/// `node_manager::viewport_pick`. The remaining surfaces — `context_pick`
+/// (right-click), `pointer`, `sidebar_sync`, and the path segment/vertex/handle
+/// filters — stay Phase-2 work of `hierarchy_visibility_groups_20260808`.
 fn apply_camera_focus(
     mut focus_target: ResMut<CameraFocusTarget>,
     mut query: Query<&mut fe_renderer::camera::OrbitCameraController>,
     spawned: Query<(&SpawnedNodeMarker, &GlobalTransform)>,
+    nav: Res<crate::navigation_manager::NavigationManager>,
+    visibility: Res<crate::visibility::VisibilityState>,
 ) {
     if let Some((node_id, fallback)) = focus_target.target.take() {
+        // Built exactly as `visibility::sync_node_visibility` builds it, so the
+        // camera and the renderer agree on what "hidden" means.
+        let ancestry = crate::visibility::NodeAncestry {
+            verse_id: nav.active_verse_id.as_deref().unwrap_or(""),
+            fractal_id: nav.active_fractal_id.as_deref().unwrap_or(""),
+            petal_id: nav.active_petal_id.as_deref().unwrap_or(""),
+        };
+        // Never fly to something the user cannot see: DROP the request (it was
+        // already `take`n) rather than parking the camera on empty space.
+        if !focus_target_visible(&node_id, ancestry, &visibility) {
+            return;
+        }
         if let Ok(mut controller) = query.single_mut() {
             let pos = spawned
                 .iter()

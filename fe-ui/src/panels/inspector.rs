@@ -20,8 +20,16 @@ use crate::theme;
 use crate::verse_manager::VerseManager;
 use fe_runtime::messages::DbCommand;
 
+/// Inspector BODY. ui_semantics_unification_20260808 D10 removed this panel's
+/// bespoke `SidePanel::right("inspector")` + `show_animated` self-collapse: the
+/// right region has exactly one chrome now
+/// (`ui_shell::right_sidebar::section_chrome`), and the Inspector opting out of
+/// it was why the section rail — the sole entry point to Terrain Tools and the
+/// Proposal Report — was invisible in the resting app (finding #3). The
+/// section header/close affordance is the chrome's; the sections below all
+/// carry their own empty states, so this renders fine with nothing selected.
 pub(crate) fn right_inspector(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
     node_mgr: &mut crate::node_manager::NodeManager,
     hierarchy: &VerseManager,
@@ -31,136 +39,113 @@ pub(crate) fn right_inspector(
     nav: &NavigationManager,
     asset_status: &crate::asset_ops::AssetDownloadStatus,
 ) {
-    let open = node_mgr.selected_entity().is_some();
-    // Allow up to 80% of screen width.
-    let max_w = ctx.viewport_rect().width() * 0.8;
-    egui::SidePanel::right("inspector")
-        .resizable(true)
-        .default_width(260.0)
-        .width_range(200.0..=max_w)
-        .frame(
-            egui::Frame::NONE
-                .fill(theme::BG_PANEL)
-                .inner_margin(egui::Margin::same(0))
-                .stroke(egui::Stroke::new(2.0_f32, theme::BG_BUTTON)),
-        )
-        .show_animated(ctx, open, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Inspector")
-                        .strong()
-                        .color(theme::TEXT_HEADING),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0);
-                    if ui
-                        .add(
-                            egui::Button::new("\u{2715}")
-                                .fill(egui::Color32::TRANSPARENT)
-                                .small(),
-                        )
-                        .clicked()
-                    {
-                        node_mgr.deselect();
-                    }
-                });
+    if node_mgr.selected_entity().is_some() {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(
+                    egui::Button::new("\u{2715}")
+                        .fill(egui::Color32::TRANSPARENT)
+                        .small(),
+                )
+                .on_hover_text("Deselect")
+                .clicked()
+            {
+                node_mgr.deselect();
+            }
+        });
+    } else {
+        ui.label(
+            egui::RichText::new("Nothing selected — pick an object in the viewport.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
+    }
+
+    // Tab bar
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        for (tab, label) in [
+            (InspectorTab::Properties, "Properties"),
+            (InspectorTab::ApiAccess, "API Access"),
+            (InspectorTab::Query, "Query"),
+        ] {
+            let active = inspector.active_tab == tab;
+            let btn = egui::Button::new(egui::RichText::new(label).small().color(if active {
+                theme::TEXT_BRIGHT
+            } else {
+                theme::TEXT_DIM
+            }))
+            .fill(if active {
+                theme::BG_BUTTON_ACTIVE
+            } else {
+                theme::BG_BUTTON
             });
+            if ui.add(btn).clicked() {
+                let prev_tab = inspector.active_tab;
+                inspector.active_tab = tab;
 
-            // Tab bar
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                for (tab, label) in [
-                    (InspectorTab::Properties, "Properties"),
-                    (InspectorTab::ApiAccess, "API Access"),
-                    (InspectorTab::Query, "Query"),
-                ] {
-                    let active = inspector.active_tab == tab;
-                    let btn =
-                        egui::Button::new(egui::RichText::new(label).small().color(if active {
-                            theme::TEXT_BRIGHT
-                        } else {
-                            theme::TEXT_DIM
-                        }))
-                        .fill(if active {
-                            theme::BG_BUTTON_ACTIVE
-                        } else {
-                            theme::BG_BUTTON
-                        });
-                    if ui.add(btn).clicked() {
-                        let prev_tab = inspector.active_tab;
-                        inspector.active_tab = tab;
+                // Clear sensitive state when leaving the API tab
+                if prev_tab == InspectorTab::ApiAccess && tab != InspectorTab::ApiAccess {
+                    inspector.generated_api_token = None;
+                }
 
-                        // Clear sensitive state when leaving the API tab
-                        if prev_tab == InspectorTab::ApiAccess && tab != InspectorTab::ApiAccess {
-                            inspector.generated_api_token = None;
-                        }
-
-                        // Auto-populate scope + fetch tokens when entering API tab
-                        if tab == InspectorTab::ApiAccess {
-                            inspector.api_tokens_page = 0;
-                            if inspector.api_token_scope_buf.is_empty() {
-                                inspector.api_token_scope_buf = build_nav_scope(nav);
-                            }
-                            let scope = inspector.api_token_scope_buf.clone();
-                            if !scope.is_empty() {
-                                db_tx
-                                    .send(DbCommand::ListApiTokensByScope {
-                                        scope_prefix: scope,
-                                        offset: 0,
-                                        limit: API_TOKEN_PAGE_SIZE,
-                                    })
-                                    .ok();
-                            }
-                        }
+                // Auto-populate scope + fetch tokens when entering API tab
+                if tab == InspectorTab::ApiAccess {
+                    inspector.api_tokens_page = 0;
+                    if inspector.api_token_scope_buf.is_empty() {
+                        inspector.api_token_scope_buf = build_nav_scope(nav);
+                    }
+                    let scope = inspector.api_token_scope_buf.clone();
+                    if !scope.is_empty() {
+                        db_tx
+                            .send(DbCommand::ListApiTokensByScope {
+                                scope_prefix: scope,
+                                offset: 0,
+                                limit: API_TOKEN_PAGE_SIZE,
+                            })
+                            .ok();
                     }
                 }
-            });
-            ui.separator();
+            }
+        }
+    });
+    ui.separator();
 
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| match inspector.active_tab {
-                    InspectorTab::Properties => {
-                        ui.add_space(4.0);
-                        inspector_entity_section(ui, node_mgr);
-                        ui.add_space(2.0);
-                        crate::panels::asset_card::asset_card_section(
-                            ui,
-                            node_mgr,
-                            hierarchy,
-                            ui_mgr,
-                            asset_status,
-                        );
-                        ui.add_space(2.0);
-                        crate::panels::annotation_card::annotation_card_section(
-                            ui, inspector, node_mgr, ui_mgr,
-                        );
-                        ui.add_space(2.0);
-                        inspector_transform_section(ui, inspector, ui_mgr);
-                        ui.add_space(2.0);
-                        inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
-                        ui.add_space(2.0);
-                        inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
-                        ui.add_space(2.0);
-                        inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav);
-                    }
-                    InspectorTab::ApiAccess => {
-                        ui.add_space(4.0);
-                        inspector_api_access_section(
-                            ui, inspector, node_mgr, db_tx, local_role, ui_mgr,
-                        );
-                    }
-                    InspectorTab::Query => {
-                        ui.add_space(4.0);
-                        crate::panels::query_tab::inspector_query_section(
-                            ui, inspector, nav, ui_mgr,
-                        );
-                    }
-                });
-        });
+    match inspector.active_tab {
+        InspectorTab::Properties => {
+            ui.add_space(4.0);
+            inspector_entity_section(ui, node_mgr);
+            ui.add_space(2.0);
+            crate::panels::asset_card::asset_card_section(
+                ui,
+                node_mgr,
+                hierarchy,
+                ui_mgr,
+                asset_status,
+            );
+            ui.add_space(2.0);
+            crate::panels::annotation_card::annotation_card_section(
+                ui, inspector, node_mgr, ui_mgr,
+            );
+            ui.add_space(2.0);
+            inspector_transform_section(ui, inspector, ui_mgr);
+            ui.add_space(2.0);
+            inspector_url_meta_section(ui, inspector, ui_mgr, local_role);
+            ui.add_space(2.0);
+            inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
+            ui.add_space(2.0);
+            inspector_schema_section(ui, inspector, node_mgr, local_role, db_tx, nav);
+        }
+        InspectorTab::ApiAccess => {
+            ui.add_space(4.0);
+            inspector_api_access_section(ui, inspector, node_mgr, db_tx, local_role, ui_mgr);
+        }
+        InspectorTab::Query => {
+            ui.add_space(4.0);
+            crate::panels::query_tab::inspector_query_section(ui, inspector, nav, ui_mgr);
+        }
+    }
 }
 
 /// Build a scope string from the current navigation state.

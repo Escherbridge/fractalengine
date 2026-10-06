@@ -1,5 +1,14 @@
 # fe-sync — module notes
 
+## §blob-store-directory-initialization
+
+`FsBlobStore` evaluates `create_dir_all` by its required postcondition: an error
+is harmless when the target now resolves to a directory. This guards the
+observed Windows error 183 case, whose `io::ErrorKind` was not `AlreadyExists`
+despite the OS message, while still rejecting a file or missing target at the
+blob-store path. The same helper protects root initialization and per-hash
+shard creation.
+
 ## §congestion-control — explicit BBR (track p2p_unblock_now_20260711 FR-4)
 
 iroh 0.35's default QUIC congestion controller is **CUBIC**

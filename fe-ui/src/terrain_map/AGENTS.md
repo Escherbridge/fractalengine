@@ -4,11 +4,11 @@
   `world_scale`), `HexonOp`/`PendingHexonOps` (registry ops queued for the main
   binary, since `fe-ui` has no `TilesetRegistry` access itself),
   `load_petal_terrain_on_nav_change` (requests terrain config on petal switch,
-  resets scale to 1.0 pending load), `tileset_to_terrain_json` (builds the
-  `fe-terrain` `TerrainConfig`-shaped JSON blob, now including `world_scale`),
-  and `sync_camera_scale_from_petal_map` (mirrors `PetalMapState.world_scale`
-  into fe-renderer's `CameraScaleSettings` so the camera adapts live and on
-  restart; no-op when the renderer resource is absent).
+  resets scale to 1.0 pending load, also resets the proposal mirror via reset_for_petal_switch),
+  `tileset_to_terrain_json` (builds the `fe-terrain` `TerrainConfig`-shaped JSON blob,
+  now including `world_scale`), and `sync_camera_scale_from_petal_map` (mirrors
+  `PetalMapState.world_scale` into fe-renderer's `CameraScaleSettings` so the
+  camera adapts live and on restart; no-op when the renderer resource is absent).
   `PetalMapState.terrain_json: Option<serde_json::Value>` (added for the GIS
   Layer Manager, see root `AGENTS.md` §gis-query-ui) holds the raw,
   last-loaded terrain doc verbatim — not just the derived `tileset_ids`/

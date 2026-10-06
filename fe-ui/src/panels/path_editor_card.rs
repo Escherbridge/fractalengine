@@ -90,6 +90,19 @@ pub(crate) fn path_editor_section(
     }
 }
 
+/// Repairs all numeric path-editor fields before conditional panels route them.
+pub(crate) fn sanitize_path_editor_numeric_state(path_state: &mut PathEditorState) {
+    for point in &mut path_state.points {
+        point.position[1] = sanitize_numeric(point.position[1], 0.0, -1_000_000.0, 1_000_000.0);
+    }
+    path_state.snap.grid_step_m =
+        sanitize_numeric(path_state.snap.grid_step_m, 1.0, 0.01, 1_000_000.0);
+    path_state.snap.anchor_radius_m =
+        sanitize_numeric(path_state.snap.anchor_radius_m, 1.0, 0.0, 1_000_000.0);
+    path_state.edited_track_style.width =
+        sanitize_numeric(path_state.edited_track_style.width, 0.1, 0.1, 20.0);
+}
+
 fn render_track_list(
     ui: &mut egui::Ui,
     path_state: &mut PathEditorState,
@@ -311,14 +324,17 @@ fn render_edit_view(
     // `gis.track.*` props on select); each change emits a focused `PathSetStyle`
     // via the deferred-push idiom so the borrow on `path_state` ends first.
     let to_style = render_style_controls(ui, &mut path_state.edited_track_style);
-    if let Some((color, width, visible)) = to_style {
+    if let Some((color, width, visible, closed, fill_color)) = to_style {
         ui_mgr.push_action(UiAction::PathSetStyle {
             track_node_id: track_id.to_string(),
             color,
             width,
             visible,
+            closed,
+            fill_color,
         });
     }
+    render_snap_controls(ui, &mut path_state.snap);
 
     if path_status.track_node_id.as_deref() == Some(track_id) {
         ui.add_space(4.0);
@@ -387,27 +403,18 @@ fn render_edit_view(
     }
     ui.add_space(4.0);
 
-    // pen_curve_tool_20260722 (FR-6): per-anchor corner settings for the
-    // selected vertex — same deferred-push idiom as the style controls above
-    // (live buffer edit, persist signal consumed after the borrow ends).
-    if let Some(idx) = path_state.selected_point {
-        let (to_corner, to_handles) = render_corner_settings(ui, &mut path_state.points, idx);
-        if let Some(corner) = to_corner {
-            ui_mgr.push_action(UiAction::PathSetAnchorCorner {
-                track_node_id: track_id.to_string(),
-                index: idx,
-                corner,
-            });
-        }
-        if let Some((handle_in, handle_out, smoothness)) = to_handles {
-            ui_mgr.push_action(UiAction::PathSetAnchorHandles {
-                track_node_id: track_id.to_string(),
-                index: idx,
-                handle_in,
-                handle_out,
-                smoothness,
-            });
-        }
+    // D8 (ui_semantics_unification_20260808): the per-anchor corner/smoothness
+    // card MOVED to the Options section's Pen arm
+    // (`panels::tool_options::render_corner_editor`) — this tab keeps the track
+    // list, start/stop editing, and the per-point list. The card's pure math
+    // (`corner_toggle_outcome` & co) stays homed here as Authority B's rules.
+    if path_state.selected_point.is_some() {
+        ui.label(
+            egui::RichText::new("Corner settings live in the Options panel (Pen tool).")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
         ui.add_space(4.0);
     }
 
@@ -536,10 +543,18 @@ fn render_edit_view(
 fn render_style_controls(
     ui: &mut egui::Ui,
     style: &mut crate::gis::TrackStyleFields,
-) -> Option<(Option<[f32; 4]>, Option<f32>, Option<bool>)> {
+) -> Option<(
+    Option<[f32; 4]>,
+    Option<f32>,
+    Option<bool>,
+    Option<bool>,
+    Option<[f32; 4]>,
+)> {
     let mut changed_color: Option<[f32; 4]> = None;
     let mut changed_width: Option<f32> = None;
     let mut changed_visible: Option<bool> = None;
+    let mut changed_closed: Option<bool> = None;
+    let mut changed_fill_color: Option<[f32; 4]> = None;
 
     ui.add_space(6.0);
     ui.separator();
@@ -552,7 +567,7 @@ fn render_style_controls(
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
-        ui.label("Color");
+        ui.label("Border color");
         // egui's picker works in sRGB `Color32` (unmultiplied). Convert to/from
         // our `[f32; 4]` sRGB representation.
         let mut rgba = egui::Color32::from_rgba_unmultiplied(
@@ -589,7 +604,7 @@ fn render_style_controls(
     });
 
     ui.horizontal(|ui| {
-        ui.label("Thickness");
+        ui.label("Border width");
         let mut w = style.width;
         // Range starts at 0.1 (step 0.1), matching the thin default (petal-local
         // meters). Dial up for wider roads/paths.
@@ -615,10 +630,94 @@ fn render_style_controls(
         }
     });
 
-    if changed_color.is_some() || changed_width.is_some() || changed_visible.is_some() {
-        Some((changed_color, changed_width, changed_visible))
+    ui.horizontal(|ui| {
+        let mut closed = style.closed;
+        if ui
+            .add(egui::Checkbox::new(&mut closed, "Closed zone"))
+            .changed()
+        {
+            style.closed = closed;
+            changed_closed = Some(closed);
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Fill color");
+        let mut rgba = egui::Color32::from_rgba_unmultiplied(
+            (style.fill_color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (style.fill_color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (style.fill_color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (style.fill_color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+        );
+        let response = egui::color_picker::color_edit_button_srgba(
+            ui,
+            &mut rgba,
+            egui::color_picker::Alpha::OnlyBlend,
+        );
+        if response.changed() {
+            style.fill_color = [
+                rgba.r() as f32 / 255.0,
+                rgba.g() as f32 / 255.0,
+                rgba.b() as f32 / 255.0,
+                rgba.a() as f32 / 255.0,
+            ];
+        }
+        if response.changed() && ui.input(|input| !input.pointer.primary_down()) {
+            changed_fill_color = Some(style.fill_color);
+        }
+    });
+
+    if changed_color.is_some()
+        || changed_width.is_some()
+        || changed_visible.is_some()
+        || changed_closed.is_some()
+        || changed_fill_color.is_some()
+    {
+        Some((
+            changed_color,
+            changed_width,
+            changed_visible,
+            changed_closed,
+            changed_fill_color,
+        ))
     } else {
         None
+    }
+}
+
+fn render_snap_controls(ui: &mut egui::Ui, snap: &mut crate::gis::PathSnapSettings) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new("Snap")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
+    ui.checkbox(&mut snap.enabled, "Enable snapping");
+    ui.add_enabled_ui(snap.enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Grid step (m)");
+            ui.add(
+                egui::DragValue::new(&mut snap.grid_step_m)
+                    .range(0.01..=1_000_000.0)
+                    .speed(0.1),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Anchor radius (m)");
+            ui.add(
+                egui::DragValue::new(&mut snap.anchor_radius_m)
+                    .range(0.0..=1_000_000.0)
+                    .speed(0.1),
+            );
+        });
+    });
+}
+
+fn sanitize_numeric(value: f32, fallback: f32, min: f32, max: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
     }
 }
 
@@ -670,7 +769,7 @@ fn zero_handle_kind_revert(
 }
 
 /// Deferred `PathSetAnchorHandles` payload: `(handle_in, handle_out, smoothness)`.
-type HandlesPersist = (Option<[f32; 3]>, Option<[f32; 3]>, f32);
+pub(crate) type HandlesPersist = (Option<[f32; 3]>, Option<[f32; 3]>, f32);
 
 /// What a corner-toggle click does to the row buffer and the persist queue.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -730,8 +829,11 @@ fn corner_toggle_outcome(
 
 /// pen_curve_tool_20260722 (FR-6): "Corner settings" sub-card for the selected
 /// vertex — live-edits the row, returns deferred persist signals (consumed
-/// after the `points` borrow ends). See `fe-ui/src/AGENTS.md` §path-editor.
-fn render_corner_settings(
+/// after the `points` borrow ends). D8 moved its sole CALL SITE to the Options
+/// section's Pen arm (`panels::tool_options`); the widget and its pure toggle
+/// rules stay homed here with Authority B. See `fe-ui/src/AGENTS.md`
+/// §path-editor.
+pub(crate) fn render_corner_settings(
     ui: &mut egui::Ui,
     points: &mut [PathPointRow],
     idx: usize,

@@ -9,25 +9,34 @@ use crate::plugin::ViewportRect;
 /// A viewport left-click consumer, ordered highest-priority first.
 ///
 /// Consumers run in this order via the `.chain()` in `mod.rs`; the first to
-/// `claim` a frame owns it and lower-priority consumers yield.
+/// `claim` a frame owns it and lower-priority consumers yield. `claim()` is
+/// pure first-claim-wins by EXECUTION order, so the `.chain()` registration in
+/// `mod.rs` is normative (ratified D14-A) and these variants are listed to
+/// match it exactly — the ordinals document the chain, they do not drive it.
+/// Adding a consumer means inserting BOTH, in the same position.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub(super) enum ClickPriority {
+    /// First-class terrain brush. Registered 2nd in the chain (right after the
+    /// arbiter), so while Brush is the active tool it claims ahead of every
+    /// other consumer — including the path/gimbal arms, which independently
+    /// early-return on `Tool::Brush` anyway.
+    Brush,
     /// Drag a bezier handle marker of the edited track (pen_curve_tool_20260722
     /// FR-5, ratified Q7): outranks the gimbal arm AND the vertex marker, so an
     /// overlapping handle + vertex resolves to the handle.
     PathHandle,
-    /// Gimbal axis pick / drag (transform tools).
+    /// Gimbal axis pick / drag — the FR-3 path gimbal, then the entity gimbal
+    /// (transform tools); both claim under this one priority.
     Gimbal,
     /// Drag / annotate an existing path-point marker.
     PathMarker,
-    /// Pen-tool append of a new path point.
+    /// Pen-tool append of a new path point (same system as `PathMarker`, which
+    /// resolves first within it).
     PathPlace,
     /// Select a ribbon SEGMENT of the edited track (path_interaction_20260716,
     /// FR-3). Outranks `NodePick` so while editing a click on the ribbon selects
     /// the segment instead of re-picking the whole track as a node.
     PathSegment,
-    /// First-class terrain brush; outranks node selection.
-    Brush,
     /// glTF / node selection (lowest priority).
     NodePick,
 }
@@ -281,6 +290,48 @@ mod tests {
                 pair[1]
             );
         }
+    }
+
+    #[test]
+    fn click_priority_ordinals_match_the_chain_registration_order() {
+        // D14-A: the `.chain()` in `mod.rs` is normative. This array IS that
+        // registration order; the assert pins the enum to it, so a future
+        // consumer inserted in only one of the two places trips here.
+        let chain = [
+            ClickPriority::Brush,
+            ClickPriority::PathHandle,
+            ClickPriority::Gimbal,
+            ClickPriority::PathMarker,
+            ClickPriority::PathPlace,
+            ClickPriority::PathSegment,
+            ClickPriority::NodePick,
+        ];
+        for pair in chain.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{:?} runs before {:?} in the chain and must rank before it",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn brush_claims_before_every_other_consumer() {
+        // The runtime behavior the reordered enum now documents (finding #11).
+        let mut arb = available_arbiter();
+        for who in [
+            ClickPriority::Brush,
+            ClickPriority::PathHandle,
+            ClickPriority::Gimbal,
+            ClickPriority::PathMarker,
+            ClickPriority::PathPlace,
+            ClickPriority::PathSegment,
+            ClickPriority::NodePick,
+        ] {
+            assert_eq!(arb.claim(who), who == ClickPriority::Brush, "{who:?}");
+        }
+        assert!(arb.is_owner(ClickPriority::Brush));
     }
 
     #[test]

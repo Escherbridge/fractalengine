@@ -249,6 +249,18 @@ pub struct StampRenderIndex {
     pub tracks: HashMap<String, StampTrackRenderData>,
 }
 
+/// Immediately evict one deleted path's generated-stamp projection.
+pub fn invalidate_path_stamp_projection(
+    track_id: &str,
+    cache: &mut PathAssetCache,
+    applied: &mut PathAssetApplied,
+    render_index: &mut StampRenderIndex,
+) {
+    cache.invalidate(track_id);
+    applied.invalidate(track_id);
+    render_index.tracks.remove(track_id);
+}
+
 // ---------------------------------------------------------------------------
 // Per-stamp override application (T2 FR-3)
 // ---------------------------------------------------------------------------
@@ -828,6 +840,35 @@ mod tests {
             !applied.matches("t2", &d, 2, 1.0, 0),
             "clear drops everything"
         );
+    }
+
+    #[test]
+    fn delete_projection_teardown_is_scoped_and_idempotent() {
+        let descriptor = sample_desc();
+        let mut cache = PathAssetCache::default();
+        cache.upsert("gone", "p", descriptor.clone(), vec![[0.0; 3]], 1);
+        cache.upsert("kept", "p", descriptor.clone(), vec![[1.0; 3]], 2);
+        let mut applied = PathAssetApplied::default();
+        applied.remember("gone", descriptor.clone(), 1, 1.0, 0);
+        applied.remember("kept", descriptor.clone(), 2, 1.0, 0);
+        let mut render_index = StampRenderIndex::default();
+        render_index.tracks.insert(
+            "gone".into(),
+            StampTrackRenderData {
+                petal_id: "p".into(),
+                index: StampSpatialIndex::build(&[], DEFAULT_CELL_SIZE_M),
+                batches: Vec::new(),
+            },
+        );
+
+        invalidate_path_stamp_projection("gone", &mut cache, &mut applied, &mut render_index);
+        invalidate_path_stamp_projection("gone", &mut cache, &mut applied, &mut render_index);
+
+        assert!(cache.get("gone").is_none());
+        assert!(!applied.matches("gone", &descriptor, 1, 1.0, 0));
+        assert!(!render_index.tracks.contains_key("gone"));
+        assert!(cache.get("kept").is_some());
+        assert!(applied.matches("kept", &descriptor, 2, 1.0, 0));
     }
 
     // --- per-stamp override application (T2 FR-3) ---

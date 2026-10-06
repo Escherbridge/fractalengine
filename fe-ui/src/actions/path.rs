@@ -246,6 +246,8 @@ pub(crate) fn export_gpx(path_ops: &mut PendingPathOps, track_node_id: String) {
 pub(crate) const TRACK_COLOR_KEY: &str = "gis.track.color";
 pub(crate) const TRACK_WIDTH_KEY: &str = "gis.track.width";
 pub(crate) const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
+pub(crate) const TRACK_CLOSED_KEY: &str = "gis.track.closed";
+pub(crate) const TRACK_FILL_COLOR_KEY: &str = "gis.track.fill.color";
 
 /// Encode an sRGB `[f32; 4]` color as a `#rrggbbaa` hex string matching
 /// `fe_terrain::iot::parse_track_color_hex`'s reader. Local to avoid an
@@ -268,6 +270,8 @@ pub(crate) fn style_property_writes(
     color: Option<[f32; 4]>,
     width: Option<f32>,
     visible: Option<bool>,
+    closed: Option<bool>,
+    fill_color: Option<[f32; 4]>,
 ) -> Vec<(&'static str, serde_json::Value)> {
     let mut writes = Vec::new();
     if let Some(color) = color {
@@ -282,6 +286,15 @@ pub(crate) fn style_property_writes(
     if let Some(visible) = visible {
         writes.push((TRACK_VISIBLE_KEY, serde_json::Value::Bool(visible)));
     }
+    if let Some(closed) = closed {
+        writes.push((TRACK_CLOSED_KEY, serde_json::Value::Bool(closed)));
+    }
+    if let Some(fill_color) = fill_color {
+        writes.push((
+            TRACK_FILL_COLOR_KEY,
+            serde_json::Value::String(track_color_to_hex(fill_color)),
+        ));
+    }
     writes
 }
 
@@ -295,8 +308,10 @@ pub(crate) fn set_style(
     color: Option<[f32; 4]>,
     width: Option<f32>,
     visible: Option<bool>,
+    closed: Option<bool>,
+    fill_color: Option<[f32; 4]>,
 ) {
-    for (key, value) in style_property_writes(color, width, visible) {
+    for (key, value) in style_property_writes(color, width, visible, closed, fill_color) {
         if db_sender
             .0
             .send(DbCommand::SetNodeProperty {
@@ -808,16 +823,22 @@ mod tests {
     #[test]
     fn style_property_writes_only_includes_changed_fields() {
         // Only the width is set → exactly one write, for the width key.
-        let writes = style_property_writes(None, Some(3.5), None);
+        let writes = style_property_writes(None, Some(3.5), None, None, None);
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].0, TRACK_WIDTH_KEY);
         assert_eq!(writes[0].1, serde_json::json!(3.5));
     }
 
     #[test]
-    fn style_property_writes_maps_all_three_keys_and_types() {
-        let writes = style_property_writes(Some([0.0, 0.8, 1.0, 1.0]), Some(4.0), Some(false));
-        assert_eq!(writes.len(), 3);
+    fn style_property_writes_maps_zone_keys_and_types() {
+        let writes = style_property_writes(
+            Some([0.0, 0.8, 1.0, 1.0]),
+            Some(4.0),
+            Some(false),
+            Some(true),
+            Some([0.2, 0.4, 0.6, 0.5]),
+        );
+        assert_eq!(writes.len(), 5);
         // Color → hex string.
         assert_eq!(
             writes[0],
@@ -833,11 +854,19 @@ mod tests {
             writes[2],
             (TRACK_VISIBLE_KEY, serde_json::Value::Bool(false))
         );
+        assert_eq!(writes[3], (TRACK_CLOSED_KEY, serde_json::Value::Bool(true)));
+        assert_eq!(
+            writes[4],
+            (
+                TRACK_FILL_COLOR_KEY,
+                serde_json::Value::String("#33669980".to_string())
+            )
+        );
     }
 
     #[test]
     fn style_property_writes_empty_when_nothing_changed() {
-        assert!(style_property_writes(None, None, None).is_empty());
+        assert!(style_property_writes(None, None, None, None, None).is_empty());
     }
 
     #[test]
@@ -849,6 +878,8 @@ mod tests {
             "track-1".to_string(),
             Some([1.0, 0.0, 0.0, 1.0]),
             Some(2.0),
+            None,
+            None,
             None,
         );
         // Two writes: color + width (visible is None).

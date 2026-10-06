@@ -12,7 +12,7 @@ use fe_runtime::messages::{DbCommand, DbResult};
 use fe_terrain::gpx::{compute_stats, parse_gpx_bytes, scene_nodes_to_gpx, GpxData, TrackStats};
 use fe_terrain::iot::animation::{CornerKind, TimestampedRoutePoint, TrackRoute};
 use fe_terrain::iot::{parse_track_color_hex, TrackRouteMap, TrackStyle, TrackStyleMap};
-use fe_terrain::mesh::track::track_centroid;
+use fe_terrain::mesh::track::{prepare_track_zone, track_centroid};
 use fe_terrain::petal_binding::ActivePetalTerrain;
 use fe_terrain::projection::Projection;
 use fe_terrain::terrain_plugin::GpxTrackLine;
@@ -20,7 +20,10 @@ use fe_terrain::ExportNode;
 use fe_ui::gpx_ops::{GpxImportStatus, GpxOp, PendingGpxOps};
 use fe_ui::node_manager::TrackPickShape;
 use fe_ui::path_ops::{PathEditStatus, PathOp, PendingPathOps};
-use fe_ui::verse_manager::VerseManager;
+use fe_ui::verse_manager::{
+    invalidate_path_stamp_projection, PathAssetApplied, PathAssetCache, StampRenderIndex,
+    VerseManager,
+};
 
 /// Reserved flat property key marking a node as GPX-derived (`"track"` or `"waypoint"`).
 const GPX_TYPE_KEY: &str = "gpx_type";
@@ -38,13 +41,14 @@ const TRACK_NAME_KEY: &str = "gis.track.name";
 /// JSON array of `[x, y, z, time_seconds]` in petal-local meters. See
 /// `src/AGENTS.md` §path-editor.
 const GPX_POINTS_KEY: &str = "gpx_points";
-/// Per-track style properties (track_styling_20260713): a hex color string
-/// (`#rrggbbaa`), a numeric ribbon width (meters), and a bool visibility. Read
+/// Per-track border, visibility, closed-zone, and fill properties. Read
 /// into `TrackStyleMap` by `advance_path_materialization`; written by the Paths
 /// tab via `SetNodeProperty`. Absent/invalid → `TrackStyle::default()` (FR-4).
 const TRACK_COLOR_KEY: &str = "gis.track.color";
 const TRACK_WIDTH_KEY: &str = "gis.track.width";
 const TRACK_VISIBLE_KEY: &str = "gis.track.visible";
+const TRACK_CLOSED_KEY: &str = "gis.track.closed";
+const TRACK_FILL_COLOR_KEY: &str = "gis.track.fill.color";
 
 /// Parse a track's `gis.track.*` properties into a [`TrackStyle`]. Any
 /// missing/invalid field falls back to that field's default (FR-4) — this
@@ -61,11 +65,21 @@ fn style_from_properties(properties: &serde_json::Value) -> TrackStyle {
     }
     if let Some(width) = properties.get(TRACK_WIDTH_KEY).and_then(|v| v.as_f64()) {
         if width.is_finite() && width > 0.0 {
-            style.width = width as f32;
+            style.width = width.clamp(0.1, 20.0) as f32;
         }
     }
     if let Some(visible) = properties.get(TRACK_VISIBLE_KEY).and_then(|v| v.as_bool()) {
         style.visible = visible;
+    }
+    if let Some(closed) = properties.get(TRACK_CLOSED_KEY).and_then(|v| v.as_bool()) {
+        style.closed = closed;
+    }
+    if let Some(fill_color) = properties
+        .get(TRACK_FILL_COLOR_KEY)
+        .and_then(|v| v.as_str())
+        .and_then(parse_track_color_hex)
+    {
+        style.fill_color = fill_color;
     }
     style
 }
@@ -79,6 +93,19 @@ fn next_authored_track_correlation_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!("authored-track:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn enqueue_track_delete(db_tx: &DbCommandSender, track_node_id: &str) -> Result<(), &'static str> {
+    db_tx
+        .0
+        .send(DbCommand::DeleteNode {
+            node_id: track_node_id.to_string(),
+        })
+        .map_err(|_| "Database channel closed; track was not deleted")
+}
+
+fn projection_matches_track(candidate_track_id: &str, deleted_track_id: &str) -> bool {
+    candidate_track_id == deleted_track_id
 }
 
 // ---------------------------------------------------------------------------
@@ -621,13 +648,45 @@ fn track_pick_shape(
         return None;
     }
     let centroid = track_centroid(&positions);
-    let half_width = style_map.style_for(track_node_id).width.max(0.01) / 2.0;
+    let style = style_map.style_for(track_node_id);
+    let half_width = style.width.max(0.01) / 2.0;
+    let (mut pick_points, fill_triangles) = if style.closed {
+        let prepared = prepare_track_zone(&positions);
+        let fill_triangles = prepared
+            .triangle_indices
+            .chunks_exact(3)
+            .map(|triangle| {
+                [0, 1, 2].map(|offset| {
+                    let point = prepared.points[triangle[offset] as usize];
+                    Vec3::new(point[0], point[1] + 0.48, point[2])
+                })
+            })
+            .collect();
+        (
+            prepared
+                .points
+                .iter()
+                .map(|point| Vec3::from_array(*point))
+                .collect::<Vec<_>>(),
+            fill_triangles,
+        )
+    } else {
+        (
+            positions
+                .iter()
+                .map(|point| Vec3::from_array(*point))
+                .collect(),
+            Vec::new(),
+        )
+    };
+    if style.closed && pick_points.len() >= 3 {
+        pick_points.push(pick_points[0]);
+    }
     Some(TrackPickShape {
-        points: positions
-            .iter()
-            .map(|p| Vec3::new(p[0], p[1], p[2]))
-            .collect(),
+        points: pick_points,
         half_width,
+        closed: style.closed,
+        fill_triangles,
         centroid: Vec3::new(centroid[0], centroid[1], centroid[2]),
     })
 }
@@ -1105,6 +1164,9 @@ pub fn drain_path_ops(
     db_tx: Res<DbCommandSender>,
     mut pending: ResMut<PendingPathEdits>,
     mut route_map: ResMut<TrackRouteMap>,
+    mut path_asset_cache: ResMut<PathAssetCache>,
+    mut path_asset_applied: ResMut<PathAssetApplied>,
+    mut stamp_render_index: ResMut<StampRenderIndex>,
     active_terrain: Res<ActivePetalTerrain>,
     track_lines: Query<(Entity, &GpxTrackLine)>,
     single_nodes: Query<(Entity, &SinglePointTrackNode)>,
@@ -1157,21 +1219,33 @@ pub fn drain_path_ops(
                 // GpxTrackLine) are cleared optimistically here, and the
                 // left panel + Paths tab sync via DbResult::NodeDeleted
                 // (FR-3, fe-ui/src/verse_manager/db_results.rs).
-                db_tx
-                    .0
-                    .send(DbCommand::DeleteNode {
-                        node_id: track_node_id.clone(),
-                    })
-                    .ok();
+                if let Err(error) = enqueue_track_delete(&db_tx, &track_node_id) {
+                    *status = PathEditStatus {
+                        track_node_id: Some(track_node_id),
+                        message: None,
+                        error: Some(error.to_string()),
+                    };
+                    continue;
+                }
                 pending.in_flight_points.remove(&track_node_id);
                 pending.seed_pending.remove(&track_node_id);
                 route_map.routes.remove(&track_node_id);
+                invalidate_path_stamp_projection(
+                    &track_node_id,
+                    &mut path_asset_cache,
+                    &mut path_asset_applied,
+                    &mut stamp_render_index,
+                );
                 // Despawn ALL matching lines — a leaked duplicate ribbon must
                 // not survive a single-`.find()` teardown.
-                for (entity, _) in track_lines
-                    .iter()
-                    .filter(|(_, t)| t.track_node_id == track_node_id)
-                {
+                for (entity, _) in track_lines.iter().filter(|(_, track)| {
+                    projection_matches_track(&track.track_node_id, &track_node_id)
+                }) {
+                    commands.entity(entity).despawn();
+                }
+                for (entity, _) in single_nodes.iter().filter(|(_, node)| {
+                    projection_matches_track(&node.track_node_id, &track_node_id)
+                }) {
                     commands.entity(entity).despawn();
                 }
                 *status = PathEditStatus {
@@ -2347,16 +2421,15 @@ pub fn advance_path_materialization(
                 style_map.styles.insert(node_id.clone(), new_style);
                 let mut force_line_redraw = false;
                 if style_changed {
-                    if let Some((entity, _)) = track_lines
-                        .iter()
-                        .find(|(_, t)| t.track_node_id == *node_id)
-                    {
+                    for (entity, _) in track_lines.iter().filter(|(_, track)| {
+                        projection_matches_track(&track.track_node_id, node_id)
+                    }) {
                         commands.entity(entity).despawn();
                         // The line no longer exists for the reconcile below, so
                         // it will respawn from scratch — force it even though
                         // petal-load normally passes `false`.
-                        force_line_redraw = true;
                     }
+                    force_line_redraw = true;
                 }
                 let Some(points_json) = properties.get(GPX_POINTS_KEY) else {
                     continue;
@@ -2388,7 +2461,12 @@ pub fn advance_path_materialization(
                 // `NodePropertiesLoaded` arm above refreshes `TrackStyleMap` and
                 // forces the ribbon rebuild. Only for the three style keys so an
                 // unrelated property write doesn't trigger a spurious round trip.
-                if key == TRACK_COLOR_KEY || key == TRACK_WIDTH_KEY || key == TRACK_VISIBLE_KEY {
+                if key == TRACK_COLOR_KEY
+                    || key == TRACK_WIDTH_KEY
+                    || key == TRACK_VISIBLE_KEY
+                    || key == TRACK_CLOSED_KEY
+                    || key == TRACK_FILL_COLOR_KEY
+                {
                     db_tx
                         .0
                         .send(DbCommand::GetNodeProperties {
@@ -2912,16 +2990,50 @@ mod tests {
     }
 
     #[test]
-    fn style_from_properties_reads_all_three_keys() {
+    fn delete_enqueue_reports_channel_failure_without_false_success() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        enqueue_track_delete(&sender, "track-1").expect("connected channel");
+        assert!(matches!(
+            rx.try_recv().expect("delete command"),
+            DbCommand::DeleteNode { node_id } if node_id == "track-1"
+        ));
+
+        let (tx, rx) = crossbeam::channel::unbounded();
+        drop(rx);
+        let sender = DbCommandSender(tx);
+        assert!(enqueue_track_delete(&sender, "track-2").is_err());
+    }
+
+    #[test]
+    fn delete_projection_match_covers_line_and_single_point_cleanup() {
+        assert!(projection_matches_track("track-1", "track-1"));
+        assert!(!projection_matches_track("track-1", "track-2"));
+    }
+
+    #[test]
+    fn style_from_properties_reads_zone_keys() {
         let props = serde_json::json!({
             "gis.track.color": "#ff0000ff",
             "gis.track.width": 5.5,
             "gis.track.visible": false,
+            "gis.track.closed": true,
+            "gis.track.fill.color": "#33669980",
         });
         let style = style_from_properties(&props);
         assert_eq!(style.color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(style.width, 5.5);
         assert!(!style.visible);
+        assert!(style.closed);
+        assert_eq!(
+            style.fill_color,
+            [
+                0x33 as f32 / 255.0,
+                0x66 as f32 / 255.0,
+                0x99 as f32 / 255.0,
+                0x80 as f32 / 255.0,
+            ]
+        );
     }
 
     #[test]
@@ -2938,6 +3050,19 @@ mod tests {
         assert_eq!(style.color, d.color);
         assert_eq!(style.width, d.width);
         assert_eq!(style.visible, d.visible);
+    }
+
+    #[test]
+    fn style_from_properties_caps_f64_width_before_f32_conversion() {
+        let style = style_from_properties(&serde_json::json!({
+            "gis.track.width": 1.0e100
+        }));
+        assert_eq!(style.width, 20.0);
+        assert!(style.width.is_finite());
+        let tiny = style_from_properties(&serde_json::json!({
+            "gis.track.width": 1.0e-100
+        }));
+        assert_eq!(tiny.width, 0.1);
     }
 
     #[test]

@@ -2,8 +2,9 @@
 
 ## 2026-07-26 routing
 
-Topbar **Tools** toggles `PathTools`, matching its stamping/Pen/shapes label.
-Brush activation requests the contextual `Tool` section for mutable controls.
+Topbar **Options** toggles `RightSidebarSection::Options` (ALL non-Select tools request the
+Options section via `ToolState::activate`, not just Brush). Right-row helpers resolve
+active section, compute labels, and provide toggle/reveal operations.
 
 `ui_shell_architecture_20260724` Phase 2 (FR-4/5/6). The top-level shell is
 decomposed into per-area **managers**. Each manager module is: a small state
@@ -19,7 +20,7 @@ own Bevy systems (NFR-4: exactly ONE `EguiPrimaryContextPass` entry,
 | :-- | :-- | :-- | :-- | :-- |
 | Topbar (FR-4) | `topbar.rs` | `TopbarState` (minimal/reserved) | — (delegates to `panels::toolbar`) | `render_topbar` |
 | Left (FR-5) | `left_sidebar.rs` | `LeftSidebarState { policy, user_intent }` | `left_visibility` | `render_left_sidebar` |
-| Right (FR-6) | `right_sidebar.rs` | `RightSidebarState { requested }` | `active_section`, `section_label`, `toggle`/`is_active` | `render_right_sidebar` |
+| Right (FR-6) | `right_sidebar.rs` | `RightSidebarState { requested }` | `active_section`, `section_label`, `slug`/`from_slug`, `toggle`/`is_active`/`reveal`/`reveal_slug` | `render_right_sidebar` |
 | Modal (FR-7) | `modal.rs` | `ModalManagerState { disabled_panels, last_error }` | `guarded`, `transient_order`, `resolve_exclusive` | transient layer, rendered last |
 
 Resources are `init_resource`'d in `plugin.rs` and threaded into
@@ -34,10 +35,9 @@ The single-source data — `TOOL_DEFS`, `shortcut_hint_line`, `active_tool_hint`
 topbar only calls it. The tool-switcher, deselect, and Data/Settings/Maps
 buttons are byte-for-byte the same behavior.
 
-**Section-toggle wiring.** The **Tools** button toggles
-`RightSidebarSection::Tool` via `right.toggle(Tool)` — the SOLE reveal path
-(Phase 4 (FR-9) retired the Phase-2 compat shim + the legacy `tool_panel.open`
-flag). Data/Settings/Maps have no section variant and are unchanged.
+**Section-toggle wiring.** The **Options** button toggles
+`RightSidebarSection::Options` via `right.toggle(Options)` — the SOLE reveal path
+for tool options. Data/Settings/Maps have no section variant and are unchanged.
 
 **Tooltips (FR-8).** Each mode button's hover text comes from
 `toolbar::tool_tooltip_text(def)`, which joins `TOOL_DEFS` (glyph/name/shortcut)
@@ -48,26 +48,31 @@ string — so button, shortcut, and description can't drift. The redundant
 
 ## §left (FR-5)
 
-The left sidebar's auto-collapse is now a **policy**, not a per-frame stomp. The
+The left sidebar's visibility is now a **policy**, not a per-frame stomp. The
 pure `left_visibility(policy, right_open, user_intent) -> bool`:
 
-- `AutoCollapse` (DEFAULT) → `!right_open`. This reproduces the pre-refactor
-  `sidebar.open = !(portal_is_open() || selected_entity().is_some())` EXACTLY —
-  `user_intent` is ignored, matching the old manual-toggle no-op. Do not change
-  this default without a ratified decision; the no-op-toggle bug must not return.
-- `Manual` → `user_intent` (the seam for a future manual toggle; not default).
+- `AutoCollapse` → `!right_open` (reproduces the pre-refactor
+  `sidebar.open = !(portal_is_open() || selected_entity().is_some())` — `user_intent`
+  is ignored).
+- `Manual` → `user_intent` (the seam for a future manual toggle; only option).
 
 `render_left_sidebar` applies the policy to `sidebar.open` **before** rendering
 (the old stomp ran after render; the one-frame difference is absorbed by
 `show_animated`). `right_open` is computed in `gardener_console` post-topbar
 (so a topbar deselect is reflected), exactly as the old stomp was.
+`VisibilityState` is threaded via gardener_console.
 
 ## §right (FR-6) — precedence + the section-fn seam
 
-`RightSidebarSection = { Inspector, Tool, PathTools, TerrainTools, ProposalReport }`
+`RightSidebarSection = { Inspector, Options, TerrainTools, ProposalReport, Settings, Maps }`
 is the mutually-exclusive right region — **one section at a time** (RATIFIED
 Q-2). `RightSidebarState.requested: Option<RightSidebarSection>` is the explicit
-toggle (topbar / in-panel rail); `None` means selection-default.
+toggle (topbar / in-panel rail); `None` means selection-default. Rail has 6 glyphs
+sourced from ALL_SECTIONS (PathTools retired; Options now hosts all tool-specific controls).
+
+**Section-toggle wiring.** `RevealSection { slug }` is the addressable idempotent
+reveal (cross-links, context menu, future fe-api/MCP); topbar/rail stay toggles
+(a reveal can never close a section).
 
 **`active_section(state, selection_present, portal_open)` precedence —
 portal > explicit toggle > selection-default:**
@@ -87,22 +92,24 @@ also enforces it at the state level: requesting a new section replaces, never
 stacks.
 
 **The section-fn seam (CRITICAL — do not collapse).** There is exactly ONE
-render fn per variant; all five are now filled (the one-fn-per-section split is
+render fn per variant; all six are now filled (the one-fn-per-section split is
 what kept the P4 and P5 slices conflict-free):
 
 | Section | Fn | Content | Landed by |
 | :-- | :-- | :-- | :-- |
 | Inspector | `render_inspector_section` | node inspector (`inspector::right_inspector`) | P2 |
-| Tool | `render_tool_section` | live readouts `selection_summary` / `gimbal_affordance_label` / `anchor_readout` — read-only host (no `&mut` path/pen state) | P5 |
-| PathTools | `render_path_tools_section` | path-asset stamp + pen + shape tools (ex-"Tools" window) | P4 |
+| Options | `render_tool_options_section` | active-tool options dispatcher (Selection/Transform/Pen/Brush arms) | P5 |
 | TerrainTools | `render_terrain_tools_section` | 8-mode palette + proposals (ex-"Terrain Tools" window) | P4 |
 | ProposalReport | `render_proposal_report_section` | proposal report body (ex-"Proposal Report" window) | P4 |
+| Settings | — | settings dialog (ActiveDialog::Settings) | — |
+| Maps | — | map/hexon manager (ActiveDialog::HexonManager) | — |
 
 Migrated tool sections keep their logic + tests verbatim and their authority
 rules (path/stamp sections key ONLY on `PathEditorState.editing_track_id`, never
 `NodeManager.selected` — NFR-1). Portal-open swaps the whole right region to
 `portal_toolbar::right_portal_toolbar` (preserved). Empty states are calm hints,
-never blank (`ui_ux.md §7`).
+never blank (`ui_ux.md §7`). `InputContext` (toolbar.rs owns the key; topbar is
+the single stasher via `stash_input_context`) threads input-mode state.
 
 ## §modal (FR-7) — transient layer + panel panic guard
 

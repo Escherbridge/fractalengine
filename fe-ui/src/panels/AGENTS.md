@@ -2,11 +2,21 @@
 
 ## 2026-07-26 Brush and numeric hardening
 
-Topbar **Tools** routes to `PathTools`, which owns stamping, Pen curves, and
-generated shapes. Selecting Brush opens the contextual `Tool` section with
-mutable radius/strength/op controls. `ToolPanelState` and `SculptToolState`
-sanitize relevant `f32`s before widgets and use practical finite ranges.
+Topbar **Options** routes to `RightSidebarSection::Options`, which owns all active-tool controls.
+Selecting Brush opens the contextual Options section with mutable radius/strength/op controls.
+`ToolPanelState` and `SculptToolState` sanitize relevant `f32`s before widgets and use practical finite ranges.
 Circle/Rect/Polygon are labeled report-only; Brush is the live paint shape.
+
+The Paths edit card exposes legacy color/width as border style, an alpha-aware
+fill color, and a closed-zone toggle. It also owns session-local snap settings
+(enabled, grid step meters, anchor radius meters); viewport interaction applies
+them on Pen append and single-point release. Border width, both snap values,
+point Y, and Settings render distance are repaired and capped before egui sees
+them; the full-panel numeric smoke seeds NaN/Inf across these surfaces.
+All `PathEditorState` numeric repair (point Y, grid step, anchor radius, and
+border width) runs once at the `gardener_console` shell boundary rather than
+inside the conditionally visible GIS Paths tab, so hidden state is already
+finite when that tab later constructs its numeric widgets.
 
 **Shell layout moved to area managers** (`ui_shell_architecture_20260724`
 Phase 2). The topbar/left/right render bodies now live in `crate::ui_shell`
@@ -28,9 +38,12 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
   and calls these. `Tool` is reachable crate-internally as
   `crate::panels::toolbar::Tool` (not re-exported further — see root
   `AGENTS.md` §compat).
-- `status_bar.rs` — bottom status bar (online/peer indicators, active verse).
+- `status_bar.rs` — bottom status bar (online/peer indicators, active verse). Dim "N hidden" chip when nodes are hidden by visibility groups, absent at zero.
 - `sidebar.rs` — left verse/fractal/petal/node tree, drag-reorder, space
-  overview.
+  overview. Eye toggles at all 4 tree levels (CollapsingState::show_header for
+  the right-aligned gutter, same persistent-id scheme), muted hidden rows, active-petal
+  eye disabled (D4), tri-state override cycle with hidden-reason tooltips.
+  VisibilityState threaded via gardener_console.
 - `inspector.rs` — right inspector panel: entity/transform/**Portal
   URLs**/properties/schema/API-access tabs. The "Portal URLs" section is
   the browser-integration seam — see root `AGENTS.md` §portal before
@@ -94,6 +107,10 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
   `gis::query::extract_xz`); validate against the live guard/DB in Phase 6.
 - Route/URL shapes implement the plan contract (Phases 2–3), not fe-api's
   current code — endpoints are being built concurrently to the same contract.
+
+## §tool-options — active-tool options dispatcher
+
+`tool_options.rs` (`ui_shell::right_sidebar::render_tool_options_section`) is the single active-tool options dispatcher (one arm per Tool: Selection/Transform/Pen/Brush), reuse-don't-rewrite rule. Each arm renders live controls (mutable numeric radius/strength/op + toggles) OR options_hints (static advisory text for tools with no live controls), mutually exclusive per tool. The `active_petal_id` param threads through for geometry conversions (world_scale). Shape-region Apply wiring routes through `SculptShapeRegion`; `SculptDeleteRegion` still unwired — needs EarthworkNodeMap, follow-up.
 
 ## §tool-panel
 
@@ -209,12 +226,10 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
 
 ## §terrain-tools
 
-FR-5/FR-6 (`terrain_editor_overhaul_20260718`) + D-78 (`p2p_asset_streaming_20260718` FR-7), added by ultrapilot worker w4a. Palette + proposal list now render via `ui_shell::right_sidebar::render_terrain_tools_section`; report (via `render_proposal_report_section`) shows selected proposal stats.
+FR-5/FR-6 (`terrain_editor_overhaul_20260718`) + D-78 (`p2p_asset_streaming_20260718` FR-7), added by ultrapilot worker w4a. Section = 8-mode palette + controls + proposal list; report shows selected proposal stats.
 
 - `terrain_tools_panel.rs` — terrain proposal palette helpers: 8 mode buttons (`TerrainToolMode` — Raise/Lower/Flatten/Ramp/Slope/Pad/Cut/Fill, panel-local enum converted via `to_proposal_op()` into `ProposalOp`), footprint-radius/target-height/delta controls, plus select/delete list of `ProposalEditState.proposals` (select sets `ProposalEditState.selected`). NFR-1: never writes `TerrainHeightField` — only builds `UiAction` payloads. Footprint is 2-D `[f32; 2]` (Y dropped from `node_manager::curve::circle`, matching JSON contract).
-- `proposal_report_panel.rs` — computed report for selected proposal: extent (m), area (m²), volume (m³), slope (%), bearing (°) via pure, unit-tested `compute_report` from `fe_ui::geometry::{world_to_real_distance, polygon_area_m2, bearing_deg}`. **NFR-4 honesty:** unset/`<=0` `world_scale` uses `scale = 1.0` ("world units", never mislabeled) + "no map scale" chip; slope/bearing are scale-invariant (computed from raw extent), reported regardless.
-- **`gardener_console` signature change (wired).** `render_terrain_tools_section` and `render_proposal_report_section` need `proposal_state: &mut terrain_proposal_state::ProposalEditState` and `app_settings: &mut settings::AppSettings` (also D-78 Settings dialog, see `dialogs/AGENTS.md` §settings). `plugin.rs::gardener_ui_system` supplies them via `MiscUiParams` bundle (both `init_resource`'d there).
-- **Reconciled shapes (w4b is source of truth).** `ProposalRecord` is `{ id: String, op: ProposalOp, footprint: Vec<[f32; 2]>, target_height: Option<f32>, delta: Option<f32> }` and `ProposalEditState.selected: Option<String>` — 2-D footprint + `Option` height/delta, matching JSON contract and `fe_terrain::TerrainProposal`. The two section renders convert at the seams: palette drops Y to build `[f32; 2]` and wraps `Some(..)`; report lifts `[x, z]` back to `[x, 0, z]` for geometry helpers and treats `None` delta as `0.0`.
+- `proposal_report_panel.rs` — computed report for selected proposal: extent (m), area (m²), volume (m³), slope (%), bearing (°) via pure, unit-tested `compute_report` from `fe_ui::geometry::{world_to_real_distance, polygon_area_m2, bearing_deg}`. `render_controls_and_emit` now takes `world_scale` and renders metres via geometry::world_to_meters/meters_to_world with the "no map scale — showing world units" fallback chip. **PROPOSAL_ONLY_DISCLOSURE** ("Proposal only — does not modify terrain.") is single-sourced. `circle_footprint`/`rect_footprint` pure helpers feed tool_options' Apply. **NFR-4 honesty:** unset/`<=0` `world_scale` uses `scale = 1.0` ("world units", never mislabeled) + "no map scale" chip; slope/bearing are scale-invariant (computed from raw extent), reported regardless.
 - **Reconciled shapes (w4b is source of truth).** `ProposalRecord` is
   `{ id: String, op: ProposalOp, footprint: Vec<[f32; 2]>, target_height:
   Option<f32>, delta: Option<f32> }` and `ProposalEditState.selected:
@@ -233,24 +248,19 @@ paint, no render fn) — its content moved to two consumers:
 
 - **Tooltips carry title/description/Use-guidance.** Each topbar mode button
   (`ui_shell::topbar::render_topbar`, driven by `panels::toolbar::TOOL_DEFS`)
-  is meant to show a rich hover tooltip built by `toolbar::tool_tooltip_text`,
+  shows a rich hover tooltip built by `toolbar::tool_tooltip_text`,
   which joins `TOOL_DEFS` (shortcut) with `tool_inspector::panel_descriptor`
-  (title/subtitle/Use zone) so button/shortcut/tooltip can never drift. Test:
+  (title/subtitle/Use zone) so button/shortcut/tooltip can never drift.
+  `tool_tooltip_text` IS wired (called from topbar). Test:
   `toolbar::tests::tool_tooltip_text_covers_every_tool_with_title_shortcut_description_and_use_zone`.
-  **Wiring note (Phase 6):** `tool_tooltip_text` is pure + tested but not yet
-  called — `ui_shell::topbar` isn't owned by this slice. Phase 6 (or the
-  ui_shell owner) should replace `render_topbar`'s inline
-  `format!("{tip} ({key})")` `.on_hover_text(...)` call with
-  `toolbar::tool_tooltip_text(def)`, and update
-  `fe-ui/src/ui_shell/AGENTS.md §topbar` to describe the richer tooltip.
 - **Live readouts moved to the right-sidebar Tool section.** `selection_summary`,
   `gimbal_affordance_label`, and `anchor_readout` are now called from
-  `ui_shell::right_sidebar::render_tool_section` (the section fn P4 left as a
-  placeholder). It projects the selection via `node_manager::project_selection`
-  exactly as the old panel did, guards a stale index via `fresh_path_selection`,
-  and shows the gimbal-active affordance exactly when a gimbal is drawn.
+  `ui_shell::right_sidebar::render_tool_section`. It projects the selection via
+  `node_manager::project_selection` exactly as the old panel did, guards a stale
+  index via `fresh_path_selection`, and shows the gimbal-active affordance
+  exactly when a gimbal is drawn.
 - **Pure + total, still unit-tested.** `panel_descriptor(tool)` (title/subtitle/
-  Use/Settings-zone labels per tool), `gimbal_affordance_label(tool, kind)`,
+  Use/options_hints labels per tool), `gimbal_affordance_label(tool, kind)`,
   `selection_summary`, `anchor_readout`, and `fresh_path_selection` are pure;
   all their tests survive unchanged in `tool_inspector.rs`. `mode_button_fill`
   is no longer duplicated here — `toolbar::mode_button_fill` is the sole

@@ -8,11 +8,16 @@ use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::router::{sweep_stranded_drag, ClickArbiter, ClickPriority, PointerPhase};
 use super::selection::project_selection;
 use crate::actions::{UiAction, UiManager};
-use crate::gis::{min_neighbor_gap_m, smoothness_readback, CornerKind, PathEditorState};
+use crate::geometry::meters_to_world;
+use crate::gis::{
+    min_neighbor_gap_m, smoothness_readback, CornerKind, PathEditorState, PathPointRow,
+    PathSnapSettings,
+};
 use crate::navigation_manager::NavigationManager;
 use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::toolbar::Tool;
 use crate::plugin::{Billboard, ToolState};
+use crate::terrain_map::PetalMapState;
 
 /// Default name for a track auto-created by the first Pen click when none is
 /// being edited (`pen_autocreate_track_20260713`). Renameable in the Paths tab.
@@ -244,14 +249,83 @@ fn pen_gesture_fate(
     }
 }
 
+fn snap_path_position(
+    position: [f32; 3],
+    anchors: &[PathPointRow],
+    skip_index: Option<usize>,
+    settings: PathSnapSettings,
+    world_scale: f64,
+) -> [f32; 3] {
+    if !settings.enabled || !position.iter().all(|value| value.is_finite()) {
+        return position;
+    }
+    let radius = meters_to_world(
+        if settings.anchor_radius_m.is_finite() {
+            settings.anchor_radius_m.max(0.0)
+        } else {
+            0.0
+        },
+        world_scale,
+    );
+    let mut nearest: Option<(f32, [f32; 3])> = None;
+    for (index, anchor) in anchors.iter().enumerate() {
+        if Some(index) == skip_index
+            || !anchor.position[0].is_finite()
+            || !anchor.position[2].is_finite()
+        {
+            continue;
+        }
+        let distance = (position[0] - anchor.position[0]).hypot(position[2] - anchor.position[2]);
+        if distance <= radius && nearest.is_none_or(|(best, _)| distance < best) {
+            nearest = Some((distance, anchor.position));
+        }
+    }
+    if let Some((_, anchor)) = nearest {
+        return [anchor[0], position[1], anchor[2]];
+    }
+
+    let step = meters_to_world(
+        if settings.grid_step_m.is_finite() && settings.grid_step_m > 0.0 {
+            settings.grid_step_m
+        } else {
+            1.0
+        },
+        world_scale,
+    );
+    if !(step.is_finite() && step > 0.0) {
+        return position;
+    }
+    [
+        (position[0] / step).round() * step,
+        position[1],
+        (position[2] / step).round() * step,
+    ]
+}
+
+fn apply_snapped_point_release(
+    points: &mut [PathPointRow],
+    index: usize,
+    snapped: [f32; 3],
+) -> bool {
+    if !snapped.iter().all(|value| value.is_finite()) {
+        return false;
+    }
+    let Some(point) = points.get_mut(index) else {
+        return false;
+    };
+    point.position = snapped;
+    true
+}
+
 /// Resolve a completed pen gesture: append onto the edited track, or stash the
 /// FULL first-anchor payload (handles included — the FR-4 must-fix) under a
 /// correlation id for the deferred auto-create echo. See AGENTS.md §pen-tool.
 fn release_pen_gesture(
-    pen: PenHandleDragState,
+    mut pen: PenHandleDragState,
     default_kind: CornerKind,
     path_state: &mut PathEditorState,
     nav: &NavigationManager,
+    world_scale: f64,
     ui_mgr: &mut UiManager,
 ) {
     // Press-time context gate: a staged-Escape stop_editing, track delete,
@@ -265,6 +339,13 @@ fn release_pen_gesture(
     if fate == PenGestureFate::Drop {
         return;
     }
+    pen.anchor = snap_path_position(
+        pen.anchor,
+        &path_state.points,
+        None,
+        path_state.snap,
+        world_scale,
+    );
     let decision = pen_release_decision(
         pen.drag_vec,
         pen.alt_seen,
@@ -475,6 +556,7 @@ pub(super) fn handle_path_point_interaction(
     tool: Res<ToolState>,
     tool_panel: Res<ToolPanelState>,
     nav: Res<NavigationManager>,
+    petal_map: Res<PetalMapState>,
     mut ui_mgr: ResMut<UiManager>,
     mut marker_tx: Query<(&mut Transform, &PathPointMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
@@ -519,16 +601,31 @@ pub(super) fn handle_path_point_interaction(
         if let Some(state) = drag.active.take() {
             // A drag can only start while editing a track, so `editing_track_id`
             // is `Some` here.
-            if let (Some(track_id), Some((tx, _))) = (
-                editing_track_id.clone(),
-                marker_tx.iter().find(|(_, m)| m.index == state.index),
-            ) {
-                let p = tx.translation;
-                ui_mgr.push_action(UiAction::PathMovePoint {
-                    track_node_id: track_id,
-                    index: state.index,
-                    position: [p.x, p.y, p.z],
-                });
+            let marker_position = marker_tx
+                .iter()
+                .find(|(_, marker)| marker.index == state.index)
+                .map(|(transform, _)| transform.translation);
+            if let (Some(track_id), Some(p)) = (editing_track_id.clone(), marker_position) {
+                let snapped = snap_path_position(
+                    [p.x, p.y, p.z],
+                    &path_state.points,
+                    Some(state.index),
+                    path_state.snap,
+                    petal_map.world_scale,
+                );
+                if apply_snapped_point_release(&mut path_state.points, state.index, snapped) {
+                    if let Some((mut transform, _)) = marker_tx
+                        .iter_mut()
+                        .find(|(_, marker)| marker.index == state.index)
+                    {
+                        transform.translation = Vec3::from(snapped);
+                    }
+                    ui_mgr.push_action(UiAction::PathMovePoint {
+                        track_node_id: track_id,
+                        index: state.index,
+                        position: snapped,
+                    });
+                }
             }
         }
         if let Some(pen) = pen_drag.active.take() {
@@ -537,6 +634,7 @@ pub(super) fn handle_path_point_interaction(
                 tool_panel.pen_new_anchor_kind,
                 &mut path_state,
                 &nav,
+                petal_map.world_scale,
                 &mut ui_mgr,
             );
         }
@@ -770,6 +868,116 @@ mod tests {
             height_delta_from_cursor(120.0, 120.0, HEIGHT_DRAG_SENSITIVITY),
             0.0
         );
+    }
+
+    fn point(position: [f32; 3]) -> PathPointRow {
+        PathPointRow {
+            position,
+            ..Default::default()
+        }
+    }
+
+    fn snap_settings(grid_step_m: f32, anchor_radius_m: f32) -> PathSnapSettings {
+        PathSnapSettings {
+            enabled: true,
+            grid_step_m,
+            anchor_radius_m,
+        }
+    }
+
+    #[test]
+    fn snap_grid_rounds_negative_coordinates_and_preserves_y() {
+        let snapped =
+            snap_path_position([-1.6, 7.0, -2.4], &[], None, snap_settings(1.0, 0.0), 1.0);
+        assert_eq!(snapped, [-2.0, 7.0, -2.0]);
+    }
+
+    #[test]
+    fn snap_uses_nearest_anchor_within_radius_before_grid() {
+        let anchors = [point([0.0, 1.0, 0.0]), point([0.4, 2.0, 0.0])];
+        let snapped = snap_path_position(
+            [0.35, 9.0, 0.0],
+            &anchors,
+            None,
+            snap_settings(10.0, 1.0),
+            1.0,
+        );
+        assert_eq!(snapped, [0.4, 9.0, 0.0]);
+    }
+
+    #[test]
+    fn snap_anchor_radius_is_inclusive() {
+        let anchors = [point([0.0, 0.0, 0.0])];
+        let snapped = snap_path_position(
+            [1.0, 4.0, 0.0],
+            &anchors,
+            None,
+            snap_settings(10.0, 1.0),
+            1.0,
+        );
+        assert_eq!(snapped, [0.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn snap_outside_anchor_threshold_falls_back_to_scaled_grid() {
+        let anchors = [point([0.0, 0.0, 0.0])];
+        let snapped = snap_path_position(
+            [0.14, 3.0, -0.16],
+            &anchors,
+            None,
+            snap_settings(100.0, 10.0),
+            0.001,
+        );
+        assert!((snapped[0] - 0.1).abs() < 1e-6);
+        assert_eq!(snapped[1], 3.0);
+        assert!((snapped[2] + 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pen_release_queues_snapped_position() {
+        let mut path_state = PathEditorState::default();
+        path_state.start_editing("track".into());
+        path_state.snap = snap_settings(1.0, 0.0);
+        let nav = NavigationManager::default();
+        let mut ui = UiManager::default();
+        release_pen_gesture(
+            PenHandleDragState {
+                anchor: [1.4, 5.0, -1.6],
+                drag_vec: [0.0; 3],
+                alt_seen: false,
+                frozen_in: None,
+                press_track_id: Some("track".into()),
+                press_petal_id: None,
+            },
+            CornerKind::Corner,
+            &mut path_state,
+            &nav,
+            1.0,
+            &mut ui,
+        );
+        match ui.drain_actions().pop().expect("snapped append") {
+            UiAction::PathAppendPoint { position, .. } => {
+                assert_eq!(position, [1.0, 5.0, -2.0]);
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapped_release_updates_authoritative_point_and_rejects_bad_indices() {
+        let mut points = vec![point([3.0, 2.0, 1.0])];
+        assert!(apply_snapped_point_release(&mut points, 0, [4.0, 2.0, 5.0]));
+        assert_eq!(points[0].position, [4.0, 2.0, 5.0]);
+        assert!(!apply_snapped_point_release(
+            &mut points,
+            9,
+            [0.0, 0.0, 0.0]
+        ));
+        assert!(!apply_snapped_point_release(
+            &mut points,
+            0,
+            [f32::NAN, 0.0, 0.0]
+        ));
     }
 
     #[test]

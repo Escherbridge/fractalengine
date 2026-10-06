@@ -26,3 +26,4 @@ pub mod ui_shell;
 pub mod verse_manager;
 pub mod viewport;
 pub mod viewport_labels;
+pub mod visibility;

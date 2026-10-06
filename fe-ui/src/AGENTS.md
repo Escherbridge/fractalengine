@@ -10,7 +10,8 @@ see each module's own doc-comment for the "what"; this file is the "why".
 `Tool::Brush` converts the meter-valued radius/target/delta through the active
 petal's sanitized `world_scale` at press, then samples Y=0 ray hits at half the
 converted radius. Release queues one bounded `SculptBrushStroke`; its handler
-performs one terrain-document write and one endpoint-node creation per dab.
+builds one swept-corridor polygon and performs one terrain-document write plus
+one endpoint-node creation per completed stroke.
 Escape, right-click, tool/petal change, or a stranded release cancels without
 replay.
 
@@ -23,7 +24,8 @@ sanitized radius. Missing petal/map is a warned, visible no-op.
 
 | Module | Owns |
 | --- | --- |
-| `plugin` | `GardenerConsolePlugin`, `UiSet` ordering, the `EguiPrimaryContextPass` entry system, cross-crate re-export shims (see §compat), UI-only resources that don't belong to a specific domain manager (`SidebarState`, `ToolState`, `InspectorFormState`, `LocalUserRole`, `CameraFocusTarget`, `ViewportCursorWorld`, `ViewportRect`, `SpawnedNodeMarker`). |
+| `plugin` | `GardenerConsolePlugin`, `UiSet` ordering, the `EguiPrimaryContextPass` entry system, cross-crate re-export shims (see §compat), UI-only resources that don't belong to a specific domain manager (`SidebarState`, `ToolState`, `InspectorFormState`, `LocalUserRole`, `CameraFocusTarget`, `ViewportCursorWorld`, `ViewportRect`, `SpawnedNodeMarker`). `ToolState::activate` is the SOLE writer of `active_tool` (re-press toggles back to Select; one-shot Options reveal at activation edge only). |
+| `visibility` | Session-only Phases 0-1 of hierarchy_visibility_groups_20260808 (pure resolver in visibility/resolve.rs — solo lens > tri-state override > ancestor chain > ANY-hidden-group). `sync_node_visibility` applies Visibility to SpawnedNodeMarker entities; pickers/camera do NOT yet respect hidden — Phase 2. |
 | `actions` | `UiAction` (the one-frame action queue enum) + `UiManager` (queue + portal + active dialog + toast) + `process_ui_actions`, split into domain files (`portal`, `node_props`, `hexon`, `query`, `transform`). See §actions and §inspector-transform. |
 | `portal` | `PortalState` + the pure webview-rect-sync math (`compute_portal_rect`). See §portal — this is the browser-integration seam. |
 | `dialogs` | `ActiveDialog` (mutual-exclusion enum) + one render function per floating dialog/window. |
@@ -493,7 +495,8 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    simply starts a fresh auto-create.
 9. **Per-track style controls persist on release, not per-frame** (MEDIUM-2,
    `track_styling_20260713`). `path_editor_card::render_style_controls` binds the
-   color picker / thickness slider / visibility checkbox to
+   border/fill color pickers, border-width slider, closed-zone toggle, and
+   visibility checkbox to
    `PathEditorState.edited_track_style`. A drag fires egui `.changed()` every
    frame, and each `PathSetStyle` → `SetNodeProperty` → refetch →
    despawn/respawn/ribbon-rebuild round-trip in the gpx bridge is expensive
@@ -504,8 +507,16 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    a `.changed()` observed while the primary pointer is released (the button
    response can't see the popup's internal slider drag, so `drag_stopped()` is
    unusable there); the checkbox immediately (a single click, no drag churn).
-   Live visual feedback is preserved; exactly one DB write lands at release.
+   Live visual feedback is preserved; each changed field writes once at release.
+   Absent `gis.track.closed` / `gis.track.fill.color` properties default to
+   `false` / transparent, so legacy tracks remain visually unchanged.
+   The adjacent snap controls are session-local editor settings: anchor-first
+   within a meter radius, then XZ grid, with Y preserved. The viewport converts
+   both distances through the active petal's `world_scale`; Pen append and
+   single-point release consume them, while whole-track transforms do not.
 10. **Corner settings card** (`pen_curve_tool_20260722` FR-6 + ratified Q5).
+   The per-anchor corner-settings CALL SITE moved to the Options section
+   (tool_options Pen arm); pure math + tests stay in path_editor_card.rs.
    `path_editor_card::render_corner_settings` is the "Corner settings —
    vertex N" sub-card in the edit view, gated on `selected_point`: a
    Corner/Smooth/Symmetric toggle + a smoothness slider `0.0..=1.0` (unitless
@@ -722,6 +733,40 @@ names + the `snake_case` op tags match the contract exactly; `target_height`/
   `terrain_map::tileset_to_terrain_json`'s fields, `enabled: false`) for any
   `None`/non-object base, so every terrain-JSON reader always sees a
   well-formed doc.
+  **Hydration (`ui_semantics_unification_20260808` Phase 1).**
+  `ProposalEditState.hydrated` gate: on petal switch,
+  `load_petal_terrain_on_nav_change` (terrain_map/mod.rs) triggers
+  `DbCommand::GetPetalTerrain`, and the `DbResult::PetalTerrainLoaded` handler
+  (verse_manager/db_results/terrain.rs) rehydrates `ProposalEditState` via
+  DescriptorCaches.proposal_state before rendering. The doc's `proposals`
+  array holds TWO record shapes — palette `ProposalRecord`s and
+  Brush/shape-tool earthwork regions tagged by a `material` key (see
+  "Sculpt & earthwork regions" below) — so hydration parses back ONLY
+  palette-shaped entries (any entry carrying `material` is filtered out
+  BEFORE `ProposalOp` parsing); a region entry never enters the mirror, so it
+  is never silently absorbed (stripping `material`) nor silently dropped for
+  an op `ProposalOp` doesn't recognize (`level`/`smooth`).
+  `reset_for_petal_switch` clears the state. `embed_proposals` reconciles
+  differently depending on `hydrated`, and is precisely NOT a single
+  "read-modify-write" for both cases:
+  - **Hydrated** — a **shape-preserving merge**: palette-shaped doc entries
+    are wholesale-replaced by the mirror's current records (so palette
+    add/delete/edit all apply, matching "the mirror is authoritative"),
+    while every material-tagged region entry passes through the doc
+    byte-identical. No sequence of palette adds/deletes can remove or alter
+    a region — this is the data-loss-guard invariant.
+  - **Unhydrated** — a **tombstone-aware union**: every doc entry survives
+    except ids in `ProposalEditState.pending_deletes` (ids deleted locally
+    before this petal's mirror ever hydrated — without this exclusion, a
+    pre-hydration delete of an already-persisted id is silently
+    resurrected). An id present in the local records wins over the doc's
+    copy for that id (handles a locally-minted `p{n}` id colliding with an
+    already-persisted one); every other id is appended as new.
+  The cut/fill report (proposal_report_panel) parses `Brush`/shape regions
+  directly off the terrain doc via `earthwork_regions_from_terrain`, using the
+  same `material`-key discriminator — disjoint from the palette mirror by
+  construction post-hydration-filter, so totals never double-count a region
+  that also happens to be visible to a hydrated mirror.
 - **Ids** are minted by a monotonic `ProposalEditState` counter (`p{n}`, no
   `uuid`/`rand` dep — mirrors `gis::next_pen_correlation_id`). `replace_all`
   keeps the counter past any rehydrated `p{n}` so a load-then-add never collides.
@@ -749,13 +794,19 @@ SAME `terrain.proposals` block (adds a `material` tag), so it round-trips throug
   un-bakes the non-destructive overlay; the true heightfield was never written).
 - Handlers `handle_{brush_stroke,shape_region,delete_region}` persist via
   `persist_doc`; a stroke appends all dabs with one document clone/write.
+  `handle_shape_region` converts its `footprint`/`target_height`/`delta` from
+  petal-local meters (N-1, the queueing panel's convention) to world units via
+  `PetalMapState.world_scale` before persisting — mirroring
+  `BrushSnapshot::from_state`'s conversion for the freeform stroke — so every
+  persisted region entry is world units, matching Brush's own regions and
+  every downstream reader (finding #11 fix, `ui_semantics_unification_20260808`).
 - The **cut/fill report** is in `panels::proposal_report_panel`
   (`earthwork_kind` + `cut_fill_totals`): per-region fill/cut/net + totals across
   all regions (FR-5). The true separated cut+fill over relief is
   `fe_terrain::sculpt::cut_fill_volume` at bake.
 
-**Commit line (LIVE, integration pass 2026-07-26):** `render_brush_controls`
-configures `SculptToolState`; viewport press snapshots the active petal,
+**Commit line (LIVE, integration pass 2026-07-26):** `render_brush_controls` is the single copy,
+hosted by the Options Brush arm (tool_options.rs). It configures `SculptToolState`; viewport press snapshots the active petal,
 sanitized scale, and converted controls, and release directly queues one
 fully-threaded `SculptBrushStroke`. Committed regions
 also become addressable node rows (`EarthworkNodeMap`, `earthwork:{region_id}`

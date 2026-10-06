@@ -1,5 +1,5 @@
 //! Toolbar constants + the `Tool` enum: single source for `TOOL_DEFS`, the
-//! shortcut hint line, the active-tool temp-data stash, and `mode_button_fill`.
+//! shortcut hint line, the `InputContext` temp-data stash, and `mode_button_fill`.
 //! The top-toolbar RENDER body lives in `ui_shell::topbar` (FR-4) and calls
 //! these. See `fe-ui/src/panels/AGENTS.md`.
 
@@ -87,27 +87,37 @@ pub(crate) fn shortcut_hint_line() -> String {
         .map(|d| format!("{} = {}", d.key, d.name))
         .collect::<Vec<_>>()
         .join("  ");
-    line.push_str("  \u{2022}  Esc = deselect  \u{2022}  Right-click = menu");
+    line.push_str("  \u{2022}  Esc = back out one step  \u{2022}  Right-click = cancel / menu");
     line
 }
 
-/// Id under which `stash_active_tool` stashes the frame's active tool (egui
-/// temp data — same idiom as the sidebar drag index) for panels that can't
-/// reach `ToolState`, e.g. the viewport hint.
-fn active_tool_id() -> egui::Id {
-    egui::Id::new("fe_active_tool")
+/// The frame's input context as seen by egui-side panels that cannot read Bevy
+/// resources (`viewport.rs`). Stashed once by the topbar, which always renders
+/// before the viewport (`panels/mod.rs`), so readers get same-frame values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct InputContext {
+    pub(crate) active_tool: Tool,
+    /// `true` while a viewport gesture is mid-flight — the one right-click rule
+    /// (D5) suppresses the object menu only then.
+    pub(crate) gesture_active: bool,
 }
 
-/// Reads back the active tool stashed by the topbar this frame.
-pub(crate) fn active_tool_hint(ctx: &egui::Context) -> Option<Tool> {
-    ctx.data(|d| d.get_temp(active_tool_id()))
+/// Id under which [`stash_input_context`] stashes the frame's [`InputContext`]
+/// (egui temp data — same idiom as the sidebar drag index).
+fn input_context_id() -> egui::Id {
+    egui::Id::new("fe_input_context")
 }
 
-/// Stashes the frame's active tool under the private temp-data key that
-/// [`active_tool_hint`] reads. Called by `ui_shell::topbar` (FR-4) so the
-/// temp-data key stays single-source here.
-pub(crate) fn stash_active_tool(ctx: &egui::Context, tool: Tool) {
-    ctx.data_mut(|d| d.insert_temp(active_tool_id(), tool));
+/// Reads back the input context stashed by the topbar this frame.
+pub(crate) fn input_context(ctx: &egui::Context) -> Option<InputContext> {
+    ctx.data(|d| d.get_temp(input_context_id()))
+}
+
+/// Stashes the frame's input context under the private temp-data key that
+/// [`input_context`] reads. Called by `ui_shell::topbar` so the key stays
+/// single-source here.
+pub(crate) fn stash_input_context(ctx: &egui::Context, input: InputContext) {
+    ctx.data_mut(|d| d.insert_temp(input_context_id(), input));
 }
 
 /// Active-MODE button fill: a luminance emphasis (brighter neutral), not a hue
@@ -155,6 +165,53 @@ mod tests {
             );
         }
         assert!(line.contains("Esc"), "hint line missing Esc: {line}");
+        assert!(
+            line.contains("Right-click"),
+            "hint line missing right-click: {line}"
+        );
+    }
+
+    // --- InputContext stash (D5): the egui-side view of the Bevy input state ---
+
+    #[test]
+    fn input_context_stash_round_trips() {
+        let ctx = egui::Context::default();
+        assert_eq!(input_context(&ctx), None, "nothing stashed yet");
+        let stashed = InputContext {
+            active_tool: Tool::Brush,
+            gesture_active: true,
+        };
+        stash_input_context(&ctx, stashed);
+        assert_eq!(input_context(&ctx), Some(stashed));
+    }
+
+    #[test]
+    fn input_context_stash_overwrites_the_previous_frame() {
+        let ctx = egui::Context::default();
+        stash_input_context(
+            &ctx,
+            InputContext {
+                active_tool: Tool::Pen,
+                gesture_active: true,
+            },
+        );
+        stash_input_context(
+            &ctx,
+            InputContext {
+                active_tool: Tool::Select,
+                gesture_active: false,
+            },
+        );
+        let read = input_context(&ctx).expect("stashed");
+        assert_eq!(read.active_tool, Tool::Select);
+        assert!(!read.gesture_active, "a stale gesture bit must not linger");
+    }
+
+    #[test]
+    fn input_context_default_is_the_rest_state() {
+        let ic = InputContext::default();
+        assert_eq!(ic.active_tool, Tool::Select);
+        assert!(!ic.gesture_active);
     }
 
     #[test]

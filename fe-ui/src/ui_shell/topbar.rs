@@ -1,13 +1,16 @@
 //! Topbar area manager (FR-4): renders the top toolbar — transform-tool
 //! switcher, deselect, and the Data/Tools/Settings/Maps cluster. The tool data
-//! (`TOOL_DEFS`), the active-tool temp-data stash, and `mode_button_fill` stay
-//! single-source in `panels::toolbar`; this manager calls them. See
+//! (`TOOL_DEFS`), the `InputContext` temp-data stash, and `mode_button_fill`
+//! stay single-source in `panels::toolbar`; this manager calls them. Tool
+//! activation routes through `ToolState::activate` — the single writer. See
 //! `fe-ui/src/ui_shell/AGENTS.md` §topbar.
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
 
-use crate::panels::toolbar::{mode_button_fill, stash_active_tool, tool_tooltip_text, TOOL_DEFS};
+use crate::panels::toolbar::{
+    mode_button_fill, stash_input_context, tool_tooltip_text, InputContext, TOOL_DEFS,
+};
 use crate::plugin::ToolState;
 use crate::theme;
 use crate::ui_shell::left_sidebar::LeftSidebarState;
@@ -20,9 +23,11 @@ use crate::ui_shell::right_sidebar::{RightSidebarSection, RightSidebarState};
 pub struct TopbarState;
 
 /// Renders the top toolbar. Migrated verbatim from `panels::toolbar::top_toolbar`
-/// (FR-4). Phase 4 (FR-9) retired the Phase-2 compat shim: the Tools button
-/// now toggles the right-sidebar `PathTools` section directly — that toggle is the
-/// SOLE reveal path (no more mirrored `ToolPanelState.open` legacy flag).
+/// (FR-4). The former "Tools" button is the **Options** toggle since D7 — the
+/// `PathTools` section it used to reveal is retired into the Options
+/// dispatcher's Pen arm. Section buttons here write `RightSidebarState::toggle`
+/// directly rather than `UiAction::RevealSection`: they are TOGGLES (re-press
+/// closes), and the addressable reveal action is deliberately idempotent.
 pub fn render_topbar(
     ctx: &egui::Context,
     _topbar: &mut TopbarState,
@@ -65,13 +70,20 @@ pub fn render_topbar(
                     let btn = egui::Button::new(format!("{} {}", def.glyph, def.name))
                         .fill(mode_button_fill(active));
                     if ui.add(btn).on_hover_text(tool_tooltip_text(def)).clicked() {
-                        tool.active_tool = def.tool;
-                        if def.tool == crate::panels::toolbar::Tool::Brush {
-                            right.requested = Some(RightSidebarSection::Tool);
-                        }
+                        // D1/D9: one activation writer — re-press toggles to
+                        // Select, and the options reveal is its job, not ours.
+                        tool.activate(def.tool, right);
                     }
                 }
-                stash_active_tool(ui.ctx(), tool.active_tool);
+                // Publish the frame's input context for the egui-side surfaces
+                // that cannot read Bevy resources (viewport hint + right-click).
+                stash_input_context(
+                    ui.ctx(),
+                    InputContext {
+                        active_tool: tool.active_tool,
+                        gesture_active: node_mgr.gesture_active,
+                    },
+                );
 
                 ui.separator();
 
@@ -102,18 +114,22 @@ pub fn render_topbar(
                         gis_panel.open = !gis_panel.open;
                     }
 
+                    // D7: "Tools" was the PathTools reveal; that section is
+                    // retired, so the button is the Options surface's toggle —
+                    // one label for "the active tool's settings", whatever the
+                    // active tool is.
                     if ui
-                        .add(egui::Button::new("\u{1F527} Tools").fill(
-                            if right.is_active(RightSidebarSection::PathTools) {
+                        .add(egui::Button::new("\u{1F527} Options").fill(
+                            if right.is_active(RightSidebarSection::Options) {
                                 theme::BG_BUTTON_ACTIVE
                             } else {
                                 theme::BG_BUTTON
                             },
                         ))
-                        .on_hover_text("Path-asset stamp, pen curves, and shape tools")
+                        .on_hover_text("Settings for the active tool (pen curves, brush, stamping)")
                         .clicked()
                     {
-                        right.toggle(RightSidebarSection::PathTools);
+                        right.toggle(RightSidebarSection::Options);
                     }
 
                     // FR-1 (D-A10): Settings is a one-at-a-time right-sidebar
@@ -157,11 +173,54 @@ pub fn render_topbar(
 mod tests {
     use super::*;
 
+    use crate::panels::toolbar::{input_context, Tool};
+
     #[test]
-    fn tools_button_routes_to_path_tools() {
+    fn options_button_toggles_the_options_section_both_ways() {
+        // Mirrors the (ex-"Tools") Options button arm: a toggle, not a reveal.
         let mut right = RightSidebarState::default();
-        right.toggle(RightSidebarSection::PathTools);
-        assert!(right.is_active(RightSidebarSection::PathTools));
-        assert!(!right.is_active(RightSidebarSection::Tool));
+        right.toggle(RightSidebarSection::Options);
+        assert!(right.is_active(RightSidebarSection::Options));
+        right.toggle(RightSidebarSection::Options);
+        assert_eq!(
+            right.requested, None,
+            "re-press falls back to the selection default"
+        );
+    }
+
+    #[test]
+    fn tool_button_press_routes_through_the_single_activation_writer() {
+        // Mirrors the button arm: no Brush special case survives here.
+        let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
+        tool.activate(Tool::Brush, &mut right);
+        assert_eq!(tool.active_tool, Tool::Brush);
+        assert!(right.is_active(RightSidebarSection::Options));
+        tool.activate(Tool::Brush, &mut right);
+        assert_eq!(tool.active_tool, Tool::Select, "re-press rests on Select");
+        assert_eq!(right.requested, None);
+    }
+
+    #[test]
+    fn topbar_publishes_both_halves_of_the_input_context() {
+        // Mirrors the stash call after the tool-button loop: the tool half from
+        // `ToolState`, the gesture half from the `NodeManager` per-frame mirror.
+        let ctx = egui::Context::default();
+        let tool = ToolState {
+            active_tool: Tool::Pen,
+        };
+        let node_mgr = crate::node_manager::NodeManager {
+            gesture_active: true,
+            ..Default::default()
+        };
+        stash_input_context(
+            &ctx,
+            InputContext {
+                active_tool: tool.active_tool,
+                gesture_active: node_mgr.gesture_active,
+            },
+        );
+        let read = input_context(&ctx).expect("topbar stashed it");
+        assert_eq!(read.active_tool, Tool::Pen);
+        assert!(read.gesture_active);
     }
 }

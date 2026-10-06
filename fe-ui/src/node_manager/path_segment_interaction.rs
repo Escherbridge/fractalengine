@@ -2,13 +2,14 @@
 //! SEGMENT selection (FR-3), and live metric measurement of the edited track.
 //! See `fe-ui/src/node_manager/AGENTS.md` §track-picking + §path-segments.
 
+use bevy::math::Vec3Swizzles;
 use bevy::prelude::*;
 
 use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::router::{ClickArbiter, ClickPriority};
 use super::selection::project_selection;
 use crate::gis::PathEditorState;
-use crate::plugin::ToolState;
+use crate::plugin::{SpawnedNodeMarker, ToolState};
 
 /// Vertical lift baked into the rendered ribbon (`fe_terrain`'s `track_mesh`
 /// `y_offset`). Picking geometry adds it so the ray test hits where the ribbon
@@ -31,8 +32,40 @@ pub struct TrackPickShape {
     pub points: Vec<Vec3>,
     /// Half the ribbon width in world units.
     pub half_width: f32,
+    /// Whether the polyline also represents a pickable filled zone.
+    pub closed: bool,
+    /// Accepted rendered fill triangles, already lifted to their world surface.
+    pub fill_triangles: Vec<[Vec3; 3]>,
     /// Centroid of `points` — the render entity's baseline translation.
     pub centroid: Vec3,
+}
+
+fn zone_fill_intersection(triangles: &[[Vec3; 3]], origin: Vec3, dir: Vec3) -> Option<(f32, Vec3)> {
+    triangles
+        .iter()
+        .filter_map(|triangle| {
+            let edge_1 = triangle[1] - triangle[0];
+            let edge_2 = triangle[2] - triangle[0];
+            let h = dir.cross(edge_2);
+            let determinant = edge_1.dot(h);
+            if determinant.abs() <= 1e-7 {
+                return None;
+            }
+            let inverse = determinant.recip();
+            let s = origin - triangle[0];
+            let u = inverse * s.dot(h);
+            if !(0.0..=1.0).contains(&u) {
+                return None;
+            }
+            let q = s.cross(edge_1);
+            let v = inverse * dir.dot(q);
+            if v < 0.0 || u + v > 1.0 {
+                return None;
+            }
+            let t = inverse * edge_2.dot(q);
+            (t.is_finite() && t >= 0.0).then_some((t, origin + dir * t))
+        })
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
 }
 
 /// Closest-approach distance between a ray (`origin + t·dir`, `dir` unit, `t ≥
@@ -95,14 +128,46 @@ pub(super) fn ray_polyline_hit(
     origin: Vec3,
     dir: Vec3,
     half_width: f32,
+    fill_triangles: &[[Vec3; 3]],
 ) -> Option<f32> {
-    closest_ribbon_segment(points, origin, dir, half_width).map(|(_, t)| t)
+    let border = closest_ribbon_segment(points, origin, dir, half_width).map(|(_, t)| t);
+    let fill = zone_fill_intersection(fill_triangles, origin, dir).map(|(t, _)| t);
+    match (border, fill) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(t), None) | (None, Some(t)) => Some(t),
+        (None, None) => None,
+    }
 }
 
 /// FR-3: index of the ribbon segment the ray selects (nearest within
 /// tolerance), or `None`. Pure over the edited track's raw points.
-fn nearest_segment(points: &[Vec3], origin: Vec3, dir: Vec3, half_width: f32) -> Option<usize> {
-    closest_ribbon_segment(points, origin, dir, half_width).map(|(i, _)| i)
+fn nearest_segment(
+    points: &[Vec3],
+    origin: Vec3,
+    dir: Vec3,
+    half_width: f32,
+    fill_triangles: &[[Vec3; 3]],
+) -> Option<usize> {
+    if let Some((index, _)) = closest_ribbon_segment(points, origin, dir, half_width) {
+        return Some(index.min(points.len().saturating_sub(2)));
+    }
+    let (_, hit) = zone_fill_intersection(fill_triangles, origin, dir)?;
+    points
+        .windows(2)
+        .enumerate()
+        .map(|(index, edge)| {
+            let a = edge[0].xz();
+            let delta = edge[1].xz() - a;
+            let length_squared = delta.length_squared();
+            let along = if length_squared > 0.0 {
+                ((hit.xz() - a).dot(delta) / length_squared).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (index, hit.xz().distance_squared(a + delta * along))
+        })
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(index, _)| index.min(points.len().saturating_sub(2)))
 }
 
 /// Guard `world_scale` (world units per real meter) to a positive, finite value;
@@ -133,6 +198,7 @@ pub(super) fn handle_path_segment_interaction(
     tool: Res<ToolState>,
     mut arbiter: ResMut<ClickArbiter>,
     mut path_state: ResMut<PathEditorState>,
+    rendered_shapes: Query<(&TrackPickShape, &SpawnedNodeMarker)>,
 ) {
     if !arbiter.is_fresh_press() || !arbiter.is_available() {
         return;
@@ -145,12 +211,31 @@ pub(super) fn handle_path_segment_interaction(
     // Half-width from the edited track's live style (petal-local meters, same
     // frame as the rendered ribbon — width is NOT world-scaled); floored so a
     // hair-thin ribbon is still selectable (PICK_SLOP does most of the work).
-    let half_width = (path_state.edited_track_style.width * 0.5).max(0.05);
-    let pts: Vec<Vec3> = path_state
+    let fallback_half_width = (path_state.edited_track_style.width * 0.5).max(0.05);
+    let mut fallback_points: Vec<Vec3> = path_state
         .points
         .iter()
         .map(|p| Vec3::from(p.position))
         .collect();
+    if path_state.edited_track_style.closed && fallback_points.len() >= 3 {
+        fallback_points.push(fallback_points[0]);
+    }
+    let rendered = path_state.editing_track_id.as_deref().and_then(|track_id| {
+        rendered_shapes
+            .iter()
+            .find(|(_, marker)| marker.node_id == track_id)
+            .map(|(shape, _)| shape)
+    });
+    let (points, half_width, fill_triangles) = rendered.map_or(
+        (fallback_points.as_slice(), fallback_half_width, &[][..]),
+        |shape| {
+            (
+                shape.points.as_slice(),
+                shape.half_width,
+                shape.fill_triangles.as_slice(),
+            )
+        },
+    );
 
     // Route the claim through the FR-2 table (no-bypass): a ribbon-segment hit
     // resolves to `SelectSegment`, tool- and selection-independent (projected
@@ -161,7 +246,13 @@ pub(super) fn handle_path_segment_interaction(
         path_state.selected_point,
         path_state.selected_segment,
     );
-    match nearest_segment(&pts, ray.origin, *ray.direction, half_width) {
+    match nearest_segment(
+        points,
+        ray.origin,
+        *ray.direction,
+        half_width,
+        fill_triangles,
+    ) {
         Some(index) => {
             if matches!(
                 resolve_operation(
@@ -286,7 +377,7 @@ mod tests {
     #[test]
     fn polyline_hit_selects_first_segment() {
         // Straight-down ray over the first segment's midpoint (x=5).
-        let t = ray_polyline_hit(&zig(), Vec3::new(5.0, 5.0, 0.0), Vec3::NEG_Y, 0.25);
+        let t = ray_polyline_hit(&zig(), Vec3::new(5.0, 5.0, 0.0), Vec3::NEG_Y, 0.25, &[]);
         assert!(t.is_some(), "expected a hit");
         // Enters near the lifted ribbon (y = 0.5), i.e. ~4.5 units down.
         assert!((t.unwrap() - 4.5).abs() < 0.1, "t = {:?}", t);
@@ -295,29 +386,160 @@ mod tests {
     #[test]
     fn polyline_hit_misses_off_ribbon() {
         // Ray well beside the polyline → no hit within half_width + slop.
-        let t = ray_polyline_hit(&zig(), Vec3::new(5.0, 5.0, 20.0), Vec3::NEG_Y, 0.25);
+        let t = ray_polyline_hit(&zig(), Vec3::new(5.0, 5.0, 20.0), Vec3::NEG_Y, 0.25, &[]);
         assert!(t.is_none(), "expected miss, got {:?}", t);
     }
 
     #[test]
     fn nearest_segment_picks_second_leg() {
         // Straight-down ray over the second segment's midpoint (x=10, z=5).
-        let idx = nearest_segment(&zig(), Vec3::new(10.0, 5.0, 5.0), Vec3::NEG_Y, 0.25);
+        let idx = nearest_segment(&zig(), Vec3::new(10.0, 5.0, 5.0), Vec3::NEG_Y, 0.25, &[]);
         assert_eq!(idx, Some(1));
     }
 
     #[test]
     fn nearest_segment_none_when_off_ribbon() {
-        let idx = nearest_segment(&zig(), Vec3::new(50.0, 5.0, 50.0), Vec3::NEG_Y, 0.25);
+        let idx = nearest_segment(&zig(), Vec3::new(50.0, 5.0, 50.0), Vec3::NEG_Y, 0.25, &[]);
         assert_eq!(idx, None);
     }
 
     #[test]
     fn nearest_segment_needs_two_points() {
         assert_eq!(
-            nearest_segment(&[Vec3::ZERO], Vec3::Y, Vec3::NEG_Y, 1.0),
+            nearest_segment(&[Vec3::ZERO], Vec3::Y, Vec3::NEG_Y, 1.0, &[]),
             None
         );
+    }
+
+    fn square_zone() -> Vec<Vec3> {
+        vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, 0.0),
+        ]
+    }
+
+    fn square_fill() -> Vec<[Vec3; 3]> {
+        vec![
+            [
+                Vec3::new(0.0, 0.48, 0.0),
+                Vec3::new(10.0, 0.48, 0.0),
+                Vec3::new(10.0, 0.48, 10.0),
+            ],
+            [
+                Vec3::new(0.0, 0.48, 0.0),
+                Vec3::new(10.0, 0.48, 10.0),
+                Vec3::new(0.0, 0.48, 10.0),
+            ],
+        ]
+    }
+
+    #[test]
+    fn closed_zone_fill_hit_reports_visible_surface_depth() {
+        let t = ray_polyline_hit(
+            &square_zone(),
+            Vec3::new(5.0, 10.0, 5.0),
+            Vec3::NEG_Y,
+            0.1,
+            &square_fill(),
+        )
+        .expect("interior fill");
+        assert!((t - 9.52).abs() < 1e-4);
+    }
+
+    #[test]
+    fn closed_zone_edge_is_pickable_and_keeps_segment_selection() {
+        let points = square_zone();
+        assert!(ray_polyline_hit(
+            &points,
+            Vec3::new(5.0, 10.0, 0.0),
+            Vec3::NEG_Y,
+            0.1,
+            &square_fill(),
+        )
+        .is_some());
+        assert_eq!(
+            nearest_segment(
+                &points,
+                Vec3::new(5.0, 10.0, 0.0),
+                Vec3::NEG_Y,
+                0.1,
+                &square_fill(),
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn closed_zone_outside_misses_fill_and_border() {
+        assert!(ray_polyline_hit(
+            &square_zone(),
+            Vec3::new(20.0, 10.0, 20.0),
+            Vec3::NEG_Y,
+            0.1,
+            &square_fill(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn closed_zone_interior_selects_nearest_border_segment() {
+        assert_eq!(
+            nearest_segment(
+                &square_zone(),
+                Vec3::new(5.0, 10.0, 2.0),
+                Vec3::NEG_Y,
+                0.1,
+                &square_fill(),
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn sloped_fill_uses_triangle_depth_not_average_height() {
+        let triangle = [[
+            Vec3::new(0.0, 0.48, 0.0),
+            Vec3::new(10.0, 10.48, 0.0),
+            Vec3::new(0.0, 0.48, 10.0),
+        ]];
+        let (_, hit) = zone_fill_intersection(&triangle, Vec3::new(2.0, 10.0, 2.0), Vec3::NEG_Y)
+            .expect("sloped triangle");
+        assert!((hit.y - 2.48).abs() < 1e-4);
+    }
+
+    #[test]
+    fn invalid_or_rejected_fill_has_no_interior_pick() {
+        let bow_tie = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(4.0, 0.0, 4.0),
+            Vec3::new(0.0, 0.0, 4.0),
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+        ];
+        assert!(
+            ray_polyline_hit(&bow_tie, Vec3::new(0.5, 10.0, 2.0), Vec3::NEG_Y, 0.05, &[],)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fill_pick_uses_only_prepared_triangle_surface() {
+        let accepted = [[
+            Vec3::new(0.0, 0.48, 0.0),
+            Vec3::new(4.0, 0.48, 0.0),
+            Vec3::new(0.0, 0.48, 4.0),
+        ]];
+        assert!(ray_polyline_hit(
+            &square_zone(),
+            Vec3::new(8.0, 10.0, 8.0),
+            Vec3::NEG_Y,
+            0.05,
+            &accepted,
+        )
+        .is_none());
     }
 
     #[test]

@@ -60,10 +60,12 @@ pub enum HexonOp {
 #[derive(Debug, Default, Resource)]
 pub struct PendingHexonOps(pub Vec<HexonOp>);
 
-/// Requests the petal's terrain config when the active petal changes.
+/// Requests the petal's terrain config when the active petal changes; also
+/// drops the outgoing petal's proposal mirror (see `reset_for_petal_switch`).
 pub(crate) fn load_petal_terrain_on_nav_change(
     nav: Res<crate::navigation_manager::NavigationManager>,
     mut petal_map: ResMut<PetalMapState>,
+    mut proposal_state: ResMut<crate::terrain_proposal_state::ProposalEditState>,
     db_sender: Res<fe_runtime::app::DbCommandSender>,
 ) {
     if petal_map.petal_id == nav.active_petal_id {
@@ -76,6 +78,11 @@ pub(crate) fn load_petal_terrain_on_nav_change(
     petal_map.world_scale = 1.0;
     petal_map.scale_bounds = None;
     petal_map.terrain_json = None;
+    // Data-loss guard companion (ui_semantics_unification_20260808 #1): drop
+    // the outgoing petal's proposal mirror so it can never bleed into the
+    // next petal; `handle_petal_terrain_loaded` rehydrates + re-marks it
+    // hydrated once the new petal's terrain doc actually arrives.
+    proposal_state.reset_for_petal_switch();
     if let Some(petal_id) = nav.active_petal_id.clone() {
         if db_sender
             .0

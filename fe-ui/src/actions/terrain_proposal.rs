@@ -9,6 +9,7 @@ use bevy::prelude::{MessageReader, Res, ResMut, Resource};
 use fe_runtime::app::DbCommandSender;
 use fe_runtime::messages::{CallerAuth, DbCommand};
 
+use crate::geometry::meters_to_world;
 use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::{ProposalEditState, ProposalOp, ProposalRecord};
 
@@ -19,15 +20,96 @@ use crate::terrain_proposal_state::{ProposalEditState, ProposalOp, ProposalRecor
 /// skeleton) — see `fe-ui/src/AGENTS.md` §terrain-proposal-editor for why. Pure
 /// so the additive-merge contract (NFR-1: never clobber tileset config) is
 /// testable.
+///
+/// `hydrated` gates HOW `records` reconciles against the doc's existing
+/// `proposals` array (data-loss guard, `ui_semantics_unification_20260808`
+/// finding #1). The doc's `proposals` array holds TWO record shapes: palette
+/// `ProposalRecord`s (`records`, this mirror) and Brush/shape-tool earthwork
+/// regions tagged by a `material` key (`region_json`'s shape) — the mirror
+/// NEVER absorbs region entries (see `db_results/terrain.rs`'s hydration
+/// filter), so this function must never let a palette-only operation touch
+/// them either:
+///
+/// - **Hydrated**: the mirror holds the petal's complete PALETTE set
+///   (persisted + local edits), so this is a **shape-preserving merge** —
+///   palette-shaped entries in the doc are wholesale-replaced by `records`
+///   (so palette add/delete/edit all apply), while every material-tagged
+///   region entry passes through the doc byte-identical. No sequence of
+///   palette adds/deletes can remove or alter a region (finding #1 invariant).
+/// - **Unhydrated**: `records` is only a partial/local view (the mirror
+///   hasn't loaded the petal's persisted set yet), so this performs a
+///   **tombstone-aware union** like `embed_region`/`remove_region`: every doc
+///   entry survives except ids in `pending_deletes` (finding #13 fix — a
+///   delete issued before hydration would otherwise be silently resurrected
+///   by the "keep every existing entry" rule, since the mirror has no way to
+///   know the id was ever persisted). An id present in `records` wins over
+///   the doc's copy for that id (handles the case where a locally-minted
+///   `p{n}` id happens to collide with an already-persisted one — the local
+///   version must not be silently discarded); every other id `records`
+///   doesn't mention is appended as new. This is what makes an Add/Delete
+///   racing ahead of `PetalTerrainLoaded` safe.
 pub(crate) fn embed_proposals(
     base: Option<&serde_json::Value>,
     records: &[ProposalRecord],
+    hydrated: bool,
+    pending_deletes: &std::collections::HashSet<String>,
 ) -> serde_json::Value {
     let mut doc = match base {
         Some(v @ serde_json::Value::Object(_)) => v.clone(),
         _ => baseline_terrain_doc(),
     };
-    doc["proposals"] = crate::terrain_proposal_state::to_json(records);
+    if hydrated {
+        let region_entries: Vec<serde_json::Value> = match doc.get("proposals") {
+            Some(serde_json::Value::Array(a)) => a
+                .iter()
+                .filter(|item| item.get("material").is_some())
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut merged = match crate::terrain_proposal_state::to_json(records) {
+            serde_json::Value::Array(a) => a,
+            _ => Vec::new(),
+        };
+        merged.extend(region_entries);
+        doc["proposals"] = serde_json::Value::Array(merged);
+        return doc;
+    }
+    let mut existing: Vec<serde_json::Value> = match doc.get("proposals") {
+        Some(serde_json::Value::Array(a)) => a.clone(),
+        _ => Vec::new(),
+    };
+    // Finding #13 fix: drop tombstoned ids first — otherwise the
+    // keep-every-existing-entry rule below would resurrect them.
+    existing.retain(|item| {
+        item.get("id")
+            .and_then(|v| v.as_str())
+            .is_none_or(|id| !pending_deletes.contains(id))
+    });
+    let record_by_id: std::collections::HashMap<&str, &ProposalRecord> =
+        records.iter().map(|r| (r.id.as_str(), r)).collect();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in existing.iter_mut() {
+        let Some(id) = item.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+            continue;
+        };
+        // Prefer the mirror's version for any id it currently holds (new OR
+        // colliding-with-persisted) — see the doc comment above.
+        if let Some(record) = record_by_id.get(id.as_str()) {
+            if let Ok(value) = serde_json::to_value(record) {
+                *item = value;
+            }
+        }
+        seen_ids.insert(id);
+    }
+    for record in records {
+        if !seen_ids.contains(&record.id) {
+            if let Ok(value) = serde_json::to_value(record) {
+                existing.push(value);
+            }
+        }
+    }
+    doc["proposals"] = serde_json::Value::Array(existing);
     doc
 }
 
@@ -51,13 +133,21 @@ fn baseline_terrain_doc() -> serde_json::Value {
 /// Persist the current proposal set on the active petal's terrain config.
 /// Optimistically updates `petal_map.terrain_json` only after the command is
 /// queued (mirrors `hexon::set_petal_map`; `PetalTerrainLoaded` confirms).
+/// Takes the whole `ProposalEditState` (not just its `proposals` slice) so
+/// `embed_proposals` can read `hydrated` and pick the correct reconciliation
+/// strategy (see its doc comment).
 fn persist(
     db_sender: &DbCommandSender,
     petal_map: &mut PetalMapState,
-    proposals: &[ProposalRecord],
+    proposals: &ProposalEditState,
     petal_id: String,
 ) {
-    let terrain = embed_proposals(petal_map.terrain_json.as_ref(), proposals);
+    let terrain = embed_proposals(
+        petal_map.terrain_json.as_ref(),
+        &proposals.proposals,
+        proposals.hydrated,
+        &proposals.pending_deletes,
+    );
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
@@ -90,8 +180,16 @@ pub(crate) fn add(
         bevy::log::warn!("TerrainProposalAdd ignored — no active petal");
         return;
     };
+    // Collision guard: an unhydrated mirror hasn't absorbed the doc's ids yet.
+    if let Some(existing) = petal_map
+        .terrain_json
+        .as_ref()
+        .and_then(|doc| doc["proposals"].as_array())
+    {
+        proposals.ensure_ids_beyond(existing.iter().filter_map(|r| r["id"].as_str()));
+    }
     proposals.push_new(op, footprint, target_height, delta);
-    persist(db_sender, petal_map, &proposals.proposals, petal_id);
+    persist(db_sender, petal_map, proposals, petal_id);
 }
 
 /// Delete a proposal by id and re-persist the (now-smaller) block.
@@ -107,7 +205,7 @@ pub(crate) fn delete(
         return;
     };
     proposals.remove(&id);
-    persist(db_sender, petal_map, &proposals.proposals, petal_id);
+    persist(db_sender, petal_map, proposals, petal_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -622,25 +720,360 @@ pub(crate) fn petal_map_enabled(petal_map: &PetalMapState, petal_id: &str) -> bo
 /// Defense-in-depth cap shared with the viewport sampler.
 pub(crate) const MAX_BRUSH_DABS_PER_STROKE: usize = 4_096;
 
-/// Append all regions with one clone of the terrain document and one mutation
-/// of its proposals array.
-fn embed_regions(
-    base: Option<&serde_json::Value>,
-    regions: Vec<serde_json::Value>,
-) -> serde_json::Value {
-    let mut doc = match base {
-        Some(v @ serde_json::Value::Object(_)) => v.clone(),
-        _ => baseline_terrain_doc(),
-    };
-    match doc.get_mut("proposals") {
-        Some(serde_json::Value::Array(existing)) => existing.extend(regions),
-        _ => doc["proposals"] = serde_json::Value::Array(regions),
+const CORRIDOR_CAP_SEGMENTS: usize = 8;
+const CORRIDOR_MITER_LIMIT: f32 = 2.0;
+const MAX_CORRIDOR_CENTERLINE_POINTS: usize = 256;
+
+fn signed_area(footprint: &[[f32; 2]]) -> f64 {
+    footprint
+        .iter()
+        .zip(footprint.iter().cycle().skip(1))
+        .map(|([ax, az], [bx, bz])| *ax as f64 * *bz as f64 - *bx as f64 * *az as f64)
+        .sum::<f64>()
+        * 0.5
+}
+
+fn orient_2d(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f64 {
+    let ab = [b[0] as f64 - a[0] as f64, b[1] as f64 - a[1] as f64];
+    let ac = [c[0] as f64 - a[0] as f64, c[1] as f64 - a[1] as f64];
+    ab[0] * ac[1] - ab[1] * ac[0]
+}
+
+fn orientation_sign(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> i8 {
+    let cross = orient_2d(a, b, c);
+    let scale = ((b[0] as f64 - a[0] as f64).hypot(b[1] as f64 - a[1] as f64)
+        * (c[0] as f64 - a[0] as f64).hypot(c[1] as f64 - a[1] as f64))
+    .max(1.0);
+    let epsilon = scale * 1e-10;
+    if cross > epsilon {
+        1
+    } else if cross < -epsilon {
+        -1
+    } else {
+        0
     }
-    doc
+}
+
+fn point_on_segment(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> bool {
+    if orientation_sign(a, b, point) != 0 {
+        return false;
+    }
+    let epsilon = ((b[0] as f64 - a[0] as f64).hypot(b[1] as f64 - a[1] as f64) * 1e-8).max(1e-8);
+    let px = point[0] as f64;
+    let pz = point[1] as f64;
+    px >= (a[0].min(b[0]) as f64 - epsilon)
+        && px <= (a[0].max(b[0]) as f64 + epsilon)
+        && pz >= (a[1].min(b[1]) as f64 - epsilon)
+        && pz <= (a[1].max(b[1]) as f64 + epsilon)
+}
+
+fn segments_intersect(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> bool {
+    let o1 = orientation_sign(a, b, c);
+    let o2 = orientation_sign(a, b, d);
+    let o3 = orientation_sign(c, d, a);
+    let o4 = orientation_sign(c, d, b);
+    (o1 != o2 && o1 != 0 && o2 != 0 && o3 != o4 && o3 != 0 && o4 != 0)
+        || (o1 == 0 && point_on_segment(c, a, b))
+        || (o2 == 0 && point_on_segment(d, a, b))
+        || (o3 == 0 && point_on_segment(a, c, d))
+        || (o4 == 0 && point_on_segment(b, c, d))
+}
+
+fn polygon_is_simple(points: &[[f32; 2]]) -> bool {
+    if points.len() < 3 {
+        return false;
+    }
+    let edge_count = points.len();
+    for first in 0..edge_count {
+        let first_next = (first + 1) % edge_count;
+        for second in first + 1..edge_count {
+            let second_next = (second + 1) % edge_count;
+            // Adjacent edges intentionally share one endpoint, including the
+            // closing edge with edge zero.
+            if first == second_next || first_next == second {
+                continue;
+            }
+            if segments_intersect(
+                points[first],
+                points[first_next],
+                points[second],
+                points[second_next],
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn centerline_is_valid(points: &[[f32; 2]]) -> bool {
+    if points.len() < 2 {
+        return true;
+    }
+    for triple in points.windows(3) {
+        let incoming = [triple[1][0] - triple[0][0], triple[1][1] - triple[0][1]];
+        let outgoing = [triple[2][0] - triple[1][0], triple[2][1] - triple[1][1]];
+        let product = incoming[0].hypot(incoming[1]) * outgoing[0].hypot(outgoing[1]);
+        let cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
+        let dot = incoming[0] * outgoing[0] + incoming[1] * outgoing[1];
+        if product > 0.0 && cross.abs() <= product * 1e-5 && dot <= -product * 0.999 {
+            return false;
+        }
+    }
+    let segment_count = points.len() - 1;
+    for first in 0..segment_count {
+        for second in first + 2..segment_count {
+            if segments_intersect(
+                points[first],
+                points[first + 1],
+                points[second],
+                points[second + 1],
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn push_corridor_join(
+    rail: &mut Vec<[f32; 2]>,
+    point: [f32; 2],
+    previous_normal: [f32; 2],
+    next_normal: [f32; 2],
+    radius: f32,
+    side: f32,
+) {
+    let previous = [previous_normal[0] * side, previous_normal[1] * side];
+    let next = [next_normal[0] * side, next_normal[1] * side];
+    let sum = [previous[0] + next[0], previous[1] + next[1]];
+    let sum_len = sum[0].hypot(sum[1]);
+    if sum_len > 1e-6 {
+        let miter = [sum[0] / sum_len, sum[1] / sum_len];
+        let denominator = miter[0] * next[0] + miter[1] * next[1];
+        if denominator > 1e-4 {
+            let length = radius / denominator;
+            if length.is_finite() && length <= radius * CORRIDOR_MITER_LIMIT {
+                rail.push([point[0] + miter[0] * length, point[1] + miter[1] * length]);
+                return;
+            }
+        }
+    }
+    rail.push([
+        point[0] + previous[0] * radius,
+        point[1] + previous[1] * radius,
+    ]);
+    rail.push([point[0] + next[0] * radius, point[1] + next[1] * radius]);
+}
+
+fn simplify_stroke_centerline(points: Vec<[f32; 2]>, tolerance: f32) -> Vec<[f32; 2]> {
+    let mut simplified: Vec<[f32; 2]> = Vec::with_capacity(points.len());
+    for point in points {
+        while simplified.len() >= 2 {
+            let previous = simplified[simplified.len() - 2];
+            let middle = simplified[simplified.len() - 1];
+            let ax = middle[0] - previous[0];
+            let az = middle[1] - previous[1];
+            let bx = point[0] - middle[0];
+            let bz = point[1] - middle[1];
+            let baseline = (point[0] - previous[0]).hypot(point[1] - previous[1]);
+            let deviation = if baseline > 0.0 {
+                (ax * bz - az * bx).abs() / baseline
+            } else {
+                0.0
+            };
+            if ax * bx + az * bz >= 0.0 && deviation <= tolerance {
+                simplified.pop();
+            } else {
+                break;
+            }
+        }
+        simplified.push(point);
+    }
+    simplified
+}
+
+fn point_segment_distance_2d(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
+    if length_squared <= f32::MIN_POSITIVE {
+        return (point[0] - a[0]).hypot(point[1] - a[1]);
+    }
+    let along = (((point[0] - a[0]) * delta[0] + (point[1] - a[1]) * delta[1]) / length_squared)
+        .clamp(0.0, 1.0);
+    (point[0] - (a[0] + delta[0] * along)).hypot(point[1] - (a[1] + delta[1] * along))
+}
+
+fn bounded_stroke_centerline(points: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
+    if points.len() <= MAX_CORRIDOR_CENTERLINE_POINTS {
+        return points;
+    }
+
+    let mut selected = vec![0usize, points.len() - 1];
+    while selected.len() < MAX_CORRIDOR_CENTERLINE_POINTS {
+        let mut best: Option<(f32, usize, usize, usize, usize)> = None;
+        for (insertion_index, span) in selected.windows(2).enumerate() {
+            let start = span[0];
+            let end = span[1];
+            if end <= start + 1 {
+                continue;
+            }
+            let span_length = end - start;
+            let midpoint = start + span_length / 2;
+            for index in start + 1..end {
+                let deviation =
+                    point_segment_distance_2d(points[index], points[start], points[end]);
+                let midpoint_distance = index.abs_diff(midpoint);
+                let replace = best.is_none_or(
+                    |(best_deviation, best_span, best_midpoint_distance, best_index, _)| {
+                        let deviation_order = deviation.total_cmp(&best_deviation);
+                        deviation_order.is_gt()
+                            || (deviation_order.is_eq()
+                                && (span_length > best_span
+                                    || (span_length == best_span
+                                        && (midpoint_distance < best_midpoint_distance
+                                            || (midpoint_distance == best_midpoint_distance
+                                                && index < best_index)))))
+                    },
+                );
+                if replace {
+                    best = Some((
+                        deviation,
+                        span_length,
+                        midpoint_distance,
+                        index,
+                        insertion_index,
+                    ));
+                }
+            }
+        }
+        let Some((_, _, _, point_index, insertion_index)) = best else {
+            break;
+        };
+        selected.insert(insertion_index + 1, point_index);
+    }
+
+    selected.into_iter().map(|index| points[index]).collect()
+}
+
+/// Build one reportable polygon for a complete brush stroke.
+pub(crate) fn stroke_corridor_footprint(
+    centers: &[[f32; 2]],
+    radius: f32,
+) -> Option<Vec<[f32; 2]>> {
+    if !(radius.is_finite() && radius > 0.0) {
+        return None;
+    }
+    let dedupe_distance = (radius * 1e-4).max(f32::MIN_POSITIVE);
+    let mut points = Vec::with_capacity(centers.len().min(MAX_BRUSH_DABS_PER_STROKE));
+    for point in centers.iter().take(MAX_BRUSH_DABS_PER_STROKE) {
+        if !point[0].is_finite() || !point[1].is_finite() {
+            continue;
+        }
+        if points.last().is_some_and(|last: &[f32; 2]| {
+            (point[0] - last[0]).hypot(point[1] - last[1]) <= dedupe_distance
+        }) {
+            continue;
+        }
+        points.push(*point);
+    }
+    let points = bounded_stroke_centerline(simplify_stroke_centerline(points, radius * 0.01));
+    if points.is_empty() {
+        return None;
+    }
+    if points.len() == 1 {
+        let footprint = brush_disc(points[0], radius);
+        return (signed_area(&footprint).is_finite()
+            && signed_area(&footprint) != 0.0
+            && polygon_is_simple(&footprint))
+        .then_some(footprint);
+    }
+    if !centerline_is_valid(&points) {
+        return None;
+    }
+
+    let mut normals = Vec::with_capacity(points.len() - 1);
+    for pair in points.windows(2) {
+        let dx = pair[1][0] - pair[0][0];
+        let dz = pair[1][1] - pair[0][1];
+        let length = dx.hypot(dz);
+        if !(length.is_finite() && length > 0.0) {
+            return None;
+        }
+        normals.push([-dz / length, dx / length]);
+    }
+
+    let mut left = Vec::with_capacity(points.len() * 2);
+    let mut right = Vec::with_capacity(points.len() * 2);
+    left.push([
+        points[0][0] + normals[0][0] * radius,
+        points[0][1] + normals[0][1] * radius,
+    ]);
+    right.push([
+        points[0][0] - normals[0][0] * radius,
+        points[0][1] - normals[0][1] * radius,
+    ]);
+    for index in 1..points.len() - 1 {
+        push_corridor_join(
+            &mut left,
+            points[index],
+            normals[index - 1],
+            normals[index],
+            radius,
+            1.0,
+        );
+        push_corridor_join(
+            &mut right,
+            points[index],
+            normals[index - 1],
+            normals[index],
+            radius,
+            -1.0,
+        );
+    }
+    let last_point = points[points.len() - 1];
+    let last_normal = normals[normals.len() - 1];
+    left.push([
+        last_point[0] + last_normal[0] * radius,
+        last_point[1] + last_normal[1] * radius,
+    ]);
+    right.push([
+        last_point[0] - last_normal[0] * radius,
+        last_point[1] - last_normal[1] * radius,
+    ]);
+
+    let mut footprint = left;
+    let end_angle = last_normal[1].atan2(last_normal[0]);
+    for step in 1..CORRIDOR_CAP_SEGMENTS {
+        let angle = end_angle - std::f32::consts::PI * step as f32 / CORRIDOR_CAP_SEGMENTS as f32;
+        footprint.push([
+            last_point[0] + angle.cos() * radius,
+            last_point[1] + angle.sin() * radius,
+        ]);
+    }
+    footprint.extend(right.iter().rev().copied());
+    let first_point = points[0];
+    let first_normal = normals[0];
+    let start_angle = (-first_normal[1]).atan2(-first_normal[0]);
+    for step in 1..CORRIDOR_CAP_SEGMENTS {
+        let angle = start_angle - std::f32::consts::PI * step as f32 / CORRIDOR_CAP_SEGMENTS as f32;
+        footprint.push([
+            first_point[0] + angle.cos() * radius,
+            first_point[1] + angle.sin() * radius,
+        ]);
+    }
+    let area = signed_area(&footprint);
+    if !area.is_finite() || area == 0.0 || footprint.len() < 3 || !polygon_is_simple(&footprint) {
+        return None;
+    }
+    if area < 0.0 {
+        footprint.reverse();
+    }
+    Some(footprint)
 }
 
 /// Persist a distance-sampled brush stroke as one terrain document update,
-/// then create one addressable endpoint node per committed dab.
+/// then create one addressable endpoint node for its swept corridor.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_brush_stroke(
     db_sender: &DbCommandSender,
@@ -699,48 +1132,40 @@ pub(crate) fn handle_brush_stroke(
     } else {
         material.trim()
     };
-    let dab_count = centers.len().min(MAX_BRUSH_DABS_PER_STROKE);
-    let mut regions = Vec::with_capacity(dab_count);
-    let mut endpoints = Vec::with_capacity(dab_count);
-    for center in centers.into_iter().take(MAX_BRUSH_DABS_PER_STROKE) {
-        let footprint = brush_disc(center, radius);
-        if footprint.len() < 3 {
-            continue;
-        }
-        let id = mint_unused_region_id(sculpt_state, petal_map.terrain_json.as_ref());
-        regions.push(region_json(
+    let Some(footprint) = stroke_corridor_footprint(&centers, radius) else {
+        bevy::log::warn!("SculptBrushStroke ignored: no finite corridor footprint");
+        return;
+    };
+    let id = mint_unused_region_id(sculpt_state, petal_map.terrain_json.as_ref());
+    let region = region_json(&id, &op, &footprint, target_height, delta, material);
+    let terrain = embed_region(petal_map.terrain_json.as_ref(), region);
+    if persist_doc(db_sender, petal_map, terrain, petal_id.clone()) {
+        create_region_node(
+            db_sender,
+            earthwork_map,
+            &petal_id,
             &id,
             &op,
             &footprint,
-            target_height,
-            delta,
             material,
-        ));
-        endpoints.push((id, footprint));
-    }
-    if regions.is_empty() {
-        bevy::log::warn!("SculptBrushStroke ignored: no finite dab footprints");
-        return;
-    }
-    let terrain = embed_regions(petal_map.terrain_json.as_ref(), regions);
-    if persist_doc(db_sender, petal_map, terrain, petal_id.clone()) {
-        for (id, footprint) in endpoints {
-            create_region_node(
-                db_sender,
-                earthwork_map,
-                &petal_id,
-                &id,
-                &op,
-                &footprint,
-                material,
-            );
-        }
+        );
     }
 }
 
 /// T3 FR-1 shape + FR-3 region + FR-4 volume: create a defined-shape earthwork
 /// region record (the reportable BIM node, D-A8). Persisted in the `proposals`
 /// block enriched with `material`; the report derives cut/fill volume.
+///
+/// Finding #11 fix (`ui_semantics_unification_20260808`): the caller
+/// (`panels::tool_options::render_sculpt_shape_picker`) queues
+/// `footprint`/`target_height`/`delta` in petal-local METERS (N-1, same
+/// convention `SculptToolState`'s fields document), but every persisted
+/// `terrain.proposals` entry — Brush regions (`BrushSnapshot::from_state`'s
+/// world-unit snapshot), palette proposals — and every downstream consumer
+/// (context-menu PNPOLY pick, report cut/fill totals) assumes WORLD UNITS.
+/// This handler converts at the boundary via `PetalMapState.world_scale`,
+/// mirroring `BrushSnapshot::from_state`'s conversion exactly, so the
+/// persisted record is honest world units like everything else in the array.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_shape_region(
     db_sender: &DbCommandSender,
@@ -758,6 +1183,18 @@ pub(crate) fn handle_shape_region(
         bevy::log::warn!("SculptShapeRegion ignored — footprint has fewer than 3 points");
         return;
     }
+    let world_scale = petal_map.world_scale;
+    let footprint: Vec<[f32; 2]> = footprint
+        .iter()
+        .map(|[x, z]| {
+            [
+                meters_to_world(*x, world_scale),
+                meters_to_world(*z, world_scale),
+            ]
+        })
+        .collect();
+    let target_height = target_height.map(|t| meters_to_world(t, world_scale));
+    let delta = delta.map(|d| meters_to_world(d, world_scale));
     let id = mint_unused_region_id(sculpt_state, petal_map.terrain_json.as_ref());
     let region = region_json(&id, &op, &footprint, target_height, delta, &material);
     let terrain = embed_region(petal_map.terrain_json.as_ref(), region);
@@ -842,6 +1279,12 @@ mod tests {
         }
     }
 
+    /// Empty tombstone set — the common case for tests not exercising the
+    /// finding #13 fix.
+    fn no_tombstones() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
     #[test]
     fn embed_preserves_existing_terrain_config() {
         // A realistic terrain doc (tileset + layers + scale) must survive intact.
@@ -851,7 +1294,7 @@ mod tests {
             "tileset_hexon_uris": ["ts-1"],
             "layers": [{ "name": "satellite", "visible": true }],
         });
-        let out = embed_proposals(Some(&base), &[record("p1")]);
+        let out = embed_proposals(Some(&base), &[record("p1")], true, &no_tombstones());
         // Proposals added…
         assert_eq!(out["proposals"][0]["id"], json!("p1"));
         assert_eq!(out["proposals"][0]["op"], json!("raise"));
@@ -867,7 +1310,7 @@ mod tests {
         // map-less petal must NOT get a bare `{"proposals": [...]}` skeleton —
         // every field a terrain-JSON reader (fe-ui panels, fe-terrain's
         // `TerrainConfig`) might require must be present with a safe default.
-        let out = embed_proposals(None, &[record("p1")]);
+        let out = embed_proposals(None, &[record("p1")], true, &no_tombstones());
         assert!(out.is_object());
         assert_eq!(out["proposals"][0]["id"], json!("p1"));
         assert_eq!(out["enabled"], json!(false), "no real map — honest default");
@@ -884,7 +1327,12 @@ mod tests {
     fn embed_non_object_base_also_gets_the_complete_baseline() {
         // A non-object base (e.g. a stale/corrupt doc) must not leak through
         // as the seed — same complete-baseline treatment as `None`.
-        let out = embed_proposals(Some(&json!([1, 2, 3])), &[record("p1")]);
+        let out = embed_proposals(
+            Some(&json!([1, 2, 3])),
+            &[record("p1")],
+            true,
+            &no_tombstones(),
+        );
         assert_eq!(out["enabled"], json!(false));
         assert_eq!(out["tile_source_url"], json!(""));
         assert_eq!(out["proposals"][0]["id"], json!("p1"));
@@ -897,7 +1345,7 @@ mod tests {
         // any of them fails. Pin that the baseline always carries all three
         // (fe-ui can't import TerrainConfig itself — boundary rule — so this
         // asserts the JSON shape directly).
-        let out = embed_proposals(None, &[]);
+        let out = embed_proposals(None, &[], true, &no_tombstones());
         assert!(out.get("enabled").and_then(|v| v.as_bool()).is_some());
         assert!(out
             .get("tile_source_url")
@@ -911,9 +1359,340 @@ mod tests {
 
     #[test]
     fn embed_empty_records_writes_empty_array() {
-        let out = embed_proposals(Some(&json!({ "enabled": true })), &[]);
+        let out = embed_proposals(
+            Some(&json!({ "enabled": true })),
+            &[],
+            true,
+            &no_tombstones(),
+        );
         assert_eq!(out["proposals"], json!([]));
         assert_eq!(out["enabled"], json!(true));
+    }
+
+    // --- Data-loss guard: unhydrated embed is read-modify-write, not overwrite
+    // (ui_semantics_unification_20260808 finding #1) ---
+
+    #[test]
+    fn embed_proposals_unhydrated_preserves_persisted_entries_the_mirror_never_saw() {
+        // A doc already has "p1" persisted from a prior session; this
+        // session's mirror never loaded it (still unhydrated) but the user
+        // added a brand-new local record "p2" before the load response
+        // arrived. The persisted entry must survive.
+        let base = json!({
+            "enabled": true,
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], "delta": 5.0 }
+            ],
+        });
+        let out = embed_proposals(Some(&base), &[record("p2")], false, &no_tombstones());
+        let ids: Vec<&str> = out["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&"p1"),
+            "persisted-but-unloaded proposal survives"
+        );
+        assert!(
+            ids.contains(&"p2"),
+            "the new local record is still appended"
+        );
+        assert_eq!(ids.len(), 2);
+        assert_eq!(out["enabled"], json!(true), "config untouched");
+    }
+
+    #[test]
+    fn embed_proposals_unhydrated_does_not_duplicate_an_id_already_in_the_doc() {
+        let base = json!({
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 }
+            ],
+        });
+        let out = embed_proposals(Some(&base), &[record("p1")], false, &no_tombstones());
+        assert_eq!(
+            out["proposals"].as_array().unwrap().len(),
+            1,
+            "the mirror's record and the doc's record share an id — no duplicate"
+        );
+    }
+
+    #[test]
+    fn embed_proposals_unhydrated_with_no_base_still_appends_the_local_record() {
+        // A brand-new/map-less petal (no base doc at all) is not a "lose
+        // data" case — there is nothing persisted to preserve — but the RMW
+        // path must still land the local record.
+        let out = embed_proposals(None, &[record("p1")], false, &no_tombstones());
+        assert_eq!(out["proposals"][0]["id"], json!("p1"));
+    }
+
+    #[test]
+    fn embed_proposals_hydrated_replaces_wholesale_reflecting_deletions() {
+        // Once hydrated, the mirror IS authoritative — a record dropped from
+        // the local set (e.g. via `ProposalEditState::remove`) must actually
+        // disappear from the doc, not just fail to be re-added.
+        let base = json!({
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 },
+                { "id": "p2", "op": "raise", "footprint": [], "delta": 1.0 }
+            ],
+        });
+        let out = embed_proposals(Some(&base), &[record("p1")], true, &no_tombstones());
+        let ids: Vec<&str> = out["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["p1"],
+            "p2 was deleted from the hydrated mirror — it's gone"
+        );
+    }
+
+    // --- Finding #1 fix: hydrated embed is a SHAPE-PRESERVING merge — a
+    // material-tagged region entry must survive ANY sequence of palette
+    // add/delete, hydrated or not ---
+
+    #[test]
+    fn embed_proposals_hydrated_preserves_material_tagged_region_entries_untouched() {
+        let base = json!({
+            "enabled": true,
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 },
+                { "id": "r1", "op": "raise", "footprint": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], "delta": 3.0, "material": "gravel" }
+            ],
+        });
+        // The hydrated mirror only ever holds palette entries (finding #1's
+        // hydration filter) — here it still has "p1" and adds nothing new.
+        let out = embed_proposals(Some(&base), &[record("p1")], true, &no_tombstones());
+        let region = out["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == json!("r1"))
+            .expect("region entry survives a hydrated palette merge");
+        assert_eq!(
+            region["material"],
+            json!("gravel"),
+            "region untouched byte-for-byte"
+        );
+        assert_eq!(region["op"], json!("raise"));
+        assert_eq!(region["delta"], json!(3.0));
+    }
+
+    #[test]
+    fn embed_proposals_hydrated_palette_delete_never_removes_a_region_entry() {
+        // The mirror "deletes" p1 by simply not including it in `records`
+        // (mirrors `ProposalEditState::remove` then `persist`). The
+        // material-tagged region must remain even though it's the ONLY
+        // entry left in the doc's proposals array.
+        let base = json!({
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 },
+                { "id": "r1", "op": "level", "footprint": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], "target_height": 4.0, "material": "earth" }
+            ],
+        });
+        let out = embed_proposals(Some(&base), &[], true, &no_tombstones());
+        let ids: Vec<&str> = out["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["r1"],
+            "p1 deleted from the palette; r1 (region) survives"
+        );
+    }
+
+    #[test]
+    fn embed_proposals_no_sequence_of_palette_operations_alters_a_region_entry() {
+        // Invariant sweep (finding #1): add, then delete, then add-again on
+        // the palette side — the region entry must be byte-identical at
+        // every step.
+        let region = json!({ "id": "r1", "op": "lower", "footprint": [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]], "delta": 1.5, "material": "sand" });
+        let base = json!({ "proposals": [region.clone()] });
+
+        let step1 = embed_proposals(Some(&base), &[record("p1")], true, &no_tombstones());
+        let step2 = embed_proposals(
+            Some(&step1),
+            &[record("p1"), record("p2")],
+            true,
+            &no_tombstones(),
+        );
+        let step3 = embed_proposals(Some(&step2), &[], true, &no_tombstones());
+        let step4 = embed_proposals(Some(&step3), &[record("p3")], true, &no_tombstones());
+
+        for (label, doc) in [
+            ("step1", &step1),
+            ("step2", &step2),
+            ("step3", &step3),
+            ("step4", &step4),
+        ] {
+            let found = doc["proposals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == json!("r1"))
+                .unwrap_or_else(|| panic!("{label}: region entry missing"));
+            assert_eq!(
+                *found, region,
+                "{label}: region entry must be byte-identical"
+            );
+        }
+    }
+
+    // --- Finding #13 fix: unhydrated merge is tombstone-aware ---
+
+    #[test]
+    fn embed_proposals_unhydrated_tombstoned_id_is_excluded_even_though_doc_has_it() {
+        // A pre-hydration delete of an already-persisted id must not be
+        // resurrected by the "keep every existing entry" union rule.
+        let base = json!({
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 }
+            ],
+        });
+        let mut tombstones = std::collections::HashSet::new();
+        tombstones.insert("p1".to_string());
+        let out = embed_proposals(Some(&base), &[], false, &tombstones);
+        assert!(
+            out["proposals"].as_array().unwrap().is_empty(),
+            "tombstoned id is dropped, not resurrected"
+        );
+    }
+
+    #[test]
+    fn embed_proposals_unhydrated_prefers_mirror_version_for_a_touched_id() {
+        // A locally-minted id happens to collide with an already-persisted
+        // one (e.g. a fresh `ProposalEditState` re-mints "p1"). The mirror's
+        // version must win, not be silently discarded.
+        let base = json!({
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [[9.0, 9.0]], "delta": 99.0 }
+            ],
+        });
+        let local = record("p1"); // footprint/delta differ from the doc's "p1".
+        let out = embed_proposals(
+            Some(&base),
+            std::slice::from_ref(&local),
+            false,
+            &no_tombstones(),
+        );
+        let entries = out["proposals"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "still one entry for id p1 — no duplicate");
+        assert_eq!(
+            entries[0]["delta"],
+            json!(local.delta.unwrap()),
+            "mirror's version wins"
+        );
+    }
+
+    #[test]
+    fn embed_proposals_unhydrated_palette_delete_never_touches_a_region_entry() {
+        // Same invariant as the hydrated tests above, exercised on the
+        // UNHYDRATED path: a pre-hydration palette delete (tombstoning "p1")
+        // must never remove or alter the material-tagged region entry, even
+        // though both live in the same `proposals` array.
+        let base = json!({
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 },
+                { "id": "r1", "op": "raise", "footprint": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], "delta": 3.0, "material": "earth" }
+            ],
+        });
+        let mut tombstones = std::collections::HashSet::new();
+        tombstones.insert("p1".to_string());
+        // Records is empty — the palette mirror never held regions to begin
+        // with (finding #1's hydration filter / regions never enter push_new).
+        let out = embed_proposals(Some(&base), &[], false, &tombstones);
+        let ids: Vec<&str> = out["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["r1"], "p1 tombstoned away; r1 (region) untouched");
+        let region = &out["proposals"][0];
+        assert_eq!(region["material"], json!("earth"));
+        assert_eq!(region["delta"], json!(3.0));
+    }
+
+    #[test]
+    fn embed_proposals_unhydrated_tombstone_does_not_affect_other_ids() {
+        let base = json!({
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 },
+                { "id": "p2", "op": "raise", "footprint": [], "delta": 2.0 }
+            ],
+        });
+        let mut tombstones = std::collections::HashSet::new();
+        tombstones.insert("p1".to_string());
+        let out = embed_proposals(Some(&base), &[], false, &tombstones);
+        let ids: Vec<&str> = out["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["p2"], "only the tombstoned id is dropped");
+    }
+
+    #[test]
+    fn add_before_hydration_does_not_destroy_persisted_proposals() {
+        // End-to-end reproduction of finding #1 through the real `add` action:
+        // the petal's terrain doc already has a persisted proposal, but this
+        // session's `ProposalEditState` was never rehydrated (e.g. a race
+        // with `PetalTerrainLoaded`). The first Add must not wipe it.
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut petal_map = PetalMapState {
+            petal_id: Some("petal-1".into()),
+            terrain_json: Some(json!({
+                "enabled": true,
+                "proposals": [
+                    { "id": "p1", "op": "raise", "footprint": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], "delta": 3.0 }
+                ],
+            })),
+            ..Default::default()
+        };
+        let mut proposals = ProposalEditState::default();
+        assert!(
+            !proposals.hydrated,
+            "not rehydrated — the exact bug scenario"
+        );
+
+        add(
+            &sender,
+            &mut petal_map,
+            &mut proposals,
+            Some("petal-1".into()),
+            ProposalOp::Lower,
+            vec![[2.0, 2.0], [3.0, 2.0], [3.0, 3.0]],
+            None,
+            Some(-1.0),
+        );
+
+        let doc = match rx.try_recv().expect("terrain write") {
+            DbCommand::SetPetalTerrain {
+                terrain: Some(doc), ..
+            } => doc,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        let ids: Vec<&str> = doc["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&"p1"),
+            "persisted proposal survives the unhydrated Add"
+        );
+        assert_eq!(ids.len(), 2, "plus the newly added one");
     }
 
     // --- T3 sculpt & earthwork region helpers ---
@@ -1001,6 +1780,156 @@ mod tests {
         }
         assert!(brush_disc([0.0, 0.0], 0.0).is_empty());
         assert!(brush_disc([0.0, 0.0], f32::NAN).is_empty());
+    }
+
+    #[test]
+    fn stroke_corridor_single_point_reuses_disc() {
+        let corridor = stroke_corridor_footprint(&[[5.0, -3.0]], 2.0).unwrap();
+        assert_eq!(corridor, brush_disc([5.0, -3.0], 2.0));
+        assert!(signed_area(&corridor) > 0.0);
+    }
+
+    #[test]
+    fn stroke_corridor_straight_segment_has_round_caps_and_positive_area() {
+        let corridor = stroke_corridor_footprint(&[[0.0, 0.0], [10.0, 0.0]], 2.0).unwrap();
+        assert!(corridor.len() >= 18);
+        assert!(signed_area(&corridor) > 0.0);
+        let min_x = corridor
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::MAX, f32::min);
+        let max_x = corridor
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::MIN, f32::max);
+        assert!((min_x + 2.0).abs() < 1e-4);
+        assert!((max_x - 12.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn stroke_corridor_filters_bad_and_duplicate_samples() {
+        let corridor = stroke_corridor_footprint(
+            &[
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [f32::NAN, 1.0],
+                [5.0, 0.0],
+                [5.0, 5.0],
+            ],
+            1.0,
+        )
+        .unwrap();
+        assert!(corridor.iter().flatten().all(|value| value.is_finite()));
+        assert!(signed_area(&corridor) > 0.0);
+        assert!(stroke_corridor_footprint(&[[f32::NAN, 0.0]], 1.0).is_none());
+        assert!(stroke_corridor_footprint(&[[0.0, 0.0]], 0.0).is_none());
+    }
+
+    #[test]
+    fn stroke_corridor_rejects_figure_eight_centerline() {
+        assert!(
+            stroke_corridor_footprint(&[[0.0, 0.0], [4.0, 4.0], [0.0, 4.0], [4.0, 0.0]], 0.25,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stroke_corridor_rejects_closed_loop_centerline() {
+        assert!(stroke_corridor_footprint(
+            &[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0],],
+            0.25,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn stroke_corridor_rejects_collinear_reversal() {
+        assert!(stroke_corridor_footprint(&[[0.0, 0.0], [4.0, 0.0], [1.0, 0.0]], 0.25).is_none());
+    }
+
+    #[test]
+    fn stroke_corridor_normal_turn_remains_simple() {
+        let footprint = stroke_corridor_footprint(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]], 0.25)
+            .expect("right-angle stroke");
+        assert!(polygon_is_simple(&footprint));
+        assert!(signed_area(&footprint) > 0.0);
+    }
+
+    #[test]
+    fn stroke_corridor_bounds_high_sample_centerline_and_output() {
+        let samples: Vec<[f32; 2]> = (0..MAX_BRUSH_DABS_PER_STROKE)
+            .map(|index| [index as f32, (index as f32 * 0.001).sin()])
+            .collect();
+        let bounded = bounded_stroke_centerline(samples.clone());
+        assert!(bounded.len() <= MAX_CORRIDOR_CENTERLINE_POINTS);
+        assert_eq!(bounded.first(), samples.first());
+        assert_eq!(bounded.last(), samples.last());
+        let footprint = stroke_corridor_footprint(&samples, 0.1).expect("bounded corridor");
+        assert!(footprint.len() <= MAX_CORRIDOR_CENTERLINE_POINTS * 4 + 16);
+    }
+
+    #[test]
+    fn bounded_centerline_retains_equal_amplitude_zigzag_turns() {
+        let mut samples: Vec<[f32; 2]> = (0..MAX_BRUSH_DABS_PER_STROKE)
+            .map(|index| [index as f32, if index % 2 == 0 { 1.0 } else { -1.0 }])
+            .collect();
+        samples[0][1] = 0.0;
+        samples[MAX_BRUSH_DABS_PER_STROKE - 1][1] = 0.0;
+
+        let bounded = bounded_stroke_centerline(samples);
+        assert_eq!(bounded.len(), MAX_CORRIDOR_CENTERLINE_POINTS);
+        assert!(bounded.iter().filter(|point| point[1] > 0.5).count() > 48);
+        assert!(bounded.iter().filter(|point| point[1] < -0.5).count() > 48);
+        assert!(
+            bounded
+                .windows(3)
+                .filter(|turn| orient_2d(turn[0], turn[1], turn[2]).abs() > 0.5)
+                .count()
+                > MAX_CORRIDOR_CENTERLINE_POINTS / 4
+        );
+    }
+
+    #[test]
+    fn bounded_centerline_preserves_localized_turn_extremum() {
+        let mut samples: Vec<[f32; 2]> = (0..MAX_BRUSH_DABS_PER_STROKE)
+            .map(|index| [index as f32, 0.0])
+            .collect();
+        samples[MAX_BRUSH_DABS_PER_STROKE / 2][1] = 50.0;
+        let bounded = bounded_stroke_centerline(samples);
+        assert!(bounded.len() <= MAX_CORRIDOR_CENTERLINE_POINTS);
+        assert!(bounded.iter().any(|point| point[1] >= 50.0));
+    }
+
+    #[test]
+    fn bounded_centerline_preserves_localized_self_crossing_for_rejection() {
+        let mut samples = Vec::new();
+        for index in 0..1_500 {
+            samples.push([-100.0 + index as f32 * (100.0 / 1_500.0), 0.0]);
+        }
+        let loop_vertices = [
+            [0.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [10.0, 0.0],
+            [20.0, 0.0],
+        ];
+        for edge in loop_vertices.windows(2) {
+            for index in 0..200 {
+                let t = index as f32 / 200.0;
+                samples.push([
+                    edge[0][0] + (edge[1][0] - edge[0][0]) * t,
+                    edge[0][1] + (edge[1][1] - edge[0][1]) * t,
+                ]);
+            }
+        }
+        while samples.len() < MAX_BRUSH_DABS_PER_STROKE {
+            let t = (samples.len() - 2_300) as f32 / (MAX_BRUSH_DABS_PER_STROKE - 2_300) as f32;
+            samples.push([20.0 + 80.0 * t, 0.0]);
+        }
+        let bounded = bounded_stroke_centerline(samples.clone());
+        assert!(bounded.len() <= MAX_CORRIDOR_CENTERLINE_POINTS);
+        assert!(!centerline_is_valid(&bounded));
+        assert!(stroke_corridor_footprint(&samples, 0.1).is_none());
     }
 
     #[test]
@@ -1095,7 +2024,7 @@ mod tests {
     }
 
     #[test]
-    fn brush_stroke_commits_one_document_and_one_node_per_dab() {
+    fn brush_stroke_commits_one_document_and_one_corridor_node() {
         let (tx, rx) = crossbeam::channel::unbounded();
         let sender = DbCommandSender(tx);
         let mut petal_map = PetalMapState {
@@ -1130,15 +2059,13 @@ mod tests {
             other => panic!("unexpected first stroke command: {other:?}"),
         };
         let proposals = doc["proposals"].as_array().expect("proposal array");
-        assert_eq!(proposals.len(), 3);
-        assert!((proposals[0]["footprint"][0][0].as_f64().unwrap() - 0.002).abs() < 1e-7);
+        assert_eq!(proposals.len(), 1);
+        assert!(proposals[0]["footprint"].as_array().unwrap().len() >= 18);
         assert!((proposals[0]["delta"].as_f64().unwrap() - 0.002).abs() < 1e-7);
 
         let followups: Vec<_> = rx.try_iter().collect();
-        assert_eq!(followups.len(), 3);
-        assert!(followups
-            .iter()
-            .all(|command| matches!(command, DbCommand::CreateNode { .. })));
+        assert_eq!(followups.len(), 1);
+        assert!(matches!(followups[0], DbCommand::CreateNode { .. }));
     }
 
     #[test]
@@ -1156,7 +2083,9 @@ mod tests {
             &mut SculptToolState::default(),
             &mut EarthworkNodeMap::default(),
             "p".into(),
-            vec![[0.0, 0.0]; MAX_BRUSH_DABS_PER_STROKE + 7],
+            (0..MAX_BRUSH_DABS_PER_STROKE + 7)
+                .map(|index| [index as f32, 0.0])
+                .collect(),
             1.0,
             1.0,
             "raise".into(),
@@ -1170,11 +2099,15 @@ mod tests {
             } => doc,
             other => panic!("unexpected first stroke command: {other:?}"),
         };
-        assert_eq!(
-            doc["proposals"].as_array().unwrap().len(),
-            MAX_BRUSH_DABS_PER_STROKE
-        );
-        assert_eq!(rx.try_iter().count(), MAX_BRUSH_DABS_PER_STROKE);
+        assert_eq!(doc["proposals"].as_array().unwrap().len(), 1);
+        let max_x = doc["proposals"][0]["footprint"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|point| point[0].as_f64())
+            .fold(f64::MIN, f64::max);
+        assert!(max_x <= MAX_BRUSH_DABS_PER_STROKE as f64 + 1e-4);
+        assert_eq!(rx.try_iter().count(), 1);
     }
 
     #[test]
@@ -1356,5 +2289,122 @@ mod tests {
         let terrain = json!({ "proposals": [ { "id": "r1" }, { "id": "r2" } ] });
         assert_eq!(mint_unused_region_id(&mut s, Some(&terrain)), "r3");
         assert_eq!(mint_unused_region_id(&mut s, None), "r4");
+    }
+
+    // --- Finding #11 fix: `handle_shape_region` converts petal-local meters
+    // to world units via `PetalMapState.world_scale` before persisting ---
+
+    #[test]
+    fn shape_region_converts_footprint_and_deltas_meters_to_world_units_at_nondefault_scale() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut petal_map = PetalMapState {
+            petal_id: Some("p".into()),
+            world_scale: 0.01, // 0.01 world units per real meter
+            terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
+            ..Default::default()
+        };
+        handle_shape_region(
+            &sender,
+            &mut petal_map,
+            &mut SculptToolState::default(),
+            &mut EarthworkNodeMap::default(),
+            "p".into(),
+            vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]], // petal-local meters
+            "raise".into(),
+            None,
+            Some(50.0), // meters
+            "earth".into(),
+        );
+        let doc = match rx.try_recv().expect("terrain write") {
+            DbCommand::SetPetalTerrain {
+                terrain: Some(doc), ..
+            } => doc,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        let footprint = doc["proposals"][0]["footprint"].as_array().unwrap();
+        // 100 meters * 0.01 world units/meter = 1.0 world unit.
+        assert!((footprint[1][0].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        assert!((footprint[2][1].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        // delta: 50 meters * 0.01 world units/meter = 0.5 world units.
+        assert!((doc["proposals"][0]["delta"].as_f64().unwrap() - 0.5).abs() < 1e-6);
+
+        // The endpoint node's centroid must also be in the converted
+        // (world-unit) footprint, not the raw meters one.
+        let node_position = match rx.try_recv().expect("endpoint node") {
+            DbCommand::CreateNode { position, .. } => position,
+            other => panic!("unexpected endpoint command: {other:?}"),
+        };
+        assert!((node_position[0] - (200.0 / 3.0 * 0.01)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn shape_region_target_height_also_converts_to_world_units() {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut petal_map = PetalMapState {
+            petal_id: Some("p".into()),
+            world_scale: 2.0, // 2 world units per real meter
+            terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
+            ..Default::default()
+        };
+        handle_shape_region(
+            &sender,
+            &mut petal_map,
+            &mut SculptToolState::default(),
+            &mut EarthworkNodeMap::default(),
+            "p".into(),
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            "level".into(),
+            Some(10.0), // meters
+            None,
+            "earth".into(),
+        );
+        let doc = match rx.try_recv().expect("terrain write") {
+            DbCommand::SetPetalTerrain {
+                terrain: Some(doc), ..
+            } => doc,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        // 10 meters * 2 world units/meter = 20 world units.
+        assert!((doc["proposals"][0]["target_height"].as_f64().unwrap() - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shape_region_at_default_scale_is_numerically_unchanged() {
+        // world_scale == 1.0 must behave as an identity conversion — a
+        // sanity guard against a regression that shifts values even at the
+        // most common (unscaled) case.
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let sender = DbCommandSender(tx);
+        let mut petal_map = PetalMapState {
+            petal_id: Some("p".into()),
+            world_scale: 1.0,
+            terrain_json: Some(json!({ "enabled": true, "proposals": [] })),
+            ..Default::default()
+        };
+        handle_shape_region(
+            &sender,
+            &mut petal_map,
+            &mut SculptToolState::default(),
+            &mut EarthworkNodeMap::default(),
+            "p".into(),
+            vec![[0.0, 0.0], [3.0, 0.0], [3.0, 3.0]],
+            "raise".into(),
+            None,
+            Some(4.0),
+            "earth".into(),
+        );
+        let doc = match rx.try_recv().expect("terrain write") {
+            DbCommand::SetPetalTerrain {
+                terrain: Some(doc), ..
+            } => doc,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert_eq!(
+            doc["proposals"][0]["footprint"],
+            json!([[0.0, 0.0], [3.0, 0.0], [3.0, 3.0]])
+        );
+        assert_eq!(doc["proposals"][0]["delta"], json!(4.0));
     }
 }

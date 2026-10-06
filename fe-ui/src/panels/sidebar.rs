@@ -1,4 +1,13 @@
 //! Left sidebar: verse/fractal/petal/node hierarchy tree + space overview.
+//!
+//! hierarchy_visibility_groups_20260808 Phase 1 adds a right-aligned eye
+//! toggle to every tree row (verse/fractal/petal/node), reusing the gutter
+//! idiom the verse header already established (`Layout::right_to_left`). All
+//! visibility state lives in `crate::visibility::VisibilityState`; this file
+//! only renders it and writes user clicks back — the resolver
+//! (`crate::visibility::resolve`) owns the actual precedence logic. See
+//! `panels/AGENTS.md` §sidebar and `conductor/tracks/
+//! hierarchy_visibility_groups_20260808/spec.md` §4.
 
 use bevy_egui::egui;
 
@@ -9,6 +18,7 @@ use crate::navigation_manager::NavigationManager;
 use crate::plugin::{CameraFocusTarget, SidebarState};
 use crate::theme;
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
+use crate::visibility::{self, NodeAncestry, OverrideState, VisibilityState};
 use fe_runtime::messages::DbCommand;
 
 pub(crate) fn left_sidebar(
@@ -21,6 +31,7 @@ pub(crate) fn left_sidebar(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    vis_state: &mut VisibilityState,
 ) {
     egui::SidePanel::left("sidebar")
         .resizable(true)
@@ -39,7 +50,15 @@ pub(crate) fn left_sidebar(
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     ui.add_space(4.0);
-                    render_verse_tree(ui, hierarchy, nav, camera_focus, node_mgr, ui_mgr);
+                    render_verse_tree(
+                        ui,
+                        hierarchy,
+                        nav,
+                        camera_focus,
+                        node_mgr,
+                        ui_mgr,
+                        vis_state,
+                    );
                     ui.add_space(8.0);
                     sidebar_section_space_overview(ui, dashboard);
                     ui.add_space(4.0);
@@ -150,6 +169,22 @@ fn sidebar_verse_header(
     ui.add_space(6.0);
 }
 
+/// Right-aligned eye-toggle button (spec §4.1 gutter idiom). Returns `true`
+/// if clicked this frame. `enabled=false` disables it (RATIFICATION #4: the
+/// active petal's eye is disabled + tooltipped, never clickable).
+fn eye_button(ui: &mut egui::Ui, glyph: &str, enabled: bool, tooltip: &str) -> bool {
+    let btn = egui::Button::new(
+        egui::RichText::new(glyph)
+            .small()
+            .color(theme::TREE_NODE_ICON),
+    )
+    .frame(false)
+    .small();
+    ui.add_enabled(enabled, btn)
+        .on_hover_text(tooltip)
+        .clicked()
+}
+
 fn render_verse_tree(
     ui: &mut egui::Ui,
     hierarchy: &mut VerseManager,
@@ -157,6 +192,7 @@ fn render_verse_tree(
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    vis_state: &mut VisibilityState,
 ) {
     let verse_count = hierarchy.verses.len();
     for vi in 0..verse_count {
@@ -164,33 +200,73 @@ fn render_verse_tree(
         let verse_name = hierarchy.verses[vi].name.clone();
         let is_active_verse = nav.active_verse_id.as_deref() == Some(&verse_id);
 
+        let own_visible = visibility::verse_effective_visible(&verse_id, vis_state);
+        let rollup_state = visibility::rollup(
+            hierarchy.verses[vi]
+                .fractals
+                .iter()
+                .map(|f| visibility::fractal_effective_visible(&f.id, &verse_id, vis_state)),
+            own_visible,
+        );
+        let glyph = visibility::glyph_for_rollup(rollup_state);
+        let eye_tooltip = if own_visible {
+            "Hide verse"
+        } else {
+            "Show verse"
+        };
+
         let header_text = egui::RichText::new(&verse_name)
             .strong()
-            .color(if is_active_verse {
+            .color(if !own_visible {
+                theme::TEXT_MUTED
+            } else if is_active_verse {
                 theme::TEXT_BRIGHT
             } else {
                 theme::TEXT_SECTION
             });
 
-        let resp = egui::CollapsingHeader::new(header_text)
-            .id_salt(format!("verse_{}", verse_id))
-            .default_open(true)
-            .show(ui, |ui| {
-                render_fractals(
-                    ui,
-                    &mut hierarchy.verses[vi].fractals,
-                    nav,
-                    &verse_id,
-                    camera_focus,
-                    node_mgr,
-                    ui_mgr,
-                );
-                // [+] Add Fractal inside the verse collapse
-                add_button_inline(ui, "Add Fractal", CreateKind::Fractal, &verse_id, ui_mgr);
-            });
+        // egui::Id::new(...) wrapper matches the old `CollapsingHeader::id_salt`
+        // double-hash exactly, so previously-persisted open/closed state isn't
+        // reset by this refactor from `CollapsingHeader::show` to the lower-level
+        // `CollapsingState::show_header`/`.body()` (needed for the eye gutter).
+        let id = ui.make_persistent_id(egui::Id::new(format!("verse_{}", verse_id)));
+        let mut name_clicked = false;
+        let mut eye_clicked = false;
+        let mut header =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+                .show_header(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let label_resp =
+                            ui.add(egui::Label::new(header_text).sense(egui::Sense::click()));
+                        name_clicked = label_resp.clicked();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            eye_clicked = eye_button(ui, glyph, true, eye_tooltip);
+                        });
+                    });
+                });
+        if name_clicked {
+            header.toggle();
+        }
+        let _ = header.body(|ui| {
+            render_fractals(
+                ui,
+                &mut hierarchy.verses[vi].fractals,
+                nav,
+                &verse_id,
+                camera_focus,
+                node_mgr,
+                ui_mgr,
+                vis_state,
+            );
+            // [+] Add Fractal inside the verse collapse
+            add_button_inline(ui, "Add Fractal", CreateKind::Fractal, &verse_id, ui_mgr);
+        });
 
-        if resp.header_response.clicked() {
+        if name_clicked {
             nav.navigate_to_verse(verse_id.clone(), verse_name.clone());
+        }
+        if eye_clicked {
+            vis_state.toggle_verse_hidden(&verse_id);
         }
     }
 
@@ -213,6 +289,7 @@ fn render_fractals(
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    vis_state: &mut VisibilityState,
 ) {
     let fractal_count = fractals.len();
     for fi in 0..fractal_count {
@@ -220,31 +297,70 @@ fn render_fractals(
         let fractal_name = fractals[fi].name.clone();
         let is_active = nav.active_fractal_id.as_deref() == Some(&fractal_id);
 
-        let header_text = egui::RichText::new(&fractal_name).color(if is_active {
+        let own_visible = visibility::fractal_effective_visible(&fractal_id, verse_id, vis_state);
+        let rollup_state = visibility::rollup(
+            fractals[fi].petals.iter().map(|p| {
+                visibility::petal_effective_visible(&p.id, &fractal_id, verse_id, vis_state)
+            }),
+            own_visible,
+        );
+        let glyph = visibility::glyph_for_rollup(rollup_state);
+        let eye_tooltip = if own_visible {
+            "Hide fractal"
+        } else {
+            "Show fractal"
+        };
+
+        let header_text = egui::RichText::new(&fractal_name).color(if !own_visible {
+            theme::TEXT_MUTED
+        } else if is_active {
             theme::TEXT_BRIGHT
         } else {
             theme::TEXT_SECTION
         });
 
-        let resp = egui::CollapsingHeader::new(header_text)
-            .id_salt(format!("fractal_{}_{}", verse_id, fractal_id))
-            .default_open(true)
-            .show(ui, |ui| {
-                render_petals(
-                    ui,
-                    &mut fractals[fi].petals,
-                    nav,
-                    &fractal_id,
-                    camera_focus,
-                    node_mgr,
-                    ui_mgr,
-                );
-                // [+] Add Petal inside the fractal collapse
-                add_button_inline(ui, "Add Petal", CreateKind::Petal, &fractal_id, ui_mgr);
-            });
+        let id = ui.make_persistent_id(egui::Id::new(format!(
+            "fractal_{}_{}",
+            verse_id, fractal_id
+        )));
+        let mut name_clicked = false;
+        let mut eye_clicked = false;
+        let mut header =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+                .show_header(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let label_resp =
+                            ui.add(egui::Label::new(header_text).sense(egui::Sense::click()));
+                        name_clicked = label_resp.clicked();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            eye_clicked = eye_button(ui, glyph, true, eye_tooltip);
+                        });
+                    });
+                });
+        if name_clicked {
+            header.toggle();
+        }
+        let _ = header.body(|ui| {
+            render_petals(
+                ui,
+                &mut fractals[fi].petals,
+                nav,
+                &fractal_id,
+                verse_id,
+                camera_focus,
+                node_mgr,
+                ui_mgr,
+                vis_state,
+            );
+            // [+] Add Petal inside the fractal collapse
+            add_button_inline(ui, "Add Petal", CreateKind::Petal, &fractal_id, ui_mgr);
+        });
 
-        if resp.header_response.clicked() {
+        if name_clicked {
             nav.navigate_to_fractal(fractal_id.clone(), fractal_name.clone());
+        }
+        if eye_clicked {
+            vis_state.toggle_fractal_hidden(&fractal_id);
         }
     }
 }
@@ -255,9 +371,11 @@ fn render_petals(
     petals: &mut [PetalEntry],
     nav: &mut NavigationManager,
     fractal_id: &str,
+    verse_id: &str,
     camera_focus: &mut CameraFocusTarget,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    vis_state: &mut VisibilityState,
 ) {
     let petal_count = petals.len();
     for pi in 0..petal_count {
@@ -265,46 +383,87 @@ fn render_petals(
         let petal_name = petals[pi].name.clone();
         let is_active = nav.active_petal_id.as_deref() == Some(&petal_id);
 
-        let header_text = egui::RichText::new(&petal_name).color(if is_active {
+        let own_visible =
+            visibility::petal_effective_visible(&petal_id, fractal_id, verse_id, vis_state);
+        let glyph = visibility::glyph_for_bool(own_visible);
+        // RATIFICATION #4: the ACTIVE petal's eye is disabled — you can't hide
+        // the petal you're standing in.
+        let eye_enabled = !is_active;
+        let eye_tooltip = if is_active {
+            "Can't hide the petal you're in"
+        } else if own_visible {
+            "Hide petal"
+        } else {
+            "Show petal"
+        };
+
+        let header_text = egui::RichText::new(&petal_name).color(if !own_visible {
+            theme::TEXT_MUTED
+        } else if is_active {
             theme::TEXT_BRIGHT
         } else {
             theme::TEXT_SECTION
         });
 
-        let resp = egui::CollapsingHeader::new(header_text)
-            .id_salt(format!("petal_{}_{}", fractal_id, petal_id))
-            .default_open(true)
-            .show(ui, |ui| {
-                render_nodes(
-                    ui,
-                    &petals[pi].nodes,
-                    camera_focus,
-                    node_mgr,
-                    ui_mgr,
-                    is_active,
-                );
-                ui.horizontal(|ui| {
-                    // [+] Add Node inside the petal collapse
-                    add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, ui_mgr);
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("Manifest").small())
-                                .fill(theme::BG_BUTTON)
-                                .small(),
-                        )
-                        .on_hover_text("Edit petal hexon manifest")
-                        .clicked()
-                    {
-                        ui_mgr.push_action(UiAction::PetalManifestOpen {
-                            petal_id: petal_id.clone(),
-                            petal_name: petal_name.clone(),
+        let id = ui.make_persistent_id(egui::Id::new(format!("petal_{}_{}", fractal_id, petal_id)));
+        let mut name_clicked = false;
+        let mut eye_clicked = false;
+        let mut header =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+                .show_header(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let label_resp =
+                            ui.add(egui::Label::new(header_text).sense(egui::Sense::click()));
+                        name_clicked = label_resp.clicked();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            eye_clicked = eye_button(ui, glyph, eye_enabled, eye_tooltip);
                         });
-                    }
+                    });
                 });
+        if name_clicked {
+            header.toggle();
+        }
+        let ancestry = NodeAncestry {
+            verse_id,
+            fractal_id,
+            petal_id: &petal_id,
+        };
+        let _ = header.body(|ui| {
+            render_nodes(
+                ui,
+                &petals[pi].nodes,
+                camera_focus,
+                node_mgr,
+                ui_mgr,
+                is_active,
+                ancestry,
+                vis_state,
+            );
+            ui.horizontal(|ui| {
+                // [+] Add Node inside the petal collapse
+                add_button_inline(ui, "Add Node", CreateKind::Node, &petal_id, ui_mgr);
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("Manifest").small())
+                            .fill(theme::BG_BUTTON)
+                            .small(),
+                    )
+                    .on_hover_text("Edit petal hexon manifest")
+                    .clicked()
+                {
+                    ui_mgr.push_action(UiAction::PetalManifestOpen {
+                        petal_id: petal_id.clone(),
+                        petal_name: petal_name.clone(),
+                    });
+                }
             });
+        });
 
-        if resp.header_response.clicked() {
+        if name_clicked {
             nav.navigate_to_petal(petal_id.clone());
+        }
+        if eye_clicked {
+            vis_state.toggle_petal_hidden(&petal_id);
         }
     }
 }
@@ -316,9 +475,12 @@ fn render_nodes(
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     is_active_petal: bool,
+    ancestry: NodeAncestry<'_>,
+    vis_state: &mut VisibilityState,
 ) {
     let mut node_click: Option<(String, [f32; 3])> = None;
     let mut node_alt_click: Option<(String, String, String)> = None;
+    let mut override_write: Option<(String, OverrideState)> = None;
 
     for node in nodes.iter() {
         let node_id = node.id.clone();
@@ -329,12 +491,18 @@ fn render_nodes(
         let is_selected =
             node_mgr.selected.as_ref().map(|s| s.node_id.as_str()) == Some(node_id.as_str());
 
+        let reason = visibility::node_hidden_reason(&node_id, ancestry, vis_state);
+        let effectively_visible = reason == visibility::HiddenReason::NotHidden;
+        let glyph = visibility::glyph_for_bool(effectively_visible);
+        let eye_tooltip = visibility::node_eye_tooltip(&reason);
+
         let bg = if is_selected {
             theme::TREE_SELECTED_BG
         } else {
             egui::Color32::TRANSPARENT
         };
 
+        let mut eye_clicked = false;
         let row = egui::Frame::NONE
             .fill(bg)
             .inner_margin(egui::Margin::symmetric(4, 1))
@@ -346,22 +514,25 @@ fn render_nodes(
                             .small()
                             .color(theme::TREE_NODE_ICON),
                     );
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&node_name).small().color(
-                            if !is_active_petal {
-                                theme::TEXT_MUTED
-                            } else if is_selected {
-                                theme::TEXT_BRIGHT
+                    let text_color = if !is_active_petal || !effectively_visible {
+                        theme::TEXT_MUTED
+                    } else if is_selected {
+                        theme::TEXT_BRIGHT
+                    } else {
+                        theme::TEXT_SECTION
+                    };
+                    let label_resp = ui.add(
+                        egui::Label::new(egui::RichText::new(&node_name).small().color(text_color))
+                            .sense(if is_active_petal {
+                                egui::Sense::click()
                             } else {
-                                theme::TEXT_SECTION
-                            },
-                        ))
-                        .sense(if is_active_petal {
-                            egui::Sense::click()
-                        } else {
-                            egui::Sense::hover()
-                        }),
-                    )
+                                egui::Sense::hover()
+                            }),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        eye_clicked = eye_button(ui, glyph, true, &eye_tooltip);
+                    });
+                    label_resp
                 })
                 .inner
             });
@@ -376,6 +547,12 @@ fn render_nodes(
             } else {
                 node_click = Some((node_id.clone(), position));
             }
+        }
+
+        if eye_clicked {
+            let current = vis_state.node_override(&node_id);
+            let next = visibility::toggle_node_override(&reason, current);
+            override_write = Some((node_id.clone(), next));
         }
     }
 
@@ -396,6 +573,14 @@ fn render_nodes(
             pending_delete: false,
             descendant_count: None,
         });
+    }
+
+    // Apply the eye click's tri-state write (RATIFICATION #6 — Auto is
+    // represented by absence, keeping the map small; `set_node_override`
+    // handles that + bumps `VisibilityState::epoch` — see `visibility/mod.rs`
+    // module docs).
+    if let Some((nid, next)) = override_write {
+        vis_state.set_node_override(&nid, next);
     }
 }
 

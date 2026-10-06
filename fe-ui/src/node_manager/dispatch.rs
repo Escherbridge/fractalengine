@@ -40,7 +40,8 @@ pub enum HitTarget {
     Stamp(Entity),
     /// An existing proposed terrain-edit overlay.
     TerrainProposal { id: String },
-    /// A terrain cell under a terrain-edit brush (FR-5 seam — see AGENTS.md).
+    /// Bare terrain surface. Left-click treats it as empty ground; the
+    /// right-click menu offers the same verbs as `Empty` (`dialogs::context_menu`).
     TerrainCell,
     /// A gimbal axis handle (transform tools).
     GimbalAxis,
@@ -80,60 +81,6 @@ pub enum Operation {
     /// Drag anchor `idx`'s bezier handle (pen_curve_tool_20260722 FR-5).
     /// Position-free like `MoveVertex` — the consumer computes positions.
     MoveHandle { idx: usize, side: HandleSide },
-    /// Emit a proposed terrain-cell edit (FR-5 seam — see AGENTS.md §dispatch).
-    TerrainCellEdit,
-}
-
-/// Cities-Skylines-inspired terrain-edit brush an [`Operation::TerrainCellEdit`]
-/// carries downstream (FR-5). Every brush emits a PROPOSAL overlay, never a
-/// destructive terrain write (NFR-1). Reserved for the terrain-cell seam.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerrainBrush {
-    Raise,
-    Lower,
-    Flatten,
-    Ramp,
-    Slope,
-    Pad,
-    Cut,
-    Fill,
-}
-
-/// Payload for a proposed terrain-cell edit (FR-5). Mirrors the fields of the
-/// forthcoming `crate::actions::UiAction::TerrainProposalAdd { op, footprint,
-/// target_height, delta }` (owned by worker w4b). Kept as a local struct so this
-/// crate compiles before that variant lands; the emitting system maps it 1:1.
-///
-/// TODO(ultrapilot): once `UiAction::TerrainProposalAdd` exists, the terrain-cell
-/// consumer pushes it directly instead of returning this struct — see AGENTS.md
-/// §dispatch (terrain seam).
-#[derive(Debug, Clone, PartialEq)]
-pub struct TerrainProposalEdit {
-    /// Which brush produced this edit.
-    pub op: TerrainBrush,
-    /// World-space footprint polygon (ground XZ, Y carried) the edit covers.
-    pub footprint: Vec<[f32; 3]>,
-    /// Desired Bevy-Y height for level brushes (flatten / pad).
-    pub target_height: f32,
-    /// Raise / lower amount in world units for relative brushes.
-    pub delta: f32,
-}
-
-/// Build the FR-5 terrain-proposal payload for a resolved
-/// [`Operation::TerrainCellEdit`]. Pure so the object→payload mapping is
-/// testable before the `UiAction::TerrainProposalAdd` variant exists.
-pub fn terrain_cell_proposal(
-    op: TerrainBrush,
-    footprint: Vec<[f32; 3]>,
-    target_height: f32,
-    delta: f32,
-) -> TerrainProposalEdit {
-    TerrainProposalEdit {
-        op,
-        footprint,
-        target_height,
-        delta,
-    }
 }
 
 /// The FR-2 truth table: map `(tool, current selection, hit)` to the object-aware
@@ -144,7 +91,9 @@ pub fn terrain_cell_proposal(
 ///   stamp / whole-track via the entity gimbal, or a vertex/segment via FR-3).
 /// - A node/vertex/segment/stamp/proposal hit selects that object (the Pen tool
 ///   keeps placing points instead of selecting a node — placement dominates).
-/// - A terrain-cell hit proposes an edit (FR-5 seam).
+/// - Brush owns its own gesture upstream (it claims the frame in
+///   `brush_interaction`, ahead of every consumer of this table), so here it
+///   resolves to `None`: it must never select and never deselect.
 /// - An empty hit places a point in Pen, else clears the selection.
 pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Operation {
     match hit {
@@ -153,7 +102,7 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
             // Pen intent dominates: an empty-ground append still wins over
             // selecting the node the ray grazed (matches §pen-tool routing).
             Tool::Pen => Operation::PlacePathPoint,
-            Tool::Brush => Operation::TerrainCellEdit,
+            Tool::Brush => Operation::None,
             _ => Operation::SelectNode(entity),
         },
         // A concrete object hit selects that object regardless of tool; WHEN such
@@ -165,10 +114,11 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
         HitTarget::PathSegment { idx } => Operation::SelectSegment { idx },
         HitTarget::Stamp(entity) => Operation::SelectStamp(entity),
         HitTarget::TerrainProposal { id } => Operation::SelectProposal { id },
-        HitTarget::TerrainCell => Operation::TerrainCellEdit,
-        HitTarget::Empty => match tool {
+        // Bare terrain reads as empty ground for left-click (its right-click
+        // verb set matches `Empty` too — `dialogs::context_menu`).
+        HitTarget::TerrainCell | HitTarget::Empty => match tool {
             Tool::Pen => Operation::PlacePathPoint,
-            Tool::Brush => Operation::TerrainCellEdit,
+            Tool::Brush => Operation::None,
             _ => Operation::Deselect,
         },
     }
@@ -448,10 +398,20 @@ mod tests {
     }
 
     #[test]
-    fn terrain_cell_hit_proposes_an_edit() {
+    fn terrain_cell_hit_reads_as_empty_ground() {
+        // The superseded `TerrainCellEdit` verb is gone (D15): bare terrain is
+        // just ground. Brush never reaches this table (it claims upstream).
         assert_eq!(
-            resolve_operation(Tool::Select, &SelectionKind::Empty, HitTarget::TerrainCell),
-            Operation::TerrainCellEdit
+            resolve_operation(
+                Tool::Select,
+                &SelectionKind::Node(entity(1)),
+                HitTarget::TerrainCell
+            ),
+            Operation::Deselect
+        );
+        assert_eq!(
+            resolve_operation(Tool::Pen, &SelectionKind::Empty, HitTarget::TerrainCell),
+            Operation::PlacePathPoint
         );
     }
 
@@ -473,49 +433,20 @@ mod tests {
     }
 
     #[test]
-    fn brush_node_or_empty_hit_edits_terrain_instead_of_selecting() {
-        assert_eq!(
-            resolve_operation(Tool::Brush, &SelectionKind::Empty, HitTarget::Empty),
-            Operation::TerrainCellEdit
-        );
-        assert_eq!(
-            resolve_operation(
-                Tool::Brush,
-                &SelectionKind::Empty,
-                HitTarget::Node(entity(9))
-            ),
-            Operation::TerrainCellEdit
-        );
-    }
-
-    // --- terrain proposal payload seam (FR-5) ---
-
-    #[test]
-    fn terrain_cell_proposal_carries_all_fields() {
-        let footprint = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0]];
-        let edit = terrain_cell_proposal(TerrainBrush::Flatten, footprint.clone(), 12.5, -3.0);
-        assert_eq!(edit.op, TerrainBrush::Flatten);
-        assert_eq!(edit.footprint, footprint);
-        assert_eq!(edit.target_height, 12.5);
-        assert_eq!(edit.delta, -3.0);
-    }
-
-    #[test]
-    fn every_brush_is_distinct() {
-        let all = [
-            TerrainBrush::Raise,
-            TerrainBrush::Lower,
-            TerrainBrush::Flatten,
-            TerrainBrush::Ramp,
-            TerrainBrush::Slope,
-            TerrainBrush::Pad,
-            TerrainBrush::Cut,
-            TerrainBrush::Fill,
-        ];
-        for (i, a) in all.iter().enumerate() {
-            for (j, b) in all.iter().enumerate() {
-                assert_eq!(i == j, a == b);
-            }
+    fn brush_never_selects_and_never_deselects() {
+        // Brush owns its gesture upstream; if a frame ever reaches this table
+        // with Brush active, the answer must be "do nothing" — NOT the empty
+        // click's `Deselect`, which would silently drop the user's selection.
+        for hit in [
+            HitTarget::Empty,
+            HitTarget::TerrainCell,
+            HitTarget::Node(entity(9)),
+        ] {
+            assert_eq!(
+                resolve_operation(Tool::Brush, &SelectionKind::Node(entity(1)), hit.clone()),
+                Operation::None,
+                "{hit:?}"
+            );
         }
     }
 
@@ -540,7 +471,6 @@ mod tests {
                 idx: 0,
                 side: HandleSide::In,
             },
-            Operation::TerrainCellEdit,
         ];
     }
 }

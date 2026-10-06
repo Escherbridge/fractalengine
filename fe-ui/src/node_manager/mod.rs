@@ -55,11 +55,9 @@ pub use path_segment_interaction::TrackPickShape;
 pub(crate) use selection::{project_selection, SelectionKind, SelectionState};
 
 /// FR-2 object-aware left-click dispatch model, re-exported for the FR-3 path
-/// gimbal drag and future terrain/road-builder consumers of the shared table.
-pub use dispatch::{
-    resolve_operation, terrain_cell_proposal, HandleSide, HitTarget, Operation, TerrainBrush,
-    TerrainProposalEdit,
-};
+/// gimbal drag, the right-click menu (`dialogs::context_menu`), and future
+/// terrain/road-builder consumers of the shared table.
+pub use dispatch::{resolve_operation, HandleSide, HitTarget, Operation};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,6 +72,18 @@ pub struct NodeManager {
     pub pending_sidebar_select: Option<String>,
     /// Which axis the cursor is hovering over (for highlight feedback).
     pub hovered_axis: Option<GimbalAxis>,
+    /// Per-frame mirror of `GestureParams::any_active`, written first in the
+    /// chain by `shortcuts::handle_tool_shortcuts`. It is how the egui side
+    /// (topbar `InputContext` stash → viewport right-click rule) learns a
+    /// gesture is live without reaching the module-private gesture resources.
+    ///
+    /// STALENESS (finding F16): the mirror is computed BEFORE any gesture system
+    /// runs, so it lags in BOTH directions — stale-FALSE on the frame a gesture
+    /// STARTS (the unsafe one: that frame's right-click still opens the object
+    /// menu), stale-TRUE on the frame it RELEASES (one harmless extra frame of
+    /// suppression). Only a rung-0 cancel is exact. See AGENTS.md
+    /// §staged-escape.
+    pub gesture_active: bool,
 }
 
 /// A currently selected node and its optional in-progress drag session.
@@ -97,6 +107,96 @@ pub struct AxisDrag {
     pub start_pos: Vec3,
     pub start_rot: Quat,
     pub start_scale: Vec3,
+}
+
+/// Pre-drag `Transform` snapshot captured at gimbal press — the entity gimbal
+/// applies its drag LIVE, so a rung-0 Escape must put these three fields back
+/// or the viewport keeps a transform the DB never heard about.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DragRestore {
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
+}
+
+impl DragRestore {
+    /// Write the snapshot back over a live `Transform`.
+    pub fn apply(self, transform: &mut Transform) {
+        transform.translation = self.translation;
+        transform.rotation = self.rotation;
+        transform.scale = self.scale;
+    }
+}
+
+/// How many independent in-flight gestures [`GestureParams`] aggregates.
+const GESTURE_COUNT: usize = 6;
+
+/// Pure aggregate for [`GestureParams::any_active`] — "a gesture is live" is
+/// one OR over [`GESTURE_COUNT`] independent sources, unit-testable without a
+/// Bevy `App` so a newly-added gesture that forgets the bundle trips a test
+/// rather than shipping (finding F5: the entity `AxisDrag` was the sixth).
+fn any_gesture_active(flags: [bool; GESTURE_COUNT]) -> bool {
+    flags.iter().any(|live| *live)
+}
+
+/// Aggregate over the six in-flight viewport gestures — one place to ask "is a
+/// gesture live?" and to drop them all. Rung 0 of the staged-Escape ladder and
+/// the gesture half of the one-right-click rule read this; it is the reason no
+/// tool needs its own private Escape handler. Every downstream Release handler
+/// `take()`s its own state, so an externally-cleared resource is a silent no-op
+/// (never a replay). See `node_manager/AGENTS.md` §staged-escape.
+/// Module-private on purpose: the field types are `node_manager`-internal, and
+/// the egui side reads the aggregated bit off [`NodeManager::gesture_active`]
+/// instead (mirrored each frame by `handle_tool_shortcuts`).
+///
+/// The bundle owns `NodeManager` rather than sitting alongside it: the sixth
+/// gesture (the entity gimbal's [`AxisDrag`]) lives INSIDE the selection, and
+/// two `ResMut<NodeManager>` in one system is a Bevy param-aliasing panic — so
+/// `handle_tool_shortcuts` reaches the manager through this bundle.
+#[derive(bevy::ecs::system::SystemParam)]
+struct GestureParams<'w, 's> {
+    brush: ResMut<'w, brush_interaction::BrushGesture>,
+    path_point: ResMut<'w, path_point_interaction::PathPointDrag>,
+    pen_handle: ResMut<'w, path_point_interaction::PenHandleDrag>,
+    path_handle: ResMut<'w, path_handle_interaction::PathHandleDrag>,
+    path_gimbal: ResMut<'w, path_gimbal_drag::PathGimbalDrag>,
+    /// Also the shortcuts system's handle on selection state (see type docs).
+    node_mgr: ResMut<'w, NodeManager>,
+    /// Restores the pre-drag `Transform` when a rung-0 cancel drops an
+    /// entity gimbal drag.
+    transforms: Query<'w, 's, &'static mut Transform>,
+}
+
+impl GestureParams<'_, '_> {
+    /// `true` while ANY viewport gesture is mid-flight.
+    fn any_active(&self) -> bool {
+        any_gesture_active([
+            self.brush.is_active(),
+            self.path_point.active.is_some(),
+            self.pen_handle.active.is_some(),
+            self.path_handle.active.is_some(),
+            self.path_gimbal.active.is_some(),
+            // The entity gimbal's Move/Rotate/Scale `AxisDrag` (finding F5).
+            self.node_mgr.is_dragging(),
+        ])
+    }
+
+    /// Drop every in-flight gesture WITHOUT committing it. The entity gimbal
+    /// drag additionally REVERTS its live-applied `Transform` to the press-time
+    /// snapshot — the other five never write world state before their Release,
+    /// so dropping the resource is their whole cancel.
+    fn cancel_all(&mut self) {
+        self.brush.cancel();
+        self.path_point.active = None;
+        self.pen_handle.active = None;
+        self.path_handle.active = None;
+        self.path_gimbal.active = None;
+        if let Some((entity, restore)) = self.node_mgr.cancel_axis_drag() {
+            if let Ok(mut transform) = self.transforms.get_mut(entity) {
+                restore.apply(&mut transform);
+            }
+        }
+    }
 }
 
 impl NodeManager {
@@ -131,6 +231,27 @@ impl NodeManager {
     pub fn deselect(&mut self) {
         self.selected = None;
     }
+
+    /// Drop an in-flight entity gimbal drag WITHOUT committing it, yielding the
+    /// dragged entity and the pre-drag [`DragRestore`] snapshot the caller must
+    /// write back (this type owns no `Transform` access). `None` when no drag
+    /// was live. `drag_committed` stays `false`, so `broadcast_transform` never
+    /// sees a canceled drag and the selection itself survives — cancel undoes
+    /// the transform, it does not deselect. Rung 0 of the staged-Escape ladder
+    /// (finding F5).
+    pub fn cancel_axis_drag(&mut self) -> Option<(Entity, DragRestore)> {
+        let selection = self.selected.as_mut()?;
+        let drag = selection.drag.take()?;
+        selection.drag_committed = false;
+        Some((
+            selection.entity,
+            DragRestore {
+                translation: drag.start_pos,
+                rotation: drag.start_rot,
+                scale: drag.start_scale,
+            },
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,9 +275,13 @@ impl Plugin for NodeManagerPlugin {
         app.add_systems(
             Update,
             (
+                // MUST stay first: it owns the staged-Escape ladder, so a rung-0
+                // gesture cancel lands before any gesture system runs this frame.
                 shortcuts::handle_tool_shortcuts,
                 sidebar_sync::sync_sidebar_to_manager,
                 router::resolve_pointer_frame, // arbitrate left-click ownership for this frame (first)
+                // This registration order is NORMATIVE for `ClickPriority` (D14-A):
+                // Brush claims 2nd, ahead of every other consumer, while active.
                 brush_interaction::handle_brush_interaction, // Brush owns viewport gestures while active
                 gimbal_interaction::update_hovered_axis,     // hover detection (before interaction)
                 path_handle_interaction::sync_path_handle_markers, // keep handle markers current before their pick
@@ -271,6 +396,19 @@ mod tests {
     }
 
     #[test]
+    fn gesture_active_defaults_false_and_survives_selection_changes() {
+        // It is a per-frame mirror owned by `handle_tool_shortcuts`, NOT part
+        // of the selection state machine — select/deselect must not touch it.
+        let mut mgr = NodeManager::default();
+        assert!(!mgr.gesture_active);
+        mgr.gesture_active = true;
+        mgr.select(entity(1), "node-1");
+        assert!(mgr.gesture_active);
+        mgr.deselect();
+        assert!(mgr.gesture_active);
+    }
+
+    #[test]
     fn is_dragging_returns_false_when_no_drag() {
         let mut mgr = NodeManager::default();
         assert!(!mgr.is_dragging());
@@ -282,16 +420,110 @@ mod tests {
     fn is_dragging_returns_true_when_drag_active() {
         let mut mgr = NodeManager::default();
         mgr.select(entity(1), "node-1");
+        begin_axis_drag(&mut mgr);
+        assert!(mgr.is_dragging());
+    }
+
+    // --- F5: the entity gimbal drag is the SIXTH in-flight gesture ---
+
+    /// Start an entity gimbal drag whose press-time snapshot is a recognizable
+    /// non-identity transform, so a restore is distinguishable from a no-op.
+    fn begin_axis_drag(mgr: &mut NodeManager) {
         if let Some(ref mut sel) = mgr.selected {
             sel.drag = Some(AxisDrag {
                 axis: crate::gimbal::GimbalAxis::X,
                 start_cursor: Vec2::ZERO,
                 axis_screen_dir: Vec2::X,
-                start_pos: Vec3::ZERO,
-                start_rot: Quat::IDENTITY,
-                start_scale: Vec3::ONE,
+                start_pos: Vec3::new(1.0, 2.0, 3.0),
+                start_rot: Quat::from_rotation_y(0.5),
+                start_scale: Vec3::new(2.0, 2.0, 2.0),
             });
         }
-        assert!(mgr.is_dragging());
+    }
+
+    #[test]
+    fn any_gesture_active_is_armed_by_each_of_the_six_sources() {
+        // The aggregate is one OR over six independent gestures — a bundle
+        // that forgets one (F5's entity AxisDrag) fails this arity check.
+        assert!(!any_gesture_active([false; GESTURE_COUNT]));
+        for i in 0..GESTURE_COUNT {
+            let mut flags = [false; GESTURE_COUNT];
+            flags[i] = true;
+            assert!(any_gesture_active(flags), "source {i} arms the aggregate");
+        }
+        assert!(any_gesture_active([true; GESTURE_COUNT]));
+    }
+
+    #[test]
+    fn axis_drag_counts_as_a_live_gesture_for_the_aggregate() {
+        // `any_active` feeds `is_dragging()` in as its sixth flag, so an
+        // entity transform drag pins Escape at rung 0 and suppresses the
+        // right-click object menu like every other gesture.
+        let mut mgr = NodeManager::default();
+        assert!(!any_gesture_active([
+            false,
+            false,
+            false,
+            false,
+            false,
+            mgr.is_dragging()
+        ]));
+        mgr.select(entity(1), "node-1");
+        begin_axis_drag(&mut mgr);
+        assert!(any_gesture_active([
+            false,
+            false,
+            false,
+            false,
+            false,
+            mgr.is_dragging()
+        ]));
+    }
+
+    #[test]
+    fn cancel_axis_drag_returns_the_pre_drag_snapshot_and_keeps_the_selection() {
+        let mut mgr = NodeManager::default();
+        mgr.select(entity(1), "node-1");
+        begin_axis_drag(&mut mgr);
+        let (dragged, restore) = mgr.cancel_axis_drag().expect("a drag was live");
+        assert_eq!(dragged, entity(1));
+        assert_eq!(restore.translation, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(restore.rotation, Quat::from_rotation_y(0.5));
+        assert_eq!(restore.scale, Vec3::splat(2.0));
+        assert!(!mgr.is_dragging(), "the drag is dropped");
+        // Cancel undoes the transform, it does not deselect.
+        assert!(mgr.is_selected(), "the selection survives");
+        assert!(
+            !mgr.selected.as_ref().map(|s| s.drag_committed).unwrap(),
+            "a canceled drag must never look committed to broadcast_transform"
+        );
+    }
+
+    #[test]
+    fn cancel_axis_drag_is_a_no_op_without_a_live_drag() {
+        let mut mgr = NodeManager::default();
+        assert!(mgr.cancel_axis_drag().is_none(), "nothing selected");
+        mgr.select(entity(1), "node-1");
+        assert!(
+            mgr.cancel_axis_drag().is_none(),
+            "selected but not dragging"
+        );
+        assert!(mgr.is_selected());
+    }
+
+    #[test]
+    fn drag_restore_writes_all_three_transform_fields_back() {
+        let mut transform = Transform::from_xyz(9.0, 9.0, 9.0)
+            .with_rotation(Quat::from_rotation_z(1.0))
+            .with_scale(Vec3::splat(7.0));
+        DragRestore {
+            translation: Vec3::new(1.0, 2.0, 3.0),
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }
+        .apply(&mut transform);
+        assert_eq!(transform.translation, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(transform.rotation, Quat::IDENTITY);
+        assert_eq!(transform.scale, Vec3::ONE);
     }
 }

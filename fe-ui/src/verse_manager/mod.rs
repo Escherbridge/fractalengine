@@ -26,7 +26,8 @@ use bevy::prelude::*;
 use crate::plugin::UiSet;
 
 pub use path_asset_materialize::{
-    PathAssetApplied, PathAssetCache, StampRenderIndex, StampTrackRenderData,
+    invalidate_path_stamp_projection, PathAssetApplied, PathAssetCache, StampRenderIndex,
+    StampTrackRenderData,
 };
 // T4 right-click classification: the stamp marker-id format + the per-instance
 // marker component, consumed by `node_manager::context_pick`.

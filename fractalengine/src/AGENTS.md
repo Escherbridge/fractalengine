@@ -63,6 +63,11 @@ the correct name to `every` is the actual durability fix.
 
 ## §assets
 
+Blob-store initialization is a required startup dependency. Failure is reported
+as a fatal startup error with exit code 1 rather than panicking through the
+global panic hook; filesystem creation errors whose requested directory already
+exists are normalized inside `fe_sync::FsBlobStore`.
+
 Two asset paths converge here:
 
 1. **API asset endpoints.** `fe_api::ApiConfig.blob_store` receives a clone of
