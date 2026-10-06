@@ -54,8 +54,15 @@ is not.
 
 ## What this must not be used for
 
-The authors built this work on the conditions below and do not consent to its
-use outside them.
+> وَتَعَاوَنُوا عَلَى الْبِرِّ وَالتَّقْوَىٰ وَلَا تَعَاوَنُوا عَلَى الْإِثْمِ وَالْعُدْوَانِ
+>
+> Cooperate with one another in righteousness and piety, and do not cooperate
+> in sin and transgression.
+>
+> — Qur'an 5:2 (Al-Ma'idah)
+
+That is the rule this work was built under. The conditions below are how it
+applies here; the authors do not consent to its use outside them.
 
 1. **No afterlife simulation.** This software may not be used to simulate,
    reconstruct, continue, or claim to preserve a person who has died; to stand
