@@ -16,6 +16,9 @@ FractalEngine's data layer replicates peer-to-peer.
 
 **Single binary. Local-first. Your data stays in your database.**
 
+> **Why this exists:** [PURPOSE.md](PURPOSE.md) — what FractalEngine is for,
+> what it is and is not, and what it must never be used for.
+
 ---
 
 ## Status: alpha
@@ -263,6 +266,7 @@ persists are rolled back via `transform_rollback`.
 
 | Document | Description |
 |---|---|
+| [PURPOSE.md](PURPOSE.md) | Why this exists, what it is for, and what it must never be used for |
 | [BUILDING.md](BUILDING.md) | Per-platform build instructions and known issues |
 | [docs/guide.md](docs/guide.md) | Comprehensive developer guide |
 | [docs/editor-guide.md](docs/editor-guide.md) | Editor usage guide (Pen tool, paths, curves) |
@@ -279,6 +283,10 @@ persists are rolled back via `transform_rollback`.
 ## License
 
 Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)).
+
+The license governs your legal rights. [PURPOSE.md](PURPOSE.md) states the
+intent and the conditions under which this work is offered; contributions,
+registry listings, and official support are held to it.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
