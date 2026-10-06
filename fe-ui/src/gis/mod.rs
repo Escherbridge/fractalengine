@@ -266,6 +266,8 @@ pub struct PathEditorState {
     /// Stored as raw fields (not `fe_terrain::TrackStyle`) since fe-ui must not
     /// depend on fe-terrain. Default reproduces the historic cyan look.
     pub edited_track_style: TrackStyleFields,
+    /// Viewport point snapping settings in real meters.
+    pub snap: PathSnapSettings,
     /// The edited track's `path_asset` stamp descriptor, seeded from its loaded
     /// `path_asset` node prop when a track is selected (see
     /// `verse_manager::db_results`) and refreshed after a `PathAssetApply`
@@ -296,6 +298,23 @@ pub struct PathEditorState {
     pub selected_segment_length_m: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathSnapSettings {
+    pub enabled: bool,
+    pub grid_step_m: f32,
+    pub anchor_radius_m: f32,
+}
+
+impl Default for PathSnapSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            grid_step_m: 1.0,
+            anchor_radius_m: 1.0,
+        }
+    }
+}
+
 /// track_styling_20260713: the Paths-tab style-control state — a fe-ui-local
 /// mirror of `fe_terrain::iot::TrackStyle` (fe-ui must not depend on
 /// fe-terrain). `color` is sRGB `0.0..=1.0` RGBA. Default = the historic cyan
@@ -305,6 +324,8 @@ pub struct TrackStyleFields {
     pub color: [f32; 4],
     pub width: f32,
     pub visible: bool,
+    pub closed: bool,
+    pub fill_color: [f32; 4],
 }
 
 impl Default for TrackStyleFields {
@@ -315,6 +336,8 @@ impl Default for TrackStyleFields {
             color: [0.0, 0.8, 1.0, 1.0],
             width: 0.1,
             visible: true,
+            closed: false,
+            fill_color: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -334,11 +357,21 @@ impl TrackStyleFields {
         }
         if let Some(width) = props.get("gis.track.width").and_then(|v| v.as_f64()) {
             if width.is_finite() && width > 0.0 {
-                s.width = width as f32;
+                s.width = width.clamp(0.1, 20.0) as f32;
             }
         }
         if let Some(visible) = props.get("gis.track.visible").and_then(|v| v.as_bool()) {
             s.visible = visible;
+        }
+        if let Some(closed) = props.get("gis.track.closed").and_then(|v| v.as_bool()) {
+            s.closed = closed;
+        }
+        if let Some(fill_color) = props
+            .get("gis.track.fill.color")
+            .and_then(|v| v.as_str())
+            .and_then(parse_hex_color)
+        {
+            s.fill_color = fill_color;
         }
         s
     }
@@ -390,6 +423,10 @@ impl PathEditorState {
         self.clear_path_selection();
     }
 
+    /// Ends the edit session. Authority-B ONLY by design: the matching
+    /// `NodeManager.selected` clear is bridge arm 4 in
+    /// `node_manager::pointer::drop_selection_of_closed_track`, which fires the
+    /// same frame — never reach across from here.
     pub(crate) fn stop_editing(&mut self) {
         self.editing_track_id = None;
         self.points.clear();
@@ -605,6 +642,8 @@ mod tests {
         assert_eq!(s.color, [0.0, 0.8, 1.0, 1.0]);
         assert_eq!(s.width, 0.1);
         assert!(s.visible);
+        assert!(!s.closed);
+        assert_eq!(s.fill_color, [0.0; 4]);
     }
 
     #[test]
@@ -612,12 +651,24 @@ mod tests {
         let props = serde_json::json!({
             "gis.track.color": "#ff0000",
             "gis.track.width": 6.0,
+            "gis.track.closed": true,
+            "gis.track.fill.color": "#33669980",
             // visible absent → default true
         });
         let s = TrackStyleFields::from_properties(&props);
         assert_eq!(s.color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(s.width, 6.0);
         assert!(s.visible);
+        assert!(s.closed);
+        assert_eq!(
+            s.fill_color,
+            [
+                0x33 as f32 / 255.0,
+                0x66 as f32 / 255.0,
+                0x99 as f32 / 255.0,
+                0x80 as f32 / 255.0,
+            ]
+        );
     }
 
     #[test]
@@ -631,6 +682,19 @@ mod tests {
         assert_eq!(s.color, TrackStyleFields::default().color);
         assert_eq!(s.width, TrackStyleFields::default().width);
         assert!(!s.visible);
+    }
+
+    #[test]
+    fn track_style_fields_caps_f64_width_before_f32_conversion() {
+        let s = TrackStyleFields::from_properties(&serde_json::json!({
+            "gis.track.width": 1.0e100
+        }));
+        assert_eq!(s.width, 20.0);
+        assert!(s.width.is_finite());
+        let tiny = TrackStyleFields::from_properties(&serde_json::json!({
+            "gis.track.width": 1.0e-100
+        }));
+        assert_eq!(tiny.width, 0.1);
     }
 
     #[test]
@@ -654,6 +718,8 @@ mod tests {
             color: [1.0, 0.0, 0.0, 1.0],
             width: 9.0,
             visible: false,
+            closed: true,
+            fill_color: [1.0, 1.0, 1.0, 0.5],
         };
         s.start_editing("track-1".to_string());
         assert_eq!(s.edited_track_style, TrackStyleFields::default());

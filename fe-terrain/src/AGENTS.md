@@ -128,7 +128,8 @@ runs first so the frame's assignment is visible to everything downstream.
   a matching `LayerType::GpxTrack` (by `node_id`).
 
 **§track-styling (track_styling_20260713).** Per-track color / thickness /
-visibility. `TrackStyle { color:[f32;4], width, visible }` (plain struct, no
+visibility plus optional zones. `TrackStyle { color, width, visible, closed,
+fill_color }` (plain struct, no
 Bevy dep — `iot/animation.rs`) + `TrackStyleMap` resource (render-only, keyed
 by track node id) live next to `TrackRouteMap`; `parse_track_color_hex` /
 `track_color_to_hex` handle the `#rrggbbaa` persistence format (invalid → the
@@ -149,7 +150,16 @@ values are historic, the geometry/material are new. The map is populated by the
 fractalengine gpx bridge (`advance_path_materialization`) from `gis.track.*`
 node props; live restyle is a despawn+respawn of the `GpxTrackLine` (same
 `force_line_redraw` discipline point-edits use — see
-`fractalengine/src/AGENTS.md`).
+`fractalengine/src/AGENTS.md`). Closed tracks add a closing border segment and
+earcut-triangulate their alpha fill into the same mesh entity; invalid polygons
+keep the border and omit only the fill. Zone input is finite-filtered,
+consecutive-deduplicated, and whole-ring sampled at 2,048 shared border/fill
+points before simplicity validation and earcut; it is never prefix-truncated.
+`prepare_track_zone` is the shared render/pick geometry authority. Defaults
+(`closed=false`, transparent fill) preserve legacy open tracks.
+Small and narrow rings below the cap remain untouched. The quadratic simplicity
+check runs only on the final bounded polygon, whose fill must retain three
+unique points and meaningful area relative to the original ring.
 - `sync_layer_visibility` ran every frame; now gated on
   `layer_stack.is_changed()`, and opacity < 1.0 also sets
   `AlphaMode::Blend` (alpha alone doesn't blend on `StandardMaterial`).
@@ -487,7 +497,8 @@ fe-ui sculpt UI (`panels/terrain_tools_panel.rs::render_brush_controls`)
 configures meter-valued region params. The viewport snapshots them into
 petal-local world units and queues one batched stroke action on release.
 `process_ui_actions` dispatches `UiAction::SculptBrushStroke` to one terrain
-document write and one endpoint-node creation per dab (see
+document write and one endpoint-node creation for the stroke's single
+swept-corridor polygon (see
 `fe-ui/src/actions/AGENTS.md` §sculpt).
 
 ### Earthwork bake (T3 integration, terrain_plugin.rs)

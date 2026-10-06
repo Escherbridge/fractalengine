@@ -33,7 +33,10 @@ pub(super) fn update_hovered_axis(
 ) {
     manager.hovered_axis = None;
 
-    if tool.active_tool == Tool::Select {
+    // Same guard set as drag-start (`handle_gimbal_interaction`) and the draw
+    // (`gimbal.rs`): tools with no live entity gimbal must not pay for a
+    // per-frame raycast, and must not highlight an axis they cannot grab.
+    if matches!(tool.active_tool, Tool::Select | Tool::Pen | Tool::Brush) {
         return;
     }
     let Some(ref sel) = manager.selected else {

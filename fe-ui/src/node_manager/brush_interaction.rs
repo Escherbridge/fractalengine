@@ -1,4 +1,5 @@
-//! First-class viewport brush gesture; see `AGENTS.md` §brush-tool.
+//! First-class viewport brush gesture. Escape is handled centrally by the
+//! staged ladder in `shortcuts.rs`, not here; see `AGENTS.md` §brush-tool.
 
 use bevy::prelude::*;
 
@@ -64,6 +65,18 @@ pub(super) struct BrushGesture {
     active: Option<ActiveStroke>,
 }
 
+impl BrushGesture {
+    /// `true` while a stroke is being sampled. Read by `GestureParams`.
+    pub(super) fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+
+    /// Drop the in-flight stroke without emitting its dabs (staged-Escape rung 0).
+    pub(super) fn cancel(&mut self) {
+        self.active = None;
+    }
+}
+
 fn ground_hit(ray: Ray3d) -> Option<[f32; 2]> {
     let direction = *ray.direction;
     if direction.y.abs() <= f32::EPSILON {
@@ -113,9 +126,12 @@ fn stroke_action(stroke: ActiveStroke) -> Option<UiAction> {
     })
 }
 
+fn petal_map_is_loading(petal_map: &PetalMapState, petal_id: &str) -> bool {
+    petal_map.petal_id.as_deref() != Some(petal_id) || !petal_map.loaded
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_brush_interaction(
-    keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     tool: Res<ToolState>,
     nav: Res<NavigationManager>,
@@ -126,11 +142,13 @@ pub(super) fn handle_brush_interaction(
     mut ui_mgr: ResMut<UiManager>,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
+    // Escape is NO LONGER read here: it is the central staged ladder's rung 0
+    // (`shortcuts::handle_tool_shortcuts`, which runs first in the chain and
+    // clears this resource through `GestureParams`). What stays is the
+    // gesture-shaped cancel set: right-click (D5's cancel half), a tool change
+    // away from Brush, and the petal-change guard below.
     let brush_active = tool.active_tool == Tool::Brush;
-    let cancel = keyboard.just_pressed(KeyCode::Escape)
-        || mouse.just_pressed(MouseButton::Right)
-        || !brush_active;
-    if cancel {
+    if mouse.just_pressed(MouseButton::Right) || !brush_active {
         gesture.active = None;
         return;
     }
@@ -164,6 +182,14 @@ pub(super) fn handle_brush_interaction(
                 );
                 return;
             };
+            if petal_map_is_loading(&petal_map, petal_id) {
+                bevy::log::warn!("Brush ignored: active petal map is still loading");
+                ui_mgr.show_toast(
+                    "The petal map is still loading; try Brush again in a moment",
+                    time.elapsed_secs_f64(),
+                );
+                return;
+            }
             if !petal_map_enabled(&petal_map, petal_id) {
                 bevy::log::warn!("Brush ignored — active petal has no enabled map");
                 ui_mgr.show_toast(
@@ -283,16 +309,54 @@ mod tests {
         assert!((raise.delta.unwrap() - 0.003).abs() < 1e-7);
     }
 
-    #[test]
-    fn canceled_gesture_drops_samples_without_actions() {
-        let mut gesture = BrushGesture {
+    fn live_gesture() -> BrushGesture {
+        BrushGesture {
             active: Some(ActiveStroke {
                 petal_id: "p".to_string(),
                 samples: vec![[1.0, 1.0]],
                 settings: snapshot("raise"),
             }),
-        };
-        gesture.active = None;
+        }
+    }
+
+    #[test]
+    fn canceled_gesture_drops_samples_without_actions() {
+        // `cancel` never routes through `stroke_action`, so the sampled dabs
+        // are dropped rather than committed.
+        let mut gesture = live_gesture();
+        gesture.cancel();
         assert!(gesture.active.is_none());
+    }
+
+    #[test]
+    fn is_active_tracks_the_stroke_for_the_gesture_aggregate() {
+        // The bit `GestureParams::any_active` (staged-Escape rung 0 + the one
+        // right-click rule) reads.
+        let mut gesture = live_gesture();
+        assert!(gesture.is_active());
+        gesture.cancel();
+        assert!(!gesture.is_active());
+        assert!(!BrushGesture::default().is_active());
+    }
+
+    #[test]
+    fn cancel_is_idempotent() {
+        let mut gesture = BrushGesture::default();
+        gesture.cancel();
+        gesture.cancel();
+        assert!(!gesture.is_active());
+    }
+
+    #[test]
+    fn map_loading_check_is_scoped_to_active_petal() {
+        let mut map = PetalMapState {
+            petal_id: Some("p".into()),
+            loaded: false,
+            ..Default::default()
+        };
+        assert!(petal_map_is_loading(&map, "p"));
+        map.loaded = true;
+        assert!(!petal_map_is_loading(&map, "p"));
+        assert!(petal_map_is_loading(&map, "other"));
     }
 }

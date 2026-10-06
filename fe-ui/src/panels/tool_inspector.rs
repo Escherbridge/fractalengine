@@ -3,25 +3,32 @@
 //! unit-tested helpers. The left `SidePanel` this module used to render is
 //! GONE (RATIFIED Q-1) — its content now lives in two places: the topbar
 //! mode-button tooltips (`toolbar::tool_tooltip_text`, built from
-//! `panel_descriptor` here) and the right-sidebar Tool section
-//! (`ui_shell::right_sidebar::render_tool_section`, built from
-//! `selection_summary`/`gimbal_affordance_label`/`anchor_readout` here). This
-//! module is helper-only now — no egui paint. See
-//! `fe-ui/src/panels/AGENTS.md` §tool-inspector.
+//! `panel_descriptor` here) and the right-sidebar Options section
+//! (`ui_shell::right_sidebar::render_options_section` +
+//! `panels::tool_options`, built from
+//! `selection_summary`/`gimbal_affordance_label`/`anchor_readout` and
+//! `panel_descriptor().options_hints` here). This module is helper-only —
+//! no egui paint. See `fe-ui/src/panels/AGENTS.md` §tool-inspector.
 
 use crate::gis::PathPointRow;
 use crate::node_manager::SelectionKind;
 use crate::panels::toolbar::Tool;
 
 /// A per-tool inspector descriptor: the mode's title, a one-line "what this mode
-/// does", and the labels shown in its Use / Settings zones. Pure data so the
-/// tool→panel mapping is unit-testable. Zone entries marked "(soon)" are Phase
-/// 2+ placeholders — the scaffold is calm and never blank (`ui_ux.md §7`).
+/// does", the labels shown in its Use zone (topbar tooltip), and the calm
+/// placeholder lines its Options arm shows while it has no live controls yet.
+/// Pure data so the tool→panel mapping is unit-testable.
+///
+/// `options_hints` is EMPTY exactly for the tools whose Options body is real
+/// (Pen, Brush) — the previous `settings_zone` was the opposite: unreachable
+/// copy that documented controls living somewhere else (finding #15). The
+/// invariant "live controls XOR hints" is asserted in
+/// `panels::tool_options`'s tests.
 pub(crate) struct ToolPanelDescriptor {
     pub title: &'static str,
     pub subtitle: &'static str,
     pub use_zone: &'static [&'static str],
-    pub settings_zone: &'static [&'static str],
+    pub options_hints: &'static [&'static str],
 }
 
 /// Map the active [`Tool`] to its inspector descriptor. Pure + total.
@@ -35,7 +42,7 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
                 "Click a path point or segment to edit it",
                 "Click empty space to deselect",
             ],
-            settings_zone: &["Selection filters (soon)", "Highlight style (soon)"],
+            options_hints: &["Selection filters (soon)", "Highlight style (soon)"],
         },
         Tool::Move => ToolPanelDescriptor {
             title: "Move",
@@ -44,19 +51,19 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
                 "Drag a gimbal axis to move",
                 "Ctrl+drag a path point to change its height",
             ],
-            settings_zone: &["Axis lock X / Y / Z (soon)", "Grid snap, m (soon)"],
+            options_hints: &["Axis lock X / Y / Z (soon)", "Grid snap, m (soon)"],
         },
         Tool::Rotate => ToolPanelDescriptor {
             title: "Rotate",
             subtitle: "Spin the selection about a gimbal ring",
             use_zone: &["Drag a gimbal ring to rotate"],
-            settings_zone: &["Angle snap 45° / 90° (soon)", "Pivot (soon)"],
+            options_hints: &["Angle snap 45° / 90° (soon)", "Pivot (soon)"],
         },
         Tool::Scale => ToolPanelDescriptor {
             title: "Scale",
             subtitle: "Resize the selection along a gimbal axis",
             use_zone: &["Drag a gimbal axis to scale"],
-            settings_zone: &["Uniform / per-axis (soon)", "Snap increment (soon)"],
+            options_hints: &["Uniform / per-axis (soon)", "Snap increment (soon)"],
         },
         Tool::Pen => ToolPanelDescriptor {
             title: "Pen",
@@ -67,10 +74,10 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
                 "Alt mid-drag breaks the handles apart",
                 "A gimbal on a selected point stays grabbable",
             ],
-            settings_zone: &[
-                "New anchor type — Tools window, Pen",
-                "Corner settings — Paths tab, selected vertex",
-            ],
+            // D7/D8: curve mode, new-anchor kind, shapes, stamping AND the
+            // per-anchor corner card are all live in the Options section now,
+            // so there is nothing left to point at.
+            options_hints: &[],
         },
         Tool::Brush => ToolPanelDescriptor {
             title: "Brush",
@@ -80,7 +87,9 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
                 "Release to commit the sampled stroke",
                 "Escape or right-click cancels the stroke",
             ],
-            settings_zone: &["Radius, strength, and operation below"],
+            // D6-B: radius/strength/op/material/shape are live in the Options
+            // section's Brush arm (this string was unreachable — finding #15).
+            options_hints: &[],
         },
     }
 }
@@ -177,11 +186,25 @@ mod tests {
             let d = panel_descriptor(tool);
             assert!(!d.title.is_empty(), "{tool:?} has empty title");
             assert!(!d.subtitle.is_empty(), "{tool:?} has empty subtitle");
-            // Never a blank panel (ui_ux.md §7): both zones carry at least one line.
+            // The Use zone feeds the topbar tooltip for EVERY tool.
             assert!(!d.use_zone.is_empty(), "{tool:?} has empty Use zone");
+        }
+    }
+
+    #[test]
+    fn options_hints_exist_exactly_for_the_tools_without_live_controls() {
+        // Never-blank (ui_ux.md §7) without double-documenting (finding #15):
+        // Pen/Brush have real Options bodies, everything else needs hints.
+        for tool in [Tool::Select, Tool::Move, Tool::Rotate, Tool::Scale] {
             assert!(
-                !d.settings_zone.is_empty(),
-                "{tool:?} has empty Settings zone"
+                !panel_descriptor(tool).options_hints.is_empty(),
+                "{tool:?} has no live Options controls and no hints either"
+            );
+        }
+        for tool in [Tool::Pen, Tool::Brush] {
+            assert!(
+                panel_descriptor(tool).options_hints.is_empty(),
+                "{tool:?} renders real controls; a hint list would be stale copy"
             );
         }
     }

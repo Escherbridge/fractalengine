@@ -19,7 +19,10 @@ use crate::lod_ring::{
 };
 use crate::mesh::interp::upsample_bilinear;
 use crate::mesh::terrain::terrain_mesh;
-use crate::mesh::track::{track_centroid, track_mesh, ColorMode as TrackColorMode};
+use crate::mesh::track::{
+    prepare_track_zone, track_centroid, track_mesh, track_zone_mesh_prepared,
+    ColorMode as TrackColorMode, PreparedTrackZone,
+};
 use crate::petal_binding::{
     apply_terrain_assignments, ActivePetalTerrain, ActiveTileSource, TerrainAssignmentMsg,
 };
@@ -740,13 +743,43 @@ fn render_gpx_tracks(
             .iter()
             .map(|p| [p[0] - centroid[0], p[1] - centroid[1], p[2] - centroid[2]])
             .collect();
-        let ribbon = track_mesh(&rel, style.width.max(0.01), TrackColorMode::Solid(color));
+        let ribbon = if style.closed {
+            let fill = style.fill_color_u8();
+            let prepared = prepare_track_zone(&positions);
+            let prepared_relative = PreparedTrackZone {
+                points: prepared
+                    .points
+                    .iter()
+                    .map(|point| {
+                        [
+                            point[0] - centroid[0],
+                            point[1] - centroid[1],
+                            point[2] - centroid[2],
+                        ]
+                    })
+                    .collect(),
+                triangle_indices: prepared.triangle_indices,
+            };
+            track_zone_mesh_prepared(
+                &prepared_relative,
+                style.width.max(0.01),
+                color,
+                Color::srgba_u8(fill[0], fill[1], fill[2], fill[3]),
+            )
+        } else {
+            track_mesh(&rel, style.width.max(0.01), TrackColorMode::Solid(color))
+        };
 
         let handle = meshes.add(ribbon);
         let material = materials.add(StandardMaterial {
             base_color: Color::WHITE,
             unlit: true,
             cull_mode: None,
+            alpha_mode: if style.closed {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            },
             ..default()
         });
 

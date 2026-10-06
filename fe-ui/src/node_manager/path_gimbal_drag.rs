@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::gimbal_interaction::{axis_screen_dir, axis_vec, pick_axis};
 use super::path_point_interaction::PathPointMarker;
-use super::router::{ClickArbiter, ClickPriority};
+use super::router::{sweep_stranded_drag, ClickArbiter, ClickPriority};
 use super::selection::{path_gimbal_target, project_selection, SelectionKind};
 use super::NodeManager;
 use crate::actions::{UiAction, UiManager};
@@ -117,6 +117,14 @@ pub(super) fn handle_path_gimbal_drag(
     mut markers: Query<(&mut Transform, &PathPointMarker)>,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
+    // Stranded-gesture sweep (finding F4) — the same idiom the four sibling
+    // gestures use. A Hover frame means the button is up, so a surviving drag
+    // missed its Release (alt-tab mid-drag): drop it. Without this the drag
+    // stays `active` forever, pinning Escape at rung 0 and permanently
+    // suppressing the right-click object menu via `!gesture_active`. It runs
+    // BEFORE the window/camera guards so a lost window strands nothing either.
+    sweep_stranded_drag(arbiter.phase(), &mut drag.active);
+
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
     let Ok((camera, cam_tx)) = cameras.single() else {
@@ -350,5 +358,46 @@ mod tests {
         // Camera on top of the target → distance 0 clamps to the 0.5 floor.
         let s = move_scale_factor(Vec3::new(3.0, 0.0, 0.0), Vec3::new(3.0, 0.0, 0.0));
         assert!((s - 0.001).abs() < 1e-6, "s = {s}");
+    }
+
+    // --- F4: the stranded-drag sweep this gesture was missing ---
+
+    fn live_drag() -> PathGimbalDrag {
+        PathGimbalDrag {
+            active: Some(PathGimbalDragState {
+                axis: GimbalAxis::X,
+                axis_screen_dir: Vec2::X,
+                start_cursor: Vec2::new(10.0, 10.0),
+                start_center: Vec3::ZERO,
+                track_id: "track-1".into(),
+                affected: vec![(0, Vec3::ZERO)],
+                current: vec![Vec3::ZERO],
+            }),
+        }
+    }
+
+    #[test]
+    fn a_missed_release_is_swept_on_the_next_hover_frame() {
+        // Alt-tab mid-drag: the Release never arrives, so the next button-up
+        // frame must drop the drag. A surviving one would pin Escape at rung 0
+        // and keep the right-click menu suppressed for the rest of the session.
+        use super::super::router::PointerPhase;
+        let mut drag = live_drag();
+        sweep_stranded_drag(PointerPhase::Hover, &mut drag.active);
+        assert!(drag.active.is_none(), "hover must sweep the stranded drag");
+    }
+
+    #[test]
+    fn the_sweep_never_touches_a_genuinely_live_drag() {
+        use super::super::router::PointerPhase;
+        for phase in [
+            PointerPhase::Press,
+            PointerPhase::Hold,
+            PointerPhase::Release,
+        ] {
+            let mut drag = live_drag();
+            sweep_stranded_drag(phase, &mut drag.active);
+            assert!(drag.active.is_some(), "{phase:?} must keep the drag");
+        }
     }
 }

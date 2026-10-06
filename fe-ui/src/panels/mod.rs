@@ -5,8 +5,9 @@
 //! plus the still-floating `gis_panel` window and the `ActiveDialog` set.
 //! Phase 4 (FR-9) retired the last three floating windows (Tools/Terrain
 //! Tools/Proposal Report) — their bodies now live in
-//! `ui_shell::right_sidebar`'s PathTools/TerrainTools/ProposalReport
-//! sections. See `fe-ui/src/panels/AGENTS.md`.
+//! `ui_shell::right_sidebar`'s sections; ui_semantics_unification_20260808
+//! then folded the PathTools section into the `Options` section's Pen arm
+//! (`tool_options`). See `fe-ui/src/panels/AGENTS.md`.
 
 pub(crate) mod gis_panel;
 pub(crate) mod inspector;
@@ -19,6 +20,10 @@ pub(crate) mod terrain_tools_panel;
 /// toolbar tooltip and the right-sidebar Tool section. No left panel anymore
 /// (ui_shell_architecture_20260724 Phase 5) — see `panels/AGENTS.md` §tool-inspector.
 pub(crate) mod tool_inspector;
+/// ui_semantics_unification_20260808 Phase 3: the ONE active-tool options
+/// dispatcher behind `RightSidebarSection::Options` — one arm per `Tool`, each
+/// reusing an existing helper. See `panels/AGENTS.md` §tool-options.
+pub(crate) mod tool_options;
 pub(crate) mod tool_panel;
 pub(crate) mod toolbar;
 
@@ -112,7 +117,14 @@ pub fn gardener_console(
     // Phase 3 (FR-7/Q-5): panel panic guard + transient-layer sequencing state,
     // also supplied via `UiShellParams`. See `ui_shell/modal.rs`.
     modal: &mut crate::ui_shell::modal::ModalManagerState,
+    // hierarchy_visibility_groups_20260808 Phase 1: session-only visibility
+    // state — sidebar eye toggles read/write it, the status bar reads the
+    // effectively-hidden count off it. See `visibility/mod.rs`.
+    vis_state: &mut crate::visibility::VisibilityState,
 ) -> egui::Rect {
+    // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
+    path_editor_card::sanitize_path_editor_numeric_state(path_state);
+
     // Topbar (FR-4): tool switcher, deselect, Data/Tools/Settings/Maps.
     let _ = guarded(modal, "topbar", || {
         crate::ui_shell::topbar::render_topbar(
@@ -127,7 +139,16 @@ pub fn gardener_console(
     });
     // Never guarded: hosts the persistent guard-error segment below (Q-5) —
     // if this itself were quarantined, a disabled panel's error would vanish.
-    status_bar::status_bar(ctx, dashboard, sync_status, nav, ui_mgr, modal);
+    status_bar::status_bar(
+        ctx,
+        dashboard,
+        sync_status,
+        nav,
+        ui_mgr,
+        modal,
+        hierarchy,
+        vis_state,
+    );
 
     // Left sidebar (FR-3 shell_ux_sidebar): user-sticky. The manager applies
     // `sidebar.open = user_intent` only — the old per-frame `!right_open` stomp
@@ -144,16 +165,17 @@ pub fn gardener_console(
             db_tx,
             node_mgr,
             ui_mgr,
+            vis_state,
         )
     });
 
     // Right sidebar (FR-6): portal toolbar when the portal owns the region, else
-    // the active section (Inspector by default; Path/Terrain Tools and the
-    // Proposal Report host the former floating windows as of Phase 4/FR-9).
-    // One guard covers all five mutually-exclusive sections (incl. Terrain
-    // Tools, directive-3's crash surface) — `right_sidebar.rs` is out of this
-    // slice's owned-file set, so a panic anywhere in the active section
-    // quarantines the whole region rather than just that section; see report.
+    // the active section (Inspector by default; Options hosts the active tool's
+    // settings, Terrain Tools / Proposal Report the former floating windows).
+    // ONE guard covers all six mutually-exclusive sections — a panic anywhere
+    // in the active section quarantines the whole region, not just that
+    // section. `path_state` is `&mut` here because the Options section's Pen
+    // arm hosts the per-anchor corner editor (D8).
     let _ = guarded(modal, "right_sidebar", || {
         crate::ui_shell::right_sidebar::render_right_sidebar(
             ctx,
@@ -276,6 +298,7 @@ pub fn gardener_console(
                         hierarchy,
                         stamp_state,
                         tool_panel,
+                        &*path_state,
                         db_tx,
                     )
                 });
@@ -375,6 +398,19 @@ mod tests {
         let gpx_status = crate::gpx_ops::GpxImportStatus::default();
         let mut path_state = crate::gis::PathEditorState {
             editing_track_id: Some("track-1".into()),
+            points: vec![crate::gis::PathPointRow {
+                position: [0.0, f32::NAN, 0.0],
+                ..Default::default()
+            }],
+            snap: crate::gis::PathSnapSettings {
+                enabled: true,
+                grid_step_m: f32::NAN,
+                anchor_radius_m: f32::INFINITY,
+            },
+            edited_track_style: crate::gis::TrackStyleFields {
+                width: f32::INFINITY,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let path_status = crate::path_ops::PathEditStatus::default();
@@ -397,7 +433,10 @@ mod tests {
             None,
             Some(1.0),
         );
-        let mut app_settings = crate::settings::AppSettings::default();
+        let mut app_settings = crate::settings::AppSettings {
+            render_distance: f32::INFINITY,
+            ..Default::default()
+        };
         let mut sculpt = crate::actions::terrain_proposal::SculptToolState {
             radius: f32::NAN,
             strength: f32::INFINITY,
@@ -409,13 +448,15 @@ mod tests {
         let mut topbar = crate::ui_shell::topbar::TopbarState;
         let mut left = crate::ui_shell::left_sidebar::LeftSidebarState::default();
         let mut right = RightSidebarState {
-            requested: Some(RightSidebarSection::PathTools),
+            requested: Some(RightSidebarSection::Options),
         };
         let mut modal = crate::ui_shell::modal::ModalManagerState::default();
+        let mut vis_state = crate::visibility::VisibilityState::default();
 
         {
-            let mut render = |section: Option<RightSidebarSection>| {
+            let mut render = |section: Option<RightSidebarSection>, active_tool: Tool| {
                 right.requested = section;
+                tool.active_tool = active_tool;
                 let raw = egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -454,14 +495,21 @@ mod tests {
                         &mut left,
                         &mut right,
                         &mut modal,
+                        &mut vis_state,
                     );
                 });
             };
 
-            render(None);
-            render(Some(RightSidebarSection::PathTools));
-            render(Some(RightSidebarSection::TerrainTools));
-            render(Some(RightSidebarSection::Tool));
+            // Every section, so no arm escapes the numeric-sanitize sweep.
+            render(None, Tool::Brush);
+            for section in crate::ui_shell::right_sidebar::ALL_SECTIONS {
+                render(Some(section), Tool::Brush);
+            }
+            // Plus every Options arm — the dispatcher is the new numeric
+            // boundary for the pen/stamp/sculpt buffers (D6-B/D7/D8).
+            for t in [Tool::Select, Tool::Move, Tool::Pen, Tool::Brush] {
+                render(Some(RightSidebarSection::Options), t);
+            }
         }
 
         assert!(tool_panel.shape_radius_z.is_finite());
@@ -469,5 +517,10 @@ mod tests {
         assert!(tool_panel.terrain_footprint_radius.is_finite());
         assert!(sculpt.radius.is_finite());
         assert!(sculpt.strength.is_finite());
+        assert!(path_state.points[0].position[1].is_finite());
+        assert!(path_state.snap.grid_step_m.is_finite());
+        assert!(path_state.snap.anchor_radius_m.is_finite());
+        assert!(path_state.edited_track_style.width.is_finite());
+        assert!(app_settings.render_distance.is_finite());
     }
 }

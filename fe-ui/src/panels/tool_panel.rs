@@ -1,7 +1,9 @@
 //! Path-tools + pen controls: pure rendering helpers called by
-//! `ui_shell::right_sidebar::render_path_tools_section` (ui_shell_architecture
-//! Phase 4 folded the former floating "Tools" window into the right-sidebar
-//! PathTools section). The "Stamp along path" button emits
+//! `panels::tool_options`'s Pen arm. ui_shell_architecture Phase 4 folded the
+//! former floating "Tools" window into a right-sidebar `PathTools` section;
+//! ui_semantics_unification_20260808 (D7) retired that section in turn — these
+//! controls are the active tool's Options body now. The "Stamp along path"
+//! button emits
 //! `UiAction::PathAssetApply` for the track currently being edited
 //! (`PathEditorState.editing_track_id`), building the descriptor from the
 //! repetition/pattern controls. See `fe-ui/src/panels/AGENTS.md` §tool-panel.
@@ -275,10 +277,9 @@ impl ToolPanelState {
     }
 }
 
-/// Path-asset stamp controls. Called directly by
-/// `ui_shell::right_sidebar::render_path_tools_section` (the former
-/// `render_tool_panel` floating-window shell was retired in Phase 4 — this
-/// body moved verbatim, only the `egui::Window` wrapper was dropped).
+/// Path-asset stamp controls. Called directly by `tool_options`'s Pen arm (the
+/// `render_tool_panel` floating-window shell was retired in Phase 4 and the
+/// `PathTools` section that replaced it in D7 — the body itself never changed).
 pub(crate) fn render_path_asset_section(
     ui: &mut egui::Ui,
     state: &mut ToolPanelState,
@@ -663,9 +664,8 @@ fn build_descriptor(
 /// "Smooth path" button (resample + replace the edited track's points), and
 /// shape buttons (ellipse/circle). All buttons queue a `UiAction` into
 /// `state.pending_actions`, drained by `process_ui_actions`. Called directly
-/// by `ui_shell::right_sidebar::render_path_tools_section` (see
-/// `render_path_asset_section`'s doc for the Phase-4 window retirement). See
-/// `node_manager/AGENTS.md` §pen-tool.
+/// by `tool_options`'s Pen arm (see `render_path_asset_section`'s doc for the
+/// window/section retirements). See `node_manager/AGENTS.md` §pen-tool.
 pub(crate) fn render_pen_section(ui: &mut egui::Ui, state: &mut ToolPanelState) {
     state.sanitize_numeric_state();
     // `ToolPanelState` is `#[derive(Default)]` (shared with W4), so the pen

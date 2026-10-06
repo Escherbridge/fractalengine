@@ -166,6 +166,10 @@ pub struct TrackStyle {
     pub width: f32,
     /// When `false`, the track's mesh is hidden (entity kept for cheap toggle).
     pub visible: bool,
+    /// Close the last route point back to the first and treat it as a zone.
+    pub closed: bool,
+    /// Zone fill color; transparent by default for legacy open-track parity.
+    pub fill_color: [f32; 4],
 }
 
 impl Default for TrackStyle {
@@ -178,6 +182,8 @@ impl Default for TrackStyle {
             color: [0.0, 0.8, 1.0, 1.0],
             width: 0.1,
             visible: true,
+            closed: false,
+            fill_color: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -191,6 +197,15 @@ impl TrackStyle {
             (self.color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
             (self.color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
             (self.color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+        ]
+    }
+
+    pub fn fill_color_u8(&self) -> [u8; 4] {
+        [
+            (self.fill_color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (self.fill_color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (self.fill_color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (self.fill_color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
         ]
     }
 }
@@ -319,6 +334,8 @@ mod tests {
         assert_eq!(s.color, [0.0, 0.8, 1.0, 1.0]);
         assert_eq!(s.width, 0.1);
         assert!(s.visible);
+        assert!(!s.closed);
+        assert_eq!(s.fill_color, [0.0; 4]);
     }
 
     #[test]
@@ -364,5 +381,14 @@ mod tests {
             ..TrackStyle::default()
         };
         assert_eq!(s.color_u8(), [0, 204, 255, 255]);
+    }
+
+    #[test]
+    fn track_style_fill_color_u8_preserves_alpha() {
+        let s = TrackStyle {
+            fill_color: [0.2, 0.4, 0.6, 0.5],
+            ..TrackStyle::default()
+        };
+        assert_eq!(s.fill_color_u8(), [51, 102, 153, 128]);
     }
 }

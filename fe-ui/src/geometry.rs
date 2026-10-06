@@ -19,11 +19,40 @@ pub(crate) fn sanitize_world_scale(scale: f64) -> f64 {
 /// `f32` falls back to the human-scale value instead of leaking infinity.
 pub(crate) fn meters_to_world(meters: f32, scale: f64) -> f32 {
     let converted = meters as f64 * sanitize_world_scale(scale);
-    if converted.is_finite() && converted.abs() <= f32::MAX as f64 {
-        converted as f32
-    } else {
-        meters
+    if !converted.is_finite() || converted.abs() > f32::MAX as f64 {
+        return meters;
     }
+    if meters != 0.0 && converted.abs() < f32::MIN_POSITIVE as f64 {
+        return f32::MIN_POSITIVE.copysign(meters);
+    }
+    converted as f32
+}
+
+/// Petal-local world units to real meters — the inverse of [`meters_to_world`],
+/// with the same overflow/underflow safety and unset-scale honesty (an
+/// unusable `scale` sanitizes to `1.0`, so a round trip through both
+/// functions at an unset scale is an identity, never a fabricated meters
+/// value). Added for D17 (`ui_semantics_unification_20260808` finding #9):
+/// the terrain-tools palette displays/edits its footprint radius/target
+/// height/delta in metres, converting back to world units at the emit
+/// boundary via `meters_to_world`.
+///
+/// NOTE: fe-ui also has a second, simpler (non-overflow-guarded)
+/// `world_to_meters`/`meters_to_world` pair in `panels/widgets.rs`, used by
+/// the inspector/GIS panel/egress card. This is pre-existing duplication
+/// (not introduced or resolved by this pass) — this module stays the
+/// fe-terrain-mirror seam already imported by `node_manager::brush_interaction`
+/// and `sculpt_cursor`; see `fe-ui/src/AGENTS.md` §geometry-mirror.
+pub(crate) fn world_to_meters(world_units: f32, scale: f64) -> f32 {
+    let sanitized = sanitize_world_scale(scale);
+    let converted = world_units as f64 / sanitized;
+    if !converted.is_finite() || converted.abs() > f32::MAX as f64 {
+        return world_units;
+    }
+    if world_units != 0.0 && converted.abs() < f32::MIN_POSITIVE as f64 {
+        return f32::MIN_POSITIVE.copysign(world_units);
+    }
+    converted as f32
 }
 
 /// Real-meter ground-plane (XZ) distance between two world-space points, given
@@ -80,6 +109,63 @@ mod tests {
     fn meters_to_world_uses_map_scale_and_human_fallback() {
         assert_eq!(meters_to_world(5.0, 0.001), 0.005);
         assert_eq!(meters_to_world(5.0, f64::NAN), 5.0);
+    }
+
+    #[test]
+    fn meters_to_world_preserves_nonzero_at_tiny_positive_scale() {
+        let radius = meters_to_world(0.1, f64::MIN_POSITIVE);
+        assert!(radius.is_finite() && radius > 0.0);
+        assert_eq!(radius, f32::MIN_POSITIVE);
+    }
+
+    #[test]
+    fn world_to_meters_uses_map_scale_and_human_fallback() {
+        assert_eq!(world_to_meters(0.005, 0.001), 5.0);
+        // Unset scale (<=0 / non-finite) sanitizes to 1.0 — an identity
+        // conversion, never a fabricated meters value (NFR-4).
+        assert_eq!(world_to_meters(5.0, f64::NAN), 5.0);
+        assert_eq!(world_to_meters(5.0, 0.0), 5.0);
+        assert_eq!(world_to_meters(5.0, -3.0), 5.0);
+    }
+
+    #[test]
+    fn world_to_meters_preserves_nonzero_at_tiny_positive_scale() {
+        let meters = world_to_meters(0.1, f64::MIN_POSITIVE);
+        assert!(meters.is_finite() && meters > 0.0);
+    }
+
+    #[test]
+    fn world_to_meters_zero_input_stays_zero() {
+        assert_eq!(world_to_meters(0.0, 1.0), 0.0);
+        assert_eq!(world_to_meters(0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn meters_to_world_and_world_to_meters_round_trip() {
+        for &scale in &[1.0, 0.001, 1000.0] {
+            for &meters in &[0.0, 1.0, 5.0, 123.456, -42.0] {
+                let world = meters_to_world(meters, scale);
+                let back = world_to_meters(world, scale);
+                assert!(
+                    (back - meters).abs() < 1e-3,
+                    "round trip failed at scale {scale}: {meters} -> {world} -> {back}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn round_trip_is_identity_at_unset_scale() {
+        // Both directions sanitize an unusable scale to 1.0, so a round trip
+        // at an unset scale must be an exact identity (the honest "world
+        // units == meters, unlabeled" case, NFR-4).
+        for &value in &[0.0, 2.5, -7.0] {
+            assert_eq!(world_to_meters(meters_to_world(value, 0.0), 0.0), value);
+            assert_eq!(
+                meters_to_world(world_to_meters(value, f64::NAN), f64::NAN),
+                value
+            );
+        }
     }
 
     #[test]

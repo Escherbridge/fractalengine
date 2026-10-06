@@ -10,6 +10,8 @@ use crate::dialogs::ActiveDialog;
 use crate::navigation_manager::NavigationManager;
 use crate::theme;
 use crate::ui_shell::modal::ModalManagerState;
+use crate::verse_manager::VerseManager;
+use crate::visibility::{self, VisibilityState};
 
 pub(crate) fn status_bar(
     ctx: &egui::Context,
@@ -18,6 +20,13 @@ pub(crate) fn status_bar(
     nav: &NavigationManager,
     ui_mgr: &mut UiManager,
     modal: &ModalManagerState,
+    // hierarchy_visibility_groups_20260808 RATIFICATION #16: persistent
+    // "N hidden" chip — absent when nothing is hidden in the active petal.
+    // `&mut` because F19's memoization cache lives on `VisibilityState`
+    // itself (this fn is a plain call, not a Bevy system — no `Local<T>`
+    // available to cache in here directly).
+    hierarchy: &VerseManager,
+    vis_state: &mut VisibilityState,
 ) {
     egui::TopBottomPanel::bottom("statusbar")
         .exact_height(22.0)
@@ -94,6 +103,19 @@ pub(crate) fn status_bar(
                     .small()
                     .color(theme::TEXT_MUTED),
                 );
+
+                // hierarchy_visibility_groups_20260808 RATIFICATION #16: dim
+                // persistent "N hidden" chip — an abnormal-condition
+                // indicator per ui_ux.md §6, not a toast. Absent when zero.
+                // Memoized (F19): counts HIERARCHY ROWS, not spawned
+                // entities — see `visibility::hidden_count_in_active_petal`
+                // docs for why that's a deliberately different number than
+                // `sync_node_visibility`'s per-frame apply count.
+                let hidden_count = vis_state.hidden_count_in_active_petal_cached(hierarchy, nav);
+                if let Some(label) = visibility::hidden_chip_label(hidden_count) {
+                    ui.separator();
+                    ui.label(egui::RichText::new(label).small().color(theme::TEXT_MUTED));
+                }
 
                 // Persistent guard-error segment (Q-5, FR-7): a disabled
                 // panel's error stays visible for the session — no

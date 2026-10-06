@@ -108,7 +108,10 @@ pub fn viewport_petal_space(
     }
 
     // Tool hints at bottom — keys/labels come from `panels::toolbar::TOOL_DEFS`.
-    let active_tool = toolbar::active_tool_hint(ui.ctx());
+    // The topbar stashed this frame's `InputContext` before we rendered.
+    let input = toolbar::input_context(ui.ctx());
+    let active_tool = input.map(|i| i.active_tool);
+    let gesture_active = input.is_some_and(|i| i.gesture_active);
     if active_tool == Some(toolbar::Tool::Pen) {
         ui.painter().text(
             egui::pos2(center.x, rect.max.y - 40.0),
@@ -121,7 +124,7 @@ pub fn viewport_petal_space(
         ui.painter().text(
             egui::pos2(center.x, rect.max.y - 40.0),
             egui::Align2::CENTER_CENTER,
-            "Brush: press-drag to sample earthwork dabs  \u{2022}  release to commit  \u{2022}  Esc/right-click cancels",
+            "Brush: press-drag to sample earthwork dabs  \u{2022}  release to commit  \u{2022}  Esc/right-click cancels the stroke",
             egui::FontId::proportional(12.0),
             theme::TEXT_VIEWPORT_HINT,
         );
@@ -168,7 +171,10 @@ pub fn viewport_petal_space(
     // Right-click for context menu — use input directly to avoid stealing clicks.
     // `target: None` = classification pending; `node_manager::context_pick`
     // fills it from the same pick machinery left-click uses (T4 FR-1).
-    if active_tool != Some(toolbar::Tool::Brush) && ui.input(|i| i.pointer.secondary_clicked()) {
+    // D5, one rule for every tool: right-click cancels an in-flight gesture
+    // (the gesture systems consume the press themselves), otherwise it opens
+    // the object-aware menu. No tool-specific gate — Brush is not a mode.
+    if !gesture_active && ui.input(|i| i.pointer.secondary_clicked()) {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             if rect.contains(pos) {
                 ui_mgr.open_dialog(ActiveDialog::ContextMenu {

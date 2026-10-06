@@ -54,7 +54,11 @@ the SAME enum left-click resolves) to the ordered `Verb` set valid for that
 object (FR-1). It is total over every `HitTarget` and unit-tested exhaustively;
 no verb appears for an object it can't act on. `TerrainCell` is treated like
 empty ground (creation verbs only); `GimbalAxis` (a transform widget) yields no
-menu.
+menu. Classifier now resolves all four extra target kinds: `SetCornerSmooth`
+(corner-kind cycle → PathSetAnchorCorner), `DeletePoint` (PathRemovePoint),
+`EditRegionParams` (TerrainProposalSelect + RevealSection "terrain"), and
+`TerrainProposal` Delete via two-step confirm to TerrainProposalDelete;
+`render_context_menu` takes `path_state`.
 
 Ratified per-object verbs (spec Q-1):
 

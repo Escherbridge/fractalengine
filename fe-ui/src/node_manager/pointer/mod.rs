@@ -3,7 +3,8 @@
 //! `PathEditorState` (Authority B, Paths tab) WITHOUT merging them — a viewport
 //! track-select queues `UiAction::PathSelectTrack`, and petal entry/change
 //! eager-loads the Paths-tab track list. Re-homed verbatim from `viewport_pick`
-//! so this module is the single home of the bridge. See
+//! so this module is the single home of the bridge — all FOUR arms live here,
+//! and `PathEditorState::stop_editing` itself stays authority-B-only. See
 //! `fe-ui/src/node_manager/AGENTS.md` §pointer-manager (+ §track-picking).
 
 use bevy::prelude::*;
@@ -22,6 +23,8 @@ use crate::plugin::SpawnedNodeMarker;
 /// - a Paths-tab selection becomes the viewport/inspector selection via
 ///   `pending_sidebar_select` (only when the track's entity is spawned, so the
 ///   sidebar resolver can't deselect-fallback and kill the fresh session);
+/// - closing a session (B→None) drops the viewport selection of that same
+///   track — the one-press back-out, arm 4 (see `drop_selection_of_closed_track`);
 /// - an active-petal change fully resets the editor (`respawn_on_petal_change`
 ///   cadence) so Pen clicks can't append to a foreign-petal track.
 pub(super) fn open_track_on_select(
@@ -66,16 +69,33 @@ pub(super) fn open_track_on_select(
 
     let editing = path_state.editing_track_id.clone();
     if editing != *last_editing {
-        *last_editing = editing.clone();
-        if let Some(track_id) = editing {
-            let already_selected =
-                manager.selected.as_ref().map(|s| s.node_id.as_str()) == Some(track_id.as_str());
-            if !already_selected
-                && spawned_in_petal(&markers, &track_id, nav.active_petal_id.as_deref())
-            {
-                manager.pending_sidebar_select = Some(track_id);
+        let closed = std::mem::replace(&mut *last_editing, editing.clone());
+        match editing {
+            Some(track_id) => {
+                let already_selected = manager.selected.as_ref().map(|s| s.node_id.as_str())
+                    == Some(track_id.as_str());
+                if !already_selected
+                    && spawned_in_petal(&markers, &track_id, nav.active_petal_id.as_deref())
+                {
+                    manager.pending_sidebar_select = Some(track_id);
+                }
             }
+            None => drop_selection_of_closed_track(&mut manager, closed.as_deref()),
         }
+    }
+}
+
+/// Bridge arm 4 (B→None ⇒ A), ratified 2026-08-08 as the one-press back-out:
+/// closing a path-edit session also drops the viewport selection when it still
+/// points at THAT track, so staged-Escape rung 1 backs fully out of the object
+/// instead of leaving rung 2 to fire on the same one. Scoped to the closed
+/// track — a selection that has already moved elsewhere is left alone.
+fn drop_selection_of_closed_track(manager: &mut NodeManager, closed_track_id: Option<&str>) {
+    let Some(track_id) = closed_track_id else {
+        return;
+    };
+    if manager.selected.as_ref().map(|s| s.node_id.as_str()) == Some(track_id) {
+        manager.deselect();
     }
 }
 
@@ -208,6 +228,46 @@ mod tests {
         state.editing_track_id = Some("track-a".to_string());
         // Switching to a different listed track should open it.
         assert!(track_to_open("track-b", &state));
+    }
+
+    // --- arm 4: B→None ⇒ A (the ratified one-press back-out) ---
+
+    fn manager_selecting(node_id: &str) -> NodeManager {
+        let mut mgr = NodeManager::default();
+        mgr.select(Entity::from_bits(7), node_id);
+        mgr
+    }
+
+    #[test]
+    fn closing_a_session_clears_the_viewport_selection_of_that_track() {
+        // Esc rung 1 calls `stop_editing()`; this arm makes the SAME press also
+        // drop Authority A, so rung 2 doesn't fire on the same object next press.
+        let mut mgr = manager_selecting("track-a");
+        drop_selection_of_closed_track(&mut mgr, Some("track-a"));
+        assert!(!mgr.is_selected());
+    }
+
+    #[test]
+    fn closing_a_session_leaves_a_selection_that_moved_elsewhere() {
+        // The user closed track-a but has since selected some other node —
+        // backing out of the session must not steal that selection.
+        let mut mgr = manager_selecting("some-other-node");
+        drop_selection_of_closed_track(&mut mgr, Some("track-a"));
+        assert_eq!(
+            mgr.selected.as_ref().map(|s| s.node_id.as_str()),
+            Some("some-other-node")
+        );
+    }
+
+    #[test]
+    fn no_closed_track_is_a_noop() {
+        let mut mgr = manager_selecting("track-a");
+        drop_selection_of_closed_track(&mut mgr, None);
+        assert!(mgr.is_selected());
+        // …and an empty selection stays empty.
+        let mut empty = NodeManager::default();
+        drop_selection_of_closed_track(&mut empty, Some("track-a"));
+        assert!(!empty.is_selected());
     }
 
     // --- FR-2 eager track-list load (petal change ⇒ track-list request) ---

@@ -66,7 +66,8 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   delivered to pending API requests).
 - `query.rs` — the shared untagged `QueryResult`/`Error` channel with its
   GIS-panel > Paths-tab > Query-tab claim priority.
-- `fields.rs` / `terrain.rs` — field-def lists, petal terrain docs.
+- `fields.rs` / `terrain.rs` — field-def lists, petal terrain docs. `terrain.rs`
+  also rehydrates `ProposalEditState` (5th param via DescriptorCaches.proposal_state).
 
 Handlers take the minimal `&`/`&mut` param set (no Bevy system params), so
 they unit-test without spinning up ECS — the smoke tests live in
@@ -211,7 +212,12 @@ fingerprint}`) fed independently of selection, plus ONE materializer.
   `respawn_on_petal_change` + `reconcile_path_asset`) so it observes their
   despawns, the gate clear, and both feeds — and because only it spawns, double
   stamping is structurally impossible.
-- **Delete cascade (FR-4, `terrain_editor_overhaul_20260718`):** `NodeDeleted`
+- **Delete cascade (FR-4, `terrain_editor_overhaul_20260718`):** the bridge
+  first calls public `invalidate_path_stamp_projection` after a successful
+  `DeleteNode` enqueue, invalidating cache/applied/pick-index state so orphan
+  entities disappear on the next materializer pass. A channel failure leaves
+  every projection intact. Promoted stamp nodes remain durable rows; projection
+  teardown never deletes `owning_path_id` records. The eventual `NodeDeleted`
   (`db_results/nodes.rs::handle_node_deleted`) calls `PathAssetCache::invalidate`
   + `PathAssetApplied::invalidate` on the deleted track. Invalidating the cache
   both wakes the materializer (it's `is_changed`) and makes the track's stamps

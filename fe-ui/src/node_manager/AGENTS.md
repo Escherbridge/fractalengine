@@ -5,10 +5,18 @@
 `brush_interaction.rs` claims before all scene interactions while Brush is
 active, converts meter controls through the active petal's sanitized
 `world_scale`, samples at half the converted radius, and emits one bounded
-`SculptBrushStroke` on release. Sampling is distance-based.
+`SculptBrushStroke` on release. Sampling is distance-based; persistence turns
+the samples into one capped-miter swept corridor rather than overlapping dabs.
 Escape/right-click/tool/petal change cancels. Bare B activates Brush and opens
 its contextual controls;
 Ctrl/Cmd+B remains the sidebar toggle.
+
+`path_point_interaction.rs::snap_path_position` is the viewport snap seam:
+the nearest current-track anchor within the metric radius wins, then XZ grid
+rounding applies; Y is always preserved. It is used only for Pen append and
+single-point drag release. A snapped release updates both the live marker and
+the authoritative edit row before queueing persistence. Multi-point and
+whole-track transforms remain unsnapped, and cross-track anchors are deferred.
 
 Right-click classification only fills `ContextTarget`; it does not mutate
 `NodeManager` or select/promote stamps. Viewport pick stays in the main chain;
@@ -53,13 +61,37 @@ classification is separately constrained after it and before track opening.
   (transform strings + per-node URL/property load on selection change; also
   clears the Annotation card's title/body/color buffers here since the
   underlying property load is async — see root `AGENTS.md` §gis-query-ui).
-- `transform_broadcast.rs` — commits a finished gimbal drag to
-  `DbCommand::UpdateNodeTransform` + P2P sync, and applies inbound API
-  transforms back onto the ECS.
+- `transform_broadcast.rs` — commits a finished gimbal drag to the local
+  `DbCommand::UpdateNodeTransform` materialization path and applies inbound API
+  transforms back onto the ECS. It intentionally emits no unsigned P2P
+  transform command; network replication must enter through the future signed-op
+  admission path.
 
 System functions are `pub(super)` (visible to `mod.rs`'s plugin
 registration only) — this module's public surface is just `NodeManager`
 itself; nothing outside `fe-ui` should call the per-frame systems directly.
+
+## §staged-escape — four-rung gesture cancellation
+
+The canonical staged Escape (codified in `ui_ux.md §5`): four rungs with ratified
+D4-override. The `GestureParams` bundle carries all SIX in-flight gestures — the five
+gesture resources plus the entity gimbal's `AxisDrag`, which lives inside
+`NodeManager.selected` and so brings `NodeManager` into the bundle (a second
+`ResMut<NodeManager>` on the same system would be a param-aliasing panic).
+`handle_tool_shortcuts` MUST stay first in the chain; no tool may read Escape privately.
+
+Rung 0 is a true cancel, not just a drop: the five resource-backed gestures write no
+world state before their Release, so clearing them suffices, while the entity gimbal
+applies its drag LIVE and therefore restores the press-time `Transform` snapshot
+(`NodeManager::cancel_axis_drag` → `DragRestore`). `NodeManager.gesture_active` mirrors
+the aggregate for the egui side; because it is written before any gesture system runs it
+lags both ways — stale-FALSE on the frame a gesture starts (the unsafe direction: that
+frame's right-click still opens the object menu) and stale-TRUE on the frame it releases.
+
+1. Gesture-cancel (tool-specific: pen/handle drag cancel)
+2. `stop_editing` + `deselect` (one-press back-out, clearing track edit + selection)
+3. `deselect` (node selection only)
+4. `activate(Select)` (switch tool)
 
 ## §pen-tool — pen (phase 1 polyline + phase 2 curves/shapes + bezier anchors)
 
@@ -411,7 +443,7 @@ split (`ui_ux.md` §5, sacred) — this only feeds Authority B's track list.
 **Precise ribbon picking (`path_interaction_20260716`, FR-1).** The old AABB
 pick made a km-scale flat ribbon a giant flat box that swallowed clicks meant
 for nearby objects. The bridge now also attaches a `TrackPickShape { points,
-half_width, centroid }` (fe-ui component, re-exported at
+half_width, closed, fill_triangles, centroid }` (fe-ui component, re-exported at
 `fe_ui::node_manager::TrackPickShape`, populated in `tag_track_lines_selectable`
 from the track's route + style — the RAW world polyline, no y-lift). In
 `handle_viewport_click`, an entity carrying `TrackPickShape` SKIPS the AABB slab
@@ -424,6 +456,11 @@ object still out-picks a track behind it. `TrackPickShape` is refreshed every
 respawn (the despawn/respawn redraw cycle re-tags via the `Without` filter), so
 it stays in sync with style-width and point edits. `centroid` is the render
 entity's baseline `Transform` translation — see §path-segments (FR-4 bake).
+
+For a closed zone, `fill_triangles` comes from the same
+`fe_terrain::mesh::track::prepare_track_zone` result used by rendering.
+Two-sided ray/triangle tests therefore return slope-correct visible depth for
+the exact accepted/decimated surface; rejected polygons have no fill pick.
 
 ## §path-segments — ribbon-segment select, whole-path gimbal, measurement (`path_segment_interaction.rs`)
 
@@ -479,8 +516,8 @@ ownership instead of racing ad-hoc booleans (replaces the old
 `path_edit_capturing` flag). `ClickArbiter` is a `Resource`;
 `resolve_pointer_frame` is the FIRST system in the `.chain()`.
 
-- **Priority table** (highest first — mirrors the old implicit `.chain()`
-  order, now explicit):
+- **Priority table** (highest first — the `.chain()` order is NORMATIVE, D14-A;
+  Brush claims 2nd priority while active by design):
 
   | Priority      | Consumer system                     | Claims when                          |
   | ------------- | ----------------------------------- | ------------------------------------ |
@@ -524,7 +561,9 @@ ownership instead of racing ad-hoc booleans (replaces the old
 ## §pointer-manager — cross-authority bridge + claim-priority table (`pointer/mod.rs`, `router.rs`)
 
 `ui_shell_architecture_20260724` FR-3. Two pointer/router concerns are now
-explicit and consolidated:
+explicit and consolidated. **Pointer bridge carries FOUR arms** (A = `NodeManager.selected`
+changed; B = none; stop_editing clears the closed track's viewport selection via
+drop_selection_of_closed_track):
 
 - **Claim-priority table (`router.rs::hit_target_rank`).** The pure, total
   `hit_target_rank(&HitTarget) -> u8` makes the object-level pick preference
@@ -613,15 +652,15 @@ result (`Empty`/`Node`/`PathVertex`/`PathHandle`/`PathSegment`/`Stamp`/
 (`SelectNode`/
 `SelectVertex`/`SelectSegment`/`SelectStamp`/`SelectProposal`/`PlacePathPoint`/
 `PlaceNode`/`BeginGimbalDrag`/`MoveVertex`/`MoveSegment`/`MoveHandle`/
-`TerrainCellEdit`/
-`Deselect`/`None`). Resolution is **hit-first**, modulated by tool/selection only
-where intent changes: Pen keeps placing a point even over a grazed node; a
-gimbal-axis press drags the current selection. Per the ratified decision
-(2026-07-19 "grab it wherever it's shown"), a path vertex/segment resolves to
-`MoveVertex`/`MoveSegment` in EVERY tool (its gimbal is always drawn as a Move
-handle, so it must always be grabbable); an entity-backed selection (node / stamp
-/ whole track) resolves to `BeginGimbalDrag` only in the transform tools
-(`Move`/`Rotate`/`Scale`), matching the entity gimbal that stays closed in
+`Deselect`/`None`). `HitTarget::TerrainCell` survives as right-click
+"bare terrain = empty ground" classification. Resolution is **hit-first**, modulated by
+tool/selection only where intent changes: Pen keeps placing a point even over a
+grazed node; a gimbal-axis press drags the current selection. Per the ratified
+decision (2026-07-19 "grab it wherever it's shown"), a path vertex/segment
+resolves to `MoveVertex`/`MoveSegment` in EVERY tool (its gimbal is always drawn
+as a Move handle, so it must always be grabbable); an entity-backed selection
+(node / stamp / whole track) resolves to `BeginGimbalDrag` only in the transform
+tools (`Move`/`Rotate`/`Scale`), matching the entity gimbal that stays closed in
 Select/Pen. WHEN a given hit can occur is the router's gate, not the table's
 concern — the table stays decoupled from the per-tool pick guards.
 
@@ -669,19 +708,6 @@ translate: length + orientation preserved). It:
 Whole-track gimbal drag stays on the entity path (the ribbon has an entity + the
 FR-4 bake in §path-segments); FR-3 only adds the vertex/segment case.
 
-**Terrain-cell seam (FR-5, NOT fully wired).** `HitTarget::TerrainCell →
-Operation::TerrainCellEdit` exists and is tested, and
-`dispatch::terrain_cell_proposal(brush, footprint, target_height, delta) ->
-TerrainProposalEdit` builds the payload. `TerrainBrush` enumerates the
-Cities-Skylines-style brushes (raise/lower/flatten/ramp/slope/pad/cut/fill);
-every brush emits a PROPOSAL, never a destructive terrain write (NFR-1). Two
-`TODO(ultrapilot)` seams remain: (a) there is no terrain-edit `Tool` variant to
-produce `TerrainCell` hits (adding one touches `panels/toolbar.rs`, outside
-node_manager's write scope); (b) the emit target
-`crate::actions::UiAction::TerrainProposalAdd { op, footprint, target_height,
-delta }` is owned by the p2p/terrain worker — once it lands, the terrain-cell
-consumer pushes it directly instead of returning `TerrainProposalEdit`. fe-ui
-must NOT depend on fe-terrain, so `TerrainBrush` is a local enum, not a re-export.
 
 ## §context-pick — right-click classification (`context_pick.rs`, contextual_controls T4)
 
@@ -691,16 +717,17 @@ secondary click; `classify_context_menu` (chained right after
 REUSES the left-click pick machinery — the exact `handle_viewport_click` loop
 (`TrackPickShape` polyline else `pick_node_aabb` subtree DFS, active-petal
 filtered) over a fresh camera ray built from the stored `screen_pos` (right
-click never touches the left-click `ClickArbiter`). A hit whose entity carries
-`PathAssetInstance` is a stamp: `(track, index)` comes from
-`source_track_id` + `verse_manager::parse_stamp_marker_id` (the marker-id
-format has one producer, `stamp_marker_id`). When the ray misses, the T2
-`StampRenderIndex` ground pick at the click's `world_pos` (radius = one
-`DEFAULT_CELL_SIZE_M` grid cell) catches small stamps; its entity resolves by
-marker id (`Entity::PLACEHOLDER` mid-respawn — stamp verbs key on the payload,
-never the entity). The pure core `resolve_context_target` is unit-tested.
-Side effects mirror left-click: node hit → `NodeManager.select`; stamp hit →
-`UiAction::SelectStamp` (idempotent, lazy promotion — N-3/N-9). Produces only
-`Node`/`Stamp`/`Empty` today; vertex/handle/segment/proposal classification is
-future headroom (the menu table is already total over them). Always resolves —
-worst case `Empty` — so the menu can't hang unclassified (N-8).
+click never touches the left-click `ClickArbiter`). Classifier now resolves
+`PathVertex`/`PathHandle`/`PathSegment`/`TerrainProposal` — narrow-phase vs path
+markers for the edited track; PNPOLY vs ProposalEditState footprints; edited-ribbon
+Node→PathSegment reclassify. A hit whose entity carries `PathAssetInstance` is
+a stamp: `(track, index)` comes from `source_track_id` +
+`verse_manager::parse_stamp_marker_id` (the marker-id format has one producer,
+`stamp_marker_id`). When the ray misses, the T2 `StampRenderIndex` ground pick
+at the click's `world_pos` (radius = one `DEFAULT_CELL_SIZE_M` grid cell) catches
+small stamps; its entity resolves by marker id (`Entity::PLACEHOLDER`
+mid-respawn — stamp verbs key on the payload, never the entity). The pure core
+`resolve_context_target` is unit-tested. Side effects mirror left-click: node
+hit → `NodeManager.select`; stamp hit → `UiAction::SelectStamp` (idempotent,
+lazy promotion — N-3/N-9). Always resolves — worst case `Empty` — so the menu
+can't hang unclassified (N-8).

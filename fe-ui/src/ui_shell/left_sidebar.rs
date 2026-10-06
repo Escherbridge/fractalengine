@@ -68,6 +68,8 @@ pub fn render_left_sidebar(
     db_tx: &crossbeam::channel::Sender<DbCommand>,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    // hierarchy_visibility_groups_20260808 Phase 1: sidebar eye toggles.
+    vis_state: &mut crate::visibility::VisibilityState,
 ) {
     sidebar_state.open = left_visibility(state.policy, state.user_intent);
     sidebar::left_sidebar(
@@ -80,6 +82,7 @@ pub fn render_left_sidebar(
         db_tx,
         node_mgr,
         ui_mgr,
+        vis_state,
     );
 }
 

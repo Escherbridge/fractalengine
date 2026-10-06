@@ -1,5 +1,8 @@
 # fe-ui/src/actions — UiAction queue, split by domain
 
+New UiAction variants: `RevealSection { slug }` (idempotent reveal, handler routes
+through RightSidebarState via the ToolStateParams bundle) and `TerrainProposalSelect { id }`.
+
 ## First-class Brush producer
 
 The sculpt pending-action bridge is removed. The viewport queues fully-threaded
@@ -143,10 +146,16 @@ EarthworkRegion` by contract (fe-ui must NOT depend on fe-terrain).
 - **Commit line (was the missing seam).** The viewport Brush snapshots the
   active petal and converts sanitized meter controls through `world_scale` on
   press, then queues one bounded `SculptBrushStroke` on release. Its handler
-  appends all region records with one terrain-doc clone/write. A missing petal
-  or disabled map warns, toasts, and produces no persistence action.
-- **Endpoint rows (D-A8/N-10).** Each committed dab (`handle_brush_stroke` /
-  `handle_shape_region`, gated on the `SetPetalTerrain` queue succeeding) also
+  converts the sampled centerline into one finite swept-corridor polygon and
+  performs one terrain-doc write. The whole-stroke centerline is reduced to at
+  most 256 points by deterministic, interval-balanced maximum-deviation
+  splitting before intersection validation and corridor building, preserving
+  equal-amplitude turns and localized loops without an unbounded reducer.
+  A loading map gets a distinct retry toast;
+  a missing/disabled map keeps the assignment toast and persists nothing.
+- **Endpoint rows (D-A8/N-10).** Each committed stroke/shape
+  (`handle_brush_stroke` / `handle_shape_region`, gated on the
+  `SetPetalTerrain` queue succeeding) also
   sends `CreateNode` at the footprint's vertex-mean centroid (petal-local
   world units) with `correlation_id = "earthwork:{region_id}"`.
   `db_results/nodes.rs` consumes the echo (pen-tool consume idiom: echoed-id

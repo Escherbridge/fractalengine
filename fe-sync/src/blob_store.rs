@@ -9,8 +9,23 @@
 
 use fe_runtime::blob_store::{BlobHash, BlobStore};
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+fn finish_create_dir(path: &Path, result: io::Result<()>) -> anyhow::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) if path.is_dir() => Ok(()),
+        Err(error) => Err(anyhow::anyhow!(
+            "create_dir_all {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn ensure_dir(path: &Path) -> anyhow::Result<()> {
+    finish_create_dir(path, fs::create_dir_all(path))
+}
 
 /// On-disk content-addressed blob store.
 pub struct FsBlobStore {
@@ -24,8 +39,7 @@ impl FsBlobStore {
     /// systems we would normally set `0700` permissions — on Windows this is
     /// a no-op for now (see TODO in source).
     pub fn new(root: PathBuf) -> anyhow::Result<Self> {
-        fs::create_dir_all(&root)
-            .map_err(|e| anyhow::anyhow!("create_dir_all {}: {e}", root.display()))?;
+        ensure_dir(&root)?;
 
         // TODO(phase-d): on Unix, set 0700 on root via std::os::unix::fs::PermissionsExt
         // to restrict access to the current user. Windows ACLs handle this differently
@@ -80,8 +94,7 @@ impl BlobStore for FsBlobStore {
         }
 
         let shard_dir = path.parent().expect("path_for always has a parent");
-        fs::create_dir_all(shard_dir)
-            .map_err(|e| anyhow::anyhow!("create_dir_all {}: {e}", shard_dir.display()))?;
+        ensure_dir(shard_dir)?;
 
         // Atomic write: write to a temp file in the same directory, then rename.
         // Same-directory rename is atomic on all mainstream filesystems, so
@@ -173,6 +186,35 @@ mod tests {
         store.remove_blob(&hash).expect("remove");
         assert!(!store.has_blob(&hash));
         assert!(store.get_blob_path(&hash).is_none());
+    }
+
+    #[test]
+    fn create_dir_error_accepts_an_existing_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("blobs");
+        std::fs::create_dir(&root).expect("create root");
+
+        finish_create_dir(
+            &root,
+            Err(io::Error::other("simulated Windows create_dir_all result")),
+        )
+        .expect("existing directory is usable");
+    }
+
+    #[test]
+    fn already_exists_error_rejects_an_existing_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("blobs");
+        std::fs::write(&root, b"not a directory").expect("create file");
+
+        assert!(finish_create_dir(
+            &root,
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "existing file"
+            )),
+        )
+        .is_err());
     }
 
     #[test]

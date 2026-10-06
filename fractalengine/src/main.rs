@@ -43,8 +43,14 @@ fn main() {
 
     // P2P Mycelium Phase A+B: local content-addressed blob store, shared with
     // the DB thread and the Bevy blob:// asset source.
-    let blob_store: fe_database::BlobStoreHandle =
-        std::sync::Arc::new(fe_sync::FsBlobStore::open_default().expect("open blob store"));
+    let blob_store: fe_database::BlobStoreHandle = match fe_sync::FsBlobStore::open_default() {
+        Ok(store) => std::sync::Arc::new(store),
+        Err(error) => {
+            tracing::error!(%error, "Could not open the local blob store");
+            eprintln!("Fatal error: could not open the local blob store: {error}");
+            std::process::exit(1);
+        }
+    };
 
     // Secret store: OS keychain on desktop.
     let secret_store: Arc<dyn fe_identity::SecretStore> =

@@ -36,6 +36,9 @@ pub(super) struct DescriptorCaches<'w, 's> {
     /// correlations + writes the endpoint property bag; `NodePropertiesLoaded`
     /// re-hydrates region→node on reload (§sculpt in actions/AGENTS.md).
     earthwork_map: ResMut<'w, crate::actions::terrain_proposal::EarthworkNodeMap>,
+    /// Proposal-mirror rehydration target for `PetalTerrainLoaded` (data-loss
+    /// fix: the mirror must be seeded from the doc before any embed persists).
+    proposal_state: ResMut<'w, crate::terrain_proposal_state::ProposalEditState>,
     spawned: Query<
         'w,
         's,
@@ -309,7 +312,13 @@ pub(super) fn apply_db_results(
             | DbResult::FieldDefUpdated { .. }
             | DbResult::FieldDefDeleted { .. } => {}
             DbResult::PetalTerrainLoaded { petal_id, terrain } => {
-                terrain::handle_petal_terrain_loaded(petal_id, terrain, &nav, &mut petal_map)
+                terrain::handle_petal_terrain_loaded(
+                    petal_id,
+                    terrain,
+                    &nav,
+                    &mut petal_map,
+                    &mut caches.proposal_state,
+                )
             }
             _ => {}
         }
@@ -1278,13 +1287,14 @@ mod tests {
     fn petal_terrain_loaded_gates_on_active_petal() {
         let mut nav = NavigationManager::default();
         let mut map = crate::terrain_map::PetalMapState::default();
+        let mut props = crate::terrain_proposal_state::ProposalEditState::default();
         let terrain = Some(json!({"world_scale": 2.5, "tileset_hexon_uris": ["hexon://a"]}));
         // Inactive petal → untouched.
-        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map);
+        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map, &mut props);
         assert!(!map.loaded);
         // Active petal → parsed.
         nav.active_petal_id = Some("p1".into());
-        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map);
+        terrain::handle_petal_terrain_loaded("p1", &terrain, &nav, &mut map, &mut props);
         assert!(map.loaded);
         assert_eq!(map.world_scale, 2.5);
         assert_eq!(map.tileset_ids, vec!["hexon://a".to_string()]);

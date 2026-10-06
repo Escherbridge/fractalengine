@@ -18,7 +18,7 @@ pub(crate) fn drain_tileset_events(
         return;
     }
 
-    let events: Vec<fe_sync::SyncEvent> = tileset_buf.events.drain(..).collect();
+    let events: Vec<fe_sync::SyncEvent> = std::mem::take(&mut tileset_buf.events);
 
     for evt in events {
         match evt {
