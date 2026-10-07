@@ -18,13 +18,21 @@ pub enum SyncCommand {
     FetchBlob { hash: BlobHash, verse_id: String },
     /// Open (or join) an iroh-docs replica for a verse.
     ///
-    /// Phase E: creates an `IrohDocsReplicator` (stub) and inserts it into the
-    /// sync thread's replica map. The `namespace_secret` is `Some` if the
-    /// local node is the owner; `None` for read-only join.
+    /// Creates an `IrohDocsReplicator` and opens its document: with the
+    /// `namespace_secret` present the namespace is imported as a write
+    /// capability; without it the namespace is opened read-only (a previously
+    /// imported / ticket-joined replica).
+    ///
+    /// `bootstrap_peers` carries serialized iroh `NodeAddr` entries (JSON) to
+    /// dial when the replica starts syncing — empty for the default
+    /// `FE_SYNC_BOOTSTRAP` set.
     OpenVerseReplica {
         verse_id: String,
         namespace_id: String,
         namespace_secret: Option<String>,
+        /// JSON-serialized `iroh::NodeAddr` values parsed with iroh's own
+        /// serde types; invalid entries warn loudly and are skipped.
+        bootstrap_peers: Vec<String>,
     },
     /// Close a previously-opened verse replica.
     CloseVerseReplica { verse_id: String },
@@ -93,10 +101,23 @@ pub enum SyncEvent {
     ///
     /// `online == true` means the iroh endpoint bound successfully and the
     /// node is reachable (at least via relay).  `false` means the thread is
-    /// running in offline/local-only mode.
-    Started { online: bool },
+    /// running in offline/local-only mode. `node_addr` is the JSON-serialized
+    /// `iroh::NodeAddr` peers can dial us on, when online.
+    Started {
+        online: bool,
+        node_addr: Option<String>,
+    },
     /// A blob is now available in the local blob store.
     BlobReady { hash: BlobHash },
+    /// An inbound replicated row was received from a peer and forwarded to
+    /// the DB thread via `DbCommand::ApplyReplicatedRow` (A4). The DB thread
+    /// applies it as the single writer; the durable outcome comes back as
+    /// `DbResult::ReplicatedRowApplied`.
+    RowApplied {
+        verse_id: String,
+        table: String,
+        record_id: String,
+    },
     /// The sync thread has shut down.
     Stopped,
     /// A peer has connected to the current verse.
@@ -205,6 +226,7 @@ mod tests {
                 verse_id: "v1".into(),
                 namespace_id: "ns1".into(),
                 namespace_secret: Some("secret".into()),
+                bootstrap_peers: vec![],
             }
             .clone()
         );
@@ -245,9 +267,40 @@ mod tests {
 
     #[test]
     fn sync_event_debug_clone() {
-        let _ = format!("{:?}", SyncEvent::Started { online: true }.clone());
+        let _ = format!(
+            "{:?}",
+            SyncEvent::Started {
+                online: true,
+                node_addr: None,
+            }
+            .clone()
+        );
         let _ = format!("{:?}", SyncEvent::BlobReady { hash: [1u8; 32] }.clone());
         let _ = format!("{:?}", SyncEvent::Stopped.clone());
+    }
+
+    #[test]
+    fn row_applied_debug_clone() {
+        let ev = SyncEvent::RowApplied {
+            verse_id: "verse-1".into(),
+            table: "node".into(),
+            record_id: "node-9".into(),
+        };
+        let dbg = format!("{:?}", ev.clone());
+        assert!(dbg.contains("RowApplied"));
+        assert!(dbg.contains("node-9"));
+        match ev {
+            SyncEvent::RowApplied {
+                verse_id,
+                table,
+                record_id,
+            } => {
+                assert_eq!(verse_id, "verse-1");
+                assert_eq!(table, "node");
+                assert_eq!(record_id, "node-9");
+            }
+            _ => panic!("expected RowApplied"),
+        }
     }
 
     #[test]

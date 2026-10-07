@@ -46,8 +46,15 @@ async fn read_local_tombstoned(db: &Db, node_id: &str) -> anyhow::Result<(bool, 
 /// must NOT resurrect it. This is the durable counterpart of
 /// `fe_entity_store::EntityStore::upsert`'s in-memory tombstone guard, and the
 /// function `fe-sync`'s reconciliation drives for inbound rows.
+///
+/// Geometry-safe against the real SCHEMAFULL schema (§geometry-inserts): the
+/// `position` column is extracted from the payload and written with an
+/// explicit `<geometry<point>>` cast — never bound raw through
+/// CONTENT/MERGE — and a CREATE backfills the schema-required core fields
+/// (a minimal remote tombstone for a node we never had carries only
+/// `node_id`/`petal_id`/`tombstone`).
 pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<MergeApplied> {
-    let incoming: serde_json::Value = serde_json::from_slice(row_json)
+    let mut incoming: serde_json::Value = serde_json::from_slice(row_json)
         .map_err(|e| anyhow::anyhow!("apply_replicated_node: bad row JSON: {e}"))?;
     let Some(node_id) = incoming.get("node_id").and_then(|v| v.as_str()) else {
         return Ok(MergeApplied::NotANode);
@@ -59,6 +66,9 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
         .map(|t| !t.is_null())
         .unwrap_or(false);
 
+    // Geometry column: extract before any CONTENT/MERGE bind (§geometry-inserts).
+    let position = extract_point_2d(&mut incoming);
+
     let (exists, local_tombstoned) = read_local_tombstoned(db, &node_id).await?;
 
     // Non-resurrection: a local delete wins over a stale live write (D-A7/N-4).
@@ -69,11 +79,11 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
 
     // Incoming tombstone converges the local row to deleted (merge-safe).
     if incoming_tombstoned {
-        let marker = incoming
-            .get("tombstone")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
         if exists {
+            let marker = incoming
+                .get("tombstone")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
             db.query("UPDATE node SET tombstone = $ts WHERE node_id = $nid")
                 .bind(("ts", marker))
                 .bind(("nid", node_id.clone()))
@@ -81,11 +91,11 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
                 .check()
                 .map_err(|e| anyhow::anyhow!("merge apply-tombstone failed: {e}"))?;
         } else {
-            db.query("CREATE node CONTENT $row")
-                .bind(("row", incoming.clone()))
-                .await?
-                .check()
-                .map_err(|e| anyhow::anyhow!("merge create-tombstoned failed: {e}"))?;
+            // Schema-required core first (inline geometry cast), then the
+            // payload's remaining fields — including the tombstone itself —
+            // merge onto the fresh row.
+            create_core_node(db, &incoming, &node_id, position).await?;
+            merge_remaining_fields(db, &incoming, &node_id).await?;
         }
         return Ok(MergeApplied::AppliedTombstone);
     }
@@ -98,14 +108,107 @@ pub async fn apply_replicated_node(db: &Db, row_json: &[u8]) -> anyhow::Result<M
             .await?
             .check()
             .map_err(|e| anyhow::anyhow!("merge update failed: {e}"))?;
+        if let Some((x, z)) = position {
+            db.query("UPDATE node SET position = <geometry<point>> [$x, $z] WHERE node_id = $nid")
+                .bind(("x", x))
+                .bind(("z", z))
+                .bind(("nid", node_id.clone()))
+                .await?
+                .check()
+                .map_err(|e| anyhow::anyhow!("merge position cast failed: {e}"))?;
+        }
     } else {
-        db.query("CREATE node CONTENT $row")
-            .bind(("row", incoming.clone()))
-            .await?
-            .check()
-            .map_err(|e| anyhow::anyhow!("merge create failed: {e}"))?;
+        create_core_node(db, &incoming, &node_id, position).await?;
+        merge_remaining_fields(db, &incoming, &node_id).await?;
     }
     Ok(MergeApplied::Applied)
+}
+
+/// Extract + remove the `position` geometry column from a node payload.
+/// Accepts the two wire shapes a serialized node row can carry: the GeoJSON
+/// Point Surreal returns from a `geometry<point>` column, or a plain
+/// `[x, z]` array.
+fn extract_point_2d(row: &mut serde_json::Value) -> Option<(f64, f64)> {
+    let obj = row.as_object_mut()?;
+    let pos = obj.remove("position")?;
+    let coords = match &pos {
+        serde_json::Value::Array(a) if a.len() >= 2 => Some(a),
+        serde_json::Value::Object(o) => o.get("coordinates").and_then(|c| c.as_array()),
+        _ => None,
+    }?;
+    let x = coords.first().and_then(|v| v.as_f64())?;
+    let z = coords.get(1).and_then(|v| v.as_f64())?;
+    Some((x, z))
+}
+
+/// Create the schema-required core of a node row with an **inline geometry
+/// cast** (§geometry-inserts) — the hand-written-statement pattern of the
+/// crud handlers. A `CREATE … CONTENT $row` bind cannot express the cast,
+/// and omitting `position`/`rotation`/`scale`/`created_at` fails the
+/// SCHEMAFULL type check, so absent rows go through this statement first.
+async fn create_core_node(
+    db: &Db,
+    incoming: &serde_json::Value,
+    node_id: &str,
+    position: Option<(f64, f64)>,
+) -> anyhow::Result<()> {
+    let petal_id = incoming
+        .get("petal_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if incoming.get("petal_id").and_then(|v| v.as_str()).is_none() {
+        tracing::warn!(
+            node_id,
+            "replicated node row lacks petal_id — creating with an empty scope"
+        );
+    }
+    let (x, z) = position.unwrap_or((0.0, 0.0));
+    let created_at = incoming
+        .get("created_at")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    db.query(
+        "CREATE node SET \
+         node_id = $nid, \
+         petal_id = $pid, \
+         position = <geometry<point>> [$x, $z], \
+         rotation = [0.0, 0.0, 0.0, 1.0], \
+         scale = [1.0, 1.0, 1.0], \
+         created_at = $created",
+    )
+    .bind(("nid", node_id.to_string()))
+    .bind(("pid", petal_id))
+    .bind(("x", x))
+    .bind(("z", z))
+    .bind(("created", created_at))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("merge core-create failed: {e}"))?;
+    Ok(())
+}
+
+/// Merge the payload's non-geometry fields onto an existing row (the core
+/// statement has just created it).
+async fn merge_remaining_fields(
+    db: &Db,
+    incoming: &serde_json::Value,
+    node_id: &str,
+) -> anyhow::Result<()> {
+    // Strip nulls first: SurrealDB `option<T>` rejects explicit `null`
+    // (absence means NONE — same contract as `Repo`'s create paths).
+    let mut row = incoming.clone();
+    if let Some(obj) = row.as_object_mut() {
+        obj.retain(|_, v| !v.is_null());
+    }
+    db.query("UPDATE node MERGE $row WHERE node_id = $nid")
+        .bind(("row", row))
+        .bind(("nid", node_id.to_string()))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("merge create-fields failed: {e}"))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

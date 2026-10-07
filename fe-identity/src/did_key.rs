@@ -21,6 +21,17 @@ pub fn pub_key_to_did_key(pub_key: &VerifyingKey) -> String {
     did_key_from_public_key(pub_key)
 }
 
+/// Convert a raw Ed25519 public key (32 bytes) to did:key format.
+///
+/// Returns `None` only if the bytes are not a valid curve point. Callers
+/// holding a key from another wrapper type (e.g. iroh's `PublicKey`) use this
+/// instead of round-tripping through `VerifyingKey`.
+pub fn did_key_from_public_key_bytes(pub_key_bytes: &[u8; 32]) -> Option<String> {
+    VerifyingKey::from_bytes(pub_key_bytes)
+        .ok()
+        .map(|vk| did_key_from_public_key(&vk))
+}
+
 /// Parse a did:key string back to an Ed25519 VerifyingKey.
 ///
 /// Expects `did:key:z<base58btc>` where the decoded bytes start with the

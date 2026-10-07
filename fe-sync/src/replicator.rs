@@ -4,12 +4,41 @@
 //! the DB-to-sync bridge and subscriber loop can be tested against a mock
 //! without a running iroh endpoint.
 //!
-//! We use `async fn in trait` (RPITIT, stabilised in Rust 1.75) to avoid the
-//! `async-trait` proc-macro dependency.
+//! The trait is async. To keep it dyn-compatible (`Box<dyn VerseReplicator>`
+//! in the sync thread) without the `async-trait` proc-macro dependency, the
+//! methods return hand-boxed futures ([`ReplicatorFuture`]) — the same
+//! desugaring `async-trait` performs, minus the dependency.
+//!
+//! `IrohDocsReplicator` rides the real iroh-docs 0.35 `Doc` client
+//! (`set_bytes` / `subscribe` / `del` / `close`) whenever the P2P stack is
+//! online, and degrades to the in-memory [`MockVerseReplicator`] only when it
+//! is not (offline bind failure, stack spawn failure, or an unusable
+//! namespace capability). See `fe-sync/src/AGENTS.md` §iroh-0.35.
 
 use fe_runtime::blob_store::BlobHash;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+
+use bytes::Bytes;
+use futures_lite::{Stream, StreamExt};
+use iroh_blobs::store::fs::Store as FsBlobStore;
+use iroh_docs::engine::LiveEvent;
+use iroh_docs::rpc::client::docs::Doc;
+use iroh_docs::{AuthorId, Capability, NamespaceId, NamespaceSecret};
+use tokio::sync::mpsc;
+
+/// Boxed async return for the dyn-compatible trait methods.
+pub type ReplicatorFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// The in-process docs client connector — the transport `MemClient` rides.
+type DocsFlumeConnector = quic_rpc::transport::flume::FlumeConnector<
+    iroh_docs::rpc::proto::Response,
+    iroh_docs::rpc::proto::Request,
+>;
+
+/// A live iroh-docs document handle as handed out by the in-process client.
+pub type DocHandle = Doc<DocsFlumeConnector>;
 
 // ---------------------------------------------------------------------------
 // RowChange — a single replicated row event
@@ -26,17 +55,24 @@ pub struct RowChange {
     pub content_hash: BlobHash,
     /// DID or public key identifying the author of the change.
     pub author_id: String,
-    /// Lamport-style timestamp for ordering.
+    /// The entry's timestamp (iroh-docs entries carry microsecond wall time).
     pub timestamp: u64,
     /// If true this entry represents a deletion (tombstone).
     pub is_tombstone: bool,
+    /// The row's payload bytes so the inbound apply path never has to re-read
+    /// a blob store (A4: the DB thread applies what the wire delivered).
+    pub data: Vec<u8>,
 }
 
 /// Whether a serialized row JSON represents a tombstoned (soft-deleted) node —
-/// i.e. it carries a non-null `tombstone` field (FR-1). Used to set
-/// [`RowChange::is_tombstone`] so the merge path honors deletes and never
+/// i.e. it carries a non-null `tombstone` field (FR-1), or the payload is
+/// empty (the iroh-docs `del` marker — an empty entry is a deletion). Used to
+/// set [`RowChange::is_tombstone`] so the merge path honors deletes and never
 /// resurrects a tombstoned node (N-4).
 pub fn row_is_tombstone(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return true;
+    }
     serde_json::from_slice::<serde_json::Value>(data)
         .ok()
         .and_then(|v| v.get("tombstone").map(|t| !t.is_null()))
@@ -57,20 +93,24 @@ pub fn row_is_tombstone(data: &[u8]) -> bool {
 pub trait VerseReplicator: Send + Sync {
     /// Write (or overwrite) a row entry in the replica.
     ///
-    /// The entry key is `"{table}/{record_id}"`. The value is the BLAKE3
-    /// content hash of the serialised row JSON (the actual bytes live in the
-    /// blob store, not in the replica).
-    fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()>;
+    /// The entry key is `"{table}/{record_id}"`. The value is the row payload
+    /// bytes (`Doc::set_bytes`); an empty `data` writes a deletion marker
+    /// (`Doc::del`).
+    fn write_row(
+        &self,
+        table: &str,
+        record_id: &str,
+        data: &[u8],
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 
     /// Subscribe to incoming row changes from peers.
     ///
-    /// Returns a receiver that yields `RowChange` events. The receiver is
-    /// unbounded-ish (bounded to 1024 in the mock). Dropping the receiver
-    /// unsubscribes.
-    fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>;
+    /// Returns a receiver that yields `RowChange` events. Dropping the
+    /// receiver unsubscribes.
+    fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>>;
 
     /// Close the replica, flushing any pending state.
-    fn close(&self) -> anyhow::Result<()>;
+    fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +123,7 @@ pub trait VerseReplicator: Send + Sync {
 /// Every `write_row` call broadcasts a `RowChange` to all active subscribers.
 pub struct MockVerseReplicator {
     entries: Mutex<HashMap<String, Vec<u8>>>,
-    subscribers: Mutex<Vec<tokio::sync::mpsc::Sender<RowChange>>>,
+    subscribers: Mutex<Vec<mpsc::Sender<RowChange>>>,
     author_id: String,
     closed: Mutex<bool>,
 }
@@ -114,60 +154,75 @@ impl MockVerseReplicator {
 }
 
 impl VerseReplicator for MockVerseReplicator {
-    fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()> {
-        if *self.closed.lock().unwrap() {
-            anyhow::bail!("MockVerseReplicator is closed");
-        }
+    fn write_row(
+        &self,
+        table: &str,
+        record_id: &str,
+        data: &[u8],
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        let table = table.to_string();
+        let record_id = record_id.to_string();
+        let data = data.to_vec();
+        Box::pin(async move {
+            if *self.closed.lock().unwrap() {
+                anyhow::bail!("MockVerseReplicator is closed");
+            }
 
-        let key = format!("{table}/{record_id}");
-        let content_hash: BlobHash = *blake3::hash(data).as_bytes();
+            let key = format!("{table}/{record_id}");
+            let content_hash: BlobHash = *blake3::hash(&data).as_bytes();
 
-        self.entries
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
-            .insert(key, data.to_vec());
+            self.entries
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
+                .insert(key, data.clone());
 
-        // Notify subscribers. `is_tombstone` is derived from the row content so
-        // a soft-deleted node propagates as a tombstone the merge path honors
-        // (N-4) — previously hardcoded `false`, which silently dropped deletes.
-        let change = RowChange {
-            table: table.to_string(),
-            record_id: record_id.to_string(),
-            content_hash,
-            author_id: self.author_id.clone(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-            is_tombstone: row_is_tombstone(data),
-        };
+            // Notify subscribers. `is_tombstone` is derived from the row content so
+            // a soft-deleted node propagates as a tombstone the merge path honors
+            // (N-4) — previously hardcoded `false`, which silently dropped deletes.
+            let change = RowChange {
+                table,
+                record_id,
+                content_hash,
+                author_id: self.author_id.clone(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros() as u64,
+                is_tombstone: row_is_tombstone(&data),
+                data,
+            };
 
-        let mut subs = self
-            .subscribers
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        subs.retain(|tx| tx.try_send(change.clone()).is_ok());
+            let mut subs = self
+                .subscribers
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            subs.retain(|tx| tx.try_send(change.clone()).is_ok());
 
-        Ok(())
+            Ok(())
+        })
     }
 
-    fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>> {
-        let (tx, rx) = tokio::sync::mpsc::channel(1024);
-        self.subscribers
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
-            .push(tx);
-        Ok(rx)
+    fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>> {
+        Box::pin(async move {
+            let (tx, rx) = mpsc::channel(1024);
+            self.subscribers
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
+                .push(tx);
+            Ok(rx)
+        })
     }
 
-    fn close(&self) -> anyhow::Result<()> {
-        *self.closed.lock().unwrap() = true;
-        // Drop all subscriber senders
-        self.subscribers
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
-            .clear();
-        Ok(())
+    fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        Box::pin(async move {
+            *self.closed.lock().unwrap() = true;
+            // Drop all subscriber senders
+            self.subscribers
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
+                .clear();
+            Ok(())
+        })
     }
 }
 
@@ -288,31 +343,39 @@ impl IrohDocsEngineHolder {
 }
 
 // ---------------------------------------------------------------------------
-// IrohDocsReplicator — backed by iroh-docs Engine (Phase F.1)
+// IrohDocsReplicator — backed by the real iroh-docs Doc client (A2)
 // ---------------------------------------------------------------------------
 
-/// Implementation of `VerseReplicator` backed by iroh-docs.
+/// Implementation of `VerseReplicator` backed by iroh-docs 0.35.
 ///
-/// The real P2P stack (Blobs + Gossip + Docs + Router) now lives in the
-/// `engine_holder`; the Doc-backed write/subscribe path rides it once the
-/// `VerseReplicator` trait goes async (the 0.35 `Doc` client is async-only).
-/// Until that rewrite lands, operations delegate to the in-memory mock for
-/// every mode, online or offline — degradation is total, never a crash.
-/// See `fe-sync/src/AGENTS.md` §iroh-0.35.
+/// Online (the stack spawned and the namespace capability usable) every
+/// operation rides the real `Doc` handle: `write_row` → `set_bytes` (or `del`
+/// for empty payloads), `subscribe` → a `LiveEvent` pump that maps
+/// `InsertRemote`/`ContentReady` into `RowChange`s carrying the payload bytes
+/// read from the blobs store, `close` → `Doc::close`.
+///
+/// Offline or when the namespace capability cannot be imported, operations
+/// fall back to the in-memory mock — degradation is total, never a crash.
 pub struct IrohDocsReplicator {
     pub namespace_id: String,
     pub namespace_secret: String,
     /// The shared stack holder (online or offline/mock).
     engine_holder: Arc<IrohDocsEngineHolder>,
-    /// In-memory backing store (used until the Doc-backed path lands; also
-    /// the offline fallback).
+    /// In-memory backing store — the offline fallback.
     inner: MockVerseReplicator,
+    /// Live Doc handle when the namespace opened on the real stack.
+    doc: RwLock<Option<DocHandle>>,
+    /// The node's default author for `set_bytes` writes.
+    author: RwLock<Option<AuthorId>>,
+    /// Abort handle of the live-event pump spawned by the last `subscribe`.
+    pump: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl IrohDocsReplicator {
     /// Create a new replicator for a given namespace.
     ///
-    /// `author_id` is the local peer's DID / public key.
+    /// `author_id` is the local peer's DID / public key. The document itself is
+    /// opened by [`Self::open_document`].
     pub fn new(
         namespace_id: String,
         namespace_secret: String,
@@ -324,44 +387,396 @@ impl IrohDocsReplicator {
             namespace_secret,
             engine_holder,
             inner: MockVerseReplicator::new(author_id),
+            doc: RwLock::new(None),
+            author: RwLock::new(None),
+            pump: Mutex::new(None),
         }
     }
 
-    /// Open the document for this namespace.
+    /// Whether the real Doc-backed path is active (stack online + doc open).
+    pub fn is_doc_backed(&self) -> bool {
+        self.doc.read().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    fn live_doc(&self) -> Option<DocHandle> {
+        self.doc.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn live_author(&self) -> Option<AuthorId> {
+        *self.author.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Open the document for this namespace on the real stack.
     ///
-    /// No-op until the Doc-backed path lands with the async trait rewrite;
-    /// the sync thread opens/imports namespaces itself then.
-    pub fn open_document(&self) -> anyhow::Result<()> {
-        // TODO(iroh-0.35): import/open the iroh-docs Doc via the holder's
-        // docs client (async trait rewrite).
+    /// A non-empty `namespace_secret` is validated **eagerly** — an
+    /// unparseable secret surfaces as an error even when the stack is
+    /// offline, so a bad config is never silently deferred past startup.
+    /// With a valid secret the verse namespace is imported as a **write
+    /// capability** (`Capability::Write(NamespaceSecret)`); without one the
+    /// namespace id is opened read-only (`Client::open` — a previously
+    /// imported or ticket-joined replica). Any failure is returned as an
+    /// error; the caller keeps the mock-backed replicator, it never crashes.
+    pub async fn open_document(&self) -> anyhow::Result<()> {
+        if !self.namespace_secret.is_empty() {
+            // Surface config errors eagerly, stack or no stack.
+            parse_secret_hex(&self.namespace_secret)?;
+        }
+        let Some(client) = self.engine_holder.docs_client() else {
+            tracing::debug!(
+                ns = %self.namespace_id,
+                "P2P stack offline — replica stays on the in-memory mock"
+            );
+            return Ok(());
+        };
+
+        let author = client
+            .authors()
+            .default()
+            .await
+            .map_err(|e| anyhow::anyhow!("resolving default author: {e}"))?;
+
+        let doc = if !self.namespace_secret.is_empty() {
+            let secret_bytes = parse_secret_hex(&self.namespace_secret)?;
+            let secret = NamespaceSecret::from_bytes(&secret_bytes);
+            let doc = client
+                .import_namespace(Capability::Write(secret))
+                .await
+                .map_err(|e| anyhow::anyhow!("importing namespace capability: {e}"))?;
+            tracing::info!(
+                ns = %self.namespace_id,
+                iroh_ns = %doc.id().fmt_short(),
+                mode = "write-capability",
+                "Opened verse replica document on the real iroh-docs stack"
+            );
+            doc
+        } else {
+            let ns = parse_namespace_id(&self.namespace_id)?;
+            match client.open(ns).await? {
+                Some(doc) => {
+                    tracing::info!(
+                        ns = %self.namespace_id,
+                        mode = "read-only",
+                        "Opened verse replica document on the real iroh-docs stack"
+                    );
+                    doc
+                }
+                None => anyhow::bail!("namespace {ns} is not a known local replica"),
+            }
+        };
+
+        *self.doc.write().unwrap_or_else(|e| e.into_inner()) = Some(doc);
+        *self.author.write().unwrap_or_else(|e| e.into_inner()) = Some(author);
+        Ok(())
+    }
+
+    /// Join the live sync swarm for this replica, dialing `peers`.
+    ///
+    /// No-op on the mock fallback (no document to sync).
+    pub async fn start_sync(&self, peers: Vec<iroh::NodeAddr>) -> anyhow::Result<()> {
+        let Some(doc) = self.live_doc() else {
+            return Ok(());
+        };
+        doc.start_sync(peers)
+            .await
+            .map_err(|e| anyhow::anyhow!("start_sync: {e}"))
+    }
+
+    async fn write_row_inner(
+        &self,
+        table: &str,
+        record_id: &str,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        let Some(doc) = self.live_doc() else {
+            tracing::debug!(
+                ns = %self.namespace_id,
+                key = %format!("{table}/{record_id}"),
+                "write_row on mock fallback (doc unavailable)"
+            );
+            return VerseReplicator::write_row(&self.inner, table, record_id, data).await;
+        };
+        let Some(author) = self.live_author() else {
+            anyhow::bail!("document open but no author resolved");
+        };
+
+        let key = format!("{table}/{record_id}");
+        if data.is_empty() {
+            // Empty payload = deletion marker (tombstone semantics, `Doc::del`
+            // inserts an empty entry — detected by `row_is_tombstone`).
+            let removed = doc
+                .del(author, key.as_bytes().to_vec())
+                .await
+                .map_err(|e| anyhow::anyhow!("del {key}: {e}"))?;
+            tracing::debug!(ns = %doc.id().fmt_short(), key = %key, removed, "tombstone written");
+        } else {
+            doc.set_bytes(author, key.as_bytes().to_vec(), data.to_vec())
+                .await
+                .map_err(|e| anyhow::anyhow!("set_bytes {key}: {e}"))?;
+            tracing::debug!(ns = %doc.id().fmt_short(), key = %key, "row written");
+        }
         Ok(())
     }
 }
 
 impl VerseReplicator for IrohDocsReplicator {
-    fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()> {
-        // TODO(iroh-0.35): route through the real iroh-docs Doc via the
-        // holder's docs client (async trait rewrite) — the stack is real,
-        // but this path still writes the in-memory mock until then.
-        tracing::debug!(
-            ns = %self.namespace_id,
-            key = %format!("{table}/{record_id}"),
-            stack_available = self.engine_holder.is_available(),
-            backend = "mock (doc-backed path pending)",
-            "IrohDocsReplicator::write_row"
+    fn write_row(
+        &self,
+        table: &str,
+        record_id: &str,
+        data: &[u8],
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        // Own the params inside the boxed future so the returned future
+        // borrows only `self` — the trait's `ReplicatorFuture<'_>` ties to
+        // `&self` and the param lifetimes may be shorter.
+        let table = table.to_string();
+        let record_id = record_id.to_string();
+        let data = data.to_vec();
+        Box::pin(async move { self.write_row_inner(&table, &record_id, &data).await })
+    }
+
+    fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>> {
+        Box::pin(async move {
+            let Some(doc) = self.live_doc() else {
+                tracing::debug!(ns = %self.namespace_id, "subscribe on mock fallback");
+                return VerseReplicator::subscribe(&self.inner).await;
+            };
+            let Some(stack) = self.engine_holder.stack() else {
+                anyhow::bail!("document open but stack unavailable");
+            };
+
+            let stream = doc
+                .subscribe()
+                .await
+                .map_err(|e| anyhow::anyhow!("doc subscribe: {e}"))?;
+            let (tx, rx) = mpsc::channel::<RowChange>(1024);
+            let handle = tokio::spawn(pump_live_events(
+                Box::pin(stream),
+                stack.blobs().store().clone(),
+                tx,
+            ));
+            *self.pump.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
+            Ok(rx)
+        })
+    }
+
+    fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        Box::pin(async move {
+            // Stop the inbound pump first so no further rows are emitted.
+            if let Some(handle) = self.pump.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                handle.abort();
+            }
+            // Take the doc out of the write lock BEFORE awaiting — an
+            // `RwLockWriteGuard` held across an await makes the future
+            // non-Send.
+            let doc = self.doc.write().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(doc) = doc {
+                if let Err(e) = doc.close().await {
+                    tracing::warn!(ns = %self.namespace_id, "Doc close failed: {e}");
+                }
+                *self.author.write().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+            VerseReplicator::close(&self.inner).await
+        })
+    }
+}
+
+/// Parse a hex-encoded 32-byte namespace secret.
+fn parse_secret_hex(secret: &str) -> anyhow::Result<[u8; 32]> {
+    hex::decode(secret.trim())
+        .map_err(|e| anyhow::anyhow!("namespace secret is not valid hex: {e}"))
+        .and_then(|bytes| {
+            bytes.try_into().map_err(|v: Vec<u8>| {
+                anyhow::anyhow!("namespace secret must be 32 bytes, got {}", v.len())
+            })
+        })
+}
+
+/// Parse a hex-encoded iroh-docs `NamespaceId`.
+fn parse_namespace_id(ns_hex: &str) -> anyhow::Result<NamespaceId> {
+    use std::str::FromStr;
+    NamespaceId::from_str(ns_hex.trim()).map_err(|e| anyhow::anyhow!("invalid namespace id: {e}"))
+}
+
+/// An entry whose content has not finished downloading yet.
+#[derive(Debug, Clone)]
+struct PendingContent {
+    table: String,
+    record_id: String,
+    content_hash: BlobHash,
+    author_id: String,
+    timestamp: u64,
+}
+
+/// Map an iroh peer public key to the app's `did:key` identity form.
+fn peer_did_key(peer: &iroh::PublicKey) -> String {
+    fe_identity::did_key::did_key_from_public_key_bytes(peer.as_bytes())
+        .unwrap_or_else(|| peer.to_string())
+}
+
+/// Read one blob's full content bytes from the iroh-blobs fs store.
+async fn read_blob_bytes(store: &FsBlobStore, hash: &iroh_blobs::Hash) -> anyhow::Result<Bytes> {
+    use iroh_blobs::store::Map;
+    use iroh_io::AsyncSliceReaderExt;
+
+    let entry = store
+        .get(hash)
+        .await
+        .map_err(|e| anyhow::anyhow!("blob store lookup: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("blob {} not in the local store", hash))?;
+    if !entry.is_complete() {
+        anyhow::bail!("blob {} is incomplete", hash);
+    }
+    // The fs store's `data_reader` is a synchronous inherent method.
+    let mut reader = entry.data_reader();
+    reader
+        .read_to_end()
+        .await
+        .map_err(|e| anyhow::anyhow!("reading blob bytes: {e}"))
+}
+
+/// The per-replica inbound event pump: maps the iroh-docs `LiveEvent` stream
+/// to `RowChange`s carrying the payload bytes.
+///
+/// - `InsertLocal` is skipped — our own writes must never loop back (E.8).
+/// - `InsertRemote` entries whose content is already local are emitted
+///   immediately; entries whose content is still downloading are stashed until
+///   `ContentReady` fires for their hash.
+/// - Empty entries (`Doc::del` markers) carry no content; they are emitted
+///   immediately as tombstones.
+async fn pump_live_events(
+    mut stream: std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<LiveEvent>> + Send>>,
+    blobs: FsBlobStore,
+    out: mpsc::Sender<RowChange>,
+) {
+    // Entries whose content hash has not finished downloading yet.
+    let mut pending: HashMap<iroh_blobs::Hash, Vec<PendingContent>> = HashMap::new();
+
+    while let Some(event) = stream.next().await {
+        let event = match event {
+            Ok(event) => event,
+            Err(e) => {
+                tracing::warn!("replica event stream error: {e}");
+                continue;
+            }
+        };
+        match event {
+            LiveEvent::InsertLocal { entry } => {
+                // Loop prevention at the source: our own write echoing back.
+                tracing::debug!(key = ?String::from_utf8_lossy(entry.key()), "local insert skipped");
+            }
+            LiveEvent::InsertRemote {
+                entry,
+                content_status,
+                from,
+            } => {
+                let key = String::from_utf8_lossy(entry.key()).into_owned();
+                let Some((table, record_id)) = key.split_once('/') else {
+                    tracing::warn!(key = %key, "replica entry key not in table/id form — skipped");
+                    continue;
+                };
+                let content_hash: BlobHash = *entry.content_hash().as_bytes();
+                let meta = PendingContent {
+                    table: table.to_string(),
+                    record_id: record_id.to_string(),
+                    content_hash,
+                    author_id: peer_did_key(&from),
+                    timestamp: entry.timestamp(),
+                };
+                if entry.record().is_empty() {
+                    // Deletion marker: no content to download.
+                    let change = RowChange {
+                        table: meta.table,
+                        record_id: meta.record_id,
+                        content_hash: meta.content_hash,
+                        author_id: meta.author_id,
+                        timestamp: meta.timestamp,
+                        is_tombstone: true,
+                        data: Vec::new(),
+                    };
+                    if out.send(change).await.is_err() {
+                        return; // receiver dropped — replica closed
+                    }
+                    continue;
+                }
+                match content_status {
+                    iroh_docs::ContentStatus::Complete => {
+                        let data = match read_blob_bytes(&blobs, &entry.content_hash()).await {
+                            Ok(data) => data,
+                            Err(e) => {
+                                tracing::warn!(
+                                    key = %key,
+                                    "reading replica entry content failed: {e}"
+                                );
+                                continue;
+                            }
+                        };
+                        let data = data.to_vec();
+                        let change = RowChange {
+                            table: meta.table,
+                            record_id: meta.record_id,
+                            content_hash: meta.content_hash,
+                            author_id: meta.author_id,
+                            timestamp: meta.timestamp,
+                            is_tombstone: row_is_tombstone(&data),
+                            data,
+                        };
+                        if out.send(change).await.is_err() {
+                            return;
+                        }
+                    }
+                    status => {
+                        tracing::debug!(
+                            key = %key,
+                            ?status,
+                            "replica entry content pending download"
+                        );
+                        pending.entry(entry.content_hash()).or_default().push(meta);
+                    }
+                }
+            }
+            LiveEvent::ContentReady { hash } => {
+                let Some(waiting) = pending.remove(&hash) else {
+                    continue;
+                };
+                let data = match read_blob_bytes(&blobs, &hash).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        tracing::warn!(hash = %hash, "content-ready read failed: {e}");
+                        continue;
+                    }
+                };
+                let data = data.to_vec();
+                for meta in waiting {
+                    let change = RowChange {
+                        table: meta.table,
+                        record_id: meta.record_id,
+                        content_hash: meta.content_hash,
+                        author_id: meta.author_id,
+                        timestamp: meta.timestamp,
+                        is_tombstone: row_is_tombstone(&data),
+                        data: data.clone(),
+                    };
+                    if out.send(change).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            LiveEvent::NeighborUp(peer) => {
+                tracing::debug!(peer = %peer.fmt_short(), "replica swarm neighbor up");
+            }
+            LiveEvent::NeighborDown(peer) => {
+                tracing::debug!(peer = %peer.fmt_short(), "replica swarm neighbor down");
+            }
+            LiveEvent::SyncFinished(_) | LiveEvent::PendingContentReady => {
+                tracing::debug!("replica sync progress event");
+            }
+        }
+    }
+    if !pending.is_empty() {
+        tracing::warn!(
+            count = pending.len(),
+            "replica event stream ended with content still pending"
         );
-        self.inner.write_row(table, record_id, data)
-    }
-
-    fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>> {
-        // TODO(iroh-0.35): subscribe to real iroh-docs Doc events when available.
-        tracing::debug!(ns = %self.namespace_id, "IrohDocsReplicator::subscribe (mock fallback)");
-        self.inner.subscribe()
-    }
-
-    fn close(&self) -> anyhow::Result<()> {
-        tracing::debug!(ns = %self.namespace_id, "IrohDocsReplicator::close");
-        self.inner.close()
     }
 }
 
@@ -382,13 +797,18 @@ pub trait PetalReplicator: Send + Sync {
     ///
     /// The entry key is `"/{table}/{record_id}"`. The value is the content
     /// hash of the serialised row JSON.
-    fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()>;
+    fn write_row(
+        &self,
+        table: &str,
+        record_id: &str,
+        data: &[u8],
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 
     /// Subscribe to incoming row changes from peers within this petal.
-    fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>;
+    fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>>;
 
     /// Close the replica, flushing any pending state.
-    fn close(&self) -> anyhow::Result<()>;
+    fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,8 +821,8 @@ pub trait PetalReplicator: Send + Sync {
 /// `/{table}/{record_id}` (e.g., `/node/{node_id}`).
 ///
 /// Currently backed by an in-memory store (same as MockVerseReplicator) with
-/// the petal-scoped interface. The iroh-docs wiring will connect in a future
-/// phase once the iroh endpoint lifecycle is fully integrated.
+/// the petal-scoped interface. Petal-granularity verse namespaces are a
+/// follow-up — petal rows replicate through their verse's namespace today.
 pub struct IrohPetalReplicator {
     /// The petal ID this replicator is responsible for.
     pub petal_id: String,
@@ -455,23 +875,33 @@ impl IrohPetalReplicator {
 }
 
 impl PetalReplicator for IrohPetalReplicator {
-    fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()> {
+    fn write_row(
+        &self,
+        table: &str,
+        record_id: &str,
+        data: &[u8],
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
         tracing::debug!(
             petal = %self.petal_id,
             ns = %self.namespace_id,
             key = %Self::encode_key(table, record_id),
             "IrohPetalReplicator::write_row"
         );
-        self.inner.write_row(table, record_id, data)
+        Box::pin(VerseReplicator::write_row(
+            &self.inner,
+            table,
+            record_id,
+            data,
+        ))
     }
 
-    fn subscribe(&self) -> anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>> {
-        self.inner.subscribe()
+    fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>> {
+        Box::pin(VerseReplicator::subscribe(&self.inner))
     }
 
-    fn close(&self) -> anyhow::Result<()> {
+    fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
         tracing::debug!(petal = %self.petal_id, ns = %self.namespace_id, "IrohPetalReplicator::close");
-        self.inner.close()
+        Box::pin(VerseReplicator::close(&self.inner))
     }
 }
 
@@ -482,56 +912,95 @@ impl PetalReplicator for IrohPetalReplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::docs_engine::DocsStack;
 
-    #[test]
-    fn mock_replicator_write_and_count() {
+    #[tokio::test]
+    async fn mock_replicator_write_and_count() {
         let mock = MockVerseReplicator::new("author-a");
-        mock.write_row("verse", "v1", b"{\"name\":\"test\"}")
+        mock.write_row("verse", "v1", br#"{"name":"test"}"#)
+            .await
             .unwrap();
         assert_eq!(mock.entry_count(), 1);
         assert!(mock.has_entry("verse", "v1"));
         assert!(!mock.has_entry("verse", "v2"));
     }
 
-    #[test]
-    fn mock_replicator_close_rejects_writes() {
+    #[tokio::test]
+    async fn mock_replicator_close_rejects_writes() {
         let mock = MockVerseReplicator::new("author-a");
-        mock.close().unwrap();
-        assert!(mock.write_row("verse", "v1", b"{}").is_err());
+        mock.close().await.unwrap();
+        assert!(mock.write_row("verse", "v1", b"{}").await.is_err());
     }
 
-    #[test]
-    fn mock_replicator_subscribe_receives_changes() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+    #[tokio::test]
+    async fn mock_replicator_subscribe_receives_changes() {
+        let mock = MockVerseReplicator::new("author-a");
+        let mut rx = mock.subscribe().await.unwrap();
+        mock.write_row("fractal", "f1", br#"{"name":"frac"}"#)
+            .await
             .unwrap();
-        rt.block_on(async {
-            let mock = MockVerseReplicator::new("author-a");
-            let mut rx = mock.subscribe().unwrap();
-            mock.write_row("fractal", "f1", b"{\"name\":\"frac\"}")
-                .unwrap();
-            let change = rx.try_recv().unwrap();
-            assert_eq!(change.table, "fractal");
-            assert_eq!(change.record_id, "f1");
-            assert_eq!(change.author_id, "author-a");
-            assert!(!change.is_tombstone);
-        });
+        let change = rx.try_recv().unwrap();
+        assert_eq!(change.table, "fractal");
+        assert_eq!(change.record_id, "f1");
+        assert_eq!(change.author_id, "author-a");
+        assert!(!change.is_tombstone);
     }
 
-    #[test]
-    fn iroh_docs_replicator_stub_works() {
+    #[tokio::test]
+    async fn row_change_carries_payload_bytes() {
+        // A2/A4: the inbound apply path rides the payload bytes on the event —
+        // the DB thread never re-reads a blob store for an inbound row.
+        let mock = MockVerseReplicator::new("author-a");
+        let mut rx = mock.subscribe().await.unwrap();
+        let payload = br#"{"verse_id":"v1","name":"payload"}"#;
+        mock.write_row("verse", "v1", payload).await.unwrap();
+        let change = rx.try_recv().unwrap();
+        assert_eq!(change.data, payload.to_vec());
+        assert_eq!(
+            change.content_hash,
+            *blake3::hash(payload).as_bytes(),
+            "content hash must still cover the payload bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_holder_degrades_doc_replicator_to_mock() {
+        // Mock fallback is the *offline* behavior: with an empty holder every
+        // operation must still work through the in-memory store.
         let engine_holder = Arc::new(IrohDocsEngineHolder::new());
         let repl = IrohDocsReplicator::new(
-            "ns-id-hex".to_string(),
-            "ns-secret-hex".to_string(),
+            hex::encode([1u8; 32]),
+            hex::encode([2u8; 32]),
             "local-author".to_string(),
             engine_holder,
         );
-        repl.write_row("verse", "v1", b"{\"name\":\"test\"}")
+        repl.open_document().await.unwrap();
+        assert!(!repl.is_doc_backed());
+        repl.write_row("verse", "v1", br#"{"name":"test"}"#)
+            .await
             .unwrap();
         assert_eq!(repl.inner.entry_count(), 1);
-        repl.close().unwrap();
+        assert!(!repl.is_doc_backed());
+        repl.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_secret_degrades_to_mock_without_crashing() {
+        // A garbage namespace secret (not 32-byte hex) must degrade loudly to
+        // the mock path — never a panic, never a crash.
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new());
+        let repl = IrohDocsReplicator::new(
+            "some-ns".to_string(),
+            "test-secret".to_string(),
+            "local-author".to_string(),
+            engine_holder,
+        );
+        assert!(
+            repl.open_document().await.is_err(),
+            "an unparseable secret must surface as an open error"
+        );
+        repl.write_row("verse", "v1", b"{}").await.unwrap();
+        assert!(!repl.is_doc_backed());
     }
 
     // --- IncomingEntryApplicator tests (E.7-E.9) ---
@@ -544,6 +1013,7 @@ mod tests {
             author_id: author.to_string(),
             timestamp: ts,
             is_tombstone: false,
+            data: Vec::new(),
         }
     }
 
@@ -600,16 +1070,34 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_row_propagates_is_tombstone_flag() {
+    fn row_is_tombstone_detects_empty_entry_del_marker() {
+        // iroh-docs `del` writes an empty entry (no content) — the empty
+        // payload IS the deletion marker (F2 empty-entry tombstone detection).
+        assert!(row_is_tombstone(b""));
+    }
+
+    #[tokio::test]
+    async fn tombstone_row_propagates_is_tombstone_flag() {
         let mock = MockVerseReplicator::new("author-a");
-        let mut rx = mock.subscribe().unwrap();
+        let mut rx = mock.subscribe().await.unwrap();
         mock.write_row("node", "n1", br#"{"node_id":"n1","tombstone":{"hlc":1}}"#)
+            .await
             .unwrap();
         let change = rx.try_recv().unwrap();
         assert!(
             change.is_tombstone,
             "soft-deleted row must propagate as tombstone"
         );
+        assert!(
+            !change.data.is_empty(),
+            "a soft-delete row still carries its payload"
+        );
+
+        // An empty payload (the del marker) is a tombstone with no bytes.
+        mock.write_row("node", "n2", b"").await.unwrap();
+        let change = rx.try_recv().unwrap();
+        assert!(change.is_tombstone);
+        assert!(change.data.is_empty());
     }
 
     #[test]
@@ -627,36 +1115,31 @@ mod tests {
 
     // --- IrohPetalReplicator tests ---
 
-    #[test]
-    fn petal_replicator_write_and_subscribe() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+    #[tokio::test]
+    async fn petal_replicator_write_and_subscribe() {
+        let repl = IrohPetalReplicator::new(
+            "petal-1".to_string(),
+            "ns-petal-1".to_string(),
+            "local-author".to_string(),
+        );
+        let mut rx = repl.subscribe().await.unwrap();
+        repl.write_row("node", "n1", br#"{"name":"test"}"#)
+            .await
             .unwrap();
-        rt.block_on(async {
-            let repl = IrohPetalReplicator::new(
-                "petal-1".to_string(),
-                "ns-petal-1".to_string(),
-                "local-author".to_string(),
-            );
-            let mut rx = repl.subscribe().unwrap();
-            repl.write_row("node", "n1", b"{\"name\":\"test\"}")
-                .unwrap();
-            let change = rx.try_recv().unwrap();
-            assert_eq!(change.table, "node");
-            assert_eq!(change.record_id, "n1");
-        });
+        let change = rx.try_recv().unwrap();
+        assert_eq!(change.table, "node");
+        assert_eq!(change.record_id, "n1");
     }
 
-    #[test]
-    fn petal_replicator_close_rejects_writes() {
+    #[tokio::test]
+    async fn petal_replicator_close_rejects_writes() {
         let repl = IrohPetalReplicator::new(
             "petal-2".to_string(),
             "ns-petal-2".to_string(),
             "local-author".to_string(),
         );
-        repl.close().unwrap();
-        assert!(repl.write_row("node", "n1", b"{}").is_err());
+        repl.close().await.unwrap();
+        assert!(repl.write_row("node", "n1", b"{}").await.is_err());
     }
 
     #[test]
@@ -684,5 +1167,120 @@ mod tests {
         assert!(!IrohPetalReplicator::should_apply_remote(
             100, 100, "author-a", "author-b"
         ));
+    }
+
+    // --- Real doc-backed replicator over loopback (A2 transport half) ---
+
+    /// Bind a hermetic loopback endpoint (relay disabled — loopback-only rule),
+    /// reusing the same `SyncEndpoint` seam the sync thread binds with.
+    async fn bind_loopback_endpoint(seed: u8) -> Option<iroh::Endpoint> {
+        let secret = iroh::SecretKey::from_bytes(&[seed; 32]);
+        match crate::endpoint::SyncEndpoint::new(
+            secret,
+            &crate::relay_config::RelayConfig::Disabled,
+        )
+        .await
+        {
+            Ok(ep) => Some(ep.inner().clone()),
+            Err(e) => {
+                tracing::warn!("endpoint bind failed (sandboxed env?) — skipping: {e}");
+                None
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn doc_replicator_replicates_row_over_real_transport() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (Some(ep_a), Some(ep_b)) = (
+            bind_loopback_endpoint(11).await,
+            bind_loopback_endpoint(22).await,
+        ) else {
+            return; // sandboxed environment without UDP — tolerated, see F1 tests
+        };
+
+        let stack_a = Arc::new(
+            DocsStack::spawn(ep_a.clone(), tmp.path().join("peer-a"))
+                .await
+                .expect("stack A spawns"),
+        );
+        let stack_b = Arc::new(
+            DocsStack::spawn(ep_b.clone(), tmp.path().join("peer-b"))
+                .await
+                .expect("stack B spawns"),
+        );
+        let holder_a = Arc::new(IrohDocsEngineHolder::online(stack_a.clone()));
+        let holder_b = Arc::new(IrohDocsEngineHolder::online(stack_b.clone()));
+
+        // The verse namespace: one 32-byte secret shared by both sides; the
+        // app-level namespace_id is derived the same way on both.
+        let secret = [7u8; 32];
+        let ns_id_hex = hex::encode(secret);
+
+        let alice = IrohDocsReplicator::new(
+            ns_id_hex.clone(),
+            hex::encode(secret),
+            "did:key:alice".to_string(),
+            holder_a,
+        );
+        let bob = IrohDocsReplicator::new(
+            ns_id_hex,
+            hex::encode(secret),
+            "did:key:bob".to_string(),
+            holder_b,
+        );
+        alice.open_document().await.expect("alice opens doc");
+        bob.open_document().await.expect("bob opens doc");
+        assert!(alice.is_doc_backed() && bob.is_doc_backed());
+
+        // Subscribe Bob before the write, then start BOTH docs syncing.
+        // Alice's side runs with no outbound peers — but her sync task must
+        // be running to serve the entry to the peer that dials her (the same
+        // passive-side rule `handle_open_verse_replica` follows).
+        let mut bob_rx = bob.subscribe().await.expect("bob subscribes");
+        let addr_a = ep_a.node_addr().await.expect("alice node addr");
+        bob.start_sync(vec![addr_a])
+            .await
+            .expect("bob syncs with alice");
+        alice
+            .start_sync(Vec::new())
+            .await
+            .expect("alice's doc serves entries");
+
+        // Alice writes a row through the real Doc::set_bytes path.
+        let payload = br#"{"verse_id":"v1","name":"Real Transport Verse"}"#.to_vec();
+        alice
+            .write_row("verse", "v1", &payload)
+            .await
+            .expect("alice set_bytes");
+
+        // Bob's pump must deliver the change with the payload bytes attached.
+        let change = tokio::time::timeout(std::time::Duration::from_secs(20), bob_rx.recv())
+            .await
+            .expect("replicated row arrives over the real transport")
+            .expect("pump stays alive");
+        assert_eq!(change.table, "verse");
+        assert_eq!(change.record_id, "v1");
+        assert_eq!(change.data, payload, "payload bytes must ride the event");
+        assert!(!change.is_tombstone);
+        assert_ne!(
+            change.author_id, "did:key:alice",
+            "author is the wire peer's node id, not the local did"
+        );
+
+        // Close must leave the swarm cleanly on both sides.
+        alice.close().await.unwrap();
+        bob.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_did_key_maps_iroh_node_id_to_did_key() {
+        let secret = iroh::SecretKey::from_bytes(&[33u8; 32]);
+        let node_id = secret.public();
+        let did = peer_did_key(&node_id);
+        assert!(did.starts_with("did:key:z6Mk"), "got: {did}");
+        // Round-trips through fe-identity's parser.
+        let recovered = fe_identity::did_key::public_key_from_did_key(&did).unwrap();
+        assert_eq!(recovered.to_bytes(), *node_id.as_bytes());
     }
 }

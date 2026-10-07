@@ -263,6 +263,10 @@ one sub-module per domain:
 - `petal_terrain` — per-petal terrain config get/set
 - `iot_reading` — append-only IoT sensor-reading ingestion (§iot-readings)
 - `node_log` — append-only per-node operation log (§node-log)
+- `replicated_row` — inbound P2P row apply (A4): `DbCommand::ApplyReplicatedRow`
+  → geometry-safe, tombstone-honoring durable write (`merge.rs`) + petal-scoped
+  `SceneChange`; loop-free by construction (no replication sender in scope).
+  The fe-policy role gate is F3's A3 seam (`TODO(F3/A3)` in the handler).
 
 ## §node-log
 

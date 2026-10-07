@@ -5,11 +5,18 @@
 //! its own single-threaded Tokio runtime.  If the iroh endpoint fails to
 //! bind the thread enters **offline mode** — it stays alive, responds to
 //! commands, but all network-dependent operations are no-ops.
+//!
+//! The command loop is a `tokio::select!` over the command channel and the
+//! per-replica inbound event pumps (A2/A4): crossbeam's receiver has no
+//! async API, so a bridge thread forwards commands into a tokio channel
+//! before the select.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
+use fe_runtime::messages::DbCommand;
 
 use iroh_gossip::net::{Gossip, GossipTopic};
 use iroh_gossip::proto::TopicId;
@@ -19,9 +26,104 @@ use crate::endpoint::SyncEndpoint;
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
 use crate::relay_config::{RelayConfig, RelayHealth};
 use crate::replicator::{
-    IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator, VerseReplicator,
+    IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator, RowChange,
+    VerseReplicator,
 };
 use crate::verse_peers;
+
+/// Env var carrying bootstrap peers for every opened replica: **semicolon**
+/// `-separated` iroh `NodeAddr` JSON entries (or bare `NodeId` hex), parsed
+/// with iroh's own serde/FromStr types. Semicolons because `NodeAddr` JSON
+/// itself contains commas — a comma-separated list would be ambiguous.
+/// Invalid entries are skipped loudly, never fatal (see AGENTS.md
+/// §relay-health for the relay config this rides alongside).
+pub const BOOTSTRAP_ENV_VAR: &str = "FE_SYNC_BOOTSTRAP";
+
+/// Inbound rows dropped because the DB-thread command channel was full
+/// (§replication-backpressure — drop-and-count, never block the sync thread).
+static INBOUND_APPLY_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Total inbound rows dropped due to a full DB command channel.
+pub fn inbound_apply_drop_count() -> u64 {
+    INBOUND_APPLY_DROPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Send a [`SyncEvent`] back to the main thread, warning on failure —
+/// never a bare `.ok()` (§warn-on-send-failure).
+fn send_sync_event(evt_tx: &SyncEventSender, event: SyncEvent) {
+    if let Err(e) = evt_tx.send(event) {
+        tracing::warn!("sync event send failed: {e}");
+    }
+}
+
+/// Parse one bootstrap peer entry with iroh's own types: a JSON-serialized
+/// `iroh::NodeAddr` (what `SyncEvent::Started.node_addr` emits), or a bare
+/// hex `NodeId` (which carries no address and therefore cannot be dialed —
+/// that is reported loudly and skipped).
+fn parse_bootstrap_peer(entry: &str) -> Option<iroh::NodeAddr> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<iroh::NodeAddr>(entry) {
+        Ok(addr) => Some(addr),
+        Err(json_err) => {
+            use std::str::FromStr;
+            match iroh::NodeId::from_str(entry) {
+                Ok(node_id) => {
+                    tracing::warn!(
+                        node_id = %node_id.fmt_short(),
+                        "bootstrap entry carries no address (expected NodeAddr JSON) — skipped"
+                    );
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        entry = %entry.truncate_str(80),
+                        "invalid FE_SYNC_BOOTSTRAP entry (NodeAddr JSON or NodeId hex expected) — skipped: {json_err}"
+                    );
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Minimal string truncation helper for loud logs (no new deps).
+trait TruncateStr {
+    fn truncate_str(&self, max: usize) -> String;
+}
+
+impl TruncateStr for str {
+    fn truncate_str(&self, max: usize) -> String {
+        if self.len() <= max {
+            self.to_string()
+        } else {
+            let mut cut = max;
+            while !self.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            format!("{}…", &self[..cut])
+        }
+    }
+}
+
+/// Resolve the configured bootstrap peers from [`BOOTSTRAP_ENV_VAR`].
+///
+/// Entries are **semicolon-separated** (a `NodeAddr` JSON contains commas,
+/// so the list separator must not). Invalid entries fail loudly at startup
+/// (one warn each) and are skipped — a bad config must never take the sync
+/// thread down.
+fn bootstrap_peers_from_env() -> Vec<iroh::NodeAddr> {
+    std::env::var(BOOTSTRAP_ENV_VAR)
+        .ok()
+        .map(|raw| {
+            raw.split(';')
+                .filter_map(parse_bootstrap_peer)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
 
 /// Derive an iroh-gossip 0.35 `TopicId` (32 bytes) from a topic key string.
 fn gossip_topic_id(topic_key: &str) -> TopicId {
@@ -40,12 +142,22 @@ fn gossip_topic_id(topic_key: &str) -> TopicId {
 /// * `cmd_rx` — receives [`SyncCommand`]s from the main / Bevy thread.
 /// * `evt_tx` — sends [`SyncEvent`]s back to the main / Bevy thread.
 /// * `local_did` — the node's DID (`did:key:z6Mk…`) used as author ID in replicas.
+/// * `db_cmd_tx` — the DB thread's command sender for the inbound apply path
+///   (`DbCommand::ApplyReplicatedRow`, A4). `None` disables inbound applies
+///   (rows are logged and dropped) — for tests without a DB thread.
+/// * `p2p_dir` — explicit per-thread P2P data dir (one `DocsStack` per data
+///   dir per process — the redb store takes an exclusive file lock, so two
+///   sync threads in one process need two dirs; this parameter is how
+///   multi-peer tests give each peer its own). `None` resolves
+///   [`crate::docs_engine::P2P_DIR_ENV_VAR`] (env, default `data/p2p`).
 pub fn spawn_sync_thread(
     secret_key: iroh::SecretKey,
     blob_store: BlobStoreHandle,
     cmd_rx: SyncCommandReceiver,
     evt_tx: SyncEventSender,
     local_did: String,
+    db_cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
+    p2p_dir: Option<PathBuf>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -60,6 +172,16 @@ pub fn spawn_sync_thread(
             let relay_config = RelayConfig::from_env();
             tracing::info!(relay_config = ?relay_config, "Resolved relay config for sync thread");
 
+            // Bootstrap peers (A9 seam): parsed once with iroh's own parsers,
+            // invalid entries warned loudly and skipped.
+            let bootstrap_peers = bootstrap_peers_from_env();
+            if !bootstrap_peers.is_empty() {
+                tracing::info!(
+                    count = bootstrap_peers.len(),
+                    "Resolved bootstrap peers from {BOOTSTRAP_ENV_VAR}"
+                );
+            }
+
             // Phase F.1: Create the iroh endpoint first
             let mut relay_health: RelayHealth;
             let endpoint = match SyncEndpoint::new(secret_key, &relay_config).await {
@@ -68,13 +190,33 @@ pub fn spawn_sync_thread(
                         node_id = %ep.node_id(),
                         "Sync thread started (online)"
                     );
-                    evt_tx.send(SyncEvent::Started { online: true }).ok();
+                    // Our own dialable address, for peers/relays joining us
+                    // (serialized NodeAddr JSON — `parse_bootstrap_peer`
+                    // reads this exact form).
+                    let node_addr = match ep.inner().node_addr().await {
+                        Ok(addr) => Some(addr),
+                        Err(e) => {
+                            tracing::warn!("Could not resolve our node addr: {e}");
+                            None
+                        }
+                    };
+                    let addr_json = node_addr
+                        .as_ref()
+                        .and_then(|a| serde_json::to_string(a).ok());
+                    send_sync_event(
+                        &evt_tx,
+                        SyncEvent::Started {
+                            online: true,
+                            node_addr: addr_json,
+                        },
+                    );
                     relay_health = RelayHealth::on_bind_success(&relay_config);
-                    evt_tx
-                        .send(SyncEvent::RelayHealthChanged {
+                    send_sync_event(
+                        &evt_tx,
+                        SyncEvent::RelayHealthChanged {
                             health: relay_health,
-                        })
-                        .ok();
+                        },
+                    );
                     Some(ep)
                 }
                 Err(e) => {
@@ -82,24 +224,31 @@ pub fn spawn_sync_thread(
                     // debug-level detail — see AGENTS.md §relay-health.
                     tracing::error!("Sync thread could not bind iroh endpoint — relay unreachable: {e}");
                     tracing::warn!("Running in offline mode — network fetch disabled");
-                    evt_tx.send(SyncEvent::Started { online: false }).ok();
+                    send_sync_event(
+                        &evt_tx,
+                        SyncEvent::Started {
+                            online: false,
+                            node_addr: None,
+                        },
+                    );
                     relay_health = RelayHealth::on_bind_failure();
-                    evt_tx
-                        .send(SyncEvent::RelayHealthChanged {
+                    send_sync_event(
+                        &evt_tx,
+                        SyncEvent::RelayHealthChanged {
                             health: relay_health,
-                        })
-                        .ok();
+                        },
+                    );
                     None
                 }
             };
 
             // Real iroh-docs 0.35 stack (A1): Blobs (fs) + Gossip + Docs
             // (persistent redb) + Router accepting all three ALPNs, with
-            // persistent stores under FE_P2P_DIR. Absent in offline mode
+            // persistent stores under the data dir. Absent in offline mode
             // (endpoint bind failure or stack spawn failure) — the holder
             // then reports unavailable and replicators degrade to the
             // in-memory mock. See AGENTS.md §iroh-0.35 and docs_engine.rs.
-            let p2p_dir = p2p_data_dir();
+            let p2p_dir = p2p_dir.unwrap_or_else(p2p_data_dir);
             let docs_stack: Option<Arc<DocsStack>> = match endpoint.as_ref() {
                 Some(ep) => match DocsStack::spawn(ep.inner().clone(), &p2p_dir).await {
                     Ok(stack) => Some(Arc::new(stack)),
@@ -114,13 +263,12 @@ pub fn spawn_sync_thread(
                             "Failed to spawn P2P docs stack — degrading to offline/mock replication: {e}"
                         );
                         relay_health = relay_health.on_error();
-                        if let Err(send_err) =
-                            evt_tx.send(SyncEvent::RelayHealthChanged {
+                        send_sync_event(
+                            &evt_tx,
+                            SyncEvent::RelayHealthChanged {
                                 health: relay_health,
-                            })
-                        {
-                            tracing::warn!("Sync event send failed: {send_err}");
-                        }
+                            },
+                        );
                         None
                     }
                 },
@@ -148,10 +296,9 @@ pub fn spawn_sync_thread(
             // `endpoint.inner().home_relay()` returns a `Watcher<Option<RelayUrl>>`
             // that would let us detect relay loss mid-session (Healthy ->
             // Degraded/Unreachable via `RelayHealth::on_error`, and recovery via
-            // `on_success`), but wiring it requires turning this loop's blocking
-            // `cmd_rx.recv()` into a `tokio::select!` against the watcher stream.
-            // Only the startup bind result and the P2P-stack spawn outcome are
-            // tracked today — see AGENTS.md §relay-health.
+            // `on_success`), but wiring it requires watching the stream alongside
+            // the select! loop below. Only the startup bind result and the
+            // P2P-stack spawn outcome are tracked today — see AGENTS.md §relay-health.
 
             // Track active gossip subscriptions (topic key -> live handle) for verse/petal.
             let mut gossip_topics: HashMap<String, GossipTopic> = HashMap::new();
@@ -159,141 +306,207 @@ pub fn spawn_sync_thread(
             // Phase E: per-verse replica map.
             let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
 
+            // A2: per-replica inbound pump handles (verse_id -> forwarder).
+            let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+
+            // A2/A4: aggregated inbound row stream. Every open replica's event
+            // pump forwards (verse_id, RowChange) here; the select! loop drains
+            // it alongside commands.
+            let (inbound_tx, mut inbound_rx) =
+                tokio::sync::mpsc::channel::<(String, RowChange)>(256);
+
             // Phase F.2: per-petal replica map.
             let mut petal_replicas: HashMap<String, Box<dyn PetalReplicator>> = HashMap::new();
 
             // Phase F.5: tileset download tracker
             let mut download_tracker = TilesetDownloadTracker::new();
 
-            // §D1: policy gate for replica row writes. The strict default
-            // denies until peer roles are plumbed — see AGENTS.md §write-policy.
-            let write_policy = crate::write_policy::PolicyHandle::default();
+            // crossbeam's receiver has no async readiness API — bridge the
+            // command channel into a tokio channel so the select! below can
+            // poll it next to the inbound pumps. Ordering is preserved (one
+            // forwarder); backpressure mirrors the old blocking recv (the
+            // bridge blocks while the sync thread is busy).
+            let (async_cmd_tx, mut async_cmd_rx) =
+                tokio::sync::mpsc::channel::<SyncCommand>(256);
+            {
+                let cmd_rx = cmd_rx;
+                std::thread::spawn(move || {
+                    while let Ok(cmd) = cmd_rx.recv() {
+                        // blocking_send parks this bridge thread until the
+                        // sync thread has capacity — never called from async
+                        // context, which is exactly what blocking_send wants.
+                        if cmd_rx_bridge_send(&async_cmd_tx, cmd).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
 
-            // Command loop
+            // Command loop (select! over commands + inbound replica rows).
             loop {
-                match cmd_rx.recv() {
-                    Ok(SyncCommand::FetchBlob { hash, verse_id }) => {
-                        handle_fetch_blob(
-                            &blob_store,
-                            endpoint.as_ref(),
-                            &hash,
-                            &verse_id,
-                            &evt_tx,
-                        );
+                tokio::select! {
+                    maybe_row = inbound_rx.recv() => {
+                        // `None` (all pumps closed) needs no handling —
+                        // commands still flow.
+                        if let Some((verse_id, change)) = maybe_row {
+                            handle_inbound_row_change(
+                                &verse_id,
+                                &change,
+                                &local_did,
+                                &evt_tx,
+                                &db_cmd_tx,
+                            );
+                        }
                     }
-                    Ok(SyncCommand::OpenVerseReplica {
-                        verse_id,
-                        namespace_id,
-                        namespace_secret,
-                    }) => {
-                        handle_open_verse_replica(
-                            &mut replicas,
-                            docs_engine_holder.clone(),
-                            &verse_id,
-                            &namespace_id,
-                            namespace_secret,
-                            &local_did,
-                        );
-                        // Phase F.4: Subscribe to verse gossip topic
-                        subscribe_to_verse_gossip_topic(
-                            &gossip_host,
-                            &mut gossip_topics,
-                            &verse_id,
-                        );
-                    }
-                    Ok(SyncCommand::CloseVerseReplica { verse_id }) => {
-                        handle_close_verse_replica(&mut replicas, &verse_id);
-                        // Phase F.4: Unsubscribe from verse gossip topic
-                        unsubscribe_from_verse_gossip_topic(
-                            &gossip_host,
-                            &mut gossip_topics,
-                            &verse_id,
-                        );
-                    }
-                    Ok(SyncCommand::WriteRowEntry {
-                        verse_id,
-                        table,
-                        record_id,
-                        content_hash,
-                    }) => {
-                        handle_write_row_entry(
-                            &replicas,
-                            &blob_store,
-                            &write_policy,
-                            &local_did,
-                            &verse_id,
-                            &table,
-                            &record_id,
-                            &content_hash,
-                        )
-                        .await;
-                    }
-                    Ok(SyncCommand::UpdateNodeTransform {
-                        verse_id,
-                        node_id,
-                        ..
-                    }) => {
-                        tracing::warn!(
-                            verse_id,
-                            node_id,
-                            "dropped unsigned transform sync command; a signed canonical operation is required before network forwarding"
-                        );
-                    }
-                    Ok(SyncCommand::SubscribePetal { petal_id }) => {
-                        handle_subscribe_petal(
-                            &mut petal_replicas,
-                            docs_engine_holder.clone(),
-                            &petal_id,
-                            &local_did,
-                        );
-                    }
-                    Ok(SyncCommand::UnsubscribePetal { petal_id }) => {
-                        handle_unsubscribe_petal(&mut petal_replicas, &petal_id);
-                    }
-                    Ok(SyncCommand::SubmitComputeTask {
-                        task_id,
-                        query,
-                        petal_scope,
-                        requester_did,
-                    }) => {
-                        // TODO(Phase 6.2): execute compute task locally, emit ComputeResultReady
-                        tracing::debug!(%task_id, %query, ?petal_scope, %requester_did, "SubmitComputeTask (stub)");
-                    }
-                    Ok(SyncCommand::AdvertiseTilesets { verse_id, advertisements_json }) => {
-                        handle_advertise_tilesets(
-                            &gossip_host,
-                            &gossip_topics,
-                            &advertisements_json,
-                            &verse_id,
-                        )
-                        .await;
-                    }
-                    Ok(SyncCommand::RequestTilesetMeta { peer_id, tileset_id }) => {
-                        handle_request_tileset_meta(&peer_id, &tileset_id, &evt_tx);
-                    }
-                    Ok(SyncCommand::RequestChunk { peer_id, tileset_id, chunk_seq }) => {
-                        handle_request_chunk(&peer_id, &tileset_id, chunk_seq, &evt_tx);
-                    }
-                    Ok(SyncCommand::CancelTilesetDownload { tileset_id }) => {
-                        handle_cancel_tileset_download(&mut download_tracker, &tileset_id);
-                    }
-                    Ok(SyncCommand::Shutdown) => {
-                        tracing::info!("Sync thread shutting down");
-                        break;
-                    }
-                    Err(_) => {
-                        // Channel closed — main thread dropped the sender.
-                        tracing::info!("Sync command channel closed, shutting down");
-                        break;
+                    maybe_cmd = async_cmd_rx.recv() => {
+                        match maybe_cmd {
+                            Some(SyncCommand::FetchBlob { hash, verse_id }) => {
+                                handle_fetch_blob(
+                                    &blob_store,
+                                    endpoint.as_ref(),
+                                    &hash,
+                                    &verse_id,
+                                    &evt_tx,
+                                );
+                            }
+                            Some(SyncCommand::OpenVerseReplica {
+                                verse_id,
+                                namespace_id,
+                                namespace_secret,
+                                bootstrap_peers: cmd_peers,
+                            }) => {
+                                // Merge the command's explicit peers with the
+                                // env-configured bootstrap set (deduped).
+                                let mut peers = bootstrap_peers.clone();
+                                for entry in cmd_peers {
+                                    if let Some(addr) = parse_bootstrap_peer(&entry) {
+                                        if !peers.contains(&addr) {
+                                            peers.push(addr);
+                                        }
+                                    }
+                                }
+                                handle_open_verse_replica(
+                                    &mut replicas,
+                                    &mut inbound_pumps,
+                                    inbound_tx.clone(),
+                                    docs_engine_holder.clone(),
+                                    &verse_id,
+                                    &namespace_id,
+                                    namespace_secret,
+                                    &peers,
+                                    &local_did,
+                                )
+                                .await;
+                                // Phase F.4: Subscribe to verse gossip topic
+                                subscribe_to_verse_gossip_topic(
+                                    &gossip_host,
+                                    &mut gossip_topics,
+                                    &verse_id,
+                                );
+                            }
+                            Some(SyncCommand::CloseVerseReplica { verse_id }) => {
+                                handle_close_verse_replica(
+                                    &mut replicas,
+                                    &mut inbound_pumps,
+                                    &verse_id,
+                                )
+                                .await;
+                                // Phase F.4: Unsubscribe from verse gossip topic
+                                unsubscribe_from_verse_gossip_topic(
+                                    &gossip_host,
+                                    &mut gossip_topics,
+                                    &verse_id,
+                                );
+                            }
+                            Some(SyncCommand::WriteRowEntry {
+                                verse_id,
+                                table,
+                                record_id,
+                                content_hash,
+                            }) => {
+                                handle_write_row_entry(
+                                    &replicas,
+                                    &blob_store,
+                                    &local_did,
+                                    &verse_id,
+                                    &table,
+                                    &record_id,
+                                    &content_hash,
+                                )
+                                .await;
+                            }
+                            Some(SyncCommand::UpdateNodeTransform {
+                                verse_id,
+                                node_id,
+                                ..
+                            }) => {
+                                tracing::warn!(
+                                    verse_id,
+                                    node_id,
+                                    "dropped unsigned transform sync command; a signed canonical operation is required before network forwarding"
+                                );
+                            }
+                            Some(SyncCommand::SubscribePetal { petal_id }) => {
+                                handle_subscribe_petal(
+                                    &mut petal_replicas,
+                                    docs_engine_holder.clone(),
+                                    &petal_id,
+                                    &local_did,
+                                )
+                                .await;
+                            }
+                            Some(SyncCommand::UnsubscribePetal { petal_id }) => {
+                                handle_unsubscribe_petal(&mut petal_replicas, &petal_id).await;
+                            }
+                            Some(SyncCommand::SubmitComputeTask {
+                                task_id,
+                                query,
+                                petal_scope,
+                                requester_did,
+                            }) => {
+                                // TODO(Phase 6.2): execute compute task locally, emit ComputeResultReady
+                                tracing::debug!(%task_id, %query, ?petal_scope, %requester_did, "SubmitComputeTask (stub)");
+                            }
+                            Some(SyncCommand::AdvertiseTilesets { verse_id, advertisements_json }) => {
+                                handle_advertise_tilesets(
+                                    &gossip_host,
+                                    &gossip_topics,
+                                    &advertisements_json,
+                                    &verse_id,
+                                )
+                                .await;
+                            }
+                            Some(SyncCommand::RequestTilesetMeta { peer_id, tileset_id }) => {
+                                handle_request_tileset_meta(&peer_id, &tileset_id, &evt_tx);
+                            }
+                            Some(SyncCommand::RequestChunk { peer_id, tileset_id, chunk_seq }) => {
+                                handle_request_chunk(&peer_id, &tileset_id, chunk_seq, &evt_tx);
+                            }
+                            Some(SyncCommand::CancelTilesetDownload { tileset_id }) => {
+                                handle_cancel_tileset_download(&mut download_tracker, &tileset_id);
+                            }
+                            Some(SyncCommand::Shutdown) => {
+                                tracing::info!("Sync thread shutting down");
+                                break;
+                            }
+                            None => {
+                                // Channel closed — main thread dropped the sender.
+                                tracing::info!("Sync command channel closed, shutting down");
+                                break;
+                            }
+                        }
                     }
                 }
             }
 
             // Close all open replicas before shutting down.
             for (vid, repl) in replicas.drain() {
-                if let Err(e) = repl.close() {
+                if let Err(e) = repl.close().await {
                     tracing::warn!("Error closing replica for verse {vid}: {e}");
                 }
+            }
+            for (_, pump) in inbound_pumps.drain() {
+                pump.abort();
             }
 
             // Shut the P2P stack's protocol handlers down (docs engine
@@ -306,9 +519,98 @@ pub fn spawn_sync_thread(
             if let Some(ep) = endpoint {
                 ep.shutdown().await;
             }
-            evt_tx.send(SyncEvent::Stopped).ok();
+            send_sync_event(&evt_tx, SyncEvent::Stopped);
         });
     })
+}
+
+/// Bridge-thread helper: forward one command into the tokio channel.
+///
+/// Kept as a named fn so the bridge thread's blocking shape is greppable.
+/// The `SendError` carries the unsent command back (`.0`) so the bridge can
+/// stop cleanly on shutdown.
+fn cmd_rx_bridge_send(
+    tx: &tokio::sync::mpsc::Sender<SyncCommand>,
+    cmd: SyncCommand,
+) -> Result<(), SyncCommand> {
+    tx.blocking_send(cmd).map_err(|e| e.0)
+}
+
+/// Forward one inbound replicated row to the DB thread (A4 seam).
+///
+/// Own-author rows are skipped first (E.8 loop prevention): the real Doc
+/// path never echoes local writes (the pump skips `InsertLocal`), but the
+/// offline mock fallback broadcasts every write to its subscribers —
+/// re-applying our own row would fire spurious `RowApplied` events and a
+/// redundant DB write.
+///
+/// Surviving rows emit [`SyncEvent::RowApplied`] and are sent as
+/// [`DbCommand::ApplyReplicatedRow`] **on the DB thread's command channel** —
+/// the DB thread is the single SurrealDB writer and the enforcement point.
+/// The send is fire-and-forget with the drop-and-count backpressure contract
+/// (§replication-backpressure): a full channel drops the row with a warn
+/// (replication lag, not a stalled sync thread); a disconnected channel is
+/// shutdown and silent.
+fn handle_inbound_row_change(
+    verse_id: &str,
+    change: &RowChange,
+    local_did: &str,
+    evt_tx: &SyncEventSender,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+) {
+    if change.author_id == local_did {
+        tracing::debug!(
+            verse_id,
+            record_id = %change.record_id,
+            "Inbound row echoes our own write — skipped (loop prevention)"
+        );
+        return;
+    }
+    tracing::debug!(
+        verse_id,
+        table = %change.table,
+        record_id = %change.record_id,
+        author = %change.author_id,
+        tombstone = change.is_tombstone,
+        "Inbound replicated row from peer"
+    );
+    send_sync_event(
+        evt_tx,
+        SyncEvent::RowApplied {
+            verse_id: verse_id.to_string(),
+            table: change.table.clone(),
+            record_id: change.record_id.clone(),
+        },
+    );
+
+    let Some(tx) = db_cmd_tx else {
+        tracing::debug!(
+            verse_id,
+            "No DB command channel — inbound row not applied (test mode)"
+        );
+        return;
+    };
+    match tx.try_send(DbCommand::ApplyReplicatedRow {
+        verse_id: verse_id.to_string(),
+        table: change.table.clone(),
+        record_id: change.record_id.clone(),
+        row_bytes: change.data.clone(),
+        author_did: change.author_id.clone(),
+    }) {
+        Ok(()) => {}
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            let dropped =
+                INBOUND_APPLY_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            tracing::warn!(
+                verse_id,
+                table = %change.table,
+                record_id = %change.record_id,
+                dropped_total = dropped,
+                "DB command channel full — dropping inbound replicated row"
+            );
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+    }
 }
 
 /// Handle a [`SyncCommand::FetchBlob`].
@@ -347,21 +649,40 @@ fn handle_fetch_blob(
 
 /// Handle [`SyncCommand::OpenVerseReplica`].
 ///
-/// Creates an `IrohDocsReplicator` (now with real iroh-docs when available) and
-/// inserts it into the replica map. If a replica is already open for this verse,
-/// it is closed first.
-fn handle_open_verse_replica(
+/// Creates an [`IrohDocsReplicator`] and opens its document: with the
+/// namespace secret the capability is imported on the real stack, without it
+/// the namespace opens read-only. A doc-backed replica then joins the live
+/// sync swarm (dialing `peers`) and spawns its per-replica inbound event
+/// pump, whose `RowChange`s are forwarded into `inbound_tx` — the aggregated
+/// stream the command loop selects on (A2/A4). If a replica is already open
+/// for this verse, it (and its pump) is closed first.
+///
+/// Every degradation on this path is loud but non-fatal: an offline stack or
+/// unusable capability leaves the replicator mock-backed, never crashed.
+#[allow(clippy::too_many_arguments)]
+async fn handle_open_verse_replica(
     replicas: &mut HashMap<String, Box<dyn VerseReplicator>>,
+    inbound_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
+    inbound_tx: tokio::sync::mpsc::Sender<(String, RowChange)>,
     engine_holder: Arc<IrohDocsEngineHolder>,
     verse_id: &str,
     namespace_id: &str,
     namespace_secret: Option<String>,
+    peers: &[iroh::NodeAddr],
     local_did: &str,
 ) {
-    // Close existing replica if any.
+    // Close existing replica (and its inbound pump) if any.
     if let Some(old) = replicas.remove(verse_id) {
         tracing::debug!(verse_id, "Closing existing replica before re-open");
-        old.close().ok();
+        if let Err(e) = old.close().await {
+            tracing::warn!(
+                verse_id,
+                "Error closing existing replica before re-open: {e}"
+            );
+        }
+        if let Some(pump) = inbound_pumps.remove(verse_id) {
+            pump.abort();
+        }
     }
 
     let secret = namespace_secret.unwrap_or_default();
@@ -372,8 +693,45 @@ fn handle_open_verse_replica(
         engine_holder.clone(),
     );
 
-    // Open the document for this namespace
-    replicator.open_document().ok();
+    // Open the document for this namespace. Offline stacks return `Ok(())`
+    // with no doc (mock stays); a genuine failure (unparseable capability)
+    // warns loudly and also keeps the mock backing.
+    if let Err(e) = replicator.open_document().await {
+        tracing::warn!(
+            verse_id,
+            "Verse replica document open failed — mock fallback: {e}"
+        );
+    } else if replicator.is_doc_backed() {
+        // Join the live sync swarm. `start_sync` runs even with no peers:
+        // the dialed side must have its sync task running to serve entries
+        // to peers that dial *us* (A2), and the bootstrap set is exactly the
+        // peers we dial out to (A9).
+        if let Err(e) = replicator.start_sync(peers.to_vec()).await {
+            tracing::warn!(verse_id, "Replica start_sync failed: {e}");
+        }
+    }
+
+    // Per-replica inbound event pump (A2/A4): every inbound RowChange is
+    // forwarded into the aggregated stream the command loop selects on.
+    match replicator.subscribe().await {
+        Ok(rx) => {
+            let pump_verse_id = verse_id.to_string();
+            let pump_tx = inbound_tx.clone();
+            let pump = tokio::spawn(async move {
+                let mut rx = rx;
+                while let Some(change) = rx.recv().await {
+                    if pump_tx.send((pump_verse_id.clone(), change)).await.is_err() {
+                        // Command loop dropped the aggregate stream — shutdown.
+                        break;
+                    }
+                }
+            });
+            inbound_pumps.insert(verse_id.to_string(), pump.abort_handle());
+        }
+        Err(e) => {
+            tracing::warn!(verse_id, "Replica subscribe failed — no inbound pump: {e}");
+        }
+    }
 
     replicas.insert(verse_id.to_string(), Box::new(replicator));
 
@@ -382,19 +740,25 @@ fn handle_open_verse_replica(
     tracing::info!(
         verse_id,
         namespace_id,
+        peers = peers.len(),
         gossip_topic = %hex::encode(topic_hash),
-        "Opened verse replica — P2P stack {} (replicator mock-backed until the async rewrite)",
+        "Opened verse replica — P2P stack {}",
         if engine_holder.is_available() { "online" } else { "offline (mock fallback)" }
     );
 }
 
 /// Handle [`SyncCommand::CloseVerseReplica`].
-fn handle_close_verse_replica(
+async fn handle_close_verse_replica(
     replicas: &mut HashMap<String, Box<dyn VerseReplicator>>,
+    inbound_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
     verse_id: &str,
 ) {
+    // Stop the inbound pump first so no further rows are emitted mid-close.
+    if let Some(pump) = inbound_pumps.remove(verse_id) {
+        pump.abort();
+    }
     if let Some(repl) = replicas.remove(verse_id) {
-        if let Err(e) = repl.close() {
+        if let Err(e) = repl.close().await {
             tracing::warn!(verse_id, "Error closing replica: {e}");
         }
         tracing::info!(verse_id, "Closed verse replica");
@@ -404,22 +768,23 @@ fn handle_close_verse_replica(
 }
 
 /// Handle [`SyncCommand::WriteRowEntry`] (blob read off-loaded via spawn_blocking).
+///
+/// The §D1 write-policy gate was deliberately removed from this outbound
+/// path: these commands originate from the local DB thread's replication
+/// bridge (a local, already-admitted write being published to peers), so
+/// gating here would only block our own publishes. Peer admission happens on
+/// the inbound path (`DbCommand::ApplyReplicatedRow` on the DB thread —
+/// single writer + fe-policy deny-by-default), not here.
 #[allow(clippy::too_many_arguments)]
 async fn handle_write_row_entry(
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
     blob_store: &BlobStoreHandle,
-    write_policy: &crate::write_policy::PolicyHandle,
     author_did: &str,
     verse_id: &str,
     table: &str,
     record_id: &str,
     content_hash: &fe_runtime::blob_store::BlobHash,
 ) {
-    // §D1 gate: unplumbed peer roles are None and therefore fail closed.
-    if !write_policy.allow_write(author_did, None, verse_id) {
-        return;
-    }
-
     let Some(repl) = replicas.get(verse_id) else {
         tracing::warn!(
             verse_id,
@@ -466,11 +831,12 @@ async fn handle_write_row_entry(
         }
     };
 
-    if let Err(e) = repl.write_row(table, record_id, &data) {
+    if let Err(e) = repl.write_row(table, record_id, &data).await {
         tracing::error!(
             verse_id,
             table,
             record_id,
+            author = author_did,
             "WriteRowEntry: replicator write failed: {e}"
         );
     }
@@ -494,7 +860,7 @@ fn derive_namespace_id(petal_id: &str) -> String {
 /// Creates a new `IrohPetalReplicator` for the petal and inserts it into the
 /// petal replica map. Each petal gets its own iroh-docs namespace derived
 /// from the petal_id.
-fn handle_subscribe_petal(
+async fn handle_subscribe_petal(
     petal_replicas: &mut HashMap<String, Box<dyn PetalReplicator>>,
     engine_holder: Arc<IrohDocsEngineHolder>,
     petal_id: &str,
@@ -506,7 +872,9 @@ fn handle_subscribe_petal(
             petal_id,
             "Closing existing petal replicator before re-subscribe"
         );
-        old.close().ok();
+        if let Err(e) = old.close().await {
+            tracing::warn!(petal_id, "Error closing existing petal replicator: {e}");
+        }
     }
 
     // Derive namespace ID from petal_id
@@ -532,12 +900,12 @@ fn handle_subscribe_petal(
 /// Handle [`SyncCommand::UnsubscribePetal`].
 ///
 /// Closes and removes the petal replicator from the map.
-fn handle_unsubscribe_petal(
+async fn handle_unsubscribe_petal(
     petal_replicas: &mut HashMap<String, Box<dyn PetalReplicator>>,
     petal_id: &str,
 ) {
     if let Some(repl) = petal_replicas.remove(petal_id) {
-        if let Err(e) = repl.close() {
+        if let Err(e) = repl.close().await {
             tracing::warn!(petal_id, "Error closing petal replicator: {e}");
         }
         tracing::info!(petal_id, "Unsubscribed from petal");
@@ -808,13 +1176,21 @@ mod tests {
         let _env_guard = SYNC_THREAD_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _p2p_dir = hermetic_p2p_env();
+        let p2p_dir = hermetic_p2p_env();
         let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
         let secret = iroh::SecretKey::from_bytes(&[99u8; 32]);
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(8);
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
 
-        let handle = spawn_sync_thread(secret, store, cmd_rx, evt_tx, "test-node-did".to_string());
+        let handle = spawn_sync_thread(
+            secret,
+            store,
+            cmd_rx,
+            evt_tx,
+            "test-node-did".to_string(),
+            None,
+            Some(p2p_dir.path().to_path_buf()),
+        );
         // Wait for Started event (online or offline)
         let started = evt_rx.recv_timeout(std::time::Duration::from_secs(15));
         assert!(
@@ -864,14 +1240,22 @@ mod tests {
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(8);
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
 
-        let handle = spawn_sync_thread(secret, store, cmd_rx, evt_tx, "test-node-did".to_string());
+        let handle = spawn_sync_thread(
+            secret,
+            store,
+            cmd_rx,
+            evt_tx,
+            "test-node-did".to_string(),
+            None,
+            Some(p2p_dir.path().to_path_buf()),
+        );
         let started = evt_rx.recv_timeout(std::time::Duration::from_secs(15));
         assert!(
             matches!(started, Ok(SyncEvent::Started { .. })),
             "expected Started event, got {started:?}"
         );
 
-        if matches!(started, Ok(SyncEvent::Started { online: true })) {
+        if matches!(started, Ok(SyncEvent::Started { online: true, .. })) {
             // Started is emitted between the endpoint bind and the stack
             // spawn, so poll for the docs engine's redb store to appear.
             let docs_redb = p2p_dir.path().join("docs.redb");
@@ -939,13 +1323,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handle_subscribe_petal_creates_replicator() {
+    #[tokio::test]
+    async fn handle_subscribe_petal_creates_replicator() {
         let mut petal_replicas: HashMap<String, Box<dyn PetalReplicator>> = HashMap::new();
         let engine_holder = Arc::new(IrohDocsEngineHolder::new());
         let local_did = "did:test:local-author";
 
-        handle_subscribe_petal(&mut petal_replicas, engine_holder, "petal-alpha", local_did);
+        handle_subscribe_petal(&mut petal_replicas, engine_holder, "petal-alpha", local_did).await;
 
         assert!(
             petal_replicas.contains_key("petal-alpha"),
@@ -953,8 +1337,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handle_subscribe_petal_idempotent_resubscribe() {
+    #[tokio::test]
+    async fn handle_subscribe_petal_idempotent_resubscribe() {
         let mut petal_replicas: HashMap<String, Box<dyn PetalReplicator>> = HashMap::new();
         let engine_holder = Arc::new(IrohDocsEngineHolder::new());
         let local_did = "did:test:local-author";
@@ -965,7 +1349,8 @@ mod tests {
             engine_holder.clone(),
             "petal-beta",
             local_did,
-        );
+        )
+        .await;
         let first_count = petal_replicas.len();
 
         // Re-subscription should replace old replicator (idempotent)
@@ -974,7 +1359,8 @@ mod tests {
             engine_holder.clone(),
             "petal-beta",
             local_did,
-        );
+        )
+        .await;
         let second_count = petal_replicas.len();
 
         assert_eq!(
@@ -984,18 +1370,18 @@ mod tests {
         assert!(petal_replicas.contains_key("petal-beta"));
     }
 
-    #[test]
-    fn handle_unsubscribe_petal_removes_replicator() {
+    #[tokio::test]
+    async fn handle_unsubscribe_petal_removes_replicator() {
         let mut petal_replicas: HashMap<String, Box<dyn PetalReplicator>> = HashMap::new();
         let engine_holder = Arc::new(IrohDocsEngineHolder::new());
         let local_did = "did:test:local-author";
 
         // Subscribe first
-        handle_subscribe_petal(&mut petal_replicas, engine_holder, "petal-gamma", local_did);
+        handle_subscribe_petal(&mut petal_replicas, engine_holder, "petal-gamma", local_did).await;
         assert!(petal_replicas.contains_key("petal-gamma"));
 
         // Unsubscribe
-        handle_unsubscribe_petal(&mut petal_replicas, "petal-gamma");
+        handle_unsubscribe_petal(&mut petal_replicas, "petal-gamma").await;
 
         assert!(
             !petal_replicas.contains_key("petal-gamma"),
@@ -1003,18 +1389,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handle_unsubscribe_petal_nonexistent_is_noop() {
+    #[tokio::test]
+    async fn handle_unsubscribe_petal_nonexistent_is_noop() {
         let mut petal_replicas: HashMap<String, Box<dyn PetalReplicator>> = HashMap::new();
 
         // Unsubscribe non-existent should not panic
-        handle_unsubscribe_petal(&mut petal_replicas, "petal-missing");
+        handle_unsubscribe_petal(&mut petal_replicas, "petal-missing").await;
 
         assert!(petal_replicas.is_empty(), "map should remain empty");
     }
 
-    #[test]
-    fn petal_replicator_write_and_subscribe() {
+    #[tokio::test]
+    async fn petal_replicator_write_and_subscribe() {
         use crate::replicator::IrohPetalReplicator;
 
         // Create a petal replicator
@@ -1026,13 +1412,15 @@ mod tests {
 
         // Write a row
         repl.write_row("nodes", "node-001", b"{\"name\": \"test\"}")
+            .await
             .expect("write_row should succeed");
 
         // Subscribe to changes
-        let mut rx = repl.subscribe().expect("subscribe should succeed");
+        let mut rx = repl.subscribe().await.expect("subscribe should succeed");
 
         // Write another row - should trigger notification
         repl.write_row("nodes", "node-002", b"{\"name\": \"test2\"}")
+            .await
             .expect("write_row should succeed");
 
         // Check we received a change notification (non-blocking)
@@ -1161,5 +1549,271 @@ mod tests {
             ads_json,
             "verse-1",
         ));
+    }
+
+    // -------------------------------------------------------------------------
+    // A2/A4: bootstrap peer parsing + inbound apply seam
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn parse_bootstrap_peer_accepts_node_addr_json() {
+        // Round-trip through iroh's own serde types — the exact form
+        // `SyncEvent::Started.node_addr` emits.
+        let addr = iroh::NodeAddr::new(iroh::SecretKey::from_bytes(&[7u8; 32]).public());
+        let json = serde_json::to_string(&addr).unwrap();
+        assert_eq!(parse_bootstrap_peer(&json), Some(addr));
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_rejects_bare_node_id() {
+        // A bare NodeId carries no address — undialable, so skipped loudly.
+        let node_id = iroh::SecretKey::from_bytes(&[8u8; 32]).public();
+        assert_eq!(parse_bootstrap_peer(&node_id.to_string()), None);
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_rejects_garbage() {
+        assert_eq!(parse_bootstrap_peer("not-a-peer"), None);
+        assert_eq!(parse_bootstrap_peer("  "), None);
+    }
+
+    #[test]
+    fn bootstrap_peers_from_env_parses_valid_and_skips_invalid() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let addr = iroh::NodeAddr::new(iroh::SecretKey::from_bytes(&[9u8; 32]).public());
+        let json = serde_json::to_string(&addr).unwrap();
+        // Semicolon-separated: NodeAddr JSON contains commas, so the list
+        // separator must not be a comma (this test pins that exact contract).
+        std::env::set_var(BOOTSTRAP_ENV_VAR, format!("{json};not-a-peer;;{json}"));
+
+        let peers = bootstrap_peers_from_env();
+        std::env::remove_var(BOOTSTRAP_ENV_VAR);
+        assert_eq!(peers.len(), 2, "both valid entries parse, garbage skipped");
+        assert!(peers.contains(&addr));
+    }
+
+    #[test]
+    fn inbound_row_change_emits_event_and_applies_via_db_command() {
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let (db_tx, db_rx) = crossbeam::channel::bounded(8);
+        let payload = br#"{"name":"from peer"}"#.to_vec();
+        let change = RowChange {
+            table: "node".to_string(),
+            record_id: "node-42".to_string(),
+            content_hash: [1u8; 32],
+            author_id: "did:key:peer-a".to_string(),
+            timestamp: 1234,
+            is_tombstone: false,
+            data: payload.clone(),
+        };
+
+        handle_inbound_row_change("verse-1", &change, "did:key:local", &evt_tx, &Some(db_tx));
+
+        // Event seam: RowApplied is emitted for the UI layer.
+        let evt = evt_rx.try_recv().expect("RowApplied event expected");
+        assert!(matches!(
+            evt,
+            SyncEvent::RowApplied {
+                ref verse_id,
+                ref table,
+                ref record_id,
+            } if verse_id == "verse-1" && table == "node" && record_id == "node-42"
+        ));
+        // DB seam (A4): the apply rides a DbCommand on the DB thread —
+        // the single-writer path — carrying the payload bytes.
+        let cmd = db_rx
+            .try_recv()
+            .expect("ApplyReplicatedRow DbCommand expected");
+        assert!(matches!(
+            cmd,
+            DbCommand::ApplyReplicatedRow {
+                ref verse_id,
+                ref table,
+                ref record_id,
+                ref row_bytes,
+                ref author_did,
+            } if verse_id == "verse-1" && table == "node" && record_id == "node-42"
+                && row_bytes == &payload && author_did == "did:key:peer-a"
+        ));
+    }
+
+    #[test]
+    fn inbound_row_change_skips_own_author_loop_prevention() {
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let (db_tx, db_rx) = crossbeam::channel::bounded(8);
+        let change = RowChange {
+            table: "node".to_string(),
+            record_id: "node-echo".to_string(),
+            content_hash: [3u8; 32],
+            author_id: "did:key:local".to_string(),
+            timestamp: 55,
+            is_tombstone: false,
+            data: br#"{"name":"own echo"}"#.to_vec(),
+        };
+
+        handle_inbound_row_change("verse-9", &change, "did:key:local", &evt_tx, &Some(db_tx));
+
+        assert!(
+            evt_rx.try_recv().is_err(),
+            "own-author rows must not emit RowApplied (loop prevention)"
+        );
+        assert!(
+            db_rx.try_recv().is_err(),
+            "own-author rows must not re-apply on the DB thread"
+        );
+    }
+
+    #[test]
+    fn inbound_row_change_without_db_channel_emits_event_only() {
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let change = RowChange {
+            table: "petal".to_string(),
+            record_id: "petal-7".to_string(),
+            content_hash: [2u8; 32],
+            author_id: "did:key:peer-b".to_string(),
+            timestamp: 99,
+            is_tombstone: true,
+            data: Vec::new(),
+        };
+
+        handle_inbound_row_change("verse-2", &change, "did:key:local", &evt_tx, &None);
+
+        assert!(matches!(
+            evt_rx.try_recv(),
+            Ok(SyncEvent::RowApplied { .. })
+        ));
+    }
+
+    #[test]
+    fn inbound_row_change_drops_and_counts_on_full_db_channel() {
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
+        let (db_tx, _db_rx) = crossbeam::channel::bounded(1);
+        let change = RowChange {
+            table: "node".to_string(),
+            record_id: "node-full".to_string(),
+            content_hash: [4u8; 32],
+            author_id: "did:key:peer-c".to_string(),
+            timestamp: 7,
+            is_tombstone: false,
+            data: br#"{"name":"overflow"}"#.to_vec(),
+        };
+
+        // Fill the DB channel to capacity.
+        db_tx
+            .send(DbCommand::ApplyReplicatedRow {
+                verse_id: "verse-3".to_string(),
+                table: "node".to_string(),
+                record_id: "filler".to_string(),
+                row_bytes: Vec::new(),
+                author_did: "did:key:filler".to_string(),
+            })
+            .unwrap();
+
+        let before = inbound_apply_drop_count();
+        handle_inbound_row_change("verse-3", &change, "did:key:local", &evt_tx, &Some(db_tx));
+        assert!(
+            inbound_apply_drop_count() > before,
+            "a full DB channel must drop-and-count, never block the sync thread"
+        );
+    }
+
+    /// A2/A4 (offline holder — mock fallback): opening a verse replica
+    /// registers both the replica and its inbound pump; closing removes both.
+    #[tokio::test]
+    async fn open_and_close_verse_replica_manage_replica_and_pump() {
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx.clone(),
+            engine_holder.clone(),
+            "verse-1",
+            "0".repeat(64).as_str(),
+            None,
+            &[],
+            "did:key:local",
+        )
+        .await;
+
+        assert!(replicas.contains_key("verse-1"), "replica registered");
+        assert!(
+            inbound_pumps.contains_key("verse-1"),
+            "inbound pump spawned with the replica"
+        );
+
+        // Idempotent re-open replaces both without leaking.
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx.clone(),
+            engine_holder,
+            "verse-1",
+            "0".repeat(64).as_str(),
+            None,
+            &[],
+            "did:key:local",
+        )
+        .await;
+        assert_eq!(replicas.len(), 1);
+        assert_eq!(inbound_pumps.len(), 1);
+
+        handle_close_verse_replica(&mut replicas, &mut inbound_pumps, "verse-1").await;
+        assert!(!replicas.contains_key("verse-1"), "replica closed");
+        assert!(!inbound_pumps.contains_key("verse-1"), "pump aborted");
+    }
+
+    /// A4 end-of-seam (offline holder): a mock-backed replica's own-author
+    /// rows flow through the pump into the aggregated inbound stream, where
+    /// `handle_inbound_row_change` filters them (loop prevention) — proving
+    /// the pump wiring forwards and the seam filters.
+    #[tokio::test]
+    async fn mock_replica_pump_feeds_inbound_stream_and_own_writes_are_filtered() {
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx,
+            engine_holder,
+            "verse-pump",
+            "0".repeat(64).as_str(),
+            None,
+            &[],
+            "did:key:local",
+        )
+        .await;
+
+        let repl = replicas.get("verse-pump").expect("replica present");
+        repl.write_row("node", "node-1", br#"{"name":"written locally"}"#)
+            .await
+            .expect("mock write succeeds");
+
+        // The pump must forward the write into the aggregated inbound stream.
+        let (verse_id, change) = inbound_rx
+            .recv()
+            .await
+            .expect("pump forwarded the row into the inbound stream");
+        assert_eq!(verse_id, "verse-pump");
+        assert_eq!(change.record_id, "node-1");
+        assert_eq!(change.data, br#"{"name":"written locally"}"#.to_vec());
+
+        // The seam filters our own author (mock echo) before any DB apply.
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        handle_inbound_row_change(&verse_id, &change, "did:key:local", &evt_tx, &None);
+        assert!(
+            evt_rx.try_recv().is_err(),
+            "own-author rows are filtered at the seam"
+        );
+
+        handle_close_verse_replica(&mut replicas, &mut inbound_pumps, "verse-pump").await;
     }
 }

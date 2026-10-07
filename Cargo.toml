@@ -67,6 +67,10 @@ iroh-gossip = "0.35"
 iroh-docs = { version = "0.35", features = ["rpc"] }
 # quinn fork used by iroh 0.35 — needed only for congestion::BbrConfig (fe-sync BBR)
 iroh-quinn-proto = "0.13"
+# pinned by iroh-docs 0.35 — fe-sync names the in-process Doc client connector type
+quic-rpc = "0.20"
+# pinned by iroh-blobs 0.35 — fe-sync reads blob content via AsyncSliceReaderExt
+iroh-io = "0.6"
 # Feature-unification shim: netwatch 0.5.0 (iroh dep) uses socket2::Type::RAW
 # on macOS without enabling socket2/all — declaring it here turns the feature
 # on graph-wide so the macOS CI build compiles. Drop when iroh/netwatch fix it.

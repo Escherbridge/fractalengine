@@ -13,6 +13,7 @@ fe-runtime = { path = "../fe-runtime" }
 fe-database = { path = "../fe-database" }
 fe-network = { path = "../fe-network" }
 fe-policy = { path = "../fe-policy" }
+fe-identity = { path = "../fe-identity" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -26,7 +27,10 @@ iroh-blobs = { workspace = true }
 iroh-docs = { workspace = true }
 iroh-gossip = { workspace = true }
 iroh-quinn-proto = { workspace = true }
+iroh-io = { workspace = true }
+quic-rpc = { workspace = true }
 bytes = { workspace = true }
+futures-lite = "2.3"
 # see workspace Cargo.toml — socket2/all shim for netwatch's macOS build
 socket2 = { workspace = true }
 crossbeam = { workspace = true }

@@ -148,6 +148,9 @@ fn open_replica(
             verse_id: verse_id.to_string(),
             namespace_id: ns_id,
             namespace_secret: ns_secret,
+            // The UI sends no explicit peers today — the sync thread merges
+            // the FE_SYNC_BOOTSTRAP env set (see fe-sync sync_thread.rs).
+            bootstrap_peers: Vec::new(),
         })
         .is_err()
     {

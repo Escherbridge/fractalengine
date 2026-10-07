@@ -40,6 +40,7 @@ pub fn run() -> Result<TestResult> {
             verse_id: verse_id.clone(),
             namespace_id: namespace_id.clone(),
             namespace_secret: Some("test-secret".into()),
+            bootstrap_peers: Vec::new(),
         })
         .map_err(|e| anyhow::anyhow!("Failed to send OpenVerseReplica: {e}"))?;
 

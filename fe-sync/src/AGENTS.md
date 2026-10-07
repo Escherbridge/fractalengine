@@ -92,33 +92,78 @@ the redb replica store `docs.redb` + persistent default-author storage) +
   (the Router routes to the stack's instance only). Likewise two stacks in
   one process must not share a data dir — the redb file lock makes the
   second spawn fail (→ degrade).
-- **Still mock-backed:** `IrohDocsReplicator` / `IrohPetalReplicator` delegate
-  to `MockVerseReplicator` until the `VerseReplicator` trait goes async —
-  the 0.35 `Doc` client (`set_bytes`/`subscribe`/`close`) is async-only.
-  The remaining wiring point is marked `// TODO(iroh-0.35):` in
-  `replicator.rs::open_document`; F2 owns that rewrite.
+- **Real Doc-backed replicators (F2 / A2):** the `VerseReplicator` /
+  `PetalReplicator` traits are async (hand-boxed `ReplicatorFuture`, no
+  async-trait dep), and `IrohDocsReplicator` rides the real 0.35 `Doc`
+  client whenever the stack is online: `open_document` imports the
+  `Capability::Write(NamespaceSecret)` (secret hex) or opens the namespace
+  read-only without one, `write_row` → `Doc::set_bytes` (empty payload →
+  `Doc::del`, the empty-entry tombstone), `subscribe` → a `LiveEvent` pump
+  (`InsertRemote` + `ContentReady` → `RowChange`s carrying the payload
+  bytes read from the stack's blobs store; `InsertLocal` skipped for loop
+  prevention; empty entries emitted as tombstones), `close` → pump abort +
+  `Doc::close`. Mock fallback is now **offline-only** (bind failure, stack
+  spawn failure, unusable capability — loud, never a crash). `start_sync`
+  runs on every doc-backed open, with or without outbound peers: the
+  dialed side must have its sync task running to serve entries.
 
 `status.rs` also carries a `TODO(iroh-0.35)` for applying inbound peer `SyncEvent::NodeTransformed`
 to the local world (currently logged, not applied) — it depends on the inbound gossip route above.
 
-Runtime behavior: the network stack is real (inbound connections routable,
-stores persistent across restarts), but no row bytes traverse it yet — the
-replicator layer is the next seam.
+Runtime behavior: row bytes traverse the real network. The fe-test-harness
+scenario `two_peer_replica_sync` proves A2 end-to-end (two in-process peers
+over loopback, READ-BACK from the joining peer's durable store).
+
+## §inbound-apply (F2 / A2+A4)
+
+The sync thread's command loop is a `tokio::select!` over two streams
+(`sync_thread.rs`): commands and **inbound replica rows**. crossbeam's
+receiver has no async API, so a dedicated bridge thread forwards
+`cmd_rx.recv()` into a tokio mpsc via `blocking_send` (ordering preserved;
+the bridge parks while the sync thread is busy). Every open replica spawns a
+**per-replica inbound pump** (`replicator.rs::pump_live_events` → forwarder
+task) feeding one aggregated `mpsc<(verse_id, RowChange)>`; closing the
+replica aborts its pump. `spawn_sync_thread` therefore takes two new
+parameters: `db_cmd_tx: Option<Sender<DbCommand>>` (the inbound apply path;
+`None` = rows logged and dropped, for tests without a DB thread) and
+`p2p_dir: Option<PathBuf>` (per-thread data dir — the redb store takes an
+exclusive file lock, so multi-peer processes must give each sync thread its
+own dir; `None` resolves `FE_P2P_DIR`).
+
+Inbound rows flow: pump → aggregated stream → `handle_inbound_row_change`,
+which (a) skips own-author rows (E.8 — the mock fallback echoes local
+writes; the real path never echoes because `InsertLocal` is skipped at the
+source), (b) emits `SyncEvent::RowApplied`, (c) `try_send`s
+`DbCommand::ApplyReplicatedRow` to the DB thread — drop-and-count
+(`INBOUND_APPLY_DROPS` / `inbound_apply_drop_count()`), never a blocking
+send. The DB thread is the single SurrealDB writer and the A4 enforcement
+point (see fe-database `handlers/replicated_row.rs`); the role gate is F3's
+A3 seam.
+
+Bootstrap peers (A9 prep): `FE_SYNC_BOOTSTRAP` holds **semicolon-separated**
+`NodeAddr` JSON entries (semicolons because the JSON contains commas), parsed
+with iroh's own types; bare `NodeId` hex carries no address and is skipped
+loudly. `OpenVerseReplica.bootstrap_peers` carries the same entry form
+per-verse and merges with the env set (deduped); `SyncEvent::Started.node_addr`
+emits our own dialable `NodeAddr` JSON in exactly that form.
 
 ## §write-policy (auth_policy_pattern_20260710 §D1)
 
-`write_policy.rs` gates `handle_write_row_entry` (sync_thread.rs): no row is
-applied to a verse replica without a `Policy::evaluate` decision. The default
-is `PolicyHandle::strict()`. Because peer roles are not yet plumbed to the sync
-thread, every remote row write currently carries `RoleLevel::None` and is
-denied. This preserves local editor behavior while the mock-backed network
-path remains dormant; role propagation and signed operation admission must
-land before real replication is enabled.
+**F2 moved the gate.** `write_policy.rs` no longer gates
+`handle_write_row_entry`: those commands are the *outbound* path — a local,
+already-admitted DB write being published to peers — so gating there only
+blocked our own publishes (A3's "outbound local DB-thread writes are no
+longer denied"). `PolicyHandle` and its evaluation logic remain (unit-tested
+in `write_policy.rs`) and are the intended building block for the **inbound**
+admission gate: peer admission happens on the DB thread
+(`DbCommand::ApplyReplicatedRow` → fe-policy deny-by-default, Editor+,
+roles resolved from the `role` table at verse scope, never wire-supplied) —
+F3's A3 seam, marked `TODO(F3/A3)` in fe-database
+`handlers/replicated_row.rs`.
 
 `PolicyHandle` derives `Resource` so the app side can insert a stricter policy
-for tests or future admission work; `spawn_sync_thread` constructs the default
-internally to avoid churning its signature. The causal-DAG membership resolver
-is not here; it remains blocked on per-operation signing.
+for tests or future admission work. The causal-DAG membership resolver is not
+here; it remains blocked on per-operation signing.
 
 `SyncCommand::UpdateNodeTransform` is a legacy compatibility command, not a
 transport path: the sync thread logs and drops it, and the UI no longer sends

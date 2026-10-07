@@ -50,14 +50,27 @@ pub fn drain_sync_events(
     let Ok(rx) = receiver.0.lock() else { return };
     while let Ok(evt) = rx.try_recv() {
         match evt {
-            SyncEvent::Started { online } => {
+            SyncEvent::Started { online, node_addr } => {
                 status.online = online;
+                status.node_addr = node_addr;
                 tracing::info!(online, "SyncStatus updated: started");
             }
             SyncEvent::BlobReady { hash } => {
                 tracing::debug!(
                     hash = %fe_runtime::blob_store::hash_to_hex(&hash),
                     "Blob ready from sync"
+                );
+            }
+            SyncEvent::RowApplied {
+                ref verse_id,
+                ref table,
+                ref record_id,
+            } => {
+                tracing::info!(
+                    verse_id,
+                    table,
+                    record_id,
+                    "Replicated row applied from peer"
                 );
             }
             SyncEvent::Stopped => {

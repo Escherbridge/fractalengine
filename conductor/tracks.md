@@ -428,9 +428,14 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
 - [ ] **verse_services** — accelerator-only per-verse services (seeder/presence/
   materializer); reconstruct-without-service invariant — spec_only —
   [./tracks/verse_services_20260711/](./tracks/verse_services_20260711/)
-- [~] **p2p_mycelium_completion** — F1 DocsStack now wires persistent blobs/docs,
-  Gossip, and all three Router ALPNs; real Doc-backed replicators (F2), inbound
-  apply/policy (F3), relay lifecycle/bootstrap (F4), and legacy phases remain open —
+- [~] **p2p_mycelium_completion** — F1 DocsStack wires persistent blobs/docs,
+  Gossip, and all three Router ALPNs; F2 (2026-10-07) makes the replicator layer
+  real (async traits, Doc::set_bytes/subscribe/close, capability import, payload
+  RowChanges, empty-entry tombstones, per-replica pumps → select! loop, DB-thread
+  ApplyReplicatedRow with geometry-safe merge + SceneChange; harness A2 scenario
+  two_peer_replica_sync passes with durable READ-BACK); inbound fe-policy role
+  gate (F3/A3), petal namespaces, relay lifecycle/bootstrap (F4), and legacy
+  phases remain open —
   in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
   [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
 

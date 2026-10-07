@@ -61,6 +61,7 @@ pub fn run() -> Result<TestResult> {
             verse_id: verse_id.clone(),
             namespace_id: namespace_id.clone(),
             namespace_secret: namespace_secret.clone(),
+            bootstrap_peers: Vec::new(),
         })
         .map_err(|e| anyhow::anyhow!("Failed to send OpenVerseReplica to Alice: {e}"))?;
 
@@ -109,6 +110,7 @@ pub fn run() -> Result<TestResult> {
             verse_id: verse_id.clone(),
             namespace_id: namespace_id.clone(),
             namespace_secret: namespace_secret.clone(),
+            bootstrap_peers: Vec::new(),
         })
         .map_err(|e| anyhow::anyhow!("Failed to send OpenVerseReplica to Bob: {e}"))?;
 
