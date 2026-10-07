@@ -100,3 +100,10 @@ outside fe-identity.
 
 Tokens are Ed25519-signed with the node keypair; minting rejects empty scopes
 and TTLs over the maximum.
+
+`examples/mint_api_token.rs` (M1 user-testing validation fixture, 2026-10-07)
+is the headless equivalent of the UI's `MintApiToken` flow for validators
+that control the process environment: it mints a real token from a hex seed
+via the same `mint_api_token` call — the relay verifies Bearer JWTs against
+the keypair loaded from `FE_SECRET_FRACTALENGINE_NODE_KEYPAIR`, so a token
+minted from the same seed passes the production `auth_middleware` unchanged.
