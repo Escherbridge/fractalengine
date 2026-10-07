@@ -48,6 +48,91 @@ pub fn inbound_apply_drop_count() -> u64 {
     INBOUND_APPLY_DROPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Retention cap for pending writes: far beyond any real emit-before-open
+/// race window, while bounding memory on a process that never opens some
+/// verse's replica. Past the cap the OLDEST entry is dropped with a warn.
+const PENDING_WRITES_CAP: usize = 1024;
+
+/// One row write that arrived while its verse's replica was not open yet.
+#[derive(Debug, Clone)]
+struct PendingWrite {
+    table: String,
+    record_id: String,
+    content_hash: fe_runtime::blob_store::BlobHash,
+}
+
+/// Writes retained for verses whose replica is not open yet — the F21/M2
+/// verse-manifest open race (see AGENTS.md §pending-writes).
+///
+/// `create_verse_handler` emits the manifest `ReplicationEvent` roughly
+/// 100ms BEFORE the host's open (`VerseCreated` system on the relay,
+/// navigation on the GUI) reaches this thread, so pre-fix the FIRST
+/// manifest row hit the no-open-replica warn-and-drop and never entered the
+/// doc — `seed_reconciliation` cannot heal a row that never entered, and a
+/// fresh peer joining then never received the manifest, defeating the
+/// bootstrap-window contract. Retained writes are republished in FIFO order
+/// through the same write path a live write takes after the replica opens
+/// successfully, so publish/conflict semantics are identical to the live
+/// path. Retention is process-lifetime only: sync-thread shutdown drops
+/// whatever is still queued with a warn (rows stay durable in the local DB;
+/// only their publish is lost this session).
+#[derive(Default)]
+struct PendingWrites {
+    entries: std::collections::VecDeque<(String, PendingWrite)>,
+}
+
+impl PendingWrites {
+    /// Retain a write for later publication. Bounded: past
+    /// [`PENDING_WRITES_CAP`] the oldest entry is dropped so the queue
+    /// keeps the newest versions — on flush the doc still converges to the
+    /// latest row content per key.
+    fn push(&mut self, verse_id: &str, write: PendingWrite) {
+        while self.entries.len() >= PENDING_WRITES_CAP {
+            if let Some((verse, dropped)) = self.entries.pop_front() {
+                tracing::warn!(
+                    verse_id = %verse,
+                    table = %dropped.table,
+                    record_id = %dropped.record_id,
+                    cap = PENDING_WRITES_CAP,
+                    "Pending-writes cap reached — dropping the oldest retained write (the row stays durable in the local DB)"
+                );
+            }
+        }
+        tracing::debug!(
+            verse_id,
+            table = %write.table,
+            record_id = %write.record_id,
+            queued = self.entries.len() + 1,
+            "WriteRowEntry retained pending — verse replica not open yet (republished after the open)"
+        );
+        self.entries.push_back((verse_id.to_string(), write));
+    }
+
+    /// Take (and clear) the FIFO queue for one verse.
+    fn take(&mut self, verse_id: &str) -> Vec<PendingWrite> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.entries.len() {
+            if self.entries[i].0 == verse_id {
+                if let Some((_, write)) = self.entries.remove(i) {
+                    out.push(write);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Send a [`SyncEvent`] back to the main thread, warning on failure —
 /// never a bare `.ok()` (§warn-on-send-failure).
 fn send_sync_event(evt_tx: &SyncEventSender, event: SyncEvent) {
@@ -321,6 +406,10 @@ pub fn spawn_sync_thread(
             // Phase F.5: tileset download tracker
             let mut download_tracker = TilesetDownloadTracker::new();
 
+            // F21/M2: writes retained for verses whose replica is not open
+            // yet, republished after the open (see PendingWrites).
+            let mut pending_writes = PendingWrites::default();
+
             // crossbeam's receiver has no async readiness API — bridge the
             // command channel into a tokio channel so the select! below can
             // poll it next to the inbound pumps. Ordering is preserved (one
@@ -397,6 +486,8 @@ pub fn spawn_sync_thread(
                                     &local_did,
                                     &evt_tx,
                                     &db_cmd_tx,
+                                    &blob_store,
+                                    &mut pending_writes,
                                 )
                                 .await;
                                 // Phase F.4: Subscribe to verse gossip topic
@@ -428,6 +519,7 @@ pub fn spawn_sync_thread(
                             }) => {
                                 handle_write_row_entry(
                                     &replicas,
+                                    &mut pending_writes,
                                     &blob_store,
                                     &local_did,
                                     &verse_id,
@@ -488,6 +580,14 @@ pub fn spawn_sync_thread(
                                 handle_cancel_tileset_download(&mut download_tracker, &tileset_id);
                             }
                             Some(SyncCommand::Shutdown) => {
+                                if !pending_writes.is_empty() {
+                                    tracing::warn!(
+                                        count = pending_writes.len(),
+                                        "Shutdown: dropping writes still retained for verses whose \
+                                         replica never opened this session (rows remain durable in \
+                                         the local DB; their publish is lost this session)"
+                                    );
+                                }
                                 tracing::info!("Sync thread shutting down");
                                 break;
                             }
@@ -745,6 +845,8 @@ async fn handle_open_verse_replica(
     local_did: &str,
     evt_tx: &SyncEventSender,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+    blob_store: &BlobStoreHandle,
+    pending: &mut PendingWrites,
 ) {
     // Close existing replica (and its inbound pump) if any.
     if let Some(old) = replicas.remove(verse_id) {
@@ -851,6 +953,7 @@ async fn handle_open_verse_replica(
     }
 
     let open_failed_reason = replicator.open_error();
+    let open_failed = open_failed_reason.is_some();
     replicas.insert(verse_id.to_string(), Box::new(replicator));
 
     // Phase F: compute gossip topic for this verse. The banner reports the
@@ -874,6 +977,41 @@ async fn handle_open_verse_replica(
             "Opened verse replica — P2P stack {}",
             if engine_holder.is_available() { "online" } else { "offline (mock fallback)" }
         );
+    }
+
+    // F21/M2 (the verse-manifest open race): republish writes that arrived
+    // while this verse's replica was not open. The canonical case is the
+    // verse manifest itself — the DB handler emits it before the host's
+    // `VerseCreated`/navigation open reaches this thread, so pre-fix the
+    // FIRST manifest row warn-and-dropped and never entered the doc (a row
+    // `seed_reconciliation` cannot heal), permanently starving fresh peers
+    // of the manifest. Flushed in FIFO order through the SAME write path a
+    // live write takes, so publish/conflict semantics are identical. Never
+    // flushed on a failed open: a loudly non-replicating replica publishes
+    // nothing (F20 finding 4) — the writes stay retained for a later
+    // successful (re-)open.
+    if !open_failed {
+        let queued = pending.take(verse_id);
+        if !queued.is_empty() {
+            tracing::info!(
+                verse_id,
+                count = queued.len(),
+                "Replica open completed — republishing writes retained from before the open"
+            );
+            for write in queued {
+                handle_write_row_entry(
+                    replicas,
+                    pending,
+                    blob_store,
+                    local_did,
+                    verse_id,
+                    &write.table,
+                    &write.record_id,
+                    &write.content_hash,
+                )
+                .await;
+            }
+        }
     }
 }
 
@@ -905,9 +1043,17 @@ async fn handle_close_verse_replica(
 /// gating here would only block our own publishes. Peer admission happens on
 /// the inbound path (`DbCommand::ApplyReplicatedRow` on the DB thread —
 /// single writer + fe-policy deny-by-default), not here.
+///
+/// A write for a verse whose replica is not open yet is RETAINED in
+/// `pending` (F21/M2 — the verse-manifest open race; see AGENTS.md
+/// §pending-writes) and republished after the open, never warn-and-dropped:
+/// the verse manifest row is emitted exactly once at creation and can never
+/// be re-emitted, so dropping it would permanently starve fresh peers of the
+/// manifest.
 #[allow(clippy::too_many_arguments)]
 async fn handle_write_row_entry(
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    pending: &mut PendingWrites,
     blob_store: &BlobStoreHandle,
     author_did: &str,
     verse_id: &str,
@@ -916,11 +1062,13 @@ async fn handle_write_row_entry(
     content_hash: &fe_runtime::blob_store::BlobHash,
 ) {
     let Some(repl) = replicas.get(verse_id) else {
-        tracing::warn!(
+        pending.push(
             verse_id,
-            table,
-            record_id,
-            "WriteRowEntry: no open replica for verse"
+            PendingWrite {
+                table: table.to_string(),
+                record_id: record_id.to_string(),
+                content_hash: *content_hash,
+            },
         );
         return;
     };
@@ -1859,6 +2007,8 @@ mod tests {
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
         let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let mut pending = PendingWrites::default();
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
         assert!(evt_rx.try_recv().is_err(), "no events yet");
 
@@ -1874,6 +2024,8 @@ mod tests {
             "did:key:local",
             &evt_tx,
             &None,
+            &blob_store,
+            &mut pending,
         )
         .await;
 
@@ -1896,6 +2048,8 @@ mod tests {
             "did:key:local",
             &evt_tx,
             &None,
+            &blob_store,
+            &mut pending,
         )
         .await;
         assert_eq!(replicas.len(), 1);
@@ -1916,6 +2070,8 @@ mod tests {
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
         let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let mut pending = PendingWrites::default();
         let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
 
         handle_open_verse_replica(
@@ -1930,6 +2086,8 @@ mod tests {
             "did:key:local",
             &evt_tx,
             &None,
+            &blob_store,
+            &mut pending,
         )
         .await;
 
@@ -2124,6 +2282,8 @@ mod tests {
         let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
         let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
+        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let mut pending = PendingWrites::default();
 
         // A malformed secret forces a real open_document error on an ONLINE
         // stack — exactly the finding-4 shape.
@@ -2139,6 +2299,8 @@ mod tests {
             "did:key:local",
             &evt_tx,
             &Some(db_tx),
+            &blob_store,
+            &mut pending,
         )
         .await;
 
@@ -2180,6 +2342,8 @@ mod tests {
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
         let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
+        let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let mut pending = PendingWrites::default();
 
         handle_open_verse_replica(
             &mut replicas,
@@ -2193,6 +2357,8 @@ mod tests {
             "did:key:local",
             &evt_tx,
             &Some(db_tx),
+            &blob_store,
+            &mut pending,
         )
         .await;
 
@@ -2401,5 +2567,529 @@ mod tests {
             }
         }
         sync.join().expect("sync thread exited cleanly");
+    }
+
+    // -------------------------------------------------------------------------
+    // F21/M2: the verse-manifest open race (emit-before-open)
+    // -------------------------------------------------------------------------
+
+    /// The pending-writes queue is bounded: past the cap the OLDEST entry is
+    /// dropped so the queue retains the newest versions per key (the doc
+    /// still converges to the latest content on flush), and `take` returns
+    /// one verse's writes in FIFO order.
+    #[test]
+    fn pending_writes_cap_drops_oldest_and_takes_fifo() {
+        let mut pending = PendingWrites::default();
+        for i in 0..(PENDING_WRITES_CAP + 8) {
+            pending.push(
+                &format!("verse-{}", i % 4),
+                PendingWrite {
+                    table: "node".to_string(),
+                    record_id: format!("row-{i:04}"),
+                    content_hash: [i as u8; 32],
+                },
+            );
+        }
+        assert_eq!(
+            pending.len(),
+            PENDING_WRITES_CAP,
+            "queue bounded at the cap"
+        );
+        // The oldest 8 entries (row-0000 … row-0007) were dropped.
+        let taken = pending.take("verse-0");
+        assert!(!taken.iter().any(|w| w.record_id == "row-0000"));
+        assert!(taken.iter().any(|w| w.record_id == "row-0012"));
+        assert!(pending.len() < PENDING_WRITES_CAP, "take drains its verse");
+
+        // FIFO order survives interleaved verses.
+        let mut pending = PendingWrites::default();
+        for (verse, id) in [("a", 1), ("b", 1), ("a", 2), ("b", 2), ("a", 3)] {
+            pending.push(
+                verse,
+                PendingWrite {
+                    table: "node".to_string(),
+                    record_id: format!("row-{verse}-{id}"),
+                    content_hash: [id as u8; 32],
+                },
+            );
+        }
+        let taken = pending.take("a");
+        assert_eq!(
+            taken
+                .iter()
+                .map(|w| w.record_id.clone())
+                .collect::<Vec<_>>(),
+            ["row-a-1", "row-a-2", "row-a-3"],
+            "per-verse FIFO order preserved"
+        );
+        assert_eq!(pending.len(), 2, "other verses untouched by take");
+    }
+
+    /// F21 at the offline seam: a write that arrives while the verse's
+    /// replica is not open is RETAINED (never warn-and-dropped), and the
+    /// replica open flushes it through the normal write path — READ-BACK via
+    /// the replica's own snapshot. Writes arriving AFTER the open publish
+    /// directly and never queue.
+    #[tokio::test]
+    async fn write_before_open_retained_then_flushed_through_offline_mock() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store: BlobStoreHandle =
+            Arc::new(crate::FsBlobStore::new(tmp.path().join("blobs")).expect("fs blob store"));
+        let manifest =
+            br#"{"verse_id":"v-race","name":"Offline Race Verse","default_access":"viewer"}"#;
+        let manifest_hash = blob_store.add_blob(manifest).expect("manifest blob");
+
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
+        let mut pending = PendingWrites::default();
+
+        // THE RACE SHAPE: the manifest write is emitted while no replica is
+        // open (exactly what create_verse_handler → VerseCreated does — the
+        // open arrives later).
+        handle_write_row_entry(
+            &replicas,
+            &mut pending,
+            &blob_store,
+            "did:key:local",
+            "v-race",
+            "verse",
+            "v-race",
+            &manifest_hash,
+        )
+        .await;
+        assert_eq!(
+            pending.len(),
+            1,
+            "no open replica — write retained, not dropped"
+        );
+
+        // The open that races it: flushes the retained write.
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx.clone(),
+            engine_holder,
+            "v-race",
+            "0".repeat(64).as_str(),
+            None,
+            &[],
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &blob_store,
+            &mut pending,
+        )
+        .await;
+        assert!(pending.is_empty(), "the open flushed the retained write");
+
+        // READ-BACK: the manifest row is in the replica's doc.
+        let snap = replicas
+            .get("v-race")
+            .expect("replica registered")
+            .snapshot()
+            .await
+            .expect("snapshot");
+        let row = snap
+            .iter()
+            .find(|c| c.table == "verse" && c.record_id == "v-race")
+            .expect("manifest row present in the replica doc");
+        assert_eq!(row.data, manifest.to_vec());
+
+        // Post-open writes publish directly and never queue again.
+        let later = br#"{"fractal_id":"f-1","verse_id":"v-race"}"#;
+        let later_hash = blob_store.add_blob(later).expect("later blob");
+        handle_write_row_entry(
+            &replicas,
+            &mut pending,
+            &blob_store,
+            "did:key:local",
+            "v-race",
+            "fractal",
+            "f-1",
+            &later_hash,
+        )
+        .await;
+        assert!(
+            pending.is_empty(),
+            "an open replica publishes directly — no queueing"
+        );
+        let snap = replicas
+            .get("v-race")
+            .unwrap()
+            .snapshot()
+            .await
+            .expect("snapshot");
+        assert!(
+            snap.iter()
+                .any(|c| c.table == "fractal" && c.record_id == "f-1"),
+            "direct publish landed in the doc"
+        );
+    }
+
+    /// F20-finding-4 interaction: a write retained before a FAILED online
+    /// open is NOT flushed (a loudly non-replicating replica publishes
+    /// nothing) and stays retained — a later successful (re-)open flushes it.
+    // The env-mutex guard is deliberately held across awaits: it must
+    // serialize this env-mutating test against every other one for the
+    // test's whole duration (nothing inside this test contends on it).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn failed_online_open_retains_pending_until_successful_reopen() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(crate::relay_config::RELAY_CONFIG_ENV_VAR, "disabled");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let secret = iroh::SecretKey::from_bytes(&[67u8; 32]);
+        let endpoint =
+            match crate::endpoint::SyncEndpoint::new(secret, &RelayConfig::from_env()).await {
+                Ok(ep) => ep,
+                Err(e) => {
+                    tracing::warn!("skipping online test: endpoint bind failed ({e})");
+                    return;
+                }
+            };
+        let stack = Arc::new(
+            DocsStack::spawn(endpoint.inner().clone(), tmp.path().join("p2p"))
+                .await
+                .expect("docs stack"),
+        );
+        let holder = Arc::new(IrohDocsEngineHolder::online(stack));
+
+        let blob_store: BlobStoreHandle =
+            Arc::new(crate::FsBlobStore::new(tmp.path().join("blobs")).expect("fs blob store"));
+        let manifest = br#"{"verse_id":"v-flaky","name":"Flaky Verse","default_access":"viewer"}"#;
+        let manifest_hash = blob_store.add_blob(manifest).expect("manifest blob");
+
+        let ns_secret = [29u8; 32];
+        let ns_id = hex::encode(fe_database::derive_namespace_id(&ns_secret));
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let mut pending = PendingWrites::default();
+
+        // The write arrives before any open — retained.
+        handle_write_row_entry(
+            &replicas,
+            &mut pending,
+            &blob_store,
+            "did:key:local",
+            "v-flaky",
+            "verse",
+            "v-flaky",
+            &manifest_hash,
+        )
+        .await;
+
+        // A FAILED online open must not flush it (loud non-replicating
+        // state publishes nothing).
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx.clone(),
+            holder.clone(),
+            "v-flaky",
+            ns_id.as_str(),
+            Some("not-hex".to_string()),
+            &[],
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &blob_store,
+            &mut pending,
+        )
+        .await;
+        assert!(
+            matches!(
+                evt_rx.try_recv(),
+                Ok(SyncEvent::ReplicaOpenFailed { ref verse_id, .. }) if verse_id == "v-flaky"
+            ),
+            "failed online open is loud"
+        );
+        assert_eq!(
+            pending.len(),
+            1,
+            "a failed open retains (never flushes) pending writes"
+        );
+
+        // A later successful open flushes them.
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx,
+            holder,
+            "v-flaky",
+            ns_id.as_str(),
+            Some(hex::encode(ns_secret)),
+            &[],
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &blob_store,
+            &mut pending,
+        )
+        .await;
+        assert!(
+            pending.is_empty(),
+            "successful re-open flushed the retained write"
+        );
+        let snap = replicas
+            .get("v-flaky")
+            .expect("replica registered")
+            .snapshot()
+            .await
+            .expect("doc-backed snapshot");
+        let row = snap
+            .iter()
+            .find(|c| c.table == "verse" && c.record_id == "v-flaky")
+            .expect("manifest row published by the flush");
+        assert_eq!(row.data, manifest.to_vec());
+    }
+
+    /// F21/M2 regression at the EXACT failure shape: a verse manifest row
+    /// emitted BEFORE its replica open (the create_verse → VerseCreated race)
+    /// must be durably present in its own doc, and a fresh peer must converge
+    /// it through the real transport. Proves, on a REAL sync thread:
+    ///
+    /// 1. the emit-before-open write is retained, not warn-and-dropped;
+    /// 2. the open republishes it (FIFO flush through the normal write path);
+    /// 3. a fresh peer (cold store, joins the namespace, dials the creator)
+    ///    converges the manifest through the real loopback transport — the
+    ///    bootstrap-window contract (A3) preserved;
+    /// 4. the manifest is DURABLE in the creator's own doc: after a clean
+    ///    shutdown, a read-only reopen of the same persisted store finds it
+    ///    (get_many read-back — the exact instrument seed_reconciliation
+    ///    uses).
+    // The env-mutex guard is deliberately held across awaits: it must
+    // serialize this env-mutating test against every other one for the
+    // test's whole duration (nothing inside this test contends on it).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn manifest_written_before_replica_open_converges_to_fresh_peer_and_reads_back() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(crate::relay_config::RELAY_CONFIG_ENV_VAR, "disabled");
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // The creator: a REAL sync thread — the same spawn_sync_thread the
+        // relay's VerseCreated system and the GUI's navigation ride.
+        let secret_b = iroh::SecretKey::from_bytes(&[71u8; 32]);
+        let local_did_b =
+            fe_identity::did_key::did_key_from_public_key_bytes(secret_b.public().as_bytes())
+                .expect("B did:key");
+        let blob_store: BlobStoreHandle =
+            Arc::new(crate::FsBlobStore::new(tmp.path().join("blobs")).expect("fs blob store"));
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(64);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(4096);
+        let sync = spawn_sync_thread(
+            secret_b,
+            blob_store.clone(),
+            cmd_rx,
+            evt_tx,
+            local_did_b.clone(),
+            None,
+            Some(tmp.path().join("b")),
+        );
+        let started = {
+            let rx = evt_rx.clone();
+            tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(20)))
+                .await
+                .expect("event-wait task")
+                .expect("Started event")
+        };
+        let SyncEvent::Started {
+            online: true,
+            node_addr: Some(addr_json),
+        } = started
+        else {
+            panic!("this test requires an online stack, got {started:?}");
+        };
+        let addr_b: iroh::NodeAddr =
+            serde_json::from_str(&addr_json).expect("creator NodeAddr JSON");
+
+        // The verse the creator is about to make — real ULID + derived
+        // namespace id, exactly the values create_verse_handler writes.
+        let verse_id = ulid::Ulid::new().to_string();
+        let ns_secret = [23u8; 32];
+        let ns_id = hex::encode(fe_database::derive_namespace_id(&ns_secret));
+        let ns_secret_hex = hex::encode(ns_secret);
+        let manifest = serde_json::json!({
+            "verse_id": verse_id,
+            "name": "Open-Race Verse",
+            "created_by": local_did_b,
+            "created_at": "2026-10-07T00:00:00Z",
+            "namespace_id": ns_id,
+            "default_access": "viewer",
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let manifest_hash = blob_store.add_blob(&manifest_bytes).expect("manifest blob");
+
+        // 1) THE RACE: the manifest write is emitted BEFORE the replica open
+        //    (exactly the create_verse_handler → VerseCreated ordering).
+        cmd_tx
+            .send(SyncCommand::WriteRowEntry {
+                verse_id: verse_id.clone(),
+                table: "verse".to_string(),
+                record_id: verse_id.clone(),
+                content_hash: manifest_hash,
+            })
+            .expect("manifest write command");
+
+        // 2) The open that races it (the VerseCreated system's / navigation's
+        //    OpenVerseReplica).
+        cmd_tx
+            .send(SyncCommand::OpenVerseReplica {
+                verse_id: verse_id.clone(),
+                namespace_id: ns_id.clone(),
+                namespace_secret: Some(ns_secret_hex.clone()),
+                bootstrap_peers: Vec::new(),
+            })
+            .expect("replica open command");
+
+        // Deterministic sequencing barrier: the command loop processes
+        // commands in order, so a BlobReady emitted for this FetchBlob
+        // proves the open (and its pending flush) has fully completed —
+        // the fresh peer can then join without racing the open.
+        let probe_hash = blob_store
+            .add_blob(b"open-complete-probe")
+            .expect("probe blob");
+        cmd_tx
+            .send(SyncCommand::FetchBlob {
+                hash: probe_hash,
+                verse_id: verse_id.clone(),
+            })
+            .expect("probe command");
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let rx = evt_rx.clone();
+                let next = tokio::task::spawn_blocking(move || {
+                    rx.recv_timeout(std::time::Duration::from_millis(500))
+                })
+                .await
+                .expect("event-wait task");
+                match next {
+                    Ok(SyncEvent::BlobReady { hash }) if hash == probe_hash => break,
+                    Ok(_) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout)
+                        if std::time::Instant::now() < deadline =>
+                    {
+                        continue
+                    }
+                    Err(other) => panic!("open barrier never fired: {other:?}"),
+                }
+            }
+        }
+
+        // 3) A FRESH PEER joins the namespace from a cold store and converges
+        //    the manifest through the real transport.
+        let secret_c = iroh::SecretKey::from_bytes(&[72u8; 32]);
+        let endpoint_c = crate::endpoint::SyncEndpoint::new(secret_c, &RelayConfig::from_env())
+            .await
+            .expect("fresh-peer endpoint");
+        let stack_c = Arc::new(
+            DocsStack::spawn(endpoint_c.inner().clone(), tmp.path().join("c"))
+                .await
+                .expect("fresh-peer docs stack"),
+        );
+        let holder_c = Arc::new(IrohDocsEngineHolder::online(stack_c));
+        let fresh = IrohDocsReplicator::new(
+            verse_id.clone(),
+            ns_id.clone(),
+            ns_secret_hex.clone(),
+            "did:key:fresh-peer".to_string(),
+            holder_c,
+        );
+        fresh
+            .open_document()
+            .await
+            .expect("fresh peer imports the capability");
+        fresh
+            .start_sync(vec![addr_b])
+            .await
+            .expect("fresh peer dials the creator");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let mut converged = None;
+        while std::time::Instant::now() < deadline {
+            let snap = fresh.snapshot().await.expect("fresh-peer snapshot");
+            if let Some(row) = snap
+                .iter()
+                .find(|c| c.table == "verse" && c.record_id == verse_id)
+            {
+                converged = Some(row.data.clone());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let converged =
+            converged.expect("fresh peer converged the manifest through the real transport");
+        assert_eq!(
+            converged, manifest_bytes,
+            "converged manifest content matches the emitted row"
+        );
+
+        // 4) OWN-DOC DURABLE READ-BACK: shut the creator down cleanly, then
+        //    reopen its persisted doc store read-only (secretless — F20
+        //    aligned ids) and get_many the manifest.
+        cmd_tx.send(SyncCommand::Shutdown).expect("shutdown send");
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                let rx = evt_rx.clone();
+                let next = tokio::task::spawn_blocking(move || {
+                    rx.recv_timeout(std::time::Duration::from_millis(500))
+                })
+                .await
+                .expect("event-wait task");
+                match next {
+                    Ok(SyncEvent::Stopped) => break,
+                    Ok(_) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout)
+                        if std::time::Instant::now() < deadline =>
+                    {
+                        continue
+                    }
+                    Err(other) => panic!("sync thread did not stop cleanly: {other:?}"),
+                }
+            }
+        }
+        sync.join().expect("sync thread exited cleanly");
+
+        let secret_ro = iroh::SecretKey::from_bytes(&[73u8; 32]);
+        let endpoint_ro = crate::endpoint::SyncEndpoint::new(secret_ro, &RelayConfig::from_env())
+            .await
+            .expect("read-back endpoint");
+        let stack_ro = Arc::new(
+            DocsStack::spawn(endpoint_ro.inner().clone(), tmp.path().join("b"))
+                .await
+                .expect("reopen the creator's persisted doc store"),
+        );
+        let holder_ro = Arc::new(IrohDocsEngineHolder::online(stack_ro));
+        let reader = IrohDocsReplicator::new(
+            verse_id.clone(),
+            ns_id.clone(),
+            String::new(), // secretless read-only reopen
+            "did:key:reader".to_string(),
+            holder_ro,
+        );
+        reader
+            .open_document()
+            .await
+            .expect("secretless reopen of the persisted doc");
+        let snap = reader.snapshot().await.expect("own-doc get_many read-back");
+        let row = snap
+            .iter()
+            .find(|c| c.table == "verse" && c.record_id == verse_id)
+            .expect("manifest row durably in its own doc despite the open race");
+        assert_eq!(
+            row.data, manifest_bytes,
+            "durable manifest content matches the emitted row"
+        );
     }
 }

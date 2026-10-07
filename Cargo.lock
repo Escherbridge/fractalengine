@@ -5595,6 +5595,7 @@ dependencies = [
  "crossbeam",
  "fe-database",
  "fe-hexon",
+ "fe-identity",
  "fe-renderer",
  "fe-runtime",
  "fe-sdk",

@@ -207,6 +207,54 @@ that select loop drains.** The regression test
 pins the exact shape: 300-entry doc, live convergence, re-open replay past
 capacity, and `Shutdown` still processing.
 
+## §pending-writes (F21/M2 — the verse-manifest open race)
+
+`WriteRowEntry` for a verse whose replica is not open yet is **retained, not
+warn-and-dropped**: `handle_write_row_entry` queues it in the command loop's
+`PendingWrites` map, and `handle_open_verse_replica` republishes the verse's
+queue **in FIFO order through the same write path a live write takes** after
+a successful open (publish/conflict semantics are identical to the live
+path — same key encoding, same set_bytes/del, same doc latest-per-entry
+rules).
+
+Why the seam (not the relay instance): `create_verse_handler` emits the
+verse manifest `ReplicationEvent` before the host's open reaches the sync
+thread — the relay's `open_replica_on_verse_created` Bevy system and the
+GUI's navigation `open_replica` both send their `OpenVerseReplica` AFTER the
+manifest `WriteRowEntry` is already in flight, so the first manifest row hit
+the no-open-replica warn-and-drop and never entered the doc. The manifest is
+emitted exactly once at creation and can never be re-emitted, and
+`seed_reconciliation` cannot heal a row that never entered the doc — a fresh
+relay's doc would permanently lack its verse manifest, so a fresh peer
+joining never received it (defeating A3's bootstrap window, which exists
+precisely so the manifest arrives that way). Fixing the seam covers every
+host: relay, GUI, sim, harness.
+
+Rules:
+
+- **Bounded retention:** cap 1024 entries (`PENDING_WRITES_CAP`), drop-oldest
+  with a warn — the queue keeps the newest version per key, so a flush still
+  converges the doc to the latest row content.
+- **Failed open never flushes** (F20 finding 4 interaction): an online
+  open failure leaves the loudly non-replicating replica publishing NOTHING —
+  retained writes stay queued for a later successful (re-)open
+  (regression-tested: `failed_online_open_retains_pending_until_successful_reopen`).
+- **Process-lifetime only:** sync-thread shutdown drops whatever is still
+  queued with a warn (rows stay durable in the local DB; their publish is
+  lost this session). Residual hole, known and accepted: a verse created but
+  whose replica never opens in the creating process (and never opens again
+  in a later process through any write) relies on a later session's manual
+  write or the verse-invite path to publish its manifest — a DB-side re-emit
+  on replica open is the deferred shape if that hole ever matters.
+- Regression tests pin the exact failure shape:
+  `write_before_open_retained_then_flushed_through_offline_mock` (offline
+  seam, snapshot read-back) and
+  `manifest_written_before_replica_open_converges_to_fresh_peer_and_reads_back`
+  (REAL sync thread: emit-before-open retained → flushed after open → a
+  fresh peer converges the manifest through the real loopback transport →
+  after clean shutdown the manifest reads back from the creator's own
+  persisted doc via a secretless reopen).
+
 ## §write-policy (auth_policy_pattern_20260710 §D1)
 
 **F2 moved the gate; F3 landed it.** `write_policy.rs` no longer gates

@@ -240,4 +240,81 @@ mod tests {
             "only petal should be cleared"
         );
     }
+
+    /// F21/M2 (GUI half of the verse-manifest open race): navigating into a
+    /// verse sends the `OpenVerseReplica` that unblocks the sync thread's
+    /// retained manifest write — the DB thread emitted the manifest
+    /// `WriteRowEntry` at creation time, before this open arrives. The
+    /// command must carry the verse's namespace_id and its stored namespace
+    /// secret (GUI path parity with the relay's `VerseCreated` system test
+    /// in fractalengine-relay/src/replicas.rs).
+    #[test]
+    fn navigation_to_created_verse_sends_open_verse_replica() {
+        use crate::verse_manager::VerseEntry;
+        use fe_identity::{InMemoryBackend, SecretStore};
+        use std::sync::Arc;
+
+        let verse_id = "01F21GUIOPENVARSE00000000000";
+        let secret = [5u8; 32];
+        let hex_secret = fe_database::hash_to_hex(&secret);
+        let ns_id = fe_database::hash_to_hex(&fe_database::derive_namespace_id(&secret));
+
+        let store: Arc<dyn SecretStore> = Arc::new(InMemoryBackend::new());
+        store
+            .set(
+                &format!("fractalengine:verse:{verse_id}:ns_secret"),
+                "fractalengine",
+                &hex_secret,
+            )
+            .unwrap();
+
+        let (sync_tx, sync_rx) = crossbeam::channel::bounded(4);
+        let mut app = App::new();
+        app.init_resource::<NavigationManager>();
+        app.insert_resource(crate::verse_manager::VerseManager::from_verses(vec![
+            VerseEntry {
+                id: verse_id.to_string(),
+                name: "GUI Race Verse".to_string(),
+                namespace_id: Some(ns_id.clone()),
+                expanded: true,
+                fractals: Vec::new(),
+            },
+        ]));
+        app.insert_resource(fe_sync::SyncCommandSenderRes(sync_tx));
+        app.insert_resource(fe_database::SecretStoreRes(store));
+        app.add_systems(Update, handle_verse_replica_lifecycle);
+
+        // Frame 1: nothing active — the lifecycle initializes without opening.
+        app.update();
+        assert!(
+            sync_rx.try_recv().is_err(),
+            "no open command before navigation"
+        );
+
+        // Frame 2: the user navigates into the newly created verse. The
+        // manifest write emitted at creation time is already retained on the
+        // sync thread (F21); this open is what publishes it.
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_verse(verse_id, "GUI Race Verse");
+        app.update();
+
+        match sync_rx
+            .try_recv()
+            .expect("OpenVerseReplica after navigation")
+        {
+            fe_sync::SyncCommand::OpenVerseReplica {
+                verse_id: v,
+                namespace_id,
+                namespace_secret,
+                bootstrap_peers,
+            } => {
+                assert_eq!(v, verse_id);
+                assert_eq!(namespace_id, ns_id);
+                assert_eq!(namespace_secret, Some(hex_secret));
+                assert!(bootstrap_peers.is_empty());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 }

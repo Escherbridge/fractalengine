@@ -22,3 +22,8 @@ url = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rfd = { workspace = true }
+
+[dev-dependencies]
+# tests only (navigation replica-lifecycle test wires an in-memory secret
+# store to assert the full OpenVerseReplica command parity with the relay)
+fe-identity = { path = "../fe-identity" }
