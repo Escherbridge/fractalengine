@@ -5,10 +5,10 @@
 //! sender, so an applied row can never re-enter the outbound bridge — the
 //! dispatch arm is the only caller and it passes none either.
 //!
-//! TODO(F3/A3): the fe-policy role gate (Viewer denied / Editor+ applied /
-//! unknown peer denied, deny-by-default, roles resolved from the `role`
-//! table at verse scope — never wire-supplied) slots in at the top of
-//! [`apply_replicated_row_handler`] once F3 wires peer-role resolution.
+//! A3: admission is role-gated here (deny-by-default). The author's role is
+//! resolved from the local tables at the verse scope — never from the wire —
+//! and must reach Editor+ (the same fe-policy standard write gate as the
+//! local path). See [`admit_inbound_row`].
 
 use fe_runtime::messages::{NodeDto, ReplicatedRowOutcome, SceneChange};
 
@@ -26,8 +26,9 @@ pub type SceneChangeSender = tokio::sync::broadcast::Sender<SceneChange>;
 /// back with explicit SurrealQL casts (§geometry-inserts); tombstone
 /// dominance is delegated to [`crate::merge::apply_replicated_node`] (N-4).
 ///
-/// `verse_id` / `author_did` are audit context for logs (the role gate that
-/// will consume `author_did` is F3's seam). `pub` so the test harness's
+/// `author_did` (the entry author the transport attests) is what the A3
+/// role gate resolves against the local tables — wire payloads are never
+/// consulted for roles. `pub` so the test harness's
 /// simplified DB loop can drive the **real** apply path against its in-memory
 /// DB (the real dispatch loop lives in fe-database's own thread and is not
 /// callable against `Mem` — statement-parity isn't enough here, the apply
@@ -49,8 +50,38 @@ pub async fn apply_replicated_row_handler(
         author = author_did,
         "Applying inbound replicated row"
     );
+    // A3: admission precedes dispatch — a denied row is never applied and
+    // never re-emitted (there is no replication sender in scope anyway).
+    match admit_inbound_row(db, verse_id, table, record_id, row_bytes, author_did).await? {
+        Admission::Allow => {}
+        Admission::Deny(reason) => {
+            tracing::warn!(
+                verse_id,
+                table,
+                record_id,
+                author = author_did,
+                reason = %reason,
+                "Inbound replicated row DENIED at the verse-scope role gate — not applied"
+            );
+            return Ok(ReplicatedRowOutcome::Denied);
+        }
+    }
     match table {
-        "verse" | "fractal" | "petal" => apply_static_row(db, table, record_id, row_bytes).await,
+        "verse" | "fractal" | "petal" => {
+            // An empty entry is the iroh-docs `del` marker. Static hierarchy
+            // rows have no tombstone semantics in this model (N-4 covers
+            // nodes) — a peer-side delete of a verse/petal is not a thing we
+            // apply, so report it as not-applicable rather than an error.
+            if row_bytes.is_empty() {
+                tracing::debug!(
+                    table,
+                    record_id,
+                    "empty-entry delete on a static hierarchy table — no tombstone semantics"
+                );
+                return Ok(ReplicatedRowOutcome::NotApplicable);
+            }
+            apply_static_row(db, table, record_id, row_bytes).await
+        }
         "node" => apply_node_row(db, record_id, row_bytes, entity_change_tx).await,
         other => {
             tracing::debug!(
@@ -59,6 +90,95 @@ pub async fn apply_replicated_row_handler(
             );
             Ok(ReplicatedRowOutcome::NotApplicable)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A3: the inbound role gate
+// ---------------------------------------------------------------------------
+
+/// Verdict of the inbound admission gate.
+enum Admission {
+    /// The row may be applied.
+    Allow,
+    /// The row is denied — never applied, never re-emitted.
+    Deny(String),
+}
+
+/// A3: gate one inbound row on the author's role at the verse scope.
+///
+/// Deny-by-default, roles resolved from the **local** tables, never the
+/// wire: [`crate::role_manager::resolve_role`] walks the verse owner
+/// (`created_by`) → explicit `role` rows up the scope chain → the verse's
+/// `default_access` (pinned by the schema and `set_default_access` to
+/// "viewer"/"none", so an unknown peer can never resolve to a writer). The
+/// decision itself is [`crate::rbac::evaluate_write`] — the same fe-policy
+/// standard write gate as the local path (Write = Editor+), so inbound and
+/// local writes can never drift apart in threshold.
+///
+/// **Bootstrap window:** rows for a verse this store does not know yet are
+/// admitted. A peer only receives rows over a replica it deliberately opened
+/// (namespace capability in hand) — that capability is the admission until
+/// the verse manifest converges and real roles become resolvable. Denying
+/// here would deadlock convergence at the root: the verse row itself, which
+/// the gate keys on, arrives over this same path (the A2 two-peer flow
+/// depends on this). The window closes the moment the manifest lands; every
+/// row after it is role-gated. A capability-holder could always plant a
+/// manifest first anyway, so this rule gates nothing extra — it only keeps
+/// out-of-order sync (petal rows arriving before the verse row) from being
+/// permanently lost.
+async fn admit_inbound_row(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    author_did: &str,
+) -> anyhow::Result<Admission> {
+    // A verse row claiming a different verse than the replica it arrived on
+    // is a scope-injection attempt: the gate would judge the replica's verse
+    // while the row lands under the payload's (which, pre-manifest, would
+    // also slip through the bootstrap window unchecked). Never trust it.
+    if table == "verse" {
+        if let Some(claimed) = serde_json::from_slice::<serde_json::Value>(row_bytes)
+            .ok()
+            .and_then(|row| {
+                row.get("verse_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+        {
+            if claimed != verse_id {
+                tracing::warn!(
+                    verse_id,
+                    claimed_verse_id = %claimed,
+                    record_id,
+                    author = author_did,
+                    "verse row claims a foreign verse_id — denied"
+                );
+                return Ok(Admission::Deny(
+                    "verse_id does not match the replica's verse".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Bootstrap window (see the doc comment above).
+    if !row_exists(db, "verse", "verse_id", verse_id).await? {
+        tracing::debug!(
+            verse_id,
+            table,
+            record_id,
+            "verse manifest not converged yet — bootstrap admission"
+        );
+        return Ok(Admission::Allow);
+    }
+
+    let verse_scope = crate::scope::build_scope(verse_id, None, None);
+    let role = crate::role_manager::resolve_role(db, author_did, &verse_scope).await?;
+    match crate::rbac::evaluate_write(author_did, &role.to_string(), &verse_scope) {
+        fe_policy::Decision::Allow => Ok(Admission::Allow),
+        fe_policy::Decision::Deny(reason) => Ok(Admission::Deny(reason)),
     }
 }
 
@@ -126,13 +246,29 @@ async fn apply_static_row(
 
     if let Some(geometry) = geometry_value {
         let field = geometry_field.expect("geometry_value implies a geometry field");
+        // §geometry-inserts, strictest form: a cast around a BOUND GeoJSON
+        // object — or even around an object literal with a bound rings
+        // parameter — is rejected by the schema check ("could not cast into
+        // `geometry`"). The only form this SurrealDB line casts is the inline
+        // numeric literal the local petal paths use (crud.rs, seed.rs). So:
+        // extract the payload's coordinate rings and render them inline.
+        // Only validated finite floats are formatted — no injection surface.
+        let rings = geometry.get("coordinates").cloned().ok_or_else(|| {
+            anyhow::anyhow!("replicated {table} row {row_id}: bounds lacks coordinates rings")
+        })?;
+        let literal = render_polygon_rings(&rings).ok_or_else(|| {
+            anyhow::anyhow!(
+                "replicated {table} row {row_id}: bounds coordinates are not numeric rings"
+            )
+        })?;
         db.query(
             format!(
-                "UPDATE {table} SET {field} = <geometry<polygon>> $geo WHERE {id_field} = $rid"
+                "UPDATE {table} SET {field} = \
+                 <geometry<polygon>> {{ type: 'Polygon', coordinates: {literal} }} \
+                 WHERE {id_field} = $rid"
             )
             .as_str(),
         )
-        .bind(("geo", geometry))
         .bind(("rid", row_id))
         .await?
         .check()
@@ -140,6 +276,36 @@ async fn apply_static_row(
     }
 
     Ok(ReplicatedRowOutcome::Applied)
+}
+
+/// Render a GeoJSON `coordinates` value as an inline SurrealQL numeric
+/// literal (`[[[x, z], …]]`) — the only statement form this SurrealDB line
+/// accepts under a `<geometry<polygon>>` cast (see apply_static_row). Every
+/// rendered token comes from a validated finite f64, so the interpolation
+/// carries no injection surface; `None` on any non-numeric shape.
+fn render_polygon_rings(coords: &serde_json::Value) -> Option<String> {
+    let mut out = String::from("[");
+    for (ri, ring) in coords.as_array()?.iter().enumerate() {
+        if ri > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (pi, point) in ring.as_array()?.iter().enumerate() {
+            if pi > 0 {
+                out.push(',');
+            }
+            let pair = point.as_array()?;
+            let x = pair.first()?.as_f64()?;
+            let z = pair.get(1)?.as_f64()?;
+            if !x.is_finite() || !z.is_finite() {
+                return None;
+            }
+            out.push_str(&format!("[{x}, {z}]"));
+        }
+        out.push(']');
+    }
+    out.push(']');
+    Some(out)
 }
 
 /// Whether a row with `row_id` exists in `table`. Tolerates an absent table
@@ -175,8 +341,20 @@ async fn apply_node_row(
     row_bytes: &[u8],
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
-    let mut row: serde_json::Value = serde_json::from_slice(row_bytes)
-        .map_err(|e| anyhow::anyhow!("replicated node row {record_id}: bad JSON: {e}"))?;
+    // An empty payload is the wire tombstone — the iroh-docs `del` marker's
+    // empty entry (`RowChange::is_tombstone` mirrors this at the seam).
+    // Synthesize the node payload the merge path expects; the petal scope
+    // for the scene change is resolved from the durable row below, since
+    // the wire form carries nothing.
+    let mut row: serde_json::Value = if row_bytes.is_empty() {
+        serde_json::json!({
+            "node_id": record_id,
+            "tombstone": { "source": "remote-del" },
+        })
+    } else {
+        serde_json::from_slice(row_bytes)
+            .map_err(|e| anyhow::anyhow!("replicated node row {record_id}: bad JSON: {e}"))?
+    };
 
     // merge.rs keys on the payload's `node_id`; fall back to the wire id.
     let node_id = row
@@ -197,6 +375,14 @@ async fn apply_node_row(
         MergeApplied::NotANode => return Ok(ReplicatedRowOutcome::NotApplicable),
         MergeApplied::SkippedTombstoned => ReplicatedRowOutcome::SkippedTombstoned,
         MergeApplied::AppliedTombstone => {
+            // The empty-entry tombstone carries no petal — resolve the owning
+            // petal from the durable row for the scene change (§scene-change
+            // attribution: an absent lookup suppresses the event rather than
+            // broadcasting an unscoped delta).
+            let petal_id = match petal_id {
+                Some(p) => Some(p),
+                None => node_petal_id(db, &node_id).await,
+            };
             if let Some(petal_id) = petal_id {
                 emit_scene_change(
                     entity_change_tx,
@@ -221,6 +407,26 @@ async fn apply_node_row(
         }
     };
     Ok(outcome)
+}
+
+/// The durable row's owning petal, for scene-change attribution when the
+/// inbound payload carries none (the empty-entry tombstone form). Best-effort:
+/// a failed or absent lookup yields `None`, which suppresses the scene event
+/// (§scene-change attribution) rather than broadcasting an unscoped delta.
+async fn node_petal_id(db: &Db, node_id: &str) -> Option<String> {
+    let rows: Vec<serde_json::Value> = db
+        .query("SELECT petal_id FROM node WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await
+        .ok()?
+        .check()
+        .ok()?
+        .take(0)
+        .ok()?;
+    rows.first()
+        .and_then(|r| r.get("petal_id"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
 }
 
 /// Read the payload's `position` as `(x, z)` for the scene-change DTO.
@@ -328,6 +534,8 @@ mod tests {
     #[tokio::test]
     async fn verse_row_applies_and_reads_back() {
         let db = schema_db().await;
+        // Fresh store: the verse manifest itself arrives over the replica —
+        // bootstrap admission (see admit_inbound_row), the A2 convergence case.
         let row = serde_json::to_vec(&serde_json::json!({
             "verse_id": "verse-e2e",
             "name": "Replicated Verse",
@@ -364,6 +572,9 @@ mod tests {
     #[tokio::test]
     async fn verse_row_merge_updates_existing() {
         let db = schema_db().await;
+        // The verse creator (created_by) — resolves to Owner, so the update
+        // passes the A3 gate. The unknown-peer update is covered by
+        // `unknown_peer_verse_update_is_denied`.
         let first = serde_json::to_vec(&serde_json::json!({
             "verse_id": "v1", "name": "First",
             "created_by": "did:key:a", "created_at": "2026-10-07T00:00:00Z",
@@ -375,11 +586,11 @@ mod tests {
             .unwrap();
 
         let update = serde_json::to_vec(&serde_json::json!({
-            "verse_id": "v1", "name": "Renamed by peer",
+            "verse_id": "v1", "name": "Renamed by owner",
         }))
         .unwrap();
         let outcome =
-            apply_replicated_row_handler(&db, "v1", "verse", "v1", &update, "did:key:peer-b", None)
+            apply_replicated_row_handler(&db, "v1", "verse", "v1", &update, "did:key:a", None)
                 .await
                 .unwrap();
         assert_eq!(outcome, ReplicatedRowOutcome::Applied);
@@ -390,7 +601,7 @@ mod tests {
         )
         .await;
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["name"], "Renamed by peer", "MERGE updates fields");
+        assert_eq!(rows[0]["name"], "Renamed by owner", "MERGE updates fields");
         assert_eq!(
             rows[0]["created_by"], "did:key:a",
             "MERGE preserves untouched fields"
@@ -401,6 +612,8 @@ mod tests {
     async fn node_row_with_geojson_position_applies_geometry_safe() {
         let db = schema_db().await;
         let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
+        // No verse row is seeded — this row rides the bootstrap window (the
+        // gated variant is `editor_role_row_applies_and_reads_back`).
         // Position arrives as the GeoJSON Point Surreal serializes from a
         // geometry<point> column.
         let row = serde_json::to_vec(&serde_json::json!({
@@ -501,5 +714,386 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcome, ReplicatedRowOutcome::NotApplicable);
+    }
+
+    // -------------------------------------------------------------------
+    // A3: the inbound role gate — deny-by-default, roles from local tables
+    // -------------------------------------------------------------------
+
+    /// Seed a verse row (owner = `created_by`) plus optional explicit role
+    /// rows at the verse scope, exactly as the production paths write them.
+    async fn seed_verse_with_roles(db: &Db, verse_id: &str, roles: &[(&str, &str)]) {
+        let _: Option<serde_json::Value> = db
+            .create("verse")
+            .content(serde_json::json!({
+                "verse_id": verse_id,
+                "name": "Gated Verse",
+                "created_by": "did:key:owner-a",
+                "created_at": "2026-10-07T00:00:00Z",
+                "default_access": "viewer",
+            }))
+            .await
+            .expect("seed verse");
+        let scope = crate::scope::build_scope(verse_id, None, None);
+        for (did, role) in roles {
+            crate::rbac::assign_role(db, did, &scope, role)
+                .await
+                .expect("seed role");
+        }
+    }
+
+    fn gated_node_row(node_id: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "node_id": node_id,
+            "petal_id": "petal-1",
+            "display_name": "Gated Node",
+            "position": { "type": "Point", "coordinates": [1.5, 2.5] },
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0],
+            "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn editor_role_row_applies_and_reads_back() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-gated-1",
+            &gated_node_row("node-gated-1"),
+            "did:key:peer-ed",
+            Some(&scene_tx),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+        // READ-BACK: the Editor peer's row is durable.
+        let rows = select_json(
+            &db,
+            "SELECT node_id FROM node WHERE node_id = 'node-gated-1'",
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        // A4 travels with admission: the gated apply still emits the
+        // petal-scoped scene change.
+        assert!(matches!(
+            scene_rx.try_recv(),
+            Ok(SceneChange::NodeAdded { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn viewer_role_row_is_denied_never_applied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-view", "viewer")]).await;
+        let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-gated-2",
+            &gated_node_row("node-gated-2"),
+            "did:key:peer-view",
+            Some(&scene_tx),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+
+        // READ-BACK: the Viewer's row never touched the durable store…
+        let rows = select_json(
+            &db,
+            "SELECT node_id FROM node WHERE node_id = 'node-gated-2'",
+        )
+        .await;
+        assert!(rows.is_empty(), "denied row must not be persisted");
+        // …and emitted no scene change (never re-emitted anywhere).
+        assert!(scene_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn unknown_peer_row_is_denied() {
+        let db = schema_db().await;
+        // No role row for the author: resolution falls to the verse's
+        // default_access ("viewer"), which must not admit a writer.
+        seed_verse_with_roles(&db, "v1", &[]).await;
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-gated-3",
+            &gated_node_row("node-gated-3"),
+            "did:key:peer-unknown",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+
+        let rows = select_json(
+            &db,
+            "SELECT node_id FROM node WHERE node_id = 'node-gated-3'",
+        )
+        .await;
+        assert!(rows.is_empty(), "unknown peer's row must not be persisted");
+    }
+
+    #[tokio::test]
+    async fn unknown_peer_verse_update_is_denied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[]).await;
+
+        let update = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "v1", "name": "Hijacked Name",
+        }))
+        .unwrap();
+        let outcome =
+            apply_replicated_row_handler(&db, "v1", "verse", "v1", &update, "did:key:peer-b", None)
+                .await
+                .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+
+        // READ-BACK: the verse row is untouched.
+        let rows = select_json(&db, "SELECT name FROM verse WHERE verse_id = 'v1'").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], "Gated Verse");
+    }
+
+    #[tokio::test]
+    async fn verse_row_claiming_foreign_verse_id_is_denied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[]).await;
+
+        // The payload claims a different verse than the replica it arrived
+        // on — the gate would judge verse v1 while the row lands as v2.
+        let row = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "v2", "name": "Injected Verse",
+            "created_by": "did:key:owner-a", "created_at": "2026-10-07T00:00:00Z",
+            "default_access": "viewer",
+        }))
+        .unwrap();
+        let outcome =
+            apply_replicated_row_handler(&db, "v1", "verse", "v2", &row, "did:key:owner-a", None)
+                .await
+                .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+
+        let rows = select_json(&db, "SELECT verse_id FROM verse WHERE verse_id = 'v2'").await;
+        assert!(rows.is_empty(), "foreign verse_id must not be planted");
+    }
+
+    #[tokio::test]
+    async fn node_row_before_verse_manifest_applies_bootstrap() {
+        let db = schema_db().await;
+        // Out-of-order sync: interior rows can arrive before the verse
+        // manifest converges — they ride the bootstrap window (see
+        // admit_inbound_row) instead of being permanently lost.
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-boot-1",
+            &gated_node_row("node-boot-1"),
+            "did:key:peer-any",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+        let rows = select_json(
+            &db,
+            "SELECT node_id FROM node WHERE node_id = 'node-boot-1'",
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+    }
+
+    // -------------------------------------------------------------------
+    // A5: tombstone dominance through the real inbound path (N-4)
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn stale_live_row_cannot_resurrect_locally_tombstoned_node() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        let live = gated_node_row("node-n4");
+
+        // 1. The live node converges.
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-n4",
+            &live,
+            "did:key:peer-ed",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+        // 2. An incoming tombstone converges the local row to deleted.
+        let tombstone = serde_json::to_vec(&serde_json::json!({
+            "node_id": "node-n4", "petal_id": "petal-1",
+            "tombstone": { "hlc": 42, "source_did": "did:key:peer-ed" },
+        }))
+        .unwrap();
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-n4",
+            &tombstone,
+            "did:key:peer-ed",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::AppliedTombstone);
+        let rows = select_json(&db, "SELECT tombstone FROM node WHERE node_id = 'node-n4'").await;
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0]["tombstone"].is_object(),
+            "row must read back tombstoned"
+        );
+
+        // 3. A stale live row (a replica that never saw the delete) must NOT
+        //    resurrect it — N-4 holds through the real inbound path.
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-n4",
+            &live,
+            "did:key:peer-ed",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::SkippedTombstoned);
+        let rows = select_json(&db, "SELECT tombstone FROM node WHERE node_id = 'node-n4'").await;
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0]["tombstone"].is_object(),
+            "the tombstone must survive the stale live write"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_entry_tombstone_converges_local_node_and_emits_scene_change() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
+
+        // The node is live locally first.
+        apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-del",
+            &gated_node_row("node-del"),
+            "did:key:peer-ed",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // An EMPTY payload is the iroh-docs `del` marker — the wire tombstone
+        // form (`RowChange::is_tombstone` at the seam). It must converge the
+        // local row to deleted and emit the petal-scoped NodeRemoved, with the
+        // petal resolved from the durable row (the wire form carries none).
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-del",
+            b"",
+            "did:key:peer-ed",
+            Some(&scene_tx),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::AppliedTombstone);
+
+        // READ-BACK: tombstoned.
+        let rows = select_json(&db, "SELECT tombstone FROM node WHERE node_id = 'node-del'").await;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0]["tombstone"].is_object());
+
+        match scene_rx.try_recv().expect("NodeRemoved scene change") {
+            SceneChange::NodeRemoved { node_id, petal_id } => {
+                assert_eq!(node_id, "node-del");
+                assert_eq!(petal_id, "petal-1");
+            }
+            other => panic!("expected NodeRemoved, got {other:?}"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // A6: petal bounds — the polygon geometry twin of the node point case
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn petal_row_with_bounds_applies_geometry_safe() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-ed", "editor")]).await;
+        let row = serde_json::to_vec(&serde_json::json!({
+            "petal_id": "petal-bounds",
+            "fractal_id": "fractal-1",
+            "name": "Replicated Petal",
+            "node_id": "did:key:peer-ed",
+            "bounds": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [-12.0, -8.0], [12.0, -8.0], [12.0, 8.0], [-12.0, 8.0], [-12.0, -8.0]
+                ]]
+            },
+            "created_at": "2026-10-07T00:00:00Z",
+        }))
+        .unwrap();
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "petal",
+            "petal-bounds",
+            &row,
+            "did:key:peer-ed",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+        // READ-BACK: the geometry column holds the real polygon (a raw
+        // GeoJSON bind would have failed the SCHEMAFULL write entirely).
+        let rows = select_json(
+            &db,
+            "SELECT bounds FROM petal WHERE petal_id = 'petal-bounds'",
+        )
+        .await;
+        assert_eq!(rows.len(), 1, "petal row must be durably present");
+        let bounds = &rows[0]["bounds"];
+        assert_eq!(bounds["type"], "Polygon");
+        let ring = bounds["coordinates"][0].as_array().unwrap();
+        assert_eq!(
+            ring.len(),
+            5,
+            "the polygon ring survives the cast round-trip"
+        );
+        assert_eq!(ring[0][0].as_f64().unwrap(), -12.0);
+        assert_eq!(ring[0][1].as_f64().unwrap(), -8.0);
+        assert_eq!(ring[2][0].as_f64().unwrap(), 12.0);
+        assert_eq!(ring[2][1].as_f64().unwrap(), 8.0);
     }
 }

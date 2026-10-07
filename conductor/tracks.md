@@ -433,9 +433,14 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   real (async traits, Doc::set_bytes/subscribe/close, capability import, payload
   RowChanges, empty-entry tombstones, per-replica pumps → select! loop, DB-thread
   ApplyReplicatedRow with geometry-safe merge + SceneChange; harness A2 scenario
-  two_peer_replica_sync passes with durable READ-BACK); inbound fe-policy role
-  gate (F3/A3), petal namespaces, relay lifecycle/bootstrap (F4), and legacy
-  phases remain open —
+  two_peer_replica_sync passes with durable READ-BACK); F3 (2026-10-07) lands the
+  inbound fe-policy role gate (admit_inbound_row: verse-scope resolution from
+  local tables, deny-by-default, Editor+, bootstrap window, Denied outcome),
+  empty-entry tombstone apply + scene-change petal attribution, the petal-bounds
+  inline-literal geometry cast, and the rbac::get_role full-row projection fix;
+  harness A5 scenario two_peer_tombstone_sync proves N-4 over the real transport;
+  all 11 harness scenarios green; petal namespaces, relay lifecycle/bootstrap
+  (F4), and legacy phases remain open —
   in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
   [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
 

@@ -58,6 +58,19 @@ swallowed. Both defects are fixed: the three geometry insert paths in
 `query_helpers::exec_query` now checks every response. `InsertBuilder`
 remains fine for non-geometry tables.
 
+**Polygon casts need fully inline numeric literals (A6 finding,
+2026-10-07).** `node.position` is forgiving: `SET position =
+<geometry<point>> [$x, $z]` with bound scalars casts fine. `petal.bounds` is
+not: this SurrealDB line rejects a cast around a *bound* GeoJSON object
+(`<geometry<polygon>> $geo`) AND around an object literal with a bound rings
+parameter (`{ type: 'Polygon', coordinates: $coords }`) — both fail the
+schema check with "could not cast into `geometry`". Only the inline numeric
+literal form (`{ type: 'Polygon', coordinates: [[[-10.0, -10.0], …]] }`,
+the shape `crud.rs`/`seed.rs` use) casts. The replicated-petal path
+(`handlers/replicated_row.rs::render_polygon_rings`) therefore extracts the
+payload's rings and renders them inline — every token comes from a validated
+finite f64, so there is no injection surface.
+
 Regression guard: `db_test.rs` reads a freshly created node back from the DB
 (`SELECT ... WHERE node_id`) instead of trusting handler `Ok` — handler
 success must mean the row is actually persisted.
@@ -119,6 +132,13 @@ track's acceptance criteria. `role_level.rs` is now a re-export shim: the
 canonical `RoleLevel` moved to `fe-policy` (see fe-policy/AGENTS.md §role-level)
 to avoid a dependency cycle; `fe_database::RoleLevel` paths still resolve to
 the same type.
+
+**`get_role` projects full rows (A3 fix, 2026-10-07).** It used to render
+`SELECT role FROM role`, so any *existing* role row failed the typed-`Role`
+deserialization ("missing field `peer_did`") — explicit roles never resolved;
+only the owner (`created_by`) and `default_access` paths ever worked, and
+`assign_role_checked` for a non-owner Manager would error. The A3 inbound
+gate's editor/viewer tests surfaced it; the projection is now `SELECT *`.
 
 ## §iot-readings (iot_spatial_reporting_20260714)
 
@@ -263,10 +283,22 @@ one sub-module per domain:
 - `petal_terrain` — per-petal terrain config get/set
 - `iot_reading` — append-only IoT sensor-reading ingestion (§iot-readings)
 - `node_log` — append-only per-node operation log (§node-log)
-- `replicated_row` — inbound P2P row apply (A4): `DbCommand::ApplyReplicatedRow`
-  → geometry-safe, tombstone-honoring durable write (`merge.rs`) + petal-scoped
-  `SceneChange`; loop-free by construction (no replication sender in scope).
-  The fe-policy role gate is F3's A3 seam (`TODO(F3/A3)` in the handler).
+- `replicated_row` — inbound P2P row apply (A3+A4): `DbCommand::ApplyReplicatedRow`
+  → **role-gated admission** (`admit_inbound_row`: the author's role resolved
+  from the local tables at the verse scope via `role_manager::resolve_role`,
+  decided by the same fe-policy standard write gate as the local path —
+  deny-by-default, Editor+, never wire-supplied) → geometry-safe,
+  tombstone-honoring durable write (`merge.rs`) + petal-scoped `SceneChange`;
+  loop-free by construction (no replication sender in scope). Two admission
+  rules worth knowing: a **bootstrap window** admits rows for a verse this
+  store does not know yet (replica capability = the admission; denying would
+  deadlock the verse manifest's own convergence — A2 depends on it, and
+  out-of-order sync would otherwise permanently lose interior rows), and a
+  verse row whose payload `verse_id` ≠ the replica's verse is denied
+  (scope-injection guard). The wire **tombstone form is the empty entry**
+  (`Doc::del`): the handler synthesizes the node payload and resolves the
+  scene change's petal from the durable row; an empty entry on a static
+  hierarchy table is `NotApplicable` (no tombstone semantics there).
 
 ## §node-log
 
