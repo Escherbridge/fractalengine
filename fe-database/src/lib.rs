@@ -1245,8 +1245,9 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                     // (the single SurrealDB writer). The handler takes no
                     // replication sender and this arm passes none, so an
                     // applied row can never re-enter the outbound bridge
-                    // (loop-free by construction). The fe-policy role gate
-                    // is F3's A3 seam (see handlers/replicated_row.rs).
+                    // (loop-free by construction). A3: the handler gates
+                    // admission on the author's role at the verse scope
+                    // (fe-policy deny-by-default, Editor+) before applying.
                     Ok(DbCommand::ApplyReplicatedRow { verse_id, table, record_id, row_bytes, author_did }) => {
                         match handlers::replicated_row::apply_replicated_row_handler(
                             &db,

@@ -630,7 +630,7 @@ fn handle_fetch_blob(
     // Fast path: already have it locally.
     if blob_store.has_blob(hash) {
         tracing::debug!(hash = %hex, "Blob already present locally");
-        evt_tx.send(SyncEvent::BlobReady { hash: *hash }).ok();
+        send_sync_event(evt_tx, SyncEvent::BlobReady { hash: *hash });
         return;
     }
 
@@ -1081,15 +1081,16 @@ fn handle_request_tileset_meta(peer_id: &str, tileset_id: &str, evt_tx: &SyncEve
     // Stub: emit a placeholder response
     // In full implementation, we'd look up actual metadata
     let meta_json = r#"{"error": "tileset not found locally"}"#;
-    evt_tx
-        .send(SyncEvent::TilesetMetaReceived {
+    send_sync_event(
+        evt_tx,
+        SyncEvent::TilesetMetaReceived {
             peer_id: peer_id.to_string(),
             tileset_id: tileset_id.to_string(),
             meta_json: meta_json.to_string(),
             total_chunks: 0,
             approx_size_bytes: 0,
-        })
-        .ok();
+        },
+    );
 }
 
 /// Handle [`SyncCommand::RequestChunk`].
@@ -1100,13 +1101,14 @@ fn handle_request_chunk(peer_id: &str, tileset_id: &str, chunk_seq: u32, evt_tx:
     tracing::debug!(peer_id = %peer_id, tileset_id = %tileset_id, chunk_seq, "RequestChunk (stub)");
 
     // Stub: emit failure since we can't actually transfer
-    evt_tx
-        .send(SyncEvent::ChunkFailed {
+    send_sync_event(
+        evt_tx,
+        SyncEvent::ChunkFailed {
             tileset_id: tileset_id.to_string(),
             chunk_seq,
             reason: "chunk transfer not implemented in stub".to_string(),
-        })
-        .ok();
+        },
+    );
 }
 
 /// Handle [`SyncCommand::CancelTilesetDownload`].

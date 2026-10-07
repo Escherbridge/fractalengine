@@ -16,7 +16,12 @@ pub async fn apply_schema(db: &Db) -> anyhow::Result<()> {
 
 pub async fn get_role(db: &Db, peer_did: &str, scope: &str) -> anyhow::Result<RoleId> {
     let q = QueryBuilder::new()
-        .select(&["role"])
+        // Full rows: the result deserializes into the typed `Role` struct,
+        // which needs every field — a single-column projection made any
+        // *existing* role row fail with "missing field `peer_did`" (so
+        // explicit roles never resolved; only the owner/default_access
+        // paths worked). Found by the A3 inbound gate's editor/viewer tests.
+        .select(&["*"])
         .from("role")
         .filter(Filter::eq("peer_did", peer_did))
         .filter(Filter::eq("scope", scope))

@@ -489,6 +489,9 @@ pub enum ReplicatedRowOutcome {
     AppliedTombstone,
     /// Apply failed — row left untouched, error logged by the DB thread.
     Failed,
+    /// The A3 role gate denied the row (resolved role below Editor at the
+    /// verse scope, deny-by-default) — never applied, never re-emitted.
+    Denied,
 }
 
 #[derive(Debug, Clone, Message)]

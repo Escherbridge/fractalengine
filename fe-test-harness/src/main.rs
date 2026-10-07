@@ -66,6 +66,10 @@ fn main() {
             "Two-Peer Real Replica Sync (A2)",
             scenarios::two_peer_replica_sync::run,
         ),
+        (
+            "Two-Peer Tombstone Sync (A5)",
+            scenarios::two_peer_tombstone_sync::run,
+        ),
         ("API Token Flow", scenarios::api_token_flow::run),
         (
             "API Token Edge Cases",

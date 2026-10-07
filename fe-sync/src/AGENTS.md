@@ -137,8 +137,9 @@ source), (b) emits `SyncEvent::RowApplied`, (c) `try_send`s
 `DbCommand::ApplyReplicatedRow` to the DB thread — drop-and-count
 (`INBOUND_APPLY_DROPS` / `inbound_apply_drop_count()`), never a blocking
 send. The DB thread is the single SurrealDB writer and the A4 enforcement
-point (see fe-database `handlers/replicated_row.rs`); the role gate is F3's
-A3 seam.
+point (see fe-database `handlers/replicated_row.rs`), where the A3 role gate
+also lives (landed F3, 2026-10-07: deny-by-default, Editor+, roles resolved
+from the local tables at the verse scope — never wire-supplied).
 
 Bootstrap peers (A9 prep): `FE_SYNC_BOOTSTRAP` holds **semicolon-separated**
 `NodeAddr` JSON entries (semicolons because the JSON contains commas), parsed
@@ -149,21 +150,29 @@ emits our own dialable `NodeAddr` JSON in exactly that form.
 
 ## §write-policy (auth_policy_pattern_20260710 §D1)
 
-**F2 moved the gate.** `write_policy.rs` no longer gates
+**F2 moved the gate; F3 landed it.** `write_policy.rs` no longer gates
 `handle_write_row_entry`: those commands are the *outbound* path — a local,
 already-admitted DB write being published to peers — so gating there only
 blocked our own publishes (A3's "outbound local DB-thread writes are no
-longer denied"). `PolicyHandle` and its evaluation logic remain (unit-tested
-in `write_policy.rs`) and are the intended building block for the **inbound**
-admission gate: peer admission happens on the DB thread
-(`DbCommand::ApplyReplicatedRow` → fe-policy deny-by-default, Editor+,
-roles resolved from the `role` table at verse scope, never wire-supplied) —
-F3's A3 seam, marked `TODO(F3/A3)` in fe-database
-`handlers/replicated_row.rs`.
+longer denied"). Peer admission now happens on the DB thread:
+`DbCommand::ApplyReplicatedRow` → `handlers::replicated_row.rs`
+(`admit_inbound_row`) resolves the author's role from the local `role`
+table at the verse scope and requires Editor+ through fe-policy
+(deny-by-default, never wire-supplied — see fe-database/src/AGENTS.md
+§handlers and §rbac-policy for the landed gate, its bootstrap window, and
+the `get_role` projection fix it surfaced).
 
-`PolicyHandle` derives `Resource` so the app side can insert a stricter policy
-for tests or future admission work. The causal-DAG membership resolver is not
-here; it remains blocked on per-operation signing.
+`PolicyHandle` and its evaluation logic remain in `write_policy.rs`
+(unit-tested) as the building block for any future fe-sync-side admission
+work; no production path consults it today. `PolicyHandle` derives
+`Resource` so the app side can insert a stricter policy for tests. The
+causal-DAG membership resolver is not here; it remains blocked on
+per-operation signing.
+
+The §warn-on-send-failure sweep is complete for this crate: every
+`SyncEvent` send site in `sync_thread.rs` goes through the `send_sync_event`
+helper (warn on failure) — including the F1-era startup sends and the
+blob/tileset stub handlers, which were the last bare `.ok()`s (F3, 2026-10-07).
 
 `SyncCommand::UpdateNodeTransform` is a legacy compatibility command, not a
 transport path: the sync thread logs and drops it, and the UI no longer sends
