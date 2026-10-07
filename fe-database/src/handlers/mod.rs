@@ -14,6 +14,7 @@ pub mod node_log;
 pub mod petal_terrain;
 pub(crate) mod preconditions;
 pub mod rbac;
+pub mod replicated_row;
 pub mod seed;
 pub mod transform;
 

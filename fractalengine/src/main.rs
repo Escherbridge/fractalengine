@@ -176,6 +176,12 @@ fn main() {
         sync_cmd_rx,
         sync_evt_tx,
         local_did,
+        // Inbound apply path (A4): replicated rows ride the DB thread's
+        // command channel — the DB thread stays the single SurrealDB writer.
+        Some(ch.db_cmd_tx.clone()),
+        // Default data dir (FE_P2P_DIR env, `data/p2p`) — one DocsStack per
+        // process for the desktop binary.
+        None,
     );
 
     // Phase E: bridge replication events from DB thread to sync thread.

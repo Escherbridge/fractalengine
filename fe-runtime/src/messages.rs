@@ -457,6 +457,38 @@ pub enum DbCommand {
     GetPetalTerrain {
         petal_id: String,
     },
+    // --- Inbound P2P replication (A4 seam) ---
+    /// Apply one row received from a peer's verse replica.
+    ///
+    /// Emitted by the sync thread's inbound replica event pump. The DB thread
+    /// is the single SurrealDB writer and the enforcement point: it resolves
+    /// the peer's role at the verse scope (fe-policy, deny-by-default) before
+    /// applying and never re-emits replication for the applied row (loop
+    /// prevention at the source).
+    ApplyReplicatedRow {
+        verse_id: String,
+        table: String,
+        record_id: String,
+        /// Serialised row JSON as published by the authoring peer.
+        row_bytes: Vec<u8>,
+        /// `did:key` of the peer that authored the entry.
+        author_did: String,
+    },
+}
+
+/// How one inbound replicated row was reconciled by the DB thread (A4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicatedRowOutcome {
+    /// Row applied (created or field-merged).
+    Applied,
+    /// Payload was for a table the inbound path does not handle.
+    NotApplicable,
+    /// A local tombstone dominated the incoming live row (N-4 non-resurrection).
+    SkippedTombstoned,
+    /// An incoming tombstone converged the local row to deleted.
+    AppliedTombstone,
+    /// Apply failed — row left untouched, error logged by the DB thread.
+    Failed,
 }
 
 #[derive(Debug, Clone, Message)]
@@ -681,6 +713,14 @@ pub enum DbResult {
     PetalTerrainLoaded {
         petal_id: String,
         terrain: Option<serde_json::Value>,
+    },
+    /// Result of `ApplyReplicatedRow` — how the DB thread reconciled one
+    /// inbound replicated row (A4).
+    ReplicatedRowApplied {
+        verse_id: String,
+        table: String,
+        record_id: String,
+        outcome: ReplicatedRowOutcome,
     },
 }
 

@@ -1241,6 +1241,40 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Uninstall crate failed: {e}"))),
                         }
                     }
+                    // A4: inbound replicated row — applied on the DB thread
+                    // (the single SurrealDB writer). The handler takes no
+                    // replication sender and this arm passes none, so an
+                    // applied row can never re-enter the outbound bridge
+                    // (loop-free by construction). The fe-policy role gate
+                    // is F3's A3 seam (see handlers/replicated_row.rs).
+                    Ok(DbCommand::ApplyReplicatedRow { verse_id, table, record_id, row_bytes, author_did }) => {
+                        match handlers::replicated_row::apply_replicated_row_handler(
+                            &db,
+                            &verse_id,
+                            &table,
+                            &record_id,
+                            &row_bytes,
+                            &author_did,
+                            entity_change_tx.as_ref(),
+                        ).await {
+                            Ok(outcome) => send_result(
+                                &tx,
+                                DbResult::ReplicatedRowApplied { verse_id, table, record_id, outcome },
+                            ),
+                            Err(e) => {
+                                tracing::warn!("Applying replicated row failed: {e}");
+                                send_result(
+                                    &tx,
+                                    DbResult::ReplicatedRowApplied {
+                                        verse_id,
+                                        table,
+                                        record_id,
+                                        outcome: fe_runtime::messages::ReplicatedRowOutcome::Failed,
+                                    },
+                                );
+                            }
+                        }
+                    }
                     Ok(DbCommand::Shutdown) | Err(_) => break,
                 }
                 tracing::debug!(elapsed_ms = %cmd_start.elapsed().as_millis(), "DB command processed");
