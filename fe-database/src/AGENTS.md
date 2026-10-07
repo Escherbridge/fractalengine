@@ -13,6 +13,15 @@ histograms, gpx_points sizes, node_log/asset breakdowns, disk size). Both open
 the store normally but run only SELECT queries — safe against the user's live
 DB, but they DO take the SurrealKV lock, so the app must not be running.
 
+`examples/seed_join_verse.rs` (M1 user-testing validation fixture, 2026-10-07)
+is the one WRITING example: `gen` (fresh verse ULID + namespace secret),
+`seed` (verse row with the `derive_namespace_id` namespace_id +
+optional Editor role row — the rows `create_verse_handler` writes, via the
+same `Repo` helpers; REST-created verses get an in-process secret an operator
+cannot extract, so a validator that owns both relays' environments seeds the
+joinable verse directly), `readback` (whitelisted-table SELECT, one JSON line
+per row). Same SurrealKV lock rule: host process must be stopped.
+
 ## §replication-backpressure
 
 The DB→sync replication bridge is two `crossbeam::bounded(256)` hops:
