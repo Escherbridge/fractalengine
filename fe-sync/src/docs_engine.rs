@@ -14,7 +14,7 @@
 //! ```text
 //! <dir>/blobs/          — iroh-blobs fs store (bao data + outboards)
 //! <dir>/docs.redb       — iroh-docs replica store
-//! <dir>/default-author  — hex-encoded persistent default author key
+//! <dir>/default-author  — hex-encoded default author key (the endpoint identity)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -71,6 +71,17 @@ impl DocsStack {
     /// it. Any failure returns an error — the caller degrades to
     /// offline/mock mode rather than panicking. Directory creation runs on
     /// the blocking pool (see AGENTS.md §sync-thread-blocking-io).
+    ///
+    /// **One authenticated author identity (F20/M1 finding 2):** the
+    /// endpoint's identity key is imported as the docs author and made the
+    /// node-wide default, so every write the replicator layer publishes is
+    /// authored by the endpoint identity and `entry.author()` maps to the
+    /// same `did:key` the A3 inbound gate resolves (endpoint `NodeId`
+    /// did:key == the app DID — fe-identity's keypair and the iroh secret
+    /// share the ed25519 seed). Left un-imported, the docs default author
+    /// would be an unrelated per-`FE_P2P_DIR` key that maps to no role
+    /// anywhere, and reconciliation replays would re-attribute rows to that
+    /// role-less identity (denied outside the bootstrap window).
     pub async fn spawn(endpoint: iroh::Endpoint, data_dir: impl AsRef<Path>) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         // redb and the docs author storage need the parent dir to exist;
@@ -93,6 +104,27 @@ impl DocsStack {
             .spawn(&blobs, &gossip)
             .await
             .context("spawning persistent iroh-docs engine")?;
+
+        // Import the endpoint identity as the docs author + make it the
+        // node-wide default (persisted to <data_dir>/default-author), so
+        // writes, live events, and snapshots all carry one authenticated
+        // author identity — see the method doc comment.
+        let identity_author = iroh_docs::Author::from_bytes(&endpoint.secret_key().to_bytes());
+        let authors = docs.client().authors();
+        authors
+            .import(identity_author.clone())
+            .await
+            .context("importing the endpoint identity as the docs author")?;
+        authors
+            .set_default(identity_author.id())
+            .await
+            .context("setting the endpoint identity as the default docs author")?;
+        tracing::info!(
+            author = %identity_author.id(),
+            node_id = %endpoint.node_id().fmt_short(),
+            "Docs author imported from the endpoint identity"
+        );
+
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs.clone())
             .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())

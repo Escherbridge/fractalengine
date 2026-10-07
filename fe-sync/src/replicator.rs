@@ -11,9 +11,19 @@
 //!
 //! `IrohDocsReplicator` rides the real iroh-docs 0.35 `Doc` client
 //! (`set_bytes` / `subscribe` / `del` / `close`) whenever the P2P stack is
-//! online, and degrades to the in-memory [`MockVerseReplicator`] only when it
-//! is not (offline bind failure, stack spawn failure, or an unusable
-//! namespace capability). See `fe-sync/src/AGENTS.md` §iroh-0.35.
+//! online, and degrades to the in-memory [`MockVerseReplicator`] only when
+//! it is not (offline bind failure, stack spawn failure). On an ONLINE
+//! stack, a document-open failure leaves a loudly non-replicating replica
+//! (writes warn and fail, `snapshot`/`subscribe` error — F20 finding 4),
+//! never a usable in-memory success path. See `fe-sync/src/AGENTS.md`
+//! §iroh-0.35.
+//!
+//! **One authenticated author identity (F20 finding 2):** the docs author
+//! is the endpoint identity (imported + made default at
+//! `DocsStack::spawn`), so `entry.author()` maps to the same `did:key` the
+//! A3 gate resolves. Live delivery and snapshot replay attribute rows from
+//! `entry.author()` identically; `InsertRemote.from` is only the
+//! forwarding neighbor.
 
 use fe_runtime::blob_store::BlobHash;
 use std::collections::HashMap;
@@ -402,6 +412,9 @@ impl IrohDocsEngineHolder {
 /// Offline or when the namespace capability cannot be imported, operations
 /// fall back to the in-memory mock — degradation is total, never a crash.
 pub struct IrohDocsReplicator {
+    /// The verse this replica serves (used by the secretless-open fallback
+    /// to find the right persisted doc when the stored namespace id misses).
+    pub verse_id: String,
     pub namespace_id: String,
     pub namespace_secret: String,
     /// The shared stack holder (online or offline/mock).
@@ -414,20 +427,31 @@ pub struct IrohDocsReplicator {
     author: RwLock<Option<AuthorId>>,
     /// Abort handle of the live-event pump spawned by the last `subscribe`.
     pump: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Why `open_document` failed **on an online stack** (F20 finding 4).
+    ///
+    /// Set by the sync thread's open handler via [`Self::mark_open_failed`]:
+    /// a failure while the stack is ONLINE must leave a loud,
+    /// NON-replicating replica (writes fail with a warn, `snapshot` and
+    /// `subscribe` error) — never a usable in-memory mock success path.
+    /// `None` offline (the offline mock fallback is sanctioned) and on
+    /// successful opens.
+    open_failed: RwLock<Option<String>>,
 }
 
 impl IrohDocsReplicator {
-    /// Create a new replicator for a given namespace.
+    /// Create a new replicator for a given verse namespace.
     ///
-    /// `author_id` is the local peer's DID / public key. The document itself is
-    /// opened by [`Self::open_document`].
+    /// `author_id` is the local peer's DID / public key (the offline mock's
+    /// author). The document itself is opened by [`Self::open_document`].
     pub fn new(
+        verse_id: String,
         namespace_id: String,
         namespace_secret: String,
         author_id: String,
         engine_holder: Arc<IrohDocsEngineHolder>,
     ) -> Self {
         Self {
+            verse_id,
             namespace_id,
             namespace_secret,
             engine_holder,
@@ -435,12 +459,31 @@ impl IrohDocsReplicator {
             doc: RwLock::new(None),
             author: RwLock::new(None),
             pump: Mutex::new(None),
+            open_failed: RwLock::new(None),
         }
     }
 
     /// Whether the real Doc-backed path is active (stack online + doc open).
     pub fn is_doc_backed(&self) -> bool {
         self.doc.read().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    /// Record a failed document open on an ONLINE stack (F20 finding 4).
+    ///
+    /// Marks the replica loudly non-replicating: every later write warns and
+    /// fails, `subscribe`/`snapshot` error. The sync thread calls this only
+    /// when `IrohDocsEngineHolder::is_available()` — offline stacks keep the
+    /// sanctioned in-memory mock fallback.
+    pub fn mark_open_failed(&self, reason: String) {
+        *self.open_failed.write().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+    }
+
+    /// The recorded online-open failure, if any (see [`Self::mark_open_failed`]).
+    pub fn open_error(&self) -> Option<String> {
+        self.open_failed
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn live_doc(&self) -> Option<DocHandle> {
@@ -459,8 +502,21 @@ impl IrohDocsReplicator {
     /// With a valid secret the verse namespace is imported as a **write
     /// capability** (`Capability::Write(NamespaceSecret)`); without one the
     /// namespace id is opened read-only (`Client::open` — a previously
-    /// imported or ticket-joined replica). Any failure is returned as an
-    /// error; the caller keeps the mock-backed replicator, it never crashes.
+    /// imported or ticket-joined replica).
+    ///
+    /// **Secretless reopen fallback (F20/M1 finding 3):** production
+    /// `verse.namespace_id` values used to be a keyed-BLAKE3 digest that can
+    /// never equal the iroh namespace id (the Ed25519 public key the secret
+    /// derives to), so a stored-id miss must not end the open. On a miss the
+    /// client scans the node's **known** docs for the one carrying this
+    /// verse's manifest row (`verse/{verse_id}`) and reopens that doc
+    /// read-only — the compatibility path for BLAKE3 values in live DBs.
+    /// New verses store the aligned id (`fe_database::derive_namespace_id`
+    /// now returns the Ed25519 id), which `Client::open` resolves directly.
+    ///
+    /// Offline stacks return `Ok(())` with no doc (the sanctioned mock
+    /// fallback). An error return while online is recorded by the caller as
+    /// a loud non-replicating replica state — never a usable mock.
     pub async fn open_document(&self) -> anyhow::Result<()> {
         if !self.namespace_secret.is_empty() {
             // Surface config errors eagerly, stack or no stack.
@@ -496,8 +552,8 @@ impl IrohDocsReplicator {
             doc
         } else {
             let ns = parse_namespace_id(&self.namespace_id)?;
-            match client.open(ns).await? {
-                Some(doc) => {
+            match client.open(ns).await {
+                Ok(Some(doc)) => {
                     tracing::info!(
                         ns = %self.namespace_id,
                         mode = "read-only",
@@ -505,7 +561,27 @@ impl IrohDocsReplicator {
                     );
                     doc
                 }
-                None => anyhow::bail!("namespace {ns} is not a known local replica"),
+                Ok(None) | Err(_) => {
+                    // Stored-id miss (legacy BLAKE3 id, or a doc imported
+                    // under a different id form): scan known docs for the
+                    // one carrying this verse's manifest row.
+                    match find_doc_by_verse_manifest(&client, &self.verse_id).await {
+                        Some(doc) => {
+                            tracing::info!(
+                                stored_ns = %self.namespace_id,
+                                iroh_ns = %doc.id().fmt_short(),
+                                mode = "read-only (stored-id miss → manifest scan)",
+                                "Reopened the verse's persisted document by its manifest"
+                            );
+                            doc
+                        }
+                        None => anyhow::bail!(
+                            "namespace {ns} is not a known local replica and no \
+                             known doc carries the manifest for verse {}",
+                            self.verse_id
+                        ),
+                    }
+                }
             }
         };
 
@@ -532,6 +608,19 @@ impl IrohDocsReplicator {
         record_id: &str,
         data: &[u8],
     ) -> anyhow::Result<()> {
+        // F20 finding 4: a replica whose document open FAILED on an online
+        // stack is loudly non-replicating — a write here must warn and fail,
+        // never "succeed" against the in-memory mock (which would publish
+        // nothing while looking healthy).
+        if let Some(reason) = self.open_error() {
+            tracing::warn!(
+                verse_id = %self.verse_id,
+                key = %format!("{table}/{record_id}"),
+                reason = %reason,
+                "WriteRowEntry on a NON-replicating replica (open failed) — not written"
+            );
+            anyhow::bail!("replica is not replicating: document open failed: {reason}");
+        }
         let Some(doc) = self.live_doc() else {
             tracing::debug!(
                 ns = %self.namespace_id,
@@ -581,6 +670,12 @@ impl VerseReplicator for IrohDocsReplicator {
 
     fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>> {
         Box::pin(async move {
+            // F20 finding 4: no live pump for a failed online open — there is
+            // no document to receive events from, and a mock pump would
+            // fabricate an inbound stream that applies nothing real.
+            if let Some(reason) = self.open_error() {
+                anyhow::bail!("replica is not replicating: document open failed: {reason}");
+            }
             let Some(doc) = self.live_doc() else {
                 tracing::debug!(ns = %self.namespace_id, "subscribe on mock fallback");
                 return VerseReplicator::subscribe(&self.inner).await;
@@ -606,6 +701,11 @@ impl VerseReplicator for IrohDocsReplicator {
 
     fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
         Box::pin(async move {
+            // F20 finding 4: a failed online open has no document to
+            // snapshot — error loudly rather than replaying mock rows.
+            if let Some(reason) = self.open_error() {
+                anyhow::bail!("replica is not replicating: document open failed: {reason}");
+            }
             let Some(doc) = self.live_doc() else {
                 tracing::debug!(ns = %self.namespace_id, "snapshot on mock fallback");
                 return VerseReplicator::snapshot(&self.inner).await;
@@ -725,6 +825,50 @@ fn parse_namespace_id(ns_hex: &str) -> anyhow::Result<NamespaceId> {
     NamespaceId::from_str(ns_hex.trim()).map_err(|e| anyhow::anyhow!("invalid namespace id: {e}"))
 }
 
+/// Find the known doc that carries a verse's manifest row (F20/M1 finding 3).
+///
+/// The secretless reopen compatibility path: legacy `verse.namespace_id`
+/// values are keyed-BLAKE3 digests that never equal the iroh namespace id
+/// the doc actually registered under, so a stored-id miss resolves the doc
+/// by content instead — the one whose `verse/{verse_id}` key exists. Scan
+/// cost is one local `get_one` per known doc (all reads against the local
+/// redb store, no network). `None` when no known doc claims the verse.
+async fn find_doc_by_verse_manifest(
+    client: &iroh_docs::rpc::client::docs::MemClient,
+    verse_id: &str,
+) -> Option<DocHandle> {
+    let manifest_key = format!("verse/{verse_id}");
+    let mut stream = client.list().await.ok()?;
+    while let Some(item) = stream.next().await {
+        let (doc_id, _capability) = match item {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(verse_id, "doc list entry failed during manifest scan: {e}");
+                continue;
+            }
+        };
+        let Ok(doc) = client.open(doc_id).await else {
+            continue;
+        };
+        let Some(doc) = doc else { continue };
+        let query = iroh_docs::store::Query::key_exact(manifest_key.as_bytes()).build();
+        match doc.get_one(query).await {
+            Ok(Some(_)) => return Some(doc),
+            Ok(None) => continue,
+            Err(e) => {
+                // An unreadable doc must not abort the scan of the rest.
+                tracing::warn!(
+                    verse_id,
+                    ns = %doc_id.fmt_short(),
+                    "manifest probe failed during doc scan: {e}"
+                );
+                continue;
+            }
+        }
+    }
+    None
+}
+
 /// An entry whose content has not finished downloading yet.
 #[derive(Debug, Clone)]
 struct PendingContent {
@@ -736,6 +880,10 @@ struct PendingContent {
 }
 
 /// Map an iroh peer public key to the app's `did:key` identity form.
+///
+/// The endpoint identity's `NodeId` did:key IS the app DID (fe-identity's
+/// keypair and the iroh secret share the ed25519 seed), which is what makes
+/// author attribution and the A3 role gate agree across peers.
 fn peer_did_key(peer: &iroh::PublicKey) -> String {
     fe_identity::did_key::did_key_from_public_key_bytes(peer.as_bytes())
         .unwrap_or_else(|| peer.to_string())
@@ -743,9 +891,12 @@ fn peer_did_key(peer: &iroh::PublicKey) -> String {
 
 /// Map an iroh-docs entry `AuthorId` to the app's `did:key` identity form.
 ///
-/// Snapshot entries carry the **author** (the peer that wrote the entry), not
-/// the neighbor it arrived from; both are ed25519 keys over the same identity
-/// seed, so the same did:key mapping applies.
+/// Snapshot entries and live entries both attribute authorship from
+/// `entry.author()` (the key that signed the entry — the endpoint identity,
+/// since `DocsStack::spawn` imports it as the docs author); both are
+/// ed25519 keys over the same identity seed, so the same did:key mapping
+/// applies. Never confuse the author with `InsertRemote.from`, which names
+/// only the forwarding neighbor.
 fn author_did_key(author: &AuthorId) -> String {
     fe_identity::did_key::did_key_from_public_key_bytes(author.as_bytes())
         .unwrap_or_else(|| author.to_string())
@@ -812,14 +963,30 @@ async fn pump_live_events(
                     tracing::warn!(key = %key, "replica entry key not in table/id form — skipped");
                     continue;
                 };
+                // F20/M1 finding 2: attribute authorship from the ENTRY
+                // author (`entry.author()` — the key that signed the entry),
+                // never from `from` — iroh-docs 0.35's `InsertRemote.from`
+                // is the FORWARDING neighbor, not the author. With the docs
+                // author imported from the endpoint identity at stack
+                // spawn, `entry.author()` maps to the same did:key the A3
+                // gate resolves, so >=3-member docs judge the author, not
+                // the relaying node, and the snapshot path (which always
+                // read `entry.author()`) agrees with live delivery. `from`
+                // is retained only as tracing context.
                 let content_hash: BlobHash = *entry.content_hash().as_bytes();
                 let meta = PendingContent {
                     table: table.to_string(),
                     record_id: record_id.to_string(),
                     content_hash,
-                    author_id: peer_did_key(&from),
+                    author_id: author_did_key(&entry.author()),
                     timestamp: entry.timestamp(),
                 };
+                tracing::debug!(
+                    key = %key,
+                    forwarded_by = %from.fmt_short(),
+                    author = %meta.author_id,
+                    "InsertRemote"
+                );
                 if entry.record().is_empty() {
                     // Deletion marker: no content to download.
                     let change = RowChange {
@@ -900,10 +1067,10 @@ async fn pump_live_events(
                 }
             }
             LiveEvent::NeighborUp(peer) => {
-                tracing::debug!(peer = %peer.fmt_short(), "replica swarm neighbor up");
+                tracing::debug!(peer = %peer_did_key(&peer), "replica swarm neighbor up");
             }
             LiveEvent::NeighborDown(peer) => {
-                tracing::debug!(peer = %peer.fmt_short(), "replica swarm neighbor down");
+                tracing::debug!(peer = %peer_did_key(&peer), "replica swarm neighbor down");
             }
             LiveEvent::SyncFinished(_) | LiveEvent::PendingContentReady => {
                 tracing::debug!("replica sync progress event");
@@ -1107,6 +1274,7 @@ mod tests {
         // operation must still work through the in-memory store.
         let engine_holder = Arc::new(IrohDocsEngineHolder::new());
         let repl = IrohDocsReplicator::new(
+            "verse-offline".to_string(),
             hex::encode([1u8; 32]),
             hex::encode([2u8; 32]),
             "local-author".to_string(),
@@ -1125,9 +1293,13 @@ mod tests {
     #[tokio::test]
     async fn invalid_secret_degrades_to_mock_without_crashing() {
         // A garbage namespace secret (not 32-byte hex) must degrade loudly to
-        // the mock path — never a panic, never a crash.
+        // the mock path — never a panic, never a crash. Offline (empty
+        // holder) the mock fallback is sanctioned; ON an online stack the
+        // sync thread's open handler marks the replica non-replicating
+        // instead (see sync_thread tests).
         let engine_holder = Arc::new(IrohDocsEngineHolder::new());
         let repl = IrohDocsReplicator::new(
+            "verse-bad-secret".to_string(),
             "some-ns".to_string(),
             "test-secret".to_string(),
             "local-author".to_string(),
@@ -1139,6 +1311,35 @@ mod tests {
         );
         repl.write_row("verse", "v1", b"{}").await.unwrap();
         assert!(!repl.is_doc_backed());
+    }
+
+    /// F20 finding 4: a failed online open makes the replica loudly
+    /// non-replicating — writes warn and fail, `subscribe`/`snapshot`
+    /// error. There is no path back to the in-memory mock success state.
+    #[tokio::test]
+    async fn marked_failed_replica_is_loudly_non_replicating() {
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new());
+        let repl = IrohDocsReplicator::new(
+            "verse-failed".to_string(),
+            hex::encode([1u8; 32]),
+            hex::encode([2u8; 32]),
+            "local-author".to_string(),
+            engine_holder,
+        );
+        repl.mark_open_failed("namespace import failed (test)".to_string());
+
+        assert_eq!(
+            repl.open_error().as_deref(),
+            Some("namespace import failed (test)")
+        );
+        assert!(
+            repl.write_row("verse", "v1", b"{}").await.is_err(),
+            "writes on a failed online open must fail loudly, never publish to the mock"
+        );
+        assert!(repl.subscribe().await.is_err());
+        assert!(repl.snapshot().await.is_err());
+        // The replica must still be closeable (re-open churn depends on it).
+        repl.close().await.unwrap();
     }
 
     // --- IncomingEntryApplicator tests (E.7-E.9) ---
@@ -1351,17 +1552,20 @@ mod tests {
         let holder_b = Arc::new(IrohDocsEngineHolder::online(stack_b.clone()));
 
         // The verse namespace: one 32-byte secret shared by both sides; the
-        // app-level namespace_id is derived the same way on both.
+        // app-level namespace_id is derived the same way on both (the
+        // Ed25519 id the secret registers the doc under).
         let secret = [7u8; 32];
         let ns_id_hex = hex::encode(secret);
 
         let alice = IrohDocsReplicator::new(
+            "verse-a2".to_string(),
             ns_id_hex.clone(),
             hex::encode(secret),
             "did:key:alice".to_string(),
             holder_a,
         );
         let bob = IrohDocsReplicator::new(
+            "verse-a2".to_string(),
             ns_id_hex,
             hex::encode(secret),
             "did:key:bob".to_string(),
@@ -1386,9 +1590,9 @@ mod tests {
             .expect("alice's doc serves entries");
 
         // Alice writes a row through the real Doc::set_bytes path.
-        let payload = br#"{"verse_id":"v1","name":"Real Transport Verse"}"#.to_vec();
+        let payload = br#"{"verse_id":"verse-a2","name":"Real Transport Verse"}"#.to_vec();
         alice
-            .write_row("verse", "v1", &payload)
+            .write_row("verse", "verse-a2", &payload)
             .await
             .expect("alice set_bytes");
 
@@ -1398,17 +1602,214 @@ mod tests {
             .expect("replicated row arrives over the real transport")
             .expect("pump stays alive");
         assert_eq!(change.table, "verse");
-        assert_eq!(change.record_id, "v1");
+        assert_eq!(change.record_id, "verse-a2");
         assert_eq!(change.data, payload, "payload bytes must ride the event");
         assert!(!change.is_tombstone);
-        assert_ne!(
-            change.author_id, "did:key:alice",
-            "author is the wire peer's node id, not the local did"
+
+        // F20 finding 2: the live pump attributes authorship from the ENTRY
+        // author (the endpoint identity `DocsStack::spawn` imported as the
+        // docs author) — the same did:key the A3 gate resolves. It is NOT
+        // the app-level "did:key:alice" string, and NOT the forwarding
+        // neighbor's raw key form.
+        let alice_endpoint_did = peer_did_key(&ep_a.node_id());
+        assert_eq!(
+            change.author_id, alice_endpoint_did,
+            "live author must be the entry author (endpoint identity did:key)"
+        );
+
+        // The snapshot path must attribute the SAME row to the SAME author —
+        // live delivery and restart replay judge one identity, which is what
+        // makes the reconciliation second chance work.
+        let snap = bob.snapshot().await.expect("bob snapshots the doc");
+        let snap_row = snap
+            .iter()
+            .find(|c| c.record_id == "verse-a2")
+            .expect("snapshot contains the replicated row");
+        assert_eq!(
+            snap_row.author_id, alice_endpoint_did,
+            "snapshot author must equal live author for the same entry"
         );
 
         // Close must leave the swarm cleanly on both sides.
         alice.close().await.unwrap();
         bob.close().await.unwrap();
+    }
+
+    /// F20/M1 finding 3: the app-level `derive_namespace_id` must produce
+    /// the ACTUAL iroh namespace id (the Ed25519 public key the secret's
+    /// signing key derives to) — the cross-crate alignment that makes a
+    /// secretless read-only reopen addressable by the stored id.
+    #[test]
+    fn derive_namespace_id_matches_iroh_namespace_id() {
+        let secret = [7u8; 32];
+        let derived_hex = hex::encode(fe_database::derive_namespace_id(&secret));
+        let iroh_ns = NamespaceSecret::from_bytes(&secret).id();
+        assert_eq!(
+            derived_hex,
+            iroh_ns.to_string(),
+            "fe-database's derivation must equal iroh-docs' namespace id"
+        );
+        // And it parses back to the same id.
+        use std::str::FromStr;
+        assert_eq!(
+            NamespaceId::from_str(&derived_hex).unwrap(),
+            iroh_ns,
+            "the derived hex must round-trip through iroh's own parser"
+        );
+    }
+
+    /// F20/M1 finding 3: a doc imported with its secret reopens read-only
+    /// WITHOUT the secret on the same persisted store, addressed by the
+    /// aligned (Ed25519) namespace id the verse row now carries.
+    #[tokio::test]
+    async fn secretless_reopen_finds_persisted_doc_by_aligned_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(ep) = bind_loopback_endpoint(44).await else {
+            return; // sandboxed environment without UDP — tolerated
+        };
+        let stack = Arc::new(
+            DocsStack::spawn(ep, tmp.path().join("p2p"))
+                .await
+                .expect("stack"),
+        );
+        let holder = Arc::new(IrohDocsEngineHolder::online(stack));
+
+        let secret = [9u8; 32];
+        // The production form: verse.namespace_id = derive_namespace_id.
+        let ns_id_hex = hex::encode(fe_database::derive_namespace_id(&secret));
+
+        // First open: with the secret (write capability import).
+        let writer = IrohDocsReplicator::new(
+            "verse-reopen".to_string(),
+            ns_id_hex.clone(),
+            hex::encode(secret),
+            "did:key:writer".to_string(),
+            holder.clone(),
+        );
+        writer.open_document().await.expect("writer opens doc");
+        writer
+            .write_row(
+                "verse",
+                "verse-reopen",
+                br#"{"verse_id":"verse-reopen","name":"Reopen Verse"}"#,
+            )
+            .await
+            .expect("manifest written");
+        writer
+            .write_row("node", "node-1", br#"{"node_id":"node-1","name":"n"}"#)
+            .await
+            .expect("row written");
+        writer.close().await.unwrap();
+
+        // Second open: NO secret — the persisted doc must be found by the
+        // stored id and opened read-only.
+        let reader = IrohDocsReplicator::new(
+            "verse-reopen".to_string(),
+            ns_id_hex,
+            String::new(),
+            "did:key:reader".to_string(),
+            holder,
+        );
+        reader.open_document().await.expect("secretless reopen");
+        assert!(reader.is_doc_backed(), "read-only doc handle is live");
+        let snap = reader.snapshot().await.expect("snapshot of reopened doc");
+        assert_eq!(snap.len(), 2, "manifest + node row both present");
+        reader.close().await.unwrap();
+    }
+
+    /// F20/M1 finding 3 compatibility: a LEGACY `namespace_id` (the pre-fix
+    /// keyed-BLAKE3 digest, still present in live DBs) never equals the iroh
+    /// namespace id — the secretless open must then fall back to scanning
+    /// known docs for the one carrying this verse's manifest row, and find
+    /// the same persisted doc.
+    #[tokio::test]
+    async fn secretless_reopen_falls_back_to_manifest_scan_on_legacy_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(ep) = bind_loopback_endpoint(55).await else {
+            return; // sandboxed environment without UDP — tolerated
+        };
+        let stack = Arc::new(
+            DocsStack::spawn(ep, tmp.path().join("p2p"))
+                .await
+                .expect("stack"),
+        );
+        let holder = Arc::new(IrohDocsEngineHolder::online(stack));
+
+        let secret = [11u8; 32];
+        // Import first (the id the doc registers under is the Ed25519 key).
+        let writer = IrohDocsReplicator::new(
+            "verse-legacy".to_string(),
+            hex::encode(fe_database::derive_namespace_id(&secret)),
+            hex::encode(secret),
+            "did:key:writer".to_string(),
+            holder.clone(),
+        );
+        writer.open_document().await.expect("writer opens doc");
+        writer
+            .write_row(
+                "verse",
+                "verse-legacy",
+                br#"{"verse_id":"verse-legacy","name":"Legacy Verse"}"#,
+            )
+            .await
+            .expect("manifest written");
+        writer.close().await.unwrap();
+
+        // Legacy stored id: the pre-F20 keyed-BLAKE3 digest form.
+        let legacy_ns_hex = hex::encode(
+            blake3::keyed_hash(b"fractalengine:verse:namespace_id", &secret).as_bytes(),
+        );
+        let reader = IrohDocsReplicator::new(
+            "verse-legacy".to_string(),
+            legacy_ns_hex,
+            String::new(),
+            "did:key:reader".to_string(),
+            holder,
+        );
+        reader
+            .open_document()
+            .await
+            .expect("legacy stored id resolves through the manifest scan");
+        assert!(
+            reader.is_doc_backed(),
+            "the persisted doc reopened read-only"
+        );
+        let snap = reader.snapshot().await.expect("snapshot of reopened doc");
+        assert!(
+            snap.iter().any(|c| c.record_id == "verse-legacy"),
+            "the manifest row is readable after the fallback reopen"
+        );
+        reader.close().await.unwrap();
+    }
+
+    /// F20/M1 finding 3 negative: with no persisted doc claiming the verse
+    /// and an id the store does not know, the secretless open fails loudly
+    /// (an error the online open handler turns into a non-replicating
+    /// replica — never a silent mock).
+    #[tokio::test]
+    async fn secretless_open_with_no_matching_doc_fails_loudly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(ep) = bind_loopback_endpoint(66).await else {
+            return; // sandboxed environment without UDP — tolerated
+        };
+        let stack = Arc::new(
+            DocsStack::spawn(ep, tmp.path().join("p2p"))
+                .await
+                .expect("stack"),
+        );
+        let holder = Arc::new(IrohDocsEngineHolder::online(stack));
+
+        let reader = IrohDocsReplicator::new(
+            "verse-unknown".to_string(),
+            "0".repeat(64),
+            String::new(),
+            "did:key:reader".to_string(),
+            holder,
+        );
+        assert!(
+            reader.open_document().await.is_err(),
+            "an unknown namespace with no claiming doc must be a loud open error"
+        );
     }
 
     #[tokio::test]

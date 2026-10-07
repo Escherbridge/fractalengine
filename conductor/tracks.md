@@ -260,11 +260,15 @@ _Link: [./tracks/auth_policy_pattern_20260710/](./tracks/auth_policy_pattern_202
 Implementation slice landed 2026-07-15: new `fe-policy` crate (deny-by-default
 `Policy::evaluate`, `RoleLevel` moved here canonically), fe-database `require_write_role`
 delegates to the engine, fe-hexon Phase 8.4 RBAC gap closed (`install_as`/`uninstall_as`
-gated Editor+), fe-sync §D1 write gate via `PolicyHandle.allow_write` (permissive
-warn-logging until peer roles are plumbed), fe-plugin/fe-webview thin adapters.
+gated Editor+), fe-plugin/fe-webview thin adapters.
+CORRECTED 2026-10-07 (F20 board-drift pass): the fe-sync §D1 `PolicyHandle` write gate
+named above was superseded by F3 — peer admission now lives on the DB thread
+(`ApplyReplicatedRow` → `admit_inbound_row`, fe-policy Editor+ at verse scope,
+deny-by-default); `write_policy.rs` keeps `PolicyHandle` as a building block only, and
+the "flip fe-sync to strict" item is closed as superseded
+(fe-sync/src/AGENTS.md §write-policy).
 Remaining: fe-api adapter, TokenScopePolicy/OwnershipPolicy, causal-DAG membership +
-strong-removal resolver (blocked on per-op ed25519 signing, decisions D5-1), flipping
-fe-sync to strict.
+strong-removal resolver (blocked on per-op ed25519 signing, decisions D5-1).
 
 ### [~] iot_spatial_reporting — IoT as Queryable Spatial Rows
 
@@ -448,7 +452,20 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   replication sender; also fixed the relay's first-frame TilesetEventBuffer panic
   and the missing headless DbResult→pending-API delivery that 503'd /ready) —
   cross-relay convergence e2e honestly deferred (no unauthenticated relay write
-  surface; seam proven by the harness scenarios); petal namespaces, gossip
+  surface; seam proven by the harness scenarios); F20 (2026-10-07, M1 scrutiny
+  round-1) repairs the four confirmed blocking defects — deadlock-free
+  seed_reconciliation (snapshot applies directly through the inbound handler,
+  never awaiting into the channel the loop itself drains; 300-entry regression
+  test proves Shutdown still processes), one entry-author identity
+  (DocsStack::spawn imports the endpoint key as the docs author; live pump +
+  snapshot both attribute from entry.author(), never the forwarding neighbor),
+  Ed25519-aligned namespace ids with a legacy-BLAKE3 manifest-scan fallback
+  (secretless reopen of a persisted doc now works), and offline-only mock
+  fallback (an online open failure is a loud non-replicating replica via
+  ReplicaOpenFailed, writes error — never a false-healthy in-memory success);
+  fold-ins: inbound verse-manifest default_access {viewer,none} validation,
+  relay Seed send warn-on-error, shared relay OpenedReplicas set (no
+  close+reopen churn); petal namespaces, gossip
   receive, per-petal topics, tileset P2P remain open —
   in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
   [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)

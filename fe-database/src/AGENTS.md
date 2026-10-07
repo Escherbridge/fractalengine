@@ -298,7 +298,13 @@ one sub-module per domain:
   (scope-injection guard). The wire **tombstone form is the empty entry**
   (`Doc::del`): the handler synthesizes the node payload and resolves the
   scene change's petal from the durable row; an empty entry on a static
-  hierarchy table is `NotApplicable` (no tombstone semantics there).
+  hierarchy table is `NotApplicable` (no tombstone semantics there). A
+  third rule (F20, 2026-10-07): an inbound **verse manifest's
+  `default_access` must be `"viewer"` or `"none"`** — anything else is
+  denied in `apply_static_row`. The schema column carries only a
+  `DEFAULT 'viewer'` (no ASSERT), so without this a replicated manifest
+  could set `"editor"` and make every unknown peer resolve to a writer for
+  that verse, defeating A3 deny-by-default on the one path that writes it.
 
 ## §node-log
 
