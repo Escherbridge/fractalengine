@@ -395,6 +395,8 @@ pub fn spawn_sync_thread(
                                     namespace_secret,
                                     &peers,
                                     &local_did,
+                                    &evt_tx,
+                                    &db_cmd_tx,
                                 )
                                 .await;
                                 // Phase F.4: Subscribe to verse gossip topic
@@ -647,24 +649,40 @@ fn handle_fetch_blob(
     );
 }
 
-/// Replay a freshly-opened replica's current entries into the aggregated
-/// inbound stream (F4 startup reconciliation).
+/// Replay a freshly-opened replica's current entries through the inbound
+/// apply path (F4 startup reconciliation, made deadlock-free by F20/M1
+/// finding 1).
 ///
 /// The A3 inbound role gate denies a row whose author does not resolve to
 /// Editor+ at the verse scope — including rows that arrive before the verse
 /// manifest or an explicit role has converged locally. Such a row stays in
 /// the doc store but never re-fires as an `InsertRemote`, so without this pass
-/// it could never converge. Feeding the snapshot through the same inbound
-/// apply path (and therefore the same gate) gives it a second chance whenever
-/// the replica is opened — at relay/GUI startup and on every re-open.
+/// it could never converge. Replaying the snapshot gives it a second chance
+/// whenever the replica is opened — at relay/GUI startup and on every
+/// re-open.
 ///
-/// Best-effort: a snapshot failure is a loud warn, never fatal. Forwarding
-/// uses the same bounded `inbound_tx` as the live pump; if the command loop
-/// has dropped the aggregate stream the pass stops.
+/// **Self-drain capacity rule (F20 finding 1):** entries are applied
+/// DIRECTLY through [`handle_inbound_row_change`] — the same handler the
+/// command loop's inbound branch calls — never by awaiting a send into the
+/// aggregated inbound stream. That stream (capacity 256) is drained ONLY by
+/// the select loop, and this pass runs inline inside the loop's
+/// `OpenVerseReplica` arm: awaiting capacity there parked the 257th send
+/// forever on any replica whose doc holds more entries than the channel
+/// capacity (every real IoT verse — readings are per-row doc keys), wedging
+/// the whole sync thread (no further commands, not even `Shutdown`).
+/// `handle_inbound_row_change` is fully synchronous and `try_send`s to the
+/// DB thread with drop-and-count backpressure, so an unbounded snapshot
+/// drains without ever awaiting anything. **A handler awaited inline in the
+/// select loop must never await a send into a stream only that select loop
+/// drains.**
+///
+/// Best-effort: a snapshot failure is a loud warn, never fatal.
 async fn seed_reconciliation(
     replicator: &dyn VerseReplicator,
     verse_id: &str,
-    inbound_tx: &tokio::sync::mpsc::Sender<(String, RowChange)>,
+    local_did: &str,
+    evt_tx: &SyncEventSender,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
 ) {
     let entries = match replicator.snapshot().await {
         Ok(entries) => entries,
@@ -679,13 +697,11 @@ async fn seed_reconciliation(
     let total = entries.len();
     let mut forwarded = 0usize;
     for change in entries {
-        if inbound_tx
-            .send((verse_id.to_string(), change))
-            .await
-            .is_err()
-        {
-            break;
-        }
+        // The literal same inbound apply path the live pump's rows take:
+        // own-author rows filtered here (loop prevention — the docs author
+        // is the endpoint identity, so our own snapshot entries carry our
+        // DID), survivors emitted + `try_send`'d to the DB thread.
+        handle_inbound_row_change(verse_id, &change, local_did, evt_tx, db_cmd_tx);
         forwarded += 1;
     }
     tracing::info!(
@@ -700,14 +716,22 @@ async fn seed_reconciliation(
 ///
 /// Creates an [`IrohDocsReplicator`] and opens its document: with the
 /// namespace secret the capability is imported on the real stack, without it
-/// the namespace opens read-only. A doc-backed replica then joins the live
-/// sync swarm (dialing `peers`) and spawns its per-replica inbound event
-/// pump, whose `RowChange`s are forwarded into `inbound_tx` — the aggregated
-/// stream the command loop selects on (A2/A4). If a replica is already open
-/// for this verse, it (and its pump) is closed first.
+/// the namespace opens read-only (a previously imported doc — by the stored
+/// id when it is the aligned Ed25519 form, else by the manifest-scan
+/// fallback for legacy BLAKE3 ids; F20 finding 3). A doc-backed replica then
+/// joins the live sync swarm (dialing `peers`) and spawns its per-replica
+/// inbound event pump, whose `RowChange`s are forwarded into `inbound_tx` —
+/// the aggregated stream the command loop selects on (A2/A4). If a replica
+/// is already open for this verse, it (and its pump) is closed first.
 ///
-/// Every degradation on this path is loud but non-fatal: an offline stack or
-/// unusable capability leaves the replicator mock-backed, never crashed.
+/// **Degradation contract (F20 finding 4):** the mock fallback is
+/// **offline-only** (`is_available() == false`). On an ONLINE stack a
+/// document-open failure leaves a loud, observable NON-replicating replica:
+/// the error is recorded on the replicator (writes warn and fail,
+/// `subscribe`/`snapshot` error), an `error!` log + `SyncEvent::
+/// ReplicaOpenFailed` fires, and the open banner reports the failure —
+/// never a usable in-memory success path that would publish nothing while
+/// looking healthy.
 #[allow(clippy::too_many_arguments)]
 async fn handle_open_verse_replica(
     replicas: &mut HashMap<String, Box<dyn VerseReplicator>>,
@@ -719,6 +743,8 @@ async fn handle_open_verse_replica(
     namespace_secret: Option<String>,
     peers: &[iroh::NodeAddr],
     local_did: &str,
+    evt_tx: &SyncEventSender,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
 ) {
     // Close existing replica (and its inbound pump) if any.
     if let Some(old) = replicas.remove(verse_id) {
@@ -736,6 +762,7 @@ async fn handle_open_verse_replica(
 
     let secret = namespace_secret.unwrap_or_default();
     let replicator = IrohDocsReplicator::new(
+        verse_id.to_string(),
         namespace_id.to_string(),
         secret,
         local_did.to_string(),
@@ -743,65 +770,111 @@ async fn handle_open_verse_replica(
     );
 
     // Open the document for this namespace. Offline stacks return `Ok(())`
-    // with no doc (mock stays); a genuine failure (unparseable capability)
-    // warns loudly and also keeps the mock backing.
-    if let Err(e) = replicator.open_document().await {
-        tracing::warn!(
-            verse_id,
-            "Verse replica document open failed — mock fallback: {e}"
-        );
-    } else if replicator.is_doc_backed() {
-        // Join the live sync swarm. `start_sync` runs even with no peers:
-        // the dialed side must have its sync task running to serve entries
-        // to peers that dial *us* (A2), and the bootstrap set is exactly the
-        // peers we dial out to (A9).
-        if let Err(e) = replicator.start_sync(peers.to_vec()).await {
-            tracing::warn!(verse_id, "Replica start_sync failed: {e}");
+    // with no doc (the sanctioned mock stays). An error while ONLINE is
+    // recorded as a loud non-replicating replica state — never a mock
+    // install (F20 finding 4).
+    match replicator.open_document().await {
+        Ok(()) => {
+            if replicator.is_doc_backed() {
+                // Join the live sync swarm. `start_sync` runs even with no
+                // peers: the dialed side must have its sync task running to
+                // serve entries to peers that dial *us* (A2), and the
+                // bootstrap set is exactly the peers we dial out to (A9).
+                if let Err(e) = replicator.start_sync(peers.to_vec()).await {
+                    tracing::warn!(verse_id, "Replica start_sync failed: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            if engine_holder.is_available() {
+                // ONLINE + failed open: loud, observable, non-replicating.
+                replicator.mark_open_failed(format!("{e}"));
+                tracing::error!(
+                    verse_id,
+                    "Verse replica open FAILED on the online P2P stack — \
+                     replica is NOT replicating (writes will fail loudly): {e}"
+                );
+                send_sync_event(
+                    evt_tx,
+                    SyncEvent::ReplicaOpenFailed {
+                        verse_id: verse_id.to_string(),
+                        reason: format!("{e}"),
+                    },
+                );
+            } else {
+                // Offline: the sanctioned in-memory mock fallback.
+                tracing::warn!(
+                    verse_id,
+                    "Verse replica document open failed while the stack is offline — mock fallback: {e}"
+                );
+            }
         }
     }
 
     // Per-replica inbound event pump (A2/A4): every inbound RowChange is
     // forwarded into the aggregated stream the command loop selects on.
-    match replicator.subscribe().await {
-        Ok(rx) => {
-            let pump_verse_id = verse_id.to_string();
-            let pump_tx = inbound_tx.clone();
-            let pump = tokio::spawn(async move {
-                let mut rx = rx;
-                while let Some(change) = rx.recv().await {
-                    if pump_tx.send((pump_verse_id.clone(), change)).await.is_err() {
-                        // Command loop dropped the aggregate stream — shutdown.
-                        break;
+    // Skipped entirely for a failed online open — there is no document to
+    // receive events from.
+    if replicator.open_error().is_none() {
+        match replicator.subscribe().await {
+            Ok(rx) => {
+                let pump_verse_id = verse_id.to_string();
+                let pump_tx = inbound_tx.clone();
+                let pump = tokio::spawn(async move {
+                    let mut rx = rx;
+                    while let Some(change) = rx.recv().await {
+                        if pump_tx.send((pump_verse_id.clone(), change)).await.is_err() {
+                            // Command loop dropped the aggregate stream — shutdown.
+                            break;
+                        }
                     }
-                }
-            });
-            inbound_pumps.insert(verse_id.to_string(), pump.abort_handle());
-        }
-        Err(e) => {
-            tracing::warn!(verse_id, "Replica subscribe failed — no inbound pump: {e}");
+                });
+                inbound_pumps.insert(verse_id.to_string(), pump.abort_handle());
+            }
+            Err(e) => {
+                tracing::warn!(verse_id, "Replica subscribe failed — no inbound pump: {e}");
+            }
         }
     }
 
-    // F4 startup reconciliation: replay the replica's current entries through
-    // the SAME inbound apply path. A row the A3 role gate denied while a role
-    // or the verse manifest had not yet converged never re-fires as an
-    // `InsertRemote`, so it would be stranded in the doc store forever; this
-    // pass gives it a second chance on every replica open. Own-author rows are
-    // filtered downstream by the inbound handler like any other row.
-    seed_reconciliation(&replicator, verse_id, &inbound_tx).await;
+    // F4 startup reconciliation (deadlock-free shape — see
+    // seed_reconciliation's doc comment): replay the replica's current
+    // entries through the SAME inbound apply path, applied directly. A row
+    // the A3 role gate denied while a role or the verse manifest had not
+    // yet converged never re-fires as an `InsertRemote`, so it would be
+    // stranded in the doc store forever; this pass gives it a second
+    // chance on every replica open. Own-author rows are filtered
+    // downstream by the inbound handler like any other row. Skipped for a
+    // failed online open (no document to snapshot).
+    if replicator.open_error().is_none() {
+        seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx).await;
+    }
 
+    let open_failed_reason = replicator.open_error();
     replicas.insert(verse_id.to_string(), Box::new(replicator));
 
-    // Phase F: compute gossip topic for this verse
+    // Phase F: compute gossip topic for this verse. The banner reports the
+    // replica's REAL state — never "online" for a failed open (F20 finding 4).
     let topic_hash = verse_peers::verse_gossip_topic(verse_id);
-    tracing::info!(
-        verse_id,
-        namespace_id,
-        peers = peers.len(),
-        gossip_topic = %hex::encode(topic_hash),
-        "Opened verse replica — P2P stack {}",
-        if engine_holder.is_available() { "online" } else { "offline (mock fallback)" }
-    );
+    if let Some(reason) = open_failed_reason {
+        tracing::error!(
+            verse_id,
+            namespace_id,
+            reason = %reason,
+            peers = peers.len(),
+            gossip_topic = %hex::encode(topic_hash),
+            "Opened verse replica — open FAILED, NOT replicating"
+        );
+    } else {
+        tracing::info!(
+            verse_id,
+            namespace_id,
+            peers = peers.len(),
+            gossip_topic = %hex::encode(topic_hash),
+            "Opened verse replica — P2P stack {}",
+            if engine_holder.is_available() { "online" } else { "offline (mock fallback)" }
+        );
+    }
 }
 
 /// Handle [`SyncCommand::CloseVerseReplica`].
@@ -1786,6 +1859,8 @@ mod tests {
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
         let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        assert!(evt_rx.try_recv().is_err(), "no events yet");
 
         handle_open_verse_replica(
             &mut replicas,
@@ -1797,6 +1872,8 @@ mod tests {
             None,
             &[],
             "did:key:local",
+            &evt_tx,
+            &None,
         )
         .await;
 
@@ -1817,6 +1894,8 @@ mod tests {
             None,
             &[],
             "did:key:local",
+            &evt_tx,
+            &None,
         )
         .await;
         assert_eq!(replicas.len(), 1);
@@ -1837,6 +1916,7 @@ mod tests {
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
         let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
 
         handle_open_verse_replica(
             &mut replicas,
@@ -1848,6 +1928,8 @@ mod tests {
             None,
             &[],
             "did:key:local",
+            &evt_tx,
+            &None,
         )
         .await;
 
@@ -1903,30 +1985,94 @@ mod tests {
         assert!(tomb.data.is_empty());
     }
 
-    /// `seed_reconciliation` replays a replica's entries into the aggregated
-    /// inbound stream, where the command loop's handler turns them into
-    /// `DbCommand::ApplyReplicatedRow`s — the second-chance convergence path.
+    /// `seed_reconciliation` replays a replica's entries through the inbound
+    /// apply path — applied DIRECTLY (F20 finding 1: never by awaiting a
+    /// send into the aggregated inbound stream, whose only drainer is the
+    /// command loop that is running this pass). Survivors emit `RowApplied`
+    /// and ride a `DbCommand::ApplyReplicatedRow`; own-author rows are
+    /// filtered (loop prevention) — the second-chance convergence path.
     #[tokio::test]
-    async fn seed_reconciliation_forwards_snapshot_into_inbound_stream() {
-        use crate::replicator::MockVerseReplicator;
-        let repl = MockVerseReplicator::new("did:key:peer");
-        repl.write_row("verse", "verse-1", br#"{"name":"manifest"}"#)
-            .await
-            .unwrap();
-        repl.write_row("node", "node-1", br#"{"name":"stranded"}"#)
-            .await
-            .unwrap();
+    async fn seed_reconciliation_applies_snapshot_directly() {
+        use crate::replicator::ReplicatorFuture;
 
-        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
-        seed_reconciliation(&repl, "verse-1", &inbound_tx).await;
-
-        let mut ids = Vec::new();
-        while let Ok((verse_id, change)) = inbound_rx.try_recv() {
-            assert_eq!(verse_id, "verse-1");
-            ids.push(change.record_id);
+        fn change(table: &str, record_id: &str, author: &str, data: &[u8]) -> RowChange {
+            RowChange {
+                table: table.to_string(),
+                record_id: record_id.to_string(),
+                content_hash: [0u8; 32],
+                author_id: author.to_string(),
+                timestamp: 1,
+                is_tombstone: false,
+                data: data.to_vec(),
+            }
         }
-        ids.sort();
-        assert_eq!(ids, vec!["node-1".to_string(), "verse-1".to_string()]);
+        // Two peer-authored rows + one own-author row (a snapshot entry we
+        // wrote ourselves — filtered by the seam like any own echo).
+        let entries = vec![
+            change(
+                "verse",
+                "verse-1",
+                "did:key:peer",
+                br#"{"name":"manifest"}"#,
+            ),
+            change("node", "node-1", "did:key:peer", br#"{"name":"stranded"}"#),
+            change("node", "node-own", "did:key:local", br#"{"name":"ours"}"#),
+        ];
+        struct FixedSnapshot(Vec<RowChange>);
+        impl VerseReplicator for FixedSnapshot {
+            fn write_row(
+                &self,
+                _table: &str,
+                _record_id: &str,
+                _data: &[u8],
+            ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn subscribe(
+                &self,
+            ) -> ReplicatorFuture<'_, anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>>
+            {
+                Box::pin(async { unreachable!("not used in this test") })
+            }
+            fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+                Box::pin(async move { Ok(self.0.clone()) })
+            }
+            fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(16);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(16);
+        let fixed = FixedSnapshot(entries);
+        seed_reconciliation(&fixed, "verse-1", "did:key:local", &evt_tx, &Some(db_tx)).await;
+
+        // Events: the two peer-authored rows emit RowApplied; the own-author
+        // row is filtered at the seam (no event, no DbCommand).
+        let mut applied_ids = Vec::new();
+        while let Ok(evt) = evt_rx.try_recv() {
+            if let SyncEvent::RowApplied { record_id, .. } = evt {
+                applied_ids.push(record_id);
+            }
+        }
+        applied_ids.sort();
+        assert_eq!(
+            applied_ids,
+            vec!["node-1".to_string(), "verse-1".to_string()],
+            "peer-authored rows emit RowApplied; own-author rows are filtered"
+        );
+        let mut cmd_ids = Vec::new();
+        while let Ok(cmd) = db_rx.try_recv() {
+            if let DbCommand::ApplyReplicatedRow { record_id, .. } = cmd {
+                cmd_ids.push(record_id);
+            }
+        }
+        cmd_ids.sort();
+        assert_eq!(
+            cmd_ids,
+            vec!["node-1".to_string(), "verse-1".to_string()],
+            "peer-authored rows ride DbCommand::ApplyReplicatedRow; own-author rows never re-apply"
+        );
     }
 
     /// An empty replica (nothing ever replicated in) is a silent no-op.
@@ -1934,11 +2080,326 @@ mod tests {
     async fn seed_reconciliation_empty_replica_is_noop() {
         use crate::replicator::MockVerseReplicator;
         let repl = MockVerseReplicator::new("did:key:peer");
-        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(4);
-        seed_reconciliation(&repl, "verse-empty", &inbound_tx).await;
-        assert!(
-            inbound_rx.try_recv().is_err(),
-            "no entries — nothing forwarded"
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(4);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(4);
+        seed_reconciliation(&repl, "verse-empty", "did:key:local", &evt_tx, &Some(db_tx)).await;
+        assert!(evt_rx.try_recv().is_err(), "no events — nothing forwarded");
+        assert!(db_rx.try_recv().is_err(), "no DbCommands — nothing applied");
+    }
+
+    /// F20/M1 finding 4: on an ONLINE stack, an `open_document` failure
+    /// leaves a loud NON-replicating replica — the failed replicator stays
+    /// registered (no mock install), writes and snapshots error instead of
+    /// silently succeeding in memory, no inbound pump is spawned, and a
+    /// `SyncEvent::ReplicaOpenFailed` fires for the host to surface.
+    // The env-mutex guard is deliberately held across awaits: it must
+    // serialize this env-mutating test against every other one for the
+    // test's whole duration (nothing inside this test contends on it).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn online_open_failure_leaves_loud_non_replicating_replica() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(crate::relay_config::RELAY_CONFIG_ENV_VAR, "disabled");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let secret = iroh::SecretKey::from_bytes(&[63u8; 32]);
+        let endpoint =
+            match crate::endpoint::SyncEndpoint::new(secret, &RelayConfig::from_env()).await {
+                Ok(ep) => ep,
+                Err(e) => {
+                    tracing::warn!("skipping online test: endpoint bind failed ({e})");
+                    return;
+                }
+            };
+        let stack = Arc::new(
+            DocsStack::spawn(endpoint.inner().clone(), tmp.path().join("p2p"))
+                .await
+                .expect("docs stack"),
         );
+        let holder = Arc::new(IrohDocsEngineHolder::online(stack));
+
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
+
+        // A malformed secret forces a real open_document error on an ONLINE
+        // stack — exactly the finding-4 shape.
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx,
+            holder,
+            "verse-bad",
+            "0".repeat(64).as_str(),
+            Some("not-hex".to_string()),
+            &[],
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+        )
+        .await;
+
+        // Loud: the failure is an observable event.
+        match evt_rx.try_recv() {
+            Ok(SyncEvent::ReplicaOpenFailed { ref verse_id, .. }) if verse_id == "verse-bad" => {}
+            other => panic!("expected ReplicaOpenFailed for verse-bad, got {other:?}"),
+        }
+        // No pump, no reconciliation, no silent application.
+        assert!(evt_rx.try_recv().is_err(), "no further events");
+        assert!(db_rx.try_recv().is_err(), "nothing applied");
+        assert!(
+            !inbound_pumps.contains_key("verse-bad"),
+            "no inbound pump for a failed online open"
+        );
+        // The failed replica stays registered (host can close it) and is
+        // loudly non-replicating: writes error, never a mock success.
+        let repl = replicas
+            .get("verse-bad")
+            .expect("failed replica stays registered");
+        assert!(
+            repl.write_row("node", "n1", b"{}").await.is_err(),
+            "writes on a failed online open must error, not publish to a mock"
+        );
+        assert!(
+            repl.snapshot().await.is_err(),
+            "snapshot on a failed online open must error"
+        );
+    }
+
+    /// F20/M1 finding 4 counterpart: the mock fallback is OFFLINE-ONLY —
+    /// with an unavailable stack the same open failure keeps the sanctioned
+    /// in-memory mock replica (usable writes, a live pump, no failure event).
+    #[tokio::test]
+    async fn offline_open_failure_keeps_mock_fallback() {
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
+
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx,
+            engine_holder,
+            "verse-offline",
+            "0".repeat(64).as_str(),
+            Some("not-hex".to_string()),
+            &[],
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+        )
+        .await;
+
+        // No failure event — the offline mock path is the designed fallback.
+        assert!(
+            !matches!(evt_rx.try_recv(), Ok(SyncEvent::ReplicaOpenFailed { .. })),
+            "no ReplicaOpenFailed when the stack is offline (mock is sanctioned)"
+        );
+        assert!(
+            db_rx.try_recv().is_err(),
+            "empty mock snapshot applies nothing"
+        );
+        assert!(
+            inbound_pumps.contains_key("verse-offline"),
+            "mock replica still pumps inbound events"
+        );
+        let repl = replicas
+            .get("verse-offline")
+            .expect("mock replica registered");
+        assert!(
+            repl.write_row("node", "n1", b"{}").await.is_ok(),
+            "offline mock writes succeed in memory by design"
+        );
+    }
+
+    /// F20/M1 finding 1 regression: a replica whose doc holds MORE entries
+    /// than the aggregated inbound channel's capacity (256) must not wedge
+    /// the sync thread on open. The reconciliation pass applies the snapshot
+    /// directly through the inbound apply path (it never awaits a send into
+    /// the stream that only the command loop drains), so the loop keeps
+    /// processing commands — including `Shutdown` — and the replayed
+    /// entries still apply. The pre-fix code deadlocked the loop forever on
+    /// the 257th queued entry (an `await` whose receiver was the awaiting
+    /// loop itself), starving ALL inbound applies, teardown, and any
+    /// blocking crossbeam senders.
+    // The env-mutex guard is deliberately held across awaits: it must
+    // serialize this env-mutating test against every other one for the
+    // test's whole duration (nothing inside this test contends on it).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn reconciliation_snapshot_larger_than_inbound_capacity_does_not_deadlock() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(crate::relay_config::RELAY_CONFIG_ENV_VAR, "disabled");
+        let tmp = tempfile::TempDir::new().unwrap();
+        const ROWS: usize = 300; // > the 256-capacity aggregated inbound channel
+
+        // Peer A: a test-owned online stack authoring 300 rows in the doc.
+        let secret_a = iroh::SecretKey::from_bytes(&[61u8; 32]);
+        let endpoint =
+            match crate::endpoint::SyncEndpoint::new(secret_a, &RelayConfig::from_env()).await {
+                Ok(ep) => ep,
+                Err(e) => {
+                    tracing::warn!("skipping online test: endpoint bind failed ({e})");
+                    return;
+                }
+            };
+        let stack_a = Arc::new(
+            DocsStack::spawn(endpoint.inner().clone(), tmp.path().join("a"))
+                .await
+                .expect("docs stack A"),
+        );
+        let holder_a = Arc::new(IrohDocsEngineHolder::online(stack_a.clone()));
+        let ns_secret = [17u8; 32];
+        let ns_id = hex::encode(fe_database::derive_namespace_id(&ns_secret));
+        let ns_secret_hex = hex::encode(ns_secret);
+        let alice = IrohDocsReplicator::new(
+            "verse-big".to_string(),
+            ns_id.clone(),
+            ns_secret_hex.clone(),
+            "did:key:alice".to_string(),
+            holder_a,
+        );
+        alice.open_document().await.expect("alice opens her doc");
+        alice
+            .start_sync(Vec::new())
+            .await
+            .expect("alice serves her doc");
+        for i in 0..ROWS {
+            let payload = format!("{{\"node_id\":\"row-{i:03}\",\"name\":\"row {i}\"}}");
+            alice
+                .write_row("node", &format!("row-{i:03}"), payload.as_bytes())
+                .await
+                .expect("alice authors row");
+        }
+        let addr_a = endpoint.inner().node_addr().await.expect("alice addr");
+
+        // Peer B: a REAL sync thread (the system under test).
+        let secret_b = iroh::SecretKey::from_bytes(&[62u8; 32]);
+        let local_did_b =
+            fe_identity::did_key::did_key_from_public_key_bytes(secret_b.public().as_bytes())
+                .expect("B did:key");
+        let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(64);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(4096);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(4096);
+        let sync = spawn_sync_thread(
+            secret_b,
+            store,
+            cmd_rx,
+            evt_tx,
+            local_did_b,
+            Some(db_tx),
+            Some(tmp.path().join("b")),
+        );
+        let started = {
+            let rx = evt_rx.clone();
+            tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(20)))
+                .await
+                .expect("event-wait task")
+                .expect("Started event")
+        };
+        assert!(
+            matches!(started, SyncEvent::Started { online: true, .. }),
+            "this test requires an online stack, got {started:?}"
+        );
+
+        // Wait for a count of RowApplied events for the verse, skipping
+        // unrelated traffic, until `want` is reached or the deadline passes.
+        //
+        // The crossbeam recv runs on `spawn_blocking` and is AWAITED: this
+        // is a current-thread runtime, and alice's QUIC endpoint shares it
+        // — a blocking recv parked inline would starve her transport and
+        // the sync would never converge.
+        async fn wait_row_applied(
+            evt_rx: &crossbeam::channel::Receiver<SyncEvent>,
+            want: usize,
+            verse_id: &str,
+        ) -> usize {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut got = 0usize;
+            while got < want && std::time::Instant::now() < deadline {
+                let rx = evt_rx.clone();
+                let next = tokio::task::spawn_blocking(move || {
+                    rx.recv_timeout(std::time::Duration::from_millis(250))
+                })
+                .await
+                .expect("event-wait task");
+                match next {
+                    Ok(SyncEvent::RowApplied { verse_id: v, .. }) if v == verse_id => got += 1,
+                    Ok(_) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            got
+        }
+
+        // 1) Live convergence: B opens the replica with the write capability
+        //    and dials A; all ROWS converge through the real transport.
+        cmd_tx
+            .send(SyncCommand::OpenVerseReplica {
+                verse_id: "verse-big".to_string(),
+                namespace_id: ns_id.clone(),
+                namespace_secret: Some(ns_secret_hex.clone()),
+                bootstrap_peers: vec![serde_json::to_string(&addr_a).unwrap()],
+            })
+            .expect("open command");
+        let live = wait_row_applied(&evt_rx, ROWS, "verse-big").await;
+        assert_eq!(live, ROWS, "live pump converged all {ROWS} rows");
+        while db_rx.try_recv().is_ok() {} // baseline: live applies drained
+
+        // 2) THE REGRESSION SHAPE: re-open the replica. The seed
+        //    reconciliation now faces a {ROWS}-entry snapshot — larger than
+        //    the 256-capacity aggregated inbound channel — while running
+        //    inline in the command loop's select arm. Pre-fix, this arm
+        //    deadlocked forever; post-fix the replay applies directly and
+        //    the loop returns to service.
+        cmd_tx
+            .send(SyncCommand::OpenVerseReplica {
+                verse_id: "verse-big".to_string(),
+                namespace_id: ns_id.clone(),
+                namespace_secret: Some(ns_secret_hex.clone()),
+                bootstrap_peers: vec![serde_json::to_string(&addr_a).unwrap()],
+            })
+            .expect("re-open command");
+        let replayed = wait_row_applied(&evt_rx, ROWS, "verse-big").await;
+        assert_eq!(
+            replayed, ROWS,
+            "reconciliation replayed all {ROWS} snapshot entries past channel capacity"
+        );
+
+        // 3) Proof the loop is NOT wedged: Shutdown must still be processed
+        //    (A8 teardown) and the thread must exit (asserted via the
+        //    Stopped event with a timeout, so a regression fails instead of
+        //    hanging the suite).
+        cmd_tx.send(SyncCommand::Shutdown).expect("shutdown send");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let rx = evt_rx.clone();
+            let next = tokio::task::spawn_blocking(move || {
+                rx.recv_timeout(std::time::Duration::from_millis(500))
+            })
+            .await
+            .expect("event-wait task");
+            match next {
+                Ok(SyncEvent::Stopped) => break,
+                Ok(_) => continue,
+                Err(crossbeam::channel::RecvTimeoutError::Timeout)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    continue
+                }
+                Err(other) => panic!("sync thread did not stop cleanly: {other:?}"),
+            }
+        }
+        sync.join().expect("sync thread exited cleanly");
     }
 }

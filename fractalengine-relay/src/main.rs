@@ -83,7 +83,13 @@ fn main() -> anyhow::Result<()> {
         Some(db_path.clone()),
     );
 
-    ch.db_cmd_tx.send(DbCommand::Seed).ok();
+    // A10 letter gap (F20 fold-in): the seed send was a bare `.ok()` — a
+    // closed DB channel (dead DB thread) was silent. Mirror the GUI's
+    // seed-gate: loud error + exit, never a quiet drop.
+    if ch.db_cmd_tx.send(DbCommand::Seed).is_err() {
+        tracing::error!("Database command channel closed before seed");
+        std::process::exit(1);
+    }
 
     // Seed barrier (same pattern as the GUI): SurrealKV takes an exclusive
     // file lock while the DB thread initialises, so a second read-only
@@ -326,7 +332,10 @@ fn main() -> anyhow::Result<()> {
 
     // A7: react to VerseCreated by opening its replica, and open a replica for
     // every verse the relay hosts at startup (one LoadHierarchy round-trip per
-    // process; each open also runs fe-sync's reconciliation pass).
+    // process; each open also runs fe-sync's reconciliation pass). The
+    // opened-set resource is shared by both systems so runtime-created verses
+    // are never churned close+reopen by a later hierarchy reply.
+    app.init_resource::<replicas::OpenedReplicas>();
     app.add_systems(
         bevy::prelude::Update,
         replicas::open_replica_on_verse_created,

@@ -1296,9 +1296,26 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
 // Public utilities (used by handlers and external crates)
 // ---------------------------------------------------------------------------
 
-/// Derive a deterministic 32-byte namespace ID from a namespace secret.
+/// Derive the namespace ID bytes from a namespace secret — the **actual
+/// iroh-docs namespace id**: the Ed25519 public key the secret's signing key
+/// derives to (`iroh_docs::NamespaceSecret::from_bytes(secret).id()`), NOT a
+/// private digest.
+///
+/// History (F20/M1 scrutiny finding 3): this used to be a keyed-BLAKE3
+/// digest, which can never equal the Ed25519 id iroh-docs registers a
+/// document under — so a verse imported with its secret could never be
+/// reopened read-only by the stored id (`Client::open` missed). Verse rows
+/// written before the fix still carry BLAKE3 hex in `namespace_id`;
+/// fe-sync's secretless open falls back to scanning known docs for the
+/// verse's manifest row on a stored-id miss (compatibility story). New
+/// verses store this id, which `Client::open` resolves directly.
+///
+/// Same seed → same Ed25519 keypair, so the derivation is deterministic and
+/// identical across peers with the same secret.
 pub fn derive_namespace_id(secret: &[u8; 32]) -> [u8; 32] {
-    *blake3::keyed_hash(b"fractalengine:verse:namespace_id", secret).as_bytes()
+    ed25519_dalek::SigningKey::from_bytes(secret)
+        .verifying_key()
+        .to_bytes()
 }
 
 /// Retrieve a namespace secret from the secret store. Returns `None` if not found.
@@ -1320,6 +1337,42 @@ pub fn get_namespace_secret(
         }
         Ok(None) => Ok(None),
         Err(e) => Err(anyhow::anyhow!("secret store get failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod namespace_id_tests {
+    use super::*;
+
+    /// F20/M1 finding 3: the derived id must BE the iroh-docs namespace id
+    /// — the Ed25519 public key of the secret's signing key (what
+    /// `NamespaceSecret::from_bytes(secret).id()` yields in iroh-docs), not a
+    /// private digest that `Client::open` can never resolve. Same-key
+    /// equivalence is pinned cross-crate in fe-sync's
+    /// `derive_namespace_id_matches_iroh_namespace_id`.
+    #[test]
+    fn derive_namespace_id_is_the_secret_ed25519_public_key() {
+        let secret = [7u8; 32];
+        let expected = ed25519_dalek::SigningKey::from_bytes(&secret)
+            .verifying_key()
+            .to_bytes();
+        assert_eq!(derive_namespace_id(&secret), expected);
+    }
+
+    #[test]
+    fn derive_namespace_id_is_deterministic_and_secret_sensitive() {
+        let a = derive_namespace_id(&[7u8; 32]);
+        let b = derive_namespace_id(&[7u8; 32]);
+        let c = derive_namespace_id(&[8u8; 32]);
+        assert_eq!(a, b, "same secret → same namespace id");
+        assert_ne!(a, c, "different secrets → different namespace ids");
+    }
+
+    /// The id must never equal the secret itself (it is the PUBLIC key half).
+    #[test]
+    fn derive_namespace_id_is_public_not_secret() {
+        let secret = [9u8; 32];
+        assert_ne!(derive_namespace_id(&secret), secret);
     }
 }
 

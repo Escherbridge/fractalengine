@@ -102,10 +102,37 @@ the redb replica store `docs.redb` + persistent default-author storage) +
   (`InsertRemote` + `ContentReady` → `RowChange`s carrying the payload
   bytes read from the stack's blobs store; `InsertLocal` skipped for loop
   prevention; empty entries emitted as tombstones), `close` → pump abort +
-  `Doc::close`. Mock fallback is now **offline-only** (bind failure, stack
-  spawn failure, unusable capability — loud, never a crash). `start_sync`
+  `Doc::close`. **Mock fallback is offline-only** — `is_available() == false`
+  (bind failure, stack-spawn failure — loud, never a crash). An
+  `open_document` failure while the stack is ONLINE is NEVER a mock install
+  (F20 finding 4): the failed replica stays registered in a loud
+  non-replicating state — `SyncEvent::ReplicaOpenFailed`, an `error!` open
+  banner that says NOT replicating, and `write_row`/`subscribe`/`snapshot`
+  all erroring — so the node can never look healthy while publishing
+  nothing. `start_sync`
   runs on every doc-backed open, with or without outbound peers: the
   dialed side must have its sync task running to serve entries.
+
+- **Entry author identity (F20 finding 2).** `DocsStack::spawn` imports the
+  endpoint's own `SecretKey` as the docs author and sets it default
+  (`authors().import` + `set_default`), so `entry.author()` resolves to the
+  endpoint `NodeId` did:key — the SAME identity the fe-identity keypair
+  exposes (`to_iroh_seed` shares the seed), which is what the A3 gate on the
+  DB thread resolves roles against. Both the live pump and the snapshot
+  attribute `RowChange.author_id` from `entry.author()` (`author_did_key`),
+  never from `InsertRemote.from` (the FORWARDING neighbor — a ≥3-member doc
+  would otherwise judge the relaying node, not the author). The per-dir
+  `client.authors().default()` author is unrelated to the app identity and
+  must not be used for attribution. Loop prevention stays correct because
+  our own writes are authored by that same endpoint identity.
+- **Namespace ids (F20 finding 3).** `fe_database::derive_namespace_id`
+  returns the Ed25519 verifying key of the namespace secret — the id the doc
+  actually registers under (`NamespaceSecret::from_bytes(secret).id()`), so
+  the secretless open (`client.open(stored_id)`) finds a previously imported
+  doc on the same persisted store. Legacy keyed-BLAKE3 ids still in live DBs
+  can never match; the secretless path falls back to scanning known docs for
+  the one whose `verse/{verse_id}` manifest key exists
+  (`find_doc_by_verse_manifest`).
 
 `status.rs` also carries a `TODO(iroh-0.35)` for applying inbound peer `SyncEvent::NodeTransformed`
 to the local world (currently logged, not applied) — it depends on the inbound gossip route above.
@@ -150,8 +177,9 @@ emits our own dialable `NodeAddr` JSON in exactly that form (F4 also logs it
 raw — not Debug-escaped — on the `SyncStatus updated: started` banner so it
 is copy-pasteable into `FE_SYNC_BOOTSTRAP`).
 
-**Startup reconciliation (F4, 2026-10-07).** Every `OpenVerseReplica` runs
-`seed_reconciliation` after `subscribe`: `VerseReplicator::snapshot()`
+**Startup reconciliation (F4, 2026-10-07; F20 self-drain fix).** Every
+`OpenVerseReplica` runs `seed_reconciliation` after `subscribe`:
+`VerseReplicator::snapshot()`
 (`get_many(Query::single_latest_per_key().include_empty())` — the doc's
 current entries, tombstones included) replays through the SAME inbound apply
 path as the live pump. This exists because the A3 role gate permanently
@@ -163,6 +191,21 @@ re-navigation). Best-effort: a snapshot failure is a loud warn, never fatal.
 Own-author rows are filtered downstream by the inbound handler like any
 other row. Mock-backed replicas (offline) snapshot their in-memory rows, so
 tests exercise the same seam.
+
+**Self-drain capacity rule (F20 finding 1 — regression-tested).** The
+snapshot is UNBOUNDED, so the reconciliation pass must apply entries
+DIRECTLY through `handle_inbound_row_change` (which `try_send`s to the DB
+channel with drop-and-count) — it must NEVER await a send into the
+aggregated inbound stream, whose only drainer is the very command loop
+running the pass. The pre-F20 inline-await shape deadlocked the loop forever
+on any doc with more entries than the 256-capacity channel (any real IoT
+verse — readings are per-row doc keys), starving all inbound applies,
+`Shutdown`, and any blocking crossbeam senders. General rule: **a handler
+awaited inline in the select loop must never await a send into a stream only
+that select loop drains.** The regression test
+(`reconciliation_snapshot_larger_than_inbound_capacity_does_not_deadlock`)
+pins the exact shape: 300-entry doc, live convergence, re-open replay past
+capacity, and `Shutdown` still processing.
 
 ## §write-policy (auth_policy_pattern_20260710 §D1)
 

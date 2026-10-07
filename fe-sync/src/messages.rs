@@ -165,6 +165,15 @@ pub enum SyncEvent {
         chunk_seq: u32,
         reason: String,
     },
+    /// A verse replica's document failed to open **while the P2P stack was
+    /// online** (F20/M1 finding 4).
+    ///
+    /// The replica is registered but loudly NON-replicating: no inbound
+    /// pump, `WriteRowEntry` warns and fails, reconciliation is skipped.
+    /// Emitted alongside an `error!` log so hosts can surface honest
+    /// replica status — the offline mock fallback is a different (sanctioned)
+    /// mode and does not emit this.
+    ReplicaOpenFailed { verse_id: String, reason: String },
     /// A node transform was updated by a peer.
     NodeTransformed {
         verse_id: String,
@@ -440,6 +449,25 @@ mod tests {
                 assert_eq!(health, RelayHealth::Unreachable);
             }
             _ => panic!("expected RelayHealthChanged"),
+        }
+    }
+
+    #[test]
+    fn replica_open_failed_debug_clone() {
+        let ev = SyncEvent::ReplicaOpenFailed {
+            verse_id: "01VERSEOPENFAILED0000000000".into(),
+            reason: "namespace import failed (test)".into(),
+        };
+        let cloned = ev.clone();
+        let dbg = format!("{:?}", cloned);
+        assert!(dbg.contains("ReplicaOpenFailed"));
+        assert!(dbg.contains("01VERSEOPENFAILED0000000000"));
+        match ev {
+            SyncEvent::ReplicaOpenFailed { verse_id, reason } => {
+                assert_eq!(verse_id, "01VERSEOPENFAILED0000000000");
+                assert_eq!(reason, "namespace import failed (test)");
+            }
+            _ => panic!("expected ReplicaOpenFailed"),
         }
     }
 

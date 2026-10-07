@@ -109,6 +109,20 @@ pub fn drain_sync_events(
                 }
                 status.health = health;
             }
+            SyncEvent::ReplicaOpenFailed {
+                ref verse_id,
+                ref reason,
+            } => {
+                // F20 finding 4: honest replica status — this verse is NOT
+                // replicating while its document remains unopenable on an
+                // online stack. Loud by design (see AGENTS.md §iroh-0.35:
+                // the mock fallback is offline-only).
+                tracing::error!(
+                    verse_id,
+                    reason,
+                    "Verse replica NOT replicating — document open failed on the online stack"
+                );
+            }
             SyncEvent::ComputeResultReady {
                 ref task_id,
                 row_count,

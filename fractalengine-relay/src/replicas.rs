@@ -80,28 +80,47 @@ fn namespace_id_from_secret(secret_hex: &str) -> Option<String> {
 ///
 /// The relay pumps `DbResult`s into Bevy `Messages` via
 /// `fe_runtime::app::setup_core_systems`; this reads the same stream the GUI's
-/// `VerseManagerPlugin` consumes (no fe-ui in the relay).
+/// `VerseManagerPlugin` consumes (no fe-ui in the relay). The verse is
+/// recorded in the shared [`OpenedReplicas`] set so the startup scan's next
+/// `HierarchyLoaded` pass (e.g. an API `GET /api/v1/hierarchy` round-trip)
+/// never churns the just-opened replica close+reopen.
 pub fn open_replica_on_verse_created(
     mut results: bevy::prelude::MessageReader<DbResult>,
+    mut opened: bevy::prelude::ResMut<OpenedReplicas>,
     sync: bevy::prelude::Res<fe_sync::SyncCommandSenderRes>,
     secret_store: bevy::prelude::Res<SecretStoreRes>,
 ) {
     for result in results.read() {
         if let DbResult::VerseCreated { id, name } = result {
+            if !opened.0.insert(id.clone()) {
+                continue; // a replica is already open for this verse
+            }
             tracing::info!(verse_id = %id, name = %name, "VerseCreated — opening replica");
-            open_replica(&sync.0, secret_store.0.as_ref(), id, None);
+            if !open_replica(&sync.0, secret_store.0.as_ref(), id, None) {
+                // The open failed — forget the verse so a later scan or
+                // retry can try again.
+                opened.0.remove(id);
+            }
         }
     }
 }
 
+/// Verses this relay process has already sent an `OpenVerseReplica` for.
+///
+/// Shared resource (F20 fold-in c): previously the set lived only in the
+/// startup scan's `Local`, so a verse created at runtime (opened by
+/// [`open_replica_on_verse_created`]) was missing from it — the next
+/// `HierarchyLoaded` the scan processed re-sent the open, churning the live
+/// replica close+reopen on the sync thread.
+#[derive(bevy::prelude::Resource, Default)]
+pub(crate) struct OpenedReplicas(std::collections::HashSet<String>);
+
 /// Per-system state for [`startup_replica_scan`]: whether the one-time
-/// hierarchy request has been sent, and which verses this process has already
-/// opened (so later `HierarchyLoaded` replies — e.g. an API
-/// `GET /api/v1/hierarchy` channel round-trip — never churn a live replica).
+/// hierarchy request has been sent. (Which verses are already open lives in
+/// the shared [`OpenedReplicas`] resource.)
 #[derive(Default)]
 pub(crate) struct StartupScanState {
     hierarchy_requested: bool,
-    opened: std::collections::HashSet<String>,
 }
 
 /// Bevy system (A7): at startup, open a replica for every verse the relay
@@ -119,6 +138,7 @@ pub(crate) struct StartupScanState {
 /// reconciliation pass inside the sync thread.
 pub fn startup_replica_scan(
     mut state: bevy::prelude::Local<StartupScanState>,
+    mut opened: bevy::prelude::ResMut<OpenedReplicas>,
     db_tx: bevy::prelude::Res<fe_runtime::app::DbCommandSender>,
     mut results: bevy::prelude::MessageReader<DbResult>,
     sync: bevy::prelude::Res<fe_sync::SyncCommandSenderRes>,
@@ -138,8 +158,8 @@ pub fn startup_replica_scan(
         };
         let mut opened_now = 0usize;
         for verse in verses {
-            if !state.opened.insert(verse.id.clone()) {
-                continue; // already opened by this process
+            if !opened.0.insert(verse.id.clone()) {
+                continue; // already opened by this process (startup or runtime)
             }
             if open_replica(
                 &sync.0,
@@ -148,6 +168,8 @@ pub fn startup_replica_scan(
                 verse.namespace_id.clone(),
             ) {
                 opened_now += 1;
+            } else {
+                opened.0.remove(&verse.id);
             }
         }
         tracing::info!(
@@ -181,11 +203,15 @@ mod tests {
 
     /// A7 (`VerseCreated`): the real Bevy system turns a `DbResult::VerseCreated`
     /// into an `OpenVerseReplica` carrying the namespace id derived from the
-    /// stored secret, so the relay replicates verses created at runtime.
+    /// stored secret, so the relay replicates verses created at runtime — and
+    /// records it in the shared opened-set so a later startup-scan
+    /// `HierarchyLoaded` never churns the live replica close+reopen (F20
+    /// fold-in c).
     #[test]
     fn verse_created_opens_replica_with_derived_namespace() {
         use bevy::prelude::*;
         use fe_identity::{InMemoryBackend, SecretStore};
+        use fe_runtime::messages::{DbCommand, VerseHierarchyData};
 
         let verse_id = "01TESTVERSE0000000000000000";
         let secret = [9u8; 32];
@@ -201,12 +227,20 @@ mod tests {
             .unwrap();
 
         let (sync_tx, sync_rx) = crossbeam::channel::bounded(4);
+        let (db_tx, db_rx) = crossbeam::channel::bounded(4);
         let mut app = App::new();
         app.add_message::<DbResult>();
         app.insert_resource(fe_sync::SyncCommandSenderRes(sync_tx));
         app.insert_resource(SecretStoreRes(store));
-        app.add_systems(Update, open_replica_on_verse_created);
+        app.insert_resource(fe_runtime::app::DbCommandSender(db_tx));
+        app.init_resource::<OpenedReplicas>();
+        app.add_systems(
+            Update,
+            (open_replica_on_verse_created, startup_replica_scan),
+        );
 
+        // Frame 1: VerseCreated opens the replica (and the scan requests the
+        // hierarchy in the same frame).
         app.world_mut().write_message(DbResult::VerseCreated {
             id: verse_id.to_string(),
             name: "Runtime Verse".to_string(),
@@ -229,6 +263,27 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+        // The scan's one-time hierarchy request went out this frame.
+        assert!(
+            matches!(db_rx.try_recv(), Ok(DbCommand::LoadHierarchy)),
+            "scan requests the hierarchy once"
+        );
+
+        // Frame 2: the hierarchy reply includes the SAME verse — the shared
+        // opened-set must suppress the re-open (no close+reopen churn).
+        app.world_mut().write_message(DbResult::HierarchyLoaded {
+            verses: vec![VerseHierarchyData {
+                id: verse_id.to_string(),
+                name: "Runtime Verse".into(),
+                namespace_id: None,
+                fractals: Vec::new(),
+            }],
+        });
+        app.update();
+        assert!(
+            sync_rx.try_recv().is_err(),
+            "a runtime-opened verse is not churned by the startup scan's reply"
+        );
     }
 
     /// A7 (startup scan): the system asks the DB thread for the hierarchy
@@ -262,6 +317,7 @@ mod tests {
         app.insert_resource(fe_sync::SyncCommandSenderRes(sync_tx));
         app.insert_resource(SecretStoreRes(store));
         app.insert_resource(fe_runtime::app::DbCommandSender(db_tx));
+        app.init_resource::<OpenedReplicas>();
         app.add_systems(Update, startup_replica_scan);
 
         // Frame 1: exactly one LoadHierarchy request.

@@ -110,11 +110,16 @@ enum Admission {
 /// Deny-by-default, roles resolved from the **local** tables, never the
 /// wire: [`crate::role_manager::resolve_role`] walks the verse owner
 /// (`created_by`) → explicit `role` rows up the scope chain → the verse's
-/// `default_access` (pinned by the schema and `set_default_access` to
-/// "viewer"/"none", so an unknown peer can never resolve to a writer). The
-/// decision itself is [`crate::rbac::evaluate_write`] — the same fe-policy
-/// standard write gate as the local path (Write = Editor+), so inbound and
-/// local writes can never drift apart in threshold.
+/// `default_access`. Nothing pins `default_access` to a safe value at the
+/// schema level — the column carries only a `DEFAULT 'viewer'`
+/// (schema.rs), no `ASSERT` — so the safe values are enforced where they
+/// are written: `set_default_access` (local path) and `apply_static_row`
+/// (inbound replicated manifests, which reject anything outside
+/// `"viewer"`/`"none"`) together keep an unknown peer from ever resolving
+/// to a writer through this table. The decision itself is
+/// [`crate::rbac::evaluate_write`] — the same fe-policy standard write gate
+/// as the local path (Write = Editor+), so inbound and local writes can
+/// never drift apart in threshold.
 ///
 /// **Bootstrap window:** rows for a verse this store does not know yet are
 /// admitted. A peer only receives rows over a replica it deliberately opened
@@ -127,6 +132,17 @@ enum Admission {
 /// manifest first anyway, so this rule gates nothing extra — it only keeps
 /// out-of-order sync (petal rows arriving before the verse row) from being
 /// permanently lost.
+///
+/// **Cross-verse referential confinement (known gap, future hardening):**
+/// this gate confines a row to the replica's verse (`verse_id` match for
+/// verse rows; the manifest's scope for interior rows) but does not verify
+/// that an admitted interior row's *references* (a node row's `petal_id`,
+/// a petal row's `fractal_id`, …) belong to that same verse — an Editor
+/// admitted in verse A could push rows referencing verse B's ids. Full
+/// referential-confinement checking is recorded on the conductor board (the
+/// p2p_mycelium_completion FUTURE-HARDENING note) and belongs at this
+/// admission gate once the verse-manifest/role bootstrap contract is
+/// specified; it is deliberately out of M1 scope.
 async fn admit_inbound_row(
     db: &Db,
     verse_id: &str,
@@ -206,6 +222,30 @@ async fn apply_static_row(
     let mut row: serde_json::Value = serde_json::from_slice(row_bytes)
         .map_err(|e| anyhow::anyhow!("replicated row {table}/{record_id}: bad JSON: {e}"))?;
     strip_toplevel_nulls(&mut row);
+
+    // A3 deny-by-default (F20 fold-in): an inbound verse manifest is the
+    // only writer that could hand an unknown peer a write role — `resolve_role`
+    // falls back to `default_access` for peers with no explicit row, and the
+    // schema only DEFAULTs the column (no ASSERT). The local writers are
+    // pinned ("viewer" at creation, `set_default_access` rejects anything
+    // else), so the replicated path validates the same set here: a manifest
+    // carrying anything outside {"viewer", "none"} is denied outright, never
+    // applied.
+    if table == "verse" {
+        if let Some(access) = row.get("default_access") {
+            let valid = access
+                .as_str()
+                .is_some_and(|v| v == "viewer" || v == "none");
+            if !valid {
+                tracing::warn!(
+                    verse_id = record_id,
+                    default_access = ?access,
+                    "Inbound verse manifest carries a forbidden default_access — denied"
+                );
+                return Ok(ReplicatedRowOutcome::Denied);
+            }
+        }
+    }
 
     // Extract the geometry column now, write it with an explicit cast after
     // the row exists (a raw GeoJSON bind against a SCHEMAFULL table fails).
@@ -608,6 +648,88 @@ mod tests {
         );
     }
 
+    /// F20 fold-in (A3 deny-by-default): an inbound verse manifest carrying a
+    /// `default_access` outside {viewer, none} is denied at the replicated
+    /// write path — without this, a capability-holding peer could plant
+    /// `default_access: "editor"` and make every unknown peer resolve to a
+    /// writer for that verse (the schema column has only a DEFAULT, no ASSERT).
+    #[tokio::test]
+    async fn inbound_verse_manifest_with_editor_default_access_is_denied() {
+        let db = schema_db().await;
+        // Fresh store: the gate's bootstrap window admits the manifest (this
+        // is exactly how a verse converges on a joining peer — A2), so the
+        // default_access validation is what must reject it.
+        let row = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "verse-hijack",
+            "name": "Hijacked Access Verse",
+            "created_by": "did:key:peer-a",
+            "created_at": "2026-10-07T00:00:00Z",
+            "default_access": "editor",
+        }))
+        .unwrap();
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "verse-hijack",
+            "verse",
+            "verse-hijack",
+            &row,
+            "did:key:peer-a",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+
+        // READ-BACK: the manifest never landed — unknown peers cannot gain a
+        // write role through this verse.
+        let rows = select_json(
+            &db,
+            "SELECT verse_id FROM verse WHERE verse_id = 'verse-hijack'",
+        )
+        .await;
+        assert!(
+            rows.is_empty(),
+            "forbidden default_access manifest must not be applied"
+        );
+    }
+
+    /// `none` is a valid inbound `default_access` (deny-by-default in the
+    /// strictest form) — the validation must not reject safe values.
+    #[tokio::test]
+    async fn inbound_verse_manifest_with_none_default_access_applies() {
+        let db = schema_db().await;
+        let row = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "verse-none",
+            "name": "Private Verse",
+            "created_by": "did:key:peer-a",
+            "created_at": "2026-10-07T00:00:00Z",
+            "default_access": "none",
+        }))
+        .unwrap();
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "verse-none",
+            "verse",
+            "verse-none",
+            &row,
+            "did:key:peer-a",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+        let rows = select_json(
+            &db,
+            "SELECT verse_id, default_access FROM verse WHERE verse_id = 'verse-none'",
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["default_access"], "none");
+    }
+
     #[tokio::test]
     async fn node_row_with_geojson_position_applies_geometry_safe() {
         let db = schema_db().await;
@@ -845,6 +967,125 @@ mod tests {
         )
         .await;
         assert!(rows.is_empty(), "unknown peer's row must not be persisted");
+    }
+
+    /// F20/M1 finding 2 (reconciliation second chance): a row denied because
+    /// its author's role had not yet converged locally must apply when the
+    /// same row is **replayed** (the startup reconciliation path re-applies a
+    /// replica's snapshot) with the same authenticated author DID — this only
+    /// works because live delivery and snapshot replay attribute authorship
+    /// identically (fe-sync imports the endpoint identity as the docs
+    /// author). Re-delivery denial must stay harmless: the denied replay
+    /// leaves no trace.
+    #[tokio::test]
+    async fn denied_row_converges_on_replay_after_role_lands() {
+        let db = schema_db().await;
+        // The verse manifest has converged; carol's Editor role row has NOT.
+        seed_verse_with_roles(&db, "v1", &[]).await;
+        let row = gated_node_row("node-replay-1");
+
+        // First delivery (live): carol resolves to default_access viewer → denied.
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-replay-1",
+            &row,
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert!(
+            select_json(
+                &db,
+                "SELECT node_id FROM node WHERE node_id = 'node-replay-1'"
+            )
+            .await
+            .is_empty(),
+            "denied row must not be persisted"
+        );
+
+        // The role row lands (e.g. it replicated later than carol's rows).
+        let scope = crate::scope::build_scope("v1", None, None);
+        crate::rbac::assign_role(&db, "did:key:carol", &scope, "editor")
+            .await
+            .expect("seed carol's editor role");
+
+        // Replay (restart reconciliation): the SAME row, the SAME author DID.
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-replay-1",
+            &row,
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            ReplicatedRowOutcome::Applied,
+            "the second chance must converge the previously denied row"
+        );
+
+        // READ-BACK: converged durably.
+        let rows = select_json(
+            &db,
+            "SELECT node_id FROM node WHERE node_id = 'node-replay-1'",
+        )
+        .await;
+        assert_eq!(
+            rows.len(),
+            1,
+            "replayed row is durable after the role landed"
+        );
+    }
+
+    /// Re-delivery of an already-applied row is idempotent-harmless (the
+    /// reconciliation pass replays the whole snapshot on every open): the
+    /// second apply MERGEs onto the existing row and stays `Applied` — the
+    /// "denial on re-delivery must stay harmless" contract for rows authored
+    /// under a stale identity.
+    #[tokio::test]
+    async fn already_applied_row_redelivery_stays_applied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:carol", "editor")]).await;
+        let row = gated_node_row("node-idem-1");
+
+        let first = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-idem-1",
+            &row,
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, ReplicatedRowOutcome::Applied);
+
+        let second = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "node",
+            "node-idem-1",
+            &row,
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second, ReplicatedRowOutcome::Applied);
+        let rows = select_json(
+            &db,
+            "SELECT node_id FROM node WHERE node_id = 'node-idem-1'",
+        )
+        .await;
+        assert_eq!(rows.len(), 1, "re-delivery does not duplicate the row");
     }
 
     #[tokio::test]
