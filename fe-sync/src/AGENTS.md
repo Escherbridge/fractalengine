@@ -146,7 +146,23 @@ Bootstrap peers (A9 prep): `FE_SYNC_BOOTSTRAP` holds **semicolon-separated**
 with iroh's own types; bare `NodeId` hex carries no address and is skipped
 loudly. `OpenVerseReplica.bootstrap_peers` carries the same entry form
 per-verse and merges with the env set (deduped); `SyncEvent::Started.node_addr`
-emits our own dialable `NodeAddr` JSON in exactly that form.
+emits our own dialable `NodeAddr` JSON in exactly that form (F4 also logs it
+raw — not Debug-escaped — on the `SyncStatus updated: started` banner so it
+is copy-pasteable into `FE_SYNC_BOOTSTRAP`).
+
+**Startup reconciliation (F4, 2026-10-07).** Every `OpenVerseReplica` runs
+`seed_reconciliation` after `subscribe`: `VerseReplicator::snapshot()`
+(`get_many(Query::single_latest_per_key().include_empty())` — the doc's
+current entries, tombstones included) replays through the SAME inbound apply
+path as the live pump. This exists because the A3 role gate permanently
+skips a denied row: the entry never re-fires as an `InsertRemote`, so a row
+denied while a role or the verse manifest had not yet converged locally
+would be stranded in the doc store forever; the snapshot gives it a second
+chance on every open (relay startup scan, relay `VerseCreated`, GUI
+re-navigation). Best-effort: a snapshot failure is a loud warn, never fatal.
+Own-author rows are filtered downstream by the inbound handler like any
+other row. Mock-backed replicas (offline) snapshot their in-memory rows, so
+tests exercise the same seam.
 
 ## §write-policy (auth_policy_pattern_20260710 §D1)
 

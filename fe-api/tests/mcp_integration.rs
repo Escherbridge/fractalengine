@@ -225,6 +225,7 @@ fn emu_state() -> (Arc<ApiState>, Arc<Mutex<Model>>) {
         tileset_registry: None,
         hexon_registry: None,
         announcement_store: None,
+        replication_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));

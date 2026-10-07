@@ -43,6 +43,14 @@ pub struct ApiState {
     /// P2P announcement store for peer-discovered crates.
     pub announcement_store:
         Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
+    /// Replication emit seam: the DB→sync bridge's event channel (A11).
+    ///
+    /// The API ingestion path (IoT readings) writes directly on `db_reader`
+    /// (the §iot-readings append-only exception), so it needs its own way to
+    /// publish rows to peers. Handlers that own a `ReplicationEvent` push it
+    /// here; `None` means the API thread is running without a replication
+    /// bridge (harness/tests) and emission is skipped.
+    pub replication_tx: Option<fe_database::ReplicationSender>,
     /// Ed25519 keypair signing shareable query URLs (see AGENTS.md §share).
     pub share_signer: Arc<fe_identity::NodeKeypair>,
 }

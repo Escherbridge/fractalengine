@@ -57,6 +57,9 @@ pub struct ApiConfig {
     /// P2P announcement store for peer-discovered crates.
     pub announcement_store:
         Option<std::sync::Arc<std::sync::Mutex<fe_hexon::p2p::AnnouncementStore>>>,
+    /// Replication emit seam for the API thread (A11). The DB→sync bridge's
+    /// event sender; `None` disables API-side replication emission.
+    pub replication_tx: Option<fe_database::ReplicationSender>,
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
@@ -97,6 +100,7 @@ async fn run_server(config: ApiConfig) {
         tileset_registry: config.tileset_registry,
         hexon_registry: config.hexon_registry,
         announcement_store: config.announcement_store,
+        replication_tx: config.replication_tx,
         // Ephemeral per-process share-URL signing key: restart invalidates
         // outstanding links (TTL ≤ 24h anyway) — see AGENTS.md §share.
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
