@@ -1,8 +1,9 @@
 //! Relay seed/fetch authorization decisions (SPEC-6 §6) and scope-key currency (§9.2).
 //!
 //! This module contains NO socket, listener, connection, iroh, or libp2p code. It does not
-//! reference `fe-network` or `fe-sync`, opens nothing, and cannot change
-//! `fe-sync`'s `IrohDocsEngineHolder::is_available()`, which stays `false`. It decides
+//! reference `fe-network` or `fe-sync`, opens nothing, and cannot influence
+//! `fe-sync`'s `IrohDocsEngineHolder::is_available()` (driven solely by the fe-sync sync
+//! thread's own P2P stack spawn). It decides
 //! whether a hypothetical transport WOULD be permitted to seed or disclose an artifact; the
 //! transport itself remains owner-gated and unbuilt.
 

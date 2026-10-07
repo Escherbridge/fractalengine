@@ -240,29 +240,50 @@ impl IncomingEntryApplicator {
 }
 
 // ---------------------------------------------------------------------------
-// IrohDocsEngineHolder — holds the shared iroh-docs Engine (Phase F.1)
+// IrohDocsEngineHolder — holds the real iroh-docs stack (Phase F.1, A1)
 // ---------------------------------------------------------------------------
 
-/// Placeholder holder for the iroh-docs Engine.
+/// Holder for the real iroh-docs 0.35 P2P stack
+/// ([`crate::docs_engine::DocsStack`]: Blobs + Gossip + Docs + Router).
 ///
-/// Real iroh-docs 0.35 `Engine<D>` wiring is deferred — the 0.35 `Engine::spawn`
-/// requires a full P2P stack (gossip, blob store, downloader, local pool) that is
-/// out of scope here. `is_available()` therefore stays `false` and replicators use
-/// the in-memory fallback. See `fe-sync/src/AGENTS.md` §iroh-0.35.
+/// The sync thread constructs it `online` when the endpoint bound and the
+/// full stack spawned, and leaves it empty in offline mode (bind failure or
+/// stack spawn failure) — `is_available()` then reports `false` and
+/// replicators degrade to the in-memory mock without crashing.
+/// See `fe-sync/src/AGENTS.md` §iroh-0.35.
 #[derive(Default)]
 pub struct IrohDocsEngineHolder {
-    available: std::sync::atomic::AtomicBool,
+    stack: Option<Arc<crate::docs_engine::DocsStack>>,
 }
 
 impl IrohDocsEngineHolder {
-    /// Create a new empty holder (real Engine wiring deferred to iroh-0.35 follow-up).
+    /// Create an empty holder (offline — no stack, replicators use the mock).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Whether a real iroh-docs Engine is available. Currently always `false`.
+    /// Create a holder around a successfully spawned stack (online).
+    pub fn online(stack: Arc<crate::docs_engine::DocsStack>) -> Self {
+        Self { stack: Some(stack) }
+    }
+
+    /// Whether the real iroh-docs stack is available.
     pub fn is_available(&self) -> bool {
-        self.available.load(std::sync::atomic::Ordering::Relaxed)
+        self.stack.is_some()
+    }
+
+    /// The live stack, when online.
+    pub fn stack(&self) -> Option<&crate::docs_engine::DocsStack> {
+        self.stack.as_deref()
+    }
+
+    /// Clone of the docs RPC client, when online.
+    ///
+    /// The handle the replicator layer uses for `import_namespace` /
+    /// `set_bytes` / `subscribe` / `start_sync` / `close` — the real
+    /// Doc-backed path rides this seam.
+    pub fn docs_client(&self) -> Option<iroh_docs::rpc::client::docs::MemClient> {
+        self.stack.as_ref().map(|s| s.docs_client())
     }
 }
 
@@ -272,16 +293,19 @@ impl IrohDocsEngineHolder {
 
 /// Implementation of `VerseReplicator` backed by iroh-docs.
 ///
-/// Real iroh-docs 0.35 wiring is deferred (`Engine<D>` needs the full P2P stack);
-/// until then this is backed by the in-memory mock. The `engine_holder` is carried
-/// so the real path can be dropped in later without changing call sites.
+/// The real P2P stack (Blobs + Gossip + Docs + Router) now lives in the
+/// `engine_holder`; the Doc-backed write/subscribe path rides it once the
+/// `VerseReplicator` trait goes async (the 0.35 `Doc` client is async-only).
+/// Until that rewrite lands, operations delegate to the in-memory mock for
+/// every mode, online or offline — degradation is total, never a crash.
 /// See `fe-sync/src/AGENTS.md` §iroh-0.35.
 pub struct IrohDocsReplicator {
     pub namespace_id: String,
     pub namespace_secret: String,
-    /// The shared Engine holder (real Engine wiring deferred).
+    /// The shared stack holder (online or offline/mock).
     engine_holder: Arc<IrohDocsEngineHolder>,
-    /// In-memory backing store (fallback until iroh-docs is wired).
+    /// In-memory backing store (used until the Doc-backed path lands; also
+    /// the offline fallback).
     inner: MockVerseReplicator,
 }
 
@@ -305,22 +329,27 @@ impl IrohDocsReplicator {
 
     /// Open the document for this namespace.
     ///
-    /// No-op until the real iroh-docs 0.35 Engine is wired.
+    /// No-op until the Doc-backed path lands with the async trait rewrite;
+    /// the sync thread opens/imports namespaces itself then.
     pub fn open_document(&self) -> anyhow::Result<()> {
-        // TODO(iroh-0.35): open/create the iroh-docs document via Engine<D>.
+        // TODO(iroh-0.35): import/open the iroh-docs Doc via the holder's
+        // docs client (async trait rewrite).
         Ok(())
     }
 }
 
 impl VerseReplicator for IrohDocsReplicator {
     fn write_row(&self, table: &str, record_id: &str, data: &[u8]) -> anyhow::Result<()> {
-        // TODO(iroh-0.35): route through the real iroh-docs Doc when available.
-        let backend = if self.engine_holder.is_available() {
-            "iroh-docs"
-        } else {
-            "mock fallback"
-        };
-        tracing::debug!(ns = %self.namespace_id, key = %format!("{table}/{record_id}"), backend, "IrohDocsReplicator::write_row");
+        // TODO(iroh-0.35): route through the real iroh-docs Doc via the
+        // holder's docs client (async trait rewrite) — the stack is real,
+        // but this path still writes the in-memory mock until then.
+        tracing::debug!(
+            ns = %self.namespace_id,
+            key = %format!("{table}/{record_id}"),
+            stack_available = self.engine_holder.is_available(),
+            backend = "mock (doc-backed path pending)",
+            "IrohDocsReplicator::write_row"
+        );
         self.inner.write_row(table, record_id, data)
     }
 

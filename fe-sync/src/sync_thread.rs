@@ -14,6 +14,7 @@ use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
 use iroh_gossip::net::{Gossip, GossipTopic};
 use iroh_gossip::proto::TopicId;
 
+use crate::docs_engine::{p2p_data_dir, DocsStack};
 use crate::endpoint::SyncEndpoint;
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
 use crate::relay_config::{RelayConfig, RelayHealth};
@@ -92,38 +93,56 @@ pub fn spawn_sync_thread(
                 }
             };
 
-            // Phase F.1: iroh-docs Engine holder.
-            // TODO(iroh-0.35): real Engine<D> wiring is deferred (needs the full
-            // P2P stack — gossip, blob store, downloader, local pool). Replicators
-            // use the in-memory fallback until then. See AGENTS.md §iroh-0.35.
-            let docs_engine_holder = Arc::new(IrohDocsEngineHolder::new());
-
-            // Phase F.3: Create iroh-gossip 0.35 Gossip instance from the endpoint.
-            let gossip_host: Option<Gossip> = match endpoint.as_ref() {
-                Some(ep) => match Gossip::builder().spawn(ep.inner().clone()).await {
-                    Ok(gossip) => {
-                        tracing::info!("iroh-gossip Gossip initialized");
-                        Some(gossip)
-                    }
+            // Real iroh-docs 0.35 stack (A1): Blobs (fs) + Gossip + Docs
+            // (persistent redb) + Router accepting all three ALPNs, with
+            // persistent stores under FE_P2P_DIR. Absent in offline mode
+            // (endpoint bind failure or stack spawn failure) — the holder
+            // then reports unavailable and replicators degrade to the
+            // in-memory mock. See AGENTS.md §iroh-0.35 and docs_engine.rs.
+            let p2p_dir = p2p_data_dir();
+            let docs_stack: Option<Arc<DocsStack>> = match endpoint.as_ref() {
+                Some(ep) => match DocsStack::spawn(ep.inner().clone(), &p2p_dir).await {
+                    Ok(stack) => Some(Arc::new(stack)),
                     Err(e) => {
-                        // LOUD-FAIL: gossip rides the same endpoint/relay
-                        // connection — a spawn failure here is a real
-                        // degradation of P2P health, not just a debug note.
-                        tracing::warn!("Failed to spawn gossip: {e}");
+                        // LOUD-FAIL: the endpoint is up but replication is
+                        // not. Degrade to offline/mock and record the
+                        // degradation in relay health (the stack includes
+                        // gossip, which rides the same endpoint/relay
+                        // connection — see AGENTS.md §relay-health).
+                        tracing::error!(
+                            p2p_dir = %p2p_dir.display(),
+                            "Failed to spawn P2P docs stack — degrading to offline/mock replication: {e}"
+                        );
                         relay_health = relay_health.on_error();
-                        evt_tx
-                            .send(SyncEvent::RelayHealthChanged {
+                        if let Err(send_err) =
+                            evt_tx.send(SyncEvent::RelayHealthChanged {
                                 health: relay_health,
                             })
-                            .ok();
+                        {
+                            tracing::warn!("Sync event send failed: {send_err}");
+                        }
                         None
                     }
                 },
                 None => {
-                    tracing::debug!("No endpoint, skipping gossip creation");
+                    tracing::debug!("No endpoint, skipping P2P stack spawn");
                     None
                 }
             };
+
+            // Gossip lives inside the stack (one instance, routed by the
+            // Router) — a second instance here would never see inbound
+            // connections. None in offline mode, like before.
+            let gossip_host: Option<Gossip> = docs_stack
+                .as_ref()
+                .map(|stack| stack.gossip().clone());
+
+            // Phase F.1: iroh-docs Engine holder — real when the stack
+            // spawned, empty (mock fallback) in offline mode.
+            let docs_engine_holder = Arc::new(match docs_stack.as_ref() {
+                Some(stack) => IrohDocsEngineHolder::online(stack.clone()),
+                None => IrohDocsEngineHolder::new(),
+            });
 
             // TODO(ultrapilot): continuous relay-health monitoring.
             // `endpoint.inner().home_relay()` returns a `Watcher<Option<RelayUrl>>`
@@ -131,7 +150,7 @@ pub fn spawn_sync_thread(
             // Degraded/Unreachable via `RelayHealth::on_error`, and recovery via
             // `on_success`), but wiring it requires turning this loop's blocking
             // `cmd_rx.recv()` into a `tokio::select!` against the watcher stream.
-            // Only the startup bind result and the gossip-spawn outcome are
+            // Only the startup bind result and the P2P-stack spawn outcome are
             // tracked today — see AGENTS.md §relay-health.
 
             // Track active gossip subscriptions (topic key -> live handle) for verse/petal.
@@ -277,6 +296,12 @@ pub fn spawn_sync_thread(
                 }
             }
 
+            // Shut the P2P stack's protocol handlers down (docs engine
+            // flush) before the endpoint close.
+            if let Some(stack) = &docs_stack {
+                stack.shutdown().await;
+            }
+
             // Graceful endpoint shutdown
             if let Some(ep) = endpoint {
                 ep.shutdown().await;
@@ -358,8 +383,8 @@ fn handle_open_verse_replica(
         verse_id,
         namespace_id,
         gossip_topic = %hex::encode(topic_hash),
-        "Opened verse replica — iroh-docs {}",
-        if engine_holder.is_available() { "online" } else { "mock fallback" }
+        "Opened verse replica — P2P stack {} (replicator mock-backed until the async rewrite)",
+        if engine_holder.is_available() { "online" } else { "offline (mock fallback)" }
     );
 }
 
@@ -495,11 +520,11 @@ fn handle_subscribe_petal(
 
     tracing::info!(
         petal_id,
-        "Subscribed to petal — iroh-docs {}",
+        "Subscribed to petal — P2P stack {} (replicator mock-backed until the async rewrite)",
         if engine_holder.is_available() {
             "online"
         } else {
-            "mock fallback"
+            "offline (mock fallback)"
         }
     );
 }
@@ -759,8 +784,31 @@ mod tests {
         );
     }
 
+    /// Serializes tests that mutate process env and spawn sync threads —
+    /// env is process-global and cargo runs tests in parallel.
+    static SYNC_THREAD_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Hermetic env for thread-spawning tests: loopback-only relay config
+    /// (§loopback-only P2P tests) plus an isolated FE_P2P_DIR tempdir so the
+    /// persistent stores never touch the working tree.
+    fn hermetic_p2p_env() -> tempfile::TempDir {
+        std::env::set_var(crate::relay_config::RELAY_CONFIG_ENV_VAR, "disabled");
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var(crate::docs_engine::P2P_DIR_ENV_VAR, dir.path());
+        dir
+    }
+
+    fn restore_p2p_env() {
+        std::env::remove_var(crate::relay_config::RELAY_CONFIG_ENV_VAR);
+        std::env::remove_var(crate::docs_engine::P2P_DIR_ENV_VAR);
+    }
+
     #[test]
     fn shutdown_command_terminates_thread() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _p2p_dir = hermetic_p2p_env();
         let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
         let secret = iroh::SecretKey::from_bytes(&[99u8; 32]);
         let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(8);
@@ -785,8 +833,9 @@ mod tests {
         cmd_tx.send(SyncCommand::Shutdown).unwrap();
         handle.join().expect("sync thread panicked");
 
-        // Drain any further RelayHealthChanged events (e.g. a gossip-spawn
-        // failure in a sandboxed CI network) until the final Stopped event.
+        // Drain any further RelayHealthChanged events (e.g. a P2P
+        // stack-spawn failure in a sandboxed CI network) until the final
+        // Stopped event.
         let stopped = loop {
             match evt_rx.recv_timeout(std::time::Duration::from_secs(2)) {
                 Ok(SyncEvent::RelayHealthChanged { .. }) => continue,
@@ -797,6 +846,69 @@ mod tests {
             matches!(stopped, Ok(SyncEvent::Stopped)),
             "expected Stopped event, got {stopped:?}"
         );
+        restore_p2p_env();
+    }
+
+    /// A1 (test): with an online endpoint the sync thread spawns the real
+    /// Blobs + Gossip + Docs + Router stack with persistent stores under
+    /// `FE_P2P_DIR`. READ-BACK: the redb store and blobs dir must exist on
+    /// disk, not merely the startup log lines.
+    #[test]
+    fn sync_thread_spawns_persistent_stack_when_online() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let p2p_dir = hermetic_p2p_env();
+        let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
+        let secret = iroh::SecretKey::from_bytes(&[98u8; 32]);
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(8);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+
+        let handle = spawn_sync_thread(secret, store, cmd_rx, evt_tx, "test-node-did".to_string());
+        let started = evt_rx.recv_timeout(std::time::Duration::from_secs(15));
+        assert!(
+            matches!(started, Ok(SyncEvent::Started { .. })),
+            "expected Started event, got {started:?}"
+        );
+
+        if matches!(started, Ok(SyncEvent::Started { online: true })) {
+            // Started is emitted between the endpoint bind and the stack
+            // spawn, so poll for the docs engine's redb store to appear.
+            let docs_redb = p2p_dir.path().join("docs.redb");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !docs_redb.is_file() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert!(
+                docs_redb.is_file(),
+                "docs.redb must exist under FE_P2P_DIR when online"
+            );
+            assert!(
+                p2p_dir.path().join("blobs").is_dir(),
+                "blobs fs store dir must exist under FE_P2P_DIR when online"
+            );
+        } else {
+            // Sandboxed environment: the endpoint could not bind, so the
+            // thread degraded to offline/mock (proven tolerantly by
+            // shutdown_command_terminates_thread and the docs_engine tests).
+            tracing::warn!(
+                "endpoint offline in this environment — skipping online stack assertions"
+            );
+        }
+
+        cmd_tx.send(SyncCommand::Shutdown).unwrap();
+        handle.join().expect("sync thread panicked");
+        let stopped = loop {
+            match evt_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(SyncEvent::RelayHealthChanged { .. }) => continue,
+                other => break other,
+            }
+        };
+        assert!(
+            matches!(stopped, Ok(SyncEvent::Stopped)),
+            "expected Stopped event, got {stopped:?}"
+        );
+        restore_p2p_env();
     }
 
     // -------------------------------------------------------------------------

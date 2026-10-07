@@ -13,8 +13,9 @@ behind `receipt::SealedBodyOpener`.
 
 `relay_policy` and `discovery_labels` contain no socket, listener, connection, iroh, or libp2p
 code. Nothing here references `fe-network`, `fe-sync`, or `fe-runtime`, nothing opens a file or
-a port, and nothing can change `fe-sync`'s `IrohDocsEngineHolder::is_available()`, which stays
-`false`. `decide_seed` and `decide_fetch` answer *whether* a transport would be permitted to
+a port, and nothing here can influence `fe-sync`'s `IrohDocsEngineHolder::is_available()`
+(owned solely by the fe-sync sync thread's P2P stack spawn — this crate has no path to it).
+`decide_seed` and `decide_fetch` answer *whether* a transport would be permitted to
 act; the transport itself remains owner-gated and unbuilt. Relay work here is local artifact
 handling only.
 
