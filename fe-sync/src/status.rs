@@ -53,7 +53,23 @@ pub fn drain_sync_events(
             SyncEvent::Started { online, node_addr } => {
                 status.online = online;
                 status.node_addr = node_addr;
-                tracing::info!(online, "SyncStatus updated: started");
+                // The dialable NodeAddr JSON is what peers/relays paste into
+                // FE_SYNC_BOOTSTRAP — log it raw (not Debug-escaped) so it is
+                // copy-pasteable off the start banner, in exactly the form
+                // `parse_bootstrap_peer` accepts.
+                match status.node_addr.as_deref() {
+                    Some(addr) => {
+                        tracing::info!(
+                            online,
+                            node_addr = %addr,
+                            "SyncStatus updated: started — dialable address above \
+                             (paste into FE_SYNC_BOOTSTRAP)"
+                        );
+                    }
+                    None => {
+                        tracing::info!(online, "SyncStatus updated: started — no dialable address");
+                    }
+                }
             }
             SyncEvent::BlobReady { hash } => {
                 tracing::debug!(

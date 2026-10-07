@@ -647,6 +647,55 @@ fn handle_fetch_blob(
     );
 }
 
+/// Replay a freshly-opened replica's current entries into the aggregated
+/// inbound stream (F4 startup reconciliation).
+///
+/// The A3 inbound role gate denies a row whose author does not resolve to
+/// Editor+ at the verse scope — including rows that arrive before the verse
+/// manifest or an explicit role has converged locally. Such a row stays in
+/// the doc store but never re-fires as an `InsertRemote`, so without this pass
+/// it could never converge. Feeding the snapshot through the same inbound
+/// apply path (and therefore the same gate) gives it a second chance whenever
+/// the replica is opened — at relay/GUI startup and on every re-open.
+///
+/// Best-effort: a snapshot failure is a loud warn, never fatal. Forwarding
+/// uses the same bounded `inbound_tx` as the live pump; if the command loop
+/// has dropped the aggregate stream the pass stops.
+async fn seed_reconciliation(
+    replicator: &dyn VerseReplicator,
+    verse_id: &str,
+    inbound_tx: &tokio::sync::mpsc::Sender<(String, RowChange)>,
+) {
+    let entries = match replicator.snapshot().await {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(verse_id, "Reconciliation snapshot failed: {e}");
+            return;
+        }
+    };
+    if entries.is_empty() {
+        return;
+    }
+    let total = entries.len();
+    let mut forwarded = 0usize;
+    for change in entries {
+        if inbound_tx
+            .send((verse_id.to_string(), change))
+            .await
+            .is_err()
+        {
+            break;
+        }
+        forwarded += 1;
+    }
+    tracing::info!(
+        verse_id,
+        entries = total,
+        forwarded,
+        "Reconciliation: replayed replica entries through the inbound apply path"
+    );
+}
+
 /// Handle [`SyncCommand::OpenVerseReplica`].
 ///
 /// Creates an [`IrohDocsReplicator`] and opens its document: with the
@@ -732,6 +781,14 @@ async fn handle_open_verse_replica(
             tracing::warn!(verse_id, "Replica subscribe failed — no inbound pump: {e}");
         }
     }
+
+    // F4 startup reconciliation: replay the replica's current entries through
+    // the SAME inbound apply path. A row the A3 role gate denied while a role
+    // or the verse manifest had not yet converged never re-fires as an
+    // `InsertRemote`, so it would be stranded in the doc store forever; this
+    // pass gives it a second chance on every replica open. Own-author rows are
+    // filtered downstream by the inbound handler like any other row.
+    seed_reconciliation(&replicator, verse_id, &inbound_tx).await;
 
     replicas.insert(verse_id.to_string(), Box::new(replicator));
 
@@ -1817,5 +1874,71 @@ mod tests {
         );
 
         handle_close_verse_replica(&mut replicas, &mut inbound_pumps, "verse-pump").await;
+    }
+
+    // -------------------------------------------------------------------------
+    // F4: startup reconciliation (snapshot → inbound apply path)
+    // -------------------------------------------------------------------------
+
+    /// A replica's `snapshot()` enumerates its current entries as RowChanges,
+    /// with payload bytes and tombstone flags intact — the reconciliation
+    /// pass's input.
+    #[tokio::test]
+    async fn mock_snapshot_returns_current_entries() {
+        use crate::replicator::MockVerseReplicator;
+        let repl = MockVerseReplicator::new("did:key:peer");
+        repl.write_row("node", "node-1", br#"{"name":"live"}"#)
+            .await
+            .unwrap();
+        repl.write_row("node", "node-2", b"").await.unwrap();
+
+        let snap = repl.snapshot().await.unwrap();
+        assert_eq!(snap.len(), 2, "both entries enumerated");
+        let live = snap.iter().find(|c| c.record_id == "node-1").unwrap();
+        assert_eq!(live.table, "node");
+        assert_eq!(live.data, br#"{"name":"live"}"#.to_vec());
+        assert!(!live.is_tombstone);
+        let tomb = snap.iter().find(|c| c.record_id == "node-2").unwrap();
+        assert!(tomb.is_tombstone, "empty entry is a deletion marker");
+        assert!(tomb.data.is_empty());
+    }
+
+    /// `seed_reconciliation` replays a replica's entries into the aggregated
+    /// inbound stream, where the command loop's handler turns them into
+    /// `DbCommand::ApplyReplicatedRow`s — the second-chance convergence path.
+    #[tokio::test]
+    async fn seed_reconciliation_forwards_snapshot_into_inbound_stream() {
+        use crate::replicator::MockVerseReplicator;
+        let repl = MockVerseReplicator::new("did:key:peer");
+        repl.write_row("verse", "verse-1", br#"{"name":"manifest"}"#)
+            .await
+            .unwrap();
+        repl.write_row("node", "node-1", br#"{"name":"stranded"}"#)
+            .await
+            .unwrap();
+
+        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        seed_reconciliation(&repl, "verse-1", &inbound_tx).await;
+
+        let mut ids = Vec::new();
+        while let Ok((verse_id, change)) = inbound_rx.try_recv() {
+            assert_eq!(verse_id, "verse-1");
+            ids.push(change.record_id);
+        }
+        ids.sort();
+        assert_eq!(ids, vec!["node-1".to_string(), "verse-1".to_string()]);
+    }
+
+    /// An empty replica (nothing ever replicated in) is a silent no-op.
+    #[tokio::test]
+    async fn seed_reconciliation_empty_replica_is_noop() {
+        use crate::replicator::MockVerseReplicator;
+        let repl = MockVerseReplicator::new("did:key:peer");
+        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(4);
+        seed_reconciliation(&repl, "verse-empty", &inbound_tx).await;
+        assert!(
+            inbound_rx.try_recv().is_err(),
+            "no entries — nothing forwarded"
+        );
     }
 }

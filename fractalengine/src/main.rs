@@ -81,6 +81,9 @@ fn main() {
     // The DB thread emits ReplicationEvents; we bridge them to SyncCommand::WriteRowEntry
     // after the sync command sender is created below.
     let (repl_tx, repl_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(256);
+    // Clone for the API thread's emit seam (A11: the API-side ingestion path
+    // writes directly on db_reader and needs its own replication sender).
+    let repl_tx_for_api = repl_tx.clone();
 
     // Scene change broadcast: DB thread emits CUD deltas, API thread fans out to WS clients.
     let (entity_change_tx, _) =
@@ -368,6 +371,7 @@ fn main() {
         tileset_registry: tileset_registry.clone(),
         hexon_registry: None,
         announcement_store: None,
+        replication_tx: Some(repl_tx_for_api),
     });
 
     // ---- Entity Store (in-memory hot cache) ----

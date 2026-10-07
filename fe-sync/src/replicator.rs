@@ -109,6 +109,21 @@ pub trait VerseReplicator: Send + Sync {
     /// receiver unsubscribes.
     fn subscribe(&self) -> ReplicatorFuture<'_, anyhow::Result<mpsc::Receiver<RowChange>>>;
 
+    /// Enumerate the replica's **current** entries (latest per key) as
+    /// [`RowChange`]s — the startup reconciliation pass (F4).
+    ///
+    /// A row that was denied by the inbound role gate while a role or the
+    /// verse manifest had not yet converged stays in the doc store but never
+    /// re-fires as an `InsertRemote` event, so it would be lost forever. On
+    /// every replica open the sync thread replays this snapshot through the
+    /// **same** inbound apply path, giving those rows a second chance to
+    /// converge. Own-author rows are filtered downstream like any other
+    /// inbound row.
+    ///
+    /// Entries whose content has not finished downloading are omitted (they
+    /// arrive through the live pump when the content lands).
+    fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>>;
+
     /// Close the replica, flushing any pending state.
     fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 }
@@ -210,6 +225,36 @@ impl VerseReplicator for MockVerseReplicator {
                 .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
                 .push(tx);
             Ok(rx)
+        })
+    }
+
+    fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+        Box::pin(async move {
+            let entries = self
+                .entries
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?
+                .clone();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64;
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, data) in entries {
+                let Some((table, record_id)) = key.split_once('/') else {
+                    continue;
+                };
+                out.push(RowChange {
+                    table: table.to_string(),
+                    record_id: record_id.to_string(),
+                    content_hash: *blake3::hash(&data).as_bytes(),
+                    author_id: self.author_id.clone(),
+                    timestamp: now,
+                    is_tombstone: row_is_tombstone(&data),
+                    data,
+                });
+            }
+            Ok(out)
         })
     }
 
@@ -559,6 +604,89 @@ impl VerseReplicator for IrohDocsReplicator {
         })
     }
 
+    fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+        Box::pin(async move {
+            let Some(doc) = self.live_doc() else {
+                tracing::debug!(ns = %self.namespace_id, "snapshot on mock fallback");
+                return VerseReplicator::snapshot(&self.inner).await;
+            };
+            let Some(stack) = self.engine_holder.stack() else {
+                anyhow::bail!("document open but stack unavailable");
+            };
+            let blobs = stack.blobs().store().clone();
+
+            // Latest entry per key (a key may have been written by several
+            // authors); `include_empty` keeps `Doc::del` tombstones in the set.
+            let query = iroh_docs::store::Query::single_latest_per_key()
+                .include_empty()
+                .build();
+            let stream = doc
+                .get_many(query)
+                .await
+                .map_err(|e| anyhow::anyhow!("get_many for reconciliation: {e}"))?;
+            let mut stream = std::pin::pin!(stream);
+
+            let mut out = Vec::new();
+            while let Some(entry) = stream.next().await {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        tracing::warn!(ns = %self.namespace_id, "reconciliation query entry failed: {e}");
+                        continue;
+                    }
+                };
+                let key = String::from_utf8_lossy(entry.key()).into_owned();
+                let Some((table, record_id)) = key.split_once('/') else {
+                    tracing::warn!(key = %key, "replica entry key not in table/id form — skipped");
+                    continue;
+                };
+                let meta = (
+                    table.to_string(),
+                    record_id.to_string(),
+                    *entry.content_hash().as_bytes(),
+                    author_did_key(&entry.author()),
+                    entry.timestamp(),
+                );
+                if entry.record().is_empty() {
+                    // Deletion marker: no content to read.
+                    out.push(RowChange {
+                        table: meta.0,
+                        record_id: meta.1,
+                        content_hash: meta.2,
+                        author_id: meta.3,
+                        timestamp: meta.4,
+                        is_tombstone: true,
+                        data: Vec::new(),
+                    });
+                    continue;
+                }
+                match read_blob_bytes(&blobs, &entry.content_hash()).await {
+                    Ok(data) => {
+                        let data = data.to_vec();
+                        out.push(RowChange {
+                            table: meta.0,
+                            record_id: meta.1,
+                            content_hash: meta.2,
+                            author_id: meta.3,
+                            timestamp: meta.4,
+                            is_tombstone: row_is_tombstone(&data),
+                            data,
+                        });
+                    }
+                    Err(e) => {
+                        // Content not local yet — the live pump emits it when
+                        // the download completes, so nothing is lost.
+                        tracing::debug!(
+                            key = %key,
+                            "reconciliation snapshot: content not local — deferred to live pump: {e}"
+                        );
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
     fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
         Box::pin(async move {
             // Stop the inbound pump first so no further rows are emitted.
@@ -611,6 +739,16 @@ struct PendingContent {
 fn peer_did_key(peer: &iroh::PublicKey) -> String {
     fe_identity::did_key::did_key_from_public_key_bytes(peer.as_bytes())
         .unwrap_or_else(|| peer.to_string())
+}
+
+/// Map an iroh-docs entry `AuthorId` to the app's `did:key` identity form.
+///
+/// Snapshot entries carry the **author** (the peer that wrote the entry), not
+/// the neighbor it arrived from; both are ed25519 keys over the same identity
+/// seed, so the same did:key mapping applies.
+fn author_did_key(author: &AuthorId) -> String {
+    fe_identity::did_key::did_key_from_public_key_bytes(author.as_bytes())
+        .unwrap_or_else(|| author.to_string())
 }
 
 /// Read one blob's full content bytes from the iroh-blobs fs store.

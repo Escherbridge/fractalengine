@@ -439,8 +439,17 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   empty-entry tombstone apply + scene-change petal attribution, the petal-bounds
   inline-literal geometry cast, and the rbac::get_role full-row projection fix;
   harness A5 scenario two_peer_tombstone_sync proves N-4 over the real transport;
-  all 11 harness scenarios green; petal namespaces, relay lifecycle/bootstrap
-  (F4), and legacy phases remain open —
+  F4 (2026-10-07) makes the relay a fully applying replica (db_cmd_tx threaded,
+  startup LoadHierarchy scan + VerseCreated replica opens with EnvBackend secret
+  lookup, snapshot-based startup reconciliation so A3-denied rows get a second
+  chance, try_send bridge with drop-and-warn, SIGINT/SIGTERM/FE_SHUTDOWN_AFTER_SECS
+  → dual Shutdown commands → exit 0 e2e, FE_SYNC_BOOTSTRAP parsed with iroh's
+  NodeAddr types + start_sync'd per replica, ApiConfig gets shared blob store +
+  replication sender; also fixed the relay's first-frame TilesetEventBuffer panic
+  and the missing headless DbResult→pending-API delivery that 503'd /ready) —
+  cross-relay convergence e2e honestly deferred (no unauthenticated relay write
+  surface; seam proven by the harness scenarios); petal namespaces, gossip
+  receive, per-petal topics, tileset P2P remain open —
   in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
   [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
 

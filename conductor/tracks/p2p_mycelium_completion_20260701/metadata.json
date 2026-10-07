@@ -1,86 +1,86 @@
-{
-  "id": "p2p_mycelium_completion_20260701",
-  "description": "Complete the P2P Mycelium layer: connect IrohDocsReplicator to real iroh-docs Engine, implement petal-level replication, real-time transform sync, gossip topics, and tileset P2P",
-  "type": "feature",
-  "created_at": "2026-07-01T14:00:00Z",
-  "status": "in_progress",
-  "execution_wave": 2,
-  "wave_rationale": "P0: real iroh-docs + gossip RX loop. Depends on p2p_unblock_now (wave 0) and the sync-path policy gate (auth_policy_pattern, wave 2).",
-  "priority": "P2",
-  "depends_on": [
-    "p2p_mycelium_20260405"
-  ],
-  "notes": "depends_on p2p_mycelium_20260405 is archived (conductor/tracks/_archive/p2p_mycelium_20260405/) — satisfied, kept for provenance. Top-level priority demoted P0 → P2 per 2026-07-14 alignment (FOUNDRY-ADJACENT).\nVALIDATED 2026-07-19: in_progress — evidence: fe-sync/src/replicator.rs untouched since 51bc90e (predates 320ebfe), IrohDocsEngineHolder::is_available() (replicator.rs:235) still gated false, PetalDocsBackend::write (replicator.rs:289) still branches to MockVerseReplicator; no gossip receive loop found in fe-sync/src/sync_thread.rs (git grep for topic.next/gossip receive: no hits) confirming phase 3 (transform sync receive side) still pending. Status unchanged from pending phases 1-2 reopened. Remaining: phase 1 (real iroh-docs Engine wiring), phase 2 (petal namespaces off mock), phase 3 (gossip receive loop + apply-to-Bevy), phase 4 per-petal topic subscription, phase 5 tileset P2P — all still open. Do NOT archive.\nVALIDATED 2026-10-07: F1 wires DocsStack in fe-sync/src/docs_engine.rs with persistent blobs/docs stores, Gossip, and Router ALPN routing; FE_P2P_DIR selects the store root. Tests in docs_engine.rs prove persistent-store read-back, all three ALPN routes, and stack-spawn failure as an error; sync_thread.rs verifies online stack startup. cargo test -p fe-sync passed 121 tests and cargo clippy -p fe-sync --all-targets -- -D warnings passed in the worker run. IrohDocsReplicator still delegates document operations to the mock; F2 real Doc operations, F3 inbound apply/policy, and F4 relay lifecycle remain open. Keep in_progress; n0 hosted-relay EOL remains 2026-12-31.\nVALIDATED 2026-10-07: F2 (assertions A2+A4) makes the replicator layer real: VerseReplicator/PetalReplicator are async (dyn-compatible ReplicatorFuture), IrohDocsReplicator rides Doc::set_bytes/del/subscribe/close with Capability::Write import from the verse secret (mock fallback offline-only), RowChange carries payload bytes + author + entry timestamp, empty entries are tombstones, and per-replica LiveEvent pumps feed a select!-based sync-thread command loop. Inbound rows apply on the DB thread via DbCommand::ApplyReplicatedRow (single writer; geometry-safe node/petal writes with explicit casts in merge.rs; petal-scoped SceneChange; loop-free by construction — no replication sender in the handler; fe-policy role gate is F3's A3 seam). spawn_sync_thread gained db_cmd_tx + per-thread p2p_dir params (3 call sites updated; per-peer dirs fix the redb exclusive-lock degradation in the harness). Evidence: cargo test -p fe-sync 133 passed; cargo test -p fe-database 234 passed; clippy -D warnings clean on all touched crates; harness scenario two_peer_replica_sync (A2) passes — two in-process peers over loopback, READ-BACK from the joining peer's durable store via RawQuery plus RowApplied event + Applied outcome echo; all 10 harness scenarios green. Phase 1 complete. Petal-level real namespaces (phase 2), inbound policy gate (F3/A3), relay lifecycle (F4), gossip receive (phase 3), petal topics (phase 4), tileset P2P (phase 5) remain open. Keep in_progress; n0 hosted-relay EOL remains 2026-12-31.\nVALIDATED 2026-10-07: F3 (assertions A3+A4+A5+A6) lands the inbound admission gate at the DB layer: handlers/replicated_row.rs::admit_inbound_row resolves the entry author's role from the local tables at the verse scope (role_manager::resolve_role: owner via created_by, explicit role rows, then default_access which the schema pins to viewer/none) and requires Editor+ through the same fe-policy standard write gate as the local path (rbac::evaluate_write) - deny-by-default, never wire-supplied. A bootstrap window admits rows for a verse not yet converged locally (replica capability is the admission; the verse manifest itself arrives this way, so A2 depends on it), and a verse row whose payload verse_id differs from the replica's verse is denied (scope-injection guard). New ReplicatedRowOutcome::Denied variant; denied rows are never applied and never re-emitted. The wire tombstone form (the empty Doc::del entry) now synthesizes the node payload and resolves the scene-change petal from the durable row (empty entries on static hierarchy tables are NotApplicable). Petal bounds apply through the inline numeric literal cast (render_polygon_rings) - a bound GeoJSON object, even under an explicit cast, is rejected by this SurrealDB line. Fixed rbac::get_role to project full rows (the old SELECT role projection made every existing role row fail typed deserialization, so explicit roles never resolved and assign_role_checked for a non-owner Manager errored). fe-sync sync_thread.rs send sweep complete: every SyncEvent send goes through send_sync_event (the last bare .ok()s were the blob/tileset stub handlers; the F1-era startup sends were already converted by F2). Evidence: cargo test -p fe-database 169 passed; cargo test -p fe-sync 133 passed; clippy -D warnings clean on fe-runtime/fe-database/fe-sync/fe-test-harness with fe-ui/fractalengine/fractalengine-relay checked; harness scenario two_peer_tombstone_sync (A5) passes - live node, empty-entry tombstone, stale live row over the real loopback transport with durable READ-BACK each leg, N-4 holds; all 11 harness scenarios green (A2 re-proven with the gate active). Petal namespaces (phase 2), relay lifecycle/bootstrap (F4/A7-A10), gossip receive (phase 3), per-petal topics (phase 4), tileset P2P (phase 5) remain open. Keep in_progress; n0 hosted-relay EOL remains 2026-12-31.",
-  "phases": [
-    {
-      "id": "phase_1",
-      "name": "IrohDocsReplicator Integration",
-      "description": "Connect IrohDocsReplicator to real iroh_docs::Engine instead of in-memory HashMap",
-      "hours_estimate": "3-4",
-      "status": "completed",
-      "completed_at": "2026-10-07T00:00:00Z",
-      "completed_evidence": "F2 (A2+A4): replicator.rs rides the real iroh-docs 0.35 Doc client (set_bytes/del/subscribe/close, Capability::Write import, LiveEvent pump with payload bytes); mock fallback offline-only; loopback transport test + harness two_peer_replica_sync prove real replication with durable READ-BACK. The sync-path policy gate moved to the inbound DB-thread seam (F3/A3).",
-      "reopened_at": "2026-07-11T00:00:00Z",
-      "reopen_evidence": "hexon-p2p-commons report §8.1 SC3: IrohDocsEngineHolder::is_available() reads an AtomicBool nothing ever sets true (fe-sync/src/replicator.rs:235-237); write_row/subscribe/close delegate unconditionally to MockVerseReplicator (replicator.rs:286-304); two TODO(iroh-0.35) markers remain. Prior completed_at 2026-07-01T15:00:00Z was scaffolding-only.",
-      "prerequisite": "p2p_unblock_now_20260711 FR-1 (try_send bridge) must land first or the mock stops masking a DB freeze; sync write path must be policy-gated per auth_policy_pattern_20260710 amendment"
-    },
-    {
-      "id": "phase_2",
-      "name": "Petal-Level Replication",
-      "description": "Full SubscribePetal/UnsubscribePetal implementation with per-petal namespaces",
-      "hours_estimate": "2-3",
-      "status": "reopened",
-      "reopened_at": "2026-07-11T00:00:00Z",
-      "reopen_evidence": "Subscribe/unsubscribe handlers + namespace derivation exist and are tested, but they create mock-backed replicators (phase_1 evidence) — petal state never crosses the network. Prior completed_at 2026-07-01T16:30:00Z reflected the handler scaffolding, not working replication."
-    },
-    {
-      "id": "phase_3",
-      "name": "Real-Time Transform Sync",
-      "description": "Broadcast node transform changes to peers via iroh-gossip AND receive them: add the gossip receive loop (topic.next() into the command loop) and apply inbound transforms to the Bevy scene. Send path exists (sync_thread.rs:538,678); receive loop does not (report §8.1 bonus check) — without it the send path broadcasts into the void.",
-      "hours_estimate": "3-4",
-      "status": "pending"
-    },
-    {
-      "id": "phase_4",
-      "name": "Gossip Topic Subscription",
-      "description": "Subscribe to iroh-gossip topics per Verse and per Petal",
-      "hours_estimate": "2",
-      "status": "in_progress",
-      "notes": "verse gossip topic subscribe/unsubscribe implemented (sync_thread.rs:549-590, wired at 134-146); per-petal topics remain"
-    },
-    {
-      "id": "phase_5",
-      "name": "Tileset P2P",
-      "description": "Implement tileset advertisement, metadata request, and chunk fetch over P2P",
-      "hours_estimate": "4-5",
-      "status": "pending"
-    }
-  ],
-  "total_hours_estimate": "14-18",
-  "hours_completed": "0 (phases 1-2 reopened 2026-07-11 — prior 5-7h was scaffolding/tests, not working replication)",
-  "files_to_modify": [
-    "fe-sync/src/replicator.rs",
-    "fe-sync/src/sync_thread.rs",
-    "fe-sync/src/messages.rs",
-    "fe-network/src/gossip.rs"
-  ],
-  "tests_added": [
-    "derive_namespace_id_is_deterministic",
-    "derive_namespace_id_format",
-    "handle_subscribe_petal_creates_replicator",
-    "handle_subscribe_petal_idempotent_resubscribe",
-    "handle_unsubscribe_petal_removes_replicator",
-    "handle_unsubscribe_petal_nonexistent_is_noop",
-    "petal_replicator_write_and_subscribe"
-  ],
-  "research_refs": [
-    "conductor/tracks/_archive/p2p_mycelium_20260405/spec.md",
-    "conductor/tracks/_archive/p2p_mycelium_20260405/plan.md"
-  ],
-  "alignment": {
-    "verdict": "FOUNDRY-ADJACENT / ENABLING",
-    "priority": "P2",
-    "rationale": "Real iroh-docs replication matters for the commons/foundry, not single-instance BI. Pairs with foundry work.",
-    "assessed": "2026-07-14"
-  }
+﻿{
+    "id":  "p2p_mycelium_completion_20260701",
+    "description":  "Complete the P2P Mycelium layer: connect IrohDocsReplicator to real iroh-docs Engine, implement petal-level replication, real-time transform sync, gossip topics, and tileset P2P",
+    "type":  "feature",
+    "created_at":  "2026-07-01T14:00:00Z",
+    "status":  "in_progress",
+    "execution_wave":  2,
+    "wave_rationale":  "P0: real iroh-docs + gossip RX loop. Depends on p2p_unblock_now (wave 0) and the sync-path policy gate (auth_policy_pattern, wave 2).",
+    "priority":  "P2",
+    "depends_on":  [
+                       "p2p_mycelium_20260405"
+                   ],
+    "notes":  "depends_on p2p_mycelium_20260405 is archived (conductor/tracks/_archive/p2p_mycelium_20260405/) â€” satisfied, kept for provenance. Top-level priority demoted P0 â†’ P2 per 2026-07-14 alignment (FOUNDRY-ADJACENT).\nVALIDATED 2026-07-19: in_progress â€” evidence: fe-sync/src/replicator.rs untouched since 51bc90e (predates 320ebfe), IrohDocsEngineHolder::is_available() (replicator.rs:235) still gated false, PetalDocsBackend::write (replicator.rs:289) still branches to MockVerseReplicator; no gossip receive loop found in fe-sync/src/sync_thread.rs (git grep for topic.next/gossip receive: no hits) confirming phase 3 (transform sync receive side) still pending. Status unchanged from pending phases 1-2 reopened. Remaining: phase 1 (real iroh-docs Engine wiring), phase 2 (petal namespaces off mock), phase 3 (gossip receive loop + apply-to-Bevy), phase 4 per-petal topic subscription, phase 5 tileset P2P â€” all still open. Do NOT archive.\nVALIDATED 2026-10-07: F1 wires DocsStack in fe-sync/src/docs_engine.rs with persistent blobs/docs stores, Gossip, and Router ALPN routing; FE_P2P_DIR selects the store root. Tests in docs_engine.rs prove persistent-store read-back, all three ALPN routes, and stack-spawn failure as an error; sync_thread.rs verifies online stack startup. cargo test -p fe-sync passed 121 tests and cargo clippy -p fe-sync --all-targets -- -D warnings passed in the worker run. IrohDocsReplicator still delegates document operations to the mock; F2 real Doc operations, F3 inbound apply/policy, and F4 relay lifecycle remain open. Keep in_progress; n0 hosted-relay EOL remains 2026-12-31.\nVALIDATED 2026-10-07: F2 (assertions A2+A4) makes the replicator layer real: VerseReplicator/PetalReplicator are async (dyn-compatible ReplicatorFuture), IrohDocsReplicator rides Doc::set_bytes/del/subscribe/close with Capability::Write import from the verse secret (mock fallback offline-only), RowChange carries payload bytes + author + entry timestamp, empty entries are tombstones, and per-replica LiveEvent pumps feed a select!-based sync-thread command loop. Inbound rows apply on the DB thread via DbCommand::ApplyReplicatedRow (single writer; geometry-safe node/petal writes with explicit casts in merge.rs; petal-scoped SceneChange; loop-free by construction â€” no replication sender in the handler; fe-policy role gate is F3\u0027s A3 seam). spawn_sync_thread gained db_cmd_tx + per-thread p2p_dir params (3 call sites updated; per-peer dirs fix the redb exclusive-lock degradation in the harness). Evidence: cargo test -p fe-sync 133 passed; cargo test -p fe-database 234 passed; clippy -D warnings clean on all touched crates; harness scenario two_peer_replica_sync (A2) passes â€” two in-process peers over loopback, READ-BACK from the joining peer\u0027s durable store via RawQuery plus RowApplied event + Applied outcome echo; all 10 harness scenarios green. Phase 1 complete. Petal-level real namespaces (phase 2), inbound policy gate (F3/A3), relay lifecycle (F4), gossip receive (phase 3), petal topics (phase 4), tileset P2P (phase 5) remain open. Keep in_progress; n0 hosted-relay EOL remains 2026-12-31.\nVALIDATED 2026-10-07: F3 (assertions A3+A4+A5+A6) lands the inbound admission gate at the DB layer: handlers/replicated_row.rs::admit_inbound_row resolves the entry author\u0027s role from the local tables at the verse scope (role_manager::resolve_role: owner via created_by, explicit role rows, then default_access which the schema pins to viewer/none) and requires Editor+ through the same fe-policy standard write gate as the local path (rbac::evaluate_write) - deny-by-default, never wire-supplied. A bootstrap window admits rows for a verse not yet converged locally (replica capability is the admission; the verse manifest itself arrives this way, so A2 depends on it), and a verse row whose payload verse_id differs from the replica\u0027s verse is denied (scope-injection guard). New ReplicatedRowOutcome::Denied variant; denied rows are never applied and never re-emitted. The wire tombstone form (the empty Doc::del entry) now synthesizes the node payload and resolves the scene-change petal from the durable row (empty entries on static hierarchy tables are NotApplicable). Petal bounds apply through the inline numeric literal cast (render_polygon_rings) - a bound GeoJSON object, even under an explicit cast, is rejected by this SurrealDB line. Fixed rbac::get_role to project full rows (the old SELECT role projection made every existing role row fail typed deserialization, so explicit roles never resolved and assign_role_checked for a non-owner Manager errored). fe-sync sync_thread.rs send sweep complete: every SyncEvent send goes through send_sync_event (the last bare .ok()s were the blob/tileset stub handlers; the F1-era startup sends were already converted by F2). Evidence: cargo test -p fe-database 169 passed; cargo test -p fe-sync 133 passed; clippy -D warnings clean on fe-runtime/fe-database/fe-sync/fe-test-harness with fe-ui/fractalengine/fractalengine-relay checked; harness scenario two_peer_tombstone_sync (A5) passes - live node, empty-entry tombstone, stale live row over the real loopback transport with durable READ-BACK each leg, N-4 holds; all 11 harness scenarios green (A2 re-proven with the gate active). Petal namespaces (phase 2), relay lifecycle/bootstrap (F4/A7-A10), gossip receive (phase 3), per-petal topics (phase 4), tileset P2P (phase 5) remain open. Keep in_progress; n0 hosted-relay EOL remains 2026-12-31.VALIDATED 2026-10-07: F4 (assertions A7-A10) lands the relay as a fully applying replica and its ops lifecycle. fractalengine-relay/src/main.rs threads its DbCommand sender into spawn_sync_thread (was None - inbound replicated rows were dropped-and-counted, never applied) and passes the shared FsBlobStore + replication sender into fe_api::ApiConfig (closes the asset-endpoint 503 gap; GUI main.rs wires the same). New fractalengine-relay/src/replicas.rs opens a replica for every hosted verse at startup (one DbCommand::LoadHierarchy round-trip, namespace secret from the relay\u0027s EnvBackend secret store, namespace id derived via the DB handler\u0027s own keyed blake3 when the row has none) and on every DbResult::VerseCreated; a per-process opened-set stops later HierarchyLoaded replies from churning live replicas. Why a channel round-trip and not a second SurrealKV connection: SurrealKV takes a per-handle file lock, so a second in-process connection cannot coexist with the DB thread\u0027s writer on Windows (os error 33; fe-database\u0027s own examples note the app must not be running) - the relay\u0027s api_db_reader legitimately falls back to the channel there, same as the GUI. Opening a replica runs fe-sync\u0027s startup reconciliation pass (replicator.rs VerseReplicator::snapshot over get_many single_latest_per_key -\u003e the same inbound apply path), so rows the A3 role gate denied while a role or the verse manifest had not yet converged get a second chance on every open - 3 new fe-sync tests. Graceful shutdown: SIGINT/SIGTERM (and FE_SHUTDOWN_AFTER_SECS for windowed runs) sends DbCommand::Shutdown + SyncCommand::Shutdown, waits 750ms, and a Bevy system raises AppExit::Success so app.run() returns and the process exits 0 - verified e2e (cmd %ERRORLEVEL% capture: exit 0 on fresh DB, existing DB, and bootstrap runs). FE_SYNC_BOOTSTRAP (A9) is parsed with iroh\u0027s own serde NodeAddr types: e2e shows the invalid entry warned loudly and skipped, the valid NodeAddr JSON resolved (count=1) and start_sync\u0027d per replica (Opened verse replica peers=1). The DB-\u003esync bridge is extracted to run_replication_bridge with try_send + drop-and-warn (dropped_total) and a prompt-return unit test on a full channel (A10); no bare .ok() in touched paths. Two pre-existing relay defects fixed en route: (1) drain_sync_events needs fe_sync::TilesetEventBuffer, which only fe-ui inits - the relay panicked on its first frame (Resource does not exist) since its inception; (2) no headless system delivered DbResults to pending API requests (the GUI\u0027s fe-ui dispatcher does it), so every channel-fallback API request (/ready Ping, hierarchy reads, scope resolutions) timed out - new fe_runtime::app::deliver_pending_api_results (relay-registered) fixed /ready 503 -\u003e 200 in e2e. Evidence: cargo test -p fractalengine-relay 6 passed (startup_scan_opens_replicas_from_hierarchy_loaded, verse_created_opens_replica_with_derived_namespace, replication_bridge_drops_and_warns_on_full_channel, shutdown_flag_raises_app_exit_success, 2 namespace derivation tests); cargo fmt clean; cargo clippy --workspace --all-targets -D warnings clean; cargo test --workspace exit 0 (0 failed); harness scenarios 11 passed 0 failed. A7 caveat, recorded honestly: two LIVE relay processes converging rows was not run end-to-end - the relay exposes no unauthenticated write surface (all REST/MCP writes are JWT-gated and token minting is UI-only), so a cross-relay write needs an invite/join contract outside F4; the convergence seam itself (same spawn_sync_thread + inbound apply path + bootstrap address form) is proven by the harness two_peer_replica_sync scenario over the real loopback transport. FUTURE-HARDENING (from F3, recorded per conductor directive): the A3 gate confines a row to the replica\u0027s verse but does not verify cross-verse references - an Editor admitted in verse A can push non-verse rows referencing verse B\u0027s ids (e.g. a node row whose petal/fractal ids belong to another verse); full referential-confinement checking was out of F3\u0027s scope and is documented in the gate\u0027s doc comments (handlers/replicated_row.rs) - add referential checking to the admission gate when the verse-manifest/role bootstrap contract is specified. Phases 2 (petal namespaces), 3 (gossip receive), 4 (per-petal topics), 5 (tileset P2P) remain open. Keep in_progress; n0 hosted-relay EOL remains 2026-12-31.",
+    "phases":  [
+                   {
+                       "id":  "phase_1",
+                       "name":  "IrohDocsReplicator Integration",
+                       "description":  "Connect IrohDocsReplicator to real iroh_docs::Engine instead of in-memory HashMap",
+                       "hours_estimate":  "3-4",
+                       "status":  "completed",
+                       "completed_at":  "2026-10-07T00:00:00Z",
+                       "completed_evidence":  "F2 (A2+A4): replicator.rs rides the real iroh-docs 0.35 Doc client (set_bytes/del/subscribe/close, Capability::Write import, LiveEvent pump with payload bytes); mock fallback offline-only; loopback transport test + harness two_peer_replica_sync prove real replication with durable READ-BACK. The sync-path policy gate moved to the inbound DB-thread seam (F3/A3).",
+                       "reopened_at":  "2026-07-11T00:00:00Z",
+                       "reopen_evidence":  "hexon-p2p-commons report Â§8.1 SC3: IrohDocsEngineHolder::is_available() reads an AtomicBool nothing ever sets true (fe-sync/src/replicator.rs:235-237); write_row/subscribe/close delegate unconditionally to MockVerseReplicator (replicator.rs:286-304); two TODO(iroh-0.35) markers remain. Prior completed_at 2026-07-01T15:00:00Z was scaffolding-only.",
+                       "prerequisite":  "p2p_unblock_now_20260711 FR-1 (try_send bridge) must land first or the mock stops masking a DB freeze; sync write path must be policy-gated per auth_policy_pattern_20260710 amendment"
+                   },
+                   {
+                       "id":  "phase_2",
+                       "name":  "Petal-Level Replication",
+                       "description":  "Full SubscribePetal/UnsubscribePetal implementation with per-petal namespaces",
+                       "hours_estimate":  "2-3",
+                       "status":  "reopened",
+                       "reopened_at":  "2026-07-11T00:00:00Z",
+                       "reopen_evidence":  "Subscribe/unsubscribe handlers + namespace derivation exist and are tested, but they create mock-backed replicators (phase_1 evidence) â€” petal state never crosses the network. Prior completed_at 2026-07-01T16:30:00Z reflected the handler scaffolding, not working replication."
+                   },
+                   {
+                       "id":  "phase_3",
+                       "name":  "Real-Time Transform Sync",
+                       "description":  "Broadcast node transform changes to peers via iroh-gossip AND receive them: add the gossip receive loop (topic.next() into the command loop) and apply inbound transforms to the Bevy scene. Send path exists (sync_thread.rs:538,678); receive loop does not (report Â§8.1 bonus check) â€” without it the send path broadcasts into the void.",
+                       "hours_estimate":  "3-4",
+                       "status":  "pending"
+                   },
+                   {
+                       "id":  "phase_4",
+                       "name":  "Gossip Topic Subscription",
+                       "description":  "Subscribe to iroh-gossip topics per Verse and per Petal",
+                       "hours_estimate":  "2",
+                       "status":  "in_progress",
+                       "notes":  "verse gossip topic subscribe/unsubscribe implemented (sync_thread.rs:549-590, wired at 134-146); per-petal topics remain"
+                   },
+                   {
+                       "id":  "phase_5",
+                       "name":  "Tileset P2P",
+                       "description":  "Implement tileset advertisement, metadata request, and chunk fetch over P2P",
+                       "hours_estimate":  "4-5",
+                       "status":  "pending"
+                   }
+               ],
+    "total_hours_estimate":  "14-18",
+    "hours_completed":  "0 (phases 1-2 reopened 2026-07-11 â€” prior 5-7h was scaffolding/tests, not working replication)",
+    "files_to_modify":  [
+                            "fe-sync/src/replicator.rs",
+                            "fe-sync/src/sync_thread.rs",
+                            "fe-sync/src/messages.rs",
+                            "fe-network/src/gossip.rs"
+                        ],
+    "tests_added":  [
+                        "derive_namespace_id_is_deterministic",
+                        "derive_namespace_id_format",
+                        "handle_subscribe_petal_creates_replicator",
+                        "handle_subscribe_petal_idempotent_resubscribe",
+                        "handle_unsubscribe_petal_removes_replicator",
+                        "handle_unsubscribe_petal_nonexistent_is_noop",
+                        "petal_replicator_write_and_subscribe"
+                    ],
+    "research_refs":  [
+                          "conductor/tracks/_archive/p2p_mycelium_20260405/spec.md",
+                          "conductor/tracks/_archive/p2p_mycelium_20260405/plan.md"
+                      ],
+    "alignment":  {
+                      "verdict":  "FOUNDRY-ADJACENT / ENABLING",
+                      "priority":  "P2",
+                      "rationale":  "Real iroh-docs replication matters for the commons/foundry, not single-instance BI. Pairs with foundry work.",
+                      "assessed":  "2026-07-14"
+                  }
 }

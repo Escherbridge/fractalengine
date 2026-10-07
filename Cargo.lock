@@ -5864,6 +5864,8 @@ dependencies = [
  "fe-runtime",
  "fe-sync",
  "fe-terrain",
+ "hex",
+ "serde_json",
  "surrealdb",
  "tokio",
  "tracing",

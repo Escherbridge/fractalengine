@@ -88,6 +88,7 @@ impl ApiHarness {
             tileset_registry: None,
             hexon_registry: None,
             announcement_store: None,
+            replication_tx: None,
             share_signer: keypair.clone(),
         });
 

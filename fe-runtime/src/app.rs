@@ -239,6 +239,32 @@ impl PendingApiRequests {
     }
 }
 
+/// Bevy system: deliver every `DbResult` to pending API requests.
+///
+/// The GUI binary does this delivery from fe-ui's `apply_db_results`
+/// dispatcher (which owns UI-side skip semantics). A headless host has no
+/// fe-ui — without this system, every channel-fallback API request
+/// (`DbCommand::Ping` → `/ready`, `GET /api/v1/hierarchy`,
+/// `ResolvePetalScope` fallbacks, …) times out even though the DB thread
+/// answered: the reply lands in `Messages<DbResult>` and nobody forwards it
+/// to the oneshot. The relay registers this system; the GUI does not (its
+/// dispatcher already delivers).
+pub fn deliver_pending_api_results(
+    mut results: bevy::prelude::MessageReader<DbResult>,
+    mut pending: bevy::prelude::ResMut<PendingApiRequests>,
+) {
+    let _span = tracing::debug_span!("deliver_pending_api_results").entered();
+    for result in results.read() {
+        if let DbResult::HierarchyLoaded { verses } = result {
+            // Full verse tree to pending hierarchy requests (the
+            // `GET /api/v1/hierarchy` channel fallback) — mirrors the fe-ui
+            // dispatcher's `HierarchyLoaded` arm.
+            pending.deliver_hierarchy(verses.to_vec());
+        }
+        pending.try_deliver(result.clone());
+    }
+}
+
 /// Bevy system: drain API commands and forward to the DB command channel.
 pub fn drain_api_commands(
     api_rx: Option<Res<ApiCommandReceiver>>,
