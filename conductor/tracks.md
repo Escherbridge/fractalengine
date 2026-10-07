@@ -465,9 +465,22 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   ReplicaOpenFailed, writes error — never a false-healthy in-memory success);
   fold-ins: inbound verse-manifest default_access {viewer,none} validation,
   relay Seed send warn-on-error, shared relay OpenedReplicas set (no
-  close+reopen churn); petal namespaces, gossip
-  receive, per-petal topics, tileset P2P remain open —
-  in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
+  close+reopen churn); F21 (2026-10-07, M1 user-testing round-1 fix) closes
+  the verse-manifest open race at the seam — a WriteRowEntry for a
+  not-yet-open verse is retained (bounded 1024, drop-oldest) and republished
+  FIFO through the normal write path after the open (never on a failed open),
+  so the manifest row create_verse_handler emits ~100ms before the
+  VerseCreated/navigation open always enters its doc: fresh relay + fresh
+  peers now converge it (live relay e2e: republishing count=1 in the log, and
+  inspect_doc reads verse/<ULID> back out of the stopped relay's own
+  docs.redb; fe-sync 149 tests, harness 11/11; new GUI navigation test pins
+  the fe-ui open path); petal namespaces, gossip
+  receive, per-petal topics, tileset P2P remain open; FUTURE-OPS (deferred,
+  not scheduled): relay REST-created verses have process-lifetime secrets
+  (EnvBackend in-memory only, no persistence/extraction — replicas can
+  never re-open after a relay restart; GUI persists to the OS keystore;
+  workaround: env-inject the verse's FE_SECRET_…NS_SECRET or seed via
+  fixtures) — in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
   [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
 
 ---
