@@ -2,6 +2,7 @@ pub mod bevy_asset_reader;
 pub mod blob_store;
 pub mod cache;
 pub mod compute;
+pub mod docs_engine;
 pub mod endpoint;
 pub mod lifecycle;
 pub mod messages;
@@ -17,6 +18,7 @@ pub mod write_policy;
 
 pub use bevy_asset_reader::BlobAssetReader;
 pub use blob_store::FsBlobStore;
+pub use docs_engine::{p2p_data_dir, DocsStack, P2P_DIR_ENV_VAR};
 pub use fe_database::invite::VerseInvite;
 pub use lifecycle::{
     lifecycle_channel, LifecycleEventReceiver, LifecycleEventSender, LifecycleForwarder,

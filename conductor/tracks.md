@@ -428,10 +428,10 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
 - [ ] **verse_services** — accelerator-only per-verse services (seeder/presence/
   materializer); reconstruct-without-service invariant — spec_only —
   [./tracks/verse_services_20260711/](./tracks/verse_services_20260711/)
-- [~] **p2p_mycelium_completion** — real iroh-docs Engine + gossip RX loop; phases 1–2
-  reopened 2026-07-11 with file:line evidence (mock-backed replicators), phase 4
-  partially done (verse gossip topics) — in_progress, FOUNDRY-ADJACENT P2; policy-gate
-  prerequisite met by auth_policy_pattern's sync write gate —
+- [~] **p2p_mycelium_completion** — F1 DocsStack now wires persistent blobs/docs,
+  Gossip, and all three Router ALPNs; real Doc-backed replicators (F2), inbound
+  apply/policy (F3), relay lifecycle/bootstrap (F4), and legacy phases remain open —
+  in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
   [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
 
 ---

@@ -62,29 +62,48 @@ The old `iroh_gossip::{Host, Topic, TopicId}` surface was removed upstream. Curr
   advertisement handler is therefore `async`). Unsigned transform broadcasts
   are intentionally absent.
 
-Deferred: no `iroh::protocol::Router` is registered for `GOSSIP_ALPN`, so **inbound** gossip
-connections are not yet routed. Outbound `broadcast` is best-effort (messages queue until a
-neighbor is available). Wiring the Router + inbound peer handling is a follow-up.
+Deferred from this pass: consuming **inbound** topic messages — the tileset
+handlers broadcast out but nothing drains a `GossipTopic`'s event stream yet.
+Outbound `broadcast` is best-effort (messages queue until a neighbor is
+available). Inbound *connections* are now routed since the P2P stack landed
+(see §iroh-0.35 below): the stack's `Router` accepts `GOSSIP_ALPN`.
 
-### iroh-docs 0.35 — deferred (mock-backed)
+### iroh-docs 0.35 — stack real, replicators mock-backed (A1)
 
-The old single-arg `iroh_docs::Engine::new(endpoint)` / `iroh_docs::Document` surface is gone.
-0.35 exposes `iroh_docs::engine::Engine<D: iroh_blobs::store::Store>::spawn(endpoint, gossip,
-replica_store, bao_store, downloader, default_author_storage, local_pool)` and a docs RPC client
-`iroh_docs::rpc::client::docs::Doc`. Standing that up requires the **full P2P stack** (a blob
-store, a `Downloader`, a `LocalPoolHandle`, and the gossip instance) — out of scope for this pass.
+The full P2P stack now spawns in the sync thread (`docs_engine.rs::DocsStack`):
+`iroh_blobs::net_protocol::Blobs::persistent(<dir>/blobs)` +
+`iroh_gossip::net::Gossip::builder().spawn(endpoint)` +
+`iroh_docs::protocol::Docs::persistent(<dir>)` (which wires `Engine::spawn` +
+the redb replica store `docs.redb` + persistent default-author storage) +
+`iroh::protocol::Router` accepting all three ALPNs (`/iroh-bytes/4`,
+`/iroh-gossip/0`, `/iroh-sync/1`). Persistent stores live under `FE_P2P_DIR`
+(`p2p_data_dir()`, default `data/p2p`); the dir is created at spawn.
 
-Until then:
-
-- `IrohDocsEngineHolder::is_available()` is always `false`.
-- `IrohDocsReplicator` / `IrohPetalReplicator` are backed by the in-memory `MockVerseReplicator`.
-- Real wiring points are marked `// TODO(iroh-0.35):` in `replicator.rs` and `sync_thread.rs`.
+- The stack spawns only when the endpoint bound. On **bind failure** or
+  **stack-spawn failure** the sync thread degrades to offline mode: the
+  holder stays empty (`is_available() == false`), gossip is absent, and
+  replicators use the in-memory mock — loudly (`error!` +
+  `SyncEvent::RelayHealthChanged`), never a crash.
+- `IrohDocsEngineHolder` is a real holder (`Option<Arc<DocsStack>>`):
+  `is_available()` reflects the stack; `docs_client()` hands out the
+  `MemClient` clone the replicator layer will write through.
+- **One gossip instance per endpoint.** Gossip is owned by the stack; a
+  second `Gossip` spawned outside it would never see inbound connections
+  (the Router routes to the stack's instance only). Likewise two stacks in
+  one process must not share a data dir — the redb file lock makes the
+  second spawn fail (→ degrade).
+- **Still mock-backed:** `IrohDocsReplicator` / `IrohPetalReplicator` delegate
+  to `MockVerseReplicator` until the `VerseReplicator` trait goes async —
+  the 0.35 `Doc` client (`set_bytes`/`subscribe`/`close`) is async-only.
+  The remaining wiring point is marked `// TODO(iroh-0.35):` in
+  `replicator.rs::open_document`; F2 owns that rewrite.
 
 `status.rs` also carries a `TODO(iroh-0.35)` for applying inbound peer `SyncEvent::NodeTransformed`
 to the local world (currently logged, not applied) — it depends on the inbound gossip route above.
 
-Runtime behavior is therefore unchanged from the pre-checkpoint WIP intent: fully mock-backed,
-network paths are no-ops when offline (which is every current test path).
+Runtime behavior: the network stack is real (inbound connections routable,
+stores persistent across restarts), but no row bytes traverse it yet — the
+replicator layer is the next seam.
 
 ## §write-policy (auth_policy_pattern_20260710 §D1)
 
