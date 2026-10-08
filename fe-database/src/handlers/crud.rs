@@ -42,6 +42,13 @@ pub(crate) async fn create_verse_handler(
         created_at: now.clone(),
         namespace_id: Some(ns_id_hex.clone()),
         default_access: "viewer".to_string(),
+        // M2/F6: explicit defaults on the manifest so peers and the sync
+        // thread's fabric learn the settings from the verse row itself.
+        ts_mode: fe_runtime::timeseries::TimeseriesMode::default()
+            .as_str()
+            .to_string(),
+        ts_replication_factor: 1,
+        ts_bucket_width_ms: fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS as i64,
     };
     let row_json = serde_json::to_value(&verse_row)?;
 
@@ -676,6 +683,9 @@ pub(crate) async fn load_hierarchy_handler(
                 id: verse_id,
                 name: verse_name,
                 namespace_id,
+                // M2/F6: surface the persisted ts_* columns (missing/invalid
+                // values fall back to the mirror defaults — from_verse_row).
+                timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::from_verse_row(v),
                 fractals,
             }
         })

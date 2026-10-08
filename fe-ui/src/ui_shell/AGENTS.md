@@ -101,7 +101,7 @@ what kept the P4 and P5 slices conflict-free):
 | Options | `render_tool_options_section` | active-tool options dispatcher (Selection/Transform/Pen/Brush arms) | P5 |
 | TerrainTools | `render_terrain_tools_section` | 8-mode palette + proposals (ex-"Terrain Tools" window) | P4 |
 | ProposalReport | `render_proposal_report_section` | proposal report body (ex-"Proposal Report" window) | P4 |
-| Settings | — | settings dialog (ActiveDialog::Settings) | — |
+| Settings | `render_settings_section` | app-settings knobs (render distance, mesh budget) + the per-verse Timeseries Fabric controls (§timeseries-settings) | — |
 | Maps | — | map/hexon manager (ActiveDialog::HexonManager) | — |
 
 Migrated tool sections keep their logic + tests verbatim and their authority
@@ -151,3 +151,34 @@ right-sidebar guard is coarse — a panic in any one section quarantines all fiv
 for the session (per-section granularity is a noted follow-up, would need the
 guard threaded into `right_sidebar.rs`). `status_bar` is deliberately NOT
 guarded (it hosts the error chip).
+
+## §timeseries-settings (M2/F6 — the Settings section's fabric controls)
+
+The Settings section hosts the per-verse Timeseries Fabric surface
+(`render_timeseries_fabric_controls`, fed by
+`crate::timeseries_settings::TimeseriesSettingsState`): mode radio
+(mirror/sharded/balanced), the durability slider R (1..16 — clamped at
+placement to the reachable peers), and the shard bucket width with presets.
+It configures the ACTIVE verse (`nav.active_verse_id`; no active verse → a
+calm hint, never blank — ui_ux §7).
+
+Design decisions:
+
+- **Settings live on the verse row, not `AppSettings`.** They replicate with
+  the verse manifest and converge per-verse through the fabric; the app-level
+  `AppSettings` knobs above them are process-local for a reason.
+- **A dedicated state resource, not a `VerseEntry` field.** `VerseEntry` has
+  13 field literals across the tree UI; churning all of them for one field
+  (that the tree never shows) is the wrong trade. `TimeseriesSettingsState`
+  mirrors per-verse settings (`HierarchyLoaded` folds
+  `verse.timeseries` in), writes via
+  `DbCommand::SetVerseTimeseriesSettings`, and displays only the
+  authoritative `DbResult::VerseTimeseriesSettingsSet` echo — the surface
+  never shows an optimistic guess (same read-back rule as the petal-map
+  surface). The R slider is live-echo, not committed-buffer, so it tracks the
+  echo exactly.
+- **Bundled, not a 17th param.** `apply_db_results` was already at Bevy's
+  16-`SystemParam` ceiling; the state rides inside the `DescriptorCaches`
+  bundle (see `fe-ui/src/verse_manager/AGENTS.md`).
+- `MAX_REPLICATION_FACTOR = 16` is a UI bound (a slider needs a finite range);
+  the fabric itself only clamps R to the reachable peers.

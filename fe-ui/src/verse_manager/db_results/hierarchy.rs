@@ -50,8 +50,15 @@ pub(super) fn handle_hierarchy_loaded(
     pending_api: &mut PendingApiRequests,
     already_spawned: &mut std::collections::HashSet<String>,
     budget_exceeded: bool,
+    ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
 ) {
     let first_load = nav.active_verse_id.is_none();
+
+    // M2/F6: mirror each verse's persisted timeseries settings into the
+    // settings surface state (the verse row's ts_* columns are the truth).
+    for v in verses.iter() {
+        ts_settings.set_from_hierarchy(&v.id, v.timeseries);
+    }
 
     // Auto-navigate before rebuilding the tree so spawn uses the
     // correct active_petal_id on this same event (single round-trip).

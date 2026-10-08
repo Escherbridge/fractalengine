@@ -103,6 +103,8 @@ pub fn gardener_console(
     // as `MiscUiParams`). See `panels/AGENTS.md` §terrain-tools.
     proposal_state: &mut crate::terrain_proposal_state::ProposalEditState,
     app_settings: &mut crate::settings::AppSettings,
+    // M2/F6: per-verse timeseries fabric settings surface state.
+    ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
     // Wave-1 scaffold: sculpt-tool state, threaded through to the TerrainTools
     // section so T3's folded sculpt UI reads/writes it (mirrors `proposal_state`).
     sculpt_state: &mut crate::actions::terrain_proposal::SculptToolState,
@@ -194,6 +196,7 @@ pub fn gardener_console(
             sculpt_state,
             petal_map,
             app_settings,
+            ts_settings,
             tool,
         )
     });
@@ -444,6 +447,7 @@ mod tests {
             delta: f32::NAN,
             ..Default::default()
         };
+        let mut ts_settings = crate::timeseries_settings::TimeseriesSettingsState::default();
         let stamp_state = crate::actions::asset::StampInteractionState::default();
         let mut topbar = crate::ui_shell::topbar::TopbarState;
         let mut left = crate::ui_shell::left_sidebar::LeftSidebarState::default();
@@ -489,6 +493,7 @@ mod tests {
                         &mut tool_panel,
                         &mut proposal_state,
                         &mut app_settings,
+                        &mut ts_settings,
                         &mut sculpt,
                         &stamp_state,
                         &mut topbar,

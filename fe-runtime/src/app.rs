@@ -244,6 +244,7 @@ enum ReplyKind {
     FieldDefDeleted,
     QueryResult,
     PetalTerrain,
+    VerseTimeseriesSettings,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -273,6 +274,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
         RawQuery { .. } => ReplyKind::QueryResult,
         GetPetalTerrain { .. } => ReplyKind::PetalTerrain,
+        SetVerseTimeseriesSettings { .. } => ReplyKind::VerseTimeseriesSettings,
         _ => return None,
     })
 }
@@ -303,6 +305,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         FieldDefDeleted { .. } => ReplyKind::FieldDefDeleted,
         QueryResult { .. } => ReplyKind::QueryResult,
         PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
+        VerseTimeseriesSettingsSet { .. } => ReplyKind::VerseTimeseriesSettings,
         _ => return None,
     })
 }
@@ -853,6 +856,20 @@ mod tests {
                 DbResult::PetalTerrainLoaded {
                     petal_id: "p".to_string(),
                     terrain: None,
+                },
+            ),
+            (
+                DbCommand::SetVerseTimeseriesSettings {
+                    verse_id: "v".to_string(),
+                    mode: "balanced".to_string(),
+                    replication_factor: 2,
+                    bucket_width_ms: crate::timeseries::DEFAULT_BUCKET_WIDTH_MS,
+                },
+                DbResult::VerseTimeseriesSettingsSet {
+                    verse_id: "v".to_string(),
+                    mode: "balanced".to_string(),
+                    replication_factor: 2,
+                    bucket_width_ms: crate::timeseries::DEFAULT_BUCKET_WIDTH_MS,
                 },
             ),
         ];

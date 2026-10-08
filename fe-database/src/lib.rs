@@ -49,6 +49,11 @@ impl std::error::Error for DbInitError {
 pub use fe_runtime::blob_store::{
     hash_from_hex, hash_to_hex, BlobHash, BlobStore, BlobStoreHandle,
 };
+/// M2/F6: canonical timeseries settings types (fe-runtime is the lowest
+/// common dependency — the same split as `RoleLevel`).
+pub use fe_runtime::timeseries::{
+    TimeseriesMode, VerseTimeseriesSettings, DEFAULT_BUCKET_WIDTH_MS,
+};
 
 pub mod admin;
 pub mod api_token_store;
@@ -671,6 +676,30 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         match crate::role_manager::set_default_access(&db, &verse_id, &default_access).await {
                             Ok(()) => send_result(&tx, DbResult::VerseDefaultAccessSet { verse_id, default_access }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Set default access failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::SetVerseTimeseriesSettings { verse_id, mode, replication_factor, bucket_width_ms }) => {
+                        match handlers::verse_settings::set_verse_timeseries_settings_handler(
+                            &db,
+                            &blob_store,
+                            repl_tx.as_ref(),
+                            &verse_id,
+                            &mode,
+                            replication_factor,
+                            bucket_width_ms,
+                        )
+                        .await
+                        {
+                            Ok(s) => send_result(
+                                &tx,
+                                DbResult::VerseTimeseriesSettingsSet {
+                                    verse_id,
+                                    mode: s.mode.as_str().to_string(),
+                                    replication_factor: s.replication_factor,
+                                    bucket_width_ms: s.bucket_width_ms,
+                                },
+                            ),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Set verse timeseries settings failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::UpdateFractalDescription { fractal_id, description }) => {

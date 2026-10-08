@@ -357,6 +357,36 @@ one sub-module per domain:
   could set `"editor"` and make every unknown peer resolve to a writer for
   that verse, defeating A3 deny-by-default on the one path that writes it.
 
+## §timeseries-settings (M2/F6)
+
+`handlers/verse_settings.rs` owns the per-verse timeseries fabric settings
+(the `ts_mode`/`ts_replication_factor`/`ts_bucket_width_ms` columns on
+`verse`, non-optional with `DEFAULT 'mirror'`/`1`/`86400000` — a pre-F6 row
+therefore parses as pure mirror, which IS the pre-F6 behavior).
+`SetVerseTimeseriesSettings` sanitizes through
+`fe_runtime::timeseries::VerseTimeseriesSettings::sanitized` (the canonical
+enum lives in fe-runtime; see `fe-runtime/src/AGENTS.md` §timeseries),
+persists `UPDATE verse SET ts_* = …`, and replies with the authoritative
+READ-BACK echo `DbResult::VerseTimeseriesSettingsSet` carrying the sanitized
+values — the same read-back shape as `PetalTerrainLoaded`, so the settings
+surface's optimistic update is confirmed by fact, not trust.
+
+**The handler also re-emits the verse manifest `ReplicationEvent`** carrying
+the new `ts_*` fields. This is load-bearing, not redundant: the manifest doc
+row IS the replication path for settings — peers' fabrics
+(fe-sync `sharding.rs::VerseFabric::note_verse_row`) learn
+mode/R/bucket-width only from the verse doc row, so without the re-emission a
+settings change would never leave the local verse. The re-emitted row is read
+back from the durable store after the UPDATE (never the request values), so
+what crosses the wire is what the store actually holds. The convergence test
+pins this: a settings change must produce a manifest event whose `ts_*`
+fields match the persisted row.
+
+`load_hierarchy` (crud.rs) surfaces the columns via
+`VerseTimeseriesSettings::from_verse_row` — missing/invalid values fall back
+to the mirror defaults, so hierarchy consumers never see a parse error from a
+settings column.
+
 ## §node-log
 
 The `node_log` table is append-only: each row is an immutable fact recording

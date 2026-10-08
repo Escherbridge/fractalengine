@@ -379,6 +379,60 @@ impl TestPeer {
                         Ok(DbCommand::UpdateNodeUrl { .. }) => {
                             // Not implemented in test harness.
                         }
+                        // M2/F6 (A13): persist the verse's timeseries settings
+                        // and echo the sanitized values back, mirroring the real
+                        // DB handler (read-back + authoritative echo).
+                        Ok(DbCommand::SetVerseTimeseriesSettings {
+                            verse_id,
+                            mode,
+                            replication_factor,
+                            bucket_width_ms,
+                        }) => {
+                            let parsed = fe_runtime::timeseries::VerseTimeseriesSettings::sanitized(
+                                &mode,
+                                replication_factor,
+                                bucket_width_ms,
+                            );
+                            match parsed {
+                                Ok(settings) => {
+                                    let update = db
+                                        .query(
+                                            "UPDATE verse SET ts_mode = $mode, \
+                                             ts_replication_factor = $r, \
+                                             ts_bucket_width_ms = $bw WHERE verse_id = $vid",
+                                        )
+                                        .bind(("mode", settings.mode.as_str().to_string()))
+                                        .bind(("r", settings.replication_factor))
+                                        .bind(("bw", settings.bucket_width_ms))
+                                        .bind(("vid", verse_id.clone()))
+                                        .await
+                                        .and_then(|r| r.check());
+                                    match update {
+                                        Ok(_) => {
+                                            db_result_tx
+                                                .send(DbResult::VerseTimeseriesSettingsSet {
+                                                    verse_id,
+                                                    mode: settings.mode.as_str().to_string(),
+                                                    replication_factor: settings
+                                                        .replication_factor,
+                                                    bucket_width_ms: settings.bucket_width_ms,
+                                                })
+                                                .ok();
+                                        }
+                                        Err(e) => {
+                                            db_result_tx
+                                                .send(DbResult::Error(format!(
+                                                    "Set timeseries settings failed: {e}"
+                                                )))
+                                                .ok();
+                                        }
+                                    }
+                                }
+                                Err(reason) => {
+                                    db_result_tx.send(DbResult::Error(reason)).ok();
+                                }
+                            }
+                        }
                         Ok(DbCommand::RenameEntity { .. })
                         | Ok(DbCommand::SetVerseDefaultAccess { .. })
                         | Ok(DbCommand::UpdateFractalDescription { .. })
@@ -830,6 +884,36 @@ impl TestPeer {
         }
     }
 
+    /// Drain sync events until one matches the predicate or timeout (M2/F6 —
+    /// `SyncEvent::ShardLedger` has no DbResult echo, so the shard-fabric
+    /// scenario polls the fabric through this seam).
+    pub fn wait_sync_event<F: Fn(&SyncEvent) -> bool>(
+        &self,
+        predicate: F,
+        timeout: Duration,
+    ) -> Result<SyncEvent> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or(Duration::ZERO);
+            if remaining.is_zero() {
+                anyhow::bail!("Timeout waiting for sync event on peer '{}'", self.name);
+            }
+            match self.sync_evt_rx.recv_timeout(remaining) {
+                Ok(evt) => {
+                    if predicate(&evt) {
+                        return Ok(evt);
+                    }
+                    tracing::debug!("Peer '{}' skipping sync event: {:?}", self.name, evt);
+                }
+                Err(_) => {
+                    anyhow::bail!("Timeout waiting for sync event on peer '{}'", self.name);
+                }
+            }
+        }
+    }
+
     /// Shut down the peer (DB + sync threads).
     #[allow(dead_code)]
     pub fn shutdown(mut self) {
@@ -1213,6 +1297,9 @@ async fn load_hierarchy(db: &surrealdb::Surreal<Db>) -> anyhow::Result<Vec<Verse
             id: verse_id,
             name: verse_name,
             namespace_id,
+            // M2/F6: the harness SELECT doesn't fetch ts_* columns, so the
+            // mirror defaults apply (equivalent to a pre-F6 verse row).
+            timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
             fractals,
         });
     }

@@ -474,7 +474,38 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   peers now converge it (live relay e2e: republishing count=1 in the log, and
   inspect_doc reads verse/<ULID> back out of the stopped relay's own
   docs.redb; fe-sync 149 tests, harness 11/11; new GUI navigation test pins
-  the fe-ui open path); petal namespaces, gossip
+  the fe-ui open path); F6 (2026-10-08, assertions A13+A14) lands the sharded
+  hybrid timeseries fabric — shard id (petal, anchor, time bucket,
+  div_euclid epoch-aligned), shard ledger `__shards/*` + peer declarations
+  `__peers/*` riding the verse's own namespace (a joining peer converges the
+  placement picture from the reconciliation snapshot), the per-verse fabric
+  as SYNC-PLANE state consumed at the inbound seam (never DB state); pure
+  deterministic placement (mirror=all, sharded=1, balanced=R clamped to the
+  reachable peers; power-of-choices; seeders as the reserved overflow tier —
+  a first-draft unreachable seeder branch was caught and fixed with a
+  regression test; loud least-utilized last resort only for a homeless
+  shard; the smallest peer never caps the fleet total); settings canonical
+  in fe-runtime timeseries.rs, persisted on the verse row's ts_* columns
+  (mirror default = exact pre-F6 behavior), replicated by the verse
+  manifest (the DB handler re-emits it on every settings change) and
+  learned by peers' fabrics from both directions of verse-doc traffic;
+  receive-side transfer routing (mirror retains all; unknown shard retains
+  — the safe default; non-host skips, silent by design), the ledger row
+  published before the first reading; the settings surface in the
+  right-sidebar Settings section (mode radios, R slider 1..16, bucket
+  width) through a dedicated TimeseriesSettingsState bundled into
+  DescriptorCaches (apply_db_results is at Bevy's 16-SystemParam ceiling);
+  SetShardDeclaration/GetShardLedger sync commands (fabric dump for
+  diagnostics + the harness); harness scenario 11 two_peer_shard_fabric
+  proves A13/A14 over the real loopback transport (balanced R=2 plans both
+  peers; manifest re-publish switches modes on both fabrics; a 1-byte
+  capacity declaration excludes the declaring peer and a later reading for
+  a non-hosted shard never lands in its store; a ~2-shard cap still places
+  all 8 one-host shards — SUM never MIN; both starved → never-homeless last
+  resort); fe-sync 183 tests, harness 13/13; residual recorded honestly: R
+  is a request (fewer-than-R is honest, not an error), mirror ignores
+  capacity by contract, host sets never re-plan on churn (deferred), F7's
+  targeted transport is the natural next step; petal namespaces, gossip
   receive, per-petal topics, tileset P2P remain open; FUTURE-OPS (deferred,
   not scheduled): relay REST-created verses have process-lifetime secrets
   (EnvBackend in-memory only, no persistence/extraction — replicas can

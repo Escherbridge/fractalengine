@@ -150,6 +150,14 @@ pub fn drain_sync_events(
                     "Received peer NodeTransformed (not yet applied)"
                 );
             }
+            // M2/F6: the shard-ledger dump is a diagnostics reply (the
+            // harness asserts placement/mode through it); log it at debug.
+            SyncEvent::ShardLedger {
+                ref verse_id,
+                ref ledger_json,
+            } => {
+                tracing::debug!(verse_id, ledger = %ledger_json, "Shard ledger snapshot");
+            }
         }
     }
 }

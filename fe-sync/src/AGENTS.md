@@ -382,3 +382,86 @@ field), not hardcoded `false`; `IncomingEntryApplicator::should_apply` gives
 tombstones dominance over concurrent live writes (never LWW, D-A7). The durable
 non-resurrection proof lives in `fe-database` `merge::tests`; the fe-sync layer
 tests the flag detection + `should_apply` dominance.
+
+## §sharding (M2/F6 — A13/A14)
+
+The sharded hybrid timeseries fabric: `sharding.rs` (shard model + per-verse
+fabric state) and `placement.rs` (the pure planner). D2's design decisions and
+why:
+
+- **Shard id = (petal, anchor node, time bucket).** A reading maps to exactly
+  one shard by `(anchor, recorded_at_ms)` `div_euclid` the verse's bucket
+  width (epoch-aligned; `div_euclid` keeps pre-1970 timestamps floor-aligned).
+  Anchor, not metric: a sensor's readings stay in one shard's timeline — the
+  query fan-out (F7) targets an anchor's series, and shard keys stay few.
+- **The fabric is sync-plane state, NOT SurrealDB state.** `VerseFabric`
+  (settings + peer declarations + shard ledger) lives in the sync thread's
+  command loop, one entry per open verse. `__shards/*` and `__peers/*` doc
+  rows are consumed at the inbound seam (`handle_inbound_row_change`
+  `note_entry`, BEFORE the own-author filter — our own snapshot rows are how
+  the fabric re-learns after a restart) and return early: they never reach
+  the DB thread (which would `NotApplicable` them anyway). This is why the
+  ledger has no DB-side convergence test — there is nothing to converge in a
+  store.
+- **Ledger/declarations ride the verse's own namespace** under
+  `__shards/{petal}/{anchor}/{bucket}` and `__peers/{did}`, replicating like
+  any row; a joining peer converges the whole placement picture from the
+  `seed_reconciliation` snapshot through the same `note_*` seam the live
+  pump uses. One writer per shard ledger key (the peer that first saw the
+  shard plans and publishes); conflicts resolve by the doc's
+  latest-per-entry semantics.
+- **`note_verse_row` learns settings from BOTH directions of verse-doc
+  traffic**: outbound writes parse the manifest blob before publishing
+  (`handle_write_row_entry`), inbound rows/snapshot replay through
+  `note_entry`. The DB handler's manifest re-emission on every settings
+  change (fe-database §timeseries-settings) is what makes a settings change
+  cross to peers at all.
+- **Placement is pure and deterministic** (`placement.rs`: no I/O, no
+  clocks): a no-coordinator fabric's placement decision must be replayable
+  from identical inputs by any peer. Modes: `mirror` → all peers (capacity
+  deliberately does not gate a mode whose point is "everyone holds
+  everything"); `sharded` → exactly one host; `balanced` → R hosts, R a
+  request that clamps to the reachable peers (1..N — the slider, never a
+  hard requirement). Picking is power-of-choices: probe `PROBES=4`
+  hash-derived candidates, keep the least-utilized (ties break by DID — pure
+  function of the inputs). A candidate set ≤ PROBES is probed in full, so
+  small fleets always cover their underloaded peers.
+- **Seeders are the overflow tier, never the regular pool.** `pick_host`
+  excludes seeders from the regular branch (a seeder with room is never
+  consumed by regular placement — it stays in reserve) and spills to them
+  only when every non-seeder is full; a pick within the seeder's own capacity
+  is spillover, not over-capacity. A full regular fleet with no seeder room
+  is a **loud last resort, never a drop**: the least-utilized peer hosts the
+  shard anyway, flagged `overflowed` so the caller warns — an over-capacity
+  host beats invisible data. The last resort is reachable ONLY for a
+  homeless shard (`hosts.is_empty()`): a shard that already has one host
+  drops its extra replica slots honestly (fewer than R) rather than breaking
+  a capacity declaration.
+- **Capacity is a planning hint, not an enforcement wall** (D2 #3, A14): the
+  smallest peer never caps the fleet total — a small declaration moves
+  placement to the peers that have room; only when NO peer anywhere can fit
+  the shard does the last-resort branch fire.
+- **Transfer routing per mode (A13)**: `mirror` → `Broadcast` (all peers);
+  `sharded`/`balanced` → `Targeted(hosts)` — the route is the record the
+  ledger row publishes and F7's targeted transport will consume. On the doc
+  transport every subscriber physically receives the entry, so the route is
+  enforced on the **receive side**: `retention_decision` keeps a reading only
+  when the local peer hosts the shard (mirror keeps everything — pre-F6
+  behavior preserved). An **unknown** shard (ledger not converged locally)
+  retains — the ledger row and the first reading race through the doc, and
+  the safe direction is keep: union semantics make over-retention
+  idempotent, while a wrongly-dropped hosted row would be data loss.
+- **The ledger row publishes BEFORE the reading** (`handle_write_row_entry`:
+  ledger first, then the row) so a receiving peer learns the host set before
+  the row lands; estimates (`row_count`/`size_bytes`) are written once at
+  first sight and tracked locally afterwards — re-publishing per reading
+  would double doc writes for metadata that is not authoritative. The host
+  set never re-plans in F6 (membership churn re-planning is deferred).
+- **Diagnostics**: `SyncCommand::GetShardLedger` → `SyncEvent::ShardLedger`
+  (fabric dump JSON — settings, peers, shards). The DB loop never sees
+  `__shards`/`__peers` rows; `SyncCommand::SetShardDeclaration` updates the
+  local `__peers/{did}` declaration in every open verse and republishes it.
+- End-to-end proof: harness scenario `two_peer_shard_fabric` (A13/A14 through
+  the real loopback transport — mode switching via the manifest, ledger
+  crossing, capacity exclusion, smallest-peer-never-caps, and the
+  never-homeless last resort).

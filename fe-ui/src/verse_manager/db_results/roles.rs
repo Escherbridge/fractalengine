@@ -107,6 +107,36 @@ pub(super) fn handle_verse_default_access_set(verse_id: &str, default_access: &s
     );
 }
 
+/// `VerseTimeseriesSettingsSet` (M2/F6): fold the authoritative persisted
+/// timeseries settings back into the settings surface's per-verse map. The
+/// handler sanitizes, so the echoed values are the persisted truth — never an
+/// optimistic UI guess (A13).
+pub(super) fn handle_verse_timeseries_settings_set(
+    verse_id: &str,
+    mode: &str,
+    replication_factor: u32,
+    bucket_width_ms: u64,
+    state: &mut crate::timeseries_settings::TimeseriesSettingsState,
+) {
+    // Re-parse through the canonical parser; an unparseable mode falls back to
+    // mirror exactly as the verse-row parse does (defensive — the handler
+    // already validated).
+    let parsed = fe_runtime::timeseries::VerseTimeseriesSettings::sanitized(
+        mode,
+        replication_factor,
+        bucket_width_ms,
+    )
+    .unwrap_or_default();
+    state.set(verse_id, parsed);
+    bevy::log::info!(
+        "Set timeseries settings for verse {}: mode={} R={} bucket={}ms",
+        verse_id,
+        parsed.mode.as_str(),
+        parsed.replication_factor,
+        parsed.bucket_width_ms
+    );
+}
+
 /// `FractalDescriptionUpdated`: log-only acknowledgement.
 pub(super) fn handle_fractal_description_updated(fractal_id: &str, description: &str) {
     bevy::log::info!(

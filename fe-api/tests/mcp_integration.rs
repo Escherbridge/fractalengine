@@ -90,6 +90,7 @@ fn handle_command(cmd: ApiCommand, model: &Arc<Mutex<Model>>) {
                     id: vid.clone(),
                     name: vname.clone(),
                     namespace_id: None,
+                    timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
                     fractals: m
                         .fractals
                         .iter()

@@ -67,6 +67,17 @@ pub enum SyncCommand {
     },
     /// Cancel an in-progress tileset download.
     CancelTilesetDownload { tileset_id: String },
+    /// Declare the local peer's shard-hosting capacity and seeder role
+    /// (M2/F6 — A14). Published to `__peers/{local_did}` in every open
+    /// verse's namespace so peers' placement plans see it. `None` capacity
+    /// means unlimited.
+    SetShardDeclaration {
+        capacity_bytes: Option<u64>,
+        seeder: bool,
+    },
+    /// Request the current per-verse shard ledger + settings (M2/F6
+    /// diagnostics — the harness asserts placement/mode through this).
+    GetShardLedger { verse_id: String },
     /// Gracefully shut down the sync thread.
     Shutdown,
     /// Legacy unsigned transform command.
@@ -189,6 +200,14 @@ pub enum SyncEvent {
     /// §relay-health. Not silent: a `Degraded`/`Unreachable` transition is
     /// loud-logged by the sync thread at the point of failure.
     RelayHealthChanged { health: RelayHealth },
+    /// Reply to [`SyncCommand::GetShardLedger`] (M2/F6): the verse's current
+    /// timeseries fabric — settings, peer declarations, shard ledger — as a
+    /// JSON dump. Diagnostics/harness assertions only; the fabric itself is
+    /// sync-thread-internal.
+    ShardLedger {
+        verse_id: String,
+        ledger_json: String,
+    },
 }
 
 /// Real-time transform update message for P2P gossip.
@@ -525,6 +544,46 @@ mod tests {
                 assert_eq!(requester_did, "did:key:z6MkRT");
             }
             _ => panic!("expected SubmitComputeTask"),
+        }
+    }
+
+    #[test]
+    fn set_shard_declaration_debug_clone() {
+        let cmd = SyncCommand::SetShardDeclaration {
+            capacity_bytes: Some(1_000_000),
+            seeder: true,
+        };
+        let dbg = format!("{:?}", cmd.clone());
+        assert!(dbg.contains("SetShardDeclaration"));
+        match cmd {
+            SyncCommand::SetShardDeclaration {
+                capacity_bytes,
+                seeder,
+            } => {
+                assert_eq!(capacity_bytes, Some(1_000_000));
+                assert!(seeder);
+            }
+            _ => panic!("expected SetShardDeclaration"),
+        }
+    }
+
+    #[test]
+    fn shard_ledger_event_debug_clone() {
+        let ev = SyncEvent::ShardLedger {
+            verse_id: "v-1".into(),
+            ledger_json: "{}".into(),
+        };
+        let dbg = format!("{:?}", ev.clone());
+        assert!(dbg.contains("ShardLedger"));
+        match ev {
+            SyncEvent::ShardLedger {
+                verse_id,
+                ledger_json,
+            } => {
+                assert_eq!(verse_id, "v-1");
+                assert_eq!(ledger_json, "{}");
+            }
+            _ => panic!("expected ShardLedger"),
         }
     }
 }
