@@ -80,7 +80,7 @@ impl Plugin for NavigationManagerPlugin {
 // System: open / close P2P verse replica when active verse changes
 // ---------------------------------------------------------------------------
 
-fn handle_verse_replica_lifecycle(
+pub(crate) fn handle_verse_replica_lifecycle(
     nav: Res<NavigationManager>,
     verse_mgr: Res<VerseManager>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
@@ -137,6 +137,16 @@ fn open_replica(
         .find(|v| v.id == verse_id)
         .and_then(|v| v.namespace_id.clone())
     else {
+        // F22: warn instead of silently returning. A verse with no
+        // namespace_id in the tree (or absent from it) cannot open a replica,
+        // so every write for it this session is retained by the sync thread
+        // and dropped at shutdown — the permanent-loss shape F21/F22 exist to
+        // prevent. `DbResult::VerseCreated` now populates the tree entry, so
+        // this should not fire on the normal create-then-navigate flow.
+        bevy::log::warn!(
+            "open_replica: verse {verse_id} has no namespace_id in the tree — \
+             replica not opened; its writes will not publish this session"
+        );
         return;
     };
     let ns_secret = secret_store
@@ -241,32 +251,21 @@ mod tests {
         );
     }
 
-    /// F21/M2 (GUI half of the verse-manifest open race): navigating into a
-    /// verse sends the `OpenVerseReplica` that unblocks the sync thread's
-    /// retained manifest write — the DB thread emitted the manifest
-    /// `WriteRowEntry` at creation time, before this open arrives. The
-    /// command must carry the verse's namespace_id and its stored namespace
-    /// secret (GUI path parity with the relay's `VerseCreated` system test
-    /// in fractalengine-relay/src/replicas.rs).
+    /// F22: a verse whose tree entry has no `namespace_id` — the state before
+    /// `DbResult::VerseCreated` populates it, or a verse that never received
+    /// one — must NOT open a replica. `open_replica` now warns instead of
+    /// silently returning; no `OpenVerseReplica` is sent. The positive
+    /// create-then-navigate flow (the `VerseCreated` result populates the id,
+    /// then navigation opens the replica) is pinned end-to-end in
+    /// `verse_manager::db_results::tests::fresh_created_verse_then_navigation_opens_replica`.
     #[test]
-    fn navigation_to_created_verse_sends_open_verse_replica() {
+    fn navigation_to_verse_without_namespace_id_does_not_open_replica() {
         use crate::verse_manager::VerseEntry;
         use fe_identity::{InMemoryBackend, SecretStore};
         use std::sync::Arc;
 
-        let verse_id = "01F21GUIOPENVARSE00000000000";
-        let secret = [5u8; 32];
-        let hex_secret = fe_database::hash_to_hex(&secret);
-        let ns_id = fe_database::hash_to_hex(&fe_database::derive_namespace_id(&secret));
-
+        let verse_id = "01F22NOOPENVARSE0000000000";
         let store: Arc<dyn SecretStore> = Arc::new(InMemoryBackend::new());
-        store
-            .set(
-                &format!("fractalengine:verse:{verse_id}:ns_secret"),
-                "fractalengine",
-                &hex_secret,
-            )
-            .unwrap();
 
         let (sync_tx, sync_rx) = crossbeam::channel::bounded(4);
         let mut app = App::new();
@@ -274,8 +273,8 @@ mod tests {
         app.insert_resource(crate::verse_manager::VerseManager::from_verses(vec![
             VerseEntry {
                 id: verse_id.to_string(),
-                name: "GUI Race Verse".to_string(),
-                namespace_id: Some(ns_id.clone()),
+                name: "No Namespace Verse".to_string(),
+                namespace_id: None,
                 expanded: true,
                 fractals: Vec::new(),
             },
@@ -291,30 +290,16 @@ mod tests {
             "no open command before navigation"
         );
 
-        // Frame 2: the user navigates into the newly created verse. The
-        // manifest write emitted at creation time is already retained on the
-        // sync thread (F21); this open is what publishes it.
+        // Frame 2: navigating into a verse with no namespace_id must not send
+        // an open (the warn branch) — pre-F22 this returned silently, which
+        // hid the missing-open hole.
         app.world_mut()
             .resource_mut::<NavigationManager>()
-            .navigate_to_verse(verse_id, "GUI Race Verse");
+            .navigate_to_verse(verse_id, "No Namespace Verse");
         app.update();
-
-        match sync_rx
-            .try_recv()
-            .expect("OpenVerseReplica after navigation")
-        {
-            fe_sync::SyncCommand::OpenVerseReplica {
-                verse_id: v,
-                namespace_id,
-                namespace_secret,
-                bootstrap_peers,
-            } => {
-                assert_eq!(v, verse_id);
-                assert_eq!(namespace_id, ns_id);
-                assert_eq!(namespace_secret, Some(hex_secret));
-                assert!(bootstrap_peers.is_empty());
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
+        assert!(
+            sync_rx.try_recv().is_err(),
+            "a verse without a namespace_id must not open a replica"
+        );
     }
 }

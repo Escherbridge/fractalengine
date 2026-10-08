@@ -97,9 +97,11 @@ pub(super) fn apply_db_results(
                 caches.path_asset.clear();
                 hierarchy::handle_database_reset(&mut verse_mgr, &db_sender);
             }
-            DbResult::VerseCreated { id, name } => {
-                hierarchy::handle_verse_created(id, name, &mut verse_mgr)
-            }
+            DbResult::VerseCreated {
+                id,
+                name,
+                namespace_id,
+            } => hierarchy::handle_verse_created(id, name, namespace_id.clone(), &mut verse_mgr),
             DbResult::FractalCreated { id, verse_id, name } => {
                 hierarchy::handle_fractal_created(id, verse_id, name, &mut verse_mgr)
             }
@@ -458,12 +460,107 @@ mod tests {
     #[test]
     fn verse_fractal_petal_created_grow_the_tree() {
         let mut mgr = tree();
-        hierarchy::handle_verse_created("v2", "V2", &mut mgr);
+        hierarchy::handle_verse_created("v2", "V2", Some("ns-v2".to_string()), &mut mgr);
         assert_eq!(mgr.verses.len(), 2);
+        assert_eq!(
+            mgr.verses[1].namespace_id.as_deref(),
+            Some("ns-v2"),
+            "VerseCreated carries the namespace_id onto the tree entry"
+        );
         hierarchy::handle_fractal_created("f2", "v2", "F2", &mut mgr);
         assert_eq!(mgr.verses[1].fractals.len(), 1);
         hierarchy::handle_petal_created("p2", "f2", "P2", &mut mgr);
         assert_eq!(mgr.verses[1].fractals[0].petals.len(), 1);
+    }
+
+    /// F22 end-to-end GUI path: a verse created through the real create flow
+    /// has NO namespace_id until `DbResult::VerseCreated` arrives; the result
+    /// carries the DB-computed id, `handle_verse_created` puts it on the tree
+    /// entry, and navigating into the verse then sends the `OpenVerseReplica`
+    /// that unblocks the F21-retained manifest write on the sync seam. This
+    /// pins the REAL fresh-create state (the old test fabricated
+    /// `namespace_id: Some(...)` directly in the tree).
+    #[test]
+    fn fresh_created_verse_then_navigation_opens_replica() {
+        use bevy::prelude::*;
+        use fe_identity::{InMemoryBackend, SecretStore};
+        use fe_sync::SyncCommand;
+        use std::sync::Arc;
+
+        let verse_id = "01F22GUIOPENVARSE0000000000";
+        let secret = [5u8; 32];
+        let hex_secret = fe_database::hash_to_hex(&secret);
+        let ns_id = fe_database::hash_to_hex(&fe_database::derive_namespace_id(&secret));
+
+        let store: Arc<dyn SecretStore> = Arc::new(InMemoryBackend::new());
+        store
+            .set(
+                &format!("fractalengine:verse:{verse_id}:ns_secret"),
+                "fractalengine",
+                &hex_secret,
+            )
+            .unwrap();
+
+        // Real create flow: the tree has no verse until VerseCreated arrives
+        // (the create dialog only sends CreateVerse; nothing is pushed
+        // locally).
+        let mut mgr = VerseManager::default();
+        assert!(
+            mgr.verses.is_empty(),
+            "no verse in the tree before the result lands"
+        );
+
+        // `DbResult::VerseCreated` arrives carrying the DB-computed namespace
+        // id — exactly the dispatcher arm's call.
+        hierarchy::handle_verse_created(verse_id, "GUI Fresh Verse", Some(ns_id.clone()), &mut mgr);
+        assert_eq!(
+            mgr.verses
+                .iter()
+                .find(|v| v.id == verse_id)
+                .and_then(|v| v.namespace_id.clone()),
+            Some(ns_id.clone()),
+            "VerseCreated populates the tree entry's namespace_id"
+        );
+
+        let (sync_tx, sync_rx) = crossbeam::channel::bounded(4);
+        let mut app = App::new();
+        app.init_resource::<NavigationManager>();
+        app.insert_resource(mgr);
+        app.insert_resource(fe_sync::SyncCommandSenderRes(sync_tx));
+        app.insert_resource(fe_database::SecretStoreRes(store));
+        app.add_systems(
+            Update,
+            crate::navigation_manager::handle_verse_replica_lifecycle,
+        );
+
+        // Frame 1: lifecycle initializes with nothing active.
+        app.update();
+        assert!(sync_rx.try_recv().is_err(), "no open before navigation");
+
+        // Frame 2: the user navigates into the freshly created verse — the
+        // open that flushes the retained manifest through the F21 seam.
+        app.world_mut()
+            .resource_mut::<NavigationManager>()
+            .navigate_to_verse(verse_id, "GUI Fresh Verse");
+        app.update();
+
+        match sync_rx
+            .try_recv()
+            .expect("OpenVerseReplica after navigating into the fresh verse")
+        {
+            SyncCommand::OpenVerseReplica {
+                verse_id: v,
+                namespace_id,
+                namespace_secret,
+                bootstrap_peers,
+            } => {
+                assert_eq!(v, verse_id);
+                assert_eq!(namespace_id, ns_id);
+                assert_eq!(namespace_secret, Some(hex_secret));
+                assert!(bootstrap_peers.is_empty());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

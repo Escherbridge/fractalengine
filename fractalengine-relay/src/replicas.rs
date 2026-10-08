@@ -97,12 +97,20 @@ pub fn open_replica_on_verse_created(
     secret_store: bevy::prelude::Res<SecretStoreRes>,
 ) {
     for result in results.read() {
-        if let DbResult::VerseCreated { id, name } = result {
+        if let DbResult::VerseCreated {
+            id,
+            name,
+            namespace_id,
+        } = result
+        {
             if !opened.0.insert(id.clone()) {
                 continue; // a replica is already open for this verse
             }
             tracing::info!(verse_id = %id, name = %name, "VerseCreated — opening replica");
-            if !open_replica(&sync.0, secret_store.0.as_ref(), id, None) {
+            // F22: the result now carries the DB-computed namespace id, so the
+            // relay opens with it directly instead of re-deriving from the
+            // secret (derivation remains the fallback when it is absent).
+            if !open_replica(&sync.0, secret_store.0.as_ref(), id, namespace_id.clone()) {
                 // The open failed — forget the verse so a later scan or
                 // retry can try again.
                 opened.0.remove(id);
@@ -250,6 +258,9 @@ mod tests {
         app.world_mut().write_message(DbResult::VerseCreated {
             id: verse_id.to_string(),
             name: "Runtime Verse".to_string(),
+            // F22: the result carries the DB-computed id — the relay opens
+            // with it directly.
+            namespace_id: Some(hex::encode(fe_database::derive_namespace_id(&secret))),
         });
         app.update();
 

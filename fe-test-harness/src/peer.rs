@@ -208,9 +208,13 @@ impl TestPeer {
                         }
                         Ok(DbCommand::CreateVerse { name }) => {
                             match create_verse(&db, &name, &db_local_did, &db_ns_secrets).await {
-                                Ok(id) => {
+                                Ok((id, namespace_id)) => {
                                     db_result_tx
-                                        .send(DbResult::VerseCreated { id, name })
+                                        .send(DbResult::VerseCreated {
+                                            id,
+                                            name,
+                                            namespace_id: Some(namespace_id),
+                                        })
                                         .ok();
                                 }
                                 Err(e) => {
@@ -1131,7 +1135,7 @@ async fn create_verse(
     name: &str,
     local_did: &str,
     ns_secrets: &NsSecretMap,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, String)> {
     let verse_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -1159,7 +1163,9 @@ async fn create_verse(
         .unwrap_or_else(|e| e.into_inner())
         .insert(verse_id.clone(), ns_secret_hex);
 
-    Ok(verse_id)
+    // F22: return the namespace id with the verse id so the `VerseCreated`
+    // result carries it (matching the row written above).
+    Ok((verse_id, ns_id_hex))
 }
 
 async fn create_fractal(

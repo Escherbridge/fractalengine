@@ -26,7 +26,7 @@ pub(crate) async fn create_verse_handler(
     name: &str,
     local_did: &str,
     secret_store: Option<&std::sync::Arc<dyn fe_identity::SecretStore>>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, String)> {
     let verse_id = ulid::Ulid::new().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -72,7 +72,10 @@ pub(crate) async fn create_verse_handler(
     }
 
     tracing::info!("Created verse: {name} ({verse_id}) namespace_id={ns_id_hex}");
-    Ok(verse_id)
+    // F22: return the namespace id alongside the verse id so the caller can
+    // carry it on `DbResult::VerseCreated` — the GUI tree entry then has the
+    // id immediately and navigation opens the replica without a reload.
+    Ok((verse_id, ns_id_hex))
 }
 
 // ---------------------------------------------------------------------------

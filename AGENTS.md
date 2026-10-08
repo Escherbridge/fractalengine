@@ -118,6 +118,11 @@ Key methods (all clear downstream selections when navigating up):
 Side effect: `NavigationManagerPlugin` runs `handle_verse_replica_lifecycle` every frame.
 When `active_verse_id` changes, it sends `SyncCommand::CloseVerseReplica` for the old verse
 and `SyncCommand::OpenVerseReplica` for the new one (using the namespace_id from VerseManager).
+A verse with no `namespace_id` in the tree cannot open a replica — `open_replica` warns and
+returns (F22). Fresh-created verses get their `namespace_id` from `DbResult::VerseCreated`
+(the DB handler computes it), which `handle_verse_created` puts on the tree entry, so
+create-then-navigate opens the replica without a hierarchy reload. CreateVerse does NOT
+trigger a `LoadHierarchy` — the tree entry is authoritative.
 
 ### VerseManager (`fe-ui/src/verse_manager.rs`)
 

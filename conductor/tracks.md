@@ -552,6 +552,16 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   workaround: env-inject the verse's FE_SECRET_…NS_SECRET or seed via
   fixtures) — in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
   [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
+  F22 (2026-10-08, M2 scrutiny round-1 fix, feature F22-m2-gui-verse-open-path):
+  CORRECTION — the F21 sentence above ('new GUI navigation test pins the fe-ui
+  open path') was false. That test fabricated `namespace_id: Some(...)`, a state
+  the real fresh-create flow never had, so GUI-created verses never sent
+  `OpenVerseReplica`, their retained manifest was dropped at shutdown, and fresh
+  peers never converged it. Fixed state: the DB-computed id now rides
+  `DbResult::VerseCreated` into the GUI tree entry (`handle_verse_created`);
+  `open_replica`'s None branch warns instead of silently returning; the relay
+  opens with the provided id; and the GUI test pins the real fresh-create state
+  end-to-end. F21's fe-sync seam is untouched. (fe-ui 900 tests; harness 14/14.)
 
 ---
 

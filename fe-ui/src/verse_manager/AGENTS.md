@@ -87,6 +87,19 @@ they unit-test without spinning up ECS — the smoke tests live in
 and its tests only. The dispatcher keeps the `_ => {}` catch-all (variants
 like `ScopeResolved` are consumed solely via `pending_api.try_deliver`).
 
+**§fresh-create namespace id (F22/M2).** CreateVerse does NOT trigger a
+hierarchy reload — the only `LoadHierarchy` triggers are Seeded / VerseJoined
+/ DatabaseReset / an external API poll. So `handle_verse_created` is the only
+place a freshly created verse's `namespace_id` enters the tree, and it now
+takes it from the `DbResult::VerseCreated` payload (the DB handler computes
+it) and appends/updates the `VerseEntry` with it. Without this the entry had
+`namespace_id: None`, `NavigationManager::open_replica` silently skipped the
+verse on navigation, and the sync thread's retained verse-manifest write was
+dropped at shutdown — permanent manifest loss (the F21/F22 shape). Keep the
+id flowing through the result: do not re-derive it UI-side and do not add a
+`LoadHierarchy` round-trip on create. A verse already present in the tree
+(e.g. an API poll raced the create) is updated in place, not duplicated.
+
 ## §node-index (`code_review_20260430_performance_hotpaths`)
 
 `VerseManager.node_index` maps `node_id → (verse_idx, fractal_idx,
