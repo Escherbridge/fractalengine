@@ -330,6 +330,63 @@ async fn query_distributed_mode_maps_a_dead_seam_to_unavailable() {
     assert_eq!(body["error"], "distributed query transport unavailable");
 }
 
+#[tokio::test]
+async fn query_distributed_mode_refuses_promptly_when_the_seam_is_saturated() {
+    // The saturated-seam shape (M2 scrutiny round-1 blocker, fixed F23):
+    // the bounded(64) seam is FULL and the consumer (the sync thread) is
+    // alive but wedged — it never drains. A blocking send here would pin
+    // this handler (and, request by request, the API workers) indefinitely;
+    // try_send must refuse PROMPTLY with the honest queue-full error.
+    const SEAM_CAP: usize = 64;
+    let (tx, rx) = crossbeam::channel::bounded::<DistributedQueryCall>(SEAM_CAP);
+    for i in 0..SEAM_CAP {
+        let (reply_tx, _reply_rx) = crossbeam::channel::bounded(1);
+        let call = DistributedQueryCall {
+            request: DistributedQueryRequest {
+                request_id: format!("wedged-{i}"),
+                verse_id: "verse-wedged".into(),
+                spec: TsQueryKind::AllReadings {
+                    petal_id: "petal-wedged".into(),
+                },
+                timeout_ms: 1_000,
+                row_cap: 0,
+            },
+            reply: reply_tx,
+        };
+        tx.send(call).expect("fill the seam to capacity");
+    }
+    let h = ApiHarness::spawn_with_distributed_tx(Some(tx))
+        .await
+        .expect("spawn harness");
+    let seeded = h.seed_hierarchy().await.expect("seed hierarchy");
+    let token = h.mint_token(&seeded.verse_scope(), "viewer");
+
+    let started = std::time::Instant::now();
+    let (status, body) = h
+        .post_json(
+            "/api/v1/query",
+            Some(&token),
+            &json!({
+                "distributed": { "kind": "all_readings", "petal_id": seeded.petal_id }
+            }),
+        )
+        .await;
+    let elapsed = started.elapsed();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], false, "query response: {body}");
+    assert_eq!(
+        body["error"],
+        "distributed query transport is saturated — too many queued fan-outs, try again shortly"
+    );
+    // Prompt refusal: far under the 10 s the reply wait alone would take,
+    // and a blocking send would never return at all (the consumer is wedged).
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the saturated seam must refuse promptly, took {elapsed:?}"
+    );
+    drop(rx); // the wedged consumer stays alive until every assertion ran
+}
+
 // ---------------------------------------------------------------------------
 // MCP query_timeseries tool (full router, real auth middleware)
 // ---------------------------------------------------------------------------

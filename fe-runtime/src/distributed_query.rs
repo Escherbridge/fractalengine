@@ -130,6 +130,16 @@ pub struct TsPartialRows {
     pub rows: Vec<serde_json::Value>,
     /// The partial hit its row cap and is incomplete (honesty flag).
     pub truncated: bool,
+    /// The executing host FAILED to render this partial (DB error) — the
+    /// rows are empty because they could not be read, not because they do
+    /// not exist (F23: a failed partial must never masquerade as an
+    /// authoritative covered-empty). The merge excludes failed partials
+    /// from rows, coverage, and `answered_hosts`, so a formal host that
+    /// failed lands in `missing_hosts` and its shards in `missing_shards`.
+    /// Serde-defaulted so a pre-F23 peer's envelope (no field) parses as
+    /// a normal partial.
+    #[serde(default)]
+    pub failed: bool,
 }
 
 impl TsPartialRows {
@@ -139,6 +149,17 @@ impl TsPartialRows {
             per_shard: Vec::new(),
             rows: Vec::new(),
             truncated: false,
+            failed: false,
+        }
+    }
+
+    /// A FAILED partial (the executing host's DB query errored): empty rows
+    /// because they could not be read, flagged so the merge never treats it
+    /// as an authoritative covered-empty answer.
+    pub fn failed() -> Self {
+        Self {
+            failed: true,
+            ..Self::empty()
         }
     }
 
@@ -161,7 +182,10 @@ pub struct DistributedQueryMeta {
     pub missing_shards: Vec<String>,
     /// Peer DIDs that answered (including the local peer).
     pub answered_hosts: Vec<String>,
-    /// Peer DIDs expected to answer but silent until the deadline.
+    /// Peer DIDs expected to answer but silent until the deadline (or whose
+    /// partial arrived with `failed: true` — data-silent, F23: a host that
+    /// could not execute contributes nothing and is reported as missing, so
+    /// the metadata never reads "covered" where the truth is "host failed").
     pub missing_hosts: Vec<String>,
     /// Mode recorded at placement time for the targeted shards.
     pub mode: String,
@@ -288,6 +312,7 @@ mod tests {
             }],
             rows: vec![serde_json::json!({"reading_id": "r1"})],
             truncated: true,
+            failed: false,
         };
         let json = serde_json::to_string(&partial).unwrap();
         let back: TsPartialRows = serde_json::from_str(&json).unwrap();
@@ -295,6 +320,19 @@ mod tests {
         assert!(back.truncated);
         assert!(!back.is_empty());
         assert!(TsPartialRows::empty().is_empty());
+        assert!(!TsPartialRows::empty().failed);
+        // Wire compat: a pre-F23 peer's envelope carries no `failed` field —
+        // serde-default parses it as a normal (non-failed) partial.
+        let legacy = serde_json::from_str::<TsPartialRows>(
+            r#"{"per_shard":[],"rows":[],"truncated":false}"#,
+        )
+        .unwrap();
+        assert!(!legacy.failed && !legacy.truncated && legacy.is_empty());
+        // The failed constructor is empty-but-flagged.
+        let failed = TsPartialRows::failed();
+        assert!(failed.failed && failed.is_empty());
+        let failed_json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(failed_json["failed"], true);
     }
 
     #[test]

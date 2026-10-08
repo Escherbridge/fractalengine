@@ -1536,6 +1536,11 @@ async fn pump_gossip_topic(
                 let incoming = GossipIncoming {
                     verse_id: verse_id.clone(),
                     from: message.delivered_from,
+                    // F23 identity check input: only a DIRECT delivery's
+                    // `delivered_from` is the envelope author — the scope
+                    // says whether the message took 0 hops from its
+                    // publisher (iroh-gossip `DeliveryScope::is_direct`).
+                    direct: message.scope.is_direct(),
                     content: message.content,
                 };
                 if inbound_tx.send(incoming).await.is_err() {

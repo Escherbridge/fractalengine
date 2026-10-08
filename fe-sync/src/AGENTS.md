@@ -409,7 +409,12 @@ why:
   `seed_reconciliation` snapshot through the same `note_*` seam the live
   pump uses. One writer per shard ledger key (the peer that first saw the
   shard plans and publishes); conflicts resolve by the doc's
-  latest-per-entry semantics.
+  latest-per-entry semantics. **Ledger admission (F23):** `note_entry`
+  enforces `__peers` self-declaration (the row key must name its own signed
+  author — a forged `__peers/{other_did}` capacity row is dropped; see
+  §transport-admission-control item 4). The `__shards` Editor+ gate was
+  evaluated and NOT implemented (no role data reaches the sync plane) — the
+  residual is recorded in §transport-admission-control item 5.
 - **`note_verse_row` learns settings from BOTH directions of verse-doc
   traffic**: outbound writes parse the manifest blob before publishing
   (`handle_write_row_entry`), inbound rows/snapshot replay through
@@ -495,20 +500,39 @@ diagnostics echo.
   (`encode_envelope`/`decode_envelope`) under `GOSSIP_ENVELOPE_BUDGET`
   (448 KiB against iroh's 512 KiB frame cap) — an over-budget partial is
   trimmed row-wise and flagged `truncated` in the meta, never dropped
-  silently. Correlation is by `request_id` through `PendingQueries`
-  (`register`/`deregister`/`route`, cap `PENDING_QUERY_CAP` = 64 — a
-  duplicate id never clobbers a live collector). The collector runs under
-  bounded concurrency (`MAX_CONCURRENT_QUERIES` = 8) with a per-request
-  deadline (`DEFAULT_QUERY_TIMEOUT_MS` 3 s, `MAX_QUERY_TIMEOUT_MS` 10 s):
-  partials that arrive after the deadline are routed and dropped; a request
-  with zero fabric/shards is an honest empty plan, not an error.
+  silently (F23 adds a no-progress guard: a single row larger than the whole
+  budget makes the halving loop a no-op, so `encode_envelope` now BAILS with
+  an error — the responder warns and drops the answer — instead of
+  re-serializing an identical envelope forever). Correlation is by
+  `request_id` through `PendingQueries` (`register`/`deregister`/`route`, cap
+  `PENDING_QUERY_CAP` = 64). **A duplicate id is REFUSED, not overwritten
+  (F23 fix):** `register` returns `false` and the live collector's inbox is
+  never replaced (pre-F23 `map.insert` clobbered it, and the clobbered
+  collector's later `deregister` would evict the replacement — unreachable
+  with ULID request ids, but the doc claim and the code now agree). The
+  collector runs under bounded concurrency (`MAX_CONCURRENT_QUERIES` = 8)
+  with a per-request deadline (`DEFAULT_QUERY_TIMEOUT_MS` 3 s,
+  `MAX_QUERY_TIMEOUT_MS` 10 s): partials that arrive after the deadline are
+  routed and dropped; a request with zero fabric/shards is an honest empty
+  plan, not an error.
 - **Responder** (`handle_gossip_incoming`): a host that receives a request
-  renders the partial for the shards it hosts (the ledger's `Targeted`
-  routes are the truth — a host answers only for hosted shards, so a
-  non-host over-retained copy never widens an answer past its own
-  attribution) with its own `RESPONDER_EXEC_CAP_MS` budget, replying as a
-  topic broadcast (the topic is exactly the replica members — everyone
+  renders a partial with its own `RESPONDER_EXEC_CAP_MS` budget, replying as
+  a topic broadcast (the topic is exactly the replica members — everyone
   else's `route` ignores foreign request ids).
+- **Responder shard filtering is NOT implemented (F23 honesty pass).** A
+  responder runs the shard list it was asked for verbatim — it does not
+  narrow to shards IT hosts. Correctness does not depend on it: receive-side
+  retention (§sharding) means a non-host holds no rows for a shard it does
+  not host, so its partial for that shard is empty, and the merge's
+  per-shard attribution (`fold_attribution`/`covered_by_answered_hosts`)
+  only ever credits a shard to a peer in that shard's ledger host set. A
+  non-host answering an aggregate request is therefore a harmless empty
+  contribution (wasted DB work, no wrong data); the coverage metadata can
+  never be widened by it. The earlier doc phrasing ("a host answers only for
+  hosted shards") overstated the code — this is the correction. Wiring true
+  responder-side filtering would be a pure efficiency win (skip a DB round
+  trip for shards we do not host) and is a reasonable follow-up, not a
+  correctness fix.
 - **Commutative merges** (`merge_partials`): aggregates fold
   count/sum/min/max per (anchor, window) — mean is carried as
   (sum, count), computed only at the end, so partials merge in ANY order and
@@ -526,7 +550,14 @@ diagnostics echo.
   (the merge never fabricates its data); at R=2 the surviving mirror answers
   and the shard is `covered`. A shard answered-but-empty is covered (the
   host honestly holds no rows in that window — absence of data is not
-  absence of the shard).
+  absence of the shard). **A FAILED host is not a covered-empty (F23):**
+  `TsPartialRows.failed` (the executing host's DB errored — set by the
+  `ExecuteTsPartial` error arm in fe-database, serde-defaulted on the wire
+  for back-compat) excludes that response from the rows, the coverage
+  attribution, and `answered_hosts`, so the formal host lands in
+  `missing_hosts` and its shards in `missing_shards`. Pre-F23 the error arm
+  replied `empty()`, which the merge counted as an authoritative
+  covered-empty — a silent data-loss masquerade the metadata now refuses.
 - **Send-side targeted delivery — evaluated, NOT adopted.** The orchestrator
   asked whether the fan-out's request/response correlation could be reused
   for per-host transfer routing on the doc transport (F6's receive-side
@@ -544,6 +575,88 @@ diagnostics echo.
   shard missing after departure, and the R=2 surviving mirror serving a
   row-in-result) + fe-api `tests/distributed_query_test.rs` for the surface
   guards (A17).
+
+### §transport-admission-control (F23, 2026-10-08)
+
+The M2 scrutiny round-1 review flagged the sync-plane seams as riding the
+verse's own doc/gossip namespaces without any admission control of their own.
+The mission-wide stance is deny-by-default RBAC; the API/data surfaces carry
+the approved A13–A17 guards, but the transport/ledger seams were unguarded.
+This pass closes the cheap, seam-fitting holes. **Posture before this
+feature:** any node that knew a verse's ULID (the gossip topic id is a public
+function of the ULID — no capability) could publish compute requests and
+ledger/declaration rows; the only checks were structural (request shape,
+petal containment). **Posture after:** the checks below. Every drop returns a
+named `GossipDisposition::Dropped(&'static str)` from `drop_reason`, so each
+shape is unit-testable without a gossip stack.
+
+`handle_gossip_incoming` (`distributed_query.rs`):
+
+1. **Verse binding.** A request's envelope `verse_id` must equal the verse of
+   the topic the message ARRIVED on (`incoming.verse_id`, set by the pump
+   from the topic it drained). The arrival topic is the authenticated
+   binding; the envelope field is an untrusted claim. Mismatch →
+   `drop_reason::VERSE_MISMATCH`.
+2. **Sender identity.** On a DIRECT delivery (`GossipIncoming.direct`, from
+   `DeliveryScope::is_direct()` — neighbor broadcast or 0 swarm hops), the
+   claimed `from_did` must equal `did_key(incoming.from)`. The F20
+   endpoint-identity == fe-DID alignment (the iroh endpoint key and the app
+   DID share the ed25519 seed) makes the authenticated sender's DID
+   derivable, so forged attribution is impossible on direct deliveries:
+   a covered-empty cannot masquerade as a formal host's answer, and a request
+   cannot impersonate a declared peer. Applies to BOTH responses and requests
+   → `drop_reason::FORGED_SENDER`. **Residual (honest):** a RELAYED delivery's
+   `from` is the forwarding neighbor, not the original broadcaster (iroh-gossip
+   0.35 `GossipEvent` docs), so relayed deliveries cannot be wire-verified and
+   fall back to claim-based admission. Relays are therefore the residual hole
+   for attribution; it is not closable without per-message signing
+   (deferred — the causal-DAG membership resolver is blocked on the same
+   per-operation signing, see §write-policy).
+3. **Requester membership.** A requesting peer must be a DECLARED fabric peer
+   of the arrival verse (`__peers/{did}` in that verse's `VerseFabric`)
+   before we execute anything → `drop_reason::UNDECLARED_REQUESTER`.
+   Deny-by-default for strangers on a topic id that is derivable from the
+   public verse ULID. Honest about convergence: a responder that has not yet
+   converged the requester's own declaration refuses until it does (the
+   declaration rides the doc and converges like any row). Claim-based for
+   relayed requests (the claim is what we look up); the identity gate (2)
+   still binds the claim on direct deliveries. **This one was implemented**
+   (not just evaluated) — it fits the seam naturally: the fabric already
+   holds the peer set, and every sanctioned requester is a declared peer.
+
+`VerseFabric::note_entry` (`sharding.rs`, ledger admission):
+
+4. **`__peers` is self-declaration only.** A `__peers` row's key
+   (`record_id` = `__peers/{did}`) must name its own author (`change.author_id`,
+   the doc entry's signed author — never the row bytes). A row declaring
+   ANOTHER peer's capacity (e.g. publishing `__peers/{honest_did}` with
+   `capacity_bytes: 1` to starve that peer out of future placement) is
+   dropped with a warn. The honest path is unaffected: replica open,
+   `SetShardDeclaration`, and the restart snapshot all write the local
+   peer's OWN key under its own author identity.
+5. **`__shards` Editor+ gate — evaluated, NOT implemented (residual
+   recorded for orchestrator review).** The requested gate needs the author's
+   ROLE resolved at the verse scope. Roles are **DB-thread state** (the local
+   `role` table — see fe-database §handlers / §rbac-policy; `admit_inbound_row`
+   resolves them from local tables, never the wire), and `__shards`/`__peers`
+   rows are consumed at the sync seam and never reach the DB thread — so the
+   sync plane has NO role information to gate on, and the manifest doc row
+   carries only `created_by`/`default_access`, not per-peer roles. No honest
+   seam-side gate is constructible today. The weaker shape available (require
+   the author to be a declared peer) does not close the hole — a declared
+   peer can still publish a false ledger row (claiming hosts that do not hold
+   the shard, or omitting itself) — so implementing it would be a gate that
+   looks like protection without being one; per the feature's instruction
+   ("do not force a broken gate"), it was NOT implemented. **Residual risk:**
+   a declared fabric peer can inject a `__shards` ledger row that misdirects
+   placement/retention. Impact is bounded: retention is receive-side
+   (over-retention is idempotent under union semantics, a wrongly-dropped
+   hosted row is the real loss), and the merge's per-shard attribution means
+   a false host set can at worst make a shard look `missing`/`covered` —
+   metadata honesty, not silent data corruption. The durable fix is a
+   role-bearing ledger (roles ride the doc, or a signed shard-claim
+   envelope), which is the same per-operation-signing dependency as the
+   relayed-attribution residual above.
 
 ### §gossip-bootstrap — the Join-drop race (fixed 2026-10-08)
 

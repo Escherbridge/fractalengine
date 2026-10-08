@@ -327,3 +327,62 @@ async fn replication_seam_without_verse_emits_nothing() {
         "no verse context → nothing published"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F23 — the union key is storage-enforced (UNIQUE index on reading_id)
+// ---------------------------------------------------------------------------
+
+/// F23 (M2 scrutiny F5 minor): `reading_id` — the A12 union key — carries a
+/// UNIQUE index, defense in depth under the read-then-write applier. All
+/// sanctioned writers mint fresh ULIDs, so the index should never fire in
+/// production; this test proves the storage layer actually enforces it — a
+/// direct duplicate insert fails loudly, and the original fact survives
+/// untouched (union semantics: one fact per id, never overwritten).
+#[tokio::test]
+async fn reading_id_is_storage_enforced_unique() {
+    let db = setup_db().await;
+    seed_node(&db, "p1", "n1", 1.0, 2.0).await;
+    insert_readings(
+        &db,
+        "p1",
+        "did:key:z6MkSensor",
+        &[reading(
+            "n1",
+            "temperature_c",
+            21.5,
+            Some("2026-07-15T10:00:00Z"),
+        )],
+    )
+    .await
+    .expect("insert the first reading");
+    let rows = select_all_readings(&db).await;
+    assert_eq!(rows.len(), 1);
+    let dup_id = rows[0]["reading_id"]
+        .as_str()
+        .expect("reading_id")
+        .to_string();
+
+    // A second row under the SAME reading_id must be rejected by the UNIQUE
+    // index at the storage layer (never a silent second fact under one key).
+    let dup = db
+        .query(
+            "CREATE iot_reading CONTENT { \
+             reading_id: $rid, node_id: 'n1', petal_id: 'p1', \
+             metric: 'temperature_c', value: 99.0, units: 'C', \
+             recorded_at: '2026-07-15T12:00:00Z', \
+             recorded_at_ms: 1752580800000, hlc_timestamp: 2, \
+             source_did: 'did:key:z6MkSensor' }",
+        )
+        .bind(("rid", dup_id))
+        .await
+        .and_then(|r| r.check());
+    assert!(
+        dup.is_err(),
+        "the UNIQUE index must reject a duplicate reading_id"
+    );
+
+    // READ-BACK: the original fact is intact — union semantics held.
+    let rows = select_all_readings(&db).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["value"].as_f64(), Some(21.5));
+}

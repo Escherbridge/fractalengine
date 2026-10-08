@@ -1072,7 +1072,10 @@ async fn seed_test_data(
     // Create genesis verse
     let verse_id = ulid::Ulid::new().to_string();
     let ns_secret = rand_bytes_32();
-    let ns_id = *blake3::keyed_hash(b"fractalengine:verse:namespace_id", &ns_secret).as_bytes();
+    // F23: derive the namespace id with the SAME function the doc registers
+    // under (the Ed25519 verifying key) — the pre-F20 keyed-BLAKE3 form was
+    // never an id any doc could open by (F20 finding 3).
+    let ns_id = fe_database::derive_namespace_id(&ns_secret);
     let ns_id_hex = hex::encode(ns_id);
 
     let _: Option<serde_json::Value> = db
@@ -1140,7 +1143,10 @@ async fn create_verse(
     let now = chrono::Utc::now().to_rfc3339();
 
     let ns_secret = rand_bytes_32();
-    let ns_id = *blake3::keyed_hash(b"fractalengine:verse:namespace_id", &ns_secret).as_bytes();
+    // F23: the F20 keyed-BLAKE3 id form was replaced by the Ed25519 verifying
+    // key the doc actually registers under (fe_database::derive_namespace_id)
+    // — harness rows must derive via the same fn the production path uses.
+    let ns_id = fe_database::derive_namespace_id(&ns_secret);
     let ns_id_hex = hex::encode(ns_id);
     let ns_secret_hex = hex::encode(ns_secret);
 

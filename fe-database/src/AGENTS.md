@@ -178,8 +178,10 @@ modules are path-tracking/animation only). Design decisions:
   statuses instead of string-sniffing.
 
 **Emit seam (A11, F5).** `insert_readings` is now a thin delegate;
-`insert_readings_with_replication(db, petal_id, verse_id, rows, blob_store,
-repl_tx)` is the seam that also publishes replication. Order matters and is
+`insert_readings_with_replication(db, petal_id, verse_id, source_did, readings,
+blob_store, repl_tx)` is the seam that also publishes replication (`source_did`
+is the ingesting caller's DID, threaded onto each reading row — added after
+the original F5 signature, re-verified F23 2026-10-08). Order matters and is
 deliberate: validate everything, insert durably, THEN emit — so a peer never
 sees a row the local store cannot serve (the same durable-first rule as
 §replication-backpressure). One `ReplicationEvent` per accepted row, carrying

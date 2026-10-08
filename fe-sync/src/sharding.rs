@@ -325,6 +325,17 @@ impl VerseFabric {
     /// Feed one inbound (or snapshot) row change into the fabric. Runs
     /// BEFORE the own-author filter: our own snapshot rows are exactly how
     /// the fabric re-learns settings/peers/ledger after a restart.
+    ///
+    /// **Admission control (F23, the sync-plane hardening pass):** a
+    /// `__peers` declaration is SELF-declaration only — the row's key
+    /// (`__peers/{did}`, i.e. `record_id`) must name its own author, whose
+    /// identity comes from the doc entry (`author_id`), never from the
+    /// row bytes. A row declaring ANOTHER peer's capacity (e.g. a member
+    /// publishing `__peers/{honest_did}` with `capacity_bytes: 1` to
+    /// starve that peer out of future placement) is dropped with a warn.
+    /// The honest path is unaffected: every sanctioned publisher (replica
+    /// open, `SetShardDeclaration`, the restart snapshot) writes its OWN
+    /// key under its own author identity.
     pub fn note_entry(&mut self, change: &crate::replicator::RowChange) {
         match change.table.as_str() {
             "verse" => {
@@ -335,6 +346,15 @@ impl VerseFabric {
                 }
             }
             PEER_DECL_TABLE => {
+                if change.record_id != change.author_id {
+                    tracing::warn!(
+                        record_id = %change.record_id,
+                        author = %change.author_id,
+                        "Forged peer declaration dropped — __peers rows must be self-declared \
+                         (the key must name the author's own DID)"
+                    );
+                    return;
+                }
                 if !change.data.is_empty() {
                     if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&change.data) {
                         self.note_peer_declaration(
@@ -597,5 +617,62 @@ mod tests {
         let json = serde_json::to_vec(&entry).expect("serialize");
         let back: ShardLedgerEntry = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back, entry);
+    }
+
+    // ── F23: ledger admission control (__peers is self-declaration only) ──
+
+    fn peer_decl_change(record_id: &str, author_id: &str) -> crate::replicator::RowChange {
+        crate::replicator::RowChange {
+            table: PEER_DECL_TABLE.into(),
+            record_id: record_id.into(),
+            content_hash: [0; 32],
+            author_id: author_id.into(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: br#"{"capacity_bytes":1,"seeder":false}"#.to_vec(),
+        }
+    }
+
+    #[test]
+    fn forged_peer_declaration_is_dropped() {
+        // The M2 scrutiny F6 major shape: a member publishes
+        // `__peers/{honest_did}` (starving the honest peer's placement)
+        // under its OWN author identity — the record key does not name the
+        // author, so the declaration is refused.
+        let mut fabric = VerseFabric::default();
+        fabric.note_entry(&peer_decl_change("did:key:honest", "did:key:attacker"));
+        assert!(
+            !fabric.peers.contains_key("did:key:honest"),
+            "a forged foreign-DID declaration must never enter the fabric"
+        );
+        assert!(
+            !fabric.peers.contains_key("did:key:attacker"),
+            "the declaration must not be re-keyed to the attacker either"
+        );
+    }
+
+    #[test]
+    fn honest_self_declaration_converges() {
+        let mut fabric = VerseFabric::default();
+        fabric.note_entry(&peer_decl_change("did:key:bob", "did:key:bob"));
+        let decl = fabric
+            .peers
+            .get("did:key:bob")
+            .expect("self-declaration converges into the fabric");
+        assert_eq!(decl.capacity_bytes, Some(1));
+        assert!(!decl.seeder);
+        // A later honest re-declaration still updates in place.
+        fabric.note_entry(&crate::replicator::RowChange {
+            table: PEER_DECL_TABLE.into(),
+            record_id: "did:key:bob".into(),
+            content_hash: [0; 32],
+            author_id: "did:key:bob".into(),
+            timestamp: 1,
+            is_tombstone: false,
+            data: br#"{"capacity_bytes":900,"seeder":true}"#.to_vec(),
+        });
+        let decl = fabric.peers.get("did:key:bob").expect("still declared");
+        assert_eq!(decl.capacity_bytes, Some(900));
+        assert!(decl.seeder);
     }
 }

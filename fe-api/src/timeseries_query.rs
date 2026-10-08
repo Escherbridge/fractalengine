@@ -132,11 +132,32 @@ pub async fn run_distributed_timeseries_query(
         },
         reply: reply_tx,
     };
-    if let Err(e) = distributed_tx.send(call) {
-        tracing::warn!("distributed query seam send failed (sync thread gone): {e:?}");
-        return Err(TimeseriesQueryError::BadGateway(
-            "distributed query transport unavailable",
-        ));
+    // Reply-embedded call channel (§backpressure boundary ruling b): the
+    // payload embeds its own crossbeam reply sender and bypasses
+    // PendingApiRequests, so try_send is MANDATORY here — a blocking send on
+    // the bounded(64) seam would pin API workers indefinitely when the sync
+    // thread is alive-but-wedged (the M2 scrutiny round-1 blocker, F23).
+    // Full is the honest queue-full refusal this module already anticipates;
+    // Disconnected is shutdown.
+    match distributed_tx.try_send(call) {
+        Ok(()) => {}
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            tracing::warn!(
+                "distributed query seam saturated (bounded-64 queue full, sync thread not \
+                 draining) — refusing with Unavailable"
+            );
+            return Err(TimeseriesQueryError::Unavailable(
+                "distributed query transport is saturated — too many queued fan-outs, try again \
+                 shortly"
+                    .into(),
+            ));
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(e)) => {
+            tracing::warn!("distributed query seam send failed (sync thread gone): {e:?}");
+            return Err(TimeseriesQueryError::BadGateway(
+                "distributed query transport unavailable",
+            ));
+        }
     }
     // The reply rides a crossbeam receiver — await it off the async workers
     // (spawn_blocking), bounded by the request deadline plus slack for the
