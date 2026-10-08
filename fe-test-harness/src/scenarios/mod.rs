@@ -4,6 +4,7 @@ pub mod invite_flow;
 pub mod migration;
 pub mod two_peer_blob_exchange;
 pub mod two_peer_replica_sync;
+pub mod two_peer_shard_fabric;
 pub mod two_peer_sync_pipeline;
 pub mod two_peer_timeseries_sync;
 pub mod two_peer_tombstone_sync;

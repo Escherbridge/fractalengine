@@ -140,7 +140,13 @@ define_table! {
         created_by:     String         => "TYPE string",
         created_at:     String         => "TYPE string",
         namespace_id:   Option<String> => "TYPE option<string>",
-        default_access: String         => "TYPE string DEFAULT 'viewer'"
+        default_access: String         => "TYPE string DEFAULT 'viewer'",
+        /// M2/F6 (A13): timeseries replication mode — mirror|sharded|balanced.
+        ts_mode:                 String => "TYPE string DEFAULT 'mirror'",
+        /// M2/F6: durability slider R (1..N); hosts per shard in balanced mode.
+        ts_replication_factor:   i64    => "TYPE int DEFAULT 1",
+        /// M2/F6: shard bucket width (ms), epoch-aligned; default 1 day.
+        ts_bucket_width_ms:       i64    => "TYPE int DEFAULT 86400000"
     }
 }
 

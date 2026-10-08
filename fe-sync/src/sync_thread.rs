@@ -24,11 +24,13 @@ use iroh_gossip::proto::TopicId;
 use crate::docs_engine::{p2p_data_dir, DocsStack};
 use crate::endpoint::SyncEndpoint;
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
+use crate::placement::Retention;
 use crate::relay_config::{RelayConfig, RelayHealth};
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator, RowChange,
     VerseReplicator,
 };
+use crate::sharding::{PeerDeclaration, ShardId, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE};
 use crate::verse_peers;
 
 /// Env var carrying bootstrap peers for every opened replica: **semicolon**
@@ -410,6 +412,17 @@ pub fn spawn_sync_thread(
             // yet, republished after the open (see PendingWrites).
             let mut pending_writes = PendingWrites::default();
 
+            // M2/F6: per-verse timeseries fabric (settings from the verse
+            // manifest, peer declarations, shard ledger). Sync-thread state,
+            // NOT DB state — the DB thread maps `__shards`/`__peers` rows to
+            // NotApplicable. See AGENTS.md §sharding.
+            let mut fabrics: HashMap<String, VerseFabric> = HashMap::new();
+
+            // M2/F6: the local peer's shard-hosting declaration, applied to
+            // every open verse's fabric (published as `__peers/{local_did}`).
+            // Defaults to unlimited capacity, non-seeder — a plain node.
+            let mut local_declaration = PeerDeclaration::default();
+
             // crossbeam's receiver has no async readiness API — bridge the
             // command channel into a tokio channel so the select! below can
             // poll it next to the inbound pumps. Ordering is preserved (one
@@ -438,7 +451,9 @@ pub fn spawn_sync_thread(
                         // `None` (all pumps closed) needs no handling —
                         // commands still flow.
                         if let Some((verse_id, change)) = maybe_row {
+                            let fabric = fabrics.entry(verse_id.clone()).or_default();
                             handle_inbound_row_change(
+                                fabric,
                                 &verse_id,
                                 &change,
                                 &local_did,
@@ -488,6 +503,8 @@ pub fn spawn_sync_thread(
                                     &db_cmd_tx,
                                     &blob_store,
                                     &mut pending_writes,
+                                    fabrics.entry(verse_id.clone()).or_default(),
+                                    local_declaration,
                                 )
                                 .await;
                                 // Phase F.4: Subscribe to verse gossip topic
@@ -520,6 +537,7 @@ pub fn spawn_sync_thread(
                                 handle_write_row_entry(
                                     &replicas,
                                     &mut pending_writes,
+                                    fabrics.entry(verse_id.clone()).or_default(),
                                     &blob_store,
                                     &local_did,
                                     &verse_id,
@@ -578,6 +596,35 @@ pub fn spawn_sync_thread(
                             }
                             Some(SyncCommand::CancelTilesetDownload { tileset_id }) => {
                                 handle_cancel_tileset_download(&mut download_tracker, &tileset_id);
+                            }
+                            Some(SyncCommand::SetShardDeclaration {
+                                capacity_bytes,
+                                seeder,
+                            }) => {
+                                local_declaration = PeerDeclaration {
+                                    capacity_bytes,
+                                    seeder,
+                                };
+                                handle_set_shard_declaration(
+                                    &replicas,
+                                    &mut fabrics,
+                                    &local_did,
+                                    local_declaration,
+                                )
+                                .await;
+                            }
+                            Some(SyncCommand::GetShardLedger { verse_id }) => {
+                                let ledger_json = fabrics
+                                    .get(&verse_id)
+                                    .map(|f| f.to_dump_json())
+                                    .unwrap_or_else(|| serde_json::Value::Null);
+                                send_sync_event(
+                                    &evt_tx,
+                                    SyncEvent::ShardLedger {
+                                        verse_id,
+                                        ledger_json: ledger_json.to_string(),
+                                    },
+                                );
                             }
                             Some(SyncCommand::Shutdown) => {
                                 if !pending_writes.is_empty() {
@@ -654,12 +701,23 @@ fn cmd_rx_bridge_send(
 /// (replication lag, not a stalled sync thread); a disconnected channel is
 /// shutdown and silent.
 fn handle_inbound_row_change(
+    fabric: &mut VerseFabric,
     verse_id: &str,
     change: &RowChange,
     local_did: &str,
     evt_tx: &SyncEventSender,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
 ) {
+    // Feed the fabric FIRST — before the own-author filter — because our own
+    // snapshot rows (replayed by seed_reconciliation) are exactly how the
+    // fabric re-learns settings, peer declarations, and the shard ledger
+    // after a restart. Sync-plane rows (`__shards`/`__peers`) are consumed
+    // here and never forwarded to the DB thread.
+    fabric.note_entry(change);
+    if change.table == SHARD_TABLE || change.table == PEER_DECL_TABLE {
+        return;
+    }
+
     if change.author_id == local_did {
         tracing::debug!(
             verse_id,
@@ -676,6 +734,29 @@ fn handle_inbound_row_change(
         tombstone = change.is_tombstone,
         "Inbound replicated row from peer"
     );
+
+    // Transfer routing, receive side (A13): a timeseries row for a shard this
+    // peer does not host is not applied locally. `mirror` retains everything
+    // (the pre-F6 behavior); an unknown shard (ledger not converged yet) also
+    // retains — over-retention is harmless under union semantics, while a
+    // wrongly-dropped hosted row would be data loss.
+    if change.table == "iot_reading" && !change.is_tombstone && !change.data.is_empty() {
+        if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&change.data) {
+            if let Some(shard) = ShardId::of_reading_row(&row, fabric.settings.bucket_width_ms) {
+                let key = shard.key();
+                if fabric.retention_for(&key, local_did) == Retention::Skip {
+                    tracing::debug!(
+                        verse_id,
+                        shard = %key,
+                        record_id = %change.record_id,
+                        "Timeseries row not retained — another peer hosts this shard (F6 retention)"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
     send_sync_event(
         evt_tx,
         SyncEvent::RowApplied {
@@ -783,6 +864,7 @@ async fn seed_reconciliation(
     local_did: &str,
     evt_tx: &SyncEventSender,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+    fabric: &mut VerseFabric,
 ) {
     let entries = match replicator.snapshot().await {
         Ok(entries) => entries,
@@ -800,8 +882,10 @@ async fn seed_reconciliation(
         // The literal same inbound apply path the live pump's rows take:
         // own-author rows filtered here (loop prevention — the docs author
         // is the endpoint identity, so our own snapshot entries carry our
-        // DID), survivors emitted + `try_send`'d to the DB thread.
-        handle_inbound_row_change(verse_id, &change, local_did, evt_tx, db_cmd_tx);
+        // DID), survivors emitted + `try_send`'d to the DB thread. The
+        // fabric is fed for every row (settings/peers/ledger re-learn) and
+        // the retention filter drops unhosted timeseries rows.
+        handle_inbound_row_change(fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx);
         forwarded += 1;
     }
     tracing::info!(
@@ -847,6 +931,8 @@ async fn handle_open_verse_replica(
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     blob_store: &BlobStoreHandle,
     pending: &mut PendingWrites,
+    fabric: &mut VerseFabric,
+    local_declaration: PeerDeclaration,
 ) {
     // Close existing replica (and its inbound pump) if any.
     if let Some(old) = replicas.remove(verse_id) {
@@ -949,12 +1035,21 @@ async fn handle_open_verse_replica(
     // downstream by the inbound handler like any other row. Skipped for a
     // failed online open (no document to snapshot).
     if replicator.open_error().is_none() {
-        seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx).await;
+        seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
     }
 
     let open_failed_reason = replicator.open_error();
     let open_failed = open_failed_reason.is_some();
     replicas.insert(verse_id.to_string(), Box::new(replicator));
+
+    // M2/F6: declare the local peer's shard-hosting capacity/seeder role and
+    // publish it as `__peers/{local_did}` so peers' placement plans see it.
+    // Skipped on a failed open (nothing publishes from a non-replicating
+    // replica — F20 finding 4).
+    if !open_failed {
+        fabric.note_local_declaration(local_did, local_declaration);
+        handle_publish_peer_declaration(replicas, fabric, local_did, verse_id).await;
+    }
 
     // Phase F: compute gossip topic for this verse. The banner reports the
     // replica's REAL state — never "online" for a failed open (F20 finding 4).
@@ -1002,6 +1097,7 @@ async fn handle_open_verse_replica(
                 handle_write_row_entry(
                     replicas,
                     pending,
+                    fabric,
                     blob_store,
                     local_did,
                     verse_id,
@@ -1054,6 +1150,7 @@ async fn handle_close_verse_replica(
 async fn handle_write_row_entry(
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
     pending: &mut PendingWrites,
+    fabric: &mut VerseFabric,
     blob_store: &BlobStoreHandle,
     author_did: &str,
     verse_id: &str,
@@ -1109,6 +1206,44 @@ async fn handle_write_row_entry(
         }
     };
 
+    // M2/F6 fabric bookkeeping on the OUTBOUND path (a local, already-admitted
+    // write being published): learn the verse's ts_* settings from its own
+    // manifest, and on the first sight of a timeseries row plan the shard's
+    // host set and publish its ledger row.
+    let mut ledger_publish: Option<(String, Vec<u8>)> = None;
+    if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&data) {
+        match table {
+            "verse" => {
+                fabric.note_verse_row(&row);
+            }
+            "iot_reading" => {
+                if let Some(shard) = ShardId::of_reading_row(&row, fabric.settings.bucket_width_ms)
+                {
+                    if let Some(ledger_bytes) = fabric.ensure_shard(&shard, data.len(), author_did)
+                    {
+                        ledger_publish = Some((shard.key(), ledger_bytes));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Publish the shard ledger row BEFORE the reading so a receiving peer
+    // learns the host set (its retention decision) before the row lands. The
+    // route itself is enforced on the receive side: the doc transport
+    // physically reaches every subscriber, and each peer's retention
+    // decision applies only the shards it hosts.
+    if let Some((shard_key, ledger_bytes)) = ledger_publish {
+        if let Err(e) = repl.write_row(SHARD_TABLE, &shard_key, &ledger_bytes).await {
+            tracing::warn!(
+                verse_id,
+                shard = %shard_key,
+                "Shard ledger publish failed: {e}"
+            );
+        }
+    }
+
     if let Err(e) = repl.write_row(table, record_id, &data).await {
         tracing::error!(
             verse_id,
@@ -1118,6 +1253,49 @@ async fn handle_write_row_entry(
             "WriteRowEntry: replicator write failed: {e}"
         );
     }
+}
+
+/// Publish the local peer's `__peers/{local_did}` declaration row (M2/F6).
+///
+/// Called on replica open and on every [`SyncCommand::SetShardDeclaration`]
+/// for each open verse, so peers' placement plans converge on our capacity
+/// and seeder role.
+async fn handle_publish_peer_declaration(
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    fabric: &VerseFabric,
+    local_did: &str,
+    verse_id: &str,
+) {
+    let Some(bytes) = fabric.local_peer_row(local_did) else {
+        return;
+    };
+    let Some(repl) = replicas.get(verse_id) else {
+        return;
+    };
+    if let Err(e) = repl.write_row(PEER_DECL_TABLE, local_did, &bytes).await {
+        tracing::warn!(verse_id, "Peer declaration publish failed: {e}");
+    }
+}
+
+/// Handle [`SyncCommand::SetShardDeclaration`] (M2/F6): update the local
+/// declaration in every open verse's fabric and republish it.
+async fn handle_set_shard_declaration(
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    fabrics: &mut HashMap<String, VerseFabric>,
+    local_did: &str,
+    declaration: PeerDeclaration,
+) {
+    for (verse_id, fabric) in fabrics.iter_mut() {
+        fabric.note_local_declaration(local_did, declaration);
+        if replicas.contains_key(verse_id) {
+            handle_publish_peer_declaration(replicas, fabric, local_did, verse_id).await;
+        }
+    }
+    tracing::info!(
+        capacity_bytes = ?declaration.capacity_bytes,
+        seeder = declaration.seeder,
+        "Shard declaration updated"
+    );
 }
 
 /// Derive a namespace ID from a petal ID.
@@ -1889,7 +2067,14 @@ mod tests {
             data: payload.clone(),
         };
 
-        handle_inbound_row_change("verse-1", &change, "did:key:local", &evt_tx, &Some(db_tx));
+        handle_inbound_row_change(
+            &mut VerseFabric::default(),
+            "verse-1",
+            &change,
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+        );
 
         // Event seam: RowApplied is emitted for the UI layer.
         let evt = evt_rx.try_recv().expect("RowApplied event expected");
@@ -1933,7 +2118,14 @@ mod tests {
             data: br#"{"name":"own echo"}"#.to_vec(),
         };
 
-        handle_inbound_row_change("verse-9", &change, "did:key:local", &evt_tx, &Some(db_tx));
+        handle_inbound_row_change(
+            &mut VerseFabric::default(),
+            "verse-9",
+            &change,
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+        );
 
         assert!(
             evt_rx.try_recv().is_err(),
@@ -1958,7 +2150,14 @@ mod tests {
             data: Vec::new(),
         };
 
-        handle_inbound_row_change("verse-2", &change, "did:key:local", &evt_tx, &None);
+        handle_inbound_row_change(
+            &mut VerseFabric::default(),
+            "verse-2",
+            &change,
+            "did:key:local",
+            &evt_tx,
+            &None,
+        );
 
         assert!(matches!(
             evt_rx.try_recv(),
@@ -1992,7 +2191,14 @@ mod tests {
             .unwrap();
 
         let before = inbound_apply_drop_count();
-        handle_inbound_row_change("verse-3", &change, "did:key:local", &evt_tx, &Some(db_tx));
+        handle_inbound_row_change(
+            &mut VerseFabric::default(),
+            "verse-3",
+            &change,
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+        );
         assert!(
             inbound_apply_drop_count() > before,
             "a full DB channel must drop-and-count, never block the sync thread"
@@ -2026,6 +2232,8 @@ mod tests {
             &None,
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
 
@@ -2050,6 +2258,8 @@ mod tests {
             &None,
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
         assert_eq!(replicas.len(), 1);
@@ -2088,6 +2298,8 @@ mod tests {
             &None,
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
 
@@ -2097,23 +2309,305 @@ mod tests {
             .expect("mock write succeeds");
 
         // The pump must forward the write into the aggregated inbound stream.
-        let (verse_id, change) = inbound_rx
-            .recv()
-            .await
-            .expect("pump forwarded the row into the inbound stream");
+        // The open also published our `__peers` declaration row (F6), so drain
+        // that sync-plane row first.
+        let mut node_row = None;
+        for _ in 0..4 {
+            let (verse_id, change) = inbound_rx
+                .recv()
+                .await
+                .expect("pump forwarded rows into the inbound stream");
+            if change.table == "node" {
+                node_row = Some((verse_id, change));
+                break;
+            }
+        }
+        let (verse_id, change) = node_row.expect("pump forwarded the node row");
         assert_eq!(verse_id, "verse-pump");
         assert_eq!(change.record_id, "node-1");
         assert_eq!(change.data, br#"{"name":"written locally"}"#.to_vec());
 
         // The seam filters our own author (mock echo) before any DB apply.
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
-        handle_inbound_row_change(&verse_id, &change, "did:key:local", &evt_tx, &None);
+        handle_inbound_row_change(
+            &mut VerseFabric::default(),
+            &verse_id,
+            &change,
+            "did:key:local",
+            &evt_tx,
+            &None,
+        );
         assert!(
             evt_rx.try_recv().is_err(),
             "own-author rows are filtered at the seam"
         );
 
         handle_close_verse_replica(&mut replicas, &mut inbound_pumps, "verse-pump").await;
+    }
+
+    // -------------------------------------------------------------------------
+    // M2/F6: timeseries fabric wiring (A13 mode-switching, A14 placement)
+    // -------------------------------------------------------------------------
+
+    /// A reading published while the verse is in `balanced` mode plans its
+    /// shard across R peers and publishes a `__shards/{key}` ledger row into
+    /// the verse's doc — mode honored by placement (A13/A14) at the sync-thread
+    /// seam, with the settings learned from the verse manifest row itself.
+    #[tokio::test]
+    async fn write_row_entry_publishes_shard_ledger_per_mode() {
+        use crate::sharding::ShardLedgerEntry;
+        use fe_runtime::timeseries::TimeseriesMode;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store: BlobStoreHandle =
+            Arc::new(crate::FsBlobStore::new(tmp.path().join("blobs")).expect("fs blob store"));
+        let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
+        let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
+        let mut pending = PendingWrites::default();
+
+        // Two peers declared: the local one and a remote one → R=2 is reachable.
+        let mut fabric = VerseFabric::default();
+        fabric.note_peer_declaration("did:key:peer-b", PeerDeclaration::default());
+
+        handle_open_verse_replica(
+            &mut replicas,
+            &mut inbound_pumps,
+            inbound_tx,
+            engine_holder,
+            "v-shard",
+            "0".repeat(64).as_str(),
+            None,
+            &[],
+            "did:key:local",
+            &evt_tx,
+            &None,
+            &blob_store,
+            &mut pending,
+            &mut fabric,
+            PeerDeclaration::default(),
+        )
+        .await;
+
+        // The verse manifest carries the fabric settings (balanced, R=2).
+        let verse_row = br#"{"verse_id":"v-shard","name":"Sharded","ts_mode":"balanced","ts_replication_factor":2,"ts_bucket_width_ms":86400000}"#;
+        let verse_hash = blob_store.add_blob(verse_row).expect("verse blob");
+        handle_write_row_entry(
+            &replicas,
+            &mut pending,
+            &mut fabric,
+            &blob_store,
+            "did:key:local",
+            "v-shard",
+            "verse",
+            "v-shard",
+            &verse_hash,
+        )
+        .await;
+        assert_eq!(
+            fabric.settings.mode,
+            TimeseriesMode::Balanced,
+            "settings learned from the outbound verse manifest"
+        );
+        assert_eq!(fabric.settings.replication_factor, 2);
+
+        // A reading maps to exactly one shard → the ledger row is published.
+        let reading = br#"{"reading_id":"r-1","node_id":"a1","petal_id":"p1","recorded_at_ms":1752580800000}"#;
+        let reading_hash = blob_store.add_blob(reading).expect("reading blob");
+        handle_write_row_entry(
+            &replicas,
+            &mut pending,
+            &mut fabric,
+            &blob_store,
+            "did:key:local",
+            "v-shard",
+            "iot_reading",
+            "r-1",
+            &reading_hash,
+        )
+        .await;
+
+        let snap = replicas
+            .get("v-shard")
+            .expect("replica present")
+            .snapshot()
+            .await
+            .expect("snapshot");
+        let ledger_row = snap
+            .iter()
+            .find(|c| c.table == SHARD_TABLE)
+            .expect("a shard ledger row was published to the doc");
+        let entry: ShardLedgerEntry =
+            serde_json::from_slice(&ledger_row.data).expect("ledger json");
+        assert_eq!(entry.shard, "p1/a1/20284");
+        assert_eq!(entry.hosts.len(), 2, "balanced R=2 places two hosts");
+        assert_eq!(entry.mode, TimeseriesMode::Balanced);
+        assert!(entry.hosts.contains(&"did:key:local".to_string()));
+        assert!(entry.hosts.contains(&"did:key:peer-b".to_string()));
+
+        // Re-publishing the same reading never re-plans (one ledger row).
+        handle_write_row_entry(
+            &replicas,
+            &mut pending,
+            &mut fabric,
+            &blob_store,
+            "did:key:local",
+            "v-shard",
+            "iot_reading",
+            "r-1",
+            &reading_hash,
+        )
+        .await;
+        let snap = replicas.get("v-shard").unwrap().snapshot().await.unwrap();
+        let ledger_rows = snap.iter().filter(|c| c.table == SHARD_TABLE).count();
+        assert_eq!(ledger_rows, 1, "the ledger row is written once per shard");
+    }
+
+    /// A timeseries row for a shard this peer does not host is NOT applied
+    /// (A13 transfer routing, receive side) — while `mirror` retains
+    /// everything, and an unknown shard retains (the safe default).
+    #[tokio::test]
+    async fn inbound_timeseries_row_retention_follows_mode() {
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
+        let reading = br#"{"reading_id":"r-1","node_id":"a1","petal_id":"p1","recorded_at_ms":1752580800000}"#;
+        let change = RowChange {
+            table: "iot_reading".to_string(),
+            record_id: "r-1".to_string(),
+            content_hash: [0u8; 32],
+            author_id: "did:key:peer-b".to_string(),
+            timestamp: 1,
+            is_tombstone: false,
+            data: reading.to_vec(),
+        };
+
+        // sharded mode with a converged ledger placing the shard on peer-b
+        // only → the local peer is not a host → skip.
+        let mut fabric = VerseFabric::default();
+        fabric.note_verse_row(&serde_json::json!({
+            "ts_mode": "sharded", "ts_bucket_width_ms": 86_400_000
+        }));
+        fabric.note_shard_row(&serde_json::json!({
+            "shard": "p1/a1/20284", "hosts": ["did:key:peer-b"],
+            "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 86_400_000,
+            "range_start_ms": 0, "range_end_ms": 0, "row_count": 1, "size_bytes": 1
+        }));
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &change,
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx.clone()),
+        );
+        assert!(
+            evt_rx.try_recv().is_err(),
+            "a non-hosted shard's row is not applied (no RowApplied)"
+        );
+        assert!(
+            db_rx.try_recv().is_err(),
+            "no DB apply for a non-hosted shard"
+        );
+
+        // The same row when the local peer IS the host applies normally.
+        let mut fabric = VerseFabric::default();
+        fabric.note_verse_row(&serde_json::json!({
+            "ts_mode": "sharded", "ts_bucket_width_ms": 86_400_000
+        }));
+        fabric.note_shard_row(&serde_json::json!({
+            "shard": "p1/a1/20284", "hosts": ["did:key:local"],
+            "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 86_400_000,
+            "range_start_ms": 0, "range_end_ms": 0, "row_count": 1, "size_bytes": 1
+        }));
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &change,
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+        );
+        assert!(
+            matches!(evt_rx.try_recv(), Ok(SyncEvent::RowApplied { .. })),
+            "a hosted shard's row applies"
+        );
+        assert!(
+            db_rx.try_recv().is_ok(),
+            "hosted shard row rides the DB apply path"
+        );
+
+        // Mirror mode (default) retains everything — pre-F6 behavior.
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let mut mirror = VerseFabric::default();
+        handle_inbound_row_change(&mut mirror, "v-1", &change, "did:key:local", &evt_tx, &None);
+        assert!(
+            matches!(evt_rx.try_recv(), Ok(SyncEvent::RowApplied { .. })),
+            "mirror mode retains every shard"
+        );
+    }
+
+    /// `__shards`/`__peers` rows are sync-plane: the seam consumes them into
+    /// the fabric and NEVER forwards them to the DB thread.
+    #[tokio::test]
+    async fn sync_plane_rows_never_reach_the_db_thread() {
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
+        let mut fabric = VerseFabric::default();
+
+        let peer_row = RowChange {
+            table: PEER_DECL_TABLE.to_string(),
+            record_id: "did:key:peer-b".to_string(),
+            content_hash: [0u8; 32],
+            author_id: "did:key:peer-b".to_string(),
+            timestamp: 1,
+            is_tombstone: false,
+            data: br#"{"capacity_bytes":1000,"seeder":true}"#.to_vec(),
+        };
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &peer_row,
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx.clone()),
+        );
+        assert_eq!(
+            fabric
+                .peers
+                .get("did:key:peer-b")
+                .and_then(|p| p.capacity_bytes),
+            Some(1000),
+            "peer declaration consumed into the fabric"
+        );
+
+        let shard_row = RowChange {
+            table: SHARD_TABLE.to_string(),
+            record_id: "p1/a1/1".to_string(),
+            content_hash: [0u8; 32],
+            author_id: "did:key:peer-b".to_string(),
+            timestamp: 2,
+            is_tombstone: false,
+            data: br#"{"shard":"p1/a1/1","hosts":["did:key:peer-b"],"mode":"sharded","replication_factor":1,"bucket_width_ms":1000,"range_start_ms":1000,"range_end_ms":2000,"row_count":1,"size_bytes":10}"#.to_vec(),
+        };
+        handle_inbound_row_change(
+            &mut fabric,
+            "v-1",
+            &shard_row,
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+        );
+        assert!(fabric.shards.contains_key("p1/a1/1"), "ledger row consumed");
+        assert!(
+            evt_rx.try_recv().is_err(),
+            "sync-plane rows emit no RowApplied"
+        );
+        assert!(
+            db_rx.try_recv().is_err(),
+            "sync-plane rows never reach the DB thread"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -2203,7 +2697,15 @@ mod tests {
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(16);
         let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(16);
         let fixed = FixedSnapshot(entries);
-        seed_reconciliation(&fixed, "verse-1", "did:key:local", &evt_tx, &Some(db_tx)).await;
+        seed_reconciliation(
+            &fixed,
+            "verse-1",
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+            &mut VerseFabric::default(),
+        )
+        .await;
 
         // Events: the two peer-authored rows emit RowApplied; the own-author
         // row is filtered at the seam (no event, no DbCommand).
@@ -2240,7 +2742,15 @@ mod tests {
         let repl = MockVerseReplicator::new("did:key:peer");
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(4);
         let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(4);
-        seed_reconciliation(&repl, "verse-empty", "did:key:local", &evt_tx, &Some(db_tx)).await;
+        seed_reconciliation(
+            &repl,
+            "verse-empty",
+            "did:key:local",
+            &evt_tx,
+            &Some(db_tx),
+            &mut VerseFabric::default(),
+        )
+        .await;
         assert!(evt_rx.try_recv().is_err(), "no events — nothing forwarded");
         assert!(db_rx.try_recv().is_err(), "no DbCommands — nothing applied");
     }
@@ -2301,6 +2811,8 @@ mod tests {
             &Some(db_tx),
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
 
@@ -2359,6 +2871,8 @@ mod tests {
             &Some(db_tx),
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
 
@@ -2652,6 +3166,7 @@ mod tests {
         handle_write_row_entry(
             &replicas,
             &mut pending,
+            &mut VerseFabric::default(),
             &blob_store,
             "did:key:local",
             "v-race",
@@ -2681,6 +3196,8 @@ mod tests {
             &None,
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
         assert!(pending.is_empty(), "the open flushed the retained write");
@@ -2704,6 +3221,7 @@ mod tests {
         handle_write_row_entry(
             &replicas,
             &mut pending,
+            &mut VerseFabric::default(),
             &blob_store,
             "did:key:local",
             "v-race",
@@ -2776,6 +3294,7 @@ mod tests {
         handle_write_row_entry(
             &replicas,
             &mut pending,
+            &mut VerseFabric::default(),
             &blob_store,
             "did:key:local",
             "v-flaky",
@@ -2801,6 +3320,8 @@ mod tests {
             &None,
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
         assert!(
@@ -2831,6 +3352,8 @@ mod tests {
             &None,
             &blob_store,
             &mut pending,
+            &mut VerseFabric::default(),
+            PeerDeclaration::default(),
         )
         .await;
         assert!(

@@ -39,6 +39,11 @@ pub(super) struct DescriptorCaches<'w, 's> {
     /// Proposal-mirror rehydration target for `PetalTerrainLoaded` (data-loss
     /// fix: the mirror must be seeded from the doc before any embed persists).
     proposal_state: ResMut<'w, crate::terrain_proposal_state::ProposalEditState>,
+    /// M2/F6: per-verse timeseries fabric settings surface state, fed by
+    /// `HierarchyLoaded` + the `VerseTimeseriesSettingsSet` echo. Bundled here
+    /// (not a 17th top-level param) — `apply_db_results` is already at Bevy's
+    /// 16-`SystemParam` ceiling.
+    ts_settings: ResMut<'w, crate::timeseries_settings::TimeseriesSettingsState>,
     spawned: Query<
         'w,
         's,
@@ -84,6 +89,7 @@ pub(super) fn apply_db_results(
                 &mut pending_api,
                 &mut already_spawned,
                 mesh_budget_exceeded,
+                &mut caches.ts_settings,
             ),
             DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
             DbResult::DatabaseReset { .. } => {
@@ -218,6 +224,20 @@ pub(super) fn apply_db_results(
                 verse_id,
                 default_access,
             } => roles::handle_verse_default_access_set(verse_id, default_access),
+            // M2/F6: authoritative persisted timeseries settings — fold into the
+            // settings surface's per-verse map (A13).
+            DbResult::VerseTimeseriesSettingsSet {
+                verse_id,
+                mode,
+                replication_factor,
+                bucket_width_ms,
+            } => roles::handle_verse_timeseries_settings_set(
+                verse_id,
+                mode,
+                *replication_factor,
+                *bucket_width_ms,
+                &mut caches.ts_settings,
+            ),
             DbResult::FractalDescriptionUpdated {
                 fractal_id,
                 description,

@@ -55,7 +55,10 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   `EntityRenamed`, `EntityDeleted`.
 - `nodes.rs` — single-node lifecycle: `GltfImported`, `NodeCreated` (pen
   auto-create flush + Paths-tab re-query), `NodeDeleted`.
-- `roles.rs` — invites, peer roles, local role, log-only acks.
+- `roles.rs` — invites, peer roles, local role, log-only acks, and (M2/F6)
+  `VerseTimeseriesSettingsSet` — the authoritative echo that updates
+  `TimeseriesSettingsState` so the settings surface never shows an
+  optimistic guess.
 - `tokens.rs` — API token mint/revoke/list + `tokens_to_entries` /
   `refresh_inspector_tokens`.
 - `properties.rs` — `NodeProperties{Loaded,Set,Deleted}` +
@@ -68,6 +71,15 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   GIS-panel > Paths-tab > Query-tab claim priority.
 - `fields.rs` / `terrain.rs` — field-def lists, petal terrain docs. `terrain.rs`
   also rehydrates `ProposalEditState` (5th param via DescriptorCaches.proposal_state).
+
+**`DescriptorCaches` is also the SystemParam-overflow valve (M2/F6).**
+`apply_db_results` sits at Bevy's 16-`SystemParam` ceiling, so any new
+resource it needs goes INTO the `DescriptorCaches` bundle rather than onto
+the system's parameter list: `proposal_state` (terrain rehydration) and
+`ts_settings` (`TimeseriesSettingsState` — `hierarchy.rs` folds each verse's
+`timeseries` into it on `HierarchyLoaded`; `roles.rs` writes the echo into
+it). A 17th top-level param is a compile error (E0599 on `.chain()`), not a
+style issue — route through the bundle.
 
 Handlers take the minimal `&`/`&mut` param set (no Bevy system params), so
 they unit-test without spinning up ECS — the smoke tests live in

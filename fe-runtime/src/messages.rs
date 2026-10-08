@@ -234,6 +234,17 @@ pub enum DbCommand {
         verse_id: String,
         default_access: String,
     },
+    /// Set a verse's timeseries replication settings (M2/F6 — A13): mode
+    /// (`mirror`|`sharded`|`balanced`), the durability slider `R`, and the
+    /// shard bucket width. Persisted on the verse row's `ts_*` columns and
+    /// re-emitted as the verse manifest so peers and the sync thread's
+    /// fabric converge on the same settings through the existing seams.
+    SetVerseTimeseriesSettings {
+        verse_id: String,
+        mode: String,
+        replication_factor: u32,
+        bucket_width_ms: u64,
+    },
     /// Update a fractal's description.
     UpdateFractalDescription {
         fractal_id: String,
@@ -567,6 +578,14 @@ pub enum DbResult {
         verse_id: String,
         default_access: String,
     },
+    /// Echo of `SetVerseTimeseriesSettings` — the authoritative persisted
+    /// values (the handler sanitizes), for the settings surface to display.
+    VerseTimeseriesSettingsSet {
+        verse_id: String,
+        mode: String,
+        replication_factor: u32,
+        bucket_width_ms: u64,
+    },
     FractalDescriptionUpdated {
         fractal_id: String,
         description: String,
@@ -760,6 +779,9 @@ pub struct VerseHierarchyData {
     pub name: String,
     /// Phase E: hex-encoded namespace ID for the verse's iroh-docs replica.
     pub namespace_id: Option<String>,
+    /// M2/F6: the verse's timeseries replication settings (ts_* columns),
+    /// so the settings surface and the UI tree speak the persisted truth.
+    pub timeseries: crate::timeseries::VerseTimeseriesSettings,
     pub fractals: Vec<FractalHierarchyData>,
 }
 

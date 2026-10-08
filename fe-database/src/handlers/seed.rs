@@ -131,6 +131,9 @@ pub async fn seed_default_data(
             created_at: now.clone(),
             namespace_id: None,
             default_access: "viewer".to_string(),
+            ts_mode: "mirror".to_string(),
+            ts_replication_factor: 1,
+            ts_bucket_width_ms: fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS as i64,
         },
     )
     .await?;

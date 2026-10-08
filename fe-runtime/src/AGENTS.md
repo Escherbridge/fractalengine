@@ -62,6 +62,37 @@ cross-check hashes — that is why `fe-runtime` takes a direct `blake3`
 dependency despite the trait itself needing none. If that dep weight ever
 becomes an issue, move the mock into `fe-sync` instead.
 
+## §timeseries (M2/F6)
+
+`timeseries.rs` is the canonical per-verse timeseries-fabric vocabulary:
+`TimeseriesMode` (mirror/sharded/balanced) and `VerseTimeseriesSettings`
+(mode + `replication_factor` R + `bucket_width_ms`, epoch-aligned). It lives
+here for the same reason `RoleLevel` lives in fe-policy: every layer needs it
+(fe-database persists and re-emits the `ts_*` verse-row columns, fe-sync's
+fabric/placement/retention dispatch on it, fe-ui renders it) and fe-runtime
+is the lowest common dependency — one definition, no drift, no cycle.
+
+- `mirror` is the `#[default]` **and** the pre-F6 behavior exactly (every
+  peer holds every shard), so a fresh verse and an F5-era peer are
+  byte-compatible with the F6 fabric.
+- `sanitized(mode, R, bucket)` validates raw settings input and returns a
+  human-readable reason on bad input — the DB handler rejects with it; row
+  parsing never calls it (see below).
+- `from_verse_row` parses the `ts_*` columns with **clamping, never
+  rejection**: missing or invalid fields fall back to the mirror defaults,
+  because an inbound verse manifest must never fail to converge a fabric
+  over a settings typo (a manifest is data, not a form submission). This is
+  the same asymmetric-validation split fe-sync's `ShardLedgerEntry::from_row`
+  uses. The pre-F6 row (no `ts_*` at all) parses as pure defaults.
+- `serde` shape: the enum serializes lowercase (`"mirror"`|`"sharded"`|
+  `"balanced"`, `#[serde(rename_all = "lowercase")]`) — the verse-row column
+  value, the shard-ledger row value, and the dump-JSON value are all the
+  same label, matched by `as_str`/`parse` (not serde) on the DB-column paths
+  where the value rides a plain `String`.
+- `DEFAULT_BUCKET_WIDTH_MS` = 1 day. Bucket indices are
+  `recorded_at_ms.div_euclid(bucket_width_ms)` (fe-sync `ShardId`), so the
+  default aligns buckets to day boundaries.
+
 ## §api-reply-correlation
 
 `app.rs::PendingApiRequests` holds the API threads' pending `DbResult` waiters.

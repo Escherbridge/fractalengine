@@ -17,6 +17,7 @@ pub mod rbac;
 pub mod replicated_row;
 pub mod seed;
 pub mod transform;
+pub mod verse_settings;
 
 use crossbeam::channel::Sender;
 use fe_runtime::messages::DbResult;

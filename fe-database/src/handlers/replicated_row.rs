@@ -845,6 +845,79 @@ mod tests {
         assert_eq!(rows[0]["default_access"], "none");
     }
 
+    /// M2/F6 (A13): a verse manifest carrying the `ts_*` settings columns
+    /// applies through the inbound path and READS BACK — this is how a
+    /// settings change converges to every peer (the DB handler re-emits the
+    /// manifest; each peer's inbound apply persists it).
+    #[tokio::test]
+    async fn inbound_verse_manifest_with_timeseries_settings_applies_and_reads_back() {
+        let db = schema_db().await;
+        let row = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "verse-ts",
+            "name": "Sharded Verse",
+            "created_by": "did:key:peer-a",
+            "created_at": "2026-10-07T00:00:00Z",
+            "default_access": "viewer",
+            "ts_mode": "balanced",
+            "ts_replication_factor": 2,
+            "ts_bucket_width_ms": 3_600_000,
+        }))
+        .unwrap();
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "verse-ts",
+            "verse",
+            "verse-ts",
+            &row,
+            "did:key:peer-a",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+
+        // READ-BACK: the settings persisted on the peer's verse row.
+        let rows = select_json(
+            &db,
+            "SELECT ts_mode, ts_replication_factor, ts_bucket_width_ms FROM verse \
+             WHERE verse_id = 'verse-ts'",
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["ts_mode"], "balanced");
+        assert_eq!(rows[0]["ts_replication_factor"], 2);
+        assert_eq!(rows[0]["ts_bucket_width_ms"], 3_600_000);
+
+        // A settings CHANGE re-delivered as a fresh manifest MERGES over the
+        // existing row (the update leg).
+        let changed = serde_json::to_vec(&serde_json::json!({
+            "verse_id": "verse-ts",
+            "name": "Sharded Verse",
+            "created_by": "did:key:peer-a",
+            "created_at": "2026-10-07T00:00:00Z",
+            "default_access": "viewer",
+            "ts_mode": "sharded",
+            "ts_replication_factor": 1,
+            "ts_bucket_width_ms": 3_600_000,
+        }))
+        .unwrap();
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "verse-ts",
+            "verse",
+            "verse-ts",
+            &changed,
+            "did:key:peer-a",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        let rows = select_json(&db, "SELECT ts_mode FROM verse WHERE verse_id = 'verse-ts'").await;
+        assert_eq!(rows[0]["ts_mode"], "sharded");
+    }
+
     #[tokio::test]
     async fn node_row_with_geojson_position_applies_geometry_safe() {
         let db = schema_db().await;

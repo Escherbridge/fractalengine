@@ -282,6 +282,7 @@ mod tests {
                 id: verse_id.to_string(),
                 name: "Runtime Verse".into(),
                 namespace_id: None,
+                timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
                 fractals: Vec::new(),
             }],
         });
@@ -343,12 +344,14 @@ mod tests {
                     id: verse_id.to_string(),
                     name: "Startup Verse".into(),
                     namespace_id: None,
+                    timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
                     fractals: Vec::new(),
                 },
                 VerseHierarchyData {
                     id: other_id.to_string(),
                     name: "No Secret Verse".into(),
                     namespace_id: None,
+                    timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
                     fractals: Vec::new(),
                 },
             ],
@@ -384,6 +387,7 @@ mod tests {
                 id: verse_id.to_string(),
                 name: "Startup Verse".into(),
                 namespace_id: None,
+                timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
                 fractals: Vec::new(),
             }],
         });

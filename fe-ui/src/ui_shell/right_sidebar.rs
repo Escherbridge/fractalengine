@@ -199,6 +199,9 @@ pub fn render_right_sidebar(
     // ProposalReport's `world_scale`) and app settings (Settings section).
     petal_map: &mut PetalMapState,
     app_settings: &mut AppSettings,
+    // M2/F6: per-verse timeseries fabric settings (mode + R slider + bucket
+    // width) mirrored from the verse row; the section edits it.
+    ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
     // The active tool — what the Options section dispatches on, and the source
     // of the live selection/gimbal readouts. Read-only here: `activate` is the
     // single writer (`plugin.rs`).
@@ -259,7 +262,9 @@ pub fn render_right_sidebar(
             petal_map.world_scale,
             petal_map.terrain_json.as_ref(),
         ),
-        Some(RightSidebarSection::Settings) => render_settings_section(ctx, state, app_settings),
+        Some(RightSidebarSection::Settings) => {
+            render_settings_section(ctx, state, app_settings, ts_settings, nav, db_tx)
+        }
         Some(RightSidebarSection::Maps) => render_maps_section(
             ctx,
             state,
@@ -465,6 +470,9 @@ fn render_settings_section(
     ctx: &egui::Context,
     state: &mut RightSidebarState,
     app_settings: &mut AppSettings,
+    ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
+    nav: &NavigationManager,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
 ) {
     app_settings.render_distance = if app_settings.render_distance.is_finite() {
         app_settings.render_distance.clamp(1.0, 1_000_000.0)
@@ -522,7 +530,181 @@ fn render_settings_section(
             .color(theme::TEXT_MUTED)
             .italics(),
         );
+
+        // --- Timeseries fabric (M2/F6 — per active verse) ---
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("Timeseries Fabric")
+                .strong()
+                .color(theme::TEXT_SECTION),
+        );
+        ui.add_space(2.0);
+        render_timeseries_fabric_controls(ui, ts_settings, nav, db_tx);
     });
+}
+
+/// The per-verse timeseries-fabric controls (M2/F6 — A13): mode picker, the
+/// `balanced` durability slider R (1..N; R clamps to the reachable peers at
+/// placement), and the shard bucket width. Writes go out as
+/// `DbCommand::SetVerseTimeseriesSettings`; the persisted values come back via
+/// `VerseTimeseriesSettingsSet`, so this surface never shows an optimistic
+/// guess. No active verse → a calm hint (ui_ux §7), never blank.
+fn render_timeseries_fabric_controls(
+    ui: &mut egui::Ui,
+    ts_settings: &mut crate::timeseries_settings::TimeseriesSettingsState,
+    nav: &NavigationManager,
+    db_tx: &crossbeam::channel::Sender<DbCommand>,
+) {
+    use crate::timeseries_settings as tss;
+
+    let Some(verse_id) = nav.active_verse_id.as_deref() else {
+        ui.label(
+            egui::RichText::new("Select a verse to configure its timeseries fabric.")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
+        return;
+    };
+
+    let current = ts_settings.settings_for(verse_id);
+
+    let send = |mode: fe_runtime::timeseries::TimeseriesMode, r: u32, bucket_ms: u64| {
+        if db_tx
+            .send(DbCommand::SetVerseTimeseriesSettings {
+                verse_id: verse_id.to_string(),
+                mode: mode.as_str().to_string(),
+                replication_factor: r,
+                bucket_width_ms: bucket_ms,
+            })
+            .is_err()
+        {
+            bevy::log::warn!(
+                "db_tx channel closed — timeseries settings change dropped for verse {verse_id}"
+            );
+        }
+    };
+
+    // Mode picker (radio per mode). The label names the placement contract so
+    // the user knows what each mode does without a doc.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Mode").small().color(theme::TEXT_DIM));
+    });
+    for mode in [
+        fe_runtime::timeseries::TimeseriesMode::Mirror,
+        fe_runtime::timeseries::TimeseriesMode::Sharded,
+        fe_runtime::timeseries::TimeseriesMode::Balanced,
+    ] {
+        let selected = current.mode == mode;
+        if ui
+            .radio(selected, tss::mode_label(mode))
+            .on_hover_text(mode_tooltip(mode))
+            .clicked()
+            && !selected
+        {
+            // Mode change keeps R and the bucket width as-is; R is clamped by
+            // the planner for modes that do not use it.
+            send(mode, current.replication_factor, current.bucket_width_ms);
+        }
+    }
+
+    ui.add_space(4.0);
+    // Durability slider R — meaningful only in `balanced` (sharded is R=1,
+    // mirror ignores R). Disabled with an explanatory hint elsewhere.
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Durability (R)")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        let enabled = tss::replication_slider_enabled(current.mode);
+        let mut r = tss::clamp_replication_factor(current.replication_factor);
+        let response = ui.add_enabled(
+            enabled,
+            egui::Slider::new(&mut r, 1..=tss::MAX_REPLICATION_FACTOR)
+                .integer()
+                .suffix(" peers/shard"),
+        );
+        if enabled {
+            if response
+                .on_hover_text(
+                    "Replication factor for balanced mode. R is a request: placement clamps it to the peers a shard can actually reach.",
+                )
+                .changed()
+            {
+                send(current.mode, r, current.bucket_width_ms);
+            }
+        } else {
+            response.on_disabled_hover_text(
+                "R applies to balanced mode only (sharded = one host, mirror = all).",
+            );
+        }
+    });
+
+    ui.add_space(4.0);
+    // Shard bucket width (ms) — epoch-aligned; a reading maps to one shard by
+    // (anchor, recorded_at_ms / width). Presets beside a numeric field.
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Bucket width")
+                .small()
+                .color(theme::TEXT_DIM),
+        );
+        let mut buf_u64 = ts_settings.bucket_width_buffer(verse_id);
+        if ui
+            .add(
+                egui::DragValue::new(&mut buf_u64)
+                    .speed(60_000.0)
+                    .range(1..=u64::MAX)
+                    .suffix(" ms"),
+            )
+            .on_hover_text("Shard time-bucket width in milliseconds (epoch-aligned)")
+            .changed()
+        {
+            ts_settings.set_bucket_width_buffer(verse_id, buf_u64);
+            send(
+                current.mode,
+                current.replication_factor,
+                ts_settings.bucket_width_to_commit(),
+            );
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        for (ms, label) in tss::BUCKET_WIDTH_PRESETS {
+            let selected = current.bucket_width_ms == ms;
+            if ui.selectable_label(selected, label).clicked() && !selected {
+                ts_settings.set_bucket_width_buffer(verse_id, ms);
+                send(current.mode, current.replication_factor, ms);
+            }
+        }
+    });
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(
+            "Shard = (petal, anchor, time bucket). Placement is capacity-aware: the smallest peer never caps total data — overflow spills to fallback/relay seeders.",
+        )
+        .small()
+        .color(theme::TEXT_MUTED)
+        .italics(),
+    );
+}
+
+/// Hover text explaining what a mode does (D2 #1).
+fn mode_tooltip(mode: fe_runtime::timeseries::TimeseriesMode) -> &'static str {
+    use fe_runtime::timeseries::TimeseriesMode;
+    match mode {
+        TimeseriesMode::Mirror => {
+            "Every peer holds every shard (full replication). Highest durability, highest storage."
+        }
+        TimeseriesMode::Sharded => {
+            "Each peer hosts its declared portion only — one host per shard, capacity-aware."
+        }
+        TimeseriesMode::Balanced => {
+            "Each shard lives on R peers chosen by capacity-aware placement (durability slider below)."
+        }
+    }
 }
 
 /// Maps section (FR-2, D-A10) — the former `ActiveDialog::HexonManager` floating

@@ -663,6 +663,9 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<ViewportRect>();
         app.init_resource::<UiManager>();
         app.init_resource::<PetalMapState>();
+        // M2/F6: per-verse timeseries fabric settings surface (mirrors the
+        // verse row's ts_* columns; see timeseries_settings.rs).
+        app.init_resource::<crate::timeseries_settings::TimeseriesSettingsState>();
         // Application settings (D-78) + terrain-proposal editor state (FR-5).
         app.init_resource::<crate::settings::AppSettings>();
         app.init_resource::<crate::terrain_proposal_state::ProposalEditState>();
@@ -807,6 +810,8 @@ struct MiscUiParams<'w> {
     // FR-5/D-78: terrain proposal editor state + app settings (w4b resources).
     proposal_state: ResMut<'w, crate::terrain_proposal_state::ProposalEditState>,
     app_settings: ResMut<'w, crate::settings::AppSettings>,
+    // M2/F6: per-verse timeseries fabric settings surface state.
+    ts_settings: ResMut<'w, crate::timeseries_settings::TimeseriesSettingsState>,
     // Wave-1 scaffold: sculpt-tool state threaded to the TerrainTools section
     // (T3 fold). Mirrors `proposal_state`; distinct schedule from
     // `process_ui_actions`'s `ResMut`, so no resource-access conflict.
@@ -880,6 +885,7 @@ fn gardener_ui_system(
         &mut misc.tool_panel,
         &mut misc.proposal_state,
         &mut misc.app_settings,
+        &mut misc.ts_settings,
         &mut misc.sculpt_state,
         &misc.stamp_state,
         &mut ui_shell.topbar,

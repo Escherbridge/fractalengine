@@ -105,6 +105,9 @@ async fn run_seed() -> anyhow::Result<()> {
                 created_at: chrono::Utc::now().to_rfc3339(),
                 namespace_id: Some(namespace_id.clone()),
                 default_access: "viewer".to_string(),
+                ts_mode: "mirror".to_string(),
+                ts_replication_factor: 1,
+                ts_bucket_width_ms: fe_runtime::DEFAULT_BUCKET_WIDTH_MS as i64,
             },
         )
         .await?;

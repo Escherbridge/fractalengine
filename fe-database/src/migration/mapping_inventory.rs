@@ -76,6 +76,7 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "InstallCrateEntry",
     "UninstallCrate",
     "SetPetalTerrain",
+    "SetVerseTimeseriesSettings",
 ];
 
 /// Registry of every currently-dispatched mutation kind's canonical-mapping

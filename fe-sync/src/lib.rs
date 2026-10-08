@@ -7,10 +7,12 @@ pub mod endpoint;
 pub mod lifecycle;
 pub mod messages;
 pub mod offline;
+pub mod placement;
 pub mod reconciliation;
 pub mod relay_config;
 pub mod replication;
 pub mod replicator;
+pub mod sharding;
 pub mod status;
 pub mod sync_thread;
 pub mod verse_peers;
@@ -24,10 +26,14 @@ pub use lifecycle::{
     lifecycle_channel, LifecycleEventReceiver, LifecycleEventSender, LifecycleForwarder,
 };
 pub use messages::{SyncCommand, SyncCommandSender, SyncEvent, SyncEventReceiver};
+pub use placement::{plan_shard_hosts, PlacementPlan, Retention, TransferRoute};
 pub use relay_config::{RelayConfig, RelayConfigError, RelayHealth, RELAY_CONFIG_ENV_VAR};
 pub use replicator::{
     IncomingEntryApplicator, IrohDocsReplicator, IrohPetalReplicator, MockVerseReplicator,
     PetalReplicator, RowChange, VerseReplicator,
+};
+pub use sharding::{
+    PeerDeclaration, ShardId, ShardLedgerEntry, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE,
 };
 pub use status::{
     drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus, TilesetEventBuffer,
