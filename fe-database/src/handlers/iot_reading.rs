@@ -5,6 +5,7 @@ use fe_query::{Filter, InsertBuilder, QueryBuilder, QueryValue};
 use crate::op_log::next_hlc_timestamp;
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
+use crate::{BlobStoreHandle, ReplicationSender};
 
 /// One incoming sensor reading, pre-validation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -36,11 +37,43 @@ pub enum IotIngestError {
 
 /// Insert a batch of readings anchored to nodes of `petal_id` (all-or-nothing:
 /// every anchor is validated against the petal before any row is written).
+///
+/// Delegating shim: replicates nothing. Callers on a replication seam use
+/// [`insert_readings_with_replication`] (F5/A11).
 pub async fn insert_readings(
     db: &Db,
     petal_id: &str,
     source_did: &str,
     readings: &[IotReadingInput],
+) -> Result<usize, IotIngestError> {
+    insert_readings_with_replication(db, petal_id, None, source_did, readings, None, None).await
+}
+
+/// Insert a batch of readings and publish each accepted row to the verse's
+/// replication bridge (A11) — see `src/AGENTS.md` §iot-readings.
+///
+/// The emission seam is here, not in fe-api, so **both** ingestion paths speak
+/// it: the API thread's `db_reader` write (fe-api `iot.rs` — the §iot-readings
+/// append-only exception) and any DB-thread caller pass their own blob handle +
+/// `ReplicationSender`.
+///
+/// Ordering: each row is durably inserted *before* its `ReplicationEvent` is
+/// emitted. Replication is best-effort (the bridge drops-and-counts on a full
+/// channel), so publishing first would risk losing a row that the local store
+/// never accepted. A row whose blob write or channel send fails is simply not
+/// replicated; it remains durable locally, and the union CRDT makes a later
+/// re-delivery harmless.
+///
+/// `verse_id` names the replica the row belongs in; `None` disables emission
+/// (the shim path, or a caller with no verse context).
+pub async fn insert_readings_with_replication(
+    db: &Db,
+    petal_id: &str,
+    verse_id: Option<&str>,
+    source_did: &str,
+    readings: &[IotReadingInput],
+    blob_store: Option<&BlobStoreHandle>,
+    repl_tx: Option<&ReplicationSender>,
 ) -> Result<usize, IotIngestError> {
     if readings.is_empty() {
         return Ok(0);
@@ -65,8 +98,24 @@ pub async fn insert_readings(
         }
     }
 
-    // Parse all timestamps up-front so a bad row aborts before any insert.
-    let mut rows: Vec<serde_json::Value> = Vec::with_capacity(readings.len());
+    // Warn once (not per row) when an emit seam was wired but the batch cannot
+    // actually be published — a silently non-replicating ingestion path is the
+    // failure mode this seam exists to prevent. `repl_tx: None` is a legitimate
+    // "replication disabled" configuration and stays silent.
+    let can_publish = verse_id.is_some() && blob_store.is_some();
+    if repl_tx.is_some() && !can_publish {
+        tracing::warn!(
+            petal_id,
+            verse_id = ?verse_id,
+            "iot ingest: replication sender wired but verse_id or blob store missing — readings will not be published"
+        );
+    }
+
+    let mut written = 0usize;
+    // Parse every timestamp up-front so a bad row aborts before any insert
+    // (the all-or-nothing validation contract in §iot-readings). HLC + id are
+    // also assigned up-front, exactly as the pre-F5 loop did.
+    let mut prepared: Vec<(String, serde_json::Value)> = Vec::with_capacity(readings.len());
     for r in readings {
         let recorded = match &r.recorded_at {
             Some(raw) => chrono::DateTime::parse_from_rfc3339(raw)
@@ -75,8 +124,9 @@ pub async fn insert_readings(
             None => chrono::Utc::now(),
         };
         let (hlc_packed, _hlc_str) = next_hlc_timestamp();
-        rows.push(serde_json::json!({
-            "reading_id": ulid::Ulid::new().to_string(),
+        let reading_id = ulid::Ulid::new().to_string();
+        let row = serde_json::json!({
+            "reading_id": reading_id.clone(),
             "node_id": r.node_id,
             "petal_id": petal_id,
             "metric": r.metric,
@@ -86,21 +136,43 @@ pub async fn insert_readings(
             "recorded_at_ms": recorded.timestamp_millis(),
             "hlc_timestamp": hlc_packed as i64,
             "source_did": source_did,
-        }));
+        });
+        prepared.push((reading_id, row));
     }
 
-    // No geometry columns on the row, so InsertBuilder is legal here
-    // (AGENTS.md §geometry-inserts applies only to geometry-typed columns).
-    for row in rows {
+    for (reading_id, row) in prepared {
+        // No geometry columns on the row, so InsertBuilder is legal here
+        // (AGENTS.md §geometry-inserts applies only to geometry-typed columns).
         let q = InsertBuilder::insert_into("iot_reading")
-            .values(row)
+            .values(row.clone())
             .build();
         exec_query(db, &q)
             .await
             .map_err(|e| IotIngestError::Db(e.to_string()))?;
+        written += 1;
+
+        // Durable first, then publish (see the ordering note above).
+        if let (Some(verse_id), Some(store)) = (verse_id, blob_store) {
+            match serde_json::to_vec(&row) {
+                Ok(bytes) => crate::replicate_row_with_petal(
+                    repl_tx,
+                    store,
+                    verse_id,
+                    "iot_reading",
+                    &reading_id,
+                    &bytes,
+                    Some(petal_id.to_string()),
+                ),
+                Err(e) => tracing::warn!(
+                    reading_id,
+                    petal_id,
+                    "iot reading accepted but not serialised for replication: {e}"
+                ),
+            }
+        }
     }
 
-    Ok(readings.len())
+    Ok(written)
 }
 
 /// Return the subset of `anchor_ids` that exist as nodes of `petal_id`.

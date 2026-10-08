@@ -6,7 +6,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use fe_database::handlers::iot_reading::{insert_readings, IotIngestError, IotReadingInput};
+use fe_database::handlers::iot_reading::{
+    insert_readings_with_replication, IotIngestError, IotReadingInput,
+};
 use fe_identity::api_token::ApiClaims;
 use serde::Deserialize;
 
@@ -85,8 +87,28 @@ pub async fn ingest_readings(
         );
     };
 
+    // A11: publish each accepted row to the verse's replica. The API thread
+    // writes on `db_reader` (append-only exception, §iot-readings), so it
+    // carries its own emit seam: the shared blob store supplies the row's
+    // content hash and `replication_tx` is the DB→sync bridge. Both are absent
+    // in a replication-disabled deployment — the rows are still durable, they
+    // simply are not published.
+    let verse_id = fe_database::parse_scope(&scope)
+        .ok()
+        .map(|parts| parts.verse_id);
+
     // Append-only insert — safe off the DB thread (fe-database AGENTS.md §iot-readings).
-    match insert_readings(db, &petal_id, &claims.sub, &req.readings).await {
+    match insert_readings_with_replication(
+        db,
+        &petal_id,
+        verse_id.as_deref(),
+        &claims.sub,
+        &req.readings,
+        state.blob_store.as_ref(),
+        state.replication_tx.as_ref(),
+    )
+    .await
+    {
         Ok(accepted) => (
             StatusCode::OK,
             Json(serde_json::json!({ "ok": true, "accepted": accepted })),

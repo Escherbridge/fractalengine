@@ -70,6 +70,10 @@ fn main() {
             "Two-Peer Tombstone Sync (A5)",
             scenarios::two_peer_tombstone_sync::run,
         ),
+        (
+            "Two-Peer Timeseries Union Sync (A12)",
+            scenarios::two_peer_timeseries_sync::run,
+        ),
         ("API Token Flow", scenarios::api_token_flow::run),
         (
             "API Token Edge Cases",

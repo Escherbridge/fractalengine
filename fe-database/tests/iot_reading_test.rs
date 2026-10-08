@@ -223,3 +223,107 @@ async fn missing_recorded_at_defaults_to_server_time() {
         .as_str()
         .is_some_and(|s| !s.is_empty()));
 }
+
+// ---------------------------------------------------------------------------
+// A11 — the replication emission seam
+// ---------------------------------------------------------------------------
+
+/// A11: `insert_readings_with_replication` emits exactly one
+/// `ReplicationEvent` per accepted row, each carrying the verse **and** the
+/// petal, keyed by that row's own `reading_id`, and the emitted bytes are the
+/// row as persisted.
+#[tokio::test]
+async fn replication_seam_emits_one_event_per_row_with_verse_and_petal() {
+    use std::sync::Arc;
+
+    use fe_database::handlers::iot_reading::insert_readings_with_replication;
+    use fe_database::BlobStoreHandle;
+
+    let db = setup_db().await;
+    seed_node(&db, "petal-1", "node-a", 0.0, 0.0).await;
+    let mock = Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+    let store: BlobStoreHandle = mock.clone();
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(8);
+
+    let n = insert_readings_with_replication(
+        &db,
+        "petal-1",
+        Some("verse-1"),
+        "did:key:z6MkSensor",
+        &[
+            reading("node-a", "temperature_c", 21.5, None),
+            reading("node-a", "humidity_pct", 55.0, None),
+        ],
+        Some(&store),
+        Some(&repl_tx),
+    )
+    .await
+    .expect("insert with replication");
+
+    assert_eq!(n, 2, "both rows are durably accepted");
+    assert_eq!(select_all_readings(&db).await.len(), 2);
+
+    let mut events = Vec::new();
+    while let Ok(evt) = repl_rx.try_recv() {
+        events.push(evt);
+    }
+    assert_eq!(events.len(), 2, "one ReplicationEvent per accepted row");
+
+    let persisted = select_all_readings(&db).await;
+    for evt in &events {
+        assert_eq!(evt.verse_id, "verse-1", "the event names its verse replica");
+        assert_eq!(evt.table, "iot_reading");
+        assert_eq!(evt.petal_id.as_deref(), Some("petal-1"));
+        // The doc key is the union key, and the blob holds exactly the row that
+        // was persisted (so a peer can apply it byte-for-byte).
+        let row = persisted
+            .iter()
+            .find(|r| r["reading_id"].as_str() == Some(evt.record_id.as_str()))
+            .expect("emitted reading_id must be a persisted row");
+        let bytes = mock.bytes_for(&evt.content_hash).expect("blob present");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["value"],
+            row["value"],
+            "published bytes match the durable row"
+        );
+    }
+    assert_ne!(
+        events[0].record_id, events[1].record_id,
+        "each row gets its own reading_id key"
+    );
+}
+
+/// A11: without a verse (the delegating-shim path) nothing is published —
+/// the rows are still written, so a caller that has no replication seam loses
+/// nothing durable.
+#[tokio::test]
+async fn replication_seam_without_verse_emits_nothing() {
+    use std::sync::Arc;
+
+    use fe_database::handlers::iot_reading::insert_readings_with_replication;
+    use fe_database::BlobStoreHandle;
+
+    let db = setup_db().await;
+    seed_node(&db, "petal-1", "node-a", 0.0, 0.0).await;
+    let store: BlobStoreHandle = Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(8);
+
+    let n = insert_readings_with_replication(
+        &db,
+        "petal-1",
+        None,
+        "did:key:z6MkSensor",
+        &[reading("node-a", "temperature_c", 21.5, None)],
+        Some(&store),
+        Some(&repl_tx),
+    )
+    .await
+    .expect("insert without verse context");
+
+    assert_eq!(n, 1);
+    assert_eq!(select_all_readings(&db).await.len(), 1);
+    assert!(
+        repl_rx.try_recv().is_err(),
+        "no verse context → nothing published"
+    );
+}

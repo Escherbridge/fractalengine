@@ -1486,29 +1486,17 @@ pub async fn move_waypoint(
         None => [req.lat as f32, ele as f32, req.lon as f32],
     };
 
-    // Update transform
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
-        cmd: DbCommand::UpdateNodeTransform {
-            node_id: waypoint_id.clone(),
-            position,
-            rotation: [0.0, 0.0, 0.0],
-            scale: [1.0, 1.0, 1.0],
-        },
-        reply_tx: tx,
+    // Update transform. Fire-and-forget via `TransformPersist` (the same shape
+    // `update_transform` uses): the DB thread emits no `DbResult` for a
+    // transform write — it broadcasts `SceneChange::TransformFailed` on error
+    // instead — so waiting on one would leave a dangling pending API request
+    // that only ever "succeeded" by consuming an unrelated reply.
+    let _ = state.api_cmd_tx.send(ApiCommand::TransformPersist {
+        node_id: waypoint_id.clone(),
+        position,
+        rotation: [0.0, 0.0, 0.0],
+        scale: [1.0, 1.0, 1.0],
     });
-    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-        Ok(Ok(DbResult::Error(e))) => {
-            return Json(ApiResponse::error(format!("transform update failed: {e}")));
-        }
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) => {
-            return Json(ApiResponse::error("transform update channel closed"));
-        }
-        Err(_) => {
-            return Json(ApiResponse::error("transform update timed out"));
-        }
-    }
 
     // Update properties
     for (key, value) in [
