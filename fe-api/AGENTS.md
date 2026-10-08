@@ -4,7 +4,10 @@ Runs on its own multi-thread tokio runtime (`spawn_api_thread`), talking to the
 Bevy/DB threads over `crossbeam::channel` (`ApiCommand` -> `DbCommand` ->
 `DbResult`, matched via `tokio::sync::oneshot` per request — see
 `fe-runtime/src/app.rs` `drain_api_commands` + `PendingApiRequests`, read-only
-from here). Where a `db_reader: Option<Arc<Surreal<Db>>>` is configured,
+from here). Replies are matched by **reply family**, not arrival order, because
+results also arrive unsolicited (relay startup scan, GUI reloads) on the same
+channel — rationale + rules in `fe-runtime/src/AGENTS.md` §api-reply-correlation.
+Where a `db_reader: Option<Arc<Surreal<Db>>>` is configured,
 handlers may bypass that round-trip entirely with a direct SurrealDB query
 (`direct_*` helpers in `rest.rs`/`assets.rs`) — this is the established escape
 hatch for reads that don't have (or don't need) a dedicated `DbCommand`.
@@ -390,11 +393,19 @@ future work). Design notes:
   (`limits::IOT_INGEST_RATE_PER_SEC`) → batch cap
   (`limits::IOT_INGEST_MAX_READINGS`, 413 past it).
 - **The write goes straight to `db_reader`** via
-  `fe_database::handlers::iot_reading::insert_readings`, not through a
-  `DbCommand` round-trip: readings are append-only facts with no derived
-  counters, so the DB-thread single-writer invariant doesn't apply (rationale
-  in fe-database `src/AGENTS.md` §iot-readings), and IoT-frequency batches
-  must not queue behind the render loop's channel.
+  `fe_database::handlers::iot_reading::insert_readings_with_replication`, not
+  through a `DbCommand` round-trip: readings are append-only facts with no
+  derived counters, so the DB-thread single-writer invariant doesn't apply
+  (rationale in fe-database `src/AGENTS.md` §iot-readings), and IoT-frequency
+  batches must not queue behind the render loop's channel.
+- **Replication emit seam (A11, F5)**: the same call publishes one
+  `ReplicationEvent` per accepted row, so readings ingested over HTTP reach
+  peers exactly like DB-thread writes do. It needs `ApiState.replication_tx`
+  (the DB→sync sender) and `ApiState.blob_store` (row bytes → content hash) —
+  `fractalengine/src/main.rs` must wire both for the GUI binary to replicate
+  ingested readings; a `None` in either field degrades to
+  durable-but-unpublished, never to a failed ingest. The verse id comes from
+  `parse_scope(resolved_petal_scope)`, never from the request body.
 - **Validation failures map to real statuses**: unknown/foreign-petal anchor,
   bad RFC-3339 timestamp, or empty metric → 422 (typed `IotIngestError`, no
   string-sniffing); DB failure → 502; empty batch → 400.

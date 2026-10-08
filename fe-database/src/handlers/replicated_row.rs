@@ -9,10 +9,15 @@
 //! resolved from the local tables at the verse scope — never from the wire —
 //! and must reach Editor+ (the same fe-policy standard write gate as the
 //! local path). See [`admit_inbound_row`].
+//!
+//! M2/F5: dispatch is keyed on [`ReplicationMode::for_table`] — `Row` tables
+//! take the tombstone-aware merge, `Timeseries` tables (`iot_reading`) the
+//! append-only union CRDT (see [`apply_timeseries_row`]).
 
 use fe_runtime::messages::{NodeDto, ReplicatedRowOutcome, SceneChange};
 
 use crate::merge::{apply_replicated_node, MergeApplied};
+use crate::replication_mode::ReplicationMode;
 use crate::repo::Db;
 
 /// The DB thread's scene-change seam (entity_change_tx).
@@ -66,6 +71,116 @@ pub async fn apply_replicated_row_handler(
             return Ok(ReplicatedRowOutcome::Denied);
         }
     }
+    // Per-table semantics: `Timeseries` tables take the append-only union
+    // path (A12), everything else the tombstone-aware row merge (N-4).
+    dispatch_by_mode(db, verse_id, table, record_id, row_bytes, entity_change_tx).await
+}
+
+/// Apply one inbound row according to its table's [`ReplicationMode`].
+///
+/// `Timeseries` tables (currently just `iot_reading`) use the union CRDT
+/// contract — see [`apply_timeseries_row`]; everything else keeps the
+/// tombstone-aware row merge path.
+async fn dispatch_by_mode(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    entity_change_tx: Option<&SceneChangeSender>,
+) -> anyhow::Result<ReplicatedRowOutcome> {
+    match ReplicationMode::for_table(table) {
+        ReplicationMode::Timeseries => {
+            apply_timeseries_row(db, verse_id, table, record_id, row_bytes).await
+        }
+        ReplicationMode::Row => {
+            apply_row_mode(db, table, record_id, row_bytes, entity_change_tx).await
+        }
+    }
+}
+
+/// Union-CRDT apply for append-only timeseries tables (A12).
+///
+/// A reading is an immutable fact: the row is inserted **only when its
+/// `reading_id` is absent**, so re-delivery is idempotent, an existing row is
+/// never overwritten (no LWW), and the entry is never deleted — an empty
+/// `Doc::del` tombstone on a timeseries key is deliberately `NotApplicable`
+/// (union semantics keep the fact). Delivery order and count therefore cannot
+/// change the converged set, which is what makes offline-then-rejoin
+/// convergence work with no coordinator.
+///
+/// The A3 role gate has already run (it precedes dispatch for every table), so
+/// an unauthorized peer's readings never reach here.
+async fn apply_timeseries_row(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+) -> anyhow::Result<ReplicatedRowOutcome> {
+    // Union CRDT: deletes do not exist on this path. An empty entry is either a
+    // stray `del` or a truncated payload — never apply it, never remove a fact.
+    if row_bytes.is_empty() {
+        tracing::debug!(
+            verse_id,
+            table,
+            record_id,
+            "empty-entry delete on a timeseries table — union CRDT keeps the fact (not applicable)"
+        );
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    }
+
+    let mut row: serde_json::Value = serde_json::from_slice(row_bytes).map_err(|e| {
+        anyhow::anyhow!("replicated timeseries row {table}/{record_id}: bad JSON: {e}")
+    })?;
+    strip_toplevel_nulls(&mut row);
+
+    // The union key is the row's own `reading_id`; the wire key is the same
+    // value by construction (the emission seam keys the doc entry on it), so a
+    // mismatch means a malformed publisher — trust the payload and log.
+    let reading_id = row
+        .get("reading_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| record_id.to_string());
+    if reading_id != record_id {
+        tracing::warn!(
+            table,
+            record_id,
+            reading_id = %reading_id,
+            "replicated timeseries row key differs from its reading_id — trusting the payload"
+        );
+    }
+
+    if row_exists(db, table, "reading_id", &reading_id).await? {
+        tracing::debug!(
+            verse_id,
+            table,
+            reading_id,
+            "timeseries row already present — union re-delivery is idempotent (not overwritten)"
+        );
+        // Reported `Applied` like the node path's idempotent re-merge: the
+        // converged state is correct, which is what the outcome asserts.
+        return Ok(ReplicatedRowOutcome::Applied);
+    }
+
+    db.query(format!("CREATE {table} CONTENT $row").as_str())
+        .bind(("row", row))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("replicated timeseries {table} create failed: {e}"))?;
+    Ok(ReplicatedRowOutcome::Applied)
+}
+
+/// Row-mode dispatch: tombstone-aware (N-4) insert-or-merge for the tables the
+/// inbound path has row semantics for.
+async fn apply_row_mode(
+    db: &Db,
+    table: &str,
+    record_id: &str,
+    row_bytes: &[u8],
+    entity_change_tx: Option<&SceneChangeSender>,
+) -> anyhow::Result<ReplicatedRowOutcome> {
     match table {
         "verse" | "fractal" | "petal" => {
             // An empty entry is the iroh-docs `del` marker. Static hierarchy
@@ -1336,5 +1451,193 @@ mod tests {
         assert_eq!(ring[0][1].as_f64().unwrap(), -8.0);
         assert_eq!(ring[2][0].as_f64().unwrap(), 12.0);
         assert_eq!(ring[2][1].as_f64().unwrap(), 8.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // A12 — timeseries union CRDT (`iot_reading`)
+    // -----------------------------------------------------------------------
+
+    /// One `iot_reading` payload shaped exactly as the ingestion seam emits it
+    /// (`insert_readings_with_replication`).
+    fn reading_row(reading_id: &str, node_id: &str, value: f64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "reading_id": reading_id,
+            "node_id": node_id,
+            "petal_id": "petal-1",
+            "metric": "temperature_c",
+            "value": value,
+            "units": "C",
+            "recorded_at": "2026-10-07T00:00:00Z",
+            "recorded_at_ms": 1_757_000_000_000i64,
+            "hlc_timestamp": 1_757_000_000_000i64,
+            "source_did": "did:key:carol",
+        }))
+        .unwrap()
+    }
+
+    async fn reading_count(db: &Db) -> usize {
+        select_json(db, "SELECT reading_id FROM iot_reading")
+            .await
+            .len()
+    }
+
+    /// A12: re-delivery is idempotent — no duplicates — and an existing reading
+    /// is **never** overwritten (union CRDT, not LWW), however many times and
+    /// in whatever order the same key arrives.
+    #[tokio::test]
+    async fn timeseries_reading_redelivery_is_idempotent_and_never_overwrites() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:carol", "editor")]).await;
+        let row = reading_row("reading-1", "node-a", 21.5);
+
+        for _ in 0..3 {
+            let outcome = apply_replicated_row_handler(
+                &db,
+                "v1",
+                "iot_reading",
+                "reading-1",
+                &row,
+                "did:key:carol",
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        }
+
+        assert_eq!(reading_count(&db).await, 1, "no duplicates");
+        let rows = select_json(
+            &db,
+            "SELECT * FROM iot_reading WHERE reading_id = 'reading-1'",
+        )
+        .await;
+        assert_eq!(rows[0]["value"].as_f64().unwrap(), 21.5);
+
+        // A *conflicting* re-delivery of the same key (a later value) must not
+        // overwrite the first fact: the union keeps both writers' facts but a
+        // single key is written once.
+        let conflicting = reading_row("reading-1", "node-a", 99.0);
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-1",
+            &conflicting,
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(reading_count(&db).await, 1);
+        let rows = select_json(
+            &db,
+            "SELECT * FROM iot_reading WHERE reading_id = 'reading-1'",
+        )
+        .await;
+        assert_eq!(
+            rows[0]["value"].as_f64().unwrap(),
+            21.5,
+            "an existing reading is never overwritten"
+        );
+    }
+
+    /// A12: the converged set does not depend on delivery order or count — the
+    /// same three readings delivered in any interleaving converge to exactly
+    /// those three rows.
+    #[tokio::test]
+    async fn timeseries_reading_union_converges_regardless_of_delivery_order() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:carol", "editor")]).await;
+
+        let r1 = reading_row("reading-1", "node-a", 1.0);
+        let r2 = reading_row("reading-2", "node-a", 2.0);
+        let r3 = reading_row("reading-3", "node-b", 3.0);
+        // Interleaved with repeats, as a replica pump would deliver them.
+        for (id, row) in [
+            ("reading-1", &r1),
+            ("reading-2", &r2),
+            ("reading-1", &r1),
+            ("reading-3", &r3),
+            ("reading-2", &r2),
+            ("reading-3", &r3),
+        ] {
+            let outcome = apply_replicated_row_handler(
+                &db,
+                "v1",
+                "iot_reading",
+                id,
+                row,
+                "did:key:carol",
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        }
+
+        assert_eq!(reading_count(&db).await, 3, "exactly the union of facts");
+    }
+
+    /// A12: readings are never tombstoned — the empty iroh-docs `del` entry is
+    /// `NotApplicable` on a timeseries key and the fact survives (union CRDT
+    /// has no delete; only a whole-verse teardown removes rows).
+    #[tokio::test]
+    async fn timeseries_reading_empty_entry_never_removes_the_fact() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:carol", "editor")]).await;
+
+        apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-1",
+            &reading_row("reading-1", "node-a", 7.0),
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reading_count(&db).await, 1);
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-1",
+            &[],
+            "did:key:carol",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::NotApplicable);
+        assert_eq!(
+            reading_count(&db).await,
+            1,
+            "a delete entry never removes a timeseries fact"
+        );
+    }
+
+    /// A3 still governs the timeseries path: a peer below Editor at the verse
+    /// scope cannot inject readings (deny-by-default is uniform across modes).
+    #[tokio::test]
+    async fn timeseries_reading_from_viewer_is_denied() {
+        let db = schema_db().await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:viewer", "viewer")]).await;
+
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "iot_reading",
+            "reading-1",
+            &reading_row("reading-1", "node-a", 1.0),
+            "did:key:viewer",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Denied);
+        assert_eq!(reading_count(&db).await, 0, "denied rows are never applied");
     }
 }

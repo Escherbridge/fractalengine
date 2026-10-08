@@ -177,6 +177,45 @@ modules are path-tracking/animation only). Design decisions:
 - Errors are typed (`IotIngestError`, thiserror) so fe-api maps real HTTP
   statuses instead of string-sniffing.
 
+**Emit seam (A11, F5).** `insert_readings` is now a thin delegate;
+`insert_readings_with_replication(db, petal_id, verse_id, rows, blob_store,
+repl_tx)` is the seam that also publishes replication. Order matters and is
+deliberate: validate everything, insert durably, THEN emit — so a peer never
+sees a row the local store cannot serve (the same durable-first rule as
+§replication-backpressure). One `ReplicationEvent` per accepted row, carrying
+the caller's `verse_id` (fe-api derives it from the resolved petal scope),
+`petal_id`, `table: "iot_reading"`, `record_id: <reading_id>` and the row
+bytes' content hash. Missing verse/blob-store/sender degrades to
+durable-but-unpublished (warns once when a sender is wired but the context is
+missing) — never to a failed ingest.
+
+## §replication-mode (F5)
+
+`replication_mode.rs::ReplicationMode` is the canonical per-table replication
+shape: `ReplicationMode::for_table("iot_reading") == Timeseries`, every other
+table is `Row`. It lives in this crate (not `fe-sync`) because the *inbound*
+applier here must dispatch on it; `fe-sync` re-exports the enum for producers
+so there is one definition, not two that can drift.
+
+- `Row` — whole-row CRDT semantics: an incoming payload is merged into the
+  local row by `merge.rs` (tombstone-honoring, stale-HLC rejecting).
+- `Timeseries` — **union/append-only** semantics (A12). A reading is an
+  immutable fact keyed by `reading_id`: the applier inserts it only when that
+  key is absent, and NEVER overwrites an existing row, in either direction
+  (a re-delivered row is idempotent; a "newer" payload for a known
+  `reading_id` is discarded). No wall-clock ordering is involved — two peers
+  that both hold a reading hold the same value, so any apply order converges
+  to the same set.
+- The wire **tombstone form** stays the empty `Doc::del` entry, but for a
+  timeseries table it is `NotApplicable`: a row tombstone cannot retract a
+  fact that the whole point of the union is to keep, so the local row (and
+  its A3 denial path) is untouched. Timeseries retention/GC is a separate
+  concern, deliberately not wired here.
+- The A3 role gate (`admit_inbound_row`, Editor+) runs **before** mode
+  dispatch, so union semantics never widen authority — a viewer-authored
+  reading is denied exactly like a viewer-authored row.
+
+
 ## §session-cache (absorbed from fe-auth, 2026-07-17)
 
 `session_cache.rs` is the former `fe-auth` crate's surviving surface, moved
@@ -296,8 +335,11 @@ one sub-module per domain:
   → **role-gated admission** (`admit_inbound_row`: the author's role resolved
   from the local tables at the verse scope via `role_manager::resolve_role`,
   decided by the same fe-policy standard write gate as the local path —
-  deny-by-default, Editor+, never wire-supplied) → geometry-safe,
-  tombstone-honoring durable write (`merge.rs`) + petal-scoped `SceneChange`;
+  deny-by-default, Editor+, never wire-supplied) → **per-table mode dispatch**
+  (`dispatch_by_mode`: `ReplicationMode::Row` → whole-row merge; `Timeseries`
+  → append-only union for `iot_reading`, §replication-mode) →
+  geometry-safe, tombstone-honoring durable write (`merge.rs`) + petal-scoped
+  `SceneChange`;
   loop-free by construction (no replication sender in scope). Two admission
   rules worth knowing: a **bootstrap window** admits rows for a verse this
   store does not know yet (replica capability = the admission; denying would

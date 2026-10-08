@@ -187,41 +187,203 @@ pub struct InboundTransformReceiver(pub crossbeam::channel::Receiver<TransformUp
 pub struct RevocationBroadcastSender(pub tokio::sync::broadcast::Sender<String>);
 
 /// Bevy resource: pending API requests awaiting DB results.
+///
+/// **Reply correlation (F5).** Requests used to be matched to replies by bare
+/// FIFO order, so a `DbResult` that arrives with *no* pending request — the
+/// relay's startup-scan `HierarchyLoaded`, a GUI-initiated hierarchy reload, an
+/// unsolicited `ReplicatedRowApplied` from the inbound replication pump — could
+/// consume an unrelated waiter's oneshot (`/ready`'s `Ping` receiving a
+/// `HierarchyLoaded`). Each request is now filed under the reply family its
+/// `DbCommand` produces, and a result is handed only to a request filed under
+/// that same family; a result with no match is dropped for the API path (it
+/// still reaches the Bevy `Messages<DbResult>` stream for UI consumers).
+///
+/// `DbResult::Error` is the DB thread's universal failure reply and carries no
+/// family, so it goes to the **oldest** pending request of any family — the
+/// failing command is the one that has been waiting longest, and a caller must
+/// never lose its error to a family mismatch.
 #[derive(Resource, Default)]
 pub struct PendingApiRequests {
-    pending: HashMap<u64, tokio::sync::oneshot::Sender<DbResult>>,
+    by_kind: HashMap<ReplyKind, std::collections::VecDeque<PendingEntry>>,
+    /// Requests whose command has no awaited reply family (legacy behaviour:
+    /// matched only by other uncorrelated results, plus wildcard errors).
+    uncorrelated: std::collections::VecDeque<PendingEntry>,
     pending_hierarchy: Vec<tokio::sync::oneshot::Sender<Vec<VerseHierarchyData>>>,
     next_id: u64,
 }
 
+/// One API request waiting for its reply, with its enqueue order so an
+/// untyped (`Error`) reply can be routed to the oldest waiter.
+struct PendingEntry {
+    id: u64,
+    reply_tx: tokio::sync::oneshot::Sender<DbResult>,
+}
+
+/// The reply family a command's result belongs to — the correlation key that
+/// replaced FIFO pairing. Kept private: callers enqueue with the command and
+/// never name a kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ReplyKind {
+    Pong,
+    VerseCreated,
+    FractalCreated,
+    PetalCreated,
+    NodeCreated,
+    Hierarchy,
+    ScopeResolved,
+    NodesLoaded,
+    NodeTransformLoaded,
+    NodeProperties,
+    NodePropertySet,
+    NodePropertyDeleted,
+    NodeDeleted,
+    NodePromoted,
+    FieldDefCreated,
+    FieldDefsListed,
+    FieldDefUpdated,
+    FieldDefDeleted,
+    QueryResult,
+    PetalTerrain,
+}
+
+/// The reply family `cmd` produces, or `None` when the command has no reply on
+/// this channel (fire-and-forget writes) — see [`PendingApiRequests`].
+fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
+    use DbCommand::*;
+    Some(match cmd {
+        Ping => ReplyKind::Pong,
+        CreateVerse { .. } => ReplyKind::VerseCreated,
+        CreateFractal { .. } => ReplyKind::FractalCreated,
+        CreatePetal { .. } => ReplyKind::PetalCreated,
+        CreateNode { .. } => ReplyKind::NodeCreated,
+        LoadHierarchy => ReplyKind::Hierarchy,
+        ResolvePetalScope { .. } | ResolveNodeScope { .. } => ReplyKind::ScopeResolved,
+        LoadNodesByPetal { .. } => ReplyKind::NodesLoaded,
+        GetNodeTransform { .. } => ReplyKind::NodeTransformLoaded,
+        GetNodeProperties { .. } => ReplyKind::NodeProperties,
+        SetNodeProperty { .. } => ReplyKind::NodePropertySet,
+        DeleteNodeProperty { .. } => ReplyKind::NodePropertyDeleted,
+        DeleteNode { .. } | TombstoneNode { .. } | CascadeTombstoneNode { .. } => {
+            ReplyKind::NodeDeleted
+        }
+        PromoteInstance { .. } => ReplyKind::NodePromoted,
+        CreateFieldDef { .. } => ReplyKind::FieldDefCreated,
+        ListFieldDefs { .. } => ReplyKind::FieldDefsListed,
+        UpdateFieldDef { .. } => ReplyKind::FieldDefUpdated,
+        DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
+        RawQuery { .. } => ReplyKind::QueryResult,
+        GetPetalTerrain { .. } => ReplyKind::PetalTerrain,
+        _ => return None,
+    })
+}
+
+/// The reply family a result belongs to, or `None` when it is not a correlated
+/// reply (`Error` is handled separately as the universal reply — see
+/// [`PendingApiRequests`]).
+fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
+    use DbResult::*;
+    Some(match result {
+        Pong => ReplyKind::Pong,
+        VerseCreated { .. } => ReplyKind::VerseCreated,
+        FractalCreated { .. } => ReplyKind::FractalCreated,
+        PetalCreated { .. } => ReplyKind::PetalCreated,
+        NodeCreated { .. } => ReplyKind::NodeCreated,
+        HierarchyLoaded { .. } => ReplyKind::Hierarchy,
+        ScopeResolved { .. } => ReplyKind::ScopeResolved,
+        NodesLoaded { .. } => ReplyKind::NodesLoaded,
+        NodeTransformLoaded { .. } => ReplyKind::NodeTransformLoaded,
+        NodePropertiesLoaded { .. } => ReplyKind::NodeProperties,
+        NodePropertySet { .. } => ReplyKind::NodePropertySet,
+        NodePropertyDeleted { .. } => ReplyKind::NodePropertyDeleted,
+        NodeDeleted { .. } => ReplyKind::NodeDeleted,
+        NodePromoted { .. } => ReplyKind::NodePromoted,
+        FieldDefCreated { .. } => ReplyKind::FieldDefCreated,
+        FieldDefsListed { .. } => ReplyKind::FieldDefsListed,
+        FieldDefUpdated { .. } => ReplyKind::FieldDefUpdated,
+        FieldDefDeleted { .. } => ReplyKind::FieldDefDeleted,
+        QueryResult { .. } => ReplyKind::QueryResult,
+        PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
+        _ => return None,
+    })
+}
+
 impl PendingApiRequests {
-    /// Enqueue a DB request and return a correlation ID.
-    pub fn enqueue(&mut self, reply_tx: tokio::sync::oneshot::Sender<DbResult>) -> u64 {
+    /// Enqueue a DB request under the reply family `cmd` produces and return
+    /// its correlation id (insertion order, used only to route untyped
+    /// `Error` replies to the oldest waiter).
+    pub fn enqueue_for(
+        &mut self,
+        cmd: &DbCommand,
+        reply_tx: tokio::sync::oneshot::Sender<DbResult>,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        self.pending.insert(id, reply_tx);
+        let entry = PendingEntry { id, reply_tx };
+        match reply_kind_of_command(cmd) {
+            Some(kind) => self.by_kind.entry(kind).or_default().push_back(entry),
+            None => self.uncorrelated.push_back(entry),
+        }
         id
     }
 
-    /// Try to deliver a DbResult to the first pending request.
-    /// Returns true if a result was delivered.
-    ///
-    /// Skips any stale entries whose receivers were dropped (caller timed out)
-    /// so they cannot poison the FIFO queue for subsequent requests.
-    pub fn try_deliver(&mut self, result: DbResult) -> bool {
-        loop {
-            let Some((&id, _)) = self.pending.iter().next() else {
-                return false;
-            };
-            let Some(tx) = self.pending.remove(&id) else {
-                return false;
-            };
-            if tx.is_closed() {
+    /// Pop the next live entry (skipping ones whose receiver was dropped by a
+    /// timed-out caller) and send `result` to it.
+    fn deliver_to(queue: &mut std::collections::VecDeque<PendingEntry>, result: DbResult) -> bool {
+        while let Some(entry) = queue.pop_front() {
+            if entry.reply_tx.is_closed() {
                 // Receiver dropped — discard stale entry and try the next one.
                 continue;
             }
-            let _ = tx.send(result);
+            let _ = entry.reply_tx.send(result);
             return true;
+        }
+        false
+    }
+
+    /// Route an untyped reply (the DB thread's universal `Error`) to the oldest
+    /// pending request of any family.
+    fn deliver_to_oldest(&mut self, result: DbResult) -> bool {
+        let mut oldest: Option<ReplyKind> = None;
+        let mut oldest_id = u64::MAX;
+        for (kind, queue) in &self.by_kind {
+            if let Some(entry) = queue.front() {
+                if entry.id < oldest_id {
+                    oldest_id = entry.id;
+                    oldest = Some(*kind);
+                }
+            }
+        }
+        let oldest_uncorrelated = self.uncorrelated.front().map(|e| e.id).unwrap_or(u64::MAX);
+        if oldest_uncorrelated < oldest_id {
+            return Self::deliver_to(&mut self.uncorrelated, result);
+        }
+        match oldest {
+            Some(kind) => {
+                let queue = self.by_kind.get_mut(&kind).expect("kind came from by_kind");
+                Self::deliver_to(queue, result)
+            }
+            None => Self::deliver_to(&mut self.uncorrelated, result),
+        }
+    }
+
+    /// Try to deliver a `DbResult` to the pending request that asked for it.
+    /// Returns true if a result was delivered.
+    ///
+    /// The result's [`ReplyKind`] selects the queue; a result whose family has
+    /// no waiter is dropped (never offered to an unrelated request). `Error` is
+    /// the wildcard that reaches the oldest waiter.
+    pub fn try_deliver(&mut self, result: DbResult) -> bool {
+        if matches!(result, DbResult::Error(_)) {
+            return self.deliver_to_oldest(result);
+        }
+        match reply_kind_of_result(&result) {
+            Some(kind) => {
+                let Some(queue) = self.by_kind.get_mut(&kind) else {
+                    return false;
+                };
+                Self::deliver_to(queue, result)
+            }
+            None => Self::deliver_to(&mut self.uncorrelated, result),
         }
     }
 
@@ -278,12 +440,18 @@ pub fn drain_api_commands(
     for _ in 0..64 {
         match rx.try_recv() {
             Ok(ApiCommand::DbRequest { cmd, reply_tx }) => {
-                pending.enqueue(reply_tx);
-                let _ = db_tx.0.send(cmd);
+                pending.enqueue_for(&cmd, reply_tx);
+                if let Err(e) = db_tx.0.send(cmd) {
+                    tracing::warn!("API DB request dropped — DB command channel closed: {e}");
+                }
             }
             Ok(ApiCommand::GetHierarchy { reply_tx }) => {
                 pending.enqueue_hierarchy(reply_tx);
-                let _ = db_tx.0.send(DbCommand::LoadHierarchy);
+                if let Err(e) = db_tx.0.send(DbCommand::LoadHierarchy) {
+                    tracing::warn!(
+                        "API hierarchy request dropped — DB command channel closed: {e}"
+                    );
+                }
             }
             Ok(ApiCommand::SyncForward { .. }) => {
                 // Transform sync forwarding handled via broadcast channel
@@ -370,6 +538,360 @@ mod tests {
         assert!(
             !messages.is_empty(),
             "pump must forward lifecycle events into Bevy messages"
+        );
+    }
+
+    // -- Reply correlation (F5) ---------------------------------------------
+
+    use crate::messages::{CallerAuth, ReplicatedRowOutcome};
+
+    fn node_created(id: &str) -> DbResult {
+        DbResult::NodeCreated {
+            id: id.to_string(),
+            petal_id: "p1".to_string(),
+            name: id.to_string(),
+            has_asset: false,
+            correlation_id: None,
+            position: [0.0, 0.0, 0.0],
+        }
+    }
+
+    fn create_node_cmd() -> DbCommand {
+        DbCommand::CreateNode {
+            petal_id: "p1".to_string(),
+            name: "n".to_string(),
+            position: [0.0, 0.0, 0.0],
+            correlation_id: None,
+        }
+    }
+
+    /// The hazard this replaced FIFO pairing for: an unsolicited
+    /// `HierarchyLoaded` (the relay's startup scan, a GUI reload) must never be
+    /// handed to a racing `/ready` `Ping`.
+    #[test]
+    fn hierarchy_result_never_satisfies_a_ping_request() {
+        let mut pending = PendingApiRequests::default();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&DbCommand::Ping, tx);
+
+        assert!(
+            !pending.try_deliver(DbResult::HierarchyLoaded { verses: Vec::new() }),
+            "a hierarchy result must not be delivered to a Ping waiter"
+        );
+
+        assert!(
+            pending.try_deliver(DbResult::Pong),
+            "the Ping is still waiting for its own reply"
+        );
+        assert!(matches!(rx.try_recv(), Ok(DbResult::Pong)));
+    }
+
+    /// Same-kind requests keep FIFO order (the DB thread answers sequentially),
+    /// so two racing requests of one kind still pair with their own replies.
+    #[test]
+    fn same_kind_requests_pair_in_enqueue_order() {
+        let mut pending = PendingApiRequests::default();
+        let (tx1, mut rx1) = tokio::sync::oneshot::channel();
+        let (tx2, mut rx2) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&create_node_cmd(), tx1);
+        pending.enqueue_for(&create_node_cmd(), tx2);
+
+        assert!(pending.try_deliver(node_created("n1")));
+        assert!(pending.try_deliver(node_created("n2")));
+
+        match rx1.try_recv().expect("first request answered") {
+            DbResult::NodeCreated { id, .. } => assert_eq!(id, "n1"),
+            other => panic!("unexpected result: {other:?}"),
+        }
+        match rx2.try_recv().expect("second request answered") {
+            DbResult::NodeCreated { id, .. } => assert_eq!(id, "n2"),
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    /// `Error` is the DB thread's universal reply and carries no family — it
+    /// must reach the oldest waiter, whatever kind that waiter asked for.
+    #[test]
+    fn error_reply_reaches_the_oldest_pending_request() {
+        let mut pending = PendingApiRequests::default();
+        let (ping_tx, mut ping_rx) = tokio::sync::oneshot::channel();
+        let (props_tx, mut props_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&DbCommand::Ping, ping_tx);
+        pending.enqueue_for(
+            &DbCommand::GetNodeProperties {
+                node_id: "n1".to_string(),
+            },
+            props_tx,
+        );
+
+        assert!(pending.try_deliver(DbResult::Error("db exploded".to_string())));
+        assert!(matches!(ping_rx.try_recv(), Ok(DbResult::Error(_))));
+        assert!(
+            props_rx.try_recv().is_err(),
+            "only the oldest request receives the untyped error"
+        );
+    }
+
+    /// A result with no waiter of its family is dropped for the API path (it
+    /// still flows to the Bevy `Messages<DbResult>` stream for UI consumers)
+    /// and never consumes an unrelated pending request.
+    #[test]
+    fn result_without_a_waiter_is_not_delivered_and_leaves_waiters_untouched() {
+        let mut pending = PendingApiRequests::default();
+        assert!(!pending.try_deliver(DbResult::Started));
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&DbCommand::Ping, tx);
+        assert!(!pending.try_deliver(DbResult::ScopeResolved { scope: None }));
+        assert!(
+            rx.try_recv().is_err(),
+            "a resolved-scope reply must not satisfy a Ping"
+        );
+    }
+
+    /// Every command the API awaits has a reply family, and the family of its
+    /// reply matches — the guard against a silent one-sided mapping (which
+    /// would turn an endpoint into a timeout).
+    #[test]
+    fn reply_kind_mapping_is_consistent_for_every_awaited_command() {
+        let cases: Vec<(DbCommand, DbResult)> = vec![
+            (DbCommand::Ping, DbResult::Pong),
+            (
+                DbCommand::CreateVerse {
+                    name: "v".to_string(),
+                },
+                DbResult::VerseCreated {
+                    id: "v".to_string(),
+                    name: "v".to_string(),
+                },
+            ),
+            (
+                DbCommand::CreateFractal {
+                    verse_id: "v".to_string(),
+                    name: "f".to_string(),
+                },
+                DbResult::FractalCreated {
+                    id: "f".to_string(),
+                    verse_id: "v".to_string(),
+                    name: "f".to_string(),
+                },
+            ),
+            (
+                DbCommand::CreatePetal {
+                    fractal_id: "f".to_string(),
+                    name: "p".to_string(),
+                },
+                DbResult::PetalCreated {
+                    id: "p".to_string(),
+                    fractal_id: "f".to_string(),
+                    name: "p".to_string(),
+                },
+            ),
+            (create_node_cmd(), node_created("n1")),
+            (
+                DbCommand::LoadHierarchy,
+                DbResult::HierarchyLoaded { verses: Vec::new() },
+            ),
+            (
+                DbCommand::ResolvePetalScope {
+                    petal_id: "p".to_string(),
+                },
+                DbResult::ScopeResolved { scope: None },
+            ),
+            (
+                DbCommand::ResolveNodeScope {
+                    node_id: "n".to_string(),
+                },
+                DbResult::ScopeResolved { scope: None },
+            ),
+            (
+                DbCommand::LoadNodesByPetal {
+                    petal_id: "p".to_string(),
+                },
+                DbResult::NodesLoaded {
+                    petal_id: "p".to_string(),
+                    nodes: Vec::new(),
+                },
+            ),
+            (
+                DbCommand::GetNodeTransform {
+                    node_id: "n".to_string(),
+                },
+                DbResult::NodeTransformLoaded {
+                    node_id: "n".to_string(),
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+            ),
+            (
+                DbCommand::GetNodeProperties {
+                    node_id: "n".to_string(),
+                },
+                DbResult::NodePropertiesLoaded {
+                    node_id: "n".to_string(),
+                    properties: serde_json::Value::Null,
+                },
+            ),
+            (
+                DbCommand::SetNodeProperty {
+                    node_id: "n".to_string(),
+                    key: "k".to_string(),
+                    value: serde_json::Value::Null,
+                },
+                DbResult::NodePropertySet {
+                    node_id: "n".to_string(),
+                    key: "k".to_string(),
+                },
+            ),
+            (
+                DbCommand::DeleteNodeProperty {
+                    node_id: "n".to_string(),
+                    key: "k".to_string(),
+                },
+                DbResult::NodePropertyDeleted {
+                    node_id: "n".to_string(),
+                    key: "k".to_string(),
+                },
+            ),
+            (
+                DbCommand::DeleteNode {
+                    node_id: "n".to_string(),
+                },
+                DbResult::NodeDeleted {
+                    node_id: "n".to_string(),
+                    petal_id: "p".to_string(),
+                },
+            ),
+            (
+                DbCommand::TombstoneNode {
+                    node_id: "n".to_string(),
+                    auth: CallerAuth::Anonymous,
+                },
+                DbResult::NodeDeleted {
+                    node_id: "n".to_string(),
+                    petal_id: "p".to_string(),
+                },
+            ),
+            (
+                DbCommand::CascadeTombstoneNode {
+                    node_id: "n".to_string(),
+                    auth: CallerAuth::Anonymous,
+                },
+                DbResult::NodeDeleted {
+                    node_id: "n".to_string(),
+                    petal_id: "p".to_string(),
+                },
+            ),
+            (
+                DbCommand::PromoteInstance {
+                    petal_id: "p".to_string(),
+                    path_id: "path".to_string(),
+                    instance_index: 0,
+                    auth: CallerAuth::Anonymous,
+                },
+                DbResult::NodePromoted {
+                    node_id: "n".to_string(),
+                    petal_id: "p".to_string(),
+                    path_id: "path".to_string(),
+                    instance_index: 0,
+                    newly_promoted: true,
+                },
+            ),
+            (
+                DbCommand::CreateFieldDef {
+                    scope: "VERSE#v".to_string(),
+                    entity_type: "node".to_string(),
+                    key: "k".to_string(),
+                    value_type: "string".to_string(),
+                    default_val: None,
+                },
+                DbResult::FieldDefCreated {
+                    field_def_id: "fd".to_string(),
+                    scope: "VERSE#v".to_string(),
+                    key: "k".to_string(),
+                },
+            ),
+            (
+                DbCommand::ListFieldDefs {
+                    scope: "VERSE#v".to_string(),
+                },
+                DbResult::FieldDefsListed {
+                    scope: "VERSE#v".to_string(),
+                    field_defs: Vec::new(),
+                },
+            ),
+            (
+                DbCommand::UpdateFieldDef {
+                    field_def_id: "fd".to_string(),
+                    value_type: "string".to_string(),
+                    default_val: None,
+                },
+                DbResult::FieldDefUpdated {
+                    field_def_id: "fd".to_string(),
+                },
+            ),
+            (
+                DbCommand::DeleteFieldDef {
+                    field_def_id: "fd".to_string(),
+                },
+                DbResult::FieldDefDeleted {
+                    field_def_id: "fd".to_string(),
+                },
+            ),
+            (
+                DbCommand::RawQuery {
+                    sql: "SELECT 1".to_string(),
+                    vars: std::collections::HashMap::new(),
+                },
+                DbResult::QueryResult { data: Vec::new() },
+            ),
+            (
+                DbCommand::GetPetalTerrain {
+                    petal_id: "p".to_string(),
+                },
+                DbResult::PetalTerrainLoaded {
+                    petal_id: "p".to_string(),
+                    terrain: None,
+                },
+            ),
+        ];
+
+        for (cmd, result) in cases {
+            let cmd_kind = reply_kind_of_command(&cmd);
+            assert!(cmd_kind.is_some(), "no reply family mapped for {cmd:?}");
+            assert_eq!(
+                cmd_kind,
+                reply_kind_of_result(&result),
+                "reply family mismatch for {cmd:?}"
+            );
+        }
+
+        // Commands with no awaited reply on this channel, and results that are
+        // never a correlated reply, must stay unmapped.
+        assert_eq!(
+            reply_kind_of_command(&DbCommand::UpdateNodeTransform {
+                node_id: "n".to_string(),
+                position: [0.0; 3],
+                rotation: [0.0; 3],
+                scale: [1.0; 3],
+            }),
+            None
+        );
+        assert_eq!(
+            reply_kind_of_result(&DbResult::Error("x".to_string())),
+            None
+        );
+        assert_eq!(reply_kind_of_result(&DbResult::Started), None);
+        assert_eq!(
+            reply_kind_of_result(&DbResult::ReplicatedRowApplied {
+                verse_id: "v".to_string(),
+                table: "iot_reading".to_string(),
+                record_id: "r".to_string(),
+                outcome: ReplicatedRowOutcome::Applied,
+            }),
+            None,
+            "an unsolicited inbound-apply echo must never satisfy a pending request"
         );
     }
 }

@@ -61,3 +61,35 @@ rows (`content_hash` column) and paths (`blob://{hex}.glb`).
 cross-check hashes — that is why `fe-runtime` takes a direct `blake3`
 dependency despite the trait itself needing none. If that dep weight ever
 becomes an issue, move the mock into `fe-sync` instead.
+
+## §api-reply-correlation
+
+`app.rs::PendingApiRequests` holds the API threads' pending `DbResult` waiters.
+`DbResult` carries **no correlation id**, and results are not only replies to
+API commands: the DB thread also fans unsolicited work into the same channel
+(the relay startup scan's `HierarchyLoaded`, GUI-initiated hierarchy reloads).
+Pairing the next result with the oldest waiter (plain FIFO) therefore
+cross-pairs whenever an unsolicited result races a pending request — the
+relay's production `/ready` ping rides exactly that window (a `HierarchyLoaded`
+would satisfy the ping while the ping's real `Pong` went to the hierarchy
+waiter, which then either mishandled it or dropped it).
+
+The queue is therefore keyed by reply **family** (`ReplyKind`), not by arrival
+order:
+
+- `enqueue_for(cmd, tx)` derives the family with `reply_kind_of_command`;
+  `reply_kind_of_result` derives it from a result; `try_deliver` only hands a
+  result to the oldest waiter of that one family.
+- `DbResult::Error` is a wildcard: it is delivered to the oldest waiter of any
+  family (`deliver_to_oldest`), because a failure has no family-specific shape.
+- A result whose family has no waiter is dropped, never delivered to some
+  other family.
+
+**Maintenance rule:** every `DbCommand` that expects a reply must be mapped in
+`reply_kind_of_command` and its reply in `reply_kind_of_result` —
+`reply_kind_mapping_is_consistent_for_every_awaited_command` fails otherwise.
+Fire-and-forget commands (`TransformPersist`, telemetry writes) must send
+directly and must NOT enqueue a waiter: registering a waiter for a command the
+DB thread never answers leaves a dangling entry that later results can
+mis-deliver into.
+

@@ -68,8 +68,14 @@ pub fn open_replica(
     }
 }
 
-/// Derive the hex namespace id from a hex namespace secret (the DB handler's
-/// own derivation: `blake3::keyed_hash` over the 32-byte secret).
+/// Derive the hex namespace id from a hex namespace secret.
+///
+/// Delegates to `fe_database::derive_namespace_id`, the single derivation the
+/// DB handlers (`create_verse` / invite) and the harness use: the Ed25519
+/// **verifying key** of the 32-byte secret — the id iroh-docs actually
+/// registers the namespace under. Do NOT reintroduce the pre-F20 keyed-BLAKE3
+/// form here: a mismatched id makes a secretless reopen (`client.open(id)`)
+/// miss the persisted doc and silently strands the replica.
 fn namespace_id_from_secret(secret_hex: &str) -> Option<String> {
     let bytes = hex::decode(secret_hex.trim()).ok()?;
     let arr: [u8; 32] = bytes.try_into().ok()?;

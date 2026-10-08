@@ -322,3 +322,110 @@ async fn guarded_query_reads_iot_rows_scope_filtered() {
     assert_eq!(rows[0]["petal_id"], pa.as_str());
     assert_eq!(rows[0]["value"].as_f64(), Some(1.0));
 }
+
+// ---------------------------------------------------------------------------
+// A11 — the API-path replication emit seam
+// ---------------------------------------------------------------------------
+
+/// Same state as [`test_state`] but with the A11 emit seam wired: a content
+/// blob store (row bytes → content hash) and the DB→sync replication sender.
+fn test_state_with_replication(
+    db: Db,
+) -> (
+    Arc<ApiState>,
+    crossbeam::channel::Receiver<fe_database::ReplicationEvent>,
+) {
+    let (api_cmd_tx, _rx) = crossbeam::channel::bounded(1);
+    let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+    let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(8);
+    // Derive the verify key from a fresh node keypair rather than naming the
+    // curve crate directly; this state never verifies a token anyway.
+    let keypair = fe_identity::NodeKeypair::generate();
+    let verifying_key = keypair.verifying_key();
+
+    let state = Arc::new(ApiState {
+        api_cmd_tx,
+        transform_broadcast_tx,
+        entity_change_tx,
+        verifying_key,
+        revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+        blob_store: Some(Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new())),
+        cors_origins: vec![],
+        db_reader: Some(Arc::new(db)),
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: None,
+        tileset_registry: None,
+        hexon_registry: None,
+        announcement_store: None,
+        replication_tx: Some(repl_tx),
+        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
+    });
+    (state, repl_rx)
+}
+
+/// A11: the `db_reader` ingestion path publishes one `ReplicationEvent` per
+/// accepted row, each naming the verse (derived from the resolved petal scope)
+/// and the petal, keyed on that row's `reading_id`.
+#[tokio::test]
+async fn ingest_publishes_one_replication_event_per_row() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa).await;
+    seed_node(&db, &pa, "sensor-1", 1.0, 2.0).await;
+    let (state, repl_rx) = test_state_with_replication(db.clone());
+
+    let resp = post_readings(
+        &state,
+        test_claims("VERSE#v1", "editor"),
+        &pa,
+        vec![
+            reading("sensor-1", "temperature_c", 21.5, None),
+            reading("sensor-1", "humidity_pct", 55.0, None),
+        ],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["accepted"], 2);
+
+    // READ-BACK: the rows are durable before the events that describe them.
+    assert_eq!(count_readings(&db).await, 2);
+
+    let mut events = Vec::new();
+    while let Ok(evt) = repl_rx.try_recv() {
+        events.push(evt);
+    }
+    assert_eq!(events.len(), 2, "one event per accepted reading");
+    for evt in &events {
+        assert_eq!(evt.verse_id, "v1", "the event names the verse replica");
+        assert_eq!(evt.table, "iot_reading");
+        assert_eq!(evt.petal_id.as_deref(), Some(pa.as_str()));
+    }
+    assert_ne!(
+        events[0].record_id, events[1].record_id,
+        "each row is keyed by its own reading_id"
+    );
+}
+
+/// A11: without an emit seam wired (`replication_tx: None`, the harness
+/// default) ingestion still succeeds and publishes nothing — the rows remain
+/// durable, so a deployment with replication disabled loses no data.
+#[tokio::test]
+async fn ingest_without_replication_seam_still_persists_rows() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa).await;
+    seed_node(&db, &pa, "sensor-1", 1.0, 2.0).await;
+    let state = test_state(db.clone());
+
+    let resp = post_readings(
+        &state,
+        test_claims("VERSE#v1", "editor"),
+        &pa,
+        vec![reading("sensor-1", "temperature_c", 21.5, None)],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(count_readings(&db).await, 1);
+}
