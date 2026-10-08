@@ -114,6 +114,14 @@ pub struct SecretStoreRes(pub std::sync::Arc<dyn fe_identity::SecretStore>);
 /// A replication event emitted by the DB thread when a replicated row is written.
 /// Defined here (not in fe-sync) to avoid a circular dependency.
 /// The binary crate bridges these into `SyncCommand::WriteRowEntry`.
+///
+/// `petal_id` is INFORMATIONAL at the bridge (F23 disclosure): both binaries'
+/// DB→sync bridges forward only `{verse_id, table, record_id, content_hash}`
+/// because `WriteRowEntry` carries no `petal_id` — downstream consumers
+/// re-derive the petal from the row payload (the shard model reads it off the
+/// row bytes), so nothing breaks, but no consumer may assume event-borne
+/// petal routing works. Threading it through `WriteRowEntry` is the follow-up
+/// shape if a future feature needs it (recorded in the F23 handoff).
 #[derive(Debug, Clone)]
 pub struct ReplicationEvent {
     pub verse_id: String,
@@ -157,8 +165,9 @@ pub fn replicate_row(
     )
 }
 
-/// Like [`replicate_row`] but allows attaching a `petal_id` to the event
-/// for petal-scoped replication routing.
+/// Like [`replicate_row`] but attaches the row's `petal_id` to the event —
+/// informational at the bridge (see [`ReplicationEvent`]); the emission
+/// seam's tests assert it, and a future petal-routed transport consumes it.
 pub fn replicate_row_with_petal(
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
@@ -1265,8 +1274,15 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                 }
                             }
                             Err(reason) => {
+                                // F23 honesty rule: a FAILED local partial must
+                                // never masquerade as an authoritative
+                                // covered-empty answer — reply the failed flag
+                                // so the merge reports the host in
+                                // missing_hosts and its shards in
+                                // missing_shards (A16 reads "host failed",
+                                // never "covered").
                                 tracing::warn!(reason, "ExecuteTsPartial failed");
-                                if let Err(e) = reply.send(fe_runtime::distributed_query::TsPartialRows::empty()) {
+                                if let Err(e) = reply.send(fe_runtime::distributed_query::TsPartialRows::failed()) {
                                     tracing::warn!("ExecuteTsPartial error-reply send failed: {e:?}");
                                 }
                             }

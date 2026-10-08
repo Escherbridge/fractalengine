@@ -91,6 +91,7 @@ pub async fn execute_ts_partial(
                 per_shard,
                 rows: Vec::new(),
                 truncated,
+                failed: false,
             })
         }
         TsQueryKind::ReadingsInWindow {
@@ -114,6 +115,7 @@ pub async fn execute_ts_partial(
                 per_shard: Vec::new(),
                 rows,
                 truncated,
+                failed: false,
             })
         }
         TsQueryKind::LatestPerAnchor { petal_id, metric } => {
@@ -126,6 +128,7 @@ pub async fn execute_ts_partial(
                 per_shard: Vec::new(),
                 rows,
                 truncated,
+                failed: false,
             })
         }
         TsQueryKind::AllReadings { petal_id } => {
@@ -138,6 +141,7 @@ pub async fn execute_ts_partial(
                 per_shard: Vec::new(),
                 rows,
                 truncated,
+                failed: false,
             })
         }
     }

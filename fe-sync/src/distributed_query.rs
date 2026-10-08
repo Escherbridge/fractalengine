@@ -13,6 +13,13 @@
 //! merge are pure functions of their inputs — no I/O, no clocks, no
 //! iteration-order dependence. Only the collector/responder tasks (which
 //! drive the transport) are async.
+//!
+//! **Admission control (F23, 2026-10-08):** inbound compute envelopes are
+//! gated at `handle_gossip_incoming` — verse-vs-arrival-topic, direct
+//! sender identity (`from_did == did_key(from)` on direct deliveries), and
+//! declared-fabric-peer membership for requesters. See `AGENTS.md`
+//! §distributed-query for the honest boundary, including the relayed
+//! delivery residual.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -90,6 +97,16 @@ pub enum ComputeEnvelope {
 pub struct GossipIncoming {
     pub verse_id: String,
     pub from: iroh::NodeId,
+    /// Whether the message was delivered DIRECTLY from its publisher
+    /// (`DeliveryScope::is_direct()`: neighbor broadcast or 0 swarm hops).
+    /// Only then does `from` authenticate the ENVELOPE author — a relayed
+    /// delivery's `from` is the forwarding neighbor, not the original
+    /// broadcaster (iroh-gossip 0.35 `GossipEvent` docs). The F23 identity
+    /// check enforces `from_did == did_key(from)` strictly on direct
+    /// deliveries; relayed deliveries cannot be wire-verified and fall back
+    /// to claim-based admission (see §distributed-query in this crate's
+    /// AGENTS.md for the residual).
+    pub direct: bool,
     pub content: bytes::Bytes,
 }
 
@@ -194,6 +211,15 @@ pub struct PartialResponse {
 /// (ledger hosts first, sorted), never by arrival — the sim lab's
 /// determinism requirement and the merge's commutativity both depend on it.
 ///
+/// **Failed partials never masquerade as answers (F23):** a response with
+/// `partial.failed` (the executing host's DB errored) is excluded from the
+/// rows, the coverage attribution, and `answered_hosts` — so a formal host
+/// that failed lands in `missing_hosts` and its shards in `missing_shards`
+/// (the metadata reads "host failed", never an authoritative covered-empty).
+/// A failed host IS still "resolved" for the collector's settlement (it
+/// answered; no more data is coming from it), which is why the filter lives
+/// here and not at the inbox.
+///
 /// - `WindowAggregate`: per-shard attribution prevents double-counting when
 ///   several mirrors of one shard answer (the first NON-EMPTY partial wins
 ///   the shard; identical data makes any winner correct); across shards the
@@ -211,20 +237,33 @@ pub fn merge_partials(
     plan: &DistributedPlan,
     responses: &[PartialResponse],
 ) -> DistributedQueryOutcome {
-    let answered_hosts: BTreeSet<&str> = responses.iter().map(|r| r.host.as_str()).collect();
-    let truncated = responses.iter().any(|r| r.partial.truncated);
+    // Partition out failed partials (clone only on the rare failed path —
+    // the pure fns below keep their borrowed slices).
+    let usable_owned: Vec<PartialResponse>;
+    let usable: &[PartialResponse] = if responses.iter().any(|r| r.partial.failed) {
+        usable_owned = responses
+            .iter()
+            .filter(|r| !r.partial.failed)
+            .cloned()
+            .collect();
+        &usable_owned
+    } else {
+        responses
+    };
+    let answered_hosts: BTreeSet<&str> = usable.iter().map(|r| r.host.as_str()).collect();
+    let truncated = usable.iter().any(|r| r.partial.truncated);
 
     let (rows, covered_shards, missing_shards) = match spec {
-        TsQueryKind::WindowAggregate { .. } => merge_aggregates(plan, responses),
+        TsQueryKind::WindowAggregate { .. } => merge_aggregates(plan, usable),
         TsQueryKind::ReadingsInWindow { petal_id, .. } | TsQueryKind::AllReadings { petal_id } => {
-            let (rows, covered, missing) = merge_raw(plan, responses);
+            let (rows, covered, missing) = merge_raw(plan, usable);
             let attributed =
                 attribute_rows_to_shards(&rows, petal_id, plan.bucket_width_ms, &plan.shard_hosts);
             let (covered, missing) = fold_attribution(covered, missing, attributed);
             (rows, covered, missing)
         }
         TsQueryKind::LatestPerAnchor { petal_id, .. } => {
-            let rows = merge_latest(responses);
+            let rows = merge_latest(usable);
             let attributed =
                 attribute_rows_to_shards(&rows, petal_id, plan.bucket_width_ms, &plan.shard_hosts);
             let (covered, missing) = covered_by_answered_hosts(plan, &answered_hosts);
@@ -494,12 +533,25 @@ fn attribute_rows_to_shards(
 /// Serialize an envelope, trimming rows until it fits the gossip budget.
 /// Trimming flags the partial `truncated` so the merge reports it (A16
 /// honesty: a partial that did not fit is never silently rounded off).
+/// No-progress guard (F23, M2 scrutiny F7 minor): when a single row alone
+/// exceeds the budget the halving loop would re-serialize an identical
+/// envelope forever — bail with an error instead (the responder drops the
+/// answer with a warn, which the requester honestly sees as a silent host).
 pub fn encode_envelope(envelope: &mut ComputeEnvelope) -> Result<bytes::Bytes, String> {
+    let mut prev_len = usize::MAX;
     loop {
         let bytes = serde_json::to_vec(envelope).map_err(|e| e.to_string())?;
         if bytes.len() <= GOSSIP_ENVELOPE_BUDGET {
             return Ok(bytes.into());
         }
+        if bytes.len() >= prev_len {
+            return Err(
+                "compute envelope cannot shrink below the gossip budget — a single row exceeds \
+                 it; dropping the answer"
+                    .into(),
+            );
+        }
+        prev_len = bytes.len();
         match envelope {
             ComputeEnvelope::Response { partial, .. } => {
                 let mut total = partial.rows.len();
@@ -558,7 +610,16 @@ pub struct PendingQueries {
 impl PendingQueries {
     fn register(&self, request_id: &str, tx: tokio::sync::mpsc::Sender<RoutedResponse>) -> bool {
         let mut map = self.map.lock().expect("pending queries lock");
-        if map.len() >= PENDING_QUERY_CAP && !map.contains_key(request_id) {
+        // F23 (M2 scrutiny F7 doc/code fix): a duplicate id REFUSES rather
+        // than clobbering a live collector — the clobbered collector's
+        // inbox would be replaced and its later deregister would evict the
+        // replacement's registration. Unreachable with ULID request ids,
+        // but the doc claim ("a duplicate id never clobbers a live
+        // collector") and the code now agree.
+        if map.contains_key(request_id) {
+            return false;
+        }
+        if map.len() >= PENDING_QUERY_CAP {
             return false;
         }
         map.insert(request_id.to_string(), tx);
@@ -701,7 +762,10 @@ pub fn submit_distributed_query(
     if !transport.pending.register(&request.request_id, inbox_tx) {
         transport.reply(
             &call.reply,
-            error_outcome("distributed query queue full — too many pending requests"),
+            error_outcome(
+                "distributed query queue full — too many pending requests or a duplicate \
+                 request id is already live",
+            ),
         );
         return;
     }
@@ -899,19 +963,80 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
     }
 }
 
+/// The disposition of one inbound gossip compute message: what the
+/// admission gate (F23 hardening) decided. Returned so every drop shape is
+/// unit-testable without a gossip stack; production callers ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GossipDisposition {
+    /// A response was routed to its collector.
+    Routed,
+    /// A request passed admission — the responder task was spawned.
+    Answered,
+    /// Not a compute envelope (tileset/foreign traffic) — ignored at debug.
+    Ignored,
+    /// Refused at the gate; the reason is the honest log line.
+    Dropped(&'static str),
+}
+
+/// Admission-gate drop reasons — named so the logs and the tests share one
+/// definition.
+pub mod drop_reason {
+    /// Our own request echoed back — never respond to self.
+    pub const SELF_ECHO: &str = "self echo";
+    /// Structural validation failed (id/timeout/shard-list shape).
+    pub const MALFORMED: &str = "malformed request";
+    /// The envelope's verse claim does not match the verse whose topic the
+    /// message arrived on (the only authenticated verse binding).
+    pub const VERSE_MISMATCH: &str = "envelope verse does not match the arrival topic";
+    /// On a direct delivery the claimed `from_did` is not the authenticated
+    /// sender's did:key — forged attribution.
+    pub const FORGED_SENDER: &str = "claimed from_did does not match the authenticated sender";
+    /// The requesting peer is not declared in this verse's fabric
+    /// (`__peers/{did}`) — deny-by-default for strangers on a topic id that
+    /// is derivable from the public verse ULID (no capability).
+    pub const UNDECLARED_REQUESTER: &str = "requester is not a declared fabric peer";
+    /// Aggregate shard list does not sit inside the spec's petal.
+    pub const SHARD_LIST_MISMATCH: &str = "shard list does not match its petal";
+    /// Raw/latest request for a petal this verse's ledger knows no shard
+    /// for — legitimately not answering.
+    pub const PETAL_UNKNOWN: &str = "petal unknown here";
+    /// The verse topic's sender is gone (replica closed mid-request).
+    pub const TOPIC_CLOSED: &str = "topic closed under us";
+}
+
 /// Handle one inbound gossip message: route responses, answer requests.
 /// Synchronous (the responder's DB round trip lives in a spawned task).
+///
+/// **Admission control (F23, the sync-plane hardening pass):**
+/// 1. A request's envelope `verse_id` must equal the verse of the topic the
+///    message ARRIVED on — the arrival topic is the authenticated binding;
+///    the envelope field is a claim. A mismatch is dropped.
+/// 2. On a DIRECT delivery, the claimed `from_did` must equal
+///    `did_key(incoming.from)` — the F20 endpoint-identity == fe-DID
+///    alignment makes the authenticated sender's DID derivable, so
+///    forged-attribution envelopes (a covered-empty masquerading as a
+///    formal host's answer, a request impersonating a declared peer) are
+///    dropped. RELAYED deliveries cannot be wire-verified (iroh-gossip's
+///    `from` is the forwarding neighbor, not the original broadcaster), so
+///    they are admitted claim-based — the residual is documented in
+///    `AGENTS.md` §distributed-query.
+/// 3. The requesting peer must be a DECLARED fabric peer of the arrival
+///    verse (`__peers/{did}`) before we execute anything — membership
+///    requires a doc round trip, so a stranger on the derivable gossip
+///    topic cannot read. Claim-based for relayed requests; honest about
+///    convergence (a responder that has not converged the requester's
+///    declaration yet refuses until it does).
 pub fn handle_gossip_incoming(
     transport: &DistributedTransport,
     fabrics: &HashMap<String, VerseFabric>,
     gossip_senders: &HashMap<String, GossipSender>,
     incoming: GossipIncoming,
-) {
+) -> GossipDisposition {
     let Some(envelope) = decode_envelope(&incoming.content) else {
         // Foreign traffic on the verse topic (tileset announcements) — not
         // consumed by anyone today; ignore at debug, never fatal.
         tracing::debug!(verse_id = %incoming.verse_id, "ignoring non-compute gossip message");
-        return;
+        return GossipDisposition::Ignored;
     };
     match envelope {
         ComputeEnvelope::Response {
@@ -919,6 +1044,15 @@ pub fn handle_gossip_incoming(
             from_did,
             partial,
         } => {
+            if incoming.direct && from_did != crate::replicator::peer_did_key(&incoming.from) {
+                tracing::warn!(
+                    request_id = %request_id,
+                    claimed = %from_did,
+                    "forged-attribution compute response dropped — claimed from_did does not \
+                     match the authenticated direct sender"
+                );
+                return GossipDisposition::Dropped(drop_reason::FORGED_SENDER);
+            }
             transport.pending.route(
                 &request_id,
                 RoutedResponse {
@@ -926,6 +1060,7 @@ pub fn handle_gossip_incoming(
                     partial,
                 },
             );
+            GossipDisposition::Routed
         }
         ComputeEnvelope::Request {
             request_id,
@@ -937,7 +1072,7 @@ pub fn handle_gossip_incoming(
             row_cap,
         } => {
             if from_did == transport.local_did {
-                return; // our own request echoed back — never respond to self
+                return GossipDisposition::Dropped(drop_reason::SELF_ECHO);
             }
             if request_id.is_empty()
                 || request_id.len() > 128
@@ -945,14 +1080,44 @@ pub fn handle_gossip_incoming(
                 || timeout_ms > MAX_QUERY_TIMEOUT_MS
             {
                 tracing::warn!(request_id, "ignoring malformed compute request");
-                return;
+                return GossipDisposition::Dropped(drop_reason::MALFORMED);
             }
-            // Authorization boundary (honest, narrow): the doc bounds which
-            // verse the request arrived on, and the petal prefix bounds the
-            // read surface — aggregate shard lists must sit entirely inside
-            // the spec's petal, raw/latest requests must name a petal this
-            // verse's ledger has at least one shard for. A compute request
-            // can never read outside the verse/petal it was sent to.
+            if verse_id != incoming.verse_id {
+                tracing::warn!(
+                    request_id,
+                    claimed_verse = %verse_id,
+                    topic_verse = %incoming.verse_id,
+                    "compute request verse does not match its arrival topic — dropped"
+                );
+                return GossipDisposition::Dropped(drop_reason::VERSE_MISMATCH);
+            }
+            if incoming.direct && from_did != crate::replicator::peer_did_key(&incoming.from) {
+                tracing::warn!(
+                    request_id = %request_id,
+                    claimed = %from_did,
+                    "forged-attribution compute request dropped — claimed from_did does not \
+                     match the authenticated direct sender"
+                );
+                return GossipDisposition::Dropped(drop_reason::FORGED_SENDER);
+            }
+            let declared = fabrics
+                .get(&incoming.verse_id)
+                .map(|f| f.peers.contains_key(&from_did))
+                .unwrap_or(false);
+            if !declared {
+                tracing::warn!(
+                    request_id,
+                    requester = %from_did,
+                    "compute request from a peer not declared in this verse's fabric — dropped"
+                );
+                return GossipDisposition::Dropped(drop_reason::UNDECLARED_REQUESTER);
+            }
+            // Petal containment (unchanged, the honest narrow boundary): the
+            // petal prefix bounds the read surface — aggregate shard lists
+            // must sit entirely inside the spec's petal, raw/latest requests
+            // must name a petal this verse's ledger has at least one shard
+            // for. A compute request can never read outside the petal it
+            // was sent for.
             let petal_prefix = format!("{}/", spec.petal_id());
             let is_aggregate = matches!(spec, TsQueryKind::WindowAggregate { .. });
             if is_aggregate {
@@ -961,21 +1126,21 @@ pub fn handle_gossip_incoming(
                         request_id,
                         "aggregate compute request with bad shard list — ignored"
                     );
-                    return;
+                    return GossipDisposition::Dropped(drop_reason::MALFORMED);
                 }
                 if !shards.iter().all(|s| s.shard.starts_with(&petal_prefix)) {
                     tracing::warn!(
                         request_id,
                         "compute request shards do not match its petal — ignored"
                     );
-                    return;
+                    return GossipDisposition::Dropped(drop_reason::SHARD_LIST_MISMATCH);
                 }
             } else {
                 // Raw/latest: no shard list rides the request; answer only
                 // when this verse's ledger knows the petal (no rows could be
                 // hosted for an unknown petal anyway).
                 let petal_known = fabrics
-                    .get(&verse_id)
+                    .get(&incoming.verse_id)
                     .map(|f| f.shards.keys().any(|k| k.starts_with(&petal_prefix)))
                     .unwrap_or(false);
                 if !petal_known {
@@ -983,13 +1148,13 @@ pub fn handle_gossip_incoming(
                         request_id,
                         "compute request petal unknown here — not answering"
                     );
-                    return;
+                    return GossipDisposition::Dropped(drop_reason::PETAL_UNKNOWN);
                 }
             }
             let Some(sender) =
-                gossip_senders.get(&crate::sync_thread::derive_gossip_topic(&verse_id))
+                gossip_senders.get(&crate::sync_thread::derive_gossip_topic(&incoming.verse_id))
             else {
-                return; // topic closed under us — nothing to answer on
+                return GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED);
             };
             tokio::spawn(respond_to_compute_request(
                 transport.clone(),
@@ -1000,6 +1165,7 @@ pub fn handle_gossip_incoming(
                 timeout_ms.min(MAX_QUERY_TIMEOUT_MS),
                 effective_row_cap(row_cap),
             ));
+            GossipDisposition::Answered
         }
     }
 }
@@ -1299,7 +1465,7 @@ mod tests {
         // A15: the merged window aggregate across peers must equal the same
         // query over the UNION of all rows — computed here from raw rows,
         // not hand-made fixtures.
-        let rows_a = vec![
+        let rows_a = [
             reading_row("r1", "a", 10.0, 0),
             reading_row("r2", "a", 20.0, 10),
             reading_row("r3", "b", 5.0, 20),
@@ -1341,6 +1507,7 @@ mod tests {
                     .collect(),
                 rows: Vec::new(),
                 truncated: false,
+                failed: false,
             },
         };
         // Host A answers its shards (sum/count per shard, exactly what the
@@ -1405,6 +1572,7 @@ mod tests {
                 }],
                 rows: Vec::new(),
                 truncated: false,
+                failed: false,
             },
         };
         let r1 = [partial("did:a", 30.0, 2), partial("did:b", 30.0, 2)];
@@ -1445,6 +1613,7 @@ mod tests {
                 )],
                 rows: Vec::new(),
                 truncated: false,
+                failed: false,
             },
         };
         // "did:over" < "did:host" in DID order — the naive first-non-empty
@@ -1458,6 +1627,7 @@ mod tests {
                 )],
                 rows: Vec::new(),
                 truncated: false,
+                failed: false,
             },
         };
         for responses in [
@@ -1518,6 +1688,7 @@ mod tests {
                 }],
                 rows: Vec::new(),
                 truncated: false,
+                failed: false,
             },
         };
         let o1 = merge_partials(
@@ -1549,6 +1720,7 @@ mod tests {
                 }],
                 rows: Vec::new(),
                 truncated: false,
+                failed: false,
             },
         };
         let o_local = merge_partials(
@@ -1595,6 +1767,7 @@ mod tests {
                 }],
                 rows: Vec::new(),
                 truncated: false,
+                failed: false,
             },
         };
         let outcome = merge_partials(&agg_spec(0, 60_000), &plan, &[answered_empty]);
@@ -1638,6 +1811,7 @@ mod tests {
                 per_shard: Vec::new(),
                 rows: rows.clone(),
                 truncated: false,
+                failed: false,
             },
         };
         let outcome = merge_partials(&spec, &plan, &[resp("did:a", &rows), resp("did:b", &rows)]);
@@ -1683,6 +1857,7 @@ mod tests {
                 per_shard: Vec::new(),
                 rows,
                 truncated: false,
+                failed: false,
             },
         };
         let outcome = merge_partials(
@@ -1720,6 +1895,7 @@ mod tests {
                 per_shard: Vec::new(),
                 rows,
                 truncated: false,
+                failed: false,
             },
         };
         let outcome = merge_partials(
@@ -1761,6 +1937,7 @@ mod tests {
                 per_shard: Vec::new(),
                 rows,
                 truncated: false,
+                failed: false,
             },
         };
         let bytes = encode_envelope(&mut envelope).expect("fits after trimming");
@@ -1820,6 +1997,527 @@ mod tests {
                 capacity_bytes: None,
                 seeder: false,
             }
+        );
+    }
+
+    // ── F23: envelope budget no-progress guard ─────────────────────────────
+
+    /// One row whose serialized size alone exceeds the gossip budget — the
+    /// halving loop's no-op case (len == 1 → keep.max(1) truncates nothing).
+    /// Pre-F23 this looped forever; the guard must bail with an error.
+    #[test]
+    fn encode_envelope_bails_rather_than_looping_when_one_row_exceeds_the_budget() {
+        let huge_row = serde_json::json!({
+            "reading_id": "huge",
+            "node_id": "a",
+            "petal_id": "p1",
+            "metric": "m",
+            "value": 0.5,
+            "payload": "x".repeat(GOSSIP_ENVELOPE_BUDGET),
+        });
+        // Shape 1: the huge row sits in `rows`.
+        let mut rows_env = ComputeEnvelope::Response {
+            request_id: "req".into(),
+            from_did: "did:a".into(),
+            partial: TsPartialRows {
+                per_shard: Vec::new(),
+                rows: vec![huge_row.clone()],
+                truncated: false,
+                failed: false,
+            },
+        };
+        assert!(
+            encode_envelope(&mut rows_env).is_err_and(|e| e.contains("cannot shrink")),
+            "a single over-budget row must error, never loop"
+        );
+        // Shape 2: the huge row is the only row of the heaviest shard.
+        let mut shard_env = ComputeEnvelope::Response {
+            request_id: "req".into(),
+            from_did: "did:a".into(),
+            partial: TsPartialRows {
+                per_shard: vec![shard_rows("p1/a/0", vec![huge_row])],
+                rows: Vec::new(),
+                truncated: false,
+                failed: false,
+            },
+        };
+        assert!(
+            encode_envelope(&mut shard_env).is_err_and(|e| e.contains("cannot shrink")),
+            "the per-shard shape must error too, never loop"
+        );
+    }
+
+    // ── F23: duplicate request ids never clobber a live collector ──────────
+
+    #[test]
+    fn pending_register_refuses_a_duplicate_id_and_respects_the_cap() {
+        let pending = PendingQueries::default();
+        let (tx_a, _rx_a) = tokio::sync::mpsc::channel::<RoutedResponse>(8);
+        let (tx_b, _rx_b) = tokio::sync::mpsc::channel::<RoutedResponse>(8);
+        assert!(pending.register("req-1", tx_a.clone()));
+        // A duplicate id REFUSES — the live collector's inbox is never
+        // replaced (pre-F23 register overwrote via map.insert).
+        assert!(!pending.register("req-1", tx_b), "duplicate refused");
+        // Deregister frees the id for reuse.
+        pending.deregister("req-1");
+        let (tx_c, _rx_c) = tokio::sync::mpsc::channel::<RoutedResponse>(8);
+        assert!(
+            pending.register("req-1", tx_c),
+            "id reusable after deregister"
+        );
+        // The cap still refuses NEW ids when full ("req-1" already holds a
+        // slot, so the fill loop stops one short of the cap).
+        for i in 0..(PENDING_QUERY_CAP - 1) {
+            let (tx, _rx) = tokio::sync::mpsc::channel::<RoutedResponse>(8);
+            assert!(pending.register(&format!("cap-{i}"), tx));
+        }
+        let (tx_over, _rx_over) = tokio::sync::mpsc::channel::<RoutedResponse>(8);
+        assert!(!pending.register("over-cap", tx_over), "cap enforced");
+    }
+
+    // ── F23: a failed local partial never masquerades as covered-empty ──────
+
+    #[test]
+    fn a_failed_formal_host_partial_is_reported_missing_not_covered() {
+        // The M2 scrutiny F7 minor shape: a formal host whose partial
+        // execution FAILED (DB error) used to answer empty and the merge
+        // counted it as an authoritative covered-empty. With the failed
+        // flag, the shard is honestly MISSING and the host lands in
+        // missing_hosts — A16 reads "host failed", never "covered".
+        let fabric = fabric_with_shards(
+            VerseTimeseriesSettings::default(),
+            &[("p1/a/0", 0, 60_000, &["did:failed-host"])],
+        );
+        let plan = plan_distributed_query(&agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let failed = PartialResponse {
+            host: "did:failed-host".into(),
+            partial: TsPartialRows::failed(),
+        };
+        let outcome = merge_partials(&agg_spec(0, 60_000), &plan, &[failed]);
+        assert!(
+            outcome.meta.covered_shards.is_empty(),
+            "a failed answer covers nothing"
+        );
+        assert_eq!(outcome.meta.missing_shards, vec!["p1/a/0".to_string()]);
+        assert_eq!(
+            outcome.meta.missing_hosts,
+            vec!["did:failed-host".to_string()]
+        );
+        assert!(
+            !outcome
+                .meta
+                .answered_hosts
+                .contains(&"did:failed-host".to_string()),
+            "a failed host is not reported as having answered"
+        );
+        assert!(outcome.rows.is_empty());
+    }
+
+    #[test]
+    fn a_failed_formal_host_loses_to_a_surviving_mirror_at_r2() {
+        // At R=2 the surviving mirror's usable answer covers the shard even
+        // when the other formal host failed — the honest mixed case.
+        let fabric = fabric_with_shards(
+            VerseTimeseriesSettings {
+                mode: TimeseriesMode::Balanced,
+                replication_factor: 2,
+                bucket_width_ms: 60_000,
+            },
+            &[("p1/a/0", 0, 60_000, &["did:failed-host", "did:mirror"])],
+        );
+        let plan = plan_distributed_query(&agg_spec(0, 60_000), &fabric, "did:local").unwrap();
+        let failed = PartialResponse {
+            host: "did:failed-host".into(),
+            partial: TsPartialRows::failed(),
+        };
+        let mirror = PartialResponse {
+            host: "did:mirror".into(),
+            partial: TsPartialRows {
+                per_shard: vec![shard_rows(
+                    "p1/a/0",
+                    vec![agg_row("a", 30.0, 2, 10.0, 20.0)],
+                )],
+                rows: Vec::new(),
+                truncated: false,
+                failed: false,
+            },
+        };
+        let outcome = merge_partials(&agg_spec(0, 60_000), &plan, &[failed, mirror]);
+        assert_eq!(outcome.meta.covered_shards, vec!["p1/a/0".to_string()]);
+        assert!(outcome.meta.missing_shards.is_empty());
+        assert_eq!(outcome.meta.answered_hosts, vec!["did:mirror".to_string()]);
+        // The failed host honestly did NOT answer — it is missing, while its
+        // covered shard is served by the surviving mirror.
+        assert_eq!(
+            outcome.meta.missing_hosts,
+            vec!["did:failed-host".to_string()]
+        );
+        assert_eq!(outcome.rows.len(), 1);
+        assert_eq!(outcome.rows[0]["avg_value"].as_f64(), Some(15.0));
+    }
+
+    // ── F23: transport admission control ───────────────────────────────────
+
+    /// A deterministic test node identity — its did:key IS the app DID of
+    /// the peer that "sent" the envelope (the F20 alignment).
+    fn test_node_id(seed: u8) -> iroh::NodeId {
+        iroh::SecretKey::from_bytes(&[seed; 32]).public()
+    }
+
+    fn request_envelope(
+        request_id: &str,
+        verse_id: &str,
+        from_did: &str,
+        spec: TsQueryKind,
+        shards: Vec<PartialShard>,
+    ) -> ComputeEnvelope {
+        ComputeEnvelope::Request {
+            request_id: request_id.into(),
+            verse_id: verse_id.into(),
+            from_did: from_did.into(),
+            spec,
+            shards,
+            timeout_ms: 3_000,
+            row_cap: 0,
+        }
+    }
+
+    fn response_envelope(
+        request_id: &str,
+        from_did: &str,
+        partial: TsPartialRows,
+    ) -> ComputeEnvelope {
+        ComputeEnvelope::Response {
+            request_id: request_id.into(),
+            from_did: from_did.into(),
+            partial,
+        }
+    }
+
+    fn gossip_incoming(
+        verse_id: &str,
+        from: iroh::NodeId,
+        direct: bool,
+        envelope: &ComputeEnvelope,
+    ) -> GossipIncoming {
+        GossipIncoming {
+            verse_id: verse_id.into(),
+            from,
+            direct,
+            content: bytes::Bytes::from(serde_json::to_vec(envelope).expect("envelope json")),
+        }
+    }
+
+    /// A transport whose local peer is `did:local`, plus the verse fabric
+    /// with `p1/a/0` sharded to the requester and the requester DECLARED
+    /// (the honest requester shape). Returns the requester's own did:key —
+    /// the identity its endpoint authenticates as.
+    fn admission_setup() -> (
+        DistributedTransport,
+        HashMap<String, VerseFabric>,
+        HashMap<String, GossipSender>,
+        String,
+    ) {
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
+        let transport = DistributedTransport::new("did:local".into(), None, evt_tx);
+        let requester_did = crate::replicator::peer_did_key(&requester_node());
+        let mut fabric = VerseFabric::default();
+        fabric.note_verse_row(&serde_json::json!({"ts_mode": "sharded"}));
+        fabric.note_shard_row(&serde_json::json!({
+            "shard": "p1/a/0", "hosts": [requester_did.clone()],
+            "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 60_000,
+            "range_start_ms": 0, "range_end_ms": 60_000, "row_count": 1, "size_bytes": 10
+        }));
+        fabric.note_peer_declaration(&requester_did, PeerDeclaration::default());
+        let mut fabrics = HashMap::new();
+        fabrics.insert("v-1".to_string(), fabric);
+        (transport, fabrics, HashMap::new(), requester_did)
+    }
+
+    /// The node whose did:key the fixture fabric declares as a peer.
+    fn requester_node() -> iroh::NodeId {
+        test_node_id(7)
+    }
+
+    fn agg_shards() -> Vec<PartialShard> {
+        vec![PartialShard {
+            shard: "p1/a/0".into(),
+            anchor_node_id: "a".into(),
+            range_start_ms: 0,
+            range_end_ms: 60_000,
+        }]
+    }
+
+    #[test]
+    fn non_compute_gossip_is_ignored() {
+        let (transport, fabrics, senders, _requester_did) = admission_setup();
+        let incoming = GossipIncoming {
+            verse_id: "v-1".into(),
+            from: test_node_id(7),
+            direct: true,
+            content: bytes::Bytes::from_static(b"{\"tileset\":\"ad\"}"),
+        };
+        assert_eq!(
+            handle_gossip_incoming(&transport, &fabrics, &senders, incoming),
+            GossipDisposition::Ignored
+        );
+    }
+
+    #[test]
+    fn request_verse_mismatch_is_dropped() {
+        // The envelope claims verse v-OTHER but arrived on v-1's topic —
+        // the arrival topic is the only authenticated verse binding.
+        let (transport, fabrics, senders, requester_did) = admission_setup();
+        let from = test_node_id(7);
+        let env = request_envelope(
+            "req-1",
+            "v-OTHER",
+            &requester_did,
+            agg_spec(0, 60_000),
+            agg_shards(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", from, true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::VERSE_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn direct_request_with_forged_from_did_is_dropped() {
+        // Direct delivery: the authenticated sender's did:key is the
+        // declared requester's, but the envelope claims somebody else —
+        // forged attribution (the request-impersonation shape).
+        let (transport, fabrics, senders, requester_did) = admission_setup();
+        let from = requester_node();
+        assert_eq!(requester_did, crate::replicator::peer_did_key(&from));
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            "did:key:z6MkSomebodyElse",
+            agg_spec(0, 60_000),
+            agg_shards(),
+        );
+        assert_ne!(requester_did, "did:key:z6MkSomebodyElse");
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", from, true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::FORGED_SENDER)
+        );
+    }
+
+    #[test]
+    fn request_from_an_undeclared_peer_is_dropped() {
+        // The identity claim is honest (direct, from_did == did_key(from))
+        // but the requester never declared itself in the fabric —
+        // deny-by-default for strangers on the derivable topic.
+        let (transport, fabrics, senders, _declared_requester) = admission_setup();
+        let from = test_node_id(9);
+        let requester_did = crate::replicator::peer_did_key(&from);
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            &requester_did,
+            agg_spec(0, 60_000),
+            agg_shards(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", from, true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::UNDECLARED_REQUESTER)
+        );
+    }
+
+    #[test]
+    fn honest_direct_request_from_a_declared_peer_is_admitted() {
+        // Every gate passes: verse matches the arrival topic, from_did is
+        // the authenticated sender's did:key, the requester is declared,
+        // and the aggregate shard list sits inside the spec's petal.
+        // Reaching the (empty) gossip-sender lookup — TOPIC_CLOSED —
+        // proves admission passed; only the un-fakeable GossipSender
+        // stands between here and the responder spawn.
+        let (transport, fabrics, senders, requester_did) = admission_setup();
+        let from = requester_node();
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            &requester_did,
+            agg_spec(0, 60_000),
+            agg_shards(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", from, true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED)
+        );
+    }
+
+    #[test]
+    fn relayed_request_falls_back_to_claim_admission() {
+        // A relayed delivery's `from` is the FORWARDING neighbor, not the
+        // author (iroh-gossip GossipEvent docs) — the identity gate is
+        // skipped and the claim walks the membership + petal gates. This
+        // is the documented residual: relays cannot be wire-verified.
+        let (transport, fabrics, senders, requester_did) = admission_setup();
+        let relayed_via = test_node_id(21); // NOT the author
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            &requester_did, // the author's claim; relayed, so not checked against `from`
+            agg_spec(0, 60_000),
+            agg_shards(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", relayed_via, false, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED),
+            "a relayed honest-claim request from a declared peer passes the gates"
+        );
+    }
+
+    #[test]
+    fn self_echoed_request_is_dropped() {
+        let (transport, fabrics, senders, _requester_did) = admission_setup();
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            "did:local",
+            agg_spec(0, 60_000),
+            agg_shards(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", test_node_id(7), true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::SELF_ECHO)
+        );
+    }
+
+    #[test]
+    fn aggregate_shard_list_outside_the_petal_is_dropped() {
+        let (transport, fabrics, senders, requester_did) = admission_setup();
+        let from = requester_node();
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            &requester_did,
+            agg_spec(0, 60_000), // spec's petal is p1
+            vec![PartialShard {
+                shard: "p2/a/0".into(), // ...but the shard list names p2
+                anchor_node_id: "a".into(),
+                range_start_ms: 0,
+                range_end_ms: 60_000,
+            }],
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", from, true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::SHARD_LIST_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn forged_direct_response_is_dropped_an_honest_one_routes() {
+        // The forge-another-host's-partial hole: a direct response claims
+        // to be `did:key:z6MkFormalHost` but the authenticated sender is
+        // somebody else — dropped, never routed into the collector. The
+        // honest claim (from_did == did_key(from)) routes by request id.
+        let (transport, fabrics, senders, _requester_did) = admission_setup();
+        let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::channel::<RoutedResponse>(8);
+        assert!(transport.pending.register("req-live", inbox_tx));
+
+        let attacker = test_node_id(31);
+        let forged =
+            response_envelope("req-live", "did:key:z6MkFormalHost", TsPartialRows::empty());
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", attacker, true, &forged)
+            ),
+            GossipDisposition::Dropped(drop_reason::FORGED_SENDER)
+        );
+        assert!(
+            inbox_rx.try_recv().is_err(),
+            "the forged partial never reaches the collector"
+        );
+
+        let honest_host = test_node_id(7);
+        let honest_did = crate::replicator::peer_did_key(&honest_host);
+        let honest = response_envelope(
+            "req-live",
+            &honest_did,
+            TsPartialRows {
+                per_shard: Vec::new(),
+                rows: vec![serde_json::json!({"reading_id": "r1"})],
+                truncated: false,
+                failed: false,
+            },
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", honest_host, true, &honest)
+            ),
+            GossipDisposition::Routed
+        );
+        let routed = inbox_rx
+            .try_recv()
+            .expect("the honest partial routes to the live collector");
+        assert_eq!(routed.host, honest_did);
+        assert_eq!(routed.partial.rows.len(), 1);
+    }
+
+    #[test]
+    fn response_for_an_unknown_request_id_is_routed_and_dropped_by_the_registry() {
+        // The routing table keys by request id: a foreign id routes to
+        // nothing (debug log inside route, disposition stays Routed —
+        // the envelope itself was well-formed and honestly attributed).
+        let (transport, fabrics, senders, _requester_did) = admission_setup();
+        let host = test_node_id(7);
+        let env = response_envelope(
+            "req-unknown",
+            &crate::replicator::peer_did_key(&host),
+            TsPartialRows::empty(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", host, true, &env)
+            ),
+            GossipDisposition::Routed
         );
     }
 }

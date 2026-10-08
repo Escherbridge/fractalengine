@@ -343,13 +343,14 @@ one response can mix petals with different origins.
 
 **Integration requests** (would require edits outside `fe-api/**`, so left as
 requests rather than done here):
-- `fractalengine/src/main.rs` currently passes `blob_store: None` into
-  `fe_api::ApiConfig` (a separate `FsBlobStore` handle is only wired to Bevy,
-  not the API thread) — so on the actual GUI binary today, every asset
-  endpoint (old and new) hits the `blob_store` `None` branch and returns 503,
-  even though `db_reader` is wired and asset *metadata* queries would
-  succeed. Wiring `blob_store: Some(blob_store.clone())` in `main.rs` (the
-  handle is already `Clone`) closes this gap.
+- ~~`fractalengine/src/main.rs` passes `blob_store: None`~~ **CLOSED (A11/F5,
+  re-verified F23 2026-10-08).** Both binaries now pass `blob_store:
+  Some(handle)` — `fractalengine/src/main.rs` (`blob_store_for_api`, shared
+  with the DB thread, sync thread, Bevy `blob://` source, and the download
+  bridge) and `fractalengine-relay/src/main.rs`. The `None` branch remains in
+  `fe-api` only for tests / a future relay-only deployment. Load-bearing since
+  A11: without it every asset endpoint 503s and the IoT ingest emit seam
+  degrades to durable-but-unpublished.
 - A `DbCommand::GetNodeAsset { node_id }` / `DbCommand::GetAssetMeta
   { asset_id }` variant (returning name/content_type/size_bytes/content_hash)
   would let these endpoints work over the crossbeam channel when no

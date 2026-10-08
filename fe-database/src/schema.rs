@@ -441,6 +441,33 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!("idx_iot_reading_petal: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_iot_reading_series ON TABLE iot_reading FIELDS node_id, metric, recorded_at_ms")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_iot_reading_series: {e}"))?;
+    // F23 (M2 scrutiny F5 minor): the A12 union key, storage-enforced. The
+    // inbound applier probes `reading_id` per replicated row and F20
+    // reconciliation replays the full doc snapshot on every open — the
+    // UNIQUE index backs that probe with an actual index and enforces the
+    // union key at the storage layer as defense in depth under the
+    // read-then-write applier (which itself cannot race: the DB thread is
+    // the single writer, and all sanctioned writers only ever mint fresh
+    // ULID reading_ids). UNIQUE validates EXISTING rows eagerly: a store
+    // that somehow predates this index with duplicate reading_ids fails
+    // the definition — fall back to the plain index with a LOUD error so
+    // the node stays up (the read-then-write applier remains the
+    // enforcement, and the operator learns) rather than failing startup.
+    let unique_idx = db
+        .query("DEFINE INDEX IF NOT EXISTS idx_iot_reading_reading_id ON TABLE iot_reading FIELDS reading_id UNIQUE")
+        .await
+        .and_then(|r| r.check());
+    if let Err(e) = unique_idx {
+        tracing::error!(
+            "iot_reading.reading_id UNIQUE index rejected ({e}) — the store holds duplicate \
+             reading_ids, so storage-level union-key enforcement is unavailable; falling back \
+             to the non-unique index (the read-then-write applier remains the enforcement)"
+        );
+        db.query("DEFINE INDEX IF NOT EXISTS idx_iot_reading_reading_id ON TABLE iot_reading FIELDS reading_id")
+            .await?
+            .check()
+            .map_err(|e| anyhow::anyhow!("idx_iot_reading_reading_id: {e}"))?;
+    }
     db.query("DEFINE INDEX IF NOT EXISTS idx_crate_registry_hexon_uri ON TABLE crate_registry FIELDS hexon_uri")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_crate_registry_hexon_uri: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_crate_entry_hexon_uri ON TABLE crate_entry FIELDS hexon_uri")

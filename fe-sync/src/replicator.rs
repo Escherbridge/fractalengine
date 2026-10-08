@@ -884,7 +884,10 @@ struct PendingContent {
 /// The endpoint identity's `NodeId` did:key IS the app DID (fe-identity's
 /// keypair and the iroh secret share the ed25519 seed), which is what makes
 /// author attribution and the A3 role gate agree across peers.
-fn peer_did_key(peer: &iroh::PublicKey) -> String {
+/// `pub(crate)` since F23: the distributed-query transport uses the same
+/// mapping to verify a gossip envelope's claimed `from_did` against the
+/// authenticated direct sender.
+pub(crate) fn peer_did_key(peer: &iroh::PublicKey) -> String {
     fe_identity::did_key::did_key_from_public_key_bytes(peer.as_bytes())
         .unwrap_or_else(|| peer.to_string())
 }

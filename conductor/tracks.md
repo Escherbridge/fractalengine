@@ -562,6 +562,43 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   `open_replica`'s None branch warns instead of silently returning; the relay
   opens with the provided id; and the GUI test pins the real fresh-create state
   end-to-end. F21's fe-sync seam is untouched. (fe-ui 900 tests; harness 14/14.)
+  F23 (2026-10-08, M2 scrutiny round-1 fix 2 of 2 + sync-plane admission-control
+  hardening, feature F23-m2-sync-plane-hardening): the API→sync seam no longer
+  blocking-sends (try_send: Full → honest `Unavailable`, Disconnected →
+  `BadGateway`; the bounded-64 seam can no longer pin API workers when the sync
+  thread is alive-but-wedged), and the transport/ledger seams gained
+  deny-by-default admission. ADMISSION POSTURE (the conductor note this feature
+  was minted to carry): (1) transport identity verification — a compute
+  request's envelope `verse_id` must equal the arrival topic's verse, and on a
+  DIRECT gossip delivery the claimed `from_did` must equal `did_key(from)` (the
+  F20 endpoint-identity==fe-DID alignment), so forged-attribution envelopes
+  cannot masquerade as a formal host's answer or impersonate a declared peer;
+  RELAYED deliveries cannot be wire-verified (iroh-gossip's `from` is the
+  forwarding neighbor) and fall back to claim-based admission — documented
+  residual. (2) requester admission — a requesting peer must be a DECLARED
+  fabric peer (`__peers/{did}`) before a responder executes anything;
+  implemented (fits the seam: the fabric already holds the peer set).
+  (3) ledger self-declaration — a `__peers` row's key must name its own signed
+  author (a forged `__peers/{other_did}` capacity row is dropped; honest
+  self-declaration converges). (4) `__shards` Editor+ gate — EVALUATED, NOT
+  implemented, and the residual is recorded honestly in fe-sync/src/AGENTS.md
+  §transport-admission-control for orchestrator review: roles are DB-thread
+  state (the local `role` table), the sync plane consumes `__shards`/`__peers`
+  before the DB thread, and no doc-side role row exists — so no honest seam-side
+  role gate is constructible; the weaker membership shape would look like
+  protection without being one (a declared peer can still publish a false
+  ledger), so it was deliberately not forced. Fold-ins: envelope-budget
+  no-progress guard (a single over-budget row now errors instead of looping),
+  failed-partial honesty (`TsPartialRows.failed` — a DB-errored host surfaces in
+  `missing_hosts`, never as an authoritative covered-empty), `PendingQueries`
+  duplicate-id refusal (no live-collector clobber), a UNIQUE `reading_id` index
+  with a loud non-unique fallback for stores predating it, and `petal_id`
+  documented as informational at the DB→sync bridge. Harness `peer.rs`
+  `create_verse`/`seed_test_data` now derive namespace ids via
+  `fe_database::derive_namespace_id` (the F20 conductor claim is now true);
+  scenarios 13/14 satisfy the new checks honestly with no checks weakened.
+  (fe-sync 215 + fe-database 196 + fe-api 89 + suites green; harness 14/14;
+  clippy --all-targets -D warnings clean; relay release build ok.)
 
 ---
 
