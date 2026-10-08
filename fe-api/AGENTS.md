@@ -56,11 +56,11 @@ when a route lands.
 | Terrain config | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
 | Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
-| Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query`, `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` |
+| Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: true` → §distributed-query), `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
 | IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 10 tools: 6 base + per-endpoint CRUD `read_node` / `node_address` / `delete_node` / `promote_instance` (§endpoint-surface) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 11 tools: 6 base + per-endpoint CRUD `read_node` / `node_address` / `delete_node` / `promote_instance` (§endpoint-surface) + `query_timeseries` (§distributed-query) |
 
 ## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
 
@@ -416,3 +416,52 @@ future work). Design notes:
   Reading-shaped `export.parquet`/`export.csv` (flat reading rows + optional
   anchor-position join) is the remaining FR-5 polish — `prepare_export` is
   still node-table-only.
+
+## §distributed-query (M2/F7 — A15/A16/A17)
+
+`src/timeseries_query.rs` — the ONE guarded bridge every distributed
+timeseries surface shares: `POST /api/v1/query` with body
+`{"distributed": true, "query": {…TsQueryKind…}}`, the analytics
+endpoint's merged `iot_reading` table, and the MCP `query_timeseries`
+tool. It fans a query out to the verse's fleet over the API→sync seam and
+merges the per-host partials (the transport, planner, and merge live in
+fe-sync `distributed_query.rs` — see fe-sync/src/AGENTS.md
+§distributed-query).
+
+- **Authorization happens HERE, once** (`run_distributed_timeseries_query`):
+  Viewer+ role → valid ULID → `resolve_petal_scope` → token containment →
+  per-DID rate limit. The verse id is derived from the resolved petal scope
+  (never from the request body) — the same rule as §iot-ingest. All three
+  surfaces go through the same call, so a guard fix lands everywhere at
+  once; the A17 tests pin that a scope-denied call never even reaches the
+  fan-out seam.
+- **The seam is `ApiState.distributed_tx`** (the same
+  `DistributedQueryCallSender` channel shape the replication bridge uses);
+  the binary bridges it into `SyncCommand::SubmitComputeTask`. A dead or
+  unwired seam is an honest explicit error (`TimeseriesQueryError`),
+  never a silent empty result — the `/query` surface returns 200 +
+  `{"ok": false}` (house style), analytics maps to real HTTP statuses,
+  MCP maps to `tool_error`.
+- **The spec is structured, never SQL** (`TsQueryKind`:
+  window aggregate / readings-in-window / latest-per-anchor / all-readings).
+  Remote hosts render their own partial SQL from the spec via the fe-query
+  builders, so a distributed request can only ever read one petal's
+  readings through the sanctioned shapes — there is no SQL string to
+  guard because no SQL crosses the seam.
+- **Answers carry the A16 honesty metadata** (`covered_shards` /
+  `missing_shards` / `answered_hosts` in the outcome meta): the `/query`
+  surface echoes it verbatim so a caller can tell a genuinely empty
+  window from a departed host's shard; the analytics merged table is only
+  registered when the caller's SQL references `iot_reading`
+  (`sql_references_table`, whole-identifier word-boundary scan) — a
+  nodes-only analytics query never pays a fan-out.
+- Row caps: the API requests `DISTRIBUTED_QUERY_ROW_CAP` (0 = transport
+  default); the executing host clamps anything it receives anyway, so the
+  API layer never widens a cap. Answer deadline
+  `DISTRIBUTED_QUERY_TIMEOUT_MS` (8 s) is bounded by the transport's own
+  `MAX_QUERY_TIMEOUT_MS` and generous over the sync-side 3 s default so a
+  slow fleet still answers within the HTTP budget.
+- Tests: `tests/distributed_query_test.rs` (11) — the three surfaces'
+  happy paths, role/scope denials (seam untouched), ULID/arg validation,
+  dead-seam and no-seam explicit errors, the honest-empty vs failed
+  analytics table, and nodes-only analytics unaffected.

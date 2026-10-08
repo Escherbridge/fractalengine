@@ -147,6 +147,18 @@ fn main() -> anyhow::Result<()> {
         None,
     );
 
+    // M2/F7 (A17): API→sync distributed-query bridge — the relay answers
+    // compute requests for shards it hosts (a seeder serves its shards), and
+    // its own distributed surfaces fan out through the same seam. A
+    // disconnected sync thread is shutdown (the bridge exits silently —
+    // §backpressure's Disconnected-is-silent rule).
+    let (distributed_call_tx, distributed_call_rx) =
+        crossbeam::channel::bounded::<fe_runtime::distributed_query::DistributedQueryCall>(64);
+    fe_sync::distributed_query::bridge_distributed_queries(
+        distributed_call_rx,
+        sync_cmd_tx.clone(),
+    );
+
     // Replication bridge (A10): try_send + drop-and-warn, matching the GUI
     // pattern. A stalled sync thread must degrade to observable replication lag,
     // never block the DB→sync hop; a disconnected channel is shutdown (silent).
@@ -313,6 +325,11 @@ fn main() -> anyhow::Result<()> {
         announcement_store: None,
         // A11: API-side ingestion emit seam (IoT readings ride db_reader).
         replication_tx: Some(repl_tx_for_api),
+        // M2/F7 (A17): the API→sync distributed-query bridge's call sender —
+        // the relay answers compute requests for shards it hosts (a seeder
+        // serves its shards), and its own distributed surfaces fan out
+        // through the same seam.
+        distributed_tx: Some(distributed_call_tx),
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));

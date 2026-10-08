@@ -465,3 +465,114 @@ why:
   the real loopback transport — mode switching via the manifest, ledger
   crossing, capacity exclusion, smallest-peer-never-caps, and the
   never-homeless last resort).
+
+## §distributed-query (M2/F7 — A15/A16/A17)
+
+`distributed_query.rs` is the fan-out query engine: `SyncCommand::SubmitComputeTask`
+became a real transport, not a stub. One `DistributedQueryCall`
+(`fe_runtime::distributed_query` — request + crossbeam `reply` sender) enters
+the command loop; the loop runs the plan/collect/merge synchronously (no
+inline awaits — the collector is a spawned task, so the select loop never
+blocks on a fleet), and answers on the embedded reply channel with the merged
+`DistributedQueryOutcome`. `SyncEvent::ComputeResultReady` carries the
+diagnostics echo.
+
+- **Spec is structured, never SQL** (`TsQueryKind`:
+  `WindowAggregate`/`ReadingsInWindow`/`LatestPerAnchor`/`AllReadings`).
+  Responders render their own partial SQL via the fe-query builders, so a
+  request can only ever read one petal's readings through the sanctioned
+  shapes — the spec is the authorization surface fe-api guards (see
+  fe-api/AGENTS.md §distributed-query).
+- **Planner** (`plan_distributed_query`): splits the spec into per-host
+  partials against the verse's fabric. Window queries target only shards
+  whose `[start, end)` bucket range overlaps the window; `LatestPerAnchor`/
+  `AllReadings` target every shard of the petal (an anchor's series can live
+  in any bucket). Targets are capped at `MAX_TARGET_SHARDS` (256) and the
+  plan is honest: a capped plan marks itself truncated, it never silently
+  narrows the query.
+- **Transport**: requests/partial responses ride the verse's own compute
+  gossip topic (the F4 seam), as `ComputeEnvelope` frames
+  (`encode_envelope`/`decode_envelope`) under `GOSSIP_ENVELOPE_BUDGET`
+  (448 KiB against iroh's 512 KiB frame cap) — an over-budget partial is
+  trimmed row-wise and flagged `truncated` in the meta, never dropped
+  silently. Correlation is by `request_id` through `PendingQueries`
+  (`register`/`deregister`/`route`, cap `PENDING_QUERY_CAP` = 64 — a
+  duplicate id never clobbers a live collector). The collector runs under
+  bounded concurrency (`MAX_CONCURRENT_QUERIES` = 8) with a per-request
+  deadline (`DEFAULT_QUERY_TIMEOUT_MS` 3 s, `MAX_QUERY_TIMEOUT_MS` 10 s):
+  partials that arrive after the deadline are routed and dropped; a request
+  with zero fabric/shards is an honest empty plan, not an error.
+- **Responder** (`handle_gossip_incoming`): a host that receives a request
+  renders the partial for the shards it hosts (the ledger's `Targeted`
+  routes are the truth — a host answers only for hosted shards, so a
+  non-host over-retained copy never widens an answer past its own
+  attribution) with its own `RESPONDER_EXEC_CAP_MS` budget, replying as a
+  topic broadcast (the topic is exactly the replica members — everyone
+  else's `route` ignores foreign request ids).
+- **Commutative merges** (`merge_partials`): aggregates fold
+  count/sum/min/max per (anchor, window) — mean is carried as
+  (sum, count), computed only at the end, so partials merge in ANY order and
+  duplicate mirror answers are idempotent; raw readings union-dedupe by
+  `reading_id`; `LatestPerAnchor` keeps the max `recorded_at_ms`. The merge
+  is order-free by construction — the unit tests pin three-host merged ==
+  union ground truth, commutativity, and mirror-duplicate safety.
+- **Honesty metadata (A16)**: the outcome's meta carries
+  `covered_shards`/`missing_shards`/`answered_hosts`. A shard is covered
+  when ANY answered host returned its partial (`covered_by_answered_hosts`);
+  `attribute_rows_to_shards`/`fold_attribution` fold the answered shards
+  back onto the planned ones so a host's over-retained copy of a shard it
+  no longer plans still counts the shard as covered only where its rows
+  actually are. An offline host at R=1 ⇒ its exclusive shard is `missing`
+  (the merge never fabricates its data); at R=2 the surviving mirror answers
+  and the shard is `covered`. A shard answered-but-empty is covered (the
+  host honestly holds no rows in that window — absence of data is not
+  absence of the shard).
+- **Send-side targeted delivery — evaluated, NOT adopted.** The orchestrator
+  asked whether the fan-out's request/response correlation could be reused
+  for per-host transfer routing on the doc transport (F6's receive-side
+  retention being the current enforcement). It does not fit naturally: doc
+  writes are one-shot `Doc::set_bytes` fan-ins over the whole topic with no
+  reply channel to correlate, a "targeted" doc send would still physically
+  broadcast (the doc protocol has no direct-address mode), and threading a
+  parallel per-host request/response fabric alongside the doc seam would
+  duplicate the retention decision in two places that can drift. Receive-side
+  retention (§sharding) stands as the transfer-routing correctness guarantee.
+  Recorded honestly here + in the F7 handoff.
+- End-to-end proof: harness scenario `distributed_query` (three peers over
+  the real loopback transport — exact-merge vs ground truth, raw dedupe,
+  latest-per-anchor, all-covered, creator-copy attribution, carol-exclusive
+  shard missing after departure, and the R=2 surviving mirror serving a
+  row-in-result) + fe-api `tests/distributed_query_test.rs` for the surface
+  guards (A17).
+
+### §gossip-bootstrap — the Join-drop race (fixed 2026-10-08)
+
+`subscribe_to_verse_gossip_topic` (sync_thread.rs) must run **before** the
+open sequence, and it must register every bootstrap peer with
+`Endpoint::add_node_addr` before `gossip.subscribe(topic, bootstrap)`:
+
+- **Why `add_node_addr` first:** the one-shot `subscribe` dials the bootstrap
+  peers immediately; a bare `NodeId` with no address-book entry cannot be
+  dialed and the join silently targets nobody. Registering the addresses
+  first makes the join dial succeed on the first try (the docs `start_sync`
+  dials in the background and races this otherwise).
+- **Why subscribe-before-open:** the gossip actor is an independent task and
+  **DROPS a Join that arrives for a topic this node has not subscribed to
+  yet** — the join is one-shot with no retry, so a joiner whose Join lands
+  in that window is silently neighbor-less on the topic for the whole
+  session (its compute request/response path is dead; the doc topic never
+  hit this because iroh-docs subscribes its topic immediately at doc open).
+  Before the fix, the verse topic subscribe ran AFTER the whole open
+  sequence (doc dial, `start_sync`, seed reconciliation — milliseconds of
+  racing surface); a captured `iroh_gossip=debug` log proved the drop: alice
+  received bob's Join at `+0.350s` while her own `Command(Join([]))` was
+  only processed at `+0.353s` — bob never became a neighbor and ~1-in-3
+  harness runs lost his partial. Subscribing first makes the window
+  microseconds against the joiners' millisecond dials; the harness scenario
+  sequences the host's open 500 ms before the joiners' opens to make it
+  scheduling-proof.
+- **Residual, known and accepted:** a Join can still be dropped if it
+  arrives between the `OpenVerseReplica` command's arrival and the subscribe
+  call (thread starvation). A self-healing join-retry monitor
+  (`GossipTopic::joined()` + re-issue) is the follow-up shape if that window
+  ever matters in production.

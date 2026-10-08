@@ -93,15 +93,17 @@ pub enum SyncCommand {
         rotation: [f32; 3],
         scale: [f32; 3],
     },
-    /// Submit a compute task to a peer or execute locally.
-    ///
-    /// Phase 6.2: tasks are always executed locally. Peer offloading is
-    /// deferred to Phase 8 (fe-hexon P2P distribution).
+    /// Submit a distributed timeseries query (M2/F7 — A15/A16/A17): the
+    /// structured spec is planned against the verse's fabric, fanned out over
+    /// the verse's gossip topic with bounded concurrency, answered by every
+    /// peer hosting requested shards (relay seeders answer for shards they
+    /// host), and merged commutatively with covered/missing shard honesty
+    /// metadata. The merged outcome is delivered on the call's embedded
+    /// crossbeam reply channel; [`SyncEvent::ComputeResultReady`] carries the
+    /// diagnostics. The spec is never raw SQL — responders render their own
+    /// SQL from it via the fe-query builders.
     SubmitComputeTask {
-        task_id: String,
-        query: String,
-        petal_scope: Option<String>,
-        requester_did: String,
+        call: fe_runtime::distributed_query::DistributedQueryCall,
     },
 }
 
@@ -381,23 +383,47 @@ mod tests {
 
     #[test]
     fn submit_compute_task_debug_clone() {
+        let (reply_tx, _reply_rx) = crossbeam::channel::bounded(1);
         let cmd = SyncCommand::SubmitComputeTask {
-            task_id: "task-001".into(),
-            query: "SELECT * FROM node".into(),
-            petal_scope: Some("petal-abc".into()),
-            requester_did: "did:key:z6Mk789".into(),
+            call: fe_runtime::distributed_query::DistributedQueryCall {
+                request: fe_runtime::distributed_query::DistributedQueryRequest {
+                    request_id: "task-001".into(),
+                    verse_id: "verse-1".into(),
+                    spec: fe_runtime::distributed_query::TsQueryKind::WindowAggregate {
+                        metric: "temperature_c".into(),
+                        start_ms: 0,
+                        end_ms: 60_000,
+                        petal_id: "petal-abc".into(),
+                    },
+                    timeout_ms: 3_000,
+                    row_cap: 0,
+                },
+                reply: reply_tx,
+            },
         };
         let cloned = cmd.clone();
-        let dbg = format!("{:?}", cloned);
+        let dbg = format!("{cloned:?}");
         assert!(dbg.contains("SubmitComputeTask"));
         assert!(dbg.contains("task-001"));
 
-        // Also test with no petal scope
+        // Also test with a raw-window spec
+        let (reply_tx, _reply_rx) = crossbeam::channel::bounded(1);
         let cmd_no_scope = SyncCommand::SubmitComputeTask {
-            task_id: "task-002".into(),
-            query: "SELECT count() FROM node GROUP ALL".into(),
-            petal_scope: None,
-            requester_did: "did:key:z6Mk000".into(),
+            call: fe_runtime::distributed_query::DistributedQueryCall {
+                request: fe_runtime::distributed_query::DistributedQueryRequest {
+                    request_id: "task-002".into(),
+                    verse_id: "verse-1".into(),
+                    spec: fe_runtime::distributed_query::TsQueryKind::ReadingsInWindow {
+                        metric: "temperature_c".into(),
+                        start_ms: 0,
+                        end_ms: 60_000,
+                        petal_id: "petal-abc".into(),
+                    },
+                    timeout_ms: 3_000,
+                    row_cap: 0,
+                },
+                reply: reply_tx,
+            },
         };
         let _ = format!("{:?}", cmd_no_scope.clone());
     }
@@ -524,24 +550,48 @@ mod tests {
     #[test]
     fn channel_roundtrip_compute_task() {
         let (tx, rx) = crossbeam::channel::bounded(1);
+        let (reply_tx, reply_rx) = crossbeam::channel::bounded(1);
         tx.send(SyncCommand::SubmitComputeTask {
-            task_id: "task-rt".into(),
-            query: "SELECT * FROM node".into(),
-            petal_scope: None,
-            requester_did: "did:key:z6MkRT".into(),
+            call: fe_runtime::distributed_query::DistributedQueryCall {
+                request: fe_runtime::distributed_query::DistributedQueryRequest {
+                    request_id: "task-rt".into(),
+                    verse_id: "verse-1".into(),
+                    spec: fe_runtime::distributed_query::TsQueryKind::LatestPerAnchor {
+                        petal_id: "petal-abc".into(),
+                        metric: None,
+                    },
+                    timeout_ms: 3_000,
+                    row_cap: 0,
+                },
+                reply: reply_tx,
+            },
         })
         .unwrap();
         match rx.recv().unwrap() {
-            SyncCommand::SubmitComputeTask {
-                task_id,
-                query,
-                petal_scope,
-                requester_did,
-            } => {
-                assert_eq!(task_id, "task-rt");
-                assert_eq!(query, "SELECT * FROM node");
-                assert!(petal_scope.is_none());
-                assert_eq!(requester_did, "did:key:z6MkRT");
+            SyncCommand::SubmitComputeTask { call } => {
+                assert_eq!(call.request.request_id, "task-rt");
+                assert_eq!(call.request.verse_id, "verse-1");
+                assert!(matches!(
+                    call.request.spec,
+                    fe_runtime::distributed_query::TsQueryKind::LatestPerAnchor { .. }
+                ));
+                // The embedded reply seam survives the channel round trip.
+                call.reply
+                    .send(fe_runtime::distributed_query::DistributedQueryOutcome {
+                        rows: Vec::new(),
+                        meta: fe_runtime::distributed_query::DistributedQueryMeta {
+                            covered_shards: Vec::new(),
+                            missing_shards: Vec::new(),
+                            answered_hosts: Vec::new(),
+                            missing_hosts: Vec::new(),
+                            mode: "mirror".into(),
+                            replication_factor: 1,
+                            truncated: false,
+                        },
+                        error: None,
+                    })
+                    .unwrap();
+                assert!(reply_rx.recv().is_ok());
             }
             _ => panic!("expected SubmitComputeTask"),
         }

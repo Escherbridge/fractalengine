@@ -75,8 +75,12 @@ impl TestPeer {
         let (db_cmd_tx, db_cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
         let (db_result_tx, db_result_rx) = crossbeam::channel::bounded::<DbResult>(64);
 
-        // Replication channel (bridges DB writes into sync commands)
-        let (_repl_tx, _repl_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(64);
+        // Replication channel (bridges DB writes into sync commands) — M2/F7:
+        // the peer's DB-thread ingestion leg (`InsertIotReadings`) emits
+        // `ReplicationEvent`s through it; the bridge spawned below forwards
+        // each into a `WriteRowEntry` on the sync thread (the main.rs Phase E
+        // shape: try_send + drop-and-warn, §replication-backpressure).
+        let (repl_tx, repl_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(64);
 
         // Sync channels
         let (sync_cmd_tx, sync_cmd_rx) = crossbeam::channel::bounded::<SyncCommand>(64);
@@ -108,8 +112,37 @@ impl TestPeer {
             Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let db_ns_secrets = ns_secrets.clone();
 
+        // Replication bridge (A10/§backpressure): try_send + drop-and-warn —
+        // a stalled sync thread must degrade to observable replication lag,
+        // never block the DB loop; a disconnected channel is shutdown.
+        {
+            let sync_tx_for_repl = sync_cmd_tx.clone();
+            std::thread::spawn(move || {
+                let mut dropped: u64 = 0;
+                while let Ok(evt) = repl_rx.recv() {
+                    match sync_tx_for_repl.try_send(SyncCommand::WriteRowEntry {
+                        verse_id: evt.verse_id,
+                        table: evt.table,
+                        record_id: evt.record_id,
+                        content_hash: evt.content_hash,
+                    }) {
+                        Ok(()) => {}
+                        Err(crossbeam::channel::TrySendError::Full(_)) => {
+                            dropped += 1;
+                            tracing::warn!(
+                                dropped_total = dropped,
+                                "peer DB→sync replication bridge full — dropping event"
+                            );
+                        }
+                        Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
+                    }
+                }
+            });
+        }
+
         // Spawn DB thread with in-memory SurrealDB
         let db_blob_store = blob_store.clone();
+        let db_repl_tx = repl_tx;
         let _db_keypair = NodeKeypair::generate(); // separate keypair for DB invite ops
                                                    // We actually want to use the SAME keypair for invite generation,
                                                    // so clone the seed bytes.
@@ -140,6 +173,11 @@ impl TestPeer {
                 fe_database::api_token_store::apply_api_token_schema(&db)
                     .await
                     .expect("API token schema");
+
+                // Initialize the HLC (§hlc): the ingestion leg stamps each
+                // reading through `next_hlc_timestamp`, which panics when
+                // uninitialized. A fresh in-memory store starts from 0.
+                fe_database::op_log::init_hlc(0);
 
                 tracing::info!("Peer DB ready (in-memory)");
                 db_result_tx.send(DbResult::Started).ok();
@@ -430,6 +468,62 @@ impl TestPeer {
                                 }
                                 Err(reason) => {
                                     db_result_tx.send(DbResult::Error(reason)).ok();
+                                }
+                            }
+                        }
+                        // M2/F7 (A15): a distributed-query local partial —
+                        // the same handler the real DB thread dispatches,
+                        // executed against this peer's in-memory store. The
+                        // reply rides the embedded crossbeam sender (never
+                        // the DbResult channel — it has no reply family).
+                        Ok(DbCommand::ExecuteTsPartial {
+                            spec,
+                            shards,
+                            row_cap,
+                            reply,
+                        }) => {
+                            let partial = fe_database::handlers::ts_partial::execute_ts_partial(
+                                &db, &spec, &shards, row_cap,
+                            )
+                            .await
+                            .unwrap_or_else(|reason| {
+                                tracing::warn!(reason, "ExecuteTsPartial failed (harness)");
+                                fe_runtime::distributed_query::TsPartialRows::empty()
+                            });
+                            if let Err(e) = reply.send(partial) {
+                                tracing::warn!("ExecuteTsPartial reply send failed: {e:?}");
+                            }
+                        }
+                        // M2/F7: the DB-thread ingestion leg — the same
+                        // emit-seam handler the fe-api db_reader path calls
+                        // (durable-first, then one ReplicationEvent per
+                        // accepted row through the bridge above).
+                        Ok(DbCommand::InsertIotReadings {
+                            petal_id,
+                            verse_id,
+                            source_did,
+                            readings,
+                        }) => {
+                            match fe_database::handlers::iot_reading::insert_readings_with_replication(
+                                &db,
+                                &petal_id,
+                                verse_id.as_deref(),
+                                &source_did,
+                                &readings,
+                                Some(&db_blob_store),
+                                Some(&db_repl_tx),
+                            )
+                            .await
+                            {
+                                Ok(written) => {
+                                    if let Err(e) = db_result_tx.send(DbResult::IotReadingsInserted { petal_id, written }) {
+                                        tracing::warn!("IotReadingsInserted send failed: {e:?}");
+                                    }
+                                }
+                                Err(e) => {
+                                    if let Err(e) = db_result_tx.send(DbResult::Error(format!("IoT ingest failed: {e}"))) {
+                                        tracing::warn!("Iot ingest error send failed: {e:?}");
+                                    }
                                 }
                             }
                         }

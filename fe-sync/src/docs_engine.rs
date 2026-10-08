@@ -97,6 +97,15 @@ impl DocsStack {
             .context("opening persistent iroh-blobs store")?
             .build(&endpoint);
         let gossip = Gossip::builder()
+            // F7's distributed-query transport rides gossip envelopes (the
+            // request carries a shard list; responses carry per-shard
+            // aggregate partials or capped raw rows). iroh-gossip's default
+            // 4096-byte cap is sized for control messages — raise it so a
+            // realistic partial fits without a chunking protocol. The value
+            // must be identical network-wide (all peers run this code); the
+            // sync thread still bounds payloads itself via
+            // `distributed_query::GOSSIP_ENVELOPE_BUDGET` + row caps.
+            .max_message_size(crate::distributed_query::GOSSIP_MAX_MESSAGE_SIZE)
             .spawn(endpoint.clone())
             .await
             .context("spawning iroh-gossip")?;

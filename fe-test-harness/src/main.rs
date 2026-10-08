@@ -45,6 +45,15 @@ fn main() {
         )
         .init();
 
+    // Loopback-only by design: every peer dials every other peer over
+    // 127.0.0.1, so the n0-hosted relay servers contribute nothing but a
+    // nondeterministic dial path (observed: relay-routed gossip joins failing
+    // TLS auth and timing out mid-scenario, silently killing one peer's
+    // request/response path for the whole run). `RelayMode::Disabled` keeps
+    // every scenario on direct loopback dials (see fe-sync/src/AGENTS.md
+    // §relay-health for the production config this deliberately overrides).
+    std::env::set_var("FE_SYNC_RELAY", "disabled");
+
     println!("\n=== FractalEngine P2P Mycelium Test Harness ===\n");
 
     type Scenario = (&'static str, fn() -> Result<TestResult>);
@@ -78,6 +87,10 @@ fn main() {
             "Two-Peer Shard Fabric (A13/A14)",
             scenarios::two_peer_shard_fabric::run,
         ),
+        (
+            "Distributed Query Fan-out (A15/A16)",
+            scenarios::distributed_query::run,
+        ),
         ("API Token Flow", scenarios::api_token_flow::run),
         (
             "API Token Edge Cases",
@@ -88,7 +101,16 @@ fn main() {
     let mut passed = 0;
     let mut failed = 0;
 
+    // Optional subset filter for iterating on one scenario: a
+    // case-insensitive substring of the scenario name (empty = all).
+    let only = std::env::var("FE_HARNESS_SCENARIO")
+        .unwrap_or_default()
+        .to_lowercase();
+
     for (name, runner) in &scenarios {
+        if !only.is_empty() && !name.to_lowercase().contains(&only) {
+            continue;
+        }
         print!("  [{name}] ...");
         match runner() {
             Ok(r) if r.passed => {

@@ -144,3 +144,15 @@ footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
   the reading row keeps IoT-frequency inserts on the cheap non-geometry path
   and preserves the single source of truth for position (local-meters
   convention unchanged — see §local-coords).
+- **Distributed partials (M2/F7)**: `window_aggregate_partial` is the
+  per-shard aggregate for the fan-out's `WindowAggregate` spec — one
+  (anchor, clamped-range) query per shard, returning raw per-(anchor,
+  window) rows carrying the aggregate inputs (`sum`/`count`/`min`/`max` as
+  columns), NOT the final mean: the merge on the collector side folds
+  count/sum/min/max and derives mean only at the end, so multiple mirrors of
+  a shard and multi-host shards merge exactly (see fe-sync
+  `distributed_query.rs`). `readings_in_window`/`readings_for_petal` are
+  the raw partials (union-dedupe by `reading_id` upstream, so no shard
+  attribution needed). The executing host renders this SQL from the
+  structured spec with bound parameters (fe-database `handlers/ts_partial.rs`)
+  — remote SQL is never accepted from the wire.

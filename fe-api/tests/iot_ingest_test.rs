@@ -70,6 +70,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         hexon_registry: None,
         announcement_store: None,
         replication_tx: None,
+        distributed_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -359,6 +360,7 @@ fn test_state_with_replication(
         hexon_registry: None,
         announcement_store: None,
         replication_tx: Some(repl_tx),
+        distributed_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     (state, repl_rx)

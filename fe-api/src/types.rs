@@ -267,9 +267,19 @@ pub fn is_valid_role(s: &str) -> bool {
 
 #[derive(Debug, Deserialize)]
 pub struct QueryRequest {
+    /// Raw SurrealQL (the local-store read path). Mutually exclusive with
+    /// `distributed`: exactly one must be present.
+    #[serde(default)]
     pub sql: String,
     #[serde(default)]
     pub vars: std::collections::HashMap<String, serde_json::Value>,
+    /// M2/F7 distributed mode: a structured timeseries spec fanned out over
+    /// the verse's fabric and merged with honesty metadata (A15/A16/A17).
+    /// The spec carries its own petal id — it is resolved and scope-checked
+    /// like any petal-scoped read, and the response's `data` carries the
+    /// merged rows.
+    #[serde(default)]
+    pub distributed: Option<fe_runtime::distributed_query::TsQueryKind>,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +288,10 @@ pub struct QueryResultDto {
     /// FR-5 egress CRS label (see `crs.rs`); omitted where not applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crs: Option<String>,
+    /// M2/F7 honesty metadata, present when `data` came from a distributed
+    /// fan-out (covered/missing shards + hosts, mode/R, truncation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distributed: Option<fe_runtime::distributed_query::DistributedQueryMeta>,
 }
 
 #[derive(Debug, Deserialize)]

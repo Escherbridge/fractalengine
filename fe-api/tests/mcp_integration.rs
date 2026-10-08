@@ -25,7 +25,7 @@ use fe_runtime::messages::{
 };
 use fractalengine_test_harness::api::ApiHarness;
 
-const EXPECTED_TOOLS: [&str; 10] = [
+const EXPECTED_TOOLS: [&str; 11] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -37,6 +37,8 @@ const EXPECTED_TOOLS: [&str; 10] = [
     "node_address",
     "delete_node",
     "promote_instance",
+    // M2/F7 distributed timeseries query (A17)
+    "query_timeseries",
 ];
 
 // ---------------------------------------------------------------------------
@@ -227,6 +229,7 @@ fn emu_state() -> (Arc<ApiState>, Arc<Mutex<Model>>) {
         hexon_registry: None,
         announcement_store: None,
         replication_tx: None,
+        distributed_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));
@@ -326,10 +329,12 @@ async fn tools_list_inventory() {
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert_eq!(
         names, EXPECTED_TOOLS,
-        "exact 10-tool inventory (6 base + 4 CRUD)"
+        "exact 11-tool inventory (6 base + 4 CRUD + query_timeseries)"
     );
     // FR-4: the per-endpoint delete tool now exists.
     assert!(names.contains(&"delete_node"));
+    // M2/F7 (A17): the distributed timeseries tool exists.
+    assert!(names.contains(&"query_timeseries"));
     for t in tools {
         assert!(t["description"].is_string(), "{t}");
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");

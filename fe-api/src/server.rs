@@ -51,6 +51,12 @@ pub struct ApiState {
     /// here; `None` means the API thread is running without a replication
     /// bridge (harness/tests) and emission is skipped.
     pub replication_tx: Option<fe_database::ReplicationSender>,
+    /// Distributed-query fan-out seam (M2/F7 — A17): the API→sync bridge's
+    /// call sender (`fe_sync::distributed_query::bridge_distributed_queries`
+    /// bridges it into `SyncCommand::SubmitComputeTask`). `None` = no
+    /// sync-thread seam (harness/tests without a sync side) — the
+    /// distributed surfaces return an explicit unavailable error.
+    pub distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
     /// Ed25519 keypair signing shareable query URLs (see AGENTS.md §share).
     pub share_signer: Arc<fe_identity::NodeKeypair>,
 }

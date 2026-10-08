@@ -18,8 +18,14 @@ use std::sync::Arc;
 use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
 use fe_runtime::messages::DbCommand;
 
-use iroh_gossip::net::{Gossip, GossipTopic};
+use iroh_gossip::net::{
+    Event as GossipTopicEvent, Gossip, GossipEvent, GossipReceiver, GossipSender,
+};
 use iroh_gossip::proto::TopicId;
+
+use crate::distributed_query::{
+    handle_gossip_incoming, submit_distributed_query, DistributedTransport, GossipIncoming,
+};
 
 use crate::docs_engine::{p2p_data_dir, DocsStack};
 use crate::endpoint::SyncEndpoint;
@@ -387,8 +393,15 @@ pub fn spawn_sync_thread(
             // the select! loop below. Only the startup bind result and the
             // P2P-stack spawn outcome are tracked today — see AGENTS.md §relay-health.
 
-            // Track active gossip subscriptions (topic key -> live handle) for verse/petal.
-            let mut gossip_topics: HashMap<String, GossipTopic> = HashMap::new();
+            // Track active gossip subscriptions (topic key -> live sender)
+            // plus the per-topic inbound pumps. F7 splits each GossipTopic:
+            // the sender half broadcasts (tileset ads + distributed queries),
+            // the receiver half drains in a pump task feeding the aggregated
+            // gossip inbound stream the select! loop below consumes.
+            let mut gossip_senders: HashMap<String, GossipSender> = HashMap::new();
+            let mut gossip_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+            let (gossip_inbound_tx, mut gossip_inbound_rx) =
+                tokio::sync::mpsc::channel::<GossipIncoming>(64);
 
             // Phase E: per-verse replica map.
             let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
@@ -423,6 +436,16 @@ pub fn spawn_sync_thread(
             // Defaults to unlimited capacity, non-seeder — a plain node.
             let mut local_declaration = PeerDeclaration::default();
 
+            // M2/F7: the distributed-query transport handle shared by the
+            // select loop (submit + inbound routing) and the collector /
+            // responder tasks. Bounded concurrency + pending-request caps
+            // live inside it.
+            let transport = DistributedTransport::new(
+                local_did.clone(),
+                db_cmd_tx.clone(),
+                evt_tx.clone(),
+            );
+
             // crossbeam's receiver has no async readiness API — bridge the
             // command channel into a tokio channel so the select! below can
             // poll it next to the inbound pumps. Ordering is preserved (one
@@ -437,14 +460,15 @@ pub fn spawn_sync_thread(
                         // blocking_send parks this bridge thread until the
                         // sync thread has capacity — never called from async
                         // context, which is exactly what blocking_send wants.
-                        if cmd_rx_bridge_send(&async_cmd_tx, cmd).is_err() {
+                        if !cmd_rx_bridge_send(&async_cmd_tx, cmd) {
                             break;
                         }
                     }
                 });
             }
 
-            // Command loop (select! over commands + inbound replica rows).
+            // Command loop (select! over commands + inbound replica rows +
+            // inbound gossip compute traffic).
             loop {
                 tokio::select! {
                     maybe_row = inbound_rx.recv() => {
@@ -459,6 +483,16 @@ pub fn spawn_sync_thread(
                                 &local_did,
                                 &evt_tx,
                                 &db_cmd_tx,
+                            );
+                        }
+                    }
+                    maybe_gossip = gossip_inbound_rx.recv() => {
+                        if let Some(incoming) = maybe_gossip {
+                            handle_gossip_incoming(
+                                &transport,
+                                &fabrics,
+                                &gossip_senders,
+                                incoming,
                             );
                         }
                     }
@@ -489,6 +523,30 @@ pub fn spawn_sync_thread(
                                         }
                                     }
                                 }
+                                // Phase F.4 + M2/F7: subscribe the verse's
+                                // compute gossip topic BEFORE the open
+                                // sequence. The gossip actor is an independent
+                                // task and DROPS a Join that arrives for a
+                                // topic this node has not subscribed to yet —
+                                // and the joining peers dial out as soon as
+                                // THEIR opens run, so every step between this
+                                // command and the subscribe (doc dial,
+                                // start_sync, seed reconciliation) is a race
+                                // window in which a peer's one-shot Join is
+                                // silently lost, and with it that peer's
+                                // compute request/response path for the whole
+                                // session. Subscribing first makes the window
+                                // microseconds against the joiners'
+                                // millisecond dials.
+                                subscribe_to_verse_gossip_topic(
+                                    endpoint.as_ref(),
+                                    &gossip_host,
+                                    &mut gossip_senders,
+                                    &mut gossip_pumps,
+                                    gossip_inbound_tx.clone(),
+                                    &verse_id,
+                                    &peers,
+                                );
                                 handle_open_verse_replica(
                                     &mut replicas,
                                     &mut inbound_pumps,
@@ -507,12 +565,6 @@ pub fn spawn_sync_thread(
                                     local_declaration,
                                 )
                                 .await;
-                                // Phase F.4: Subscribe to verse gossip topic
-                                subscribe_to_verse_gossip_topic(
-                                    &gossip_host,
-                                    &mut gossip_topics,
-                                    &verse_id,
-                                );
                             }
                             Some(SyncCommand::CloseVerseReplica { verse_id }) => {
                                 handle_close_verse_replica(
@@ -523,8 +575,8 @@ pub fn spawn_sync_thread(
                                 .await;
                                 // Phase F.4: Unsubscribe from verse gossip topic
                                 unsubscribe_from_verse_gossip_topic(
-                                    &gossip_host,
-                                    &mut gossip_topics,
+                                    &mut gossip_senders,
+                                    &mut gossip_pumps,
                                     &verse_id,
                                 );
                             }
@@ -570,19 +622,28 @@ pub fn spawn_sync_thread(
                             Some(SyncCommand::UnsubscribePetal { petal_id }) => {
                                 handle_unsubscribe_petal(&mut petal_replicas, &petal_id).await;
                             }
-                            Some(SyncCommand::SubmitComputeTask {
-                                task_id,
-                                query,
-                                petal_scope,
-                                requester_did,
-                            }) => {
-                                // TODO(Phase 6.2): execute compute task locally, emit ComputeResultReady
-                                tracing::debug!(%task_id, %query, ?petal_scope, %requester_did, "SubmitComputeTask (stub)");
+                            Some(SyncCommand::SubmitComputeTask { call }) => {
+                                // M2/F7: real fan-out transport. Plans against
+                                // the verse's fabric, broadcasts over the
+                                // verse's gossip topic with bounded
+                                // concurrency, gathers per-host partials until
+                                // settled or the deadline, merges
+                                // commutatively, replies with covered/
+                                // missing shard honesty metadata, and emits
+                                // `ComputeResultReady` for the diagnostics
+                                // surface. Runs synchronously here (no
+                                // awaits) — the collector is a spawned task.
+                                submit_distributed_query(
+                                    &transport,
+                                    &fabrics,
+                                    &gossip_senders,
+                                    call,
+                                );
                             }
                             Some(SyncCommand::AdvertiseTilesets { verse_id, advertisements_json }) => {
                                 handle_advertise_tilesets(
                                     &gossip_host,
-                                    &gossip_topics,
+                                    &gossip_senders,
                                     &advertisements_json,
                                     &verse_id,
                                 )
@@ -657,6 +718,9 @@ pub fn spawn_sync_thread(
             for (_, pump) in inbound_pumps.drain() {
                 pump.abort();
             }
+            for (_, pump) in gossip_pumps.drain() {
+                pump.abort();
+            }
 
             // Shut the P2P stack's protocol handlers down (docs engine
             // flush) before the endpoint close.
@@ -676,13 +740,14 @@ pub fn spawn_sync_thread(
 /// Bridge-thread helper: forward one command into the tokio channel.
 ///
 /// Kept as a named fn so the bridge thread's blocking shape is greppable.
-/// The `SendError` carries the unsent command back (`.0`) so the bridge can
-/// stop cleanly on shutdown.
-fn cmd_rx_bridge_send(
-    tx: &tokio::sync::mpsc::Sender<SyncCommand>,
-    cmd: SyncCommand,
-) -> Result<(), SyncCommand> {
-    tx.blocking_send(cmd).map_err(|e| e.0)
+/// Returns `false` when the async channel is closed (the sync loop is gone —
+/// shutdown): the unsent command is unrecoverable by design (its receiver no
+/// longer exists) and is dropped. Deliberately NOT
+/// `Result<(), SyncCommand>` — the command payload would make the `Err`
+/// variant huge (`SubmitComputeTask` carries a full `DistributedQueryCall`)
+/// and no caller ever consumed it anyway.
+fn cmd_rx_bridge_send(tx: &tokio::sync::mpsc::Sender<SyncCommand>, cmd: SyncCommand) -> bool {
+    tx.blocking_send(cmd).is_ok()
 }
 
 /// Forward one inbound replicated row to the DB thread (A4 seam).
@@ -1372,20 +1437,28 @@ async fn handle_unsubscribe_petal(
 
 /// Derive a gossip topic from a verse ID.
 ///
-/// The topic is used for allowed verse-scoped gossip such as tileset
-/// announcements.
-fn derive_gossip_topic(verse_id: &str) -> String {
+/// The topic is used for allowed verse-scoped gossip: tileset announcements
+/// and (F7) the distributed-query request/response traffic.
+pub(crate) fn derive_gossip_topic(verse_id: &str) -> String {
     format!("verse:{}", verse_id)
 }
 
-/// Subscribe to a verse gossip topic.
+/// Subscribe to a verse gossip topic (M2/F7 rework: split the handle).
 ///
-/// This is called when opening a verse replica to make its permitted gossip
-/// controls available.
+/// The `GossipTopic` handle is split on arrival: the sender half is kept in
+/// `gossip_senders` for broadcasts (tileset ads, distributed-query
+/// envelopes), the receiver half drains in a spawned pump task that
+/// forwards every gossip message into the aggregated inbound stream the
+/// command loop's select consumes. This is the inbound route F7 rides —
+/// before it, nothing ever polled a topic's event stream.
 fn subscribe_to_verse_gossip_topic(
+    endpoint: Option<&SyncEndpoint>,
     gossip_host: &Option<Gossip>,
-    gossip_topics: &mut HashMap<String, GossipTopic>,
+    gossip_senders: &mut HashMap<String, GossipSender>,
+    gossip_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
+    gossip_inbound_tx: tokio::sync::mpsc::Sender<GossipIncoming>,
     verse_id: &str,
+    peers: &[iroh::NodeAddr],
 ) {
     let Some(ref gossip) = gossip_host else {
         tracing::debug!(verse_id, "No gossip, skipping topic subscription");
@@ -1395,15 +1468,49 @@ fn subscribe_to_verse_gossip_topic(
     let topic_key = derive_gossip_topic(verse_id);
 
     // Already subscribed?
-    if gossip_topics.contains_key(&topic_key) {
+    if gossip_senders.contains_key(&topic_key) {
         tracing::debug!(verse_id, "Already subscribed to gossip topic");
         return;
     }
 
-    match gossip.subscribe(gossip_topic_id(&topic_key), Vec::new()) {
+    // The gossip join below dials by bare NodeId and is ONE-SHOT: it can
+    // only resolve an address the endpoint's address book already knows.
+    // The docs sync (`start_sync`) dials these same peers only in the
+    // background, so without this the join races the docs dial that would
+    // first teach the endpoint the peer's address — a lost race leaves the
+    // topic with no neighbor for the whole session (every compute broadcast
+    // reaches nobody). Register every bootstrap peer's address up front so
+    // the join always resolves.
+    if let Some(ep) = endpoint {
+        for peer in peers {
+            if let Err(e) = ep.inner().add_node_addr(peer.clone()) {
+                tracing::warn!(
+                    verse_id,
+                    "add_node_addr for a gossip bootstrap peer failed: {e}"
+                );
+            }
+        }
+    }
+
+    // Bootstrap the topic with the verse's known peers (M2/F7). Without this
+    // the topic has zero neighbors and a compute request broadcast can only
+    // ever reach the local host — the fan-out transport needs real
+    // neighbors, and the same peer set the replica dials for doc sync is the
+    // one to gossip with. Empty on a fresh host (the dialed side joins via
+    // its own bootstrap set).
+    let bootstrap: Vec<iroh::NodeId> = peers.iter().map(|p| p.node_id).collect();
+
+    match gossip.subscribe(gossip_topic_id(&topic_key), bootstrap) {
         Ok(handle) => {
             tracing::debug!(verse_id, "Subscribed to verse gossip topic");
-            gossip_topics.insert(topic_key, handle);
+            let (sender, receiver) = handle.split();
+            let pump = tokio::spawn(pump_gossip_topic(
+                receiver,
+                verse_id.to_string(),
+                gossip_inbound_tx,
+            ));
+            gossip_pumps.insert(topic_key.clone(), pump.abort_handle());
+            gossip_senders.insert(topic_key, sender);
         }
         Err(e) => {
             tracing::warn!(verse_id, "Failed to subscribe to gossip topic: {e}");
@@ -1411,18 +1518,57 @@ fn subscribe_to_verse_gossip_topic(
     }
 }
 
+/// Drain one topic's gossip event stream, forwarding messages to the sync
+/// loop's aggregated inbound channel. Membership events (Joined /
+/// NeighborUp / NeighborDown) are intentionally not consumed — nothing acts
+/// on them today. A pump is a separate task, so the awaiting send below is
+/// backpressure, not a self-drain (§self-drain applies to the select loop
+/// itself).
+async fn pump_gossip_topic(
+    mut receiver: GossipReceiver,
+    verse_id: String,
+    inbound_tx: tokio::sync::mpsc::Sender<GossipIncoming>,
+) {
+    use futures_lite::StreamExt;
+    loop {
+        match receiver.next().await {
+            Some(Ok(GossipTopicEvent::Gossip(GossipEvent::Received(message)))) => {
+                let incoming = GossipIncoming {
+                    verse_id: verse_id.clone(),
+                    from: message.delivered_from,
+                    content: message.content,
+                };
+                if inbound_tx.send(incoming).await.is_err() {
+                    break; // sync loop gone — shutdown
+                }
+            }
+            Some(Ok(GossipTopicEvent::Lagged)) => {
+                tracing::warn!(verse_id, "gossip topic receiver lagged — messages missed");
+            }
+            Some(Ok(_)) => {} // Joined / NeighborUp / NeighborDown — not consumed
+            Some(Err(e)) => {
+                tracing::warn!(verse_id, "gossip topic stream error: {e}");
+            }
+            None => break, // topic closed
+        }
+    }
+}
+
 /// Unsubscribe from a verse gossip topic.
 ///
-/// This is called when closing a verse replica. Dropping the `GossipTopic`
-/// handle leaves the topic in iroh-gossip 0.35.
+/// This is called when closing a verse replica: drop the sender half and
+/// abort the receiver pump — both halves gone leaves the topic in
+/// iroh-gossip 0.35.
 fn unsubscribe_from_verse_gossip_topic(
-    _gossip_host: &Option<Gossip>,
-    gossip_topics: &mut HashMap<String, GossipTopic>,
+    gossip_senders: &mut HashMap<String, GossipSender>,
+    gossip_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
     verse_id: &str,
 ) {
     let topic_key = derive_gossip_topic(verse_id);
-
-    if gossip_topics.remove(&topic_key).is_some() {
+    if let Some(pump) = gossip_pumps.remove(&topic_key) {
+        pump.abort();
+    }
+    if gossip_senders.remove(&topic_key).is_some() {
         tracing::debug!(verse_id, "Unsubscribed from verse gossip topic");
     }
 }
@@ -1472,7 +1618,7 @@ impl TilesetDownloadTracker {
 /// Broadcasts tileset advertisements to connected peers via gossip.
 async fn handle_advertise_tilesets(
     gossip_host: &Option<Gossip>,
-    gossip_topics: &HashMap<String, GossipTopic>,
+    gossip_senders: &HashMap<String, GossipSender>,
     advertisements_json: &str,
     verse_id: &str,
 ) {
@@ -1499,9 +1645,9 @@ async fn handle_advertise_tilesets(
         }
     };
 
-    // Get the verse topic handle
+    // Get the verse topic sender
     let topic_key = derive_gossip_topic(verse_id);
-    let Some(topic) = gossip_topics.get(&topic_key) else {
+    let Some(sender) = gossip_senders.get(&topic_key) else {
         tracing::warn!(
             verse_id,
             "No gossip topic for verse, cannot advertise tilesets"
@@ -1519,7 +1665,7 @@ async fn handle_advertise_tilesets(
             }
         };
 
-        if let Err(e) = topic.broadcast(payload.into()).await {
+        if let Err(e) = sender.broadcast(payload.into()).await {
             tracing::warn!(tileset_id = %ad.tileset_id, "Failed to broadcast tileset advertisement: {e}");
         } else {
             tracing::debug!(tileset_id = %ad.tileset_id, "Broadcasted tileset advertisement");
@@ -1920,31 +2066,43 @@ mod tests {
     #[test]
     fn subscribe_to_verse_gossip_topic_no_host_is_noop() {
         let gossip_host: Option<Gossip> = None;
-        let mut gossip_topics: HashMap<String, GossipTopic> = HashMap::new();
+        let mut gossip_senders: HashMap<String, GossipSender> = HashMap::new();
+        let mut gossip_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<GossipIncoming>(8);
 
         // Should not panic, just skip
-        subscribe_to_verse_gossip_topic(&gossip_host, &mut gossip_topics, "verse-test");
+        subscribe_to_verse_gossip_topic(
+            None,
+            &gossip_host,
+            &mut gossip_senders,
+            &mut gossip_pumps,
+            tx,
+            "verse-test",
+            &[],
+        );
 
         // No topics should be created without a host
-        assert!(gossip_topics.is_empty(), "no topics without gossip host");
+        assert!(gossip_senders.is_empty(), "no topics without gossip host");
+        assert!(gossip_pumps.is_empty(), "no pumps without gossip host");
     }
 
     #[test]
     fn unsubscribe_from_verse_gossip_topic_no_host_is_noop() {
-        let gossip_host: Option<Gossip> = None;
-        let mut gossip_topics: HashMap<String, GossipTopic> = HashMap::new();
+        let mut gossip_senders: HashMap<String, GossipSender> = HashMap::new();
+        let mut gossip_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
 
         // Pre-populate (simulating prior subscription)
         // Note: Can't actually insert valid TopicId without real host,
         // but we test the cleanup path
 
         // Should not panic
-        unsubscribe_from_verse_gossip_topic(&gossip_host, &mut gossip_topics, "verse-test");
+        unsubscribe_from_verse_gossip_topic(&mut gossip_senders, &mut gossip_pumps, "verse-test");
 
         assert!(
-            gossip_topics.is_empty(),
+            gossip_senders.is_empty(),
             "map should be empty after unsubscribe"
         );
+        assert!(gossip_pumps.is_empty(), "pump map should be empty too");
     }
 
     // -------------------------------------------------------------------------
@@ -1992,7 +2150,7 @@ mod tests {
     #[test]
     fn handle_advertise_tilesets_no_host_is_noop() {
         let gossip_host: Option<Gossip> = None;
-        let gossip_topics: HashMap<String, GossipTopic> = HashMap::new();
+        let gossip_senders: HashMap<String, GossipSender> = HashMap::new();
 
         let ads_json = r#"[{"tileset_id": "ts-001", "chunk_count": 10, "size_bytes": 1000}]"#;
 
@@ -2003,7 +2161,7 @@ mod tests {
             .unwrap();
         rt.block_on(handle_advertise_tilesets(
             &gossip_host,
-            &gossip_topics,
+            &gossip_senders,
             ads_json,
             "verse-1",
         ));

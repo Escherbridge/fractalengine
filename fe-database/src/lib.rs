@@ -1245,6 +1245,52 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             }
                         }
                     }
+                    // M2/F7 (A15): a distributed-query local partial. The
+                    // spec is structured; the handler renders its own SQL
+                    // via the fe-query builders (bound params only), so no
+                    // SQL crosses the channel. The reply rides the embedded
+                    // crossbeam sender, NOT the DbResult channel — this
+                    // command has no reply family and must never be awaited
+                    // through PendingApiRequests (see fe-runtime AGENTS.md
+                    // §api-reply-correlation). The row cap is enforced in
+                    // the handler against the caller's cap.
+                    Ok(DbCommand::ExecuteTsPartial { spec, shards, row_cap, reply }) => {
+                        match handlers::ts_partial::execute_ts_partial(
+                            &db, &spec, &shards,
+                            row_cap,
+                        ).await {
+                            Ok(partial) => {
+                                if let Err(e) = reply.send(partial) {
+                                    tracing::warn!("ExecuteTsPartial reply send failed (requester gone): {e:?}");
+                                }
+                            }
+                            Err(reason) => {
+                                tracing::warn!(reason, "ExecuteTsPartial failed");
+                                if let Err(e) = reply.send(fe_runtime::distributed_query::TsPartialRows::empty()) {
+                                    tracing::warn!("ExecuteTsPartial error-reply send failed: {e:?}");
+                                }
+                            }
+                        }
+                    }
+                    // M2/F7: the DB-thread-originated IoT ingestion leg —
+                    // the same emit-seam handler the fe-api db_reader path
+                    // calls (durable-first, then one ReplicationEvent per
+                    // accepted row; see §iot-readings). Harness peers and
+                    // the sim lab ingest through this arm.
+                    Ok(DbCommand::InsertIotReadings { petal_id, verse_id, source_did, readings }) => {
+                        match handlers::iot_reading::insert_readings_with_replication(
+                            &db,
+                            &petal_id,
+                            verse_id.as_deref(),
+                            &source_did,
+                            &readings,
+                            Some(&blob_store),
+                            repl_tx.as_ref(),
+                        ).await {
+                            Ok(written) => send_result(&tx, DbResult::IotReadingsInserted { petal_id, written }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("IoT readings ingest failed: {e}"))),
+                        }
+                    }
                     // --- Hexon crate registry (Phase 8) ---
                     Ok(DbCommand::InstallCrate { hexon_uri, manifest_hash, publisher_did, hexon_type, version, name, tags, petal_id, size_bytes }) => {
                         let tx = tx.clone();

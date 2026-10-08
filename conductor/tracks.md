@@ -505,7 +505,46 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   resort); fe-sync 183 tests, harness 13/13; residual recorded honestly: R
   is a request (fewer-than-R is honest, not an error), mirror ignores
   capacity by contract, host sets never re-plan on churn (deferred), F7's
-  targeted transport is the natural next step; petal namespaces, gossip
+  targeted transport is the natural next step; F7 (2026-10-08, assertions
+  A15+A16+A17) lands the distributed query fan-out — `SubmitComputeTask` is
+  a real transport over the verse compute gossip topic (request/response
+  correlation by `request_id`, bounded concurrency 8, pending cap 64, 3 s
+  default / 10 s max deadline, 448 KiB envelope budget with trim+truncated
+  flag, 256-shard honest target cap), the planner splits the STRUCTURED
+  spec (`TsQueryKind`, never SQL) into per-host partials (windows target
+  overlapping shards; latest/all target every petal shard), commutative
+  merges fold count/sum/min/max with mean derived at the end (order-free,
+  mirror-duplicate-safe), raw dedupes by `reading_id`, latest keeps max
+  timestamp, and the A16 covered/missing/answered honesty metadata rides
+  every outcome (a creator's over-retained copy is honestly covered via row
+  attribution; an offline R=1 host's exclusive shard is missing;
+  answered-but-empty is covered); local execution renders partial SQL from
+  the spec via fe-query builders (new fe-database `ts_partial` handler —
+  remote SQL never accepted from the wire); A17 surfaces behind one guarded
+  bridge in fe-api `timeseries_query.rs` (Viewer+, petal scope resolution +
+  containment, rate limit; verse from the resolved scope, never the body):
+  `POST /api/v1/query` distributed mode, the analytics merged `iot_reading`
+  table (registered only when the caller's SQL references it), and the MCP
+  `query_timeseries` tool (11 tools), riding `ApiState.distributed_tx`
+  bridged by both binaries; send-side targeted delivery evaluated and NOT
+  adopted (doc writes are one-shot broadcasts with no reply correlation; a
+  parallel per-host fabric would duplicate the F6 receive-side retention
+  decision — receive-side retention stands); a gossip bootstrap race
+  root-caused from an `iroh_gossip=debug` capture and fixed (the verse
+  topic subscribe now runs BEFORE the open sequence + `add_node_addr`
+  before the one-shot join — the gossip actor DROPS a Join for a
+  not-yet-subscribed topic, one-shot no retry, which killed a joiner's
+  compute path in ~1/3 runs; residual microsecond window documented with
+  the join-retry-monitor follow-up); harness scenario 12
+  `distributed_query` proves A15/A16 with 3 peers over the real gossip
+  transport (exact 3-host aggregate merge == union ground truth, raw
+  dedupe, latest, all-covered, creator-copy attribution, carol-exclusive
+  missing after her replica closes, R=2 mirror serves the row) — 6/6
+  consecutive single-scenario passes + full harness 14/14 on debug and on
+  release (final tree; FE_SYNC_RELAY=disabled); fe-api 11 A17 tests;
+  workspace tests 87 suites 0 failed; fmt + clippy --workspace -D warnings
+  clean; residual: the Join-drop microsecond window above, R>1 mirror
+  duplicates are merge-idempotent by construction; petal namespaces, gossip
   receive, per-petal topics, tileset P2P remain open; FUTURE-OPS (deferred,
   not scheduled): relay REST-created verses have process-lifetime secrets
   (EnvBackend in-memory only, no persistence/extraction — replicas can
