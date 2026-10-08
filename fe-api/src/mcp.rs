@@ -337,6 +337,7 @@ async fn handle_tool_call(
                 Ok(Ok(DbResult::VerseCreated {
                     id: vid,
                     name: vname,
+                    ..
                 })) => tool_result(id, serde_json::json!({ "id": vid, "name": vname })),
                 Ok(Ok(DbResult::Error(e))) => {
                     tracing::error!("create_verse MCP failed: {e}");

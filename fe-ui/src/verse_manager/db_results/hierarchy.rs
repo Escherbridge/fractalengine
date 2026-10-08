@@ -176,7 +176,10 @@ pub(super) fn handle_hierarchy_loaded(
         );
     }
 
-    // Auto-select verse after non-first-load (e.g. after CreateVerse).
+    // Auto-select verse after a non-first hierarchy load (Seeded /
+    // VerseJoined / DatabaseReset / external API poll) when nothing is
+    // active. CreateVerse itself does NOT reload the hierarchy — the
+    // `VerseCreated` arm appends the new verse to the tree directly.
     if nav.active_verse_id.is_none() {
         if let Some(v) = verse_mgr.verses.first() {
             nav.active_verse_id = Some(v.id.clone());
@@ -188,12 +191,31 @@ pub(super) fn handle_hierarchy_loaded(
     pending_api.deliver_hierarchy(verses.to_vec());
 }
 
-/// `VerseCreated`: append an empty verse to the tree.
-pub(super) fn handle_verse_created(id: &str, name: &str, verse_mgr: &mut VerseManager) {
+/// `VerseCreated`: append the new verse to the tree, carrying its namespace
+/// id (F22) so navigation can open the replica immediately — CreateVerse does
+/// NOT trigger a hierarchy reload, so this arm is the only place the fresh
+/// verse's `namespace_id` lands in the tree. A later `HierarchyLoaded` (an API
+/// poll or a P2P join) rebuilds the tree from the DB anyway.
+pub(super) fn handle_verse_created(
+    id: &str,
+    name: &str,
+    namespace_id: Option<String>,
+    verse_mgr: &mut VerseManager,
+) {
+    // A hierarchy reload may already have materialized this verse (e.g. an
+    // external API poll racing the create). Update it in place rather than
+    // appending a duplicate, and only overwrite the id when the result
+    // actually carries one.
+    if let Some(existing) = verse_mgr.verses.iter_mut().find(|v| v.id == id) {
+        if namespace_id.is_some() {
+            existing.namespace_id = namespace_id;
+        }
+        return;
+    }
     verse_mgr.verses.push(VerseEntry {
         id: id.to_string(),
         name: name.to_string(),
-        namespace_id: None,
+        namespace_id,
         expanded: true,
         fractals: Vec::new(),
     });

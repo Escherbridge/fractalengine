@@ -28,7 +28,7 @@ pub fn run() -> Result<TestResult> {
     )?;
 
     let verse_id = match &verse_result {
-        DbResult::VerseCreated { id, name } => {
+        DbResult::VerseCreated { id, name, .. } => {
             tracing::info!("Alice created verse: {name} ({id})");
             id.clone()
         }

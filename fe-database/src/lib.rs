@@ -484,7 +484,7 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                     },
                     Ok(DbCommand::CreateVerse { name }) => {
                         match handlers::crud::create_verse_handler(&db, &blob_store, repl_tx.as_ref(), &name, &local_did, secret_store.as_ref()).await {
-                            Ok(id) => send_result(&tx, DbResult::VerseCreated { id, name }),
+                            Ok((id, ns_id_hex)) => send_result(&tx, DbResult::VerseCreated { id, name, namespace_id: Some(ns_id_hex) }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Create verse failed: {e}"))),
                         }
                     }

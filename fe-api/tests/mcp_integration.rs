@@ -135,7 +135,11 @@ fn handle_command(cmd: ApiCommand, model: &Arc<Mutex<Model>>) {
                     let id = ulid();
                     m.log.push(json!({ "cmd": "CreateVerse", "name": name }));
                     m.verses.push((id.clone(), name.clone()));
-                    DbResult::VerseCreated { id, name }
+                    DbResult::VerseCreated {
+                        id,
+                        name,
+                        namespace_id: None,
+                    }
                 }
                 DbCommand::CreateFractal { verse_id, name } => {
                     let id = ulid();

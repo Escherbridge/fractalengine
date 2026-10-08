@@ -87,7 +87,7 @@ pub async fn create_verse(
         ));
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::VerseCreated { id, name })) => {
+        Ok(Ok(DbResult::VerseCreated { id, name, .. })) => {
             Json(ApiResponse::success(CreatedEntityDto { id, name }))
         }
         Ok(Ok(DbResult::Error(_e))) => {

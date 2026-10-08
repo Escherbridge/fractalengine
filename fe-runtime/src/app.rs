@@ -669,6 +669,7 @@ mod tests {
                 DbResult::VerseCreated {
                     id: "v".to_string(),
                     name: "v".to_string(),
+                    namespace_id: None,
                 },
             ),
             (

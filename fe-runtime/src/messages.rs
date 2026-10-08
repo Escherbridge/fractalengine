@@ -570,6 +570,12 @@ pub enum DbResult {
     VerseCreated {
         id: String,
         name: String,
+        /// The verse's hex-encoded iroh-docs namespace id (F22/M2). The DB
+        /// handler computes it at creation, so the GUI tree entry becomes
+        /// authoritative the moment the result lands — navigation can open
+        /// the replica without waiting for a hierarchy reload. `None` only
+        /// for callers that do not know the id (pre-existing tests).
+        namespace_id: Option<String>,
     },
     FractalCreated {
         id: String,
