@@ -269,6 +269,7 @@ pub async fn redeem_share_url(
                         Json(ApiResponse::success(QueryResultDto {
                             data,
                             crs: Some(crs),
+                            distributed: None,
                         })),
                     )
                         .into_response()

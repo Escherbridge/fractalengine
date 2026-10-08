@@ -66,6 +66,41 @@ pub fn window_aggregate(
     q.group_by(&["node_id", "metric"]).build()
 }
 
+/// The **partial** form of [`window_aggregate`] for the distributed fabric
+/// (M2/F7): per-anchor `sum`/`count`/`min`/`max` over the window — the
+/// commutative mean monoid's `sum`+`count` pair, so per-host partials merge
+/// exactly (count adds, min/max fold; mean is derived at the merge as
+/// `sum/count`). `anchor` restricts the partial to one shard's anchor; the
+/// same shape serves both the per-shard partials (window aggregates) and
+/// single-host fallbacks. Rendered SQL is checked against the DB-thread
+/// `RawQuery` keyword filter in `fe-database`.
+pub fn window_aggregate_partial(
+    metric: &str,
+    start_ms: i64,
+    end_ms: i64,
+    petal_id: &str,
+    anchor: Option<&str>,
+) -> BuiltQuery {
+    let mut q = QueryBuilder::new()
+        .select(&[
+            "node_id",
+            "metric",
+            "math::sum(value) AS sum_value",
+            "math::min(value) AS min_value",
+            "math::max(value) AS max_value",
+            "count() AS sample_count",
+        ])
+        .from(READINGS_TABLE)
+        .filter(Filter::eq("petal_id", petal_id))
+        .and(Filter::eq("metric", metric))
+        .and(Filter::gte("recorded_at_ms", start_ms))
+        .and(Filter::lt("recorded_at_ms", end_ms));
+    if let Some(a) = anchor {
+        q = q.and(Filter::eq("node_id", a));
+    }
+    q.group_by(&["node_id", "metric"]).build()
+}
+
 /// Raw reading rows for `metric` in `[start_ms, end_ms)`, oldest first, with
 /// an optional extra filter (e.g. [`anchors_within`]) — the combined
 /// spatial+temporal query shape.
@@ -89,6 +124,19 @@ pub fn readings_in_window(
         q = q.and(f);
     }
     q.order_by("recorded_at_ms", SortDir::Asc).build()
+}
+
+/// The whole readings view of a petal — every metric, all time, oldest
+/// first (M2/F7 — the `AllReadings` distributed partial; the analytics
+/// endpoint's registered `iot_reading` table). The executing host's row cap
+/// bounds the scan; the distributed merge dedupes by `reading_id`.
+pub fn readings_for_petal(petal_id: &str) -> BuiltQuery {
+    QueryBuilder::new()
+        .select(&["*"])
+        .from(READINGS_TABLE)
+        .filter(Filter::eq("petal_id", petal_id))
+        .order_by("recorded_at_ms", SortDir::Asc)
+        .build()
 }
 
 // ── Tests (rendered SQL, per test policy) ───────────────────────────────────
@@ -142,6 +190,76 @@ mod tests {
         let q = window_aggregate("humidity_pct", 0, 10, None);
         assert!(!q.sql.contains("petal_id"));
         assert_eq!(q.params.len(), 3);
+    }
+
+    #[test]
+    fn window_aggregate_partial_renders_monoid_aggs() {
+        let q = window_aggregate_partial("temperature_c", 1_000, 2_000, "p1", Some("node-a"));
+        assert_eq!(
+            q.sql,
+            "SELECT node_id, metric, math::sum(value) AS sum_value, \
+             math::min(value) AS min_value, math::max(value) AS max_value, \
+             count() AS sample_count FROM iot_reading \
+             WHERE petal_id = $p0 AND metric = $p1 AND recorded_at_ms >= $p2 \
+             AND recorded_at_ms < $p3 AND node_id = $p4 GROUP BY node_id, metric"
+        );
+        assert_eq!(q.params[0].1, serde_json::json!("p1"));
+        assert_eq!(q.params[1].1, serde_json::json!("temperature_c"));
+        assert_eq!(q.params[2].1, serde_json::json!(1_000));
+        assert_eq!(q.params[3].1, serde_json::json!(2_000));
+        assert_eq!(q.params[4].1, serde_json::json!("node-a"));
+    }
+
+    #[test]
+    fn window_aggregate_partial_without_anchor_keeps_shard_free_shape() {
+        let q = window_aggregate_partial("co2_ppm", 0, 60_000, "p2", None);
+        assert!(!q.sql.contains("node_id = $"));
+        assert!(q.sql.contains("math::sum(value) AS sum_value"));
+        assert!(q.sql.contains("count() AS sample_count"));
+        assert_eq!(q.params.len(), 4);
+    }
+
+    #[test]
+    fn window_aggregate_partial_passes_rawquery_keyword_filter() {
+        // The DB-thread ExecuteTsPartial arm rejects the same bare-word
+        // keywords RawQuery does; the partial builder must never render one.
+        let blocked = [
+            "CREATE", "UPDATE", "DELETE", "DEFINE", "REMOVE", "RELATE", "INSERT", "LET", "RETURN",
+            "INFO", "FOR", "THROW", "SLEEP", "BREAK", "LIVE", "KILL", "IF", "BEGIN", "COMMIT",
+            "CANCEL",
+        ];
+        for (metric, anchor) in [("temperature_c", Some("node-a")), ("m2", None)] {
+            let q = window_aggregate_partial(metric, 0, 1, "p1", anchor);
+            let sql_upper = q.sql.to_uppercase();
+            for kw in blocked {
+                assert!(
+                    !sql_upper.contains(kw),
+                    "partial SQL must not contain blocked keyword {kw}: {}",
+                    q.sql
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn readings_for_petal_renders_whole_view_oldest_first() {
+        let q = readings_for_petal("p1");
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM iot_reading WHERE petal_id = $p0 ORDER BY recorded_at_ms ASC"
+        );
+        assert_eq!(q.params.len(), 1);
+        assert_eq!(q.params[0].1, serde_json::json!("p1"));
+        // The AllReadings partial rides the same DB-thread keyword screen
+        // as every other partial shape.
+        let sql_upper = q.sql.to_uppercase();
+        for kw in ["CREATE", "UPDATE", "DELETE", "INSERT", "LET", "INFO"] {
+            assert!(
+                !sql_upper.contains(kw),
+                "partial SQL must not contain blocked keyword {kw}: {}",
+                q.sql
+            );
+        }
     }
 
     #[test]

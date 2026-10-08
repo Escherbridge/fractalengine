@@ -1,5 +1,6 @@
 pub mod api_token_flow;
 pub mod blob_roundtrip;
+pub mod distributed_query;
 pub mod invite_flow;
 pub mod migration;
 pub mod two_peer_blob_exchange;

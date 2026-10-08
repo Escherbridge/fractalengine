@@ -5,6 +5,25 @@ use bevy::prelude::Message;
 /// in-process caches without a DB round-trip.
 pub type RevocationNotifier = tokio::sync::broadcast::Sender<String>;
 
+/// One incoming IoT sensor reading, pre-validation (M2/F7). Defined here —
+/// like every cross-thread wire shape — because `DbCommand::InsertIotReadings`
+/// carries it and fe-database (the validator/ingester) depends on fe-runtime,
+/// never the reverse; fe-database re-exports it so existing import paths are
+/// unchanged (see fe-database `src/AGENTS.md` §iot-readings).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IotReadingInput {
+    /// Anchor node the reading is spatially attached to.
+    pub node_id: String,
+    /// Metric name, e.g. `temperature_c`.
+    pub metric: String,
+    pub value: f64,
+    #[serde(default)]
+    pub units: String,
+    /// RFC-3339 sensor timestamp; server ingest time when absent.
+    #[serde(default)]
+    pub recorded_at: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // API Gateway types (Phase: Realtime API Gateway)
 // ---------------------------------------------------------------------------
@@ -431,6 +450,39 @@ pub enum DbCommand {
         sql: String,
         vars: std::collections::HashMap<String, serde_json::Value>,
     },
+    /// Execute a distributed-query local partial (M2/F7 — A15).
+    ///
+    /// Sent by the sync thread (requester AND responder sides) to run this
+    /// host's slice of a distributed timeseries query. The spec is
+    /// structured (see `distributed_query.rs`): the DB thread renders its own
+    /// SQL via the fe-query builders with bound parameters — no SQL ever
+    /// crosses a channel boundary. The reply rides the embedded crossbeam
+    /// sender, deliberately NOT the `DbResult` channel: this command has no
+    /// reply family and must never be registered with
+    /// `PendingApiRequests::enqueue_for` (its answer would mis-deliver into
+    /// an API waiter's oneshot; see fe-runtime `AGENTS.md`
+    /// §api-reply-correlation).
+    ExecuteTsPartial {
+        spec: crate::distributed_query::TsQueryKind,
+        shards: Vec<crate::distributed_query::PartialShard>,
+        /// Per-partial row cap (clamped by the executor into
+        /// `distributed_query::{MIN,MAX}_PARTIAL_ROW_CAP`).
+        row_cap: usize,
+        reply: crossbeam::channel::Sender<crate::distributed_query::TsPartialRows>,
+    },
+    /// Ingest a batch of IoT readings through the DB thread (M2/F7 — the
+    /// DB-thread-originated ingestion leg; same handler the fe-api
+    /// `db_reader` path calls). Durable-first, then one `ReplicationEvent`
+    /// per accepted row over the thread's replication seam — see
+    /// fe-database `src/AGENTS.md` §iot-readings.
+    InsertIotReadings {
+        petal_id: String,
+        /// The verse whose replica the rows belong in; `None` disables the
+        /// replication emit (durable-only).
+        verse_id: Option<String>,
+        source_did: String,
+        readings: Vec<IotReadingInput>,
+    },
     // --- Hexon crate registry (Phase 8) ---
     /// Install a hexon crate into a petal.
     InstallCrate {
@@ -715,6 +767,11 @@ pub enum DbResult {
     /// Result of `RawQuery`.
     QueryResult {
         data: Vec<serde_json::Value>,
+    },
+    /// Result of `InsertIotReadings` — how many rows the batch wrote.
+    IotReadingsInserted {
+        petal_id: String,
+        written: usize,
     },
     // --- Hexon crate registry results (Phase 8) ---
     /// Result of `InstallCrate`.

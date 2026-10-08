@@ -243,6 +243,7 @@ enum ReplyKind {
     FieldDefUpdated,
     FieldDefDeleted,
     QueryResult,
+    IotReadingsInserted,
     PetalTerrain,
     VerseTimeseriesSettings,
 }
@@ -273,6 +274,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         UpdateFieldDef { .. } => ReplyKind::FieldDefUpdated,
         DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
         RawQuery { .. } => ReplyKind::QueryResult,
+        InsertIotReadings { .. } => ReplyKind::IotReadingsInserted,
         GetPetalTerrain { .. } => ReplyKind::PetalTerrain,
         SetVerseTimeseriesSettings { .. } => ReplyKind::VerseTimeseriesSettings,
         _ => return None,
@@ -304,6 +306,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         FieldDefUpdated { .. } => ReplyKind::FieldDefUpdated,
         FieldDefDeleted { .. } => ReplyKind::FieldDefDeleted,
         QueryResult { .. } => ReplyKind::QueryResult,
+        IotReadingsInserted { .. } => ReplyKind::IotReadingsInserted,
         PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
         VerseTimeseriesSettingsSet { .. } => ReplyKind::VerseTimeseriesSettings,
         _ => return None,
@@ -848,6 +851,18 @@ mod tests {
                     vars: std::collections::HashMap::new(),
                 },
                 DbResult::QueryResult { data: Vec::new() },
+            ),
+            (
+                DbCommand::InsertIotReadings {
+                    petal_id: "p".to_string(),
+                    verse_id: None,
+                    source_did: "did:key:z6MkTest".to_string(),
+                    readings: Vec::new(),
+                },
+                DbResult::IotReadingsInserted {
+                    petal_id: "p".to_string(),
+                    written: 0,
+                },
             ),
             (
                 DbCommand::GetPetalTerrain {

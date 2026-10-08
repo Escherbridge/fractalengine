@@ -330,6 +330,9 @@ one sub-module per domain:
 - `crate_registry` — hexon crate registry install/uninstall
 - `petal_terrain` — per-petal terrain config get/set
 - `iot_reading` — append-only IoT sensor-reading ingestion (§iot-readings)
+- `ts_partial` — local partial execution for distributed timeseries queries
+  (§ts-partials): renders the structured spec's SQL via the fe-query builders,
+  never accepting SQL from the wire
 - `node_log` — append-only per-node operation log (§node-log)
 - `replicated_row` — inbound P2P row apply (A3+A4): `DbCommand::ApplyReplicatedRow`
   → **role-gated admission** (`admit_inbound_row`: the author's role resolved
@@ -386,6 +389,35 @@ fields match the persisted row.
 `VerseTimeseriesSettings::from_verse_row` — missing/invalid values fall back
 to the mirror defaults, so hierarchy consumers never see a parse error from a
 settings column.
+
+## §ts-partials (M2/F7 — A15)
+
+`handlers/ts_partial.rs::execute_ts_partial` runs THIS host's slice of a
+distributed timeseries query on the DB thread (the single-writer connection —
+the same class of read `RawQuery` performs; it is read-only, so it is safe on
+the DB thread's runtime by construction). The input is the structured
+`fe_runtime::distributed_query` spec: **SQL is rendered here via the fe-query
+builders with bound parameters, never accepted from the wire**, so a peer
+request can only ever run one of the sanctioned shapes restricted to a
+petal/window/shard — the spec is the authorization surface, same as the
+fe-api side.
+
+Partial semantics are dictated by the merge contract (fe-sync
+`distributed_query.rs`, the commutative merges):
+
+- **`WindowAggregate` runs ONE query per requested shard** (anchor + range),
+  clamping each shard's bucket range to the query window — per-shard
+  attribution is what lets the merge prevent double-counting when multiple
+  mirrors of a shard answer, while the sum/count/min/max monoid still adds
+  up correctly across shards hosted by different peers. A shard whose
+  clamped range is empty contributes an empty `ShardRows` (absence of data is
+  not absence of the shard — the A16 covered/missing metadata depends on it).
+- **`ReadingsInWindow` / `LatestPerAnchor` run ONE whole-window query**: their
+  merges (union-dedupe-by-`reading_id`, max-by-timestamp) are exact under
+  duplicate answers, so no shard attribution is needed.
+- **`row_cap` is clamped** (`clamp_partial_row_cap`) — an executing host
+  never trusts an unbounded request; the partial is truncated row-wise and
+  flagged `truncated` rather than dropped.
 
 ## §node-log
 

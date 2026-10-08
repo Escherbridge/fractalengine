@@ -7,20 +7,10 @@ use crate::query_helpers::exec_query;
 use crate::repo::Db;
 use crate::{BlobStoreHandle, ReplicationSender};
 
-/// One incoming sensor reading, pre-validation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct IotReadingInput {
-    /// Anchor node the reading is spatially attached to.
-    pub node_id: String,
-    /// Metric name, e.g. `temperature_c`.
-    pub metric: String,
-    pub value: f64,
-    #[serde(default)]
-    pub units: String,
-    /// RFC-3339 sensor timestamp; server ingest time when absent.
-    #[serde(default)]
-    pub recorded_at: Option<String>,
-}
+/// One incoming sensor reading, pre-validation. Canonical definition lives in
+/// `fe_runtime::messages` (M2/F7 — `DbCommand::InsertIotReadings` carries it
+/// cross-thread); re-exported so every existing import path is unchanged.
+pub use fe_runtime::messages::IotReadingInput;
 
 /// Typed ingestion failures so the API layer can map real HTTP statuses.
 #[derive(Debug, thiserror::Error)]

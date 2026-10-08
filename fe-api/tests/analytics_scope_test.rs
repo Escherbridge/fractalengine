@@ -55,6 +55,7 @@ fn state(db: Option<Db>, store: Arc<EntityStore>) -> Arc<ApiState> {
         hexon_registry: None,
         announcement_store: None,
         replication_tx: None,
+        distributed_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }

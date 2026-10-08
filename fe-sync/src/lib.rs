@@ -2,6 +2,7 @@ pub mod bevy_asset_reader;
 pub mod blob_store;
 pub mod cache;
 pub mod compute;
+pub mod distributed_query;
 pub mod docs_engine;
 pub mod endpoint;
 pub mod lifecycle;

@@ -187,6 +187,19 @@ fn main() {
         None,
     );
 
+    // M2/F7 (A17): API→sync distributed-query bridge. The API thread's
+    // distributed surfaces send `DistributedQueryCall`s; this bridge forwards
+    // each one into `SyncCommand::SubmitComputeTask` on the sync thread
+    // (request/response correlation + bounded concurrency live there). A
+    // disconnected sync thread is shutdown (the bridge exits silently —
+    // §backpressure's Disconnected-is-silent rule).
+    let (distributed_call_tx, distributed_call_rx) =
+        crossbeam::channel::bounded::<fe_runtime::distributed_query::DistributedQueryCall>(64);
+    fe_sync::distributed_query::bridge_distributed_queries(
+        distributed_call_rx,
+        sync_cmd_tx.clone(),
+    );
+
     // Phase E: bridge replication events from DB thread to sync thread.
     // try_send + drop counter so a stalled sync thread never blocks this hop
     // (see fe-database/src/AGENTS.md §replication-backpressure).
@@ -372,6 +385,12 @@ fn main() {
         hexon_registry: None,
         announcement_store: None,
         replication_tx: Some(repl_tx_for_api),
+        // M2/F7 (A17): the API→sync distributed-query bridge's call sender —
+        // every distributed surface (/api/v1/query's `distributed` mode, the
+        // analytics endpoint's merged readings table, the MCP query_timeseries
+        // tool) fans out through this seam. The bridge below forwards each
+        // call into `SyncCommand::SubmitComputeTask` on the sync thread.
+        distributed_tx: Some(distributed_call_tx),
     });
 
     // ---- Entity Store (in-memory hot cache) ----

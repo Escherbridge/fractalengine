@@ -854,12 +854,62 @@ pub(crate) fn parse_f32_array3(val: &serde_json::Value, default: f32) -> [f32; 3
 /// Security: full guard pipeline in `query_guard` (rate limit 10 req/s/DID,
 /// single-SELECT, keyword blocklist, table whitelist, scope injection) plus
 /// the FR-4 row cap + response-size ceiling from `limits`.
+///
+/// M2/F7 distributed mode (A15/A16/A17): a `distributed` spec instead of `sql`
+/// fans the structured query out over the verse's fabric and returns the
+/// merged rows with honesty metadata. The guard pipeline (role, petal scope
+/// resolution + containment, rate limit) lives in
+/// `crate::timeseries_query::run_distributed_timeseries_query` — the same
+/// guards every other petal-scoped read applies; the merged rows then pass
+/// the SAME row cap (error, not truncate) + byte ceiling as the raw path.
 pub async fn execute_query(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Json(req): Json<crate::types::QueryRequest>,
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
+
+    if let Some(spec) = req.distributed {
+        if !req.sql.trim().is_empty() {
+            return Json(ApiResponse::<QueryResultDto>::error(
+                "sql and distributed are mutually exclusive — send exactly one",
+            ));
+        }
+        return match crate::timeseries_query::run_distributed_timeseries_query(
+            &state, &claims, spec,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                if let Some(reason) = &outcome.error {
+                    return Json(ApiResponse::<QueryResultDto>::error(reason));
+                }
+                // The merged rows pass the same FR-4 caps as the raw path —
+                // error, never a silent truncation.
+                if outcome.rows.len() > crate::limits::QUERY_ROW_CAP {
+                    return Json(ApiResponse::<QueryResultDto>::error(format!(
+                        "row cap exceeded (limit {} rows; narrow the window or the petal's shard count)",
+                        crate::limits::QUERY_ROW_CAP
+                    )));
+                }
+                if let Err(e) = crate::query_guard::enforce_byte_ceiling(
+                    &outcome.rows,
+                    crate::limits::QUERY_MAX_RESPONSE_BYTES,
+                    crate::limits::QUERY_MAX_RESPONSE_LABEL,
+                ) {
+                    return Json(ApiResponse::<QueryResultDto>::error(e));
+                }
+                // FR-5: stamp the egress CRS resolved from the token's scope.
+                let crs = crate::crs::scope_crs(&state, &claims.scope).await;
+                Json(ApiResponse::success(QueryResultDto {
+                    data: outcome.rows,
+                    crs: Some(crs),
+                    distributed: Some(outcome.meta),
+                }))
+            }
+            Err(e) => Json(ApiResponse::<QueryResultDto>::error(e.message())),
+        };
+    }
 
     if require_role(&claims, "viewer").is_err() {
         return Json(ApiResponse::<QueryResultDto>::error(
@@ -911,6 +961,7 @@ pub async fn execute_query(
             Json(ApiResponse::success(QueryResultDto {
                 data,
                 crs: Some(crs),
+                distributed: None,
             }))
         }
         Err(e) => Json(ApiResponse::<QueryResultDto>::error(e)),
@@ -1015,7 +1066,11 @@ pub async fn execute_elevated_query(
                     Err(_) => break,
                 }
             }
-            Json(ApiResponse::success(QueryResultDto { data, crs: None }))
+            Json(ApiResponse::success(QueryResultDto {
+                data,
+                crs: None,
+                distributed: None,
+            }))
         }
         Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!(
             "query failed: {e}"
@@ -1032,6 +1087,12 @@ pub async fn execute_elevated_query(
 /// the direct DB reader and must be covered by the token scope before the
 /// in-memory table is constructed.
 /// Rate limited to 10 req/s per user (shared with `/query` limiter).
+///
+/// M2/F7 (A17): a SQL reference to `iot_reading` serves the MERGED
+/// DISTRIBUTED view of the petal's readings (fanned out over the verse's
+/// fabric, deduped by `reading_id`, honesty metadata attached) — not just
+/// this node's local shards. The table is registered from the fan-out
+/// outcome; an empty outcome registers an honest empty table.
 ///
 /// Accepts `{ "sql": "SELECT ...", "petal_id": "required-petal" }`.
 /// Returns JSON rows from the DataFusion result.
@@ -1113,13 +1174,48 @@ pub async fn execute_analytics_query(
         )));
     }
 
+    // M2/F7 (A17): a reference to `iot_reading` serves the merged distributed
+    // view — the whole petal's fabric (every metric, all time), not just this
+    // node's local shards. There is deliberately NO local fallback: a
+    // sharded-verse deployment presenting local-only rows as "the readings
+    // table" would be the dishonest surface; without the seam the reference
+    // fails explicitly instead.
+    let mut distributed_meta = None;
+    if crate::timeseries_query::sql_references_table(&translated_sql, "iot_reading") {
+        let spec = fe_runtime::distributed_query::TsQueryKind::AllReadings {
+            petal_id: req.petal_id.clone(),
+        };
+        let outcome =
+            match crate::timeseries_query::run_distributed_timeseries_query(&state, &claims, spec)
+                .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    return Json(ApiResponse::<QueryResultDto>::error(e.message()));
+                }
+            };
+        if let Some(reason) = &outcome.error {
+            return Json(ApiResponse::<QueryResultDto>::error(reason));
+        }
+        if let Err(e) = analytics_ctx.register_json_rows_table("iot_reading", &outcome.rows) {
+            return Json(ApiResponse::<QueryResultDto>::error(format!(
+                "failed to register readings table: {e}"
+            )));
+        }
+        distributed_meta = Some(outcome.meta);
+    }
+
     match tokio::time::timeout(
         std::time::Duration::from_secs(10),
         analytics_ctx.execute_to_json(&translated_sql),
     )
     .await
     {
-        Ok(Ok(data)) => Json(ApiResponse::success(QueryResultDto { data, crs: None })),
+        Ok(Ok(data)) => Json(ApiResponse::success(QueryResultDto {
+            data,
+            crs: None,
+            distributed: distributed_meta,
+        })),
         Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!(
             "analytics query failed: {e}"
         ))),
@@ -2054,6 +2150,7 @@ mod tests {
             hexon_registry: None,
             announcement_store: None,
             replication_tx: None,
+            distributed_tx: None,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
@@ -2071,6 +2168,7 @@ mod tests {
         let req = QueryRequest {
             sql: "SELECT * FROM asset".to_string(),
             vars: std::collections::HashMap::new(),
+            distributed: None,
         };
         println!("DEBUG: Executing first query");
         let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;
@@ -2096,6 +2194,7 @@ mod tests {
         let req = QueryRequest {
             sql: "SELECT * FROM crate_registry".to_string(),
             vars: std::collections::HashMap::new(),
+            distributed: None,
         };
         println!("DEBUG: Executing second query");
         let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;
@@ -2120,6 +2219,7 @@ mod tests {
         let req = QueryRequest {
             sql: "DELETE FROM asset WHERE asset_id = 'asset-1'".to_string(),
             vars: std::collections::HashMap::new(),
+            distributed: None,
         };
         println!("DEBUG: Executing third query (blocked)");
         let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;

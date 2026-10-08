@@ -197,6 +197,27 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["petal_id", "path_id", "instance_index"]
             }),
         },
+        // --- M2/F7 distributed timeseries query (A15/A16/A17) ---
+        ToolDefinition {
+            name: "query_timeseries".into(),
+            description:
+                "Run a distributed timeseries query over a petal's sharded IoT fabric. The query fans out to online peers hosting the petal's shards and merges commutatively (aggregate: mean/min/max/count as an exact monoid; raw rows: union deduped by reading_id; latest: max timestamp per anchor). Results carry covered/missing shard honesty metadata — an offline peer's shards are invisible at replication factor 1, served from a surviving mirror at R>=2. Requires viewer role + petal scope.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "petal_id": { "type": "string", "description": "The petal whose shard fabric is queried" },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["window_aggregate", "latest_per_anchor", "readings_in_window", "all_readings"],
+                        "description": "Query shape: window_aggregate = per-anchor mean/min/max/count over a half-open [start_ms, end_ms) window; latest_per_anchor = newest reading per (anchor, metric); readings_in_window = raw rows in the window; all_readings = the whole merged view of the petal"
+                    },
+                    "metric": { "type": "string", "description": "Metric name (required for window_aggregate and readings_in_window; optional filter for latest_per_anchor)" },
+                    "start_ms": { "type": "integer", "description": "Window start, epoch ms inclusive (required for window_aggregate and readings_in_window)" },
+                    "end_ms": { "type": "integer", "description": "Window end, epoch ms exclusive (required for window_aggregate and readings_in_window)" }
+                },
+                "required": ["petal_id", "kind"]
+            }),
+        },
     ]
 }
 
@@ -631,6 +652,76 @@ async fn handle_tool_call(
                     tool_error(id, "operation failed or not permitted")
                 }
                 _ => tool_error(id, "promote_instance failed"),
+            }
+        }
+
+        // --- M2/F7 distributed timeseries query (A15/A16/A17) ---
+        "query_timeseries" => {
+            if require_role(claims, "viewer").is_err() {
+                return tool_error(id, "insufficient permissions");
+            }
+            let petal_id = str_arg(&args, "petal_id");
+            if petal_id.is_empty() {
+                return tool_error(id, "petal_id is required");
+            }
+            let kind = str_arg(&args, "kind");
+            let metric = str_arg(&args, "metric");
+            let has_metric = !metric.is_empty();
+            let start_ms = args.get("start_ms").and_then(|v| v.as_i64());
+            let end_ms = args.get("end_ms").and_then(|v| v.as_i64());
+            // Build the structured spec from the flat tool args; each kind
+            // demands its own required fields (a mismatch is a client error,
+            // never a defaulted-away silent query).
+            let spec = match kind.as_str() {
+                "window_aggregate"
+                    if has_metric && matches!((start_ms, end_ms), (Some(_), Some(_))) =>
+                {
+                    fe_runtime::distributed_query::TsQueryKind::WindowAggregate {
+                        metric,
+                        start_ms: start_ms.unwrap_or_default(),
+                        end_ms: end_ms.unwrap_or_default(),
+                        petal_id,
+                    }
+                }
+                "readings_in_window"
+                    if has_metric && matches!((start_ms, end_ms), (Some(_), Some(_))) =>
+                {
+                    fe_runtime::distributed_query::TsQueryKind::ReadingsInWindow {
+                        metric,
+                        start_ms: start_ms.unwrap_or_default(),
+                        end_ms: end_ms.unwrap_or_default(),
+                        petal_id,
+                    }
+                }
+                "latest_per_anchor" => {
+                    fe_runtime::distributed_query::TsQueryKind::LatestPerAnchor {
+                        petal_id,
+                        metric: has_metric.then_some(metric),
+                    }
+                }
+                "all_readings" => {
+                    fe_runtime::distributed_query::TsQueryKind::AllReadings { petal_id }
+                }
+                _ => {
+                    return tool_error(
+                        id,
+                        "invalid arguments: kind must be one of window_aggregate | latest_per_anchor | readings_in_window | all_readings, with the metric/start_ms/end_ms fields its kind requires",
+                    );
+                }
+            };
+            // The shared guarded fan-out (role, petal scope resolution +
+            // token containment, rate limit) — same bridge as /api/v1/query.
+            match crate::timeseries_query::run_distributed_timeseries_query(state, claims, spec)
+                .await
+            {
+                Ok(outcome) => {
+                    if let Some(reason) = &outcome.error {
+                        return tool_error(id, reason);
+                    }
+                    let payload = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+                    tool_result(id, payload)
+                }
+                Err(e) => tool_error(id, e.message()),
             }
         }
 

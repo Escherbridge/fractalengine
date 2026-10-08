@@ -51,6 +51,17 @@ pub struct ApiHarness {
 impl ApiHarness {
     /// Spin up a fresh harness: Mem SurrealDB + full schema + real router.
     pub async fn spawn() -> Result<Self> {
+        Self::spawn_with_distributed_tx(None).await
+    }
+
+    /// Like [`Self::spawn`], optionally wiring the distributed-query seam
+    /// (M2/F7 — A17): `distributed_tx` is the API→sync call sender. A test
+    /// owning the matching receiver answers `DistributedQueryCall`s like a
+    /// sync thread would (the seam boundary; the real sync side is proven
+    /// by the P2P scenario runner).
+    pub async fn spawn_with_distributed_tx(
+        distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
+    ) -> Result<Self> {
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .context("in-memory SurrealDB")?;
@@ -89,6 +100,7 @@ impl ApiHarness {
             hexon_registry: None,
             announcement_store: None,
             replication_tx: None,
+            distributed_tx,
             share_signer: keypair.clone(),
         });
 

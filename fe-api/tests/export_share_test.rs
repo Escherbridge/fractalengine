@@ -73,6 +73,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         hexon_registry: None,
         announcement_store: None,
         replication_tx: None,
+        distributed_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -445,6 +446,7 @@ async fn query_envelope_carries_resolved_crs() {
     let req = fe_api::types::QueryRequest {
         sql: "SELECT * FROM node".to_string(),
         vars: std::collections::HashMap::new(),
+        distributed: None,
     };
     let resp = fe_api::rest::execute_query(State(state), Extension(claims), Json(req))
         .await
