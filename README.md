@@ -35,6 +35,7 @@ Pre-1.0, under active development. What that means concretely:
 - HTTP/WS API gateway on `127.0.0.1:8765` — REST, live scene subscriptions, MCP tools — plus a headless relay binary (Docker image available)
 - JWT auth, hierarchical RBAC, deny-by-default policy engine
 - Plugin system — Rhai and WASM sandboxes against the stable `fe-sdk` API, with UI slots
+- **Peer-to-peer sync** — a real iroh-docs 0.35 stack replicates whole verses with deny-by-default RBAC enforced at the DB thread (never trusted from a peer), plus a switchable mirror/sharded/balanced timeseries fabric for IoT readings with honest per-query coverage reporting. See [Peer-to-Peer Sync & Distributed Data](#peer-to-peer-sync--distributed-data) below.
 
 **In progress**
 
@@ -42,7 +43,6 @@ Pre-1.0, under active development. What that means concretely:
 - Measurement tools (tape/area/bearing) on top of the landed real-world-scale plumbing
 - IoT spatial reporting — ingestion and time-series queries landed; reading-shaped export remains
 - Release pipeline — the 8-target build matrix exists; the first tag-triggered release has not yet run
-- P2P sync — petal replication works over iroh; parts of verse-level replication are still mock-backed
 
 **Planned**
 
@@ -138,6 +138,46 @@ bytes, never shared mutable state.
 
 > See [docs/diagrams.md](docs/diagrams.md) for full architecture diagrams
 > including data flow, auth sequences, and component interactions.
+
+---
+
+## Peer-to-Peer Sync & Distributed Data
+
+The Sync Thread (T4) runs a real **iroh / iroh-docs / iroh-gossip 0.35** stack —
+`Blobs` + `Gossip` + `Docs` + a `Router` accepting all three ALPNs — with
+persistent stores under `FE_P2P_DIR`. A verse's replica is a CRDT-backed
+iroh-docs document: opening one subscribes the verse's gossip topic, dials
+bootstrap peers, and replays the doc's current entries through the same
+inbound path a live write takes, so a row denied before RBAC converged
+locally gets a second chance on every open. (A separate, legacy petal-level
+replicator remains mock-backed — it is not part of this path.)
+
+- **Policy at the data layer, not the wire.** Inbound replicated rows are
+  admitted by the DB thread's deny-by-default RBAC gate (Editor+, roles
+  resolved from local tables — never trusted from a peer). Outbound writes
+  from the local DB are never gated a second time on their way out.
+- **Timeseries fabric.** IoT readings replicate append-only via union
+  semantics, in one of three switchable per-verse modes — `mirror` (every
+  peer holds everything), `sharded` (one host per shard), or `balanced`
+  (replication factor R) — tracked in a per-verse shard ledger that rides the
+  verse's own doc. Distributed window/aggregate queries fan out over the
+  verse's gossip topic and merge per-host partials, reporting which shards
+  were actually covered vs. missing rather than guessing.
+- **Simulation lab.** `fe-sim` runs deterministic, scripted multi-peer
+  scenarios — virtual doc + gossip planes, an accelerable clock, scripted
+  faults — against the SAME replicator trait production code uses, so sim and
+  prod cannot drift by construction. See
+  [docs/simulation-lab.md](docs/simulation-lab.md).
+- **BI egress.** Export nodes and IoT readings as Parquet/CSV over signed,
+  time-limited share URLs for DuckDB, PowerBI, or a spreadsheet — no database
+  credentials required. See [docs/bi-egress.md](docs/bi-egress.md).
+- **MCP surface.** 29 machine-callable tools behind one table-driven
+  authorization path: a role floor plus a scope rule resolved from the DB,
+  never from caller-supplied ancestry ids.
+- **Relay EOL note.** iroh 0.35's default n0-hosted relay infrastructure is
+  EOL **2026-12-31**. Point `FE_SYNC_RELAY` at a custom relay (or set it to
+  `disabled` for LAN-only) before then — see
+  [fractalengine-relay/README.md](fractalengine-relay/README.md).
 
 ---
 
@@ -271,6 +311,8 @@ persists are rolled back via `transform_rollback`.
 | [docs/guide.md](docs/guide.md) | Comprehensive developer guide |
 | [docs/editor-guide.md](docs/editor-guide.md) | Editor usage guide (Pen tool, paths, curves) |
 | [docs/diagrams.md](docs/diagrams.md) | Architecture diagrams index (Mermaid) |
+| [docs/bi-egress.md](docs/bi-egress.md) | BI egress: connecting DuckDB/PowerBI/spreadsheets |
+| [docs/simulation-lab.md](docs/simulation-lab.md) | Simulation lab: scripted multi-peer P2P scenarios (fe-sim) |
 | [docs/security-checklist.md](docs/security-checklist.md) | Security audit checklist |
 | [docs/webview-threat-model.md](docs/webview-threat-model.md) | WebView threat model |
 | [conductor/product.md](conductor/product.md) | Product vision and entity hierarchy |

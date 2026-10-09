@@ -56,7 +56,7 @@ its commit hash + evidence line appended here.
 
 ## M5 — MCP + API integration
 
-- [ ] **F13** (A26) — ToolSpec/ScopeRule dispatcher, 6→20 MCP tools, 3 weak-authz fixes, GLB upload API-side
+- [x] **F13 LANDED @ `635b8c5`** (A26) — one ToolSpec table drives definitions + dispatch (zero inline require_* in handlers); 29 tools (DEC-C14: 20-name vocabulary complete + 9 documented extras); FOUR authz holes closed w/ denial tests (3 original warts incl. the decoy variant + depth-escalation caught by automated security review on the new code itself — HierarchyArgs(HierarchyTarget) anchors at the write-target level, deeper ids rejected); GLB upload API-side via the StoredGlb capability type (bytes structurally cannot cross the channel) + REST sibling; side fix: REST create_waypoint panicked on every call. Gate: fe-api 199, combined 572+, harness 26, clippy/fmt clean (-j2). Open: MCP install_tileset Manager vs REST Editor+policy; set_petal_terrain validate-then-refuse (needs correlated reply, touches fe-ui); FR-3 optional create_node asset args → F14; asset rows unscoped (deferred w/ trigger).
 - [ ] **F14** (A27) — harness suites: WS, hexon/tileset, IoT ingest+export, share mint→redeem, token lifecycle, cross-thread, MCP negatives; fix peer.rs:705/709 bare `.ok()`
 - [ ] **M5 milestone review**
 
