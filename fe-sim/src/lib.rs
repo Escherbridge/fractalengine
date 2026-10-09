@@ -13,7 +13,8 @@
 //!   time, so a stepped run is deterministic.
 //! * [`net::SimNet`] — the deterministic in-process network hub: scripted
 //!   membership, latency, partitions, and churn, with latest-per-key doc
-//!   convergence. [`net::SimVerseReplicator`] implements the SAME
+//!   convergence, plus the virtual gossip plane the distributed-query
+//!   fan-out rides ([`net::SimGossipTopic`], F9/A21). [`net::SimVerseReplicator`] implements the SAME
 //!   `fe_sync::VerseReplicator` + open-lifecycle contract as
 //!   `IrohDocsReplicator` (fe-sync `virtual_transport.rs`), so prod and sim
 //!   cannot drift by construction; a sim sync thread binds no iroh

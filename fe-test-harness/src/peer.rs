@@ -74,6 +74,18 @@ impl TestPeer {
         temp_dir: &Path,
         transport: Option<std::sync::Arc<dyn fe_sync::VirtualTransportFactory>>,
     ) -> Result<Self> {
+        Self::spawn_with_identity(name, temp_dir, transport, NodeKeypair::generate())
+    }
+
+    /// [`Self::spawn_with_transport`] with a caller-supplied identity (F9: the
+    /// sim lab seeds keypairs so DIDs — and DID-ordered shard placement — are
+    /// reproducible run to run).
+    pub fn spawn_with_identity(
+        name: &str,
+        temp_dir: &Path,
+        transport: Option<std::sync::Arc<dyn fe_sync::VirtualTransportFactory>>,
+        keypair: NodeKeypair,
+    ) -> Result<Self> {
         let peer_dir = temp_dir.join(name);
         std::fs::create_dir_all(&peer_dir)
             .with_context(|| format!("create peer dir: {}", peer_dir.display()))?;
@@ -82,7 +94,6 @@ impl TestPeer {
         let blob_store: BlobStoreHandle =
             Arc::new(FsBlobStore::new(blob_dir).context("create blob store")?);
 
-        let keypair = NodeKeypair::generate();
         let local_did = keypair.to_did_key();
 
         // DB channels

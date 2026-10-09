@@ -413,14 +413,25 @@ replication model is forbidden.
   inbound pump, `seed_reconciliation`, fabric bookkeeping (`__shards`/
   `__peers`/manifest learning), and receive-side retention all run the same
   code. Only the transport under the trait object differs.
-- **Honest limits in virtual mode:** the distributed-query compute plane
-  (gossip topics) requires the real stack and is absent —
-  `SubmitComputeTask` answers the honest "no gossip sender for this topic"
-  error. F9/A21 virtualizes that plane by extending the factory with a
-  topic seam (a virtual gossip hub handing out channel pairs shaped like
-  `GossipTopic`); petal-level replication stays mock-backed (legacy path,
-  no sim consumer), and blob fetching across peers is likewise not
-  virtualized (sim fleets exchange rows, not GLB assets).
+- **Gossip/compute plane (F9/A21 — implemented hub-side in fe-sim):**
+  `VirtualTransportFactory::join_gossip_topic(topic_key, local_did,
+  local_node)` returns a `VirtualGossipTopic` (broadcast + take-once inbound
+  of `VirtualGossipMessage { from, direct, content }`). In virtual mode
+  `subscribe_to_verse_gossip_topic` takes that branch instead of iroh-gossip:
+  the sender lands in `gossip_senders` as `TopicSender::Virtual` (the enum
+  every compute call site now holds — `TopicSender::Real` wraps the iroh
+  `GossipSender`, so the real path is unchanged), and
+  `pump_virtual_gossip_topic` forwards inbound frames as `GossipIncoming`
+  exactly like the real pump — the command loop cannot tell the planes
+  apart. The sync thread passes its own DID + iroh `NodeId` (one ed25519
+  key), so the F23 sender-identity gate applies to sim frames verbatim. A
+  factory without a gossip plane (the trait default `None`) leaves the verse
+  honestly topic-less (`SubmitComputeTask` runs local-only). fe-sim's
+  `SimNet` implements it with self-echo, scripted latency/partition/churn,
+  and NO history (fe-sim `src/AGENTS.md` §gossip-plane).
+- **Still not virtualized:** petal-level replication stays mock-backed
+  (legacy path, no sim consumer), and blob fetching across peers (sim fleets
+  exchange rows, not GLB assets).
 - **HLC parity:** simulated peers stamp HLC from their `SimClock` via
   `fe_database::op_log::set_wall_clock_source` (see fe-database
   `src/AGENTS.md` §hlc) — every simulated peer reads time from the same

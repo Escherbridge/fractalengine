@@ -9,13 +9,19 @@
 //! zero latency a delivery lands on the very next drain after its write —
 //! determinism comes from the (due_ms, seq) heap order, never from thread
 //! scheduling.
+//!
+//! The hub carries two planes on the same heap (F9/A21): the DOC plane
+//! (replica rows) and the GOSSIP plane (per-verse compute topics — the
+//! distributed-query fan-out). See `AGENTS.md` §net / §gossip-plane.
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fe_sync::replicator::{row_is_tombstone, ReplicatorFuture, RowChange};
-use fe_sync::virtual_transport::{VirtualReplica, VirtualTransportFactory};
+use fe_sync::virtual_transport::{
+    VirtualGossipMessage, VirtualGossipTopic, VirtualReplica, VirtualTransportFactory,
+};
 use fe_sync::VerseReplicator;
 
 use crate::clock::SimClock;
@@ -24,6 +30,9 @@ use crate::clock::SimClock;
 /// a full channel drops with a warn — §replication-backpressure, never a
 /// blocking send on the hub.
 const SUBSCRIBER_CAPACITY: usize = 1024;
+
+/// Per-member gossip inbound capacity (same drop-and-count posture).
+const GOSSIP_SUBSCRIBER_CAPACITY: usize = 256;
 
 /// One latest-per-key entry in a virtual doc (the doc's own state).
 #[derive(Clone)]
@@ -34,6 +43,20 @@ struct DocEntry {
     author: String,
     /// Simulated epoch milliseconds at write time.
     written_ms: u64,
+    /// Hub-wide write order — convergence replays and snapshots walk entries
+    /// in this order (ledger-before-row survives a replay; §net).
+    write_seq: u64,
+}
+
+/// One doc entry as a peer can see it (authored, or delivered to it).
+#[derive(Debug, Clone)]
+pub struct VisibleEntry {
+    /// The entry's author DID.
+    pub author: String,
+    /// The entry's record id.
+    pub record_id: String,
+    /// The entry's payload bytes.
+    pub data: Vec<u8>,
 }
 
 /// A live subscriber: one `subscribe()` registration (the sync thread's
@@ -57,9 +80,18 @@ struct Partition {
     groups: Vec<Vec<String>>,
 }
 
+/// One gossip-topic membership (one `join_gossip_topic`).
+struct GossipMember {
+    peer: String,
+    token: u64,
+    tx: tokio::sync::mpsc::Sender<VirtualGossipMessage>,
+}
+
 /// Hub state under one lock.
 struct NetState {
     docs: HashMap<String, VirtualDoc>,
+    /// Gossip topic key → current members (the compute plane).
+    topics: HashMap<String, Vec<GossipMember>>,
     /// Every known peer's online flag (membership/churn).
     peers: HashMap<String, bool>,
     partitions: Vec<Partition>,
@@ -68,16 +100,34 @@ struct NetState {
     /// In-flight deliveries, min-heap by (due_ms, seq).
     inflight: BinaryHeap<Delivery>,
     seq: u64,
+    /// Doc entries handed to each peer's subscriber: peer → (namespace,
+    /// `table/record_id`). The scenario runner's exact convergence target.
+    delivered: HashMap<String, HashSet<(String, String)>>,
+}
+
+/// What a scheduled delivery carries.
+enum Payload {
+    /// A doc-plane row change for one replica subscriber.
+    Row {
+        namespace_id: String,
+        change: RowChange,
+    },
+    /// A gossip-plane frame for one topic member.
+    Gossip {
+        topic: String,
+        message: VirtualGossipMessage,
+    },
 }
 
 /// A scheduled delivery to one subscriber.
 struct Delivery {
     due_ms: u64,
     seq: u64,
+    /// The publishing peer's DID (link checks at drain time).
+    author: String,
     peer: String,
     token: u64,
-    namespace_id: String,
-    change: RowChange,
+    payload: Payload,
 }
 
 // BinaryHeap is a max-heap: order so the EARLIEST (due_ms, seq) pops first.
@@ -108,6 +158,8 @@ pub struct SimNet {
     state: Mutex<NetState>,
     /// Deliveries dropped at drain time (link down / channel full).
     dropped_deliveries: AtomicU64,
+    /// Gossip frames handed to a member's inbound stream.
+    gossip_deliveries: AtomicU64,
 }
 
 impl SimNet {
@@ -117,13 +169,16 @@ impl SimNet {
             clock,
             state: Mutex::new(NetState {
                 docs: HashMap::new(),
+                topics: HashMap::new(),
                 peers: HashMap::new(),
                 partitions: Vec::new(),
                 latency_ms: 0,
                 inflight: BinaryHeap::new(),
                 seq: 0,
+                delivered: HashMap::new(),
             }),
             dropped_deliveries: AtomicU64::new(0),
+            gossip_deliveries: AtomicU64::new(0),
         })
     }
 
@@ -135,6 +190,51 @@ impl SimNet {
     /// Total deliveries dropped at drain time (fault effects + backpressure).
     pub fn dropped_deliveries(&self) -> u64 {
         self.dropped_deliveries.load(Ordering::SeqCst)
+    }
+
+    /// Total gossip frames delivered to topic members (self-echoes included).
+    pub fn gossip_deliveries(&self) -> u64 {
+        self.gossip_deliveries.load(Ordering::SeqCst)
+    }
+
+    /// Doc entries of `table` across every namespace (the runner's
+    /// "every ingest reached the hub" barrier).
+    pub fn entry_count(&self, table: &str) -> usize {
+        self.lock()
+            .docs
+            .values()
+            .map(|doc| doc.entries.values().filter(|e| e.table == table).count())
+            .sum()
+    }
+
+    /// The `table` entries `peer` can hold: those it authored plus those the
+    /// hub handed to its subscriber (the exact convergence target).
+    pub fn visible_entries(&self, peer: &str, table: &str) -> Vec<VisibleEntry> {
+        let state = self.lock();
+        let delivered = state.delivered.get(peer);
+        let mut out = Vec::new();
+        for (ns, doc) in &state.docs {
+            for (key, entry) in &doc.entries {
+                if entry.table != table {
+                    continue;
+                }
+                let seen = entry.author == peer
+                    || delivered.is_some_and(|d| d.contains(&(ns.clone(), key.clone())));
+                if seen {
+                    out.push(VisibleEntry {
+                        author: entry.author.clone(),
+                        record_id: entry.record_id.clone(),
+                        data: entry.data.clone(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The earliest in-flight due time, if any (query waits advance to it).
+    pub fn next_due_ms(&self) -> Option<u64> {
+        self.lock().inflight.peek().map(|d| d.due_ms)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, NetState> {
@@ -160,22 +260,15 @@ impl SimNet {
         let was_online = state.peers.get(peer).copied().unwrap_or(false);
         state.peers.insert(peer.to_string(), online);
         if online && !was_online {
-            let docs: Vec<(String, Vec<DocEntry>)> = state
-                .docs
-                .iter()
-                .map(|(ns, doc)| (ns.clone(), doc.entries.values().cloned().collect()))
-                .collect();
             let now = self.clock.now_ms();
-            for (ns, entries) in docs {
-                for entry in &entries {
-                    schedule_to_subscribers(
-                        &mut state,
-                        &ns,
-                        &entry.author,
-                        change_from_entry(entry, &entry.author),
-                        now,
-                    );
-                }
+            for (ns, entry) in entries_in_write_order(&state) {
+                schedule_to_subscribers(
+                    &mut state,
+                    &ns,
+                    &entry.author,
+                    change_from_entry(&entry, &entry.author),
+                    now,
+                );
             }
             tracing::info!(peer, "sim net: peer back online — converging doc state");
         }
@@ -195,22 +288,15 @@ impl SimNet {
     pub fn heal(&self) {
         let mut state = self.lock();
         state.partitions.clear();
-        let docs: Vec<(String, Vec<DocEntry>)> = state
-            .docs
-            .iter()
-            .map(|(ns, doc)| (ns.clone(), doc.entries.values().cloned().collect()))
-            .collect();
         let now = self.clock.now_ms();
-        for (ns, entries) in docs {
-            for entry in &entries {
-                schedule_to_subscribers(
-                    &mut state,
-                    &ns,
-                    &entry.author,
-                    change_from_entry(entry, &entry.author),
-                    now,
-                );
-            }
+        for (ns, entry) in entries_in_write_order(&state) {
+            schedule_to_subscribers(
+                &mut state,
+                &ns,
+                &entry.author,
+                change_from_entry(&entry, &entry.author),
+                now,
+            );
         }
         tracing::info!("sim net: partitions healed — doc state converging");
     }
@@ -261,6 +347,8 @@ impl SimNet {
     ) {
         let mut state = self.lock();
         let now = self.clock.now_ms();
+        state.seq += 1;
+        let write_seq = state.seq;
         let doc = state
             .docs
             .entry(namespace_id.to_string())
@@ -276,6 +364,7 @@ impl SimNet {
                 data: data.to_vec(),
                 author: peer.to_string(),
                 written_ms: now,
+                write_seq,
             },
         );
         let online = state.peers.get(peer).copied().unwrap_or(false);
@@ -336,16 +425,105 @@ impl SimNet {
     /// the same inbound apply path the live pump uses).
     fn snapshot(&self, namespace_id: &str) -> Vec<RowChange> {
         let state = self.lock();
+        let Some(doc) = state.docs.get(namespace_id) else {
+            return Vec::new();
+        };
+        let mut entries: Vec<&DocEntry> = doc.entries.values().collect();
+        entries.sort_by_key(|e| e.write_seq);
+        entries
+            .into_iter()
+            .map(|e| change_from_entry(e, &e.author))
+            .collect()
+    }
+
+    /// Join a gossip topic as `peer` (one membership per call), returning
+    /// the member's inbound stream and its registration token.
+    fn join_topic(
+        &self,
+        topic: &str,
+        peer: &str,
+    ) -> (tokio::sync::mpsc::Receiver<VirtualGossipMessage>, u64) {
+        let mut state = self.lock();
+        let (tx, rx) = tokio::sync::mpsc::channel(GOSSIP_SUBSCRIBER_CAPACITY);
+        state.seq += 1;
+        let token = state.seq;
+        state.peers.entry(peer.to_string()).or_insert(true);
         state
-            .docs
-            .get(namespace_id)
-            .map(|doc| {
-                doc.entries
-                    .values()
-                    .map(|e| change_from_entry(e, &e.author))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .topics
+            .entry(topic.to_string())
+            .or_default()
+            .push(GossipMember {
+                peer: peer.to_string(),
+                token,
+                tx,
+            });
+        (rx, token)
+    }
+
+    /// Remove one gossip membership (its topic handle dropped).
+    fn leave_topic(&self, topic: &str, peer: &str, token: u64) {
+        let mut state = self.lock();
+        if let Some(members) = state.topics.get_mut(topic) {
+            members.retain(|m| !(m.peer == peer && m.token == token));
+            if members.is_empty() {
+                state.topics.remove(topic);
+            }
+        }
+    }
+
+    /// Broadcast one gossip frame: one delivery per CURRENT member linked to
+    /// the publisher — the publisher's own membership included (iroh-gossip
+    /// self-echo parity). No history: a member unreachable now never gets it.
+    fn gossip_broadcast(
+        &self,
+        topic: &str,
+        author: &str,
+        author_node: iroh::NodeId,
+        token: u64,
+        content: bytes::Bytes,
+    ) -> Result<(), String> {
+        let mut state = self.lock();
+        let Some(members) = state.topics.get(topic) else {
+            return Err(format!(
+                "virtual gossip topic {topic} has no members (left)"
+            ));
+        };
+        if !members.iter().any(|m| m.peer == author && m.token == token) {
+            return Err(format!(
+                "virtual gossip topic {topic} was left by this member"
+            ));
+        }
+        // Member order by (DID, token): the fan-out's seq assignment must not
+        // depend on which sync thread happened to join first.
+        let mut targets: Vec<(String, u64)> =
+            members.iter().map(|m| (m.peer.clone(), m.token)).collect();
+        targets.sort();
+        let now = self.clock.now_ms();
+        let message = VirtualGossipMessage {
+            from: author_node,
+            direct: true,
+            content,
+        };
+        for (peer, member_token) in targets {
+            if !Self::pair_linked(&state, author, &peer) {
+                continue;
+            }
+            state.seq += 1;
+            let seq = state.seq;
+            let due_ms = now.saturating_add(state.latency_ms);
+            state.inflight.push(Delivery {
+                due_ms,
+                seq,
+                author: author.to_string(),
+                peer,
+                token: member_token,
+                payload: Payload::Gossip {
+                    topic: topic.to_string(),
+                    message: message.clone(),
+                },
+            });
+        }
+        Ok(())
     }
 
     /// Drain every delivery due at or before the clock's current time.
@@ -368,46 +546,67 @@ impl SimNet {
                 }
             };
             // Link state is re-checked at delivery time — a partition that
-            // hit while the message was in flight loses it, like real nets.
+            // hit while the message was in flight loses it, like real nets
+            // (both planes: a gossip frame lost here is gone for good).
             let linked = {
                 let state = self.lock();
-                Self::pair_linked(&state, &next.change.author_id, &next.peer)
+                Self::pair_linked(&state, &next.author, &next.peer)
             };
             if !linked {
                 self.dropped_deliveries.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
-            // `try_send`'s error carries the whole RowChange back; fold it
-            // into a small outcome here so the closure's Result stays thin
-            // (clippy result_large_err) — the payload is already cloned.
-            enum SendOutcome {
-                Delivered,
-                Backpressure,
-                SubscriberGone,
-            }
             let send_outcome = {
-                let state = self.lock();
-                state
-                    .docs
-                    .get(&next.namespace_id)
-                    .and_then(|doc| {
-                        doc.subscribers
-                            .iter()
-                            .find(|s| s.peer == next.peer && s.token == next.token)
-                            .map(|s| match s.tx.try_send(next.change.clone()) {
-                                Ok(()) => SendOutcome::Delivered,
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                    SendOutcome::Backpressure
-                                }
-                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                    SendOutcome::SubscriberGone
-                                }
-                            })
-                    })
-                    // No matching subscriber: its replica closed between
-                    // scheduling and delivery — the same shape as a closed
-                    // channel (expected, counted, never fatal).
-                    .unwrap_or(SendOutcome::SubscriberGone)
+                let mut state = self.lock();
+                let outcome = match &next.payload {
+                    Payload::Row {
+                        namespace_id,
+                        change,
+                    } => state
+                        .docs
+                        .get(namespace_id)
+                        .and_then(|doc| {
+                            doc.subscribers
+                                .iter()
+                                .find(|s| s.peer == next.peer && s.token == next.token)
+                                .map(|s| SendOutcome::of(s.tx.try_send(change.clone())))
+                        })
+                        // No matching subscriber: its replica closed between
+                        // scheduling and delivery — the same shape as a
+                        // closed channel (expected, counted, never fatal).
+                        .unwrap_or(SendOutcome::SubscriberGone),
+                    Payload::Gossip { topic, message } => state
+                        .topics
+                        .get(topic)
+                        .and_then(|members| {
+                            members
+                                .iter()
+                                .find(|m| m.peer == next.peer && m.token == next.token)
+                                .map(|m| SendOutcome::of(m.tx.try_send(message.clone())))
+                        })
+                        .unwrap_or(SendOutcome::SubscriberGone),
+                };
+                if matches!(outcome, SendOutcome::Delivered) {
+                    match &next.payload {
+                        Payload::Row {
+                            namespace_id,
+                            change,
+                        } => {
+                            state
+                                .delivered
+                                .entry(next.peer.clone())
+                                .or_default()
+                                .insert((
+                                    namespace_id.clone(),
+                                    format!("{}/{}", change.table, change.record_id),
+                                ));
+                        }
+                        Payload::Gossip { .. } => {
+                            self.gossip_deliveries.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                }
+                outcome
             };
             match send_outcome {
                 SendOutcome::Delivered => delivered += 1,
@@ -464,11 +663,44 @@ fn schedule_to_subscribers(
         state.inflight.push(Delivery {
             due_ms: now_ms.saturating_add(state.latency_ms),
             seq: state.seq,
+            author: author.to_string(),
             peer,
             token,
-            namespace_id: namespace_id.to_string(),
-            change: change.clone(),
+            payload: Payload::Row {
+                namespace_id: namespace_id.to_string(),
+                change: change.clone(),
+            },
         });
+    }
+}
+
+/// Every doc entry (all namespaces) in hub write order — the order a
+/// convergence replay re-schedules them in.
+fn entries_in_write_order(state: &NetState) -> Vec<(String, DocEntry)> {
+    let mut entries: Vec<(String, DocEntry)> = state
+        .docs
+        .iter()
+        .flat_map(|(ns, doc)| doc.entries.values().map(|e| (ns.clone(), e.clone())))
+        .collect();
+    entries.sort_by_key(|(_, e)| e.write_seq);
+    entries
+}
+
+/// One drain attempt's result. `try_send`'s error carries the payload back;
+/// folding it here keeps the drain loop thin (clippy result_large_err).
+enum SendOutcome {
+    Delivered,
+    Backpressure,
+    SubscriberGone,
+}
+
+impl SendOutcome {
+    fn of<T>(result: Result<(), tokio::sync::mpsc::error::TrySendError<T>>) -> Self {
+        match result {
+            Ok(()) => Self::Delivered,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Self::Backpressure,
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Self::SubscriberGone,
+        }
     }
 }
 
@@ -535,6 +767,60 @@ impl SimVerseReplicator {
             anyhow::bail!("SimVerseReplicator is closed");
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SimGossipTopic — one peer's membership on a virtual compute topic
+// ---------------------------------------------------------------------------
+
+/// A peer's membership on a hub gossip topic (F9/A21): the
+/// `VirtualGossipTopic` the sync thread's compute plane drives. Broadcasts
+/// carry the member's iroh `NodeId` as `from` (0-hop, so `direct`), which is
+/// what lets fe-sync's F23 sender-identity gate authenticate sim envelopes
+/// verbatim. Dropping the last handle leaves the topic.
+pub struct SimGossipTopic {
+    net: Arc<SimNet>,
+    topic: String,
+    peer: String,
+    node: iroh::NodeId,
+    token: u64,
+    inbound: Mutex<Option<tokio::sync::mpsc::Receiver<VirtualGossipMessage>>>,
+}
+
+impl SimGossipTopic {
+    /// Join `topic` as `peer` (DID — the hub's link key) / `node` (the
+    /// identity its frames are tagged with).
+    pub fn join(net: Arc<SimNet>, topic: &str, peer: &str, node: iroh::NodeId) -> Self {
+        let (rx, token) = net.join_topic(topic, peer);
+        Self {
+            net,
+            topic: topic.to_string(),
+            peer: peer.to_string(),
+            node,
+            token,
+            inbound: Mutex::new(Some(rx)),
+        }
+    }
+}
+
+impl VirtualGossipTopic for SimGossipTopic {
+    fn broadcast(&self, content: bytes::Bytes) -> Result<(), String> {
+        self.net
+            .gossip_broadcast(&self.topic, &self.peer, self.node, self.token, content)
+    }
+
+    fn take_inbound(&self) -> Option<tokio::sync::mpsc::Receiver<VirtualGossipMessage>> {
+        self.inbound
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+}
+
+impl Drop for SimGossipTopic {
+    fn drop(&mut self) {
+        self.net.leave_topic(&self.topic, &self.peer, self.token);
     }
 }
 
@@ -667,6 +953,22 @@ impl VirtualTransportFactory for SimTransportFactory {
 
     fn describe(&self) -> &'static str {
         "virtual (sim)"
+    }
+
+    /// The hub's gossip plane: the membership is the sync thread's own
+    /// identity (`local_did` for links, `local_node` for frame tagging).
+    fn join_gossip_topic(
+        &self,
+        topic_key: &str,
+        local_did: &str,
+        local_node: iroh::NodeId,
+    ) -> Option<Arc<dyn VirtualGossipTopic>> {
+        Some(Arc::new(SimGossipTopic::join(
+            self.net.clone(),
+            topic_key,
+            local_did,
+            local_node,
+        )))
     }
 }
 
@@ -895,5 +1197,200 @@ mod tests {
         let seen = f.beta_rx.try_recv().expect("n3 crosses to beta");
         assert_eq!(seen.record_id, "n3");
         assert_eq!(seen.author_id, "did:some-peer");
+    }
+
+    #[test]
+    fn convergence_replay_preserves_write_order() {
+        let mut f = fixture();
+        f.net.set_peer_online("did:beta", false);
+        // Ledger-before-row pairs, as fe-sync's write path publishes them: a
+        // replay that reorders them would make the receiver retain a row for
+        // a shard it does not yet know (over-retention).
+        let mut written = Vec::new();
+        for k in 0..16 {
+            for table in ["__shards", "iot_reading"] {
+                let id = format!("k{k}");
+                block_on(f.alpha.write_row(table, &id, &row(&id))).unwrap();
+                written.push(format!("{table}/{id}"));
+            }
+        }
+        f.net.set_peer_online("did:beta", true);
+        f.net.step();
+        let mut received = Vec::new();
+        while let Ok(change) = f.beta_rx.try_recv() {
+            received.push(format!("{}/{}", change.table, change.record_id));
+        }
+        assert_eq!(received, written, "the return replay walks hub write order");
+    }
+
+    #[test]
+    fn visible_entries_are_authored_plus_delivered() {
+        let f = fixture();
+        block_on(f.alpha.write_row("node", "n1", &row("n1"))).unwrap();
+        f.net.step();
+        f.net.set_peer_online("did:beta", false);
+        block_on(f.alpha.write_row("node", "n2", &row("n2"))).unwrap();
+        f.net.step();
+        assert_eq!(f.net.entry_count("node"), 2, "both writes are in the doc");
+        let ids = |peer: &str| {
+            let mut ids: Vec<String> = f
+                .net
+                .visible_entries(peer, "node")
+                .into_iter()
+                .map(|e| e.record_id)
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(
+            ids("did:alpha"),
+            vec!["n1", "n2"],
+            "authored rows are visible"
+        );
+        assert_eq!(
+            ids("did:beta"),
+            vec!["n1"],
+            "only the delivered row reached beta"
+        );
+    }
+
+    // --- Gossip plane (F9/A21) ------------------------------------------------
+
+    fn node(seed: u8) -> iroh::NodeId {
+        iroh::SecretKey::from_bytes(&[seed; 32]).public()
+    }
+
+    struct GossipFixture {
+        net: Arc<SimNet>,
+        alpha: Arc<dyn VirtualGossipTopic>,
+        beta: Arc<dyn VirtualGossipTopic>,
+        alpha_rx: tokio::sync::mpsc::Receiver<VirtualGossipMessage>,
+        beta_rx: tokio::sync::mpsc::Receiver<VirtualGossipMessage>,
+    }
+
+    /// Two members joined through the factory seam the sync thread uses.
+    fn gossip_fixture() -> GossipFixture {
+        let net = SimNet::new(SimClock::new(1_000_000));
+        let join = |did: &str, seed: u8| {
+            SimTransportFactory::new(net.clone())
+                .join_gossip_topic("verse-topic", did, node(seed))
+                .expect("the sim hub has a gossip plane")
+        };
+        let alpha = join("did:alpha", 1);
+        let beta = join("did:beta", 2);
+        let alpha_rx = alpha.take_inbound().expect("alpha inbound");
+        let beta_rx = beta.take_inbound().expect("beta inbound");
+        GossipFixture {
+            net,
+            alpha,
+            beta,
+            alpha_rx,
+            beta_rx,
+        }
+    }
+
+    fn frame(text: &'static str) -> bytes::Bytes {
+        bytes::Bytes::from_static(text.as_bytes())
+    }
+
+    #[test]
+    fn gossip_broadcast_reaches_every_member_including_the_publisher() {
+        let mut f = gossip_fixture();
+        f.alpha.broadcast(frame("req-1")).unwrap();
+        f.alpha.broadcast(frame("req-2")).unwrap();
+        assert_eq!(
+            f.net.step(),
+            4,
+            "two frames × two members (self-echo included)"
+        );
+        for rx in [&mut f.alpha_rx, &mut f.beta_rx] {
+            let first = rx.try_recv().expect("first frame");
+            assert_eq!(first.content.as_ref(), b"req-1");
+            assert_eq!(first.from, node(1), "tagged with the publisher's NodeId");
+            assert!(first.direct, "hub deliveries are 0-hop");
+            assert_eq!(rx.try_recv().expect("second").content.as_ref(), b"req-2");
+            assert!(rx.try_recv().is_err());
+        }
+        assert_eq!(f.net.gossip_deliveries(), 4);
+        assert!(
+            f.alpha.take_inbound().is_none(),
+            "the inbound stream is taken once"
+        );
+    }
+
+    #[test]
+    fn gossip_rides_the_scripted_latency() {
+        let mut f = gossip_fixture();
+        f.net.set_latency_ms(250);
+        f.beta.broadcast(frame("resp")).unwrap();
+        assert_eq!(f.net.next_due_ms(), Some(1_000_250));
+        f.net.clock().advance_ms(249);
+        assert_eq!(f.net.step(), 0, "not due yet");
+        f.net.clock().advance_ms(1);
+        assert_eq!(f.net.step(), 2);
+        assert_eq!(f.alpha_rx.try_recv().unwrap().from, node(2));
+    }
+
+    #[test]
+    fn gossip_has_no_history_for_offline_or_cut_members() {
+        let mut f = gossip_fixture();
+        // Offline at broadcast time: never scheduled, and never replayed.
+        f.net.set_peer_online("did:beta", false);
+        f.alpha.broadcast(frame("while-offline")).unwrap();
+        f.net.step();
+        assert!(
+            f.alpha_rx.try_recv().is_ok(),
+            "the publisher still self-echoes"
+        );
+        f.net.set_peer_online("did:beta", true);
+        f.net.step();
+        assert!(
+            f.beta_rx.try_recv().is_err(),
+            "a returning member never sees frames it missed (gossip has no history)"
+        );
+
+        // Cut while in flight: lost at drain, counted, and a heal does not
+        // resurrect it.
+        f.net.set_latency_ms(100);
+        f.alpha.broadcast(frame("in-flight")).unwrap();
+        f.net
+            .partition(vec![vec!["did:alpha".into()], vec!["did:beta".into()]]);
+        f.net.clock().advance_ms(100);
+        f.net.step();
+        f.net.heal();
+        f.net.clock().advance_ms(100);
+        f.net.step();
+        assert!(
+            f.beta_rx.try_recv().is_err(),
+            "the cut frame is gone for good"
+        );
+        assert_eq!(
+            f.alpha_rx.try_recv().unwrap().content.as_ref(),
+            b"in-flight"
+        );
+        assert_eq!(f.net.dropped_deliveries(), 1);
+    }
+
+    #[test]
+    fn dropping_a_topic_handle_leaves_the_membership() {
+        let GossipFixture {
+            net,
+            alpha,
+            beta,
+            mut alpha_rx,
+            ..
+        } = gossip_fixture();
+        drop(beta);
+        alpha.broadcast(frame("after-leave")).unwrap();
+        assert_eq!(net.step(), 1, "only the publisher's own membership remains");
+        assert_eq!(
+            alpha_rx.try_recv().unwrap().content.as_ref(),
+            b"after-leave"
+        );
+        assert_eq!(
+            net.dropped_deliveries(),
+            0,
+            "a departed member is not a loss"
+        );
     }
 }

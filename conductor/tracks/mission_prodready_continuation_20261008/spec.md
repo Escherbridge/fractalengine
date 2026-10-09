@@ -78,6 +78,27 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   (1e-9) either way, as defense against float-summation order effects — never
   as a mask for transport lossiness. Outcome recorded in plan.md when executed.
 
+- **DEC-C7 (2026-10-09)** — F9 sim control surface placement (A20): message
+  contract (`SimControlCommand/Call/Result` + sender alias) lives in
+  **fe-runtime** (sibling of `distributed_query.rs`, same seam pattern as
+  `ApiConfig.distributed_tx`) so fe-api gains zero new dependencies; the
+  backend is a new **`ScenarioSession`** in fe-sim (decomposes the monolithic
+  blocking `run_scenario` into start/step/inject-fault/stop/status, holding
+  the process-global `SCENARIO_RUN_LOCK` for the session lifetime and
+  rejecting a concurrent start with a clean error BEFORE touching the lock);
+  wiring is **relay-only behind a default-off `sim-control` cargo feature**
+  (`fractalengine-relay`), GUI stays `None` — a sim session sharing the
+  process-global HLC override with a live editing session is a correctness
+  hazard, and default builds keep D3's "no new prod-path deps" literally true
+  (fe-sim pulls in the test harness as a real dependency). Full design map:
+  `f9-sim-control-design.md` in this track.
+
+- **DEC-C8 (2026-10-09)** — M6 regions/sources: ESRI World Imagery as the new
+  keyless global imagery source (`license_type = "attribution"` — honest ToS
+  posture, unlike USGS public-domain); regions = Zurich/Alps (CH) + Mount Fuji
+  (JP), CI-scale bboxes, full-region builds documented as operator-run.
+  Map + rationale: `m6-gis-regions-design.md` in this track.
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

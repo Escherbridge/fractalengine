@@ -43,5 +43,7 @@ pub use status::{
 };
 pub use sync_thread::{spawn_sync_thread, spawn_sync_thread_with_transport};
 pub use verse_peers::VersePeers;
-pub use virtual_transport::{VirtualReplica, VirtualTransportFactory};
+pub use virtual_transport::{
+    VirtualGossipMessage, VirtualGossipTopic, VirtualReplica, VirtualTransportFactory,
+};
 pub use write_policy::PolicyHandle;

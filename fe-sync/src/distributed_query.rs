@@ -110,6 +110,39 @@ pub struct GossipIncoming {
     pub content: bytes::Bytes,
 }
 
+/// One verse compute-topic sender: the real iroh-gossip half, or the sim
+/// lab's virtual topic (F9/A21 — the gossip plane rides the same scripted
+/// hub as the doc plane, so prod and sim fan-out cannot drift). Both halves
+/// broadcast a frame and report failure as an honest reason string.
+#[derive(Clone)]
+pub enum TopicSender {
+    /// Real iroh-gossip topic sender (production / loopback harness).
+    Real(GossipSender),
+    /// Virtual sim-hub topic (no real network — A19/A21).
+    Virtual(Arc<dyn crate::virtual_transport::VirtualGossipTopic>),
+}
+
+impl std::fmt::Debug for TopicSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Real(_) => f.write_str("TopicSender::Real(..)"),
+            Self::Virtual(_) => f.write_str("TopicSender::Virtual(..)"),
+        }
+    }
+}
+
+impl TopicSender {
+    /// Broadcast one frame to the topic's members. Error strings are the
+    /// honest failure reason (wire rejection / closed topic) for the warn
+    /// log every call site already emits.
+    pub async fn broadcast(&self, payload: bytes::Bytes) -> Result<(), String> {
+        match self {
+            Self::Real(sender) => sender.broadcast(payload).await.map_err(|e| e.to_string()),
+            Self::Virtual(topic) => topic.broadcast(payload),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Planner (pure)
 // ---------------------------------------------------------------------------
@@ -699,7 +732,7 @@ struct CollectTask {
     request: fe_runtime::distributed_query::DistributedQueryRequest,
     reply: crossbeam::channel::Sender<DistributedQueryOutcome>,
     plan: DistributedPlan,
-    gossip_sender: Option<GossipSender>,
+    gossip_sender: Option<TopicSender>,
     inbox: tokio::sync::mpsc::Receiver<RoutedResponse>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
@@ -720,7 +753,7 @@ fn effective_row_cap(cap: usize) -> usize {
 pub fn submit_distributed_query(
     transport: &DistributedTransport,
     fabrics: &HashMap<String, VerseFabric>,
-    gossip_senders: &HashMap<String, GossipSender>,
+    gossip_senders: &HashMap<String, TopicSender>,
     call: DistributedQueryCall,
 ) {
     let request = &call.request;
@@ -1029,7 +1062,7 @@ pub mod drop_reason {
 pub fn handle_gossip_incoming(
     transport: &DistributedTransport,
     fabrics: &HashMap<String, VerseFabric>,
-    gossip_senders: &HashMap<String, GossipSender>,
+    gossip_senders: &HashMap<String, TopicSender>,
     incoming: GossipIncoming,
 ) -> GossipDisposition {
     let Some(envelope) = decode_envelope(&incoming.content) else {
@@ -1175,7 +1208,7 @@ pub fn handle_gossip_incoming(
 /// that this host had nothing (or was too slow) — never an error path here.
 async fn respond_to_compute_request(
     transport: DistributedTransport,
-    sender: GossipSender,
+    sender: TopicSender,
     request_id: String,
     spec: TsQueryKind,
     shards: Vec<PartialShard>,
@@ -2215,7 +2248,7 @@ mod tests {
     fn admission_setup() -> (
         DistributedTransport,
         HashMap<String, VerseFabric>,
-        HashMap<String, GossipSender>,
+        HashMap<String, TopicSender>,
         String,
     ) {
         let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);

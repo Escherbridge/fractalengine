@@ -128,13 +128,25 @@ fn print_outcome(outcome: &fe_sim::scenario::ScenarioOutcome) {
     for (peer, readings) in outcome.fingerprint() {
         println!("  peer '{peer}': {} reading(s)", readings.len());
     }
+    for query in &outcome.queries {
+        println!(
+            "  query '{}' on {}: {} row(s), {} covered / {} missing shard(s), missing hosts {:?}",
+            query.label,
+            query.peer,
+            query.outcome.rows.len(),
+            query.outcome.covered_shards.len(),
+            query.outcome.missing_shards.len(),
+            query.outcome.missing_hosts
+        );
+    }
     match serde_json::to_string_pretty(&serde_json::json!({
         "name": outcome.name,
         "ingested": outcome.ingested,
         "dropped_deliveries": outcome.dropped_deliveries,
+        "gossip_deliveries": outcome.gossip_deliveries,
         "endpoints_before": outcome.endpoints_before,
         "endpoints_after": outcome.endpoints_after,
-        "per_peer": outcome.fingerprint(),
+        "fingerprint": outcome.canonical_fingerprint(),
     })) {
         Ok(json) => println!("{json}"),
         Err(e) => eprintln!("(fingerprint not serializable: {e})"),
