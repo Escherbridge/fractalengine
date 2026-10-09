@@ -271,9 +271,12 @@ pub(super) fn apply_db_results(
             DbResult::ScopedApiTokensListed { tokens, total } => {
                 tokens::handle_scoped_api_tokens_listed(tokens, *total, &mut ui_mgr, &mut inspector)
             }
-            DbResult::QueryResult { data } => {
-                query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector)
-            }
+            // Correlated (API-originated) results belong to their API waiter
+            // only — they fall through to `try_deliver` below (M4 fix B2).
+            DbResult::QueryResult {
+                data,
+                correlation_id: None,
+            } => query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector),
             DbResult::Error(msg) => {
                 query::handle_error(msg, &mut gis_panel, &mut path_state, &mut inspector)
             }

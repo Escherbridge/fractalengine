@@ -237,6 +237,7 @@ fn poll_ledger<F: Fn(&serde_json::Value) -> bool>(
 /// READ-BACK readings straight from a peer's durable store.
 fn read_readings(peer: &TestPeer, where_clause: &str) -> Result<Vec<serde_json::Value>> {
     peer.send(DbCommand::RawQuery {
+        correlation_id: None,
         sql: format!("SELECT * FROM iot_reading{where_clause}"),
         vars: HashMap::new(),
     });
@@ -244,7 +245,7 @@ fn read_readings(peer: &TestPeer, where_clause: &str) -> Result<Vec<serde_json::
         |r| matches!(r, DbResult::QueryResult { .. }),
         Duration::from_secs(30),
     )? {
-        DbResult::QueryResult { data } => Ok(data),
+        DbResult::QueryResult { data, .. } => Ok(data),
         other => bail!("unexpected read-back result: {other:?}"),
     }
 }

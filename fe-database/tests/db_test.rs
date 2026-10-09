@@ -334,6 +334,7 @@ fn test_created_node_is_persisted_with_geometry() {
     vars.insert("nid".to_string(), serde_json::json!(node_id));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT node_id, position FROM node WHERE node_id = $nid".to_string(),
             vars,
         })
@@ -344,7 +345,7 @@ fn test_created_node_is_persisted_with_geometry() {
         .recv_timeout(Duration::from_secs(5))
         .expect("RawQuery result")
     {
-        DbResult::QueryResult { data } => {
+        DbResult::QueryResult { data, .. } => {
             assert_eq!(data.len(), 1, "created node must exist in DB, got {data:?}");
             assert!(
                 !data[0]["position"].is_null(),
@@ -369,6 +370,7 @@ fn test_legacy_node_create_and_delete_record_oplog() {
     vars.insert("nid".to_string(), serde_json::json!(node_id.clone()));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid".to_string(),
             vars,
         })
@@ -378,7 +380,7 @@ fn test_legacy_node_create_and_delete_record_oplog() {
         .recv_timeout(Duration::from_secs(5))
         .expect("CreateNode op-log query")
     {
-        DbResult::QueryResult { data } => assert!(
+        DbResult::QueryResult { data, .. } => assert!(
             data.iter().any(|row| row["op_type"] == "NodeCreated"),
             "CreateNode must persist NodeCreated before materialization, got {data:?}"
         ),
@@ -401,6 +403,7 @@ fn test_legacy_node_create_and_delete_record_oplog() {
     vars.insert("nid".to_string(), serde_json::json!(node_id));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid".to_string(),
             vars,
         })
@@ -410,7 +413,7 @@ fn test_legacy_node_create_and_delete_record_oplog() {
         .recv_timeout(Duration::from_secs(5))
         .expect("DeleteNode op-log query")
     {
-        DbResult::QueryResult { data } => assert!(
+        DbResult::QueryResult { data, .. } => assert!(
             data.iter().any(|row| row["op_type"] == "NodeDeleted"),
             "DeleteNode must persist NodeDeleted before materialization, got {data:?}"
         ),
@@ -493,6 +496,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
     vars.insert("nid".to_string(), serde_json::json!(root.clone()));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid AND op_type = 'NodeTombstoned'".to_string(),
             vars,
         })
@@ -502,7 +506,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
         .recv_timeout(Duration::from_secs(5))
         .expect("first cascade op-log query")
     {
-        DbResult::QueryResult { data } => assert_eq!(data.len(), 1),
+        DbResult::QueryResult { data, .. } => assert_eq!(data.len(), 1),
         other => panic!("expected QueryResult, got {other:?}"),
     }
 
@@ -510,6 +514,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
     vars.insert("nid".to_string(), serde_json::json!(root.clone()));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT tombstone FROM node WHERE node_id = $nid".to_string(),
             vars,
         })
@@ -519,7 +524,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
         .recv_timeout(Duration::from_secs(5))
         .expect("first cascade tombstone query")
     {
-        DbResult::QueryResult { data } => data
+        DbResult::QueryResult { data, .. } => data
             .first()
             .map(|row| row["tombstone"].clone())
             .expect("cascade root must retain its tombstone row"),
@@ -549,6 +554,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
     vars.insert("nid".to_string(), serde_json::json!(root.clone()));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT tombstone FROM node WHERE node_id = $nid".to_string(),
             vars,
         })
@@ -558,7 +564,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
         .recv_timeout(Duration::from_secs(5))
         .expect("repeat cascade tombstone query")
     {
-        DbResult::QueryResult { data } => assert_eq!(
+        DbResult::QueryResult { data, .. } => assert_eq!(
             data.first().map(|row| row["tombstone"].clone()),
             Some(tombstone_before_repeat),
             "an idempotent cascade must not rewrite the tombstone row"
@@ -570,6 +576,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
     vars.insert("nid".to_string(), serde_json::json!(root));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT op_type FROM op_log WHERE payload.node_id = $nid AND op_type = 'NodeTombstoned'".to_string(),
             vars,
         })
@@ -579,7 +586,7 @@ fn test_cascade_tombstone_emits_scoped_removal_for_each_node() {
         .recv_timeout(Duration::from_secs(5))
         .expect("repeat cascade op-log query")
     {
-        DbResult::QueryResult { data } => assert_eq!(
+        DbResult::QueryResult { data, .. } => assert_eq!(
             data.len(),
             1,
             "an idempotent cascade must not append another NodeTombstoned operation"
@@ -809,6 +816,7 @@ fn test_rename_entity_omits_node_scene_change() {
     vars.insert("pid".to_string(), serde_json::json!(petal_id));
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: "SELECT name FROM petal WHERE petal_id = $pid".to_string(),
             vars,
         })
@@ -818,7 +826,7 @@ fn test_rename_entity_omits_node_scene_change() {
         .recv_timeout(Duration::from_secs(5))
         .expect("RawQuery result")
     {
-        DbResult::QueryResult { data } => {
+        DbResult::QueryResult { data, .. } => {
             assert_eq!(
                 data.len(),
                 1,

@@ -7,6 +7,7 @@ pub(crate) fn submit(db_sender: &DbCommandSender, sql: String) {
     if db_sender
         .0
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql,
             vars: std::collections::HashMap::new(),
         })

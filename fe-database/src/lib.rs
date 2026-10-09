@@ -1260,7 +1260,14 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Delete field def failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::RawQuery { sql, vars }) => {
+                    Ok(DbCommand::RawQuery { sql, vars, correlation_id }) => {
+                        // Correlated (API) failures get their own echoed reply so a
+                        // timed-out caller's error can't land on another waiter;
+                        // GUI queries (`None`) keep the universal `Error`.
+                        let query_failed = |error: String| match &correlation_id {
+                            Some(id) => DbResult::QueryFailed { error, correlation_id: id.clone() },
+                            None => DbResult::Error(error),
+                        };
                         // Security: only allow single SELECT statements.
                         let sql_trimmed = sql.trim();
                         let sql_upper = sql_trimmed.to_uppercase();
@@ -1283,13 +1290,15 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                     false
                                 });
                         if blocked {
-                            send_result(&tx, DbResult::Error("only single SELECT statements are allowed".to_string()));
+                            send_result(&tx, query_failed("only single SELECT statements are allowed".to_string()));
                         } else {
                             let mut query_builder = db.query(&sql);
                             for (key, value) in &vars {
                                 query_builder = query_builder.bind((key.clone(), value.clone()));
                             }
-                            match query_builder.await {
+                            // `.check()`: a failed statement (incl. a DB-side `TIMEOUT`)
+                            // must never read as an empty-but-successful result.
+                            match query_builder.await.and_then(|r| r.check()) {
                                 Ok(mut response) => {
                                     let mut data = Vec::new();
                                     let num = response.num_statements();
@@ -1301,10 +1310,10 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                             Err(_) => break,
                                         }
                                     }
-                                    send_result(&tx, DbResult::QueryResult { data });
+                                    send_result(&tx, DbResult::QueryResult { data, correlation_id: correlation_id.clone() });
                                 }
                                 Err(e) => {
-                                    send_result(&tx, DbResult::Error(format!("query failed: {e}")));
+                                    send_result(&tx, query_failed(format!("query failed: {e}")));
                                 }
                             }
                         }

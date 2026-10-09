@@ -135,6 +135,17 @@ order:
   unmapped legacy routing and can never land on an API waiter).
   The fe-api fallback additionally checks the echoed id + `petal_id` and
   answers 502 on a mismatch rather than leak another caller's result.
+  **M4 fix B2 (2026-10-09):** `RawQuery` → `QueryResult` is correlated too.
+  The API channel fallback (`query_guard::run_guarded_query_via_state`, gis
+  `run_select`) sends a fresh ULID; the DB thread echoes it on `QueryResult`
+  and answers a correlated failure with `QueryFailed { error,
+  correlation_id }` (GUI queries send `None` and keep failing with `Error`,
+  so fe-ui's error routing is untouched). An UNCORRELATED reply now reaches
+  only an uncorrelated entry (`deliver_uncorrelated`) — before, a GUI
+  Query-tab `QueryResult` was handed to the oldest API waiter (a public
+  share redeemer could receive the desktop user's ad-hoc rows). fe-ui's
+  dispatcher consumes only `correlation_id: None` query results; correlated
+  ones flow solely to `try_deliver`.
 - **Known sharp edge (deliberately NOT changed — DEC-C13).** `Error` stays
   family-blind (oldest waiter of any family) and `deliver_to` keeps
   skip-closed: a late `Error` for a timed-out caller still lands on the next

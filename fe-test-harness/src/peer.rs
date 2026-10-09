@@ -775,7 +775,7 @@ impl TestPeer {
                             .ok();
                             db_result_tx.send(DbResult::NodeDeleted { node_id, petal_id }).ok();
                         }
-                        Ok(DbCommand::RawQuery { sql, vars }) => {
+                        Ok(DbCommand::RawQuery { sql, vars, correlation_id }) => {
                             let mut query_builder = db.query(&sql);
                             for (key, value) in &vars {
                                 query_builder = query_builder.bind((key.clone(), value.clone()));
@@ -801,7 +801,7 @@ impl TestPeer {
                                             Err(_) => break,
                                         }
                                     }
-                                    db_result_tx.send(DbResult::QueryResult { data }).ok();
+                                    db_result_tx.send(DbResult::QueryResult { data, correlation_id: correlation_id.clone() }).ok();
                                 }
                                 Err(e) => {
                                     db_result_tx.send(DbResult::Error(format!("query failed: {e}"))).ok();

@@ -35,10 +35,11 @@ surrealdb = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 # Share-token encoding (already in-tree via jsonwebtoken's dep graph)
 base64 = "0.22"
+# Strong ETag over export/share bodies (DEC-C18).
+blake3 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
-blake3 = { workspace = true }
 hex = "0.4"
 # Dev-dep cycle is legal cargo: the API-integration harness lives in the
 # harness crate's lib target (see fe-test-harness/src/AGENTS.md §api-harness).

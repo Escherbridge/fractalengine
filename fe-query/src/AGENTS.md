@@ -123,9 +123,13 @@ footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
   (spec-tolerated custom keys). The API layer (which owns the petal terrain
   origin) still overrides that string via `write_nodes_parquet_with_meta`,
   either stamping the real origin string or converting to lat/lon and only
-  then labeling EPSG:4326 (track Phase 5) — only the `fe:crs` value changes;
-  `crs` stays `null` either way. This closed the stock-DuckDB interop gap
-  (`enable_geoparquet_conversion` no longer needs to be disabled).
+  then labeling EPSG:4326 (track Phase 5). This closed the stock-DuckDB
+  interop gap (`enable_geoparquet_conversion` no longer needs to be disabled).
+  **M4 minor #7 (2026-10-09):** `GeoParquetMeta.lonlat_crs84 = true` (set by
+  fe-api for `coords=latlon` output) OMITS the `crs` key — GeoParquet 1.0
+  defines an absent `crs` as OGC:CRS84 (lon/lat), exactly the `[lon, lat,
+  ele]` order fe-api writes. Petal-local output keeps an explicit `crs: null`
+  (null ≠ absent: null = "unspecified").
 
 ## §timeseries (iot_spatial_reporting_20260714)
 

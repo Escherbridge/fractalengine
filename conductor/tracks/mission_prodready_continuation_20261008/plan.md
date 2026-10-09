@@ -68,7 +68,7 @@ its commit hash + evidence line appended here.
 
 ## M7 — Close-out
 
-- [ ] **F17** (A30) — README/ops docs rewrite (P2P status, relay ops surface incl. Windows SurrealKV note + process-lifetime secrets note, sim usage)
+- [x] **F17 LANDED @ `7b11c1a`** (A30) — root README P2P section rewritten (real stack; honest legacy-petal-mock residual kept), relay README ops surface (env table, process-lifetime verse secrets + workaround, Windows per-handle-lock note, sim-control double opt-in), new docs/simulation-lab.md, fe-sync §iroh-0.35 de-staled (heading + false gossip-drain claim corrected vs code). bi-egress.md cross-linked. Every claim source-verified; M4-blocker-dependent claims deliberately omitted pending the fix pass.
 - [ ] **F18** (A31) — conductor reconciliation: VALIDATED notes on absorbed tracks, new tracks (timeseries-fabric, simulation-lab, BI-verification), consolidation pointers from p2p track, tracks.md/roadmap.md refresh, THIS track retro + archive
 - [ ] **F19** (A32+A33) — full sweep: fmt, clippy -D warnings, workspace tests (RUST_MIN_STACK), harness scenarios, relay release build, git hygiene check
 

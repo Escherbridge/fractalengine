@@ -22,7 +22,15 @@ pub(crate) fn query_tracks(
     let (sql, vars) = gis::track_query(&petal_id);
     path_state.tracks_pending = true;
     path_state.last_error = None;
-    if db_sender.0.send(DbCommand::RawQuery { sql, vars }).is_err() {
+    if db_sender
+        .0
+        .send(DbCommand::RawQuery {
+            sql,
+            vars,
+            correlation_id: None,
+        })
+        .is_err()
+    {
         bevy::log::warn!("db_sender channel closed — Paths RawQuery not dispatched");
         path_state.tracks_pending = false;
         path_state.last_error = Some("DB channel closed".to_string());

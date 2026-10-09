@@ -31,6 +31,10 @@ pub struct GeoParquetMeta {
     pub crs: String,
     /// Geometry encoding format (GeoParquet 1.0 mandates `"WKB"`).
     pub encoding: String,
+    /// `true` = coordinates are WGS84 `[lon, lat, ele]`: the spec `crs` key is
+    /// OMITTED (absent = OGC:CRS84 per GeoParquet 1.0). `false` keeps
+    /// `crs: null` ("unspecified" — petal-local meters, DEC-C16).
+    pub lonlat_crs84: bool,
 }
 
 impl Default for GeoParquetMeta {
@@ -39,6 +43,7 @@ impl Default for GeoParquetMeta {
             primary_geometry_column: DEFAULT_GEOMETRY_COLUMN.into(),
             crs: "PETAL-LOCAL:meters;origin=unset".into(),
             encoding: "WKB".into(),
+            lonlat_crs84: false,
         }
     }
 }
@@ -46,22 +51,22 @@ impl Default for GeoParquetMeta {
 impl GeoParquetMeta {
     /// Render the GeoParquet 1.0 `geo` file-metadata JSON document.
     ///
-    /// DEC-C16: `crs` is always spec-legal `null` (petal-local frames have no
-    /// PROJJSON CRS; `null` means "unspecified" and claims nothing — unlike a
-    /// silent EPSG:4326 default would). The honest free-text label still lives
-    /// in `fe:crs`, a spec-tolerated custom key alongside `crs`.
+    /// DEC-C16: petal-local frames get spec-legal `crs: null` ("unspecified" —
+    /// never a silent EPSG:4326 claim); WGS84 lon/lat output omits `crs`
+    /// (= OGC:CRS84, M4 minor #7). The free-text label always lives in `fe:crs`.
     pub fn geo_metadata_json(&self) -> Result<String> {
+        let mut column = serde_json::json!({
+            "encoding": self.encoding,
+            "geometry_types": ["Point Z"],
+            "fe:crs": self.crs,
+        });
+        if !self.lonlat_crs84 {
+            column["crs"] = serde_json::Value::Null;
+        }
         let doc = serde_json::json!({
             "version": "1.0.0",
             "primary_column": self.primary_geometry_column,
-            "columns": {
-                &self.primary_geometry_column: {
-                    "encoding": self.encoding,
-                    "geometry_types": ["Point Z"],
-                    "crs": serde_json::Value::Null,
-                    "fe:crs": self.crs,
-                }
-            }
+            "columns": { &self.primary_geometry_column: column }
         });
         serde_json::to_string(&doc).context("serializing geo metadata")
     }
@@ -400,5 +405,27 @@ mod tests {
             .unwrap()
             .contains("origin=47.6062,-122.3321,56.0"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// M4 minor #7: `crs` ABSENT means OGC:CRS84 (lon/lat) — only latlon
+    /// output may omit it; petal-local output must keep an explicit null.
+    #[test]
+    fn crs_key_absent_only_for_lonlat_output() {
+        let column = |meta: &GeoParquetMeta| -> serde_json::Value {
+            let geo: serde_json::Value =
+                serde_json::from_str(&meta.geo_metadata_json().unwrap()).unwrap();
+            geo["columns"]["position"].clone()
+        };
+        let local = column(&GeoParquetMeta::default());
+        assert!(local.as_object().unwrap().contains_key("crs"));
+        assert!(local["crs"].is_null());
+
+        let lonlat = column(&GeoParquetMeta {
+            crs: "EPSG:4326".into(),
+            lonlat_crs84: true,
+            ..Default::default()
+        });
+        assert!(!lonlat.as_object().unwrap().contains_key("crs"));
+        assert_eq!(lonlat["fe:crs"], "EPSG:4326");
     }
 }

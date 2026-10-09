@@ -287,18 +287,88 @@ whole-word keyword bans + all-occurrence target checks in
 string literals reject the query.
 
 `src/query_guard.rs` is the single guard pipeline for every read-only SQL
-egress path: `/api/v1/query`, both export routes, and shared-URL redemption.
-It was factored **verbatim** out of `rest.rs::execute_query` (error strings
-preserved) so new egress handlers cannot bypass a guard by construction:
-`guard_and_prepare_query` = rate limit (1s sliding window, keyed string) →
-`validate_select_sql` (semicolon reject, SELECT-only, keyword blocklist,
-table whitelist) → `build_scope_filter`/`inject_scope_filter` (petal-scoped
-tokens get `petal_id = '…'` injected into node-table queries). Execution goes
-through `run_guarded_query`, which owns the pre-existing **5s statement
-timeout** (do NOT add another) and the FR-4 **row cap**. The row-cap policy is
-**error, not truncate**: exceeding it returns `row cap exceeded (limit N rows…)`
-so a BI tool never silently sees partial data. `enforce_byte_ceiling` guards
-serialized response size the same way.
+egress path: `/api/v1/query` (+ MCP `query`), both export routes, and
+shared-URL redemption, so new egress handlers cannot bypass a guard by
+construction. Error strings of the original checks are preserved.
+
+**M4 fix B1 (2026-10-09) — row scoping is FROM-substitution, not a
+string append.** The old `inject_scope_filter` appended `WHERE/AND petal_id
+= '…'` only when the text contained the exact substring `FROM NODE` (single
+space) — the M4 review broke it four ways (double space/tab/newline → no
+injection; `WHERE true OR true` → OR binds looser than the appended AND;
+trailing `--` swallowed the appended clause; a projection subquery `(SELECT
+* FROM iot_reading)` was never filtered) — and verse/fractal-scoped tokens
+got NO filter at all. It is gone. `prepare_scoped_sql(sql, petals, mode)`:
+
+1. (Egress/Export modes) reject comment tokens `--` `#` `//` `/*` anywhere;
+2. `normalize_whitespace` (runs collapsed outside strings/comments — cosmetic;
+   no guard decision depends on it);
+3. `validate_select_sql` — semicolon, SELECT-only, keyword blocklist, and the
+   table whitelist over `from_clause_targets`, which now also rejects any FROM
+   target that is not a bare identifier followed by a clause keyword / `,` /
+   `)` / end. SurrealQL parses the FROM target as an EXPRESSION
+   (`parse_expr_table`), so `FROM verse AND role` read `role` past the
+   whitelist, as did `FROM (role)` (paren must open a SELECT) and `FROM
+   (SELECT …) AND role` (string-aware paren matcher, fail-closed on comments);
+4. scoped-dialect bans: escaped identifiers (`` ` `` / `⟨⟩`), record/table
+   constructors (`type::thing|record|table`, `record::`, `<record>`), `r"…"`
+   record strings — every way to name a record without its table name;
+5. **every** whole-word `node` / `iot_reading` in the text must be a FROM
+   target (lexer-free: strings and comments count — fail-closed, so
+   `WHERE name = 'node'` is a false-positive rejection; record literals like
+   `node:x.*` die here);
+6. Egress/Export: exactly one SELECT and one FROM table (no nesting);
+7. rewrite each `node`/`iot_reading` target to
+   `(SELECT * FROM node WHERE <filter>)`; Export also forces the projection
+   to `*`.
+
+*Soundness (why OR/whitespace/comment tricks cannot widen it):* the user's
+statement can only read the petal table through the substituted subquery,
+whose text is entirely server-built: `<filter>` is `petal_id = 'P'`,
+`petal_id IN ['P1', …]`, or `false`, with ids restricted to
+`[A-Za-z0-9_-]` (unsafe ids are dropped, never escaped). The inserted
+segment has an even number of quotes, all AFTER the contiguous
+`FROM node WHERE` tokens, and no comment/backtick/bracket characters — so
+whatever lexer state the user's preceding text leaves, either the whole
+`FROM node WHERE petal_id …` sequence is live SQL (filtered) or the `node`
+token is inside a string/comment (inert). User predicates, `OR`, `LIMIT`,
+projections and subqueries all sit OUTSIDE the parens and only ever see
+already-scoped rows. Trade-off: the outer WHERE/LIMIT no longer push down —
+the inner subquery materializes the petal's rows (bounded by TIMEOUT +
+row cap).
+
+*Scope → allow-list (FIX 1(c)) — `resolve_scope_petals`:* petal scope →
+`[petal]`; fractal scope → petals whose `fractal_id` is that fractal AND the
+fractal belongs to the scope's verse; verse scope → petals under any fractal
+of that verse (`petal.fractal_id` → `fractal.verse_id`; `node`/`iot_reading`
+carry only `petal_id`, so this is resolved first and inlined as an IN-list —
+one extra fixed-shape query, skipped entirely when the SQL reads no
+petal-scoped table); unparseable scope → `[]` (deny all). Petals with no
+`fractal_id` belong to no verse and are denied.
+
+*Modes:* `Query` (`/query`, MCP): comments + scoped subqueries allowed (each
+FROM is rewritten). `Egress` (json share): flat single SELECT, no comments.
+`Export` (parquet/csv export + share): `Egress` + `*` projection.
+
+*Known limitation (trigger to revisit: any petal-private data landing in
+another table):* only `node` and `iot_reading` are row-scoped. `petal`,
+`room`, `model`, `crate_registry` also carry `petal_id` but have never been
+filtered on `/query` (pre-existing; not in M4's surface); `node_log` has only
+`node_id`. Function namespaces outside the banned constructors (e.g. a
+future `fn::`/`api::`) are not enumerated.
+
+Execution goes through `run_guarded_query` / `run_guarded_query_via_state`:
+**M4 fix M2** appends `\nTIMEOUT 5s` to every guarded statement (the newline
+ends a trailing Query-mode line comment that would otherwise swallow it) so
+the DB aborts a heavy query and frees its thread; a 6s client timer is only a
+backstop. Statement errors are surfaced via `Response::check()` — a failed or
+timed-out statement no longer reads as an empty success. The FR-4 **row cap**
+policy is **error, not truncate** (`row cap exceeded (limit N rows…)`);
+`enforce_byte_ceiling` guards serialized size the same way. The channel
+fallback is CORRELATED (M4 fix B2 — fe-runtime src/AGENTS.md
+§api-reply-correlation): it sends a fresh `correlation_id`, accepts only
+`QueryResult`/`QueryFailed` echoing it, and treats anything else as an error,
+never as its rows.
 
 `src/limits.rs` holds every cost knob as a named constant (plan D4):
 `/query` 10 000 rows / 8 MiB; exports 500 000 rows / 128 MiB; rate limits
@@ -310,14 +380,25 @@ default 1h / max 24h. Change limits there, nowhere else.
 `src/export.rs` — `GET /api/v1/petals/:petal_id/export.parquet|export.csv`
 (`?query=<urlencoded SELECT>&coords=local|latlon`), the FR-2 BI egress. Flow:
 Viewer+ role → valid ULID → petal scope coverage (`resolve_petal_scope`,
-deny-by-default, real HTTP statuses per the §assets precedent) → shared guard
-pipeline (UNCHANGED by F11 — `validate_select_sql` → scope injection →
-`run_guarded_query` → row cap/byte ceiling, exactly as `/query`) → **forced
-petal pre-filter** (`petal_id = :path_petal` injected regardless of the query
-text — FR-6 export pre-filtering) → rows mapped to a table-specific shape →
-fe-query's GeoParquet writer (`write_nodes_parquet_bytes` /
-`write_readings_parquet_bytes`, both in-memory; no temp files) or local CSV
-serialization.
+deny-by-default, real HTTP statuses per the §assets precedent) →
+`prepare_scoped_sql(sql, [path_petal], GuardMode::Export)` (§query-guard:
+the path petal is substituted into the FROM source — FR-6 — and the
+projection forced to `*`) → `run_guarded_query_via_state` (TIMEOUT 5s, row
+cap) → **row-level post-filter** (M4 fix B1(a), 2026-10-09): every row whose
+own `petal_id` is not the authorized petal is dropped and counted
+(a `warn!` with the count when non-zero — it can only fire if the source rewrite were bypassed) — an
+egress-point re-check independent of the SQL rewrite; the forced `*`
+projection guarantees the real `petal_id` column is present, and aliasing
+(`'P' AS petal_id`) is impossible because the projection is discarded →
+rows mapped to a table-specific shape → fe-query's GeoParquet writer
+(`write_nodes_parquet_bytes` / `write_readings_parquet_bytes`, both
+in-memory; no temp files) or local CSV serialization.
+
+- **Export dialect (M4 fix B1(b)).** Export/share SQL must be ONE flat
+  SELECT over ONE table: comment tokens (`--`, `#`, `//`, `/*`) anywhere —
+  string literals included, so `'https://…'` is rejected — nested SELECTs and
+  comma FROM-lists are 400s, at mint time and again at redemption (old
+  tokens carrying such SQL now fail with 400).
 
 - Export queries target **NODE or IOT_READING only** (400 otherwise, message
   shared with §share's mint-time check via `export::classify_export_table`):
@@ -333,8 +414,10 @@ serialization.
   $pid AND node_id IN $ids` (bound, not string-interpolated — the ids are
   server-derived ULIDs, not caller SQL, so it bypasses `validate_select_sql`
   but still rides `run_guarded_query` for the same timeout/row-cap/error
-  shape). This is Rust-side batching, never an N+1 per-row subquery. A reading
-  whose anchor no longer resolves (hard-deleted node, not merely tombstoned —
+  shape). This is Rust-side batching, never an N+1 per-row subquery (distinct
+  ids via a `HashSet`, M4 minor #5). A reading
+  whose anchor no longer resolves (hard-deleted node, or a row without a
+  readable `position` — M4 minor #6: never defaulted to 0.0; not merely tombstoned —
   the join does NOT filter by `tombstone`, so a reading anchored to a
   tombstoned-but-still-present node keeps its last known position) maps to
   `anchor_position: None`, which the parquet writer encodes as a **null**
@@ -356,7 +439,9 @@ serialization.
   thread's writer connection is alive, so every export/share request used
   to 503 with `"export endpoint not available (no db_reader)"` — A22's
   e2e could not pass without this fix. The channel path re-applies the
-  same row cap as the direct path; `RawQuery`'s own SELECT-only guard rail
+  same TIMEOUT + row cap as the direct path and is correlated (M4 fix B2 —
+  before it, a timed-out caller's late rows or a GUI Query-tab result could
+  be handed to the next public share redeemer); `RawQuery`'s own SELECT-only guard rail
   (`fe-database/src/lib.rs`) re-validates independently as defense in
   depth. `/api/v1/query` (`rest.rs::execute_query`) and the `fmt=json`
   branch of share redemption still require `db_reader` directly and were
@@ -376,6 +461,20 @@ serialization.
   full `200` body, which RFC 7233 permits). Bodies are already fully
   buffered `Vec<u8>` (capped at `EXPORT_MAX_BYTES`), so the slice is free.
   Covered by `export.rs`'s `body_response_*` / `range_*` unit tests.
+  `bytes=-0` (empty suffix) is also 416 (M4 minor #10).
+- **Validators + caching (DEC-C18, M4 fix M1, 2026-10-09).** A22's
+  "immutable cache" expectation is amended: export/share bodies are LIVE
+  query output, so they carry `Cache-Control: private, no-store` (json share
+  responses too) — `immutable` stays on the content-addressed assets route
+  only. Every body (200, 206, 416) carries a strong `ETag` = quoted blake3
+  hex of the exact full body. `If-Range` is honored: a validator equal to the
+  current ETag serves the range (206); anything else (stale ETag, an
+  HTTP-date — we send no `Last-Modified`) downgrades to the full 200, so a
+  reader re-fetching ranges across a live write gets a consistent whole body
+  instead of stitched slices of two result sets. Tests:
+  `etag_is_strong_stable_and_body_derived`,
+  `if_range_match_serves_range_mismatch_serves_full_body`,
+  `export_etag_and_if_range_round_trip`.
 - CSV is RFC-4180 with a leading `# crs=<label>` comment line (documented
   choice: comment line + `X-FE-CRS` header; a sidecar column would bloat every
   row) and **properties as one JSON-string column** (flattening arbitrary keys
@@ -387,7 +486,10 @@ serialization.
   (never in fe-query/fe-database); position becomes `[lon, lat, ele]`
   (GeoParquet EPSG:4326 axis order) / `lon,lat,ele_m` CSV columns — applied to
   the anchor position on the readings path too. 400 when the petal has no
-  terrain origin. Precision note: parquet positions pass through
+  terrain origin. The GeoParquet `geo` metadata OMITS the spec `crs` key for
+  latlon output (absent = OGC:CRS84, exactly our lon/lat order — M4 minor
+  #7) while petal-local output keeps `crs: null` (DEC-C16); `fe:crs` carries
+  the label in both. Precision note: parquet positions pass through
   `EntitySnapshot`'s `f32` (≈1 m at mid-latitudes) — acceptable v1, revisit if
   survey-grade egress is needed.
 - Status mapping: 400 bad query/coords/table, 403 role/scope, 404 unknown
@@ -418,22 +520,36 @@ HMAC because the identity stack is already ed25519 — no new secret type).
   `/query` envelope (incl. `crs`); `fmt=parquet|csv` reuses the §export
   pipeline and therefore requires a petal-scoped ceiling (400 otherwise —
   enforced at mint too).
-- **Key lifetime — CLOSED (A24, DEC-C9).** `ApiState.share_signer` is a
-  required `ApiConfig` field (`fe-api/src/lib.rs`), not a per-process
-  `generate()`. Both binaries construct it via
-  `fe_identity::load_or_generate_keypair(&secret_store, "share_signer")`
-  before calling `spawn_api_thread` — `fractalengine/src/main.rs` (GUI:
-  `OsKeystoreBackend`) and `fractalengine-relay/src/main.rs` (relay:
-  `EnvBackend`, slot `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`, same
-  operator-must-export-every-launch caveat as the relay's node keypair —
-  `fractalengine-relay/README.md` §Secret injection). **Deliberately a
-  dedicated slot, not derived from the node identity seed**: share-URL
-  signing is a different capability domain from node identity — independent
-  rotation, and a leaked share-signing key must never double as node
-  impersonation. `ApiHarness` (fe-test-harness) keeps its old default (same
-  keypair as token signing, for every pre-existing test) but exposes
-  `spawn_with_share_signer(Arc<NodeKeypair>)` so a persistence test can share
-  one key across two harness instances to simulate a restart.
+- **Key lifetime (A24, DEC-C9) — restated honestly 2026-10-09 (M4 fix M3).**
+  `ApiState.share_signer` is a required `ApiConfig` field
+  (`fe-api/src/lib.rs`); both binaries build it with
+  `fe_identity::load_or_generate_keypair(&secret_store, "share_signer")`.
+  What that actually guarantees differs per binary:
+  - **GUI** (`fractalengine/src/main.rs`, `OsKeystoreBackend`): the generated
+    seed is written to the OS keystore — share links survive restarts.
+  - **Relay** (`fractalengine-relay/src/main.rs`, `EnvBackend`, slot
+    `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`): links survive a restart ONLY if
+    the operator exports that 64-hex seed. `EnvBackend::set` stores
+    in-process only, so when the var is unset the relay silently generated
+    an ephemeral key (the "could not load/store" fallback arm never fires).
+    The relay now `warn!`s at startup when the var is absent: every link it
+    mints will 401 after a restart. Pinned by fe-identity
+    `env_backend_share_signer_round_trips_across_restarts` (two fresh
+    `EnvBackend`s load the same key from the var; without it, two different
+    ephemeral keys). The earlier F11 "persistence" test shared one
+    `Arc<NodeKeypair>` between two harnesses — it proves verify-with-same-key,
+    not persistence.
+  **Deliberately a dedicated slot, not derived from the node identity seed**:
+  share-URL signing is a different capability domain — independent rotation,
+  and a leaked share-signing key must never double as node impersonation.
+  `ApiHarness` (fe-test-harness) now defaults to a DISTINCT generated
+  keypair (DEC-C9 separation holds in tests too); `spawn_with_share_signer`
+  lets a test share one key across two harness instances.
+- **Caching:** json redemptions also send `Cache-Control: private, no-store`
+  (DEC-C18); parquet/csv redemptions inherit §export's ETag/If-Range.
+- **Windows (no `db_reader`):** `fmt=parquet|csv` redemptions work through the
+  correlated channel fallback; `fmt=json` (like `/api/v1/query`) still
+  answers 503 `shared query not available (no db_reader)` — unchanged.
 
 ## §crs
 
@@ -555,8 +671,9 @@ future work). Design notes:
   wording to the direct path (parity pinned by a fe-database test), and only
   DB failures degrade to the generic `DbResult::Error` → 502.
 - **Egress seam (FR-5) — CLOSED (A23, F11)**: `iot_reading` is whitelisted in
-  `query_guard::ALLOWED_TABLES` and `inject_scope_filter` injects the petal
-  filter on `FROM iot_reading` (rows carry a denormalized `petal_id`), so
+  `query_guard::ALLOWED_TABLES` and `prepare_scoped_sql` substitutes the
+  petal filter into every `FROM iot_reading` source (rows carry a
+  denormalized `petal_id`; M4 fix B1 replaced the old `inject_scope_filter`), so
   `/api/v1/query` + shared-URL redemption serve IoT rows scope-guarded.
   Reading-shaped `export.parquet`/`export.csv` (flat reading rows + the
   anchor-position batched join) now ships too — see §export.

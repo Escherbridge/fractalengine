@@ -512,6 +512,10 @@ pub enum DbCommand {
     RawQuery {
         sql: String,
         vars: std::collections::HashMap<String, serde_json::Value>,
+        /// API-originated queries carry a fresh id the DB thread echoes on
+        /// `QueryResult`/`QueryFailed`; GUI queries send `None`
+        /// (fe-runtime src/AGENTS.md §api-reply-correlation).
+        correlation_id: Option<String>,
     },
     /// Execute a distributed-query local partial (M2/F7 — A15).
     ///
@@ -851,6 +855,14 @@ pub enum DbResult {
     /// Result of `RawQuery`.
     QueryResult {
         data: Vec<serde_json::Value>,
+        /// Echoes `RawQuery.correlation_id` (`None` = GUI-originated).
+        correlation_id: Option<String>,
+    },
+    /// Failure of a CORRELATED (API-originated) `RawQuery`. GUI queries
+    /// (`correlation_id: None`) keep failing with `DbResult::Error`.
+    QueryFailed {
+        error: String,
+        correlation_id: String,
     },
     /// Result of `InsertIotReadings` — how many rows the batch wrote.
     IotReadingsInserted {

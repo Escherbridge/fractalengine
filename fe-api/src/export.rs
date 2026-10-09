@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::auth::{require_role, require_scope};
 use crate::crs::{resolve_petal_crs, CRS_EPSG_4326};
 use crate::limits;
-use crate::query_guard;
+use crate::query_guard::{self, GuardMode};
 use crate::server::ApiState;
 use crate::types::is_valid_ulid;
 
@@ -49,7 +49,7 @@ fn err(status: StatusCode, msg: &str) -> Response {
 fn query_err_response(e: String) -> Response {
     if e.starts_with("row cap exceeded") {
         err(StatusCode::PAYLOAD_TOO_LARGE, &e)
-    } else if e.contains("timed out") {
+    } else if query_guard::is_timeout_error(&e) {
         err(StatusCode::GATEWAY_TIMEOUT, &e)
     } else if e.starts_with("rate limit exceeded") {
         err(StatusCode::TOO_MANY_REQUESTS, &e)
@@ -102,11 +102,10 @@ pub(crate) enum ExportShape {
     IotReading,
 }
 
-/// Classify the query's FROM target as NODE or IOT_READING (400 otherwise).
-/// The guard pipeline itself (keyword/whitelist/scope) is unchanged — this is
-/// strictly about which row mapper the export/share path uses.
-pub(crate) fn classify_export_table(sql_upper: &str) -> Result<ExportShape, Response> {
-    match query_guard::from_table(sql_upper).as_deref() {
+/// Classify the (single, `GuardMode::Export`-validated) FROM table as NODE or
+/// IOT_READING (400 otherwise) — strictly which row mapper the export uses.
+pub(crate) fn classify_export_table(tables: &[String]) -> Result<ExportShape, Response> {
+    match tables.first().map(String::as_str) {
         Some("NODE") => Ok(ExportShape::Node),
         Some("IOT_READING") => Ok(ExportShape::IotReading),
         _ => Err(err(
@@ -129,9 +128,10 @@ pub(crate) struct ExportOutput {
     pub coords: Coords,
 }
 
-/// Guarded export pipeline shared with share-URL redemption: same static
-/// validation as `/query`, node/iot_reading only, forced petal pre-filter, 5s
-/// timeout, export row cap, CRS resolution + optional lat/lon conversion.
+/// Guarded export pipeline shared with share-URL redemption: Export-dialect
+/// validation (no comments / nesting, projection forced to `*`), node or
+/// iot_reading only, source-substituted petal filter, DB-side TIMEOUT, export
+/// row cap, row-level petal re-check, CRS resolution + optional lat/lon.
 pub(crate) async fn prepare_export(
     state: &ApiState,
     rate_key: &str,
@@ -149,25 +149,40 @@ pub(crate) async fn prepare_export(
     {
         return Err(err(StatusCode::TOO_MANY_REQUESTS, &e));
     }
-    if let Err(e) = query_guard::validate_select_sql(sql) {
-        return Err(err(StatusCode::BAD_REQUEST, &e));
-    }
+    // FR-6 / M4 fix B1: the petal filter is substituted INTO the FROM source,
+    // so no query text can widen it (AGENTS.md §query-guard).
+    let prepared =
+        match query_guard::prepare_scoped_sql(sql, &[petal_id.to_string()], GuardMode::Export) {
+            Ok(p) => p,
+            Err(e) => return Err(err(StatusCode::BAD_REQUEST, &e)),
+        };
     // Exports map rows onto the node/EntitySnapshot or reading/ReadingSnapshot
     // shape — every other table is /query territory.
-    let upper = sql.trim().to_uppercase();
-    let shape = classify_export_table(&upper)?;
-
-    // FR-6: pre-filter to the authorized petal regardless of the query text.
-    let filter = format!("petal_id = '{}'", petal_id.replace('\'', ""));
-    let guarded = query_guard::GuardedQuery {
-        sql: query_guard::inject_scope_filter(sql.trim(), &filter),
-    };
+    let shape = classify_export_table(&prepared.tables)?;
+    let guarded = query_guard::GuardedQuery { sql: prepared.sql };
 
     let vars = std::collections::HashMap::new();
     let rows =
         query_guard::run_guarded_query_via_state(state, &guarded, &vars, limits::EXPORT_ROW_CAP)
             .await
             .map_err(query_err_response)?;
+
+    // Egress-point re-check, independent of the SQL rewrite: a row leaves
+    // only if its own `petal_id` IS the authorized petal (`*` projection
+    // guarantees the real column is present).
+    let before = rows.len();
+    let rows: Vec<serde_json::Value> = rows
+        .into_iter()
+        .filter(|r| r.get("petal_id").and_then(serde_json::Value::as_str) == Some(petal_id))
+        .collect();
+    let dropped_foreign_rows = before - rows.len();
+    if dropped_foreign_rows > 0 {
+        tracing::warn!(
+            petal_id,
+            dropped_foreign_rows,
+            "export post-filter dropped rows outside the authorized petal"
+        );
+    }
 
     // FR-5: resolve the petal CRS; latlon requires a configured terrain origin.
     let crs = resolve_petal_crs(state, petal_id).await;
@@ -195,14 +210,12 @@ pub(crate) async fn prepare_export(
             // distinct anchor node_ids this page of readings touches, then
             // resolve their positions in ONE second guarded query — see
             // `fetch_anchor_positions` + AGENTS.md §export.
-            let mut node_ids: Vec<&str> = Vec::new();
-            for r in &rows {
-                if let Some(id) = r["node_id"].as_str() {
-                    if !node_ids.contains(&id) {
-                        node_ids.push(id);
-                    }
-                }
-            }
+            let mut seen = std::collections::HashSet::new();
+            let node_ids: Vec<&str> = rows
+                .iter()
+                .filter_map(|r| r["node_id"].as_str())
+                .filter(|id| seen.insert(*id))
+                .collect();
             let anchors = fetch_anchor_positions(state, petal_id, &node_ids).await?;
             ExportRows::Readings(
                 rows.iter()
@@ -225,8 +238,10 @@ pub(crate) async fn prepare_export(
 /// Resolve anchor-node positions for a batch of `node_id`s, scoped to
 /// `petal_id`, in a single guarded query (fixed shape, server-built — not
 /// user SQL, so it is bound via `$pid`/`$ids` rather than re-run through
-/// `validate_select_sql`). Missing anchors (hard-deleted nodes) are simply
-/// absent from the map; `reading_row_to_snapshot` maps that to `None`.
+/// `validate_select_sql`). Missing anchors (hard-deleted nodes) and rows
+/// without a readable position are absent from the map, so
+/// `reading_row_to_snapshot` emits a null geometry — never a fabricated 0.0.
+/// Tombstoned anchors are NOT filtered: they still export their last position.
 async fn fetch_anchor_positions(
     state: &ApiState,
     petal_id: &str,
@@ -252,8 +267,10 @@ async fn fetch_anchor_positions(
             continue;
         };
         let coords = &row["position"]["coordinates"];
-        let x = coords[0].as_f64().unwrap_or(0.0);
-        let z = coords[1].as_f64().unwrap_or(0.0);
+        let (Some(x), Some(z)) = (coords[0].as_f64(), coords[1].as_f64()) else {
+            continue;
+        };
+        // `elevation` is `TYPE float DEFAULT 0.0` in the schema: absent = 0.0.
         let y = row["elevation"].as_f64().unwrap_or(0.0);
         map.insert(node_id.to_string(), (x, y, z));
     }
@@ -283,7 +300,7 @@ pub async fn export_parquet(
         Ok(o) => o,
         Err(resp) => return resp,
     };
-    parquet_response(&out, &format!("{petal_id}.parquet"), range_header(&headers))
+    parquet_response(&out, &format!("{petal_id}.parquet"), &headers)
 }
 
 /// GET /api/v1/petals/:petal_id/export.csv?query=...&coords=local|latlon
@@ -309,23 +326,36 @@ pub async fn export_csv(
         Ok(o) => o,
         Err(resp) => return resp,
     };
-    csv_response(&out, &format!("{petal_id}.csv"), range_header(&headers))
+    csv_response(&out, &format!("{petal_id}.csv"), &headers)
 }
 
-/// Extract the raw `Range` header value, if present (passed through to
-/// `body_response` — see DEC-C10 in `fe-api/AGENTS.md` §export).
-fn range_header(headers: &HeaderMap) -> Option<&str> {
-    headers.get(header::RANGE).and_then(|v| v.to_str().ok())
+/// The conditional-range request headers `body_response` honors (DEC-C10/C18).
+struct RangeRequest<'a> {
+    range: Option<&'a str>,
+    if_range: Option<&'a str>,
+}
+
+impl<'a> RangeRequest<'a> {
+    fn from_headers(headers: &'a HeaderMap) -> Self {
+        let get = |name| headers.get(name).and_then(|v| v.to_str().ok());
+        Self {
+            range: get(header::RANGE),
+            if_range: get(header::IF_RANGE),
+        }
+    }
 }
 
 /// Serialize an export to a parquet HTTP response (DuckDB-httpfs-friendly headers).
 pub(crate) fn parquet_response(
     out: &ExportOutput,
     filename: &str,
-    range: Option<&str>,
+    headers: &HeaderMap,
 ) -> Response {
     let meta = GeoParquetMeta {
         crs: out.crs_label.clone(),
+        // GeoParquet: an ABSENT `crs` key means OGC:CRS84 (lon/lat) — true
+        // only for latlon exports; petal-local frames keep `crs: null`.
+        lonlat_crs84: out.coords == Coords::LatLon,
         ..Default::default()
     };
     let written = match &out.rows {
@@ -356,12 +386,12 @@ pub(crate) fn parquet_response(
         "application/vnd.apache.parquet",
         &out.crs_label,
         filename,
-        range,
+        RangeRequest::from_headers(headers),
     )
 }
 
 /// Serialize an export to a CSV HTTP response.
-pub(crate) fn csv_response(out: &ExportOutput, filename: &str, range: Option<&str>) -> Response {
+pub(crate) fn csv_response(out: &ExportOutput, filename: &str, headers: &HeaderMap) -> Response {
     let csv = match &out.rows {
         ExportRows::Nodes(snapshots) => snapshots_to_csv(snapshots, out.coords, &out.crs_label),
         ExportRows::Readings(rows) => readings_to_csv(rows, out.coords, &out.crs_label),
@@ -380,31 +410,44 @@ pub(crate) fn csv_response(out: &ExportOutput, filename: &str, range: Option<&st
         "text/csv; charset=utf-8",
         &out.crs_label,
         filename,
-        range,
+        RangeRequest::from_headers(headers),
     )
 }
 
-/// Assemble the download response with content-type/CRS/range headers.
+/// Strong entity tag over the exact body bytes (quoted blake3 hex).
+fn strong_etag(bytes: &[u8]) -> String {
+    format!("\"{}\"", blake3::hash(bytes).to_hex())
+}
+
+/// Live query output is never cacheable (DEC-C18 — `immutable` stays assets-only).
+const EXPORT_CACHE_CONTROL: &str = "private, no-store";
+
+/// Assemble the download response with content-type/CRS/range/validator headers.
 ///
-/// DEC-C10 (F10): `Accept-Ranges: bytes` used to be advertised with ZERO
-/// Range support behind it. Bodies are already fully buffered `Vec<u8>`
-/// (capped at `EXPORT_MAX_BYTES`), so honoring one `Range: bytes=a-b` request
-/// is a cheap slice — see `parse_single_byte_range`. A multi-range or
-/// malformed request is declined (RFC 7233 permits this) and falls back to
-/// the full 200 body; a well-formed range starting at or past EOF is the one
-/// case that must answer 416 rather than silently serving everything.
+/// DEC-C10: one `Range: bytes=a-b` is honored as a slice of the buffered body
+/// (`parse_single_byte_range`); multi-range/malformed falls back to 200; a
+/// well-formed range at/past EOF answers 416. DEC-C18: every body carries a
+/// strong `ETag` and `Cache-Control: private, no-store`; `If-Range` that does
+/// not match the current ETag (or is a date — we send no Last-Modified)
+/// downgrades the ranged GET to a full 200 so a reader can never stitch
+/// ranges from two different result sets.
 fn body_response(
     bytes: Vec<u8>,
     content_type: &str,
     crs_label: &str,
     filename: &str,
-    range: Option<&str>,
+    request: RangeRequest<'_>,
 ) -> Response {
     let total = bytes.len();
+    let etag = strong_etag(&bytes);
+    let range = match request.if_range {
+        Some(validator) if validator.trim() != etag => None,
+        _ => request.range,
+    };
     // F10/DEC-C10 evidence: direct server-side record of whether a client
     // (DuckDB httpfs, in the verification script) issued a Range request at
     // all, independent of any client-side logging capability.
-    tracing::debug!(range = ?range, total, "export body_response: range decision");
+    tracing::debug!(range = ?range, if_range = ?request.if_range, total, "export body_response: range decision");
     let (status, body, content_range) = match range.and_then(|h| parse_single_byte_range(h, total))
     {
         Some(ByteRange::Satisfiable { start, end }) => (
@@ -412,18 +455,29 @@ fn body_response(
             bytes[start..=end].to_vec(),
             Some(format!("bytes {start}-{end}/{total}")),
         ),
-        Some(ByteRange::Unsatisfiable) => {
-            let mut resp = (StatusCode::RANGE_NOT_SATISFIABLE, Vec::<u8>::new()).into_response();
-            if let Ok(v) = header::HeaderValue::from_str(&format!("bytes */{total}")) {
-                resp.headers_mut().insert(header::CONTENT_RANGE, v);
-            }
-            return resp;
-        }
+        Some(ByteRange::Unsatisfiable) => (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            Vec::new(),
+            Some(format!("bytes */{total}")),
+        ),
         None => (StatusCode::OK, bytes, None),
     };
 
     let mut resp = (status, body).into_response();
     let headers = resp.headers_mut();
+    if let Ok(v) = header::HeaderValue::from_str(&etag) {
+        headers.insert(header::ETAG, v);
+    }
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static(EXPORT_CACHE_CONTROL),
+    );
+    if status == StatusCode::RANGE_NOT_SATISFIABLE {
+        if let Some(cr) = content_range.and_then(|cr| header::HeaderValue::from_str(&cr).ok()) {
+            headers.insert(header::CONTENT_RANGE, cr);
+        }
+        return resp;
+    }
     if let Ok(v) = header::HeaderValue::from_str(content_type) {
         headers.insert(header::CONTENT_TYPE, v);
     }
@@ -460,8 +514,8 @@ enum ByteRange {
 /// response (missing/malformed header, non-`bytes` unit, or a comma-separated
 /// multi-range request) — the caller then serves the full 200 body, which is
 /// always a valid response to a declined Range. Returns
-/// `Some(Unsatisfiable)` only when the range is well-formed but starts at or
-/// past EOF (the one case the server must answer 416, not 200).
+/// `Some(Unsatisfiable)` only when the range is well-formed but selects no
+/// byte (starts at/past EOF, or the empty suffix `bytes=-0`) — 416, not 200.
 fn parse_single_byte_range(header_value: &str, total: usize) -> Option<ByteRange> {
     let spec = header_value.strip_prefix("bytes=")?;
     if spec.contains(',') {
@@ -473,10 +527,11 @@ fn parse_single_byte_range(header_value: &str, total: usize) -> Option<ByteRange
     }
     let last = total - 1;
     if start_s.is_empty() {
-        // Suffix range: `bytes=-N` = the last N bytes.
+        // Suffix range: `bytes=-N` = the last N bytes; `-0` selects nothing
+        // (RFC 7233 §2.1: unsatisfiable).
         let suffix_len: usize = end_s.parse().ok()?;
         if suffix_len == 0 {
-            return None;
+            return Some(ByteRange::Unsatisfiable);
         }
         let start = last.saturating_sub(suffix_len.saturating_sub(1));
         return Some(ByteRange::Satisfiable { start, end: last });
@@ -769,7 +824,7 @@ mod tests {
             "text/csv",
             "PETAL-LOCAL:meters;origin=unset",
             "f.csv",
-            Some("bytes=2-5"),
+            rr(Some("bytes=2-5"), None),
         );
         assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(
@@ -789,7 +844,7 @@ mod tests {
             "text/csv",
             "PETAL-LOCAL:meters;origin=unset",
             "f.csv",
-            Some("bytes=50-60"),
+            rr(Some("bytes=50-60"), None),
         );
         assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
         assert_eq!(
@@ -806,7 +861,7 @@ mod tests {
             "text/csv",
             "PETAL-LOCAL:meters;origin=unset",
             "f.csv",
-            None,
+            rr(None, None),
         );
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp.headers().get(header::CONTENT_RANGE).is_none());
@@ -822,10 +877,76 @@ mod tests {
             "text/csv",
             "PETAL-LOCAL:meters;origin=unset",
             "f.csv",
-            Some("bytes=0-1,5-6"),
+            rr(Some("bytes=0-1,5-6"), None),
         );
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), 100).await.unwrap();
         assert_eq!(&bytes[..], b"0123456789");
+    }
+
+    fn rr<'a>(range: Option<&'a str>, if_range: Option<&'a str>) -> RangeRequest<'a> {
+        RangeRequest { range, if_range }
+    }
+
+    fn respond(body: &[u8], range: Option<&str>, if_range: Option<&str>) -> Response {
+        body_response(
+            body.to_vec(),
+            "text/csv",
+            "PETAL-LOCAL:meters;origin=unset",
+            "f.csv",
+            rr(range, if_range),
+        )
+    }
+
+    #[test]
+    fn empty_suffix_range_is_unsatisfiable() {
+        assert!(matches!(
+            parse_single_byte_range("bytes=-0", 10),
+            Some(ByteRange::Unsatisfiable)
+        ));
+        assert_eq!(
+            respond(b"0123456789", Some("bytes=-0"), None).status(),
+            StatusCode::RANGE_NOT_SATISFIABLE
+        );
+    }
+
+    /// DEC-C18: a strong ETag over the exact body, stable for identical bytes
+    /// and different for different bytes, on 200 AND 206, with no-store.
+    #[test]
+    fn etag_is_strong_stable_and_body_derived() {
+        let full = respond(b"0123456789", None, None);
+        let ranged = respond(b"0123456789", Some("bytes=2-5"), None);
+        let other = respond(b"0123456780", None, None);
+        let etag = |r: &Response| r.headers()[header::ETAG].to_str().unwrap().to_string();
+        assert!(etag(&full).starts_with('"') && etag(&full).ends_with('"'));
+        assert_eq!(
+            etag(&full),
+            etag(&ranged),
+            "206 carries the full body's ETag"
+        );
+        assert_ne!(etag(&full), etag(&other));
+        for r in [&full, &ranged] {
+            assert_eq!(r.headers()[header::CACHE_CONTROL], "private, no-store");
+        }
+    }
+
+    /// If-Range: matching ETag → the range is served (206); a stale ETag or
+    /// a date → the full body (200), never a slice of a different result.
+    #[tokio::test]
+    async fn if_range_match_serves_range_mismatch_serves_full_body() {
+        let current = strong_etag(b"0123456789");
+        let hit = respond(b"0123456789", Some("bytes=2-5"), Some(&current));
+        assert_eq!(hit.status(), StatusCode::PARTIAL_CONTENT);
+
+        for stale in [
+            strong_etag(b"older body"),
+            "Wed, 21 Oct 2015 07:28:00 GMT".to_string(),
+        ] {
+            let miss = respond(b"0123456789", Some("bytes=2-5"), Some(&stale));
+            assert_eq!(miss.status(), StatusCode::OK, "If-Range {stale}");
+            assert!(miss.headers().get(header::CONTENT_RANGE).is_none());
+            let bytes = axum::body::to_bytes(miss.into_body(), 100).await.unwrap();
+            assert_eq!(&bytes[..], b"0123456789");
+        }
     }
 }

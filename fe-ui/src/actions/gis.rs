@@ -18,7 +18,15 @@ fn submit_query(
 ) {
     gis_state.query_pending = true;
     gis_state.last_error = None;
-    if db_sender.0.send(DbCommand::RawQuery { sql, vars }).is_err() {
+    if db_sender
+        .0
+        .send(DbCommand::RawQuery {
+            sql,
+            vars,
+            correlation_id: None,
+        })
+        .is_err()
+    {
         bevy::log::warn!("db_sender channel closed — GIS RawQuery not dispatched");
         gis_state.query_pending = false;
         gis_state.last_error = Some("DB channel closed".to_string());

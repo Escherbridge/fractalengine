@@ -1,14 +1,14 @@
 //! Shared guard pipeline for /query + export/share egress — see `fe-api/AGENTS.md` §query-guard.
 //!
-//! One entry point (`guard_and_prepare_query`) so export/share handlers cannot
-//! bypass any guard `execute_query` enforces. Logic moved verbatim from
-//! `rest.rs::execute_query` (Task 2.1); error strings preserved.
+//! One entry point per surface (`guard_and_prepare_query[_with_mode]`,
+//! `prepare_scoped_sql`) so export/share handlers cannot bypass any guard
+//! `execute_query` enforces. Row scoping is FROM-substitution (M4 fix B1).
 
 use std::sync::Arc;
 
 use crate::server::ApiState;
 
-/// SQL that has passed every static guard, with the scope filter injected.
+/// SQL that has passed every static guard, with the scope filter applied.
 pub struct GuardedQuery {
     pub sql: String,
 }
@@ -36,6 +36,49 @@ const ALLOWED_TABLES: &[&str] = &[
     "CRATE_ENTRY",
     "IOT_READING",
 ];
+
+/// Tables whose rows carry `petal_id` and are scope-filtered at the source.
+const PETAL_SCOPED_TABLES: &[&str] = &["NODE", "IOT_READING"];
+
+/// SELECT clauses that may follow a FROM target (SurrealQL 3 `parse_select_stmt`
+/// order). Anything else after a target (an operator) would extend the target
+/// EXPRESSION — `FROM verse AND role` evaluates to the `role` table.
+const FROM_BOUNDARY_KEYWORDS: &[&str] = &[
+    "WITH",
+    "WHERE",
+    "SPLIT",
+    "GROUP",
+    "ORDER",
+    "LIMIT",
+    "START",
+    "FETCH",
+    "VERSION",
+    "TIMEOUT",
+    "TEMPFILES",
+    "EXPLAIN",
+    "PARALLEL",
+];
+
+/// DB-side statement timeout appended to every guarded SELECT (M4 fix M2).
+pub const STATEMENT_TIMEOUT_SECS: u64 = 5;
+
+/// Client-side backstop; deliberately longer than the DB-side TIMEOUT so the
+/// DB aborts (and frees its thread) first.
+const CLIENT_TIMEOUT_SECS: u64 = STATEMENT_TIMEOUT_SECS + 1;
+
+const UNSUPPORTED_FROM: &str =
+    "unsupported FROM target (only table names or subqueries are allowed)";
+
+/// Which egress surface a guarded query serves (dialect strictness).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardMode {
+    /// `/api/v1/query` + MCP `query`: subqueries allowed — every FROM is scoped.
+    Query,
+    /// JSON share links: one flat SELECT, no comments.
+    Egress,
+    /// Parquet/CSV export + share: `Egress` + projection forced to `*`.
+    Export,
+}
 
 /// Sliding 1s-window rate limit keyed by caller; `label` names the limit in the error.
 pub async fn check_rate_limit(
@@ -72,7 +115,8 @@ pub fn validate_select_sql(sql: &str) -> Result<(), String> {
         return Err("semicolons are not allowed (single statement only)".to_string());
     }
 
-    let sql_upper = sql_trimmed.to_uppercase();
+    // ASCII uppercase keeps byte offsets identical to the input.
+    let sql_upper = sql_trimmed.to_ascii_uppercase();
     if !sql_upper.starts_with("SELECT") {
         return Err("only SELECT statements are allowed".to_string());
     }
@@ -87,10 +131,11 @@ pub fn validate_select_sql(sql: &str) -> Result<(), String> {
 
     // Table whitelist: EVERY FROM clause (top level and subqueries) must
     // target whitelisted tables — see AGENTS.md §query-guard (subquery bypass).
-    for table_name in from_clause_tables(&sql_upper)? {
-        if !ALLOWED_TABLES.contains(&table_name.as_str()) {
+    for target in from_clause_targets(&sql_upper)? {
+        if !ALLOWED_TABLES.contains(&target.table.as_str()) {
             return Err(format!(
-                "queries against table '{table_name}' are not allowed"
+                "queries against table '{}' are not allowed",
+                target.table
             ));
         }
     }
@@ -98,27 +143,50 @@ pub fn validate_select_sql(sql: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// True if `word` appears as a whole word (not inside a longer identifier).
-pub fn contains_word(sql_upper: &str, word: &str) -> bool {
-    let bytes = sql_upper.as_bytes();
-    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    let mut start = 0;
-    while let Some(pos) = sql_upper[start..].find(word) {
-        let abs_pos = start + pos;
-        let before_ok = abs_pos == 0 || !is_ident(bytes[abs_pos - 1]);
-        let after_pos = abs_pos + word.len();
-        let after_ok = after_pos >= bytes.len() || !is_ident(bytes[after_pos]);
-        if before_ok && after_ok {
-            return true;
-        }
-        start = abs_pos + word.len();
-    }
-    false
+fn is_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Extract the (uppercased) table name following the first FROM, if any.
+/// True if `word` appears as a whole word (not inside a longer identifier).
+pub fn contains_word(sql_upper: &str, word: &str) -> bool {
+    !word_positions(sql_upper, word).is_empty()
+}
+
+/// Byte offsets of every whole-word occurrence of `word` (strings and
+/// comments included — deliberately lexer-free, so never under-reports).
+fn word_positions(sql_upper: &str, word: &str) -> Vec<usize> {
+    let bytes = sql_upper.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = sql_upper[start..].find(word) {
+        let abs = start + pos;
+        let before_ok = abs == 0 || !is_ident(bytes[abs - 1]);
+        let after = abs + word.len();
+        let after_ok = after >= bytes.len() || !is_ident(bytes[after]);
+        if before_ok && after_ok {
+            out.push(abs);
+        }
+        start = after;
+    }
+    out
+}
+
+/// True if the whole word `word` starts at byte `i`.
+fn word_at(bytes: &[u8], i: usize, word: &str) -> bool {
+    bytes[i.min(bytes.len())..].starts_with(word.as_bytes())
+        && bytes.get(i + word.len()).is_none_or(|b| !is_ident(*b))
+}
+
+fn skip_ascii_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Extract the (uppercased) table name following the first whole-word FROM, if any.
 pub fn from_table(sql_upper: &str) -> Option<String> {
-    let from_pos = sql_upper.find("FROM")?;
+    let from_pos = *word_positions(sql_upper, "FROM").first()?;
     let after_from = sql_upper[from_pos + 4..].trim_start();
     let table_name: String = after_from
         .chars()
@@ -127,47 +195,107 @@ pub fn from_table(sql_upper: &str) -> Option<String> {
     Some(table_name)
 }
 
+/// One table identifier in a FROM clause, with its byte span in the scanned SQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FromTarget {
+    pub table: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Every table identifier targeted by any FROM clause; errors on FROM
-/// targets that cannot be whitelist-checked (variables, literals).
+/// targets that cannot be whitelist-checked (variables, literals, record ids,
+/// operator expressions like `FROM verse AND role`, non-SELECT parens).
 pub fn from_clause_tables(sql_upper: &str) -> Result<Vec<String>, String> {
+    Ok(from_clause_targets(sql_upper)?
+        .into_iter()
+        .map(|t| t.table)
+        .collect())
+}
+
+/// [`from_clause_tables`] with byte spans (the scope rewrite's anchor points).
+pub fn from_clause_targets(sql_upper: &str) -> Result<Vec<FromTarget>, String> {
     let bytes = sql_upper.as_bytes();
-    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    let mut tables = Vec::new();
-    let mut start = 0;
-    while let Some(pos) = sql_upper[start..].find("FROM") {
-        let abs_pos = start + pos;
-        let before_ok = abs_pos == 0 || !is_ident(bytes[abs_pos - 1]);
-        let after_kw = abs_pos + 4;
-        let after_ok = after_kw >= bytes.len() || !is_ident(bytes[after_kw]);
-        start = after_kw;
-        if !(before_ok && after_ok) {
-            continue;
-        }
-        let mut rest = sql_upper[after_kw..].trim_start();
-        // A parenthesized subquery's own FROM is caught by this same scan.
-        if rest.starts_with('(') {
-            continue;
-        }
+    let mut targets = Vec::new();
+    for from_pos in word_positions(sql_upper, "FROM") {
+        let mut i = from_pos + 4;
         loop {
-            let table: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if table.is_empty() {
-                return Err(
-                    "unsupported FROM target (only table names or subqueries are allowed)"
-                        .to_string(),
-                );
+            i = skip_ascii_ws(bytes, i);
+            if bytes.get(i) == Some(&b'(') {
+                // A parenthesized source must be a SELECT; its own FROM is
+                // scanned by the outer loop.
+                if !word_at(bytes, skip_ascii_ws(bytes, i + 1), "SELECT") {
+                    return Err(UNSUPPORTED_FROM.to_string());
+                }
+                i = matching_paren(bytes, i).ok_or_else(|| UNSUPPORTED_FROM.to_string())? + 1;
+            } else {
+                let start = i;
+                while i < bytes.len() && is_ident(bytes[i]) {
+                    i += 1;
+                }
+                if i == start {
+                    return Err(UNSUPPORTED_FROM.to_string());
+                }
+                targets.push(FromTarget {
+                    table: sql_upper[start..i].to_string(),
+                    start,
+                    end: i,
+                });
             }
-            rest = rest[table.len()..].trim_start();
-            tables.push(table);
-            match rest.strip_prefix(',') {
-                Some(next) => rest = next.trim_start(),
-                None => break,
+            let next = skip_ascii_ws(bytes, i);
+            if bytes.get(next) == Some(&b',') {
+                i = next + 1;
+                continue;
             }
+            let clean = next >= bytes.len()
+                || bytes[next] == b')'
+                || FROM_BOUNDARY_KEYWORDS
+                    .iter()
+                    .any(|kw| word_at(bytes, next, kw));
+            if !clean {
+                return Err(UNSUPPORTED_FROM.to_string());
+            }
+            break;
         }
     }
-    Ok(tables)
+    Ok(targets)
+}
+
+/// Index of the `)` closing the `(` at `open`, skipping SurrealQL strings and
+/// backtick identifiers (backslash escapes). Fails closed (`None`) on
+/// comments, `⟨⟩` identifiers, or imbalance.
+fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            q @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                loop {
+                    match *bytes.get(i)? {
+                        b'\\' => i += 2,
+                        b if b == q => break,
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'#' => return None,
+            b'-' if bytes.get(i + 1) == Some(&b'-') => return None,
+            b'/' if matches!(bytes.get(i + 1), Some(b'/' | b'*')) => return None,
+            // UTF-8 lead bytes of ⟨ (E2 9F A8).
+            0xE2 if bytes.get(i + 1) == Some(&0x9F) => return None,
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Elevated-query validation: whole-word DDL/system keyword ban plus
@@ -180,7 +308,6 @@ pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result
         }
     }
     let bytes = sql_upper.as_bytes();
-    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     for keyword in ["FROM", "INTO", "UPDATE"] {
         let mut start = 0;
         while let Some(pos) = sql_upper[start..].find(keyword) {
@@ -210,40 +337,264 @@ pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result
     Ok(())
 }
 
-/// Build a scope filter clause from the token's scope string.
-/// Returns a WHERE clause fragment like `petal_id = 'p1'` or empty for broad access.
-pub fn build_scope_filter(scope: &str) -> String {
+// ---------------------------------------------------------------------------
+// Scoped dialect + FROM-substitution (M4 fix B1 — AGENTS.md §query-guard)
+// ---------------------------------------------------------------------------
+
+/// Collapse whitespace runs to one space OUTSIDE strings, escaped
+/// identifiers and comments (their bytes are copied verbatim). Semantics-only:
+/// no guard decision depends on this lexer being exact.
+pub fn normalize_whitespace(sql: &str) -> String {
+    let chars: Vec<char> = sql.trim().chars().collect();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    let mut pending_space = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            pending_space = true;
+            i += 1;
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        let next = chars.get(i + 1).copied();
+        let end = match c {
+            '\'' | '"' | '`' | '⟨' => {
+                let close = if c == '⟨' { '⟩' } else { c };
+                let mut j = i + 1;
+                while j < chars.len() && chars[j] != close {
+                    j += if chars[j] == '\\' { 2 } else { 1 };
+                }
+                (j + 1).min(chars.len())
+            }
+            '#' => line_end(&chars, i),
+            '-' if next == Some('-') => line_end(&chars, i),
+            '/' if next == Some('/') => line_end(&chars, i),
+            '/' if next == Some('*') => {
+                let mut j = i + 2;
+                while j + 1 < chars.len() && !(chars[j] == '*' && chars[j + 1] == '/') {
+                    j += 1;
+                }
+                (j + 2).min(chars.len())
+            }
+            _ => i + 1,
+        };
+        out.extend(&chars[i..end]);
+        i = end;
+    }
+    out
+}
+
+/// Index just past the newline ending a single-line comment starting at `i`.
+fn line_end(chars: &[char], i: usize) -> usize {
+    let mut j = i;
+    while j < chars.len() && chars[j] != '\n' {
+        j += 1;
+    }
+    (j + 1).min(chars.len())
+}
+
+/// Export/share: reject comment tokens anywhere (string literals included).
+fn reject_comments(sql: &str) -> Result<(), String> {
+    for token in ["--", "#", "//", "/*"] {
+        if sql.contains(token) {
+            return Err(format!(
+                "comments ('{token}') are not allowed in export/share queries"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject every way to name a record/table WITHOUT the table's name appearing
+/// as a plain word (escaped identifiers, record constructors, `r"..."`).
+fn reject_record_constructors(canonical: &str, upper: &str) -> Result<(), String> {
+    if canonical.contains('`') || canonical.contains('⟨') || canonical.contains('⟩') {
+        return Err("escaped identifiers (`...` / ⟨...⟩) are not allowed in scoped queries".into());
+    }
+    let compact: String = upper.chars().filter(|c| !c.is_whitespace()).collect();
+    for needle in [
+        "TYPE::THING",
+        "TYPE::RECORD",
+        "TYPE::TABLE",
+        "RECORD::",
+        "<RECORD",
+    ] {
+        if compact.contains(needle) {
+            return Err(format!(
+                "record/table constructors ({}) are not allowed in scoped queries",
+                needle.to_ascii_lowercase()
+            ));
+        }
+    }
+    let bytes = upper.as_bytes();
+    for i in 0..bytes.len().saturating_sub(1) {
+        if bytes[i] == b'R'
+            && matches!(bytes[i + 1], b'\'' | b'"')
+            && (i == 0 || !is_ident(bytes[i - 1]))
+        {
+            return Err(
+                "record-id string literals (r\"...\") are not allowed in scoped queries".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The server-built row predicate for a petal allow-list (`false` = deny all).
+/// Ids outside `[A-Za-z0-9_-]` are dropped, never escaped.
+fn petal_filter_clause(petals: &[String]) -> String {
+    let safe: Vec<&str> = petals
+        .iter()
+        .map(String::as_str)
+        .filter(|p| {
+            !p.is_empty()
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
+        .collect();
+    match safe.as_slice() {
+        [] => "false".to_string(),
+        [one] => format!("petal_id = '{one}'"),
+        many => format!(
+            "petal_id IN [{}]",
+            many.iter()
+                .map(|p| format!("'{p}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Output of [`prepare_scoped_sql`].
+#[derive(Debug)]
+pub struct PreparedSql {
+    /// Whitespace-normalized SQL as written (pre-rewrite).
+    pub canonical: String,
+    /// Uppercased FROM-target table names in source order.
+    pub tables: Vec<String>,
+    /// Executable SQL: every node/iot_reading FROM target replaced by a
+    /// server-built petal-filtered subquery.
+    pub sql: String,
+}
+
+impl PreparedSql {
+    /// True if any FROM target is a petal-scoped table (needs a scope lookup).
+    pub fn reads_petal_scoped_table(&self) -> bool {
+        self.tables
+            .iter()
+            .any(|t| PETAL_SCOPED_TABLES.contains(&t.as_str()))
+    }
+}
+
+/// Normalize → validate → scoped-dialect checks → FROM-substitution.
+///
+/// `FROM node` becomes `FROM (SELECT * FROM node WHERE <petal filter>)`, so
+/// the user's WHERE/OR/projection only ever sees already-scoped rows — see
+/// AGENTS.md §query-guard for the soundness argument.
+pub fn prepare_scoped_sql(
+    sql: &str,
+    petals: &[String],
+    mode: GuardMode,
+) -> Result<PreparedSql, String> {
+    let trimmed = sql.trim();
+    if mode != GuardMode::Query {
+        reject_comments(trimmed)?;
+    }
+    let canonical = normalize_whitespace(trimmed);
+    validate_select_sql(&canonical)?;
+    let upper = canonical.to_ascii_uppercase();
+    reject_record_constructors(&canonical, &upper)?;
+    let targets = from_clause_targets(&upper)?;
+
+    if mode != GuardMode::Query {
+        if word_positions(&upper, "SELECT").len() != 1 {
+            return Err("nested SELECT is not allowed in export/share queries".into());
+        }
+        if word_positions(&upper, "FROM").len() != 1 || targets.len() != 1 {
+            return Err("export/share queries must read exactly one table".into());
+        }
+    }
+
+    // Every mention of a petal-scoped table must be a FROM target we rewrite.
+    for table in PETAL_SCOPED_TABLES {
+        for pos in word_positions(&upper, table) {
+            if !targets.iter().any(|t| t.start == pos) {
+                return Err(format!(
+                    "'{}' may only appear as a FROM table name in scoped queries",
+                    table.to_ascii_lowercase()
+                ));
+            }
+        }
+    }
+
+    let filter = petal_filter_clause(petals);
+    let mut out = canonical.clone();
+    for t in targets.iter().rev() {
+        if PETAL_SCOPED_TABLES.contains(&t.table.as_str()) {
+            let original = canonical[t.start..t.end].to_string();
+            out.replace_range(
+                t.start..t.end,
+                &format!("(SELECT * FROM {original} WHERE {filter})"),
+            );
+        }
+    }
+    if mode == GuardMode::Export {
+        // Export rows map onto a fixed shape: the projection is irrelevant,
+        // and `*` guarantees the real `petal_id` column reaches the post-filter.
+        let from_pos = word_positions(&upper, "FROM")[0];
+        out.replace_range("SELECT".len()..from_pos, " * ");
+    }
+
+    Ok(PreparedSql {
+        canonical,
+        tables: targets.into_iter().map(|t| t.table).collect(),
+        sql: out,
+    })
+}
+
+/// Petal allow-list for a token scope: petal → itself; fractal/verse → every
+/// petal under it (resolved via petal.fractal_id → fractal.verse_id);
+/// unparseable → empty (deny all).
+pub async fn resolve_scope_petals(state: &ApiState, scope: &str) -> Result<Vec<String>, String> {
     let Ok(parts) = fe_database::parse_scope(scope) else {
-        return String::new();
+        return Ok(Vec::new());
     };
-    if let Some(ref petal_id) = parts.petal_id {
-        format!("petal_id = '{}'", petal_id.replace('\'', ""))
-    } else {
-        // Verse or fractal scope — broader access, pass through without filter.
-        String::new()
+    if let Some(petal_id) = parts.petal_id {
+        return Ok(vec![petal_id]);
     }
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("vid".to_string(), serde_json::json!(parts.verse_id));
+    let sql = match parts.fractal_id {
+        Some(fractal_id) => {
+            vars.insert("fid".to_string(), serde_json::json!(fractal_id));
+            "SELECT VALUE petal_id FROM petal WHERE fractal_id IN \
+             (SELECT VALUE fractal_id FROM fractal WHERE verse_id = $vid AND fractal_id = $fid)"
+        }
+        None => {
+            "SELECT VALUE petal_id FROM petal WHERE fractal_id IN \
+             (SELECT VALUE fractal_id FROM fractal WHERE verse_id = $vid)"
+        }
+    };
+    let rows = run_guarded_query_via_state(
+        state,
+        &GuardedQuery {
+            sql: sql.to_string(),
+        },
+        &vars,
+        crate::limits::QUERY_ROW_CAP,
+    )
+    .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect())
 }
 
-/// Inject scope filter into SQL that queries a petal_id-carrying table
-/// (`node`, `iot_reading`). Simple heuristic: if the query touches such a
-/// FROM target and we have a scope filter, append/inject a WHERE clause.
-pub fn inject_scope_filter(sql: &str, scope_filter: &str) -> String {
-    if scope_filter.is_empty() {
-        return sql.to_string();
-    }
-    let sql_upper = sql.to_uppercase();
-    if !sql_upper.contains("FROM NODE") && !sql_upper.contains("FROM IOT_READING") {
-        return sql.to_string();
-    }
-    // If there's already a WHERE, add AND; otherwise add WHERE
-    if sql_upper.contains("WHERE") {
-        format!("{sql} AND {scope_filter}")
-    } else {
-        format!("{sql} WHERE {scope_filter}")
-    }
-}
-
-/// Full guard chain: rate limit → static validation → scope-filter injection.
+/// Full guard chain for `/api/v1/query` (+ MCP `query`): [`GuardMode::Query`].
 pub async fn guard_and_prepare_query(
     state: &ApiState,
     rate_key: &str,
@@ -252,33 +603,71 @@ pub async fn guard_and_prepare_query(
     scope: &str,
     sql: &str,
 ) -> Result<GuardedQuery, String> {
+    guard_and_prepare_query_with_mode(
+        state,
+        rate_key,
+        rate_max_per_sec,
+        rate_label,
+        scope,
+        sql,
+        GuardMode::Query,
+    )
+    .await
+}
+
+/// Rate limit → static dialect checks → scope lookup (only when a
+/// petal-scoped table is read) → FROM-substitution.
+pub async fn guard_and_prepare_query_with_mode(
+    state: &ApiState,
+    rate_key: &str,
+    rate_max_per_sec: u32,
+    rate_label: &str,
+    scope: &str,
+    sql: &str,
+    mode: GuardMode,
+) -> Result<GuardedQuery, String> {
     check_rate_limit(state, rate_key, rate_max_per_sec, rate_label).await?;
-    validate_select_sql(sql)?;
-    let scope_filter = build_scope_filter(scope);
+    let static_pass = prepare_scoped_sql(sql, &[], mode)?;
+    if !static_pass.reads_petal_scoped_table() {
+        return Ok(GuardedQuery {
+            sql: static_pass.sql,
+        });
+    }
+    let petals = resolve_scope_petals(state, scope).await?;
     Ok(GuardedQuery {
-        sql: inject_scope_filter(sql.trim(), &scope_filter),
+        sql: prepare_scoped_sql(sql, &petals, mode)?.sql,
     })
 }
 
-/// Execute a guarded query with the pre-existing 5s statement timeout and a row cap.
+/// Append the DB-side statement timeout (SurrealQL orders TIMEOUT after
+/// FETCH/VERSION). The leading NEWLINE ends any trailing `--`/`#`/`//`
+/// comment (allowed in Query mode) so it cannot swallow the clause.
+pub fn with_statement_timeout(sql: &str) -> String {
+    format!("{}\nTIMEOUT {STATEMENT_TIMEOUT_SECS}s", sql.trim_end())
+}
+
+/// Execute a guarded query with a DB-side `TIMEOUT 5s`, a client backstop, and a row cap.
 pub async fn run_guarded_query(
     db: &Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>,
     guarded: &GuardedQuery,
     vars: &std::collections::HashMap<String, serde_json::Value>,
     row_cap: usize,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let mut query_builder = db.query(&guarded.sql);
+    let mut query_builder = db.query(with_statement_timeout(&guarded.sql));
     for (key, value) in vars {
         query_builder = query_builder.bind((key.clone(), value.clone()));
     }
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(CLIENT_TIMEOUT_SECS), async {
         query_builder.await
     })
     .await;
 
     match result {
-        Ok(Ok(mut response)) => {
+        Ok(Ok(response)) => {
+            // A failed statement (incl. a DB-side TIMEOUT) must never read
+            // as an empty-but-successful result.
+            let mut response = response.check().map_err(|e| format!("query failed: {e}"))?;
             let mut data = Vec::new();
             let num = response.num_statements();
             for idx in 0..num {
@@ -295,18 +684,15 @@ pub async fn run_guarded_query(
             Ok(data)
         }
         Ok(Err(e)) => Err(format!("query failed: {e}")),
-        Err(_) => Err("query timed out (5s)".to_string()),
+        Err(_) => Err(format!("query timed out ({CLIENT_TIMEOUT_SECS}s)")),
     }
 }
 
 /// Execute a guarded query, preferring the direct `db_reader` and falling
 /// back to the `DbCommand::RawQuery` gateway channel when no direct reader is
-/// wired (F10: the Windows SurrealKV per-handle lock, M1/F4-documented,
-/// routinely leaves `db_reader` `None` on the deployment platform — the same
-/// gap `gis.rs::run_select` already papers over for GIS reads). The channel
-/// path mirrors `run_guarded_query`'s row-cap enforcement exactly so it is
-/// never weaker than the direct path; `RawQuery`'s own SELECT-only guard rail
-/// (`fe-database/src/lib.rs`) re-validates independently as defense in depth.
+/// wired (F10: the Windows SurrealKV per-handle lock leaves `db_reader`
+/// `None` on the deployment platform). The channel request is CORRELATED (M4
+/// fix B2) and mirrors the direct path's TIMEOUT + row cap exactly.
 pub async fn run_guarded_query_via_state(
     state: &ApiState,
     guarded: &GuardedQuery,
@@ -316,25 +702,39 @@ pub async fn run_guarded_query_via_state(
     if let Some(ref db) = state.db_reader {
         return run_guarded_query(db, guarded, vars, row_cap).await;
     }
+    let correlation_id = ulid::Ulid::new().to_string();
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     state
         .api_cmd_tx
         .send(fe_runtime::messages::ApiCommand::DbRequest {
             cmd: fe_runtime::messages::DbCommand::RawQuery {
-                sql: guarded.sql.clone(),
+                sql: with_statement_timeout(&guarded.sql),
                 vars: vars.clone(),
+                correlation_id: Some(correlation_id.clone()),
             },
             reply_tx,
         })
         .map_err(|_| "internal channel closed".to_string())?;
-    let data = match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(fe_runtime::messages::DbResult::QueryResult { data })) => data,
-        Ok(Ok(fe_runtime::messages::DbResult::Error(e))) => {
-            return Err(format!("query failed: {e}"))
-        }
-        Ok(Ok(_)) => return Err("query failed: unexpected reply".to_string()),
+    use fe_runtime::messages::DbResult;
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(CLIENT_TIMEOUT_SECS),
+        reply_rx,
+    )
+    .await;
+    let data = match reply {
+        Ok(Ok(DbResult::QueryResult {
+            data,
+            correlation_id: Some(echoed),
+        })) if echoed == correlation_id => data,
+        Ok(Ok(DbResult::QueryFailed {
+            error,
+            correlation_id: echoed,
+        })) if echoed == correlation_id => return Err(format!("query failed: {error}")),
+        Ok(Ok(DbResult::Error(e))) => return Err(format!("query failed: {e}")),
+        // Defense in depth over the router: anything else is never our rows.
+        Ok(Ok(_)) => return Err("query failed: uncorrelated reply".to_string()),
         Ok(Err(_)) => return Err("request cancelled".to_string()),
-        Err(_) => return Err("query timed out (5s)".to_string()),
+        Err(_) => return Err(format!("query timed out ({CLIENT_TIMEOUT_SECS}s)")),
     };
     if data.len() > row_cap {
         return Err(format!(
@@ -362,11 +762,21 @@ pub fn enforce_byte_ceiling(
     Ok(())
 }
 
+/// True for guard/DB error strings that mean a timeout (either layer).
+pub fn is_timeout_error(e: &str) -> bool {
+    let lower = e.to_ascii_lowercase();
+    lower.contains("timed out") || lower.contains("timeout")
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn p(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
 
     #[test]
     fn semicolon_rejected() {
@@ -403,70 +813,20 @@ mod tests {
     #[test]
     fn whitelisted_table_allowed() {
         assert!(validate_select_sql("SELECT * FROM node WHERE petal_id = 'p1'").is_ok());
-    }
-
-    #[test]
-    fn iot_reading_table_whitelisted() {
         assert!(
             validate_select_sql("SELECT * FROM iot_reading WHERE metric = 'temperature_c'").is_ok()
         );
     }
 
     #[test]
-    fn inject_covers_iot_reading_table() {
-        assert_eq!(
-            inject_scope_filter("SELECT * FROM iot_reading", "petal_id = 'p1'"),
-            "SELECT * FROM iot_reading WHERE petal_id = 'p1'"
-        );
-        assert_eq!(
-            inject_scope_filter(
-                "SELECT * FROM iot_reading WHERE metric = 'co2_ppm'",
-                "petal_id = 'p1'"
-            ),
-            "SELECT * FROM iot_reading WHERE metric = 'co2_ppm' AND petal_id = 'p1'"
-        );
-    }
-
-    #[test]
-    fn scope_filter_petal_level_only() {
-        assert_eq!(
-            build_scope_filter("VERSE#v1-FRACTAL#f1-PETAL#p1"),
-            "petal_id = 'p1'"
-        );
-        assert_eq!(build_scope_filter("VERSE#v1"), "");
-    }
-
-    #[test]
-    fn inject_adds_where_or_and() {
-        assert_eq!(
-            inject_scope_filter("SELECT * FROM node", "petal_id = 'p1'"),
-            "SELECT * FROM node WHERE petal_id = 'p1'"
-        );
-        assert_eq!(
-            inject_scope_filter("SELECT * FROM node WHERE x = 1", "petal_id = 'p1'"),
-            "SELECT * FROM node WHERE x = 1 AND petal_id = 'p1'"
-        );
-        assert_eq!(
-            inject_scope_filter("SELECT * FROM verse", "petal_id = 'p1'"),
-            "SELECT * FROM verse"
-        );
-    }
-
-    #[test]
-    fn byte_ceiling_enforced() {
-        let rows: Vec<serde_json::Value> = (0..10)
-            .map(|i| serde_json::json!({ "k": format!("row-{i}") }))
-            .collect();
-        assert!(enforce_byte_ceiling(&rows, 1024, "1 KiB").is_ok());
-        let err = enforce_byte_ceiling(&rows, 32, "32 B").unwrap_err();
-        assert!(err.contains("result size exceeds ceiling (32 B)"), "{err}");
-    }
-
-    #[test]
-    fn from_table_extracts_first_target() {
+    fn from_table_extracts_first_whole_word_target() {
         assert_eq!(
             from_table("SELECT * FROM NODE WHERE X = 1").as_deref(),
             Some("NODE")
+        );
+        assert_eq!(
+            from_table("SELECT FROMAGE FROM IOT_READING").as_deref(),
+            Some("IOT_READING")
         );
         assert_eq!(from_table("SELECT 1").as_deref(), None);
     }
@@ -478,10 +838,7 @@ mod tests {
         let err =
             validate_select_sql("SELECT * FROM node WHERE id IN (SELECT id FROM session_cache)")
                 .unwrap_err();
-        assert!(
-            err.contains("session_cache") || err.contains("SESSION_CACHE"),
-            "{err}"
-        );
+        assert!(err.contains("SESSION_CACHE"), "{err}");
         assert!(validate_select_sql(
             "SELECT * FROM node WHERE id IN (SELECT anchor_node_id FROM iot_reading)"
         )
@@ -495,16 +852,166 @@ mod tests {
         assert!(validate_select_sql("SELECT * FROM node, petal").is_ok());
     }
 
+    /// FROM targets are SurrealQL EXPRESSIONS: an operator after a target
+    /// (`verse AND role` evaluates to the `role` table) or a non-SELECT
+    /// parenthesized source would reach tables the whitelist never saw.
     #[test]
-    fn non_identifier_from_targets_are_rejected() {
-        assert!(validate_select_sql("SELECT * FROM $tbl").is_err());
-        assert!(validate_select_sql("SELECT * FROM type::table($t)").is_err());
+    fn from_target_expressions_cannot_smuggle_tables() {
+        for sql in [
+            "SELECT * FROM $tbl",
+            "SELECT * FROM type::table($t)",
+            "SELECT * FROM verse AND role",
+            "SELECT * FROM verse OR role",
+            "SELECT * FROM (role)",
+            "SELECT * FROM (SELECT * FROM verse) AND role",
+            "SELECT * FROM (SELECT * FROM verse WHERE n = ') WHERE ') AND role",
+            "SELECT * FROM node:abc",
+            "SELECT * FROM ONLY node",
+            "SELECT * FROM `role`",
+        ] {
+            assert!(validate_select_sql(sql).is_err(), "should reject: {sql}");
+        }
+        assert!(validate_select_sql("SELECT * FROM (SELECT * FROM node) WHERE x = 1").is_ok());
+        assert!(validate_select_sql("SELECT * FROM node ORDER BY x LIMIT 5").is_ok());
     }
 
     #[test]
     fn rbac_tables_not_readable_via_egress() {
         assert!(validate_select_sql("SELECT * FROM role").is_err());
         assert!(validate_select_sql("SELECT * FROM verse_member").is_err());
+    }
+
+    #[test]
+    fn byte_ceiling_enforced() {
+        let rows: Vec<serde_json::Value> = (0..10)
+            .map(|i| serde_json::json!({ "k": format!("row-{i}") }))
+            .collect();
+        assert!(enforce_byte_ceiling(&rows, 1024, "1 KiB").is_ok());
+        let err = enforce_byte_ceiling(&rows, 32, "32 B").unwrap_err();
+        assert!(err.contains("result size exceeds ceiling (32 B)"), "{err}");
+    }
+
+    #[test]
+    fn whitespace_normalized_outside_literals_only() {
+        assert_eq!(
+            normalize_whitespace("SELECT  *\n\tFROM   node WHERE n = 'a  b'"),
+            "SELECT * FROM node WHERE n = 'a  b'"
+        );
+        // A `--` comment keeps its newline so normalization never comments
+        // out the following line.
+        assert_eq!(
+            normalize_whitespace("SELECT * -- c\nFROM node"),
+            "SELECT * -- c\nFROM node"
+        );
+    }
+
+    /// Source substitution: the user's text never sits inside the filtered
+    /// subquery, so OR-precedence/whitespace/projection tricks see only
+    /// scoped rows.
+    #[test]
+    fn scoped_rewrite_substitutes_every_petal_scoped_from_target() {
+        let out = prepare_scoped_sql(
+            "SELECT *  FROM\n node WHERE true OR true",
+            &p(&["P1"]),
+            GuardMode::Query,
+        )
+        .unwrap();
+        assert_eq!(
+            out.sql,
+            "SELECT * FROM (SELECT * FROM node WHERE petal_id = 'P1') WHERE true OR true"
+        );
+
+        let out = prepare_scoped_sql(
+            "SELECT *, (SELECT * FROM iot_reading) AS x FROM node",
+            &p(&["P1", "P2"]),
+            GuardMode::Query,
+        )
+        .unwrap();
+        assert_eq!(
+            out.sql,
+            "SELECT *, (SELECT * FROM (SELECT * FROM iot_reading WHERE petal_id IN ['P1', 'P2'])) \
+             AS x FROM (SELECT * FROM node WHERE petal_id IN ['P1', 'P2'])"
+        );
+
+        // Empty allow-list = deny all; unsafe ids are dropped, never escaped.
+        let out = prepare_scoped_sql("SELECT * FROM node", &p(&["a'b", "x\\"]), GuardMode::Query)
+            .unwrap();
+        assert_eq!(out.sql, "SELECT * FROM (SELECT * FROM node WHERE false)");
+
+        // Non-petal tables are untouched.
+        let out = prepare_scoped_sql("SELECT * FROM verse", &p(&["P1"]), GuardMode::Query).unwrap();
+        assert_eq!(out.sql, "SELECT * FROM verse");
+    }
+
+    #[test]
+    fn scoped_dialect_rejects_unscoped_record_access() {
+        for sql in [
+            "SELECT *, node:abc.* AS leak FROM verse",
+            "SELECT * FROM verse WHERE (node:abc.position) != NONE",
+            "SELECT type::thing('no' + 'de', 'x').* FROM verse",
+            "SELECT type :: record('node', 'x') FROM verse",
+            "SELECT <record> 'node:x' FROM verse",
+            "SELECT r\"no\" FROM verse",
+            "SELECT `a` FROM node",
+            "SELECT * FROM verse WHERE name = 'node'",
+        ] {
+            assert!(
+                prepare_scoped_sql(sql, &p(&["P1"]), GuardMode::Query).is_err(),
+                "should reject: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn egress_modes_reject_comments_and_nesting() {
+        for sql in [
+            "SELECT * FROM node -- x",
+            "SELECT * FROM node /* x */",
+            "SELECT * FROM node # x",
+            "SELECT * FROM node WHERE u = 'http://x'",
+            "SELECT *, (SELECT * FROM iot_reading) AS x FROM node",
+            "SELECT * FROM node WHERE node_id IN (SELECT VALUE node_id FROM node)",
+            "SELECT * FROM node, petal",
+        ] {
+            for mode in [GuardMode::Egress, GuardMode::Export] {
+                assert!(
+                    prepare_scoped_sql(sql, &p(&["P1"]), mode).is_err(),
+                    "{mode:?} should reject: {sql}"
+                );
+            }
+        }
+        // Query mode keeps (scoped) subqueries.
+        assert!(prepare_scoped_sql(
+            "SELECT *, (SELECT * FROM iot_reading) AS x FROM node",
+            &p(&["P1"]),
+            GuardMode::Query
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn export_mode_forces_star_projection() {
+        let out = prepare_scoped_sql(
+            "SELECT node_id, 'P1' AS petal_id FROM node WHERE x = 1",
+            &p(&["P1"]),
+            GuardMode::Export,
+        )
+        .unwrap();
+        assert_eq!(
+            out.sql,
+            "SELECT * FROM (SELECT * FROM node WHERE petal_id = 'P1') WHERE x = 1"
+        );
+        assert_eq!(out.tables, vec!["NODE".to_string()]);
+    }
+
+    #[test]
+    fn statement_timeout_is_appended_last_and_survives_trailing_comments() {
+        assert_eq!(
+            with_statement_timeout("SELECT * FROM node ORDER BY x LIMIT 3 "),
+            "SELECT * FROM node ORDER BY x LIMIT 3\nTIMEOUT 5s"
+        );
+        // A trailing line comment ends at the newline — TIMEOUT stays live.
+        assert!(with_statement_timeout("SELECT * FROM node -- x").ends_with("-- x\nTIMEOUT 5s"));
     }
 
     #[test]

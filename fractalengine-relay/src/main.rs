@@ -19,6 +19,9 @@ mod replicas;
 #[derive(bevy::prelude::Resource)]
 struct ShutdownRequested(Arc<AtomicBool>);
 
+/// EnvBackend slot for the share-URL signing seed (`("fractalengine", "share_signer")`).
+const SHARE_SIGNER_ENV: &str = "FE_SECRET_FRACTALENGINE_SHARE_SIGNER";
+
 fn main() -> anyhow::Result<()> {
     // Durability: default SurrealKV's fsync mode unless the operator overrode it,
     // mirroring the GUI binary so both agree. Valid values are `never` | `every` |
@@ -58,7 +61,16 @@ fn main() -> anyhow::Result<()> {
     // A24/DEC-C9: dedicated share-URL signing key, independent of the node
     // identity seed — EnvBackend slot `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`
     // (operator must export it for the key to survive a restart, same
-    // caveat as the relay's node keypair; fe-api/src/AGENTS.md §share).
+    // caveat as the relay's node keypair; fe-api/AGENTS.md §share).
+    // EnvBackend::set only stores in-process, so the fallback arm below never
+    // fires for a missing var — warn here, before the silent ephemeral generate.
+    if std::env::var_os(SHARE_SIGNER_ENV).is_none() {
+        tracing::warn!(
+            "{SHARE_SIGNER_ENV} is not set — generating an EPHEMERAL share-URL signing key: \
+             every share link minted by this relay stops verifying (401) after a restart. \
+             Export a 64-hex-char seed in {SHARE_SIGNER_ENV} to make share links survive restarts."
+        );
+    }
     let share_signer = match fe_identity::load_or_generate_keypair(&secret_store, "share_signer") {
         Ok(kp) => Arc::new(kp),
         Err(e) => {
