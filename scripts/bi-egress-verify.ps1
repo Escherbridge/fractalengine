@@ -294,18 +294,12 @@ try {
     # -----------------------------------------------------------------------
     Write-Section "DuckDB httpfs reads"
 
-    # DuckDB's parquet reader auto-detects the GeoParquet "geo" key-value
-    # metadata and (with enable_geoparquet_conversion, default ON) validates
-    # its "crs" field strictly against the GeoParquet spec (PROJJSON object,
-    # `null`, or absent) -- our free-text CRS label ("PETAL-LOCAL:meters;
-    # origin=unset" etc., also used for the x-fe-crs header and the CSV
-    # "# crs=" line) is NOT a spec-legal value, so DuckDB rejects the whole
-    # file with "Invalid Input Error: Geoparquet column 'position' has
-    # invalid CRS" -- this is a real, DuckDB-specific interop finding (see
-    # the script's final report). Disabling geo-metadata interpretation
-    # client-side is the non-invasive fix: we do not need DuckDB's SPATIAL
-    # geometry type, only the raw WKB bytes / scalar columns.
-    $prelude = "INSTALL httpfs; LOAD httpfs; SET enable_geoparquet_conversion=false;"
+    # DEC-C16: the GeoParquet "geo" key-value metadata's "crs" field is now
+    # spec-legal null (the honest free-text label moved to the custom
+    # "fe:crs" key), so stock DuckDB's enable_geoparquet_conversion (default
+    # ON) no longer rejects the file -- `SET enable_geoparquet_conversion=
+    # false;` is only needed for hexon archives produced before DEC-C16.
+    $prelude = "INSTALL httpfs; LOAD httpfs;"
 
     # -json mode gives structured, precision-preserving output (doubles are
     # rendered as their shortest round-trip decimal string) instead of the

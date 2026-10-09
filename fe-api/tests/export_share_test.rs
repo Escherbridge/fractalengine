@@ -257,8 +257,10 @@ async fn export_parquet_round_trips_and_is_scope_filtered() {
     assert_eq!(snaps[0].position, [1.5, 2.0, 3.0]);
 
     // Landmine (unconfigured petal): local meters never masquerade as EPSG:4326.
+    // DEC-C16: spec `crs` key is null; the honest label lives in `fe:crs`.
     let geo = read_parquet_geo_meta(&bytes);
-    let crs = geo["columns"]["position"]["crs"].as_str().unwrap();
+    assert!(geo["columns"]["position"]["crs"].is_null());
+    let crs = geo["columns"]["position"]["fe:crs"].as_str().unwrap();
     assert!(crs.contains("PETAL-LOCAL"), "{crs}");
     assert!(!crs.contains("4326"), "{crs}");
 }
@@ -407,8 +409,10 @@ async fn export_csv_local_vs_latlon_landmine() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
+    // DEC-C16: spec `crs` key is null; the honest label lives in `fe:crs`.
     let geo = read_parquet_geo_meta(&body_bytes(resp).await);
-    assert_eq!(geo["columns"]["position"]["crs"], "EPSG:4326");
+    assert!(geo["columns"]["position"]["crs"].is_null());
+    assert_eq!(geo["columns"]["position"]["fe:crs"], "EPSG:4326");
 
     // Bad coords value → 400.
     let resp = export_csv(

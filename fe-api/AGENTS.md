@@ -448,6 +448,9 @@ silently labeled EPSG:4326; only `coords=latlon` output gets `EPSG:4326`).
 The `/query` JSON envelope gains an optional `crs` field: petal-scoped tokens
 resolve their petal, broader scopes get the `origin=per-petal` marker because
 one response can mix petals with different origins.
+DEC-C16: in the GeoParquet `geo` footer metadata (fe-query §geoparquet) this
+same label lands in the custom `fe:crs` key, not the spec `crs` key (which is
+always `null`) — the x-fe-crs header and CSV `# crs=` line are unaffected.
 
 **Integration requests** (would require edits outside `fe-api/**`, so left as
 requests rather than done here):
