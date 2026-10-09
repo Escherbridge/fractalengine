@@ -36,12 +36,23 @@
 //!       pending durable-reply correlation), so a live-relay verify script
 //!       has no authed path to bind a tileset to a petal — this direct write
 //!       is the only way to exercise the authed tile-SERVING routes end to
-//!       end against a real relay. Prints `terrain: <json>` on success.
+//!       end against a real relay. The written value is a real
+//!       `fe_terrain::config::TerrainConfig` (DEC-C22 FIX H) — fe-api's list
+//!       and tile-serving handlers only lenient-read the raw
+//!       `tileset_hexon_uris` JSON field, but the in-app engine reader
+//!       (`fe-terrain/src/petal_binding.rs::terrain_config_from_petal_json`)
+//!       does `serde_json::from_value::<TerrainConfig>` and rejects a partial
+//!       object outright, since `TerrainConfig`'s `enabled`/`origin`/
+//!       `tile_source_url`/`elevation_source` fields have no serde defaults
+//!       (`fe-terrain/src/config.rs:47-51`); a writer of this shared JSON
+//!       column must satisfy the strictest reader. Prints `terrain: <json>`
+//!       on success.
 
 use surrealdb::engine::local::SurrealKv;
 
 use fe_database::repo::Db;
 use fe_database::schema::{Role, Verse};
+use fe_terrain::config::TerrainConfig;
 
 fn arg(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -184,7 +195,15 @@ async fn run_bind_terrain() -> anyhow::Result<()> {
         "petal {petal_id} does not exist in {db_path} -- seed it over REST first"
     );
 
-    let config = serde_json::json!({ "tileset_hexon_uris": tileset_ids });
+    // Full TerrainConfig, not a partial object — the strict engine reader
+    // (petal_binding.rs::terrain_config_from_petal_json) is the contract for
+    // this JSON column; see the module doc above (DEC-C22 FIX H).
+    let terrain_config = TerrainConfig {
+        enabled: true,
+        tileset_hexon_uris: tileset_ids,
+        ..TerrainConfig::default()
+    };
+    let config = serde_json::to_value(&terrain_config)?;
     db.query("UPDATE petal SET terrain = $config WHERE petal_id = $pid")
         .bind(("config", config.clone()))
         .bind(("pid", petal_id.clone()))

@@ -37,6 +37,10 @@ surrealdb = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3"
+# seed_join_verse's bind-terrain writes a real TerrainConfig (DEC-C22 FIX H):
+# fe-terrain has no fe-database dependency (checked, no cycle), default
+# features only (no "render"/bevy pulled in).
+fe-terrain = { path = "../fe-terrain" }
 
 [package.metadata.env]
 SURREAL_SYNC_DATA = "true"

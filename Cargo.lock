@@ -5293,6 +5293,7 @@ dependencies = [
  "fe-policy",
  "fe-query",
  "fe-runtime",
+ "fe-terrain",
  "hex",
  "rand 0.8.6",
  "serde",

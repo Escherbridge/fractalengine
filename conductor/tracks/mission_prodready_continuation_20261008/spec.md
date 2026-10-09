@@ -217,6 +217,20 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   audit finding; trigger: hexon registry goes live), remaining legacy
   peer.rs .ok() sites (F19 note), bridge arrival-order note.
 
+- **DEC-C22 (2026-10-09)** — M6 review PASS-WITH-FIXES, fixes folded before
+  close: (H) bind-terrain serializes a REAL `TerrainConfig` (enabled +
+  defaults) instead of a partial object — the strict engine parser
+  (terrain_config_from_petal_json) rejected the partial shape while fe-api's
+  lenient field-read tolerated it, so the serve fixture would have rendered
+  no terrain in-app (reviewer's rule: a writer of a shared JSON column must
+  satisfy the STRICTEST reader); (M) hexon-serve-verify tees its assertion
+  results into the committed log (evidence trail, not just relay stdout);
+  (L) the env-gated GIS test becomes `#[ignore = "requires FE_GIS_DIST_DIR"]`
+  + explicit --ignored invocation in the script (no silent skip-as-green in
+  workspace sweeps). Serve script re-run post-fix is the acceptance.
+  Informational (no action): log mojibake (console codepage), stale ~18KB/tile
+  estimate vs measured ~74KB (the measured table is what's presented).
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

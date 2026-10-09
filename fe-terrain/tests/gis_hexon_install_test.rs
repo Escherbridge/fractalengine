@@ -1,12 +1,15 @@
 //! F16/A29 V1 — install verification for the two F15-produced `.hexon`
 //! tilesets (switzerland-zurich-alps, japan-mount-fuji). The archives live in
 //! the sibling `gis-tile-etl` repo's `dist/` directory, not in this repo, so
-//! this test is gated on `FE_GIS_DIST_DIR` and skips cleanly (prints a
-//! notice, returns without assertions) when that env var is unset.
+//! this test is `#[ignore]`d by default (DEC-C22 FIX L: a workspace sweep
+//! without `FE_GIS_DIST_DIR` must show the test did not run, not a silent
+//! green skip) and requires an explicit `--ignored` invocation. Once run,
+//! a missing/unset `FE_GIS_DIST_DIR` or missing archive is a loud panic, not
+//! a skip — misconfiguration should fail, not pass quietly.
 //!
 //! Run:
 //!   FE_GIS_DIST_DIR="C:\Users\<you>\...\gis-tile-etl\dist" \
-//!   cargo test -p fe-terrain --test gis_hexon_install_test -- --nocapture
+//!   cargo test -p fe-terrain --test gis_hexon_install_test -- --ignored --nocapture
 
 use fe_terrain::tiles::HexonStore;
 
@@ -61,15 +64,13 @@ fn temp_store_dir(label: &str) -> std::path::PathBuf {
 }
 
 #[test]
+#[ignore = "requires FE_GIS_DIST_DIR pointing at gis-tile-etl/dist"]
 fn install_f15_hexons_backfills_correct_scale_and_meta() {
-    let Ok(dist_dir) = std::env::var("FE_GIS_DIST_DIR") else {
-        eprintln!(
-            "SKIP install_f15_hexons_backfills_correct_scale_and_meta: \
-             FE_GIS_DIST_DIR is unset. Point it at gis-tile-etl's dist/ \
-             directory (sibling repo) to run this F16/A29 verification."
-        );
-        return;
-    };
+    let dist_dir = std::env::var("FE_GIS_DIST_DIR").expect(
+        "FE_GIS_DIST_DIR must be set when running this #[ignore]'d test -- \
+         point it at gis-tile-etl's dist/ directory (sibling repo); \
+         misconfiguration should fail loudly, not skip quietly",
+    );
     let dist_dir = std::path::PathBuf::from(dist_dir);
 
     let store = HexonStore::with_dir(temp_store_dir("store")).expect("create hexon store");
