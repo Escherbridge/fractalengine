@@ -24,7 +24,10 @@ const DEFAULT_GEOMETRY_COLUMN: &str = "position";
 pub struct GeoParquetMeta {
     /// Name of the column that holds geometry data.
     pub primary_geometry_column: String,
-    /// CRS descriptor — petal-local meters by default, never a silent EPSG:4326 (see AGENTS.md §geoparquet).
+    /// CRS descriptor — petal-local meters by default, never a silent EPSG:4326.
+    /// DEC-C16: this label is NOT written to the spec `crs` key (which must be
+    /// PROJJSON/null/absent); it is carried in the custom `fe:crs` key instead,
+    /// alongside the x-fe-crs header and CSV `# crs=` line (see AGENTS.md §geoparquet).
     pub crs: String,
     /// Geometry encoding format (GeoParquet 1.0 mandates `"WKB"`).
     pub encoding: String,
@@ -42,6 +45,11 @@ impl Default for GeoParquetMeta {
 
 impl GeoParquetMeta {
     /// Render the GeoParquet 1.0 `geo` file-metadata JSON document.
+    ///
+    /// DEC-C16: `crs` is always spec-legal `null` (petal-local frames have no
+    /// PROJJSON CRS; `null` means "unspecified" and claims nothing — unlike a
+    /// silent EPSG:4326 default would). The honest free-text label still lives
+    /// in `fe:crs`, a spec-tolerated custom key alongside `crs`.
     pub fn geo_metadata_json(&self) -> Result<String> {
         let doc = serde_json::json!({
             "version": "1.0.0",
@@ -50,7 +58,8 @@ impl GeoParquetMeta {
                 &self.primary_geometry_column: {
                     "encoding": self.encoding,
                     "geometry_types": ["Point Z"],
-                    "crs": self.crs,
+                    "crs": serde_json::Value::Null,
+                    "fe:crs": self.crs,
                 }
             }
         });
@@ -276,7 +285,9 @@ mod tests {
         assert_eq!(geo["primary_column"], "position");
         assert_eq!(geo["columns"]["position"]["encoding"], "WKB");
         assert_eq!(geo["columns"]["position"]["geometry_types"][0], "Point Z");
-        assert!(geo["columns"]["position"]["crs"]
+        // DEC-C16: spec `crs` is null; the honest label lives in `fe:crs`.
+        assert!(geo["columns"]["position"]["crs"].is_null());
+        assert!(geo["columns"]["position"]["fe:crs"]
             .as_str()
             .unwrap()
             .contains("PETAL-LOCAL"));
@@ -383,7 +394,8 @@ mod tests {
             .unwrap()
             .expect("geo metadata present");
         let geo: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert!(geo["columns"]["position"]["crs"]
+        assert!(geo["columns"]["position"]["crs"].is_null());
+        assert!(geo["columns"]["position"]["fe:crs"]
             .as_str()
             .unwrap()
             .contains("origin=47.6062,-122.3321,56.0"));

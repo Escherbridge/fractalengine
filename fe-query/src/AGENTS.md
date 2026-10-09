@@ -115,14 +115,17 @@ footer metadata; `codec.rs` owns the snapshot↔Arrow/WKB mapping.
   (BI/DuckDB-friendly); `properties` is a nullable JSON-string Utf8 column;
   `node_log` is intentionally NOT exported (audit log ≠ analytics egress)
   and reads back empty.
-- **CRS honesty (FR-5 seam):** the `geo` metadata `crs` field carries a
-  descriptive *string* — default `"PETAL-LOCAL:meters;origin=unset"` — never
-  a silent EPSG:4326 claim, because coordinates are petal-local meters. The
-  API layer (which owns the petal terrain origin) overrides it via
-  `write_nodes_parquet_with_meta`, either stamping the real origin string or
-  converting to lat/lon and only then labeling EPSG:4326 (track Phase 5). A
-  string in `crs` deviates from strict GeoParquet-1.0 PROJJSON; that is a
-  deliberate trade — honest-but-nonstandard beats standard-but-wrong.
+- **CRS honesty (FR-5 seam) + DEC-C16 spec compliance:** the `geo` metadata
+  `crs` key is always spec-legal `null` (petal-local frames have no PROJJSON
+  CRS; `null` means "unspecified", never a silent EPSG:4326 claim). The
+  descriptive *string* — default `"PETAL-LOCAL:meters;origin=unset"` — moved
+  to the custom `fe:crs` key in the same `columns.<geometry>` object
+  (spec-tolerated custom keys). The API layer (which owns the petal terrain
+  origin) still overrides that string via `write_nodes_parquet_with_meta`,
+  either stamping the real origin string or converting to lat/lon and only
+  then labeling EPSG:4326 (track Phase 5) — only the `fe:crs` value changes;
+  `crs` stays `null` either way. This closed the stock-DuckDB interop gap
+  (`enable_geoparquet_conversion` no longer needs to be disabled).
 
 ## §timeseries (iot_spatial_reporting_20260714)
 

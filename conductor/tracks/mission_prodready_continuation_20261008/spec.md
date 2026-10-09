@@ -129,6 +129,15 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   F14 (sonnet) strictly sequential; ToolSpec/ScopeRule shape ratified in
   `m5-mcp-harness-design.md`.
 
+- **DEC-C16 (2026-10-09)** — GeoParquet CRS spec compliance: the geo-metadata
+  `crs` key gets spec-legal `null` (petal-local frames genuinely have no
+  PROJJSON CRS; null = "unspecified", never a silent EPSG:4326 claim), with
+  the honest free-text label moved to a CUSTOM key (`fe:crs`) in the same
+  geo metadata + the existing x-fe-crs header. Stock DuckDB then reads our
+  parquet without `SET enable_geoparquet_conversion=false`; the escape hatch
+  stays documented for older builds only. Implemented as a small dedicated
+  pass before F12 so the egress docs state the simple truth.
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.
