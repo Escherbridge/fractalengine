@@ -68,6 +68,24 @@ greenfield):**
 - IoT ingestion → queryable spatial rows (fe-terrain has IoT bits; needs the
   reporting-facing shape).
 
+> **CORRECTION 2026-10-09 (F18 conductor reconciliation):** every gap above
+> is now closed; this bullet list is historical, kept for context, not a
+> live gap list. GeoParquet has a real writer/reader
+> (`fe-query/src/columnar/geoparquet/{mod,codec}.rs`, `analytics_egress_20260714`
+> Phase 1, 2026-07-15) with spec-legal `crs` metadata (DEC-C16, commit
+> `1ea14ba`). The BI-egress surface shipped and is **live-verified, not just
+> landed**: `export.parquet`/`export.csv` (incl. the reading-shaped export,
+> F11 `2023809`), a live-DuckDB-over-httpfs e2e proof re-runnable via
+> `scripts/bi-egress-verify.ps1` (F10 `2a4026e`, 49/49 after the M4 review
+> hardening), and signed/shareable query URLs with a persistent share-signer
+> keystore slot (F11). Copy-paste UX landed earlier (`fe-ui/src/panels/egress_card.rs`,
+> `analytics_egress_20260714` Phase 4). IoT → queryable spatial rows landed
+> via `iot_spatial_reporting_20260714` (schema + ingest + timeseries query
+> builders) plus the reading-shaped export (F11). Full record:
+> [analytics_egress_20260714](./tracks/analytics_egress_20260714/),
+> [bi_verification_20261009](./tracks/bi_verification_20261009/),
+> `docs/bi-egress.md`.
+
 **Candidate track shape (for later planning):** `analytics_egress_*` —
 (a) finish GeoParquet, (b) add BI egress (OData or DuckDB-attach or parquet
 download — decide), (c) copy-paste query/URL UX, (d) IoT→spatial-rows reporting
@@ -105,6 +123,18 @@ closed foundry + official registry + marketplace as a separate product.
   rate/cost limits, CRS correctness, RBAC on query results, blob provenance).
   Known standing gaps: RBAC not enforced in fe-hexon (Phase 8.4), replication
   mock-backed, `fe-plugin` should depend on `fe-sdk`.
+
+  > **CORRECTION 2026-10-09 (F18 conductor reconciliation):** "replication
+  > mock-backed" is now FALSE and should be struck from future copies of
+  > this gap list. Real iroh-docs replication landed across M1+M2 of the
+  > prod-ready mission (F1–F4, F20–F24; commit range `f9c609a`..`0105bba`):
+  > `IrohDocsReplicator` rides real `Doc::set_bytes`/`del`/`subscribe`, the
+  > relay opens and applies replicas for every hosted verse with graceful
+  > shutdown, and the sharded timeseries fabric + distributed query fan-out
+  > (F5–F7) ride the same real transport. The other two gaps (fe-hexon RBAC,
+  > `fe-plugin`→`fe-sdk`) are untouched by this mission and remain open as
+  > stated. Record: [p2p_mycelium_completion_20260701](./tracks/p2p_mycelium_completion_20260701/)
+  > (now `done`), [timeseries_fabric_20261009](./tracks/timeseries_fabric_20261009/).
 - **UX:** refined editing + sleeker features. **The user will spec a dedicated
   UX track themselves after a thorough QA review** — do not pre-empt it; capture
   QA findings for that track when they surface.

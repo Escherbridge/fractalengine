@@ -1,0 +1,18 @@
+{
+  "id": "bi_verification_20261009",
+  "description": "Consolidated record track for the M4 BI-egress verification effort: the live-relay + real-DuckDB e2e proof (scripts/bi-egress-verify.ps1), the readings-export + share-signer-persistence acceptance, the docs/bi-egress.md deliverable, and the full adversarial-review saga (FAIL -> fix -> STILL-FAILING -> remediation + grammar audit -> validated) that hardened the export/share SQL surface. Created at mission close (F18, A31) as one of the three new initiative tracks per the F18 orchestrator note.",
+  "type": "record",
+  "created_at": "2026-10-09T00:00:00Z",
+  "status": "done",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "VALIDATED 2026-10-09 (F18, conductor reconciliation): created per the F18 deliverable (3 new record tracks: timeseries-fabric, simulation-lab, BI-verification). Acceptance covered: A22 (live DuckDB e2e, F10 2a4026e, 31/31 -> 48/48 -> 49/49 across the review saga), A23/A24 (readings export + persistent share signer, F11 2023809), A25 (docs/bi-egress.md, F12 a6d23f3). M4 milestone review verdict trail: FAIL -> fix pass @667aa18 (DEC-C17/C18) -> re-review STILL-FAILING (1 new HIGH, node_log side channel) -> remediation + grammar audit @770acd3 (DEC-C19/C20) -> gate green. scripts/bi-egress-verify.ps1 is the standing re-runnable verification artifact -- re-run it (not this note) to re-confirm the live surface after future export/share-path changes. Implementation history (as opposed to verification history) lives in conductor/tracks/analytics_egress_20260714/metadata.json, now closed done.",
+  "research_refs": [
+    "conductor/tracks/analytics_egress_20260714/metadata.json",
+    "conductor/tracks/mission_prodready_continuation_20261008/plan.md",
+    "conductor/tracks/mission_prodready_continuation_20261008/spec.md",
+    "docs/bi-egress.md",
+    "scripts/bi-egress-verify.ps1"
+  ]
+}
