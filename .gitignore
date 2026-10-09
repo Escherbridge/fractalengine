@@ -27,3 +27,6 @@ coverage/
 
 # Built sample hexon packages (regenerate via `cargo run -p fe-hexon --example build_sample_hexons`)
 sample-hexons/dist/
+
+# Local tooling fetched for e2e verification (BI egress A22) - never committed
+/tools/
