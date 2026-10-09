@@ -386,3 +386,49 @@ async fn reading_id_is_storage_enforced_unique() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["value"].as_f64(), Some(21.5));
 }
+
+// ---------------------------------------------------------------------------
+// F24 — typed rejection rides the DB-thread reply (no string-sniffing)
+// ---------------------------------------------------------------------------
+
+/// F24: the DB-thread `InsertIotReadings` arm packs validation failures into
+/// `DbResult::IotReadingsRejected` (the 422-class family) so the fe-api
+/// fallback maps real HTTP statuses without parsing `DbResult::Error`
+/// strings. Each validation variant must map to its typed rejection with
+/// Display wording identical to the direct path's `IotIngestError` body
+/// (byte-parity), and a DB failure must NOT masquerade as a validation
+/// rejection.
+#[test]
+fn validation_failures_map_to_their_typed_rejection_with_parity_wording() {
+    use fe_database::handlers::iot_reading::IotIngestError;
+    use fe_runtime::messages::IotIngestRejection;
+
+    let cases: Vec<(IotIngestError, IotIngestRejection)> = vec![
+        (
+            IotIngestError::UnknownAnchor("n-foreign".into()),
+            IotIngestRejection::UnknownAnchor {
+                node_id: "n-foreign".into(),
+            },
+        ),
+        (
+            IotIngestError::InvalidTimestamp("nope".into()),
+            IotIngestRejection::InvalidTimestamp { raw: "nope".into() },
+        ),
+        (IotIngestError::EmptyMetric, IotIngestRejection::EmptyMetric),
+    ];
+    for (error, expected) in cases {
+        let rejection = error
+            .validation_rejection()
+            .expect("validation errors carry their typed rejection");
+        assert_eq!(rejection, expected);
+        // Byte-parity with the direct path: the HTTP body is identical
+        // whichever seam served the ingest.
+        assert_eq!(rejection.to_string(), error.to_string());
+    }
+
+    // A DB failure is not a validation rejection — the arm must degrade it
+    // to the generic `DbResult::Error` (502-class), never a 422.
+    assert!(IotIngestError::Db("transport broke".into())
+        .validation_rejection()
+        .is_none());
+}

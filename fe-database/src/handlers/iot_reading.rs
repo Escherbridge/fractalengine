@@ -25,6 +25,29 @@ pub enum IotIngestError {
     Db(String),
 }
 
+impl IotIngestError {
+    /// The typed 422-class detail when this is a validation failure, `None`
+    /// for DB failures (F24) — the DB-thread `InsertIotReadings` arm packs
+    /// the rejection into `DbResult::IotReadingsRejected` so the API
+    /// fallback never string-sniffs `DbResult::Error` for status mapping.
+    pub fn validation_rejection(&self) -> Option<fe_runtime::messages::IotIngestRejection> {
+        match self {
+            Self::UnknownAnchor(node_id) => {
+                Some(fe_runtime::messages::IotIngestRejection::UnknownAnchor {
+                    node_id: node_id.clone(),
+                })
+            }
+            Self::InvalidTimestamp(raw) => {
+                Some(fe_runtime::messages::IotIngestRejection::InvalidTimestamp {
+                    raw: raw.clone(),
+                })
+            }
+            Self::EmptyMetric => Some(fe_runtime::messages::IotIngestRejection::EmptyMetric),
+            Self::Db(_) => None,
+        }
+    }
+}
+
 /// Insert a batch of readings anchored to nodes of `petal_id` (all-or-nothing:
 /// every anchor is validated against the petal before any row is written).
 ///

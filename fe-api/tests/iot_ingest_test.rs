@@ -16,6 +16,7 @@ use fe_api::server::ApiState;
 use fe_api::{limits, query_guard};
 use fe_database::handlers::iot_reading::IotReadingInput;
 use fe_identity::api_token::ApiClaims;
+use fe_runtime::messages::{DbCommand, DbResult};
 
 type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;
 
@@ -430,4 +431,460 @@ async fn ingest_without_replication_seam_still_persists_rows() {
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(count_readings(&db).await, 1);
+}
+
+// ---------------------------------------------------------------------------
+// F24 — the DB-thread fallback when db_reader is absent
+// ---------------------------------------------------------------------------
+
+/// One command the fallback dispatcher observed, for guard-order assertions.
+#[derive(Clone, Debug)]
+enum ObservedCommand {
+    /// A scope-resolution round-trip (expected before any write; its payload
+    /// is irrelevant to the guard-order assertions).
+    ScopeResolution,
+    InsertIotReadings {
+        petal_id: String,
+        verse_id: Option<String>,
+        source_did: String,
+        readings: usize,
+    },
+}
+
+/// What the test dispatcher does with an `InsertIotReadings` command.
+enum InsertBehaviour {
+    /// Execute the real DB-thread arm: run `insert_readings_with_replication`
+    /// on the Mem DB and reply with the same typed mapping the arm uses
+    /// (`IotReadingsInserted` / `IotReadingsRejected` / `Error`).
+    Real,
+    /// Reply with a fixed `DbResult` instead (simulates a DB/transport
+    /// failure behind the seam).
+    Fixed(DbResult),
+}
+
+struct FallbackHarness {
+    state: Arc<ApiState>,
+    repl_rx: crossbeam::channel::Receiver<fe_database::ReplicationEvent>,
+    observed: Arc<std::sync::Mutex<Vec<ObservedCommand>>>,
+    _dispatcher: std::thread::JoinHandle<()>,
+}
+
+/// Build the F24 fallback deployment: `db_reader: None` (the Windows
+/// SurrealKV per-handle-lock posture) with the API→DB command channel
+/// serviced by a dispatcher that mirrors the DB-thread arms the real
+/// dispatch loop runs.
+fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarness {
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(64);
+    let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+    let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(64);
+    let keypair = fe_identity::NodeKeypair::generate();
+    let verifying_key = keypair.verifying_key();
+
+    let state = Arc::new(ApiState {
+        api_cmd_tx,
+        transform_broadcast_tx,
+        entity_change_tx,
+        verifying_key,
+        revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+        blob_store: None,
+        cors_origins: vec![],
+        // The F24 precondition: no direct reader (the deployment-platform
+        // posture this feature exists to serve).
+        db_reader: None,
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: None,
+        tileset_registry: None,
+        hexon_registry: None,
+        announcement_store: None,
+        // NOTE: None here — on the fallback path the emit seam belongs to the
+        // DB thread (the dispatcher wires it below), not to ApiState.
+        replication_tx: None,
+        distributed_tx: None,
+        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
+    });
+
+    let observed: Arc<std::sync::Mutex<Vec<ObservedCommand>>> = Arc::default();
+    let observed_for_thread = Arc::clone(&observed);
+    let dispatcher_db = db.clone();
+    let dispatcher = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("dispatcher runtime");
+        while let Ok(fe_runtime::messages::ApiCommand::DbRequest { cmd, reply_tx }) =
+            api_cmd_rx.recv()
+        {
+            match cmd {
+                DbCommand::ResolvePetalScope { petal_id } => {
+                    observed_for_thread
+                        .lock()
+                        .unwrap()
+                        .push(ObservedCommand::ScopeResolution);
+                    let scope = rt.block_on(async {
+                        let mut res = dispatcher_db
+                            .query("SELECT fractal_id FROM petal WHERE petal_id = $pid LIMIT 1")
+                            .bind(("pid", petal_id.clone()))
+                            .await
+                            .expect("petal query");
+                        let rows: Vec<serde_json::Value> = res.take(0).expect("petal rows");
+                        let fractal_id = rows
+                            .first()
+                            .and_then(|r| r.get("fractal_id"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)?;
+                        let mut res2 = dispatcher_db
+                            .query("SELECT verse_id FROM fractal WHERE fractal_id = $fid")
+                            .bind(("fid", fractal_id.clone()))
+                            .await
+                            .expect("fractal query");
+                        let rows2: Vec<serde_json::Value> = res2.take(0).expect("fractal rows");
+                        rows2
+                            .first()
+                            .and_then(|r| r.get("verse_id"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(|verse_id| {
+                                fe_database::build_scope(
+                                    verse_id,
+                                    Some(&fractal_id),
+                                    Some(&petal_id),
+                                )
+                            })
+                    });
+                    // Mirrors the real arm: `scope: None` when unresolvable
+                    // (the handler maps that to its 404/None path).
+                    let _ = reply_tx.send(DbResult::ScopeResolved { scope });
+                }
+                DbCommand::InsertIotReadings {
+                    petal_id,
+                    verse_id,
+                    source_did,
+                    readings,
+                } => {
+                    observed_for_thread
+                        .lock()
+                        .unwrap()
+                        .push(ObservedCommand::InsertIotReadings {
+                            petal_id: petal_id.clone(),
+                            verse_id: verse_id.clone(),
+                            source_did: source_did.clone(),
+                            readings: readings.len(),
+                        });
+                    let reply = match &insert_behaviour {
+                        InsertBehaviour::Real => {
+                            // Exactly the fe-database dispatch arm: durable
+                            // first, one ReplicationEvent per accepted row,
+                            // typed rejection for validation failures.
+                            let blob: fe_runtime::blob_store::BlobStoreHandle =
+                                Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+                            match rt.block_on(
+                                fe_database::handlers::iot_reading::insert_readings_with_replication(
+                                    &dispatcher_db,
+                                    &petal_id,
+                                    verse_id.as_deref(),
+                                    &source_did,
+                                    &readings,
+                                    Some(&blob),
+                                    Some(&repl_tx),
+                                ),
+                            ) {
+                                Ok(written) => DbResult::IotReadingsInserted { petal_id, written },
+                                Err(e) => match e.validation_rejection() {
+                                    Some(reason) => {
+                                        DbResult::IotReadingsRejected { petal_id, reason }
+                                    }
+                                    None => DbResult::Error(format!(
+                                        "IoT readings ingest failed: {e}"
+                                    )),
+                                },
+                            }
+                        }
+                        InsertBehaviour::Fixed(fixed) => fixed.clone(),
+                    };
+                    let _ = reply_tx.send(reply);
+                }
+                other => {
+                    let _ = reply_tx.send(DbResult::Error(format!(
+                        "unsupported in fallback harness: {other:?}"
+                    )));
+                }
+            }
+        }
+    });
+
+    FallbackHarness {
+        state,
+        repl_rx,
+        observed,
+        _dispatcher: dispatcher,
+    }
+}
+
+fn observed_inserts(harness: &FallbackHarness) -> Vec<ObservedCommand> {
+    harness
+        .observed
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| matches!(c, ObservedCommand::InsertIotReadings { .. }))
+        .cloned()
+        .collect()
+}
+
+/// F24 success: with `db_reader` absent (the Windows per-handle-lock posture),
+/// ingest rides the DB-thread seam, threads the acting caller's identity,
+/// writes durably (READ-BACK), and fires one `ReplicationEvent` per accepted
+/// row — no 503 anywhere.
+#[tokio::test]
+async fn fallback_ingest_without_db_reader_persists_and_emits_per_row() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa).await;
+    seed_node(&db, &pa, "sensor-1", 1.0, 2.0).await;
+    let harness = fallback_harness(db.clone(), InsertBehaviour::Real);
+
+    let resp = post_readings(
+        &harness.state,
+        test_claims("VERSE#v1", "editor"),
+        &pa,
+        vec![
+            reading("sensor-1", "temperature_c", 21.5, None),
+            reading("sensor-1", "humidity_pct", 55.0, None),
+        ],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "no 503 on the fallback path");
+    let body = body_json(resp).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["accepted"], 2);
+
+    // The command carried the resolved petal, its verse (derived from the
+    // resolved scope, never the request body), and the acting caller's DID.
+    let inserts = observed_inserts(&harness);
+    assert_eq!(inserts.len(), 1, "one DB-thread command per batch");
+    match &inserts[0] {
+        ObservedCommand::InsertIotReadings {
+            petal_id,
+            verse_id,
+            source_did,
+            readings,
+        } => {
+            assert_eq!(petal_id, &pa);
+            assert_eq!(verse_id.as_deref(), Some("v1"));
+            assert_eq!(source_did, "did:key:z6MkUser");
+            assert_eq!(*readings, 2);
+        }
+        other => panic!("expected an InsertIotReadings observation, got {other:?}"),
+    }
+
+    // READ-BACK: the rows are durable.
+    assert_eq!(count_readings(&db).await, 2);
+    let mut res = db
+        .query("SELECT * FROM iot_reading")
+        .await
+        .expect("read back rows");
+    let rows: Vec<serde_json::Value> = res.take(0).expect("rows");
+    assert!(rows.iter().all(|r| r["source_did"] == "did:key:z6MkUser"));
+
+    // READ-BACK: one ReplicationEvent per accepted row (the DB-thread arm
+    // rides insert_readings_with_replication), each naming the verse + petal.
+    let mut events = Vec::new();
+    while let Ok(evt) = harness.repl_rx.try_recv() {
+        events.push(evt);
+    }
+    assert_eq!(events.len(), 2, "one event per accepted reading");
+    for evt in &events {
+        assert_eq!(evt.verse_id, "v1");
+        assert_eq!(evt.table, "iot_reading");
+        assert_eq!(evt.petal_id.as_deref(), Some(pa.as_str()));
+    }
+    assert_ne!(events[0].record_id, events[1].record_id);
+}
+
+/// F24: the fallback fires ONLY when `db_reader` is `None` — with a reader
+/// configured the direct path serves the ingest and no DB-thread command is
+/// ever sent.
+#[tokio::test]
+async fn direct_path_with_db_reader_never_sends_the_fallback_command() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa).await;
+    seed_node(&db, &pa, "sensor-1", 0.0, 0.0).await;
+
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(64);
+    let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+    let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
+    let keypair = fe_identity::NodeKeypair::generate();
+    let state = Arc::new(ApiState {
+        api_cmd_tx,
+        transform_broadcast_tx,
+        entity_change_tx,
+        verifying_key: keypair.verifying_key(),
+        revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+        blob_store: None,
+        cors_origins: vec![],
+        db_reader: Some(Arc::new(db)),
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: None,
+        tileset_registry: None,
+        hexon_registry: None,
+        announcement_store: None,
+        replication_tx: None,
+        distributed_tx: None,
+        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
+    });
+
+    let resp = post_readings(
+        &state,
+        test_claims("VERSE#v1", "editor"),
+        &pa,
+        vec![reading("sensor-1", "temperature_c", 21.5, None)],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The channel stayed empty — the direct path is unchanged.
+    assert!(
+        matches!(
+            api_cmd_rx.try_recv(),
+            Err(crossbeam::channel::TryRecvError::Empty)
+        ),
+        "no DB-thread command may be sent while db_reader is present"
+    );
+}
+
+/// F24: every guard denies on the fallback path BEFORE any write command is
+/// sent — role floor, scope containment, unknown petal, and the per-DID rate
+/// limit all behave exactly as on the direct path.
+#[tokio::test]
+async fn fallback_guards_deny_before_the_seam() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa).await;
+    seed_node(&db, &pa, "sensor-1", 0.0, 0.0).await;
+    let harness = fallback_harness(db, InsertBehaviour::Real);
+    let batch = || vec![reading("sensor-1", "temperature_c", 20.0, None)];
+
+    // Viewer role → 403, and not even a scope-resolution command is sent
+    // (the role floor precedes scope resolution).
+    let resp = post_readings(
+        &harness.state,
+        test_claims("VERSE#v1", "viewer"),
+        &pa,
+        batch(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        harness.observed.lock().unwrap().is_empty(),
+        "role denial happens before any channel traffic"
+    );
+
+    // Foreign-verse scope → 403; scope was resolved (one command) but NO
+    // write reached the seam.
+    let resp = post_readings(
+        &harness.state,
+        test_claims("VERSE#v2", "editor"),
+        &pa,
+        batch(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        observed_inserts(&harness).len(),
+        0,
+        "scope denial must never reach the write seam"
+    );
+
+    // Unknown petal → 404 (scope resolution honestly fails through the
+    // channel), still no write.
+    let resp = post_readings(
+        &harness.state,
+        test_claims("VERSE#v1", "editor"),
+        &ulid(),
+        batch(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(observed_inserts(&harness).len(), 0);
+
+    // Rate limit → 429: the first ten batches of the second pass ingest,
+    // then the guard refuses with the 11th — and no write command is sent
+    // for the refused request.
+    for _ in 0..limits::IOT_INGEST_RATE_PER_SEC {
+        let resp = post_readings(
+            &harness.state,
+            test_claims("VERSE#v1", "editor"),
+            &pa,
+            batch(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    let before = observed_inserts(&harness).len();
+    let resp = post_readings(
+        &harness.state,
+        test_claims("VERSE#v1", "editor"),
+        &pa,
+        batch(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        observed_inserts(&harness).len(),
+        before,
+        "the refused request never reached the write seam"
+    );
+}
+
+/// F24: the fallback keeps the direct path's typed status mapping — a
+/// validation failure returns 422 with byte-identical wording (the typed
+/// rejection crossing the seam), and a DB failure returns 502.
+#[tokio::test]
+async fn fallback_maps_typed_rejection_to_422_and_db_failure_to_502() {
+    // 422: a foreign anchor is a validation failure — the DB-thread arm's
+    // typed rejection crosses the seam as IotReadingsRejected.
+    let db = setup_test_db().await;
+    let pa = ulid();
+    let pb = ulid();
+    seed_petal(&db, &pa).await;
+    seed_petal(&db, &pb).await;
+    seed_node(&db, &pb, "sensor-b", 0.0, 0.0).await;
+    let harness = fallback_harness(db.clone(), InsertBehaviour::Real);
+
+    let resp = post_readings(
+        &harness.state,
+        test_claims("VERSE#v1", "editor"),
+        &pa,
+        vec![reading("sensor-b", "temperature_c", 20.0, None)],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["error"], "unknown anchor node 'sensor-b' in this petal",
+        "byte-parity with the direct path's IotIngestError wording"
+    );
+    assert_eq!(count_readings(&db).await, 0, "nothing persisted");
+
+    // 502: a DB failure behind the seam maps to the same failure surface as
+    // the direct path's IotIngestError::Db.
+    let db2 = setup_test_db().await;
+    let pc = ulid();
+    seed_petal(&db2, &pc).await;
+    seed_node(&db2, &pc, "sensor-1", 0.0, 0.0).await;
+    let harness = fallback_harness(
+        db2,
+        InsertBehaviour::Fixed(DbResult::Error("storage exploded".into())),
+    );
+    let resp = post_readings(
+        &harness.state,
+        test_claims("VERSE#v1", "editor"),
+        &pc,
+        vec![reading("sensor-1", "temperature_c", 20.0, None)],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"], "reading write failed");
 }

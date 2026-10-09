@@ -241,6 +241,38 @@ the cache receives its scene change; the bounded bridge has no automatic
 resync after a drop. Callers requiring read-after-write semantics must use the
 scoped DB/export surfaces instead.
 
+**Host wiring (F24, 2026-10-08).** `src/entity_store_bridge.rs` is the shared
+analytics-cache wiring every host binary rides: `hydrate_entity_store`
+(startup snapshot from live nodes, 10s-bounded, fail-closed on a malformed
+row) and `runtime_scene_change_to_store` (the fe-runtime → fe-entity-store
+`SceneChange` conversion — fe-entity-store deliberately stays fe-runtime-free,
+so each host converts at its own seam). Both binaries now wire the cache: the
+GUI drains via its Bevy `drain_scene_changes_to_store` system, and the relay
+(the headless host) creates the store, subscribes the scene-change broadcast
+BEFORE its DB thread spawns (no event gap), drains on a dedicated thread, and
+hydrates from pre-startup rows when its API read connection opens — closing
+the relay's `entity_store: None` TODO that kept the merged analytics surface
+dead on every platform. A relay-side hydration failure fails the surface
+closed (`entity_store: None`) rather than serving a partial nodes table;
+the GUI's pre-extraction local copies of these fns remain until its
+mechanical migration.
+
+**Honest-unavailable posture on per-handle-lock platforms (Windows).** The
+analytics authorization resolves the petal scope through the DIRECT reader by
+design (no crossbeam fallback — this section's first paragraph), and
+SurrealKV's per-handle file lock (os error 33, M1/F4-documented) rejects the
+second in-process connection while the DB-thread writer lives. On such
+platforms the analytics surface is therefore honestly unavailable live on
+BOTH binaries — `analytics authorization unavailable (no direct DB reader)` —
+even with the `EntityStore` wired. This is deliberate fail-closed
+posture, not an oversight to be "fixed" by routing analytics authorization
+through the fallback: F24 added a DB-thread fallback for IoT ingest (a write
+with a sanctioned `InsertIotReadings` command), but the analytics
+authorization design predates F24 and stays direct-only — extending it to
+the channel seam is a design change for the orchestrator to weigh, not
+something F24 forced. The merged surface serves live wherever the read
+connection opens.
+
 **Subquery/whitespace hardening (2026-07-15 security review):** the table
 whitelist is enforced on EVERY `FROM` clause via `from_clause_tables`
 (subqueries included; non-identifier FROM targets like `$var` or
@@ -399,6 +431,24 @@ future work). Design notes:
   derived counters, so the DB-thread single-writer invariant doesn't apply
   (rationale in fe-database `src/AGENTS.md` §iot-readings), and IoT-frequency
   batches must not queue behind the render loop's channel.
+- **DB-thread fallback when `db_reader` is absent (F24)**: the SurrealKV
+  per-handle file lock (os error 33 on Windows, M1/F4-documented) rejects the
+  API read connection while the DB-thread writer lives, so `db_reader` is
+  `None` on the deployment platform — the handler used to 503 there, killing
+  REST ingest live. It now falls back to the DB-thread seam
+  (`DbCommand::InsertIotReadings`, F7) over the SAME `ApiCommand::DbRequest`
+  channel every channel-fallback read uses: the write happens ON the DB
+  thread (MORE aligned with the single-writer rule than the `db_reader`
+  append-only exception), and the DB-thread arm rides
+  `insert_readings_with_replication`, so the per-row `ReplicationEvent`s fire
+  exactly as on the direct path. No guard is weakened or reordered: Editor+
+  role → ULID → petal scope → token containment → per-DID rate limit → batch
+  caps all run on this path BEFORE the command is sent, and `claims.sub`
+  rides the command as `source_did` so the acting caller's identity reaches
+  the DB-thread context. The fallback fires ONLY when `db_reader` is `None`;
+  with a reader configured the direct path is byte-identical to before.
+  Bounded by a 10s round-trip timeout (504 on timeout, 502 on
+  transport/DB failure).
 - **Replication emit seam (A11, F5)**: the same call publishes one
   `ReplicationEvent` per accepted row, so readings ingested over HTTP reach
   peers exactly like DB-thread writes do. It needs `ApiState.replication_tx`
@@ -409,7 +459,13 @@ future work). Design notes:
   `parse_scope(resolved_petal_scope)`, never from the request body.
 - **Validation failures map to real statuses**: unknown/foreign-petal anchor,
   bad RFC-3339 timestamp, or empty metric → 422 (typed `IotIngestError`, no
-  string-sniffing); DB failure → 502; empty batch → 400.
+  string-sniffing); DB failure → 502; empty batch → 400. **On the F24
+  fallback the typed detail crosses the DB-thread seam as
+  `DbResult::IotReadingsRejected` carrying
+  `fe_runtime::messages::IotIngestRejection`** (same reply family as
+  `IotReadingsInserted`): validation failures stay 422 with byte-identical
+  wording to the direct path (parity pinned by a fe-database test), and only
+  DB failures degrade to the generic `DbResult::Error` → 502.
 - **Egress seam (FR-5)**: `iot_reading` is whitelisted in
   `query_guard::ALLOWED_TABLES` and `inject_scope_filter` injects the petal
   filter on `FROM iot_reading` (rows carry a denormalized `petal_id`), so

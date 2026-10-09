@@ -18,6 +18,7 @@ fe-database = { path = "../fe-database" }
 fe-identity = { path = "../fe-identity", default-features = false }
 fe-sync     = { path = "../fe-sync" }
 fe-api      = { path = "../fe-api" }
+fe-entity-store = { path = "../fe-entity-store" }
 fe-terrain  = { path = "../fe-terrain" }
 bevy        = { workspace = true }
 crossbeam   = { workspace = true }
