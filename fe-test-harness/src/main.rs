@@ -100,6 +100,10 @@ fn main() {
             "API Token Edge Cases",
             scenarios::api_token_flow::run_edge_cases,
         ),
+        (
+            "API-DB-Sync Cross-Thread (F14/T4)",
+            scenarios::api_db_sync_cross_thread::run,
+        ),
     ];
 
     let mut passed = 0;

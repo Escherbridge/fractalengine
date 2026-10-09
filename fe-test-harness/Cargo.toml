@@ -13,6 +13,9 @@ fe-database = { path = "../fe-database" }
 fe-runtime = { path = "../fe-runtime" }
 fe-sync = { path = "../fe-sync" }
 fe-identity = { path = "../fe-identity" }
+# Tileset-registry seam for the API harness (api.rs::spawn_with_tileset_registry,
+# F14/T2) — already in the dep graph via fe-api itself.
+fe-terrain = { path = "../fe-terrain" }
 crossbeam = { workspace = true }
 anyhow = { workspace = true }
 tempfile = "3"

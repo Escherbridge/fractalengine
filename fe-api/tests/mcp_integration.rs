@@ -1730,3 +1730,148 @@ async fn query_tool_uses_the_guarded_local_pipeline() {
         .await;
     assert_tool_error(&body, "only SELECT statements are allowed");
 }
+
+// ---------------------------------------------------------------------------
+// F14/T5: seeded structured fuzz over every tool's arg schema
+// ---------------------------------------------------------------------------
+
+/// Deterministic splitmix64 (Steele/Lea/Flood 2014) — no new dependency, and
+/// the fixed seed below makes every run (and every panic, should one ever
+/// appear) byte-for-byte reproducible from the printed seed/key/variant.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
+/// A superset of every property name used across all 29 tool schemas, filled
+/// with values valid enough to clear `check_required_args` and usually reach
+/// the handler. One random key (scoped to the tool's OWN schema) is replaced
+/// per iteration — see [`mutate`].
+fn fuzz_baseline_args(home: &Chain, asset_id: &str) -> serde_json::Value {
+    json!({
+        "verse_id": home.verse, "fractal_id": home.fractal,
+        "petal_id": home.petal, "node_id": home.node,
+        "name": "fuzz-node", "cascade": false,
+        "position": [1.0, 2.0, 3.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0],
+        "path_id": home.node, "instance_index": 0,
+        "kind": "all_readings", "metric": "temp", "start_ms": 0, "end_ms": 1,
+        "script": "default", "n": 1, "event": { "kind": "heal" },
+        "data_base64": b64(&tiny_glb()), "asset_id": asset_id,
+        "key": "fuzz_key", "value": "fuzz_value",
+        "lat": 47.0, "lon": 8.0, "ele": 10.0, "description": "d", "symbol": "s",
+        "terrain": serde_json::Value::Null,
+        "bbox": "0,0,10,10", "bbox_ll": "0,0,1,1", "radius": 5.0, "cx": 0.0, "cz": 0.0,
+        "sql": "SELECT 1", "vars": {},
+    })
+}
+
+/// Replace `args[key]` with a type-confused value, or delete it entirely —
+/// the categories FR-5 names: numbers for strings, nulls, empty strings,
+/// oversized strings, wrong-shape objects/arrays, missing required keys.
+fn mutate(obj: &mut serde_json::Map<String, serde_json::Value>, key: &str, variant: u64) {
+    match variant {
+        0 => {
+            obj.insert(key.to_string(), serde_json::Value::Null);
+        }
+        1 => {
+            obj.insert(key.to_string(), json!(987_654_321_i64));
+        }
+        2 => {
+            obj.insert(key.to_string(), json!(""));
+        }
+        3 => {
+            obj.insert(key.to_string(), json!("x".repeat(20_000)));
+        }
+        4 => {
+            obj.insert(key.to_string(), json!([]));
+        }
+        5 => {
+            obj.insert(key.to_string(), json!({}));
+        }
+        _ => {
+            obj.remove(key);
+        }
+    }
+}
+
+/// FR-5: every tool, N=25 seeded mutations each, asserting the dispatcher
+/// never panics, never bubbles a transport-level JSON-RPC error for a
+/// routed `tools/call` (always the clean `tool_error` content shape), and
+/// never lets a call the dispatcher itself rejected (denied role, or a
+/// malformed/missing arg caught before the handler's side effect) reach the
+/// DB channel.
+#[tokio::test]
+async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "fuzz-home");
+    let asset_id = ulid();
+    let mut rng = SplitMix64::new(0x4641_3134_4632_3700); // "FA14F270", arbitrary fixed seed
+    const N: u64 = 25;
+
+    for spec in tool_specs() {
+        let schema = (spec.input_schema)();
+        let keys: Vec<String> = schema["properties"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        if keys.is_empty() {
+            continue; // nothing to mutate (sim_stop/sim_status take no args)
+        }
+        for i in 0..N {
+            let auth_ok = rng.next_u64() % 2 == 0;
+            let c = if auth_ok {
+                claims(&home.verse_scope(), &spec.min_role.to_string())
+            } else {
+                claims(&home.verse_scope(), role_below(spec.min_role))
+            };
+
+            let mut args = fuzz_baseline_args(&home, &asset_id);
+            let key = keys[(rng.next_u64() as usize) % keys.len()].clone();
+            let variant = rng.next_u64() % 7;
+            mutate(args.as_object_mut().unwrap(), &key, variant);
+
+            let before = model.lock().unwrap().log.len();
+            let (state2, c2, tool, args2) = (state.clone(), c.clone(), spec.name.to_string(), args);
+            let joined =
+                tokio::spawn(async move { call_tool(&state2, &c2, &tool, args2).await }).await;
+            assert!(
+                joined.is_ok(),
+                "{}: panicked on seed-iter {i} (key={key}, variant={variant})",
+                spec.name
+            );
+            let resp = joined.unwrap();
+            assert!(
+                resp.get("error").is_none() || resp["error"].is_null(),
+                "{}: dispatcher returned a transport-level error (5xx-shaped) for tools/call: {resp}",
+                spec.name
+            );
+            let is_tool_error = resp["result"]["isError"] == true;
+            if !auth_ok {
+                assert!(
+                    is_tool_error,
+                    "{}: a sub-min-role token was admitted: {resp}",
+                    spec.name
+                );
+            }
+            if !auth_ok || is_tool_error {
+                let after = model.lock().unwrap().log.len();
+                assert_eq!(
+                    after, before,
+                    "{}: a denied/malformed call reached the DB channel (key={key}, variant={variant})",
+                    spec.name
+                );
+            }
+        }
+    }
+}

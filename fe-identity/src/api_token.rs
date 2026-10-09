@@ -44,23 +44,41 @@ pub fn mint_api_token(
     ttl_secs: u64,
     jti: &str,
 ) -> anyhow::Result<String> {
-    ensure_crypto_provider();
     if ttl_secs > MAX_API_TOKEN_TTL_SECS {
         anyhow::bail!("API token TTL exceeds maximum of 30 days");
-    }
-    if scope.is_empty() {
-        anyhow::bail!("API token scope must not be empty");
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
+    mint_api_token_at(keypair, scope, max_role, now, now + ttl_secs, jti)
+}
+
+/// Like [`mint_api_token`], with explicit `iat`/`exp` (UNIX seconds) instead
+/// of a TTL relative to "now". Lets callers mint a token that is already
+/// expired, or expires in under a second, without waiting on the wall clock
+/// — the harness/test lane for token-lifecycle coverage (`verify_api_token`'s
+/// `jsonwebtoken` validator applies its own small leeway around `exp`, so a
+/// caller asserting expiry should pick an `exp` comfortably in the past
+/// rather than relying on TTL + sleep).
+pub fn mint_api_token_at(
+    keypair: &NodeKeypair,
+    scope: &str,
+    max_role: &str,
+    iat: u64,
+    exp: u64,
+    jti: &str,
+) -> anyhow::Result<String> {
+    ensure_crypto_provider();
+    if scope.is_empty() {
+        anyhow::bail!("API token scope must not be empty");
+    }
     let claims = ApiClaims {
         sub: keypair.to_did_key(),
         token_type: "api".to_string(),
         scope: scope.to_string(),
         max_role: max_role.to_string(),
-        iat: now,
-        exp: now + ttl_secs,
+        iat,
+        exp,
         jti: jti.to_string(),
     };
     let header = Header::new(Algorithm::EdDSA);
