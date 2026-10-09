@@ -524,6 +524,7 @@ fn analytics_state(
         announcement_store: None,
         replication_tx: None,
         distributed_tx,
+        sim_control_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }

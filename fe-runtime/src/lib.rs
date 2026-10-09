@@ -7,6 +7,7 @@ pub mod distributed_query;
 pub mod messages;
 pub mod peer_registry;
 pub mod shared_node;
+pub mod sim_control;
 pub mod timeseries;
 pub mod wiring;
 pub use channels::{ApiChannels, CHANNEL_BUFFER, TRANSFORM_BROADCAST_BUFFER};

@@ -62,6 +62,22 @@ impl ApiHarness {
     pub async fn spawn_with_distributed_tx(
         distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
     ) -> Result<Self> {
+        Self::spawn_with_seams(distributed_tx, None).await
+    }
+
+    /// Like [`Self::spawn`], wiring the sim control seam (F9/A20): a test
+    /// owning the matching receiver answers `SimControlCall`s like the
+    /// fe-sim bridge would (the real bridge is proven in fe-sim).
+    pub async fn spawn_with_sim_control_tx(
+        sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
+    ) -> Result<Self> {
+        Self::spawn_with_seams(None, sim_control_tx).await
+    }
+
+    async fn spawn_with_seams(
+        distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
+        sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
+    ) -> Result<Self> {
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .context("in-memory SurrealDB")?;
@@ -101,6 +117,7 @@ impl ApiHarness {
             announcement_store: None,
             replication_tx: None,
             distributed_tx,
+            sim_control_tx,
             share_signer: keypair.clone(),
         });
 

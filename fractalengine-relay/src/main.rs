@@ -351,6 +351,14 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // F9/A20: the sim control seam exists only in a `sim-control` build
+    // (fe-sim/src/AGENTS.md §session); default builds keep `None` and every
+    // /api/v1/sim/* call fails closed.
+    #[cfg(feature = "sim-control")]
+    let sim_control_tx = spawn_sim_control();
+    #[cfg(not(feature = "sim-control"))]
+    let sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender> = None;
+
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
         bind_addr,
         api_cmd_tx: api_cmd_tx.clone(),
@@ -378,6 +386,7 @@ fn main() -> anyhow::Result<()> {
         // serves its shards), and its own distributed surfaces fan out
         // through the same seam.
         distributed_tx: Some(distributed_call_tx),
+        sim_control_tx,
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));
@@ -427,6 +436,30 @@ fn main() -> anyhow::Result<()> {
 /// block the DB thread's outbound hop; a disconnected sync channel is
 /// shutdown, not backpressure, so it ends the bridge silently. Each dropped
 /// event warns with the running total — the bridge's drop counter.
+/// Spawn the fe-sim control bridge (sim-control builds only); sessions get
+/// scratch dirs under `FE_SIM_WORK_DIR` (default: `<tmp>/fe-relay-sim`).
+#[cfg(feature = "sim-control")]
+fn spawn_sim_control() -> Option<fe_runtime::sim_control::SimControlCallSender> {
+    let work_root = std::env::var_os("FE_SIM_WORK_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("fe-relay-sim"));
+    let (tx, rx) = fe_runtime::sim_control::sim_control_channel();
+    match fe_sim::control::spawn_sim_control_bridge(rx, work_root.clone()) {
+        Ok(_handle) => {
+            tracing::warn!(
+                work_root = %work_root.display(),
+                "SIM LAB relay: /api/v1/sim/* is live — a running sim session overrides this \
+                 process's HLC clock source; do not serve production verses from this process"
+            );
+            Some(tx)
+        }
+        Err(e) => {
+            tracing::error!("sim control bridge failed to spawn — sim surface disabled: {e}");
+            None
+        }
+    }
+}
+
 fn run_replication_bridge(
     repl_rx: crossbeam::channel::Receiver<fe_database::ReplicationEvent>,
     sync_tx: &crossbeam::channel::Sender<fe_sync::SyncCommand>,

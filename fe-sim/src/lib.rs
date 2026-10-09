@@ -1,9 +1,9 @@
 //! fe-sim — the full-lab simulation mode (F8/M3, decision D3: full lab
 //! simulation, in-process, on the same `VerseReplicator` trait as prod).
 //!
-//! Nothing on the production path depends on this crate (it is a workspace
-//! member, never a dependency); the one production-code concession it needs
-//! lives behind explicit seams:
+//! Nothing on the production path depends on this crate (the only dependent
+//! is fractalengine-relay's default-off `sim-control` feature); the one
+//! production-code concession it needs lives behind explicit seams:
 //!
 //! * [`clock::SimClock`] — the accelerable virtual clock every simulated
 //!   peer reads. Sensor timestamps, the virtual network's delivery
@@ -31,12 +31,18 @@
 //!   `TestPeer` on the virtual transport) and the scripted-scenario runner
 //!   (faults at sim times + fleet ticks + settle), producing a canonical
 //!   fingerprint for determinism assertions.
+//! * [`session::ScenarioSession`] / [`control`] — the long-lived driver
+//!   (start / step / inject_fault / status / stop; `run_scenario` is built
+//!   on it) and the bridge thread that serves the REST/MCP sim control
+//!   surface (F9/A20).
 //!
 //! See `fe-sim/src/AGENTS.md` for the module rationale.
 
 pub mod clock;
+pub mod control;
 pub mod fleet;
 pub mod net;
 pub mod peer;
 pub mod scenario;
 pub mod sensors;
+pub mod session;

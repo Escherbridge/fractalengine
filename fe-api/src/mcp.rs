@@ -218,6 +218,51 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["petal_id", "kind"]
             }),
         },
+        // --- F9/A20 sim control (Owner-only; fails closed off a sim lab host) ---
+        ToolDefinition {
+            name: "sim_start".into(),
+            description: "Start a deterministic simulation-lab session (fe-sim): spawns in-process simulated peers on a virtual network and prepares the scripted fleet. One session at a time. Requires owner role and a host started as a sim lab.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "script": {
+                        "description": "A ScenarioScript object, its JSON text, or a built-in name: default | sharded_query | offline_degraded"
+                    }
+                },
+                "required": ["script"]
+            }),
+        },
+        ToolDefinition {
+            name: "sim_stop".into(),
+            description: "Stop the live sim session: settle every peer, return the canonical outcome fingerprint, and tear it down. Requires owner role.".into(),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        },
+        ToolDefinition {
+            name: "sim_status".into(),
+            description: "Snapshot the live sim session (peers + online state, action cursor, sim clock offset, readings ingested, injected faults, network counters); {running:false} when idle. Requires owner role.".into(),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        },
+        ToolDefinition {
+            name: "sim_step".into(),
+            description: "Execute the next n scripted actions (fleet ticks, scripted faults, distributed queries) of the live sim session; returns the queries completed. Requires owner role.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "n": { "type": "integer", "minimum": 1, "maximum": fe_runtime::sim_control::MAX_SIM_STEP, "description": "Actions to execute (default 1)" }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "sim_inject_fault".into(),
+            description: "Apply a network fault to the live sim session NOW: peer_offline / peer_online {peer}, partition {groups}, heal, set_latency {latency_ms}. Requires owner role.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "event": { "type": "object", "description": "A ScriptedEvent, e.g. {\"kind\":\"peer_offline\",\"peer\":\"alice\"} (at_ms is ignored)" }
+                },
+                "required": ["event"]
+            }),
+        },
     ]
 }
 
@@ -723,6 +768,29 @@ async fn handle_tool_call(
                     tool_result(id, payload)
                 }
                 Err(e) => tool_error(id, e.message()),
+            }
+        }
+
+        // --- F9/A20 sim control: the SAME dispatch fns as /api/v1/sim/* ---
+        "sim_start" | "sim_stop" | "sim_status" | "sim_step" | "sim_inject_fault" => {
+            let field = |key: &str| args.get(key).cloned().unwrap_or(serde_json::Value::Null);
+            let result = match tool_name {
+                "sim_start" => crate::sim::start(state, claims, field("script")).await,
+                "sim_stop" => crate::sim::stop(state, claims).await,
+                "sim_status" => crate::sim::status(state, claims).await,
+                "sim_step" => {
+                    // Absent → 1; present but not a u64 → 0 (rejected as a bad request).
+                    let n = match args.get("n") {
+                        None | Some(serde_json::Value::Null) => 1,
+                        Some(v) => v.as_u64().unwrap_or(0),
+                    };
+                    crate::sim::step(state, claims, n).await
+                }
+                _ => crate::sim::inject_fault(state, claims, field("event")).await,
+            };
+            match result {
+                Ok(payload) => tool_result(id, payload),
+                Err(e) => tool_error(id, &e.message()),
             }
         }
 

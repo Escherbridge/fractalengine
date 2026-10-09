@@ -60,7 +60,8 @@ when a route lands.
 | IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 11 tools: 6 base + per-endpoint CRUD `read_node` / `node_address` / `delete_node` / `promote_instance` (§endpoint-surface) + `query_timeseries` (§distributed-query) |
+| Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 16 tools: 6 base + per-endpoint CRUD `read_node` / `node_address` / `delete_node` / `promote_instance` (§endpoint-surface) + `query_timeseries` (§distributed-query) + `sim_start` / `sim_stop` / `sim_status` / `sim_step` / `sim_inject_fault` (§sim-control) |
 
 ## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
 
@@ -522,3 +523,37 @@ fe-sync `distributed_query.rs` — see fe-sync/src/AGENTS.md
   happy paths, role/scope denials (seam untouched), ULID/arg validation,
   dead-seam and no-seam explicit errors, the honest-empty vs failed
   analytics table, and nodes-only analytics unaffected.
+
+## §sim-control (F9/A20 — DEC-C7)
+
+`src/sim.rs` — the simulation-lab control surface: REST `/api/v1/sim/*`
+(start / stop / status / step / inject-fault) and the MCP `sim_*` tools.
+One dispatch fn per verb (`sim::start` … `sim::inject_fault`); the REST
+handlers and the MCP arm both call them, so the guard lives once.
+
+- **Guard order: Owner role → seam presence → arguments.** Owner because a
+  session is process-level (it overrides the host's HLC source — fe-sim
+  §session); the check is scope-less (an Owner of ANY scope passes — the
+  `hexon.rs::publish_crate` template). A non-owner always sees 403, never a
+  400 that leaks validation detail; tests pin that a refused call never
+  reaches the seam.
+- **Fail closed off a lab host.** `ApiState.sim_control_tx` is `None` on
+  every default build (GUI permanently; relay unless built with
+  `--features sim-control`) → 503 "sim control not configured".
+- **Seam** = `fe_runtime::sim_control` (`SimControlCall { cmd, reply_tx }`,
+  JSON payloads — fe-api never depends on fe-sim). Reply-embedded call →
+  `try_send` (Full → 503 busy, Disconnected → 502), reply awaited via
+  `spawn_blocking(recv_timeout(SIM_CONTROL_TIMEOUT = 120s))` → 504. The
+  bridge is serial: a long `step` (scripted query deadlines are real time)
+  delays the next call, and an HTTP client with a shorter timeout gives up
+  while the step still completes.
+- **Status mapping** (REST; MCP returns `tool_error` text): bridge
+  `BadRequest` 400, `Conflict` (session already running) / `NotRunning` 409,
+  `Failed` (session torn down) 500. Envelope is the house `ApiResponse`.
+- `step.n` is validated API-side (`1..=MAX_SIM_STEP`), so a bad count never
+  queues. `start.script` accepts a ScenarioScript object, its JSON text, or a
+  built-in name (`default` | `sharded_query` | `offline_degraded`).
+- Tests: `tests/sim_control_test.rs` owns the receiver (a one-session
+  emulator) through the full router; the real bridge/session is proven in
+  fe-sim (`control.rs` / `session.rs` tests). F13 folds the five MCP arms
+  into the ToolSpec/ScopeRule table (scope rule: "global, Owner").

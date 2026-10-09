@@ -57,6 +57,9 @@ pub struct ApiState {
     /// sync-thread seam (harness/tests without a sync side) — the
     /// distributed surfaces return an explicit unavailable error.
     pub distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
+    /// Sim control seam (F9/A20): the fe-sim bridge's call sender. `None` =
+    /// not a lab host — every `/api/v1/sim/*` call fails closed (§sim-control).
+    pub sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
     /// Ed25519 keypair signing shareable query URLs (see AGENTS.md §share).
     pub share_signer: Arc<fe_identity::NodeKeypair>,
 }
@@ -344,6 +347,15 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .route(
             "/api/v1/crates/available",
             get(crate::hexon::available_crates),
+        )
+        // Sim control (F9/A20, Owner-only; fails closed without a sim bridge)
+        .route("/api/v1/sim/start", post(crate::sim::post_start))
+        .route("/api/v1/sim/stop", post(crate::sim::post_stop))
+        .route("/api/v1/sim/status", get(crate::sim::get_status))
+        .route("/api/v1/sim/step", post(crate::sim::post_step))
+        .route(
+            "/api/v1/sim/inject-fault",
+            post(crate::sim::post_inject_fault),
         )
         // MCP
         .route("/mcp", post(crate::mcp::mcp_handler))

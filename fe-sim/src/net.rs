@@ -306,6 +306,21 @@ impl SimNet {
         self.lock().latency_ms = latency_ms;
     }
 
+    /// The current per-link latency (simulated ms).
+    pub fn latency_ms(&self) -> u64 {
+        self.lock().latency_ms
+    }
+
+    /// Whether `peer` is registered and online (status snapshots).
+    pub fn is_peer_online(&self, peer: &str) -> bool {
+        self.lock().peers.get(peer).copied().unwrap_or(false)
+    }
+
+    /// Active partitions (cleared by [`Self::heal`]).
+    pub fn active_partitions(&self) -> usize {
+        self.lock().partitions.len()
+    }
+
     /// Whether two peers are both online and not separated by an active
     /// partition. A peer absent from a partition's groups is unaffected by
     /// that partition.

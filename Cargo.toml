@@ -25,6 +25,8 @@ members = [
     "fe-canonical-log",
     # Simulation lab (M3): sim-only crate — no production crate depends on
     # it, so the prod path gains nothing (D3's "no new prod-path deps").
+    # Sole exception: fractalengine-relay's default-OFF `sim-control`
+    # feature (F9/A20) — default builds never compile it.
     "fe-sim",
 ]
 resolver = "2"

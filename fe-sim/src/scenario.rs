@@ -33,25 +33,24 @@ use anyhow::Result;
 use fe_runtime::distributed_query::{
     DistributedQueryCall, DistributedQueryOutcome, DistributedQueryRequest, TsQueryKind,
 };
-use fe_runtime::messages::{DbCommand, DbResult, IotReadingInput};
+use fe_runtime::messages::{DbCommand, DbResult};
 use fe_runtime::timeseries::VerseTimeseriesSettings;
 use fe_sync::messages::{SyncCommand, SyncEvent};
 use fe_sync::{Retention, ShardId, SHARD_TABLE};
 use serde::{Deserialize, Serialize};
 
-use crate::clock::{install_hlc_source, uninstall_hlc_source, SimClock};
-use crate::fleet::{plan_fleet, rfc3339_from_ms, FleetConfig, ScheduledReading};
+use crate::clock::{uninstall_hlc_source, SimClock};
+use crate::fleet::{FleetConfig, ScheduledReading};
 use crate::net::SimNet;
 use crate::peer::SimPeer;
-use crate::sensors::evaluate;
 
 /// How long a settle poll may take before the scenario fails (real time —
 /// it bounds *waiting*, never what converges).
-const SETTLE_BUDGET: Duration = Duration::from_secs(30);
+pub(crate) const SETTLE_BUDGET: Duration = Duration::from_secs(30);
 /// Real-time slice between settle polls (lets the sync pumps drain).
-const SETTLE_POLL: Duration = Duration::from_millis(10);
+pub(crate) const SETTLE_POLL: Duration = Duration::from_millis(10);
 /// DB-thread reply budget (matches the harness scenarios).
-const DB_REPLY_BUDGET: Duration = Duration::from_secs(30);
+pub(crate) const DB_REPLY_BUDGET: Duration = Duration::from_secs(30);
 
 /// Verse timeseries fabric settings a script publishes on the verse
 /// manifest (`ts_mode` / `ts_replication_factor` / `ts_bucket_width_ms`).
@@ -245,36 +244,19 @@ impl ScenarioScript {
         if let Some(ts) = &self.timeseries {
             ts.settings()?;
         }
-        let known = |peer: &String| self.fleet.peers.contains(peer);
         let mut labels: BTreeSet<&str> = BTreeSet::new();
         for event in &self.events {
+            self.validate_event_peers(event)?;
             match event {
-                ScriptedEvent::PeerOffline { peer, .. }
-                | ScriptedEvent::PeerOnline { peer, .. } => {
-                    if !known(peer) {
-                        anyhow::bail!("scenario {}: event names unknown peer '{peer}'", self.name);
-                    }
-                }
-                ScriptedEvent::Partition { groups, .. } => {
-                    for peer in groups.iter().flatten() {
-                        if !known(peer) {
-                            anyhow::bail!(
-                                "scenario {}: partition names unknown peer '{peer}'",
-                                self.name
-                            );
-                        }
-                    }
-                }
+                ScriptedEvent::PeerOffline { .. }
+                | ScriptedEvent::PeerOnline { .. }
+                | ScriptedEvent::Partition { .. } => {}
                 ScriptedEvent::Query {
-                    peer,
                     label,
                     query,
                     timeout_ms,
                     ..
                 } => {
-                    if !known(peer) {
-                        anyhow::bail!("scenario {}: query names unknown peer '{peer}'", self.name);
-                    }
                     if label.trim().is_empty() || label.len() > 64 {
                         anyhow::bail!("scenario {}: query label must be 1..=64 chars", self.name);
                     }
@@ -301,6 +283,36 @@ impl ScenarioScript {
                 }
                 ScriptedEvent::Heal { .. } | ScriptedEvent::SetLatency { .. } => {}
             }
+        }
+        Ok(())
+    }
+
+    /// Every peer name `event` references must be a fleet peer (shared by
+    /// script validation and interactive fault injection).
+    pub fn validate_event_peers(&self, event: &ScriptedEvent) -> Result<()> {
+        let known = |peer: &String| self.fleet.peers.contains(peer);
+        match event {
+            ScriptedEvent::PeerOffline { peer, .. } | ScriptedEvent::PeerOnline { peer, .. } => {
+                if !known(peer) {
+                    anyhow::bail!("scenario {}: event names unknown peer '{peer}'", self.name);
+                }
+            }
+            ScriptedEvent::Partition { groups, .. } => {
+                for peer in groups.iter().flatten() {
+                    if !known(peer) {
+                        anyhow::bail!(
+                            "scenario {}: partition names unknown peer '{peer}'",
+                            self.name
+                        );
+                    }
+                }
+            }
+            ScriptedEvent::Query { peer, .. } => {
+                if !known(peer) {
+                    anyhow::bail!("scenario {}: query names unknown peer '{peer}'", self.name);
+                }
+            }
+            ScriptedEvent::Heal { .. } | ScriptedEvent::SetLatency { .. } => {}
         }
         Ok(())
     }
@@ -478,7 +490,7 @@ impl ScenarioOutcome {
 /// Restores the real HLC source when the scenario ends (even on error) —
 /// the override is process-global, so a leaked install would poison
 /// every later test in the process.
-struct HlcSourceGuard;
+pub(crate) struct HlcSourceGuard;
 
 impl Drop for HlcSourceGuard {
     fn drop(&mut self) {
@@ -487,473 +499,117 @@ impl Drop for HlcSourceGuard {
 }
 
 /// One merged driver action in total `(at_ms, event-before-tick)` order.
-enum Action<'a> {
+/// Owned (not borrowed from the script/plan) so a long-lived
+/// [`crate::session::ScenarioSession`] can hold its action list.
+#[derive(Debug, Clone)]
+pub(crate) enum Action {
     /// A scripted event at its ABSOLUTE simulated time.
-    Event {
-        at_ms: u64,
-        event: &'a ScriptedEvent,
-    },
+    Event { at_ms: u64, event: ScriptedEvent },
     /// All readings scheduled at this instant.
     Tick {
         at_ms: u64,
-        readings: Vec<&'a ScheduledReading>,
+        readings: Vec<ScheduledReading>,
     },
 }
 
-impl<'a> Action<'a> {
-    fn at_ms(&self) -> u64 {
+impl Action {
+    pub(crate) fn at_ms(&self) -> u64 {
         match self {
             Self::Event { at_ms, .. } | Self::Tick { at_ms, .. } => *at_ms,
         }
     }
 }
 
+/// Merge the fire plan and the event script into one ordered action list
+/// (events land before same-instant ticks). Event offsets become absolute
+/// simulated times here.
+pub(crate) fn merge_actions(script: &ScenarioScript, plan: &[ScheduledReading]) -> Vec<Action> {
+    let origin = script.fleet.start_ms;
+    let mut events: Vec<(u64, &ScriptedEvent)> = script
+        .events
+        .iter()
+        .map(|e| (origin.saturating_add(e.at_ms()), e))
+        .collect();
+    events.sort_by_key(|(at, _)| *at); // stable: same-instant events keep script order
+    let mut ticks: Vec<(u64, Vec<ScheduledReading>)> = Vec::new();
+    for reading in plan {
+        match ticks.last_mut() {
+            Some((at, list)) if *at == reading.at_ms => list.push(reading.clone()),
+            _ => ticks.push((reading.at_ms, vec![reading.clone()])),
+        }
+    }
+    let mut actions: Vec<Action> = Vec::with_capacity(events.len() + ticks.len());
+    let (mut e, mut t) = (0usize, 0usize);
+    while e < events.len() || t < ticks.len() {
+        let take_event = match (events.get(e), ticks.get(t)) {
+            (Some((ea, _)), Some((ta, _))) => ea <= ta,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if take_event {
+            let (at_ms, event) = events[e];
+            actions.push(Action::Event {
+                at_ms,
+                event: event.clone(),
+            });
+            e += 1;
+        } else {
+            let (at, list) = &ticks[t];
+            actions.push(Action::Tick {
+                at_ms: *at,
+                readings: list.clone(),
+            });
+            t += 1;
+        }
+    }
+    actions
+}
+
 /// Run one scripted scenario under `root_dir` (each peer gets its own
 /// subdirectory; use a fresh directory per run — two runs sharing
 /// directories would collide on peer names).
+///
+/// The one-shot leg of the ONE driver: start a
+/// [`ScenarioSession`](crate::session::ScenarioSession), step every action,
+/// stop (AGENTS.md §session — the interactive surface cannot drift from it).
 pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<ScenarioOutcome> {
-    script.validate()?;
-    // The HLC override is process-global (clock.rs): serialize scenario runs
-    // so a concurrent run — or the clock tests — cannot clobber the active
-    // source mid-run. Declared first so it outlives the HLC guard (drop
-    // order runs the uninstall before the lock releases).
-    let _run_lock = crate::clock::SCENARIO_RUN_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    std::fs::create_dir_all(root_dir)?;
-
-    let endpoints_before = fe_sync::bound_endpoint_count();
-    let settings = match &script.timeseries {
-        Some(ts) => ts.settings()?,
-        None => VerseTimeseriesSettings::default(),
-    };
-
-    // The clock the whole run reads: sensors, the hub, and (via the
-    // process-global HLC source) every reading's stamp.
-    let clock = SimClock::new(script.fleet.start_ms);
-    install_hlc_source(clock.clone());
-    let _hlc_guard = HlcSourceGuard;
-
-    let net = SimNet::new(clock.clone());
-
-    // --- Spawn the peers on the virtual transport (no real network). ---
-    let mut peers: BTreeMap<String, SimPeer> = BTreeMap::new();
-    for name in &script.fleet.peers {
-        let peer = SimPeer::spawn(&net, name, root_dir, script.seed)?;
-        peers.insert(name.clone(), peer);
-    }
-    let host_name = script.fleet.ingest_peer.clone();
-    let host = peers
-        .get(&host_name)
-        .ok_or_else(|| anyhow::anyhow!("ingest peer '{host_name}' missing"))?;
-    let host_did = host.did();
-
-    // --- Setup the hierarchy on the ingest host (real DbCommands). ------
-    host.peer.send(DbCommand::CreateVerse {
-        name: script.fleet.verse_name.clone(),
-    });
-    let verse_id = match host.peer.wait_for(
-        |r| matches!(r, DbResult::VerseCreated { .. }),
-        DB_REPLY_BUDGET,
-    )? {
-        DbResult::VerseCreated { id, .. } => id,
-        other => anyhow::bail!("unexpected CreateVerse result: {other:?}"),
-    };
-
-    host.peer.send(DbCommand::CreateFractal {
-        verse_id: verse_id.clone(),
-        name: "Sim Fractal".into(),
-    });
-    let fractal_id = match host.peer.wait_for(
-        |r| matches!(r, DbResult::FractalCreated { .. }),
-        DB_REPLY_BUDGET,
-    )? {
-        DbResult::FractalCreated { id, .. } => id,
-        other => anyhow::bail!("unexpected CreateFractal result: {other:?}"),
-    };
-
-    host.peer.send(DbCommand::CreatePetal {
-        fractal_id,
-        name: "Sim Petal".into(),
-    });
-    let petal_id = match host.peer.wait_for(
-        |r| matches!(r, DbResult::PetalCreated { .. }),
-        DB_REPLY_BUDGET,
-    )? {
-        DbResult::PetalCreated { id, .. } => id,
-        other => anyhow::bail!("unexpected CreatePetal result: {other:?}"),
-    };
-
-    // Anchor nodes — one per fleet anchor, correlated so each reply is
-    // unambiguous. anchor name → durable node id (the reading's node_id).
-    let mut anchor_node_ids: HashMap<String, String> = HashMap::new();
-    for anchor in &script.fleet.anchors {
-        host.peer.send(DbCommand::CreateNode {
-            petal_id: petal_id.clone(),
-            name: anchor.clone(),
-            position: [0.0, 0.0, 0.0],
-            correlation_id: Some(format!("sim-anchor:{anchor}")),
-        });
-        let node_id = match host.peer.wait_for(
-            |r| {
-                matches!(r, DbResult::NodeCreated { ref correlation_id, .. }
-                    if correlation_id.as_deref() == Some(format!("sim-anchor:{anchor}").as_str()))
-            },
-            DB_REPLY_BUDGET,
-        )? {
-            DbResult::NodeCreated { id, .. } => id,
-            other => anyhow::bail!("unexpected CreateNode result: {other:?}"),
-        };
-        anchor_node_ids.insert(anchor.clone(), node_id);
-    }
-
-    // --- Open the replica on every peer (all on the shared hub doc). ----
-    let ns_secret_hex = host
-        .peer
-        .namespace_secret(&verse_id)
-        .ok_or_else(|| anyhow::anyhow!("verse namespace secret missing"))?;
-    let secret_bytes: [u8; 32] = hex::decode(&ns_secret_hex)?
-        .try_into()
-        .map_err(|v: Vec<u8>| anyhow::anyhow!("secret must be 32 bytes, got {}", v.len()))?;
-    let ns_id_hex = hex::encode(fe_database::derive_namespace_id(&secret_bytes));
-    for peer in peers.values() {
-        peer.peer
-            .sync_cmd_tx
-            .send(SyncCommand::OpenVerseReplica {
-                verse_id: verse_id.clone(),
-                namespace_id: ns_id_hex.clone(),
-                namespace_secret: Some(ns_secret_hex.clone()),
-                bootstrap_peers: Vec::new(),
-            })
-            .map_err(|e| anyhow::anyhow!("OpenVerseReplica failed: {e}"))?;
-    }
-    // Give every sync thread a beat to finish its replica open (subscribe +
-    // startup snapshot) before the host publishes the manifest — the hub
-    // fans out only to CURRENT subscribers, so a write racing a joiner's
-    // subscribe would never be delivered. This is the same 500ms quiescence
-    // the real-transport scenarios use; the settle budget backstops any
-    // tail latency. It cannot perturb determinism: the clock does not move
-    // during it, so no stamp is affected.
-    std::thread::sleep(Duration::from_millis(500));
-
-    // --- Publish the verse manifest from the host (A3's admission       ---
-    // --- precondition: joiners must resolve the host as Owner; the ts_* ---
-    // --- columns are how every fabric learns the placement mode).        ---
-    let mut manifest_row = serde_json::json!({
-        "verse_id": verse_id,
-        "name": script.fleet.verse_name,
-        "created_by": host_did,
-        "created_at": rfc3339_from_ms(clock.now_ms()),
-        "namespace_id": ns_id_hex,
-        "default_access": "viewer",
-    });
-    if script.timeseries.is_some() {
-        manifest_row["ts_mode"] = settings.mode.as_str().into();
-        manifest_row["ts_replication_factor"] = settings.replication_factor.into();
-        manifest_row["ts_bucket_width_ms"] = settings.bucket_width_ms.into();
-    }
-    let manifest_bytes = serde_json::to_vec(&manifest_row)?;
-    let manifest_hash = host.peer.blob_store.add_blob(&manifest_bytes)?;
-    host.peer
-        .sync_cmd_tx
-        .send(SyncCommand::WriteRowEntry {
-            verse_id: verse_id.clone(),
-            table: "verse".into(),
-            record_id: verse_id.clone(),
-            content_hash: manifest_hash,
-        })
-        .map_err(|e| anyhow::anyhow!("manifest WriteRowEntry failed: {e}"))?;
-
-    let did_to_name: HashMap<String, String> = peers
-        .iter()
-        .map(|(name, peer)| (peer.did(), name.clone()))
-        .collect();
-    let node_to_anchor: HashMap<String, String> = anchor_node_ids
-        .iter()
-        .map(|(anchor, node)| (node.clone(), anchor.clone()))
-        .collect();
-    let mut run = Run {
-        clock: clock.clone(),
-        net: net.clone(),
-        peers,
-        host_name: host_name.clone(),
-        verse_id: verse_id.clone(),
-        petal_id: petal_id.clone(),
-        origin_ms: script.fleet.start_ms,
-        settings,
-        ingested: 0,
-        did_to_name,
-        node_to_anchor,
-    };
-
-    // The manifest must converge BEFORE the fleet starts (the A3 gate on
-    // every joiner resolves the host through it), and every fabric must
-    // know every peer's declaration + the mode before the first shard is
-    // planned (placement sees the peers it knows about; retention reads the
-    // mode). Settling never advances the clock — only steps the hub — so
-    // the first tick's simulated timestamp is untouched.
-    for name in script.fleet.peers.iter().filter(|p| **p != host_name) {
-        run.settle_probe(&format!("verse manifest on {name}"), || {
-            let rows = raw_query(
-                &run.peer(name)?.peer,
-                &format!("SELECT verse_id FROM verse WHERE verse_id = '{verse_id}'"),
-            )?;
-            Ok(!rows.is_empty())
-        })?;
-    }
-    for name in &script.fleet.peers {
-        run.settle_probe(&format!("fabric membership on {name}"), || {
-            let dump = run.ledger(name)?;
-            let peers_known = dump["peers"].as_object().map(|p| p.len()).unwrap_or(0);
-            Ok(peers_known == script.fleet.peers.len()
-                && dump["settings"]["mode"].as_str() == Some(run.settings.mode.as_str()))
-        })?;
-    }
-
-    // --- Merge the fire plan and the event script into one ordered     ---
-    // --- action list (events land before same-instant ticks). Event    ---
-    // --- offsets become absolute simulated times here.                 ---
-    let plan = plan_fleet(&script.fleet);
-    let mut actions: Vec<Action> = Vec::new();
-    {
-        let origin = script.fleet.start_ms;
-        let mut events: Vec<(u64, &ScriptedEvent)> = script
-            .events
-            .iter()
-            .map(|e| (origin.saturating_add(e.at_ms()), e))
-            .collect();
-        events.sort_by_key(|(at, _)| *at); // stable: same-instant events keep script order
-        let mut ticks: Vec<(u64, Vec<&ScheduledReading>)> = Vec::new();
-        for reading in &plan {
-            match ticks.last_mut() {
-                Some((at, list)) if *at == reading.at_ms => list.push(reading),
-                _ => ticks.push((reading.at_ms, vec![reading])),
-            }
-        }
-        let (mut e, mut t) = (0usize, 0usize);
-        while e < events.len() || t < ticks.len() {
-            let take_event = match (events.get(e), ticks.get(t)) {
-                (Some((ea, _)), Some((ta, _))) => ea <= ta,
-                (Some(_), None) => true,
-                (None, _) => false,
-            };
-            if take_event {
-                let (at_ms, event) = events[e];
-                actions.push(Action::Event { at_ms, event });
-                e += 1;
-            } else {
-                let (at, list) = &ticks[t];
-                actions.push(Action::Tick {
-                    at_ms: *at,
-                    readings: list.clone(),
-                });
-                t += 1;
-            }
-        }
-    }
-
-    // --- Drive the script. The clock only moves between actions, and   ---
-    // --- every ingest awaits its DB reply AND its hub write, so every   ---
-    // --- stamp and delivery due-time is a fixed simulated millisecond.  ---
-    let mut queries: Vec<QueryRecord> = Vec::new();
-    for action in &actions {
-        let at = action.at_ms();
-        if at > clock.now_ms() {
-            clock.advance_ms(at - clock.now_ms());
-            net.step();
-        }
-        match action {
-            Action::Event {
-                event:
-                    ScriptedEvent::Query {
-                        at_ms,
-                        peer,
-                        label,
-                        query,
-                        timeout_ms,
-                    },
-                ..
-            } => {
-                // A query reads stores: settle every peer to its exact
-                // convergence target first (draining the network — this may
-                // advance the clock to in-flight due times).
-                run.settle_stores(true, &format!("pre-query '{label}'"))?;
-                let outcome = run.run_query(peer, label, query, *timeout_ms)?;
-                queries.push(QueryRecord {
-                    label: label.clone(),
-                    peer: peer.clone(),
-                    at_ms: *at_ms,
-                    aggregate: query.is_aggregate(),
-                    outcome: run.canonical_outcome(&outcome, query.is_aggregate()),
-                });
-            }
-            Action::Event { event, .. } => {
-                // Every ingested row is already in the hub (the tick
-                // barrier), so the fault cuts a deterministic in-flight set.
-                run.settle_writes()?;
-                apply_event(&net, &run.peers, event);
-            }
-            Action::Tick { at_ms, readings } => {
-                if *at_ms < clock.now_ms() {
-                    anyhow::bail!(
-                        "simulated time overran the tick at {at_ms} (clock {}): a query's \
-                         network drain advanced past it — move the query or lower the latency",
-                        clock.now_ms()
-                    );
-                }
-                let mut batch: Vec<IotReadingInput> = Vec::with_capacity(readings.len());
-                for reading in readings {
-                    let sensor = &script.fleet.sensors[reading.sensor];
-                    // Values were precomputed by the pure planner; this
-                    // re-evaluation is an internal parity check that the
-                    // fired value is exactly the model's.
-                    debug_assert_eq!(
-                        reading.value,
-                        evaluate(&sensor.model, reading.tick, reading.at_ms)
-                    );
-                    batch.push(IotReadingInput {
-                        node_id: anchor_node_ids
-                            .get(&sensor.anchor)
-                            .cloned()
-                            .ok_or_else(|| anyhow::anyhow!("anchor '{}' missing", sensor.anchor))?,
-                        metric: sensor.metric.clone(),
-                        value: reading.value,
-                        units: sensor.units.clone(),
-                        recorded_at: Some(rfc3339_from_ms(reading.at_ms)),
-                    });
-                }
-                if batch.is_empty() {
-                    continue;
-                }
-                let expected = batch.len();
-                let want_petal = petal_id.clone();
-                let host = run.peer(&host_name)?;
-                host.peer.send(DbCommand::InsertIotReadings {
-                    petal_id: petal_id.clone(),
-                    verse_id: Some(verse_id.clone()),
-                    source_did: host_did.clone(),
-                    readings: batch,
-                });
-                let written = match host.peer.wait_for(
-                    |r| {
-                        matches!(r, DbResult::IotReadingsInserted { ref petal_id, .. }
-                            if petal_id == &want_petal)
-                    },
-                    DB_REPLY_BUDGET,
-                )? {
-                    DbResult::IotReadingsInserted { written, .. } => written,
-                    other => anyhow::bail!("unexpected ingest result: {other:?}"),
-                };
-                if written != expected {
-                    anyhow::bail!("ingest wrote {written} of {expected} readings");
-                }
-                run.ingested += written;
-                // The rows reach the hub through the DB→sync bridge; wait for
-                // that write (its due-time is this tick's millisecond), then
-                // drain what is due.
-                run.settle_writes()?;
-                net.step();
-            }
-        }
-    }
-
-    // --- Settle: every peer converges to its exact target (authored +  ---
-    // --- delivered rows, filtered by shard retention). The built-in    ---
-    // --- scripts heal every fault, so mirror targets are the union.    ---
-    run.settle_stores(true, "final convergence")?;
-
-    // --- Fingerprint every peer's durable store + the final placement. --
-    let mut per_peer: BTreeMap<String, Vec<CanonicalReading>> = BTreeMap::new();
-    for (name, peer) in &run.peers {
-        let rows = raw_query(&peer.peer, "SELECT * FROM iot_reading")?;
-        let mut canonical: Vec<CanonicalReading> = rows
-            .iter()
-            .map(|row| CanonicalReading {
-                anchor: run.anchor_name(row["node_id"].as_str().unwrap_or_default()),
-                metric: row["metric"].as_str().unwrap_or_default().to_string(),
-                units: row["units"].as_str().unwrap_or_default().to_string(),
-                recorded_at_ms: row["recorded_at_ms"].as_i64().unwrap_or_default(),
-                value_bits: row["value"].as_f64().unwrap_or_default().to_bits(),
-                hlc_wall_ms: row["hlc_timestamp"]
-                    .as_i64()
-                    .map(|h| (h >> 16) as u64)
-                    .unwrap_or_default(),
-            })
-            .collect();
-        canonical.sort();
-        per_peer.insert(name.clone(), canonical);
-    }
-    let mut placement: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (shard, hosts) in run.ledger_hosts()? {
-        let mut names: Vec<String> = hosts.iter().map(|d| run.peer_name(d)).collect();
-        names.sort();
-        placement.insert(run.canonical_shard(&shard), names);
-    }
-    let peer_dids: BTreeMap<String, String> = run
-        .peers
-        .iter()
-        .map(|(name, peer)| (name.clone(), peer.did()))
-        .collect();
-
-    // --- Clean shutdown: close replicas, drop peers (threads join). ------
-    for peer in run.peers.values() {
-        if let Err(e) = peer.peer.sync_cmd_tx.send(SyncCommand::CloseVerseReplica {
-            verse_id: verse_id.clone(),
-        }) {
-            tracing::warn!("scenario shutdown: CloseVerseReplica send failed: {e}");
-        }
-    }
-    std::thread::sleep(SETTLE_POLL);
-    let ingested = run.ingested;
-    drop(run);
-
-    let endpoints_after = fe_sync::bound_endpoint_count();
-    Ok(ScenarioOutcome {
-        name: script.name.clone(),
-        ingested,
-        per_peer,
-        placement,
-        queries,
-        peer_dids,
-        dropped_deliveries: net.dropped_deliveries(),
-        gossip_deliveries: net.gossip_deliveries(),
-        endpoints_before,
-        endpoints_after,
-    })
+    let mut session = crate::session::ScenarioSession::start(script.clone(), root_dir)?;
+    session.step(u32::MAX)?;
+    session.stop()
 }
 
 /// The live state of one run the driver's barriers and queries share.
-struct Run {
-    clock: Arc<SimClock>,
-    net: Arc<SimNet>,
-    peers: BTreeMap<String, SimPeer>,
-    host_name: String,
-    verse_id: String,
-    petal_id: String,
+pub(crate) struct Run {
+    pub(crate) clock: Arc<SimClock>,
+    pub(crate) net: Arc<SimNet>,
+    pub(crate) peers: BTreeMap<String, SimPeer>,
+    pub(crate) host_name: String,
+    pub(crate) verse_id: String,
+    pub(crate) petal_id: String,
     /// The fleet's `start_ms` (query window offsets are relative to it).
-    origin_ms: u64,
-    settings: VerseTimeseriesSettings,
+    pub(crate) origin_ms: u64,
+    pub(crate) settings: VerseTimeseriesSettings,
     /// Readings the ingest host durably wrote so far.
-    ingested: usize,
-    did_to_name: HashMap<String, String>,
-    node_to_anchor: HashMap<String, String>,
+    pub(crate) ingested: usize,
+    pub(crate) did_to_name: HashMap<String, String>,
+    pub(crate) node_to_anchor: HashMap<String, String>,
 }
 
 impl Run {
-    fn peer(&self, name: &str) -> Result<&SimPeer> {
+    pub(crate) fn peer(&self, name: &str) -> Result<&SimPeer> {
         self.peers
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("unknown peer '{name}'"))
     }
 
-    fn peer_name(&self, did: &str) -> String {
+    pub(crate) fn peer_name(&self, did: &str) -> String {
         self.did_to_name
             .get(did)
             .cloned()
             .unwrap_or_else(|| did.to_string())
     }
 
-    fn anchor_name(&self, node_id: &str) -> String {
+    pub(crate) fn anchor_name(&self, node_id: &str) -> String {
         self.node_to_anchor
             .get(node_id)
             .cloned()
@@ -961,7 +617,7 @@ impl Run {
     }
 
     /// `{petal}/{node}/{bucket}` → `{anchor}/{bucket}` (run-local ids out).
-    fn canonical_shard(&self, key: &str) -> String {
+    pub(crate) fn canonical_shard(&self, key: &str) -> String {
         let rest = key
             .strip_prefix(&format!("{}/", self.petal_id))
             .unwrap_or(key);
@@ -973,14 +629,14 @@ impl Run {
 
     /// Drop every queued sync event: the sync thread's event sends block on
     /// a full (64) channel, and nothing else consumes them in a sim run.
-    fn drain_events(&self) {
+    pub(crate) fn drain_events(&self) {
         for peer in self.peers.values() {
             while peer.peer.sync_evt_rx.try_recv().is_ok() {}
         }
     }
 
     /// A peer's fabric dump (`GetShardLedger` → `SyncEvent::ShardLedger`).
-    fn ledger(&self, name: &str) -> Result<serde_json::Value> {
+    pub(crate) fn ledger(&self, name: &str) -> Result<serde_json::Value> {
         let peer = &self.peer(name)?.peer;
         peer.sync_cmd_tx
             .send(SyncCommand::GetShardLedger {
@@ -1000,7 +656,7 @@ impl Run {
 
     /// The ingest host's shard ledger: shard key → host DIDs. The host
     /// planned every shard, so its ledger is complete even while cut off.
-    fn ledger_hosts(&self) -> Result<BTreeMap<String, Vec<String>>> {
+    pub(crate) fn ledger_hosts(&self) -> Result<BTreeMap<String, Vec<String>>> {
         let dump = self.ledger(&self.host_name)?;
         let mut out = BTreeMap::new();
         if let Some(shards) = dump["shards"].as_object() {
@@ -1021,7 +677,7 @@ impl Run {
 
     /// Poll `probe` (stepping the hub, draining events) until it passes or
     /// the budget runs out — never advances the clock.
-    fn settle_probe<P: Fn() -> Result<bool>>(&self, what: &str, probe: P) -> Result<()> {
+    pub(crate) fn settle_probe<P: Fn() -> Result<bool>>(&self, what: &str, probe: P) -> Result<()> {
         let deadline = Instant::now() + SETTLE_BUDGET;
         loop {
             self.net.step();
@@ -1038,7 +694,7 @@ impl Run {
 
     /// Barrier: every ingested reading has reached the hub doc (the
     /// DB→bridge→sync leg is asynchronous; its write time is a due-time).
-    fn settle_writes(&self) -> Result<()> {
+    pub(crate) fn settle_writes(&self) -> Result<()> {
         let want = self.ingested;
         self.settle_probe("ingested rows reaching the hub", || {
             Ok(self.net.entry_count("iot_reading") >= want)
@@ -1048,7 +704,11 @@ impl Run {
     /// How many readings `did`'s store must hold: every row it authored,
     /// plus every row the hub delivered to it that its retention keeps
     /// (the same `retention_decision` its sync thread runs).
-    fn expected_readings(&self, did: &str, hosts: &BTreeMap<String, Vec<String>>) -> usize {
+    pub(crate) fn expected_readings(
+        &self,
+        did: &str,
+        hosts: &BTreeMap<String, Vec<String>>,
+    ) -> usize {
         self.net
             .visible_entries(did, "iot_reading")
             .iter()
@@ -1075,7 +735,7 @@ impl Run {
     /// With `drain_network`, in-flight deliveries are drained first by
     /// advancing the clock to their due times. Over-retention (a store
     /// ABOVE target) never settles — it fails loudly.
-    fn settle_stores(&self, drain_network: bool, what: &str) -> Result<()> {
+    pub(crate) fn settle_stores(&self, drain_network: bool, what: &str) -> Result<()> {
         self.settle_writes()?;
         let deadline = Instant::now() + SETTLE_BUDGET;
         loop {
@@ -1129,7 +789,7 @@ impl Run {
 
     /// Submit one distributed query through the real `SubmitComputeTask`
     /// seam and pump the hub until the merged outcome comes back.
-    fn run_query(
+    pub(crate) fn run_query(
         &self,
         peer_name: &str,
         label: &str,
@@ -1180,7 +840,7 @@ impl Run {
     }
 
     /// Map a wire outcome into fleet vocabulary.
-    fn canonical_outcome(
+    pub(crate) fn canonical_outcome(
         &self,
         outcome: &DistributedQueryOutcome,
         aggregate: bool,
@@ -1236,7 +896,11 @@ impl Run {
 
 /// Apply one scripted fault to the hub (mapping fleet peer names to DIDs —
 /// the hub's membership keys are the DIDs the replicas author as).
-fn apply_event(net: &Arc<SimNet>, peers: &BTreeMap<String, SimPeer>, event: &ScriptedEvent) {
+pub(crate) fn apply_event(
+    net: &Arc<SimNet>,
+    peers: &BTreeMap<String, SimPeer>,
+    event: &ScriptedEvent,
+) {
     let did_of = |name: &String| {
         peers
             .get(name)
@@ -1275,7 +939,7 @@ fn apply_event(net: &Arc<SimNet>, peers: &BTreeMap<String, SimPeer>, event: &Scr
 }
 
 /// Read rows back from a peer's durable store (RawQuery — SELECT-only).
-fn raw_query(
+pub(crate) fn raw_query(
     peer: &fractalengine_test_harness::peer::TestPeer,
     sql: &str,
 ) -> Result<Vec<serde_json::Value>> {
@@ -1353,6 +1017,8 @@ pub fn offline_degraded_script() -> ScenarioScript {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fleet::plan_fleet;
+    use crate::sensors::evaluate;
 
     /// Float tolerance for query values: merges sum per shard then across
     /// shards, the oracle sums in tick order — summation order, never

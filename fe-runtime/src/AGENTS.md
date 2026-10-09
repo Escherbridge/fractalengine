@@ -124,3 +124,13 @@ directly and must NOT enqueue a waiter: registering a waiter for a command the
 DB thread never answers leaves a dangling entry that later results can
 mis-deliver into.
 
+## §sim-control (F9/A20)
+
+`sim_control.rs` — the API→fe-sim bridge seam (`SimControlCommand` in a
+`SimControlCall { cmd, reply_tx }`, typed `SimControlError`). It lives here
+for the `distributed_query.rs` reason: fe-api needs the vocabulary and must
+never depend on fe-sim, so wire payloads stay `serde_json::Value` and the
+bridge parses `ScenarioScript`/`ScriptedEvent` on its side. Reply is a
+crossbeam sender (the bridge thread has no async runtime). Surface rules:
+`fe-api/AGENTS.md` §sim-control; driver/bridge: `fe-sim/src/AGENTS.md`
+§session.

@@ -391,6 +391,9 @@ fn main() {
         // tool) fans out through this seam. The bridge below forwards each
         // call into `SyncCommand::SubmitComputeTask` on the sync thread.
         distributed_tx: Some(distributed_call_tx),
+        // F9/A20: never a sim lab — the process-global sim run lock / HLC
+        // override would corrupt a live editing session (fe-sim §session).
+        sim_control_tx: None,
     });
 
     // ---- Entity Store (in-memory hot cache) ----
