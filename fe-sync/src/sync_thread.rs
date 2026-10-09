@@ -2632,7 +2632,8 @@ mod tests {
         }
 
         /// A factory whose gossip plane is a loopback topic: broadcasts land
-        /// on the subscriber's own inbound stream (self-echo parity).
+        /// on the subscriber's own inbound stream — a test double that
+        /// self-delivers by its own construction (the sim hub does not).
         struct LoopbackFactory;
         struct LoopbackTopic {
             tx: tokio::sync::mpsc::Sender<VirtualGossipMessage>,
@@ -2717,7 +2718,7 @@ mod tests {
 
             // (b) With a gossip plane: sender + pump registered, a broadcast
             // arrives on the aggregated inbound stream as a direct delivery
-            // from our own node identity (self-echo parity).
+            // from our own node identity (the loopback double's construction).
             let plane: Option<Arc<dyn VirtualTransportFactory>> = Some(Arc::new(LoopbackFactory));
             let (tx, mut inbound_rx) = tokio::sync::mpsc::channel::<GossipIncoming>(8);
             subscribe_to_verse_gossip_topic(

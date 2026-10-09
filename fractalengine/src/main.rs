@@ -72,6 +72,21 @@ fn main() {
     let local_did = node_kp.to_did_key();
     let api_verifying_key = node_kp.verifying_key();
 
+    // A24/DEC-C9: dedicated share-URL signing key — a SEPARATE keystore slot,
+    // not derived from the node identity seed, so independent rotation is
+    // possible and a leaked share key can never be used to impersonate the
+    // node. Persisted the same way as the node keypair; restarts keep
+    // previously issued share links valid (fe-api/src/AGENTS.md §share).
+    let share_signer = match fe_identity::load_or_generate_keypair(&secret_store, "share_signer") {
+        Ok(kp) => Arc::new(kp),
+        Err(e) => {
+            tracing::warn!(
+                "Could not load/store share signer in secret store, generating ephemeral: {e}"
+            );
+            Arc::new(fe_identity::NodeKeypair::generate())
+        }
+    };
+
     // Phase F: create a second keypair from the same seed for the DB thread.
     // NodeKeypair is not Clone, so we recreate from the same seed bytes.
     let db_keypair = fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes())
@@ -394,6 +409,7 @@ fn main() {
         // F9/A20: never a sim lab — the process-global sim run lock / HLC
         // override would corrupt a live editing session (fe-sim §session).
         sim_control_tx: None,
+        share_signer,
     });
 
     // ---- Entity Store (in-memory hot cache) ----

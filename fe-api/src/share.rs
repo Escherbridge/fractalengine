@@ -138,14 +138,12 @@ pub async fn issue_share_url(
         return err(StatusCode::BAD_REQUEST, &e);
     }
     if req.format != "json" {
-        // File exports map onto the node/EntitySnapshot shape and need a petal
-        // for CRS resolution (see export.rs / AGENTS.md §share).
+        // File exports map onto the node/EntitySnapshot or
+        // reading/ReadingSnapshot shape and need a petal for CRS resolution
+        // (see export.rs::classify_export_table / AGENTS.md §share).
         let upper = req.sql.trim().to_uppercase();
-        if query_guard::from_table(&upper).as_deref() != Some("NODE") {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "export queries must target the node table",
-            );
+        if let Err(resp) = crate::export::classify_export_table(&upper) {
+            return resp;
         }
         let petal_scoped = fe_database::parse_scope(&claims.scope)
             .map(|p| p.petal_id.is_some())

@@ -110,6 +110,17 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   readings parquet live, so the readings export lands before the e2e; docs
   written last from verified output).
 
+- **DEC-C13 (2026-10-09)** — M3 review fix scope: findings 1-3 mandatory +
+  cheap same-area minors (#4, #6, #7-exact-compares, #8, #10-doc) in one fix
+  pass; HLC protection = validate `start_ms` (≤ real now, < 2^48) + snapshot/
+  restore HLC on session teardown (restore to max(snapshot, real now)) + a
+  runtime env opt-in (`FE_SIM_ALLOW=1`) required for the relay's sim bridge to
+  accept Start (defense beyond the compile feature); ingest correlation =
+  proper `correlation_id` on the InsertIotReadings family + petal_id defense
+  in the fallback match — the global pop-and-drop reply-routing change is NOT
+  made (alters family-blind Error routing semantics; deferred with a note).
+  Fix agents run NO builds (F11 holds the build lock); one serial gate after.
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

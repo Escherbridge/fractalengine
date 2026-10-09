@@ -155,6 +155,8 @@ fn ingest(
         verse_id: Some(verse_id.to_string()),
         source_did: peer.keypair.to_did_key(),
         readings,
+        // The harness driver awaits each reply synchronously; no routing.
+        correlation_id: None,
     });
     match peer.wait_for(
         |r| matches!(r, DbResult::IotReadingsInserted { .. }),

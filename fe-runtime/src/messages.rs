@@ -513,6 +513,10 @@ pub enum DbCommand {
         verse_id: Option<String>,
         source_did: String,
         readings: Vec<IotReadingInput>,
+        /// Caller-supplied id echoed on the reply (`CreateNode` precedent);
+        /// `PendingApiRequests` routes a correlated reply ONLY to its own
+        /// waiter (src/AGENTS.md §api-reply-correlation). `None` = legacy.
+        correlation_id: Option<String>,
     },
     // --- Hexon crate registry (Phase 8) ---
     /// Install a hexon crate into a petal.
@@ -809,6 +813,8 @@ pub enum DbResult {
     IotReadingsInserted {
         petal_id: String,
         written: usize,
+        /// Echoes `InsertIotReadings.correlation_id`.
+        correlation_id: Option<String>,
     },
     /// Validation rejection of `InsertIotReadings` (F24) — same reply family
     /// as `IotReadingsInserted` (the API fallback distinguishes 422-class
@@ -817,6 +823,8 @@ pub enum DbResult {
     IotReadingsRejected {
         petal_id: String,
         reason: IotIngestRejection,
+        /// Echoes `InsertIotReadings.correlation_id`.
+        correlation_id: Option<String>,
     },
     // --- Hexon crate registry results (Phase 8) ---
     /// Result of `InstallCrate`.

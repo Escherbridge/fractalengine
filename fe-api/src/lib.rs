@@ -70,6 +70,13 @@ pub struct ApiConfig {
     /// Sim control seam (F9/A20): the fe-sim bridge's call sender. Only a
     /// relay built with `--features sim-control` sets it (§sim-control).
     pub sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
+    /// Ed25519 keypair signing shareable query URLs (A24/DEC-C9): a
+    /// dedicated keystore slot ("share_signer"), independent of the node
+    /// identity key so a leaked share-signing key cannot be used to
+    /// impersonate the node. Both binaries construct it via
+    /// `load_or_generate_keypair(&secret_store, "share_signer")` before
+    /// calling `spawn_api_thread` — see AGENTS.md §share.
+    pub share_signer: Arc<fe_identity::NodeKeypair>,
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
@@ -113,9 +120,10 @@ async fn run_server(config: ApiConfig) {
         replication_tx: config.replication_tx,
         distributed_tx: config.distributed_tx,
         sim_control_tx: config.sim_control_tx,
-        // Ephemeral per-process share-URL signing key: restart invalidates
-        // outstanding links (TTL ≤ 24h anyway) — see AGENTS.md §share.
-        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
+        // A24/DEC-C9: persistent, dedicated share-URL signing key supplied by
+        // the caller (both binaries load-or-generate it from their secret
+        // store before calling `spawn_api_thread`) — see AGENTS.md §share.
+        share_signer: config.share_signer,
     });
 
     // Background task: listen for revocation notifications from Bevy thread

@@ -471,41 +471,71 @@ struct FallbackHarness {
     _dispatcher: std::thread::JoinHandle<()>,
 }
 
-/// Build the F24 fallback deployment: `db_reader: None` (the Windows
-/// SurrealKV per-handle-lock posture) with the API→DB command channel
-/// serviced by a dispatcher that mirrors the DB-thread arms the real
-/// dispatch loop runs.
-fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarness {
-    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(64);
+/// The DB-thread `ResolvePetalScope` arm in miniature: petal → fractal →
+/// verse → scope string (`None` when unresolvable — the 404 path).
+async fn scope_of_petal(db: &Db, petal_id: &str) -> Option<String> {
+    let mut res = db
+        .query("SELECT fractal_id FROM petal WHERE petal_id = $pid LIMIT 1")
+        .bind(("pid", petal_id.to_string()))
+        .await
+        .expect("petal query");
+    let rows: Vec<serde_json::Value> = res.take(0).expect("petal rows");
+    let fractal_id = rows
+        .first()
+        .and_then(|r| r.get("fractal_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)?;
+    let mut res2 = db
+        .query("SELECT verse_id FROM fractal WHERE fractal_id = $fid")
+        .bind(("fid", fractal_id.clone()))
+        .await
+        .expect("fractal query");
+    let rows2: Vec<serde_json::Value> = res2.take(0).expect("fractal rows");
+    rows2
+        .first()
+        .and_then(|r| r.get("verse_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(|verse_id| fe_database::build_scope(verse_id, Some(&fractal_id), Some(petal_id)))
+}
+
+/// `ApiState` for the F24 fallback posture: `db_reader: None` (the
+/// deployment-platform precondition), every DB round-trip rides `api_cmd_tx`.
+fn fallback_state(
+    api_cmd_tx: crossbeam::channel::Sender<fe_runtime::messages::ApiCommand>,
+) -> Arc<ApiState> {
     let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
     let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
-    let (repl_tx, repl_rx) = crossbeam::channel::bounded(64);
-    let keypair = fe_identity::NodeKeypair::generate();
-    let verifying_key = keypair.verifying_key();
-
-    let state = Arc::new(ApiState {
+    Arc::new(ApiState {
         api_cmd_tx,
         transform_broadcast_tx,
         entity_change_tx,
-        verifying_key,
+        verifying_key: fe_identity::NodeKeypair::generate().verifying_key(),
         revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
         blob_store: None,
         cors_origins: vec![],
-        // The F24 precondition: no direct reader (the deployment-platform
-        // posture this feature exists to serve).
         db_reader: None,
         query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         entity_store: None,
         tileset_registry: None,
         hexon_registry: None,
         announcement_store: None,
-        // NOTE: None here — on the fallback path the emit seam belongs to the
-        // DB thread (the dispatcher wires it below), not to ApiState.
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
-    });
+    })
+}
+
+/// Build the F24 fallback deployment: `db_reader: None` (the Windows
+/// SurrealKV per-handle-lock posture) with the API→DB command channel
+/// serviced by a dispatcher that mirrors the DB-thread arms the real
+/// dispatch loop runs.
+fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarness {
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(64);
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded(64);
+    // `replication_tx: None` in the state: on the fallback path the emit seam
+    // belongs to the DB thread (the dispatcher wires it below).
+    let state = fallback_state(api_cmd_tx);
 
     let observed: Arc<std::sync::Mutex<Vec<ObservedCommand>>> = Arc::default();
     let observed_for_thread = Arc::clone(&observed);
@@ -524,36 +554,7 @@ fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarnes
                         .lock()
                         .unwrap()
                         .push(ObservedCommand::ScopeResolution);
-                    let scope = rt.block_on(async {
-                        let mut res = dispatcher_db
-                            .query("SELECT fractal_id FROM petal WHERE petal_id = $pid LIMIT 1")
-                            .bind(("pid", petal_id.clone()))
-                            .await
-                            .expect("petal query");
-                        let rows: Vec<serde_json::Value> = res.take(0).expect("petal rows");
-                        let fractal_id = rows
-                            .first()
-                            .and_then(|r| r.get("fractal_id"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string)?;
-                        let mut res2 = dispatcher_db
-                            .query("SELECT verse_id FROM fractal WHERE fractal_id = $fid")
-                            .bind(("fid", fractal_id.clone()))
-                            .await
-                            .expect("fractal query");
-                        let rows2: Vec<serde_json::Value> = res2.take(0).expect("fractal rows");
-                        rows2
-                            .first()
-                            .and_then(|r| r.get("verse_id"))
-                            .and_then(serde_json::Value::as_str)
-                            .map(|verse_id| {
-                                fe_database::build_scope(
-                                    verse_id,
-                                    Some(&fractal_id),
-                                    Some(&petal_id),
-                                )
-                            })
-                    });
+                    let scope = rt.block_on(scope_of_petal(&dispatcher_db, &petal_id));
                     // Mirrors the real arm: `scope: None` when unresolvable
                     // (the handler maps that to its 404/None path).
                     let _ = reply_tx.send(DbResult::ScopeResolved { scope });
@@ -563,6 +564,7 @@ fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarnes
                     verse_id,
                     source_did,
                     readings,
+                    correlation_id,
                 } => {
                     observed_for_thread
                         .lock()
@@ -591,11 +593,17 @@ fn fallback_harness(db: Db, insert_behaviour: InsertBehaviour) -> FallbackHarnes
                                     Some(&repl_tx),
                                 ),
                             ) {
-                                Ok(written) => DbResult::IotReadingsInserted { petal_id, written },
+                                Ok(written) => DbResult::IotReadingsInserted {
+                                    petal_id,
+                                    written,
+                                    correlation_id,
+                                },
                                 Err(e) => match e.validation_rejection() {
-                                    Some(reason) => {
-                                        DbResult::IotReadingsRejected { petal_id, reason }
-                                    }
+                                    Some(reason) => DbResult::IotReadingsRejected {
+                                        petal_id,
+                                        reason,
+                                        correlation_id,
+                                    },
                                     None => DbResult::Error(format!(
                                         "IoT readings ingest failed: {e}"
                                     )),
@@ -891,4 +899,143 @@ async fn fallback_maps_typed_rejection_to_422_and_db_failure_to_502() {
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     let body = body_json(resp).await;
     assert_eq!(body["error"], "reading write failed");
+}
+
+// ---------------------------------------------------------------------------
+// DEC-C13 — a timed-out caller's late reply never reaches the next caller
+// ---------------------------------------------------------------------------
+
+/// Spawn one fallback ingest of `n` readings as its own task (abortable —
+/// aborting drops the reply receiver exactly like the 10s timeout does).
+fn spawn_ingest(
+    state: &Arc<ApiState>,
+    petal_id: &str,
+    n: usize,
+) -> tokio::task::JoinHandle<Response> {
+    let state = state.clone();
+    let petal_id = petal_id.to_string();
+    tokio::spawn(async move {
+        let readings = (0..n)
+            .map(|i| reading("sensor-1", "temperature_c", i as f64, None))
+            .collect();
+        post_readings(
+            &state,
+            test_claims("VERSE#v1", "editor"),
+            &petal_id,
+            readings,
+        )
+        .await
+    })
+}
+
+/// Poll until the dispatcher holds `count` ingest commands.
+async fn wait_for_held(held: &std::sync::Mutex<Vec<DbCommand>>, count: usize) {
+    for _ in 0..500 {
+        let len = held.lock().unwrap().len();
+        if len >= count {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the dispatcher never received ingest command #{count}");
+}
+
+/// The reply the DB thread would send for held ingest command `index`.
+fn late_reply(held: &std::sync::Mutex<Vec<DbCommand>>, index: usize) -> DbResult {
+    match &held.lock().unwrap()[index] {
+        DbCommand::InsertIotReadings {
+            petal_id,
+            readings,
+            correlation_id,
+            ..
+        } => DbResult::IotReadingsInserted {
+            petal_id: petal_id.clone(),
+            written: readings.len(),
+            correlation_id: correlation_id.clone(),
+        },
+        other => panic!("held a non-ingest command: {other:?}"),
+    }
+}
+
+/// F24 cross-delivery (DEC-C13), through the real reply router: the
+/// dispatcher files every request in `PendingApiRequests` (the relay's
+/// `drain_api_commands` + `deliver_pending_api_results`) and the test plays
+/// the DB thread. Caller A (2 readings) times out, caller B (1 reading)
+/// enqueues, THEN A's late reply lands. Before correlation, A's reply
+/// skipped A's closed entry and reached B (`accepted: 2`), and B's own reply
+/// found no waiter. Now B gets exactly its own count, and the family queue
+/// stays aligned for caller C.
+#[tokio::test]
+async fn late_reply_for_a_timed_out_ingest_never_reaches_the_next_caller() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa).await;
+    seed_node(&db, &pa, "sensor-1", 0.0, 0.0).await;
+
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(64);
+    let state = fallback_state(api_cmd_tx);
+    let pending = Arc::new(std::sync::Mutex::new(
+        fe_runtime::app::PendingApiRequests::default(),
+    ));
+    let held: Arc<std::sync::Mutex<Vec<DbCommand>>> = Arc::default();
+    let _dispatcher = {
+        let (pending, held, db) = (Arc::clone(&pending), Arc::clone(&held), db.clone());
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("dispatcher runtime");
+            while let Ok(fe_runtime::messages::ApiCommand::DbRequest { cmd, reply_tx }) =
+                api_cmd_rx.recv()
+            {
+                pending.lock().unwrap().enqueue_for(&cmd, reply_tx);
+                match cmd {
+                    // Answered at once, through the router.
+                    DbCommand::ResolvePetalScope { petal_id } => {
+                        let scope = rt.block_on(scope_of_petal(&db, &petal_id));
+                        pending
+                            .lock()
+                            .unwrap()
+                            .try_deliver(DbResult::ScopeResolved { scope });
+                    }
+                    // Held: the test decides when the "DB thread" replies.
+                    ingest @ DbCommand::InsertIotReadings { .. } => {
+                        held.lock().unwrap().push(ingest);
+                    }
+                    other => panic!("unexpected command in this flow: {other:?}"),
+                }
+            }
+        })
+    };
+
+    // A: enqueued, then times out (the abort drops its receiver, exactly as
+    // the 10s `tokio::time::timeout` does).
+    let a = spawn_ingest(&state, &pa, 2);
+    wait_for_held(&held, 1).await;
+    a.abort();
+    assert!(a.await.is_err(), "A was cancelled (timed out)");
+
+    // B enqueues behind A's closed entry; then A's LATE reply arrives.
+    let b = spawn_ingest(&state, &pa, 1);
+    wait_for_held(&held, 2).await;
+    assert!(
+        !pending.lock().unwrap().try_deliver(late_reply(&held, 0)),
+        "A's late reply is consumed by A's own entry, delivered to nobody"
+    );
+    assert!(pending.lock().unwrap().try_deliver(late_reply(&held, 1)));
+    let resp_b = b.await.expect("B completes");
+    assert_eq!(resp_b.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp_b).await["accepted"],
+        1,
+        "B must receive its own result, never A's accepted count"
+    );
+
+    // Aligned: a third caller still pairs with its own reply.
+    let c = spawn_ingest(&state, &pa, 3);
+    wait_for_held(&held, 3).await;
+    assert!(pending.lock().unwrap().try_deliver(late_reply(&held, 2)));
+    let resp_c = c.await.expect("C completes");
+    assert_eq!(resp_c.status(), StatusCode::OK);
+    assert_eq!(body_json(resp_c).await["accepted"], 3);
 }

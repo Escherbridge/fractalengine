@@ -39,7 +39,7 @@ use fe_sync::messages::{SyncCommand, SyncEvent};
 use fe_sync::{Retention, ShardId, SHARD_TABLE};
 use serde::{Deserialize, Serialize};
 
-use crate::clock::{uninstall_hlc_source, SimClock};
+use crate::clock::{install_hlc_source, uninstall_hlc_source, SimClock};
 use crate::fleet::{FleetConfig, ScheduledReading};
 use crate::net::SimNet;
 use crate::peer::SimPeer;
@@ -284,7 +284,44 @@ impl ScenarioScript {
                 ScriptedEvent::Heal { .. } | ScriptedEvent::SetLatency { .. } => {}
             }
         }
-        Ok(())
+        let max_latency = self
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                ScriptedEvent::SetLatency { latency_ms, .. } => Some(*latency_ms),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        self.check_time_limit(max_latency)
+    }
+
+    /// The furthest simulated time this script can reach — the fleet end,
+    /// every event, every query window, plus `latency_ms` of in-flight drain
+    /// — must stay below 2^48 ms (DEC-C13: HLC packs wall time into 48
+    /// bits). Shared with interactive `SetLatency` injection.
+    pub fn check_time_limit(&self, latency_ms: u64) -> Result<()> {
+        let mut horizon = self.fleet.duration_ms;
+        for event in &self.events {
+            horizon = horizon.max(event.at_ms());
+            if let ScriptedEvent::Query { query, .. } = event {
+                if let Some((_, end)) = query.window() {
+                    horizon = horizon.max(end);
+                }
+            }
+        }
+        match self
+            .fleet
+            .start_ms
+            .checked_add(horizon)
+            .and_then(|t| t.checked_add(latency_ms))
+        {
+            Some(t) if t < crate::fleet::SIM_TIME_LIMIT_MS => Ok(()),
+            _ => anyhow::bail!(
+                "scenario {}: events/latency push simulated time past the 2^48 ms limit",
+                self.name
+            ),
+        }
     }
 
     /// Every peer name `event` references must be a fleet peer (shared by
@@ -487,14 +524,27 @@ impl ScenarioOutcome {
     }
 }
 
-/// Restores the real HLC source when the scenario ends (even on error) —
-/// the override is process-global, so a leaked install would poison
-/// every later test in the process.
-pub(crate) struct HlcSourceGuard;
+/// Installs the session's HLC source and, on drop (stop, error, or
+/// abandonment), uninstalls it and restores the pre-session HLC state —
+/// both are process-global (AGENTS.md §hlc-sim).
+pub(crate) struct HlcSourceGuard {
+    snapshot: fe_database::op_log::HlcSnapshot,
+}
+
+impl HlcSourceGuard {
+    /// Snapshot the process HLC, THEN install `clock` as its source.
+    pub(crate) fn install(clock: Arc<SimClock>) -> Self {
+        let snapshot = fe_database::op_log::snapshot_hlc();
+        install_hlc_source(clock);
+        Self { snapshot }
+    }
+}
 
 impl Drop for HlcSourceGuard {
     fn drop(&mut self) {
+        // Uninstall first: restore must not observe the sim source.
         uninstall_hlc_source();
+        fe_database::op_log::restore_hlc(self.snapshot);
     }
 }
 
@@ -627,11 +677,30 @@ impl Run {
         }
     }
 
-    /// Drop every queued sync event: the sync thread's event sends block on
-    /// a full (64) channel, and nothing else consumes them in a sim run.
+    /// Drop every queued sync event AND every unsolicited
+    /// `ReplicatedRowApplied` DB echo: both producers block on full
+    /// bounded(64) channels and nothing else consumes them in a sim run (a
+    /// replica's undrained echoes deadlocked its DB thread against the
+    /// driver's next command send — AGENTS.md §scenario-runner).
+    ///
+    /// Safe to discard DB results here by the single-driver-thread
+    /// invariant: every driver DB command is sent and awaited synchronously
+    /// on THIS thread (`raw_query`, the tick ingest, setup — `send` then
+    /// `wait_for`), so no `wait_for` is outstanding whenever this runs, and
+    /// `wait_for` itself drops non-matching results. Anything other than a
+    /// `ReplicatedRowApplied` is therefore a stray — logged, never silent.
     pub(crate) fn drain_events(&self) {
-        for peer in self.peers.values() {
+        for (name, peer) in &self.peers {
             while peer.peer.sync_evt_rx.try_recv().is_ok() {}
+            while let Ok(result) = peer.peer.db_result_rx.try_recv() {
+                if !matches!(result, DbResult::ReplicatedRowApplied { .. }) {
+                    tracing::warn!(
+                        peer = %name,
+                        ?result,
+                        "scenario drain: stray DB result with no outstanding wait — dropped"
+                    );
+                }
+            }
         }
     }
 
@@ -1020,9 +1089,9 @@ mod tests {
     use crate::fleet::plan_fleet;
     use crate::sensors::evaluate;
 
-    /// Float tolerance for query values: merges sum per shard then across
+    /// Float tolerance for the MEAN only: merges sum per shard then across
     /// shards, the oracle sums in tick order — summation order, never
-    /// transport loss (replicated values are asserted bit-exact).
+    /// transport loss. Counts, min/max, and raw values compare exactly.
     const EPS: f64 = 1e-9;
 
     /// Run `script` twice in fresh directories (the repeat-run pattern).
@@ -1036,16 +1105,21 @@ mod tests {
 
     /// `{anchor}/{bucket}` of a planned reading — the canonical shard name.
     fn shard_of(script: &ScenarioScript, reading: &ScheduledReading) -> String {
+        shard_name(
+            script,
+            &script.fleet.sensors[reading.sensor].anchor,
+            reading.at_ms as i64,
+        )
+    }
+
+    /// `{anchor}/{bucket}` of a reading at `recorded_at_ms`.
+    fn shard_name(script: &ScenarioScript, anchor: &str, recorded_at_ms: i64) -> String {
         let width = script
             .timeseries
             .as_ref()
             .map(|t| t.bucket_width_ms)
             .unwrap_or(fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS);
-        format!(
-            "{}/{}",
-            script.fleet.sensors[reading.sensor].anchor,
-            ShardId::bucket_index(reading.at_ms as i64, width)
-        )
+        format!("{anchor}/{}", ShardId::bucket_index(recorded_at_ms, width))
     }
 
     /// Per-anchor (sum, count, min, max) over the planned readings `keep`
@@ -1093,19 +1167,23 @@ mod tests {
             };
             let (sum, count, want_min, want_max) = expected[anchor];
             assert_eq!(*sample_count, count, "{}: {anchor} count", record.label);
+            // Only the mean carries summation-order error; min/max select a
+            // bit-exact replicated value, so they compare exactly.
             assert!(
                 (avg - sum / count as f64).abs() < EPS,
                 "{}: {anchor} avg",
                 record.label
             );
-            assert!(
-                (min - want_min).abs() < EPS,
-                "{}: {anchor} min",
+            assert_eq!(
+                min.to_bits(),
+                want_min.to_bits(),
+                "{}: {anchor} min {min} vs {want_min}",
                 record.label
             );
-            assert!(
-                (max - want_max).abs() < EPS,
-                "{}: {anchor} max",
+            assert_eq!(
+                max.to_bits(),
+                want_max.to_bits(),
+                "{}: {anchor} max {max} vs {want_max}",
                 record.label
             );
         }
@@ -1139,6 +1217,17 @@ mod tests {
             "{peer} retains exactly its hosted shards"
         );
         for reading in store {
+            // Membership, not just counts: every held reading belongs to a
+            // shard this peer hosts (a swapped hosted/foreign pair would
+            // keep the count and still pass the bits check).
+            let shard = shard_name(script, &reading.anchor, reading.recorded_at_ms);
+            assert!(
+                outcome
+                    .placement
+                    .get(&shard)
+                    .is_some_and(|hosts| hosts.iter().any(|h| h == peer)),
+                "{peer} holds {reading:?} of shard {shard}, which it does not host"
+            );
             assert_eq!(
                 origin.get(&(reading.anchor.clone(), reading.recorded_at_ms)),
                 Some(&reading.value_bits),
@@ -1288,9 +1377,13 @@ mod tests {
                 outcome.endpoints_before, outcome.endpoints_after,
                 "no real network"
             );
+            // The hub never self-echoes (iroh-gossip parity), so every
+            // counted frame crossed peers: at minimum each of the two
+            // queries' requests reached BOTH non-requesting peers.
             assert!(
-                outcome.gossip_deliveries > 0,
-                "the fan-out rode the virtual gossip plane"
+                outcome.gossip_deliveries >= 4,
+                "the fan-out rode the virtual gossip plane cross-peer: {}",
+                outcome.gossip_deliveries
             );
         }
         assert_eq!(a.ingested, plan.len());
@@ -1361,7 +1454,13 @@ mod tests {
                 panic!("non-reading row {row:?}");
             };
             assert_eq!((anchor.as_str(), *recorded_at_ms), (planned.0, planned.1));
-            assert!((value - planned.2).abs() < EPS, "{anchor}@{recorded_at_ms}");
+            // A raw row is one replicated value (no arithmetic): exact.
+            assert_eq!(
+                value.to_bits(),
+                planned.2.to_bits(),
+                "{anchor}@{recorded_at_ms}: {value} vs {}",
+                planned.2
+            );
         }
         assert_eq!(raw.outcome.answered_hosts, ["alice", "bob", "carol"]);
         assert!(raw.outcome.missing_hosts.is_empty());
@@ -1533,10 +1632,184 @@ mod tests {
                 "duplicate label",
             ),
             (vec![query("q", "bob", 10)], "empty window"),
+            (
+                vec![ScriptedEvent::SetLatency {
+                    at_ms: 1,
+                    latency_ms: u64::MAX,
+                }],
+                "latency pushing sim time past 2^48",
+            ),
+            (
+                vec![ScriptedEvent::Heal {
+                    at_ms: crate::fleet::SIM_TIME_LIMIT_MS,
+                }],
+                "event past 2^48",
+            ),
         ] {
             let mut script = default_script();
             script.events = bad;
             assert!(script.validate().is_err(), "{why} must be rejected");
         }
+
+        // A future-dated fleet is rejected at the script level too.
+        let mut script = default_script();
+        script.fleet.start_ms = crate::fleet::real_now_ms() + 86_400_000;
+        let err = script.validate().expect_err("future start_ms");
+        assert!(err.to_string().contains("in the future"), "{err}");
+    }
+
+    /// The F8 at_ms regression guard: event offsets become ABSOLUTE times
+    /// at merge and interleave with ticks by time — an event lands before a
+    /// same-instant tick, between earlier/later ticks, and after the last
+    /// tick, keeping script order among same-instant events.
+    #[test]
+    fn merge_actions_places_events_at_their_absolute_times_among_ticks() {
+        let mut script = default_script();
+        script.fleet.sensors.truncate(1); // one sensor, 60s cadence
+        script.fleet.duration_ms = 180_000; // ticks at +60k, +120k, +180k
+        script.events = vec![
+            ScriptedEvent::Heal { at_ms: 120_000 },
+            ScriptedEvent::SetLatency {
+                at_ms: 200_000,
+                latency_ms: 0,
+            },
+            ScriptedEvent::PeerOffline {
+                at_ms: 60_000,
+                peer: "bob".into(),
+            },
+            ScriptedEvent::SetLatency {
+                at_ms: 90_000,
+                latency_ms: 5,
+            },
+            ScriptedEvent::PeerOnline {
+                at_ms: 120_000,
+                peer: "bob".into(),
+            },
+        ];
+        let origin = script.fleet.start_ms;
+        let plan = plan_fleet(&script.fleet);
+        let actions = merge_actions(&script, &plan);
+        let shape: Vec<(char, u64)> = actions
+            .iter()
+            .map(|a| match a {
+                Action::Event { at_ms, .. } => ('E', at_ms - origin),
+                Action::Tick { at_ms, .. } => ('T', at_ms - origin),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ('E', 60_000), // offline lands BEFORE the same-instant tick
+                ('T', 60_000),
+                ('E', 90_000),  // between ticks
+                ('E', 120_000), // heal, then online: same instant keeps script order
+                ('E', 120_000),
+                ('T', 120_000),
+                ('T', 180_000),
+                ('E', 200_000), // after the last tick
+            ]
+        );
+        let same_instant: Vec<&ScriptedEvent> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Event { at_ms, event } if *at_ms == origin + 120_000 => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert!(matches!(same_instant[0], ScriptedEvent::Heal { .. }));
+        assert!(matches!(same_instant[1], ScriptedEvent::PeerOnline { .. }));
+    }
+
+    /// Fix-1 regression (DEC-C13): a mirror replica retaining 300+ readings
+    /// between store barriers (no queries → the only store barrier is the
+    /// final one) used to deadlock — the replica's DB thread blocked on its
+    /// undrained `ReplicatedRowApplied` echoes while the driver blocked on
+    /// the full command channel, and the 30s settle deadline never fired.
+    /// Now the driver drains echoes and the harness `try_send`s them.
+    ///
+    /// Guard: the session runs on its own thread; once it holds the run lock
+    /// it gets [`DEADLOCK_BUDGET`]. A regression is a hang that would ALSO
+    /// hold the process-global run lock (stalling every later scenario
+    /// test), so on timeout the test exits the process (code 101) with a
+    /// message naming the drain — a loud CI failure, never a silent hang.
+    #[test]
+    fn mirror_replica_retaining_hundreds_of_rows_between_barriers_never_deadlocks() {
+        const DEADLOCK_BUDGET: Duration = Duration::from_secs(300);
+        let script = ScenarioScript::parse(
+            r#"{
+                "name": "sim-deadlock-guard",
+                "fleet": {
+                    "verse_name": "Deadlock Guard Verse",
+                    "peers": ["alice", "bob"],
+                    "ingest_peer": "alice",
+                    "anchors": ["tower-a", "tower-b"],
+                    "sensors": [
+                        { "anchor": "tower-a", "metric": "temperature_c", "units": "C",
+                          "cadence_ms": 1000,
+                          "model": { "type": "sine", "baseline": 15, "amplitude": 8,
+                                     "period_ms": 3600000 } },
+                        { "anchor": "tower-a", "metric": "humidity_pct", "units": "%",
+                          "cadence_ms": 1000,
+                          "model": { "type": "sine", "baseline": 60, "amplitude": 10,
+                                     "period_ms": 600000 } },
+                        { "anchor": "tower-b", "metric": "temperature_c", "units": "C",
+                          "cadence_ms": 1000,
+                          "model": { "type": "sine", "baseline": 12, "amplitude": 5,
+                                     "period_ms": 1800000 } },
+                        { "anchor": "tower-b", "metric": "pressure_hpa", "units": "hPa",
+                          "cadence_ms": 1000,
+                          "model": { "type": "sine", "baseline": 1013, "amplitude": 4,
+                                     "period_ms": 7200000 } }
+                    ],
+                    "start_ms": 1750000000000,
+                    "duration_ms": 80000
+                }
+            }"#,
+        )
+        .expect("deadlock-guard scenario parses");
+        let planned = plan_fleet(&script.fleet).len();
+        assert!(
+            planned >= 300,
+            "the guard needs ≥ 300 rows, plans {planned}"
+        );
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let outcome = crate::session::ScenarioSession::start(script, dir.path()).and_then(
+                |mut session| {
+                    let _ = started_tx.send(()); // the run lock is held from here
+                    session.step(u32::MAX)?;
+                    session.stop()
+                },
+            );
+            let _ = done_tx.send(outcome);
+        });
+        // Queueing behind other scenario tests on the run lock is not this
+        // test's budget; a failed start drops the sender (falls through).
+        let _ = started_rx.recv();
+        let outcome = match done_rx.recv_timeout(DEADLOCK_BUDGET) {
+            Ok(outcome) => outcome.expect("deadlock-guard scenario run"),
+            Err(_) => {
+                eprintln!(
+                    "FATAL: sim scenario deadlocked ({planned} mirror rows, no barrier) — the \
+                     driver must drain ReplicatedRowApplied echoes (Run::drain_events) and the \
+                     harness must try_send them (fe-test-harness §peer-model). Exiting: the \
+                     hung run holds SCENARIO_RUN_LOCK and would stall every later scenario test."
+                );
+                std::process::exit(101);
+            }
+        };
+        assert_eq!(outcome.ingested, planned, "every tick landed");
+        assert_eq!(
+            outcome.per_peer["bob"].len(),
+            planned,
+            "the mirror replica converged on every row"
+        );
+        assert_eq!(
+            outcome.per_peer["alice"], outcome.per_peer["bob"],
+            "replicated rows are bit-identical to the origin"
+        );
     }
 }

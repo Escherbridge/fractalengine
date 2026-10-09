@@ -28,6 +28,32 @@ reads the process-global CURRENT clock. Production processes never touch it.
 - `init_hlc(0)` runs per peer DB-thread spawn (harness) and resets the
   process-global HLC; because spawns happen under the run lock with the source
   installed, the reset itself reads the SimClock — deterministic.
+- **Snapshot/restore (DEC-C13).** That reset is process-wide and HLC is
+  forward-only, so a session would leak sim time into any co-resident
+  production DB thread: a FUTURE `start_ms` persisted into production stamps
+  (and across restarts via `init_hlc(max_persisted)`), a PAST one broke
+  op-log monotonicity. `HlcSourceGuard::install` snapshots the HLC
+  (`fe_database::op_log::snapshot_hlc`) BEFORE installing the source; its
+  `Drop` uninstalls, then `restore_hlc` sets `max(snapshot, real now)`. The
+  guard lives in `ScenarioSession` between `run` and `_run_lock`, so restore
+  runs after every peer thread has joined and before the lock releases — on
+  `stop`, on error, and on abandonment. Pinned by
+  `past_time_session_restores_the_process_hlc` (session.rs) and the
+  fe-database `op_log` restore tests.
+- **Time validation (`FleetConfig::validate`, DEC-C13).** `start_ms ≤ real
+  now` (past is the normal case; future is rejected), `start_ms < 2^48`
+  (`SIM_TIME_LIMIT_MS` — HLC's `wall << 16` truncates beyond), and
+  `start_ms + duration_ms < 2^48`; `ScenarioScript::check_time_limit` extends
+  that horizon over every event offset, query window, and `SetLatency` (also
+  checked for interactive `set_latency` injections). Below 2^48 every time is
+  chrono-representable, so `rfc3339_from_ms`'s `expect` cannot fire on a
+  validated fleet (release builds are `panic=abort`). Size caps ride the
+  same pass: ≤ 16 peers, ≤ 100 000 planned readings, cadence ≥ 1 ms;
+  `plan_fleet` iterates a bounded `1..=duration/cadence` range (the old
+  `saturating_mul` loop never terminated for `duration_ms: u64::MAX`).
+- Residual (recorded): stamps a co-resident production DB thread issues
+  DURING a session still read sim time — restore cannot un-issue them. Hence
+  the relay's runtime opt-in (§session).
 - `auto_pump` (thread advancing sim time at `speed`× real time) is
   **demo-only**; deterministic scenarios always step manually (`advance_ms`).
   The speed factor is recorded config, never a stepped run's driver.
@@ -106,8 +132,11 @@ SAME `(due_ms, seq)` heap, latency, partitions, and churn as doc rows.
   fe-sync's F23 forged-attribution gate authenticates sim envelopes exactly
   as it does direct iroh deliveries.
 - **Broadcast = one delivery per CURRENT member linked to the publisher,
-  self included** (iroh-gossip self-echo parity; fe-sync's `SELF_ECHO` gate
-  drops our own request, and our own response routes to no collector).
+  publisher EXCLUDED** (iroh-gossip 0.35 parity: a sender never receives its
+  own broadcast). Until 2026-10-09 the hub self-echoed — harmless (fe-sync's
+  `SELF_ECHO` gate dropped our own request; our own response routed to no
+  collector) but a sim/prod drift that inflated `gossip_deliveries` with
+  non-crossing frames (DEC-C13 #6). The gate stays as real-path defense.
   Targets are ordered by `(DID, token)` so seq assignment never depends on
   which sync thread joined first.
 - **No history.** Unlike the doc plane there is no replay: a member offline
@@ -120,8 +149,9 @@ SAME `(due_ms, seq)` heap, latency, partitions, and churn as doc rows.
   broadcasts never target it; a frame already in flight to it drains as
   `SubscriberGone` (counted, like a closed replica).
 - Bounded member inbound (256), drop-and-count on full — the same posture as
-  the doc subscribers. `gossip_deliveries()` counts frames handed over (the
-  scenarios assert > 0: the fan-out really rode the virtual plane).
+  the doc subscribers. `gossip_deliveries()` counts frames handed over — all
+  cross-peer, so the sharded scenario's `≥ 4` (each query's request reached
+  both non-requesting peers) proves the fan-out really crossed the plane.
 
 ## §identity (seeded peers)
 
@@ -173,9 +203,24 @@ walks it: advance the clock to each action, apply/ingest/query, `step()`.
   **Clock-overrun guard**: if a query's network drain advanced past the next
   tick, the run bails (the tick's stamp would drift) — move the query or
   lower the latency.
-- **Sync-event draining**: the sync thread's event sends are BLOCKING on a
-  bounded(64) channel (`RowApplied` per retained inbound row); nothing else
-  reads them in a sim run, so every settle/query poll drains all peers.
+- **Sync-event + DB-echo draining**: the sync thread's event sends are
+  BLOCKING on a bounded(64) channel (`RowApplied` per retained inbound row),
+  and every replica's DB thread answers each applied inbound row with an
+  unsolicited `ReplicatedRowApplied`; nothing else reads either in a sim run,
+  so every settle/query poll (`Run::drain_events`) drains both on all peers.
+  Before DEC-C13 only sync events were drained: a replica retaining ≳129
+  rows between store barriers parked its DB thread on the full result
+  channel, the driver's next `RawQuery` send parked on the full command
+  channel, and the run hung forever (the settle deadline is checked between
+  polls, never inside a blocked send). Discarding DB results there is safe
+  by the single-driver-thread invariant (every driver command is
+  `send`+`wait_for` on the driver thread, so no wait is outstanding during a
+  drain); a non-echo result is a stray and is logged. The harness side also
+  `try_send`s the echo (fe-test-harness `src/AGENTS.md` §peer-model).
+  Pinned by `mirror_replica_retaining_hundreds_of_rows_between_barriers_never_deadlocks`
+  (320 mirror rows, no query barrier; its thread guard exits the process
+  with code 101 after 300s instead of hanging CI — a hung run would hold
+  `SCENARIO_RUN_LOCK` and stall every later scenario test).
 - **Fingerprint** (`ScenarioOutcome::canonical_fingerprint`): per-peer
   `CanonicalReading`s (anchor NAME, metric, units, `recorded_at_ms`, exact
   value bits, HLC wall bits), final placement (`{anchor}/{bucket}` → peer
@@ -245,9 +290,17 @@ status snapshot between every call reproduce the one-shot fingerprint).
 - **Process-global hazard on a host binary.** A live session installs the
   SimClock as the PROCESS's HLC source and `init_hlc` resets the process
   HLC per peer spawn. That is why the bridge is wired only into
-  fractalengine-relay behind the default-off `sim-control` feature (a
-  dedicated lab relay — the relay logs a loud warning at spawn) and never
-  into the GUI binary.
+  fractalengine-relay behind the default-off `sim-control` feature AND a
+  runtime opt-in, `FE_SIM_ALLOW=1` (DEC-C13: defense beyond the compile
+  feature — a sim-control build without it logs a warning naming the risk
+  and does not spawn the bridge, so `/api/v1/sim/*` stays 503), and never
+  into the GUI binary. Lab relays must not serve production verses. The
+  HLC itself is snapshot/restored around every session (§hlc-sim).
+- **Teardown never blocks on a send.** `shutdown(run)` drains, sends
+  `CloseVerseReplica` with `try_send`, drains again, then drops the peers,
+  whose `TestPeer::shutdown_inner` joins while draining — an abandoned
+  session (Drop mid-run) can hold sync threads parked on full event
+  channels.
 
 ## §honest-limits (recorded, not hidden)
 

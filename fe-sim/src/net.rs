@@ -192,7 +192,8 @@ impl SimNet {
         self.dropped_deliveries.load(Ordering::SeqCst)
     }
 
-    /// Total gossip frames delivered to topic members (self-echoes included).
+    /// Total gossip frames delivered to topic members — all cross-peer (the
+    /// hub never self-echoes).
     pub fn gossip_deliveries(&self) -> u64 {
         self.gossip_deliveries.load(Ordering::SeqCst)
     }
@@ -487,8 +488,9 @@ impl SimNet {
     }
 
     /// Broadcast one gossip frame: one delivery per CURRENT member linked to
-    /// the publisher — the publisher's own membership included (iroh-gossip
-    /// self-echo parity). No history: a member unreachable now never gets it.
+    /// the publisher, EXCLUDING the publisher's own memberships (iroh-gossip
+    /// 0.35 parity: a sender never receives its own broadcast). No history:
+    /// a member unreachable now never gets it.
     fn gossip_broadcast(
         &self,
         topic: &str,
@@ -520,7 +522,8 @@ impl SimNet {
             content,
         };
         for (peer, member_token) in targets {
-            if !Self::pair_linked(&state, author, &peer) {
+            // No self-echo (real iroh-gossip never loops a broadcast back).
+            if peer == author || !Self::pair_linked(&state, author, &peer) {
                 continue;
             }
             state.seq += 1;
@@ -1308,25 +1311,25 @@ mod tests {
         bytes::Bytes::from_static(text.as_bytes())
     }
 
+    /// iroh-gossip 0.35 parity: a broadcast reaches every OTHER member and
+    /// never loops back to its publisher.
     #[test]
-    fn gossip_broadcast_reaches_every_member_including_the_publisher() {
+    fn gossip_broadcast_reaches_every_other_member_never_the_publisher() {
         let mut f = gossip_fixture();
         f.alpha.broadcast(frame("req-1")).unwrap();
         f.alpha.broadcast(frame("req-2")).unwrap();
+        assert_eq!(f.net.step(), 2, "two frames × one other member");
+        let first = f.beta_rx.try_recv().expect("first frame");
+        assert_eq!(first.content.as_ref(), b"req-1");
+        assert_eq!(first.from, node(1), "tagged with the publisher's NodeId");
+        assert!(first.direct, "hub deliveries are 0-hop");
         assert_eq!(
-            f.net.step(),
-            4,
-            "two frames × two members (self-echo included)"
+            f.beta_rx.try_recv().expect("second").content.as_ref(),
+            b"req-2"
         );
-        for rx in [&mut f.alpha_rx, &mut f.beta_rx] {
-            let first = rx.try_recv().expect("first frame");
-            assert_eq!(first.content.as_ref(), b"req-1");
-            assert_eq!(first.from, node(1), "tagged with the publisher's NodeId");
-            assert!(first.direct, "hub deliveries are 0-hop");
-            assert_eq!(rx.try_recv().expect("second").content.as_ref(), b"req-2");
-            assert!(rx.try_recv().is_err());
-        }
-        assert_eq!(f.net.gossip_deliveries(), 4);
+        assert!(f.beta_rx.try_recv().is_err());
+        assert!(f.alpha_rx.try_recv().is_err(), "no self-echo");
+        assert_eq!(f.net.gossip_deliveries(), 2);
         assert!(
             f.alpha.take_inbound().is_none(),
             "the inbound stream is taken once"
@@ -1342,8 +1345,9 @@ mod tests {
         f.net.clock().advance_ms(249);
         assert_eq!(f.net.step(), 0, "not due yet");
         f.net.clock().advance_ms(1);
-        assert_eq!(f.net.step(), 2);
+        assert_eq!(f.net.step(), 1, "the one other member");
         assert_eq!(f.alpha_rx.try_recv().unwrap().from, node(2));
+        assert!(f.beta_rx.try_recv().is_err(), "no self-echo");
     }
 
     #[test]
@@ -1352,10 +1356,15 @@ mod tests {
         // Offline at broadcast time: never scheduled, and never replayed.
         f.net.set_peer_online("did:beta", false);
         f.alpha.broadcast(frame("while-offline")).unwrap();
+        assert_eq!(
+            f.net.inflight_count(),
+            0,
+            "nobody reachable, nothing scheduled"
+        );
         f.net.step();
         assert!(
-            f.alpha_rx.try_recv().is_ok(),
-            "the publisher still self-echoes"
+            f.alpha_rx.try_recv().is_err(),
+            "the publisher never self-echoes"
         );
         f.net.set_peer_online("did:beta", true);
         f.net.step();
@@ -1379,10 +1388,7 @@ mod tests {
             f.beta_rx.try_recv().is_err(),
             "the cut frame is gone for good"
         );
-        assert_eq!(
-            f.alpha_rx.try_recv().unwrap().content.as_ref(),
-            b"in-flight"
-        );
+        assert!(f.alpha_rx.try_recv().is_err(), "no self-echo");
         assert_eq!(f.net.dropped_deliveries(), 1);
     }
 
@@ -1393,14 +1399,20 @@ mod tests {
             alpha,
             beta,
             mut alpha_rx,
+            mut beta_rx,
             ..
         } = gossip_fixture();
         drop(beta);
         alpha.broadcast(frame("after-leave")).unwrap();
-        assert_eq!(net.step(), 1, "only the publisher's own membership remains");
         assert_eq!(
-            alpha_rx.try_recv().unwrap().content.as_ref(),
-            b"after-leave"
+            net.step(),
+            0,
+            "only the publisher remains — and it never self-echoes"
+        );
+        assert!(alpha_rx.try_recv().is_err());
+        assert!(
+            beta_rx.try_recv().is_err(),
+            "the departed member is never targeted"
         );
         assert_eq!(
             net.dropped_deliveries(),

@@ -21,6 +21,9 @@ use fe_sync::{FsBlobStore, SyncCommandSender, SyncEventReceiver};
 /// Default timeout for waiting on DB results.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Poll slice while shutdown drains a peer's receivers.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
+
 /// Namespace secrets shared between the peer's DB thread and the test
 /// driver. Tests must not touch the real OS keyring; the driver needs the
 /// secrets to open verse replicas (A2) where the production app would read
@@ -211,6 +214,9 @@ impl TestPeer {
                 // Reconstruct keypair from seed for invite operations
                 let invite_keypair = NodeKeypair::from_bytes(&kp_seed)
                     .expect("reconstruct keypair from seed");
+
+                // ReplicatedRowApplied echoes dropped on a full result channel.
+                let mut replicated_echo_dropped: u64 = 0;
 
                 // Command loop (simplified version of fe-database::spawn_db_thread_with_sync)
                 loop {
@@ -533,6 +539,7 @@ impl TestPeer {
                             verse_id,
                             source_did,
                             readings,
+                            correlation_id,
                         }) => {
                             match fe_database::handlers::iot_reading::insert_readings_with_replication(
                                 &db,
@@ -546,7 +553,7 @@ impl TestPeer {
                             .await
                             {
                                 Ok(written) => {
-                                    if let Err(e) = db_result_tx.send(DbResult::IotReadingsInserted { petal_id, written }) {
+                                    if let Err(e) = db_result_tx.send(DbResult::IotReadingsInserted { petal_id, written, correlation_id }) {
                                         tracing::warn!("IotReadingsInserted send failed: {e:?}");
                                     }
                                 }
@@ -860,7 +867,7 @@ impl TestPeer {
                             row_bytes,
                             author_did,
                         }) => {
-                            match fe_database::handlers::replicated_row::apply_replicated_row_handler(
+                            let outcome = match fe_database::handlers::replicated_row::apply_replicated_row_handler(
                                 &db,
                                 &verse_id,
                                 &table,
@@ -872,27 +879,29 @@ impl TestPeer {
                             )
                             .await
                             {
-                                Ok(outcome) => {
-                                    db_result_tx
-                                        .send(DbResult::ReplicatedRowApplied {
-                                            verse_id,
-                                            table,
-                                            record_id,
-                                            outcome,
-                                        })
-                                        .ok();
-                                }
+                                Ok(outcome) => outcome,
                                 Err(e) => {
-                                    db_result_tx
-                                        .send(DbResult::ReplicatedRowApplied {
-                                            verse_id,
-                                            table,
-                                            record_id,
-                                            outcome:
-                                                fe_runtime::messages::ReplicatedRowOutcome::Failed,
-                                        })
-                                        .ok();
                                     tracing::warn!("ApplyReplicatedRow failed: {e}");
+                                    fe_runtime::messages::ReplicatedRowOutcome::Failed
+                                }
+                            };
+                            // Unsolicited echo → try_send + drop-and-count (§replication-
+                            // backpressure): a blocking send here deadlocked the DB thread
+                            // against a driver that never drains echoes (fe-test-harness
+                            // AGENTS.md §peer-model). Awaited replies keep blocking sends.
+                            match db_result_tx.try_send(DbResult::ReplicatedRowApplied {
+                                verse_id,
+                                table,
+                                record_id,
+                                outcome,
+                            }) {
+                                Ok(()) | Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+                                Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                    replicated_echo_dropped += 1;
+                                    tracing::warn!(
+                                        dropped_total = replicated_echo_dropped,
+                                        "harness peer: result channel full — ReplicatedRowApplied echo dropped"
+                                    );
                                 }
                             }
                         }
@@ -1045,16 +1054,47 @@ impl TestPeer {
     }
 
     fn shutdown_inner(&mut self) {
-        // Shut down DB
-        let _ = self.db_cmd_tx.send(DbCommand::Shutdown);
+        // We own both inbound receivers, so a thread parked on a full
+        // bounded(64) result/event send would never see Shutdown: every send
+        // and join below drains them while it waits (§peer-model).
         if let Some(h) = self._db_thread.take() {
-            let _ = h.join();
+            self.send_draining(&self.db_cmd_tx, DbCommand::Shutdown);
+            self.join_draining(h);
         }
-        // Shut down sync
-        let _ = self.sync_cmd_tx.send(SyncCommand::Shutdown);
         if let Some(h) = self._sync_thread.take() {
-            let _ = h.join();
+            self.send_draining(&self.sync_cmd_tx, SyncCommand::Shutdown);
+            self.join_draining(h);
         }
+    }
+
+    /// Discard every queued DB result and sync event (shutdown only).
+    fn drain_inbound(&self) {
+        while self.db_result_rx.try_recv().is_ok() {}
+        while self.sync_evt_rx.try_recv().is_ok() {}
+    }
+
+    /// Deliver `msg` without blocking forever on a full channel whose
+    /// consumer is itself parked on one of our undrained receivers.
+    fn send_draining<T>(&self, tx: &Sender<T>, mut msg: T) {
+        loop {
+            match tx.try_send(msg) {
+                Ok(()) | Err(crossbeam::channel::TrySendError::Disconnected(_)) => return,
+                Err(crossbeam::channel::TrySendError::Full(back)) => {
+                    msg = back;
+                    self.drain_inbound();
+                    std::thread::sleep(SHUTDOWN_POLL);
+                }
+            }
+        }
+    }
+
+    /// Join `handle`, draining our receivers until the thread has exited.
+    fn join_draining(&self, handle: JoinHandle<()>) {
+        while !handle.is_finished() {
+            self.drain_inbound();
+            std::thread::sleep(SHUTDOWN_POLL);
+        }
+        let _ = handle.join();
     }
 }
 

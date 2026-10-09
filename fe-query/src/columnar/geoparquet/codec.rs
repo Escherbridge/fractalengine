@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, Float32Array, RecordBatch, StringArray, UInt64Array,
+    Array, ArrayRef, BinaryArray, Float32Array, Float64Array, Int64Array, RecordBatch, StringArray,
+    UInt64Array,
 };
 use arrow::datatypes::{DataType, Field, Schema};
-use fe_entity_store::EntitySnapshot;
+use fe_entity_store::{EntitySnapshot, ReadingSnapshot};
 
 /// ISO WKB geometry type code for Point Z.
 const WKB_POINT_Z: u32 = 1001;
@@ -118,6 +119,110 @@ pub(super) fn batch_to_snapshots(
             properties,
             updated_at_ms: updated.value(i),
             node_log: Vec::new(),
+        });
+    }
+    Ok(())
+}
+
+/// Arrow schema for the flat readings table (F11/A23). The geometry column is
+/// **nullable** — unlike `nodes_schema` — because a reading can outlive its
+/// anchor node (see `fe_entity_store::ReadingSnapshot`).
+pub(super) fn readings_schema(geometry_column: &str) -> Schema {
+    Schema::new(vec![
+        Field::new("reading_id", DataType::Utf8, false),
+        Field::new("node_id", DataType::Utf8, false),
+        Field::new("petal_id", DataType::Utf8, false),
+        Field::new("metric", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+        Field::new("units", DataType::Utf8, false),
+        Field::new("recorded_at", DataType::Utf8, false),
+        Field::new("recorded_at_ms", DataType::Int64, false),
+        Field::new(geometry_column, DataType::Binary, true),
+    ])
+}
+
+/// Map reading rows into a single RecordBatch matching [`readings_schema`].
+/// `value` is `Float64` (unlike node position's `Float32`) so BI consumers
+/// get the sensor reading back bit-exact.
+pub(super) fn readings_to_batch(
+    schema: Arc<Schema>,
+    rows: &[ReadingSnapshot],
+) -> Result<RecordBatch> {
+    let reading_ids: StringArray = rows.iter().map(|r| Some(r.reading_id.as_str())).collect();
+    let node_ids: StringArray = rows.iter().map(|r| Some(r.node_id.as_str())).collect();
+    let petal_ids: StringArray = rows.iter().map(|r| Some(r.petal_id.as_str())).collect();
+    let metrics: StringArray = rows.iter().map(|r| Some(r.metric.as_str())).collect();
+    let values = Float64Array::from_iter_values(rows.iter().map(|r| r.value));
+    let units: StringArray = rows.iter().map(|r| Some(r.units.as_str())).collect();
+    let recorded_at: StringArray = rows.iter().map(|r| Some(r.recorded_at.as_str())).collect();
+    let recorded_at_ms = Int64Array::from_iter_values(rows.iter().map(|r| r.recorded_at_ms));
+    let wkb: BinaryArray = rows
+        .iter()
+        .map(|r| r.anchor_position.map(point_z_to_wkb))
+        .collect();
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(reading_ids),
+            Arc::new(node_ids),
+            Arc::new(petal_ids),
+            Arc::new(metrics),
+            Arc::new(values),
+            Arc::new(units),
+            Arc::new(recorded_at),
+            Arc::new(recorded_at_ms),
+            Arc::new(wkb),
+        ],
+    )
+    .context("building readings RecordBatch")
+}
+
+/// Decode one RecordBatch back into reading rows (sibling of `batch_to_snapshots`).
+pub(super) fn batch_to_readings(
+    batch: &RecordBatch,
+    geometry_column: &str,
+    out: &mut Vec<ReadingSnapshot>,
+) -> Result<()> {
+    let reading_ids = str_col(batch, "reading_id")?;
+    let node_ids = str_col(batch, "node_id")?;
+    let petal_ids = str_col(batch, "petal_id")?;
+    let metrics = str_col(batch, "metric")?;
+    let values = batch
+        .column_by_name("value")
+        .context("missing column `value`")?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .context("column `value` is not Float64")?;
+    let units = str_col(batch, "units")?;
+    let recorded_at = str_col(batch, "recorded_at")?;
+    let recorded_at_ms = batch
+        .column_by_name("recorded_at_ms")
+        .context("missing column `recorded_at_ms`")?
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .context("column `recorded_at_ms` is not Int64")?;
+    let wkb = batch
+        .column_by_name(geometry_column)
+        .with_context(|| format!("missing geometry column `{geometry_column}`"))?
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .with_context(|| format!("geometry column `{geometry_column}` is not Binary"))?;
+    for i in 0..batch.num_rows() {
+        let anchor_position = if wkb.is_null(i) {
+            None
+        } else {
+            Some(wkb_to_point_z(wkb.value(i))?)
+        };
+        out.push(ReadingSnapshot {
+            reading_id: reading_ids.value(i).to_string(),
+            node_id: node_ids.value(i).to_string(),
+            petal_id: petal_ids.value(i).to_string(),
+            metric: metrics.value(i).to_string(),
+            value: values.value(i),
+            units: units.value(i).to_string(),
+            recorded_at: recorded_at.value(i).to_string(),
+            recorded_at_ms: recorded_at_ms.value(i),
+            anchor_position,
         });
     }
     Ok(())

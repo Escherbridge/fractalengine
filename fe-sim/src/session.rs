@@ -14,7 +14,7 @@ use fe_runtime::timeseries::VerseTimeseriesSettings;
 use fe_sync::messages::SyncCommand;
 use serde::Serialize;
 
-use crate::clock::{install_hlc_source, SimClock, SCENARIO_RUN_LOCK};
+use crate::clock::{SimClock, SCENARIO_RUN_LOCK};
 use crate::fleet::{plan_fleet, rfc3339_from_ms};
 use crate::net::SimNet;
 use crate::peer::SimPeer;
@@ -126,8 +126,9 @@ impl ScenarioSession {
         // The clock the whole session reads: sensors, the hub, and (via the
         // process-global HLC source) every reading's stamp.
         let clock = SimClock::new(script.fleet.start_ms);
-        install_hlc_source(clock.clone());
-        let hlc_guard = HlcSourceGuard;
+        // Snapshots the process HLC before installing (restored on drop —
+        // DEC-C13; AGENTS.md §hlc-sim).
+        let hlc_guard = HlcSourceGuard::install(clock.clone());
 
         let net = SimNet::new(clock.clone());
 
@@ -447,17 +448,21 @@ impl ScenarioSession {
                 }
                 let expected = batch.len();
                 let want_petal = run.petal_id.clone();
+                // Correlated per merged action (the `sim-anchor:` idiom).
+                let want_correlation = format!("sim-ingest:{index}");
                 let host = run.peer(&run.host_name)?;
                 host.peer.send(DbCommand::InsertIotReadings {
                     petal_id: run.petal_id.clone(),
                     verse_id: Some(run.verse_id.clone()),
                     source_did: host_did.clone(),
                     readings: batch,
+                    correlation_id: Some(want_correlation.clone()),
                 });
                 let written = match host.peer.wait_for(
                     |r| {
-                        matches!(r, DbResult::IotReadingsInserted { ref petal_id, .. }
-                            if petal_id == &want_petal)
+                        matches!(r, DbResult::IotReadingsInserted { ref petal_id, ref correlation_id, .. }
+                            if petal_id == &want_petal
+                                && correlation_id.as_deref() == Some(want_correlation.as_str()))
                     },
                     DB_REPLY_BUDGET,
                 )? {
@@ -483,6 +488,9 @@ impl ScenarioSession {
     pub fn check_fault(&self, event: &ScriptedEvent) -> Result<()> {
         if let ScriptedEvent::Query { .. } = event {
             anyhow::bail!("query events are scripted actions, not faults — script them instead");
+        }
+        if let ScriptedEvent::SetLatency { latency_ms, .. } = event {
+            self.script.check_time_limit(*latency_ms)?;
         }
         self.script.validate_event_peers(event)
     }
@@ -620,17 +628,27 @@ impl Drop for ScenarioSession {
     }
 }
 
-/// Clean shutdown: close every replica, give the sync threads a beat, then
-/// drop the peers (their threads join).
+/// Clean shutdown: drain, close every replica, give the sync threads a
+/// beat, drain again, then drop the peers (their threads join while
+/// draining — `TestPeer::shutdown_inner`). Never a blocking send: an
+/// abandoned session (Drop) may hold sync threads parked on full event
+/// channels whose command channels are full too.
 fn shutdown(run: Run) {
+    run.drain_events();
     for peer in run.peers.values() {
-        if let Err(e) = peer.peer.sync_cmd_tx.send(SyncCommand::CloseVerseReplica {
-            verse_id: run.verse_id.clone(),
-        }) {
-            tracing::warn!("scenario shutdown: CloseVerseReplica send failed: {e}");
+        if let Err(e) = peer
+            .peer
+            .sync_cmd_tx
+            .try_send(SyncCommand::CloseVerseReplica {
+                verse_id: run.verse_id.clone(),
+            })
+        {
+            // Teardown proceeds regardless (the peer's Shutdown follows).
+            tracing::warn!("scenario shutdown: CloseVerseReplica not sent: {e}");
         }
     }
     std::thread::sleep(SETTLE_POLL);
+    run.drain_events();
     drop(run);
 }
 
@@ -681,6 +699,59 @@ mod tests {
             "start/step*/stop must reproduce run_scenario exactly"
         );
         assert_eq!(interactive.ingested, 21);
+    }
+
+    /// DEC-C13: a past-dated session resets the process-global HLC to sim
+    /// time (`init_hlc(0)` per peer spawn); teardown must hand it back no
+    /// lower than it found it. The pre-session state runs AHEAD of the wall
+    /// clock (a production DB that persisted stamps under clock skew), so
+    /// real time alone would NOT restore monotonicity — only the snapshot
+    /// does.
+    #[test]
+    fn past_time_session_restores_the_process_hlc() {
+        let before = {
+            let _lock = SCENARIO_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let ahead_wall = crate::fleet::real_now_ms() + 120_000;
+            fe_database::op_log::init_hlc((ahead_wall << 16) | 3);
+            fe_database::op_log::next_hlc_timestamp().0
+        };
+        // (Any session that runs in between also restores ≥ its snapshot,
+        // so the chain stays monotonic.)
+        let script = ScenarioScript::parse(
+            r#"{
+                "name": "sim-hlc-restore",
+                "fleet": {
+                    "verse_name": "HLC Restore",
+                    "peers": ["solo"],
+                    "ingest_peer": "solo",
+                    "anchors": ["tower-a"],
+                    "sensors": [
+                        { "anchor": "tower-a", "metric": "temperature_c", "units": "C",
+                          "cadence_ms": 60000,
+                          "model": { "type": "sine", "baseline": 15, "amplitude": 8,
+                                     "period_ms": 3600000 } }
+                    ],
+                    "start_ms": 1600000000000,
+                    "duration_ms": 120000
+                }
+            }"#,
+        )
+        .expect("past-dated scenario parses");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outcome = run_scenario(&script, dir.path()).expect("past-time run");
+        assert!(
+            outcome.per_peer["solo"]
+                .iter()
+                .all(|r| r.hlc_wall_ms < 1_600_000_200_000),
+            "the session really stamped (past) sim time"
+        );
+
+        let _lock = SCENARIO_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (after, _) = fe_database::op_log::next_hlc_timestamp();
+        assert!(
+            after > before,
+            "post-session production stamp {after} must exceed the pre-session stamp {before}"
+        );
     }
 
     /// Advance until the next action sits at simulated offset `at_ms`, then

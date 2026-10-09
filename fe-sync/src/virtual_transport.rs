@@ -116,9 +116,10 @@ pub struct VirtualGossipMessage {
 /// `GossipTopic` shape the real path uses.
 ///
 /// Delivery semantics are the hub's: a broadcast schedules one delivery per
-/// current subscriber (self included — iroh-gossip self-echo parity; the
-/// F23 SELF_ECHO admission gate handles it) under the hub's scripted
-/// latency/partition/churn, and a subscriber that was offline or
+/// current subscriber OTHER than the publisher (iroh-gossip 0.35 parity — a
+/// sender never receives its own broadcast; the F23 SELF_ECHO admission
+/// gate stays as defense for the real path's topology edge cases) under
+/// the hub's scripted latency/partition/churn, and a subscriber that was offline or
 /// partitioned away MISSES the message (gossip has no history — the
 /// degradation scenario depends on this).
 pub trait VirtualGossipTopic: Send + Sync {

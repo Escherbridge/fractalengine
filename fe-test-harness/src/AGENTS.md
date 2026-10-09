@@ -21,6 +21,28 @@ resolving. `TestPeer::spawn_with_identity(.., keypair)` (F9) takes a
 caller-supplied `NodeKeypair`: the sim lab seeds identities so DID-ordered
 shard placement repeats run to run (fe-sim `src/AGENTS.md` §identity).
 
+**Bounded-channel discipline (DEC-C13, 2026-10-09).** Every peer channel is
+bounded(64), and the DB/sync threads' result/event sends to the driver are
+mostly BLOCKING — correct for awaited replies (the driver is in `wait_for`),
+deadlock-prone for unsolicited output nobody waits for. Two rules:
+
+- The DB loop's `ApplyReplicatedRow` echo (`ReplicatedRowApplied`) is
+  unsolicited (the inbound pump triggers it, not the driver), so it is a
+  `try_send` + drop-and-count (§replication-backpressure). A blocking send
+  here parked a replica's DB thread once ~64 echoes queued; the driver's
+  next `send` then blocked on the full command channel — a cycle the 30s
+  settle deadline never broke (the M3 sim-lab deadlock at ≳129 retained
+  rows between store barriers). Real-transport scenarios that `wait_for` an
+  echo are unaffected: they move a handful of rows, far below 64.
+  Awaited replies keep blocking sends (dropping one would turn a test into a
+  30s timeout). `TestPeer::send` stays a blocking send — a timeout there
+  would only convert the cycle into a panic, not break it.
+- `shutdown_inner` sends Shutdown with `try_send` and joins while draining
+  BOTH receivers (`send_draining`/`join_draining`): the peer owns them, so
+  a thread parked on a full result/event send would otherwise never see
+  Shutdown and `join` would hang (reachable from fe-sim's `ScenarioSession`
+  Drop, which tears down mid-run).
+
 ## §api-harness
 
 `api.rs` — reusable in-process fe-api integration harness, consumed from

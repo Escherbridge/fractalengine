@@ -96,7 +96,7 @@ is the lowest common dependency — one definition, no drift, no cycle.
 ## §api-reply-correlation
 
 `app.rs::PendingApiRequests` holds the API threads' pending `DbResult` waiters.
-`DbResult` carries **no correlation id**, and results are not only replies to
+`DbResult` mostly carries **no correlation id** (exceptions below), and results are not only replies to
 API commands: the DB thread also fans unsolicited work into the same channel
 (the relay startup scan's `HierarchyLoaded`, GUI-initiated hierarchy reloads).
 Pairing the next result with the oldest waiter (plain FIFO) therefore
@@ -115,6 +115,31 @@ order:
   family (`deliver_to_oldest`), because a failure has no family-specific shape.
 - A result whose family has no waiter is dropped, never delivered to some
   other family.
+- **Correlated families (DEC-C13, 2026-10-09).** Within one family the queue
+  is FIFO and `deliver_to` SKIPS closed entries (a timed-out caller dropped
+  its receiver). That cross-delivered the F24 IoT ingest fallback: caller A
+  times out at 10s, B enqueues, A's late `IotReadingsInserted` pops A's
+  closed entry, skips it, and lands on B (B's own reply then finds no
+  waiter; with more callers queued the whole family shifts by one). The fix
+  is per-family correlation, not a routing-wide change: `InsertIotReadings`
+  carries a `correlation_id` the DB thread echoes on `IotReadingsInserted`/
+  `IotReadingsRejected` (the `CreateNode` precedent); `PendingEntry` stores
+  it (`correlation_of_command`), and `deliver_correlated` hands a correlated
+  reply ONLY to its own entry — even a CLOSED one, which consumes and drops
+  it (requeue is impossible: a oneshot cannot be re-armed, and consuming is
+  what keeps the queue aligned). An id with no entry is not delivered.
+  Uncorrelated replies (`None`, every other family) keep the old semantics.
+  The fe-api fallback additionally checks the echoed id + `petal_id` and
+  answers 502 on a mismatch rather than leak another caller's result.
+- **Known sharp edge (deliberately NOT changed — DEC-C13).** `Error` stays
+  family-blind (oldest waiter of any family) and `deliver_to` keeps
+  skip-closed: a late `Error` for a timed-out caller still lands on the next
+  oldest waiter, and families without a correlation id still shift after a
+  timeout. A global pop-and-drop of closed entries would change Error
+  routing for every caller, so it is deferred. **Revisit trigger:** any new
+  timeout-capable write-path caller (or any family whose late reply would
+  be harmful) — give its command a correlation id like the IoT family, or
+  take the pop-and-drop change then.
 
 **Maintenance rule:** every `DbCommand` that expects a reply must be mapped in
 `reply_kind_of_command` and its reply in `reply_kind_of_result` —

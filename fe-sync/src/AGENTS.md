@@ -427,8 +427,11 @@ replication model is forbidden.
   key), so the F23 sender-identity gate applies to sim frames verbatim. A
   factory without a gossip plane (the trait default `None`) leaves the verse
   honestly topic-less (`SubmitComputeTask` runs local-only). fe-sim's
-  `SimNet` implements it with self-echo, scripted latency/partition/churn,
-  and NO history (fe-sim `src/AGENTS.md` §gossip-plane).
+  `SimNet` implements it with NO self-echo (iroh-gossip 0.35 never delivers
+  a sender's own broadcast back to it — the hub matched that on 2026-10-09,
+  DEC-C13; the `SELF_ECHO` gate remains as defense), scripted
+  latency/partition/churn, and NO history (fe-sim `src/AGENTS.md`
+  §gossip-plane).
 - **Still not virtualized:** petal-level replication stays mock-backed
   (legacy path, no sim consumer), and blob fetching across peers (sim fleets
   exchange rows, not GLB assets).

@@ -6,9 +6,11 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use fe_entity_store::EntitySnapshot;
+use fe_entity_store::{EntitySnapshot, ReadingSnapshot};
 use fe_identity::api_token::ApiClaims;
-use fe_query::columnar::geoparquet::{write_nodes_parquet_bytes, GeoParquetMeta};
+use fe_query::columnar::geoparquet::{
+    write_nodes_parquet_bytes, write_readings_parquet_bytes, GeoParquetMeta,
+};
 use serde::Deserialize;
 
 use crate::auth::{require_role, require_scope};
@@ -91,15 +93,44 @@ async fn authorize_petal_export(
     Ok(())
 }
 
-/// Result of the shared export pipeline: scoped snapshots + the CRS label to stamp.
+/// Which row-shaping path an export/share query needs (A23). Shared between
+/// `prepare_export`'s runtime dispatch and `issue_share_url`'s mint-time
+/// check (share.rs) so the two surfaces agree on the whitelist — see
+/// `fe-api/AGENTS.md` §export.
+pub(crate) enum ExportShape {
+    Node,
+    IotReading,
+}
+
+/// Classify the query's FROM target as NODE or IOT_READING (400 otherwise).
+/// The guard pipeline itself (keyword/whitelist/scope) is unchanged — this is
+/// strictly about which row mapper the export/share path uses.
+pub(crate) fn classify_export_table(sql_upper: &str) -> Result<ExportShape, Response> {
+    match query_guard::from_table(sql_upper).as_deref() {
+        Some("NODE") => Ok(ExportShape::Node),
+        Some("IOT_READING") => Ok(ExportShape::IotReading),
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            "export queries must target the node or iot_reading table",
+        )),
+    }
+}
+
+/// The shaped rows for one export, keyed by which table they came from.
+pub(crate) enum ExportRows {
+    Nodes(Vec<EntitySnapshot>),
+    Readings(Vec<ReadingSnapshot>),
+}
+
+/// Result of the shared export pipeline: shaped rows + the CRS label to stamp.
 pub(crate) struct ExportOutput {
-    pub snapshots: Vec<EntitySnapshot>,
+    pub rows: ExportRows,
     pub crs_label: String,
     pub coords: Coords,
 }
 
 /// Guarded export pipeline shared with share-URL redemption: same static
-/// validation as `/query`, node-table-only, forced petal pre-filter, 5s
+/// validation as `/query`, node/iot_reading only, forced petal pre-filter, 5s
 /// timeout, export row cap, CRS resolution + optional lat/lon conversion.
 pub(crate) async fn prepare_export(
     state: &ApiState,
@@ -121,14 +152,10 @@ pub(crate) async fn prepare_export(
     if let Err(e) = query_guard::validate_select_sql(sql) {
         return Err(err(StatusCode::BAD_REQUEST, &e));
     }
-    // Exports map rows onto the node/EntitySnapshot shape — other tables are /query territory.
+    // Exports map rows onto the node/EntitySnapshot or reading/ReadingSnapshot
+    // shape — every other table is /query territory.
     let upper = sql.trim().to_uppercase();
-    if query_guard::from_table(&upper).as_deref() != Some("NODE") {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "export queries must target the node table",
-        ));
-    }
+    let shape = classify_export_table(&upper)?;
 
     // FR-6: pre-filter to the authorized petal regardless of the query text.
     let filter = format!("petal_id = '{}'", petal_id.replace('\'', ""));
@@ -149,11 +176,8 @@ pub(crate) async fn prepare_export(
 
     // FR-5: resolve the petal CRS; latlon requires a configured terrain origin.
     let crs = resolve_petal_crs(state, petal_id).await;
-    let (snapshots, crs_label) = match coords {
-        Coords::Local => (
-            rows.iter().map(|r| row_to_snapshot(r, None)).collect(),
-            crs.label,
-        ),
+    let (proj, crs_label) = match coords {
+        Coords::Local => (None, crs.label),
         Coords::LatLon => {
             let Some(proj) = crs.projection else {
                 return Err(err(
@@ -161,20 +185,89 @@ pub(crate) async fn prepare_export(
                     "coords=latlon requires a petal terrain origin (lat/lon); none configured",
                 ));
             };
-            (
+            (Some(proj), CRS_EPSG_4326.to_string())
+        }
+    };
+
+    let export_rows = match shape {
+        ExportShape::Node => ExportRows::Nodes(
+            rows.iter()
+                .map(|r| row_to_snapshot(r, proj.as_ref()))
+                .collect(),
+        ),
+        ExportShape::IotReading => {
+            // Deterministic batched join (never per-row): collect the
+            // distinct anchor node_ids this page of readings touches, then
+            // resolve their positions in ONE second guarded query — see
+            // `fetch_anchor_positions` + AGENTS.md §export.
+            let mut node_ids: Vec<&str> = Vec::new();
+            for r in &rows {
+                if let Some(id) = r["node_id"].as_str() {
+                    if !node_ids.contains(&id) {
+                        node_ids.push(id);
+                    }
+                }
+            }
+            let anchors = fetch_anchor_positions(state, petal_id, &node_ids).await?;
+            ExportRows::Readings(
                 rows.iter()
-                    .map(|r| row_to_snapshot(r, Some(&proj)))
+                    .map(|r| {
+                        let anchor = r["node_id"].as_str().and_then(|id| anchors.get(id));
+                        reading_row_to_snapshot(r, anchor, proj.as_ref())
+                    })
                     .collect(),
-                CRS_EPSG_4326.to_string(),
             )
         }
     };
 
     Ok(ExportOutput {
-        snapshots,
+        rows: export_rows,
         crs_label,
         coords,
     })
+}
+
+/// Resolve anchor-node positions for a batch of `node_id`s, scoped to
+/// `petal_id`, in a single guarded query (fixed shape, server-built — not
+/// user SQL, so it is bound via `$pid`/`$ids` rather than re-run through
+/// `validate_select_sql`). Missing anchors (hard-deleted nodes) are simply
+/// absent from the map; `reading_row_to_snapshot` maps that to `None`.
+async fn fetch_anchor_positions(
+    state: &ApiState,
+    petal_id: &str,
+    node_ids: &[&str],
+) -> Result<std::collections::HashMap<String, (f64, f64, f64)>, Response> {
+    let mut map = std::collections::HashMap::new();
+    if node_ids.is_empty() {
+        return Ok(map);
+    }
+    let Some(ref db) = state.db_reader else {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "export endpoint not available (no db_reader)",
+        ));
+    };
+    let guarded = query_guard::GuardedQuery {
+        sql: "SELECT node_id, position, elevation FROM node WHERE petal_id = $pid AND node_id IN $ids"
+            .to_string(),
+    };
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("pid".to_string(), serde_json::json!(petal_id));
+    vars.insert("ids".to_string(), serde_json::json!(node_ids));
+    let rows = query_guard::run_guarded_query(db, &guarded, &vars, limits::EXPORT_ROW_CAP)
+        .await
+        .map_err(query_err_response)?;
+    for row in rows {
+        let Some(node_id) = row["node_id"].as_str() else {
+            continue;
+        };
+        let coords = &row["position"]["coordinates"];
+        let x = coords[0].as_f64().unwrap_or(0.0);
+        let z = coords[1].as_f64().unwrap_or(0.0);
+        let y = row["elevation"].as_f64().unwrap_or(0.0);
+        map.insert(node_id.to_string(), (x, y, z));
+    }
+    Ok(map)
 }
 
 /// GET /api/v1/petals/:petal_id/export.parquet?query=...&coords=local|latlon
@@ -233,7 +326,11 @@ pub(crate) fn parquet_response(out: &ExportOutput, filename: &str) -> Response {
         crs: out.crs_label.clone(),
         ..Default::default()
     };
-    let bytes = match write_nodes_parquet_bytes(&out.snapshots, &meta) {
+    let written = match &out.rows {
+        ExportRows::Nodes(snapshots) => write_nodes_parquet_bytes(snapshots, &meta),
+        ExportRows::Readings(rows) => write_readings_parquet_bytes(rows, &meta),
+    };
+    let bytes = match written {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(error = %e, "parquet export serialization failed");
@@ -262,7 +359,10 @@ pub(crate) fn parquet_response(out: &ExportOutput, filename: &str) -> Response {
 
 /// Serialize an export to a CSV HTTP response.
 pub(crate) fn csv_response(out: &ExportOutput, filename: &str) -> Response {
-    let csv = snapshots_to_csv(&out.snapshots, out.coords, &out.crs_label);
+    let csv = match &out.rows {
+        ExportRows::Nodes(snapshots) => snapshots_to_csv(snapshots, out.coords, &out.crs_label),
+        ExportRows::Readings(rows) => readings_to_csv(rows, out.coords, &out.crs_label),
+    };
     if csv.len() > limits::EXPORT_MAX_BYTES {
         return err(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -348,6 +448,35 @@ pub(crate) fn row_to_snapshot(
     }
 }
 
+/// Map a reading row + its (possibly absent) resolved anchor position onto a
+/// [`ReadingSnapshot`]. `anchor` / `proj` mirror `row_to_snapshot`'s
+/// local-vs-latlon handling exactly, applied to the anchor instead of a
+/// node's own geometry (readings carry none).
+pub(crate) fn reading_row_to_snapshot(
+    row: &serde_json::Value,
+    anchor: Option<&(f64, f64, f64)>,
+    proj: Option<&fe_terrain::projection::Projection>,
+) -> ReadingSnapshot {
+    let anchor_position = anchor.map(|&(x, y, z)| match proj {
+        Some(p) => {
+            let (lat, lon, ele) = p.local_to_wgs84(x, y, z);
+            [lon as f32, lat as f32, ele as f32]
+        }
+        None => [x as f32, y as f32, z as f32],
+    });
+    ReadingSnapshot {
+        reading_id: row["reading_id"].as_str().unwrap_or_default().to_string(),
+        node_id: row["node_id"].as_str().unwrap_or_default().to_string(),
+        petal_id: row["petal_id"].as_str().unwrap_or_default().to_string(),
+        metric: row["metric"].as_str().unwrap_or_default().to_string(),
+        value: row["value"].as_f64().unwrap_or(0.0),
+        units: row["units"].as_str().unwrap_or_default().to_string(),
+        recorded_at: row["recorded_at"].as_str().unwrap_or_default().to_string(),
+        recorded_at_ms: row["recorded_at_ms"].as_i64().unwrap_or(0),
+        anchor_position,
+    }
+}
+
 /// RFC-4180 CSV with a leading `# crs=` comment line; properties as one JSON
 /// string column (choice documented in `fe-api/AGENTS.md` §export).
 pub(crate) fn snapshots_to_csv(
@@ -385,6 +514,43 @@ pub(crate) fn snapshots_to_csv(
             s.scale[2].to_string(),
             csv_escape(&props),
             s.updated_at_ms.to_string(),
+        ];
+        out.push_str(&fields.join(","));
+        out.push_str("\r\n");
+    }
+    out
+}
+
+/// RFC-4180 CSV for readings exports (flat rows + anchor position columns,
+/// same local/latlon header split as `snapshots_to_csv`). `value` renders at
+/// full `f64` precision — see `fe-api/AGENTS.md` §export.
+pub(crate) fn readings_to_csv(rows: &[ReadingSnapshot], coords: Coords, crs_label: &str) -> String {
+    let position_headers = match coords {
+        Coords::Local => "anchor_x_m,anchor_y_m,anchor_z_m",
+        Coords::LatLon => "anchor_lon,anchor_lat,anchor_ele_m",
+    };
+    let mut out = String::new();
+    out.push_str(&format!("# crs={crs_label}\r\n"));
+    out.push_str(&format!(
+        "reading_id,node_id,petal_id,metric,value,units,recorded_at,recorded_at_ms,{position_headers}\r\n"
+    ));
+    for r in rows {
+        let (px, py, pz) = match r.anchor_position {
+            Some(p) => (p[0].to_string(), p[1].to_string(), p[2].to_string()),
+            None => (String::new(), String::new(), String::new()),
+        };
+        let fields = [
+            csv_escape(&r.reading_id),
+            csv_escape(&r.node_id),
+            csv_escape(&r.petal_id),
+            csv_escape(&r.metric),
+            r.value.to_string(),
+            csv_escape(&r.units),
+            csv_escape(&r.recorded_at),
+            r.recorded_at_ms.to_string(),
+            px,
+            py,
+            pz,
         ];
         out.push_str(&fields.join(","));
         out.push_str("\r\n");
