@@ -21,6 +21,23 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 
 **Open tracks: 33.**
 
+> **Recount 2026-10-09 (F18 conductor reconciliation):** re-tallied fresh —
+> **41 non-archive track folders, 33 open** (`status` not in `{done,
+> superseded}`), by coincidence the same headline number as the stale
+> 2026-07-19 count below even though the underlying set of tracks has
+> completely turned over since (archivals, new Spatial Builder Program
+> tracks, this close-out). This pass closed 5 absorbed tracks to `done`
+> (`p2p_mycelium_completion_20260701`, `analytics_egress_20260714`,
+> `iot_spatial_reporting_20260714`, `api_mcp_integration_tests_20260717`,
+> `mcp_scene_primitives_20260716`) and opened 3 new record-only tracks
+> already `done` at creation (`timeseries_fabric_20261009`,
+> `simulation_lab_20261009`, `bi_verification_20261009`) — net zero change
+> to the open count from this pass alone (−5 +0, since the new tracks never
+> counted as open). One folder, `hexon_unification_20260716/metadata.json`,
+> has a pre-existing trailing-comma JSON syntax error that breaks automated
+> parsing (not introduced or fixed by this pass — out of scope); its status
+> was confirmed `pending` by manual read and is counted as open above.
+
 > **Validation pass 2026-07-19** (5-worker swarm, code-reading + git evidence only —
 > build env memory-blocked, no test execution). Every track's `metadata.json` re-validated
 > against committed git + a dated `VALIDATED 2026-07-19` note appended. **Status corrections:**
@@ -70,6 +87,28 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
   [p2p_mycelium_completion_20260701](./tracks/p2p_mycelium_completion_20260701/)
   — F18 consolidates them into dedicated timeseries-fabric / simulation-lab /
   BI-verification tracks at close.
+- **2026-10-09 (F18 close-out status update):** M3 (sim lab, F8+F9, A18–A21)
+  **VALIDATED**; M4 (BI egress, F10–F12, A22–A25) **VALIDATED** after the
+  FAIL → fix → STILL-FAILING → remediation review saga closed clean; M5 (MCP
+  + API, F13–F14, A26–A27) **LANDED**, milestone review still in flight; M6
+  (GIS hexons, F15, A28) **LANDED**, F16 (A29, hexon install + relay tile
+  serving) remains `in_progress`; M7 close-out F17 (A30, docs) **LANDED**,
+  F18 (this pass, A31) **IN PROGRESS**, F19 (A32+A33, final sweep) `pending`.
+  Five absorbed tracks closed `done` with dated VALIDATED notes (see their
+  own `metadata.json`): [p2p_mycelium_completion_20260701](./tracks/p2p_mycelium_completion_20260701/),
+  [analytics_egress_20260714](./tracks/analytics_egress_20260714/),
+  [iot_spatial_reporting_20260714](./tracks/iot_spatial_reporting_20260714/),
+  [api_mcp_integration_tests_20260717](./tracks/api_mcp_integration_tests_20260717/),
+  [mcp_scene_primitives_20260716](./tracks/mcp_scene_primitives_20260716/).
+  Three new record-only tracks opened for board navigation (no new work — see
+  each `spec.md` for pointers to where the implementation notes actually
+  live): [timeseries_fabric_20261009](./tracks/timeseries_fabric_20261009/)
+  (M2 sync-plane: ReplicationMode row/timeseries, shard ledger + placement,
+  distributed query fan-out, admission control, verse-manifest race fixes),
+  [simulation_lab_20261009](./tracks/simulation_lab_20261009/) (`fe-sim`
+  crate: SimClock, virtual transport/gossip planes, deterministic scenarios,
+  ScenarioSession control surface), [bi_verification_20261009](./tracks/bi_verification_20261009/)
+  (the M4 live-DuckDB e2e proof + the full adversarial review saga, DEC-C16–C20).
 
 ## P0 — Spatial Builder Program (user planning grill 2026-07-25)
 

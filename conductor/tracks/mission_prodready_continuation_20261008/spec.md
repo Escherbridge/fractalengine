@@ -197,6 +197,26 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   matching the guard's scanner by construction). Folded into the DEC-C19
   remediation pass as R5.
 
+- **DEC-C21 (2026-10-09)** — M5 review verdict FAIL → fix scope: mandatory
+  (1) REST create_node/create_petal DB-resolve + ancestry-match like the MCP
+  dispatcher (the decoy wart's REST twins) + denial tests; (2) /mcp body cap
+  16 MiB (large GLBs use REST multipart), Value::take not cloned, route
+  ConcurrencyLimit; (3) ASSET removed from ALLOWED_TABLES + get_asset
+  by-hash gains scope-via-referencing-node check + place_asset rejects
+  foreign-petal asset use (ownership column deferred w/ trigger:
+  multi-tenant deploy); (4) fuzz test repaired (settle before snapshot,
+  strict no-channel assert ONLY for authz denials, per-tool fresh chain,
+  schema-trimmed baselines) and RUN to confirm. Mediums folded in:
+  install_tileset → Editor+policy on MCP + decode capped at REST cap +
+  spawn_blocking; import_gpx point cap; promote_instance path_id petal
+  check; mint_api_token_at enforces the TTL cap + exp>=iat. Lows folded:
+  scope-before-ancestry + unified denial message (existence oracle); WS
+  test timeout; move_waypoint preserves rotation/scale if small. Deferred
+  w/ triggers: blob GC/quota (documented in §asset-ingest; trigger:
+  multi-tenant deploy), per-entry decompression caps (existing 2026-07-31
+  audit finding; trigger: hexon registry goes live), remaining legacy
+  peer.rs .ok() sites (F19 note), bridge arrival-order note.
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

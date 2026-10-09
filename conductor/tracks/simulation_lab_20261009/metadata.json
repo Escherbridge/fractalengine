@@ -1,0 +1,16 @@
+{
+  "id": "simulation_lab_20261009",
+  "description": "Consolidated record track for the fe-sim crate: SimClock, virtual doc+gossip transport planes, deterministic sensor-fleet scenarios, ScenarioSession REST/MCP control surface, and the HLC-safety hardening that came out of the M3 milestone review. Created at mission close (F18, A31) as one of the three new initiative tracks per the F18 orchestrator note.",
+  "type": "record",
+  "created_at": "2026-10-09T00:00:00Z",
+  "status": "done",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "VALIDATED 2026-10-09 (F18, conductor reconciliation): created per the F18 deliverable (3 new record tracks: timeseries-fabric, simulation-lab, BI-verification). Acceptance covered: A18 (sensor-fleet model + real iot_reading ingestion, F8 c0266e3), A19 (deterministic no-real-network scripted scenarios, F8 c0266e3), A20 (sim control surface REST+MCP, F9 part B 4854227), A21 (virtual gossip plane + >=2 checked-in CI scenarios, F9 part A 1f2b6fd). M3 milestone review verdict trail: PASS-WITH-FIXES (3 MAJOR findings) -> fixes @2023809 -> VALIDATED. Evidence + decision trail: conductor/tracks/mission_prodready_continuation_20261008/plan.md §M3, spec.md DEC-C6/C7/C13. Operator docs: docs/simulation-lab.md (F17 7b11c1a).",
+  "research_refs": [
+    "conductor/tracks/mission_prodready_continuation_20261008/plan.md",
+    "conductor/tracks/mission_prodready_continuation_20261008/spec.md",
+    "docs/simulation-lab.md"
+  ]
+}

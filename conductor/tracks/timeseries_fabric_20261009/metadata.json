@@ -1,0 +1,16 @@
+{
+  "id": "timeseries_fabric_20261009",
+  "description": "Consolidated record track for the M2 sync-plane timeseries fabric (ReplicationMode row/timeseries dispatch, shard ledger + placement, distributed query fan-out + merge honesty, sync-plane admission control, verse-manifest race fixes). Created at mission close (F18, A31) to give future workers a single named home for this subsystem; implementation notes remain on the p2p track by design (see spec.md pointers).",
+  "type": "record",
+  "created_at": "2026-10-09T00:00:00Z",
+  "status": "done",
+  "depends_on": [],
+  "blocks": [],
+  "archived": false,
+  "notes": "VALIDATED 2026-10-09 (F18, conductor reconciliation): created per the F18 orchestrator note on features.json ('no timeseries-fabric track exists yet... when you create it, REFERENCE/CONSOLIDATE those accumulated notes into it by appending dated pointers, never rewrite the p2p track's history'). This track intentionally carries NO duplicate implementation history -- spec.md points at conductor/tracks/p2p_mycelium_completion_20260701/metadata.json (the actual notes, F5 fa09a47 / F6 9b170e7 / F7 c7559d5 / F21 5e72762 / F22 4ded0fe / F23 138ea3d / F24 0105bba) and conductor/tracks/mission_prodready_continuation_20261008/plan.md (per-feature evidence + commit hashes). Acceptance covered: A11-A17 (all M2 timeseries-fabric assertions), all PASSED per the M2 scrutiny validator (re-run after F22/F23 landed) and the M2 user-testing validator. Linked from conductor/tracks.md P0-ACTIVE section and the mission track's own notes.",
+  "research_refs": [
+    "conductor/tracks/p2p_mycelium_completion_20260701/metadata.json",
+    "conductor/tracks/mission_prodready_continuation_20261008/plan.md",
+    "conductor/tracks/mission_prodready_continuation_20261008/spec.md"
+  ]
+}
