@@ -29,13 +29,16 @@ const BLOCKED_KEYWORDS: &[&str] = &[
 /// reading any petal's node metadata. Re-add only behind a node-scoped
 /// subquery substitution (like `NODE`/`IOT_READING` below) if a real
 /// consumer appears — see AGENTS.md §query-guard.
+/// `ASSET` deliberately excluded (DEC-C21, 2026-10-09): asset rows carry no
+/// owner/scope column, so allow-listing them exposed every uploaded asset's
+/// `asset_id`/`content_hash` to any token; asset reads go through the scoped
+/// `/api/v1/assets/*` + `/nodes/{id}/asset` routes (§assets).
 const ALLOWED_TABLES: &[&str] = &[
     "NODE",
     "VERSE",
     "FRACTAL",
     "PETAL",
     "FIELD_DEF",
-    "ASSET",
     "MODEL",
     "ROOM",
     "CRATE_REGISTRY",

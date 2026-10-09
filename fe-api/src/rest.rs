@@ -2,12 +2,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Json, Path, State};
-use axum::response::IntoResponse;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult, TransformUpdate};
 
-use crate::auth::{require_role, require_role_and_scope, require_scope};
+use crate::auth::{require_role, require_scope};
 use crate::types::{
     hierarchy_to_dto, is_valid_scope, is_valid_ulid, ApiResponse, CreateFieldDefRequest,
     CreateFractalRequest, CreateNodeRequest, CreatePetalRequest, CreateVerseRequest,
@@ -24,6 +25,50 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// The ONE denial text for not-found / out-of-scope / ancestry-mismatch, so a
+/// denial never reveals whether an id exists (DEC-C21; §mcp-dispatch).
+pub const NOT_FOUND_OR_DENIED: &str = "not found or not permitted";
+
+/// True iff every caller-claimed ancestor id equals the DB-resolved `scope`'s chain.
+pub(crate) fn ancestry_matches(
+    scope: &str,
+    verse_id: Option<&str>,
+    fractal_id: Option<&str>,
+) -> bool {
+    let Ok(parts) = fe_database::parse_scope(scope) else {
+        return false;
+    };
+    verse_id.is_none_or(|v| v == parts.verse_id)
+        && fractal_id.is_none_or(|f| parts.fractal_id.as_deref() == Some(f))
+}
+
+/// The MCP `HierarchyArgs` discipline for REST creates: the DB-resolved write
+/// target exists, the token covers it, and the URL ancestry agrees with it.
+fn write_target_authorized(
+    claims: &ApiClaims,
+    target_scope: Option<&str>,
+    verse_id: Option<&str>,
+    fractal_id: Option<&str>,
+) -> bool {
+    target_scope.is_some_and(|scope| {
+        require_scope(claims, scope).is_ok() && ancestry_matches(scope, verse_id, fractal_id)
+    })
+}
+
+/// A REST create denial with a real HTTP status (`{ok:false}` envelope body).
+fn create_denied(status: StatusCode, msg: &str) -> Response {
+    (status, Json(ApiResponse::<CreatedEntityDto>::error(msg))).into_response()
+}
+
+/// A post-authz REST create failure (historical 200 + `{ok:false}` shape).
+fn create_failed(msg: impl Into<String>) -> Response {
+    Json(ApiResponse::<CreatedEntityDto>::error(msg)).into_response()
+}
+
+fn created(id: String, name: String) -> Response {
+    Json(ApiResponse::success(CreatedEntityDto { id, name })).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -103,215 +148,155 @@ pub async fn create_verse(
 }
 
 /// POST /api/v1/verses/:verse_id/fractals — create a fractal in a verse.
+///
+/// The verse must exist (DB-resolved) and be covered by the token; a missing
+/// or foreign verse denies with [`NOT_FOUND_OR_DENIED`] (404).
 pub async fn create_fractal(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(verse_id): Path<String>,
     Json(req): Json<CreateFractalRequest>,
-) -> impl IntoResponse {
-    let scope = fe_database::build_scope(&verse_id, None, None);
-    if require_role_and_scope(&claims, "editor", &scope).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "insufficient permissions or scope",
-        ));
+) -> Response {
+    if require_role(&claims, "editor").is_err() {
+        return create_denied(StatusCode::FORBIDDEN, "insufficient permissions");
     }
-
     if !is_valid_ulid(&verse_id) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("invalid verse_id"));
+        return create_denied(StatusCode::BAD_REQUEST, "invalid verse_id");
+    }
+    let target = resolve_verse_scope(&state, &verse_id).await;
+    if !write_target_authorized(&claims, target.as_deref(), None, None) {
+        return create_denied(StatusCode::NOT_FOUND, NOT_FOUND_OR_DENIED);
     }
 
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::CreateFractal {
-            verse_id: verse_id.clone(),
-            name: req.name,
-        },
-        reply_tx,
+    let cmd = DbCommand::CreateFractal {
+        verse_id,
+        name: req.name,
     };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "internal channel closed",
-        ));
-    }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::FractalCreated { id, name, .. })) => {
-            Json(ApiResponse::success(CreatedEntityDto { id, name }))
+    match db_round_trip(&state, cmd).await {
+        Ok(DbResult::FractalCreated { id, name, .. }) => created(id, name),
+        Ok(DbResult::Error(e)) => {
+            tracing::error!("create_fractal failed: {e}");
+            create_failed("operation failed")
         }
-        Ok(Ok(DbResult::Error(_e))) => {
-            tracing::error!("create_fractal failed: {_e}");
-            Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
-        }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
-            "unexpected response",
-        )),
-        Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
+        Ok(_) => create_failed("unexpected response"),
+        Err(e) => create_failed(e),
     }
 }
 
 /// POST /api/v1/verses/:verse_id/fractals/:fractal_id/petals — create a petal.
+///
+/// Authz anchors on the WRITE TARGET (the fractal) resolved from the DB, never
+/// on the URL prefix: the URL `verse_id` must match the fractal's stored verse
+/// (DEC-C21 — the REST twin of the MCP decoy wart; §mcp-dispatch).
 pub async fn create_petal(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path((verse_id, fractal_id)): Path<(String, String)>,
     Json(req): Json<CreatePetalRequest>,
-) -> impl IntoResponse {
-    let scope = fe_database::build_scope(&verse_id, Some(&fractal_id), None);
-    if require_role_and_scope(&claims, "editor", &scope).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "insufficient permissions or scope",
-        ));
+) -> Response {
+    if require_role(&claims, "editor").is_err() {
+        return create_denied(StatusCode::FORBIDDEN, "insufficient permissions");
     }
-
     if !is_valid_ulid(&verse_id) || !is_valid_ulid(&fractal_id) {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "invalid verse_id or fractal_id",
-        ));
+        return create_denied(StatusCode::BAD_REQUEST, "invalid verse_id or fractal_id");
+    }
+    let target = resolve_fractal_scope(&state, &fractal_id).await;
+    if !write_target_authorized(&claims, target.as_deref(), Some(&verse_id), None) {
+        return create_denied(StatusCode::NOT_FOUND, NOT_FOUND_OR_DENIED);
     }
 
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::CreatePetal {
-            fractal_id: fractal_id.clone(),
-            name: req.name,
-        },
-        reply_tx,
+    let cmd = DbCommand::CreatePetal {
+        fractal_id,
+        name: req.name,
     };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "internal channel closed",
-        ));
-    }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::PetalCreated { id, name, .. })) => {
-            Json(ApiResponse::success(CreatedEntityDto { id, name }))
+    match db_round_trip(&state, cmd).await {
+        Ok(DbResult::PetalCreated { id, name, .. }) => created(id, name),
+        Ok(DbResult::Error(e)) => {
+            tracing::error!("create_petal failed: {e}");
+            create_failed("operation failed")
         }
-        Ok(Ok(DbResult::Error(_e))) => {
-            tracing::error!("create_petal failed: {_e}");
-            Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
-        }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
-            "unexpected response",
-        )),
-        Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
+        Ok(_) => create_failed("unexpected response"),
+        Err(e) => create_failed(e),
     }
 }
 
 /// POST /api/v1/verses/:vid/fractals/:fid/petals/:pid/nodes — create a node.
 ///
-/// Hierarchical path: the verse/fractal/petal IDs are in the URL, so the
-/// token's scope is validated against the full hierarchy path.
+/// Authz anchors on the WRITE TARGET (the petal) resolved from the DB; the
+/// URL verse/fractal ids must match its stored chain (DEC-C21 — a token for
+/// `VERSE#A` can no longer write into a foreign petal by prefixing its own
+/// verse in the URL).
 pub async fn create_node(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path((verse_id, fractal_id, petal_id)): Path<(String, String, String)>,
     Json(req): Json<CreateNodeRequest>,
-) -> impl IntoResponse {
-    let scope = fe_database::build_scope(&verse_id, Some(&fractal_id), Some(&petal_id));
-    if require_role_and_scope(&claims, "editor", &scope).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "insufficient permissions or scope",
-        ));
+) -> Response {
+    if require_role(&claims, "editor").is_err() {
+        return create_denied(StatusCode::FORBIDDEN, "insufficient permissions");
     }
-
-    if !is_valid_ulid(&petal_id) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("invalid petal_id"));
+    if !is_valid_ulid(&verse_id) || !is_valid_ulid(&fractal_id) || !is_valid_ulid(&petal_id) {
+        return create_denied(
+            StatusCode::BAD_REQUEST,
+            "invalid verse_id, fractal_id or petal_id",
+        );
     }
-
-    let position = req.position.unwrap_or([0.0, 0.0, 0.0]);
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::CreateNode {
-            petal_id,
-            name: req.name,
-            position,
-            correlation_id: None,
-        },
-        reply_tx,
-    };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "internal channel closed",
-        ));
+    let target = resolve_petal_scope(&state, &petal_id).await;
+    if !write_target_authorized(
+        &claims,
+        target.as_deref(),
+        Some(&verse_id),
+        Some(&fractal_id),
+    ) {
+        return create_denied(StatusCode::NOT_FOUND, NOT_FOUND_OR_DENIED);
     }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodeCreated { id, name, .. })) => {
-            Json(ApiResponse::success(CreatedEntityDto { id, name }))
-        }
-        Ok(Ok(DbResult::Error(_e))) => {
-            tracing::error!("create_node failed: {_e}");
-            Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
-        }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
-            "unexpected response",
-        )),
-        Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
-    }
+    create_node_in_petal(&state, petal_id, req).await
 }
 
 /// POST /api/v1/nodes — legacy flat create (for MCP and existing integrations).
 ///
 /// DEPRECATION NOTE: Prefer the hierarchical endpoint
-/// `POST /api/v1/verses/:vid/fractals/:fid/petals/:pid/nodes` which enforces
-/// scope from the URL path. This endpoint resolves the petal's full scope via
-/// a DB query and enforces it against the token scope before proceeding.
+/// `POST /api/v1/verses/:vid/fractals/:fid/petals/:pid/nodes`. Both resolve
+/// the petal's full scope from the DB and enforce it against the token.
 pub async fn create_node_legacy(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Json(req): Json<CreateNodeRequest>,
-) -> impl IntoResponse {
+) -> Response {
     if require_role(&claims, "editor").is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "insufficient permissions",
-        ));
+        return create_denied(StatusCode::FORBIDDEN, "insufficient permissions");
     }
-
     let petal_id = req.petal_id.clone().unwrap_or_default();
     if !is_valid_ulid(&petal_id) {
-        return Json(ApiResponse::<CreatedEntityDto>::error("invalid petal_id"));
+        return create_denied(StatusCode::BAD_REQUEST, "invalid petal_id");
     }
+    let target = resolve_petal_scope(&state, &petal_id).await;
+    if !write_target_authorized(&claims, target.as_deref(), None, None) {
+        return create_denied(StatusCode::NOT_FOUND, NOT_FOUND_OR_DENIED);
+    }
+    create_node_in_petal(&state, petal_id, req).await
+}
 
-    // Resolve petal scope for enforcement
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "could not resolve petal scope",
-        ));
+/// `CreateNode` into an authorized petal (shared by both REST node creates).
+async fn create_node_in_petal(
+    state: &crate::server::ApiState,
+    petal_id: String,
+    req: CreateNodeRequest,
+) -> Response {
+    let cmd = DbCommand::CreateNode {
+        petal_id,
+        name: req.name,
+        position: req.position.unwrap_or([0.0, 0.0, 0.0]),
+        correlation_id: None,
     };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient scope"));
-    }
-
-    let position = req.position.unwrap_or([0.0, 0.0, 0.0]);
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::CreateNode {
-            petal_id,
-            name: req.name,
-            position,
-            correlation_id: None,
-        },
-        reply_tx,
-    };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "internal channel closed",
-        ));
-    }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodeCreated { id, name, .. })) => {
-            Json(ApiResponse::success(CreatedEntityDto { id, name }))
+    match db_round_trip(state, cmd).await {
+        Ok(DbResult::NodeCreated { id, name, .. }) => created(id, name),
+        Ok(DbResult::Error(e)) => {
+            tracing::error!("create_node failed: {e}");
+            create_failed("operation failed")
         }
-        Ok(Ok(DbResult::Error(_e))) => {
-            tracing::error!("create_node failed: {_e}");
-            Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
-        }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
-            "unexpected response",
-        )),
-        Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
+        Ok(_) => create_failed("unexpected response"),
+        Err(e) => create_failed(e),
     }
 }
 
@@ -888,6 +873,50 @@ pub(crate) async fn direct_get_node_transform(
     }))
 }
 
+/// A node's stored transform: the direct reader (same parse as `GET
+/// .../transform`), else a typed `GetNodeTransform` round trip.
+pub(crate) async fn load_node_transform(
+    state: &crate::server::ApiState,
+    node_id: &str,
+) -> Result<crate::types::TransformDto, String> {
+    if let Some(ref db) = state.db_reader {
+        return match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            direct_get_node_transform(db, node_id),
+        )
+        .await
+        {
+            Ok(Ok(Some(transform))) => Ok(transform),
+            Ok(Ok(None)) => Err("node not found".to_string()),
+            Ok(Err(e)) => {
+                tracing::warn!(node_id, "node transform read failed: {e}");
+                Err("could not load node transform".to_string())
+            }
+            Err(_) => Err("request timed out".to_string()),
+        };
+    }
+    let cmd = DbCommand::GetNodeTransform {
+        node_id: node_id.to_string(),
+    };
+    match db_round_trip(state, cmd).await? {
+        DbResult::NodeTransformLoaded {
+            position,
+            rotation,
+            scale,
+            ..
+        } => Ok(crate::types::TransformDto {
+            position,
+            rotation,
+            scale,
+        }),
+        DbResult::Error(e) => {
+            tracing::warn!(node_id, "GetNodeTransform failed: {e}");
+            Err("could not load node transform".to_string())
+        }
+        _ => Err("unexpected response".to_string()),
+    }
+}
+
 /// Resolve a petal's full scope string via direct DB queries.
 pub(crate) async fn direct_resolve_petal_scope(db: &Db, petal_id: &str) -> Option<String> {
     let mut res = db
@@ -1407,7 +1436,7 @@ pub async fn create_field_def(
 
 /// GET /api/v1/field-defs/:scope — list field definitions for a scope.
 ///
-/// RBAC: Viewer+ required.
+/// RBAC: Viewer+ required, and the token must cover the requested scope.
 pub async fn list_field_defs(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -1417,6 +1446,9 @@ pub async fn list_field_defs(
         return Json(ApiResponse::<Vec<FieldDefDto>>::error(
             "insufficient permissions",
         ));
+    }
+    if !is_valid_scope(&scope) || require_scope(&claims, &scope).is_err() {
+        return Json(ApiResponse::<Vec<FieldDefDto>>::error(NOT_FOUND_OR_DENIED));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -1457,9 +1489,31 @@ pub async fn list_field_defs(
     }
 }
 
+/// True iff the field def exists and the token covers its STORED scope (the
+/// URL carries only the id — DEC-C21 sweep: update/delete had no scope check).
+async fn field_def_in_scope(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    field_def_id: &str,
+) -> bool {
+    let Some(rows) = crate::gis::run_select(
+        state,
+        "SELECT scope FROM field_def WHERE field_def_id = $fid LIMIT 1",
+        vec![("fid".to_string(), serde_json::json!(field_def_id))],
+    )
+    .await
+    else {
+        return false;
+    };
+    rows.first()
+        .and_then(|row| row.get("scope"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|scope| require_scope(claims, scope).is_ok())
+}
+
 /// PATCH /api/v1/field-defs/:field_def_id — update a field definition.
 ///
-/// RBAC: Manager+ required.
+/// RBAC: Manager+ required, at the field def's DB-resolved scope.
 pub async fn update_field_def(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -1470,6 +1524,9 @@ pub async fn update_field_def(
         return Json(ApiResponse::<FieldDefDto>::error(
             "insufficient permissions",
         ));
+    }
+    if !field_def_in_scope(&state, &claims, &field_def_id).await {
+        return Json(ApiResponse::<FieldDefDto>::error(NOT_FOUND_OR_DENIED));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -1506,7 +1563,7 @@ pub async fn update_field_def(
 
 /// DELETE /api/v1/field-defs/:field_def_id — delete a field definition.
 ///
-/// RBAC: Manager+ required.
+/// RBAC: Manager+ required, at the field def's DB-resolved scope.
 pub async fn delete_field_def(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -1516,6 +1573,9 @@ pub async fn delete_field_def(
         return Json(ApiResponse::<FieldDefDto>::error(
             "insufficient permissions",
         ));
+    }
+    if !field_def_in_scope(&state, &claims, &field_def_id).await {
+        return Json(ApiResponse::<FieldDefDto>::error(NOT_FOUND_OR_DENIED));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -1695,6 +1755,10 @@ pub(crate) async fn move_waypoint_core(
         None => [req.lat as f32, ele as f32, req.lon as f32],
     };
 
+    // A move is a reposition only: keep the node's stored rotation/scale
+    // (`TransformPersist` writes all three, so they must be read first).
+    let current = load_node_transform(state, waypoint_id).await?;
+
     // Fire-and-forget via `TransformPersist`: the DB thread emits no
     // `DbResult` for a transform write (it broadcasts TransformFailed instead),
     // so registering a waiter would leave a dangling pending request.
@@ -1703,8 +1767,8 @@ pub(crate) async fn move_waypoint_core(
         .send(ApiCommand::TransformPersist {
             node_id: waypoint_id.to_string(),
             position,
-            rotation: [0.0, 0.0, 0.0],
-            scale: [1.0, 1.0, 1.0],
+            rotation: current.rotation,
+            scale: current.scale,
         })
         .is_err()
     {
@@ -2291,31 +2355,27 @@ mod tests {
             jti: "jti-1".to_string(),
         };
 
-        // 1. Query asset
+        // 1. The asset table is NOT queryable (DEC-C21: removed from the
+        // read whitelist — asset rows carry no owner/scope column).
         let req = QueryRequest {
             sql: "SELECT * FROM asset".to_string(),
             vars: std::collections::HashMap::new(),
             distributed: None,
         };
-        println!("DEBUG: Executing first query");
         let res = execute_query(State(state.clone()), Extension(claims.clone()), Json(req)).await;
-        println!("DEBUG: First query returned");
         let response = res.into_response();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-
-        println!("DEBUG: Reading response body for first query");
         let body_bytes = axum::body::to_bytes(response.into_body(), 10000)
             .await
             .unwrap();
         let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(!body_json["ok"].as_bool().unwrap_or(true), "{body_json}");
+        let err = body_json["error"].as_str().unwrap_or_default();
+        assert!(err.contains("'ASSET' are not allowed"), "{err}");
         assert!(
-            body_json["ok"].as_bool().unwrap_or(false),
-            "query failed: {:?}",
-            body_json
+            !body_json.to_string().contains("abc123hash"),
+            "no asset row leaks"
         );
-        let data = body_json["data"]["data"].as_array().unwrap();
-        assert_eq!(data.len(), 1);
-        assert_eq!(data[0]["asset_id"], "asset-1");
 
         // 2. Query crate_registry
         let req = QueryRequest {

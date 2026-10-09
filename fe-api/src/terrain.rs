@@ -553,11 +553,16 @@ pub async fn install_hexon_tileset(
         }
     };
 
-    match install_tileset_bytes(&state, registry, &query.petal_id, &bytes).await {
+    match install_tileset_bytes(&state, registry, &query.petal_id, bytes).await {
         Ok(installed) => Json(ApiResponse::success(installed)),
         Err(message) => Json(ApiResponse::<serde_json::Value>::error(message)),
     }
 }
+
+/// Max `.hexon` tileset archive accepted by MCP `install_tileset` — the REST
+/// install route's effective cap (it sets no `DefaultBodyLimit`, so axum's
+/// 2 MiB default bounds the whole multipart body). DEC-C21 M5.
+pub const TILESET_ARCHIVE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 /// MCP `install_tileset` core: re-runs the REST pre-body guard (Editor+ petal
 /// scope + fe-policy `Install`) as defense in depth, then [`install_tileset_bytes`].
@@ -565,7 +570,7 @@ pub(crate) async fn install_tileset_core(
     state: &crate::server::ApiState,
     claims: &ApiClaims,
     petal_id: &str,
-    bytes: &[u8],
+    bytes: axum::body::Bytes,
 ) -> Result<serde_json::Value, String> {
     crate::hexon::require_hexon_petal_access(state, claims, petal_id, "editor", Action::Install)
         .await
@@ -579,20 +584,27 @@ pub(crate) async fn install_tileset_core(
 /// Tileset-install core shared by REST (multipart) + MCP `install_tileset`
 /// (base64); the caller has authorized the petal. The archive must be a
 /// terrain tileset already bound ONLY to this petal before the store write.
+/// Archive parsing and the store write (CPU + disk) run on `spawn_blocking`.
 pub(crate) async fn install_tileset_bytes(
     state: &crate::server::ApiState,
-    registry: &fe_terrain::tiles::TilesetRegistry,
+    registry: &Arc<fe_terrain::tiles::TilesetRegistry>,
     petal_id: &str,
-    bytes: &[u8],
+    bytes: axum::body::Bytes,
 ) -> Result<serde_json::Value, String> {
     // Verify exclusive petal ownership before the registry can replace this ID.
-    let hexon_id = uploaded_terrain_tileset_id(bytes).map_err(str::to_string)?;
+    let archive = bytes.clone(); // refcounted, not a copy
+    let hexon_id = tokio::task::spawn_blocking(move || uploaded_terrain_tileset_id(&archive))
+        .await
+        .map_err(|_| "tileset archive inspection failed".to_string())?
+        .map_err(str::to_string)?;
     require_exclusive_petal_tileset_binding(state, petal_id, &hexon_id)
         .await
         .map_err(str::to_string)?;
-    match registry.install(bytes) {
-        Ok(installed) => Ok(serde_json::to_value(installed).unwrap_or_default()),
-        Err(e) => Err(format!("install failed: {e}")),
+    let registry = Arc::clone(registry);
+    match tokio::task::spawn_blocking(move || registry.install(&bytes)).await {
+        Ok(Ok(installed)) => Ok(serde_json::to_value(installed).unwrap_or_default()),
+        Ok(Err(e)) => Err(format!("install failed: {e}")),
+        Err(_) => Err("install failed: worker task aborted".to_string()),
     }
 }
 

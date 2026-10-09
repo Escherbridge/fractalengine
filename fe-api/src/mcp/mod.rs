@@ -167,9 +167,9 @@ static TOOLS: &[ToolSpec] = &[
         "Apply a network fault to the live sim session NOW: peer_offline / peer_online {peer}, partition {groups}, heal, set_latency {latency_ms}. Requires owner role."),
     // --- F13: the 13 mcp_scene_primitives tools (DEC-C14) ---
     tool!(upload_asset, Editor, PetalArg("petal_id"),
-        "Upload a GLB (binary glTF 2.0, textures embedded) as base64; stored content-addressed (BLAKE3) and registered as an asset row. Max 256 MiB decoded. Returns {asset_id, content_hash, size_bytes}. Requires editor role + the anchor petal's scope."),
+        "Upload a GLB (binary glTF 2.0, textures embedded) as base64; stored content-addressed (BLAKE3) and registered as an asset row. Max 11 MiB decoded over MCP (the /mcp body cap is 16 MiB); larger GLBs (up to 256 MiB) go through REST multipart POST /api/v1/petals/{petal_id}/assets. Returns {asset_id, content_hash, size_bytes}. Requires editor role + the anchor petal's scope."),
     tool!(place_asset, Editor, PetalArg("petal_id"),
-        "Create a node in a petal bound to an uploaded asset_id, at position (world units) with Euler XYZ rotation (radians) and scale. Requires editor role + petal scope."),
+        "Create a node in a petal bound to an uploaded asset_id, at position (world units) with Euler XYZ rotation (radians) and scale. The asset must be unplaced (fresh upload) or already used by a node within the token's scope. Requires editor role + petal scope."),
     tool!(set_property, Editor, NodeArg("node_id"),
         "Set one custom property (any JSON value) on a node. Requires editor role + the node's scope."),
     tool!(get_properties, Viewer, NodeArg("node_id"),
@@ -181,13 +181,13 @@ static TOOLS: &[ToolSpec] = &[
     tool!(move_waypoint, Editor, NodeArg("node_id"),
         "Move a waypoint node to a new WGS84 lat/lon (ele optional), reprojecting its transform. Requires editor role + the node's scope."),
     tool!(import_gpx, Editor, PetalArg("petal_id"),
-        "Import a GPX document (base64, max 16 MiB decoded) as track/waypoint nodes in a petal. Requires editor role + petal scope."),
+        "Import a GPX document (base64, max 11 MiB decoded, max 10000 points) as track/waypoint nodes in a petal. Requires editor role + petal scope."),
     tool!(set_petal_terrain, Editor, PetalArg("petal_id"),
         "Set (object) or clear (null) a petal's terrain config. Currently refused after validation exactly like REST PUT/DELETE terrain: durable SetPetalTerrain replies are not yet correlated. Requires editor role + petal scope."),
     tool!(list_tilesets, Viewer, PetalArg("petal_id"),
         "List the installed terrain tilesets bound to a petal's terrain config. Requires viewer role + petal scope."),
-    tool!(install_tileset, Manager, PetalArg("petal_id"),
-        "Install a .hexon terrain-tileset archive (base64) already bound only to this petal's terrain. Requires manager role + petal scope; authorized by fe-policy."),
+    tool!(install_tileset, Editor, PetalArg("petal_id"),
+        "Install a .hexon terrain-tileset archive (base64, max 2 MiB decoded — the REST install route's cap) already bound only to this petal's terrain. Requires editor role + petal scope; authorized by fe-policy (Install)."),
     tool!(get_gis_nodes, Viewer, PetalArg("petal_id"),
         "List a petal's geo-positioned nodes with gis.annotation.* data; optional single spatial filter (bbox, bbox_ll, or radius+cx+cz). Requires viewer role + petal scope."),
     tool!(query, Viewer, ScopeRule::None,
@@ -251,16 +251,13 @@ pub async fn mcp_handler(
         },
 
         "tools/call" => {
-            let tool_name = req
-                .params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let arguments = req
-                .params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
+            let mut params = req.params;
+            // Moved out, never cloned: a large base64 argument exists once (DEC-C21).
+            let arguments = params
+                .get_mut("arguments")
+                .map(serde_json::Value::take)
+                .unwrap_or(serde_json::Value::Null);
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             handle_tool_call(&state, &claims, req.id, tool_name, arguments).await
         }
 
@@ -328,9 +325,18 @@ async fn handle_tool_call(
     }
 }
 
+/// Ancestor ids a `HierarchyArgs` caller claimed ABOVE the write target.
+#[derive(Default)]
+struct ClaimedAncestry<'a> {
+    verse_id: Option<&'a str>,
+    fractal_id: Option<&'a str>,
+}
+
 /// THE MCP authz gate: role floor, then the spec's scope rule resolved from
-/// the DB (never from caller-supplied ancestry), then token containment.
-/// Unresolvable scope denies. Returns the resolved scope for the handler.
+/// the DB (never from caller-supplied ancestry), then token containment, and
+/// only THEN the claimed-ancestry match. Not-found, out-of-scope and
+/// ancestry-mismatch all deny with ONE message (DEC-C21 — no existence
+/// oracle). Returns the resolved scope for the handler.
 async fn authorize(
     state: &ApiState,
     claims: &ApiClaims,
@@ -340,24 +346,29 @@ async fn authorize(
     if require_role_level(claims, spec.min_role).is_err() {
         return Err("insufficient permissions".to_string());
     }
-    let scope = match spec.scope_rule {
+    let (resolved, claimed) = match spec.scope_rule {
         ScopeRule::None | ScopeRule::Global => return Ok(None),
         ScopeRule::PetalArg(key) => {
             let petal_id = id_arg(args, key, is_valid_ulid)?;
-            crate::rest::resolve_petal_scope(state, petal_id)
-                .await
-                .ok_or_else(|| "petal not found".to_string())?
+            let scope = crate::rest::resolve_petal_scope(state, petal_id).await;
+            (scope, ClaimedAncestry::default())
         }
         ScopeRule::NodeArg(key) => {
             let node_id = id_arg(args, key, is_addressable_node_id)?;
-            crate::rest::resolve_node_scope(state, node_id)
-                .await
-                .ok_or_else(|| "node not found".to_string())?
+            let scope = crate::rest::resolve_node_scope(state, node_id).await;
+            (scope, ClaimedAncestry::default())
         }
         ScopeRule::HierarchyArgs(target) => resolve_hierarchy_scope(state, args, target).await?,
     };
+    let denied = || crate::rest::NOT_FOUND_OR_DENIED.to_string();
+    let scope = resolved.ok_or_else(denied)?;
     if require_scope(claims, &scope).is_err() {
-        return Err("insufficient scope".to_string());
+        return Err(denied());
+    }
+    // Ancestry is checked AFTER containment, so a mismatch reveals nothing
+    // about a container the token cannot see.
+    if !crate::rest::ancestry_matches(&scope, claimed.verse_id, claimed.fractal_id) {
+        return Err(denied());
     }
     Ok(Some(scope))
 }
@@ -376,19 +387,20 @@ fn id_arg<'a>(
 }
 
 /// `HierarchyArgs`: resolve the id AT the tool's write-target level from the
-/// DB — never the deepest id present. Any id SHALLOWER than the target must
-/// equal the stored ancestor (kept ancestry check, closes the cross-container
-/// decoy wart); any id DEEPER than the target is rejected outright before any
-/// DB call (2026-10-09 depth-escalation hardening — a petal-scoped token must
-/// not create_fractal/create_petal by naming its own petal as an anchor one
-/// or two levels below the actual write target; see fe-api/AGENTS.md
-/// §mcp-dispatch).
-async fn resolve_hierarchy_scope(
+/// DB — never the deepest id present — and return it with the ids SHALLOWER
+/// than the target (which [`authorize`] matches against the stored chain
+/// after containment; closes the cross-container decoy wart). Any id DEEPER
+/// than the target is rejected outright before any DB call (2026-10-09
+/// depth-escalation hardening — a petal-scoped token must not
+/// create_fractal/create_petal by naming its own petal as an anchor one or
+/// two levels below the actual write target; see fe-api/AGENTS.md
+/// §mcp-dispatch). `Ok((None, _))` = the target does not resolve.
+async fn resolve_hierarchy_scope<'a>(
     state: &ApiState,
-    args: &serde_json::Value,
+    args: &'a serde_json::Value,
     target: HierarchyTarget,
-) -> Result<String, String> {
-    let present = |key: &str| -> Result<Option<&str>, String> {
+) -> Result<(Option<String>, ClaimedAncestry<'a>), String> {
+    let present = |key: &str| -> Result<Option<&'a str>, String> {
         match args.get(key).and_then(|v| v.as_str()) {
             None | Some("") => Ok(None),
             Some(id) if is_valid_ulid(id) => Ok(Some(id)),
@@ -399,7 +411,7 @@ async fn resolve_hierarchy_scope(
     let fractal_id = present("fractal_id")?;
     let petal_id = present("petal_id")?;
 
-    let scope = match target {
+    Ok(match target {
         HierarchyTarget::Verse => {
             if fractal_id.is_some() {
                 return Err("unexpected fractal_id: create_fractal targets a verse".to_string());
@@ -408,37 +420,33 @@ async fn resolve_hierarchy_scope(
                 return Err("unexpected petal_id: create_fractal targets a verse".to_string());
             }
             let verse_id = verse_id.ok_or("verse_id is required")?;
-            crate::rest::resolve_verse_scope(state, verse_id)
-                .await
-                .ok_or("verse not found")?
+            let scope = crate::rest::resolve_verse_scope(state, verse_id).await;
+            (scope, ClaimedAncestry::default())
         }
         HierarchyTarget::Fractal => {
             if petal_id.is_some() {
                 return Err("unexpected petal_id: create_petal targets a fractal".to_string());
             }
             let fractal_id = fractal_id.ok_or("fractal_id is required")?;
-            crate::rest::resolve_fractal_scope(state, fractal_id)
-                .await
-                .ok_or("fractal not found")?
+            let scope = crate::rest::resolve_fractal_scope(state, fractal_id).await;
+            let claimed = ClaimedAncestry {
+                verse_id,
+                fractal_id: None,
+            };
+            (scope, claimed)
         }
         HierarchyTarget::Petal => {
             let petal_id = petal_id.ok_or("petal_id is required")?;
-            crate::rest::resolve_petal_scope(state, petal_id)
-                .await
-                .ok_or("petal not found")?
+            let scope = crate::rest::resolve_petal_scope(state, petal_id).await;
+            (
+                scope,
+                ClaimedAncestry {
+                    verse_id,
+                    fractal_id,
+                },
+            )
         }
-    };
-
-    // Ancestry: any id ABOVE the target must match the resolved chain (the
-    // depth-escalation case above is already rejected; this only guards
-    // against a shallower id naming a different container than the target).
-    let parts = fe_database::parse_scope(&scope).map_err(|_| "scope resolution failed")?;
-    let verse_matches = verse_id.is_none_or(|v| v == parts.verse_id);
-    let fractal_matches = fractal_id.is_none_or(|f| parts.fractal_id.as_deref() == Some(f));
-    if !(verse_matches && fractal_matches) {
-        return Err("hierarchy ids do not match the stored hierarchy".to_string());
-    }
-    Ok(scope)
+    })
 }
 
 /// Enforce the schema's `required` list (absent, `null`, or `""` = missing).

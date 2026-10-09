@@ -169,6 +169,99 @@ async fn rbac_insufficient_role_denied() {
 }
 
 // ---------------------------------------------------------------------------
+// (c2) DEC-C21: REST writes anchor on the DB-resolved target (direct reader)
+// ---------------------------------------------------------------------------
+
+/// The REST decoy wart over the real router + `db_reader`: an own-verse URL
+/// prefix in front of a victim petal/fractal is denied 404 with the unified
+/// text, never written (the harness has no DB thread, so a write that got
+/// past authz would answer "request timed out" instead).
+#[tokio::test]
+async fn rest_creates_deny_a_foreign_target_behind_an_own_prefix() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed own chain");
+    let victim = h.seed_hierarchy().await.expect("seed victim chain");
+    let token = h.mint_token(&own.verse_scope(), "editor");
+
+    let node_path = format!(
+        "/api/v1/verses/{}/fractals/{}/petals/{}/nodes",
+        own.verse_id, own.fractal_id, victim.petal_id
+    );
+    let petal_path = format!(
+        "/api/v1/verses/{}/fractals/{}/petals",
+        own.verse_id, victim.fractal_id
+    );
+    for path in [node_path, petal_path] {
+        let (status, body) = h
+            .post_json(&path, Some(&token), &json!({ "name": "planted" }))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED, "{path}");
+    }
+
+    // Role floor still answers first, with its own (non-oracle) text.
+    let viewer = h.mint_token(&own.verse_scope(), "viewer");
+    let path = format!(
+        "/api/v1/verses/{}/fractals/{}/petals/{}/nodes",
+        own.verse_id, own.fractal_id, own.petal_id
+    );
+    let (status, body) = h
+        .post_json(&path, Some(&viewer), &json!({ "name": "nope" }))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "insufficient permissions");
+}
+
+/// DEC-C21 sweep finding: field-def update/delete took only an id and had no
+/// scope check — a Manager of any verse could rewrite another verse's schema.
+/// Now the field def's STORED scope must be covered (and list checks the
+/// requested scope); every denial is the unified text, before any DB send.
+#[tokio::test]
+async fn field_def_mutations_require_the_stored_scope() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed own chain");
+    let victim = h.seed_hierarchy().await.expect("seed victim chain");
+    let field_def_id = ulid::Ulid::new().to_string();
+    h.db.query(
+        "CREATE field_def CONTENT { field_def_id: $id, scope: $scope, entity_type: 'node', \
+         key: 'k', value_type: 'string', created_by: 'did:key:z6MkVictim', created_at: 'now' }",
+    )
+    .bind(("id", field_def_id.clone()))
+    .bind(("scope", victim.verse_scope()))
+    .await
+    .expect("seed field_def")
+    .check()
+    .expect("field_def row");
+    let manager = h.mint_token(&own.verse_scope(), "manager");
+    let by_id = format!("/api/v1/field-defs/by-id/{field_def_id}");
+
+    for method in ["PATCH", "DELETE"] {
+        let req = Request::builder()
+            .method(method)
+            .uri(&by_id)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {manager}"))
+            .body(Body::from(
+                json!({ "value_type": "number", "default_val": null }).to_string(),
+            ))
+            .expect("build request");
+        let resp = h.request(req).await;
+        let body: serde_json::Value =
+            serde_json::from_slice(&body_bytes(resp).await).expect("json body");
+        assert_eq!(body["ok"], false, "{method}: {body}");
+        assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED, "{method}");
+    }
+
+    let list = format!(
+        "/api/v1/field-defs/{}",
+        victim.verse_scope().replace('#', "%23")
+    );
+    let (_, body) = h.get(&list, Some(&manager)).await;
+    assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED, "{body}");
+}
+
+// ---------------------------------------------------------------------------
 // (d) GIS endpoint round-trip
 // ---------------------------------------------------------------------------
 

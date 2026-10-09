@@ -19,12 +19,22 @@ use crate::auth::{require_role, require_scope};
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
 
-/// Max decoded GLB size, both transports (tech-stack "configurable per Node" seam).
+/// Max decoded GLB size over REST multipart (tech-stack "configurable per Node" seam).
 pub const MAX_ASSET_BYTES: usize = 256 * 1024 * 1024;
 /// Per-route body limit for the REST multipart upload (asset + form overhead).
 pub const ASSET_ROUTE_BODY_LIMIT: usize = MAX_ASSET_BYTES + 1024 * 1024;
-/// `/mcp` body limit: a max-size asset as base64 (4/3) plus JSON-RPC overhead.
-pub const MCP_ROUTE_BODY_LIMIT: usize = MAX_ASSET_BYTES.div_ceil(3) * 4 + 8 * 1024 * 1024;
+/// `/mcp` body limit for EVERY JSON-RPC method (DEC-C21; §asset-ingest).
+pub const MCP_ROUTE_BODY_LIMIT: usize = 16 * 1024 * 1024;
+/// Max decoded GLB via MCP `upload_asset`: its base64 (4/3 → ~14.7 MiB) plus
+/// the JSON-RPC envelope fits under [`MCP_ROUTE_BODY_LIMIT`]; larger GLBs use
+/// REST multipart.
+pub const MCP_MAX_ASSET_BYTES: usize = 11 * 1024 * 1024;
+/// Concurrent `/mcp` requests admitted; the rest queue (§asset-ingest).
+pub const MCP_MAX_CONCURRENT_CALLS: usize = 8;
+/// Client text for an asset_id that is unknown OR not usable from the
+/// caller's scope — one message, so it is not an asset-existence oracle.
+pub const UNKNOWN_ASSET: &str =
+    "unknown asset_id (not found, or not usable from this token's scope)";
 /// Content type every ingested asset row carries (GLB only — FR-7).
 pub const GLB_CONTENT_TYPE: &str = "model/gltf-binary";
 /// Longest accepted asset display name.
@@ -264,10 +274,14 @@ pub struct PlacedAsset {
     pub position: [f32; 3],
 }
 
-/// Place-asset core (caller has authorized the petal): `CreateNodeWithAsset`
-/// with a correlated reply; the DB thread validates the asset row exists.
+/// Place-asset core (caller has authorized the petal): the asset must be
+/// usable from the caller's scope (DEC-C21 — [`crate::assets::asset_reach`]),
+/// then `CreateNodeWithAsset` with a correlated reply; the DB thread
+/// validates the asset row exists.
+#[allow(clippy::too_many_arguments)]
 pub async fn place_asset_core(
     state: &ApiState,
+    claims: &ApiClaims,
     petal_id: &str,
     name: &str,
     asset_id: &str,
@@ -275,6 +289,15 @@ pub async fn place_asset_core(
     rotation: [f32; 3],
     scale: [f32; 3],
 ) -> Result<PlacedAsset, String> {
+    let reach = crate::assets::asset_reach(state, claims, &[asset_id.to_string()]).await;
+    if reach == crate::assets::AssetReach::Foreign {
+        tracing::warn!(
+            asset_id,
+            petal_id,
+            "place_asset refused: asset referenced only outside the caller's scope"
+        );
+        return Err(UNKNOWN_ASSET.to_string());
+    }
     let correlation_id = ulid::Ulid::new().to_string();
     let cmd = DbCommand::CreateNodeWithAsset {
         petal_id: petal_id.to_string(),
@@ -305,7 +328,7 @@ pub async fn place_asset_core(
         DbResult::Error(e) => {
             tracing::warn!("place_asset refused: {e}");
             if e.contains("matched no asset") {
-                Err("unknown asset_id".to_string())
+                Err(UNKNOWN_ASSET.to_string())
             } else {
                 Err("operation failed".to_string())
             }

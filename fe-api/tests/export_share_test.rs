@@ -1073,6 +1073,10 @@ async fn scope_bypass_vectors_never_leak_foreign_rows() {
         // side channel (unscoped, so a WHERE on payload.petal_id could read
         // any petal's node metadata).
         ("node_log table", "SELECT * FROM node_log"),
+        // DEC-C21: ASSET left ALLOWED_TABLES (rows carry no owner/scope, so
+        // every uploaded asset_id/content_hash was readable by any token) —
+        // rejected (never served) on EVERY surface.
+        ("asset table", "SELECT * FROM asset"),
         // R5 (2026-10-09, independent grammar audit): a comment used to
         // split the `type::thing` needle apart on QueryJson only (the one
         // surface that skipped `reject_comments`), reaching an unscoped

@@ -19,8 +19,9 @@ use base64::Engine as _;
 use serde_json::json;
 
 use fe_api::mcp::{mcp_handler, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule};
+use fe_api::rest::NOT_FOUND_OR_DENIED;
 use fe_api::server::ApiState;
-use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError};
+use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UNKNOWN_ASSET};
 use fe_database::RoleLevel;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::blob_store::{hash_from_hex, BlobHash, BlobStore, BlobStoreHandle};
@@ -87,6 +88,8 @@ struct NodeRec {
     petal_id: String,
     name: String,
     position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
     asset_id: Option<String>,
     properties: serde_json::Map<String, serde_json::Value>,
 }
@@ -225,6 +228,8 @@ fn handle_command(cmd: ApiCommand, model: &Arc<Mutex<Model>>, store: Option<&Blo
             }));
             if let Some(n) = m.node(&node_id) {
                 n.position = position;
+                n.rotation = rotation;
+                n.scale = scale;
             }
         }
         ApiCommand::DbRequest { cmd, reply_tx } => {
@@ -283,6 +288,8 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 petal_id: petal_id.clone(),
                 name: name.clone(),
                 position,
+                rotation: [0.0; 3],
+                scale: [1.0; 3],
                 asset_id: None,
                 properties: Default::default(),
             });
@@ -295,6 +302,16 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 position,
             }
         }
+        DbCommand::Ping => DbResult::Pong,
+        DbCommand::GetNodeTransform { node_id } => match m.node(&node_id) {
+            Some(n) => DbResult::NodeTransformLoaded {
+                node_id,
+                position: n.position,
+                rotation: n.rotation,
+                scale: n.scale,
+            },
+            None => DbResult::Error(format!("no node {node_id}")),
+        },
         DbCommand::ResolvePetalScope { petal_id } => DbResult::ScopeResolved {
             scope: m.petal_scope(&petal_id),
         },
@@ -385,8 +402,9 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             name,
             asset_id,
             position,
+            rotation,
+            scale,
             correlation_id,
-            ..
         } => {
             m.log.push(json!({
                 "cmd": "CreateNodeWithAsset", "petal_id": petal_id, "asset_id": asset_id,
@@ -402,6 +420,8 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 petal_id: petal_id.clone(),
                 name: name.clone(),
                 position,
+                rotation,
+                scale,
                 asset_id: Some(asset_id.clone()),
                 properties: Default::default(),
             });
@@ -441,6 +461,23 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             correlation_id,
         } => {
             m.log.push(json!({ "cmd": "RawQuery", "sql": sql }));
+            // assets.rs::asset_reach: petals of every node referencing $aids.
+            if let Some(aids) = vars.get("aids").and_then(|v| v.as_array()) {
+                let data = m
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        n.asset_id
+                            .as_deref()
+                            .is_some_and(|a| aids.iter().any(|x| x.as_str() == Some(a)))
+                    })
+                    .map(|n| json!({ "petal_id": n.petal_id }))
+                    .collect();
+                return DbResult::QueryResult {
+                    data,
+                    correlation_id,
+                };
+            }
             let pid = vars.get("pid").and_then(|v| v.as_str()).unwrap_or_default();
             let data = m
                 .nodes
@@ -545,6 +582,8 @@ fn seed_chain(model: &Arc<Mutex<Model>>, label: &str) -> Chain {
         petal_id: chain.petal.clone(),
         name: format!("{label} node"),
         position: [1.0, 2.0, 3.0],
+        rotation: [0.0; 3],
+        scale: [1.0; 3],
         asset_id: None,
         properties: Default::default(),
     });
@@ -877,10 +916,11 @@ async fn authz_full_router_role_and_scope() {
         let (_, body) = h
             .post_json("/mcp", Some(&editor_a), &call(tool, args))
             .await;
-        assert_tool_error(&body, "insufficient scope");
+        assert_eq!(tool_text(&body), NOT_FOUND_OR_DENIED, "{tool}");
     }
 
-    // A well-formed id that resolves to nothing denies as "not found".
+    // A well-formed id that resolves to nothing denies IDENTICALLY to an
+    // out-of-scope one (DEC-C21: no existence oracle).
     let editor_foreign = h.mint_token(&foreign.verse_scope(), "editor");
     let (_, body) = h
         .post_json(
@@ -889,7 +929,7 @@ async fn authz_full_router_role_and_scope() {
             &call("create_node", json!({ "petal_id": ulid(), "name": "N" })),
         )
         .await;
-    assert_tool_error(&body, "petal not found");
+    assert_eq!(tool_text(&body), NOT_FOUND_OR_DENIED);
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,10 +1056,10 @@ async fn per_endpoint_crud_tools_role_and_validation() {
     let resp = call_tool(&state, &viewer, "read_node", json!({ "node_id": "junk" })).await;
     assert_tool_error(&resp, "invalid node_id");
 
-    // A well-formed id with no backing row is unresolvable → denied as not found.
+    // A well-formed id with no backing row is unresolvable → the unified denial.
     let editor = claims(&home.verse_scope(), "editor");
     let resp = call_tool(&state, &editor, "read_node", json!({ "node_id": ulid })).await;
-    assert_tool_error(&resp, "node not found");
+    assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
 
     // promote_instance (authorized) still requires the instance index.
     let resp = call_tool(
@@ -1087,7 +1127,7 @@ async fn wart_create_node_foreign_petal_is_denied() {
         json!({ "petal_id": foreign.petal, "name": "Sneaky" }),
     )
     .await;
-    assert_tool_error(&resp, "insufficient scope");
+    assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
     // (2) spoofed ancestry: the caller's OWN verse/fractal with a foreign petal.
     let resp = call_tool(
         &state,
@@ -1097,7 +1137,19 @@ async fn wart_create_node_foreign_petal_is_denied() {
                 "petal_id": foreign.petal, "name": "Sneakier" }),
     )
     .await;
-    assert_tool_error(&resp, "hierarchy ids do not match");
+    assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
+    // (3) ancestry mismatch INSIDE the token's own verse (a sibling fractal
+    // id with an owned petal) denies with the same text — ancestry is
+    // checked after containment, never as a distinguishable error.
+    let resp = call_tool(
+        &state,
+        &home_editor,
+        "create_node",
+        json!({ "verse_id": home.verse, "fractal_id": ulid(),
+                "petal_id": home.petal, "name": "Mismatch" }),
+    )
+    .await;
+    assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
     assert!(
         model.lock().unwrap().logged("CreateNode").is_empty(),
         "no write may reach the DB channel"
@@ -1145,7 +1197,7 @@ async fn wart_create_petal_foreign_fractal_is_denied() {
         json!({ "fractal_id": foreign.fractal, "name": "Sneaky Petal" }),
     )
     .await;
-    assert_tool_error(&resp, "insufficient scope");
+    assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
     // Decoy: authorize against an owned petal while writing a foreign fractal
     // — rejected before any DB call, since create_petal targets a fractal.
     let resp = call_tool(
@@ -1190,10 +1242,11 @@ async fn wart_update_transform_foreign_node_is_denied() {
         transform(&foreign.node),
     )
     .await;
-    assert_tool_error(&resp, "insufficient scope");
-    // A nonexistent node no longer reports "ok": unresolvable scope denies.
+    assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
+    // A nonexistent node no longer reports "ok": unresolvable scope denies,
+    // indistinguishably from a foreign one.
     let resp = call_tool(&state, &home_editor, "update_transform", transform(&ulid())).await;
-    assert_tool_error(&resp, "node not found");
+    assert_eq!(tool_text(&resp), NOT_FOUND_OR_DENIED);
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     assert!(model
         .lock()
@@ -1274,6 +1327,149 @@ async fn wart_depth_escalation_is_denied() {
     )
     .await;
     assert_eq!(tool_json(&resp)["name"], "Legit Petal 2");
+}
+
+// ---------------------------------------------------------------------------
+// DEC-C21 Mandatory 1: the REST twins of the decoy wart
+// ---------------------------------------------------------------------------
+
+/// (status, `{ok, error, data}` envelope) of a direct REST handler call.
+async fn rest_reply(resp: axum::response::Response) -> (StatusCode, serde_json::Value) {
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (status, serde_json::from_slice(&bytes).expect("json body"))
+}
+
+async fn rest_create_node(
+    state: &Arc<ApiState>,
+    c: &ApiClaims,
+    (verse, fractal, petal): (&str, &str, &str),
+) -> (StatusCode, serde_json::Value) {
+    let req = fe_api::types::CreateNodeRequest {
+        petal_id: None,
+        name: "rest-node".to_string(),
+        position: None,
+    };
+    let resp = fe_api::rest::create_node(
+        State(state.clone()),
+        Extension(c.clone()),
+        axum::extract::Path((verse.to_string(), fractal.to_string(), petal.to_string())),
+        Json(req),
+    )
+    .await;
+    rest_reply(resp).await
+}
+
+/// POST .../verses/{v}/fractals/{f}/petals/{p}/nodes used to authorize the URL
+/// prefix: an Editor of VERSE#home could name a FOREIGN petal behind its own
+/// verse/fractal ids and write into it. Now the petal's DB-resolved scope is
+/// the anchor and the URL ancestry must match it; every denial is one 404.
+#[tokio::test]
+async fn rest_create_node_rejects_a_foreign_petal_behind_an_own_prefix() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let foreign = seed_chain(&model, "foreign");
+    let home_editor = claims(&home.verse_scope(), "editor");
+
+    for (label, path) in [
+        (
+            "decoy: own verse/fractal, foreign petal",
+            (&home.verse, &home.fractal, &foreign.petal),
+        ),
+        (
+            "honest foreign path",
+            (&foreign.verse, &foreign.fractal, &foreign.petal),
+        ),
+        (
+            "own petal, wrong fractal in URL",
+            (&home.verse, &foreign.fractal, &home.petal),
+        ),
+        ("unknown petal", (&home.verse, &home.fractal, &ulid())),
+    ] {
+        let (status, body) = rest_create_node(
+            &state,
+            &home_editor,
+            (path.0.as_str(), path.1.as_str(), path.2.as_str()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{label}: {body}");
+        assert_eq!(body["error"], NOT_FOUND_OR_DENIED, "{label}");
+    }
+    assert!(
+        model.lock().unwrap().logged("CreateNode").is_empty(),
+        "no denied REST create may reach the DB channel"
+    );
+
+    // Happy path: the honest own chain creates into the resolved petal.
+    let (status, body) = rest_create_node(
+        &state,
+        &home_editor,
+        (
+            home.verse.as_str(),
+            home.fractal.as_str(),
+            home.petal.as_str(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["name"], "rest-node");
+    let created = model.lock().unwrap().logged("CreateNode");
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0]["petal_id"], home.petal.as_str());
+}
+
+/// POST .../verses/{v}/fractals/{f}/petals: the fractal's stored verse is the
+/// anchor; an own-verse URL prefix in front of a foreign fractal is denied.
+#[tokio::test]
+async fn rest_create_petal_rejects_a_foreign_fractal_behind_an_own_prefix() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let foreign = seed_chain(&model, "foreign");
+    let home_editor = claims(&home.verse_scope(), "editor");
+    let create = |verse: &str, fractal: &str| {
+        fe_api::rest::create_petal(
+            State(state.clone()),
+            Extension(home_editor.clone()),
+            axum::extract::Path((verse.to_string(), fractal.to_string())),
+            Json(fe_api::types::CreatePetalRequest {
+                name: "rest-petal".to_string(),
+            }),
+        )
+    };
+
+    let (status, body) = rest_reply(create(&home.verse, &foreign.fractal).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], NOT_FOUND_OR_DENIED);
+    let (status, _) = rest_reply(create(&foreign.verse, &foreign.fractal).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(model.lock().unwrap().logged("CreatePetal").is_empty());
+
+    let (status, body) = rest_reply(create(&home.verse, &home.fractal).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let created = model.lock().unwrap().logged("CreatePetal");
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0]["fractal_id"], home.fractal.as_str());
+
+    // create_fractal: a foreign or unknown verse denies the same way.
+    let create_fractal = |verse: &str| {
+        fe_api::rest::create_fractal(
+            State(state.clone()),
+            Extension(home_editor.clone()),
+            axum::extract::Path(verse.to_string()),
+            Json(fe_api::types::CreateFractalRequest {
+                name: "rest-fractal".to_string(),
+            }),
+        )
+    };
+    let (status, _) = rest_reply(create_fractal(&foreign.verse).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = rest_reply(create_fractal(&ulid()).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(model.lock().unwrap().logged("CreateFractal").is_empty());
+    let (status, body) = rest_reply(create_fractal(&home.verse).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// The fixes live in the table itself: the wart tools carry DB-resolving
@@ -1362,9 +1558,9 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         scoped += 1;
         // Role exactly at the floor; every hierarchy arg names the foreign chain.
         // `HierarchyArgs` rows only get args up to their own write-target depth —
-        // anything deeper now fails closed with "unexpected ... id" instead of
-        // "insufficient scope", so the blanket assertion below must not hand
-        // them an id past their target (2026-10-09 depth-escalation hardening).
+        // anything deeper fails closed with "unexpected ... id" instead of the
+        // unified denial, so the blanket assertion below must not hand them an
+        // id past their target (2026-10-09 depth-escalation hardening).
         let c = claims(&home.verse_scope(), &spec.min_role.to_string());
         let args = match spec.scope_rule {
             ScopeRule::HierarchyArgs(HierarchyTarget::Verse) => {
@@ -1384,7 +1580,7 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         let resp = call_tool(&state, &c, spec.name, args).await;
         assert_eq!(
             tool_text(&resp),
-            "insufficient scope",
+            NOT_FOUND_OR_DENIED,
             "{}: {resp}",
             spec.name
         );
@@ -1503,6 +1699,150 @@ async fn upload_asset_rejects_bad_bytes_and_writes_nothing() {
     )
     .await;
     assert_tool_error(&resp, "no blob store configured");
+}
+
+/// DEC-C21 Mandatory 3(c): an asset already used by a node in ANOTHER scope
+/// cannot be placed by a token that covers none of its referencing nodes —
+/// refused with the same text as an unknown id, before any write. The
+/// uploader's own flow (upload → place → place again) still works.
+#[tokio::test]
+async fn place_asset_rejects_a_foreign_scope_asset() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let foreign = seed_chain(&model, "foreign");
+    let foreign_editor = claims(&foreign.verse_scope(), "editor");
+    let home_editor = claims(&home.verse_scope(), "editor");
+
+    // The foreign tenant uploads + places its asset.
+    let resp = call_tool(
+        &state,
+        &foreign_editor,
+        "upload_asset",
+        json!({ "petal_id": foreign.petal, "name": "secret.glb", "data_base64": b64(&tiny_glb()) }),
+    )
+    .await;
+    let foreign_asset = tool_json(&resp)["asset_id"].as_str().unwrap().to_string();
+    let resp = call_tool(
+        &state,
+        &foreign_editor,
+        "place_asset",
+        json!({ "petal_id": foreign.petal, "asset_id": foreign_asset, "name": "Theirs" }),
+    )
+    .await;
+    tool_json(&resp);
+    let placed_before = model.lock().unwrap().logged("CreateNodeWithAsset").len();
+
+    // Home cannot bind it into its own petal.
+    let resp = call_tool(
+        &state,
+        &home_editor,
+        "place_asset",
+        json!({ "petal_id": home.petal, "asset_id": foreign_asset, "name": "Stolen" }),
+    )
+    .await;
+    assert_eq!(tool_text(&resp), UNKNOWN_ASSET);
+    let unknown = call_tool(
+        &state,
+        &home_editor,
+        "place_asset",
+        json!({ "petal_id": home.petal, "asset_id": ulid(), "name": "Ghost" }),
+    )
+    .await;
+    assert_eq!(
+        tool_text(&unknown),
+        UNKNOWN_ASSET,
+        "same text as a foreign id"
+    );
+    assert_eq!(
+        model.lock().unwrap().logged("CreateNodeWithAsset").len(),
+        placed_before + 1, // only the unknown id reached the DB (which refused it)
+        "the foreign asset never reached CreateNodeWithAsset"
+    );
+
+    // Own flow: a fresh upload places, and placing it again (now referenced
+    // by an own node) still works.
+    let resp = call_tool(
+        &state,
+        &home_editor,
+        "upload_asset",
+        json!({ "petal_id": home.petal, "name": "mine.glb", "data_base64": b64(&tiny_glb()) }),
+    )
+    .await;
+    let own_asset = tool_json(&resp)["asset_id"].as_str().unwrap().to_string();
+    for name in ["Mine 1", "Mine 2"] {
+        let resp = call_tool(
+            &state,
+            &home_editor,
+            "place_asset",
+            json!({ "petal_id": home.petal, "asset_id": own_asset, "name": name }),
+        )
+        .await;
+        assert_eq!(tool_json(&resp)["petal_id"], home.petal.as_str(), "{name}");
+    }
+}
+
+/// DEC-C21 M6: a GPX past `GPX_MAX_POINTS` is refused before ANY node is
+/// created (each point would otherwise be its own CreateNode round trip).
+#[tokio::test]
+async fn import_gpx_refuses_more_points_than_the_cap() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let editor = claims(&home.verse_scope(), "editor");
+    let points = fe_api::limits::GPX_MAX_POINTS + 1;
+    let mut gpx = String::from(
+        r#"<?xml version="1.0"?><gpx version="1.1" creator="t" xmlns="http://www.topografix.com/GPX/1/1">"#,
+    );
+    for i in 0..points {
+        gpx.push_str(&format!(r#"<wpt lat="47.{i:05}" lon="8.0"></wpt>"#));
+    }
+    gpx.push_str("</gpx>");
+
+    let resp = call_tool(
+        &state,
+        &editor,
+        "import_gpx",
+        json!({ "petal_id": home.petal, "data_base64": b64(gpx.as_bytes()) }),
+    )
+    .await;
+    assert_tool_error(&resp, "import limit");
+    assert!(
+        model.lock().unwrap().logged("CreateNode").is_empty(),
+        "nothing created past the cap"
+    );
+}
+
+/// DEC-C21 low: move_waypoint repositions only — the node's stored rotation
+/// and scale survive (they used to be reset to identity).
+#[tokio::test]
+async fn move_waypoint_preserves_rotation_and_scale() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let editor = claims(&home.verse_scope(), "editor");
+
+    let resp = call_tool(
+        &state,
+        &editor,
+        "update_transform",
+        json!({ "node_id": home.node, "position": [1.0, 2.0, 3.0],
+                "rotation": [0.25, 0.5, 0.75], "scale": [2.0, 3.0, 4.0] }),
+    )
+    .await;
+    tool_json(&resp);
+    let resp = call_tool(
+        &state,
+        &editor,
+        "move_waypoint",
+        json!({ "node_id": home.node, "lat": 47.7, "lon": -122.4 }),
+    )
+    .await;
+    tool_json(&resp);
+    settle(&state).await;
+
+    let persists = model.lock().unwrap().logged("UpdateNodeTransform");
+    assert_eq!(persists.len(), 2, "update + move");
+    assert_eq!(persists[1]["rotation"], json!([0.25, 0.5, 0.75]));
+    assert_eq!(persists[1]["scale"], json!([2.0, 3.0, 4.0]));
+    assert_ne!(persists[1]["position"], json!([1.0, 2.0, 3.0]), "it moved");
 }
 
 // ---------------------------------------------------------------------------
@@ -1678,12 +2018,13 @@ async fn terrain_and_tileset_tools_reach_their_cores() {
     .await;
     assert_eq!(tool_json(&resp), json!([]));
 
-    // install_tileset: past the Manager gate + fe-policy, the core reports
-    // the host has no tileset registry (no write attempted).
-    let manager = claims(&home.verse_scope(), "manager");
+    // install_tileset: past the Editor gate (DEC-C21 M5 — matches REST +
+    // fe-policy Install) + fe-policy, the core reports the host has no
+    // tileset registry (no write attempted).
+    let editor = claims(&home.verse_scope(), "editor");
     let resp = call_tool(
         &state,
-        &manager,
+        &editor,
         "install_tileset",
         json!({ "petal_id": home.petal, "data_base64": b64(b"archive") }),
     )
@@ -1755,9 +2096,9 @@ impl SplitMix64 {
 }
 
 /// A superset of every property name used across all 29 tool schemas, filled
-/// with values valid enough to clear `check_required_args` and usually reach
-/// the handler. One random key (scoped to the tool's OWN schema) is replaced
-/// per iteration — see [`mutate`].
+/// with values valid enough to clear `check_required_args` and reach the
+/// handler. [`fuzz_args_for`] trims it to ONE tool's schema keys; one random
+/// key of that schema is then replaced per iteration — see [`mutate`].
 fn fuzz_baseline_args(home: &Chain, asset_id: &str) -> serde_json::Value {
     json!({
         "verse_id": home.verse, "fractal_id": home.fractal,
@@ -1774,6 +2115,17 @@ fn fuzz_baseline_args(home: &Chain, asset_id: &str) -> serde_json::Value {
         "bbox": "0,0,10,10", "bbox_ll": "0,0,1,1", "radius": 5.0, "cx": 0.0, "cz": 0.0,
         "sql": "SELECT 1", "vars": {},
     })
+}
+
+/// The baseline trimmed to one tool's schema `keys`: a superset key could
+/// trip a depth check (`create_fractal` + `petal_id` → "unexpected …") and
+/// silently keep the tool from ever reaching its handler.
+fn fuzz_args_for(home: &Chain, asset_id: &str, keys: &[String]) -> serde_json::Value {
+    let mut args = fuzz_baseline_args(home, asset_id);
+    args.as_object_mut()
+        .expect("baseline is an object")
+        .retain(|k, _| keys.contains(k));
+    args
 }
 
 /// Replace `args[key]` with a type-confused value, or delete it entirely —
@@ -1805,73 +2157,144 @@ fn mutate(obj: &mut serde_json::Map<String, serde_json::Value>, key: &str, varia
     }
 }
 
-/// FR-5: every tool, N=25 seeded mutations each, asserting the dispatcher
-/// never panics, never bubbles a transport-level JSON-RPC error for a
-/// routed `tools/call` (always the clean `tool_error` content shape), and
-/// never lets a call the dispatcher itself rejected (denied role, or a
-/// malformed/missing arg caught before the handler's side effect) reach the
-/// DB channel.
+/// Barrier: a `Ping` round trip through the FIFO emulator proves every
+/// earlier fire-and-forget send (`TransformPersist`, …) has been handled, so
+/// a log snapshot taken after it is stable.
+async fn settle(state: &Arc<ApiState>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest {
+            cmd: DbCommand::Ping,
+            reply_tx,
+        })
+        .expect("emulator channel open");
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx)
+        .await
+        .expect("emulator settle timed out")
+        .expect("emulator dropped the settle reply");
+    assert!(matches!(reply, DbResult::Pong), "{reply:?}");
+}
+
+/// An authz denial from the dispatcher — the ONLY tool errors guaranteed to
+/// precede every channel send. Other tool errors may legitimately follow a
+/// write (a fire-and-forget `TransformPersist`, a `CreateNodeWithAsset` the
+/// DB refuses, a RawQuery read).
+fn is_authz_denial(text: &str) -> bool {
+    text == "insufficient permissions" || text == NOT_FOUND_OR_DENIED
+}
+
+/// Rejected by the dispatcher itself (authz, id shape, required args): the
+/// handler never ran. Any other outcome means the call reached its handler.
+fn is_dispatcher_rejection(text: &str) -> bool {
+    const BAD_SCOPE_IDS: [&str; 4] = [
+        "invalid verse_id",
+        "invalid fractal_id",
+        "invalid petal_id",
+        "invalid node_id",
+    ];
+    is_authz_denial(text)
+        || BAD_SCOPE_IDS.contains(&text)
+        || text.starts_with("unexpected ")
+        || text.ends_with(" is required")
+        || text.ends_with(" are required")
+}
+
+/// FR-5: every tool, one unmutated control call + N=25 seeded mutations,
+/// asserting the dispatcher never panics, never bubbles a transport-level
+/// JSON-RPC error for a routed `tools/call`, never admits a sub-floor role,
+/// and never lets an AUTHZ-denied call reach the DB channel (log snapshots
+/// bracketed by emulator barriers). Coverage is asserted too: every tool must
+/// reach its handler at least once, so a fixture or schema regression that
+/// starves a tool is loud instead of silently untested.
 #[tokio::test]
 async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
     let Emu { state, model, .. } = emu(true);
-    let home = seed_chain(&model, "fuzz-home");
-    let asset_id = ulid();
     let mut rng = SplitMix64::new(0x4641_3134_4632_3700); // "FA14F270", arbitrary fixed seed
     const N: u64 = 25;
+    let mut unreached: Vec<&str> = Vec::new();
 
     for spec in tool_specs() {
+        // Fresh chain + registered asset per tool: one tool's delete_node
+        // (or cascade) can never tombstone another tool's fixture.
+        let home = seed_chain(&model, spec.name);
+        let asset_id = ulid();
+        model
+            .lock()
+            .unwrap()
+            .assets
+            .push((asset_id.clone(), "00".repeat(32)));
         let schema = (spec.input_schema)();
         let keys: Vec<String> = schema["properties"]
             .as_object()
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
-        if keys.is_empty() {
-            continue; // nothing to mutate (sim_stop/sim_status take no args)
-        }
-        for i in 0..N {
-            let auth_ok = rng.next_u64() % 2 == 0;
-            let c = if auth_ok {
-                claims(&home.verse_scope(), &spec.min_role.to_string())
+        let mut reached = 0usize;
+
+        // Iteration 0 = the control (role floor, no mutation); 1..=N fuzz.
+        for i in 0..=N {
+            let (auth_ok, mutation) = if i == 0 {
+                (true, None)
             } else {
-                claims(&home.verse_scope(), role_below(spec.min_role))
+                let auth_ok = rng.next_u64() % 2 == 0;
+                let mutation = if keys.is_empty() {
+                    None // sim_stop/sim_status/get_hierarchy take no args
+                } else {
+                    let key = keys[(rng.next_u64() as usize) % keys.len()].clone();
+                    Some((key, rng.next_u64() % 7))
+                };
+                (auth_ok, mutation)
             };
+            let role = if auth_ok {
+                spec.min_role.to_string()
+            } else {
+                role_below(spec.min_role).to_string()
+            };
+            let c = claims(&home.verse_scope(), &role);
+            let mut args = fuzz_args_for(&home, &asset_id, &keys);
+            if let Some((key, variant)) = &mutation {
+                mutate(args.as_object_mut().unwrap(), key, *variant);
+            }
+            let label = format!("{} iter {i} (mutation {mutation:?})", spec.name);
 
-            let mut args = fuzz_baseline_args(&home, &asset_id);
-            let key = keys[(rng.next_u64() as usize) % keys.len()].clone();
-            let variant = rng.next_u64() % 7;
-            mutate(args.as_object_mut().unwrap(), &key, variant);
-
+            settle(&state).await;
             let before = model.lock().unwrap().log.len();
-            let (state2, c2, tool, args2) = (state.clone(), c.clone(), spec.name.to_string(), args);
+            let (state2, c2, tool) = (state.clone(), c.clone(), spec.name.to_string());
             let joined =
-                tokio::spawn(async move { call_tool(&state2, &c2, &tool, args2).await }).await;
-            assert!(
-                joined.is_ok(),
-                "{}: panicked on seed-iter {i} (key={key}, variant={variant})",
-                spec.name
-            );
+                tokio::spawn(async move { call_tool(&state2, &c2, &tool, args).await }).await;
+            assert!(joined.is_ok(), "{label}: panicked");
             let resp = joined.unwrap();
+            settle(&state).await;
+            let after = model.lock().unwrap().log.len();
+
             assert!(
                 resp.get("error").is_none() || resp["error"].is_null(),
-                "{}: dispatcher returned a transport-level error (5xx-shaped) for tools/call: {resp}",
-                spec.name
+                "{label}: dispatcher returned a transport-level error for tools/call: {resp}"
             );
             let is_tool_error = resp["result"]["isError"] == true;
+            let text = tool_text(&resp);
             if !auth_ok {
                 assert!(
-                    is_tool_error,
-                    "{}: a sub-min-role token was admitted: {resp}",
-                    spec.name
+                    is_tool_error && text == "insufficient permissions",
+                    "{label}: a sub-min-role token was admitted: {resp}"
                 );
             }
-            if !auth_ok || is_tool_error {
-                let after = model.lock().unwrap().log.len();
+            if is_tool_error && is_authz_denial(&text) {
                 assert_eq!(
                     after, before,
-                    "{}: a denied/malformed call reached the DB channel (key={key}, variant={variant})",
-                    spec.name
+                    "{label}: an authz-denied call reached the DB channel"
                 );
             }
+            if auth_ok && !(is_tool_error && is_dispatcher_rejection(&text)) {
+                reached += 1;
+            }
+        }
+        if reached == 0 {
+            unreached.push(spec.name);
         }
     }
+    assert!(
+        unreached.is_empty(),
+        "tools that never reached their handler across the control + {N} iterations: {unreached:?}"
+    );
 }

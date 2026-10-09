@@ -19,47 +19,73 @@ use crate::types::{is_valid_ulid, ApiResponse};
 /// Multipart GPX upload. Parses GPX, converts to nodes, creates them in the petal.
 /// Returns track_count, waypoint_count, total_points, bounding_box.
 ///
-/// RBAC: Editor+ required.
+/// RBAC: Editor+ required. More than [`crate::limits::GPX_MAX_POINTS`]
+/// parsed points → 413 (nothing created).
 pub async fn import_gpx(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
     mut multipart: Multipart,
-) -> impl IntoResponse {
+) -> Response {
+    let envelope_error =
+        |msg: &str| axum::Json(ApiResponse::<serde_json::Value>::error(msg)).into_response();
     if require_role(&claims, "editor").is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error(
-            "insufficient permissions",
-        ));
+        return envelope_error("insufficient permissions");
     }
     if !is_valid_ulid(&petal_id) {
-        return axum::Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
+        return envelope_error("invalid petal_id");
     }
 
     // Resolve scope
     let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
-        return axum::Json(ApiResponse::<serde_json::Value>::error(
-            "could not resolve petal scope",
-        ));
+        return envelope_error("could not resolve petal scope");
     };
     if require_scope(&claims, &scope).is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error(
-            "insufficient scope",
-        ));
+        return envelope_error("insufficient scope");
     }
 
     // Read the uploaded GPX file
-    let gpx_bytes = match read_multipart_field(&mut multipart, "file").await {
-        Some(bytes) => bytes,
-        None => {
-            return axum::Json(ApiResponse::<serde_json::Value>::error(
-                "missing or unreadable 'file' field in multipart upload",
-            ));
-        }
+    let Some(gpx_bytes) = read_multipart_field(&mut multipart, "file").await else {
+        return envelope_error("missing or unreadable 'file' field in multipart upload");
     };
 
     match import_gpx_core(&state, &petal_id, &gpx_bytes).await {
-        Ok(payload) => axum::Json(ApiResponse::success(payload)),
-        Err(e) => axum::Json(ApiResponse::<serde_json::Value>::error(e)),
+        Ok(payload) => axum::Json(ApiResponse::success(payload)).into_response(),
+        Err(e) => (
+            e.status(),
+            axum::Json(ApiResponse::<serde_json::Value>::error(e.message())),
+        )
+            .into_response(),
+    }
+}
+
+/// Why a GPX import was refused before any node was created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpxImportError {
+    /// The document did not parse as GPX.
+    Invalid(String),
+    /// More parsed points than [`crate::limits::GPX_MAX_POINTS`].
+    TooManyPoints { points: usize },
+}
+
+impl GpxImportError {
+    /// Client-facing message.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Invalid(e) => format!("invalid GPX: {e}"),
+            Self::TooManyPoints { points } => format!(
+                "GPX has {points} points; the import limit is {} (split the file)",
+                crate::limits::GPX_MAX_POINTS
+            ),
+        }
+    }
+
+    /// HTTP status for the REST surface (MCP carries only the message).
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::Invalid(_) => StatusCode::OK, // historical 200 + {ok:false}
+            Self::TooManyPoints { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+        }
     }
 }
 
@@ -70,10 +96,9 @@ pub(crate) async fn import_gpx_core(
     state: &crate::server::ApiState,
     petal_id: &str,
     gpx_bytes: &[u8],
-) -> Result<serde_json::Value, String> {
-    let data = parse_gpx_bytes(gpx_bytes).map_err(|e| format!("invalid GPX: {e}"))?;
+) -> Result<serde_json::Value, GpxImportError> {
+    let data = parse_gpx_bytes(gpx_bytes).map_err(|e| GpxImportError::Invalid(e.to_string()))?;
 
-    let stats = compute_stats(&data);
     let track_count = data.tracks.len();
     let waypoint_count = data.waypoints.len();
     let total_points: usize = data
@@ -82,6 +107,17 @@ pub(crate) async fn import_gpx_core(
         .flat_map(|t| t.segments.iter())
         .map(|s| s.points.len())
         .sum();
+    // Every parsed point counts toward the cap (trackpoints become one node
+    // each — a DB round trip per point); refused before any write.
+    let route_points: usize = data.routes.iter().map(|r| r.points.len()).sum();
+    let parsed_points = total_points + route_points + waypoint_count;
+    if parsed_points > crate::limits::GPX_MAX_POINTS {
+        return Err(GpxImportError::TooManyPoints {
+            points: parsed_points,
+        });
+    }
+
+    let stats = compute_stats(&data);
 
     // Use bounding box center as projection origin
     let origin_lat = (stats.bounding_box.min_lat + stats.bounding_box.max_lat) / 2.0;

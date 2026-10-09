@@ -363,11 +363,18 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/sim/inject-fault",
             post(crate::sim::post_inject_fault),
         )
-        // MCP (body limit admits a max-size base64 upload_asset — §asset-ingest)
+        // MCP: 16 MiB body cap for every method + bounded concurrency
+        // (DEC-C21; large GLBs use REST multipart — §asset-ingest).
         .route(
             "/mcp",
             post(crate::mcp::mcp_handler)
-                .layer(DefaultBodyLimit::max(crate::upload::MCP_ROUTE_BODY_LIMIT)),
+                .layer(DefaultBodyLimit::max(crate::upload::MCP_ROUTE_BODY_LIMIT))
+                .layer(axum::middleware::from_fn_with_state(
+                    Arc::new(tokio::sync::Semaphore::new(
+                        crate::upload::MCP_MAX_CONCURRENT_CALLS,
+                    )),
+                    mcp_concurrency_limit,
+                )),
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -379,6 +386,20 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Concurrency limit for `/mcp` (tower `ConcurrencyLimit` semantics: excess
+/// requests wait for a permit BEFORE their body is buffered). A semaphore
+/// middleware because `tower`'s `limit` feature is not a fe-api dependency.
+async fn mcp_concurrency_limit(
+    State(permits): State<Arc<tokio::sync::Semaphore>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    match permits.acquire_owned().await {
+        Ok(_permit) => next.run(req).await,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 /// Readiness probe: pings the database and returns 200 if responsive.

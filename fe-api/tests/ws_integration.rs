@@ -33,19 +33,22 @@ async fn spawn_live_server(h: &ApiHarness) -> SocketAddr {
     addr
 }
 
-/// Read one text frame and parse it as JSON.
+/// Generous per-frame budget: a regression must FAIL, never hang the suite.
+const FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Read one text frame and parse it as JSON (panics after [`FRAME_TIMEOUT`]).
 async fn next_json(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
 ) -> serde_json::Value {
     loop {
-        match ws
-            .next()
+        let frame = tokio::time::timeout(FRAME_TIMEOUT, ws.next())
             .await
+            .expect("timed out waiting for a ws frame")
             .expect("stream ended early")
-            .expect("ws frame")
-        {
+            .expect("ws frame");
+        match frame {
             WsMessage::Text(t) => return serde_json::from_str(&t).expect("json frame"),
             WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
             other => panic!("unexpected frame: {other:?}"),
@@ -161,7 +164,10 @@ async fn ws_rejects_a_bad_token_and_closes() {
     // (what tungstenite actually reports for this abrupt drop) a
     // `Protocol(ResetWithoutClosingHandshake)` error — any of which is a
     // closed connection. What must NOT happen is a further protocol frame.
-    match ws.next().await {
+    let after_reject = tokio::time::timeout(FRAME_TIMEOUT, ws.next())
+        .await
+        .expect("timed out waiting for the socket to close");
+    match after_reject {
         None => {}
         Some(Ok(WsMessage::Close(_))) => {}
         Some(Err(_)) => {}

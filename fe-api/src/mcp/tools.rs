@@ -8,7 +8,7 @@ use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 
 use super::{ToolCall, ToolFuture, ToolOutcome};
 use crate::endpoint::{caller_auth, load_node};
-use crate::upload::{GlbPayload, MAX_ASSET_BYTES};
+use crate::upload::{GlbPayload, MCP_MAX_ASSET_BYTES};
 
 // ---------------------------------------------------------------------------
 // Argument helpers
@@ -365,9 +365,12 @@ pub(super) fn sim_inject_fault(call: ToolCall<'_>) -> ToolFuture<'_> {
 pub(super) fn upload_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let payload = GlbPayload::Base64(str_arg(call.args, "data_base64").to_string());
-        let asset = crate::upload::ingest_glb(call.state, str_arg(call.args, "name"), payload)
-            .await
-            .map_err(|e| e.message())?;
+        let name = str_arg(call.args, "name");
+        // The /mcp body cap bounds this transport; big GLBs use REST multipart.
+        let asset =
+            crate::upload::ingest_glb_with_limit(call.state, name, payload, MCP_MAX_ASSET_BYTES)
+                .await
+                .map_err(|e| e.message())?;
         Ok(serde_json::to_value(asset).unwrap_or_default())
     })
 }
@@ -381,6 +384,7 @@ pub(super) fn place_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
         }
         let placed = crate::upload::place_asset_core(
             call.state,
+            call.claims,
             &petal_id,
             str_arg(call.args, "name"),
             asset_id,
@@ -481,7 +485,9 @@ pub(super) fn import_gpx(call: ToolCall<'_>) -> ToolFuture<'_> {
         let petal_id = scoped_petal(&call)?;
         let text = str_arg(call.args, "data_base64").to_string();
         let bytes = decode_base64(text, crate::limits::MCP_GPX_MAX_BYTES).await?;
-        crate::gpx::import_gpx_core(call.state, &petal_id, &bytes).await
+        crate::gpx::import_gpx_core(call.state, &petal_id, &bytes)
+            .await
+            .map_err(|e| e.message())
     })
 }
 
@@ -516,8 +522,8 @@ pub(super) fn install_tileset(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let petal_id = scoped_petal(&call)?;
         let text = str_arg(call.args, "data_base64").to_string();
-        let bytes = decode_base64(text, MAX_ASSET_BYTES).await?;
-        crate::terrain::install_tileset_core(call.state, call.claims, &petal_id, &bytes).await
+        let bytes = decode_base64(text, crate::terrain::TILESET_ARCHIVE_MAX_BYTES).await?;
+        crate::terrain::install_tileset_core(call.state, call.claims, &petal_id, bytes.into()).await
     })
 }
 
@@ -716,7 +722,7 @@ pub(super) mod schema {
             "properties": {
                 "petal_id": { "type": "string", "description": "Authz anchor petal (asset rows themselves are node-global)" },
                 "name": { "type": "string", "description": "Display/file name for the asset" },
-                "data_base64": { "type": "string", "description": "Standard base64 of a GLB (binary glTF 2.0) file" }
+                "data_base64": { "type": "string", "description": "Standard base64 of a GLB (binary glTF 2.0) file, max 11 MiB decoded (use REST multipart for larger)" }
             },
             "required": ["petal_id", "name", "data_base64"]
         })
@@ -795,7 +801,7 @@ pub(super) mod schema {
             "type": "object",
             "properties": {
                 "petal_id": { "type": "string" },
-                "data_base64": { "type": "string", "description": "Standard base64 of a GPX 1.1 document (max 16 MiB decoded)" }
+                "data_base64": { "type": "string", "description": "Standard base64 of a GPX 1.1 document (max 11 MiB decoded, max 10000 points)" }
             },
             "required": ["petal_id", "data_base64"]
         })
@@ -821,7 +827,7 @@ pub(super) mod schema {
             "type": "object",
             "properties": {
                 "petal_id": { "type": "string", "description": "The petal whose terrain already binds this tileset id" },
-                "data_base64": { "type": "string", "description": "Standard base64 of the .hexon terrain-tileset archive" }
+                "data_base64": { "type": "string", "description": "Standard base64 of the .hexon terrain-tileset archive (max 2 MiB decoded)" }
             },
             "required": ["petal_id", "data_base64"]
         })
