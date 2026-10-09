@@ -121,6 +121,14 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   made (alters family-blind Error routing semantics; deferred with a note).
   Fix agents run NO builds (F11 holds the build lock); one serial gate after.
 
+- **DEC-C14 (2026-10-09)** — A26 "20 tools" resolved as "the
+  mcp_scene_primitives 20-name vocabulary fully present"; true tools/list
+  length 29 (24 + 5 sim) recorded as a documented intentional superset.
+  Details: `m5-mcp-harness-design.md`.
+- **DEC-C15 (2026-10-09)** — M5: F13 (opus — security-authz refactor) then
+  F14 (sonnet) strictly sequential; ToolSpec/ScopeRule shape ratified in
+  `m5-mcp-harness-design.md`.
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

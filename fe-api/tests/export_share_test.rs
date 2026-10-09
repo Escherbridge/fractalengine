@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
@@ -237,6 +237,7 @@ async fn export_parquet_round_trips_and_is_scope_filtered() {
         Extension(claims),
         Path(pa.clone()),
         Query(params(None, None)),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -276,6 +277,7 @@ async fn export_rejects_bad_role_scope_and_injection() {
         Extension(test_claims("VERSE#v2", "viewer")),
         Path(pa.clone()),
         Query(params(None, None)),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -286,6 +288,7 @@ async fn export_rejects_bad_role_scope_and_injection() {
         Extension(test_claims("VERSE#v1", "none")),
         Path(pa.clone()),
         Query(params(None, None)),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -304,6 +307,7 @@ async fn export_rejects_bad_role_scope_and_injection() {
             Extension(claims.clone()),
             Path(pa.clone()),
             Query(params(Some(bad), None)),
+            HeaderMap::new(),
         )
         .await;
         assert_eq!(
@@ -319,6 +323,7 @@ async fn export_rejects_bad_role_scope_and_injection() {
         Extension(claims),
         Path(ulid()),
         Query(params(None, None)),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -339,6 +344,7 @@ async fn export_csv_local_vs_latlon_landmine() {
         Extension(claims.clone()),
         Path(pa.clone()),
         Query(params(None, Some("local"))),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -367,6 +373,7 @@ async fn export_csv_local_vs_latlon_landmine() {
         Extension(claims.clone()),
         Path(pa.clone()),
         Query(params(None, Some("latlon"))),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -396,6 +403,7 @@ async fn export_csv_local_vs_latlon_landmine() {
         Extension(claims.clone()),
         Path(pa.clone()),
         Query(params(None, Some("latlon"))),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -408,6 +416,7 @@ async fn export_csv_local_vs_latlon_landmine() {
         Extension(claims),
         Path(pa),
         Query(params(None, Some("weird"))),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -424,6 +433,7 @@ async fn export_latlon_without_origin_is_rejected() {
         Extension(test_claims("VERSE#v1", "viewer")),
         Path(pa),
         Query(params(None, Some("latlon"))),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -454,6 +464,7 @@ async fn export_readings_round_trips_scope_filtered_with_anchor_position() {
         Extension(claims.clone()),
         Path(pa.clone()),
         Query(params(Some("SELECT * FROM iot_reading"), None)),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -487,6 +498,7 @@ async fn export_readings_round_trips_scope_filtered_with_anchor_position() {
         Extension(claims),
         Path(pa.clone()),
         Query(params(Some("SELECT * FROM iot_reading"), None)),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -518,6 +530,7 @@ async fn export_readings_latlon_converts_anchor_position() {
         Extension(claims),
         Path(pa.clone()),
         Query(params(Some("SELECT * FROM iot_reading"), Some("latlon"))),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -682,6 +695,7 @@ async fn share_issue_redeem_round_trip_enforces_scope_ceiling() {
         State(state.clone()),
         Path(token.clone()),
         Query(RedeemParams::default()),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -710,7 +724,13 @@ async fn share_issue_redeem_round_trip_enforces_scope_ceiling() {
         .as_str()
         .unwrap()
         .to_string();
-    let resp = redeem_share_url(State(state), Path(token), Query(RedeemParams::default())).await;
+    let resp = redeem_share_url(
+        State(state),
+        Path(token),
+        Query(RedeemParams::default()),
+        HeaderMap::new(),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
         header_str(&resp, "content-type"),
@@ -747,7 +767,13 @@ async fn share_readings_parquet_round_trip_is_scope_filtered() {
         .to_string();
 
     // Redeemed UNAUTHENTICATED (no Authorization header, no claims extension).
-    let resp = redeem_share_url(State(state), Path(token), Query(RedeemParams::default())).await;
+    let resp = redeem_share_url(
+        State(state),
+        Path(token),
+        Query(RedeemParams::default()),
+        HeaderMap::new(),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
         header_str(&resp, "content-type"),
@@ -785,6 +811,7 @@ async fn share_expired_tampered_and_invalid_rejected() {
         State(state.clone()),
         Path(token),
         Query(RedeemParams::default()),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::GONE);
@@ -798,6 +825,7 @@ async fn share_expired_tampered_and_invalid_rejected() {
         State(state.clone()),
         Path(forged),
         Query(RedeemParams::default()),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -807,6 +835,7 @@ async fn share_expired_tampered_and_invalid_rejected() {
         State(state.clone()),
         Path("garbage".into()),
         Query(RedeemParams::default()),
+        HeaderMap::new(),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

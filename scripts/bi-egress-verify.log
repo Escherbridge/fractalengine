@@ -1,0 +1,108 @@
+
+=== Disk guard ===
+  C: free = 10.9 GB
+  Work dir: C:\Users\atooz\AppData\Local\Temp\fe-bi-egress-verify-20261009-031915
+
+=== Build (if needed) ===
+  fe-relay.exe already built, skipping.
+  mint_api_token.exe already built, skipping.
+  duckdb.exe: v1.5.6 (Variegata) 069cc9f9b5
+
+=== Starting fe-relay ===
+  Started fe-relay.exe PID=84644
+  [PASS] relay /ready returned 200 within 60s
+
+=== Mint path (offline JWT, matching the relay's node-keypair seed) ===
+  [PASS] minted a bootstrap token offline with the relay's seed
+
+=== Seeding hierarchy over REST ===
+  [PASS] created verse
+  [PASS] created fractal
+  [PASS] created petal
+  [PASS] created node 'AnchorAlpha'
+  [PASS] created node 'AnchorBeta'
+  [PASS] created node 'PlainNode'
+  [PASS] ingested 6 IoT readings across 2 anchors
+  [PASS] ingest accepted count matches batch size (expected [6], got [6])
+  [SKIP] nullable-anchor geometry cell: REST delete is tombstone-only (never a hard drop), so no REST path produces an unresolvable anchor -- see AGENTS.md note above.
+
+=== Minting share URLs ===
+  [PASS] minted node parquet share
+  [PASS] minted readings parquet share
+  [PASS] minted readings csv share
+
+=== DuckDB httpfs reads ===
+  --- nodes parquet ---
+  [{"node_id":"01M4FZBE9B0983NBWJ7NE6W90E","rotation_x":0.0},{"node_id":"01M4FZBEE2VKW81BSR55VQ58AQ","rotation_x":0.0},{"node_id":"01M4FZBEJTW8M938105X8MYCJA","rotation_x":0.0}]
+  [PASS] node parquet row count (expected [3], got [3])
+  [PASS] node parquet contains seeded node_id 01M4FZBE9B0983NBWJ7NE6W90E
+  [PASS] node parquet contains seeded node_id 01M4FZBEE2VKW81BSR55VQ58AQ
+  [PASS] node parquet contains seeded node_id 01M4FZBEJTW8M938105X8MYCJA
+  --- readings parquet: rows + schema ---
+  [{"reading_id":"01M4FZBEW625GN2SQ2YP6X419Q","node_id":"01M4FZBEE2VKW81BSR55VQ58AQ","petal_id":"01M4FZBE4HRB6XPPEY5T0XH5AF","metric":"co2_ppm","value":-0.000001234567891,"units":"ppm","recorded_at":"2026-10-09T08:00:00+00:00","recorded_at_ms":1791532800000,"position":"\\x01\\xE9\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00$@\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x14\\xC0"},{"reading_id":"01M4FZBEW6MBXEQEJ35RYJXTDB","node_id":"01M4FZBE9B0983NBWJ7NE6W90E","petal_id":"01M4FZBE4HRB6XPPEY5T0XH5AF","metric":"temperature_c","value":21.123456789012344,"units":"C","recorded_at":"2026-10-09T08:00:00+00:00","recorded_at_ms":1791532800000,"position":"\\x01\\xE9\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\xF0?\\x00\\x00\\x00\\x00\\x00\\x00\\x00@\\x00\\x00\\x00\\x00\\x00\\x00\\x08@"},{"reading_id":"01M4FZBEW66FPPSGHXH6ZK3W03","node_id":"01M4FZBE9B0983NBWJ7NE6W90E","petal_id":"01M4FZBE4HRB6XPPEY5T0XH5AF","metric":"humidity_pct","value":55.0,"units":"%","recorded_at":"2026-10-09T08:05:00+00:00","recorded_at_ms":1791533100000,"position":"\\x01\\xE9\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\xF0?\\x00\\x00\\x00\\x00\\x00\\x00\\x00@\\x00\\x00\\x00\\x00\\x00\\x00\\x08@"},{"reading_id":"01M4FZBEW6D747SMF89D5J2RRS","node_id":"01M4FZBE9B0983NBWJ7NE6W90E","petal_id":"01M4FZBE4HRB6XPPEY5T0XH5AF","metric":"temperature_c","value":22.5,"units":"C","recorded_at":"2026-10-09T08:05:00+00:00","recorded_at_ms":1791533100000,"position":"\\x01\\xE9\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\xF0?\\x00\\x00\\x00\\x00\\x00\\x00\\x00@\\x00\\x00\\x00\\x00\\x00\\x00\\x08@"},{"reading_id":"01M4FZBEW6ZJRWK24VBMTNH1YY","node_id":"01M4FZBEE2VKW81BSR55VQ58AQ","petal_id":"01M4FZBE4HRB6XPPEY5T0XH5AF","metric":"co2_ppm","value":415.0,"units":"ppm","recorded_at":"2026-10-09T08:05:00+00:00","recorded_at_ms":1791533100000,"position":"\\x01\\xE9\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00$@\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x14\\xC0"},{"reading_id":"01M4FZBEW6THJT5VZEM4CEFVJH","node_id":"01M4FZBEE2VKW81BSR55VQ58AQ","petal_id":"01M4FZBE4HRB6XPPEY5T0XH5AF","metric":"pressure_hpa","value":1013.25,"units":"hPa","recorded_at":"2026-10-09T08:05:00+00:00","recorded_at_ms":1791533100000,"position":"\\x01\\xE9\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00$@\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x14\\xC0"}]
+  [PASS] readings parquet row count (expected [6], got [6])
+  [{"column_name":"reading_id","column_type":"VARCHAR","null":"YES","key":null,"default":null,"extra":null},{"column_name":"node_id","column_type":"VARCHAR","null":"YES","key":null,"default":null,"extra":null},{"column_name":"petal_id","column_type":"VARCHAR","null":"YES","key":null,"default":null,"extra":null},{"column_name":"metric","column_type":"VARCHAR","null":"YES","key":null,"default":null,"extra":null},{"column_name":"value","column_type":"DOUBLE","null":"YES","key":null,"default":null,"extra":null},{"column_name":"units","column_type":"VARCHAR","null":"YES","key":null,"default":null,"extra":null},{"column_name":"recorded_at","column_type":"VARCHAR","null":"YES","key":null,"default":null,"extra":null},{"column_name":"recorded_at_ms","column_type":"BIGINT","null":"YES","key":null,"default":null,"extra":null},{"column_name":"position","column_type":"BLOB","null":"YES","key":null,"default":null,"extra":null}]
+  [PASS] readings schema: value is DOUBLE (Float64) (expected [DOUBLE], got [DOUBLE])
+  [PASS] readings schema: recorded_at_ms is BIGINT (Int64) (expected [BIGINT], got [BIGINT])
+  --- readings parquet: known f64 values bit-exact ---
+  [PASS] known reading value for anchorAlpha round-trips bit-exact (f64 equality, not string match) (expected [21.1234567890123], got [21.1234567890123])
+  [PASS] known reading value for anchorBeta round-trips bit-exact (f64 equality, not string match) (expected [-1.234567891E-06], got [-1.234567891E-06])
+
+=== CSV spot-check ===
+  CSV first 3 lines:
+    # crs=PETAL-LOCAL:meters;origin=unset
+    reading_id,node_id,petal_id,metric,value,units,recorded_at,recorded_at_ms,anchor_x_m,anchor_y_m,anchor_z_m
+    01M4FZBEW66FPPSGHXH6ZK3W03,01M4FZBE9B0983NBWJ7NE6W90E,01M4FZBE4HRB6XPPEY5T0XH5AF,humidity_pct,55,%,2026-10-09T08:05:00+00:00,1791533100000,1,2,3
+  [PASS] CSV has leading # crs= comment line
+  [PASS] CSV header row matches documented shape
+  [PASS] CSV body contains the known bit-exact value (f64 equality) (expected [21.1234567890123], got [21.1234567890123])
+
+=== Header + Range checks (DEC-C10) ===
+  HEAD status: 200
+  HEAD headers: {"x-fe-crs":"PETAL-LOCAL:meters;origin=unset","content-disposition":"attachment; filename=\"01M4FZBE4HRB6XPPEY5T0XH5AF.parquet\"","vary":"origin, access-control-request-method, access-control-request-headers","access-control-allow-origin":"*","Accept-Ranges":"bytes","Content-Length":"3863","Content-Type":"application/vnd.apache.parquet","Date":"Fri, 09 Oct 2026 09:19:24 GMT"}
+  [PASS] HEAD response carries Content-Length
+  [PASS] HEAD response Content-Type is parquet
+  [PASS] HEAD response carries x-fe-crs
+  [PASS] HEAD response carries Content-Disposition: attachment
+  GET with Range: bytes=0-99 -> HTTP/1.1 206 Partial Content
+  Headers:
+HTTP/1.1 206 Partial Content
+content-type: application/vnd.apache.parquet
+accept-ranges: bytes
+content-range: bytes 0-99/3863
+x-fe-crs: PETAL-LOCAL:meters;origin=unset
+content-disposition: attachment; filename="01M4FZBE4HRB6XPPEY5T0XH5AF.parquet"
+vary: origin, access-control-request-method, access-control-request-headers
+access-control-allow-origin: *
+content-length: 100
+date: Fri, 09 Oct 2026 09:19:25 GMT
+
+
+  Body length: 100 bytes
+  Server returned 206 Partial Content with a sliced body (DEC-C10 fix confirmed live).
+  [PASS] ranged GET returned exactly 100 bytes (expected [100], got [100])
+  [PASS] Content-Range header well-formed
+
+=== Did DuckDB httpfs itself issue ranged GETs? (server-side log evidence) ===
+  Relay log lines mentioning 'range' (case-insensitive):
+    2026-10-09T09:19:20.957673Z DEBUG request{method=HEAD uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIG5vZGUgV0hFUkUgcGV0YWxfaWQgPSAnMDFNNEZaQkU0SFJCNlhQUEVZNVQwWEg1QUYnIiwic2NvcGUiOiJWRVJTRSMwMU00RlpCRFYyNko0RzA1M1c3ODRGWTZRMS1GUkFDVEFMIzAxTTRGWkJEWlQxWFlYN0dTWVZXWTFWVFhZLVBFVEFMIzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGIiwiZm10IjoicGFycXVldCIsImV4cCI6MTc5MTU0MTE2MCwic3ViIjoiZGlkOmtleTp6Nk1rZWJhZ0c1YUs3Nno5VlN6S3I3N2pNU0tLMW9yOXZkYzVSM1BqSjNzNUdWaGoifQ.FCrPBboEbUJfvfXdPF7qXgI7auIaDnp7Q_dZtlckQDML2OxCHWY5mDZtQXq-qKLGtwKTCBheB0jWQFV8mMYHBw version=HTTP/1.1}: fe_api::export: export body_response: range decision range=None total=3863
+    2026-10-09T09:19:21.257947Z DEBUG request{method=GET uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIG5vZGUgV0hFUkUgcGV0YWxfaWQgPSAnMDFNNEZaQkU0SFJCNlhQUEVZNVQwWEg1QUYnIiwic2NvcGUiOiJWRVJTRSMwMU00RlpCRFYyNko0RzA1M1c3ODRGWTZRMS1GUkFDVEFMIzAxTTRGWkJEWlQxWFlYN0dTWVZXWTFWVFhZLVBFVEFMIzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGIiwiZm10IjoicGFycXVldCIsImV4cCI6MTc5MTU0MTE2MCwic3ViIjoiZGlkOmtleTp6Nk1rZWJhZ0c1YUs3Nno5VlN6S3I3N2pNU0tLMW9yOXZkYzVSM1BqSjNzNUdWaGoifQ.FCrPBboEbUJfvfXdPF7qXgI7auIaDnp7Q_dZtlckQDML2OxCHWY5mDZtQXq-qKLGtwKTCBheB0jWQFV8mMYHBw version=HTTP/1.1}: fe_api::export: export body_response: range decision range=Some("bytes=0-3862") total=3863
+    2026-10-09T09:19:21.559714Z DEBUG request{method=GET uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIG5vZGUgV0hFUkUgcGV0YWxfaWQgPSAnMDFNNEZaQkU0SFJCNlhQUEVZNVQwWEg1QUYnIiwic2NvcGUiOiJWRVJTRSMwMU00RlpCRFYyNko0RzA1M1c3ODRGWTZRMS1GUkFDVEFMIzAxTTRGWkJEWlQxWFlYN0dTWVZXWTFWVFhZLVBFVEFMIzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGIiwiZm10IjoicGFycXVldCIsImV4cCI6MTc5MTU0MTE2MCwic3ViIjoiZGlkOmtleTp6Nk1rZWJhZ0c1YUs3Nno5VlN6S3I3N2pNU0tLMW9yOXZkYzVSM1BqSjNzNUdWaGoifQ.FCrPBboEbUJfvfXdPF7qXgI7auIaDnp7Q_dZtlckQDML2OxCHWY5mDZtQXq-qKLGtwKTCBheB0jWQFV8mMYHBw version=HTTP/1.1}: fe_api::export: export body_response: range decision range=Some("bytes=4-576") total=3863
+    2026-10-09T09:19:22.113066Z DEBUG request{method=HEAD uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIGlvdF9yZWFkaW5nIFdIRVJFIHBldGFsX2lkID0gJzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGJyIsInNjb3BlIjoiVkVSU0UjMDFNNEZaQkRWMjZKNEcwNTNXNzg0Rlk2UTEtRlJBQ1RBTCMwMU00RlpCRFpUMVhZWDdHU1lWV1kxVlRYWS1QRVRBTCMwMU00RlpCRTRIUkI2WFBQRVk1VDBYSDVBRiIsImZtdCI6InBhcnF1ZXQiLCJleHAiOjE3OTE1NDExNjAsInN1YiI6ImRpZDprZXk6ejZNa2ViYWdHNWFLNzZ6OVZTektyNzdqTVNLSzFvcjl2ZGM1UjNQakozczVHVmhqIn0.c1TZY3e_5izMJLhN-LVbpoWfMqH4enXRXzG1k7C0_HAm08-F7BFNSAA38qn_T5MMat205DWyHIPDBO_qWM57Cg version=HTTP/1.1}: fe_api::export: export body_response: range decision range=None total=4011
+    2026-10-09T09:19:22.564719Z DEBUG request{method=GET uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIGlvdF9yZWFkaW5nIFdIRVJFIHBldGFsX2lkID0gJzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGJyIsInNjb3BlIjoiVkVSU0UjMDFNNEZaQkRWMjZKNEcwNTNXNzg0Rlk2UTEtRlJBQ1RBTCMwMU00RlpCRFpUMVhZWDdHU1lWV1kxVlRYWS1QRVRBTCMwMU00RlpCRTRIUkI2WFBQRVk1VDBYSDVBRiIsImZtdCI6InBhcnF1ZXQiLCJleHAiOjE3OTE1NDExNjAsInN1YiI6ImRpZDprZXk6ejZNa2ViYWdHNWFLNzZ6OVZTektyNzdqTVNLSzFvcjl2ZGM1UjNQakozczVHVmhqIn0.c1TZY3e_5izMJLhN-LVbpoWfMqH4enXRXzG1k7C0_HAm08-F7BFNSAA38qn_T5MMat205DWyHIPDBO_qWM57Cg version=HTTP/1.1}: fe_api::export: export body_response: range decision range=Some("bytes=0-4010") total=4011
+    2026-10-09T09:19:23.067038Z DEBUG request{method=GET uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIGlvdF9yZWFkaW5nIFdIRVJFIHBldGFsX2lkID0gJzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGJyIsInNjb3BlIjoiVkVSU0UjMDFNNEZaQkRWMjZKNEcwNTNXNzg0Rlk2UTEtRlJBQ1RBTCMwMU00RlpCRFpUMVhZWDdHU1lWV1kxVlRYWS1QRVRBTCMwMU00RlpCRTRIUkI2WFBQRVk1VDBYSDVBRiIsImZtdCI6InBhcnF1ZXQiLCJleHAiOjE3OTE1NDExNjAsInN1YiI6ImRpZDprZXk6ejZNa2ViYWdHNWFLNzZ6OVZTektyNzdqTVNLSzFvcjl2ZGM1UjNQakozczVHVmhqIn0.c1TZY3e_5izMJLhN-LVbpoWfMqH4enXRXzG1k7C0_HAm08-F7BFNSAA38qn_T5MMat205DWyHIPDBO_qWM57Cg version=HTTP/1.1}: fe_api::export: export body_response: range decision range=Some("bytes=4-1276") total=4011
+    2026-10-09T09:19:23.570212Z DEBUG request{method=HEAD uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIGlvdF9yZWFkaW5nIFdIRVJFIHBldGFsX2lkID0gJzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGJyIsInNjb3BlIjoiVkVSU0UjMDFNNEZaQkRWMjZKNEcwNTNXNzg0Rlk2UTEtRlJBQ1RBTCMwMU00RlpCRFpUMVhZWDdHU1lWV1kxVlRYWS1QRVRBTCMwMU00RlpCRTRIUkI2WFBQRVk1VDBYSDVBRiIsImZtdCI6InBhcnF1ZXQiLCJleHAiOjE3OTE1NDExNjAsInN1YiI6ImRpZDprZXk6ejZNa2ViYWdHNWFLNzZ6OVZTektyNzdqTVNLSzFvcjl2ZGM1UjNQakozczVHVmhqIn0.c1TZY3e_5izMJLhN-LVbpoWfMqH4enXRXzG1k7C0_HAm08-F7BFNSAA38qn_T5MMat205DWyHIPDBO_qWM57Cg version=HTTP/1.1}: fe_api::export: export body_response: range decision range=None total=4011
+    2026-10-09T09:19:24.023319Z DEBUG request{method=GET uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIGlvdF9yZWFkaW5nIFdIRVJFIHBldGFsX2lkID0gJzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGJyIsInNjb3BlIjoiVkVSU0UjMDFNNEZaQkRWMjZKNEcwNTNXNzg0Rlk2UTEtRlJBQ1RBTCMwMU00RlpCRFpUMVhZWDdHU1lWV1kxVlRYWS1QRVRBTCMwMU00RlpCRTRIUkI2WFBQRVk1VDBYSDVBRiIsImZtdCI6InBhcnF1ZXQiLCJleHAiOjE3OTE1NDExNjAsInN1YiI6ImRpZDprZXk6ejZNa2ViYWdHNWFLNzZ6OVZTektyNzdqTVNLSzFvcjl2ZGM1UjNQakozczVHVmhqIn0.c1TZY3e_5izMJLhN-LVbpoWfMqH4enXRXzG1k7C0_HAm08-F7BFNSAA38qn_T5MMat205DWyHIPDBO_qWM57Cg version=HTTP/1.1}: fe_api::export: export body_response: range decision range=Some("bytes=0-4010") total=4011
+    2026-10-09T09:19:24.525963Z DEBUG request{method=GET uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIGlvdF9yZWFkaW5nIFdIRVJFIHBldGFsX2lkID0gJzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGJyIsInNjb3BlIjoiVkVSU0UjMDFNNEZaQkRWMjZKNEcwNTNXNzg0Rlk2UTEtRlJBQ1RBTCMwMU00RlpCRFpUMVhZWDdHU1lWV1kxVlRYWS1QRVRBTCMwMU00RlpCRTRIUkI2WFBQRVk1VDBYSDVBRiIsImZtdCI6ImNzdiIsImV4cCI6MTc5MTU0MTE2MCwic3ViIjoiZGlkOmtleTp6Nk1rZWJhZ0c1YUs3Nno5VlN6S3I3N2pNU0tLMW9yOXZkYzVSM1BqSjNzNUdWaGoifQ.UTlY-lGhtV3AzzK11G-sfVOxxbo7pedPoWIqYE4PQY7Q9iThPksl1T6S6CblSnQu2XGQSACiQ8z1q65xbueEBQ version=HTTP/1.1}: fe_api::export: export body_response: range decision range=None total=1067
+    2026-10-09T09:19:24.828558Z DEBUG request{method=HEAD uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIG5vZGUgV0hFUkUgcGV0YWxfaWQgPSAnMDFNNEZaQkU0SFJCNlhQUEVZNVQwWEg1QUYnIiwic2NvcGUiOiJWRVJTRSMwMU00RlpCRFYyNko0RzA1M1c3ODRGWTZRMS1GUkFDVEFMIzAxTTRGWkJEWlQxWFlYN0dTWVZXWTFWVFhZLVBFVEFMIzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGIiwiZm10IjoicGFycXVldCIsImV4cCI6MTc5MTU0MTE2MCwic3ViIjoiZGlkOmtleTp6Nk1rZWJhZ0c1YUs3Nno5VlN6S3I3N2pNU0tLMW9yOXZkYzVSM1BqSjNzNUdWaGoifQ.FCrPBboEbUJfvfXdPF7qXgI7auIaDnp7Q_dZtlckQDML2OxCHWY5mDZtQXq-qKLGtwKTCBheB0jWQFV8mMYHBw version=HTTP/1.1}: fe_api::export: export body_response: range decision range=None total=3863
+    2026-10-09T09:19:25.180722Z DEBUG request{method=GET uri=/api/v1/shared/eyJ2IjoxLCJzcWwiOiJTRUxFQ1QgKiBGUk9NIG5vZGUgV0hFUkUgcGV0YWxfaWQgPSAnMDFNNEZaQkU0SFJCNlhQUEVZNVQwWEg1QUYnIiwic2NvcGUiOiJWRVJTRSMwMU00RlpCRFYyNko0RzA1M1c3ODRGWTZRMS1GUkFDVEFMIzAxTTRGWkJEWlQxWFlYN0dTWVZXWTFWVFhZLVBFVEFMIzAxTTRGWkJFNEhSQjZYUFBFWTVUMFhINUFGIiwiZm10IjoicGFycXVldCIsImV4cCI6MTc5MTU0MTE2MCwic3ViIjoiZGlkOmtleTp6Nk1rZWJhZ0c1YUs3Nno5VlN6S3I3N2pNU0tLMW9yOXZkYzVSM1BqSjNzNUdWaGoifQ.FCrPBboEbUJfvfXdPF7qXgI7auIaDnp7Q_dZtlckQDML2OxCHWY5mDZtQXq-qKLGtwKTCBheB0jWQFV8mMYHBw version=HTTP/1.1}: fe_api::export: export body_response: range decision range=Some("bytes=0-99") total=3863
+
+Full relay log: C:\Users\atooz\AppData\Local\Temp\fe-bi-egress-verify-20261009-031915\relay.log
+
+=== Teardown ===
+  Stopping fe-relay.exe PID=84644
+  Removing temp dir C:\Users\atooz\AppData\Local\Temp\fe-bi-egress-verify-20261009-031915
+
+=== SUMMARY ===
+Checks: 31 / 31 passed
+PASS: BI egress e2e (F10/A22) - all checks passed

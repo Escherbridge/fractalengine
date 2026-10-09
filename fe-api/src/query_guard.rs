@@ -299,6 +299,51 @@ pub async fn run_guarded_query(
     }
 }
 
+/// Execute a guarded query, preferring the direct `db_reader` and falling
+/// back to the `DbCommand::RawQuery` gateway channel when no direct reader is
+/// wired (F10: the Windows SurrealKV per-handle lock, M1/F4-documented,
+/// routinely leaves `db_reader` `None` on the deployment platform — the same
+/// gap `gis.rs::run_select` already papers over for GIS reads). The channel
+/// path mirrors `run_guarded_query`'s row-cap enforcement exactly so it is
+/// never weaker than the direct path; `RawQuery`'s own SELECT-only guard rail
+/// (`fe-database/src/lib.rs`) re-validates independently as defense in depth.
+pub async fn run_guarded_query_via_state(
+    state: &ApiState,
+    guarded: &GuardedQuery,
+    vars: &std::collections::HashMap<String, serde_json::Value>,
+    row_cap: usize,
+) -> Result<Vec<serde_json::Value>, String> {
+    if let Some(ref db) = state.db_reader {
+        return run_guarded_query(db, guarded, vars, row_cap).await;
+    }
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    state
+        .api_cmd_tx
+        .send(fe_runtime::messages::ApiCommand::DbRequest {
+            cmd: fe_runtime::messages::DbCommand::RawQuery {
+                sql: guarded.sql.clone(),
+                vars: vars.clone(),
+            },
+            reply_tx,
+        })
+        .map_err(|_| "internal channel closed".to_string())?;
+    let data = match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+        Ok(Ok(fe_runtime::messages::DbResult::QueryResult { data })) => data,
+        Ok(Ok(fe_runtime::messages::DbResult::Error(e))) => {
+            return Err(format!("query failed: {e}"))
+        }
+        Ok(Ok(_)) => return Err("query failed: unexpected reply".to_string()),
+        Ok(Err(_)) => return Err("request cancelled".to_string()),
+        Err(_) => return Err("query timed out (5s)".to_string()),
+    };
+    if data.len() > row_cap {
+        return Err(format!(
+            "row cap exceeded (limit {row_cap} rows; narrow the query or add LIMIT)"
+        ));
+    }
+    Ok(data)
+}
+
 /// Reject a result set whose serialized JSON exceeds `max_bytes`.
 pub fn enforce_byte_ceiling(
     rows: &[serde_json::Value],
