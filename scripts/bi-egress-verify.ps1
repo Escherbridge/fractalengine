@@ -535,6 +535,17 @@ try {
     $allLogs = (Get-Content $relayLog -Raw -ErrorAction SilentlyContinue) + (Get-Content $relayErrLog -Raw -ErrorAction SilentlyContinue)
     Assert-True ($allLogs -match 'FE_SECRET_FRACTALENGINE_SHARE_SIGNER is not set') "relay warns at startup that share links are ephemeral when the signer env is unset"
 
+    # DEC-C19 N4: the egress-point row-level re-check (export.rs) only ever
+    # WARNs when it actually drops a row outside the authorized petal -- it
+    # is the backstop, not the proof. Every scope-bypass vector above was
+    # served/rejected by the FROM-substitution rewrite alone, so this exact
+    # warning text (fe-api/src/export.rs's `tracing::warn!` in `prepare_export`)
+    # must never appear in the relay log across this whole run.
+    Write-Section "Post-filter backstop never fired (DEC-C19 N4)"
+    Assert-True (
+        -not ($allLogs -match 'export post-filter dropped rows outside the authorized petal')
+    ) "relay log carries no post-filter row-drop warning -- the SQL rewrite alone scoped every probe"
+
     Write-Host ""
     Write-Host "Full relay log: $relayLog"
 }

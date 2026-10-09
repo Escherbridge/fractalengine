@@ -1039,9 +1039,10 @@ fn body_rows(surface: Surface, sql: &str, body: &[u8]) -> Vec<(String, String)> 
 }
 
 /// The four M4-review bypass vectors (+ record-literal / table-expression
-/// extras) on every egress surface: each attempt is either rejected (4xx /
-/// error envelope) or answers ONLY petal-A rows — and, where it succeeds,
-/// still returns A's own row (the fix scopes, it does not just deny).
+/// extras, + a DEC-C19 N1 node_log probe) on every egress surface: each
+/// attempt is either rejected (4xx / error envelope) or answers ONLY
+/// petal-A rows — and, where it succeeds, still returns A's own row (the fix
+/// scopes, it does not just deny).
 #[tokio::test]
 async fn scope_bypass_vectors_never_leak_foreign_rows() {
     let (state, pa, pb) = two_petal_fixture().await;
@@ -1066,6 +1067,22 @@ async fn scope_bypass_vectors_never_leak_foreign_rows() {
             "SELECT *, node:x.* AS leak FROM iot_reading",
         ),
         ("table expression", "SELECT * FROM petal AND node"),
+        // DEC-C19 N1: NODE_LOG has no documented egress consumer and is no
+        // longer in ALLOWED_TABLES — it must be rejected (never served) on
+        // EVERY surface, including bare /query where it was previously the
+        // side channel (unscoped, so a WHERE on payload.petal_id could read
+        // any petal's node metadata).
+        ("node_log table", "SELECT * FROM node_log"),
+        // R5 (2026-10-09, independent grammar audit): a comment used to
+        // split the `type::thing` needle apart on QueryJson only (the one
+        // surface that skipped `reject_comments`), reaching an unscoped
+        // record dereference via `FROM verse` (allow-listed, never
+        // row-scoped). Comments are now banned in every mode — must be
+        // rejected (never served) on EVERY surface.
+        (
+            "comment-split type::thing",
+            "SELECT *, type/**/::/**/thing('no' + 'de', 'n1').* AS leak FROM verse",
+        ),
     ];
     let mut served = 0;
     for &(name, sql) in vectors {
@@ -1101,6 +1118,48 @@ async fn scope_bypass_vectors_never_leak_foreign_rows() {
         served >= 30,
         "only {served} vector/surface pairs were served"
     );
+}
+
+/// DEC-C19 N1: `petal`/`room` (joining `model`/`crate_registry`) now carry
+/// the same petal_id row filter as `node`/`iot_reading`. Export/share reject
+/// them outright (shape mismatch, `classify_export_table`'s pre-existing
+/// node/iot_reading-only rule — orthogonal to this scoping change), so only
+/// `/query` can exercise the new filter: a petal-A-scoped viewer reading
+/// `petal` or `room` must see exactly one row — its own — never petal B's.
+#[tokio::test]
+async fn newly_scoped_tables_are_row_filtered_to_the_caller_petal() {
+    let (state, pa, pb) = two_petal_fixture().await;
+    let db = state.db_reader.as_ref().expect("in-memory db").clone();
+    for (petal, room_name) in [(&pa, "Room A"), (&pb, "Room B")] {
+        db.query("CREATE room CONTENT { petal_id: $pid, name: $name }")
+            .bind(("pid", petal.to_string()))
+            .bind(("name", room_name.to_string()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+
+    for (sql, want_name) in [
+        ("SELECT * FROM petal", None),
+        ("SELECT * FROM room", Some("Room A")),
+    ] {
+        let (status, body) = hit(&state, &pa, Surface::QueryJson, sql).await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, StatusCode::OK, "{sql}: {text}");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["ok"].as_bool().unwrap_or(false), "{sql}: {v}");
+        let rows = v["data"]["data"].as_array().unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "{sql}: must see exactly its own petal's row, never petal B's ({pb}): {rows:?}"
+        );
+        assert_eq!(rows[0]["petal_id"].as_str().unwrap(), pa, "{sql}");
+        if let Some(name) = want_name {
+            assert_eq!(rows[0]["name"].as_str().unwrap(), name, "{sql}");
+        }
+    }
 }
 
 /// The bypass vectors that must be REJECTED outright on export/share (not

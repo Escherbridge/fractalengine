@@ -300,7 +300,14 @@ trailing `--` swallowed the appended clause; a projection subquery `(SELECT
 * FROM iot_reading)` was never filtered) — and verse/fractal-scoped tokens
 got NO filter at all. It is gone. `prepare_scoped_sql(sql, petals, mode)`:
 
-1. (Egress/Export modes) reject comment tokens `--` `#` `//` `/*` anywhere;
+1. reject comment tokens `--` `#` `//` `/*` anywhere, in **every** mode
+   including `Query` (corrected 2026-10-09, R5: `Query` used to skip this —
+   a comment is inter-token trivia the SurrealQL lexer recurses through
+   just like whitespace, so `type/**/::/**/thing(...)` split the step-4
+   needle scan apart and reached an unscoped record dereference via an
+   allow-listed-but-unscoped `FROM verse`; `reject_record_constructors` now
+   ALSO excises comment spans independently before its own needle scan, as
+   a second, order-independent layer);
 2. `normalize_whitespace` (runs collapsed outside strings/comments — cosmetic;
    no guard decision depends on it);
 3. `validate_select_sql` — semicolon, SELECT-only, keyword blocklist, and the
@@ -346,25 +353,46 @@ one extra fixed-shape query, skipped entirely when the SQL reads no
 petal-scoped table); unparseable scope → `[]` (deny all). Petals with no
 `fractal_id` belong to no verse and are denied.
 
-*Modes:* `Query` (`/query`, MCP): comments + scoped subqueries allowed (each
-FROM is rewritten). `Egress` (json share): flat single SELECT, no comments.
+*Modes:* `Query` (`/query`, MCP): scoped subqueries allowed (each FROM is
+rewritten), comments banned same as every other mode (R5, 2026-10-09 — see
+step 1 above; this used to say "comments + scoped subqueries allowed," which
+was the bug). `Egress` (json share): flat single SELECT, no comments.
 `Export` (parquet/csv export + share): `Egress` + `*` projection.
 
-*Known limitation (trigger to revisit: any petal-private data landing in
-another table):* only `node` and `iot_reading` are row-scoped. `petal`,
-`room`, `model`, `crate_registry` also carry `petal_id` but have never been
-filtered on `/query` (pre-existing; not in M4's surface); `node_log` has only
-`node_id`. Function namespaces outside the banned constructors (e.g. a
-future `fn::`/`api::`) are not enumerated.
+*Row-scoped tables (corrected 2026-10-09, DEC-C19 N1):* `node`, `iot_reading`,
+`petal`, `room`, `model`, `crate_registry` are all in `PETAL_SCOPED_TABLES`
+and get the identical FROM-substitution row filter — each has its own
+`petal_id` column (fe-database/src/schema.rs). The claim previously here —
+"only `node` and `iot_reading` are row-scoped … `node_log` has only
+`node_id`" — was **factually wrong**: `node_log.payload` carries the node's
+`petal_id`, `name`, `position`, and `asset_id` (fe-database/src/lib.rs
+§node-log append; `handlers/crud.rs`), so with `NODE_LOG` allow-listed but
+*not* scoped, a P1-scoped viewer could mint a public JSON share filtered on
+`payload.petal_id` and read any petal's node metadata through it — a pure
+BI-egress side channel the row-scoping machinery never saw. `NODE_LOG` has
+no documented `/query`/export/share consumer (`fe-api/src/format.rs::
+load_export_nodes` reads it directly against `db_reader` by `node_id`, never
+through this guard) and is now **removed** from `ALLOWED_TABLES`; re-add it
+only behind a node-scoped subquery substitution (mirroring `node`/
+`iot_reading`) if a real consumer appears. `crate_entry` carries no
+`petal_id` column and stays deliberately unscoped. Function namespaces
+outside the banned constructors (e.g. a future `fn::`/`api::`) are not
+enumerated.
 
 Execution goes through `run_guarded_query` / `run_guarded_query_via_state`:
 **M4 fix M2** appends `\nTIMEOUT 5s` to every guarded statement (the newline
-ends a trailing Query-mode line comment that would otherwise swallow it) so
-the DB aborts a heavy query and frees its thread; a 6s client timer is only a
-backstop. Statement errors are surfaced via `Response::check()` — a failed or
+is defense in depth against a trailing line comment, though R5 means there
+should never be one left by the time SQL reaches here) so the DB aborts a
+heavy query and frees its thread; a 6s client timer is only a backstop.
+Statement errors are surfaced via `Response::check()` — a failed or
 timed-out statement no longer reads as an empty success. The FR-4 **row cap**
 policy is **error, not truncate** (`row cap exceeded (limit N rows…)`);
-`enforce_byte_ceiling` guards serialized size the same way. The channel
+`enforce_byte_ceiling` guards serialized size the same way. **DEC-C19 N3
+(2026-10-09):** the channel-fallback branch of `run_guarded_query_via_state`
+(only — never the direct `db_reader` path) is additionally gated by a
+process-global `tokio::sync::Semaphore` (`EGRESS_FALLBACK_PERMITS = 4`); a
+caller that can't acquire a permit within `EGRESS_FALLBACK_ACQUIRE_TIMEOUT`
+(500ms) gets a clean `"egress busy"` error (export/share map it to 503). The channel
 fallback is CORRELATED (M4 fix B2 — fe-runtime src/AGENTS.md
 §api-reply-correlation): it sends a fresh `correlation_id`, accepts only
 `QueryResult`/`QueryFailed` echoing it, and treats anything else as an error,

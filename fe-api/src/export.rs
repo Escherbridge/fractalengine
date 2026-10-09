@@ -53,6 +53,10 @@ fn query_err_response(e: String) -> Response {
         err(StatusCode::GATEWAY_TIMEOUT, &e)
     } else if e.starts_with("rate limit exceeded") {
         err(StatusCode::TOO_MANY_REQUESTS, &e)
+    } else if e.starts_with("egress busy") {
+        // DEC-C19 N3: the channel-fallback semaphore failed closed — an
+        // honest, bounded 503, not a retry-blind 502.
+        err(StatusCode::SERVICE_UNAVAILABLE, &e)
     } else {
         err(StatusCode::BAD_GATEWAY, &e)
     }

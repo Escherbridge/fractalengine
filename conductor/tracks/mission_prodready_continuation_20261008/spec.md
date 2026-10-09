@@ -166,6 +166,37 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   f64 position). #2 commit-msg drift (noted, harmless). #9 script
   port-collision hardening (partial: pre-check folded into fix pass).
 
+- **DEC-C19 (2026-10-09)** — M4 re-review remediation (verdict STILL-FAILING,
+  narrowly — original vectors all closed, one new HIGH): (N1) `NODE_LOG`
+  REMOVED from ALLOWED_TABLES (no documented egress consumer; it is a
+  denormalized copy of scoped node data — re-add only behind node-scoped
+  substitution when a consumer appears) + PETAL/ROOM/MODEL/CRATE_REGISTRY
+  added to PETAL_SCOPED_TABLES (they carry petal_id; the existing filter
+  applies unchanged) + AGENTS.md §query-guard corrected; (N2)
+  deliver_to_oldest skips correlated entries (typed replies make the
+  wildcard unnecessary for them); (N3) global bounded concurrency on
+  channel-fallback egress queries (semaphore) — the 6s/5s ordering claim was
+  false under queueing; (N4) e2e asserts the relay log contains no
+  "post-filter dropped rows" line (proves the SQL rewrite alone scoped the
+  probes, not just the egress re-check); plus an independent read-only check
+  of the reject_record_constructors denylist against the vendored
+  surrealdb-core 3.0.5 parser grammar. Deferred w/ trigger: N5 user-TIMEOUT
+  clause collision (fails closed; revisit on user report); verse.namespace_id
+  read-capability question → fe-sync owners, next p2p track touch.
+
+- **DEC-C20 (2026-10-09)** — Grammar audit verdict GAPS-FOUND (1 critical):
+  comment tokens split the multi-token constructor needles in
+  reject_record_constructors, and GuardMode::Query skips reject_comments →
+  `type/**/::/**/thing('no'+'de', id).*` reads any petal's nodes via
+  /api/v1/query + MCP query (no row backstop there). Fix (two independent
+  layers): reject_comments unconditional in ALL guard modes (Query's doc
+  justified subqueries, never comments) AND the needle scan excises comment
+  spans before matching. All 17 other enumerated SurrealQL 3.0.5 form
+  classes verified sound or harmless (record-id literals, escaped idents,
+  raw strings, casts, unicode — the lexer's bare identifiers are ASCII-only,
+  matching the guard's scanner by construction). Folded into the DEC-C19
+  remediation pass as R5.
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

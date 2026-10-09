@@ -22,12 +22,18 @@ const BLOCKED_KEYWORDS: &[&str] = &[
 /// Tables a read-only query may target. ROLE/VERSE_MEMBER deliberately
 /// excluded — RBAC data is not readable via the BI egress path (2026-07-15
 /// security review; the role-gated elevated endpoint retains them).
+/// `NODE_LOG` deliberately excluded (DEC-C19 N1, 2026-10-09): it has no
+/// documented `/query`/export/share consumer and its `payload` carries a
+/// node's `petal_id`/name/position/asset_id (fe-database/src/lib.rs
+/// §node-log append; handlers/crud.rs) — unscoped, it was a side channel for
+/// reading any petal's node metadata. Re-add only behind a node-scoped
+/// subquery substitution (like `NODE`/`IOT_READING` below) if a real
+/// consumer appears — see AGENTS.md §query-guard.
 const ALLOWED_TABLES: &[&str] = &[
     "NODE",
     "VERSE",
     "FRACTAL",
     "PETAL",
-    "NODE_LOG",
     "FIELD_DEF",
     "ASSET",
     "MODEL",
@@ -38,7 +44,18 @@ const ALLOWED_TABLES: &[&str] = &[
 ];
 
 /// Tables whose rows carry `petal_id` and are scope-filtered at the source.
-const PETAL_SCOPED_TABLES: &[&str] = &["NODE", "IOT_READING"];
+/// `PETAL`/`ROOM`/`MODEL`/`CRATE_REGISTRY` added 2026-10-09 (DEC-C19 N1) —
+/// each has its own `petal_id` column (fe-database/src/schema.rs), verified
+/// per-table before adding. `CRATE_ENTRY` has no `petal_id` column and stays
+/// unscoped (deliberately).
+const PETAL_SCOPED_TABLES: &[&str] = &[
+    "NODE",
+    "IOT_READING",
+    "PETAL",
+    "ROOM",
+    "MODEL",
+    "CRATE_REGISTRY",
+];
 
 /// SELECT clauses that may follow a FROM target (SurrealQL 3 `parse_select_stmt`
 /// order). Anything else after a target (an operator) would extend the target
@@ -70,6 +87,12 @@ const UNSUPPORTED_FROM: &str =
     "unsupported FROM target (only table names or subqueries are allowed)";
 
 /// Which egress surface a guarded query serves (dialect strictness).
+/// Comments are banned in EVERY mode (R5, 2026-10-09) — `Query` used to
+/// allow them, which let a comment split a record-constructor needle like
+/// `TYPE::THING` into `TYPE/**/::/**/THING`, invisible to a whitespace-only
+/// scan, and reach an unscoped `type::thing(...)` dereference via an
+/// allow-listed-but-unscoped FROM target (e.g. `verse`). See
+/// `reject_comments` and AGENTS.md §query-guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardMode {
     /// `/api/v1/query` + MCP `query`: subqueries allowed — every FROM is scoped.
@@ -397,16 +420,66 @@ fn line_end(chars: &[char], i: usize) -> usize {
     (j + 1).min(chars.len())
 }
 
-/// Export/share: reject comment tokens anywhere (string literals included).
+/// Reject comment tokens anywhere (string literals included) — banned in
+/// EVERY [`GuardMode`] (R5, 2026-10-09): `Query` used to skip this call, and
+/// a comment inside a function/operator sequence (e.g. `type/**/::`) is
+/// inter-token trivia the SurrealQL lexer recurses through just like
+/// whitespace, so it is not a cosmetic exemption.
 fn reject_comments(sql: &str) -> Result<(), String> {
     for token in ["--", "#", "//", "/*"] {
         if sql.contains(token) {
-            return Err(format!(
-                "comments ('{token}') are not allowed in export/share queries"
-            ));
+            return Err(format!("comments ('{token}') are not allowed in queries"));
         }
     }
     Ok(())
+}
+
+/// Remove every comment span (`--`, `#`, `//` line comments; `/* … */` block
+/// comments) OUTSIDE strings/escaped identifiers, DROPPING the bytes
+/// entirely rather than collapsing them to whitespace like
+/// `normalize_whitespace` does — independent, belt-and-suspenders defense
+/// for [`reject_record_constructors`]'s needle scan (R5, 2026-10-09): a
+/// comment can split a needle like `TYPE::THING` into
+/// `TYPE/**/::/**/THING`, which a whitespace-only scan never catches. In the
+/// normal call path `reject_comments` already runs first and unconditionally
+/// (see [`prepare_scoped_sql`]), so by the time this runs there is nothing
+/// left to strip — this only matters if that ordering ever regresses.
+fn strip_comments(sql: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match c {
+            '\'' | '"' | '`' | '⟨' => {
+                let close = if c == '⟨' { '⟩' } else { c };
+                let start = i;
+                let mut j = i + 1;
+                while j < chars.len() && chars[j] != close {
+                    j += if chars[j] == '\\' { 2 } else { 1 };
+                }
+                let end = (j + 1).min(chars.len());
+                out.extend(&chars[start..end]);
+                i = end;
+            }
+            '#' => i = line_end(&chars, i),
+            '-' if next == Some('-') => i = line_end(&chars, i),
+            '/' if next == Some('/') => i = line_end(&chars, i),
+            '/' if next == Some('*') => {
+                let mut j = i + 2;
+                while j + 1 < chars.len() && !(chars[j] == '*' && chars[j + 1] == '/') {
+                    j += 1;
+                }
+                i = (j + 2).min(chars.len());
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Reject every way to name a record/table WITHOUT the table's name appearing
@@ -415,7 +488,10 @@ fn reject_record_constructors(canonical: &str, upper: &str) -> Result<(), String
     if canonical.contains('`') || canonical.contains('⟨') || canonical.contains('⟩') {
         return Err("escaped identifiers (`...` / ⟨...⟩) are not allowed in scoped queries".into());
     }
-    let compact: String = upper.chars().filter(|c| !c.is_whitespace()).collect();
+    // `strip_comments` first (R5): see its doc for why this is independent
+    // belt-and-suspenders, not the primary defense.
+    let scanned = strip_comments(upper);
+    let compact: String = scanned.chars().filter(|c| !c.is_whitespace()).collect();
     for needle in [
         "TYPE::THING",
         "TYPE::RECORD",
@@ -430,7 +506,7 @@ fn reject_record_constructors(canonical: &str, upper: &str) -> Result<(), String
             ));
         }
     }
-    let bytes = upper.as_bytes();
+    let bytes = scanned.as_bytes();
     for i in 0..bytes.len().saturating_sub(1) {
         if bytes[i] == b'R'
             && matches!(bytes[i + 1], b'\'' | b'"')
@@ -501,9 +577,11 @@ pub fn prepare_scoped_sql(
     mode: GuardMode,
 ) -> Result<PreparedSql, String> {
     let trimmed = sql.trim();
-    if mode != GuardMode::Query {
-        reject_comments(trimmed)?;
-    }
+    // R5 (2026-10-09): unconditional in every mode — `Query` used to skip
+    // this, which let a comment token survive into `reject_record_
+    // constructors`'s needle scan and split `TYPE::THING` apart. `Query`'s
+    // extra freedom is scoped subqueries (below), never comments.
+    reject_comments(trimmed)?;
     let canonical = normalize_whitespace(trimmed);
     validate_select_sql(&canonical)?;
     let upper = canonical.to_ascii_uppercase();
@@ -641,7 +719,9 @@ pub async fn guard_and_prepare_query_with_mode(
 
 /// Append the DB-side statement timeout (SurrealQL orders TIMEOUT after
 /// FETCH/VERSION). The leading NEWLINE ends any trailing `--`/`#`/`//`
-/// comment (allowed in Query mode) so it cannot swallow the clause.
+/// comment so it cannot swallow the clause — defense in depth only: every
+/// `GuardMode` now rejects comments before SQL reaches this point (R5,
+/// 2026-10-09), so there should never be one left to swallow anything.
 pub fn with_statement_timeout(sql: &str) -> String {
     format!("{}\nTIMEOUT {STATEMENT_TIMEOUT_SECS}s", sql.trim_end())
 }
@@ -688,11 +768,51 @@ pub async fn run_guarded_query(
     }
 }
 
+/// Concurrent channel-fallback egress queries allowed before a fresh caller
+/// fails closed (DEC-C19 N3) — the single Windows DB thread's budget, not a
+/// per-token rate: `/query`'s 10 rps is per-DID and share redemption's 10 rps
+/// is per-token, but tokens/DIDs are unlimited to mint, so without a shared
+/// cap unlimited concurrent callers can saturate the one DB thread with 5s
+/// `TIMEOUT` statements indefinitely.
+const EGRESS_FALLBACK_PERMITS: usize = 4;
+
+/// How long a channel-fallback request waits for a free permit before
+/// failing closed with a clean, honest error — short on purpose: queueing
+/// here would silently eat into `CLIENT_TIMEOUT_SECS`, which the caller
+/// already budgets as pure DB-service time.
+const EGRESS_FALLBACK_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Global semaphore over the channel-fallback branch of
+/// [`run_guarded_query_via_state`] ONLY — the direct `db_reader` path and
+/// fe-ui's GUI queries never touch this and are never throttled by it.
+static EGRESS_FALLBACK_SEMAPHORE: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(EGRESS_FALLBACK_PERMITS);
+
+/// Acquire one channel-fallback egress permit, or a clean `"egress busy"`
+/// error (DEC-C19 N3) when all [`EGRESS_FALLBACK_PERMITS`] are held past
+/// [`EGRESS_FALLBACK_ACQUIRE_TIMEOUT`] — bounded and honest, never a silent
+/// queue.
+async fn acquire_egress_fallback_permit() -> Result<tokio::sync::SemaphorePermit<'static>, String> {
+    match tokio::time::timeout(
+        EGRESS_FALLBACK_ACQUIRE_TIMEOUT,
+        EGRESS_FALLBACK_SEMAPHORE.acquire(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => Ok(permit),
+        _ => Err(
+            "egress busy (too many concurrent channel-fallback queries); retry shortly".to_string(),
+        ),
+    }
+}
+
 /// Execute a guarded query, preferring the direct `db_reader` and falling
 /// back to the `DbCommand::RawQuery` gateway channel when no direct reader is
 /// wired (F10: the Windows SurrealKV per-handle lock leaves `db_reader`
 /// `None` on the deployment platform). The channel request is CORRELATED (M4
-/// fix B2) and mirrors the direct path's TIMEOUT + row cap exactly.
+/// fix B2) and mirrors the direct path's TIMEOUT + row cap exactly. The
+/// fallback branch is additionally bounded by [`EGRESS_FALLBACK_SEMAPHORE`]
+/// (DEC-C19 N3); the direct `db_reader` return above is never throttled.
 pub async fn run_guarded_query_via_state(
     state: &ApiState,
     guarded: &GuardedQuery,
@@ -702,6 +822,7 @@ pub async fn run_guarded_query_via_state(
     if let Some(ref db) = state.db_reader {
         return run_guarded_query(db, guarded, vars, row_cap).await;
     }
+    let _egress_permit = acquire_egress_fallback_permit().await?;
     let correlation_id = ulid::Ulid::new().to_string();
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     state
@@ -1033,5 +1154,134 @@ mod tests {
                 .is_err()
         );
         assert!(validate_elevated_sql("UPDATE NODE SET X = (SELECT Y FROM ROLE)", TABLES).is_ok());
+    }
+
+    // ── DEC-C19 N1 — node_log removed, petal/room/model/crate_registry scoped ──
+
+    #[test]
+    fn node_log_is_no_longer_an_allowed_table() {
+        // DEC-C19 N1: NODE_LOG has no documented /query/export/share consumer
+        // and its payload carries another node's petal_id/name/position/
+        // asset_id — it must be unreachable from every guarded mode.
+        for mode in [GuardMode::Query, GuardMode::Egress, GuardMode::Export] {
+            let err = prepare_scoped_sql("SELECT * FROM node_log", &p(&["P1"]), mode).unwrap_err();
+            assert!(
+                err.contains("'NODE_LOG'") && err.contains("not allowed"),
+                "{mode:?}: {err}"
+            );
+        }
+    }
+
+    /// DEC-C19 N1: `petal`/`room`/`model`/`crate_registry` get the same
+    /// FROM-substitution row filter as `node`/`iot_reading` — a scoped read
+    /// of any of them sees only the caller's own petal(s), and mentioning
+    /// one outside a FROM target fails closed exactly like `node` already
+    /// does in `scoped_dialect_rejects_unscoped_record_access` (the scanner
+    /// in `prepare_scoped_sql` is generic over `PETAL_SCOPED_TABLES`, so this
+    /// is a list-membership change, not new logic).
+    #[test]
+    fn newly_petal_scoped_tables_are_rewritten_and_fail_closed_outside_from() {
+        for table in ["petal", "room", "model", "crate_registry"] {
+            let sql = format!("SELECT * FROM {table}");
+            let out = prepare_scoped_sql(&sql, &p(&["P1"]), GuardMode::Query).unwrap();
+            assert_eq!(
+                out.sql,
+                format!("SELECT * FROM (SELECT * FROM {table} WHERE petal_id = 'P1')")
+            );
+
+            // A mention outside the FROM target (lexer-free scan, strings
+            // included) must reject — same fail-closed posture `node` gets.
+            let leak = format!("SELECT * FROM verse WHERE name = '{table}'");
+            assert!(
+                prepare_scoped_sql(&leak, &p(&["P1"]), GuardMode::Query).is_err(),
+                "should reject: {leak}"
+            );
+        }
+    }
+
+    // ── DEC-C19 N3 — bounded channel-fallback egress concurrency ──────────────
+
+    #[tokio::test]
+    async fn egress_fallback_permit_fails_closed_when_saturated_then_recovers() {
+        // Exhaust every permit — a fresh caller must fail closed with a
+        // clean "egress busy" error inside the short acquire timeout rather
+        // than hang past it.
+        let mut held = Vec::new();
+        for _ in 0..EGRESS_FALLBACK_PERMITS {
+            held.push(
+                acquire_egress_fallback_permit()
+                    .await
+                    .expect("permit available"),
+            );
+        }
+        let started = std::time::Instant::now();
+        let err = acquire_egress_fallback_permit().await.unwrap_err();
+        assert!(err.starts_with("egress busy"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "must fail closed within the short acquire timeout, not hang"
+        );
+
+        // Releasing one permit frees capacity for the next caller.
+        held.pop();
+        assert!(acquire_egress_fallback_permit().await.is_ok());
+    }
+
+    // ── R5 — comments banned in every mode; needle scan comment-proof ──────────
+
+    /// R5 (2026-10-09, independent grammar audit): `GuardMode::Query` used to
+    /// skip `reject_comments`, so a comment could split the `TYPE::THING`
+    /// needle apart (`type/**/::/**/thing(...)`) — invisible to the old
+    /// whitespace-only scan — and reach an unscoped record dereference via
+    /// `FROM verse` (allow-listed, never row-scoped). Comments are now
+    /// rejected in every mode, before the needle scan ever runs.
+    #[test]
+    fn comments_are_banned_in_every_guard_mode() {
+        let block_comment_attack =
+            "SELECT *, type/**/::/**/thing('no' + 'de', 'n1').* AS leak FROM verse";
+        let dash_comment_attack =
+            "SELECT *, type::thing('no' + 'de', 'n1').* AS leak FROM verse -- x";
+        for sql in [block_comment_attack, dash_comment_attack] {
+            for mode in [GuardMode::Query, GuardMode::Egress, GuardMode::Export] {
+                assert!(
+                    prepare_scoped_sql(sql, &p(&["P1"]), mode).is_err(),
+                    "{mode:?} should reject: {sql}"
+                );
+            }
+        }
+        // The pre-existing (comment-free) obfuscation — string concatenation
+        // only — must stay rejected too: the needle scan still catches a
+        // bare `type::thing(...)` with no comment involved.
+        assert!(prepare_scoped_sql(
+            "SELECT type::thing('no' + 'de', 'x').* FROM verse",
+            &p(&["P1"]),
+            GuardMode::Query
+        )
+        .is_err());
+    }
+
+    /// Belt-and-suspenders (R5): `reject_record_constructors`'s needle scan
+    /// must catch the obfuscated needle even called directly on text that
+    /// still carries comment bytes, independent of `reject_comments` having
+    /// already run — the ordering in `prepare_scoped_sql` is not the only
+    /// thing standing between this needle and a false negative.
+    #[test]
+    fn reject_record_constructors_is_comment_proof_independent_of_reject_comments() {
+        let canonical =
+            "select *, type/**/::/**/thing('no' + 'de', 'n1').* as leak from verse".to_string();
+        let upper = canonical.to_ascii_uppercase();
+        assert!(reject_record_constructors(&canonical, &upper).is_err());
+    }
+
+    #[test]
+    fn strip_comments_drops_every_comment_form_outside_strings() {
+        // Each comment form (and its trailing newline, for the line forms)
+        // is dropped entirely; text before and after survives untouched.
+        assert_eq!(strip_comments("A/**/B"), "AB");
+        assert_eq!(strip_comments("A--x\nB"), "AB");
+        assert_eq!(strip_comments("A#x\nB"), "AB");
+        assert_eq!(strip_comments("A//x\nB"), "AB");
+        // Comment-like bytes inside a string literal are preserved verbatim.
+        assert_eq!(strip_comments("SELECT 'a/*b*/c'"), "SELECT 'a/*b*/c'");
     }
 }
