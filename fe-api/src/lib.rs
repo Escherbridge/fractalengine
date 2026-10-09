@@ -24,6 +24,7 @@ pub mod query_guard;
 pub mod rest;
 pub mod server;
 pub mod share;
+pub mod sim;
 pub mod terrain;
 pub mod timeseries_query;
 pub mod types;
@@ -66,6 +67,9 @@ pub struct ApiConfig {
     /// call sender. `None` = no sync-thread seam (the distributed surfaces
     /// return an explicit unavailable error; local reads are unaffected).
     pub distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
+    /// Sim control seam (F9/A20): the fe-sim bridge's call sender. Only a
+    /// relay built with `--features sim-control` sets it (§sim-control).
+    pub sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
@@ -108,6 +112,7 @@ async fn run_server(config: ApiConfig) {
         announcement_store: config.announcement_store,
         replication_tx: config.replication_tx,
         distributed_tx: config.distributed_tx,
+        sim_control_tx: config.sim_control_tx,
         // Ephemeral per-process share-URL signing key: restart invalidates
         // outstanding links (TTL ≤ 24h anyway) — see AGENTS.md §share.
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),

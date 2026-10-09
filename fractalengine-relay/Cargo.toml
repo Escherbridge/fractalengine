@@ -29,3 +29,10 @@ anyhow      = { workspace = true }
 surrealdb   = { workspace = true }
 serde_json  = { workspace = true }
 hex         = "0.4"
+# F9/A20 sim lab control surface — default OFF (fe-sim drags in the test
+# harness; see fe-sim/src/AGENTS.md §session for the process-global hazards).
+fe-sim      = { path = "../fe-sim", optional = true }
+
+[features]
+default = []
+sim-control = ["dep:fe-sim"]

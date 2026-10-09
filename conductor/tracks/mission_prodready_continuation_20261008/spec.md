@@ -99,6 +99,17 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   (JP), CI-scale bboxes, full-region builds documented as operator-run.
   Map + rationale: `m6-gis-regions-design.md` in this track.
 
+- **DEC-C9 (2026-10-09)** — Share signer persisted via a dedicated keystore
+  slot (`"share_signer"`), NOT derived from the node identity seed (capability
+  separation + independent rotation). Details: `m4-bi-egress-design.md`.
+- **DEC-C10 (2026-10-09)** — `Accept-Ranges: bytes` is advertised with zero
+  Range support; F10 resolves it empirically with DuckDB httpfs and the false
+  advertisement never ships past F10 (implement single-range 206 or drop the
+  header). Details: `m4-bi-egress-design.md`.
+- **DEC-C11 (2026-10-09)** — M4 order re-sequenced F11 → F10 → F12 (A22 needs
+  readings parquet live, so the readings export lands before the e2e; docs
+  written last from verified output).
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

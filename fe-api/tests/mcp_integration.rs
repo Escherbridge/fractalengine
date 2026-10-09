@@ -25,7 +25,7 @@ use fe_runtime::messages::{
 };
 use fractalengine_test_harness::api::ApiHarness;
 
-const EXPECTED_TOOLS: [&str; 11] = [
+const EXPECTED_TOOLS: [&str; 16] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -39,6 +39,12 @@ const EXPECTED_TOOLS: [&str; 11] = [
     "promote_instance",
     // M2/F7 distributed timeseries query (A17)
     "query_timeseries",
+    // F9/A20 sim control (Owner-only; fails closed off a sim lab host)
+    "sim_start",
+    "sim_stop",
+    "sim_status",
+    "sim_step",
+    "sim_inject_fault",
 ];
 
 // ---------------------------------------------------------------------------
@@ -234,6 +240,7 @@ fn emu_state() -> (Arc<ApiState>, Arc<Mutex<Model>>) {
         announcement_store: None,
         replication_tx: None,
         distributed_tx: None,
+        sim_control_tx: None,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));
@@ -333,7 +340,7 @@ async fn tools_list_inventory() {
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert_eq!(
         names, EXPECTED_TOOLS,
-        "exact 11-tool inventory (6 base + 4 CRUD + query_timeseries)"
+        "exact 16-tool inventory (6 base + 4 CRUD + query_timeseries + 5 sim control)"
     );
     // FR-4: the per-endpoint delete tool now exists.
     assert!(names.contains(&"delete_node"));

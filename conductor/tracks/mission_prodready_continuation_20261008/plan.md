@@ -13,22 +13,23 @@ its commit hash + evidence line appended here.
 
 ## M3 — Simulation lab (finish)
 
-- [ ] **F9** (A20+A21) — `in_progress` (factory's partial fe-sync diff kept, DEC-C2)
-  - [x] fe-sync gossip-plane seam: `TopicSender`, `VirtualGossipTopic`, subscribe/pump wiring (inherited diff)
-  - [ ] fe-sim hub-side gossip plane: SimNet virtual topics w/ scripted latency/partition/churn parity
-  - [ ] `SimTransportFactory::join_gossip_topic` wiring + identity tagging
-  - [ ] CI scenario 1: 3-peer sharded distributed query (deterministic, repeat-run fingerprints)
-  - [ ] CI scenario 2: peer-offline → degraded (honesty metadata) → return → convergence
-  - [ ] Sim control surface: `POST /api/v1/sim/*` + MCP sim tools (start/stop/status/step/inject-fault)
-  - [ ] f64 1-ULP decision executed (DEC-C6)
-  - Gate: `cargo test -p fe-sim -p fe-sync` + touched-crate clippy/fmt
+- [ ] **F9** (A20+A21) — `in_progress`; **part A landed @ `1f2b6fd`** (factory's partial fe-sync diff kept, DEC-C2)
+  - [x] fe-sync gossip-plane seam: `TopicSender`, `VirtualGossipTopic`, subscribe/pump wiring (inherited diff; compile fixes in part A)
+  - [x] fe-sim hub-side gossip plane: DID-sorted deterministic fan-out, miss-forever semantics (`net.rs gossip_broadcast`)
+  - [x] `SimTransportFactory::join_gossip_topic` wiring + identity tagging (`net.rs:960`)
+  - [x] CI scenario 1: `fe-sim/scenarios/sharded_query.json` — merged aggregate == union oracle, full coverage, fingerprint-stable
+  - [x] CI scenario 2: `fe-sim/scenarios/offline_degraded.json` — 6/3 missing shards w/ `missing_hosts=["alice"]` during outage, 18/0 after heal
+  - [x] f64 1-ULP executed (DEC-C6): serde_json `float_roundtrip` workspace-wide; 0/200k deltas (was 5,395/200k); bit-exact replica asserts
+  - [ ] **part B**: sim control surface per DEC-C7 — fe-runtime contract, fe-sim `ScenarioSession`, relay `sim-control` feature, `POST /api/v1/sim/*` + MCP tools
+  - Part A gate (orchestrator-run, serial): fe-sim 33/33, fe-sync 221/221, fe-database 275 pass, clippy -D warnings + fmt clean
+  - Part A extras: F8 bugfix (event at_ms now absolute — faults actually fire mid-run), determinism hardening (seeded identities, write-order replays, exact barriers)
 - [ ] **M3 milestone review** — adversarial pass over F24+F8+F9 (scrutiny pattern)
 
-## M4 — BI egress (DuckDB-first)
+## M4 — BI egress (DuckDB-first) — order F11 → F10 → F12 (DEC-C11); map in m4-bi-egress-design.md
 
-- [ ] **F10** (A22) — live relay + real DuckDB CLI e2e, checked-in script + recorded output; cosmetic fold-ins (a)–(e) from M2 scrutiny
-- [ ] **F11** (A23+A24) — iot_reading parquet/CSV export (anchor join, coords=latlon); share-signer key persistence (GUI + relay)
-- [ ] **F12** (A25) — docs/bi-egress.md with verified DuckDB/PowerBI/spreadsheet steps
+- [ ] **F11** (A23+A24) — iot_reading parquet/CSV export (anchor attach-join is NEW query-shape work; guards already readings-ready); share-signer keystore slot per DEC-C9
+- [ ] **F10** (A22) — live relay + real DuckDB CLI e2e (nodes AND readings), checked-in script + recorded output; Range-gap resolution per DEC-C10; cosmetic fold-ins (a)–(e) — note (c) rename unconfirmed, verify vs F22 diff first; (d) is a real doc bug
+- [ ] **F12** (A25) — docs/bi-egress.md with verified DuckDB/PowerBI/spreadsheet steps + fix the documented /api/v1/query distributed shape
 - [ ] **M4 milestone review**
 
 ## M5 — MCP + API integration

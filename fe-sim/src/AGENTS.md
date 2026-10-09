@@ -18,8 +18,8 @@ reads the process-global CURRENT clock. Production processes never touch it.
   override is process-global and cargo test runs library tests on parallel
   threads, so two concurrent scenarios (or the clock tests) would clobber each
   other's install — a run would stamp from another run's clock or from real
-  time. `run_scenario` takes the lock first and holds it through the uninstall
-  guard's drop.
+  time. `ScenarioSession::start` takes the lock first and holds it until
+  the session drops — after the uninstall guard (§session).
 - Determinism discipline in the driver (`scenario.rs`): advance the clock to
   the tick's simulated millisecond, THEN send the ingest batch, THEN await the
   DB reply before the next action. Each batch's HLC wall bits therefore equal
@@ -187,6 +187,68 @@ walks it: advance the clock to each action, apply/ingest/query, `step()`.
 - SQL strings in the runner interpolate only ULIDs and fleet ids from
   create-command results — no user input ever reaches RawQuery.
 
+## §session (F9/A20 — the long-lived driver + control bridge)
+
+`session.rs::ScenarioSession` is THE driver. `run_scenario` is literally
+`start` → `step(u32::MAX)` → `stop`, so the interactive surface and the
+one-shot runner cannot drift (pinned by
+`stepped_session_matches_one_shot_run_exactly`: uneven step chunks with a
+status snapshot between every call reproduce the one-shot fingerprint).
+
+- **Lifecycle.** `start(script, root_dir)` = validate → take
+  `SCENARIO_RUN_LOCK` → install the HLC source → spawn peers, hierarchy,
+  replica opens, manifest, membership barriers → merge the action list
+  (owned `Action`s, cursor 0). `step(n)` executes the next `n` actions with
+  part A's exact barriers (`execute` is the old loop body verbatim).
+  `inject_fault(event)` applies a fault NOW behind the same `settle_writes`
+  barrier a scripted fault gets (its `at_ms` is ignored; the record carries
+  the real sim offset). `status()` is a snapshot. `stop()` = final
+  `settle_stores` → fingerprint → shutdown → outcome.
+- **Lock discipline.** The session OWNS the `MutexGuard<'static, ()>`; field
+  order is drop order (`run` → `_hlc_guard` → `_run_lock`), so peers join
+  and the HLC source is uninstalled BEFORE the lock releases — on `stop`,
+  on error, and on abandonment (`Drop` closes replicas first). Owning a
+  `MutexGuard` makes the session `!Send`: it lives and dies on the thread
+  that started it (the bridge thread).
+- **Concurrent start** is rejected by the bridge (`control.rs`) with a
+  `Conflict` BEFORE parsing or touching the lock — the bridge thread itself
+  holds the lock through its live session, so a second start would
+  otherwise self-deadlock. Direct `ScenarioSession::start` callers (tests,
+  `run_scenario`) instead *queue* on the lock — serialization, not error.
+- **Bridge state** is a plain `Option<LiveSession>` owned by the one bridge
+  thread (deviation from the design note's `Mutex<Option<…>>`: a `!Send`
+  session cannot be shared anyway, and serial servicing IS the mutual
+  exclusion). A driver failure in step/inject/stop tears the session down
+  and reports `Failed` — a run that missed a barrier is no longer a valid
+  deterministic run. Each session gets a `TempDir` under the bridge's work
+  root, removed after the session drops.
+- **Event pumping lives inside calls — no background pump.** Every
+  step/inject/stop barrier steps the hub and drains sync events (part A's
+  `drain_events` discipline); `status()` drains events ONLY (never steps
+  the hub or clock), so a status call cannot perturb the run. Between calls
+  a sync thread may block on its full bounded(64) event channel; the next
+  call's first poll unblocks it. A background pump would race the driver's
+  barriers (nondeterminism) — rejected.
+- **Interactive faults == scripted faults at the same instant.** Pinned by
+  `injected_outage_degrades_then_heals_like_the_scripted_one`: the A21
+  outage script with its churn events replaced by no-op `set_latency`
+  markers, driven step-wise with the outage injected live, reproduces the
+  scripted fingerprint (degraded query, convergence, healed query). Use a
+  marker event to move the clock to an exact instant before injecting.
+- `inject_fault` rejects `query` events (queries are scripted actions;
+  an ad-hoc query verb is an open item) and unknown peer names
+  (`ScenarioScript::validate_event_peers`, shared with script validation).
+- **Big interactive fleets** hit §honest-limits' 64-slot inbound burst
+  drop sooner: a live `peer_online`/`heal` replays the whole doc at once.
+  The exact store barrier turns that into a loud settle timeout → the
+  session is torn down (`Failed`), never a silent pass.
+- **Process-global hazard on a host binary.** A live session installs the
+  SimClock as the PROCESS's HLC source and `init_hlc` resets the process
+  HLC per peer spawn. That is why the bridge is wired only into
+  fractalengine-relay behind the default-off `sim-control` feature (a
+  dedicated lab relay — the relay logs a loud warning at spawn) and never
+  into the GUI binary.
+
 ## §honest-limits (recorded, not hidden)
 
 - **Inbound DB-channel drops**: fe-sync forwards inbound rows with
@@ -199,7 +261,8 @@ walks it: advance the clock to each action, apply/ingest/query, `step()`.
 - Single ingest peer per fleet (the fleet config shape). The ingest host's
   ledger is therefore complete, which is what makes the store targets exact.
 - The bin's CLI is the deterministic leg only (`run`/`print`). The REST/MCP
-  control surface (`ScenarioSession`, DEC-C7) is F9/A20.
+  control surface (`ScenarioSession` + `control.rs` bridge, DEC-C7) is
+  §session.
 - Sim scenarios ride the harness's in-memory SurrealDB peers; nothing here
   touches the SurrealKV production store.
 
