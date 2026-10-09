@@ -62,13 +62,26 @@ The old `iroh_gossip::{Host, Topic, TopicId}` surface was removed upstream. Curr
   advertisement handler is therefore `async`). Unsigned transform broadcasts
   are intentionally absent.
 
-Deferred from this pass: consuming **inbound** topic messages — the tileset
-handlers broadcast out but nothing drains a `GossipTopic`'s event stream yet.
-Outbound `broadcast` is best-effort (messages queue until a neighbor is
-available). Inbound *connections* are now routed since the P2P stack landed
-(see §iroh-0.35 below): the stack's `Router` accepts `GOSSIP_ALPN`.
+**Inbound consumption is now live for the compute plane (F7/F9).** The
+distributed-query fan-out (`distributed_query.rs::handle_gossip_incoming`,
+real and virtual transports alike) drains the verse's gossip topic for
+`ComputeEnvelope` request/response frames — the deferral below is
+resolved for that consumer. Tileset advertisement, which rides the SAME
+topic, remains outbound-only: `handle_advertise_tilesets` broadcasts but no
+inbound handler parses a `TilesetAdvertisement` frame, and the
+`SyncEvent::PeerTilesetAdvertisement` / `SyncEvent::NodeTransformed`
+variants `status.rs` drains defensively are never actually emitted anywhere
+in this crate — dead wire-format placeholders, not a live path. Outbound
+`broadcast` is best-effort (messages queue until a neighbor is available).
+Inbound *connections* are routed since the P2P stack landed (see §iroh-0.35
+below): the stack's `Router` accepts `GOSSIP_ALPN`.
 
-### iroh-docs 0.35 — stack real, replicators mock-backed (A1)
+### iroh-docs 0.35 — stack and replicators both real (A1/A2); mock is offline-only
+
+Current as of F2/A2 (2026-10-07) and F23's transport-admission hardening
+(2026-10-08) — see §inbound-apply, §sharding, §distributed-query, and
+§transport-admission-control below for what the sync thread does with this
+stack once it's up.
 
 The full P2P stack now spawns in the sync thread (`docs_engine.rs::DocsStack`):
 `iroh_blobs::net_protocol::Blobs::persistent(<dir>/blobs)` +
@@ -135,7 +148,10 @@ the redb replica store `docs.redb` + persistent default-author storage) +
   (`find_doc_by_verse_manifest`).
 
 `status.rs` also carries a `TODO(iroh-0.35)` for applying inbound peer `SyncEvent::NodeTransformed`
-to the local world (currently logged, not applied) — it depends on the inbound gossip route above.
+to the local world (currently logged, not applied). Unlike the compute plane above, nothing in
+this crate ever emits that variant today — the comment marks a future capability, not a live gap
+waiting on gossip wiring (gossip itself is wired; see §write-policy for why an unsigned networked
+transform has nowhere to enter admission yet).
 
 Runtime behavior: row bytes traverse the real network. The fe-test-harness
 scenario `two_peer_replica_sync` proves A2 end-to-end (two in-process peers
