@@ -5860,6 +5860,7 @@ dependencies = [
  "crossbeam",
  "fe-api",
  "fe-database",
+ "fe-entity-store",
  "fe-identity",
  "fe-network",
  "fe-runtime",

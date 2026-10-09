@@ -69,8 +69,19 @@ fn main() -> anyhow::Result<()> {
     let db_res_tx_replay = ch.db_res_tx.clone();
 
     // Scene change broadcast: DB thread emits CUD deltas, API thread fans out to WS clients.
-    let (entity_change_tx, _) =
+    let (entity_change_tx, entity_change_rx) =
         tokio::sync::broadcast::channel::<fe_runtime::messages::SceneChange>(256);
+
+    // F24: the relay's analytics hot cache. The `EntityStore` is subscribed to
+    // the scene-change broadcast BEFORE the DB thread spawns (no change-event
+    // gap), and the drain thread mirrors every DB-thread CUD delta into it —
+    // the headless twin of the GUI's `drain_scene_changes_to_store` system.
+    // Hydration from pre-startup rows happens later, when the optional API
+    // read connection opens (see the api_db_reader block below).
+    let entity_store: Arc<fe_entity_store::EntityStore> =
+        Arc::new(fe_entity_store::EntityStore::new());
+    let entity_store_for_drain = Arc::clone(&entity_store);
+    std::thread::spawn(move || run_entity_store_drain(entity_change_rx, entity_store_for_drain));
 
     let _db_thread = fe_database::spawn_db_thread_with_sync(
         ch.db_cmd_rx,
@@ -258,6 +269,15 @@ fn main() -> anyhow::Result<()> {
     // and the API falls back to the crossbeam channel — the same fallback the
     // GUI binary hits on this platform. A couple of retries absorb a transient
     // open during DB startup.
+    // F24: the analytics hot cache rides `ApiConfig` unless hydration was
+    // attempted and failed (fail-closed below). On platforms where the
+    // SurrealKV per-handle lock keeps the API read connection closed
+    // (Windows, os error 33), the analytics authz gate — which requires the
+    // direct reader — is the honest first refusal; the store itself stays
+    // wired and live via the drain thread.
+    let mut entity_store_for_api: Option<Arc<fe_entity_store::EntityStore>> =
+        Some(Arc::clone(&entity_store));
+
     let api_db_reader: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -290,6 +310,30 @@ fn main() -> anyhow::Result<()> {
         if opened.is_some() {
             tracing::info!("Opened read-only SurrealKV connection for API gateway");
         }
+        // F24: hydrate the analytics hot cache from the pre-startup rows the
+        // same way the GUI binary does (the GUI's hydrate_entity_store,
+        // extracted verbatim into fe_api::entity_store_bridge). A hydration
+        // failure fails the analytics surface CLOSED (entity_store: None)
+        // rather than serving a partial nodes table; the drain thread keeps
+        // mirroring live scene changes either way.
+        if let Some(ref db) = opened {
+            match rt.block_on(fe_api::entity_store_bridge::hydrate_entity_store(
+                db,
+                &entity_store,
+            )) {
+                Ok(node_count) => tracing::info!(
+                    node_count,
+                    "Hydrated analytics EntityStore from pre-startup nodes"
+                ),
+                Err(e) => {
+                    tracing::error!(
+                        %e,
+                        "EntityStore hydration failed — analytics surface stays unavailable"
+                    );
+                    entity_store_for_api = None;
+                }
+            }
+        }
         opened
     };
 
@@ -319,7 +363,11 @@ fn main() -> anyhow::Result<()> {
         cors_origins: Some(cors_origins),
         entity_change_tx,
         api_db_reader,
-        entity_store: None, // TODO: share Arc<EntityStore> with relay once wired
+        // F24: the analytics hot cache (scene-change drain + startup
+        // hydration, mirroring the GUI binary) — closes the relay's
+        // `entity_store: None` gap that kept the merged analytics surface
+        // dead on every platform.
+        entity_store: entity_store_for_api,
         tileset_registry,
         hexon_registry: None,
         announcement_store: None,
@@ -402,6 +450,48 @@ fn run_replication_bridge(
             Err(crossbeam::channel::TrySendError::Disconnected(_)) => break,
         }
     }
+}
+
+/// F24: mirror DB-thread `SceneChange` events into the analytics hot cache.
+///
+/// Headless twin of the GUI's `drain_scene_changes_to_store` Bevy system: the
+/// relay has no fe-ui pass, so a dedicated thread applies each broadcast
+/// change directly through the shared conversion (fe-api
+/// `entity_store_bridge`) — the store is a concurrent (papaya) map, safe to
+/// update off the Bevy loop. Lag on the bounded broadcast degrades to a
+/// warned cache gap (the documented eventual-consistency posture of the
+/// analytics cache); a closed channel is shutdown, so the drain exits.
+fn run_entity_store_drain(
+    mut rx: tokio::sync::broadcast::Receiver<fe_runtime::messages::SceneChange>,
+    store: Arc<fe_entity_store::EntityStore>,
+) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("entity store drain runtime");
+    rt.block_on(async move {
+        loop {
+            match rx.recv().await {
+                Ok(change) => {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    store.apply_scene_change(
+                        &fe_api::entity_store_bridge::runtime_scene_change_to_store(change),
+                        now_ms,
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        skipped = n,
+                        "entity store drain lagged — analytics cache gap (eventual consistency)"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 /// Wait for a shutdown trigger: Ctrl+C on every platform, SIGTERM on unix, or
@@ -550,5 +640,48 @@ mod tests {
             Ok(fe_sync::SyncCommand::Shutdown)
         ));
         assert!(sync_rx.try_recv().is_err(), "no replication event queued");
+    }
+
+    /// F24: the analytics-cache drain mirrors a DB-thread scene change into
+    /// the `EntityStore` (READ-BACK from the store), and exits cleanly when
+    /// the broadcast closes (no leaked thread at shutdown).
+    #[test]
+    fn entity_store_drain_mirrors_scene_changes_and_exits_on_close() {
+        let (tx, rx) = tokio::sync::broadcast::channel::<fe_runtime::messages::SceneChange>(16);
+        let store = Arc::new(fe_entity_store::EntityStore::new());
+        let store_handle = Arc::clone(&store);
+        let drain = std::thread::spawn(move || run_entity_store_drain(rx, store_handle));
+
+        tx.send(fe_runtime::messages::SceneChange::NodeAdded {
+            node: fe_runtime::messages::NodeDto {
+                node_id: "n1".into(),
+                petal_id: "p1".into(),
+                name: "anchor".into(),
+                position: [1.0, 2.0, 3.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+                has_asset: false,
+                asset_path: None,
+            },
+        })
+        .expect("broadcast subscriber alive");
+
+        // The drain applies asynchronously — poll for the mirrored row.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while store.get("n1").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "drain never mirrored the NodeAdded change"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let snapshot = store.get("n1").expect("mirrored");
+        assert_eq!(snapshot.petal_id, "p1");
+        assert_eq!(snapshot.position, [1.0, 2.0, 3.0]);
+
+        // Closing the broadcast (all senders dropped) is shutdown — the
+        // drain thread exits instead of lingering.
+        drop(tx);
+        drain.join().expect("drain exits on closed broadcast");
     }
 }

@@ -307,6 +307,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         FieldDefDeleted { .. } => ReplyKind::FieldDefDeleted,
         QueryResult { .. } => ReplyKind::QueryResult,
         IotReadingsInserted { .. } => ReplyKind::IotReadingsInserted,
+        IotReadingsRejected { .. } => ReplyKind::IotReadingsInserted,
         PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
         VerseTimeseriesSettingsSet { .. } => ReplyKind::VerseTimeseriesSettings,
         _ => return None,
@@ -863,6 +864,18 @@ mod tests {
                 DbResult::IotReadingsInserted {
                     petal_id: "p".to_string(),
                     written: 0,
+                },
+            ),
+            (
+                DbCommand::InsertIotReadings {
+                    petal_id: "p".to_string(),
+                    verse_id: None,
+                    source_did: "did:key:z6MkTest".to_string(),
+                    readings: Vec::new(),
+                },
+                DbResult::IotReadingsRejected {
+                    petal_id: "p".to_string(),
+                    reason: crate::messages::IotIngestRejection::EmptyMetric,
                 },
             ),
             (

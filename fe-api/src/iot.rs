@@ -10,6 +10,7 @@ use fe_database::handlers::iot_reading::{
     insert_readings_with_replication, IotIngestError, IotReadingInput,
 };
 use fe_identity::api_token::ApiClaims;
+use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 use serde::Deserialize;
 
 use crate::auth::{require_role, require_scope};
@@ -17,6 +18,12 @@ use crate::limits;
 use crate::query_guard;
 use crate::server::ApiState;
 use crate::types::is_valid_ulid;
+
+/// Bound on the DB-thread round-trip of the no-`db_reader` ingest fallback
+/// (F24) — generous over any realistic batch write, bounded so a wedged DB
+/// thread can never pin an API worker (the same budget class as the
+/// analytics/query timeouts).
+const FALLBACK_TIMEOUT_SECS: u64 = 10;
 
 /// Batch ingestion request body.
 #[derive(Debug, Deserialize)]
@@ -34,6 +41,12 @@ fn err(status: StatusCode, msg: &str) -> Response {
 }
 
 /// POST /api/v1/petals/:petal_id/iot/readings — authenticated batch ingest.
+///
+/// Write path: `db_reader` when configured (the §iot-readings append-only
+/// exception), else the DB-thread seam (`DbCommand::InsertIotReadings`, F24)
+/// — never a 503. The guard pipeline (Editor+ role → ULID → petal scope →
+/// token containment → per-DID rate limit → batch caps) runs identically on
+/// both paths, before any write.
 pub async fn ingest_readings(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -80,13 +93,6 @@ pub async fn ingest_readings(
         );
     }
 
-    let Some(ref db) = state.db_reader else {
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "iot ingest not available (no db_reader)",
-        );
-    };
-
     // A11: publish each accepted row to the verse's replica. The API thread
     // writes on `db_reader` (append-only exception, §iot-readings), so it
     // carries its own emit seam: the shared blob store supplies the row's
@@ -97,31 +103,95 @@ pub async fn ingest_readings(
         .ok()
         .map(|parts| parts.verse_id);
 
-    // Append-only insert — safe off the DB thread (fe-database AGENTS.md §iot-readings).
-    match insert_readings_with_replication(
-        db,
-        &petal_id,
-        verse_id.as_deref(),
-        &claims.sub,
-        &req.readings,
-        state.blob_store.as_ref(),
-        state.replication_tx.as_ref(),
-    )
-    .await
-    {
-        Ok(accepted) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "ok": true, "accepted": accepted })),
+    match state.db_reader.as_ref() {
+        // Append-only insert — safe off the DB thread (fe-database AGENTS.md §iot-readings).
+        Some(db) => match insert_readings_with_replication(
+            db,
+            &petal_id,
+            verse_id.as_deref(),
+            &claims.sub,
+            &req.readings,
+            state.blob_store.as_ref(),
+            state.replication_tx.as_ref(),
         )
-            .into_response(),
-        Err(
-            e @ (IotIngestError::UnknownAnchor(_)
-            | IotIngestError::InvalidTimestamp(_)
-            | IotIngestError::EmptyMetric),
-        ) => err(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
-        Err(IotIngestError::Db(e)) => {
-            tracing::error!(petal_id, error = %e, "iot ingest DB write failed");
-            err(StatusCode::BAD_GATEWAY, "reading write failed")
+        .await
+        {
+            Ok(accepted) => (
+                StatusCode::OK,
+                Json(serde_json::json!({ "ok": true, "accepted": accepted })),
+            )
+                .into_response(),
+            Err(
+                e @ (IotIngestError::UnknownAnchor(_)
+                | IotIngestError::InvalidTimestamp(_)
+                | IotIngestError::EmptyMetric),
+            ) => err(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+            Err(IotIngestError::Db(e)) => {
+                tracing::error!(petal_id, error = %e, "iot ingest DB write failed");
+                err(StatusCode::BAD_GATEWAY, "reading write failed")
+            }
+        },
+        // F24: no `db_reader` (the SurrealKV per-handle file lock rejects the
+        // second in-process connection on Windows while the DB-thread writer
+        // lives — the deployment platform). Fall back to the DB-thread seam
+        // (`DbCommand::InsertIotReadings`, F7): the write happens ON the DB
+        // thread, which is MORE aligned with the single-writer rule than the
+        // `db_reader` append-only exception. Every guard above (Editor+ role,
+        // petal-scope containment, per-DID rate limit, batch caps) has already
+        // run on THIS path, and `claims.sub` rides the command so the
+        // DB-thread handler's `source_did` context is the acting caller's.
+        // The DB-thread arm rides `insert_readings_with_replication`, so the
+        // per-row ReplicationEvents fire exactly as on the direct path.
+        None => {
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let cmd = DbCommand::InsertIotReadings {
+                petal_id: petal_id.clone(),
+                verse_id,
+                source_did: claims.sub.clone(),
+                readings: req.readings,
+            };
+            if state
+                .api_cmd_tx
+                .send(ApiCommand::DbRequest { cmd, reply_tx })
+                .is_err()
+            {
+                tracing::warn!(petal_id, "iot ingest fallback: API command channel closed");
+                return err(StatusCode::BAD_GATEWAY, "db thread unavailable");
+            }
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(FALLBACK_TIMEOUT_SECS),
+                reply_rx,
+            )
+            .await
+            {
+                Ok(Ok(DbResult::IotReadingsInserted { written, .. })) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "ok": true, "accepted": written })),
+                )
+                    .into_response(),
+                Ok(Ok(DbResult::IotReadingsRejected { reason, .. })) => {
+                    err(StatusCode::UNPROCESSABLE_ENTITY, &reason.to_string())
+                }
+                Ok(Ok(DbResult::Error(e))) => {
+                    tracing::error!(petal_id, error = %e, "iot ingest DB-thread write failed");
+                    err(StatusCode::BAD_GATEWAY, "reading write failed")
+                }
+                Ok(Ok(other)) => {
+                    tracing::warn!(?other, "iot ingest fallback: unexpected reply family");
+                    err(StatusCode::BAD_GATEWAY, "reading write failed")
+                }
+                Ok(Err(_)) => {
+                    tracing::warn!(petal_id, "iot ingest fallback: DB reply channel dropped");
+                    err(StatusCode::BAD_GATEWAY, "reading write failed")
+                }
+                Err(_) => {
+                    tracing::warn!(petal_id, "iot ingest fallback: DB thread timed out");
+                    err(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "reading write timed out (db thread)",
+                    )
+                }
+            }
         }
     }
 }

@@ -24,6 +24,37 @@ pub struct IotReadingInput {
     pub recorded_at: Option<String>,
 }
 
+/// Validation-shaped IoT ingest rejection (F24) — the typed detail a
+/// `DbResult::IotReadingsRejected` reply carries back across the DB-thread
+/// seam, so the API layer maps real HTTP statuses (422) instead of
+/// string-sniffing `DbResult::Error`. Mirrors fe-database's
+/// `IotIngestError` validation variants; `Display` wording is identical so
+/// the fallback path's HTTP body matches the direct path byte-for-byte
+/// (parity pinned by a fe-database test).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IotIngestRejection {
+    /// An anchor node is not an existing node of the target petal.
+    UnknownAnchor { node_id: String },
+    /// `recorded_at` is not RFC-3339.
+    InvalidTimestamp { raw: String },
+    /// The metric name is empty.
+    EmptyMetric,
+}
+
+impl std::fmt::Display for IotIngestRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownAnchor { node_id } => {
+                write!(f, "unknown anchor node '{node_id}' in this petal")
+            }
+            Self::InvalidTimestamp { raw } => {
+                write!(f, "invalid recorded_at '{raw}' (expected RFC-3339)")
+            }
+            Self::EmptyMetric => write!(f, "metric name must be non-empty"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // API Gateway types (Phase: Realtime API Gateway)
 // ---------------------------------------------------------------------------
@@ -778,6 +809,14 @@ pub enum DbResult {
     IotReadingsInserted {
         petal_id: String,
         written: usize,
+    },
+    /// Validation rejection of `InsertIotReadings` (F24) — same reply family
+    /// as `IotReadingsInserted` (the API fallback distinguishes 422-class
+    /// validation failures from 502-class `DbResult::Error` DB failures
+    /// without string-sniffing).
+    IotReadingsRejected {
+        petal_id: String,
+        reason: IotIngestRejection,
     },
     // --- Hexon crate registry results (Phase 8) ---
     /// Result of `InstallCrate`.

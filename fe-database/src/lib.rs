@@ -1304,7 +1304,15 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             repl_tx.as_ref(),
                         ).await {
                             Ok(written) => send_result(&tx, DbResult::IotReadingsInserted { petal_id, written }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("IoT readings ingest failed: {e}"))),
+                            // F24: a validation failure keeps its typed shape
+                            // across the seam (`IotReadingsRejected`, the
+                            // 422-class family) so the API fallback maps real
+                            // HTTP statuses; only DB failures degrade to the
+                            // generic `Error` reply.
+                            Err(e) => match e.validation_rejection() {
+                                Some(reason) => send_result(&tx, DbResult::IotReadingsRejected { petal_id, reason }),
+                                None => send_result(&tx, DbResult::Error(format!("IoT readings ingest failed: {e}"))),
+                            },
                         }
                     }
                     // --- Hexon crate registry (Phase 8) ---

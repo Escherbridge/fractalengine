@@ -11,6 +11,7 @@ pub mod auth;
 pub mod canonical_ws;
 pub mod crs;
 pub mod endpoint;
+pub mod entity_store_bridge;
 pub mod export;
 pub mod format;
 pub mod gis;

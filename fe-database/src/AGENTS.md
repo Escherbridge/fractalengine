@@ -191,6 +191,17 @@ bytes' content hash. Missing verse/blob-store/sender degrades to
 durable-but-unpublished (warns once when a sender is wired but the context is
 missing) — never to a failed ingest.
 
+**Typed rejection across the DB-thread seam (F24).** The dispatch loop's
+`InsertIotReadings` arm maps a validation failure (`IotIngestError::{
+UnknownAnchor, InvalidTimestamp, EmptyMetric}`) into
+`DbResult::IotReadingsRejected` carrying
+`fe_runtime::messages::IotIngestRejection` (same reply family as
+`IotReadingsInserted`), NOT the generic `DbResult::Error` — so fe-api's
+no-`db_reader` ingest fallback maps real HTTP statuses (422 vs 502) without
+string-sniffing, with `Display` wording byte-identical to the direct path
+(parity test in `tests/iot_reading_test.rs`). Only DB failures degrade to
+`DbResult::Error`.
+
 ## §replication-mode (F5)
 
 `replication_mode.rs::ReplicationMode` is the canonical per-table replication
