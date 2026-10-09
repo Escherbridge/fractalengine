@@ -71,4 +71,64 @@ pub trait VirtualTransportFactory: Send + Sync {
 
     /// Banner label for the open log line (e.g. `"virtual (sim)"`).
     fn describe(&self) -> &'static str;
+
+    /// Join a verse compute topic on the virtual gossip plane (F9/A21):
+    /// the distributed-query fan-out (`SubmitComputeTask`) rides per-verse
+    /// gossip topics on the real path, so the sim hub virtualizes the same
+    /// seam — one topic handle per subscription, carrying the scripted
+    /// latency/partition/churn semantics of the hub it belongs to.
+    ///
+    /// `local_did` / `local_node` are the sync thread's identity (the same
+    /// ed25519 key backs both — the F20 endpoint-identity == fe-DID
+    /// alignment), so a delivered message's `from` authenticates its author
+    /// exactly like a direct iroh-gossip delivery.
+    ///
+    /// Default: `None` — the verse honestly has no compute topic (the same
+    /// "no gossip sender" answer a virtual transport gave before F9). A
+    /// factory without a gossip plane compiles and behaves unchanged.
+    fn join_gossip_topic(
+        &self,
+        _topic_key: &str,
+        _local_did: &str,
+        _local_node: iroh::NodeId,
+    ) -> Option<std::sync::Arc<dyn VirtualGossipTopic>> {
+        None
+    }
+}
+
+/// One inbound message on a virtual gossip topic — the hub's analogue of
+/// iroh-gossip's `GossipEvent::Received`. `direct` mirrors
+/// `DeliveryScope::is_direct()`: hub deliveries are 0-hop from their
+/// publisher, so they are always direct and `from` always authenticates the
+/// envelope author (the F23 forged-attribution gate applies verbatim).
+#[derive(Debug, Clone)]
+pub struct VirtualGossipMessage {
+    /// The publisher's node identity (its DID's ed25519 key).
+    pub from: iroh::NodeId,
+    /// Always `true` from the hub (0-hop delivery) — see above.
+    pub direct: bool,
+    /// The raw frame (`ComputeEnvelope` bytes for the compute plane).
+    pub content: bytes::Bytes,
+}
+
+/// A virtual gossip topic subscription (F9/A21): the send/receive halves
+/// the sync thread's compute plane drives, mirroring the split
+/// `GossipTopic` shape the real path uses.
+///
+/// Delivery semantics are the hub's: a broadcast schedules one delivery per
+/// current subscriber (self included — iroh-gossip self-echo parity; the
+/// F23 SELF_ECHO admission gate handles it) under the hub's scripted
+/// latency/partition/churn, and a subscriber that was offline or
+/// partitioned away MISSES the message (gossip has no history — the
+/// degradation scenario depends on this).
+pub trait VirtualGossipTopic: Send + Sync {
+    /// Broadcast one frame to the topic. Synchronous schedule into the
+    /// hub's delivery heap; failures are returned as an honest reason
+    /// (e.g. topic left).
+    fn broadcast(&self, content: bytes::Bytes) -> Result<(), String>;
+
+    /// Take the inbound stream for this subscription (once — the sync
+    /// thread takes it at subscribe time and pumps it). `None` after the
+    /// first take.
+    fn take_inbound(&self) -> Option<tokio::sync::mpsc::Receiver<VirtualGossipMessage>>;
 }

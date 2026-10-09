@@ -1,36 +1,42 @@
-//! Scripted deterministic scenarios (F8/A19): a [`ScenarioScript`] is one
-//! declarative document — a fleet config plus a fault script (churn,
-//! partitions, latency, heals at simulated times). [`run_scenario`] plays
-//! it against real in-process peers on the virtual transport and returns a
-//! canonical [`ScenarioOutcome`] fingerprint.
+//! Scripted deterministic scenarios (F8/A19, F9/A21): a [`ScenarioScript`]
+//! is one declarative document — a fleet config, optional verse timeseries
+//! fabric settings, and an event script (faults + distributed queries at
+//! simulated times). [`run_scenario`] plays it against real in-process peers
+//! on the virtual transport and returns a canonical [`ScenarioOutcome`].
 //!
 //! Determinism model (why the same script always yields the same outcome):
 //!
 //! * Every value is a pure function of (config, tick) — `sensors.rs` — and
 //!   the fire schedule itself is a pure function of the config —
-//!   `fleet::plan_fleet`. No RNG state anywhere.
+//!   `fleet::plan_fleet`. No RNG state anywhere; peer identities are keyed
+//!   derivations of `(seed, name)` (`peer::identity_seed`).
 //! * The scenario clock only moves when the driver moves it, and the
-//!   driver awaits every DB reply before its next step, so each batch's
-//!   HLC stamp lands at a fixed simulated millisecond
-//!   (`hlc_wall_ms` in the fingerprint).
+//!   driver awaits every DB reply AND the hub write of every ingested row
+//!   before its next step, so each stamp and each delivery due-time is a
+//!   fixed simulated millisecond.
 //! * The hub's delivery order comes from a (due_ms, seq) heap, never from
 //!   thread scheduling. Where real threads do interleave (the sync
-//!   threads' pumps), the assertions ride only order-independent facts:
-//!   the `iot_reading` union CRDT (A12) and convergence sets.
+//!   threads' pumps), the runner waits on EXACT convergence targets (what
+//!   each peer was delivered, filtered by its shard retention) before any
+//!   fault or query, so no action races replication.
 //! * Deliberately excluded from the fingerprint: `reading_id` (a fresh
-//!   server-side ULID per ingest), `source_did` (each run generates fresh
-//!   node keypairs), and the HLC counter bits (a concurrent pump apply
-//!   may share a millisecond). Wall bits are included — they prove the
-//!   stamps read the SimClock, not the system clock.
+//!   server-side ULID per ingest), DB node/petal ids (fresh ULIDs — mapped
+//!   to anchor names), and the HLC counter bits. See `AGENTS.md`
+//!   §scenario-runner for what each query fingerprint carries.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use fe_runtime::distributed_query::{
+    DistributedQueryCall, DistributedQueryOutcome, DistributedQueryRequest, TsQueryKind,
+};
 use fe_runtime::messages::{DbCommand, DbResult, IotReadingInput};
-use fe_sync::messages::SyncCommand;
+use fe_runtime::timeseries::VerseTimeseriesSettings;
+use fe_sync::messages::{SyncCommand, SyncEvent};
+use fe_sync::{Retention, ShardId, SHARD_TABLE};
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{install_hlc_source, uninstall_hlc_source, SimClock};
@@ -47,7 +53,119 @@ const SETTLE_POLL: Duration = Duration::from_millis(10);
 /// DB-thread reply budget (matches the harness scenarios).
 const DB_REPLY_BUDGET: Duration = Duration::from_secs(30);
 
-/// One scripted fault at a simulated offset (`at_ms` counts from the
+/// Verse timeseries fabric settings a script publishes on the verse
+/// manifest (`ts_mode` / `ts_replication_factor` / `ts_bucket_width_ms`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimeseriesSpec {
+    /// `mirror` | `sharded` | `balanced`.
+    pub mode: String,
+    /// R for `balanced` (ignored by `mirror`/`sharded`).
+    #[serde(default = "default_replication_factor")]
+    pub replication_factor: u32,
+    /// Shard bucket width (simulated ms).
+    pub bucket_width_ms: u64,
+}
+
+fn default_replication_factor() -> u32 {
+    1
+}
+
+impl TimeseriesSpec {
+    /// The sanitized settings (the same validation the DB handler applies).
+    pub fn settings(&self) -> Result<VerseTimeseriesSettings> {
+        VerseTimeseriesSettings::sanitized(
+            &self.mode,
+            self.replication_factor,
+            self.bucket_width_ms,
+        )
+        .map_err(|e| anyhow::anyhow!("invalid timeseries settings: {e}"))
+    }
+}
+
+/// A distributed query a script submits (`SyncCommand::SubmitComputeTask`
+/// on the named peer). Window bounds are offsets from the fleet's
+/// `start_ms`; the petal is the fleet's petal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SimQuery {
+    /// avg/min/max/count of `metric` per anchor over `[start_ms, end_ms)`.
+    WindowAggregate {
+        metric: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
+    /// Raw rows of `metric` in `[start_ms, end_ms)`.
+    ReadingsInWindow {
+        metric: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
+    /// Latest reading per (anchor, metric).
+    LatestPerAnchor {
+        #[serde(default)]
+        metric: Option<String>,
+    },
+    /// Every reading of the petal.
+    AllReadings,
+}
+
+impl SimQuery {
+    /// Whether the merge is the per-shard aggregate (early-settling) shape.
+    pub fn is_aggregate(&self) -> bool {
+        matches!(self, Self::WindowAggregate { .. })
+    }
+
+    fn window(&self) -> Option<(u64, u64)> {
+        match self {
+            Self::WindowAggregate {
+                start_ms, end_ms, ..
+            }
+            | Self::ReadingsInWindow {
+                start_ms, end_ms, ..
+            } => Some((*start_ms, *end_ms)),
+            Self::LatestPerAnchor { .. } | Self::AllReadings => None,
+        }
+    }
+
+    /// The wire spec against the run's petal (offsets → absolute ms).
+    fn to_kind(&self, petal_id: &str, origin_ms: u64) -> TsQueryKind {
+        let abs = |offset: u64| origin_ms.saturating_add(offset) as i64;
+        let petal_id = petal_id.to_string();
+        match self {
+            Self::WindowAggregate {
+                metric,
+                start_ms,
+                end_ms,
+            } => TsQueryKind::WindowAggregate {
+                metric: metric.clone(),
+                start_ms: abs(*start_ms),
+                end_ms: abs(*end_ms),
+                petal_id,
+            },
+            Self::ReadingsInWindow {
+                metric,
+                start_ms,
+                end_ms,
+            } => TsQueryKind::ReadingsInWindow {
+                metric: metric.clone(),
+                start_ms: abs(*start_ms),
+                end_ms: abs(*end_ms),
+                petal_id,
+            },
+            Self::LatestPerAnchor { metric } => TsQueryKind::LatestPerAnchor {
+                petal_id,
+                metric: metric.clone(),
+            },
+            Self::AllReadings => TsQueryKind::AllReadings { petal_id },
+        }
+    }
+}
+
+fn default_query_timeout_ms() -> u64 {
+    fe_sync::distributed_query::DEFAULT_QUERY_TIMEOUT_MS
+}
+
+/// One scripted event at a simulated offset (`at_ms` counts from the
 /// fleet's `start_ms`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -68,6 +186,17 @@ pub enum ScriptedEvent {
     Heal { at_ms: u64 },
     /// Set the per-link one-way delivery latency (simulated ms).
     SetLatency { at_ms: u64, latency_ms: u64 },
+    /// Submit a distributed query on `peer` (fans out over the hub's gossip
+    /// plane); the merged outcome is recorded under `label`.
+    Query {
+        at_ms: u64,
+        peer: String,
+        label: String,
+        query: SimQuery,
+        /// Per-host answer deadline (real ms — the collector's deadline).
+        #[serde(default = "default_query_timeout_ms")]
+        timeout_ms: u64,
+    },
 }
 
 impl ScriptedEvent {
@@ -77,16 +206,23 @@ impl ScriptedEvent {
             | Self::PeerOnline { at_ms, .. }
             | Self::Partition { at_ms, .. }
             | Self::Heal { at_ms }
-            | Self::SetLatency { at_ms, .. } => *at_ms,
+            | Self::SetLatency { at_ms, .. }
+            | Self::Query { at_ms, .. } => *at_ms,
         }
     }
 }
 
-/// A whole scenario: the fleet + the fault script. Declarative JSON (see
-/// `tests` for a full example, and the `fe-sim` bin).
+/// A whole scenario: the fleet + the event script. Declarative JSON (see
+/// `fe-sim/scenarios/` and the `fe-sim` bin).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScenarioScript {
     pub name: String,
+    /// Identity seed: peer keypairs derive from `(seed, peer name)`.
+    #[serde(default)]
+    pub seed: u64,
+    /// Verse timeseries fabric settings (absent = mirror defaults).
+    #[serde(default)]
+    pub timeseries: Option<TimeseriesSpec>,
     pub fleet: FleetConfig,
     #[serde(default)]
     pub events: Vec<ScriptedEvent>,
@@ -102,27 +238,64 @@ impl ScenarioScript {
     }
 
     /// Validate cross-references: every scripted peer name must be a fleet
-    /// peer, events must be time-ordered is NOT required (they are sorted
-    /// by the driver), but unknown names are a config error.
+    /// peer, query labels unique with sane windows/deadlines, timeseries
+    /// settings valid. Event order is NOT required (the driver sorts).
     pub fn validate(&self) -> Result<()> {
         self.fleet.validate()?;
+        if let Some(ts) = &self.timeseries {
+            ts.settings()?;
+        }
+        let known = |peer: &String| self.fleet.peers.contains(peer);
+        let mut labels: BTreeSet<&str> = BTreeSet::new();
         for event in &self.events {
             match event {
                 ScriptedEvent::PeerOffline { peer, .. }
                 | ScriptedEvent::PeerOnline { peer, .. } => {
-                    if !self.fleet.peers.contains(peer) {
+                    if !known(peer) {
                         anyhow::bail!("scenario {}: event names unknown peer '{peer}'", self.name);
                     }
                 }
                 ScriptedEvent::Partition { groups, .. } => {
-                    for group in groups {
-                        for peer in group {
-                            if !self.fleet.peers.contains(peer) {
-                                anyhow::bail!(
-                                    "scenario {}: partition names unknown peer '{peer}'",
-                                    self.name
-                                );
-                            }
+                    for peer in groups.iter().flatten() {
+                        if !known(peer) {
+                            anyhow::bail!(
+                                "scenario {}: partition names unknown peer '{peer}'",
+                                self.name
+                            );
+                        }
+                    }
+                }
+                ScriptedEvent::Query {
+                    peer,
+                    label,
+                    query,
+                    timeout_ms,
+                    ..
+                } => {
+                    if !known(peer) {
+                        anyhow::bail!("scenario {}: query names unknown peer '{peer}'", self.name);
+                    }
+                    if label.trim().is_empty() || label.len() > 64 {
+                        anyhow::bail!("scenario {}: query label must be 1..=64 chars", self.name);
+                    }
+                    if !labels.insert(label.as_str()) {
+                        anyhow::bail!("scenario {}: duplicate query label '{label}'", self.name);
+                    }
+                    if *timeout_ms == 0
+                        || *timeout_ms > fe_sync::distributed_query::MAX_QUERY_TIMEOUT_MS
+                    {
+                        anyhow::bail!(
+                            "scenario {}: query '{label}' timeout_ms must be 1..={}",
+                            self.name,
+                            fe_sync::distributed_query::MAX_QUERY_TIMEOUT_MS
+                        );
+                    }
+                    if let Some((start, end)) = query.window() {
+                        if start >= end {
+                            anyhow::bail!(
+                                "scenario {}: query '{label}' window must have start < end",
+                                self.name
+                            );
                         }
                     }
                 }
@@ -147,8 +320,114 @@ pub struct CanonicalReading {
     pub hlc_wall_ms: u64,
 }
 
-/// The canonical outcome of one scenario run — what a determinism
-/// assertion compares.
+/// One merged query row with run-local ids mapped to fleet names.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "row", rename_all = "snake_case")]
+pub enum CanonicalQueryRow {
+    /// A `WindowAggregate` row.
+    Aggregate {
+        anchor: String,
+        metric: String,
+        sample_count: u64,
+        avg: f64,
+        min: f64,
+        max: f64,
+    },
+    /// A raw / latest reading row.
+    Reading {
+        anchor: String,
+        metric: String,
+        recorded_at_ms: i64,
+        value: f64,
+    },
+}
+
+impl CanonicalQueryRow {
+    fn sort_key(&self) -> (&str, &str, i64) {
+        match self {
+            Self::Aggregate { anchor, metric, .. } => (anchor, metric, i64::MIN),
+            Self::Reading {
+                anchor,
+                metric,
+                recorded_at_ms,
+                ..
+            } => (anchor, metric, *recorded_at_ms),
+        }
+    }
+}
+
+/// A merged distributed-query outcome in fleet vocabulary: shards are
+/// `{anchor}/{bucket}`, hosts are fleet peer names.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CanonicalQueryOutcome {
+    pub rows: Vec<CanonicalQueryRow>,
+    pub covered_shards: Vec<String>,
+    pub missing_shards: Vec<String>,
+    pub answered_hosts: Vec<String>,
+    pub missing_hosts: Vec<String>,
+    pub mode: String,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+/// One scripted query's result.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QueryRecord {
+    pub label: String,
+    /// The fleet peer that submitted it.
+    pub peer: String,
+    /// Simulated offset (from `start_ms`) it ran at.
+    pub at_ms: u64,
+    pub aggregate: bool,
+    pub outcome: CanonicalQueryOutcome,
+}
+
+/// The determinism-contract slice of a [`QueryRecord`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QueryFingerprint {
+    pub label: String,
+    pub rows: Vec<CanonicalQueryRow>,
+    pub covered_shards: Vec<String>,
+    pub missing_shards: Vec<String>,
+    /// `(answered, missing)` hosts — `None` for a fully-covered aggregate,
+    /// whose early settle makes the host lists arrival-dependent (§scenario-runner).
+    pub hosts: Option<(Vec<String>, Vec<String>)>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+impl QueryRecord {
+    /// The deterministic slice (see [`QueryFingerprint::hosts`]).
+    pub fn fingerprint(&self) -> QueryFingerprint {
+        let early_settle = self.aggregate
+            && self.outcome.missing_shards.is_empty()
+            && self.outcome.error.is_none();
+        QueryFingerprint {
+            label: self.label.clone(),
+            rows: self.outcome.rows.clone(),
+            covered_shards: self.outcome.covered_shards.clone(),
+            missing_shards: self.outcome.missing_shards.clone(),
+            hosts: (!early_settle).then(|| {
+                (
+                    self.outcome.answered_hosts.clone(),
+                    self.outcome.missing_hosts.clone(),
+                )
+            }),
+            truncated: self.outcome.truncated,
+            error: self.outcome.error.clone(),
+        }
+    }
+}
+
+/// Everything a determinism assertion compares across two runs.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ScenarioFingerprint {
+    pub per_peer: BTreeMap<String, Vec<CanonicalReading>>,
+    pub placement: BTreeMap<String, Vec<String>>,
+    pub queries: Vec<QueryFingerprint>,
+}
+
+/// The canonical outcome of one scenario run.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScenarioOutcome {
     pub name: String,
@@ -156,9 +435,18 @@ pub struct ScenarioOutcome {
     pub ingested: usize,
     /// Per-peer canonical readings (sorted), keyed by fleet peer name.
     pub per_peer: BTreeMap<String, Vec<CanonicalReading>>,
+    /// Final shard placement from the ingest host's ledger:
+    /// `{anchor}/{bucket}` → hosting peer names (sorted).
+    pub placement: BTreeMap<String, Vec<String>>,
+    /// Scripted query results, in execution order.
+    pub queries: Vec<QueryRecord>,
+    /// Fleet peer name → DID (seeded, stable across runs).
+    pub peer_dids: BTreeMap<String, String>,
     /// Hub deliveries dropped at drain time (link-down losses + channel
     /// backpressure) — diagnostics, not part of the determinism contract.
     pub dropped_deliveries: u64,
+    /// Gossip frames the hub delivered (> 0 ⇔ the compute plane was used).
+    pub gossip_deliveries: u64,
     /// `fe_sync::bound_endpoint_count()` before/after the run: a sim
     /// scenario binds no iroh endpoint, so these must be equal (A19's
     /// "no real network" clause).
@@ -167,9 +455,23 @@ pub struct ScenarioOutcome {
 }
 
 impl ScenarioOutcome {
-    /// The per-peer fingerprint (readings only — the determinism contract).
+    /// The per-peer readings fingerprint (F8's determinism contract).
     pub fn fingerprint(&self) -> &BTreeMap<String, Vec<CanonicalReading>> {
         &self.per_peer
+    }
+
+    /// The full determinism contract: readings + placement + queries.
+    pub fn canonical_fingerprint(&self) -> ScenarioFingerprint {
+        ScenarioFingerprint {
+            per_peer: self.per_peer.clone(),
+            placement: self.placement.clone(),
+            queries: self.queries.iter().map(QueryRecord::fingerprint).collect(),
+        }
+    }
+
+    /// The recorded query with `label`.
+    pub fn query(&self, label: &str) -> Option<&QueryRecord> {
+        self.queries.iter().find(|q| q.label == label)
     }
 }
 
@@ -186,7 +488,11 @@ impl Drop for HlcSourceGuard {
 
 /// One merged driver action in total `(at_ms, event-before-tick)` order.
 enum Action<'a> {
-    Event(&'a ScriptedEvent),
+    /// A scripted event at its ABSOLUTE simulated time.
+    Event {
+        at_ms: u64,
+        event: &'a ScriptedEvent,
+    },
     /// All readings scheduled at this instant.
     Tick {
         at_ms: u64,
@@ -197,8 +503,7 @@ enum Action<'a> {
 impl<'a> Action<'a> {
     fn at_ms(&self) -> u64 {
         match self {
-            Self::Event(e) => e.at_ms(),
-            Self::Tick { at_ms, .. } => *at_ms,
+            Self::Event { at_ms, .. } | Self::Tick { at_ms, .. } => *at_ms,
         }
     }
 }
@@ -218,6 +523,10 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
     std::fs::create_dir_all(root_dir)?;
 
     let endpoints_before = fe_sync::bound_endpoint_count();
+    let settings = match &script.timeseries {
+        Some(ts) => ts.settings()?,
+        None => VerseTimeseriesSettings::default(),
+    };
 
     // The clock the whole run reads: sensors, the hub, and (via the
     // process-global HLC source) every reading's stamp.
@@ -230,7 +539,7 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
     // --- Spawn the peers on the virtual transport (no real network). ---
     let mut peers: BTreeMap<String, SimPeer> = BTreeMap::new();
     for name in &script.fleet.peers {
-        let peer = SimPeer::spawn(&net, name, root_dir)?;
+        let peer = SimPeer::spawn(&net, name, root_dir, script.seed)?;
         peers.insert(name.clone(), peer);
     }
     let host_name = script.fleet.ingest_peer.clone();
@@ -328,8 +637,9 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
     std::thread::sleep(Duration::from_millis(500));
 
     // --- Publish the verse manifest from the host (A3's admission       ---
-    // --- precondition: joiners must resolve the host as Owner).         ---
-    let manifest_row = serde_json::json!({
+    // --- precondition: joiners must resolve the host as Owner; the ts_* ---
+    // --- columns are how every fabric learns the placement mode).        ---
+    let mut manifest_row = serde_json::json!({
         "verse_id": verse_id,
         "name": script.fleet.verse_name,
         "created_by": host_did,
@@ -337,6 +647,11 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
         "namespace_id": ns_id_hex,
         "default_access": "viewer",
     });
+    if script.timeseries.is_some() {
+        manifest_row["ts_mode"] = settings.mode.as_str().into();
+        manifest_row["ts_replication_factor"] = settings.replication_factor.into();
+        manifest_row["ts_bucket_width_ms"] = settings.bucket_width_ms.into();
+    }
     let manifest_bytes = serde_json::to_vec(&manifest_row)?;
     let manifest_hash = host.peer.blob_store.add_blob(&manifest_bytes)?;
     host.peer
@@ -349,40 +664,65 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
         })
         .map_err(|e| anyhow::anyhow!("manifest WriteRowEntry failed: {e}"))?;
 
-    // The manifest must converge BEFORE the fleet starts (the A3 gate on
-    // every joiner resolves the host through it). Settling never advances
-    // the clock — only steps the hub — so the first tick's simulated
-    // timestamp is untouched by however long convergence really takes.
-    let joiners: Vec<String> = script
-        .fleet
-        .peers
+    let did_to_name: HashMap<String, String> = peers
         .iter()
-        .filter(|p| **p != host_name)
-        .cloned()
+        .map(|(name, peer)| (peer.did(), name.clone()))
         .collect();
-    settle(
-        &clock,
-        &net,
-        &peers,
-        &joiners,
-        |peer_rows| peer_rows >= 1,
-        "verse manifest convergence",
-        |peer| {
+    let node_to_anchor: HashMap<String, String> = anchor_node_ids
+        .iter()
+        .map(|(anchor, node)| (node.clone(), anchor.clone()))
+        .collect();
+    let mut run = Run {
+        clock: clock.clone(),
+        net: net.clone(),
+        peers,
+        host_name: host_name.clone(),
+        verse_id: verse_id.clone(),
+        petal_id: petal_id.clone(),
+        origin_ms: script.fleet.start_ms,
+        settings,
+        ingested: 0,
+        did_to_name,
+        node_to_anchor,
+    };
+
+    // The manifest must converge BEFORE the fleet starts (the A3 gate on
+    // every joiner resolves the host through it), and every fabric must
+    // know every peer's declaration + the mode before the first shard is
+    // planned (placement sees the peers it knows about; retention reads the
+    // mode). Settling never advances the clock — only steps the hub — so
+    // the first tick's simulated timestamp is untouched.
+    for name in script.fleet.peers.iter().filter(|p| **p != host_name) {
+        run.settle_probe(&format!("verse manifest on {name}"), || {
             let rows = raw_query(
-                &peer.peer,
+                &run.peer(name)?.peer,
                 &format!("SELECT verse_id FROM verse WHERE verse_id = '{verse_id}'"),
             )?;
-            Ok(rows.len())
-        },
-    )?;
+            Ok(!rows.is_empty())
+        })?;
+    }
+    for name in &script.fleet.peers {
+        run.settle_probe(&format!("fabric membership on {name}"), || {
+            let dump = run.ledger(name)?;
+            let peers_known = dump["peers"].as_object().map(|p| p.len()).unwrap_or(0);
+            Ok(peers_known == script.fleet.peers.len()
+                && dump["settings"]["mode"].as_str() == Some(run.settings.mode.as_str()))
+        })?;
+    }
 
-    // --- Merge the fire plan and the fault script into one ordered      ---
-    // --- action list (events land before same-instant ticks).           ---
+    // --- Merge the fire plan and the event script into one ordered     ---
+    // --- action list (events land before same-instant ticks). Event    ---
+    // --- offsets become absolute simulated times here.                 ---
     let plan = plan_fleet(&script.fleet);
     let mut actions: Vec<Action> = Vec::new();
     {
-        let mut events: Vec<&ScriptedEvent> = script.events.iter().collect();
-        events.sort_by_key(|e| e.at_ms());
+        let origin = script.fleet.start_ms;
+        let mut events: Vec<(u64, &ScriptedEvent)> = script
+            .events
+            .iter()
+            .map(|e| (origin.saturating_add(e.at_ms()), e))
+            .collect();
+        events.sort_by_key(|(at, _)| *at); // stable: same-instant events keep script order
         let mut ticks: Vec<(u64, Vec<&ScheduledReading>)> = Vec::new();
         for reading in &plan {
             match ticks.last_mut() {
@@ -390,20 +730,16 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
                 _ => ticks.push((reading.at_ms, vec![reading])),
             }
         }
-        // Merge two sorted streams.
-        let mut e = 0usize;
-        let mut t = 0usize;
+        let (mut e, mut t) = (0usize, 0usize);
         while e < events.len() || t < ticks.len() {
-            let next_event = events.get(e).map(|ev| (ev.at_ms(), 0u8));
-            let next_tick = ticks.get(t).map(|(at, _)| (*at, 1u8));
-            let take_event = match (next_event, next_tick) {
+            let take_event = match (events.get(e), ticks.get(t)) {
                 (Some((ea, _)), Some((ta, _))) => ea <= ta,
                 (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => false,
+                (None, _) => false,
             };
             if take_event {
-                actions.push(Action::Event(events[e]));
+                let (at_ms, event) = events[e];
+                actions.push(Action::Event { at_ms, event });
                 e += 1;
             } else {
                 let (at, list) = &ticks[t];
@@ -417,9 +753,9 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
     }
 
     // --- Drive the script. The clock only moves between actions, and   ---
-    // --- every ingest awaits its reply, so every stamp is a fixed      ---
-    // --- simulated millisecond.                                        ---
-    let mut ingested: usize = 0;
+    // --- every ingest awaits its DB reply AND its hub write, so every   ---
+    // --- stamp and delivery due-time is a fixed simulated millisecond.  ---
+    let mut queries: Vec<QueryRecord> = Vec::new();
     for action in &actions {
         let at = action.at_ms();
         if at > clock.now_ms() {
@@ -427,8 +763,44 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
             net.step();
         }
         match action {
-            Action::Event(event) => apply_event(&net, &peers, event),
-            Action::Tick { readings, .. } => {
+            Action::Event {
+                event:
+                    ScriptedEvent::Query {
+                        at_ms,
+                        peer,
+                        label,
+                        query,
+                        timeout_ms,
+                    },
+                ..
+            } => {
+                // A query reads stores: settle every peer to its exact
+                // convergence target first (draining the network — this may
+                // advance the clock to in-flight due times).
+                run.settle_stores(true, &format!("pre-query '{label}'"))?;
+                let outcome = run.run_query(peer, label, query, *timeout_ms)?;
+                queries.push(QueryRecord {
+                    label: label.clone(),
+                    peer: peer.clone(),
+                    at_ms: *at_ms,
+                    aggregate: query.is_aggregate(),
+                    outcome: run.canonical_outcome(&outcome, query.is_aggregate()),
+                });
+            }
+            Action::Event { event, .. } => {
+                // Every ingested row is already in the hub (the tick
+                // barrier), so the fault cuts a deterministic in-flight set.
+                run.settle_writes()?;
+                apply_event(&net, &run.peers, event);
+            }
+            Action::Tick { at_ms, readings } => {
+                if *at_ms < clock.now_ms() {
+                    anyhow::bail!(
+                        "simulated time overran the tick at {at_ms} (clock {}): a query's \
+                         network drain advanced past it — move the query or lower the latency",
+                        clock.now_ms()
+                    );
+                }
                 let mut batch: Vec<IotReadingInput> = Vec::with_capacity(readings.len());
                 for reading in readings {
                     let sensor = &script.fleet.sensors[reading.sensor];
@@ -455,6 +827,7 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
                 }
                 let expected = batch.len();
                 let want_petal = petal_id.clone();
+                let host = run.peer(&host_name)?;
                 host.peer.send(DbCommand::InsertIotReadings {
                     petal_id: petal_id.clone(),
                     verse_id: Some(verse_id.clone()),
@@ -474,126 +847,415 @@ pub fn run_scenario(script: &ScenarioScript, root_dir: &Path) -> Result<Scenario
                 if written != expected {
                     anyhow::bail!("ingest wrote {written} of {expected} readings");
                 }
-                ingested += written;
-                // Give the DB→sync bridge + hub a beat, then drain what is
-                // due. The end-of-run settle catches anything in flight.
-                std::thread::sleep(SETTLE_POLL);
+                run.ingested += written;
+                // The rows reach the hub through the DB→sync bridge; wait for
+                // that write (its due-time is this tick's millisecond), then
+                // drain what is due.
+                run.settle_writes()?;
                 net.step();
             }
         }
     }
 
-    // --- Settle: every online peer converges to the union of all        ---
-    // --- ingested readings (the built-in scripts heal every fault       ---
-    // --- before the end, so the target is exact).                        ---
-    for name in &joiners {
-        settle(
-            &clock,
-            &net,
-            &peers,
-            std::slice::from_ref(name),
-            |count| count == ingested,
-            &format!("reading union convergence on {name}"),
-            |peer| {
-                let rows = raw_query(&peer.peer, "SELECT * FROM iot_reading")?;
-                Ok(rows.len())
-            },
-        )?;
-    }
-    // Drain anything still in flight (bounded — quiescence, not progress).
-    let settle_deadline = Instant::now() + SETTLE_BUDGET;
-    while net.inflight_count() > 0 && Instant::now() < settle_deadline {
-        clock.advance_ms(1_000);
-        net.step();
-        std::thread::sleep(SETTLE_POLL);
-    }
+    // --- Settle: every peer converges to its exact target (authored +  ---
+    // --- delivered rows, filtered by shard retention). The built-in    ---
+    // --- scripts heal every fault, so mirror targets are the union.    ---
+    run.settle_stores(true, "final convergence")?;
 
-    // --- Fingerprint every peer's durable store. -------------------------
-    let node_to_anchor: HashMap<String, &String> = anchor_node_ids
-        .iter()
-        .map(|(k, v)| (v.clone(), k))
-        .collect();
+    // --- Fingerprint every peer's durable store + the final placement. --
     let mut per_peer: BTreeMap<String, Vec<CanonicalReading>> = BTreeMap::new();
-    for (name, peer) in &peers {
+    for (name, peer) in &run.peers {
         let rows = raw_query(&peer.peer, "SELECT * FROM iot_reading")?;
         let mut canonical: Vec<CanonicalReading> = rows
             .iter()
-            .map(|row| {
-                let node_id = row["node_id"].as_str().unwrap_or_default();
-                Ok::<_, anyhow::Error>(CanonicalReading {
-                    anchor: node_to_anchor
-                        .get(node_id)
-                        .map(|s| (*s).clone())
-                        .unwrap_or_else(|| node_id.to_string()),
-                    metric: row["metric"].as_str().unwrap_or_default().to_string(),
-                    units: row["units"].as_str().unwrap_or_default().to_string(),
-                    recorded_at_ms: row["recorded_at_ms"].as_i64().unwrap_or_default(),
-                    value_bits: row["value"].as_f64().unwrap_or_default().to_bits(),
-                    hlc_wall_ms: row["hlc_timestamp"]
-                        .as_i64()
-                        .map(|h| (h >> 16) as u64)
-                        .unwrap_or_default(),
-                })
+            .map(|row| CanonicalReading {
+                anchor: run.anchor_name(row["node_id"].as_str().unwrap_or_default()),
+                metric: row["metric"].as_str().unwrap_or_default().to_string(),
+                units: row["units"].as_str().unwrap_or_default().to_string(),
+                recorded_at_ms: row["recorded_at_ms"].as_i64().unwrap_or_default(),
+                value_bits: row["value"].as_f64().unwrap_or_default().to_bits(),
+                hlc_wall_ms: row["hlc_timestamp"]
+                    .as_i64()
+                    .map(|h| (h >> 16) as u64)
+                    .unwrap_or_default(),
             })
-            .collect::<Result<_>>()?;
+            .collect();
         canonical.sort();
         per_peer.insert(name.clone(), canonical);
     }
+    let mut placement: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (shard, hosts) in run.ledger_hosts()? {
+        let mut names: Vec<String> = hosts.iter().map(|d| run.peer_name(d)).collect();
+        names.sort();
+        placement.insert(run.canonical_shard(&shard), names);
+    }
+    let peer_dids: BTreeMap<String, String> = run
+        .peers
+        .iter()
+        .map(|(name, peer)| (name.clone(), peer.did()))
+        .collect();
 
     // --- Clean shutdown: close replicas, drop peers (threads join). ------
-    for peer in peers.values() {
-        let _ = peer.peer.sync_cmd_tx.send(SyncCommand::CloseVerseReplica {
+    for peer in run.peers.values() {
+        if let Err(e) = peer.peer.sync_cmd_tx.send(SyncCommand::CloseVerseReplica {
             verse_id: verse_id.clone(),
-        });
+        }) {
+            tracing::warn!("scenario shutdown: CloseVerseReplica send failed: {e}");
+        }
     }
     std::thread::sleep(SETTLE_POLL);
-    drop(peers);
+    let ingested = run.ingested;
+    drop(run);
 
     let endpoints_after = fe_sync::bound_endpoint_count();
     Ok(ScenarioOutcome {
         name: script.name.clone(),
         ingested,
         per_peer,
+        placement,
+        queries,
+        peer_dids,
         dropped_deliveries: net.dropped_deliveries(),
+        gossip_deliveries: net.gossip_deliveries(),
         endpoints_before,
         endpoints_after,
     })
 }
 
+/// The live state of one run the driver's barriers and queries share.
+struct Run {
+    clock: Arc<SimClock>,
+    net: Arc<SimNet>,
+    peers: BTreeMap<String, SimPeer>,
+    host_name: String,
+    verse_id: String,
+    petal_id: String,
+    /// The fleet's `start_ms` (query window offsets are relative to it).
+    origin_ms: u64,
+    settings: VerseTimeseriesSettings,
+    /// Readings the ingest host durably wrote so far.
+    ingested: usize,
+    did_to_name: HashMap<String, String>,
+    node_to_anchor: HashMap<String, String>,
+}
+
+impl Run {
+    fn peer(&self, name: &str) -> Result<&SimPeer> {
+        self.peers
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("unknown peer '{name}'"))
+    }
+
+    fn peer_name(&self, did: &str) -> String {
+        self.did_to_name
+            .get(did)
+            .cloned()
+            .unwrap_or_else(|| did.to_string())
+    }
+
+    fn anchor_name(&self, node_id: &str) -> String {
+        self.node_to_anchor
+            .get(node_id)
+            .cloned()
+            .unwrap_or_else(|| node_id.to_string())
+    }
+
+    /// `{petal}/{node}/{bucket}` → `{anchor}/{bucket}` (run-local ids out).
+    fn canonical_shard(&self, key: &str) -> String {
+        let rest = key
+            .strip_prefix(&format!("{}/", self.petal_id))
+            .unwrap_or(key);
+        match rest.split_once('/') {
+            Some((node, bucket)) => format!("{}/{bucket}", self.anchor_name(node)),
+            None => rest.to_string(),
+        }
+    }
+
+    /// Drop every queued sync event: the sync thread's event sends block on
+    /// a full (64) channel, and nothing else consumes them in a sim run.
+    fn drain_events(&self) {
+        for peer in self.peers.values() {
+            while peer.peer.sync_evt_rx.try_recv().is_ok() {}
+        }
+    }
+
+    /// A peer's fabric dump (`GetShardLedger` → `SyncEvent::ShardLedger`).
+    fn ledger(&self, name: &str) -> Result<serde_json::Value> {
+        let peer = &self.peer(name)?.peer;
+        peer.sync_cmd_tx
+            .send(SyncCommand::GetShardLedger {
+                verse_id: self.verse_id.clone(),
+            })
+            .map_err(|e| anyhow::anyhow!("GetShardLedger send failed: {e}"))?;
+        let verse_id = self.verse_id.clone();
+        match peer.wait_sync_event(
+            |e| matches!(e, SyncEvent::ShardLedger { verse_id: v, .. } if *v == verse_id),
+            DB_REPLY_BUDGET,
+        )? {
+            SyncEvent::ShardLedger { ledger_json, .. } => serde_json::from_str(&ledger_json)
+                .map_err(|e| anyhow::anyhow!("bad ledger JSON: {e}")),
+            other => anyhow::bail!("unexpected sync event: {other:?}"),
+        }
+    }
+
+    /// The ingest host's shard ledger: shard key → host DIDs. The host
+    /// planned every shard, so its ledger is complete even while cut off.
+    fn ledger_hosts(&self) -> Result<BTreeMap<String, Vec<String>>> {
+        let dump = self.ledger(&self.host_name)?;
+        let mut out = BTreeMap::new();
+        if let Some(shards) = dump["shards"].as_object() {
+            for (key, entry) in shards {
+                let hosts = entry["hosts"]
+                    .as_array()
+                    .map(|hs| {
+                        hs.iter()
+                            .filter_map(|h| h.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                out.insert(key.clone(), hosts);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Poll `probe` (stepping the hub, draining events) until it passes or
+    /// the budget runs out — never advances the clock.
+    fn settle_probe<P: Fn() -> Result<bool>>(&self, what: &str, probe: P) -> Result<()> {
+        let deadline = Instant::now() + SETTLE_BUDGET;
+        loop {
+            self.net.step();
+            self.drain_events();
+            if probe().unwrap_or(false) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("scenario settle timed out waiting for {what}");
+            }
+            std::thread::sleep(SETTLE_POLL);
+        }
+    }
+
+    /// Barrier: every ingested reading has reached the hub doc (the
+    /// DB→bridge→sync leg is asynchronous; its write time is a due-time).
+    fn settle_writes(&self) -> Result<()> {
+        let want = self.ingested;
+        self.settle_probe("ingested rows reaching the hub", || {
+            Ok(self.net.entry_count("iot_reading") >= want)
+        })
+    }
+
+    /// How many readings `did`'s store must hold: every row it authored,
+    /// plus every row the hub delivered to it that its retention keeps
+    /// (the same `retention_decision` its sync thread runs).
+    fn expected_readings(&self, did: &str, hosts: &BTreeMap<String, Vec<String>>) -> usize {
+        self.net
+            .visible_entries(did, "iot_reading")
+            .iter()
+            .filter(|entry| {
+                if entry.author == did {
+                    return true;
+                }
+                let shard = serde_json::from_slice::<serde_json::Value>(&entry.data)
+                    .ok()
+                    .and_then(|row| ShardId::of_reading_row(&row, self.settings.bucket_width_ms));
+                let Some(shard) = shard else {
+                    return true; // unparseable rows retain (sync-thread parity)
+                };
+                fe_sync::placement::retention_decision(
+                    &self.settings,
+                    hosts.get(&shard.key()).map(Vec::as_slice),
+                    did,
+                ) == Retention::Retain
+            })
+            .count()
+    }
+
+    /// Barrier: every peer's store holds exactly its convergence target.
+    /// With `drain_network`, in-flight deliveries are drained first by
+    /// advancing the clock to their due times. Over-retention (a store
+    /// ABOVE target) never settles — it fails loudly.
+    fn settle_stores(&self, drain_network: bool, what: &str) -> Result<()> {
+        self.settle_writes()?;
+        let deadline = Instant::now() + SETTLE_BUDGET;
+        loop {
+            self.net.step();
+            self.drain_events();
+            if drain_network && self.net.inflight_count() > 0 {
+                if let Some(due) = self.net.next_due_ms() {
+                    let now = self.clock.now_ms();
+                    if due > now {
+                        self.clock.advance_ms(due - now);
+                    }
+                }
+            } else {
+                let hosts = self.ledger_hosts()?;
+                let mut lagging: Option<String> = None;
+                for (name, peer) in &self.peers {
+                    let did = peer.did();
+                    let expected = self.expected_readings(&did, &hosts);
+                    let actual = raw_query(&peer.peer, "SELECT reading_id FROM iot_reading")?.len();
+                    // The fabric must also have consumed every ledger row it
+                    // was handed: a trailing `__shards` row for a shard this
+                    // peer does not host leaves its store count unchanged,
+                    // yet a query planned before it lands misses the shard.
+                    let shards_visible = self.net.visible_entries(&did, SHARD_TABLE).len();
+                    let shards_known = self.ledger(name)?["shards"]
+                        .as_object()
+                        .map(|s| s.len())
+                        .unwrap_or(0);
+                    if actual != expected || shards_known != shards_visible {
+                        lagging = Some(format!(
+                            "peer '{name}' holds {actual}/{expected} readings and knows \
+                             {shards_known}/{shards_visible} shards"
+                        ));
+                        break;
+                    }
+                }
+                match lagging {
+                    None => return Ok(()),
+                    Some(state) if Instant::now() >= deadline => {
+                        anyhow::bail!("scenario settle timed out ({what}): {state}");
+                    }
+                    Some(_) => {}
+                }
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("scenario settle timed out ({what}): network never drained");
+            }
+            std::thread::sleep(SETTLE_POLL);
+        }
+    }
+
+    /// Submit one distributed query through the real `SubmitComputeTask`
+    /// seam and pump the hub until the merged outcome comes back.
+    fn run_query(
+        &self,
+        peer_name: &str,
+        label: &str,
+        query: &SimQuery,
+        timeout_ms: u64,
+    ) -> Result<DistributedQueryOutcome> {
+        let peer = &self.peer(peer_name)?.peer;
+        let (reply_tx, reply_rx) = crossbeam::channel::bounded(1);
+        peer.sync_cmd_tx
+            .send(SyncCommand::SubmitComputeTask {
+                call: DistributedQueryCall {
+                    request: DistributedQueryRequest {
+                        request_id: format!("sim-query-{label}"),
+                        verse_id: self.verse_id.clone(),
+                        spec: query.to_kind(&self.petal_id, self.origin_ms),
+                        timeout_ms,
+                        row_cap: 0,
+                    },
+                    reply: reply_tx,
+                },
+            })
+            .map_err(|e| anyhow::anyhow!("SubmitComputeTask send failed: {e}"))?;
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms) + SETTLE_BUDGET;
+        loop {
+            match reply_rx.try_recv() {
+                Ok(outcome) => return Ok(outcome),
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                    anyhow::bail!("query '{label}': the collector dropped its reply")
+                }
+                Err(crossbeam::channel::TryRecvError::Empty) => {}
+            }
+            // Gossip frames (request, partial responses) ride the hub heap
+            // like doc rows: drain what is due, advancing to latency-delayed
+            // due times when nothing is due yet.
+            self.net.step();
+            self.drain_events();
+            if let Some(due) = self.net.next_due_ms() {
+                let now = self.clock.now_ms();
+                if due > now {
+                    self.clock.advance_ms(due - now);
+                }
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("query '{label}': no outcome within the deadline");
+            }
+            std::thread::sleep(SETTLE_POLL);
+        }
+    }
+
+    /// Map a wire outcome into fleet vocabulary.
+    fn canonical_outcome(
+        &self,
+        outcome: &DistributedQueryOutcome,
+        aggregate: bool,
+    ) -> CanonicalQueryOutcome {
+        let mut rows: Vec<CanonicalQueryRow> = outcome
+            .rows
+            .iter()
+            .map(|row| {
+                let anchor = self.anchor_name(row["node_id"].as_str().unwrap_or_default());
+                let metric = row["metric"].as_str().unwrap_or_default().to_string();
+                if aggregate {
+                    CanonicalQueryRow::Aggregate {
+                        anchor,
+                        metric,
+                        sample_count: row["sample_count"].as_u64().unwrap_or(0),
+                        avg: row["avg_value"].as_f64().unwrap_or(f64::NAN),
+                        min: row["min_value"].as_f64().unwrap_or(f64::NAN),
+                        max: row["max_value"].as_f64().unwrap_or(f64::NAN),
+                    }
+                } else {
+                    CanonicalQueryRow::Reading {
+                        anchor,
+                        metric,
+                        recorded_at_ms: row["recorded_at_ms"].as_i64().unwrap_or_default(),
+                        value: row["value"].as_f64().unwrap_or(f64::NAN),
+                    }
+                }
+            })
+            .collect();
+        rows.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+        let shards = |keys: &[String]| -> Vec<String> {
+            let mut out: Vec<String> = keys.iter().map(|k| self.canonical_shard(k)).collect();
+            out.sort();
+            out
+        };
+        let names = |dids: &[String]| -> Vec<String> {
+            let mut out: Vec<String> = dids.iter().map(|d| self.peer_name(d)).collect();
+            out.sort();
+            out
+        };
+        CanonicalQueryOutcome {
+            rows,
+            covered_shards: shards(&outcome.meta.covered_shards),
+            missing_shards: shards(&outcome.meta.missing_shards),
+            answered_hosts: names(&outcome.meta.answered_hosts),
+            missing_hosts: names(&outcome.meta.missing_hosts),
+            mode: outcome.meta.mode.clone(),
+            truncated: outcome.meta.truncated,
+            error: outcome.error.clone(),
+        }
+    }
+}
+
 /// Apply one scripted fault to the hub (mapping fleet peer names to DIDs —
 /// the hub's membership keys are the DIDs the replicas author as).
 fn apply_event(net: &Arc<SimNet>, peers: &BTreeMap<String, SimPeer>, event: &ScriptedEvent) {
+    let did_of = |name: &String| {
+        peers
+            .get(name)
+            .map(|p| p.did())
+            .unwrap_or_else(|| name.clone())
+    };
     match event {
         ScriptedEvent::PeerOffline { peer, .. } => {
-            let did = peers
-                .get(peer)
-                .map(|p| p.did())
-                .unwrap_or_else(|| peer.clone());
             tracing::info!(peer, "scenario: peer offline");
-            net.set_peer_online(&did, false);
+            net.set_peer_online(&did_of(peer), false);
         }
         ScriptedEvent::PeerOnline { peer, .. } => {
-            let did = peers
-                .get(peer)
-                .map(|p| p.did())
-                .unwrap_or_else(|| peer.clone());
             tracing::info!(peer, "scenario: peer back online");
-            net.set_peer_online(&did, true);
+            net.set_peer_online(&did_of(peer), true);
         }
         ScriptedEvent::Partition { groups, .. } => {
             let did_groups: Vec<Vec<String>> = groups
                 .iter()
-                .map(|group| {
-                    group
-                        .iter()
-                        .map(|name| {
-                            peers
-                                .get(name)
-                                .map(|p| p.did())
-                                .unwrap_or_else(|| name.clone())
-                        })
-                        .collect()
-                })
+                .map(|group| group.iter().map(did_of).collect())
                 .collect();
             net.partition(did_groups);
         }
@@ -605,53 +1267,10 @@ fn apply_event(net: &Arc<SimNet>, peers: &BTreeMap<String, SimPeer>, event: &Scr
             tracing::info!(latency_ms, "scenario: latency");
             net.set_latency_ms(*latency_ms);
         }
-    }
-}
-
-/// Poll `peers` until `check` passes for every one — stepping the hub each
-/// round and letting the real pumps run between polls. When deliveries are
-/// still in flight (scripted latency puts their due-times in the simulated
-/// future), the clock is advanced a bounded quantum so they can drain;
-/// nothing stamps time after the plan ends, so this moves messages, never
-/// content — determinism is untouched. Fails loudly at the budget: a
-/// scenario that cannot converge is a bug, not a slow machine.
-fn settle<P, C>(
-    clock: &Arc<SimClock>,
-    net: &Arc<SimNet>,
-    peers: &BTreeMap<String, SimPeer>,
-    targets: &[String],
-    check: C,
-    what: &str,
-    probe: P,
-) -> Result<()>
-where
-    P: Fn(&SimPeer) -> Result<usize>,
-    C: Fn(usize) -> bool,
-{
-    let deadline = Instant::now() + SETTLE_BUDGET;
-    loop {
-        net.step();
-        let mut all = true;
-        for name in targets {
-            let peer = peers
-                .get(name)
-                .ok_or_else(|| anyhow::anyhow!("settle: unknown peer '{name}'"))?;
-            let value = probe(peer).unwrap_or(0);
-            if !check(value) {
-                all = false;
-                break;
-            }
+        ScriptedEvent::Query { label, .. } => {
+            // Queries need the run context; the driver executes them.
+            tracing::warn!(label, "query event reached the fault applier — ignored");
         }
-        if all {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            anyhow::bail!("scenario settle timed out waiting for {what}");
-        }
-        if net.inflight_count() > 0 {
-            clock.advance_ms(1_000);
-        }
-        std::thread::sleep(SETTLE_POLL);
     }
 }
 
@@ -715,9 +1334,152 @@ pub fn default_script() -> ScenarioScript {
     .expect("built-in scenario must parse")
 }
 
+/// A21 scenario 1 (checked in at `fe-sim/scenarios/sharded_query.json`):
+/// three peers, a `sharded` fabric, one distributed aggregate + one raw
+/// fan-out from a non-ingest peer.
+pub fn sharded_query_script() -> ScenarioScript {
+    ScenarioScript::parse(include_str!("../scenarios/sharded_query.json"))
+        .expect("checked-in sharded_query.json must parse")
+}
+
+/// A21 scenario 2 (checked in at `fe-sim/scenarios/offline_degraded.json`):
+/// the ingest host goes offline → a degraded-but-honest query → the host
+/// returns → outage readings converge → a fully-covered query.
+pub fn offline_degraded_script() -> ScenarioScript {
+    ScenarioScript::parse(include_str!("../scenarios/offline_degraded.json"))
+        .expect("checked-in offline_degraded.json must parse")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Float tolerance for query values: merges sum per shard then across
+    /// shards, the oracle sums in tick order — summation order, never
+    /// transport loss (replicated values are asserted bit-exact).
+    const EPS: f64 = 1e-9;
+
+    /// Run `script` twice in fresh directories (the repeat-run pattern).
+    fn run_twice(script: &ScenarioScript) -> (ScenarioOutcome, ScenarioOutcome) {
+        let dir_a = tempfile::tempdir().expect("run A tempdir");
+        let a = run_scenario(script, dir_a.path()).expect("scenario run A");
+        let dir_b = tempfile::tempdir().expect("run B tempdir");
+        let b = run_scenario(script, dir_b.path()).expect("scenario run B");
+        (a, b)
+    }
+
+    /// `{anchor}/{bucket}` of a planned reading — the canonical shard name.
+    fn shard_of(script: &ScenarioScript, reading: &ScheduledReading) -> String {
+        let width = script
+            .timeseries
+            .as_ref()
+            .map(|t| t.bucket_width_ms)
+            .unwrap_or(fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS);
+        format!(
+            "{}/{}",
+            script.fleet.sensors[reading.sensor].anchor,
+            ShardId::bucket_index(reading.at_ms as i64, width)
+        )
+    }
+
+    /// Per-anchor (sum, count, min, max) over the planned readings `keep`
+    /// selects — the A15 oracle ("the same query over the union").
+    fn oracle<'a>(
+        script: &ScenarioScript,
+        readings: impl Iterator<Item = &'a ScheduledReading>,
+    ) -> BTreeMap<String, (f64, u64, f64, f64)> {
+        let mut acc: BTreeMap<String, (f64, u64, f64, f64)> = BTreeMap::new();
+        for r in readings {
+            let anchor = script.fleet.sensors[r.sensor].anchor.clone();
+            let e = acc
+                .entry(anchor)
+                .or_insert((0.0, 0, f64::INFINITY, f64::NEG_INFINITY));
+            e.0 += r.value;
+            e.1 += 1;
+            e.2 = e.2.min(r.value);
+            e.3 = e.3.max(r.value);
+        }
+        acc
+    }
+
+    fn assert_aggregate_matches(
+        record: &QueryRecord,
+        expected: &BTreeMap<String, (f64, u64, f64, f64)>,
+    ) {
+        assert_eq!(
+            record.outcome.rows.len(),
+            expected.len(),
+            "{}: one merged row per anchor: {:?}",
+            record.label,
+            record.outcome.rows
+        );
+        for row in &record.outcome.rows {
+            let CanonicalQueryRow::Aggregate {
+                anchor,
+                sample_count,
+                avg,
+                min,
+                max,
+                ..
+            } = row
+            else {
+                panic!("{}: non-aggregate row {row:?}", record.label);
+            };
+            let (sum, count, want_min, want_max) = expected[anchor];
+            assert_eq!(*sample_count, count, "{}: {anchor} count", record.label);
+            assert!(
+                (avg - sum / count as f64).abs() < EPS,
+                "{}: {anchor} avg",
+                record.label
+            );
+            assert!(
+                (min - want_min).abs() < EPS,
+                "{}: {anchor} min",
+                record.label
+            );
+            assert!(
+                (max - want_max).abs() < EPS,
+                "{}: {anchor} max",
+                record.label
+            );
+        }
+    }
+
+    /// (anchor, recorded_at) → value bits of the ingest host's ORIGIN rows.
+    fn origin_bits(outcome: &ScenarioOutcome, host: &str) -> BTreeMap<(String, i64), u64> {
+        outcome.per_peer[host]
+            .iter()
+            .map(|r| ((r.anchor.clone(), r.recorded_at_ms), r.value_bits))
+            .collect()
+    }
+
+    /// A replica's store holds exactly the readings of the shards it hosts,
+    /// each bit-identical to the origin row (DEC-C6: bit-exact replication).
+    fn assert_store_is_its_hosted_shards(
+        script: &ScenarioScript,
+        outcome: &ScenarioOutcome,
+        peer: &str,
+    ) {
+        let origin = origin_bits(outcome, &script.fleet.ingest_peer);
+        let plan = plan_fleet(&script.fleet);
+        let hosted = plan
+            .iter()
+            .filter(|r| outcome.placement[&shard_of(script, r)] == [peer.to_string()])
+            .count();
+        let store = &outcome.per_peer[peer];
+        assert_eq!(
+            store.len(),
+            hosted,
+            "{peer} retains exactly its hosted shards"
+        );
+        for reading in store {
+            assert_eq!(
+                origin.get(&(reading.anchor.clone(), reading.recorded_at_ms)),
+                Some(&reading.value_bits),
+                "{peer}'s replica of {reading:?} must be bit-identical to the origin row"
+            );
+        }
+    }
 
     /// A19: the same script, run twice, produces the same canonical
     /// fingerprint on every peer — and binds no iroh endpoint either time.
@@ -726,16 +1488,12 @@ mod tests {
         let script = default_script();
         // 3 sensors × 60s cadence over 420s = 7 ticks each = 21 readings.
         let expected_readings = 21;
-
-        let dir_a = tempfile::tempdir().expect("run A tempdir");
-        let outcome_a = run_scenario(&script, dir_a.path()).expect("scenario run A");
-        let dir_b = tempfile::tempdir().expect("run B tempdir");
-        let outcome_b = run_scenario(&script, dir_b.path()).expect("scenario run B");
+        let (outcome_a, outcome_b) = run_twice(&script);
 
         // Deterministic content: identical per-peer fingerprints.
         assert_eq!(
-            outcome_a.fingerprint(),
-            outcome_b.fingerprint(),
+            outcome_a.canonical_fingerprint(),
+            outcome_b.canonical_fingerprint(),
             "same script must produce the same per-peer readings"
         );
 
@@ -748,16 +1506,20 @@ mod tests {
                 "peer '{peer}' must converge to the full union (script heals every fault)"
             );
         }
+        // Mirror replicas are bit-identical to the origin — value bits
+        // included (DEC-C6: the 1-ULP replication loss is fixed, not masked).
+        assert_eq!(
+            outcome_a.per_peer["alice"], outcome_a.per_peer["bob"],
+            "replicated readings must be bit-identical to the origin rows"
+        );
 
         // No real network: the endpoint count never moved (A19).
-        assert_eq!(
-            outcome_a.endpoints_before, outcome_a.endpoints_after,
-            "a sim scenario must not bind any iroh endpoint"
-        );
-        assert_eq!(
-            outcome_b.endpoints_before, outcome_b.endpoints_after,
-            "run B must not bind any iroh endpoint either"
-        );
+        for outcome in [&outcome_a, &outcome_b] {
+            assert_eq!(
+                outcome.endpoints_before, outcome.endpoints_after,
+                "a sim scenario must not bind any iroh endpoint"
+            );
+        }
 
         // Cadence + HLC shape on the host: every reading sits on its
         // sensor tick's simulated millisecond (recorded_at_ms) and its HLC
@@ -838,14 +1600,247 @@ mod tests {
         }
         // All three models are represented across all five ticks.
         assert_eq!(seen.len(), 15, "15 distinct (metric, tick) readings");
+    }
 
-        // Declarative proven: the config above parsed from raw JSON and the
-        // run drove itself from it (no imperative sensor code anywhere).
-        assert!(script.fleet.sensors.len() == 3);
+    /// A21 scenario 1: a 3-peer sharded fabric; a window aggregate fanned
+    /// out from a non-ingest peer over the VIRTUAL gossip plane equals the
+    /// same aggregate over the union of all rows, with full coverage —
+    /// deterministic across runs, no real network.
+    #[test]
+    fn sharded_distributed_query_is_exact_fully_covered_and_deterministic() {
+        let script = sharded_query_script();
+        let plan = plan_fleet(&script.fleet);
+        let (a, b) = run_twice(&script);
+
+        assert_eq!(
+            a.canonical_fingerprint(),
+            b.canonical_fingerprint(),
+            "readings, placement, and query results must repeat exactly"
+        );
+        for outcome in [&a, &b] {
+            assert_eq!(
+                outcome.endpoints_before, outcome.endpoints_after,
+                "no real network"
+            );
+            assert!(
+                outcome.gossip_deliveries > 0,
+                "the fan-out rode the virtual gossip plane"
+            );
+        }
+        assert_eq!(a.ingested, plan.len());
+
+        // Placement: every shard has ONE host and each peer hosts a
+        // distinct, non-empty subset (sharded R=1).
+        let all_shards: BTreeSet<String> = plan.iter().map(|r| shard_of(&script, r)).collect();
+        assert_eq!(
+            a.placement.keys().cloned().collect::<BTreeSet<_>>(),
+            all_shards
+        );
+        let mut per_host: BTreeMap<&str, usize> = BTreeMap::new();
+        for hosts in a.placement.values() {
+            assert_eq!(
+                hosts.len(),
+                1,
+                "sharded placement is single-host: {hosts:?}"
+            );
+            *per_host.entry(hosts[0].as_str()).or_default() += 1;
+        }
+        assert_eq!(per_host.len(), 3, "every peer hosts shards: {per_host:?}");
+
+        // Retention: each replica holds exactly its hosted shards, values
+        // bit-identical to the origin. Bob cannot answer the fleet alone.
+        for peer in ["bob", "carol"] {
+            assert_store_is_its_hosted_shards(&script, &a, peer);
+        }
+        assert!(
+            a.per_peer["bob"].len() < plan.len(),
+            "bob holds a strict subset"
+        );
+
+        // A15: the fanned-out aggregate == the union oracle; full coverage.
+        let agg = a.query("fleet-aggregate").expect("aggregate recorded");
+        assert_eq!(agg.outcome.error, None);
+        assert!(!agg.outcome.truncated);
+        assert_aggregate_matches(agg, &oracle(&script, plan.iter()));
+        assert_eq!(
+            agg.outcome.covered_shards,
+            all_shards.iter().cloned().collect::<Vec<_>>(),
+            "every shard covered"
+        );
+        assert!(agg.outcome.missing_shards.is_empty());
+        for must in ["alice", "bob"] {
+            // Alice holds the only copy of her shards; bob's is the local partial.
+            assert!(
+                agg.outcome.answered_hosts.iter().any(|h| h == must),
+                "{must} answered"
+            );
+        }
+
+        // A15 raw union: every reading exactly once, every host answered.
+        let raw = a.query("fleet-readings").expect("raw recorded");
+        assert_eq!(raw.outcome.error, None);
+        assert_eq!(
+            raw.outcome.rows.len(),
+            plan.len(),
+            "the whole fleet, deduped"
+        );
+        for (row, planned) in raw.outcome.rows.iter().zip(sorted_plan(&script, &plan)) {
+            let CanonicalQueryRow::Reading {
+                anchor,
+                recorded_at_ms,
+                value,
+                ..
+            } = row
+            else {
+                panic!("non-reading row {row:?}");
+            };
+            assert_eq!((anchor.as_str(), *recorded_at_ms), (planned.0, planned.1));
+            assert!((value - planned.2).abs() < EPS, "{anchor}@{recorded_at_ms}");
+        }
+        assert_eq!(raw.outcome.answered_hosts, ["alice", "bob", "carol"]);
+        assert!(raw.outcome.missing_hosts.is_empty());
+        assert!(raw.outcome.missing_shards.is_empty());
+    }
+
+    /// Planned readings as (anchor, recorded_at_ms, value), sorted like the
+    /// canonical raw rows.
+    fn sorted_plan<'a>(
+        script: &'a ScenarioScript,
+        plan: &[ScheduledReading],
+    ) -> Vec<(&'a str, i64, f64)> {
+        let mut out: Vec<(&str, i64, f64)> = plan
+            .iter()
+            .map(|r| {
+                (
+                    script.fleet.sensors[r.sensor].anchor.as_str(),
+                    r.at_ms as i64,
+                    r.value,
+                )
+            })
+            .collect();
+        out.sort_by(|x, y| (x.0, x.1).cmp(&(y.0, y.1)));
+        out
+    }
+
+    /// A21 scenario 2: the ingest host goes offline → a query during the
+    /// outage is degraded but honest (exactly the host's shards missing,
+    /// the host in missing_hosts, the merge over what IS covered) → the
+    /// host returns → outage readings converge → full coverage again.
+    #[test]
+    fn offline_host_degrades_honestly_then_converges() {
+        let script = offline_degraded_script();
+        let plan = plan_fleet(&script.fleet);
+        let (a, b) = run_twice(&script);
+
+        assert_eq!(
+            a.canonical_fingerprint(),
+            b.canonical_fingerprint(),
+            "the outage, the degraded answer, and the convergence must repeat exactly"
+        );
+        for outcome in [&a, &b] {
+            assert_eq!(
+                outcome.endpoints_before, outcome.endpoints_after,
+                "no real network"
+            );
+        }
+        assert_eq!(
+            a.ingested,
+            plan.len(),
+            "the offline host kept ingesting locally"
+        );
+
+        let start = script.fleet.start_ms;
+        let (outage_start, outage_end) = (start + 300_000, start + 450_000);
+        let host_of = |r: &ScheduledReading| a.placement[&shard_of(&script, r)][0].clone();
+
+        // --- Degraded (A16): exactly alice's pre-outage shards are missing.
+        let pre: Vec<&ScheduledReading> = plan.iter().filter(|r| r.at_ms < outage_start).collect();
+        let (mut want_missing, mut want_covered) = (BTreeSet::new(), BTreeSet::new());
+        for r in &pre {
+            let shard = shard_of(&script, r);
+            if host_of(r) == "alice" {
+                want_missing.insert(shard);
+            } else {
+                want_covered.insert(shard);
+            }
+        }
+        assert!(
+            !want_missing.is_empty() && !want_covered.is_empty(),
+            "the seed must place pre-outage shards on both sides of the cut"
+        );
+        let degraded = a.query("degraded-aggregate").expect("degraded recorded");
+        assert_eq!(degraded.outcome.error, None);
+        assert_eq!(
+            degraded.outcome.missing_shards,
+            want_missing.iter().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            degraded.outcome.covered_shards,
+            want_covered.iter().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(degraded.outcome.missing_hosts, ["alice"]);
+        assert_eq!(degraded.outcome.answered_hosts, ["bob", "carol"]);
+        assert_aggregate_matches(
+            degraded,
+            &oracle(
+                &script,
+                pre.iter().copied().filter(|r| host_of(r) != "alice"),
+            ),
+        );
+
+        // --- Convergence: outage readings reached their hosts (doc plane).
+        for r in plan
+            .iter()
+            .filter(|r| r.at_ms >= outage_start && r.at_ms < outage_end)
+        {
+            let host = host_of(r);
+            let anchor = &script.fleet.sensors[r.sensor].anchor;
+            assert!(
+                a.per_peer[&host]
+                    .iter()
+                    .any(|c| &c.anchor == anchor && c.recorded_at_ms == r.at_ms as i64),
+                "outage reading {anchor}@{} must converge to its host {host}",
+                r.at_ms
+            );
+        }
+        for peer in ["bob", "carol"] {
+            assert_store_is_its_hosted_shards(&script, &a, peer);
+        }
+
+        // --- Healed: full coverage, exact merge over every reading.
+        let healed = a.query("healed-aggregate").expect("healed recorded");
+        assert_eq!(healed.outcome.error, None);
+        assert!(healed.outcome.missing_shards.is_empty());
+        assert_eq!(healed.outcome.covered_shards.len(), a.placement.len());
+        assert_aggregate_matches(healed, &oracle(&script, plan.iter()));
+        let readings = a.query("healed-readings").expect("healed raw recorded");
+        assert_eq!(readings.outcome.rows.len(), plan.len());
+        assert_eq!(readings.outcome.answered_hosts, ["alice", "bob", "carol"]);
+    }
+
+    /// DEC-C6 tripwire (fast, no peers): a reading row survives the
+    /// replication encoding (serde_json bytes → parse) bit-exactly. Fails if
+    /// the workspace `serde_json/float_roundtrip` feature is ever dropped —
+    /// 62.985254035088204 is a value the best-effort parser rounds 1 ULP off.
+    #[test]
+    fn replication_json_round_trip_is_bit_exact() {
+        let mut values: Vec<f64> = vec![62.985_254_035_088_204];
+        for script in [default_script(), sharded_query_script()] {
+            values.extend(plan_fleet(&script.fleet).iter().map(|r| r.value));
+        }
+        for value in values {
+            let bytes = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+            let row: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                row["value"].as_f64().map(f64::to_bits),
+                Some(value.to_bits()),
+                "{value} lost bits across the replication encoding"
+            );
+        }
     }
 
     #[test]
-    fn scenario_validation_rejects_unknown_peer_faults() {
+    fn scenario_validation_rejects_bad_events() {
         let mut script = default_script();
         script.events.push(ScriptedEvent::PeerOffline {
             at_ms: 1,
@@ -853,5 +1848,29 @@ mod tests {
         });
         assert!(script.validate().is_err());
         assert!(ScenarioScript::parse(&serde_json::to_string(&script).unwrap()).is_err());
+
+        let query = |label: &str, peer: &str, end_ms: u64| ScriptedEvent::Query {
+            at_ms: 1,
+            peer: peer.into(),
+            label: label.into(),
+            query: SimQuery::WindowAggregate {
+                metric: "temperature_c".into(),
+                start_ms: 10,
+                end_ms,
+            },
+            timeout_ms: 1_000,
+        };
+        for (bad, why) in [
+            (vec![query("q", "nobody", 20)], "unknown peer"),
+            (
+                vec![query("q", "bob", 20), query("q", "bob", 20)],
+                "duplicate label",
+            ),
+            (vec![query("q", "bob", 10)], "empty window"),
+        ] {
+            let mut script = default_script();
+            script.events = bad;
+            assert!(script.validate().is_err(), "{why} must be rejected");
+        }
     }
 }

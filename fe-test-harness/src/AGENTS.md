@@ -17,7 +17,9 @@ no iroh endpoint and sources replicas from the virtual transport — the same
 DB loop, blob store, channels, and wait helpers either way. The bin
 re-exports the lib module (`pub use fractalengine_test_harness::peer;` in
 `main.rs`) so the scenario files' `crate::peer::TestPeer` imports keep
-resolving.
+resolving. `TestPeer::spawn_with_identity(.., keypair)` (F9) takes a
+caller-supplied `NodeKeypair`: the sim lab seeds identities so DID-ordered
+shard placement repeats run to run (fe-sim `src/AGENTS.md` §identity).
 
 ## §api-harness
 

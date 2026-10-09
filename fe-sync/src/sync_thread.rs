@@ -18,13 +18,12 @@ use std::sync::Arc;
 use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
 use fe_runtime::messages::DbCommand;
 
-use iroh_gossip::net::{
-    Event as GossipTopicEvent, Gossip, GossipEvent, GossipReceiver, GossipSender,
-};
+use iroh_gossip::net::{Event as GossipTopicEvent, Gossip, GossipEvent, GossipReceiver};
 use iroh_gossip::proto::TopicId;
 
 use crate::distributed_query::{
     handle_gossip_incoming, submit_distributed_query, DistributedTransport, GossipIncoming,
+    TopicSender,
 };
 
 use crate::docs_engine::{p2p_data_dir, DocsStack};
@@ -431,6 +430,13 @@ pub fn spawn_sync_thread_with_transport(
                 );
             }
 
+            // The node's iroh identity (the same ed25519 key the DID derives
+            // from — F20 alignment). On the real path this IS the endpoint's
+            // NodeId; in virtual mode it is the identity the sim hub tags
+            // this peer's gossip deliveries with (F9/A21), so the F23
+            // forged-attribution gate authenticates sim envelopes verbatim.
+            let local_node = secret_key.public();
+
             // Phase F.1: Create the iroh endpoint first. A virtual transport
             // (sim lab, F8/A19) skips the bind entirely — no real network, no
             // relay, no stack; replicas come from the factory instead.
@@ -589,8 +595,12 @@ pub fn spawn_sync_thread_with_transport(
             // plus the per-topic inbound pumps. F7 splits each GossipTopic:
             // the sender half broadcasts (tileset ads + distributed queries),
             // the receiver half drains in a pump task feeding the aggregated
-            // gossip inbound stream the select! loop below consumes.
-            let mut gossip_senders: HashMap<String, GossipSender> = HashMap::new();
+            // gossip inbound stream the select! loop below consumes. F9/A21:
+            // the sender is a `TopicSender` — the real iroh-gossip half, or
+            // the sim hub's virtual topic when a virtual transport is
+            // installed (the compute plane then carries the hub's scripted
+            // latency/partition/churn; see AGENTS.md §virtual-transport).
+            let mut gossip_senders: HashMap<String, TopicSender> = HashMap::new();
             let mut gossip_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
             let (gossip_inbound_tx, mut gossip_inbound_rx) =
                 tokio::sync::mpsc::channel::<GossipIncoming>(64);
@@ -733,6 +743,9 @@ pub fn spawn_sync_thread_with_transport(
                                 subscribe_to_verse_gossip_topic(
                                     endpoint.as_ref(),
                                     &gossip_host,
+                                    &virtual_transport,
+                                    &local_did,
+                                    local_node,
                                     &mut gossip_senders,
                                     &mut gossip_pumps,
                                     gossip_inbound_tx.clone(),
@@ -1654,27 +1667,72 @@ pub(crate) fn derive_gossip_topic(verse_id: &str) -> String {
 /// forwards every gossip message into the aggregated inbound stream the
 /// command loop's select consumes. This is the inbound route F7 rides —
 /// before it, nothing ever polled a topic's event stream.
+///
+/// F9/A21 virtual branch: with a `VirtualTransportFactory` installed there
+/// is no iroh gossip stack — the topic comes from the factory's virtual
+/// gossip plane (the sim hub), which carries the SAME scripted
+/// latency/partition/churn as the doc plane. The sender half is a
+/// `TopicSender::Virtual`; the inbound half is a channel receiver the same
+/// pump shape forwards. A factory without a gossip plane (`join_gossip_topic`
+/// default) leaves the verse honestly topic-less, as before F9.
+#[allow(clippy::too_many_arguments)]
 fn subscribe_to_verse_gossip_topic(
     endpoint: Option<&SyncEndpoint>,
     gossip_host: &Option<Gossip>,
-    gossip_senders: &mut HashMap<String, GossipSender>,
+    virtual_transport: &Option<Arc<dyn VirtualTransportFactory>>,
+    local_did: &str,
+    local_node: iroh::NodeId,
+    gossip_senders: &mut HashMap<String, TopicSender>,
     gossip_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
     gossip_inbound_tx: tokio::sync::mpsc::Sender<GossipIncoming>,
     verse_id: &str,
     peers: &[iroh::NodeAddr],
 ) {
-    let Some(ref gossip) = gossip_host else {
-        tracing::debug!(verse_id, "No gossip, skipping topic subscription");
-        return;
-    };
-
     let topic_key = derive_gossip_topic(verse_id);
 
-    // Already subscribed?
+    // Already subscribed? (checked before either branch — one topic per verse)
     if gossip_senders.contains_key(&topic_key) {
         tracing::debug!(verse_id, "Already subscribed to gossip topic");
         return;
     }
+
+    // F9/A21: the sim lab's virtual gossip plane. Membership is scripted in
+    // the hub, so there is nothing to dial and no bootstrap race.
+    if let Some(factory) = virtual_transport {
+        match factory.join_gossip_topic(&topic_key, local_did, local_node) {
+            Some(topic) => match topic.take_inbound() {
+                Some(rx) => {
+                    let pump = tokio::spawn(pump_virtual_gossip_topic(
+                        rx,
+                        verse_id.to_string(),
+                        gossip_inbound_tx,
+                    ));
+                    gossip_pumps.insert(topic_key.clone(), pump.abort_handle());
+                    gossip_senders.insert(topic_key, TopicSender::Virtual(topic));
+                    tracing::debug!(verse_id, "Subscribed to virtual gossip topic");
+                }
+                None => {
+                    tracing::warn!(
+                        verse_id,
+                        "Virtual gossip topic handed out no inbound stream — verse has \
+                             no compute plane this session"
+                    );
+                }
+            },
+            None => {
+                tracing::debug!(
+                    verse_id,
+                    "Virtual transport has no gossip plane — verse topic absent (honest)"
+                );
+            }
+        }
+        return;
+    }
+
+    let Some(ref gossip) = gossip_host else {
+        tracing::debug!(verse_id, "No gossip, skipping topic subscription");
+        return;
+    };
 
     // The gossip join below dials by bare NodeId and is ONE-SHOT: it can
     // only resolve an address the endpoint's address book already knows.
@@ -1713,10 +1771,33 @@ fn subscribe_to_verse_gossip_topic(
                 gossip_inbound_tx,
             ));
             gossip_pumps.insert(topic_key.clone(), pump.abort_handle());
-            gossip_senders.insert(topic_key, sender);
+            gossip_senders.insert(topic_key, TopicSender::Real(sender));
         }
         Err(e) => {
             tracing::warn!(verse_id, "Failed to subscribe to gossip topic: {e}");
+        }
+    }
+}
+
+/// Drain a virtual gossip topic's inbound stream (F9/A21), forwarding each
+/// message as a [`GossipIncoming`] exactly like [`pump_gossip_topic`] does
+/// for the real stack — the command loop cannot tell the planes apart.
+/// Hub deliveries are always direct (0-hop), so the F23 sender-identity
+/// gate applies to sim envelopes exactly as to direct iroh deliveries.
+async fn pump_virtual_gossip_topic(
+    mut receiver: tokio::sync::mpsc::Receiver<crate::virtual_transport::VirtualGossipMessage>,
+    verse_id: String,
+    inbound_tx: tokio::sync::mpsc::Sender<GossipIncoming>,
+) {
+    while let Some(message) = receiver.recv().await {
+        let incoming = GossipIncoming {
+            verse_id: verse_id.clone(),
+            from: message.from,
+            direct: message.direct,
+            content: message.content,
+        };
+        if inbound_tx.send(incoming).await.is_err() {
+            break; // sync loop gone — shutdown
         }
     }
 }
@@ -1768,7 +1849,7 @@ async fn pump_gossip_topic(
 /// abort the receiver pump — both halves gone leaves the topic in
 /// iroh-gossip 0.35.
 fn unsubscribe_from_verse_gossip_topic(
-    gossip_senders: &mut HashMap<String, GossipSender>,
+    gossip_senders: &mut HashMap<String, TopicSender>,
     gossip_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
     verse_id: &str,
 ) {
@@ -1826,7 +1907,7 @@ impl TilesetDownloadTracker {
 /// Broadcasts tileset advertisements to connected peers via gossip.
 async fn handle_advertise_tilesets(
     gossip_host: &Option<Gossip>,
-    gossip_senders: &HashMap<String, GossipSender>,
+    gossip_senders: &HashMap<String, TopicSender>,
     advertisements_json: &str,
     verse_id: &str,
 ) {
@@ -2488,10 +2569,17 @@ mod tests {
     // Phase 4: Gossip Topic Subscription Tests (TDD)
     // -------------------------------------------------------------------------
 
+    /// A deterministic test node identity (same construction the
+    /// distributed-query tests use).
+    fn test_node_id(seed: u8) -> iroh::NodeId {
+        iroh::SecretKey::from_bytes(&[seed; 32]).public()
+    }
+
     #[test]
     fn subscribe_to_verse_gossip_topic_no_host_is_noop() {
         let gossip_host: Option<Gossip> = None;
-        let mut gossip_senders: HashMap<String, GossipSender> = HashMap::new();
+        let no_virtual: Option<Arc<dyn VirtualTransportFactory>> = None;
+        let mut gossip_senders: HashMap<String, TopicSender> = HashMap::new();
         let mut gossip_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
         let (tx, _rx) = tokio::sync::mpsc::channel::<GossipIncoming>(8);
 
@@ -2499,6 +2587,9 @@ mod tests {
         subscribe_to_verse_gossip_topic(
             None,
             &gossip_host,
+            &no_virtual,
+            "did:local",
+            test_node_id(3),
             &mut gossip_senders,
             &mut gossip_pumps,
             tx,
@@ -2511,9 +2602,173 @@ mod tests {
         assert!(gossip_pumps.is_empty(), "no pumps without gossip host");
     }
 
+    /// F9/A21 seam: a virtual transport WITHOUT a gossip plane (the default
+    /// `join_gossip_topic`) leaves the verse honestly topic-less; with one,
+    /// the virtual sender + pump land in the maps.
+    #[test]
+    fn subscribe_to_verse_gossip_topic_virtual_plane() {
+        use crate::virtual_transport::{
+            VirtualGossipMessage, VirtualGossipTopic, VirtualTransportFactory,
+        };
+
+        /// A factory with no gossip plane (the pre-F9 default shape).
+        struct NoGossipFactory;
+        impl VirtualTransportFactory for NoGossipFactory {
+            fn open_replica(
+                &self,
+                _verse_id: &str,
+                _namespace_id: &str,
+                _namespace_secret: Option<String>,
+                _local_did: &str,
+            ) -> Box<dyn crate::virtual_transport::VirtualReplica> {
+                unimplemented!("the gossip seam test never opens a replica")
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn describe(&self) -> &'static str {
+                "virtual (no gossip)"
+            }
+        }
+
+        /// A factory whose gossip plane is a loopback topic: broadcasts land
+        /// on the subscriber's own inbound stream (self-echo parity).
+        struct LoopbackFactory;
+        struct LoopbackTopic {
+            tx: tokio::sync::mpsc::Sender<VirtualGossipMessage>,
+            rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<VirtualGossipMessage>>>,
+            node: iroh::NodeId,
+        }
+        impl VirtualGossipTopic for LoopbackTopic {
+            fn broadcast(&self, content: bytes::Bytes) -> Result<(), String> {
+                self.tx
+                    .try_send(VirtualGossipMessage {
+                        from: self.node,
+                        direct: true,
+                        content,
+                    })
+                    .map_err(|e| format!("loopback topic send failed: {e}"))
+            }
+            fn take_inbound(&self) -> Option<tokio::sync::mpsc::Receiver<VirtualGossipMessage>> {
+                self.rx.lock().unwrap_or_else(|e| e.into_inner()).take()
+            }
+        }
+        impl VirtualTransportFactory for LoopbackFactory {
+            fn open_replica(
+                &self,
+                _verse_id: &str,
+                _namespace_id: &str,
+                _namespace_secret: Option<String>,
+                _local_did: &str,
+            ) -> Box<dyn crate::virtual_transport::VirtualReplica> {
+                unimplemented!("the gossip seam test never opens a replica")
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+            fn describe(&self) -> &'static str {
+                "virtual (loopback gossip)"
+            }
+            fn join_gossip_topic(
+                &self,
+                _topic_key: &str,
+                _local_did: &str,
+                local_node: iroh::NodeId,
+            ) -> Option<Arc<dyn VirtualGossipTopic>> {
+                let (tx, rx) = tokio::sync::mpsc::channel(16);
+                Some(Arc::new(LoopbackTopic {
+                    tx,
+                    rx: std::sync::Mutex::new(Some(rx)),
+                    node: local_node,
+                }))
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(async {
+            let gossip_host: Option<Gossip> = None;
+            let local_node = test_node_id(3);
+
+            // (a) No gossip plane: honest absence.
+            let no_plane: Option<Arc<dyn VirtualTransportFactory>> =
+                Some(Arc::new(NoGossipFactory));
+            let mut senders: HashMap<String, TopicSender> = HashMap::new();
+            let mut pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+            let (tx, _rx) = tokio::sync::mpsc::channel::<GossipIncoming>(8);
+            subscribe_to_verse_gossip_topic(
+                None,
+                &gossip_host,
+                &no_plane,
+                "did:local",
+                local_node,
+                &mut senders,
+                &mut pumps,
+                tx,
+                "verse-test",
+                &[],
+            );
+            assert!(
+                senders.is_empty(),
+                "a factory without a gossip plane leaves the verse topic-less"
+            );
+
+            // (b) With a gossip plane: sender + pump registered, a broadcast
+            // arrives on the aggregated inbound stream as a direct delivery
+            // from our own node identity (self-echo parity).
+            let plane: Option<Arc<dyn VirtualTransportFactory>> = Some(Arc::new(LoopbackFactory));
+            let (tx, mut inbound_rx) = tokio::sync::mpsc::channel::<GossipIncoming>(8);
+            subscribe_to_verse_gossip_topic(
+                None,
+                &gossip_host,
+                &plane,
+                "did:local",
+                local_node,
+                &mut senders,
+                &mut pumps,
+                tx.clone(),
+                "verse-test",
+                &[],
+            );
+            let sender = senders
+                .get(&derive_gossip_topic("verse-test"))
+                .expect("virtual sender registered");
+            sender
+                .broadcast(bytes::Bytes::from_static(b"{\"type\":\"x\"}"))
+                .await
+                .expect("virtual broadcast succeeds");
+            let incoming =
+                tokio::time::timeout(std::time::Duration::from_secs(5), inbound_rx.recv())
+                    .await
+                    .expect("pump forwards within the budget")
+                    .expect("inbound stream open");
+            assert_eq!(incoming.verse_id, "verse-test");
+            assert_eq!(incoming.from, local_node);
+            assert!(incoming.direct, "hub deliveries are 0-hop (direct)");
+            assert_eq!(incoming.content.as_ref(), b"{\"type\":\"x\"}");
+
+            // The maps own one subscription; re-subscribing is a no-op.
+            subscribe_to_verse_gossip_topic(
+                None,
+                &gossip_host,
+                &plane,
+                "did:local",
+                local_node,
+                &mut senders,
+                &mut pumps,
+                tx.clone(),
+                "verse-test",
+                &[],
+            );
+            assert_eq!(senders.len(), 1, "re-subscribe is a no-op");
+        });
+    }
+
     #[test]
     fn unsubscribe_from_verse_gossip_topic_no_host_is_noop() {
-        let mut gossip_senders: HashMap<String, GossipSender> = HashMap::new();
+        let mut gossip_senders: HashMap<String, TopicSender> = HashMap::new();
         let mut gossip_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
 
         // Pre-populate (simulating prior subscription)
@@ -2575,7 +2830,7 @@ mod tests {
     #[test]
     fn handle_advertise_tilesets_no_host_is_noop() {
         let gossip_host: Option<Gossip> = None;
-        let gossip_senders: HashMap<String, GossipSender> = HashMap::new();
+        let gossip_senders: HashMap<String, TopicSender> = HashMap::new();
 
         let ads_json = r#"[{"tileset_id": "ts-001", "chunk_count": 10, "size_bytes": 1000}]"#;
 
