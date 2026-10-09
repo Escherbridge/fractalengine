@@ -18,10 +18,13 @@ use fe_sync::SyncCommand;
 
 /// Resolve a verse's namespace id + secret and send `OpenVerseReplica`.
 ///
-/// `namespace_id` may be supplied directly (the startup hierarchy scan has
-/// it); when absent it is derived from the stored namespace secret (the
-/// `VerseCreated` path — the row and the secret are written together by the
-/// DB handler, so deriving avoids a DB round-trip inside the Bevy system).
+/// `namespace_id` is normally supplied directly: both the startup hierarchy
+/// scan and the post-F22 `VerseCreated` result carry the DB-computed id, so
+/// the common case needs no extra work here. Deriving it from the stored
+/// namespace secret is the defensive fallback for when it is absent (an
+/// older call site, or a result that could not compute it) — the row and the
+/// secret are written together by the DB handler, so deriving avoids a DB
+/// round-trip inside the Bevy system.
 ///
 /// Returns `true` when a replica open command was actually sent.
 pub fn open_replica(
@@ -216,13 +219,16 @@ mod tests {
     }
 
     /// A7 (`VerseCreated`): the real Bevy system turns a `DbResult::VerseCreated`
-    /// into an `OpenVerseReplica` carrying the namespace id derived from the
-    /// stored secret, so the relay replicates verses created at runtime — and
-    /// records it in the shared opened-set so a later startup-scan
-    /// `HierarchyLoaded` never churns the live replica close+reopen (F20
-    /// fold-in c).
+    /// into an `OpenVerseReplica` carrying the namespace id the event already
+    /// provides (the F22 primary path — the DB handler computes it, so the
+    /// relay opens with it directly rather than re-deriving from the stored
+    /// secret; the test's id value happens to equal what derivation would
+    /// produce only because the setup constructs it that way for realism),
+    /// so the relay replicates verses created at runtime — and records it in
+    /// the shared opened-set so a later startup-scan `HierarchyLoaded` never
+    /// churns the live replica close+reopen (F20 fold-in c).
     #[test]
-    fn verse_created_opens_replica_with_derived_namespace() {
+    fn verse_created_opens_replica_with_provided_namespace_id() {
         use bevy::prelude::*;
         use fe_identity::{InMemoryBackend, SecretStore};
         use fe_runtime::messages::{DbCommand, VerseHierarchyData};

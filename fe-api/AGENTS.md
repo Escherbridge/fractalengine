@@ -56,7 +56,7 @@ when a route lands.
 | Terrain config | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
 | Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
-| Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: true` → §distributed-query), `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
+| Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: {…TsQueryKind…}` → §distributed-query), `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
 | IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
@@ -345,6 +345,37 @@ serialization.
 - Parquet responses ship `Content-Type: application/vnd.apache.parquet`,
   `Content-Length` (axum), and `Accept-Ranges: bytes` so DuckDB httpfs can
   `read_parquet('<url>')` (plan D1).
+- **Windows `db_reader` fallback (F10, 2026-10-09).** `prepare_export` and
+  `fetch_anchor_positions` route through
+  `query_guard::run_guarded_query_via_state`, which prefers the direct
+  `db_reader` and falls back to the `DbCommand::RawQuery` gateway channel
+  when it is `None` — the same fallback `gis.rs::run_select` already uses.
+  This closes a real gap verified live: on the deployment platform
+  (Windows), SurrealKV's per-handle file lock (`os error 33`,
+  M1/F4-documented) routinely leaves `db_reader` `None` while the DB
+  thread's writer connection is alive, so every export/share request used
+  to 503 with `"export endpoint not available (no db_reader)"` — A22's
+  e2e could not pass without this fix. The channel path re-applies the
+  same row cap as the direct path; `RawQuery`'s own SELECT-only guard rail
+  (`fe-database/src/lib.rs`) re-validates independently as defense in
+  depth. `/api/v1/query` (`rest.rs::execute_query`) and the `fmt=json`
+  branch of share redemption still require `db_reader` directly and were
+  deliberately left alone here (same root cause, larger blast radius —
+  noted as a follow-up, not fixed in F10).
+- **Range support (DEC-C10, F10, 2026-10-09).** `Accept-Ranges: bytes` used
+  to be advertised with zero backing (grep found no Range/206 handling
+  anywhere in `fe-api`). Verified live against the real `tools/duckdb`
+  CLI (`scripts/bi-egress-verify.ps1` / `.log`): DuckDB's httpfs parquet
+  reader DOES issue real `Range` GETs against `read_parquet()` URLs
+  (observed: a near-full-file range for the initial read plus smaller
+  footer/metadata sub-ranges) — this was not a cosmetic gap. `body_response`
+  now parses a single `Range: bytes=a-b` (open-ended and suffix forms
+  included) and answers `206` with a sliced body + `Content-Range`;
+  `start` at or past EOF answers `416` with `Content-Range: bytes */total`;
+  a comma-separated multi-range request is declined (falls back to the
+  full `200` body, which RFC 7233 permits). Bodies are already fully
+  buffered `Vec<u8>` (capped at `EXPORT_MAX_BYTES`), so the slice is free.
+  Covered by `export.rs`'s `body_response_*` / `range_*` unit tests.
 - CSV is RFC-4180 with a leading `# crs=<label>` comment line (documented
   choice: comment line + `X-FE-CRS` header; a sidecar column would bloat every
   row) and **properties as one JSON-string column** (flattening arbitrary keys
@@ -363,8 +394,10 @@ serialization.
   petal, 413 row-cap/byte-ceiling (enforced on the readings path too — the
   anchor join is bounded by the already-capped distinct-node-id count, and
   the byte ceiling is checked against the final serialized body exactly as
-  for nodes), 429 rate limit, 502 query transport, 503 no db_reader, 504
-  statement timeout.
+  for nodes), 416 Range past EOF (DEC-C10), 429 rate limit, 502 query
+  transport (now also covers a dead `api_cmd_tx` channel on the Windows
+  fallback path, F10), 504 statement timeout. No more 503 "no db_reader" —
+  closed by the F10 channel fallback above.
 
 ## §share
 
@@ -529,7 +562,10 @@ future work). Design notes:
 
 `src/timeseries_query.rs` — the ONE guarded bridge every distributed
 timeseries surface shares: `POST /api/v1/query` with body
-`{"distributed": true, "query": {…TsQueryKind…}}`, the analytics
+`{"distributed": {…TsQueryKind…}}` — the spec object directly (not a
+`{"distributed": true, "query": {...}}` wrapper); `sql` must be empty, the
+two are mutually exclusive (`QueryRequest`, `types.rs:269-282`; dispatch
+`rest.rs:872-882`) — the analytics
 endpoint's merged `iot_reading` table, and the MCP `query_timeseries`
 tool. It fans a query out to the verse's fleet over the API→sync seam and
 merges the per-host partials (the transport, planner, and merge live in
@@ -569,7 +605,7 @@ fe-sync `distributed_query.rs` — see fe-sync/src/AGENTS.md
   `DISTRIBUTED_QUERY_TIMEOUT_MS` (8 s) is bounded by the transport's own
   `MAX_QUERY_TIMEOUT_MS` and generous over the sync-side 3 s default so a
   slow fleet still answers within the HTTP budget.
-- Tests: `tests/distributed_query_test.rs` (11) — the three surfaces'
+- Tests: `tests/distributed_query_test.rs` (12) — the three surfaces'
   happy paths, role/scope denials (seam untouched), ULID/arg validation,
   dead-seam and no-seam explicit errors, the honest-empty vs failed
   analytics table, and nodes-only analytics unaffected.

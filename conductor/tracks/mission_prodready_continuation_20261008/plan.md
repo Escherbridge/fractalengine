@@ -32,6 +32,8 @@ its commit hash + evidence line appended here.
   - Minors batched into the fix pass: #4 validate caps (readings/peers), #6 self-echo drift vs real iroh-gossip (skip author; fix the gossip_deliveries>0 assert), #7 exact min/max/count compares + shard-membership assert, #8 merge_actions position test, #10 doc-comment hijack.
   - Deferred with triggers: #5 step idempotency (→ document; revisit if a real client retries), #9 F24 hydration/drain startup race (→ F19 sweep note), MCP sim tools advertised on GUI (→ F13 table refactor), auto_pump dead code (→ F13/F17 decide expose-or-remove), 1-ULP legacy rows (none in prod; no backfill).
   - Claims verified to hold: real-gossip path drift-free; float_roundtrip safe (no canonical-path float parsing); lock poisoning recoverable; teardown order correct; scenarios include_str-coupled (no drift).
+  - **Fixes LANDED @ `2023809`** (combined with F11 — change sets interleave in relay main.rs). Verdict now: **M3 VALIDATED**. Gate: fe-runtime 93, fe-database 277, fe-sync 221, fe-sim 43, fe-query 123, fe-api all suites, harness 26 + 14/14 real-transport scenarios.
+  - Residual risk (documented, accepted): co-resident production DB-thread stamps DURING a sim session read sim time — restore can't undo those; mitigations are the start_ms<=now validation + FE_SIM_ALLOW + lab-relay-only doctrine (F17 README).
 
 > **Ops discipline (DEC-C12)**: every gate starts with a disk check; if C: free
 > < 10 GB, prune `target/debug/incremental` first (29.7 GB reclaimed 2026-10-09;
@@ -41,7 +43,7 @@ its commit hash + evidence line appended here.
 
 ## M4 — BI egress (DuckDB-first) — order F11 → F10 → F12 (DEC-C11); map in m4-bi-egress-design.md
 
-- [ ] **F11** (A23+A24) — iot_reading parquet/CSV export (anchor attach-join is NEW query-shape work; guards already readings-ready); share-signer keystore slot per DEC-C9
+- [x] **F11 LANDED @ `2023809`** (A23+A24) — two-table export whitelist (classify_export_table), batched anchor join (node_id IN $ids, one query per page), latlon via petal projection on the anchor, nullable geometry for dead anchors, f64 bit-exact ReadingSnapshot; readings parquet writer/codec in fe-query; share_signer required ApiConfig field + dedicated keystore slot both binaries (DEC-C9), restart-persistence + foreign-key-401 tests. Open items for F10: nullable WKB cells, Float64 value / Int64 recorded_at_ms schema asserts.
 - [ ] **F10** (A22) — live relay + real DuckDB CLI e2e (nodes AND readings), checked-in script + recorded output; Range-gap resolution per DEC-C10; cosmetic fold-ins (a)–(e) — note (c) rename unconfirmed, verify vs F22 diff first; (d) is a real doc bug
 - [ ] **F12** (A25) — docs/bi-egress.md with verified DuckDB/PowerBI/spreadsheet steps + fix the documented /api/v1/query distributed shape
 - [ ] **M4 milestone review**
@@ -54,8 +56,8 @@ its commit hash + evidence line appended here.
 
 ## M6 — GIS hexon examples
 
-- [ ] **F15** (A28) — ≥2 new region configs (≥1 non-US), ETL runs, provenance, README table
-- [ ] **F16** (A29) — hexon install via Hexon Manager + relay tile plane verification, sample-hexons/ entries
+- [x] **F15 LANDED** (A28) — gis-tile-etl @ `33eff03`, main-repo provenance @ `dbb6461`: configs/intl-regions.toml (esri-world-imagery + aws-terrarium, DEC-C8), Zurich Alps (10+10 tiles, 1.48 MB) + Mount Fuji (8+8, 0.84 MB) built + `Verify: OK`; 17/17 tests; sink fixed for fe-format TilesetMeta drift (scale fields None → app-side backfill). Flag for fe-format owners: derive(Default) on TilesetMeta would stop sibling-repo struct-literal breakage on future field adds.
+- [ ] **F16** (A29) — install dist/*.hexon via install_sample_hexons example + Hexon Manager semantics, serve via relay tile plane (petal-bound authz), scale-bar backfill assert; hexon_ids: tileset-switzerland-zurich-alps, tileset-japan-mount-fuji
 - [ ] **M6 milestone review**
 
 ## M7 — Close-out

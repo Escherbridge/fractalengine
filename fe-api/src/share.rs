@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -213,6 +213,7 @@ pub async fn redeem_share_url(
     State(state): State<Arc<ApiState>>,
     Path(token): Path<String>,
     Query(params): Query<RedeemParams>,
+    headers: HeaderMap,
 ) -> Response {
     let payload = match verify_share_token(&state.share_signer.verifying_key(), &token, now_secs())
     {
@@ -304,9 +305,14 @@ pub async fn redeem_share_url(
                 Ok(o) => o,
                 Err(resp) => return resp,
             };
+            let range = headers
+                .get(axum::http::header::RANGE)
+                .and_then(|v| v.to_str().ok());
             match payload.fmt.as_str() {
-                "parquet" => crate::export::parquet_response(&out, &format!("{petal_id}.parquet")),
-                _ => crate::export::csv_response(&out, &format!("{petal_id}.csv")),
+                "parquet" => {
+                    crate::export::parquet_response(&out, &format!("{petal_id}.parquet"), range)
+                }
+                _ => crate::export::csv_response(&out, &format!("{petal_id}.csv"), range),
             }
         }
         other => err(

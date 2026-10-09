@@ -151,7 +151,15 @@ async fn run_readback() -> anyhow::Result<()> {
     let field = arg("--field");
     let value = arg("--value");
 
-    const TABLES: &[&str] = &["verse", "fractal", "petal", "node", "role", "verse_member"];
+    const TABLES: &[&str] = &[
+        "verse",
+        "fractal",
+        "petal",
+        "node",
+        "role",
+        "verse_member",
+        "iot_reading",
+    ];
     if !TABLES.contains(&table.as_str()) {
         anyhow::bail!("table must be one of {TABLES:?}, got {table}");
     }
