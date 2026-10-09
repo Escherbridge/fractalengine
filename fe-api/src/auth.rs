@@ -53,8 +53,13 @@ pub fn extract_bearer_token(header_value: &str) -> Option<&str> {
 ///
 /// Uses `fe_database::RoleLevel` as the single source of truth for role ranking.
 pub fn require_role(claims: &ApiClaims, min_role: &str) -> Result<(), StatusCode> {
+    require_role_level(claims, RoleLevel::from(min_role))
+}
+
+/// Typed form of [`require_role`] — a typo'd role string parses to
+/// `RoleLevel::None` (admit-all), so tables use this instead.
+pub fn require_role_level(claims: &ApiClaims, required: RoleLevel) -> Result<(), StatusCode> {
     let actual = RoleLevel::from(claims.max_role.as_str());
-    let required = RoleLevel::from(min_role);
     if !actual.is_at_least(required) {
         return Err(StatusCode::FORBIDDEN);
     }

@@ -207,19 +207,28 @@ pub async fn list_gis_nodes(
     if let Err(status) = authorize_petal_read(&state, &claims, &petal_id).await {
         return status;
     }
+    match gis_nodes_core(&state, &petal_id, &q).await {
+        Ok(payload) => ok(payload),
+        Err((status, msg)) => err(status, &msg),
+    }
+}
 
-    let filter = match build_spatial_filter(&state, &petal_id, &q).await {
-        Ok(f) => f,
-        Err(resp) => return resp,
-    };
+/// GIS-nodes core shared by REST + MCP `get_gis_nodes` (caller has authorized
+/// the petal): resolve at most one spatial filter, load live nodes, filter.
+pub(crate) async fn gis_nodes_core(
+    state: &ApiState,
+    petal_id: &str,
+    q: &GisNodesQuery,
+) -> Result<Value, (StatusCode, String)> {
+    let filter = build_spatial_filter(state, petal_id, q).await?;
 
     // `created_at` is projected only because SurrealDB 3 rejects ORDER BY on
     // a field absent from an explicit projection list.
     let sql = "SELECT node_id, display_name, position, elevation, properties, created_at \
                FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC";
-    let Some(rows) = run_select(&state, sql, vec![("pid".to_string(), json!(petal_id))]).await
+    let Some(rows) = run_select(state, sql, vec![("pid".to_string(), json!(petal_id))]).await
     else {
-        return err(StatusCode::BAD_GATEWAY, "node query failed");
+        return Err((StatusCode::BAD_GATEWAY, "node query failed".to_string()));
     };
 
     let mut nodes = Vec::with_capacity(rows.len());
@@ -240,7 +249,7 @@ pub async fn list_gis_nodes(
         });
     }
 
-    ok(json!({ "petal_id": petal_id, "nodes": nodes }))
+    Ok(json!({ "petal_id": petal_id, "nodes": nodes }))
 }
 
 /// GET /api/v1/petals/:petal_id/gis/tracks
@@ -300,13 +309,13 @@ async fn authorize_petal_read(
 // Spatial filter assembly
 // ---------------------------------------------------------------------------
 
-/// Resolve at most one spatial filter from the query string. `Err(Response)`
-/// carries a 400 for malformed/ambiguous input (deny-by-default on bad params).
+/// Resolve at most one spatial filter from the query string. `Err` carries a
+/// 400 for malformed/ambiguous input (deny-by-default on bad params).
 async fn build_spatial_filter(
     state: &ApiState,
     petal_id: &str,
     q: &GisNodesQuery,
-) -> Result<Option<SpatialFilter>, Response> {
+) -> Result<Option<SpatialFilter>, (StatusCode, String)> {
     let has_bbox = q.bbox.is_some();
     let has_bbox_ll = q.bbox_ll.is_some();
     let has_radius = q.radius.is_some() || q.cx.is_some() || q.cz.is_some();
@@ -319,39 +328,39 @@ async fn build_spatial_filter(
         return Ok(None);
     }
     if count > 1 {
-        return Err(err(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "specify only one of: bbox, bbox_ll, or radius",
+            "specify only one of: bbox, bbox_ll, or radius".to_string(),
         ));
     }
 
     if let Some(ref s) = q.bbox {
-        let bbox = parse_bbox(s).map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
+        let bbox = parse_bbox(s).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
         return Ok(Some(SpatialFilter::Bbox(bbox)));
     }
 
     if let Some(ref s) = q.bbox_ll {
         let Some(proj) = load_petal_terrain_origin(state, petal_id).await else {
-            return Err(err(
+            return Err((
                 StatusCode::BAD_REQUEST,
-                "bbox_ll requires a petal terrain origin (lat/lon); none configured",
+                "bbox_ll requires a petal terrain origin (lat/lon); none configured".to_string(),
             ));
         };
-        let bbox = bbox_ll_to_local(s, &proj).map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
+        let bbox = bbox_ll_to_local(s, &proj).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
         return Ok(Some(SpatialFilter::Bbox(bbox)));
     }
 
     // Radius branch: all three of radius/cx/cz are required.
     let (Some(r), Some(cx), Some(cz)) = (q.radius, q.cx, q.cz) else {
-        return Err(err(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "radius filter requires radius, cx, and cz",
+            "radius filter requires radius, cx, and cz".to_string(),
         ));
     };
     if !(r.is_finite() && r >= 0.0) {
-        return Err(err(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "radius must be finite and non-negative",
+            "radius must be finite and non-negative".to_string(),
         ));
     }
     Ok(Some(SpatialFilter::Radius { cx, cz, r }))

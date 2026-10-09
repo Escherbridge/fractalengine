@@ -138,6 +138,34 @@ Factory-era decisions live in the mission library's `decisions.md` (D1–D4).
   stays documented for older builds only. Implemented as a small dedicated
   pass before F12 so the egress docs state the simple truth.
 
+- **DEC-C17 (2026-10-09)** — M4 review verdict **FAIL** → mandatory fix pass
+  (after F13 lands; shared files): (B1) row-level petal_id post-filter in
+  prepare_export + reject comments/nested-SELECTs in export/share SQL +
+  whitespace normalization + 4-vector adversarial tests; (B2) correlation_id
+  on RawQuery/QueryResult (M3 pattern) + db_reader:None cross-delivery test;
+  (M1) ETag + If-Range on export/share bodies; (M2) SurrealQL `TIMEOUT 5s`
+  appended in the guard; (M3) relay startup warning when share-signer env
+  unset + EnvBackend round-trip test + A24 restated honestly (GUI: OS
+  keystore; relay: operator-exported env or ephemeral); (M4) docs corrections
+  (token extraction, step order, schema shape, 401-not-404, Windows json-503,
+  drop "bundled duckdb" + "cannot widen" claims); cheap minors folded in
+  (#5 HashSet dedupe, #6 null-anchor honesty — no fabricated origin, #7 latlon
+  omits crs key → OGC:CRS84, #10 bytes=-0 → 416, #11 harness share_signer
+  default decoupled from node keypair). Script re-run (with a new live latlon
+  + geometry assert) is the acceptance gate.
+- **DEC-C18 (2026-10-09)** — A22's "immutable cache" header expectation is
+  AMENDED: query-driven exports are live data — immutable caching would be a
+  correctness bug. Contract: no-store/private Cache-Control (or none) +
+  strong ETag + If-Range for read-consistency across ranged GETs. (The
+  assets endpoint keeps immutable — content-addressed.)
+- **Deferred with triggers (M4 review minors)**: #4 WKB local-frame axes
+  (x, elevation, z) misread by GIS readers as (x, north, z) — predates M4,
+  semantic/breaking for consumers; revisit when a GIS consumer integration
+  lands (own decision + migration note). #8 f32 anchor quantization (~1 m at
+  latlon) — revisit if a consumer needs sub-meter anchors (ReadingSnapshot
+  f64 position). #2 commit-msg drift (noted, harmless). #9 script
+  port-collision hardening (partial: pre-check folded into fix pass).
+
 ## Bounds
 
 - Stale sibling forks (`fe-hermes/`, `fe-pi/`, `fe-pibridge/`, `servo/`) untouched.

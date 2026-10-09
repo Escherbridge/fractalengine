@@ -150,15 +150,30 @@ pub async fn delete_terrain_config(
     terrain_mutation_unavailable()
 }
 
+/// Why petal-terrain mutations are refused (REST PUT/DELETE + MCP `set_petal_terrain`).
+pub(crate) const TERRAIN_MUTATION_UNAVAILABLE: &str = "terrain configuration mutations are temporarily unavailable until durable command replies are correlated";
+
 /// Reject mutation until the runtime can route the authoritative DB result to this request.
 fn terrain_mutation_unavailable() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(ApiResponse::<serde_json::Value>::error(
-            "terrain configuration mutations are temporarily unavailable until durable command replies are correlated",
+            TERRAIN_MUTATION_UNAVAILABLE,
         )),
     )
         .into_response()
+}
+
+/// MCP `set_petal_terrain` core (caller has authorized the petal): validate
+/// the `terrain` argument (`null` clears, else a `TerrainConfig`), then refuse
+/// exactly as REST PUT/DELETE do — `SetPetalTerrain` replies are not yet
+/// correlated (fe-runtime §api-reply-correlation), so no success is claimed.
+pub(crate) fn set_petal_terrain_core(terrain: &serde_json::Value) -> Result<(), String> {
+    if !terrain.is_null() {
+        serde_json::from_value::<TerrainConfig>(terrain.clone())
+            .map_err(|e| format!("invalid terrain config: {e}"))?;
+    }
+    Err(TERRAIN_MUTATION_UNAVAILABLE.to_string())
 }
 
 async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
@@ -425,22 +440,29 @@ pub async fn list_available_tilesets(
     Extension(claims): Extension<ApiClaims>,
     Query(query): Query<PetalScopeQuery>,
 ) -> Response {
-    let assigned = match authorized_petal_tilesets(&state, &claims, &query.petal_id).await {
-        Ok(assigned) => assigned,
-        Err(status) => return status.into_response(),
-    };
+    match list_tilesets_core(&state, &claims, &query.petal_id).await {
+        Ok(tilesets) => Json(ApiResponse::success(tilesets)).into_response(),
+        Err(status) => status.into_response(),
+    }
+}
+
+/// Tileset-list core shared by REST + MCP `list_tilesets`: only tilesets the
+/// authorized petal's terrain binds (re-checks petal access via fe-policy).
+pub(crate) async fn list_tilesets_core(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    petal_id: &str,
+) -> Result<serde_json::Value, StatusCode> {
+    let assigned = authorized_petal_tilesets(state, claims, petal_id).await?;
     let Some(ref registry) = state.tileset_registry else {
-        return Json(ApiResponse::success(serde_json::json!([]))).into_response();
+        return Ok(serde_json::json!([]));
     };
     let tilesets: Vec<_> = registry
         .list_tilesets()
         .into_iter()
         .filter(|tileset| is_assigned_tileset(&assigned, &tileset.tileset_id))
         .collect();
-    Json(ApiResponse::success(
-        serde_json::to_value(tilesets).unwrap_or_default(),
-    ))
-    .into_response()
+    Ok(serde_json::to_value(tilesets).unwrap_or_default())
 }
 
 /// GET /api/v1/tilesets/:tileset_id/meta?petal_id=... — return authorized tileset metadata.
@@ -531,24 +553,46 @@ pub async fn install_hexon_tileset(
         }
     };
 
-    // Verify exclusive petal ownership before the registry can replace this ID.
-    let hexon_id = match uploaded_terrain_tileset_id(&bytes) {
-        Ok(hexon_id) => hexon_id,
-        Err(message) => return Json(ApiResponse::<serde_json::Value>::error(message)),
-    };
-    if let Err(message) =
-        require_exclusive_petal_tileset_binding(&state, &query.petal_id, &hexon_id).await
-    {
-        return Json(ApiResponse::<serde_json::Value>::error(message));
+    match install_tileset_bytes(&state, registry, &query.petal_id, &bytes).await {
+        Ok(installed) => Json(ApiResponse::success(installed)),
+        Err(message) => Json(ApiResponse::<serde_json::Value>::error(message)),
     }
+}
 
-    match registry.install(&bytes) {
-        Ok(installed) => Json(ApiResponse::success(
-            serde_json::to_value(installed).unwrap_or_default(),
-        )),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(format!(
-            "install failed: {e}"
-        ))),
+/// MCP `install_tileset` core: re-runs the REST pre-body guard (Editor+ petal
+/// scope + fe-policy `Install`) as defense in depth, then [`install_tileset_bytes`].
+pub(crate) async fn install_tileset_core(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    petal_id: &str,
+    bytes: &[u8],
+) -> Result<serde_json::Value, String> {
+    crate::hexon::require_hexon_petal_access(state, claims, petal_id, "editor", Action::Install)
+        .await
+        .map_err(str::to_string)?;
+    let Some(ref registry) = state.tileset_registry else {
+        return Err("tileset registry not available".to_string());
+    };
+    install_tileset_bytes(state, registry, petal_id, bytes).await
+}
+
+/// Tileset-install core shared by REST (multipart) + MCP `install_tileset`
+/// (base64); the caller has authorized the petal. The archive must be a
+/// terrain tileset already bound ONLY to this petal before the store write.
+pub(crate) async fn install_tileset_bytes(
+    state: &crate::server::ApiState,
+    registry: &fe_terrain::tiles::TilesetRegistry,
+    petal_id: &str,
+    bytes: &[u8],
+) -> Result<serde_json::Value, String> {
+    // Verify exclusive petal ownership before the registry can replace this ID.
+    let hexon_id = uploaded_terrain_tileset_id(bytes).map_err(str::to_string)?;
+    require_exclusive_petal_tileset_binding(state, petal_id, &hexon_id)
+        .await
+        .map_err(str::to_string)?;
+    match registry.install(bytes) {
+        Ok(installed) => Ok(serde_json::to_value(installed).unwrap_or_default()),
+        Err(e) => Err(format!("install failed: {e}")),
     }
 }
 

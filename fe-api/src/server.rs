@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderValue, Method, StatusCode},
     response::IntoResponse,
     routing::{delete, get, patch, post},
@@ -183,6 +183,12 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/assets/by-id/{asset_id}",
             get(crate::assets::get_asset_by_id),
         )
+        // GLB upload (FR-1; petal = authz anchor; per-route body limit — §asset-ingest)
+        .route(
+            "/api/v1/petals/{petal_id}/assets",
+            post(crate::upload::upload_petal_asset)
+                .layer(DefaultBodyLimit::max(crate::upload::ASSET_ROUTE_BODY_LIMIT)),
+        )
         // Node asset download (node -> asset -> blob, real headers)
         .route(
             "/api/v1/nodes/{node_id}/asset",
@@ -357,8 +363,12 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/sim/inject-fault",
             post(crate::sim::post_inject_fault),
         )
-        // MCP
-        .route("/mcp", post(crate::mcp::mcp_handler))
+        // MCP (body limit admits a max-size base64 upload_asset — §asset-ingest)
+        .route(
+            "/mcp",
+            post(crate::mcp::mcp_handler)
+                .layer(DefaultBodyLimit::max(crate::upload::MCP_ROUTE_BODY_LIMIT)),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::auth_middleware,

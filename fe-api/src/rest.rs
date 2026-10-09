@@ -341,48 +341,72 @@ pub async fn update_transform(
         return Json(ApiResponse::error("insufficient scope"));
     }
 
-    // Optimistic broadcast: push transform to WS subscribers + Bevy bridge
-    // immediately, BEFORE the DB persist completes.
-    let broadcast_receivers = state
-        .transform_broadcast_tx
-        .send(TransformUpdate {
-            node_id: node_id.clone(),
-            petal_id: String::new(),
-            position: req.position,
-            rotation: req.rotation,
-            scale: req.scale,
-            timestamp_ms: now_ms(),
-            source_did: claims.sub,
-        })
-        .unwrap_or(0);
-
-    // Fire-and-forget DB persist via TransformPersist (bypasses PendingApiRequests).
-    // On failure the DB thread emits SceneChange::TransformFailed so WS subscribers
-    // receive a rollback with the last-known-good values.
-    let _ = state.api_cmd_tx.send(ApiCommand::TransformPersist {
-        node_id: node_id.clone(),
-        position: req.position,
-        rotation: req.rotation,
-        scale: req.scale,
-    });
-
-    // Fire-and-forget tracking integration: if this node has a `tracking_route_id`
-    // property, compute snap-to-route metrics and check deviation alerts.
-    if let Some(ref db) = state.db_reader {
-        let db = db.clone();
-        let api_cmd_tx = state.api_cmd_tx.clone();
-        let tracked_node_id = node_id.clone();
-        let pos = req.position;
-        tokio::spawn(async move {
-            let _ = check_tracking_and_alert(&db, &api_cmd_tx, &tracked_node_id, pos).await;
-        });
-    }
+    let broadcast_receivers = persist_transform(
+        &state,
+        &claims,
+        &node_id,
+        req.position,
+        req.rotation,
+        req.scale,
+    );
 
     Json(ApiResponse::success(serde_json::json!({
         "node_id": node_id,
         "broadcast_receivers": broadcast_receivers,
         "persist": "queued"
     })))
+}
+
+/// Transform write core shared by REST `update_transform` and the MCP tool
+/// (caller has authorized): optimistic broadcast, fire-and-forget
+/// `TransformPersist` (never a pending waiter — the DB thread sends no reply),
+/// tracking-alert hook. Returns the broadcast receiver count.
+pub(crate) fn persist_transform(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    node_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+) -> usize {
+    // Optimistic broadcast: WS subscribers + Bevy bridge, BEFORE the DB persist.
+    let broadcast_receivers = state
+        .transform_broadcast_tx
+        .send(TransformUpdate {
+            node_id: node_id.to_string(),
+            petal_id: String::new(),
+            position,
+            rotation,
+            scale,
+            timestamp_ms: now_ms(),
+            source_did: claims.sub.clone(),
+        })
+        .unwrap_or(0);
+
+    // On failure the DB thread emits SceneChange::TransformFailed (WS rollback).
+    if state
+        .api_cmd_tx
+        .send(ApiCommand::TransformPersist {
+            node_id: node_id.to_string(),
+            position,
+            rotation,
+            scale,
+        })
+        .is_err()
+    {
+        tracing::warn!(node_id, "TransformPersist send failed (DB bridge gone)");
+    }
+
+    // Tracking integration: a `tracking_route_id` node gets snap/deviation checks.
+    if let Some(ref db) = state.db_reader {
+        let db = db.clone();
+        let api_cmd_tx = state.api_cmd_tx.clone();
+        let tracked_node_id = node_id.to_string();
+        tokio::spawn(async move {
+            let _ = check_tracking_and_alert(&db, &api_cmd_tx, &tracked_node_id, position).await;
+        });
+    }
+    broadcast_receivers
 }
 
 /// GET /api/v1/nodes/:node_id/transform -- read current transform.
@@ -492,28 +516,91 @@ pub async fn set_node_property(
         return Json(ApiResponse::<PropertySetDto>::error("insufficient scope"));
     }
 
+    match set_property_core(&state, &node_id, req.key, req.value).await {
+        Ok(dto) => Json(ApiResponse::success(dto)),
+        Err(e) => Json(ApiResponse::<PropertySetDto>::error(e)),
+    }
+}
+
+/// Send one `DbRequest` and await its reply with the standard 5 s budget
+/// (error strings are the REST surface's long-standing ones).
+pub(crate) async fn db_round_trip(
+    state: &crate::server::ApiState,
+    cmd: DbCommand,
+) -> Result<DbResult, String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::SetNodeProperty {
-            node_id: node_id.clone(),
-            key: req.key,
-            value: req.value,
-        },
-        reply_tx,
-    };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error(
-            "internal channel closed",
-        ));
+    if state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest { cmd, reply_tx })
+        .is_err()
+    {
+        tracing::warn!("DbRequest send failed (DB bridge gone)");
+        return Err("internal channel closed".to_string());
     }
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodePropertySet { node_id, key })) => {
-            Json(ApiResponse::success(PropertySetDto { node_id, key }))
-        }
-        Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<PropertySetDto>::error(e)),
-        Ok(Ok(_)) => Json(ApiResponse::<PropertySetDto>::error("unexpected response")),
-        Ok(Err(_)) => Json(ApiResponse::<PropertySetDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<PropertySetDto>::error("request timed out")),
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(_)) => Err("request cancelled".to_string()),
+        Err(_) => Err("request timed out".to_string()),
+    }
+}
+
+/// Property-set core shared by REST + MCP `set_property` (caller has authorized).
+pub(crate) async fn set_property_core(
+    state: &crate::server::ApiState,
+    node_id: &str,
+    key: String,
+    value: serde_json::Value,
+) -> Result<PropertySetDto, String> {
+    let cmd = DbCommand::SetNodeProperty {
+        node_id: node_id.to_string(),
+        key,
+        value,
+    };
+    match db_round_trip(state, cmd).await? {
+        DbResult::NodePropertySet { node_id, key } => Ok(PropertySetDto { node_id, key }),
+        DbResult::Error(e) => Err(e),
+        _ => Err("unexpected response".to_string()),
+    }
+}
+
+/// Property-read core shared by REST + MCP `get_properties` (caller has authorized).
+pub(crate) async fn get_properties_core(
+    state: &crate::server::ApiState,
+    node_id: &str,
+) -> Result<PropertiesDto, String> {
+    let cmd = DbCommand::GetNodeProperties {
+        node_id: node_id.to_string(),
+    };
+    match db_round_trip(state, cmd).await? {
+        DbResult::NodePropertiesLoaded {
+            node_id,
+            properties,
+        } => Ok(PropertiesDto {
+            node_id,
+            properties,
+        }),
+        DbResult::Error(e) => Err(e),
+        _ => Err("unexpected response".to_string()),
+    }
+}
+
+/// Property-delete core shared by REST + MCP `delete_property` (caller has authorized).
+pub(crate) async fn delete_property_core(
+    state: &crate::server::ApiState,
+    node_id: &str,
+    key: &str,
+) -> Result<PropertySetDto, String> {
+    let cmd = DbCommand::DeleteNodeProperty {
+        node_id: node_id.to_string(),
+        key: key.to_string(),
+    };
+    match db_round_trip(state, cmd).await? {
+        DbResult::NodePropertyDeleted { .. } => Ok(PropertySetDto {
+            node_id: node_id.to_string(),
+            key: key.to_string(),
+        }),
+        DbResult::Error(e) => Err(e),
+        _ => Err("unexpected response".to_string()),
     }
 }
 
@@ -544,30 +631,9 @@ pub async fn get_node_properties(
         return Json(ApiResponse::<PropertiesDto>::error("insufficient scope"));
     }
 
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::GetNodeProperties {
-            node_id: node_id.clone(),
-        },
-        reply_tx,
-    };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<PropertiesDto>::error(
-            "internal channel closed",
-        ));
-    }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodePropertiesLoaded {
-            node_id,
-            properties,
-        })) => Json(ApiResponse::success(PropertiesDto {
-            node_id,
-            properties,
-        })),
-        Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<PropertiesDto>::error(e)),
-        Ok(Ok(_)) => Json(ApiResponse::<PropertiesDto>::error("unexpected response")),
-        Ok(Err(_)) => Json(ApiResponse::<PropertiesDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<PropertiesDto>::error("request timed out")),
+    match get_properties_core(&state, &node_id).await {
+        Ok(dto) => Json(ApiResponse::success(dto)),
+        Err(e) => Json(ApiResponse::<PropertiesDto>::error(e)),
     }
 }
 
@@ -598,27 +664,9 @@ pub async fn delete_node_property(
         return Json(ApiResponse::<PropertySetDto>::error("insufficient scope"));
     }
 
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::DeleteNodeProperty {
-            node_id: node_id.clone(),
-            key: key.clone(),
-        },
-        reply_tx,
-    };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error(
-            "internal channel closed",
-        ));
-    }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodePropertyDeleted { .. })) => {
-            Json(ApiResponse::success(PropertySetDto { node_id, key }))
-        }
-        Ok(Ok(DbResult::Error(e))) => Json(ApiResponse::<PropertySetDto>::error(e)),
-        Ok(Ok(_)) => Json(ApiResponse::<PropertySetDto>::error("unexpected response")),
-        Ok(Err(_)) => Json(ApiResponse::<PropertySetDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<PropertySetDto>::error("request timed out")),
+    match delete_property_core(&state, &node_id, &key).await {
+        Ok(dto) => Json(ApiResponse::success(dto)),
+        Err(e) => Json(ApiResponse::<PropertySetDto>::error(e)),
     }
 }
 
@@ -676,6 +724,57 @@ pub(crate) async fn resolve_node_scope(
             },
             reply_tx,
         })
+        .ok()?;
+    match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
+        Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
+        _ => None,
+    }
+}
+
+/// Resolve a fractal_id to its scope string (direct, else `ResolveFractalScope`).
+pub(crate) async fn resolve_fractal_scope(
+    state: &crate::server::ApiState,
+    fractal_id: &str,
+) -> Option<String> {
+    if let Some(ref db) = state.db_reader {
+        return direct_resolve_fractal_scope(db, fractal_id).await;
+    }
+    resolve_scope_via_channel(
+        state,
+        DbCommand::ResolveFractalScope {
+            fractal_id: fractal_id.to_string(),
+        },
+    )
+    .await
+}
+
+/// Resolve a verse_id to `VERSE#<id>` iff the verse row exists (direct, else
+/// `ResolveVerseScope`).
+pub(crate) async fn resolve_verse_scope(
+    state: &crate::server::ApiState,
+    verse_id: &str,
+) -> Option<String> {
+    if let Some(ref db) = state.db_reader {
+        return direct_resolve_verse_scope(db, verse_id).await;
+    }
+    resolve_scope_via_channel(
+        state,
+        DbCommand::ResolveVerseScope {
+            verse_id: verse_id.to_string(),
+        },
+    )
+    .await
+}
+
+/// Channel fallback shared by the fractal/verse resolvers (3 s budget).
+async fn resolve_scope_via_channel(
+    state: &crate::server::ApiState,
+    cmd: DbCommand,
+) -> Option<String> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest { cmd, reply_tx })
         .ok()?;
     match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
         Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
@@ -814,6 +913,30 @@ pub(crate) async fn direct_resolve_petal_scope(db: &Db, petal_id: &str) -> Optio
     ))
 }
 
+/// Resolve a fractal's scope string via a direct DB query.
+pub(crate) async fn direct_resolve_fractal_scope(db: &Db, fractal_id: &str) -> Option<String> {
+    let mut res = db
+        .query("SELECT verse_id FROM fractal WHERE fractal_id = $fid LIMIT 1")
+        .bind(("fid", fractal_id.to_string()))
+        .await
+        .ok()?;
+    let rows: Vec<serde_json::Value> = res.take(0).ok()?;
+    let verse_id = rows.first()?.get("verse_id")?.as_str()?;
+    Some(fe_database::build_scope(verse_id, Some(fractal_id), None))
+}
+
+/// Resolve a verse's scope string via a direct DB query (`None` if absent).
+pub(crate) async fn direct_resolve_verse_scope(db: &Db, verse_id: &str) -> Option<String> {
+    let mut res = db
+        .query("SELECT verse_id FROM verse WHERE verse_id = $vid LIMIT 1")
+        .bind(("vid", verse_id.to_string()))
+        .await
+        .ok()?;
+    let rows: Vec<serde_json::Value> = res.take(0).ok()?;
+    let verse_id = rows.first()?.get("verse_id")?.as_str()?;
+    Some(fe_database::build_scope(verse_id, None, None))
+}
+
 /// Resolve a node's full scope string via direct DB queries.
 pub(crate) async fn direct_resolve_node_scope(db: &Db, node_id: &str) -> Option<String> {
     let mut res = db
@@ -917,55 +1040,52 @@ pub async fn execute_query(
         ));
     }
 
+    match run_local_query(&state, &claims, &req.sql, &req.vars).await {
+        Ok(dto) => Json(ApiResponse::success(dto)),
+        Err(e) => Json(ApiResponse::<QueryResultDto>::error(e)),
+    }
+}
+
+/// The `/api/v1/query` local-store path, shared with the MCP `query` tool
+/// (caller has checked the role): rate limit (per DID) → SELECT-only
+/// validation → token-scope filter injection → row cap → byte ceiling → CRS.
+pub(crate) async fn run_local_query(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    sql: &str,
+    vars: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<crate::types::QueryResultDto, String> {
     // Rate limit keyed by sub/DID (not jti) so creating multiple tokens doesn't
     // bypass the limit; then static validation + scope-filter injection.
-    let guarded = match crate::query_guard::guard_and_prepare_query(
-        &state,
+    let guarded = crate::query_guard::guard_and_prepare_query(
+        state,
         &claims.sub,
         crate::limits::QUERY_RATE_PER_SEC,
         "10 queries/sec",
         &claims.scope,
-        &req.sql,
+        sql,
     )
-    .await
-    {
-        Ok(g) => g,
-        Err(e) => return Json(ApiResponse::<QueryResultDto>::error(e)),
-    };
+    .await?;
 
-    // Require db_reader for query endpoint
     let Some(ref db) = state.db_reader else {
-        return Json(ApiResponse::<QueryResultDto>::error(
-            "query endpoint not available (no db_reader)",
-        ));
+        return Err("query endpoint not available (no db_reader)".to_string());
     };
 
-    match crate::query_guard::run_guarded_query(
-        db,
-        &guarded,
-        &req.vars,
-        crate::limits::QUERY_ROW_CAP,
-    )
-    .await
-    {
-        Ok(data) => {
-            if let Err(e) = crate::query_guard::enforce_byte_ceiling(
-                &data,
-                crate::limits::QUERY_MAX_RESPONSE_BYTES,
-                crate::limits::QUERY_MAX_RESPONSE_LABEL,
-            ) {
-                return Json(ApiResponse::<QueryResultDto>::error(e));
-            }
-            // FR-5: stamp the egress CRS resolved from the token's scope.
-            let crs = crate::crs::scope_crs(&state, &claims.scope).await;
-            Json(ApiResponse::success(QueryResultDto {
-                data,
-                crs: Some(crs),
-                distributed: None,
-            }))
-        }
-        Err(e) => Json(ApiResponse::<QueryResultDto>::error(e)),
-    }
+    let data =
+        crate::query_guard::run_guarded_query(db, &guarded, vars, crate::limits::QUERY_ROW_CAP)
+            .await?;
+    crate::query_guard::enforce_byte_ceiling(
+        &data,
+        crate::limits::QUERY_MAX_RESPONSE_BYTES,
+        crate::limits::QUERY_MAX_RESPONSE_LABEL,
+    )?;
+    // FR-5: stamp the egress CRS resolved from the token's scope.
+    let crs = crate::crs::scope_crs(state, &claims.scope).await;
+    Ok(crate::types::QueryResultDto {
+        data,
+        crs: Some(crs),
+        distributed: None,
+    })
 }
 
 /// POST /api/v1/query/elevated — execute a SurrealQL statement with mutation support.
@@ -1435,51 +1555,54 @@ pub async fn delete_field_def(
 /// POST /api/v1/petals/:petal_id/waypoints — create a waypoint node.
 ///
 /// Projects lat/lon/ele to world-space using the terrain projection.
-/// RBAC: Editor+ required.
+/// RBAC: Editor+ at the petal's DB-resolved scope (F13: the old
+/// `build_scope("", None, Some(petal))` panicked on every call).
 pub async fn create_waypoint(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
     Json(req): Json<crate::types::CreateWaypointRequest>,
 ) -> impl IntoResponse {
-    let scope = fe_database::build_scope("", None, Some(&petal_id));
-    if require_role_and_scope(&claims, "editor", &scope).is_err() {
+    if require_role(&claims, "editor").is_err() {
         return Json(ApiResponse::<CreatedEntityDto>::error(
-            "insufficient permissions or scope",
+            "insufficient permissions",
         ));
     }
-
     if !is_valid_ulid(&petal_id) {
         return Json(ApiResponse::<CreatedEntityDto>::error("invalid petal_id"));
     }
-
-    // Project WGS84 to local coordinates using the petal's terrain projection.
-    // We read the petal's config from the database first.
-    let Some(proj) = load_petal_projection(&state, &petal_id).await else {
-        // Fallback: use identity projection
-        tracing::warn!("no terrain config for petal {petal_id}, using identity projection");
-        let position = [req.lat as f32, req.ele as f32, req.lon as f32];
-        return create_waypoint_with_position(&state, &claims, &petal_id, &req, position).await;
+    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
+        return Json(ApiResponse::<CreatedEntityDto>::error(
+            "could not resolve petal scope",
+        ));
     };
-
-    match proj.wgs84_to_local(req.lat, req.lon, req.ele) {
-        Ok([x, y, z]) => {
-            let position = [x as f32, y as f32, z as f32];
-            create_waypoint_with_position(&state, &claims, &petal_id, &req, position).await
-        }
-        Err(e) => Json(ApiResponse::<CreatedEntityDto>::error(format!(
-            "projection failed: {e}"
-        ))),
+    if require_scope(&claims, &scope).is_err() {
+        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient scope"));
+    }
+    match create_waypoint_core(&state, &petal_id, &req).await {
+        Ok(dto) => Json(ApiResponse::success(dto)),
+        Err(e) => Json(ApiResponse::<CreatedEntityDto>::error(e)),
     }
 }
 
-async fn create_waypoint_with_position(
-    state: &Arc<crate::server::ApiState>,
-    _claims: &ApiClaims,
+/// Waypoint-create core shared by REST + MCP `create_waypoint` (caller has
+/// authorized the petal): project, create the node, tag its waypoint properties.
+pub(crate) async fn create_waypoint_core(
+    state: &crate::server::ApiState,
     petal_id: &str,
     req: &crate::types::CreateWaypointRequest,
-    position: [f32; 3],
-) -> Json<ApiResponse<CreatedEntityDto>> {
+) -> Result<CreatedEntityDto, String> {
+    let position = match load_petal_projection(state, petal_id).await {
+        Some(proj) => match proj.wgs84_to_local(req.lat, req.lon, req.ele) {
+            Ok([x, y, z]) => [x as f32, y as f32, z as f32],
+            Err(e) => return Err(format!("projection failed: {e}")),
+        },
+        None => {
+            tracing::warn!("no terrain config for petal {petal_id}, using identity projection");
+            [req.lat as f32, req.ele as f32, req.lon as f32]
+        }
+    };
+
     let mut props = serde_json::Map::new();
     props.insert("lat".into(), serde_json::json!(req.lat));
     props.insert("lon".into(), serde_json::json!(req.lon));
@@ -1492,48 +1615,27 @@ async fn create_waypoint_with_position(
         props.insert("symbol".into(), serde_json::json!(sym));
     }
 
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let cmd = ApiCommand::DbRequest {
-        cmd: DbCommand::CreateNode {
-            petal_id: petal_id.to_string(),
-            name: req.name.clone(),
-            position,
-            correlation_id: None,
-        },
-        reply_tx,
+    let cmd = DbCommand::CreateNode {
+        petal_id: petal_id.to_string(),
+        name: req.name.clone(),
+        position,
+        correlation_id: None,
     };
-    if state.api_cmd_tx.send(cmd).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error(
-            "internal channel closed",
-        ));
-    }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::NodeCreated { id, name, .. })) => {
-            // Set waypoint properties
+    match db_round_trip(state, cmd).await? {
+        DbResult::NodeCreated { id, name, .. } => {
+            // Tag the waypoint properties; a failed tag is logged, not fatal.
             for (key, value) in props {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
-                    cmd: DbCommand::SetNodeProperty {
-                        node_id: id.clone(),
-                        key,
-                        value,
-                    },
-                    reply_tx: tx,
-                });
-                // Fire-and-forget: ignore result
-                let _ = rx.await;
+                if let Err(e) = set_property_core(state, &id, key.clone(), value).await {
+                    tracing::warn!("waypoint {id} property {key} not set: {e}");
+                }
             }
-            Json(ApiResponse::success(CreatedEntityDto { id, name }))
+            Ok(CreatedEntityDto { id, name })
         }
-        Ok(Ok(DbResult::Error(e))) => {
+        DbResult::Error(e) => {
             tracing::error!("create_waypoint failed: {e}");
-            Json(ApiResponse::<CreatedEntityDto>::error("operation failed"))
+            Err("operation failed".to_string())
         }
-        Ok(Ok(_)) => Json(ApiResponse::<CreatedEntityDto>::error(
-            "unexpected response",
-        )),
-        Ok(Err(_)) => Json(ApiResponse::<CreatedEntityDto>::error("request cancelled")),
-        Err(_) => Json(ApiResponse::<CreatedEntityDto>::error("request timed out")),
+        _ => Err("unexpected response".to_string()),
     }
 }
 
@@ -1561,19 +1663,30 @@ pub async fn move_waypoint(
     if require_scope(&claims, &scope).is_err() {
         return Json(ApiResponse::error("insufficient scope"));
     }
+    match move_waypoint_core(&state, &waypoint_id, &scope, &req).await {
+        Ok(payload) => Json(ApiResponse::<serde_json::Value>::success(payload)),
+        Err(e) => Json(ApiResponse::error(e)),
+    }
+}
 
-    // Get the petal_id from the node to find the projection
-    let Some(petal_id) = resolve_node_petal(&state, &waypoint_id).await else {
-        return Json(ApiResponse::error("could not resolve node petal"));
+/// Waypoint-move core shared by REST + MCP `move_waypoint`. `node_scope` is
+/// the caller-authorized, DB-resolved scope; the petal (for the projection)
+/// is read from it rather than re-queried.
+pub(crate) async fn move_waypoint_core(
+    state: &crate::server::ApiState,
+    waypoint_id: &str,
+    node_scope: &str,
+    req: &crate::types::MoveWaypointRequest,
+) -> Result<serde_json::Value, String> {
+    let Some(petal_id) = fe_database::parse_scope(node_scope)
+        .ok()
+        .and_then(|parts| parts.petal_id)
+    else {
+        return Err("could not resolve node petal".to_string());
     };
+    let ele = req.ele.unwrap_or(0.0);
 
-    // Get current elevation if not provided
-    let ele = req.ele.unwrap_or({
-        // Try to get existing elevation from node properties
-        0.0
-    });
-
-    let proj = load_petal_projection(&state, &petal_id).await;
+    let proj = load_petal_projection(state, &petal_id).await;
     let position = match &proj {
         Some(p) => match p.wgs84_to_local(req.lat, req.lon, ele) {
             Ok([x, y, z]) => [x as f32, y as f32, z as f32],
@@ -1582,44 +1695,38 @@ pub async fn move_waypoint(
         None => [req.lat as f32, ele as f32, req.lon as f32],
     };
 
-    // Update transform. Fire-and-forget via `TransformPersist` (the same shape
-    // `update_transform` uses): the DB thread emits no `DbResult` for a
-    // transform write — it broadcasts `SceneChange::TransformFailed` on error
-    // instead — so waiting on one would leave a dangling pending API request
-    // that only ever "succeeded" by consuming an unrelated reply.
-    let _ = state.api_cmd_tx.send(ApiCommand::TransformPersist {
-        node_id: waypoint_id.clone(),
-        position,
-        rotation: [0.0, 0.0, 0.0],
-        scale: [1.0, 1.0, 1.0],
-    });
+    // Fire-and-forget via `TransformPersist`: the DB thread emits no
+    // `DbResult` for a transform write (it broadcasts TransformFailed instead),
+    // so registering a waiter would leave a dangling pending request.
+    if state
+        .api_cmd_tx
+        .send(ApiCommand::TransformPersist {
+            node_id: waypoint_id.to_string(),
+            position,
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        })
+        .is_err()
+    {
+        tracing::warn!(waypoint_id, "TransformPersist send failed (DB bridge gone)");
+    }
 
-    // Update properties
     for (key, value) in [
         ("lat", serde_json::json!(req.lat)),
         ("lon", serde_json::json!(req.lon)),
         ("ele", serde_json::json!(ele)),
     ] {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = state.api_cmd_tx.send(ApiCommand::DbRequest {
-            cmd: DbCommand::SetNodeProperty {
-                node_id: waypoint_id.clone(),
-                key: key.to_string(),
-                value,
-            },
-            reply_tx: tx,
-        });
-        let _ = rx.await;
+        if let Err(e) = set_property_core(state, waypoint_id, key.to_string(), value).await {
+            tracing::warn!("waypoint {waypoint_id} property {key} not updated: {e}");
+        }
     }
 
-    Json(ApiResponse::<serde_json::Value>::success(
-        serde_json::json!({
-            "node_id": waypoint_id,
-            "lat": req.lat,
-            "lon": req.lon,
-            "ele": ele,
-        }),
-    ))
+    Ok(serde_json::json!({
+        "node_id": waypoint_id,
+        "lat": req.lat,
+        "lon": req.lon,
+        "ele": ele,
+    }))
 }
 
 /// GET /api/v1/nodes/:track_id/elevation-profile — elevation profile for a track.
@@ -1745,7 +1852,7 @@ pub async fn get_track_stats(
 
 /// Load a petal's terrain configuration to get its projection.
 async fn load_petal_projection(
-    state: &Arc<crate::server::ApiState>,
+    state: &crate::server::ApiState,
     petal_id: &str,
 ) -> Option<fe_terrain::projection::Projection> {
     // Try to read terrain config from DB
@@ -1785,20 +1892,6 @@ async fn load_petal_projection(
         }
         _ => None,
     }
-}
-
-/// Resolve a node's petal_id via direct DB query.
-async fn resolve_node_petal(state: &Arc<crate::server::ApiState>, node_id: &str) -> Option<String> {
-    if let Some(ref db) = state.db_reader {
-        let mut res = db
-            .query("SELECT petal_id FROM node WHERE node_id = $nid LIMIT 1")
-            .bind(("nid", node_id.to_string()))
-            .await
-            .ok()?;
-        let rows: Vec<serde_json::Value> = res.take(0).ok()?;
-        return rows.first()?.get("petal_id")?.as_str().map(String::from);
-    }
-    None
 }
 
 async fn direct_get_elevation_profile(

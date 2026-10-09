@@ -51,7 +51,7 @@ when a route lands.
 | Per-endpoint surface (§endpoint-surface, T5) | `GET\|DELETE /api/v1/nodes/{id}`, `GET /api/v1/nodes/{id}/address`, `GET /api/v1/address?uri=…`, `GET /api/v1/petals/{p}/nodes?kind=…`, `GET /api/v1/petals/{p}/earthwork/summary`, `POST /api/v1/petals/{p}/paths/{path}/instances/{i}/promote` |
 | Waypoints | `POST /api/v1/petals/{p}/waypoints` |
 | GIS reads (§gis) | `GET /api/v1/petals/{p}/gis/nodes`, `GET …/gis/tracks` |
-| Assets (§assets) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset` |
+| Assets (§assets, §asset-ingest) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset`; upload `POST /api/v1/petals/{p}/assets` (multipart GLB) |
 | Petal archive / GPX | `GET /api/v1/petals/{p}/export`, `POST …/import`, `POST …/import/gpx`, `GET …/export/gpx` |
 | Terrain config | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
 | Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
@@ -61,7 +61,7 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 16 tools: 6 base + per-endpoint CRUD `read_node` / `node_address` / `delete_node` / `promote_instance` (§endpoint-surface) + `query_timeseries` (§distributed-query) + `sim_start` / `sim_stop` / `sim_status` / `sim_step` / `sim_inject_fault` (§sim-control) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 29 tools, one `ToolSpec` table (§mcp-dispatch); body limit raised for base64 uploads (§asset-ingest) |
 
 ## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
 
@@ -644,5 +644,103 @@ handlers and the MCP arm both call them, so the guard lives once.
   built-in name (`default` | `sharded_query` | `offline_degraded`).
 - Tests: `tests/sim_control_test.rs` owns the receiver (a one-session
   emulator) through the full router; the real bridge/session is proven in
-  fe-sim (`control.rs` / `session.rs` tests). F13 folds the five MCP arms
-  into the ToolSpec/ScopeRule table (scope rule: "global, Owner").
+  fe-sim (`control.rs` / `session.rs` tests). The five MCP `sim_*` tools
+  are `{Global, Owner}` rows in the §mcp-dispatch table (F13); the per-verb
+  guard stays as defense in depth.
+
+## §mcp-dispatch (F13/A26 — DEC-C14, DEC-C15; 2026-10-09)
+
+`src/mcp/mod.rs` owns ONE table, `TOOLS: &[ToolSpec]`
+(`{name, description, input_schema, min_role: RoleLevel, scope_rule, handler}`);
+`tools/list` and `tools/call` both derive from it. `tools/call` =
+lookup → `authorize` → schema-`required` check → handler. `authorize` is the
+**only** MCP authz code: typed role floor (`require_role_level` — a string
+role typo would parse to `RoleLevel::None` = admit-all, so the table is
+typed and a test forbids a `None` floor), then the row's `ScopeRule`
+resolved **from the DB**, then token containment. Unresolvable → deny
+("petal/node/fractal/verse not found"). Handlers (`src/mcp/tools.rs`) take
+the resolved scope and contain no `require_*`/`resolve_*_scope` calls —
+grep-tested (`handlers_contain_no_authz_calls`). Shared cores they call
+(sim verbs, hexon/tileset cores, query_guard) keep their own guards as
+defense in depth.
+
+| ScopeRule | Meaning | Rows |
+|---|---|---|
+| `None` | self-filtering read (token scope narrows output) | get_hierarchy, query |
+| `Global` | no resource scope exists — role-only by design | create_verse (Manager), sim_* (Owner) |
+| `PetalArg(k)` | `args[k]` petal → `resolve_petal_scope` | promote_instance, query_timeseries, upload_asset, place_asset, create_waypoint, import_gpx, set_petal_terrain, list_tilesets, install_tileset (Manager), get_gis_nodes |
+| `NodeArg(k)` | `args[k]` node → `resolve_node_scope` | update_transform, read_node, node_address, delete_node, set/get/delete_property, move_waypoint |
+| `HierarchyArgs(target)` | the id AT `target` (Verse/Fractal/Petal) is DB-resolved; shallower ids sent must match the stored chain; a DEEPER id is rejected outright | create_fractal→Verse, create_petal→Fractal, create_node→Petal |
+
+Role floors: Viewer for reads, Editor for writes, Manager for create_verse +
+install_tileset (DEC-C14; REST install is Editor + fe-policy `Install` — the
+MCP row is deliberately stricter), Owner for sim_*.
+
+**Wart history (fixed F13).** create_node / create_petal used to scope-check
+only when the caller supplied ancestry ids (omit them → role-only), and
+update_transform had no scope check. All three now resolve the write
+target's real scope from the DB; the role-only fallbacks are deleted.
+`HierarchyArgs`' match rule closes the decoy variant (authorize against an
+owned petal, write into a foreign fractal). Handlers write into the ids
+taken from the resolved scope, never raw args.
+
+**Depth-escalation hardening (security review, 2026-10-09).** The ancestry
+check alone did not stop a DEPTH escalation within one's own chain: a
+petal-scoped Editor token could send `{verse_id, petal_id: <own petal>}` to
+create_fractal — the old rule anchored on the *deepest* id present
+(`petal_id`), which the token legitimately covers, then let the handler
+write a verse-level fractal anyway. The fix anchors authz at the EXACT
+level the tool writes into (`HierarchyArgs(HierarchyTarget)`): create_fractal
+resolves only `verse_id` and rejects a present `fractal_id`/`petal_id`
+outright; create_petal resolves only `fractal_id` and rejects a present
+`petal_id`; create_node is unchanged (`petal_id` already was the target).
+Ids ABOVE the target (e.g. `verse_id` on create_petal) still must match the
+resolved chain — that ancestry check is kept — but nothing deeper than the
+target is ever accepted, so the token's scope containment check
+(`require_scope`) runs against the real write target, not a shallower
+decoy.
+
+**Honest arithmetic (DEC-C14).** A26's "20 tools" = the mcp_scene_primitives
+20-name vocabulary, now fully present. `tools/list` returns 29: 24 non-sim +
+5 sim — an intentional, documented superset (read_node, node_address,
+promote_instance, query_timeseries, sim_* shipped legitimately); none are
+deleted or renamed.
+
+**Known gaps (F14 / follow-ups).** `set_petal_terrain` validates then
+refuses exactly like REST PUT/DELETE terrain (`SetPetalTerrain` replies are
+uncorrelated — fe-runtime §api-reply-correlation). `query` inherits
+`query_guard`'s verse/fractal-scoped tokens getting NO row filter
+(petal-scoped tokens are filtered). `place_asset` accepts any existing
+`asset_id` (asset rows are node-global — §assets caveat).
+
+## §asset-ingest (F13 — mcp_scene_primitives FR-1/2/3/7)
+
+`src/upload.rs`. Both transports (REST multipart
+`POST /api/v1/petals/{p}/assets`, MCP `upload_asset` base64) share
+`ingest_glb_with_limit`: name check → `blob_store` present (else fail
+closed: REST 503 / MCP error) → `spawn_blocking { base64 decode (length
+pre-checked so oversize never allocates) → validate_glb → BLAKE3 +
+add_blob }` → `DbCommand::CreateAsset {name, content_type, size_bytes,
+content_hash, correlation_id}` → correlated `DbResult::AssetCreated`.
+
+- **Bytes never cross the channel — by construction.** `store_glb` consumes
+  the `Vec<u8>` and returns `StoredGlb` (private fields: hash + size only);
+  `register_asset`, the sole `CreateAsset` sender, accepts only `StoredGlb`.
+  The DB thread (`create_asset_handler`) re-verifies `has_blob` and writes
+  `data: NONE`. One `BlobStoreHandle` is shared by ApiState and the DB thread
+  (`fractalengine/src/main.rs`), so the hash is immediately servable.
+- **Validation (FR-7):** GLB only — `glTF` magic, version 2, header length ==
+  byte length, ≤ `MAX_ASSET_BYTES` (256 MiB, per-node config is a seam).
+  Embedded textures are an uploader requirement, not parsed.
+- **Limits (NFR-2):** asset route `DefaultBodyLimit` = 256 MiB + 1 MiB;
+  `/mcp` = ceil(4/3 × 256 MiB) + 8 MiB. A max-size MCP upload transiently
+  holds ~600 MB (body + decode) — accepted for a desktop node. Other routes
+  keep axum's 2 MB default. GPX via MCP caps at 16 MiB decoded.
+- **Placement:** `place_asset` → `DbCommand::CreateNodeWithAsset` (log-first
+  `NodeCreated` op, rotation stored as Euler XYZ like `UpdateNodeTransform`)
+  → `DbResult::GltfImported` with an echoed `correlation_id`. Only a
+  correlated `GltfImported` is an API reply (`ReplyKind::PlacedAsset`); a GUI
+  `ImportGltf` result (`None`) can never satisfy an API waiter, and the GUI's
+  existing listener still spawns the placed node live.
+- Re-uploading identical bytes is idempotent at the blob layer but creates a
+  new asset row (dedupe-by-hash is out of scope).

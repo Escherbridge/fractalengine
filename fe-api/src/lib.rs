@@ -28,6 +28,7 @@ pub mod sim;
 pub mod terrain;
 pub mod timeseries_query;
 pub mod types;
+pub mod upload;
 pub mod ws;
 
 use std::sync::Arc;
