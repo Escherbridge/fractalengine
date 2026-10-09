@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use fe_entity_store::EntitySnapshot;
+use fe_entity_store::{EntitySnapshot, ReadingSnapshot};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -104,6 +104,60 @@ fn write_nodes_to<W: std::io::Write + Send>(
     writer.write(&batch).context("writing record batch")?;
     writer.close().context("closing parquet writer")?;
     Ok(())
+}
+
+/// Write IoT reading rows to an in-memory GeoParquet-shaped buffer (F11/A23
+/// HTTP-egress shim for fe-api, sibling of [`write_nodes_parquet_bytes`]).
+/// The anchor-position geometry column is nullable — see
+/// `codec::readings_schema`.
+pub fn write_readings_parquet_bytes(
+    rows: &[ReadingSnapshot],
+    meta: &GeoParquetMeta,
+) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    write_readings_to(&mut buf, rows, meta)?;
+    Ok(buf)
+}
+
+/// Shared readings writer core over any `Write` sink.
+fn write_readings_to<W: std::io::Write + Send>(
+    sink: W,
+    rows: &[ReadingSnapshot],
+    meta: &GeoParquetMeta,
+) -> Result<()> {
+    let schema = Arc::new(codec::readings_schema(&meta.primary_geometry_column));
+    let batch = codec::readings_to_batch(schema.clone(), rows)?;
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(Some(vec![KeyValue::new(
+            GEO_KEY.to_string(),
+            meta.geo_metadata_json()?,
+        )]))
+        .build();
+    let mut writer =
+        ArrowWriter::try_new(sink, schema, Some(props)).context("opening parquet writer")?;
+    writer.write(&batch).context("writing record batch")?;
+    writer.close().context("closing parquet writer")?;
+    Ok(())
+}
+
+/// Read reading rows back from a GeoParquet-shaped file (test/read-back use).
+pub fn read_readings_parquet(path: &Path) -> Result<Vec<ReadingSnapshot>> {
+    let file =
+        File::open(path).with_context(|| format!("opening parquet file {}", path.display()))?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).context("reading parquet footer")?;
+    let geometry_column =
+        geometry_column_from_meta(builder.metadata().file_metadata().key_value_metadata());
+    let reader = builder.build().context("building parquet reader")?;
+    let mut out = Vec::new();
+    for batch in reader {
+        codec::batch_to_readings(
+            &batch.context("decoding record batch")?,
+            &geometry_column,
+            &mut out,
+        )?;
+    }
+    Ok(out)
 }
 
 /// Read entity snapshots back from a GeoParquet file.
@@ -258,6 +312,61 @@ mod tests {
         assert_eq!(back[0].node_id, "n1");
         assert_eq!(back[0].position, [1.0, 2.0, 3.0]);
         assert!(read_geo_metadata(&path).unwrap().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn reading(id: &str, node_id: &str, value: f64, anchor: Option<[f32; 3]>) -> ReadingSnapshot {
+        ReadingSnapshot {
+            reading_id: id.into(),
+            node_id: node_id.into(),
+            petal_id: "p1".into(),
+            metric: "temperature_c".into(),
+            value,
+            units: "celsius".into(),
+            recorded_at: "2026-10-09T00:00:00+00:00".into(),
+            recorded_at_ms: 1_760_000_000_000,
+            anchor_position: anchor,
+        }
+    }
+
+    #[test]
+    fn readings_round_trip_preserves_rows_and_bit_exact_value() {
+        let path = tmp("readings_round_trip");
+        // A value whose f32 truncation would be lossy — proves Float64 column.
+        let rows = vec![
+            reading("r1", "n1", 23.456_789_012_345, Some([1.0, 2.0, 3.0])),
+            reading("r2", "n1", -40.0, Some([1.0, 2.0, 3.0])),
+        ];
+        let bytes = write_readings_parquet_bytes(&rows, &GeoParquetMeta::default()).unwrap();
+        let path_written = {
+            std::fs::write(&path, &bytes).unwrap();
+            path.clone()
+        };
+        let back = read_readings_parquet(&path_written).unwrap();
+        assert_eq!(back.len(), 2);
+        for (a, b) in rows.iter().zip(&back) {
+            assert_eq!(a.reading_id, b.reading_id);
+            assert_eq!(a.node_id, b.node_id);
+            assert_eq!(a.petal_id, b.petal_id);
+            assert_eq!(a.metric, b.metric);
+            assert_eq!(a.value, b.value, "f64 value must round-trip bit-exact");
+            assert_eq!(a.units, b.units);
+            assert_eq!(a.recorded_at, b.recorded_at);
+            assert_eq!(a.recorded_at_ms, b.recorded_at_ms);
+            assert_eq!(a.anchor_position, b.anchor_position);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn readings_null_anchor_round_trips_as_none() {
+        let path = tmp("readings_null_anchor");
+        let rows = vec![reading("r1", "n-deleted", 1.0, None)];
+        let bytes = write_readings_parquet_bytes(&rows, &GeoParquetMeta::default()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let back = read_readings_parquet(&path).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].anchor_position, None);
         let _ = std::fs::remove_file(&path);
     }
 

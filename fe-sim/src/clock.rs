@@ -184,12 +184,15 @@ mod tests {
         // scenario runs (see SCENARIO_RUN_LOCK).
         let _run_lock = SCENARIO_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let clock = SimClock::new(4_000_000_000_000);
+        let snapshot = fe_database::op_log::snapshot_hlc();
         install_hlc_source(clock.clone());
         // init_hlc resets HLC state; with the override active the wall bits
         // must come from the SimClock, not the system clock.
         fe_database::op_log::init_hlc(0);
         let (packed, _) = fe_database::op_log::next_hlc_timestamp();
         uninstall_hlc_source();
+        // Never leave the process HLC parked in 2096 (DEC-C13 restore).
+        fe_database::op_log::restore_hlc(snapshot);
         assert_eq!(
             packed >> 16,
             4_000_000_000_000,

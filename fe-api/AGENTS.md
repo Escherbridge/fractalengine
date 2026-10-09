@@ -311,29 +311,60 @@ default 1h / max 24h. Change limits there, nowhere else.
 (`?query=<urlencoded SELECT>&coords=local|latlon`), the FR-2 BI egress. Flow:
 Viewer+ role → valid ULID → petal scope coverage (`resolve_petal_scope`,
 deny-by-default, real HTTP statuses per the §assets precedent) → shared guard
-pipeline → **forced petal pre-filter** (`petal_id = :path_petal` injected
-regardless of the query text — FR-6 export pre-filtering) → rows mapped to
-`EntitySnapshot` → fe-query's GeoParquet writer (`write_nodes_parquet_bytes`,
-in-memory; no temp files) or local CSV serialization.
+pipeline (UNCHANGED by F11 — `validate_select_sql` → scope injection →
+`run_guarded_query` → row cap/byte ceiling, exactly as `/query`) → **forced
+petal pre-filter** (`petal_id = :path_petal` injected regardless of the query
+text — FR-6 export pre-filtering) → rows mapped to a table-specific shape →
+fe-query's GeoParquet writer (`write_nodes_parquet_bytes` /
+`write_readings_parquet_bytes`, both in-memory; no temp files) or local CSV
+serialization.
 
-- Export queries are **node-table-only** (400 otherwise): the output schema is
-  the snapshot/GeoParquet nodes table; other tables belong to `/query`.
+- Export queries target **NODE or IOT_READING only** (400 otherwise, message
+  shared with §share's mint-time check via `export::classify_export_table`):
+  the output schema is the snapshot/GeoParquet nodes table or the flat
+  readings table; every other table belongs to `/query`.
+- **Readings shape (A23, F11).** `iot_reading` has no geometry column (schema
+  `src/AGENTS.md` §iot-readings in fe-database), so each reading row
+  (`reading_id, node_id, petal_id, metric, value, units, recorded_at,
+  recorded_at_ms`) is paired with its anchor node's position via a
+  **deterministic second guarded query** (`fetch_anchor_positions`): collect
+  the distinct `node_id`s the page of readings touches, then resolve all of
+  them in ONE `SELECT node_id, position, elevation FROM node WHERE petal_id =
+  $pid AND node_id IN $ids` (bound, not string-interpolated — the ids are
+  server-derived ULIDs, not caller SQL, so it bypasses `validate_select_sql`
+  but still rides `run_guarded_query` for the same timeout/row-cap/error
+  shape). This is Rust-side batching, never an N+1 per-row subquery. A reading
+  whose anchor no longer resolves (hard-deleted node, not merely tombstoned —
+  the join does NOT filter by `tombstone`, so a reading anchored to a
+  tombstoned-but-still-present node keeps its last known position) maps to
+  `anchor_position: None`, which the parquet writer encodes as a **null**
+  geometry cell (unlike the nodes writer, whose geometry column is
+  non-nullable) rather than fabricating `[0,0,0]`. `value` is `Float64` end to
+  end (reading rows, the Arrow column, and CSV) — unlike node positions'
+  `Float32` — so BI consumers get the sensor value back bit-exact.
 - Parquet responses ship `Content-Type: application/vnd.apache.parquet`,
   `Content-Length` (axum), and `Accept-Ranges: bytes` so DuckDB httpfs can
   `read_parquet('<url>')` (plan D1).
 - CSV is RFC-4180 with a leading `# crs=<label>` comment line (documented
   choice: comment line + `X-FE-CRS` header; a sidecar column would bloat every
   row) and **properties as one JSON-string column** (flattening arbitrary keys
-  would make the header schema query-dependent).
+  would make the header schema query-dependent). Readings CSV mirrors this:
+  `reading_id,node_id,petal_id,metric,value,units,recorded_at,recorded_at_ms,`
+  + the same local/latlon anchor-position column split as nodes (blank fields
+  when the anchor does not resolve).
 - `coords=latlon` converts through the petal `Projection` at the API layer
   (never in fe-query/fe-database); position becomes `[lon, lat, ele]`
-  (GeoParquet EPSG:4326 axis order) / `lon,lat,ele_m` CSV columns. 400 when
-  the petal has no terrain origin. Precision note: parquet positions pass
-  through `EntitySnapshot`'s `f32` (≈1 m at mid-latitudes) — acceptable v1,
-  revisit if survey-grade egress is needed.
-- Status mapping: 400 bad query/coords, 403 role/scope, 404 unknown petal,
-  413 row-cap/byte-ceiling, 429 rate limit, 502 query transport, 503 no
-  db_reader, 504 statement timeout.
+  (GeoParquet EPSG:4326 axis order) / `lon,lat,ele_m` CSV columns — applied to
+  the anchor position on the readings path too. 400 when the petal has no
+  terrain origin. Precision note: parquet positions pass through
+  `EntitySnapshot`'s `f32` (≈1 m at mid-latitudes) — acceptable v1, revisit if
+  survey-grade egress is needed.
+- Status mapping: 400 bad query/coords/table, 403 role/scope, 404 unknown
+  petal, 413 row-cap/byte-ceiling (enforced on the readings path too — the
+  anchor join is bounded by the already-capped distinct-node-id count, and
+  the byte ceiling is checked against the final serialized body exactly as
+  for nodes), 429 rate limit, 502 query transport, 503 no db_reader, 504
+  statement timeout.
 
 ## §share
 
@@ -354,11 +385,22 @@ HMAC because the identity stack is already ed25519 — no new secret type).
   `/query` envelope (incl. `crs`); `fmt=parquet|csv` reuses the §export
   pipeline and therefore requires a petal-scoped ceiling (400 otherwise —
   enforced at mint too).
-- **Key lifetime**: the signing keypair (`ApiState.share_signer`) is generated
-  per process in `run_server` — restarts invalidate outstanding links, which
-  is acceptable at ≤24h TTL. Wiring the node's persistent keypair through
-  `ApiConfig` is a one-line integration in `main.rs` left as an integration
-  request (outside `fe-api/**`).
+- **Key lifetime — CLOSED (A24, DEC-C9).** `ApiState.share_signer` is a
+  required `ApiConfig` field (`fe-api/src/lib.rs`), not a per-process
+  `generate()`. Both binaries construct it via
+  `fe_identity::load_or_generate_keypair(&secret_store, "share_signer")`
+  before calling `spawn_api_thread` — `fractalengine/src/main.rs` (GUI:
+  `OsKeystoreBackend`) and `fractalengine-relay/src/main.rs` (relay:
+  `EnvBackend`, slot `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`, same
+  operator-must-export-every-launch caveat as the relay's node keypair —
+  `fractalengine-relay/README.md` §Secret injection). **Deliberately a
+  dedicated slot, not derived from the node identity seed**: share-URL
+  signing is a different capability domain from node identity — independent
+  rotation, and a leaked share-signing key must never double as node
+  impersonation. `ApiHarness` (fe-test-harness) keeps its old default (same
+  keypair as token signing, for every pre-existing test) but exposes
+  `spawn_with_share_signer(Arc<NodeKeypair>)` so a persistence test can share
+  one key across two harness instances to simulate a restart.
 
 ## §crs
 
@@ -389,9 +431,9 @@ requests rather than done here):
   would let these endpoints work over the crossbeam channel when no
   `db_reader` is configured (e.g. a future relay-only deployment). Today they
   return 503 in that case, same as `blob_store` being absent.
-- Share-URL signing key persistence (§share): pass the node's `NodeKeypair`
-  into `ApiConfig`/`run_server` from `fractalengine/src/main.rs` so shareable
-  links survive a restart; today the key is ephemeral per process.
+- ~~Share-URL signing key persistence (§share)~~ **CLOSED (A24, DEC-C9,
+  F11).** `ApiConfig.share_signer` is now a required field both binaries
+  populate from their secret store; see §share's "Key lifetime" entry.
 
 ## §hexon-scope
 
@@ -450,6 +492,15 @@ future work). Design notes:
   with a reader configured the direct path is byte-identical to before.
   Bounded by a 10s round-trip timeout (504 on timeout, 502 on
   transport/DB failure).
+- **Reply correlation (M3-review fix 3, 2026-10-09)**: `InsertIotReadings`
+  and both reply variants carry a `correlation_id` (the CreateNode
+  precedent); the fallback match verifies the echoed id + `petal_id` and
+  answers 502 on mismatch, and `deliver_correlated` (fe-runtime app.rs) lets
+  a timed-out caller's dead entry CONSUME its late reply so the next caller
+  never receives another client's count or 422 detail. The family-blind
+  `Error` routing + skip-closed sharp edge remains — see fe-runtime
+  `src/AGENTS.md` §api-reply-correlation before adding any new
+  timeout-capable write-path caller.
 - **Replication emit seam (A11, F5)**: the same call publishes one
   `ReplicationEvent` per accepted row, so readings ingested over HTTP reach
   peers exactly like DB-thread writes do. It needs `ApiState.replication_tx`
@@ -467,13 +518,12 @@ future work). Design notes:
   `IotReadingsInserted`): validation failures stay 422 with byte-identical
   wording to the direct path (parity pinned by a fe-database test), and only
   DB failures degrade to the generic `DbResult::Error` → 502.
-- **Egress seam (FR-5)**: `iot_reading` is whitelisted in
+- **Egress seam (FR-5) — CLOSED (A23, F11)**: `iot_reading` is whitelisted in
   `query_guard::ALLOWED_TABLES` and `inject_scope_filter` injects the petal
   filter on `FROM iot_reading` (rows carry a denormalized `petal_id`), so
-  `/api/v1/query` + shared-URL redemption serve IoT rows scope-guarded today.
-  Reading-shaped `export.parquet`/`export.csv` (flat reading rows + optional
-  anchor-position join) is the remaining FR-5 polish — `prepare_export` is
-  still node-table-only.
+  `/api/v1/query` + shared-URL redemption serve IoT rows scope-guarded.
+  Reading-shaped `export.parquet`/`export.csv` (flat reading rows + the
+  anchor-position batched join) now ships too — see §export.
 
 ## §distributed-query (M2/F7 — A15/A16/A17)
 

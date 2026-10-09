@@ -286,6 +286,21 @@ keeping monotonicity intact while making sim runs deterministic. It is a plain
 `fn` pointer (no closure state — fe-sim's shim reads its process-global current
 clock), installed only by sim scenarios; production processes never touch it.
 
+**Sim-session snapshot/restore (DEC-C13, 2026-10-09).** `HLC_STATE` is
+process-global and HLC is forward-only, so a sim session that resets it
+(`init_hlc(0)` per harness peer spawn, reading the SimClock) would otherwise
+leak sim time into any production DB thread sharing the process: a PAST sim
+start breaks op-log monotonicity, a FUTURE one persists into production stamps
+and survives restarts (`init_hlc(max_persisted)`). `snapshot_hlc()` copies the
+state before the session installs its source; `restore_hlc(snapshot)` (after
+the source is uninstalled) sets it to `max(snapshot, (system_now, 0))` —
+reading the SYSTEM clock directly, never an installed source. An uninitialised
+snapshot restores to real now (a later stamp never panics). fe-sim calls both
+from its `HlcSourceGuard`, inside the scenario run lock. Residual: stamps a
+co-resident production DB thread issues DURING a session still read sim time
+— hence fe-sim's `start_ms ≤ now` validation and the relay's `FE_SIM_ALLOW`
+opt-in (fe-sim `src/AGENTS.md` §hlc-sim).
+
 `next_hlc_timestamp()` returns `(packed_u64, human_string)`; the human
 string is `"<wall_ms>:<counter_hex>"`, stored in the `hlc_timestamp` column
 for debugging / external tooling. HLC state sits in a `Mutex` purely for

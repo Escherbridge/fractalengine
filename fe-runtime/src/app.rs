@@ -213,10 +213,30 @@ pub struct PendingApiRequests {
 }
 
 /// One API request waiting for its reply, with its enqueue order so an
-/// untyped (`Error`) reply can be routed to the oldest waiter.
+/// untyped (`Error`) reply can be routed to the oldest waiter, and the
+/// command's correlation id (if its family carries one).
 struct PendingEntry {
     id: u64,
+    correlation_id: Option<String>,
     reply_tx: tokio::sync::oneshot::Sender<DbResult>,
+}
+
+/// The caller-supplied correlation id a command carries, for the families
+/// that echo one on their reply (see [`PendingApiRequests::try_deliver`]).
+fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
+    match cmd {
+        DbCommand::InsertIotReadings { correlation_id, .. } => correlation_id.as_deref(),
+        _ => None,
+    }
+}
+
+/// The correlation id a reply echoes (mirror of [`correlation_of_command`]).
+fn correlation_of_result(result: &DbResult) -> Option<&str> {
+    match result {
+        DbResult::IotReadingsInserted { correlation_id, .. }
+        | DbResult::IotReadingsRejected { correlation_id, .. } => correlation_id.as_deref(),
+        _ => None,
+    }
 }
 
 /// The reply family a command's result belongs to — the correlation key that
@@ -325,12 +345,52 @@ impl PendingApiRequests {
     ) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        let entry = PendingEntry { id, reply_tx };
+        let entry = PendingEntry {
+            id,
+            correlation_id: correlation_of_command(cmd).map(str::to_string),
+            reply_tx,
+        };
         match reply_kind_of_command(cmd) {
             Some(kind) => self.by_kind.entry(kind).or_default().push_back(entry),
             None => self.uncorrelated.push_back(entry),
         }
         id
+    }
+
+    /// Hand a correlated reply ONLY to the entry filed under its correlation
+    /// id — even a closed one (its caller timed out): that entry consumes and
+    /// drops the late reply, so it can never shift onto the next waiter
+    /// (src/AGENTS.md §api-reply-correlation). An id with no entry is not
+    /// delivered. Uncorrelated replies keep [`Self::deliver_to`] semantics.
+    fn deliver_correlated(
+        queue: &mut std::collections::VecDeque<PendingEntry>,
+        correlation_id: Option<&str>,
+        result: DbResult,
+    ) -> bool {
+        let Some(correlation_id) = correlation_id else {
+            return Self::deliver_to(queue, result);
+        };
+        let Some(position) = queue
+            .iter()
+            .position(|e| e.correlation_id.as_deref() == Some(correlation_id))
+        else {
+            tracing::debug!(
+                correlation_id,
+                "correlated DB reply has no pending waiter — dropped"
+            );
+            return false;
+        };
+        let entry = queue
+            .remove(position)
+            .expect("position is within the queue");
+        if entry.reply_tx.is_closed() {
+            tracing::debug!(
+                correlation_id,
+                "late DB reply for a timed-out API request — consumed by its own entry"
+            );
+            return false;
+        }
+        entry.reply_tx.send(result).is_ok()
     }
 
     /// Pop the next live entry (skipping ones whose receiver was dropped by a
@@ -377,8 +437,10 @@ impl PendingApiRequests {
     /// Returns true if a result was delivered.
     ///
     /// The result's [`ReplyKind`] selects the queue; a result whose family has
-    /// no waiter is dropped (never offered to an unrelated request). `Error` is
-    /// the wildcard that reaches the oldest waiter.
+    /// no waiter is dropped (never offered to an unrelated request). A reply
+    /// carrying a correlation id goes only to its own entry
+    /// ([`Self::deliver_correlated`]). `Error` is the wildcard that reaches
+    /// the oldest waiter (family-blind — a known sharp edge, AGENTS.md).
     pub fn try_deliver(&mut self, result: DbResult) -> bool {
         if matches!(result, DbResult::Error(_)) {
             return self.deliver_to_oldest(result);
@@ -388,7 +450,8 @@ impl PendingApiRequests {
                 let Some(queue) = self.by_kind.get_mut(&kind) else {
                     return false;
                 };
-                Self::deliver_to(queue, result)
+                let correlation_id = correlation_of_result(&result).map(str::to_string);
+                Self::deliver_correlated(queue, correlation_id.as_deref(), result)
             }
             None => Self::deliver_to(&mut self.uncorrelated, result),
         }
@@ -570,6 +633,63 @@ mod tests {
             position: [0.0, 0.0, 0.0],
             correlation_id: None,
         }
+    }
+
+    fn insert_iot_cmd(correlation_id: Option<&str>) -> DbCommand {
+        DbCommand::InsertIotReadings {
+            petal_id: "p".to_string(),
+            verse_id: None,
+            source_did: "did:key:z6MkTest".to_string(),
+            readings: Vec::new(),
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    fn iot_inserted(written: usize, correlation_id: &str) -> DbResult {
+        DbResult::IotReadingsInserted {
+            petal_id: "p".to_string(),
+            written,
+            correlation_id: Some(correlation_id.to_string()),
+        }
+    }
+
+    /// F24 cross-delivery (DEC-C13): caller A times out (receiver dropped),
+    /// B enqueues, THEN A's late reply lands. Skip-closed FIFO handed A's
+    /// reply to B and B's to nobody; correlated routing lets A's own
+    /// (closed) entry consume it, so B gets exactly its own reply and the
+    /// queue stays aligned for C.
+    #[test]
+    fn late_correlated_reply_is_consumed_by_its_own_timed_out_entry() {
+        let mut pending = PendingApiRequests::default();
+        let (a_tx, a_rx) = tokio::sync::oneshot::channel();
+        let (b_tx, mut b_rx) = tokio::sync::oneshot::channel();
+        let (c_tx, mut c_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&insert_iot_cmd(Some("a")), a_tx);
+        drop(a_rx); // A's timeout
+        pending.enqueue_for(&insert_iot_cmd(Some("b")), b_tx);
+
+        assert!(
+            !pending.try_deliver(iot_inserted(2, "a")),
+            "A's late reply is delivered to nobody"
+        );
+        assert!(b_rx.try_recv().is_err(), "B must not receive A's reply");
+
+        pending.enqueue_for(&insert_iot_cmd(Some("c")), c_tx);
+        // Replies may even arrive out of enqueue order: each finds its own.
+        assert!(pending.try_deliver(iot_inserted(3, "c")));
+        assert!(pending.try_deliver(iot_inserted(1, "b")));
+        assert!(matches!(
+            b_rx.try_recv(),
+            Ok(DbResult::IotReadingsInserted { written: 1, .. })
+        ));
+        assert!(matches!(
+            c_rx.try_recv(),
+            Ok(DbResult::IotReadingsInserted { written: 3, .. })
+        ));
+        assert!(
+            !pending.try_deliver(iot_inserted(9, "b")),
+            "a duplicate/unknown correlation id finds no waiter"
+        );
     }
 
     /// The hazard this replaced FIFO pairing for: an unsolicited
@@ -855,27 +975,19 @@ mod tests {
                 DbResult::QueryResult { data: Vec::new() },
             ),
             (
-                DbCommand::InsertIotReadings {
-                    petal_id: "p".to_string(),
-                    verse_id: None,
-                    source_did: "did:key:z6MkTest".to_string(),
-                    readings: Vec::new(),
-                },
+                insert_iot_cmd(None),
                 DbResult::IotReadingsInserted {
                     petal_id: "p".to_string(),
                     written: 0,
+                    correlation_id: None,
                 },
             ),
             (
-                DbCommand::InsertIotReadings {
-                    petal_id: "p".to_string(),
-                    verse_id: None,
-                    source_did: "did:key:z6MkTest".to_string(),
-                    readings: Vec::new(),
-                },
+                insert_iot_cmd(None),
                 DbResult::IotReadingsRejected {
                     petal_id: "p".to_string(),
                     reason: crate::messages::IotIngestRejection::EmptyMetric,
+                    correlation_id: None,
                 },
             ),
             (

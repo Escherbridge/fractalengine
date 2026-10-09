@@ -74,9 +74,27 @@ impl ApiHarness {
         Self::spawn_with_seams(None, sim_control_tx).await
     }
 
+    /// Like [`Self::spawn`], with an explicit share-URL signing key instead
+    /// of the default (same keypair as token signing). Lets a test spin up
+    /// TWO harness instances sharing one `share_signer` to simulate a
+    /// process restart — A24 persistence; production keeps it a dedicated,
+    /// independently-rotatable slot (DEC-C9), but the test only needs key
+    /// identity to be externally controllable.
+    pub async fn spawn_with_share_signer(share_signer: Arc<NodeKeypair>) -> Result<Self> {
+        Self::spawn_with_all_seams(None, None, Some(share_signer)).await
+    }
+
     async fn spawn_with_seams(
         distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
         sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
+    ) -> Result<Self> {
+        Self::spawn_with_all_seams(distributed_tx, sim_control_tx, None).await
+    }
+
+    async fn spawn_with_all_seams(
+        distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
+        sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
+        share_signer: Option<Arc<NodeKeypair>>,
     ) -> Result<Self> {
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
@@ -118,7 +136,7 @@ impl ApiHarness {
             replication_tx: None,
             distributed_tx,
             sim_control_tx,
-            share_signer: keypair.clone(),
+            share_signer: share_signer.unwrap_or_else(|| keypair.clone()),
         });
 
         let router = build_router(state.clone());

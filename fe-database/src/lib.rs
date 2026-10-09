@@ -1293,7 +1293,7 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                     // calls (durable-first, then one ReplicationEvent per
                     // accepted row; see §iot-readings). Harness peers and
                     // the sim lab ingest through this arm.
-                    Ok(DbCommand::InsertIotReadings { petal_id, verse_id, source_did, readings }) => {
+                    Ok(DbCommand::InsertIotReadings { petal_id, verse_id, source_did, readings, correlation_id }) => {
                         match handlers::iot_reading::insert_readings_with_replication(
                             &db,
                             &petal_id,
@@ -1303,14 +1303,14 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             Some(&blob_store),
                             repl_tx.as_ref(),
                         ).await {
-                            Ok(written) => send_result(&tx, DbResult::IotReadingsInserted { petal_id, written }),
+                            Ok(written) => send_result(&tx, DbResult::IotReadingsInserted { petal_id, written, correlation_id }),
                             // F24: a validation failure keeps its typed shape
                             // across the seam (`IotReadingsRejected`, the
                             // 422-class family) so the API fallback maps real
                             // HTTP statuses; only DB failures degrade to the
                             // generic `Error` reply.
                             Err(e) => match e.validation_rejection() {
-                                Some(reason) => send_result(&tx, DbResult::IotReadingsRejected { petal_id, reason }),
+                                Some(reason) => send_result(&tx, DbResult::IotReadingsRejected { petal_id, reason, correlation_id }),
                                 None => send_result(&tx, DbResult::Error(format!("IoT readings ingest failed: {e}"))),
                             },
                         }

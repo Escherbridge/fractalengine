@@ -67,6 +67,41 @@ pub fn init_hlc(max_persisted: u64) {
     );
 }
 
+/// Opaque copy of the process HLC state (packed `wall<<16 | counter`; `None`
+/// = uninitialised) — sim lab only, see [`snapshot_hlc`] / [`restore_hlc`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HlcSnapshot(Option<u64>);
+
+impl HlcSnapshot {
+    /// The packed state this snapshot holds (`None` = HLC was uninitialised).
+    pub fn packed(&self) -> Option<u64> {
+        self.0
+    }
+}
+
+/// Snapshot the process HLC state before a sim session overrides it
+/// (fe-database/src/AGENTS.md §hlc "sim-session snapshot/restore").
+pub fn snapshot_hlc() -> HlcSnapshot {
+    let guard = HLC_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    HlcSnapshot(
+        guard
+            .as_ref()
+            .map(|s| (s.wall_ms << 16) | (s.counter & 0xFFFF)),
+    )
+}
+
+/// Restore the HLC to `max(snapshot, real-now state)` after a sim session —
+/// reads the SYSTEM clock (never an installed source); see AGENTS.md §hlc.
+pub fn restore_hlc(snapshot: HlcSnapshot) {
+    let real = (system_now_ms(), 0u64);
+    let (wall_ms, counter) = match snapshot.0 {
+        Some(packed) => real.max((packed >> 16, packed & 0xFFFF)),
+        None => real,
+    };
+    *HLC_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(HlcState { wall_ms, counter });
+    tracing::info!("HLC restored after sim session: wall_ms={wall_ms}, counter={counter}");
+}
+
 /// Next HLC timestamp as `(packed_u64, human_string)`; panics if
 /// [`init_hlc`] has not been called (format: fe-database/src/AGENTS.md §hlc).
 pub fn next_hlc_timestamp() -> (u64, String) {
@@ -164,6 +199,11 @@ fn wall_now_ms() -> u64 {
     if let Some(source) = *WALL_CLOCK_SOURCE.lock().unwrap() {
         return source();
     }
+    system_now_ms()
+}
+
+/// The system clock in epoch milliseconds — never the installed source.
+fn system_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -279,6 +319,65 @@ mod tests {
         assert!(
             real >> 16 < fake_wall_now(),
             "clearing restores real wall time"
+        );
+    }
+
+    /// A past-dated sim source for the restore tests (2020-01-01T00:00:00Z).
+    fn past_sim_now() -> u64 {
+        1_577_836_800_000
+    }
+
+    /// A past-time sim session resets the HLC backwards (`init_hlc(0)` under
+    /// the source); `restore_hlc` must bring it back to at least the
+    /// pre-session state, so the next production stamp exceeds every stamp
+    /// issued before the session — even when that state ran AHEAD of the
+    /// wall clock (persisted stamps after clock skew).
+    #[test]
+    fn restore_after_a_past_sim_session_keeps_production_stamps_monotonic() {
+        let _g = lock_and_reset();
+        let ahead_wall = system_now_ms() + 60_000;
+        init_hlc((ahead_wall << 16) | 7);
+        let (before, _) = next_hlc_timestamp();
+        let snapshot = snapshot_hlc();
+        assert_eq!(snapshot.packed(), Some(before));
+
+        // The sim session: past source + per-peer init_hlc(0).
+        set_wall_clock_source(Some(past_sim_now));
+        init_hlc(0);
+        let (sim_stamp, _) = next_hlc_timestamp();
+        set_wall_clock_source(None);
+        assert_eq!(
+            sim_stamp >> 16,
+            past_sim_now(),
+            "the session stamped sim time"
+        );
+
+        restore_hlc(snapshot);
+        let (after, _) = next_hlc_timestamp();
+        assert!(
+            after > before,
+            "post-session stamp {after} must exceed the pre-session stamp {before}"
+        );
+    }
+
+    /// Restoring an uninitialised snapshot initialises at real now (never
+    /// leaves the sim's state behind, never panics a later stamp), and a
+    /// snapshot behind real time restores to real time.
+    #[test]
+    fn restore_from_uninitialised_or_stale_snapshot_uses_real_now() {
+        let _g = lock_and_reset();
+        let snapshot = snapshot_hlc();
+        assert_eq!(snapshot.packed(), None);
+        set_wall_clock_source(Some(fake_wall_now));
+        init_hlc(0);
+        set_wall_clock_source(None);
+        let floor = system_now_ms();
+        restore_hlc(snapshot);
+        let (stamp, _) = next_hlc_timestamp();
+        assert!(stamp >> 16 >= floor, "restored to real now");
+        assert!(
+            stamp >> 16 < fake_wall_now(),
+            "the sim's future state is discarded"
         );
     }
 }

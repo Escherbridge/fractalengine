@@ -25,6 +25,28 @@ pub struct EntitySnapshot {
     pub node_log: Vec<NodeLogEntry>,
 }
 
+/// A flat IoT-reading row plus its resolved anchor position, for BI egress
+/// (F11/A23 — fe-api `src/AGENTS.md` §export). Readings carry no geometry of
+/// their own; `anchor_position` is resolved by a second, Rust-side batched
+/// query over the reading rows' distinct `node_id`s (never per-row). `None`
+/// when the anchor no longer resolves (node hard-deleted, not merely
+/// tombstoned) — the geometry column stays nullable in GeoParquet rather than
+/// fabricating a position.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadingSnapshot {
+    pub reading_id: String,
+    pub node_id: String,
+    pub petal_id: String,
+    pub metric: String,
+    pub value: f64,
+    pub units: String,
+    pub recorded_at: String,
+    pub recorded_at_ms: i64,
+    /// Local-meters `[x, y, z]`, or (when exported with `coords=latlon`)
+    /// `[lon, lat, ele]` — same axis-order convention as `EntitySnapshot::position`.
+    pub anchor_position: Option<[f32; 3]>,
+}
+
 /// A log entry recording a single operation on a node (see AGENTS.md §node-log-cap).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeLogEntry {

@@ -26,12 +26,15 @@ The relay listens on `0.0.0.0:8765` by default.
 | `FE_SHUTDOWN_AFTER_SECS` | (never) | Request the same graceful shutdown a signal would, after N seconds (smoke tests, one-shot containers) |
 | `SURREAL_DATASTORE_SYNC_DATA` | `every` | SurrealKV fsync cadence (`never` / `every` / duration >100ms) |
 | `RUST_LOG` | (none) | Log level filter (`info`, `debug`, `fe_api=debug`, etc.) |
+| `FE_SIM_ALLOW` | (unset) | `sim-control` builds only: `1` spawns the sim lab bridge (`/api/v1/sim/*`). A sim session overrides the process-wide HLC clock — set only on a dedicated lab relay serving no production verses. Unset → the bridge is not spawned (503) |
+| `FE_SIM_WORK_DIR` | `<tmp>/fe-relay-sim` | `sim-control` builds only: scratch root for sim session peers |
 
 ### Secret injection
 
 The relay uses `EnvBackend` for secrets. Keys are mapped to env vars as `FE_SECRET_{SERVICE}_{ACCOUNT}` (uppercased, special chars replaced with `_`).
 
 - Node keypair: `FE_SECRET_FRACTALENGINE_NODE_KEYPAIR`. If unset, the relay generates an ephemeral keypair on startup (new iroh node id every run).
+- Share-URL signing key (A24): `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`. If unset, a new key generates each launch and every previously issued shareable query URL stops verifying — a dedicated slot, independent of the node keypair (full ops guidance is a later pass).
 - Verse namespace secrets: `FE_SECRET_FRACTALENGINE_VERSE_<VERSE_ULID>_NS_SECRET_FRACTALENGINE` = 64 hex chars. A verse's P2P replica opens only when its secret is available from this mapping — without one, startup logs a loud warning and skips that verse. The namespace id is derived from the secret (blake3 keyed hash), so no row update is needed.
 
 ## P2P Replication

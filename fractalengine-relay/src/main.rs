@@ -55,6 +55,18 @@ fn main() -> anyhow::Result<()> {
     let local_did = node_kp.to_did_key();
     let api_verifying_key = node_kp.verifying_key();
 
+    // A24/DEC-C9: dedicated share-URL signing key, independent of the node
+    // identity seed — EnvBackend slot `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`
+    // (operator must export it for the key to survive a restart, same
+    // caveat as the relay's node keypair; fe-api/src/AGENTS.md §share).
+    let share_signer = match fe_identity::load_or_generate_keypair(&secret_store, "share_signer") {
+        Ok(kp) => Arc::new(kp),
+        Err(e) => {
+            tracing::warn!("Could not load/store share signer, generating ephemeral: {e}");
+            Arc::new(fe_identity::NodeKeypair::generate())
+        }
+    };
+
     let db_keypair = fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes())
         .expect("recreate keypair from seed");
 
@@ -352,8 +364,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     // F9/A20: the sim control seam exists only in a `sim-control` build
-    // (fe-sim/src/AGENTS.md §session); default builds keep `None` and every
-    // /api/v1/sim/* call fails closed.
+    // (fe-sim/src/AGENTS.md §session) AND with the runtime opt-in
+    // `FE_SIM_ALLOW=1`; otherwise `None` and every /api/v1/sim/* call fails
+    // closed.
     #[cfg(feature = "sim-control")]
     let sim_control_tx = spawn_sim_control();
     #[cfg(not(feature = "sim-control"))]
@@ -387,6 +400,7 @@ fn main() -> anyhow::Result<()> {
         // through the same seam.
         distributed_tx: Some(distributed_call_tx),
         sim_control_tx,
+        share_signer,
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));
@@ -428,18 +442,20 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// DB→sync replication bridge (A10): forward `ReplicationEvent`s from the DB
-/// thread to the sync thread with **`try_send` + drop-and-warn**, never a
-/// blocking `send`.
-///
-/// A stalled sync thread must degrade to observable replication lag, never
-/// block the DB thread's outbound hop; a disconnected sync channel is
-/// shutdown, not backpressure, so it ends the bridge silently. Each dropped
-/// event warns with the running total — the bridge's drop counter.
-/// Spawn the fe-sim control bridge (sim-control builds only); sessions get
-/// scratch dirs under `FE_SIM_WORK_DIR` (default: `<tmp>/fe-relay-sim`).
+/// Spawn the fe-sim control bridge (sim-control builds only, AND the runtime
+/// opt-in `FE_SIM_ALLOW=1` — DEC-C13); sessions get scratch dirs under
+/// `FE_SIM_WORK_DIR` (default: `<tmp>/fe-relay-sim`). Without the opt-in the
+/// bridge is not spawned and `/api/v1/sim/*` keeps its not-configured 503.
 #[cfg(feature = "sim-control")]
 fn spawn_sim_control() -> Option<fe_runtime::sim_control::SimControlCallSender> {
+    if std::env::var("FE_SIM_ALLOW").as_deref() != Ok("1") {
+        tracing::warn!(
+            "sim-control build WITHOUT FE_SIM_ALLOW=1 — sim bridge NOT spawned (/api/v1/sim/* \
+             stays 503). A sim session overrides this process's HLC clock source process-wide; \
+             set FE_SIM_ALLOW=1 only on a dedicated lab relay that serves no production verses"
+        );
+        return None;
+    }
     let work_root = std::env::var_os("FE_SIM_WORK_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("fe-relay-sim"));
@@ -448,8 +464,9 @@ fn spawn_sim_control() -> Option<fe_runtime::sim_control::SimControlCallSender> 
         Ok(_handle) => {
             tracing::warn!(
                 work_root = %work_root.display(),
-                "SIM LAB relay: /api/v1/sim/* is live — a running sim session overrides this \
-                 process's HLC clock source; do not serve production verses from this process"
+                "SIM LAB relay (FE_SIM_ALLOW=1): /api/v1/sim/* is live — a running sim session \
+                 OVERRIDES THIS PROCESS'S HLC CLOCK process-wide (every DB thread here stamps sim \
+                 time while it runs). Lab relays must not serve production verses"
             );
             Some(tx)
         }
@@ -460,6 +477,14 @@ fn spawn_sim_control() -> Option<fe_runtime::sim_control::SimControlCallSender> 
     }
 }
 
+/// DB→sync replication bridge (A10): forward `ReplicationEvent`s from the DB
+/// thread to the sync thread with **`try_send` + drop-and-warn**, never a
+/// blocking `send`.
+///
+/// A stalled sync thread must degrade to observable replication lag, never
+/// block the DB thread's outbound hop; a disconnected sync channel is
+/// shutdown, not backpressure, so it ends the bridge silently. Each dropped
+/// event warns with the running total — the bridge's drop counter.
 fn run_replication_bridge(
     repl_rx: crossbeam::channel::Receiver<fe_database::ReplicationEvent>,
     sync_tx: &crossbeam::channel::Sender<fe_sync::SyncCommand>,

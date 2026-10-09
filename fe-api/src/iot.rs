@@ -144,11 +144,18 @@ pub async fn ingest_readings(
         // per-row ReplicationEvents fire exactly as on the direct path.
         None => {
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            // DEC-C13: correlate the reply. Without it a 10s timeout left
+            // our closed entry in the family queue and our late reply landed
+            // on the NEXT caller (fe-runtime src/AGENTS.md
+            // §api-reply-correlation — routing gives a correlated reply only
+            // to its own entry; the check below is defense in depth).
+            let correlation_id = ulid::Ulid::new().to_string();
             let cmd = DbCommand::InsertIotReadings {
                 petal_id: petal_id.clone(),
                 verse_id,
                 source_did: claims.sub.clone(),
                 readings: req.readings,
+                correlation_id: Some(correlation_id.clone()),
             };
             if state
                 .api_cmd_tx
@@ -158,20 +165,47 @@ pub async fn ingest_readings(
                 tracing::warn!(petal_id, "iot ingest fallback: API command channel closed");
                 return err(StatusCode::BAD_GATEWAY, "db thread unavailable");
             }
+            // A reply is ours only if its echoed id AND petal match (DEC-C13
+            // defense in depth over the router's correlated delivery).
+            let ours = |reply_id: Option<&str>, reply_petal: &str| {
+                reply_id == Some(correlation_id.as_str()) && reply_petal == petal_id
+            };
             match tokio::time::timeout(
                 std::time::Duration::from_secs(FALLBACK_TIMEOUT_SECS),
                 reply_rx,
             )
             .await
             {
-                Ok(Ok(DbResult::IotReadingsInserted { written, .. })) => (
+                Ok(Ok(DbResult::IotReadingsInserted {
+                    written,
+                    petal_id: reply_petal,
+                    correlation_id: reply_id,
+                })) if ours(reply_id.as_deref(), &reply_petal) => (
                     StatusCode::OK,
                     Json(serde_json::json!({ "ok": true, "accepted": written })),
                 )
                     .into_response(),
-                Ok(Ok(DbResult::IotReadingsRejected { reason, .. })) => {
+                Ok(Ok(DbResult::IotReadingsRejected {
+                    reason,
+                    petal_id: reply_petal,
+                    correlation_id: reply_id,
+                })) if ours(reply_id.as_deref(), &reply_petal) => {
                     err(StatusCode::UNPROCESSABLE_ENTITY, &reason.to_string())
                 }
+                // Another caller's reply (correlation or petal mismatch): never
+                // report it as ours — no accepted count or 422 detail leaks.
+                Ok(Ok(
+                    DbResult::IotReadingsInserted { .. } | DbResult::IotReadingsRejected { .. },
+                )) => {
+                    tracing::warn!(
+                        petal_id,
+                        correlation_id,
+                        "iot ingest fallback: reply correlation mismatch — refused"
+                    );
+                    err(StatusCode::BAD_GATEWAY, "reading write failed")
+                }
+                // Family-blind `Error` cannot be correlated (known sharp edge,
+                // fe-runtime src/AGENTS.md §api-reply-correlation).
                 Ok(Ok(DbResult::Error(e))) => {
                     tracing::error!(petal_id, error = %e, "iot ingest DB-thread write failed");
                     err(StatusCode::BAD_GATEWAY, "reading write failed")
