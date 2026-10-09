@@ -2200,6 +2200,39 @@ mod tests {
         .unwrap();
         println!("DEBUG: Asset record created");
 
+        println!("DEBUG: Seeding verse/fractal/petal hierarchy for scope row-filter");
+        db.query(
+            "CREATE verse CONTENT {
+            verse_id: 'v1', name: 'V', created_by: 'did:key:z6MkOwner', created_at: $now
+        }",
+        )
+        .bind(("now", serde_json::json!(now)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        db.query(
+            "CREATE fractal CONTENT {
+            fractal_id: 'f1', verse_id: 'v1', owner_did: 'did:key:z6MkOwner', name: 'F', created_at: $now
+        }",
+        )
+        .bind(("now", serde_json::json!(now)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        db.query(
+            "CREATE petal CONTENT {
+            petal_id: 'petal-1', fractal_id: 'f1', name: 'P', node_id: 'anchor-node', created_at: $now
+        }",
+        )
+        .bind(("now", serde_json::json!(now)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        println!("DEBUG: Hierarchy seeded");
+
         println!("DEBUG: Creating crate_registry record");
         db.query(
             "CREATE crate_registry CONTENT {

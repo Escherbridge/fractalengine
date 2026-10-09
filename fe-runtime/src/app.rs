@@ -452,29 +452,49 @@ impl PendingApiRequests {
         false
     }
 
-    /// Route an untyped reply (the DB thread's universal `Error`) to the oldest
-    /// pending request of any family.
+    /// The id of the oldest entry in `queue` that has no correlation id, if
+    /// any — entries are enqueued in increasing-id order, so this is the
+    /// first `correlation_id: None` entry, not necessarily the front.
+    fn oldest_uncorrelated_id(queue: &std::collections::VecDeque<PendingEntry>) -> Option<u64> {
+        queue
+            .iter()
+            .find(|e| e.correlation_id.is_none())
+            .map(|e| e.id)
+    }
+
+    /// Route an untyped reply (the DB thread's universal `Error`) to the
+    /// oldest pending request of any family that has NO correlation id
+    /// (DEC-C19 N2). A correlated entry (RawQuery/InsertIotReadings/
+    /// CreateAsset/CreateNodeWithAsset) always gets its own typed
+    /// `QueryFailed`/rejection reply from the DB thread, so the untyped
+    /// wildcard must skip past it rather than consume it — a correlated
+    /// waiter stealing the wildcard would leave its own typed reply (which
+    /// still arrives later) with no entry to land on, AND could leak an
+    /// unrelated caller's error text (e.g. a raw SQL string) to whichever
+    /// request happened to be oldest. If every pending request is
+    /// correlated, the error is dropped, never delivered to a correlated
+    /// waiter.
     fn deliver_to_oldest(&mut self, result: DbResult) -> bool {
         let mut oldest: Option<ReplyKind> = None;
         let mut oldest_id = u64::MAX;
         for (kind, queue) in &self.by_kind {
-            if let Some(entry) = queue.front() {
-                if entry.id < oldest_id {
-                    oldest_id = entry.id;
+            if let Some(id) = Self::oldest_uncorrelated_id(queue) {
+                if id < oldest_id {
+                    oldest_id = id;
                     oldest = Some(*kind);
                 }
             }
         }
         let oldest_uncorrelated = self.uncorrelated.front().map(|e| e.id).unwrap_or(u64::MAX);
         if oldest_uncorrelated < oldest_id {
-            return Self::deliver_to(&mut self.uncorrelated, result);
+            return Self::deliver_uncorrelated(&mut self.uncorrelated, result);
         }
         match oldest {
             Some(kind) => {
                 let queue = self.by_kind.get_mut(&kind).expect("kind came from by_kind");
-                Self::deliver_to(queue, result)
+                Self::deliver_uncorrelated(queue, result)
             }
-            None => Self::deliver_to(&mut self.uncorrelated, result),
+            None => Self::deliver_uncorrelated(&mut self.uncorrelated, result),
         }
     }
 
@@ -926,6 +946,55 @@ mod tests {
             props_rx.try_recv().is_err(),
             "only the oldest request receives the untyped error"
         );
+    }
+
+    /// DEC-C19 N2: a correlated family (RawQuery/InsertIotReadings/
+    /// CreateAsset/CreateNodeWithAsset) always gets its own typed reply from
+    /// the DB thread — the untyped wildcard `Error` must skip it even when it
+    /// is the globally oldest pending request, and land on an uncorrelated
+    /// waiter instead.
+    #[test]
+    fn error_reply_skips_correlated_waiters_for_the_oldest_uncorrelated_one() {
+        let mut pending = PendingApiRequests::default();
+        let (raw_tx, mut raw_rx) = tokio::sync::oneshot::channel();
+        let (ping_tx, mut ping_rx) = tokio::sync::oneshot::channel();
+        // The correlated RawQuery is enqueued FIRST (oldest by id) — under
+        // the old FIFO-by-id rule it would have stolen the wildcard.
+        pending.enqueue_for(&raw_query_cmd(Some("a")), raw_tx);
+        pending.enqueue_for(&DbCommand::Ping, ping_tx);
+
+        assert!(pending.try_deliver(DbResult::Error("db exploded".to_string())));
+        assert!(
+            raw_rx.try_recv().is_err(),
+            "a correlated waiter must never receive the untyped wildcard error"
+        );
+        assert!(matches!(ping_rx.try_recv(), Ok(DbResult::Error(_))));
+
+        // The correlated RawQuery is still alive and gets its own typed reply.
+        assert!(pending.try_deliver(DbResult::QueryFailed {
+            error: "parse error".to_string(),
+            correlation_id: "a".to_string(),
+        }));
+        assert!(matches!(
+            raw_rx.try_recv(),
+            Ok(DbResult::QueryFailed { .. })
+        ));
+    }
+
+    /// When every pending request is correlated, the untyped wildcard error
+    /// is dropped — never handed to a correlated waiter just because nothing
+    /// uncorrelated is pending.
+    #[test]
+    fn error_reply_is_dropped_when_only_correlated_waiters_are_pending() {
+        let mut pending = PendingApiRequests::default();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&raw_query_cmd(Some("a")), tx);
+
+        assert!(
+            !pending.try_deliver(DbResult::Error("db exploded".to_string())),
+            "a correlated-only pending set must drop the untyped error, not deliver it"
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     /// A result with no waiter of its family is dropped for the API path (it

@@ -146,15 +146,16 @@ order:
   share redeemer could receive the desktop user's ad-hoc rows). fe-ui's
   dispatcher consumes only `correlation_id: None` query results; correlated
   ones flow solely to `try_deliver`.
-- **Known sharp edge (deliberately NOT changed — DEC-C13).** `Error` stays
-  family-blind (oldest waiter of any family) and `deliver_to` keeps
-  skip-closed: a late `Error` for a timed-out caller still lands on the next
-  oldest waiter, and families without a correlation id still shift after a
-  timeout. A global pop-and-drop of closed entries would change Error
-  routing for every caller, so it is deferred. **Revisit trigger:** any new
-  timeout-capable write-path caller (or any family whose late reply would
-  be harmful) — give its command a correlation id like the IoT family, or
-  take the pop-and-drop change then.
+- **Known sharp edge (NARROWED 2026-10-09 — DEC-C19 N2, was DEC-C13).**
+  `Error` stays family-blind, but `deliver_to_oldest` now delivers only to
+  the oldest UNCORRELATED waiter (correlated families always receive typed
+  replies, so a bare `Error` can never reach a correlated waiter — e.g. a
+  share redeemer can no longer receive the desktop user's Query-tab error
+  text; if only correlated waiters are pending the error is dropped).
+  Among uncorrelated waiters the old edge remains: skip-closed shifting
+  after a timeout. **Revisit trigger:** any new timeout-capable write-path
+  caller — give its command a correlation id like the IoT/RawQuery families,
+  or take the global pop-and-drop change then.
 
 **Maintenance rule:** every `DbCommand` that expects a reply must be mapped in
 `reply_kind_of_command` and its reply in `reply_kind_of_result` —

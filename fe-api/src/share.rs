@@ -337,6 +337,10 @@ fn share_query_err(e: String) -> Response {
         err(StatusCode::GATEWAY_TIMEOUT, &e)
     } else if e.starts_with("row cap exceeded") || e.starts_with("result size exceeds") {
         err(StatusCode::PAYLOAD_TOO_LARGE, &e)
+    } else if e.starts_with("egress busy") {
+        // DEC-C19 N3: the channel-fallback semaphore failed closed — an
+        // honest, bounded 503, not a retry-blind 400.
+        err(StatusCode::SERVICE_UNAVAILABLE, &e)
     } else {
         err(StatusCode::BAD_REQUEST, &e)
     }
