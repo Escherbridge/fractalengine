@@ -1,3 +1,4 @@
+pub mod api_db_sync_cross_thread;
 pub mod api_token_flow;
 pub mod blob_roundtrip;
 pub mod distributed_query;

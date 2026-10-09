@@ -209,7 +209,9 @@ impl TestPeer {
                 fe_database::op_log::init_hlc(0);
 
                 tracing::info!("Peer DB ready (in-memory)");
-                db_result_tx.send(DbResult::Started).ok();
+                if let Err(e) = db_result_tx.send(DbResult::Started) {
+                    tracing::warn!("Started send failed: {e:?}");
+                }
 
                 // Reconstruct keypair from seed for invite operations
                 let invite_keypair = NodeKeypair::from_bytes(&kp_seed)
@@ -222,7 +224,9 @@ impl TestPeer {
                 loop {
                     match db_cmd_rx.recv() {
                         Ok(DbCommand::Ping) => {
-                            db_result_tx.send(DbResult::Pong).ok();
+                            if let Err(e) = db_result_tx.send(DbResult::Pong) {
+                                tracing::warn!("Pong send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::Seed) => {
                             match seed_test_data(&db, &db_local_did).await {
@@ -720,36 +724,91 @@ impl TestPeer {
                         }
                         Ok(DbCommand::ListApiTokensByScope { .. }) => {
                             // Not implemented in test harness
-                            db_result_tx.send(DbResult::ScopedApiTokensListed { tokens: vec![], total: 0 }).ok();
+                            if let Err(e) = db_result_tx
+                                .send(DbResult::ScopedApiTokensListed { tokens: vec![], total: 0 })
+                            {
+                                tracing::warn!("ScopedApiTokensListed send failed: {e:?}");
+                            }
                         }
-                        Ok(DbCommand::ResolvePetalScope { .. })
-                        | Ok(DbCommand::ResolveNodeScope { .. })
+                        // F14/T4: real petal-scope resolution — mirrors
+                        // fe-database::handlers::crud::resolve_petal_scope_handler
+                        // (petal → fractal_id → verse_id → build_scope). Needed so
+                        // an fe-api instance bridged to this peer's channel (no
+                        // `db_reader`) can resolve a petal's scope for its RBAC
+                        // guards, e.g. the IoT-ingest fallback path (fe-api
+                        // src/iot.rs) the cross-thread scenario drives.
+                        Ok(DbCommand::ResolvePetalScope { petal_id }) => {
+                            let scope = async {
+                                let mut res = db
+                                    .query("SELECT fractal_id FROM petal WHERE petal_id = $pid LIMIT 1")
+                                    .bind(("pid", petal_id.clone()))
+                                    .await
+                                    .ok()?;
+                                let rows: Vec<serde_json::Value> = res.take(0).ok()?;
+                                let fractal_id =
+                                    rows.first().and_then(|r| r["fractal_id"].as_str())?.to_string();
+                                let mut res2 = db
+                                    .query("SELECT verse_id FROM fractal WHERE fractal_id = $fid LIMIT 1")
+                                    .bind(("fid", fractal_id.clone()))
+                                    .await
+                                    .ok()?;
+                                let rows2: Vec<serde_json::Value> = res2.take(0).ok()?;
+                                let verse_id =
+                                    rows2.first().and_then(|r| r["verse_id"].as_str())?;
+                                Some(fe_database::build_scope(
+                                    verse_id,
+                                    Some(&fractal_id),
+                                    Some(&petal_id),
+                                ))
+                            }
+                            .await;
+                            if let Err(e) = db_result_tx.send(DbResult::ScopeResolved { scope }) {
+                                tracing::warn!("ScopeResolved send failed: {e:?}");
+                            }
+                        }
+                        Ok(DbCommand::ResolveNodeScope { .. })
                         | Ok(DbCommand::ResolveFractalScope { .. })
                         | Ok(DbCommand::ResolveVerseScope { .. }) => {
                             // Scope resolution — not implemented in test harness.
                         }
                         Ok(DbCommand::LoadNodesByPetal { petal_id }) => {
-                            db_result_tx.send(DbResult::NodesLoaded { petal_id, nodes: vec![] }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::NodesLoaded { petal_id, nodes: vec![] })
+                            {
+                                tracing::warn!("NodesLoaded send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::GetNodeTransform { node_id }) => {
-                            db_result_tx.send(DbResult::NodeTransformLoaded {
+                            if let Err(e) = db_result_tx.send(DbResult::NodeTransformLoaded {
                                 node_id,
                                 position: [0.0, 0.0, 0.0],
                                 rotation: [0.0, 0.0, 0.0],
                                 scale: [1.0, 1.0, 1.0],
-                            }).ok();
+                            }) {
+                                tracing::warn!("NodeTransformLoaded send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::SetNodeProperty { node_id, key, .. }) => {
-                            db_result_tx.send(DbResult::NodePropertySet { node_id, key }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::NodePropertySet { node_id, key })
+                            {
+                                tracing::warn!("NodePropertySet send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::GetNodeProperties { node_id }) => {
-                            db_result_tx.send(DbResult::NodePropertiesLoaded {
+                            if let Err(e) = db_result_tx.send(DbResult::NodePropertiesLoaded {
                                 node_id,
                                 properties: serde_json::json!({}),
-                            }).ok();
+                            }) {
+                                tracing::warn!("NodePropertiesLoaded send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::DeleteNodeProperty { node_id, key }) => {
-                            db_result_tx.send(DbResult::NodePropertyDeleted { node_id, key }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::NodePropertyDeleted { node_id, key })
+                            {
+                                tracing::warn!("NodePropertyDeleted send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::DeleteNode { node_id }) => {
                             // Mirror the real handler: look up petal_id, delete the node +
@@ -773,7 +832,11 @@ impl TestPeer {
                             .bind(("node_id", node_id.clone()))
                             .await
                             .ok();
-                            db_result_tx.send(DbResult::NodeDeleted { node_id, petal_id }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::NodeDeleted { node_id, petal_id })
+                            {
+                                tracing::warn!("NodeDeleted send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::RawQuery { sql, vars, correlation_id }) => {
                             let mut query_builder = db.query(&sql);
@@ -801,45 +864,88 @@ impl TestPeer {
                                             Err(_) => break,
                                         }
                                     }
-                                    db_result_tx.send(DbResult::QueryResult { data, correlation_id: correlation_id.clone() }).ok();
+                                    if let Err(e) = db_result_tx.send(DbResult::QueryResult {
+                                        data,
+                                        correlation_id: correlation_id.clone(),
+                                    }) {
+                                        tracing::warn!("QueryResult send failed: {e:?}");
+                                    }
                                 }
                                 Err(e) => {
-                                    db_result_tx.send(DbResult::Error(format!("query failed: {e}"))).ok();
+                                    if let Err(e) =
+                                        db_result_tx.send(DbResult::Error(format!("query failed: {e}")))
+                                    {
+                                        tracing::warn!("query Error send failed: {e:?}");
+                                    }
                                 }
                             }
                         }
                         Ok(DbCommand::CreateFieldDef { scope, key, .. }) => {
-                            db_result_tx.send(DbResult::FieldDefCreated {
+                            if let Err(e) = db_result_tx.send(DbResult::FieldDefCreated {
                                 field_def_id: ulid::Ulid::new().to_string(),
                                 scope,
                                 key,
-                            }).ok();
+                            }) {
+                                tracing::warn!("FieldDefCreated send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::ListFieldDefs { scope }) => {
-                            db_result_tx.send(DbResult::FieldDefsListed { scope, field_defs: vec![] }).ok();
+                            if let Err(e) = db_result_tx
+                                .send(DbResult::FieldDefsListed { scope, field_defs: vec![] })
+                            {
+                                tracing::warn!("FieldDefsListed send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::UpdateFieldDef { field_def_id, .. }) => {
-                            db_result_tx.send(DbResult::FieldDefUpdated { field_def_id }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::FieldDefUpdated { field_def_id })
+                            {
+                                tracing::warn!("FieldDefUpdated send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::DeleteFieldDef { field_def_id }) => {
-                            db_result_tx.send(DbResult::FieldDefDeleted { field_def_id }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::FieldDefDeleted { field_def_id })
+                            {
+                                tracing::warn!("FieldDefDeleted send failed: {e:?}");
+                            }
                         }
                         // Hexon crate registry — test harness stubs
                         Ok(DbCommand::InstallCrate { hexon_uri, petal_id, .. }) => {
-                            db_result_tx.send(DbResult::CrateInstalled { hexon_uri, petal_id }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::CrateInstalled { hexon_uri, petal_id })
+                            {
+                                tracing::warn!("CrateInstalled send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::InstallCrateEntry { entry_id, hexon_uri, .. }) => {
-                            db_result_tx.send(DbResult::CrateEntryInstalled { entry_id, hexon_uri }).ok();
+                            if let Err(e) = db_result_tx
+                                .send(DbResult::CrateEntryInstalled { entry_id, hexon_uri })
+                            {
+                                tracing::warn!("CrateEntryInstalled send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::UninstallCrate { hexon_uri }) => {
-                            db_result_tx.send(DbResult::CrateUninstalled { hexon_uri }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::CrateUninstalled { hexon_uri })
+                            {
+                                tracing::warn!("CrateUninstalled send failed: {e:?}");
+                            }
                         }
                         // Petal terrain — test harness stub echoes the set value.
                         Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {
-                            db_result_tx.send(DbResult::PetalTerrainLoaded { petal_id, terrain }).ok();
+                            if let Err(e) =
+                                db_result_tx.send(DbResult::PetalTerrainLoaded { petal_id, terrain })
+                            {
+                                tracing::warn!("PetalTerrainLoaded send failed: {e:?}");
+                            }
                         }
                         Ok(DbCommand::GetPetalTerrain { petal_id }) => {
-                            db_result_tx.send(DbResult::PetalTerrainLoaded { petal_id, terrain: None }).ok();
+                            if let Err(e) = db_result_tx
+                                .send(DbResult::PetalTerrainLoaded { petal_id, terrain: None })
+                            {
+                                tracing::warn!("PetalTerrainLoaded send failed: {e:?}");
+                            }
                         }
                         // Lifecycle ops (node_lifecycle_addressing_20260725) are covered by
                         // fe-database/fe-sync tests, not this mock peer — surface, don't drop.
@@ -923,7 +1029,9 @@ impl TestPeer {
                     }
                 }
                 tracing::info!("Peer DB thread shutting down");
-                db_result_tx.send(DbResult::Stopped).ok();
+                if let Err(e) = db_result_tx.send(DbResult::Stopped) {
+                    tracing::warn!("Stopped send failed: {e:?}");
+                }
             });
         });
 

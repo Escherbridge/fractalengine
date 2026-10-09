@@ -47,5 +47,12 @@ fractalengine-test-harness = { path = "../fe-test-harness" }
 # Router-nesting shape test (canonical_ws::router) — same pattern and version as
 # fe-test-harness/src/api.rs's ApiHarness::request.
 tower = { version = "0.5", features = ["util"] }
+# Live `/ws` handshake test (ws_integration.rs — F14/T1): a real client over a
+# bound TcpListener, since `tower::oneshot` cannot perform a WS upgrade.
+# Already in the dep graph at this exact version via axum 0.8's own `ws`
+# feature (see Cargo.lock) — this adds no new compile unit, just a dev-only
+# path to it.
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
 
 

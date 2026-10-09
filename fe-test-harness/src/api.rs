@@ -82,20 +82,33 @@ impl ApiHarness {
     /// independently-rotatable slot (DEC-C9), but the test only needs key
     /// identity to be externally controllable.
     pub async fn spawn_with_share_signer(share_signer: Arc<NodeKeypair>) -> Result<Self> {
-        Self::spawn_with_all_seams(None, None, Some(share_signer)).await
+        Self::spawn_with_all_seams(None, None, Some(share_signer), None).await
+    }
+
+    /// Like [`Self::spawn`], wiring a `TilesetRegistry` (F14/T2): the real
+    /// hexon/tileset REST routes (`install_hexon_tileset`,
+    /// `list_available_tilesets`, `get_tileset_meta`, `get_elevation_tile`)
+    /// 404 with `tileset_registry: None`, so a test covering that surface
+    /// must supply one — typically `TilesetRegistry::new(HexonStore::with_dir(tmp))`
+    /// over a `tempfile::TempDir` so installs never touch a real data dir.
+    pub async fn spawn_with_tileset_registry(
+        tileset_registry: Arc<fe_terrain::tiles::TilesetRegistry>,
+    ) -> Result<Self> {
+        Self::spawn_with_all_seams(None, None, None, Some(tileset_registry)).await
     }
 
     async fn spawn_with_seams(
         distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
         sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
     ) -> Result<Self> {
-        Self::spawn_with_all_seams(distributed_tx, sim_control_tx, None).await
+        Self::spawn_with_all_seams(distributed_tx, sim_control_tx, None, None).await
     }
 
     async fn spawn_with_all_seams(
         distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
         sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
         share_signer: Option<Arc<NodeKeypair>>,
+        tileset_registry: Option<Arc<fe_terrain::tiles::TilesetRegistry>>,
     ) -> Result<Self> {
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
@@ -131,7 +144,7 @@ impl ApiHarness {
             db_reader: Some(db.clone()),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
-            tileset_registry: None,
+            tileset_registry,
             hexon_registry: None,
             announcement_store: None,
             replication_tx: None,
