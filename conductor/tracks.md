@@ -56,6 +56,21 @@ Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slat
 
 ---
 
+## P0 — ACTIVE: Prod-ready mission continuation (factory handover, 2026-10-08)
+
+### [~] mission_prodready_continuation — finish factory mission mis_6c57917e: F9–F19 (sim control surface, BI egress e2e, MCP 20 tools, GIS hexons, close-out)
+
+- Track: [./tracks/mission_prodready_continuation_20261008/](./tracks/mission_prodready_continuation_20261008/)
+- Factory (droid) delivered M1 (real P2P core), M2 (sharded timeseries fabric +
+  distributed query), most of M3 (sim lab F8/F24) across 14 local commits, then
+  paused on usage-402 mid-F9 (2026-10-09T04:41Z). This track owns the
+  continuation: acceptance = mission validation contract A20–A33; decision log
+  DEC-C* in the track spec; per-feature evidence in the track plan.
+- The M2 sync-plane conductor notes accumulated on
+  [p2p_mycelium_completion_20260701](./tracks/p2p_mycelium_completion_20260701/)
+  — F18 consolidates them into dedicated timeseries-fabric / simulation-lab /
+  BI-verification tracks at close.
+
 ## P0 — Spatial Builder Program (user planning grill 2026-07-25)
 
 Six tracks from the 2026-07-25 planning grilling (12 decision-forcing questions,
