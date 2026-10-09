@@ -26,6 +26,17 @@
 //!   seed_join_verse readback --db <path> --table <table> \
 //!       [--field <field> --value <value>]
 //!     → prints each matching row as one JSON line (all rows when no filter)
+//!   seed_join_verse bind-terrain --db <path> --petal-id <ulid> \
+//!       --tileset-ids <id1,id2,...>
+//!     → F16/A29: writes the petal's `terrain.tileset_hexon_uris` directly
+//!       (same `UPDATE petal SET terrain = $config WHERE petal_id = $pid`
+//!       statement as `fe-database/src/handlers/petal_terrain.rs`'s
+//!       `set_petal_terrain_handler`). REST/MCP petal-terrain mutation is
+//!       deliberately refused (`fe-api/src/terrain.rs::TERRAIN_MUTATION_UNAVAILABLE`,
+//!       pending durable-reply correlation), so a live-relay verify script
+//!       has no authed path to bind a tileset to a petal — this direct write
+//!       is the only way to exercise the authed tile-SERVING routes end to
+//!       end against a real relay. Prints `terrain: <json>` on success.
 
 use surrealdb::engine::local::SurrealKv;
 
@@ -145,6 +156,46 @@ async fn run_seed() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_bind_terrain() -> anyhow::Result<()> {
+    let db_path = require("--db")?;
+    let petal_id = require("--petal-id")?;
+    let tileset_ids_csv = require("--tileset-ids")?;
+
+    petal_id.parse::<ulid::Ulid>()?;
+    let tileset_ids: Vec<String> = tileset_ids_csv
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    anyhow::ensure!(
+        !tileset_ids.is_empty(),
+        "--tileset-ids must list at least one id"
+    );
+
+    let db = open_db(&db_path).await?;
+
+    let exists = db
+        .query("SELECT petal_id FROM petal WHERE petal_id = $pid LIMIT 1")
+        .bind(("pid", petal_id.clone()))
+        .await?
+        .take::<Vec<serde_json::Value>>(0)?;
+    anyhow::ensure!(
+        !exists.is_empty(),
+        "petal {petal_id} does not exist in {db_path} -- seed it over REST first"
+    );
+
+    let config = serde_json::json!({ "tileset_hexon_uris": tileset_ids });
+    db.query("UPDATE petal SET terrain = $config WHERE petal_id = $pid")
+        .bind(("config", config.clone()))
+        .bind(("pid", petal_id.clone()))
+        .await?
+        .check()?;
+
+    println!("petal_id: {petal_id}");
+    println!("terrain: {config}");
+    Ok(())
+}
+
 async fn run_readback() -> anyhow::Result<()> {
     let db_path = require("--db")?;
     let table = require("--table")?;
@@ -202,7 +253,10 @@ async fn main() -> anyhow::Result<()> {
     match cmd.as_str() {
         "gen" => run_gen().await,
         "seed" => run_seed().await,
+        "bind-terrain" => run_bind_terrain().await,
         "readback" => run_readback().await,
-        other => anyhow::bail!("unknown subcommand {other:?} (gen | seed | readback)"),
+        other => {
+            anyhow::bail!("unknown subcommand {other:?} (gen | seed | bind-terrain | readback)")
+        }
     }
 }
