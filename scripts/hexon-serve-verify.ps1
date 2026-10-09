@@ -75,11 +75,16 @@ function Assert-True($condition, $message) {
     $script:Checked++
     if ($condition) {
         $script:Passed++
-        Write-Host "  [PASS] $message" -ForegroundColor Green
+        $line = "  [PASS] $message"
+        Write-Host $line -ForegroundColor Green
     } else {
         $script:Failures += $message
-        Write-Host "  [FAIL] $message" -ForegroundColor Red
+        $line = "  [FAIL] $message"
+        Write-Host $line -ForegroundColor Red
     }
+    # DEC-C22 FIX M: tee every assertion into the committed log, not just
+    # relay stdout -- $logPath is set during Setup, below.
+    if ($logPath) { Add-Content -Path $logPath -Value $line }
 }
 
 function Assert-Equal($actual, $expected, $message) {
@@ -102,6 +107,21 @@ if ($freeGb -lt 8) {
     exit 1
 }
 
+# DEC-C22 FIX M: work dir + log path are set up BEFORE the first Assert-True
+# call below (dist-archive existence) so every assertion lands in the
+# committed log, not just relay stdout.
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$script:WorkDir = Join-Path $env:TEMP "fe-hexon-serve-verify-$stamp"
+New-Item -ItemType Directory -Path $script:WorkDir -Force | Out-Null
+$dbPath = Join-Path $script:WorkDir 'db'
+$p2pDir = Join-Path $script:WorkDir 'p2p'
+$hexonDir = Join-Path $script:WorkDir 'hexons'
+$logPath = Join-Path $PSScriptRoot 'hexon-serve-verify.log'
+Write-Host "  Work dir: $script:WorkDir"
+Write-Host "  Log: $logPath"
+"" | Set-Content -Path $logPath
+function Log-Line($line) { $line | Add-Content -Path $logPath }
+
 Write-Section "Resolve F15/F16 hexon archives"
 Write-Host "  DistDir: $DistDir"
 $switzerlandPath = Join-Path $DistDir 'switzerland-zurich-alps.hexon'
@@ -117,18 +137,6 @@ if ($script:Failures.Count -gt 0) {
     Write-Host "Cannot continue without all three dist archives." -ForegroundColor Red
     exit 1
 }
-
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$script:WorkDir = Join-Path $env:TEMP "fe-hexon-serve-verify-$stamp"
-New-Item -ItemType Directory -Path $script:WorkDir -Force | Out-Null
-$dbPath = Join-Path $script:WorkDir 'db'
-$p2pDir = Join-Path $script:WorkDir 'p2p'
-$hexonDir = Join-Path $script:WorkDir 'hexons'
-$logPath = Join-Path $PSScriptRoot 'hexon-serve-verify.log'
-Write-Host "  Work dir: $script:WorkDir"
-Write-Host "  Log: $logPath"
-"" | Set-Content -Path $logPath
-function Log-Line($line) { $line | Add-Content -Path $logPath }
 
 $BindAddr = '127.0.0.1:18766'
 $BaseUrl = "http://$BindAddr"
@@ -458,11 +466,23 @@ finally {
     Write-Host ""
     Write-Host "=== SUMMARY ===" -ForegroundColor Cyan
     Write-Host "Checks: $script:Passed / $script:Checked passed"
+    # DEC-C22 FIX M: the summary is evidence too -- append it to the log, not
+    # just the console, so a re-run's committed log is self-contained.
+    if ($logPath) {
+        Add-Content -Path $logPath -Value ""
+        Add-Content -Path $logPath -Value "=== SUMMARY ==="
+        Add-Content -Path $logPath -Value "Checks: $script:Passed / $script:Checked passed"
+    }
     if ($script:Failures.Count -eq 0) {
         Write-Host "PASS: hexon serve e2e (F16/A29 V2) - all checks passed" -ForegroundColor Green
+        if ($logPath) { Add-Content -Path $logPath -Value "PASS: hexon serve e2e (F16/A29 V2) - all checks passed" }
     } else {
         Write-Host "FAIL: hexon serve e2e (F16/A29 V2) - $($script:Failures.Count) check(s) failed:" -ForegroundColor Red
         $script:Failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        if ($logPath) {
+            Add-Content -Path $logPath -Value "FAIL: hexon serve e2e (F16/A29 V2) - $($script:Failures.Count) check(s) failed:"
+            $script:Failures | ForEach-Object { Add-Content -Path $logPath -Value "  - $_" }
+        }
     }
     Write-Host "Full log: $logPath"
 }

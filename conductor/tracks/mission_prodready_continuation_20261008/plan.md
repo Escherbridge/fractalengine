@@ -35,10 +35,16 @@ its commit hash + evidence line appended here.
   - **Fixes LANDED @ `2023809`** (combined with F11 — change sets interleave in relay main.rs). Verdict now: **M3 VALIDATED**. Gate: fe-runtime 93, fe-database 277, fe-sync 221, fe-sim 43, fe-query 123, fe-api all suites, harness 26 + 14/14 real-transport scenarios.
   - Residual risk (documented, accepted): co-resident production DB-thread stamps DURING a sim session read sim time — restore can't undo those; mitigations are the start_ms<=now validation + FE_SIM_ALLOW + lab-relay-only doctrine (F17 README).
 
-> **Ops discipline (DEC-C12)**: every gate starts with a disk check; if C: free
-> < 10 GB, prune `target/debug/incremental` first (29.7 GB reclaimed 2026-10-09;
-> C: is a 1.9 TB drive running ~100% full from non-project data too — flagged
-> to the user). Builds remain strictly serialized.
+> **Ops discipline (DEC-C12, extended 2026-10-09)**: every gate starts with a
+> disk check; if C: free < 10 GB, prune `target/debug/incremental` + stale
+> PDBs first (29.7 GB + 128 GB reclaimed this mission; C: is a 1.9 TB drive
+> running ~100% full from non-project data too — flagged to the user). Builds
+> strictly serialized — INCLUDING no source/Cargo.toml edits while a build
+> runs (a mid-build manifest edit invalidated fingerprints and stacked a
+> second 100+ GB artifact generation; target/debug hit 236 GB and the disk
+> hit 0, killing two F19 sweep attempts with LLVM IO failures). Workspace
+> sweeps run with `CARGO_PROFILE_DEV_DEBUG=0` (tests need no symbols;
+> several-fold smaller artifacts, lower rustc memory → -j4 safe).
 - [ ] **M3 milestone review** — adversarial pass over F24+F8+F9 (scrutiny pattern)
 
 ## M4 — BI egress (DuckDB-first) — order F11 → F10 → F12 (DEC-C11); map in m4-bi-egress-design.md
@@ -62,20 +68,72 @@ its commit hash + evidence line appended here.
 - [x] **F13 LANDED @ `635b8c5`** (A26) — one ToolSpec table drives definitions + dispatch (zero inline require_* in handlers); 29 tools (DEC-C14: 20-name vocabulary complete + 9 documented extras); FOUR authz holes closed w/ denial tests (3 original warts incl. the decoy variant + depth-escalation caught by automated security review on the new code itself — HierarchyArgs(HierarchyTarget) anchors at the write-target level, deeper ids rejected); GLB upload API-side via the StoredGlb capability type (bytes structurally cannot cross the channel) + REST sibling; side fix: REST create_waypoint panicked on every call. Gate: fe-api 199, combined 572+, harness 26, clippy/fmt clean (-j2). Open: MCP install_tileset Manager vs REST Editor+policy; set_petal_terrain validate-then-refuse (needs correlated reply, touches fe-ui); FR-3 optional create_node asset args → F14; asset rows unscoped (deferred w/ trigger).
 - [x] **F14 LANDED @ `a5f0b7b`** (A27) — live WS upgrade e2e (real listener, production entity_change channel), hexon multipart install/list/meta/tile round-trip + foreign-petal 403 (+ ApiHarness tileset-registry seam), token lifecycle through the LIVE middleware (per-jti revocation proof; mint_api_token_at defeats jsonwebtoken's 60s leeway), api_db_sync_cross_thread harness scenario (real ApiState w/ db_reader None → real DB thread → real loopback iroh → second-peer durable read-back; TestPeer ResolvePetalScope implemented for real), 725-call seeded MCP fuzz, 21 bare-.ok() conversions. FR-3 optional create_node args deferred w/ rationale (place_asset covers the flow end-to-end).
 - [~] **M5 milestone review** (2026-10-09, adversarial opus): **FAIL** — fix pass per DEC-C21 in flight. Mandatory: (1) CRITICAL REST create_node/create_petal still trust URL ancestry ids (the decoy wart's REST twins — the MCP choke point didn't cover the other transport); (2) HIGH /mcp 349 MiB body limit = memory-exhaustion DoS for any token (args cloned; ~1.3 GB per max upload call, no concurrency limit); (3) HIGH uploaded GLBs world-readable (ASSET unscoped in the whitelist + get_asset by-hash unauthenticated + place_asset accepts foreign asset_id — M5 turned local imports into multi-tenant ingest, converting a known gap into a live confidentiality break); (4) HIGH the F14 fuzz test predicted deterministically red (fire-and-forget TransformPersist logged between snapshot and assert; 9 tools never reach their handlers; "725 calls" is really 650). Mediums folded: install_tileset role unify + decode cap + spawn_blocking; import_gpx point cap; promote_instance path-squatting check; mint_api_token_at TTL cap. Holds: dispatcher gate sound, depth hardening works, bytes-never-cross-channel confirmed (via the command variant's shape), RBAC matrix really iterates the table, MCP query inherits the hardened guard cleanly. Reviewer's pattern note: shared cores + separate guards is how drift creeps back — the table protects only what routes through it.
+  - **Fix pass LANDED @ `5b06795` — M5 VALIDATED-WITH-NOTES** (orchestrator verdict: all 4 mandatory items fixed with pinning tests; the sweep found a FOURTH hole — field-defs by-id mutations had NO scope check — also fixed; the repaired fuzz test's first real run is green). ancestry_matches is now ONE shared helper across REST+MCP (anti-drift by construction). Client-visible changes logged in the commit. Notes (deferred w/ triggers in AGENTS.md): blob GC/quota, remaining REST existence-leak message unification, /query/elevated scope filter, REST tileset-install 2MiB effective cap (axum default — real tilesets may exceed; trigger: first >2MiB install need), strict missing-path_id promote check. Gate: fe-api 234, fe-identity 51, fe-database 281, fe-terrain 218, harness 26+15/15, e2e 49/49, clippy/fmt clean.
 
 ## M6 — GIS hexon examples
 
 - [x] **F15 LANDED** (A28) — gis-tile-etl @ `33eff03`, main-repo provenance @ `dbb6461`: configs/intl-regions.toml (esri-world-imagery + aws-terrarium, DEC-C8), Zurich Alps (10+10 tiles, 1.48 MB) + Mount Fuji (8+8, 0.84 MB) built + `Verify: OK`; 17/17 tests; sink fixed for fe-format TilesetMeta drift (scale fields None → app-side backfill). Flag for fe-format owners: derive(Default) on TilesetMeta would stop sibling-repo struct-literal breakage on future field adds.
 - [x] **F16 verified (commit pending w/ M5 fix batch)** (A29) — V1 14/14: idempotent install of both F15 archives + meta/bounds/counts + scale backfill asserted against an INDEPENDENT Web-Mercator GSD oracle (103.57 m/px Zurich, 124.65 Fuji; env-gated test fe-terrain/tests/gis_hexon_install_test.rs skips cleanly without the sibling repo). V2 37/37 live relay: list excludes unbound, elevation PNG + satellite JPEG served, 403 scope-mismatch vs 404 unbound-without-existence-leak (terrain.rs:340-353 ordering). Honest ledger: in-app render + scale-bar WIDGET remain user-gated (the numeric fields they read are verified).
   - **Product gap found (deferred w/ trigger)**: NO authenticated path binds a tileset to a petal on a live relay — TERRAIN_MUTATION_UNAVAILABLE blocks REST PUT/DELETE terrain AND MCP set_petal_terrain pending correlated command replies (the F13 open item, now confirmed to cover REST too). Workaround: stop relay → seed_join_verse bind-terrain (new subcommand) → restart. Trigger to fix: correlate SetPetalTerrain replies (touches fe-ui construction sites).
-- [ ] **M6 milestone review**
+- [x] **M6 milestone review — VALIDATED** (PASS-WITH-FIXES → fixes landed): HIGH bind-terrain partial-JSON shape (satisfied fe-api's lenient reader, rejected by fe-terrain's strict parser — now serializes a real TerrainConfig via a clean dev-dep; reviewer's rule recorded: a writer of a shared JSON column must satisfy the STRICTEST reader); MEDIUM script assertions now teed into committed logs; LOW env-gated test → #[ignore] + --ignored (no silent skip-as-green; -q dropped so the ran-and-passed assert sees test names). Acceptance re-runs: install 15/15, serve 37/37. A28/A29 claims verified sound incl. Esri attribution honesty and the GSD oracle math (~0.03% agreement).
 
 ## M7 — Close-out
 
 - [x] **F17 LANDED @ `7b11c1a`** (A30) — root README P2P section rewritten (real stack; honest legacy-petal-mock residual kept), relay README ops surface (env table, process-lifetime verse secrets + workaround, Windows per-handle-lock note, sim-control double opt-in), new docs/simulation-lab.md, fe-sync §iroh-0.35 de-staled (heading + false gossip-drain claim corrected vs code). bi-egress.md cross-linked. Every claim source-verified; M4-blocker-dependent claims deliberately omitted pending the fix pass.
-- [ ] **F18** (A31) — conductor reconciliation: VALIDATED notes on absorbed tracks, new tracks (timeseries-fabric, simulation-lab, BI-verification), consolidation pointers from p2p track, tracks.md/roadmap.md refresh, THIS track retro + archive
-- [ ] **F19** (A32+A33) — full sweep: fmt, clippy -D warnings, workspace tests (RUST_MIN_STACK), harness scenarios, relay release build, git hygiene check
+- [x] **F18 LANDED @ `f7cc47b`** (A31) — 5 absorbed tracks VALIDATED+closed (honest aggregate-coverage note on api_mcp), 3 record tracks created (pointers, never rewrites), tracks.md + roadmap.md corrected, factory board synced. Retro below.
+- [x] **F19 GREEN** (A32+A33) — full sweep on the final tree: `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean (5m21s); `cargo test --workspace` **3,245 passed / 0 failed / 21 ignored** across 96 binaries (clean debuginfo=0 rebuild after the disk incident); harness scenarios 15/15 (real loopback iroh); `cargo build --release -p fractalengine-relay` succeeded (30m19s); git: local main ahead 30, NO pushes, stale sibling forks untouched (they are pruned worktree stubs, never written). M6 acceptance: install 15/15, serve 37/37.
+
+## Retro (2026-10-09, mission close)
+
+**Delivered**: F9–F19 (A20–A33), 27 feature/fix commits on local main (unpushed
+per A33), continuing factory's F1–F8. Every milestone got an adversarial
+review; every review found real issues green CI had missed:
+- M3: a bounded-channel deadlock cycle (fleets ≳129 retained rows hung
+  forever), permanent production-HLC skew from sim time, ingest reply
+  cross-delivery.
+- M4: string-append scope filter bypassable 4 ways on PUBLIC share URLs;
+  uncorrelated query replies cross-delivering; then the re-review found
+  node_log as a side channel and the grammar audit found the comment-split
+  needle bypass — two independent layers now guard each.
+- M5: the decoy wart's REST twins (the dispatcher protected only MCP), a
+  349 MiB DoS surface, world-readable uploaded assets, a deterministically
+  red fuzz test; the fix sweep found a FOURTH hole (field-defs unscoped).
+- M6: a two-readers-one-column seam bug that would have silently rendered
+  no terrain in-app despite 37/37 API checks.
+
+**Lessons (named by reviewers, now track doctrine)**:
+1. A scoped-table list is itself a denylist — denormalized copies (node_log)
+   live one table over.
+2. Shared cores + separate guards = drift; authz chokepoints protect only
+   what routes through them (REST twins).
+3. A writer of a shared JSON column must satisfy the STRICTEST reader.
+4. Serialize builds AND source/manifest edits — a mid-build Cargo.toml edit
+   stacked 236 GB of artifacts and zeroed the disk.
+5. Workspace sweeps: CARGO_PROFILE_DEV_DEBUG=0 (several-fold smaller,
+   -j4-safe); prune incremental+PDBs at thresholds (DEC-C12).
+
+**User-gated residuals** (cannot verify headlessly): in-app terrain render +
+scale-bar widget for the installed Zurich/Fuji hexons (numeric fields
+machine-verified); the Hexon Manager UI button (its seam is verified);
+in-app GUI smoke of the whole build.
+
+**Deferred register (with triggers)** — see spec.md DEC entries: blob
+GC/quota (multi-tenant deploy); REST existence-leak message unification;
+/query/elevated scope filter; WKB local-frame axes (first GIS consumer);
+f32 anchor quantization; SetPetalTerrain reply correlation → unlocks the
+live tileset-binding path (TERRAIN_MUTATION_UNAVAILABLE product gap);
+per-entry decompression caps (hexon registry go-live); fe-format
+TilesetMeta derive(Default) (sibling-repo breakage class); REST tileset
+install 2 MiB effective cap (first >2 MiB install).
 
 ## Verification evidence log
 
-(appended as features land)
+- F9A `1f2b6fd`, F9B `4854227`: fe-sim 37/37, fe-sync 221, fe-runtime 92, fe-api 165, harness 26; dep-tree proof 0.
+- F11+M3fixes `2023809`: combined gate + 14/14 real-transport scenarios.
+- F10 `2a4026e`: e2e 31/31 live (first DuckDB-vs-relay verification ever).
+- DEC-C16 `1ea14ba`: e2e 31/31 with strict geoparquet validation ON.
+- F13 `635b8c5`: fe-api 199; 572 combined; 29-tool authz matrix.
+- M4 fixes `667aa18` + remediation `770acd3`: e2e 48/48 → 49/49; grammar audit 18 form classes.
+- F12 `a6d23f3`, F15 `33eff03`/`dbb6461`, F17 `7b11c1a`, F18 `f7cc47b`.
+- M5 fixes `5b06795` + F16 `0c4bc2d`: fe-api 234, fe-database 281, fe-terrain 218, e2e 49/49.
+- F19 final: workspace 3,245/0/21; install 15/15; serve 37/37; harness 15/15; release relay built; no pushes.
