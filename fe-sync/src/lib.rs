@@ -17,11 +17,13 @@ pub mod sharding;
 pub mod status;
 pub mod sync_thread;
 pub mod verse_peers;
+pub mod virtual_transport;
 pub mod write_policy;
 
 pub use bevy_asset_reader::BlobAssetReader;
 pub use blob_store::FsBlobStore;
 pub use docs_engine::{p2p_data_dir, DocsStack, P2P_DIR_ENV_VAR};
+pub use endpoint::bound_endpoint_count;
 pub use fe_database::invite::VerseInvite;
 pub use lifecycle::{
     lifecycle_channel, LifecycleEventReceiver, LifecycleEventSender, LifecycleForwarder,
@@ -39,6 +41,7 @@ pub use sharding::{
 pub use status::{
     drain_sync_events, SyncCommandSenderRes, SyncEventReceiverRes, SyncStatus, TilesetEventBuffer,
 };
-pub use sync_thread::spawn_sync_thread;
+pub use sync_thread::{spawn_sync_thread, spawn_sync_thread_with_transport};
 pub use verse_peers::VersePeers;
+pub use virtual_transport::{VirtualReplica, VirtualTransportFactory};
 pub use write_policy::PolicyHandle;

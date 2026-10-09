@@ -19,6 +19,19 @@ pub struct SyncEndpoint {
 /// Guards the one-time startup warning about iroh 0.35's EOL-bound default relays.
 static DEFAULT_RELAY_EOL_WARNING: Once = Once::new();
 
+/// Count of `SyncEndpoint`s bound in this process — the sim lab's
+/// "no real network" assertion (F8/A19): a scenario run on a virtual
+/// transport binds zero endpoints.
+static BOUND_ENDPOINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many iroh endpoints this process has bound (see
+/// [`BOUND_ENDPOINTS`]). A virtual-transport (sim) sync thread never
+/// constructs a `SyncEndpoint`, so a sim scenario asserts this stays at
+/// its pre-run value.
+pub fn bound_endpoint_count() -> u64 {
+    BOUND_ENDPOINTS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Warn — once per process — that iroh's default n0-hosted relay servers EOL
 /// 2026-12-31 (see AGENTS.md §relay-health, decision D-77). Called whenever a
 /// [`SyncEndpoint`] binds against [`RelayConfig::Default`].
@@ -67,6 +80,7 @@ impl SyncEndpoint {
             .transport_config(bbr_transport_config())
             .bind()
             .await?;
+        BOUND_ENDPOINTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tracing::info!(
             congestion_controller = "bbr",
             relay_config = ?relay_config,

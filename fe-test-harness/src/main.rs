@@ -6,8 +6,12 @@
 //! P2P flow headlessly (no Bevy/GPU required).
 
 mod fixtures;
-mod peer;
 mod scenarios;
+
+// `peer` moved into the library (F8/M3 — the sim lab builds SimPeer on the
+// same in-process peer model). Re-exported here so the scenario modules'
+// `crate::peer::TestPeer` imports keep resolving inside the bin crate.
+pub use fractalengine_test_harness::peer;
 
 use anyhow::Result;
 

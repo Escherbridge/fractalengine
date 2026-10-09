@@ -25,6 +25,22 @@ struct HlcState {
 /// Module-level HLC.  `None` until [`init_hlc`] is called.
 static HLC_STATE: Mutex<Option<HlcState>> = Mutex::new(None);
 
+/// Pluggable wall-clock source (F8 sim lab): when installed, HLC wall time
+/// comes from the injected source instead of the system clock, so a
+/// simulated fleet stamps HLC from its virtual, accelerable `SimClock`
+/// (every simulated peer reads time from it — see fe-sim
+/// `src/AGENTS.md` §hlc-sim). A plain `fn` pointer (not a closure) keeps
+/// the override `Sync`; the sim installs a shim reading its process-global
+/// current clock. Uninstalled by default — production processes never touch
+/// this and keep real wall time.
+static WALL_CLOCK_SOURCE: Mutex<Option<fn() -> u64>> = Mutex::new(None);
+
+/// Install a wall-clock source for HLC stamping (sim lab only). Passing
+/// `None` restores the system clock.
+pub fn set_wall_clock_source(source: Option<fn() -> u64>) {
+    *WALL_CLOCK_SOURCE.lock().unwrap() = source;
+}
+
 /// Initialise the HLC past the highest persisted `lamport_clock` — called
 /// once at DB startup, before any op-log write (see fe-database/src/AGENTS.md §hlc).
 pub fn init_hlc(max_persisted: u64) {
@@ -142,8 +158,12 @@ pub async fn query_petal_at_time(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Current wall-clock time in milliseconds since the Unix epoch.
+/// Current wall-clock time in milliseconds since the Unix epoch — from the
+/// installed sim-lab source when one is present, else the system clock.
 fn wall_now_ms() -> u64 {
+    if let Some(source) = *WALL_CLOCK_SOURCE.lock().unwrap() {
+        return source();
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -229,5 +249,36 @@ mod tests {
         let (b, _) = next_hlc_timestamp();
         assert_eq!(b & 0xFFFF, 0, "counter should reset to 0 after overflow");
         assert!(b > a, "b should still be monotonically greater");
+    }
+
+    /// A fixed fake clock source for the override tests (a real test would
+    /// race the wall clock; a fake pins the values under assertion).
+    fn fake_wall_now() -> u64 {
+        4_102_444_800_000 // 2100-01-01T00:00:00Z, deliberately far from now
+    }
+
+    #[test]
+    fn wall_clock_source_override_stamps_hlc_from_the_source() {
+        let _g = lock_and_reset();
+        set_wall_clock_source(Some(fake_wall_now));
+        init_hlc(0);
+        let (packed, _) = next_hlc_timestamp();
+        let (second, _) = next_hlc_timestamp();
+        set_wall_clock_source(None);
+        // Restore real-clock state for the other tests in this binary.
+        *HLC_STATE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        init_hlc(0);
+
+        assert_eq!(
+            packed >> 16,
+            fake_wall_now(),
+            "wall bits must come from the override"
+        );
+        assert!(second > packed, "monotonicity holds under a frozen source");
+        let (real, _) = next_hlc_timestamp();
+        assert!(
+            real >> 16 < fake_wall_now(),
+            "clearing restores real wall time"
+        );
     }
 }

@@ -383,6 +383,49 @@ tombstones dominance over concurrent live writes (never LWW, D-A7). The durable
 non-resurrection proof lives in `fe-database` `merge::tests`; the fe-sync layer
 tests the flag detection + `should_apply` dominance.
 
+## §virtual-transport (M3/F8 — A19, decision D3)
+
+`virtual_transport.rs` is the seam the simulation lab rides: a **virtual**
+replica transport implements the same `VerseReplicator` contract as the real
+iroh-docs path, so prod and sim cannot drift by construction. The user's D3
+decision ("Full lab simulation") demands this — a parallel simulation-only
+replication model is forbidden.
+
+- **`VirtualReplica`** — `VerseReplicator` + the open-phase lifecycle
+  (`open_document`/`is_doc_backed`/`start_sync`/`mark_open_failed`/
+  `open_error`, the exact surface `handle_open_verse_replica` drives on the
+  real path). The names are iroh vocabulary; the contract is
+  transport-neutral. The sim lab implements it in fe-sim `transport.rs`.
+- **`VirtualTransportFactory`** — one per simulated peer; builds the
+  replica at each `OpenVerseReplica`.
+- **`spawn_sync_thread_with_transport`** — the spawn seam. With a factory
+  installed, the thread binds **no iroh endpoint** (no real network at all,
+  no relay, no `DocsStack`; `bound_endpoint_count()` stays put — this is
+  A19's "no real network" clause, pinned by the seam test), emits
+  `Started { online: true, node_addr: None }` (the transport IS live) with
+  relay health `Disabled` (the fixed point — a virtual transport cannot
+  fail or recover a relay). `spawn_sync_thread` (the production shape every
+  host binary calls) delegates with `None`.
+- **The command loop is byte-identical.** `AnyReplicator` is the enum the
+  open path drives: `Iroh(IrohDocsReplicator)` or
+  `Virtual(Box<dyn VirtualReplica>)`, delegating `write_row`/`subscribe`/
+  `snapshot`/`close` + the lifecycle methods. Pending-writes retention, the
+  inbound pump, `seed_reconciliation`, fabric bookkeeping (`__shards`/
+  `__peers`/manifest learning), and receive-side retention all run the same
+  code. Only the transport under the trait object differs.
+- **Honest limits in virtual mode:** the distributed-query compute plane
+  (gossip topics) requires the real stack and is absent —
+  `SubmitComputeTask` answers the honest "no gossip sender for this topic"
+  error. F9/A21 virtualizes that plane by extending the factory with a
+  topic seam (a virtual gossip hub handing out channel pairs shaped like
+  `GossipTopic`); petal-level replication stays mock-backed (legacy path,
+  no sim consumer), and blob fetching across peers is likewise not
+  virtualized (sim fleets exchange rows, not GLB assets).
+- **HLC parity:** simulated peers stamp HLC from their `SimClock` via
+  `fe_database::op_log::set_wall_clock_source` (see fe-database
+  `src/AGENTS.md` §hlc) — every simulated peer reads time from the same
+  accelerable clock, keeping monotonicity and run-to-run determinism.
+
 ## §sharding (M2/F6 — A13/A14)
 
 The sharded hybrid timeseries fabric: `sharding.rs` (shard model + per-verse

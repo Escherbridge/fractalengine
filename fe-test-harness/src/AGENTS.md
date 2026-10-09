@@ -2,7 +2,22 @@
 
 Package `fractalengine-test-harness` has two targets: the P2P scenario runner
 binary (`main.rs`, §scenarios below) and a library (`lib.rs`) exposing the
-API-integration harness (§api-harness).
+API-integration harness (§api-harness) and the in-process peer model
+(§peer-model).
+
+## §peer-model (F8/M3 generalization)
+
+`peer.rs` — the in-process P2P peer — is a **library** module (`pub mod peer`)
+since F8: the sim lab (fe-sim) builds its `SimPeer` on the same machinery
+instead of the harness growing a parallel peer model. `TestPeer::spawn`
+keeps the real-transport shape; `TestPeer::spawn_with_transport(name, dir,
+Some(factory))` passes a `fe_sync::VirtualTransportFactory` through to
+`spawn_sync_thread_with_transport`, so a simulated peer's sync thread binds
+no iroh endpoint and sources replicas from the virtual transport — the same
+DB loop, blob store, channels, and wait helpers either way. The bin
+re-exports the lib module (`pub use fractalengine_test_harness::peer;` in
+`main.rs`) so the scenario files' `crate::peer::TestPeer` imports keep
+resolving.
 
 ## §api-harness
 
