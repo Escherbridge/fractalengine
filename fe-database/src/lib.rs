@@ -577,9 +577,52 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                         });
                                     }
                                 }
-                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position });
+                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, correlation_id: None });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("GLTF import failed: {e}"))),
+                        }
+                    }
+                    // F13 API asset ingest: metadata only — bytes were stored API-side.
+                    Ok(DbCommand::CreateAsset { name, content_type, size_bytes, content_hash, correlation_id }) => {
+                        match handlers::crud::create_asset_handler(&db, &blob_store, &name, &content_type, size_bytes, &content_hash).await {
+                            Ok(asset_id) => send_result(&tx, DbResult::AssetCreated { asset_id, content_hash, size_bytes, correlation_id }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Create asset failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::CreateNodeWithAsset { petal_id, name, asset_id, position, rotation, scale, correlation_id }) => {
+                        match handlers::crud::create_node_with_asset_handler(&db, &petal_id, &name, &asset_id, position, rotation, scale).await {
+                            Ok((node_id, asset_path)) => {
+                                if let Some(ref ect) = entity_change_tx {
+                                    let quat = bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ, rotation[0], rotation[1], rotation[2]);
+                                    let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
+                                        node: fe_runtime::messages::NodeDto {
+                                            node_id: node_id.clone(),
+                                            petal_id: petal_id.clone(),
+                                            name: name.clone(),
+                                            position,
+                                            rotation: quat.to_array(),
+                                            scale,
+                                            has_asset: true,
+                                            asset_path: Some(asset_path.clone()),
+                                        },
+                                    });
+                                }
+                                if let Err(e) = handlers::node_log::append_node_log(
+                                    &db, &node_id, "created", &local_did,
+                                    &serde_json::json!({"name": name, "position": position, "petal_id": petal_id, "asset_id": asset_id}),
+                                ).await {
+                                    tracing::warn!("node_log append failed for {node_id}: {e}");
+                                }
+                                if let Ok(Some(scope)) = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await {
+                                    if let Some(uri) = lifecycle_uri(&scope, &node_id) {
+                                        emit_lifecycle(&lifecycle_tx, fe_runtime::messages::LifecycleEvent::NodeCreated {
+                                            address: uri, node_id: node_id.clone(),
+                                        });
+                                    }
+                                }
+                                send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, correlation_id });
+                            }
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Place asset failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::LoadHierarchy) => {
@@ -802,6 +845,18 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         match handlers::crud::resolve_node_scope_handler(&db, &node_id).await {
                             Ok(scope) => send_result(&tx, DbResult::ScopeResolved { scope }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Resolve node scope failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::ResolveFractalScope { fractal_id }) => {
+                        match handlers::crud::resolve_fractal_scope_handler(&db, &fractal_id).await {
+                            Ok(scope) => send_result(&tx, DbResult::ScopeResolved { scope }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Resolve fractal scope failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::ResolveVerseScope { verse_id }) => {
+                        match handlers::crud::resolve_verse_scope_handler(&db, &verse_id).await {
+                            Ok(scope) => send_result(&tx, DbResult::ScopeResolved { scope }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Resolve verse scope failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::LoadNodesByPetal { petal_id }) => {

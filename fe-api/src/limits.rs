@@ -30,3 +30,6 @@ pub const IOT_INGEST_RATE_PER_SEC: u32 = 10;
 pub const SHARE_DEFAULT_TTL_SECS: u64 = 3600;
 /// Maximum shareable-URL TTL (24 hours) — plan D2.
 pub const SHARE_MAX_TTL_SECS: u64 = 24 * 3600;
+
+/// Max decoded GPX size accepted by the MCP `import_gpx` tool (16 MiB).
+pub const MCP_GPX_MAX_BYTES: usize = 16 * 1024 * 1024;

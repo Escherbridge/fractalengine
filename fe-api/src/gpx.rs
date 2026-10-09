@@ -57,15 +57,21 @@ pub async fn import_gpx(
         }
     };
 
-    // Parse GPX
-    let data = match parse_gpx_bytes(&gpx_bytes) {
-        Ok(d) => d,
-        Err(e) => {
-            return axum::Json(ApiResponse::<serde_json::Value>::error(format!(
-                "invalid GPX: {e}"
-            )));
-        }
-    };
+    match import_gpx_core(&state, &petal_id, &gpx_bytes).await {
+        Ok(payload) => axum::Json(ApiResponse::success(payload)),
+        Err(e) => axum::Json(ApiResponse::<serde_json::Value>::error(e)),
+    }
+}
+
+/// GPX import core shared by REST (multipart) + MCP `import_gpx` (base64);
+/// the caller has authorized the petal. Parses, projects around the bbox
+/// center, and creates one node per scene command.
+pub(crate) async fn import_gpx_core(
+    state: &crate::server::ApiState,
+    petal_id: &str,
+    gpx_bytes: &[u8],
+) -> Result<serde_json::Value, String> {
+    let data = parse_gpx_bytes(gpx_bytes).map_err(|e| format!("invalid GPX: {e}"))?;
 
     let stats = compute_stats(&data);
     let track_count = data.tracks.len();
@@ -83,33 +89,25 @@ pub async fn import_gpx(
     let origin_ele = stats.bounding_box.min_ele.unwrap_or(0.0);
     let projection = Projection::new(origin_lat, origin_lon, origin_ele);
 
-    let commands = gpx_to_scene_commands(&data, &petal_id, &projection);
+    let commands = gpx_to_scene_commands(&data, petal_id, &projection);
 
     // Create nodes
     let mut created = 0u32;
     let mut errors = 0u32;
     for cmd in &commands {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        let db_cmd = ApiCommand::DbRequest {
-            cmd: DbCommand::CreateNode {
-                petal_id: petal_id.clone(),
-                name: cmd.name.clone(),
-                position: cmd.position,
-                correlation_id: None,
-            },
-            reply_tx,
+        let db_cmd = DbCommand::CreateNode {
+            petal_id: petal_id.to_string(),
+            name: cmd.name.clone(),
+            position: cmd.position,
+            correlation_id: None,
         };
-        if state.api_cmd_tx.send(db_cmd).is_err() {
-            errors += 1;
-            continue;
-        }
-        match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-            Ok(Ok(DbResult::NodeCreated { .. })) => created += 1,
+        match crate::rest::db_round_trip(state, db_cmd).await {
+            Ok(DbResult::NodeCreated { .. }) => created += 1,
             _ => errors += 1,
         }
     }
 
-    axum::Json(ApiResponse::success(serde_json::json!({
+    Ok(serde_json::json!({
         "track_count": track_count,
         "waypoint_count": waypoint_count,
         "total_points": total_points,
@@ -126,7 +124,7 @@ pub async fn import_gpx(
             "origin_lon": projection.origin_lon,
             "origin_ele": projection.origin_ele,
         }
-    })))
+    }))
 }
 
 /// GET /api/v1/petals/:petal_id/export/gpx

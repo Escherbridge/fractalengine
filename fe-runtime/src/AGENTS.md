@@ -129,6 +129,10 @@ order:
   it (requeue is impossible: a oneshot cannot be re-armed, and consuming is
   what keeps the queue aligned). An id with no entry is not delivered.
   Uncorrelated replies (`None`, every other family) keep the old semantics.
+  F13 adds two correlated families: `CreateAsset` → `AssetCreated` and
+  `CreateNodeWithAsset` → `GltfImported` (`ReplyKind::PlacedAsset`, mapped
+  ONLY when the echoed id is `Some` — a GUI `ImportGltf` result keeps its
+  unmapped legacy routing and can never land on an API waiter).
   The fe-api fallback additionally checks the echoed id + `petal_id` and
   answers 502 on a mismatch rather than leak another caller's result.
 - **Known sharp edge (deliberately NOT changed — DEC-C13).** `Error` stays

@@ -225,7 +225,9 @@ struct PendingEntry {
 /// that echo one on their reply (see [`PendingApiRequests::try_deliver`]).
 fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
     match cmd {
-        DbCommand::InsertIotReadings { correlation_id, .. } => correlation_id.as_deref(),
+        DbCommand::InsertIotReadings { correlation_id, .. }
+        | DbCommand::CreateAsset { correlation_id, .. }
+        | DbCommand::CreateNodeWithAsset { correlation_id, .. } => correlation_id.as_deref(),
         _ => None,
     }
 }
@@ -234,7 +236,9 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
 fn correlation_of_result(result: &DbResult) -> Option<&str> {
     match result {
         DbResult::IotReadingsInserted { correlation_id, .. }
-        | DbResult::IotReadingsRejected { correlation_id, .. } => correlation_id.as_deref(),
+        | DbResult::IotReadingsRejected { correlation_id, .. }
+        | DbResult::AssetCreated { correlation_id, .. }
+        | DbResult::GltfImported { correlation_id, .. } => correlation_id.as_deref(),
         _ => None,
     }
 }
@@ -266,6 +270,8 @@ enum ReplyKind {
     IotReadingsInserted,
     PetalTerrain,
     VerseTimeseriesSettings,
+    AssetCreated,
+    PlacedAsset,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -279,7 +285,10 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         CreatePetal { .. } => ReplyKind::PetalCreated,
         CreateNode { .. } => ReplyKind::NodeCreated,
         LoadHierarchy => ReplyKind::Hierarchy,
-        ResolvePetalScope { .. } | ResolveNodeScope { .. } => ReplyKind::ScopeResolved,
+        ResolvePetalScope { .. }
+        | ResolveNodeScope { .. }
+        | ResolveFractalScope { .. }
+        | ResolveVerseScope { .. } => ReplyKind::ScopeResolved,
         LoadNodesByPetal { .. } => ReplyKind::NodesLoaded,
         GetNodeTransform { .. } => ReplyKind::NodeTransformLoaded,
         GetNodeProperties { .. } => ReplyKind::NodeProperties,
@@ -297,6 +306,8 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         InsertIotReadings { .. } => ReplyKind::IotReadingsInserted,
         GetPetalTerrain { .. } => ReplyKind::PetalTerrain,
         SetVerseTimeseriesSettings { .. } => ReplyKind::VerseTimeseriesSettings,
+        CreateAsset { .. } => ReplyKind::AssetCreated,
+        CreateNodeWithAsset { .. } => ReplyKind::PlacedAsset,
         _ => return None,
     })
 }
@@ -330,6 +341,13 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         IotReadingsRejected { .. } => ReplyKind::IotReadingsInserted,
         PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
         VerseTimeseriesSettingsSet { .. } => ReplyKind::VerseTimeseriesSettings,
+        AssetCreated { .. } => ReplyKind::AssetCreated,
+        // Only an API placement (correlated) is a reply; a GUI `ImportGltf`
+        // result (`None`) keeps its legacy unmapped routing (§api-reply-correlation).
+        GltfImported {
+            correlation_id: Some(_),
+            ..
+        } => ReplyKind::PlacedAsset,
         _ => return None,
     })
 }
@@ -651,6 +669,78 @@ mod tests {
             written,
             correlation_id: Some(correlation_id.to_string()),
         }
+    }
+
+    fn create_asset_cmd(correlation_id: Option<&str>) -> DbCommand {
+        DbCommand::CreateAsset {
+            name: "a.glb".to_string(),
+            content_type: "model/gltf-binary".to_string(),
+            size_bytes: 12,
+            content_hash: "00".repeat(32),
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    fn asset_created(correlation_id: Option<&str>) -> DbResult {
+        DbResult::AssetCreated {
+            asset_id: "a".to_string(),
+            content_hash: "00".repeat(32),
+            size_bytes: 12,
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    fn place_asset_cmd(correlation_id: Option<&str>) -> DbCommand {
+        DbCommand::CreateNodeWithAsset {
+            petal_id: "p".to_string(),
+            name: "n".to_string(),
+            asset_id: "a".to_string(),
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: [1.0; 3],
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    fn gltf_imported(correlation_id: Option<&str>) -> DbResult {
+        DbResult::GltfImported {
+            node_id: "n".to_string(),
+            asset_id: "a".to_string(),
+            petal_id: "p".to_string(),
+            name: "n".to_string(),
+            asset_path: "blob://x.glb".to_string(),
+            position: [0.0; 3],
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    /// F13: a GUI-originated `GltfImported` (no correlation id) must never
+    /// satisfy an API `place_asset` waiter, and a placement reply reaches only
+    /// the waiter whose correlation id it echoes.
+    #[test]
+    fn placement_replies_route_only_by_correlation_id() {
+        let mut pending = PendingApiRequests::default();
+        let (tx_a, mut rx_a) = tokio::sync::oneshot::channel();
+        let (tx_b, mut rx_b) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&place_asset_cmd(Some("a")), tx_a);
+        pending.enqueue_for(&place_asset_cmd(Some("b")), tx_b);
+
+        pending.try_deliver(gltf_imported(None));
+        assert!(
+            rx_a.try_recv().is_err(),
+            "GUI import leaked to API waiter A"
+        );
+        assert!(
+            rx_b.try_recv().is_err(),
+            "GUI import leaked to API waiter B"
+        );
+
+        assert!(pending.try_deliver(gltf_imported(Some("b"))));
+        assert!(matches!(
+            rx_b.try_recv(),
+            Ok(DbResult::GltfImported { correlation_id: Some(ref c), .. }) if c == "b"
+        ));
+        assert!(rx_a.try_recv().is_err(), "B's reply must not reach A");
     }
 
     /// F24 cross-delivery (DEC-C13): caller A times out (receiver dropped),
@@ -1013,6 +1103,20 @@ mod tests {
                     bucket_width_ms: crate::timeseries::DEFAULT_BUCKET_WIDTH_MS,
                 },
             ),
+            (
+                DbCommand::ResolveFractalScope {
+                    fractal_id: "f".to_string(),
+                },
+                DbResult::ScopeResolved { scope: None },
+            ),
+            (
+                DbCommand::ResolveVerseScope {
+                    verse_id: "v".to_string(),
+                },
+                DbResult::ScopeResolved { scope: None },
+            ),
+            (create_asset_cmd(Some("c1")), asset_created(Some("c1"))),
+            (place_asset_cmd(Some("c2")), gltf_imported(Some("c2"))),
         ];
 
         for (cmd, result) in cases {
@@ -1041,6 +1145,11 @@ mod tests {
             None
         );
         assert_eq!(reply_kind_of_result(&DbResult::Started), None);
+        assert_eq!(
+            reply_kind_of_result(&gltf_imported(None)),
+            None,
+            "a GUI ImportGltf result must never satisfy an API placement waiter"
+        );
         assert_eq!(
             reply_kind_of_result(&DbResult::ReplicatedRowApplied {
                 verse_id: "v".to_string(),

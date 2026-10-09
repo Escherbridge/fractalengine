@@ -456,6 +456,158 @@ pub(crate) async fn import_gltf_handler(
 }
 
 // ---------------------------------------------------------------------------
+// API asset ingest (F13 — fe-api/AGENTS.md §asset-ingest)
+// ---------------------------------------------------------------------------
+
+/// Register an asset row for a blob the API thread already stored. No bytes
+/// reach this thread; the blob's presence in the shared store is verified.
+#[instrument(skip(db, blob_store))]
+pub(crate) async fn create_asset_handler(
+    db: &Db,
+    blob_store: &BlobStoreHandle,
+    name: &str,
+    content_type: &str,
+    size_bytes: u64,
+    content_hash: &str,
+) -> anyhow::Result<String> {
+    let hash = hash_from_hex(content_hash)
+        .map_err(|e| anyhow::anyhow!("CreateAsset invalid content_hash: {e}"))?;
+    if !blob_store.has_blob(&hash) {
+        anyhow::bail!("CreateAsset blob {content_hash} is not present in the blob store");
+    }
+    if name.trim().is_empty() || content_type.trim().is_empty() {
+        anyhow::bail!("CreateAsset requires a name and content_type");
+    }
+    let size_bytes =
+        i64::try_from(size_bytes).map_err(|_| anyhow::anyhow!("CreateAsset size overflow"))?;
+
+    let asset_id = ulid::Ulid::new().to_string();
+    db.query(
+        "CREATE asset CONTENT {
+            asset_id: $asset_id,
+            name: $name,
+            content_type: $content_type,
+            size_bytes: $size_bytes,
+            data: NONE,
+            content_hash: $content_hash,
+            created_at: $now,
+        }",
+    )
+    .bind(("asset_id", asset_id.clone()))
+    .bind(("name", name.to_string()))
+    .bind(("content_type", content_type.to_string()))
+    .bind(("size_bytes", size_bytes))
+    .bind(("content_hash", content_hash.to_string()))
+    .bind(("now", chrono::Utc::now().to_rfc3339()))
+    .await?
+    .check()
+    .map_err(|e| anyhow::anyhow!("CREATE asset failed: {e}"))?;
+    tracing::info!("Registered API asset {name} ({size_bytes} bytes, asset_id={asset_id})");
+    Ok(asset_id)
+}
+
+/// Create a node bound to an existing asset row (log-first, like `CreateNode`).
+/// Returns `(node_id, asset_path)`; `rotation` is stored as Euler XYZ radians,
+/// exactly as `UpdateNodeTransform` writes it.
+#[instrument(skip(db))]
+pub(crate) async fn create_node_with_asset_handler(
+    db: &Db,
+    petal_id: &str,
+    name: &str,
+    asset_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+) -> anyhow::Result<(String, String)> {
+    require_petal_scope(db, petal_id, "CreateNodeWithAsset").await?;
+
+    // An absent `asset` table means no assets exist (delete_node_handler precedent).
+    let lookup = db
+        .query("SELECT content_hash, content_type FROM asset WHERE asset_id = $aid LIMIT 1")
+        .bind(("aid", asset_id.to_string()))
+        .await?
+        .check();
+    let rows: Vec<serde_json::Value> = match lookup {
+        Ok(mut res) => res.take(0)?,
+        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+        Err(e) => anyhow::bail!("CreateNodeWithAsset asset lookup failed: {e}"),
+    };
+    let Some(asset_row) = rows.first() else {
+        anyhow::bail!("CreateNodeWithAsset matched no asset with asset_id = {asset_id}");
+    };
+    let Some(content_hash) = asset_row.get("content_hash").and_then(|v| v.as_str()) else {
+        anyhow::bail!("CreateNodeWithAsset asset {asset_id} has no blob content_hash");
+    };
+    let ext = match asset_row.get("content_type").and_then(|v| v.as_str()) {
+        Some("model/gltf-binary") => "glb",
+        Some("model/gltf+json") => "gltf",
+        _ => "bin",
+    };
+    let asset_path = format!("blob://{content_hash}.{ext}");
+
+    let node_id = ulid::Ulid::new().to_string();
+    let entry = crate::types::OpLogEntry {
+        lamport_clock: 0,
+        node_id: crate::types::NodeId(node_id.clone()),
+        op_type: crate::types::OpType::NodeCreated,
+        payload: serde_json::json!({
+            "node_id": node_id.clone(),
+            "petal_id": petal_id,
+            "name": name,
+            "position": position,
+            "rotation": rotation,
+            "scale": scale,
+            "asset_id": asset_id,
+            "interactive": true,
+        }),
+        sig: "00".repeat(64),
+        hlc_timestamp: String::new(),
+    };
+    let materialized_node_id = node_id.clone();
+    let materialized_petal_id = petal_id.to_string();
+    let materialized_name = name.to_string();
+    let materialized_asset_id = asset_id.to_string();
+    let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
+    let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
+    let now = chrono::Utc::now().to_rfc3339();
+    // Geometry fields need the explicit SurrealQL cast; see AGENTS.md §geometry-inserts.
+    crate::op_log::commit_operation(db, entry, move |_| async move {
+        db.query(
+            "CREATE node CONTENT {
+            node_id: $node_id,
+            petal_id: $petal_id,
+            display_name: $name,
+            asset_id: $asset_id,
+            position: <geometry<point>> [$x, $z],
+            elevation: $y,
+            rotation: $rot,
+            scale: $sc,
+            interactive: true,
+            created_at: $now,
+        }",
+        )
+        .bind(("node_id", materialized_node_id))
+        .bind(("petal_id", materialized_petal_id))
+        .bind(("name", materialized_name))
+        .bind(("asset_id", materialized_asset_id))
+        .bind(("x", position[0] as f64))
+        .bind(("z", position[2] as f64))
+        .bind(("y", position[1] as f64))
+        .bind(("rot", rot))
+        .bind(("sc", sc))
+        .bind(("now", now))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("CREATE asset node failed: {e}"))?;
+        Ok(())
+    })
+    .await?;
+
+    tracing::info!("Placed asset {asset_id} as node {node_id} in petal {petal_id}");
+    Ok((node_id, asset_path))
+}
+
+// ---------------------------------------------------------------------------
 // Load Hierarchy
 // ---------------------------------------------------------------------------
 
@@ -899,6 +1051,42 @@ pub(crate) async fn resolve_petal_scope_handler(
         Some(&fractal_id),
         Some(petal_id),
     )))
+}
+
+/// Resolve a `fractal_id` to its scope string (`VERSE#<v>-FRACTAL#<f>`);
+/// `None` when the fractal (or its verse link) is absent.
+#[instrument(skip(db))]
+pub(crate) async fn resolve_fractal_scope_handler(
+    db: &Db,
+    fractal_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut res = db
+        .query("SELECT verse_id FROM fractal WHERE fractal_id = $fid LIMIT 1")
+        .bind(("fid", fractal_id.to_string()))
+        .await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    let Some(verse_id) = rows.first().and_then(|r| r["verse_id"].as_str()) else {
+        return Ok(None);
+    };
+    Ok(Some(crate::build_scope(verse_id, Some(fractal_id), None)))
+}
+
+/// Resolve a `verse_id` to its scope string (`VERSE#<v>`); `None` when no
+/// verse row exists (existence is the point — the id alone is not proof).
+#[instrument(skip(db))]
+pub(crate) async fn resolve_verse_scope_handler(
+    db: &Db,
+    verse_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut res = db
+        .query("SELECT verse_id FROM verse WHERE verse_id = $vid LIMIT 1")
+        .bind(("vid", verse_id.to_string()))
+        .await?;
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+    Ok(rows
+        .first()
+        .and_then(|r| r["verse_id"].as_str())
+        .map(|v| crate::build_scope(v, None, None)))
 }
 
 /// Resolve a node's owning petal for node-scoped event delivery.
@@ -1671,5 +1859,145 @@ mod cascade_batch_update_tests {
 
         assert_eq!(visible_count(&db, &a).await, 0, "a must be tombstoned");
         assert_eq!(visible_count(&db, &b).await, 0, "b must be tombstoned");
+    }
+}
+
+#[cfg(test)]
+mod asset_ingest_tests {
+    use super::*;
+    use crate::{BlobHash, BlobStore};
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+
+    /// Presence-only blob store: the DB thread only ever asks `has_blob`.
+    #[derive(Default)]
+    struct PresenceStore(Mutex<HashSet<BlobHash>>);
+
+    impl BlobStore for PresenceStore {
+        fn add_blob(&self, _bytes: &[u8]) -> anyhow::Result<BlobHash> {
+            anyhow::bail!("the DB thread must never write blob bytes")
+        }
+        fn get_blob_path(&self, _hash: &BlobHash) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn has_blob(&self, hash: &BlobHash) -> bool {
+            self.0.lock().unwrap().contains(hash)
+        }
+        fn remove_blob(&self, _hash: &BlobHash) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    async fn setup() -> (Db, BlobStoreHandle, String) {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        db.query(
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v' };
+             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', name: 'f' };
+             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p' };",
+        )
+        .await
+        .expect("seed scope chain");
+        crate::op_log::init_hlc(0);
+        let store = Arc::new(PresenceStore::default());
+        let hash = [7u8; 32];
+        store.0.lock().unwrap().insert(hash);
+        (db, store, hash_to_hex(&hash))
+    }
+
+    #[tokio::test]
+    async fn create_asset_requires_the_blob_and_stores_metadata_only() {
+        let (db, store, hash) = setup().await;
+
+        let absent = hash_to_hex(&[9u8; 32]);
+        let err = create_asset_handler(&db, &store, "a.glb", "model/gltf-binary", 12, &absent)
+            .await
+            .expect_err("absent blob must be refused");
+        assert!(err.to_string().contains("not present"), "{err}");
+
+        let asset_id = create_asset_handler(&db, &store, "a.glb", "model/gltf-binary", 12, &hash)
+            .await
+            .expect("present blob registers");
+        let mut res = db
+            .query("SELECT content_hash, data, size_bytes FROM asset WHERE asset_id = $aid")
+            .bind(("aid", asset_id))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        assert_eq!(rows[0]["content_hash"], hash.as_str());
+        assert!(rows[0]["data"].is_null(), "no inline bytes: {}", rows[0]);
+        assert_eq!(rows[0]["size_bytes"], 12);
+    }
+
+    #[tokio::test]
+    async fn place_asset_binds_the_asset_and_rejects_unknown_ids() {
+        let (db, store, hash) = setup().await;
+
+        let err = create_node_with_asset_handler(
+            &db,
+            "petal-1",
+            "ghost",
+            "no-such-asset",
+            [0.0; 3],
+            [0.0; 3],
+            [1.0; 3],
+        )
+        .await
+        .expect_err("unknown asset must be refused");
+        assert!(err.to_string().contains("matched no asset"), "{err}");
+        let mut res = db.query("SELECT node_id FROM node").await.unwrap();
+        // An absent `node` table is the strongest form of "no row".
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+        assert!(rows.is_empty(), "no node row on a refused placement");
+
+        let asset_id = create_asset_handler(&db, &store, "a.glb", "model/gltf-binary", 12, &hash)
+            .await
+            .unwrap();
+        let (node_id, asset_path) = create_node_with_asset_handler(
+            &db,
+            "petal-1",
+            "house",
+            &asset_id,
+            [1.0, 2.0, 3.0],
+            [0.5, 0.0, 0.0],
+            [2.0; 3],
+        )
+        .await
+        .expect("placement succeeds");
+        assert_eq!(asset_path, format!("blob://{hash}.glb"));
+        let mut res = db
+            .query("SELECT asset_id, rotation, elevation FROM node WHERE node_id = $nid")
+            .bind(("nid", node_id))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        assert_eq!(rows[0]["asset_id"], asset_id.as_str());
+        assert_eq!(rows[0]["rotation"], serde_json::json!([0.5, 0.0, 0.0]));
+        assert_eq!(rows[0]["elevation"], 2.0);
+    }
+
+    #[tokio::test]
+    async fn fractal_and_verse_scopes_resolve_only_for_existing_rows() {
+        let (db, _, _) = setup().await;
+        assert_eq!(
+            resolve_fractal_scope_handler(&db, "fractal-1")
+                .await
+                .unwrap(),
+            Some("VERSE#verse-1-FRACTAL#fractal-1".to_string())
+        );
+        assert_eq!(
+            resolve_fractal_scope_handler(&db, "nope").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_verse_scope_handler(&db, "verse-1").await.unwrap(),
+            Some("VERSE#verse-1".to_string())
+        );
+        assert_eq!(
+            resolve_verse_scope_handler(&db, "nope").await.unwrap(),
+            None
+        );
     }
 }

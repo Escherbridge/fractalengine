@@ -245,6 +245,30 @@ pub enum DbCommand {
         file_path: String,
         position: [f32; 3],
     },
+    /// Register an asset row for a blob the API thread ALREADY wrote to the
+    /// shared blob store. Metadata only — asset bytes never ride this channel
+    /// (fe-api/AGENTS.md §asset-ingest). Replies `AssetCreated`.
+    CreateAsset {
+        name: String,
+        content_type: String,
+        size_bytes: u64,
+        /// 64-hex BLAKE3 hash; the DB thread verifies the blob is present.
+        content_hash: String,
+        /// Echoed on `AssetCreated` (reply correlation, DEC-C13).
+        correlation_id: Option<String>,
+    },
+    /// Create a node bound to an existing asset row (MCP `place_asset`).
+    /// `rotation` is Euler XYZ radians, stored as `UpdateNodeTransform` does.
+    /// Replies `GltfImported` with the echoed `correlation_id`.
+    CreateNodeWithAsset {
+        petal_id: String,
+        name: String,
+        asset_id: String,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+        correlation_id: Option<String>,
+    },
     LoadHierarchy,
     /// Phase F: generate an invite string for a verse.
     GenerateVerseInvite {
@@ -367,6 +391,14 @@ pub enum DbCommand {
     /// Resolve a node's full scope string by walking node → petal → fractal → verse.
     ResolveNodeScope {
         node_id: String,
+    },
+    /// Resolve a fractal's scope string (VERSE#v-FRACTAL#f) by walking fractal → verse.
+    ResolveFractalScope {
+        fractal_id: String,
+    },
+    /// Resolve a verse's scope string (VERSE#v); `None` when the verse row is absent.
+    ResolveVerseScope {
+        verse_id: String,
     },
     /// Load all nodes belonging to a petal (for scene snapshot).
     LoadNodesByPetal {
@@ -642,6 +674,16 @@ pub enum DbResult {
         name: String,
         asset_path: String,
         position: [f32; 3],
+        /// Echoes `CreateNodeWithAsset.correlation_id`; `None` for GUI
+        /// `ImportGltf` results (never routed to an API waiter).
+        correlation_id: Option<String>,
+    },
+    /// Result of `CreateAsset` — the asset row now references the blob.
+    AssetCreated {
+        asset_id: String,
+        content_hash: String,
+        size_bytes: u64,
+        correlation_id: Option<String>,
     },
     HierarchyLoaded {
         verses: Vec<VerseHierarchyData>,
@@ -728,7 +770,8 @@ pub enum DbResult {
         tokens: Vec<ApiTokenInfo>,
         total: u64,
     },
-    /// Result of `ResolvePetalScope` or `ResolveNodeScope`.
+    /// Result of `ResolvePetalScope` / `ResolveNodeScope` / `ResolveFractalScope` /
+    /// `ResolveVerseScope`.
     /// `scope` is `None` when the requested entity was not found.
     ScopeResolved {
         scope: Option<String>,

@@ -347,6 +347,7 @@ impl TestPeer {
                                             name,
                                             asset_path,
                                             position,
+                                            correlation_id: None,
                                         })
                                         .ok();
                                 }
@@ -722,7 +723,9 @@ impl TestPeer {
                             db_result_tx.send(DbResult::ScopedApiTokensListed { tokens: vec![], total: 0 }).ok();
                         }
                         Ok(DbCommand::ResolvePetalScope { .. })
-                        | Ok(DbCommand::ResolveNodeScope { .. }) => {
+                        | Ok(DbCommand::ResolveNodeScope { .. })
+                        | Ok(DbCommand::ResolveFractalScope { .. })
+                        | Ok(DbCommand::ResolveVerseScope { .. }) => {
                             // Scope resolution — not implemented in test harness.
                         }
                         Ok(DbCommand::LoadNodesByPetal { petal_id }) => {
@@ -849,6 +852,17 @@ impl TestPeer {
                             db_result_tx
                                 .send(DbResult::Error(
                                     "node lifecycle op not simulated by the test-harness peer"
+                                        .to_string(),
+                                ))
+                                .ok();
+                        }
+                        // F13 API asset ingest — covered by fe-database/fe-api
+                        // tests, not this mock peer — surface, don't drop.
+                        Ok(DbCommand::CreateAsset { .. })
+                        | Ok(DbCommand::CreateNodeWithAsset { .. }) => {
+                            db_result_tx
+                                .send(DbResult::Error(
+                                    "API asset ingest not simulated by the test-harness peer"
                                         .to_string(),
                                 ))
                                 .ok();
