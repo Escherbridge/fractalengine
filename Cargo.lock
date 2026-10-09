@@ -5522,6 +5522,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "fe-sim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "crossbeam",
+ "fe-database",
+ "fe-identity",
+ "fe-runtime",
+ "fe-sync",
+ "fractalengine-test-harness",
+ "hex",
+ "iroh",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
 name = "fe-sync"
 version = "0.1.0"
 dependencies = [

@@ -33,11 +33,12 @@ use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSend
 use crate::placement::Retention;
 use crate::relay_config::{RelayConfig, RelayHealth};
 use crate::replicator::{
-    IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator, RowChange,
-    VerseReplicator,
+    IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator,
+    ReplicatorFuture, RowChange, VerseReplicator,
 };
 use crate::sharding::{PeerDeclaration, ShardId, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE};
 use crate::verse_peers;
+use crate::virtual_transport::{VirtualReplica, VirtualTransportFactory};
 
 /// Env var carrying bootstrap peers for every opened replica: **semicolon**
 /// `-separated` iroh `NodeAddr` JSON entries (or bare `NodeId` hex), parsed
@@ -227,10 +228,160 @@ fn gossip_topic_id(topic_key: &str) -> TopicId {
 /// Spawn the sync thread.
 ///
 /// Returns a join handle so the caller can optionally wait for a clean
-/// shutdown.
+/// shutdown. See [`spawn_sync_thread_with_transport`] for the argument
+/// reference (this is the production shape — no virtual transport).
+pub fn spawn_sync_thread(
+    secret_key: iroh::SecretKey,
+    blob_store: BlobStoreHandle,
+    cmd_rx: SyncCommandReceiver,
+    evt_tx: SyncEventSender,
+    local_did: String,
+    db_cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
+    p2p_dir: Option<PathBuf>,
+) -> std::thread::JoinHandle<()> {
+    spawn_sync_thread_with_transport(
+        secret_key, blob_store, cmd_rx, evt_tx, local_did, db_cmd_tx, p2p_dir, None,
+    )
+}
+
+/// The per-verse replica a sync thread holds, over either transport: the
+/// real iroh-docs replicator or a sim-lab virtual replica (F8/A19). Both
+/// arms satisfy the same [`VerseReplicator`] contract, so the
+/// open/inbound/apply path is byte-identical between prod and sim; the enum
+/// only adds the open-phase lifecycle passthroughs the open sequence drives.
+enum AnyReplicator {
+    Iroh(Box<IrohDocsReplicator>),
+    Virtual(Box<dyn VirtualReplica>),
+}
+
+impl VerseReplicator for AnyReplicator {
+    fn write_row(
+        &self,
+        table: &str,
+        record_id: &str,
+        data: &[u8],
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        match self {
+            Self::Iroh(r) => r.write_row(table, record_id, data),
+            Self::Virtual(r) => r.write_row(table, record_id, data),
+        }
+    }
+
+    fn subscribe(
+        &self,
+    ) -> ReplicatorFuture<'_, anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>> {
+        match self {
+            Self::Iroh(r) => r.subscribe(),
+            Self::Virtual(r) => r.subscribe(),
+        }
+    }
+
+    fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+        match self {
+            Self::Iroh(r) => r.snapshot(),
+            Self::Virtual(r) => r.snapshot(),
+        }
+    }
+
+    fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        match self {
+            Self::Iroh(r) => r.close(),
+            Self::Virtual(r) => r.close(),
+        }
+    }
+}
+
+impl AnyReplicator {
+    /// The open-phase lifecycle. The iroh arm's `open_document`/`start_sync`
+    /// are inherent async methods (bare futures), so they are boxed here to
+    /// the shared `ReplicatorFuture` shape; the virtual arm already returns
+    /// boxed futures through the [`VirtualReplica`] trait.
+    fn open_document(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        match self {
+            Self::Iroh(r) => Box::pin(r.open_document()),
+            Self::Virtual(r) => r.open_document(),
+        }
+    }
+
+    fn is_doc_backed(&self) -> bool {
+        match self {
+            Self::Iroh(r) => r.is_doc_backed(),
+            Self::Virtual(r) => r.is_doc_backed(),
+        }
+    }
+
+    fn start_sync(&self, peers: Vec<iroh::NodeAddr>) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+        match self {
+            Self::Iroh(r) => Box::pin(r.start_sync(peers)),
+            Self::Virtual(r) => r.start_sync(peers),
+        }
+    }
+
+    fn mark_open_failed(&self, reason: String) {
+        match self {
+            Self::Iroh(r) => r.mark_open_failed(reason),
+            Self::Virtual(r) => r.mark_open_failed(reason),
+        }
+    }
+
+    fn open_error(&self) -> Option<String> {
+        match self {
+            Self::Iroh(r) => r.open_error(),
+            Self::Virtual(r) => r.open_error(),
+        }
+    }
+}
+
+/// Which transport a sync thread builds per-verse replicas on: the real
+/// iroh-docs stack, or the sim lab's virtual transport factory (F8/A19 —
+/// a sync thread with a factory binds no iroh endpoint at all).
+#[derive(Clone)]
+enum ReplicaTransport {
+    Iroh(Arc<IrohDocsEngineHolder>),
+    Virtual(Arc<dyn VirtualTransportFactory>),
+}
+
+impl ReplicaTransport {
+    fn is_available(&self) -> bool {
+        match self {
+            Self::Iroh(holder) => holder.is_available(),
+            Self::Virtual(factory) => factory.is_available(),
+        }
+    }
+
+    /// Banner label for the open log line.
+    fn describe(&self) -> &'static str {
+        match self {
+            Self::Iroh(holder) => {
+                if holder.is_available() {
+                    "online"
+                } else {
+                    "offline (mock fallback)"
+                }
+            }
+            Self::Virtual(factory) => factory.describe(),
+        }
+    }
+}
+
+/// Spawn a sync thread, optionally on a **virtual transport** (F8/A19, the
+/// sim lab): with a [`VirtualTransportFactory`] installed the thread binds
+/// **no iroh endpoint** (no real network — everything is in-process) and
+/// sources every verse replica from the factory instead of the iroh-docs
+/// stack. The command loop, pending-writes retention, inbound pump,
+/// startup reconciliation, and fabric bookkeeping all run identically —
+/// only the transport under the [`VerseReplicator`] trait differs, so the
+/// prod and sim replication paths cannot drift by construction (D3).
+///
+/// Gossip (the distributed-query compute plane) requires the real stack
+/// and is absent in virtual mode — `SubmitComputeTask` answers honestly
+/// that the verse has no topic. A21's CI scenarios virtualize that plane
+/// on top of this seam (see fe-sync/src/AGENTS.md §virtual-transport).
 ///
 /// # Arguments
-/// * `secret_key` — deterministic ed25519 seed for the iroh endpoint.
+/// * `secret_key` — deterministic ed25519 seed for the iroh endpoint (used
+///   only on the real path; a virtual transport derives identity from the
+///   factory, never the key).
 /// * `blob_store` — shared content-addressed blob store.
 /// * `cmd_rx` — receives [`SyncCommand`]s from the main / Bevy thread.
 /// * `evt_tx` — sends [`SyncEvent`]s back to the main / Bevy thread.
@@ -242,8 +393,12 @@ fn gossip_topic_id(topic_key: &str) -> TopicId {
 ///   dir per process — the redb store takes an exclusive file lock, so two
 ///   sync threads in one process need two dirs; this parameter is how
 ///   multi-peer tests give each peer its own). `None` resolves
-///   [`crate::docs_engine::P2P_DIR_ENV_VAR`] (env, default `data/p2p`).
-pub fn spawn_sync_thread(
+///   [`crate::docs_engine::P2P_DIR_ENV_VAR`] (env, default `data/p2p`). No
+///   store is touched in virtual mode.
+/// * `virtual_transport` — the sim lab's transport factory. `None` (every
+///   production host) builds replicas on the real iroh-docs stack.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_sync_thread_with_transport(
     secret_key: iroh::SecretKey,
     blob_store: BlobStoreHandle,
     cmd_rx: SyncCommandReceiver,
@@ -251,6 +406,7 @@ pub fn spawn_sync_thread(
     local_did: String,
     db_cmd_tx: Option<crossbeam::channel::Sender<DbCommand>>,
     p2p_dir: Option<PathBuf>,
+    virtual_transport: Option<Arc<dyn VirtualTransportFactory>>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -275,9 +431,35 @@ pub fn spawn_sync_thread(
                 );
             }
 
-            // Phase F.1: Create the iroh endpoint first
+            // Phase F.1: Create the iroh endpoint first. A virtual transport
+            // (sim lab, F8/A19) skips the bind entirely — no real network, no
+            // relay, no stack; replicas come from the factory instead.
             let mut relay_health: RelayHealth;
-            let endpoint = match SyncEndpoint::new(secret_key, &relay_config).await {
+            let endpoint = match virtual_transport.as_ref() {
+                Some(factory) => {
+                    tracing::info!(
+                        transport = factory.describe(),
+                        "Sync thread started (virtual transport — no iroh endpoint)"
+                    );
+                    // A virtual transport needs no relay and never dials:
+                    // `Disabled` is the honest health state, not a failure.
+                    send_sync_event(
+                        &evt_tx,
+                        SyncEvent::Started {
+                            online: true,
+                            node_addr: None,
+                        },
+                    );
+                    relay_health = RelayHealth::Disabled;
+                    send_sync_event(
+                        &evt_tx,
+                        SyncEvent::RelayHealthChanged {
+                            health: relay_health,
+                        },
+                    );
+                    None
+                }
+                None => match SyncEndpoint::new(secret_key, &relay_config).await {
                 Ok(ep) => {
                     tracing::info!(
                         node_id = %ep.node_id(),
@@ -333,6 +515,7 @@ pub fn spawn_sync_thread(
                     );
                     None
                 }
+                }
             };
 
             // Real iroh-docs 0.35 stack (A1): Blobs (fs) + Gossip + Docs
@@ -384,6 +567,15 @@ pub fn spawn_sync_thread(
                 Some(stack) => IrohDocsEngineHolder::online(stack.clone()),
                 None => IrohDocsEngineHolder::new(),
             });
+
+            // F8/A19: which transport per-verse replicas build on — the
+            // factory when a virtual transport was installed, else the real
+            // iroh-docs stack (this holder is empty in virtual mode and only
+            // the legacy petal-replica path consults it there).
+            let replica_transport = match virtual_transport.as_ref() {
+                Some(factory) => ReplicaTransport::Virtual(factory.clone()),
+                None => ReplicaTransport::Iroh(docs_engine_holder.clone()),
+            };
 
             // TODO(ultrapilot): continuous relay-health monitoring.
             // `endpoint.inner().home_relay()` returns a `Watcher<Option<RelayUrl>>`
@@ -551,7 +743,7 @@ pub fn spawn_sync_thread(
                                     &mut replicas,
                                     &mut inbound_pumps,
                                     inbound_tx.clone(),
-                                    docs_engine_holder.clone(),
+                                    &replica_transport,
                                     &verse_id,
                                     &namespace_id,
                                     namespace_secret,
@@ -963,11 +1155,14 @@ async fn seed_reconciliation(
 
 /// Handle [`SyncCommand::OpenVerseReplica`].
 ///
-/// Creates an [`IrohDocsReplicator`] and opens its document: with the
-/// namespace secret the capability is imported on the real stack, without it
-/// the namespace opens read-only (a previously imported doc — by the stored
-/// id when it is the aligned Ed25519 form, else by the manifest-scan
-/// fallback for legacy BLAKE3 ids; F20 finding 3). A doc-backed replica then
+/// Builds the per-verse replica on the sync thread's transport: the real
+/// [`IrohDocsReplicator`] (with the namespace secret the capability is
+/// imported on the real stack, without it the namespace opens read-only: a
+/// previously imported doc, by the stored id when it is the aligned
+/// Ed25519 form, else by the manifest-scan fallback for legacy BLAKE3
+/// ids; F20 finding 3) or, when a virtual transport is installed, the
+/// factory's sim replica (F8/A19) over the same trait contract. A
+/// doc-backed replica then
 /// joins the live sync swarm (dialing `peers`) and spawns its per-replica
 /// inbound event pump, whose `RowChange`s are forwarded into `inbound_tx` —
 /// the aggregated stream the command loop selects on (A2/A4). If a replica
@@ -986,7 +1181,7 @@ async fn handle_open_verse_replica(
     replicas: &mut HashMap<String, Box<dyn VerseReplicator>>,
     inbound_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
     inbound_tx: tokio::sync::mpsc::Sender<(String, RowChange)>,
-    engine_holder: Arc<IrohDocsEngineHolder>,
+    transport: &ReplicaTransport,
     verse_id: &str,
     namespace_id: &str,
     namespace_secret: Option<String>,
@@ -1013,14 +1208,22 @@ async fn handle_open_verse_replica(
         }
     }
 
-    let secret = namespace_secret.unwrap_or_default();
-    let replicator = IrohDocsReplicator::new(
-        verse_id.to_string(),
-        namespace_id.to_string(),
-        secret,
-        local_did.to_string(),
-        engine_holder.clone(),
-    );
+    let secret = namespace_secret.clone().unwrap_or_default();
+    let replicator = match transport {
+        ReplicaTransport::Iroh(holder) => AnyReplicator::Iroh(Box::new(IrohDocsReplicator::new(
+            verse_id.to_string(),
+            namespace_id.to_string(),
+            secret,
+            local_did.to_string(),
+            holder.clone(),
+        ))),
+        ReplicaTransport::Virtual(factory) => AnyReplicator::Virtual(factory.open_replica(
+            verse_id,
+            namespace_id,
+            namespace_secret.clone(),
+            local_did,
+        )),
+    };
 
     // Open the document for this namespace. Offline stacks return `Ok(())`
     // with no doc (the sanctioned mock stays). An error while ONLINE is
@@ -1039,7 +1242,7 @@ async fn handle_open_verse_replica(
             }
         }
         Err(e) => {
-            if engine_holder.is_available() {
+            if transport.is_available() {
                 // ONLINE + failed open: loud, observable, non-replicating.
                 replicator.mark_open_failed(format!("{e}"));
                 tracing::error!(
@@ -1135,7 +1338,7 @@ async fn handle_open_verse_replica(
             peers = peers.len(),
             gossip_topic = %hex::encode(topic_hash),
             "Opened verse replica — P2P stack {}",
-            if engine_holder.is_available() { "online" } else { "offline (mock fallback)" }
+            transport.describe()
         );
     }
 
@@ -1732,6 +1935,7 @@ fn handle_cancel_tileset_download(download_tracker: &mut TilesetDownloadTracker,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::replicator::MockVerseReplicator;
     use fe_runtime::blob_store::mock::MockBlobStore;
     use std::sync::Arc;
 
@@ -1830,6 +2034,222 @@ mod tests {
         assert!(
             matches!(stopped, Ok(SyncEvent::Stopped)),
             "expected Stopped event, got {stopped:?}"
+        );
+        restore_p2p_env();
+    }
+
+    /// A test double for the F8/A19 seam: a virtual replica wrapping the
+    /// in-memory [`MockVerseReplicator`] (the same contract the sim lab's
+    /// `SimVerseReplicator` implements over the shared hub).
+    struct FakeVirtualReplica {
+        inner: Arc<MockVerseReplicator>,
+        open_failed: std::sync::Mutex<Option<String>>,
+    }
+
+    impl VerseReplicator for FakeVirtualReplica {
+        fn write_row(
+            &self,
+            table: &str,
+            record_id: &str,
+            data: &[u8],
+        ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+            self.inner.write_row(table, record_id, data)
+        }
+
+        fn subscribe(
+            &self,
+        ) -> ReplicatorFuture<'_, anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>> {
+            self.inner.subscribe()
+        }
+
+        fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+            self.inner.snapshot()
+        }
+
+        fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+            self.inner.close()
+        }
+    }
+
+    impl crate::virtual_transport::VirtualReplica for FakeVirtualReplica {
+        fn open_document(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn is_doc_backed(&self) -> bool {
+            true
+        }
+
+        fn start_sync(
+            &self,
+            _peers: Vec<iroh::NodeAddr>,
+        ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn mark_open_failed(&self, reason: String) {
+            *self.open_failed.lock().unwrap() = Some(reason);
+        }
+
+        fn open_error(&self) -> Option<String> {
+            self.open_failed.lock().unwrap().clone()
+        }
+    }
+
+    struct FakeTransportFactory {
+        replica: Arc<MockVerseReplicator>,
+        opened: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::virtual_transport::VirtualTransportFactory for FakeTransportFactory {
+        fn open_replica(
+            &self,
+            _verse_id: &str,
+            _namespace_id: &str,
+            _namespace_secret: Option<String>,
+            _local_did: &str,
+        ) -> Box<dyn crate::virtual_transport::VirtualReplica> {
+            self.opened
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::new(FakeVirtualReplica {
+                inner: self.replica.clone(),
+                open_failed: std::sync::Mutex::new(None),
+            })
+        }
+
+        fn is_available(&self) -> bool {
+            true
+        }
+
+        fn describe(&self) -> &'static str {
+            "virtual (test)"
+        }
+    }
+
+    /// A19 (test): a sync thread on a virtual transport opens replicas from
+    /// the factory, runs the SAME open/write/close lifecycle over the real
+    /// command loop, and binds **no iroh endpoint** (the "no real network"
+    /// clause — pinned by `bound_endpoint_count` staying put across the run).
+    #[test]
+    fn virtual_transport_runs_the_full_replica_lifecycle_without_binding_an_endpoint() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let p2p_dir = hermetic_p2p_env();
+        let endpoints_before = crate::endpoint::bound_endpoint_count();
+
+        // The write leg reads the blob from disk, so the store must be an
+        // FsBlobStore (MockBlobStore has no paths — handle_write_row_entry
+        // would warn-and-drop).
+        let blob_dir = p2p_dir.path().join("blobs");
+        let store: BlobStoreHandle =
+            Arc::new(crate::blob_store::FsBlobStore::new(blob_dir).expect("fs blob store"));
+        let secret = iroh::SecretKey::from_bytes(&[96u8; 32]);
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(8);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(16);
+
+        let factory = Arc::new(FakeTransportFactory {
+            replica: Arc::new(MockVerseReplicator::new("did:key:virtual")),
+            opened: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        let handle = spawn_sync_thread_with_transport(
+            secret,
+            store.clone(),
+            cmd_rx,
+            evt_tx,
+            "did:key:virtual".to_string(),
+            None,
+            None,
+            Some(factory.clone()),
+        );
+
+        // Virtual startup: Started reports online (the transport is live)
+        // with no dialable address, and health is the Disabled fixed point.
+        let started = evt_rx.recv_timeout(std::time::Duration::from_secs(15));
+        assert!(
+            matches!(
+                started,
+                Ok(SyncEvent::Started {
+                    online: true,
+                    node_addr: None,
+                })
+            ),
+            "expected virtual Started, got {started:?}"
+        );
+        let health = evt_rx.recv_timeout(std::time::Duration::from_secs(2));
+        assert!(
+            matches!(
+                health,
+                Ok(SyncEvent::RelayHealthChanged {
+                    health: RelayHealth::Disabled,
+                })
+            ),
+            "expected Disabled relay health in virtual mode, got {health:?}"
+        );
+
+        // The open runs through the factory — the same command loop, the
+        // same handle_open_verse_replica open sequence.
+        cmd_tx
+            .send(SyncCommand::OpenVerseReplica {
+                verse_id: "v-sim".to_string(),
+                namespace_id: "0".repeat(64),
+                namespace_secret: None,
+                bootstrap_peers: Vec::new(),
+            })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            factory.opened.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the factory built exactly one replica"
+        );
+
+        // A write flows through the real write path (blob store → row
+        // entry → factory replica).
+        let bytes = br#"{"verse_id":"v-sim","name":"Sim Verse"}"#;
+        let hash = store.add_blob(bytes).expect("blob added");
+        cmd_tx
+            .send(SyncCommand::WriteRowEntry {
+                verse_id: "v-sim".to_string(),
+                table: "verse".to_string(),
+                record_id: "v-sim".to_string(),
+                content_hash: hash,
+            })
+            .unwrap();
+        let wrote = std::time::Instant::now();
+        while !factory.replica.has_entry("verse", "v-sim") {
+            assert!(
+                wrote.elapsed() < std::time::Duration::from_secs(5),
+                "the write never reached the virtual replica"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        cmd_tx
+            .send(SyncCommand::CloseVerseReplica {
+                verse_id: "v-sim".to_string(),
+            })
+            .unwrap();
+        cmd_tx.send(SyncCommand::Shutdown).unwrap();
+        handle.join().expect("sync thread panicked");
+
+        let stopped = loop {
+            match evt_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(SyncEvent::RelayHealthChanged { .. }) => continue,
+                other => break other,
+            }
+        };
+        assert!(
+            matches!(stopped, Ok(SyncEvent::Stopped)),
+            "expected Stopped event, got {stopped:?}"
+        );
+
+        // The "no real network" clause, pinned: no endpoint was bound.
+        assert_eq!(
+            crate::endpoint::bound_endpoint_count(),
+            endpoints_before,
+            "a virtual-transport sync thread must not bind an iroh endpoint"
         );
         restore_p2p_env();
     }
@@ -2385,7 +2805,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx.clone(),
-            engine_holder.clone(),
+            &ReplicaTransport::Iroh(engine_holder.clone()),
             "verse-1",
             "0".repeat(64).as_str(),
             None,
@@ -2411,7 +2831,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx.clone(),
-            engine_holder,
+            &ReplicaTransport::Iroh(engine_holder),
             "verse-1",
             "0".repeat(64).as_str(),
             None,
@@ -2451,7 +2871,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx,
-            engine_holder,
+            &ReplicaTransport::Iroh(engine_holder),
             "verse-pump",
             "0".repeat(64).as_str(),
             None,
@@ -2539,7 +2959,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx,
-            engine_holder,
+            &ReplicaTransport::Iroh(engine_holder),
             "v-shard",
             "0".repeat(64).as_str(),
             None,
@@ -2964,7 +3384,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx,
-            holder,
+            &ReplicaTransport::Iroh(holder),
             "verse-bad",
             "0".repeat(64).as_str(),
             Some("not-hex".to_string()),
@@ -3024,7 +3444,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx,
-            engine_holder,
+            &ReplicaTransport::Iroh(engine_holder),
             "verse-offline",
             "0".repeat(64).as_str(),
             Some("not-hex".to_string()),
@@ -3349,7 +3769,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx.clone(),
-            engine_holder,
+            &ReplicaTransport::Iroh(engine_holder),
             "v-race",
             "0".repeat(64).as_str(),
             None,
@@ -3473,7 +3893,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx.clone(),
-            holder.clone(),
+            &ReplicaTransport::Iroh(holder.clone()),
             "v-flaky",
             ns_id.as_str(),
             Some("not-hex".to_string()),
@@ -3505,7 +3925,7 @@ mod tests {
             &mut replicas,
             &mut inbound_pumps,
             inbound_tx,
-            holder,
+            &ReplicaTransport::Iroh(holder),
             "v-flaky",
             ns_id.as_str(),
             Some(hex::encode(ns_secret)),

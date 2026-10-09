@@ -599,6 +599,21 @@ presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
   scenarios 13/14 satisfy the new checks honestly with no checks weakened.
   (fe-sync 215 + fe-database 196 + fe-api 89 + suites green; harness 14/14;
   clippy --all-targets -D warnings clean; relay release build ok.)
+  F8 (2026-10-09, M3, feature F8-m3-simulation-lab; A18+A19): the simulation
+  lab landed as the new fe-sim crate — SimClock (accelerable; HLC source
+  override in fe-database op_log), a virtual transport implementing the SAME
+  VerseReplicator trait (fe-sync virtual_transport.rs +
+  spawn_sync_thread_with_transport; sim sync threads bind no iroh endpoint —
+  pinned by bound_endpoint_count), the deterministic SimNet hub (scripted
+  membership/latency/partitions/churn, heap-ordered deliveries), pure sensor
+  models + declarative fleet config ingesting real iot_reading rows through
+  the F5/F7 InsertIotReadings seam, and a scripted-scenario runner + `fe-sim`
+  CLI. Determinism proof: the same script run twice yields identical per-peer
+  fingerprints; no-real-network proof: the endpoint count never moves. Honest
+  limits: the gossip plane is not virtualized (rosters stay empty — mirror
+  mode unaffected; sharded/balanced placement + the compute transport are
+  F9/A21's seam); the REST/MCP control surface is F9/A20. (fe-sim 24 tests
+  incl. both assertion proofs; fe-sync 216; clippy/fmt clean.)
 
 ---
 

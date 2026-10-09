@@ -51,7 +51,17 @@ pub struct TestPeer {
 }
 
 impl TestPeer {
-    /// Spawn a new isolated peer.
+    /// Spawn a new isolated peer on the **real** iroh transport (the
+    /// original shape — see [`Self::spawn_with_transport`]).
+    pub fn spawn(name: &str, temp_dir: &Path) -> Result<Self> {
+        Self::spawn_with_transport(name, temp_dir, None)
+    }
+
+    /// Spawn a new isolated peer, optionally on a **virtual transport**
+    /// (F8/M3, the sim lab): with a [`fe_sync::VirtualTransportFactory`]
+    /// installed the peer's sync thread binds no iroh endpoint — replicas
+    /// come from the factory — so sim scenarios run hermetically with no
+    /// real network while riding the same sync-plane command loop (A19).
     ///
     /// Each peer gets:
     /// - A unique temp subdirectory under `temp_dir/{name}/`
@@ -59,7 +69,11 @@ impl TestPeer {
     /// - Its own in-memory SurrealDB instance
     /// - Its own sync thread with a unique iroh identity
     /// - Its own ed25519 keypair for invite signing
-    pub fn spawn(name: &str, temp_dir: &Path) -> Result<Self> {
+    pub fn spawn_with_transport(
+        name: &str,
+        temp_dir: &Path,
+        transport: Option<std::sync::Arc<dyn fe_sync::VirtualTransportFactory>>,
+    ) -> Result<Self> {
         let peer_dir = temp_dir.join(name);
         std::fs::create_dir_all(&peer_dir)
             .with_context(|| format!("create peer dir: {}", peer_dir.display()))?;
@@ -94,7 +108,7 @@ impl TestPeer {
         // lets BOTH harness peers hold an online DocsStack (see the F2
         // orchestrator note / mission library).
         let p2p_dir = peer_dir.join("p2p");
-        let sync_handle = fe_sync::spawn_sync_thread(
+        let sync_handle = fe_sync::spawn_sync_thread_with_transport(
             iroh_secret,
             sync_blob_store,
             sync_cmd_rx,
@@ -104,6 +118,7 @@ impl TestPeer {
             // applies replicated rows via the real fe-database handler.
             Some(db_cmd_tx.clone()),
             Some(p2p_dir),
+            transport,
         );
 
         // Namespace secret map shared with the DB thread (the driver reads it

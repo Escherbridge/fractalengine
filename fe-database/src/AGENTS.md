@@ -277,6 +277,15 @@ packed `u64`, a monotonic counter in the lower 16. Guarantees:
   `(wall_ms, counter)` pair, so SurrealDB `ORDER BY lamport_clock` remains
   correct.
 
+**Wall-clock source override (F8 sim lab).** `set_wall_clock_source(Some(fn))
+` installs a pluggable "now" that HLC stamping (`init_hlc` + `next_hlc_timestamp`)
+reads instead of the system clock; `set_wall_clock_source(None)` restores real
+time. This exists solely so the simulation lab's fleets stamp HLC from their
+virtual accelerable `SimClock` (every simulated peer reads time from it, D3),
+keeping monotonicity intact while making sim runs deterministic. It is a plain
+`fn` pointer (no closure state — fe-sim's shim reads its process-global current
+clock), installed only by sim scenarios; production processes never touch it.
+
 `next_hlc_timestamp()` returns `(packed_u64, human_string)`; the human
 string is `"<wall_ms>:<counter_hex>"`, stored in the `hlc_timestamp` column
 for debugging / external tooling. HLC state sits in a `Mutex` purely for
