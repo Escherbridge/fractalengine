@@ -399,7 +399,8 @@ async fn export_csv_local_vs_latlon_landmine() {
         "coordinates were not actually converted"
     );
 
-    // Parquet latlon carries EPSG:4326 geo metadata.
+    // Parquet latlon: the spec `crs` key is OMITTED (absent = OGC:CRS84, the
+    // lon/lat axis order we write — M4 minor #7); the label stays in `fe:crs`.
     let resp = export_parquet(
         State(state.clone()),
         Extension(claims.clone()),
@@ -409,9 +410,9 @@ async fn export_csv_local_vs_latlon_landmine() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    // DEC-C16: spec `crs` key is null; the honest label lives in `fe:crs`.
     let geo = read_parquet_geo_meta(&body_bytes(resp).await);
-    assert!(geo["columns"]["position"]["crs"].is_null());
+    let column = geo["columns"]["position"].as_object().unwrap();
+    assert!(!column.contains_key("crs"), "latlon must omit crs: {geo}");
     assert_eq!(geo["columns"]["position"]["fe:crs"], "EPSG:4326");
 
     // Bad coords value → 400.
@@ -873,4 +874,509 @@ async fn share_expired_tampered_and_invalid_rejected() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// M4 fix B1 — scope-filter bypass vectors (export + share + /query)
+// ---------------------------------------------------------------------------
+
+/// Petals A and B (same verse) each with a node + a reading.
+async fn two_petal_fixture() -> (Arc<ApiState>, String, String) {
+    let db = setup_test_db().await;
+    let (pa, pb) = (ulid(), ulid());
+    seed_petal(&db, &pa, false).await;
+    seed_petal(&db, &pb, false).await;
+    seed_node(&db, &pa, "node-in-a", 1.0, 1.0, 0.0).await;
+    seed_node(&db, &pb, "node-in-b", 2.0, 2.0, 0.0).await;
+    seed_reading(&db, &pa, "node-in-a", "temperature_c", 1.0).await;
+    seed_reading(&db, &pb, "node-in-b", "temperature_c", 2.0).await;
+    (test_state(db), pa, pb)
+}
+
+/// The surfaces a petal-A caller can reach with attacker-chosen SQL.
+#[derive(Debug, Clone, Copy)]
+enum Surface {
+    ExportParquet,
+    ExportCsv,
+    ShareParquet,
+    ShareCsv,
+    ShareJson,
+    QueryJson,
+}
+
+const ALL_SURFACES: [Surface; 6] = [
+    Surface::ExportParquet,
+    Surface::ExportCsv,
+    Surface::ShareParquet,
+    Surface::ShareCsv,
+    Surface::ShareJson,
+    Surface::QueryJson,
+];
+
+/// Run `sql` against `surface` as a petal-A caller; return (status, body).
+/// Share tokens are minted DIRECTLY (bypassing mint-time validation) so the
+/// redemption-time guard is what is under test — tokens minted before the
+/// fix carry arbitrary SQL.
+async fn hit(
+    state: &Arc<ApiState>,
+    pa: &str,
+    surface: Surface,
+    sql: &str,
+) -> (StatusCode, Vec<u8>) {
+    let scope = format!("VERSE#v1-FRACTAL#f1-PETAL#{pa}");
+    let share = |fmt: &str| SharePayload {
+        v: 1,
+        sql: sql.to_string(),
+        scope: scope.clone(),
+        fmt: fmt.to_string(),
+        exp: u64::MAX,
+        sub: "did:key:z6MkIssuer".into(),
+    };
+    let resp = match surface {
+        Surface::ExportParquet => {
+            export_parquet(
+                State(state.clone()),
+                Extension(test_claims("VERSE#v1", "viewer")),
+                Path(pa.to_string()),
+                Query(params(Some(sql), None)),
+                HeaderMap::new(),
+            )
+            .await
+        }
+        Surface::ExportCsv => {
+            export_csv(
+                State(state.clone()),
+                Extension(test_claims("VERSE#v1", "viewer")),
+                Path(pa.to_string()),
+                Query(params(Some(sql), None)),
+                HeaderMap::new(),
+            )
+            .await
+        }
+        Surface::ShareParquet | Surface::ShareCsv | Surface::ShareJson => {
+            let fmt = match surface {
+                Surface::ShareParquet => "parquet",
+                Surface::ShareCsv => "csv",
+                _ => "json",
+            };
+            let token = mint_share_token(&state.share_signer, &share(fmt)).unwrap();
+            redeem_share_url(
+                State(state.clone()),
+                Path(token),
+                Query(RedeemParams::default()),
+                HeaderMap::new(),
+            )
+            .await
+        }
+        Surface::QueryJson => {
+            let req = fe_api::types::QueryRequest {
+                sql: sql.to_string(),
+                vars: std::collections::HashMap::new(),
+                distributed: None,
+            };
+            fe_api::rest::execute_query(
+                State(state.clone()),
+                Extension(test_claims(&scope, "viewer")),
+                Json(req),
+            )
+            .await
+            .into_response()
+        }
+    };
+    let status = resp.status();
+    (status, body_bytes(resp).await)
+}
+
+/// Rows a successful body actually carries, as (petal_id, node_id) pairs.
+fn body_rows(surface: Surface, sql: &str, body: &[u8]) -> Vec<(String, String)> {
+    let squashed: String = sql
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let readings = squashed.contains("from iot_reading");
+    match surface {
+        Surface::ExportParquet | Surface::ShareParquet if readings => {
+            read_readings_parquet_back(body)
+                .into_iter()
+                .map(|r| (r.petal_id, r.node_id))
+                .collect()
+        }
+        Surface::ExportParquet | Surface::ShareParquet => read_parquet_back(body)
+            .into_iter()
+            .map(|s| (s.petal_id, s.node_id))
+            .collect(),
+        Surface::ExportCsv | Surface::ShareCsv => {
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            text.lines()
+                .skip(2)
+                .map(|l| {
+                    let f: Vec<&str> = l.split(',').collect();
+                    // nodes: node_id,petal_id,…  readings: reading_id,node_id,petal_id,…
+                    if readings {
+                        (f[2].to_string(), f[1].to_string())
+                    } else {
+                        (f[1].to_string(), f[0].to_string())
+                    }
+                })
+                .collect()
+        }
+        Surface::ShareJson | Surface::QueryJson => {
+            let v: serde_json::Value = serde_json::from_slice(body).unwrap();
+            v["data"]["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        r["petal_id"].as_str().unwrap_or_default().to_string(),
+                        r["node_id"].as_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
+/// The four M4-review bypass vectors (+ record-literal / table-expression
+/// extras) on every egress surface: each attempt is either rejected (4xx /
+/// error envelope) or answers ONLY petal-A rows — and, where it succeeds,
+/// still returns A's own row (the fix scopes, it does not just deny).
+#[tokio::test]
+async fn scope_bypass_vectors_never_leak_foreign_rows() {
+    let (state, pa, pb) = two_petal_fixture().await;
+    let vectors: &[(&str, &str)] = &[
+        ("double-space", "SELECT * FROM  node"),
+        ("tab", "SELECT * FROM\tnode"),
+        ("newline", "SELECT * FROM\nnode"),
+        ("readings double-space", "SELECT * FROM  iot_reading"),
+        ("OR precedence", "SELECT * FROM node WHERE true OR true"),
+        (
+            "readings OR precedence",
+            "SELECT * FROM iot_reading WHERE true OR true",
+        ),
+        ("trailing comment", "SELECT * FROM node --"),
+        ("comment after WHERE", "SELECT * FROM node WHERE true --"),
+        (
+            "projection subquery",
+            "SELECT *, (SELECT * FROM iot_reading) AS x FROM node",
+        ),
+        (
+            "record literal",
+            "SELECT *, node:x.* AS leak FROM iot_reading",
+        ),
+        ("table expression", "SELECT * FROM petal AND node"),
+    ];
+    let mut served = 0;
+    for &(name, sql) in vectors {
+        for surface in ALL_SURFACES {
+            let (status, body) = hit(&state, &pa, surface, sql).await;
+            let text = String::from_utf8_lossy(&body);
+            assert!(
+                !text.contains(&pb) && !text.contains("node-in-b"),
+                "{name} on {surface:?} leaked petal B ({status}): {text}"
+            );
+            let errored = !status.is_success()
+                || serde_json::from_slice::<serde_json::Value>(&body)
+                    .map(|v| v["ok"] == false)
+                    .unwrap_or(false);
+            if errored {
+                continue;
+            }
+            served += 1;
+            let rows = body_rows(surface, sql, &body);
+            assert!(
+                rows.iter().all(|(petal, _)| *petal == pa),
+                "{name} on {surface:?}: foreign rows {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|(_, node)| node == "node-in-a"),
+                "{name} on {surface:?}: scoping must not drop the caller's own row: {rows:?}"
+            );
+        }
+    }
+    // Whitespace + OR vectors are legitimate SQL and must still be SERVED
+    // (scoped), on all 6 surfaces: 5 vectors × 6 = 30 at minimum.
+    assert!(
+        served >= 30,
+        "only {served} vector/surface pairs were served"
+    );
+}
+
+/// The bypass vectors that must be REJECTED outright on export/share (not
+/// merely filtered): comments and nested SELECTs (M4 fix B1(b)).
+#[tokio::test]
+async fn egress_dialect_rejects_comments_and_nested_selects() {
+    let (state, pa, _pb) = two_petal_fixture().await;
+    for sql in [
+        "SELECT * FROM node --",
+        "SELECT * FROM node /* x */",
+        "SELECT *, (SELECT * FROM iot_reading) AS x FROM node",
+    ] {
+        for surface in [
+            Surface::ExportParquet,
+            Surface::ExportCsv,
+            Surface::ShareParquet,
+            Surface::ShareCsv,
+            Surface::ShareJson,
+        ] {
+            let (status, body) = hit(&state, &pa, surface, sql).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "{surface:?} {sql}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        // Mint-time fail-fast too.
+        let resp = issue_share_url(
+            State(state.clone()),
+            Extension(test_claims(
+                &format!("VERSE#v1-FRACTAL#f1-PETAL#{pa}"),
+                "viewer",
+            )),
+            Json(share_req(sql, "parquet", Some(60))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "mint {sql}");
+    }
+}
+
+/// FIX 1(c): verse- and fractal-scoped tokens are row-filtered to the petals
+/// under that verse/fractal — they used to get NO node/iot_reading filter.
+#[tokio::test]
+async fn verse_and_fractal_scopes_filter_rows_to_their_subtree() {
+    let db = setup_test_db().await;
+    let (pa, pc) = (ulid(), ulid());
+    seed_petal(&db, &pa, false).await; // verse v1 / fractal f1
+    let now = chrono::Utc::now().to_rfc3339();
+    db.query(
+        "CREATE verse CONTENT { verse_id: 'v2', name: 'V2', created_by: 'did:key:z6MkOther', created_at: $now }; \
+         CREATE fractal CONTENT { fractal_id: 'f2', verse_id: 'v2', owner_did: 'did:key:z6MkOther', name: 'F2', created_at: $now }; \
+         CREATE petal CONTENT { petal_id: $pc, fractal_id: 'f2', name: 'C', node_id: 'x', created_at: $now }",
+    )
+    .bind(("now", now))
+    .bind(("pc", pc.clone()))
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    seed_node(&db, &pa, "node-in-a", 1.0, 1.0, 0.0).await;
+    seed_node(&db, &pc, "node-in-other-verse", 2.0, 2.0, 0.0).await;
+    let state = test_state(db);
+
+    for (scope, expected) in [
+        ("VERSE#v1", vec!["node-in-a"]),
+        ("VERSE#v1-FRACTAL#f1", vec!["node-in-a"]),
+        ("VERSE#v2", vec!["node-in-other-verse"]),
+        // Fractal f1 is not under verse v2 → deny, never "whatever f1 holds".
+        ("VERSE#v2-FRACTAL#f1", vec![]),
+    ] {
+        let req = fe_api::types::QueryRequest {
+            sql: "SELECT node_id FROM node".to_string(),
+            vars: std::collections::HashMap::new(),
+            distributed: None,
+        };
+        let resp = fe_api::rest::execute_query(
+            State(state.clone()),
+            Extension(test_claims(scope, "viewer")),
+            Json(req),
+        )
+        .await
+        .into_response();
+        let body = body_json(resp).await;
+        assert_eq!(body["ok"], true, "{scope}: {body}");
+        let ids: Vec<&str> = body["data"]["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["node_id"].as_str())
+            .collect();
+        assert_eq!(ids, expected, "{scope}");
+    }
+}
+
+/// M4 minor #6: a reading whose anchor node was hard-deleted exports a NULL
+/// geometry (parquet `None`, empty CSV cells) — never a fabricated 0,0,0.
+#[tokio::test]
+async fn hard_deleted_anchor_exports_null_geometry() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa, false).await;
+    seed_node(&db, &pa, "ghost", 5.0, 6.0, 7.0).await;
+    seed_reading(&db, &pa, "ghost", "temperature_c", 3.5).await;
+    db.query("DELETE node WHERE node_id = 'ghost'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let state = test_state(db);
+    let claims = test_claims("VERSE#v1", "viewer");
+
+    let resp = export_parquet(
+        State(state.clone()),
+        Extension(claims.clone()),
+        Path(pa.clone()),
+        Query(params(Some("SELECT * FROM iot_reading"), None)),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows = read_readings_parquet_back(&body_bytes(resp).await);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].anchor_position, None, "dead anchor must be null");
+
+    let resp = export_csv(
+        State(state),
+        Extension(claims),
+        Path(pa),
+        Query(params(Some("SELECT * FROM iot_reading"), None)),
+        HeaderMap::new(),
+    )
+    .await;
+    let csv = String::from_utf8(body_bytes(resp).await).unwrap();
+    let row = csv.lines().nth(2).unwrap();
+    assert!(row.ends_with(",,,"), "anchor cells must be empty: {row}");
+}
+
+/// DEC-C18 end-to-end: export bodies carry a strong ETag + no-store, a
+/// matching If-Range yields 206, a stale one yields the full 200.
+#[tokio::test]
+async fn export_etag_and_if_range_round_trip() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa, false).await;
+    seed_node(&db, &pa, "n1", 1.0, 2.0, 3.0).await;
+    let state = test_state(db);
+    let get = |headers: HeaderMap| {
+        export_csv(
+            State(state.clone()),
+            Extension(test_claims("VERSE#v1", "viewer")),
+            Path(pa.clone()),
+            Query(params(None, None)),
+            headers,
+        )
+    };
+    let full = get(HeaderMap::new()).await;
+    assert_eq!(full.status(), StatusCode::OK);
+    assert_eq!(header_str(&full, "cache-control"), "private, no-store");
+    let etag = header_str(&full, "etag");
+    assert!(etag.starts_with('"'), "{etag}");
+    assert_eq!(
+        header_str(&get(HeaderMap::new()).await, "etag"),
+        etag,
+        "identical body → identical ETag"
+    );
+
+    let mut ranged = HeaderMap::new();
+    ranged.insert("range", "bytes=0-3".parse().unwrap());
+    ranged.insert("if-range", etag.parse().unwrap());
+    assert_eq!(get(ranged).await.status(), StatusCode::PARTIAL_CONTENT);
+
+    let mut stale = HeaderMap::new();
+    stale.insert("range", "bytes=0-3".parse().unwrap());
+    stale.insert("if-range", "\"stale\"".parse().unwrap());
+    assert_eq!(get(stale).await.status(), StatusCode::OK);
+}
+
+/// M4 fix M2: the guarded statement carries a DB-side `TIMEOUT 5s`, so a
+/// heavy query is aborted BY THE DB (freeing its thread) before the 6s
+/// client backstop — the error is SurrealDB's, not the client timer's.
+#[tokio::test]
+async fn db_side_statement_timeout_aborts_heavy_query() {
+    let db = setup_test_db().await;
+    let pa = ulid();
+    seed_petal(&db, &pa, false).await;
+    seed_node(&db, &pa, "n1", 0.0, 0.0, 0.0).await;
+    let db = Arc::new(db);
+    let guarded = fe_api::query_guard::GuardedQuery {
+        sql: "SELECT * FROM node WHERE sleep(30s) = NONE".into(),
+    };
+    let started = std::time::Instant::now();
+    let err = fe_api::query_guard::run_guarded_query(&db, &guarded, &Default::default(), 10)
+        .await
+        .unwrap_err();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "{err}"
+    );
+    assert!(
+        !err.starts_with("query timed out"),
+        "client backstop fired instead of the DB TIMEOUT: {err}"
+    );
+    assert!(fe_api::query_guard::is_timeout_error(&err), "{err}");
+}
+
+/// M4 fix B2: with `db_reader: None` the export/share seam
+/// (`run_guarded_query_via_state`) is correlated — an interleaved GUI
+/// (uncorrelated) result and another caller's correlated result never reach
+/// this caller; it gets exactly its own rows.
+#[tokio::test]
+async fn channel_fallback_never_receives_foreign_query_results() {
+    use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded::<ApiCommand>(4);
+    let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+    let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
+    let state = ApiState {
+        api_cmd_tx,
+        transform_broadcast_tx,
+        entity_change_tx,
+        verifying_key: ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap(),
+        revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+        blob_store: None,
+        cors_origins: vec![],
+        db_reader: None,
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: None,
+        tileset_registry: None,
+        hexon_registry: None,
+        announcement_store: None,
+        replication_tx: None,
+        distributed_tx: None,
+        sim_control_tx: None,
+        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
+    };
+
+    // Stand-in for the Bevy drain + DB thread, using the REAL reply router.
+    let router = std::thread::spawn(move || {
+        let mut pending = fe_runtime::app::PendingApiRequests::default();
+        let ApiCommand::DbRequest { cmd, reply_tx } = api_cmd_rx.recv().unwrap() else {
+            panic!("expected a DbRequest");
+        };
+        let DbCommand::RawQuery {
+            correlation_id: Some(id),
+            sql,
+            ..
+        } = &cmd
+        else {
+            panic!("API RawQuery must be correlated: {cmd:?}");
+        };
+        assert!(sql.ends_with("TIMEOUT 5s"), "{sql}");
+        let id = id.clone();
+        pending.enqueue_for(&cmd, reply_tx);
+        let foreign = |cid: Option<String>| DbResult::QueryResult {
+            data: vec![serde_json::json!({ "petal_id": "FOREIGN" })],
+            correlation_id: cid,
+        };
+        // Interleaved before ours: the desktop user's Query tab + another caller.
+        assert!(!pending.try_deliver(foreign(None)));
+        assert!(!pending.try_deliver(foreign(Some("someone-else".into()))));
+        assert!(pending.try_deliver(DbResult::QueryResult {
+            data: vec![serde_json::json!({ "petal_id": "MINE" })],
+            correlation_id: Some(id),
+        }));
+    });
+
+    let rows = fe_api::query_guard::run_guarded_query_via_state(
+        &state,
+        &fe_api::query_guard::GuardedQuery {
+            sql: "SELECT * FROM node".into(),
+        },
+        &Default::default(),
+        10,
+    )
+    .await
+    .expect("own result");
+    router.join().unwrap();
+    assert_eq!(rows, vec![serde_json::json!({ "petal_id": "MINE" })]);
 }

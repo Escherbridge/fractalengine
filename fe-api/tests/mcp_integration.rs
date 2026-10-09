@@ -435,7 +435,11 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             terrain: None,
         },
         // gis.rs run_select channel fallback: live nodes of the bound petal.
-        DbCommand::RawQuery { sql, vars } => {
+        DbCommand::RawQuery {
+            sql,
+            vars,
+            correlation_id,
+        } => {
             m.log.push(json!({ "cmd": "RawQuery", "sql": sql }));
             let pid = vars.get("pid").and_then(|v| v.as_str()).unwrap_or_default();
             let data = m
@@ -451,7 +455,10 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                     })
                 })
                 .collect();
-            DbResult::QueryResult { data }
+            DbResult::QueryResult {
+                data,
+                correlation_id,
+            }
         }
         _ => DbResult::Error("unhandled command in emulator".into()),
     }

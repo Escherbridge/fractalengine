@@ -88,6 +88,33 @@ mod tests {
         assert!(load_keypair(&store, "missing").is_err());
     }
 
+    /// A24 (M4 fix M3): the relay's share signer survives a restart ONLY via
+    /// the operator-exported env slot. Two fresh `EnvBackend`s (= two process
+    /// lifetimes) load the SAME key from `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`;
+    /// without it, each lifetime gets a different ephemeral key.
+    #[test]
+    fn env_backend_share_signer_round_trips_across_restarts() {
+        use crate::secret_store::EnvBackend;
+        const SLOT: &str = "FE_SECRET_FRACTALENGINE_SHARE_SIGNER";
+        let seed = NodeKeypair::generate();
+        std::env::set_var(SLOT, hex::encode(seed.seed_bytes()));
+        let boot = || {
+            let store: Arc<dyn SecretStore> = Arc::new(EnvBackend::new());
+            load_or_generate_keypair(&store, "share_signer").unwrap()
+        };
+        let (first, second) = (boot(), boot());
+        std::env::remove_var(SLOT);
+        assert_eq!(first.verifying_key(), seed.verifying_key());
+        assert_eq!(second.verifying_key(), first.verifying_key());
+
+        let (eph_a, eph_b) = (boot(), boot());
+        assert_ne!(
+            eph_a.verifying_key(),
+            eph_b.verifying_key(),
+            "unset slot = ephemeral key per process lifetime"
+        );
+    }
+
     #[test]
     fn delete_keypair_removes() {
         let store: Arc<dyn SecretStore> = Arc::new(InMemoryBackend::new());

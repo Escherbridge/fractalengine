@@ -169,6 +169,7 @@ fn run_query(
 ) -> Vec<serde_json::Value> {
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: sql.to_string(),
             vars,
         })
@@ -178,7 +179,7 @@ fn run_query(
         .recv_timeout(CMD_TIMEOUT)
         .expect("RawQuery result")
     {
-        DbResult::QueryResult { data } => data,
+        DbResult::QueryResult { data, .. } => data,
         other => panic!("expected QueryResult, got {other:?}"),
     }
 }

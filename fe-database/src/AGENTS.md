@@ -160,8 +160,8 @@ modules are path-tracking/animation only). Design decisions:
   (see fe-query `builder/timeseries.rs`). This keeps IoT-frequency inserts
   on the cheap `InsertBuilder` path; §geometry-inserts does not apply.
 - **`petal_id` is denormalized onto every row** so fe-api's
-  `build_scope_filter`/`inject_scope_filter` scope guard applies to
-  `FROM iot_reading` exactly as it does to `FROM node`.
+  scope guard (`query_guard::prepare_scoped_sql` FROM-substitution, M4 fix
+  B1) applies to `FROM iot_reading` exactly as it does to `FROM node`.
 - **Three timestamps.** `recorded_at` (RFC-3339 UTC, sensor time, humans),
   `recorded_at_ms` (epoch-ms i64 — the canonical range/window filter column,
   indexed via `idx_iot_reading_series`), `hlc_timestamp` (packed HLC,

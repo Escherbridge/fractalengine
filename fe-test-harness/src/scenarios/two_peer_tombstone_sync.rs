@@ -86,6 +86,7 @@ pub fn run() -> Result<TestResult> {
     // Helper: read rows back from a peer's durable store (A2's READ-BACK form).
     fn read_back(peer: &TestPeer, sql: &str, vid: &str) -> Result<Vec<serde_json::Value>> {
         peer.send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: sql.to_string(),
             vars: [("vid".to_string(), serde_json::json!(vid))]
                 .into_iter()
@@ -96,7 +97,7 @@ pub fn run() -> Result<TestResult> {
             std::time::Duration::from_secs(30),
         )?;
         match result {
-            DbResult::QueryResult { data } => Ok(data),
+            DbResult::QueryResult { data, .. } => Ok(data),
             other => anyhow::bail!("unexpected read-back result: {other:?}"),
         }
     }

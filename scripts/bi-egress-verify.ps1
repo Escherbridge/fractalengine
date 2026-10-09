@@ -15,6 +15,17 @@
     tools/duckdb/duckdb.exe against them, and probes Range/header behavior
     for DEC-C10 evidence.
 
+    M4 fix pass (DEC-C17/C18, 2026-10-09) adds live checks for: scope-bypass
+    vectors against a second (foreign) petal, DuckDB read_csv on the readings
+    CSV, non-null node + anchor geometry, ETag / Cache-Control / If-Range,
+    coords=latlon honesty (400 without a terrain origin -- the relay has no
+    live path to SET an origin; the known lat/lon round-trip is pinned by
+    fe-api export_csv_local_vs_latlon_landmine), and the relay's startup
+    warning when FE_SECRET_FRACTALENGINE_SHARE_SIGNER is unset. It always
+    (incrementally) rebuilds the relay + mint example so a stale binary can
+    never pass, refuses to start if the port is taken, and fails fast if the
+    relay exits early.
+
     Always tears down the relay it started (by PID, never by process name)
     and the temp dirs, even on failure (try/finally).
 
@@ -94,25 +105,18 @@ try {
     # -----------------------------------------------------------------------
     # Build
     # -----------------------------------------------------------------------
-    Write-Section "Build (if needed)"
+    Write-Section "Build (incremental -- never trust a stale binary)"
     $relayExe = Join-Path $RepoRoot 'target\debug\fe-relay.exe'
     $mintExe = Join-Path $RepoRoot 'target\debug\examples\mint_api_token.exe'
     $env:RUST_MIN_STACK = '134217728'
+    if (-not $env:CARGO_BUILD_JOBS) { $env:CARGO_BUILD_JOBS = '2' }
 
-    if (-not (Test-Path $relayExe)) {
-        Write-Host "  Building fractalengine-relay..."
-        cargo build -p fractalengine-relay
-        if ($LASTEXITCODE -ne 0) { throw "cargo build -p fractalengine-relay failed" }
-    } else {
-        Write-Host "  fe-relay.exe already built, skipping."
-    }
-    if (-not (Test-Path $mintExe)) {
-        Write-Host "  Building fe-identity mint_api_token example..."
-        cargo build -p fe-identity --example mint_api_token
-        if ($LASTEXITCODE -ne 0) { throw "cargo build -p fe-identity --example mint_api_token failed" }
-    } else {
-        Write-Host "  mint_api_token.exe already built, skipping."
-    }
+    Write-Host "  cargo build -p fractalengine-relay ..."
+    cargo build -q -p fractalengine-relay 2>&1 | ForEach-Object { Write-Host "    $_" }
+    if ($LASTEXITCODE -ne 0) { throw "cargo build -p fractalengine-relay failed" }
+    Write-Host "  cargo build -p fe-identity --example mint_api_token ..."
+    cargo build -q -p fe-identity --example mint_api_token 2>&1 | ForEach-Object { Write-Host "    $_" }
+    if ($LASTEXITCODE -ne 0) { throw "cargo build -p fe-identity --example mint_api_token failed" }
 
     $duckdbExe = Join-Path $RepoRoot 'tools\duckdb\duckdb.exe'
     if (-not (Test-Path $duckdbExe)) { throw "duckdb.exe not found at $duckdbExe" }
@@ -122,6 +126,12 @@ try {
     # Start relay
     # -----------------------------------------------------------------------
     Write-Section "Starting fe-relay"
+
+    # Port pre-check: a leftover relay (or anything else) on the port would
+    # answer our requests and silently invalidate every check below.
+    $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 18765)
+    try { $probe.Start(); $probe.Stop() }
+    catch { throw "port $BindAddr is already in use -- stop the other listener first" }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $relayExe
@@ -162,6 +172,11 @@ try {
     $deadline = (Get-Date).AddSeconds(60)
     $ready = $false
     while ((Get-Date) -lt $deadline) {
+        if ($proc.HasExited) {
+            Start-Sleep -Milliseconds 300
+            $errTail = (Get-Content $relayErrLog -Tail 20 -ErrorAction SilentlyContinue) -join "`n"
+            throw "fe-relay exited early (code $($proc.ExitCode)) before /ready:`n$errTail"
+        }
         try {
             $resp = Invoke-WebRequest -Uri "$BaseUrl/ready" -UseBasicParsing -TimeoutSec 2
             if ($resp.StatusCode -eq 200) { $ready = $true; break }
@@ -233,6 +248,15 @@ try {
     }
     $anchorAlpha = $nodeIds[0]
     $anchorBeta = $nodeIds[1]
+
+    # A SECOND petal in the same verse with its own node: the foreign rows the
+    # scope-bypass vectors below must never surface through petal P1's links.
+    $foreignPetal = Invoke-Api POST "/api/v1/verses/$verseId/fractals/$fractalId/petals" $verseToken @{ name = 'P2-foreign' }
+    Assert-True $foreignPetal.ok "created foreign petal P2"
+    $foreignPetalId = $foreignPetal.data.id
+    $foreignNode = Invoke-Api POST "/api/v1/verses/$verseId/fractals/$fractalId/petals/$foreignPetalId/nodes" $verseToken @{ name = 'ForeignNode'; position = @(99.0, 99.0, 99.0) }
+    Assert-True $foreignNode.ok "created node in foreign petal P2"
+    $foreignNodeId = $foreignNode.data.id
 
     # >=6 readings across >=2 anchors, with a handful of known f64 values we
     # will assert bit-exact after the parquet round-trip. Deliberately
@@ -349,6 +373,61 @@ try {
     $betaValue = [double]::Parse([string]$betaRow.value, $ic)
     Assert-Equal $betaValue $knownValueBeta1 "known reading value for anchorBeta round-trips bit-exact (f64 equality, not string match)"
 
+    Write-Host "  --- geometry is real, not null (nodes + live anchors) ---"
+    $nodeGeom = Invoke-DuckDbJson "$prelude SELECT count(*) AS n FROM read_parquet('$nodeShareUrl') WHERE position IS NOT NULL;"
+    Assert-Equal ([int]$nodeGeom[0].n) $nodeSpecs.Count "node parquet: every position geometry is non-null"
+    $anchorGeom = Invoke-DuckDbJson "$prelude SELECT count(*) AS n FROM read_parquet('$readingsShareUrl') WHERE position IS NOT NULL;"
+    Assert-Equal ([int]$anchorGeom[0].n) $readingSpecs.Count "readings parquet: every live-anchor geometry is non-null"
+
+    Write-Host "  --- readings CSV via DuckDB read_csv ---"
+    # skip=1 drops the leading '# crs=' comment line; the next line is the header.
+    $csvRows = Invoke-DuckDbJson "$prelude SELECT node_id, metric, value, recorded_at_ms FROM read_csv('$readingsCsvShareUrl', skip=1, header=true) ORDER BY recorded_at_ms;"
+    Write-Host "  $(($csvRows | ConvertTo-Json -Compress))"
+    Assert-Equal $csvRows.Count $readingSpecs.Count "DuckDB read_csv: readings CSV row count"
+    $csvDuckAlpha = $csvRows | Where-Object { $_.node_id -eq $anchorAlpha -and $_.metric -eq 'temperature_c' } | Sort-Object recorded_at_ms | Select-Object -First 1
+    Assert-Equal ([double]::Parse([string]$csvDuckAlpha.value, $ic)) $knownValueAlpha1 "DuckDB read_csv: known value bit-exact (f64 equality)"
+
+    # -----------------------------------------------------------------------
+    # Scope-bypass vectors (M4 fix B1) -- live, against a real foreign petal
+    # -----------------------------------------------------------------------
+    Write-Section "Scope-bypass vectors (M4 fix B1)"
+    $servedVectors = @(
+        @{ name = 'double-space FROM'; sql = 'SELECT * FROM  node' },
+        @{ name = 'tab FROM'; sql = "SELECT * FROM`tnode" },
+        @{ name = 'OR precedence'; sql = 'SELECT * FROM node WHERE true OR true' }
+    )
+    foreach ($v in $servedVectors) {
+        $share = Invoke-Api POST '/api/v1/query/share' $petalToken @{ sql = $v.sql; format = 'parquet'; ttl_secs = 600 }
+        $url = "$BaseUrl/api/v1/shared/$($share.data.token)"
+        $rows = Invoke-DuckDbJson "$prelude SELECT node_id, petal_id FROM read_parquet('$url');"
+        $foreign = @($rows | Where-Object { $_.petal_id -ne $petalId -or $_.node_id -eq $foreignNodeId })
+        Assert-True ($rows.Count -eq $nodeSpecs.Count -and $foreign.Count -eq 0) "$($v.name): served scoped -- $($rows.Count) P1 rows, 0 foreign"
+    }
+    $rejectedVectors = @(
+        @{ name = 'trailing comment'; sql = 'SELECT * FROM node --' },
+        @{ name = 'projection subquery'; sql = 'SELECT *, (SELECT * FROM iot_reading) AS x FROM node' }
+    )
+    foreach ($v in $rejectedVectors) {
+        $status = 0
+        try {
+            Invoke-Api POST '/api/v1/query/share' $petalToken @{ sql = $v.sql; format = 'parquet'; ttl_secs = 600 } | Out-Null
+            $status = 200
+        } catch { $status = [int]$_.Exception.Response.StatusCode }
+        Assert-Equal $status 400 "$($v.name): rejected at share mint"
+    }
+
+    # -----------------------------------------------------------------------
+    # coords=latlon honesty
+    # -----------------------------------------------------------------------
+    Write-Section "coords=latlon (no terrain origin on this petal)"
+    # REST/MCP terrain mutation is deliberately refused (fe-api terrain.rs), so
+    # a live relay petal can never carry an origin here; the known lat/lon
+    # value round-trip is pinned in fe-api's export_csv_local_vs_latlon_landmine.
+    $latlonStatus = 0
+    try { Invoke-WebRequest -Uri "$($nodeShareUrl)?coords=latlon" -UseBasicParsing | Out-Null; $latlonStatus = 200 }
+    catch { $latlonStatus = [int]$_.Exception.Response.StatusCode }
+    Assert-Equal $latlonStatus 400 "coords=latlon without a terrain origin answers 400 (never a mislabeled export)"
+
     # -----------------------------------------------------------------------
     # CSV spot-check
     # -----------------------------------------------------------------------
@@ -381,6 +460,9 @@ try {
         Assert-True ($headResp.Headers['Content-Type'] -match 'parquet') "HEAD response Content-Type is parquet"
         Assert-True ($headResp.Headers['x-fe-crs']) "HEAD response carries x-fe-crs"
         Assert-True ($headResp.Headers['Content-Disposition'] -match 'attachment') "HEAD response carries Content-Disposition: attachment"
+        $script:NodeEtag = $headResp.Headers['ETag']
+        Assert-True ($script:NodeEtag -match '^"[0-9a-f]{64}"$') "HEAD response carries a strong blake3 ETag (DEC-C18)"
+        Assert-Equal $headResp.Headers['Cache-Control'] 'private, no-store' "export Cache-Control is private, no-store -- live data, never immutable (DEC-C18)"
     } catch {
         Write-Host "  HEAD request failed/unsupported: $_" -ForegroundColor Yellow
         $script:Failures += "HEAD request to share URL failed: $_"
@@ -416,6 +498,22 @@ try {
         $script:Failures += "ranged GET returned unexpected status line '$statusLine'"
     }
 
+    # If-Range (DEC-C18): current ETag -> the range (206); stale -> full body (200).
+    # Request headers go through a curl `-H @file`: Windows PowerShell 5.1
+    # strips embedded double quotes from native-command arguments, which
+    # would send an unquoted (invalid) entity-tag and mangle the Range header.
+    function Get-StatusWithIfRange($validator) {
+        $reqHdrFile = Join-Path $script:WorkDir 'ifrange-request-headers.txt'
+        $respHdrFile = Join-Path $script:WorkDir 'ifrange-headers.txt'
+        Set-Content -Path $reqHdrFile -Encoding Ascii -Value @('Range: bytes=0-99', "If-Range: $validator")
+        & $curlExe -s -D $respHdrFile -o NUL -H "@$reqHdrFile" $nodeShareUrl
+        return ((Get-Content $respHdrFile -Raw) -split "`r`n")[0]
+    }
+    $ifRangeHit = Get-StatusWithIfRange $script:NodeEtag
+    Assert-True ($ifRangeHit -match ' 206 ') "If-Range with the current ETag serves the range ($ifRangeHit)"
+    $ifRangeMiss = Get-StatusWithIfRange '"0000000000000000000000000000000000000000000000000000000000000000"'
+    Assert-True ($ifRangeMiss -match ' 200 ') "If-Range with a stale ETag serves the full body ($ifRangeMiss)"
+
     # -----------------------------------------------------------------------
     # DuckDB httpfs Range-issuance evidence (server-side request log)
     # -----------------------------------------------------------------------
@@ -430,6 +528,12 @@ try {
         Write-Host "  No 'range' mentions found in the relay log for the DuckDB read_parquet() calls above." -ForegroundColor Yellow
         Write-Host "  Interpretation: DuckDB 1.5.6 httpfs served these small single-row-group files via full GET (or HEAD + full GET), not ranged GETs -- consistent with duckdb's httpfs preferring a single-request path for files under its prefetch/footer-read threshold." -ForegroundColor Yellow
     }
+
+    # A24 honesty (M4 fix M3): this run deliberately does NOT export the
+    # share-signer slot, so the relay must say its links are ephemeral.
+    Write-Section "Relay share-signer warning (A24)"
+    $allLogs = (Get-Content $relayLog -Raw -ErrorAction SilentlyContinue) + (Get-Content $relayErrLog -Raw -ErrorAction SilentlyContinue)
+    Assert-True ($allLogs -match 'FE_SECRET_FRACTALENGINE_SHARE_SIGNER is not set') "relay warns at startup that share links are ephemeral when the signer env is unset"
 
     Write-Host ""
     Write-Host "Full relay log: $relayLog"

@@ -75,7 +75,8 @@ impl ApiHarness {
     }
 
     /// Like [`Self::spawn`], with an explicit share-URL signing key instead
-    /// of the default (same keypair as token signing). Lets a test spin up
+    /// of the default (a fresh keypair DISTINCT from the token signer —
+    /// DEC-C9 capability separation holds in tests too). Lets a test spin up
     /// TWO harness instances sharing one `share_signer` to simulate a
     /// process restart — A24 persistence; production keeps it a dedicated,
     /// independently-rotatable slot (DEC-C9), but the test only needs key
@@ -136,7 +137,7 @@ impl ApiHarness {
             replication_tx: None,
             distributed_tx,
             sim_control_tx,
-            share_signer: share_signer.unwrap_or_else(|| keypair.clone()),
+            share_signer: share_signer.unwrap_or_else(|| Arc::new(NodeKeypair::generate())),
         });
 
         let router = build_router(state.clone());

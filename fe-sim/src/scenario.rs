@@ -1013,6 +1013,7 @@ pub(crate) fn raw_query(
     sql: &str,
 ) -> Result<Vec<serde_json::Value>> {
     peer.send(DbCommand::RawQuery {
+        correlation_id: None,
         sql: sql.to_string(),
         vars: HashMap::new(),
     });
@@ -1020,7 +1021,7 @@ pub(crate) fn raw_query(
         |r| matches!(r, DbResult::QueryResult { .. }),
         DB_REPLY_BUDGET,
     )? {
-        DbResult::QueryResult { data } => Ok(data),
+        DbResult::QueryResult { data, .. } => Ok(data),
         other => anyhow::bail!("unexpected read-back result: {other:?}"),
     }
 }

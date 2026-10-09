@@ -493,18 +493,24 @@ pub(crate) async fn run_select(
     // Fallback: route through the gateway channel as a RawQuery.
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let vars_map: std::collections::HashMap<String, Value> = vars.into_iter().collect();
+    // M4 fix B2: correlate so a GUI/foreign QueryResult can never be ours.
+    let correlation_id = ulid::Ulid::new().to_string();
     state
         .api_cmd_tx
         .send(ApiCommand::DbRequest {
             cmd: DbCommand::RawQuery {
                 sql: sql.to_string(),
                 vars: vars_map,
+                correlation_id: Some(correlation_id.clone()),
             },
             reply_tx,
         })
         .ok()?;
     match tokio::time::timeout(Duration::from_secs(5), reply_rx).await {
-        Ok(Ok(DbResult::QueryResult { data })) => Some(data),
+        Ok(Ok(DbResult::QueryResult {
+            data,
+            correlation_id: Some(echoed),
+        })) if echoed == correlation_id => Some(data),
         _ => None,
     }
 }

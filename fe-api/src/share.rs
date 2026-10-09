@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::require_role;
 use crate::limits;
-use crate::query_guard;
+use crate::query_guard::{self, GuardMode};
 use crate::server::ApiState;
 use crate::types::{ApiResponse, QueryResultDto};
 
@@ -134,15 +134,22 @@ pub async fn issue_share_url(
             "format must be one of: json, parquet, csv",
         );
     }
-    if let Err(e) = query_guard::validate_select_sql(&req.sql) {
-        return err(StatusCode::BAD_REQUEST, &e);
-    }
+    // Same dialect the redemption will run under, so a broken link fails at
+    // mint (M4 fix B1: no comments / nested SELECT; exports one table).
+    let mode = if req.format == "json" {
+        GuardMode::Egress
+    } else {
+        GuardMode::Export
+    };
+    let prepared = match query_guard::prepare_scoped_sql(&req.sql, &[], mode) {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &e),
+    };
     if req.format != "json" {
         // File exports map onto the node/EntitySnapshot or
         // reading/ReadingSnapshot shape and need a petal for CRS resolution
         // (see export.rs::classify_export_table / AGENTS.md §share).
-        let upper = req.sql.trim().to_uppercase();
-        if let Err(resp) = crate::export::classify_export_table(&upper) {
+        if let Err(resp) = crate::export::classify_export_table(&prepared.tables) {
             return resp;
         }
         let petal_scoped = fe_database::parse_scope(&claims.scope)
@@ -233,13 +240,14 @@ pub async fn redeem_share_url(
 
     match payload.fmt.as_str() {
         "json" => {
-            let guarded = match query_guard::guard_and_prepare_query(
+            let guarded = match query_guard::guard_and_prepare_query_with_mode(
                 &state,
                 &rate_key,
                 limits::SHARE_REDEEM_RATE_PER_SEC,
                 "10 redemptions/sec",
                 &payload.scope,
                 &payload.sql,
+                GuardMode::Egress,
             )
             .await
             {
@@ -265,6 +273,8 @@ pub async fn redeem_share_url(
                     let crs = crate::crs::scope_crs(&state, &payload.scope).await;
                     (
                         StatusCode::OK,
+                        // DEC-C18: live query output — never cacheable.
+                        [(axum::http::header::CACHE_CONTROL, "private, no-store")],
                         Json(ApiResponse::success(QueryResultDto {
                             data,
                             crs: Some(crs),
@@ -305,14 +315,11 @@ pub async fn redeem_share_url(
                 Ok(o) => o,
                 Err(resp) => return resp,
             };
-            let range = headers
-                .get(axum::http::header::RANGE)
-                .and_then(|v| v.to_str().ok());
             match payload.fmt.as_str() {
                 "parquet" => {
-                    crate::export::parquet_response(&out, &format!("{petal_id}.parquet"), range)
+                    crate::export::parquet_response(&out, &format!("{petal_id}.parquet"), &headers)
                 }
-                _ => crate::export::csv_response(&out, &format!("{petal_id}.csv"), range),
+                _ => crate::export::csv_response(&out, &format!("{petal_id}.csv"), &headers),
             }
         }
         other => err(
@@ -326,7 +333,7 @@ pub async fn redeem_share_url(
 fn share_query_err(e: String) -> Response {
     if e.starts_with("rate limit exceeded") {
         err(StatusCode::TOO_MANY_REQUESTS, &e)
-    } else if e.contains("timed out") {
+    } else if query_guard::is_timeout_error(&e) {
         err(StatusCode::GATEWAY_TIMEOUT, &e)
     } else if e.starts_with("row cap exceeded") || e.starts_with("result size exceeds") {
         err(StatusCode::PAYLOAD_TOO_LARGE, &e)

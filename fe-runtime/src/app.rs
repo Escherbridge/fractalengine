@@ -227,7 +227,8 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
     match cmd {
         DbCommand::InsertIotReadings { correlation_id, .. }
         | DbCommand::CreateAsset { correlation_id, .. }
-        | DbCommand::CreateNodeWithAsset { correlation_id, .. } => correlation_id.as_deref(),
+        | DbCommand::CreateNodeWithAsset { correlation_id, .. }
+        | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
         _ => None,
     }
 }
@@ -238,7 +239,9 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         DbResult::IotReadingsInserted { correlation_id, .. }
         | DbResult::IotReadingsRejected { correlation_id, .. }
         | DbResult::AssetCreated { correlation_id, .. }
-        | DbResult::GltfImported { correlation_id, .. } => correlation_id.as_deref(),
+        | DbResult::GltfImported { correlation_id, .. }
+        | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
+        DbResult::QueryFailed { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
 }
@@ -336,7 +339,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         FieldDefsListed { .. } => ReplyKind::FieldDefsListed,
         FieldDefUpdated { .. } => ReplyKind::FieldDefUpdated,
         FieldDefDeleted { .. } => ReplyKind::FieldDefDeleted,
-        QueryResult { .. } => ReplyKind::QueryResult,
+        QueryResult { .. } | QueryFailed { .. } => ReplyKind::QueryResult,
         IotReadingsInserted { .. } => ReplyKind::IotReadingsInserted,
         IotReadingsRejected { .. } => ReplyKind::IotReadingsInserted,
         PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
@@ -379,14 +382,16 @@ impl PendingApiRequests {
     /// id — even a closed one (its caller timed out): that entry consumes and
     /// drops the late reply, so it can never shift onto the next waiter
     /// (src/AGENTS.md §api-reply-correlation). An id with no entry is not
-    /// delivered. Uncorrelated replies keep [`Self::deliver_to`] semantics.
+    /// delivered. An uncorrelated reply reaches only an uncorrelated entry
+    /// (never a correlated waiter — a GUI `RawQuery` result must not land on
+    /// an API request, M4 fix B2).
     fn deliver_correlated(
         queue: &mut std::collections::VecDeque<PendingEntry>,
         correlation_id: Option<&str>,
         result: DbResult,
     ) -> bool {
         let Some(correlation_id) = correlation_id else {
-            return Self::deliver_to(queue, result);
+            return Self::deliver_uncorrelated(queue, result);
         };
         let Some(position) = queue
             .iter()
@@ -409,6 +414,28 @@ impl PendingApiRequests {
             return false;
         }
         entry.reply_tx.send(result).is_ok()
+    }
+
+    /// Skip-closed FIFO restricted to entries WITHOUT a correlation id;
+    /// correlated entries are left in place for their own echoed reply.
+    fn deliver_uncorrelated(
+        queue: &mut std::collections::VecDeque<PendingEntry>,
+        result: DbResult,
+    ) -> bool {
+        let mut idx = 0;
+        while idx < queue.len() {
+            if queue[idx].correlation_id.is_some() {
+                idx += 1;
+                continue;
+            }
+            let entry = queue.remove(idx).expect("idx is within the queue");
+            if entry.reply_tx.is_closed() {
+                continue;
+            }
+            let _ = entry.reply_tx.send(result);
+            return true;
+        }
+        false
     }
 
     /// Pop the next live entry (skipping ones whose receiver was dropped by a
@@ -782,6 +809,58 @@ mod tests {
         );
     }
 
+    fn raw_query_cmd(correlation_id: Option<&str>) -> DbCommand {
+        DbCommand::RawQuery {
+            sql: "SELECT * FROM node".to_string(),
+            vars: std::collections::HashMap::new(),
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    fn query_result(tag: &str, correlation_id: Option<&str>) -> DbResult {
+        DbResult::QueryResult {
+            data: vec![serde_json::json!({ "owner": tag })],
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    /// M4 fix B2: a GUI Query-tab result (uncorrelated) must never satisfy an
+    /// API `RawQuery` waiter, and a timed-out API caller's late rows are
+    /// consumed by its own entry instead of landing on the next caller.
+    #[test]
+    fn raw_query_replies_route_only_by_correlation_id() {
+        let mut pending = PendingApiRequests::default();
+        let (a_tx, a_rx) = tokio::sync::oneshot::channel();
+        let (b_tx, mut b_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&raw_query_cmd(Some("a")), a_tx);
+        drop(a_rx); // A timed out
+        pending.enqueue_for(&raw_query_cmd(Some("b")), b_tx);
+
+        assert!(
+            !pending.try_deliver(query_result("gui", None)),
+            "GUI rows have no API waiter"
+        );
+        assert!(
+            !pending.try_deliver(query_result("a", Some("a"))),
+            "A's late rows are consumed by A's own closed entry"
+        );
+        assert!(b_rx.try_recv().is_err(), "B received a foreign result");
+
+        assert!(pending.try_deliver(query_result("b", Some("b"))));
+        match b_rx.try_recv() {
+            Ok(DbResult::QueryResult { data, .. }) => assert_eq!(data[0]["owner"], "b"),
+            other => panic!("B expected its own rows, got {other:?}"),
+        }
+
+        let (c_tx, mut c_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&raw_query_cmd(Some("c")), c_tx);
+        assert!(pending.try_deliver(DbResult::QueryFailed {
+            error: "parse error".to_string(),
+            correlation_id: "c".to_string(),
+        }));
+        assert!(matches!(c_rx.try_recv(), Ok(DbResult::QueryFailed { .. })));
+    }
+
     /// The hazard this replaced FIFO pairing for: an unsolicited
     /// `HierarchyLoaded` (the relay's startup scan, a GUI reload) must never be
     /// handed to a racing `/ready` `Ping`.
@@ -1061,8 +1140,12 @@ mod tests {
                 DbCommand::RawQuery {
                     sql: "SELECT 1".to_string(),
                     vars: std::collections::HashMap::new(),
+                    correlation_id: None,
                 },
-                DbResult::QueryResult { data: Vec::new() },
+                DbResult::QueryResult {
+                    data: Vec::new(),
+                    correlation_id: None,
+                },
             ),
             (
                 insert_iot_cmd(None),

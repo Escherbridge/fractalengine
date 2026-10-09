@@ -154,6 +154,7 @@ fn run_gis_query(db: &TestDb, query: fe_query::BuiltQuery) -> Vec<serde_json::Va
     let vars: HashMap<String, serde_json::Value> = query.params.into_iter().collect();
     db.cmd_tx
         .send(DbCommand::RawQuery {
+            correlation_id: None,
             sql: query.sql,
             vars,
         })
@@ -163,7 +164,7 @@ fn run_gis_query(db: &TestDb, query: fe_query::BuiltQuery) -> Vec<serde_json::Va
         .recv_timeout(CMD_TIMEOUT)
         .expect("RawQuery result")
     {
-        DbResult::QueryResult { data } => data,
+        DbResult::QueryResult { data, .. } => data,
         other => panic!("expected QueryResult, got {other:?}"),
     }
 }

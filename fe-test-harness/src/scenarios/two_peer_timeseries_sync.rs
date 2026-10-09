@@ -61,6 +61,7 @@ fn wait_row_outcome(peer: &TestPeer) -> Result<ReplicatedRowOutcome> {
 /// READ-BACK straight from a peer's durable store.
 fn read_readings(peer: &TestPeer, where_clause: &str) -> Result<Vec<serde_json::Value>> {
     peer.send(DbCommand::RawQuery {
+        correlation_id: None,
         sql: format!("SELECT * FROM iot_reading{where_clause}"),
         vars: HashMap::new(),
     });
@@ -68,7 +69,7 @@ fn read_readings(peer: &TestPeer, where_clause: &str) -> Result<Vec<serde_json::
         |r| matches!(r, DbResult::QueryResult { .. }),
         Duration::from_secs(30),
     )? {
-        DbResult::QueryResult { data } => Ok(data),
+        DbResult::QueryResult { data, .. } => Ok(data),
         other => anyhow::bail!("unexpected read-back result: {other:?}"),
     }
 }
@@ -191,6 +192,7 @@ pub fn run() -> Result<TestResult> {
         _ => unreachable!(),
     }
     bob.send(DbCommand::RawQuery {
+        correlation_id: None,
         sql: "SELECT verse_id FROM verse LIMIT 1".into(),
         vars: HashMap::new(),
     });
@@ -199,7 +201,7 @@ pub fn run() -> Result<TestResult> {
         Duration::from_secs(30),
     )?;
     match manifest {
-        DbResult::QueryResult { data } if data.is_empty() => {
+        DbResult::QueryResult { data, .. } if data.is_empty() => {
             return Ok(TestResult::fail(
                 NAME,
                 "READ-BACK failed: bob's store never converged the verse manifest",

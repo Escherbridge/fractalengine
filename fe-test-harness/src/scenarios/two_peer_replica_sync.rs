@@ -169,6 +169,7 @@ pub fn run() -> Result<TestResult> {
     // 7. READ-BACK: the row is in bob's durable store — queried like any
     //    local row, not inferred from events or logs (A2's acceptance form).
     bob.send(DbCommand::RawQuery {
+        correlation_id: None,
         sql: "SELECT verse_id, name, created_by FROM verse WHERE verse_id = $vid LIMIT 1".into(),
         vars: [("vid".to_string(), serde_json::json!(verse_id))]
             .into_iter()
@@ -179,7 +180,7 @@ pub fn run() -> Result<TestResult> {
         std::time::Duration::from_secs(30),
     )?;
     let data = match &read_back {
-        DbResult::QueryResult { data } => data,
+        DbResult::QueryResult { data, .. } => data,
         _ => unreachable!(),
     };
     if data.is_empty() {
