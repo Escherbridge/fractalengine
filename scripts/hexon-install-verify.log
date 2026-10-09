@@ -1,0 +1,19 @@
+
+=== install_sample_hexons run: 1st (fresh install) ===
+store: C:\Users\atooz\AppData\Local\Temp\fe-hexon-install-verify-20261009-081250\hexons
+installed tileset-switzerland-zurich-alps (Switzerland G현 Zurich Alps)
+installed tileset-japan-mount-fuji (Japan G현 Mount Fuji)
+2 tileset(s) now installed
+=== install_sample_hexons run: 2nd (refresh, proves idempotency) ===
+store: C:\Users\atooz\AppData\Local\Temp\fe-hexon-install-verify-20261009-081250\hexons
+refreshed tileset-switzerland-zurich-alps (Switzerland G현 Zurich Alps)
+refreshed tileset-japan-mount-fuji (Japan G현 Mount Fuji)
+2 tileset(s) now installed
+=== cargo test -p fe-terrain --test gis_hexon_install_test ===
+
+running 1 test
+tileset-switzerland-zurich-alps: gsd=103.57 m/px (expected ~103.57), native_scale=0.009655 (expected ~0.009655)
+tileset-japan-mount-fuji: gsd=124.65 m/px (expected ~124.65), native_scale=0.008022 (expected ~0.008022)
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

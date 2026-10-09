@@ -1,0 +1,215 @@
+
+=== install_sample_hexons (pre-install) ===
+store: C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\hexons
+installed tileset-switzerland-zurich-alps (Switzerland G�� Zurich Alps)
+installed tileset-japan-mount-fuji (Japan G�� Mount Fuji)
+installed tileset-north-america-pacific-northwest (North America G�� Pacific Northwest)
+3 tileset(s) now installed
+=== seed_join_verse bind-terrain ===
+petal_id: 01M4GGNJEQMTT2NEW0YT0BCA8F
+terrain: {"tileset_hexon_uris":["tileset-switzerland-zurich-alps","tileset-japan-mount-fuji"]}
+=== relay1.log ===
+[2m2026-10-09T14:21:53.418881Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Starting FractalEngine Relay (headless)
+[2m2026-10-09T14:21:53.422711Z[0m [33m WARN[0m [2mfe_relay[0m[2m:[0m FE_SECRET_FRACTALENGINE_SHARE_SIGNER is not set ΓÇö generating an EPHEMERAL share-URL signing key: every share link minted by this relay stops verifying (401) after a restart. Export a 64-hex-char seed in FE_SECRET_FRACTALENGINE_SHARE_SIGNER to make share links survive restarts.
+[2m2026-10-09T14:21:53.424179Z[0m [32m INFO[0m [2mfe_database[0m[2m:[0m Database thread started, initialising SurrealDB at C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:21:53.424364Z[0m [32m INFO[0m [2mlibp2p_swarm[0m[2m:[0m [3mlocal_peer_id[0m[2m=[0m12D3KooW9vtgzRan8LAFEhvPhscpRoTg345YjvyH9RraTvLDm691
+[2m2026-10-09T14:21:53.420600Z[0m [32m INFO[0m [2mfe_network[0m[2m:[0m Network thread started
+[2m2026-10-09T14:21:53.424829Z[0m [33m WARN[0m [2mfe_network[0m[2m:[0m Discovery bootstrap error (continuing): Kademlia bootstrap failed: NoKnownPeers
+[2m2026-10-09T14:21:53.425339Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:21:53.426234Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:21:53.899137Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:21:53.899209Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:21:53.899233Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:21:53.899221Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:21:54.163998Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:21:54.164159Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:21:54.165368Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:21:54.165392Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:21:54.169138Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Manifest state: log_number=0, last_sequence=0
+[2m2026-10-09T14:21:54.169177Z[0m [32m INFO[0m [2msurrealkv::wal::recovery[0m[2m:[0m Starting WAL recovery from directory: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db\\wal"
+[2m2026-10-09T14:21:54.169477Z[0m [32m INFO[0m [2msurrealkv::wal::recovery[0m[2m:[0m Replaying WAL segments #00000000000000000000 to #00000000000000000000
+[2m2026-10-09T14:21:54.169798Z[0m [32m INFO[0m [2msurrealkv::wal::recovery[0m[2m:[0m WAL recovery complete: 0 batches across 0 segments, 0 memtables created, max_seq_num=None
+[2m2026-10-09T14:21:54.169958Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === LSM tree initialization complete ===
+[2m2026-10-09T14:21:54.170141Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Sync mode: every transaction commit
+[2m2026-10-09T14:21:54.170185Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Grouped commit: enabled (timeout=5000000ns, wait_threshold=12, max_batch_size=4096)
+[2m2026-10-09T14:21:54.170325Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Started surrealkv kvs store
+[2m2026-10-09T14:21:54.688831Z[0m [32m INFO[0m [2mfe_database::op_log[0m[2m:[0m HLC initialised: wall_ms=1791555714688, counter=0, max_persisted=0
+[2m2026-10-09T14:21:54.700428Z[0m [32m INFO[0m [2mfe_database[0m[2m:[0m Checking for base64 assets to migrate...
+[2m2026-10-09T14:21:54.701748Z[0m [32m INFO[0m [2mfe_database[0m[2m:[0m SurrealDB ready
+[2m2026-10-09T14:21:54.703961Z[0m [33m WARN[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m[1mseed_assets[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m assets/models/ not found ΓÇö skipping asset seed
+[2m2026-10-09T14:21:54.707316Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded verse: Genesis Verse (01M4GGNFMGMTV6R50899CKHBKK)
+[2m2026-10-09T14:21:54.710437Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded verse_member: did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw
+[2m2026-10-09T14:21:54.712819Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded fractal: Genesis Fractal (01M4GGNFMP7DCB6PA7SDF5KD56)
+[2m2026-10-09T14:21:54.720304Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded petal: Genesis Petal (01M4GGNFMR4GW16F5T02XY1F8R)
+[2m2026-10-09T14:21:54.722205Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Assigned owner role to did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw
+[2m2026-10-09T14:21:54.731596Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded room: Lobby
+[2m2026-10-09T14:21:54.740876Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded room: Workshop
+[2m2026-10-09T14:21:54.749293Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded room: Gallery
+[2m2026-10-09T14:21:54.751906Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded node: Welcome Beacon at XZ[0.0, 0.0] elev=0
+[2m2026-10-09T14:21:54.754148Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded node: Info Panel at XZ[3.0, 0.0] elev=1.2
+[2m2026-10-09T14:21:54.756971Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seeded node: Lucky Duck at XZ[-2.0, 2.0] elev=0
+[2m2026-10-09T14:21:54.757183Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Starting sync thread [3mnode_id[0m[2m=[0m68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e
+[2m2026-10-09T14:21:54.757780Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Resolved relay config for sync thread [3mrelay_config[0m[2m=[0mDisabled
+[2m2026-10-09T14:21:54.776013Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m FE_SHUTDOWN_AFTER_SECS set ΓÇö scheduling graceful shutdown [3msecs[0m[2m=[0m600
+[2m2026-10-09T14:21:54.776358Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:21:54.778037Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:21:54.778064Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:21:54.778083Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:21:54.778092Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:21:54.778130Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:21:54.778075Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:21:54.778100Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:21:54.778962Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:21:54.778988Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:21:54.809799Z[0m [32m INFO[0m [2mfe_sync::endpoint[0m[2m:[0m iroh endpoint bound [3mcongestion_controller[0m[2m=[0m"bbr" [3mrelay_config[0m[2m=[0mDisabled
+[2m2026-10-09T14:21:54.809839Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Sync thread started (online) [3mnode_id[0m[2m=[0m68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e
+[2m2026-10-09T14:21:54.948352Z[0m [32m INFO[0m [2miroh_docs::store::fs::migrations[0m[2m:[0m Executed migration migration_004_populate_by_key_index (0 rows affected)
+[2m2026-10-09T14:21:54.959867Z[0m [32m INFO[0m [2mfe_sync::docs_engine[0m[2m:[0m Docs author imported from the endpoint identity [3mauthor[0m[2m=[0m68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e [3mnode_id[0m[2m=[0m68af75396b
+[2m2026-10-09T14:21:54.960261Z[0m [32m INFO[0m [2mfe_sync::docs_engine[0m[2m:[0m P2P stack online: blobs + gossip + docs routed [3mnode_id[0m[2m=[0m68af75396b [3mp2p_dir[0m[2m=[0mC:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\p2p [3mblobs_alpn[0m[2m=[0m/iroh-bytes/4 [3mgossip_alpn[0m[2m=[0m/iroh-gossip/0 [3mdocs_alpn[0m[2m=[0m/iroh-sync/1
+[2m2026-10-09T14:21:55.035685Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:21:55.037284Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:21:55.037331Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:21:55.037321Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:21:55.037339Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:21:55.037355Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:21:55.037380Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:21:55.037348Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:21:55.037937Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:21:55.037957Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:21:55.288819Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:21:55.290249Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:21:55.290289Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:21:55.290281Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:21:55.290301Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:21:55.290295Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:21:55.290307Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:21:55.290327Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:21:55.290816Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:21:55.290836Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:21:55.541940Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:21:55.543617Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:21:55.543686Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:21:55.543779Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:21:55.543795Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:21:55.543806Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:21:55.543816Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:21:55.543846Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:21:55.544430Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:21:55.544447Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:21:55.544904Z[0m [33m WARN[0m [2mfe_relay[0m[2m:[0m Could not open API read connection, falling back to channel: There was a problem with the datastore: IO error: The process cannot access the file because another process has locked a portion of the file. (os error 33)
+[2m2026-10-09T14:21:55.576590Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Loaded hexon tilesets into registry [3mcount[0m[2m=[0m3
+[2m2026-10-09T14:21:55.577037Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Relay ready -- entering headless event loop
+[2m2026-10-09T14:21:55.579042Z[0m [32m INFO[0m [2mfe_sync::status[0m[2m:[0m SyncStatus updated: started ΓÇö dialable address above (paste into FE_SYNC_BOOTSTRAP) [3monline[0m[2m=[0mtrue [3mnode_addr[0m[2m=[0m{"node_id":"68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e","relay_url":null,"direct_addresses":["172.18.48.1:51664","192.168.0.167:51664"]}
+[2m2026-10-09T14:21:55.579083Z[0m [32m INFO[0m [2mfe_relay::replicas[0m[2m:[0m Startup verse replica scan: requested hierarchy from DB thread
+[2m2026-10-09T14:21:55.579094Z[0m [32m INFO[0m [2mfe_sync::status[0m[2m:[0m Relay health updated [3mhealth[0m[2m=[0mDisabled
+[2m2026-10-09T14:21:55.581767Z[0m [32m INFO[0m [2mfe_api[0m[2m:[0m API server listening on 127.0.0.1:18766
+[2m2026-10-09T14:21:55.585535Z[0m [32m INFO[0m [1mload_hierarchy_handler[0m[2m:[0m [2mfe_database::handlers::crud[0m[2m:[0m Loaded hierarchy: 1 verses
+[2m2026-10-09T14:21:55.678082Z[0m [33m WARN[0m [2mfe_relay::replicas[0m[2m:[0m no namespace_id available (row has none and no secret stored) ΓÇö replica not opened [3mverse_id[0m[2m=[0m"01M4GGNFMGMTV6R50899CKHBKK"
+[2m2026-10-09T14:21:55.678138Z[0m [32m INFO[0m [2mfe_relay::replicas[0m[2m:[0m Startup replica scan pass complete [3mverses[0m[2m=[0m1 [3mopened[0m[2m=[0m0
+[2m2026-10-09T14:21:56.942044Z[0m [32m INFO[0m [1mcreate_verse_handler[0m[1m{[0m[3mname[0m[2m=[0m"HexonServeVerify" [3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::crud[0m[2m:[0m Created verse: HexonServeVerify (01M4GGNHT87EWTFHF976EC5B1W) namespace_id=833dbe768e9fcd0262811d8249e7507ee08d8731fa3c21f0da30606931a3d0fd
+[2m2026-10-09T14:21:57.037125Z[0m [32m INFO[0m [2mfe_relay::replicas[0m[2m:[0m VerseCreated ΓÇö opening replica [3mverse_id[0m[2m=[0m01M4GGNHT87EWTFHF976EC5B1W [3mname[0m[2m=[0mHexonServeVerify
+[2m2026-10-09T14:21:57.037243Z[0m [32m INFO[0m [2mfe_relay::replicas[0m[2m:[0m Relay opened verse replica [3mverse_id[0m[2m=[0m"01M4GGNHT87EWTFHF976EC5B1W"
+[2m2026-10-09T14:21:57.039184Z[0m [32m INFO[0m [2mfe_sync::replicator[0m[2m:[0m Opened verse replica document on the real iroh-docs stack [3mns[0m[2m=[0m833dbe768e9fcd0262811d8249e7507ee08d8731fa3c21f0da30606931a3d0fd [3miroh_ns[0m[2m=[0m833dbe768e [3mmode[0m[2m=[0m"write-capability"
+[2m2026-10-09T14:21:57.042961Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Opened verse replica ΓÇö P2P stack online [3mverse_id[0m[2m=[0m"01M4GGNHT87EWTFHF976EC5B1W" [3mnamespace_id[0m[2m=[0m"833dbe768e9fcd0262811d8249e7507ee08d8731fa3c21f0da30606931a3d0fd" [3mpeers[0m[2m=[0m0 [3mgossip_topic[0m[2m=[0mffd64330270e1467ea103086b8908a081e138d02173cb3d1e9124ae37e384f42
+[2m2026-10-09T14:21:57.043003Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Replica open completed ΓÇö republishing writes retained from before the open [3mverse_id[0m[2m=[0m"01M4GGNHT87EWTFHF976EC5B1W" [3mcount[0m[2m=[0m1
+[2m2026-10-09T14:21:57.293421Z[0m [32m INFO[0m [1mcreate_fractal_handler[0m[1m{[0m[3mverse_id[0m[2m=[0m"01M4GGNHT87EWTFHF976EC5B1W" [3mname[0m[2m=[0m"F1" [3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::crud[0m[2m:[0m Created fractal: F1 (01M4GGNJ58Q80V6J3FBH6X7QC7) in verse 01M4GGNHT87EWTFHF976EC5B1W
+[2m2026-10-09T14:21:57.615997Z[0m [32m INFO[0m [1mcreate_petal_handler[0m[1m{[0m[3mfractal_id[0m[2m=[0m"01M4GGNJ58Q80V6J3FBH6X7QC7" [3mname[0m[2m=[0m"BoundPetal" [3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::crud[0m[2m:[0m Creating petal: BoundPetal (01M4GGNJEQMTT2NEW0YT0BCA8F) in fractal 01M4GGNJ58Q80V6J3FBH6X7QC7
+[2m2026-10-09T14:21:57.896654Z[0m [32m INFO[0m [1mcreate_petal_handler[0m[1m{[0m[3mfractal_id[0m[2m=[0m"01M4GGNJ58Q80V6J3FBH6X7QC7" [3mname[0m[2m=[0m"ForeignPetal" [3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::crud[0m[2m:[0m Creating petal: ForeignPetal (01M4GGNJR4KQKY11E6ZH8PKPJM) in fractal 01M4GGNJ58Q80V6J3FBH6X7QC7
+
+=== relay1-err.log ===
+=== relay2.log ===
+[2m2026-10-09T14:22:02.530609Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Starting FractalEngine Relay (headless)
+[2m2026-10-09T14:22:02.531974Z[0m [32m INFO[0m [2mfe_network[0m[2m:[0m Network thread started
+[2m2026-10-09T14:22:02.533430Z[0m [33m WARN[0m [2mfe_relay[0m[2m:[0m FE_SECRET_FRACTALENGINE_SHARE_SIGNER is not set ΓÇö generating an EPHEMERAL share-URL signing key: every share link minted by this relay stops verifying (401) after a restart. Export a 64-hex-char seed in FE_SECRET_FRACTALENGINE_SHARE_SIGNER to make share links survive restarts.
+[2m2026-10-09T14:22:02.534382Z[0m [32m INFO[0m [2mfe_database[0m[2m:[0m Database thread started, initialising SurrealDB at C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:22:02.534460Z[0m [32m INFO[0m [2mlibp2p_swarm[0m[2m:[0m [3mlocal_peer_id[0m[2m=[0m12D3KooWFPgusLj3Z6xMaN2pPuZFshB7EPqrWrAtZiJ9s5Ff7ifd
+[2m2026-10-09T14:22:02.534735Z[0m [33m WARN[0m [2mfe_network[0m[2m:[0m Discovery bootstrap error (continuing): Kademlia bootstrap failed: NoKnownPeers
+[2m2026-10-09T14:22:02.534999Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:22:02.535551Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:22:02.997410Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:22:02.997483Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:22:02.997497Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:22:02.997509Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:22:03.481796Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:22:03.481885Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:22:03.482367Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:22:03.482387Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:22:03.482654Z[0m [32m INFO[0m [2msurrealkv::levels[0m[2m:[0m Loading manifest from "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db\\manifest\\00000000000000000000.manifest"
+[2m2026-10-09T14:22:03.482907Z[0m [32m INFO[0m [2msurrealkv::levels[0m[2m:[0m Manifest loaded successfully: version=1, log_number=0, last_sequence=0, tables=0, levels=6
+[2m2026-10-09T14:22:03.488636Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Manifest state: log_number=0, last_sequence=0
+[2m2026-10-09T14:22:03.488669Z[0m [32m INFO[0m [2msurrealkv::wal::recovery[0m[2m:[0m Starting WAL recovery from directory: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db\\wal"
+[2m2026-10-09T14:22:03.488937Z[0m [32m INFO[0m [2msurrealkv::wal::recovery[0m[2m:[0m Replaying WAL segments #00000000000000000000 to #00000000000000000000
+[2m2026-10-09T14:22:03.491023Z[0m [32m INFO[0m [2msurrealkv::wal::recovery[0m[2m:[0m Replayed 285 batches from WAL segment #00000000000000000000
+[2m2026-10-09T14:22:03.491070Z[0m [32m INFO[0m [2msurrealkv::wal::recovery[0m[2m:[0m WAL recovery complete: 285 batches across 1 segments, 1 memtables created, max_seq_num=Some(501)
+[2m2026-10-09T14:22:03.491166Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Recovery: setting last memtable (wal=0) as active with 501 entries
+[2m2026-10-09T14:22:03.491328Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === LSM tree initialization complete ===
+[2m2026-10-09T14:22:03.491466Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Sync mode: every transaction commit
+[2m2026-10-09T14:22:03.491493Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Grouped commit: enabled (timeout=5000000ns, wait_threshold=12, max_batch_size=4096)
+[2m2026-10-09T14:22:03.491572Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Started surrealkv kvs store
+[2m2026-10-09T14:22:03.920788Z[0m [32m INFO[0m [2mfe_database::op_log[0m[2m:[0m HLC initialised: wall_ms=1791555723920, counter=0, max_persisted=117411395321528320
+[2m2026-10-09T14:22:03.945322Z[0m [32m INFO[0m [2mfe_database[0m[2m:[0m Checking for base64 assets to migrate...
+[2m2026-10-09T14:22:03.948772Z[0m [32m INFO[0m [2mfe_database[0m[2m:[0m SurrealDB ready
+[2m2026-10-09T14:22:03.951863Z[0m [32m INFO[0m [1mseed_default_data[0m[1m{[0m[3mlocal_did[0m[2m=[0m"did:key:z6MkmVud2MeaU71V767K9sFSNn9YcGwrnD2rVzTSpQG3NRqw"[1m}[0m[2m:[0m [2mfe_database::handlers::seed[0m[2m:[0m Seed already present ΓÇö skipping
+[2m2026-10-09T14:22:03.952031Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Starting sync thread [3mnode_id[0m[2m=[0m68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e
+[2m2026-10-09T14:22:03.952554Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Resolved relay config for sync thread [3mrelay_config[0m[2m=[0mDisabled
+[2m2026-10-09T14:22:03.968742Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:22:03.969120Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m FE_SHUTDOWN_AFTER_SECS set ΓÇö scheduling graceful shutdown [3msecs[0m[2m=[0m600
+[2m2026-10-09T14:22:03.984995Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:22:03.985044Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:22:03.985062Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:22:03.985054Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:22:03.985118Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:22:03.985071Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:22:03.985080Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:22:03.985762Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:22:03.985792Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:22:04.001991Z[0m [32m INFO[0m [2mfe_sync::endpoint[0m[2m:[0m iroh endpoint bound [3mcongestion_controller[0m[2m=[0m"bbr" [3mrelay_config[0m[2m=[0mDisabled
+[2m2026-10-09T14:22:04.002038Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Sync thread started (online) [3mnode_id[0m[2m=[0m68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e
+[2m2026-10-09T14:22:04.109243Z[0m [32m INFO[0m [2mfe_sync::docs_engine[0m[2m:[0m Docs author imported from the endpoint identity [3mauthor[0m[2m=[0m68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e [3mnode_id[0m[2m=[0m68af75396b
+[2m2026-10-09T14:22:04.109552Z[0m [32m INFO[0m [2mfe_sync::docs_engine[0m[2m:[0m P2P stack online: blobs + gossip + docs routed [3mnode_id[0m[2m=[0m68af75396b [3mp2p_dir[0m[2m=[0mC:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\p2p [3mblobs_alpn[0m[2m=[0m/iroh-bytes/4 [3mgossip_alpn[0m[2m=[0m/iroh-gossip/0 [3mdocs_alpn[0m[2m=[0m/iroh-sync/1
+[2m2026-10-09T14:22:04.243920Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:22:04.259679Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:22:04.259777Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:22:04.259798Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:22:04.259807Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:22:04.259892Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:22:04.259942Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:22:04.260019Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:22:04.261146Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:22:04.261227Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:22:04.512460Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:22:04.514528Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:22:04.514582Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:22:04.514590Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:22:04.514608Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:22:04.514599Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:22:04.514570Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:22:04.514637Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:22:04.515122Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:22:04.515139Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:22:04.765897Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at relative path surrealkv://C:\Users\atooz\AppData\Local\Temp\fe-hexon-serve-verify-20261009-082002\db
+[2m2026-10-09T14:22:04.773645Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-09T14:22:04.773684Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-09T14:22:04.773675Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-09T14:22:04.773701Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16020174848
+[2m2026-10-09T14:22:04.773695Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-09T14:22:04.773689Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-09T14:22:04.773719Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-09T14:22:04.774218Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m === Starting LSM tree initialization ===
+[2m2026-10-09T14:22:04.774239Z[0m [32m INFO[0m [2msurrealkv::lsm[0m[2m:[0m Database path: "C:\\Users\\atooz\\AppData\\Local\\Temp\\fe-hexon-serve-verify-20261009-082002\\db"
+[2m2026-10-09T14:22:04.774792Z[0m [33m WARN[0m [2mfe_relay[0m[2m:[0m Could not open API read connection, falling back to channel: There was a problem with the datastore: IO error: The process cannot access the file because another process has locked a portion of the file. (os error 33)
+[2m2026-10-09T14:22:04.812266Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Loaded hexon tilesets into registry [3mcount[0m[2m=[0m3
+[2m2026-10-09T14:22:04.812713Z[0m [32m INFO[0m [2mfe_relay[0m[2m:[0m Relay ready -- entering headless event loop
+[2m2026-10-09T14:22:04.814652Z[0m [32m INFO[0m [2mfe_sync::status[0m[2m:[0m SyncStatus updated: started ΓÇö dialable address above (paste into FE_SYNC_BOOTSTRAP) [3monline[0m[2m=[0mtrue [3mnode_addr[0m[2m=[0m{"node_id":"68af75396b76358573c870034633486598066f10d87624cceb4752c46064387e","relay_url":null,"direct_addresses":["172.18.48.1:57212","192.168.0.167:57212"]}
+[2m2026-10-09T14:22:04.814700Z[0m [32m INFO[0m [2mfe_sync::status[0m[2m:[0m Relay health updated [3mhealth[0m[2m=[0mDisabled
+[2m2026-10-09T14:22:04.814732Z[0m [32m INFO[0m [2mfe_relay::replicas[0m[2m:[0m Startup verse replica scan: requested hierarchy from DB thread
+[2m2026-10-09T14:22:04.817553Z[0m [32m INFO[0m [2mfe_api[0m[2m:[0m API server listening on 127.0.0.1:18766
+[2m2026-10-09T14:22:04.820556Z[0m [32m INFO[0m [1mload_hierarchy_handler[0m[2m:[0m [2mfe_database::handlers::crud[0m[2m:[0m Loaded hierarchy: 2 verses
+[2m2026-10-09T14:22:04.913731Z[0m [33m WARN[0m [2mfe_relay::replicas[0m[2m:[0m no namespace_id available (row has none and no secret stored) ΓÇö replica not opened [3mverse_id[0m[2m=[0m"01M4GGNFMGMTV6R50899CKHBKK"
+[2m2026-10-09T14:22:04.913820Z[0m [32m INFO[0m [2mfe_relay::replicas[0m[2m:[0m Relay opened verse replica [3mverse_id[0m[2m=[0m"01M4GGNHT87EWTFHF976EC5B1W"
+[2m2026-10-09T14:22:04.913833Z[0m [32m INFO[0m [2mfe_relay::replicas[0m[2m:[0m Startup replica scan pass complete [3mverses[0m[2m=[0m2 [3mopened[0m[2m=[0m1
+[2m2026-10-09T14:22:04.915155Z[0m [32m INFO[0m [2mfe_sync::replicator[0m[2m:[0m Opened verse replica document on the real iroh-docs stack [3mns[0m[2m=[0m833dbe768e9fcd0262811d8249e7507ee08d8731fa3c21f0da30606931a3d0fd [3mmode[0m[2m=[0m"read-only"
+[2m2026-10-09T14:22:04.918891Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Reconciliation: replayed replica entries through the inbound apply path [3mverse_id[0m[2m=[0m"01M4GGNHT87EWTFHF976EC5B1W" [3mentries[0m[2m=[0m3 [3mforwarded[0m[2m=[0m3
+[2m2026-10-09T14:22:04.921901Z[0m [32m INFO[0m [2mfe_sync::sync_thread[0m[2m:[0m Opened verse replica ΓÇö P2P stack online [3mverse_id[0m[2m=[0m"01M4GGNHT87EWTFHF976EC5B1W" [3mnamespace_id[0m[2m=[0m"833dbe768e9fcd0262811d8249e7507ee08d8731fa3c21f0da30606931a3d0fd" [3mpeers[0m[2m=[0m0 [3mgossip_topic[0m[2m=[0mffd64330270e1467ea103086b8908a081e138d02173cb3d1e9124ae37e384f42
+
+=== relay2-err.log ===

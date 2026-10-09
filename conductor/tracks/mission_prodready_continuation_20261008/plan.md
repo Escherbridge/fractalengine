@@ -66,7 +66,8 @@ its commit hash + evidence line appended here.
 ## M6 — GIS hexon examples
 
 - [x] **F15 LANDED** (A28) — gis-tile-etl @ `33eff03`, main-repo provenance @ `dbb6461`: configs/intl-regions.toml (esri-world-imagery + aws-terrarium, DEC-C8), Zurich Alps (10+10 tiles, 1.48 MB) + Mount Fuji (8+8, 0.84 MB) built + `Verify: OK`; 17/17 tests; sink fixed for fe-format TilesetMeta drift (scale fields None → app-side backfill). Flag for fe-format owners: derive(Default) on TilesetMeta would stop sibling-repo struct-literal breakage on future field adds.
-- [ ] **F16** (A29) — install dist/*.hexon via install_sample_hexons example + Hexon Manager semantics, serve via relay tile plane (petal-bound authz), scale-bar backfill assert; hexon_ids: tileset-switzerland-zurich-alps, tileset-japan-mount-fuji
+- [x] **F16 verified (commit pending w/ M5 fix batch)** (A29) — V1 14/14: idempotent install of both F15 archives + meta/bounds/counts + scale backfill asserted against an INDEPENDENT Web-Mercator GSD oracle (103.57 m/px Zurich, 124.65 Fuji; env-gated test fe-terrain/tests/gis_hexon_install_test.rs skips cleanly without the sibling repo). V2 37/37 live relay: list excludes unbound, elevation PNG + satellite JPEG served, 403 scope-mismatch vs 404 unbound-without-existence-leak (terrain.rs:340-353 ordering). Honest ledger: in-app render + scale-bar WIDGET remain user-gated (the numeric fields they read are verified).
+  - **Product gap found (deferred w/ trigger)**: NO authenticated path binds a tileset to a petal on a live relay — TERRAIN_MUTATION_UNAVAILABLE blocks REST PUT/DELETE terrain AND MCP set_petal_terrain pending correlated command replies (the F13 open item, now confirmed to cover REST too). Workaround: stop relay → seed_join_verse bind-terrain (new subcommand) → restart. Trigger to fix: correlate SetPetalTerrain replies (touches fe-ui construction sites).
 - [ ] **M6 milestone review**
 
 ## M7 — Close-out
