@@ -59,7 +59,9 @@ pub fn mint_api_token(
 /// — the harness/test lane for token-lifecycle coverage (`verify_api_token`'s
 /// `jsonwebtoken` validator applies its own small leeway around `exp`, so a
 /// caller asserting expiry should pick an `exp` comfortably in the past
-/// rather than relying on TTL + sleep).
+/// rather than relying on TTL + sleep). The same TTL cap as [`mint_api_token`]
+/// applies to the `exp - iat` span, and `exp` must not precede `iat`; a span
+/// entirely in the past is fine (expired-token tests).
 pub fn mint_api_token_at(
     keypair: &NodeKeypair,
     scope: &str,
@@ -71,6 +73,12 @@ pub fn mint_api_token_at(
     ensure_crypto_provider();
     if scope.is_empty() {
         anyhow::bail!("API token scope must not be empty");
+    }
+    let Some(span) = exp.checked_sub(iat) else {
+        anyhow::bail!("API token exp must not precede iat");
+    };
+    if span > MAX_API_TOKEN_TTL_SECS {
+        anyhow::bail!("API token TTL exceeds maximum of 30 days");
     }
     let claims = ApiClaims {
         sub: keypair.to_did_key(),
@@ -124,6 +132,36 @@ mod tests {
         let kp = NodeKeypair::generate();
         let result = mint_api_token(&kp, "VERSE#v1", "viewer", MAX_API_TOKEN_TTL_SECS + 1, "j1");
         assert!(result.is_err());
+    }
+
+    /// DEC-C21 M9: the explicit-timestamp mint enforces the same TTL cap on
+    /// `exp - iat` and rejects `exp < iat`; a past-dated span still mints.
+    #[test]
+    fn mint_at_enforces_ttl_cap_and_ordering() {
+        let kp = NodeKeypair::generate();
+        let iat = 1_000_000;
+        let over = mint_api_token_at(
+            &kp,
+            "VERSE#v1",
+            "viewer",
+            iat,
+            iat + MAX_API_TOKEN_TTL_SECS + 1,
+            "j1",
+        );
+        assert!(over.is_err(), "span over the cap must be refused");
+        let backwards = mint_api_token_at(&kp, "VERSE#v1", "viewer", iat, iat - 1, "j2");
+        assert!(backwards.is_err(), "exp before iat must be refused");
+        let at_cap = mint_api_token_at(
+            &kp,
+            "VERSE#v1",
+            "viewer",
+            iat,
+            iat + MAX_API_TOKEN_TTL_SECS,
+            "j3",
+        );
+        assert!(at_cap.is_ok(), "a span exactly at the cap mints");
+        // Expired-token test lane: a short span wholly in the past.
+        assert!(mint_api_token_at(&kp, "VERSE#v1", "viewer", 100, 180, "j4").is_ok());
     }
 
     #[test]

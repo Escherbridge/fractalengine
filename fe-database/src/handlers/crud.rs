@@ -1414,6 +1414,29 @@ pub(crate) async fn cascade_tombstone_node_handler(
     Ok(outcome)
 }
 
+/// The `petal_id` of any node row (tombstoned included) with this id; `None`
+/// when absent or when the `node` table does not exist yet.
+async fn node_petal_id(db: &Db, node_id: &str) -> anyhow::Result<Option<String>> {
+    let lookup = db
+        .query("SELECT petal_id FROM node WHERE node_id = $nid LIMIT 1")
+        .bind(("nid", node_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("node petal lookup failed: {e}"))?
+        .check();
+    let rows: Vec<serde_json::Value> = match lookup {
+        Ok(mut res) => res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("node petal take failed: {e}"))?,
+        Err(e) if e.to_string().contains("does not exist") => Vec::new(),
+        Err(e) => anyhow::bail!("node petal lookup statement failed: {e}"),
+    };
+    Ok(rows
+        .first()
+        .and_then(|row| row.get("petal_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
+}
+
 /// Lazy promotion (FR-5): materialize a full node row for a single stamp
 /// instance on first individual select/edit. Idempotent — if the deterministic
 /// instance node already exists, this is a no-op. Returns
@@ -1426,6 +1449,24 @@ pub(crate) async fn promote_instance_handler(
     instance_index: u32,
 ) -> anyhow::Result<(String, bool)> {
     require_petal_scope(db, petal_id, "PromoteInstance").await?;
+
+    // DEC-C21 M7: the owning path must belong to the AUTHORIZED petal. A
+    // foreign path_id would mint `<foreign>#inst-n` here (squatting the
+    // victim's deterministic instance id) — or, via the idempotency probe,
+    // hand back a node from another petal. An absent path is tolerated (ids
+    // are unguessable ULIDs, so it cannot name another petal's live path).
+    for probe_id in [
+        path_id.to_string(),
+        format!("{path_id}#inst-{instance_index}"),
+    ] {
+        if let Some(owner) = node_petal_id(db, &probe_id).await? {
+            if owner != petal_id {
+                anyhow::bail!(
+                    "PromoteInstance: node {probe_id} belongs to another petal, not {petal_id}"
+                );
+            }
+        }
+    }
 
     let node_id = format!("{path_id}#inst-{instance_index}");
     let now = chrono::Utc::now().to_rfc3339();
@@ -1976,6 +2017,39 @@ mod asset_ingest_tests {
         assert_eq!(rows[0]["asset_id"], asset_id.as_str());
         assert_eq!(rows[0]["rotation"], serde_json::json!([0.5, 0.0, 0.0]));
         assert_eq!(rows[0]["elevation"], 2.0);
+    }
+
+    /// DEC-C21 M7: promotion refuses a path_id owned by another petal (no
+    /// squatted `<foreign>#inst-n` row); an own-petal path promotes normally.
+    #[tokio::test]
+    async fn promote_instance_rejects_a_foreign_petal_path() {
+        let (db, _, _) = setup().await;
+        db.query(
+            "CREATE petal CONTENT { petal_id: 'petal-2', fractal_id: 'fractal-1', name: 'p2' };
+             CREATE node CONTENT { node_id: 'path-foreign', petal_id: 'petal-2', display_name: 'f' };
+             CREATE node CONTENT { node_id: 'path-own', petal_id: 'petal-1', display_name: 'o' };",
+        )
+        .await
+        .expect("seed paths");
+
+        let err = promote_instance_handler(&db, "petal-1", "path-foreign", 0)
+            .await
+            .expect_err("foreign path must be refused");
+        assert!(err.to_string().contains("another petal"), "{err}");
+        assert_eq!(
+            node_petal_id(&db, "path-foreign#inst-0").await.unwrap(),
+            None
+        );
+
+        let (node_id, newly) = promote_instance_handler(&db, "petal-1", "path-own", 0)
+            .await
+            .expect("own-petal path promotes");
+        assert_eq!(node_id, "path-own#inst-0");
+        assert!(newly);
+        assert_eq!(
+            node_petal_id(&db, &node_id).await.unwrap().as_deref(),
+            Some("petal-1")
+        );
     }
 
     #[tokio::test]

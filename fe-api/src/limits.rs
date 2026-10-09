@@ -31,5 +31,10 @@ pub const SHARE_DEFAULT_TTL_SECS: u64 = 3600;
 /// Maximum shareable-URL TTL (24 hours) — plan D2.
 pub const SHARE_MAX_TTL_SECS: u64 = 24 * 3600;
 
-/// Max decoded GPX size accepted by the MCP `import_gpx` tool (16 MiB).
-pub const MCP_GPX_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Max decoded GPX size accepted by the MCP `import_gpx` tool (11 MiB — its
+/// base64 must fit the 16 MiB `/mcp` body cap, DEC-C21).
+pub const MCP_GPX_MAX_BYTES: usize = 11 * 1024 * 1024;
+
+/// Max parsed GPX points (track + route points + waypoints) per import, both
+/// transports — each point becomes a DB round trip (DEC-C21 M6).
+pub const GPX_MAX_POINTS: usize = 10_000;

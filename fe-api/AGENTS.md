@@ -61,7 +61,7 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 29 tools, one `ToolSpec` table (§mcp-dispatch); body limit raised for base64 uploads (§asset-ingest) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 29 tools, one `ToolSpec` table (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
 
@@ -186,12 +186,13 @@ Three GET endpoints, all under the JWT-authenticated router in `server.rs`:
 
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/api/v1/assets/{content_hash}` | raw blob by BLAKE3 hash, `application/octet-stream`, immutable cache headers. No RBAC scope check (content hash carries no ownership) — pre-existing endpoint, unchanged. |
-| GET | `/api/v1/assets/by-id/{asset_id}` | resolves `asset` row -> blob, serves with the **real** `content_type`/`name`/`size` from the DB. RBAC scope resolved via the first `node` referencing that `asset_id`. |
+| GET | `/api/v1/assets/{content_hash}` | raw blob by BLAKE3 hash, `application/octet-stream`, `private, max-age=31536000, immutable`. Viewer+, and the hash must belong to an `asset` row referenced by a node the token covers (`asset_reach` — DEC-C21; a hash is no longer a capability). |
+| GET | `/api/v1/assets/by-id/{asset_id}` | resolves `asset` row -> blob, serves with the **real** `content_type`/`name`/`size` from the DB. Granted iff ANY node referencing the asset is in the token's scope (`asset_reach`). |
 | GET | `/api/v1/nodes/{node_id}/asset` | resolves `node.asset_id` -> `asset` row -> blob. RBAC scope resolved from the node's parent chain (same `resolve_node_scope` helper as `/nodes/:id/transform`). |
 
-Both new endpoints require Viewer+ role and require the node's/asset's scope
-be covered by the token, require a **valid ULID** path param (reuses
+All three require Viewer+ role and that the node's/asset's scope be covered
+by the token; not-found and out-of-scope deny identically (404, `not found or
+not permitted` — no existence oracle). The id routes require a **valid ULID** path param (reuses
 `types::is_valid_ulid` — length + charset check, no separate validator), and
 never build a filesystem path from user input: the blob path always comes
 from `BlobStore::get_blob_path(hash)`, keyed by the DB's `content_hash`
@@ -202,14 +203,24 @@ differs from the rest of `rest.rs`, where most handlers return HTTP 200 with
 `{"ok": false, ...}` for historical reasons; asset delivery is byte-stream
 territory, so real status codes matter for HTTP caches/CDNs/downloaders.
 
-**Asset scope resolution caveat**: the `asset` table has no scope/owner column
-of its own — only `node.asset_id` links an asset into the hierarchy, and
-nothing stops two nodes (even in different petals) from pointing at the same
-`asset_id`. `by-id` lookups authorize against whichever node happens to be
-returned first by `SELECT petal_id FROM node WHERE asset_id = $aid LIMIT 1`.
-This is fine for the common case (one asset, one importing node) but is not a
-real multi-owner model; if assets need independent RBAC, that's a schema
-change in `fe-database` (out of scope here — see integration requests below).
+**Asset scope = referencing nodes (DEC-C21, `assets::asset_reach`)**: the
+`asset` table has no scope/owner column — only `node.asset_id` links an asset
+into the hierarchy, and two nodes (even in different petals) may share one
+`asset_id`. `asset_reach` reads EVERY referencing node's petal (capped:
+10 000 rows / 256 distinct petals, fail-closed beyond) and classifies the
+asset for a token as `Covered` (>= 1 referencing node in scope), `Foreign`
+(referenced only elsewhere, or the lookup failed) or `Unreferenced` (a fresh
+upload not yet placed). Reads (by-hash, by-id) require `Covered`; MCP
+`place_asset` refuses `Foreign` (so a token cannot launder another tenant's
+asset into its own petal and then read it through its own node) with the
+same text as an unknown id. Consequences, all deliberate: an uploaded-but-
+never-placed asset is not readable by hash/id until placed; a deny-by-default
+miss (row cap) is a false 404, never a leak; the `asset` table is no longer
+in the `/query` read whitelist (§query-guard). The old rule (authorize
+against the FIRST referencing node, `LIMIT 1`) was order-dependent and is
+gone. **Deferred (trigger: multi-tenant deploy):** an owner/petal column on
+`asset` written at upload, which would make `Unreferenced` uploads
+attributable and replace the reference scan.
 
 **Directory-asset extension point**: the asset model is heading toward "any
 file, or a directory of files behind a placeholder" (the P2P bucket / "3D
@@ -374,7 +385,11 @@ no documented `/query`/export/share consumer (`fe-api/src/format.rs::
 load_export_nodes` reads it directly against `db_reader` by `node_id`, never
 through this guard) and is now **removed** from `ALLOWED_TABLES`; re-add it
 only behind a node-scoped subquery substitution (mirroring `node`/
-`iot_reading`) if a real consumer appears. `crate_entry` carries no
+`iot_reading`) if a real consumer appears. `ASSET` was removed the same way
+(DEC-C21): its rows carry no owner/scope column, so allow-listing it exposed
+every uploaded `asset_id`/`content_hash` to any token; no `/query`/export
+consumer existed (fe-ui reads assets via the DB thread; the rest.rs whitelist
+test now pins the rejection). `crate_entry` carries no
 `petal_id` column and stays deliberately unscoped. Function namespaces
 outside the banned constructors (e.g. a future `fn::`/`api::`) are not
 enumerated.
@@ -802,8 +817,14 @@ lookup → `authorize` → schema-`required` check → handler. `authorize` is t
 **only** MCP authz code: typed role floor (`require_role_level` — a string
 role typo would parse to `RoleLevel::None` = admit-all, so the table is
 typed and a test forbids a `None` floor), then the row's `ScopeRule`
-resolved **from the DB**, then token containment. Unresolvable → deny
-("petal/node/fractal/verse not found"). Handlers (`src/mcp/tools.rs`) take
+resolved **from the DB**, then token containment, then (HierarchyArgs only)
+the claimed-ancestry match. Unresolvable, out-of-scope and
+ancestry-mismatched calls ALL deny with one text, `rest::NOT_FOUND_OR_DENIED`
+("not found or not permitted" — DEC-C21: the old three messages were an
+existence oracle). Role failures stay "insufficient permissions"; malformed
+ids ("invalid petal_id") and depth escalation ("unexpected petal_id") stay
+distinct — they are input-shape errors that reveal nothing stored.
+Handlers (`src/mcp/tools.rs`) take
 the resolved scope and contain no `require_*`/`resolve_*_scope` calls —
 grep-tested (`handlers_contain_no_authz_calls`). Shared cores they call
 (sim verbs, hexon/tileset cores, query_guard) keep their own guards as
@@ -813,13 +834,18 @@ defense in depth.
 |---|---|---|
 | `None` | self-filtering read (token scope narrows output) | get_hierarchy, query |
 | `Global` | no resource scope exists — role-only by design | create_verse (Manager), sim_* (Owner) |
-| `PetalArg(k)` | `args[k]` petal → `resolve_petal_scope` | promote_instance, query_timeseries, upload_asset, place_asset, create_waypoint, import_gpx, set_petal_terrain, list_tilesets, install_tileset (Manager), get_gis_nodes |
+| `PetalArg(k)` | `args[k]` petal → `resolve_petal_scope` | promote_instance, query_timeseries, upload_asset, place_asset, create_waypoint, import_gpx, set_petal_terrain, list_tilesets, install_tileset, get_gis_nodes |
 | `NodeArg(k)` | `args[k]` node → `resolve_node_scope` | update_transform, read_node, node_address, delete_node, set/get/delete_property, move_waypoint |
 | `HierarchyArgs(target)` | the id AT `target` (Verse/Fractal/Petal) is DB-resolved; shallower ids sent must match the stored chain; a DEEPER id is rejected outright | create_fractal→Verse, create_petal→Fractal, create_node→Petal |
 
-Role floors: Viewer for reads, Editor for writes, Manager for create_verse +
-install_tileset (DEC-C14; REST install is Editor + fe-policy `Install` — the
-MCP row is deliberately stricter), Owner for sim_*.
+Role floors: Viewer for reads, Editor for writes (incl. install_tileset),
+Manager for create_verse, Owner for sim_*. install_tileset was Manager under
+DEC-C14 ("deliberately stricter"); DEC-C21 M5 aligned it to Editor — REST
+install and fe-policy `Install` are both Editor, and a stricter MCP row only
+split the authority model. Its archive decode is capped at
+`terrain::TILESET_ARCHIVE_MAX_BYTES` (2 MiB = the REST route's effective
+cap: no `DefaultBodyLimit`, so axum's default) and archive parsing + the
+registry write run on `spawn_blocking` (both transports).
 
 **Wart history (fixed F13).** create_node / create_petal used to scope-check
 only when the caller supplied ancestry ids (omit them → role-only), and
@@ -845,6 +871,21 @@ target is ever accepted, so the token's scope containment check
 (`require_scope`) runs against the real write target, not a shallower
 decoy.
 
+**REST twins (DEC-C21 Mandatory 1).** `POST …/verses/{v}/fractals/{f}/petals`
+and `POST …/petals/{p}/nodes` used to build the authz scope from the URL ids
+(`build_scope(v, f, p)` + prefix containment), so an Editor of `VERSE#A`
+could write into ANY petal by putting `A` in front of it. They now apply the
+same discipline as `HierarchyArgs` (`rest::write_target_authorized`): resolve
+the WRITE TARGET (fractal / petal) from the DB, require the token to cover
+it, then require the URL ancestors to match its stored chain — all denials
+404 + `NOT_FOUND_OR_DENIED`, role 403. `create_fractal` resolves its verse
+too (existence), and the legacy flat `POST /api/v1/nodes` uses the same
+helper. Sweep of rest.rs: every other node/petal handler already DB-resolves
+its scope; the field-def by-id routes (`PATCH|DELETE
+/api/v1/field-defs/by-id/{id}`) had NO scope check at all (any Manager could
+rewrite any verse's schema) and now require the field def's stored scope;
+`GET /api/v1/field-defs/{scope}` requires the token to cover `{scope}`.
+
 **Honest arithmetic (DEC-C14).** A26's "20 tools" = the mcp_scene_primitives
 20-name vocabulary, now fully present. `tools/list` returns 29: 24 non-sim +
 5 sim — an intentional, documented superset (read_node, node_address,
@@ -855,8 +896,8 @@ deleted or renamed.
 refuses exactly like REST PUT/DELETE terrain (`SetPetalTerrain` replies are
 uncorrelated — fe-runtime §api-reply-correlation). `query` inherits
 `query_guard`'s verse/fractal-scoped tokens getting NO row filter
-(petal-scoped tokens are filtered). `place_asset` accepts any existing
-`asset_id` (asset rows are node-global — §assets caveat).
+(petal-scoped tokens are filtered). `place_asset` refuses an asset
+referenced only outside the token's scope (§assets — DEC-C21).
 
 ## §asset-ingest (F13 — mcp_scene_primitives FR-1/2/3/7)
 
@@ -877,10 +918,35 @@ content_hash, correlation_id}` → correlated `DbResult::AssetCreated`.
 - **Validation (FR-7):** GLB only — `glTF` magic, version 2, header length ==
   byte length, ≤ `MAX_ASSET_BYTES` (256 MiB, per-node config is a seam).
   Embedded textures are an uploader requirement, not parsed.
-- **Limits (NFR-2):** asset route `DefaultBodyLimit` = 256 MiB + 1 MiB;
-  `/mcp` = ceil(4/3 × 256 MiB) + 8 MiB. A max-size MCP upload transiently
-  holds ~600 MB (body + decode) — accepted for a desktop node. Other routes
-  keep axum's 2 MB default. GPX via MCP caps at 16 MiB decoded.
+- **Limits (NFR-2, DEC-C21):** asset route `DefaultBodyLimit` = 256 MiB +
+  1 MiB — **large GLBs go through REST multipart**. `/mcp` =
+  `MCP_ROUTE_BODY_LIMIT` = **16 MiB for every JSON-RPC method** (it used to
+  be ceil(4/3 × 256 MiB) + 8 MiB ≈ 349 MiB on every method, a DoS surface).
+  MCP `upload_asset` decodes at most `MCP_MAX_ASSET_BYTES` = 11 MiB: its
+  base64 is 11 × 4/3 ≈ 14.67 MiB, leaving ~1.3 MiB for the JSON-RPC
+  envelope. Honest peak per MCP call: the <= 16 MiB body (the raw bytes plus
+  the parsed `serde_json::Value` — roughly 2× the body while parsing), the
+  arguments MOVED out of `params` (`Value::take`, never cloned), one copy of
+  the base64 string handed to the decode task (`ToolCall.args` is borrowed,
+  so the handler cannot move it), and the decoded bytes (<= 11 MiB) on
+  `spawn_blocking` → ~45 MiB transient per call at the cap; at most `MCP_MAX_CONCURRENT_CALLS` = 8 calls run at
+  once (a semaphore middleware with tower `ConcurrencyLimit` semantics —
+  excess requests wait for a permit before their body is read;
+  unauthenticated requests are rejected by the auth layer first) → a few
+  hundred MiB worst case, versus multiple GiB before. (The previous
+  "~600 MB" figure assumed one call at the old 349 MiB cap; it was never a
+  bound.) Other routes keep axum's 2 MiB default. GPX via MCP caps at
+  `MCP_GPX_MAX_BYTES` = 11 MiB decoded (same envelope arithmetic) and BOTH
+  GPX transports cap parsed points at `limits::GPX_MAX_POINTS` = 10 000
+  (each trackpoint is a `CreateNode` round trip; REST answers 413).
+- **Blob GC / quota — deferred (trigger: multi-tenant deploy).** Blobs are
+  never garbage-collected and there is no per-token/per-petal byte quota: a
+  re-upload of identical bytes dedupes at the blob layer, but every upload
+  adds an `asset` row and distinct bytes accumulate forever (bounded only by
+  the per-call caps above and disk). Acceptable for a single-tenant desktop
+  node; before any shared/multi-tenant deployment add (a) a reference-count
+  GC over `asset.content_hash` / `node.asset_id`, and (b) an upload quota
+  keyed by token subject, alongside the `asset` owner column (§assets).
 - **Placement:** `place_asset` → `DbCommand::CreateNodeWithAsset` (log-first
   `NodeCreated` op, rotation stored as Euler XYZ like `UpdateNodeTransform`)
   → `DbResult::GltfImported` with an echoed `correlation_id`. Only a

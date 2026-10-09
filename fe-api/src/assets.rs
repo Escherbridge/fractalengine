@@ -31,58 +31,143 @@ const DIRECTORY_ASSET_CONTENT_TYPE: &str = "application/x-fe-directory";
 const MAX_ASSET_RESPONSE_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 
 // ---------------------------------------------------------------------------
-// GET /api/v1/assets/:content_hash — raw content-addressed blob (unchanged).
+// Asset scope: derived from referencing nodes (asset rows have no owner column)
+// ---------------------------------------------------------------------------
+
+/// Distinct referencing petals inspected per lookup (fail-closed beyond it).
+const MAX_ASSET_REFERENCE_PETALS: usize = 256;
+/// Referencing-node rows read per lookup (fail-closed beyond it).
+const MAX_ASSET_REFERENCE_ROWS: usize = 10_000;
+
+/// How an asset relates to a token's scope (DEC-C21; see AGENTS.md §assets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetReach {
+    /// No node references the asset yet (a fresh, not-yet-placed upload).
+    Unreferenced,
+    /// At least one referencing node lies inside the token's scope.
+    Covered,
+    /// Referenced only outside the token's scope — or the lookup failed.
+    Foreign,
+}
+
+/// Classify `asset_ids` against the token scope through EVERY node that
+/// references them (direct reader, else the RawQuery channel). Fails closed.
+pub async fn asset_reach(state: &ApiState, claims: &ApiClaims, asset_ids: &[String]) -> AssetReach {
+    if asset_ids.is_empty() {
+        return AssetReach::Unreferenced;
+    }
+    let sql = format!(
+        "SELECT petal_id FROM node WHERE asset_id IN $aids LIMIT {MAX_ASSET_REFERENCE_ROWS}"
+    );
+    let Some(rows) = crate::gis::run_select(
+        state,
+        &sql,
+        vec![("aids".to_string(), serde_json::json!(asset_ids))],
+    )
+    .await
+    else {
+        tracing::warn!("asset reference lookup failed; denying");
+        return AssetReach::Foreign;
+    };
+    let mut petals: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.get("petal_id").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect();
+    petals.sort_unstable();
+    petals.dedup();
+    if petals.is_empty() {
+        return AssetReach::Unreferenced;
+    }
+    for petal_id in petals.iter().take(MAX_ASSET_REFERENCE_PETALS) {
+        if let Some(scope) = crate::rest::resolve_petal_scope(state, petal_id).await {
+            if require_scope(claims, &scope).is_ok() {
+                return AssetReach::Covered;
+            }
+        }
+    }
+    AssetReach::Foreign
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/assets/:content_hash — content-addressed blob, scope-checked.
 // ---------------------------------------------------------------------------
 
 /// GET /api/v1/assets/:content_hash
 ///
-/// Serves a blob from the content-addressed store with immutable caching headers.
-/// Returns 404 if the hash is not found in the blob store.
+/// Viewer+; the hash must belong to an `asset` row referenced by a node the
+/// token's scope covers (DEC-C21 — a hash alone is no longer a capability).
+/// Unknown, unreferenced and foreign hashes all deny with one 404.
 pub async fn get_asset(
     State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
     Path(content_hash): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
+    if require_role(&claims, "viewer").is_err() {
+        return error_response(StatusCode::FORBIDDEN, "insufficient permissions");
+    }
     let Some(ref blob_store) = state.blob_store else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            HeaderMap::new(),
-            Vec::new(),
-        );
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "blob store not configured");
     };
-
-    let hash = match fe_runtime::blob_store::hash_from_hex(&content_hash) {
-        Ok(h) => h,
-        Err(_) => return (StatusCode::BAD_REQUEST, HeaderMap::new(), Vec::new()),
+    let Ok(hash) = hash_from_hex(&content_hash) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid content hash");
     };
+    // Canonical lowercase hex — the form `CreateAsset` stores.
+    let canonical = fe_runtime::blob_store::hash_to_hex(&hash);
+    // A failed lookup reads as "no rows" — it denies below (fail closed).
+    let asset_ids: Vec<String> = crate::gis::run_select(
+        &state,
+        "SELECT asset_id FROM asset WHERE content_hash = $hash",
+        vec![("hash".to_string(), serde_json::json!(canonical))],
+    )
+    .await
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|row| row.get("asset_id").and_then(serde_json::Value::as_str))
+    .map(str::to_string)
+    .collect();
+    if asset_ids.is_empty() || asset_reach(&state, &claims, &asset_ids).await != AssetReach::Covered
+    {
+        return error_response(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED);
+    }
 
     let Some(path) = blob_store.get_blob_path(&hash) else {
-        return (StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new());
+        return error_response(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED);
     };
-
-    match std::fs::read(&path) {
-        Ok(data) => {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                "content-type",
-                HeaderValue::from_static("application/octet-stream"),
+    let data = match read_blob_capped(&path) {
+        Ok(d) => d,
+        Err(BlobReadError::TooLarge(len)) => {
+            tracing::warn!("blob {canonical} too large to serve ({len} bytes)");
+            return error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "asset exceeds maximum servable size",
             );
-            headers.insert(
-                "etag",
-                HeaderValue::from_str(&format!("\"blake3:{content_hash}\""))
-                    .unwrap_or(HeaderValue::from_static("\"unknown\"")),
-            );
-            headers.insert(
-                "cache-control",
-                HeaderValue::from_static("public, max-age=31536000, immutable"),
-            );
-            (StatusCode::OK, headers, data)
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            HeaderMap::new(),
-            Vec::new(),
-        ),
-    }
+        Err(BlobReadError::Io(e)) => {
+            tracing::error!("failed reading blob {canonical}: {e}");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to read asset blob",
+            );
+        }
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    headers.insert(
+        "etag",
+        HeaderValue::from_str(&format!("\"blake3:{canonical}\""))
+            .unwrap_or(HeaderValue::from_static("\"unknown\"")),
+    );
+    // Immutable (content-addressed) but PRIVATE: the read is authorized per
+    // token, so a shared cache must never replay it to another caller.
+    headers.insert(
+        "cache-control",
+        HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
+    (StatusCode::OK, headers, data).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +178,8 @@ pub async fn get_asset(
 /// the asset back with its real `content_type` / filename / length.
 ///
 /// RBAC: Viewer+ required, scope resolved from the node's parent chain (same
-/// helper used by `/nodes/:node_id/transform` etc).
+/// helper used by `/nodes/:node_id/transform` etc). A node the token covers
+/// grants its own asset — the same rule [`asset_reach`] applies.
 pub async fn get_node_asset(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -107,12 +193,11 @@ pub async fn get_node_asset(
     }
 
     // Scope RBAC goes through the existing channel-or-direct resolver, so this
-    // still works even without a `db_reader` configured.
-    let Some(scope) = crate::rest::resolve_node_scope(&state, &node_id).await else {
-        return error_response(StatusCode::NOT_FOUND, "node not found");
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return error_response(StatusCode::FORBIDDEN, "insufficient scope");
+    // still works even without a `db_reader` configured. Missing and foreign
+    // nodes deny identically (no existence oracle).
+    let scope = crate::rest::resolve_node_scope(&state, &node_id).await;
+    if scope.is_none_or(|s| require_scope(&claims, &s).is_err()) {
+        return error_response(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED);
     }
 
     let Some(ref db) = state.db_reader else {
@@ -127,7 +212,7 @@ pub async fn get_node_asset(
 
     let asset_id = match direct_resolve_node_asset_id(db, &node_id).await {
         Ok(NodeAssetLookup::NodeNotFound) => {
-            return error_response(StatusCode::NOT_FOUND, "node not found")
+            return error_response(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED)
         }
         Ok(NodeAssetLookup::NoAsset) => {
             return error_response(StatusCode::NOT_FOUND, "node has no associated asset")
@@ -149,9 +234,10 @@ pub async fn get_node_asset(
 /// GET /api/v1/assets/by-id/:asset_id — resolve asset -> blob directly, for
 /// callers that already hold an `asset_id` (e.g. from a prior hierarchy fetch).
 ///
-/// Assets carry no scope of their own, so RBAC is resolved via the first node
-/// that references this asset (see `direct_resolve_asset_scope` and
-/// `fe-api/AGENTS.md` §assets for the rationale/limits of that choice).
+/// Assets carry no scope of their own, so the read is granted iff ANY node
+/// referencing the asset lies in the token's scope ([`asset_reach`] — DEC-C21
+/// replaced the old first-referencing-node rule). Unknown, unreferenced and
+/// foreign ids all deny with one 404.
 pub async fn get_asset_by_id(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -174,17 +260,8 @@ pub async fn get_asset_by_id(
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "blob store not configured");
     };
 
-    let scope = match direct_resolve_asset_scope(db, &asset_id).await {
-        Some(s) => s,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "asset not found (or not referenced by any node)",
-            )
-        }
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return error_response(StatusCode::FORBIDDEN, "insufficient scope");
+    if asset_reach(&state, &claims, std::slice::from_ref(&asset_id)).await != AssetReach::Covered {
+        return error_response(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED);
     }
 
     serve_asset_by_id(db, blob_store, &asset_id).await
@@ -393,20 +470,6 @@ async fn direct_load_asset_meta(db: &Db, asset_id: &str) -> anyhow::Result<Optio
             .to_string(),
         content_hash: row["content_hash"].as_str().unwrap_or_default().to_string(),
     }))
-}
-
-/// Resolve an asset's RBAC scope via the first node referencing it. Assets
-/// have no scope column of their own (see AGENTS.md §assets); this is the
-/// best available authority until that changes.
-async fn direct_resolve_asset_scope(db: &Db, asset_id: &str) -> Option<String> {
-    let mut res = db
-        .query("SELECT petal_id FROM node WHERE asset_id = $aid LIMIT 1")
-        .bind(("aid", asset_id.to_string()))
-        .await
-        .ok()?;
-    let rows: Vec<serde_json::Value> = res.take(0).ok()?;
-    let petal_id = rows.first()?.get("petal_id")?.as_str()?;
-    crate::rest::direct_resolve_petal_scope(db, petal_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -787,5 +850,150 @@ mod tests {
         let resp = get_node_asset(State(state), Extension(claims), Path(node_id)).await;
 
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    // --- DEC-C21: asset reads are scoped through referencing nodes ---------
+
+    fn state_with_store(
+        db: surrealdb::Surreal<surrealdb::engine::local::Db>,
+        blob_store: BlobStoreHandle,
+    ) -> Arc<ApiState> {
+        let (api_cmd_tx, _) = crossbeam::channel::bounded(1);
+        let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+        let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
+        Arc::new(ApiState {
+            api_cmd_tx,
+            transform_broadcast_tx,
+            entity_change_tx,
+            verifying_key: ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap(),
+            revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+            blob_store: Some(blob_store),
+            cors_origins: vec![],
+            db_reader: Some(Arc::new(db)),
+            query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            entity_store: None,
+            tileset_registry: None,
+            hexon_registry: None,
+            announcement_store: None,
+            replication_tx: None,
+            distributed_tx: None,
+            sim_control_tx: None,
+            share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
+        })
+    }
+
+    /// By-hash: the owner's token reads the bytes (private immutable cache);
+    /// a foreign token and an unknown hash both get the same 404.
+    #[tokio::test]
+    async fn get_asset_by_hash_requires_a_covering_referencing_node() {
+        let db = setup_test_db().await;
+        let blob_store: BlobStoreHandle = Arc::new(TestFsBlobStore::new());
+        let bytes = b"scoped blob bytes".to_vec();
+        let (_node, _asset, hash) =
+            seed_node_with_asset(&db, &blob_store, &bytes, "m.glb", "model/gltf-binary").await;
+        let state = state_with_store(db, blob_store);
+
+        let resp = get_asset(
+            State(state.clone()),
+            Extension(test_claims("VERSE#v1")),
+            Path(hash.clone()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "private, max-age=31536000, immutable"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), bytes.as_slice());
+
+        let foreign = get_asset(
+            State(state.clone()),
+            Extension(test_claims("VERSE#v2")),
+            Path(hash),
+        )
+        .await;
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        let unknown = get_asset(
+            State(state),
+            Extension(test_claims("VERSE#v1")),
+            Path(hex::encode(blake3::hash(b"never stored").as_bytes())),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// An uploaded-but-never-placed asset has no scope anchor: by-hash and
+    /// by-id both deny (documented restriction until an ownership column).
+    #[tokio::test]
+    async fn unreferenced_asset_is_not_readable() {
+        let db = setup_test_db().await;
+        let blob_store: BlobStoreHandle = Arc::new(TestFsBlobStore::new());
+        seed_node_with_asset(&db, &blob_store, b"placed", "a.glb", "model/gltf-binary").await;
+        let orphan_bytes = b"orphan bytes";
+        let orphan_hash =
+            fe_runtime::blob_store::hash_to_hex(&blob_store.add_blob(orphan_bytes).unwrap());
+        let orphan_id = ulid::Ulid::new().to_string();
+        db.query(
+            "CREATE asset CONTENT { asset_id: $aid, name: 'o.glb', content_type: 'model/gltf-binary',
+                size_bytes: 12, data: NONE, content_hash: $hash, created_at: 'now' }",
+        )
+        .bind(("aid", orphan_id.clone()))
+        .bind(("hash", orphan_hash.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let state = state_with_store(db, blob_store);
+
+        let by_hash = get_asset(
+            State(state.clone()),
+            Extension(test_claims("VERSE#v1")),
+            Path(orphan_hash),
+        )
+        .await;
+        assert_eq!(by_hash.status(), StatusCode::NOT_FOUND);
+        let by_id = get_asset_by_id(
+            State(state),
+            Extension(test_claims("VERSE#v1")),
+            Path(orphan_id),
+        )
+        .await;
+        assert_eq!(by_id.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// By-id: a token that covers no referencing node is denied (404), the
+    /// covering token is served.
+    #[tokio::test]
+    async fn get_asset_by_id_denies_a_foreign_token() {
+        let db = setup_test_db().await;
+        let blob_store: BlobStoreHandle = Arc::new(TestFsBlobStore::new());
+        let (node_id, asset_id, _hash) =
+            seed_node_with_asset(&db, &blob_store, b"b", "b.glb", "model/gltf-binary").await;
+        let state = state_with_store(db, blob_store);
+
+        let foreign = get_asset_by_id(
+            State(state.clone()),
+            Extension(test_claims("VERSE#v2")),
+            Path(asset_id.clone()),
+        )
+        .await;
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        let foreign_node = get_node_asset(
+            State(state.clone()),
+            Extension(test_claims("VERSE#v2")),
+            Path(node_id),
+        )
+        .await;
+        assert_eq!(foreign_node.status(), StatusCode::NOT_FOUND);
+        let own = get_asset_by_id(
+            State(state),
+            Extension(test_claims("VERSE#v1")),
+            Path(asset_id),
+        )
+        .await;
+        assert_eq!(own.status(), StatusCode::OK);
     }
 }
