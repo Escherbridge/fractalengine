@@ -364,11 +364,9 @@ impl VerseFabric {
                     }
                 }
             }
-            SHARD_TABLE => {
-                if !change.data.is_empty() {
-                    if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&change.data) {
-                        self.note_shard_row(&row);
-                    }
+            SHARD_TABLE if !change.data.is_empty() => {
+                if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&change.data) {
+                    self.note_shard_row(&row);
                 }
             }
             _ => {}
