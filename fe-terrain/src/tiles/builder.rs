@@ -261,16 +261,10 @@ mod inner {
                 max_zoom: self.max_zoom,
                 tile_size: 256,
                 elevation_encoding: self.elevation_encoding.clone(),
-                has_satellite: false,
                 tile_count: result.tiles_downloaded,
-                satellite_tile_count: 0,
                 region_name: self.region_name.clone(),
-                parent_tileset: None,
-                chunk_index: None,
-                native_scale: None,
-                ground_sample_distance_m: None,
-                crs: None,
-                scale_bounds: None,
+                crs: None, // preserve pre-Default behavior exactly; see fe-format/src/AGENTS.md §scale
+                ..Default::default()
             };
 
             let archive_bytes = HexonArchive::export_tileset(
@@ -371,21 +365,16 @@ mod inner {
                     max_zoom: self.max_zoom,
                     tile_size: 256,
                     elevation_encoding: self.elevation_encoding.clone(),
-                    has_satellite: false,
                     tile_count,
-                    satellite_tile_count: 0,
                     region_name: self.region_name.clone(),
-                    parent_tileset: None,
                     chunk_index: Some(fe_format::manifest::ChunkIndex {
                         tileset_id: tileset_id.clone(),
                         chunk_seq: seq as u32,
                         total_chunks,
                         chunk_bounds: self.bounds,
                     }),
-                    native_scale: None,
-                    ground_sample_distance_m: None,
-                    crs: None,
-                    scale_bounds: None,
+                    crs: None, // preserve pre-Default behavior exactly; see fe-format/src/AGENTS.md §scale
+                    ..Default::default()
                 };
 
                 let archive_bytes = HexonArchive::export_tileset(

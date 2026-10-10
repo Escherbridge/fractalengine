@@ -375,12 +375,8 @@ mod tests {
             tile_count: tiles.len() as u32,
             satellite_tile_count: satellite.len() as u32,
             region_name: "Test".into(),
-            parent_tileset: None,
-            chunk_index: None,
-            native_scale: None,
-            ground_sample_distance_m: None,
-            crs: None,
-            scale_bounds: None,
+            crs: None, // deliberately legacy — differs from Default's Some("EPSG:4326")
+            ..Default::default()
         };
         let manifest = HexonManifest {
             schema_version: "1.0.0".into(),

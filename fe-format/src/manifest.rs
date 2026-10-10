@@ -27,7 +27,7 @@ pub enum HexonType {
 /// Stored in `terrain/tileset_meta.json` inside the archive.
 /// Describes the geographic bounds, zoom levels, tile encoding,
 /// and distribution/chunking information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TilesetMeta {
     /// Geographic bounding box [min_lat, min_lon, max_lat, max_lon] (WGS84).
     pub bounds: [f64; 4],
@@ -83,11 +83,40 @@ impl TilesetMeta {
     }
 }
 
+/// Manual `Default` (not `#[derive(Default)]`) because `crs` must agree with
+/// what serde produces for a crs-less archive (`default_crs()`, i.e.
+/// `Some("EPSG:4326")`) — a derived `Default` would give `None` instead and
+/// silently disagree with `legacy_tileset_meta_deserializes_with_defaults`.
+/// Every other field uses the type's own zero value, matching every other
+/// field's `#[serde(default)]` (plain `Option::is_none`/`0`/`false`).
+impl Default for TilesetMeta {
+    fn default() -> Self {
+        Self {
+            bounds: [0.0; 4],
+            min_zoom: 0,
+            max_zoom: 0,
+            tile_size: 0,
+            elevation_encoding: ElevationEncoding::default(),
+            has_satellite: false,
+            tile_count: 0,
+            satellite_tile_count: 0,
+            region_name: String::new(),
+            parent_tileset: None,
+            chunk_index: None,
+            native_scale: None,
+            ground_sample_distance_m: None,
+            crs: default_crs(),
+            scale_bounds: None,
+        }
+    }
+}
+
 /// Elevation tile encoding format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ElevationEncoding {
     /// Mapbox Terrain-RGB: elevation = -10000 + (R*256*256 + G*256 + B) * 0.1
+    #[default]
     TerrainRgb,
     /// Mapzen Terrarium: elevation = (R*256 + G + B/256) - 32768
     Terrarium,
@@ -100,7 +129,7 @@ pub enum ElevationEncoding {
 /// Large tilesets are split into chunks that can be fetched independently
 /// over P2P relays. Each chunk covers a contiguous spatial region at the
 /// same zoom range.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChunkIndex {
     /// Unique ID for the complete tileset this chunk belongs to.
     pub tileset_id: String,
@@ -231,6 +260,29 @@ mod scale_field_tests {
         assert!(meta.scale_bounds.is_none());
     }
 
+    /// The test that would go red if `Default` and serde's per-field defaults
+    /// ever drift: a legacy archive (only the original required fields) must
+    /// deserialize to exactly what a producer gets from
+    /// `TilesetMeta { ..required fields.., ..Default::default() }`.
+    #[test]
+    fn default_agrees_with_serde_defaults_for_a_legacy_archive() {
+        let from_json: TilesetMeta =
+            serde_json::from_value(legacy_tileset_meta_json()).expect("legacy blob must parse");
+        let from_default = TilesetMeta {
+            bounds: [45.0, -122.0, 46.0, -121.0],
+            min_zoom: 10,
+            max_zoom: 12,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            has_satellite: false,
+            tile_count: 4,
+            satellite_tile_count: 0,
+            region_name: "Legacy Region".into(),
+            ..Default::default()
+        };
+        assert_eq!(from_json, from_default);
+    }
+
     #[test]
     fn scale_fields_roundtrip_through_serde() {
         let meta = TilesetMeta {
@@ -243,12 +295,11 @@ mod scale_field_tests {
             tile_count: 4,
             satellite_tile_count: 0,
             region_name: "Test".into(),
-            parent_tileset: None,
-            chunk_index: None,
             native_scale: Some(0.001),
             ground_sample_distance_m: Some(2.5),
             crs: Some("EPSG:3857".into()),
             scale_bounds: Some([0.0001, 1.0]),
+            ..Default::default()
         };
         let json = serde_json::to_value(&meta).unwrap();
         let parsed: TilesetMeta = serde_json::from_value(json).unwrap();

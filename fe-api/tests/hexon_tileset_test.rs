@@ -50,16 +50,10 @@ fn build_tiny_hexon_tileset(hexon_id: &str) -> Vec<u8> {
         max_zoom: 5,
         tile_size: 256,
         elevation_encoding: ElevationEncoding::TerrainRgb,
-        has_satellite: false,
         tile_count: 1,
-        satellite_tile_count: 0,
         region_name: "F14 T2 test region".to_string(),
-        parent_tileset: None,
-        chunk_index: None,
-        native_scale: None,
-        ground_sample_distance_m: None,
-        crs: None,
-        scale_bounds: None,
+        crs: None, // deliberately legacy (no CRS) — differs from Default's Some("EPSG:4326")
+        ..Default::default()
     };
     HexonArchive::export_tileset(
         manifest,

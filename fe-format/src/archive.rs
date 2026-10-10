@@ -488,16 +488,13 @@ mod scale_roundtrip_tests {
             max_zoom: 12,
             tile_size: 256,
             elevation_encoding: ElevationEncoding::TerrainRgb,
-            has_satellite: false,
             tile_count: 1,
-            satellite_tile_count: 0,
             region_name: "Scale Region".into(),
-            parent_tileset: None,
-            chunk_index: None,
             native_scale: Some(0.001),
             ground_sample_distance_m: Some(4.77),
             crs: Some("EPSG:4326".into()),
             scale_bounds: Some([0.0001, 0.01]),
+            ..Default::default()
         };
         let bytes =
             HexonArchive::export_tileset(manifest(), &meta, &[], &[], None).expect("export failed");
@@ -507,5 +504,29 @@ mod scale_roundtrip_tests {
         assert_eq!(round_tripped.ground_sample_distance_m, Some(4.77));
         assert_eq!(round_tripped.crs.as_deref(), Some("EPSG:4326"));
         assert_eq!(round_tripped.scale_bounds, Some([0.0001, 0.01]));
+    }
+
+    /// The seam test for the `Default` contract itself: a `TilesetMeta` built
+    /// with only the fields a real producer sets (see
+    /// `fe-terrain/src/tiles/builder.rs`) plus `..Default::default()` must
+    /// round-trip byte-for-byte through the same archive writer/reader
+    /// producers and consumers actually use.
+    #[test]
+    fn default_constructed_meta_roundtrips_through_archive() {
+        let meta = TilesetMeta {
+            bounds: [47.0, 8.0, 47.1, 8.1],
+            min_zoom: 5,
+            max_zoom: 8,
+            tile_size: 256,
+            elevation_encoding: ElevationEncoding::TerrainRgb,
+            tile_count: 12,
+            region_name: "Default Contract Region".into(),
+            ..Default::default()
+        };
+        let bytes =
+            HexonArchive::export_tileset(manifest(), &meta, &[], &[], None).expect("export failed");
+        let data = HexonArchive::import(&bytes).expect("import failed");
+        let round_tripped = data.tileset_meta.expect("tileset_meta must be present");
+        assert_eq!(round_tripped, meta);
     }
 }

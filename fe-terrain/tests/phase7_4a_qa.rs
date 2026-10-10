@@ -42,16 +42,10 @@ fn make_meta(tile_count: u32) -> TilesetMeta {
         max_zoom: 13,
         tile_size: 256,
         elevation_encoding: ElevationEncoding::TerrainRgb,
-        has_satellite: false,
         tile_count,
-        satellite_tile_count: 0,
         region_name: "QA Region".into(),
-        parent_tileset: None,
-        chunk_index: None,
-        native_scale: None,
-        ground_sample_distance_m: None,
-        crs: None,
-        scale_bounds: None,
+        crs: None, // deliberately legacy — differs from Default's Some("EPSG:4326")
+        ..Default::default()
     }
 }
 
@@ -283,16 +277,10 @@ fn check3_builder_equivalent_roundtrip() {
         max_zoom: 7,
         tile_size: 256,
         elevation_encoding: ElevationEncoding::TerrainRgb,
-        has_satellite: false,
         tile_count: 2,
-        satellite_tile_count: 0,
         region_name: region.into(),
-        parent_tileset: None,
-        chunk_index: None,
-        native_scale: None,
-        ground_sample_distance_m: None,
-        crs: None,
-        scale_bounds: None,
+        crs: None, // deliberately legacy — differs from Default's Some("EPSG:4326")
+        ..Default::default()
     };
 
     let archive = HexonArchive::export_tileset(manifest.clone(), &meta, &tiles, &[], None)
@@ -413,21 +401,16 @@ fn check5_chunk_index_sequential() {
             max_zoom: 5,
             tile_size: 256,
             elevation_encoding: ElevationEncoding::TerrainRgb,
-            has_satellite: false,
             tile_count: 1,
-            satellite_tile_count: 0,
             region_name: "QA Chunk".into(),
-            parent_tileset: None,
             chunk_index: Some(ChunkIndex {
                 tileset_id: tileset_id.into(),
                 chunk_seq: seq,
                 total_chunks,
                 chunk_bounds: bounds,
             }),
-            native_scale: None,
-            ground_sample_distance_m: None,
-            crs: None,
-            scale_bounds: None,
+            crs: None, // deliberately legacy — differs from Default's Some("EPSG:4326")
+            ..Default::default()
         };
         let manifest = make_manifest(&format!("{tileset_id}-chunk-{seq}"));
         let archive = HexonArchive::export_tileset(manifest, &meta, &chunk_tiles, &[], None)
@@ -480,12 +463,8 @@ fn check6_full_roundtrip_elevation_and_satellite() {
         tile_count: 2,
         satellite_tile_count: 1,
         region_name: "Roundtrip Test".into(),
-        parent_tileset: None,
-        chunk_index: None,
-        native_scale: None,
-        ground_sample_distance_m: None,
-        crs: None,
-        scale_bounds: None,
+        crs: None, // deliberately legacy — differs from Default's Some("EPSG:4326")
+        ..Default::default()
     };
 
     let archive = HexonArchive::export_tileset(
