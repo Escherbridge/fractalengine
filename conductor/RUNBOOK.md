@@ -2,7 +2,7 @@
 type: runbook
 title: FractalEngine session runbook
 updated: 2026-10-10
-head: d4a4744
+head: da922a6
 ---
 
 # RUNBOOK — Prod-ready mission COMPLETE (2026-10-10)
@@ -55,6 +55,17 @@ acceptance A20–A33 all validated.
   fe-sync -p fe-canonical-log -p fe-database` 964 passed / 0 failed / 15
   ignored (22 binaries). The full-workspace test run is left to CI's Linux
   job on this push — check it (§8 step 1).
+- **2026-10-10 long-horizon session (local, unpushed — §8 step 1).** Four
+  small implement → adversarial-review-and-fix workflows, each gated (fmt +
+  workspace clippy on 1.99.0 + affected-crate tests + both e2e scripts where
+  fe-api changed): SetPetalTerrain correlation; elevated-query lockdown;
+  existence-oracle unification; TilesetMeta Default. The reviews found and
+  fixed FOUR live security holes beyond their briefs: `/query` read any
+  record by id (`role:x.*`, `$v.to_record()`); the elevated validator never
+  inspected DELETE/CREATE/UPSERT targets; `?kind=stamp&path_id=` read
+  another verse's stamps; an API terrain write to petal B replaced the
+  desktop's live petal-A terrain. Lesson: the reviewer that FIXES finds more
+  than the brief names — keep briefs scoped but let it chase.
 - **Verified, not just written** — final sweep on the closing tree:
   `cargo test --workspace` 3,245 passed / 0 failed / 21 ignored (96 binaries);
   `cargo clippy --workspace --all-targets -- -D warnings` clean (local
@@ -132,8 +143,8 @@ Factory-era locked user decisions: D1–D4 in the mission library.
 
 ## 7. Environment
 
-- Branch `main`, clean, in sync with origin after the 2026-10-10 push —
-  **still do not push without the user's go-ahead**. No stashes, no running
+- Branch `main`, clean, AHEAD of origin by the 2026-10-10 long-horizon
+  commits (§8 step 1) — **do not push without the user's go-ahead**. No stashes, no running
   processes, no open worktrees from the mission sessions.
 - Toolchain `1.99.0` is installed locally (build `b940084d7`, identical to
   CI's stable as of 2026-10-10): `cargo +1.99.0 clippy --workspace
@@ -151,23 +162,27 @@ Factory-era locked user decisions: D1–D4 in the mission library.
 
 ## 8. Continuation plan (next session)
 
-1. ~~Confirm the push decision~~ — moot, done 2026-10-10 (§2). **Confirm the
-   Lint job AND the Linux test job are green** on the pushed tip:
-   `gh run list --branch main --limit 1`.
-   If it is red again, reproduce with `cargo +1.99.0 clippy` (§7).
+1. **Push decision (user).** The 2026-10-10 long-horizon session left LOCAL,
+   UNPUSHED commits after `6bce04b` (`git log origin/main..HEAD`):
+   `9cbdea6` SetPetalTerrain correlation (live REST/MCP terrain mutation),
+   `9c4da00` elevated-query lockdown + `/query` record-id read leak,
+   `6763302` existence-oracle unification + stamp cross-tenant read,
+   then TilesetMeta Default, CI `--keep-going`, and this docs close-out.
+   Three are **breaking for API clients** (see their commit bodies). After
+   pushing, confirm CI green: `gh run list --branch main --limit 1`.
+   (`6bce04b` itself went fully green — run 38081082445, `latest` published.)
 2. **User runs the in-app verification** (not agent work): launch the GUI,
    install or view the Zurich/Fuji hexons, confirm terrain + scale bar, smoke
-   the editor. File any findings as new track items.
-3. If taking new work, pick from the deferred register (plan.md retro, each
-   with its trigger) — top candidate: **SetPetalTerrain reply correlation**
-   (fe-runtime/fe-database/fe-ui), which removes the
-   `TERRAIN_MUTATION_UNAVAILABLE` product gap and unlocks live tileset
-   binding; or return to the board's P0 slates (`conductor/tracks.md`:
-   Spatial Builder Program, UI shell) or the canonical-data-log initiative.
-4. Housekeeping: the Lint job runs on floating `@stable`, so each rustc
-   release can turn latent warnings red again (memory:
-   ci-stable-toolchain-drift — third occurrence). Pinning the workflow's
-   toolchain is an unratified option; trigger: the next drift-only red.
+   the editor. NEW since 2026-10-10: a REST PUT terrain to the petal you are
+   viewing should live-update it; to another petal it must NOT. File
+   findings as new track items.
+3. New work: the deferred register (plan.md retro) — every untriggered item
+   from the mission is now closed; the 2026-10-10 additions each carry a
+   trigger. Otherwise the board's P0 slates (`conductor/tracks.md`: Spatial
+   Builder Program, UI shell) or the canonical-data-log initiative.
+4. Housekeeping: Lint still runs on floating `@stable` (memory:
+   ci-stable-toolchain-drift), but clippy now runs `--keep-going` in CI, so
+   one red crate no longer hides its dependents. Pinning stays unratified.
 
 ## 9. Open questions
 

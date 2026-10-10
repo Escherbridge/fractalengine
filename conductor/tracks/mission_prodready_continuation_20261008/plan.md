@@ -119,12 +119,30 @@ in-app GUI smoke of the whole build.
 
 **Deferred register (with triggers)** — see spec.md DEC entries: blob
 GC/quota (multi-tenant deploy); ~~REST existence-leak message unification~~ (CLOSED 2026-10-10 — fe-api AGENTS.md §existence-oracle);
-/query/elevated scope filter; WKB local-frame axes (first GIS consumer);
-f32 anchor quantization; SetPetalTerrain reply correlation → unlocks the
-live tileset-binding path (TERRAIN_MUTATION_UNAVAILABLE product gap);
-per-entry decompression caps (hexon registry go-live); fe-format
-TilesetMeta derive(Default) (sibling-repo breakage class); REST tileset
+~~/query/elevated scope filter~~ (CLOSED 2026-10-10 `9c4da00` — unscopable, so
+fail-closed: `FE_API_ELEVATED_ALLOW=1` + Owner; fe-api AGENTS.md §elevated-query);
+WKB local-frame axes (first GIS consumer);
+f32 anchor quantization; ~~SetPetalTerrain reply correlation~~ (CLOSED
+2026-10-10 `9cbdea6` — REST/MCP terrain mutation live; §terrain-mutation);
+per-entry decompression caps (hexon registry go-live); ~~fe-format
+TilesetMeta derive(Default)~~ (CLOSED 2026-10-10 — manual Default agreeing
+with serde's `default_crs`; fe-format AGENTS.md §scale); REST tileset
 install 2 MiB effective cap (first >2 MiB install).
+
+**Added 2026-10-10 (long-horizon session reviews), with triggers:**
+GetPetalTerrain correlation — the tileset GET fallback is uncorrelated; a
+petal_id guard stops wrong-petal authorization but a GUI echo can still eat a
+waiter's slot (host serving tileset GETs without `db_reader` under GUI load);
+`/query/elevated` writes bypass the DB thread — no op-log/replication/
+broadcast — remove the endpoint or route it through `DbCommand` (first real
+consumer, or any multi-tenant deploy); elevated statements carry no DB-side
+TIMEOUT (before anyone sets `FE_API_ELEVATED_ALLOW=1`); existence-oracle
+TIMING channel — no index on `petal.petal_id`/`fractal.fractal_id`/
+`node.node_id`, so missing-vs-foreign lookups differ in scan cost (multi-tenant
+deploy; indexes are also a perf win); `TilesetBuilder::package*` stamps
+`crs: None` on freshly built archives so they read as legacy (next CRS-
+dependent egress or builder touch); `canonical_ws` not audited against
+§existence-oracle (when it is routed in server.rs).
 
 ## Verification evidence log
 
