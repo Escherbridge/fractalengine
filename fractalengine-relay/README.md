@@ -27,6 +27,7 @@ The relay listens on `0.0.0.0:8765` by default.
 | `SURREAL_DATASTORE_SYNC_DATA` | `every` | SurrealKV fsync cadence (`never` / `every` / duration >100ms) |
 | `RUST_LOG` | (none) | Log level filter (`info`, `debug`, `fe_api=debug`, etc.) |
 | `FE_SIM_ALLOW` | (unset) | `sim-control` builds only: `1` spawns the sim lab bridge (`/api/v1/sim/*`). A sim session overrides the process-wide HLC clock — set only on a dedicated lab relay serving no production verses. Unset → the bridge is not spawned (503) |
+| `FE_API_ELEVATED_ALLOW` | (unset) | `1` enables `POST /api/v1/query/elevated` (raw SurrealQL reads/writes, Owner tokens only). It is NOT scope-confined — an Owner of any verse reaches every verse on the node — and its writes bypass the DB thread (not op-logged, not replicated). Enable only on a single-tenant node; startup logs a WARN when on. Unset → every call is refused (fe-api/AGENTS.md §elevated-query) |
 | `FE_SIM_WORK_DIR` | `<tmp>/fe-relay-sim` | `sim-control` builds only: scratch root for sim session peers |
 
 ### Secret injection

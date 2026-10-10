@@ -56,7 +56,7 @@ when a route lands.
 | Terrain config (§terrain-mutation) | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
 | Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
-| Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: {…TsQueryKind…}` → §distributed-query), `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
+| Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: {…TsQueryKind…}` → §distributed-query), `POST /api/v1/query/elevated` (§elevated-query — OFF unless `FE_API_ELEVATED_ALLOW=1`; Owner; NOT scope-confined), `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
 | IoT ingest (§iot-ingest) | `POST /api/v1/petals/{p}/iot/readings` |
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
@@ -290,11 +290,11 @@ whitelist is enforced on EVERY `FROM` clause via `from_clause_tables`
 (subqueries included; non-identifier FROM targets like `$var` or
 `type::table(...)` are rejected outright) — first-FROM-only checking let a
 nested `SELECT` read any table. `ROLE`/`VERSE_MEMBER` were removed from the
-read whitelist (RBAC data is not BI egress; the role-gated elevated endpoint
-retains them). The elevated endpoint's DDL screen moved from bypassable
-multi-word substring matching ("DEFINE TABLE" vs "DEFINE  TABLE") to
-whole-word keyword bans + all-occurrence target checks in
-`validate_elevated_sql`. Fail-closed tradeoff accepted: keywords inside
+read whitelist (RBAC data is not BI egress; since 2026-10-10 the elevated
+endpoint excludes them too — §elevated-query). The elevated endpoint's DDL
+screen moved from bypassable multi-word substring matching ("DEFINE TABLE"
+vs "DEFINE  TABLE") to whole-word keyword bans + all-occurrence target
+checks in `validate_elevated_sql`. Fail-closed tradeoff accepted: keywords inside
 string literals reject the query.
 
 `src/query_guard.rs` is the single guard pipeline for every read-only SQL
@@ -329,8 +329,25 @@ got NO filter at all. It is gone. `prepare_scoped_sql(sql, petals, mode)`:
    whitelist, as did `FROM (role)` (paren must open a SELECT) and `FROM
    (SELECT …) AND role` (string-aware paren matcher, fail-closed on comments);
 4. scoped-dialect bans: escaped identifiers (`` ` `` / `⟨⟩`), record/table
-   constructors (`type::thing|record|table`, `record::`, `<record>`), `r"…"`
-   record strings — every way to name a record without its table name;
+   constructors (`type::thing|record|table|field(s)`, `record::`,
+   `<record>`, and the `.to_record()` method alias), `r"…"` record
+   strings — every way to name a record without its table name;
+   **Record-id literals (2026-10-10):** `reject_foreign_record_literals`
+   then refuses any `table:key` literal whose table is not in
+   `ALLOWED_TABLES`. Before this, a Viewer of verse A could read
+   `SELECT role:victim.* AS l FROM verse` (role rows by id) and
+   `SELECT $v.to_record().* … FROM verse` with `vars: {v: "<node rid of
+   verse B>"}` (any verse's node — `.to_record()` slipped past the
+   constructor needles, and a bound var never shows the word `node` to
+   step 5). Both proven against SurrealDB 3.0.5 and pinned by
+   `tests/record_id_read_test.rs`. The scan is lexer-free (strings count)
+   but sound and narrow because SurrealQL glues `:` to both sides of a
+   record id (`parse_record_id_key` bails on whitespace): spaced object
+   keys `{k: v}`, `::` function paths and digit-led runs (`…T00:00:00Z`
+   datetimes) pass; `{k:v}`, `'did:key:…'` and other `word:word` literals
+   are refused — bind them through `vars`. String-aware skipping was
+   rejected on purpose: SurrealQL regex literals (`/'/`) would desync a
+   quote lexer;
 5. **every** whole-word `node` / `iot_reading` in the text must be a FROM
    target (lexer-free: strings and comments count — fail-closed, so
    `WHERE name = 'node'` is a false-positive rejection; record literals like
@@ -417,6 +434,83 @@ never as its rows.
 `/query` 10 000 rows / 8 MiB; exports 500 000 rows / 128 MiB; rate limits
 10/s per DID (`/query`, exports) and per token (share redemption); share TTL
 default 1h / max 24h. Change limits there, nowhere else.
+
+## §elevated-query (`rest.rs::execute_elevated_query`, 2026-10-10)
+
+`POST /api/v1/query/elevated` runs caller-supplied multi-statement SurrealQL
+— including writes — directly on `db_reader`. It **cannot be scope-confined**:
+raw SQL is not honestly filterable by string (the M4 review broke the old
+`/query` scope filter four ways — §query-guard), so there is no token-scope
+check at all. Until 2026-10-10 the only gate was Manager+, which let a
+Manager token for verse A rewrite rows of any verse on the node, including
+`role`/`verse_member` (privilege escalation). The posture is now
+deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
+(DEC-C13):
+
+- **Operator opt-in.** `ApiState.elevated_query_allowed` is `false` unless the
+  binary read `FE_API_ELEVATED_ALLOW=1` at startup
+  (`fe_api::elevated_query_allowed_from_env`, called once by both the relay
+  and the GUI; loud WARN when enabled, quiet when unset, a warning when set
+  to anything but `1`). Off → every call gets `elevated query endpoint is
+  disabled on this node` before role, rate limit, parsing or DB. A field,
+  not a per-request env read, so tests set it
+  (`ApiHarness::spawn_with_elevated_query_allowed`).
+- **Guard order: opt-in → Owner (`require_role_level(Owner)`, typed — a
+  role-string typo would parse to `RoleLevel::None` = admit-all) → 5/s per
+  DID → `validate_elevated_sql` → DB.** Owner of ANY scope passes, which is
+  exactly why the endpoint is only for single-tenant nodes.
+- **Table whitelist `query_guard::ELEVATED_TABLES`** = scene content only:
+  `NODE`, `FRACTAL`, `PETAL`, `FIELD_DEF`, `MODEL`, `ROOM`. Removed:
+  `ROLE`, `VERSE_MEMBER` (privilege data changes only through the RBAC
+  handlers); `VERSE` (no secret on the row — the namespace secret lives in
+  the keystore — but `created_by` and `default_access` are
+  `role_manager::resolve_role` inputs, so `UPDATE verse SET created_by = …`
+  is an Owner takeover and bypasses `set_default_access`'s viewer/none pin);
+  `NODE_LOG` (append-only history); `ASSET`, `CRATE_REGISTRY`,
+  `CRATE_ENTRY` (content-addressed hashes / signature-checked install path —
+  a raw rewrite swaps blobs or forges `signature_valid`).
+- **Target parsing fails closed.** The old screen inspected only
+  `FROM`/`INTO`/`UPDATE` and only the first identifier, so `DELETE role`,
+  `CREATE role …`, `UPSERT role …` and `UPDATE node, role …` all passed the
+  whitelist. Now every `FROM`/`UPDATE`/`UPSERT`/`CREATE`/`DELETE`/`INTO`
+  target list is checked element by element; write targets must be plain
+  table names (record ids, `$params`, escaped identifiers, subqueries,
+  `->` graph paths fail — filter with `WHERE`); `INSERT` must use `INTO`;
+  `USE` (would re-point the shared `db_reader` session), `ALTER`,
+  `REBUILD`, `ACCESS`, `SHOW`, `OPTION`, `RELATE`, `LIVE` join the
+  DDL/`INFO`/`SLEEP`/`KILL` bans. Keywords inside string literals reject the
+  query — bind literals through `vars`.
+- **Not the DB thread.** Writes bypass the single-writer DB thread: no
+  op-log entry, no replication to peers, no scene-change broadcast, no
+  `edit_seq` bump. A peer will not see them and the GUI will not refresh.
+- **Reads that name no FROM target are closed too (2026-10-10 adversarial
+  review).** `RETURN role:x.*`, `SELECT *, role:x.* AS l FROM node`,
+  `$v.to_record().*` (with `vars: {v: "role:x"}`), `type::record(…)`,
+  `r'role:x'` and `⟨role⟩:x` all dereferenced `role` rows (proven against
+  SurrealDB 3.0.5). `validate_elevated_sql` now also runs the shared
+  `reject_comments` + `reject_record_constructors` (needles incl.
+  `TO_RECORD`, `TYPE::FIELD`) + `reject_foreign_record_literals(…,
+  ELEVATED_TABLES)` — see §query-guard "Record-id literals". Cost: object
+  keys must be spaced (`{key: value}`), comments are refused, and string
+  literals holding `word:word` (DIDs, `a:b`) must be bound through `vars`.
+  The `ON DUPLICATE KEY UPDATE` target-check exemption now requires both
+  `DUPLICATE KEY`, not just a preceding `KEY` (`$key UPDATE role` no longer
+  skips the check).
+- **Writes cannot be redirected through `id`:** `CREATE/UPSERT node CONTENT
+  {id: role:x}` and `INSERT INTO node {id: …}` re-table the key onto `node`
+  (surrealdb-core `val/value/generate.rs`, `insert.rs`), and `SET a.b = …`
+  through a record link overwrites the link instead of writing the linked
+  row (`val/value/set.rs`) — so the write-target check is the whole write
+  boundary.
+- **Practically unreachable today:** `handlers::api_token` refuses to mint
+  `max_role: owner`, so no issued API token passes the Owner gate even on an
+  opted-in node. Keep it that way unless the endpoint gains a real scope
+  model.
+- Tests: `tests/elevated_query_test.rs` (router-level: off → refused;
+  Manager → refused; Owner reads/writes `node`; privilege rewrites refused
+  and rows unchanged), `tests/record_id_read_test.rs` (Owner cannot read a
+  seeded `role:victim` by id; the same vectors on `/query`) + `query_guard`
+  unit table `elevated_write_targets_must_be_plain_whitelisted_tables`.
 
 ## §export
 

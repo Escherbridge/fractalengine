@@ -1117,17 +1117,16 @@ pub(crate) async fn run_local_query(
     })
 }
 
-/// POST /api/v1/query/elevated — execute a SurrealQL statement with mutation support.
+/// POST /api/v1/query/elevated — raw multi-statement SurrealQL (SELECT /
+/// CREATE / UPDATE / UPSERT / DELETE / INSERT INTO, LET, RETURN) against
+/// `query_guard::ELEVATED_TABLES`.
 ///
-/// RBAC: Manager+ required. Scope enforced. Allows:
-/// - SELECT, CREATE, UPDATE, DELETE against whitelisted tables
-/// - DEFINE FUNCTION / REMOVE FUNCTION for stored procedures
-/// - LET bindings and RETURN statements
-/// - Multi-statement (semicolons allowed)
-///
-/// Blocked: DEFINE TABLE, DEFINE FIELD, REMOVE TABLE, DEFINE EVENT, INFO,
-///          and any system-level DDL that could alter the schema.
-///
+/// Contract (AGENTS.md §elevated-query): disabled unless the operator opted
+/// in (`ApiState.elevated_query_allowed`, env `FE_API_ELEVATED_ALLOW=1`);
+/// Owner only; NOT scope-confined — an Owner token of any verse reaches every
+/// verse's rows on this node, so enable only on a single-tenant node. Writes
+/// go straight to `db_reader`, bypassing the DB thread: they are not
+/// op-logged, not replicated, and not broadcast to the scene.
 /// Rate limited to 5 req/s per user.
 pub async fn execute_elevated_query(
     State(state): State<Arc<crate::server::ApiState>>,
@@ -1136,54 +1135,37 @@ pub async fn execute_elevated_query(
 ) -> impl IntoResponse {
     use crate::types::QueryResultDto;
 
-    if require_role(&claims, "manager").is_err() {
+    // Deny-by-default: nothing below runs unless the node operator opted in.
+    if !state.elevated_query_allowed {
         return Json(ApiResponse::<QueryResultDto>::error(
-            "insufficient permissions (manager+ required)",
+            "elevated query endpoint is disabled on this node",
         ));
     }
 
-    // Rate limiting: 5 queries/sec for elevated queries
+    if crate::auth::require_role_level(&claims, fe_database::RoleLevel::Owner).is_err() {
+        return Json(ApiResponse::<QueryResultDto>::error(
+            "insufficient permissions (owner required)",
+        ));
+    }
+
+    if let Err(e) = crate::query_guard::check_rate_limit(
+        &state,
+        &format!("elevated:{}", claims.sub),
+        5,
+        "5 elevated queries/sec",
+    )
+    .await
     {
-        let now = std::time::Instant::now();
-        let mut limiter = state.query_rate_limiter.lock().await;
-        limiter.retain(|_, (_, ts)| now.duration_since(*ts) < std::time::Duration::from_secs(10));
-        let key = format!("elevated:{}", claims.sub);
-        let entry = limiter.entry(key).or_insert((0u32, now));
-        if now.duration_since(entry.1) > std::time::Duration::from_secs(1) {
-            *entry = (1, now);
-        } else {
-            entry.0 += 1;
-            if entry.0 > 5 {
-                return Json(ApiResponse::<QueryResultDto>::error(
-                    "rate limit exceeded (5 elevated queries/sec)",
-                ));
-            }
-        }
+        return Json(ApiResponse::<QueryResultDto>::error(e));
     }
 
     let sql_trimmed = req.sql.trim();
-    let sql_upper = sql_trimmed.to_uppercase();
+    // ASCII-only uppercasing keeps the validated text byte-aligned with the executed text.
+    let sql_upper = sql_trimmed.to_ascii_uppercase();
 
-    // Allowed tables for mutations
-    const ELEVATED_TABLES: &[&str] = &[
-        "NODE",
-        "NODE_LOG",
-        "VERSE",
-        "FRACTAL",
-        "PETAL",
-        "FIELD_DEF",
-        "MODEL",
-        "ASSET",
-        "ROLE",
-        "ROOM",
-        "CRATE_REGISTRY",
-        "CRATE_ENTRY",
-        "VERSE_MEMBER",
-    ];
-
-    // Whole-word DDL ban + all-occurrence target whitelist (2026-07-15
-    // security review — substring/first-occurrence checks were bypassable).
-    if let Err(e) = crate::query_guard::validate_elevated_sql(&sql_upper, ELEVATED_TABLES) {
+    if let Err(e) =
+        crate::query_guard::validate_elevated_sql(&sql_upper, crate::query_guard::ELEVATED_TABLES)
+    {
         return Json(ApiResponse::<QueryResultDto>::error(e));
     }
 
@@ -2342,6 +2324,7 @@ mod tests {
             replication_tx: None,
             distributed_tx: None,
             sim_control_tx: None,
+            elevated_query_allowed: false,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 

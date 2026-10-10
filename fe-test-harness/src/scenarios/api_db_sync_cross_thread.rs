@@ -154,6 +154,7 @@ async fn run_async() -> Result<TestResult> {
         replication_tx: None, // the None-db_reader path replicates via alice's OWN DB thread, not this field
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let router = build_router(state.clone());

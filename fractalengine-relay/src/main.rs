@@ -413,6 +413,9 @@ fn main() -> anyhow::Result<()> {
         distributed_tx: Some(distributed_call_tx),
         sim_control_tx,
         share_signer,
+        // Raw-SQL elevated endpoint: off unless FE_API_ELEVATED_ALLOW=1 (read
+        // once here; loud WARN when on) — fe-api/AGENTS.md §elevated-query.
+        elevated_query_allowed: fe_api::elevated_query_allowed_from_env(),
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));

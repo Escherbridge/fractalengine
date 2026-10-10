@@ -79,6 +79,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -1397,6 +1398,7 @@ async fn channel_fallback_never_receives_foreign_query_results() {
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     };
 

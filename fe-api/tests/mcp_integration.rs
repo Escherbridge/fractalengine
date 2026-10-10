@@ -548,6 +548,7 @@ fn emu(with_store: bool) -> Emu {
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));

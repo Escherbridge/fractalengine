@@ -83,7 +83,7 @@ impl ApiHarness {
     /// independently-rotatable slot (DEC-C9), but the test only needs key
     /// identity to be externally controllable.
     pub async fn spawn_with_share_signer(share_signer: Arc<NodeKeypair>) -> Result<Self> {
-        Self::spawn_with_all_seams(None, None, Some(share_signer), None).await
+        Self::spawn_with_all_seams(None, None, Some(share_signer), None, false).await
     }
 
     /// Like [`Self::spawn`], wiring a `TilesetRegistry` (F14/T2): the real
@@ -95,14 +95,21 @@ impl ApiHarness {
     pub async fn spawn_with_tileset_registry(
         tileset_registry: Arc<fe_terrain::tiles::TilesetRegistry>,
     ) -> Result<Self> {
-        Self::spawn_with_all_seams(None, None, None, Some(tileset_registry)).await
+        Self::spawn_with_all_seams(None, None, None, Some(tileset_registry), false).await
+    }
+
+    /// Like [`Self::spawn`], with the operator opt-in for
+    /// `/api/v1/query/elevated` switched ON (`FE_API_ELEVATED_ALLOW=1` in the
+    /// binaries) — every other constructor leaves it off, the production default.
+    pub async fn spawn_with_elevated_query_allowed() -> Result<Self> {
+        Self::spawn_with_all_seams(None, None, None, None, true).await
     }
 
     async fn spawn_with_seams(
         distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
         sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
     ) -> Result<Self> {
-        Self::spawn_with_all_seams(distributed_tx, sim_control_tx, None, None).await
+        Self::spawn_with_all_seams(distributed_tx, sim_control_tx, None, None, false).await
     }
 
     async fn spawn_with_all_seams(
@@ -110,6 +117,7 @@ impl ApiHarness {
         sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
         share_signer: Option<Arc<NodeKeypair>>,
         tileset_registry: Option<Arc<fe_terrain::tiles::TilesetRegistry>>,
+        elevated_query_allowed: bool,
     ) -> Result<Self> {
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
@@ -152,6 +160,7 @@ impl ApiHarness {
             distributed_tx,
             sim_control_tx,
             share_signer: share_signer.unwrap_or_else(|| Arc::new(NodeKeypair::generate())),
+            elevated_query_allowed,
         });
 
         let router = build_router(state.clone());

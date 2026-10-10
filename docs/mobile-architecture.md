@@ -54,7 +54,7 @@ The relay already exposes all APIs needed for a mobile client:
 | `/api/v1/petals/:id/import` | POST | Import petal from .fractal |
 | `/api/v1/assets/:hash` | GET | Download asset by BLAKE3 hash |
 | `/api/v1/query` | POST | SELECT queries (viewer+) |
-| `/api/v1/query/elevated` | POST | Mutation queries (manager+) |
+| `/api/v1/query/elevated` | POST | Raw SurrealQL incl. writes — disabled unless the node sets `FE_API_ELEVATED_ALLOW=1`; owner only; NOT scope-confined (single-tenant nodes only); mobile clients should not depend on it |
 | `/ws` | WS | Scene streaming + transform updates |
 | `/mcp` | POST | MCP tool interface |
 

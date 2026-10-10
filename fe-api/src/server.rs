@@ -62,6 +62,9 @@ pub struct ApiState {
     pub sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
     /// Ed25519 keypair signing shareable query URLs (see AGENTS.md §share).
     pub share_signer: Arc<fe_identity::NodeKeypair>,
+    /// Operator opt-in for `/api/v1/query/elevated` (env `FE_API_ELEVATED_ALLOW=1`,
+    /// read once at startup); `false` = the endpoint refuses every call (§elevated-query).
+    pub elevated_query_allowed: bool,
 }
 
 /// Build the complete axum [`Router`] (route inventory: fe-api/AGENTS.md §routes).

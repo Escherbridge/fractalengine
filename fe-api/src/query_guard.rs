@@ -21,7 +21,7 @@ const BLOCKED_KEYWORDS: &[&str] = &[
 
 /// Tables a read-only query may target. ROLE/VERSE_MEMBER deliberately
 /// excluded — RBAC data is not readable via the BI egress path (2026-07-15
-/// security review; the role-gated elevated endpoint retains them).
+/// security review; the elevated endpoint excludes them too — `ELEVATED_TABLES`).
 /// `NODE_LOG` deliberately excluded (DEC-C19 N1, 2026-10-09): it has no
 /// documented `/query`/export/share consumer and its `payload` carries a
 /// node's `petal_id`/name/position/asset_id (fe-database/src/lib.rs
@@ -324,43 +324,167 @@ fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
     None
 }
 
-/// Elevated-query validation: whole-word DDL/system keyword ban plus
-/// all-occurrence FROM/INTO/UPDATE target whitelisting (no substring or
-/// first-occurrence-only bypasses).
+/// Tables `/api/v1/query/elevated` may read or write — scene content only
+/// (see AGENTS.md §elevated-query). Deliberately excluded: `ROLE`,
+/// `VERSE_MEMBER`, `VERSE` (`created_by`/`default_access` feed
+/// `role_manager::resolve_role`) — privilege data changes only through the
+/// RBAC handlers; `NODE_LOG` (append-only history); `ASSET`, `CRATE_*`
+/// (content-addressed / signature-checked supply chain).
+pub const ELEVATED_TABLES: &[&str] = &["NODE", "FRACTAL", "PETAL", "FIELD_DEF", "MODEL", "ROOM"];
+
+/// Whole-word bans in elevated SQL: schema/DDL, session switching (`USE`
+/// would re-point the shared `db_reader` connection), access grants,
+/// changefeeds, import mode, graph edges, and blocking/live statements.
+const ELEVATED_BANNED_KEYWORDS: &[&str] = &[
+    "DEFINE", "REMOVE", "ALTER", "REBUILD", "INFO", "USE", "ACCESS", "SHOW", "OPTION", "RELATE",
+    "SLEEP", "KILL", "LIVE",
+];
+
+/// Clauses that may follow a mutation target (UPDATE/UPSERT/CREATE/DELETE).
+const MUTATION_BOUNDARY_KEYWORDS: &[&str] = &[
+    "SET", "UNSET", "CONTENT", "MERGE", "PATCH", "REPLACE", "WHERE", "RETURN", "TIMEOUT",
+    "PARALLEL", "EXPLAIN", "WITH", "VERSION",
+];
+
+const UNSUPPORTED_ELEVATED_TARGET: &str = "unsupported target in elevated query (only plain \
+     whitelisted table names are allowed — filter rows with WHERE, bind values via vars)";
+
+/// Elevated-query validation: whole-word keyword bans plus whitelisting of
+/// EVERY read (FROM) and write (UPDATE/UPSERT/CREATE/DELETE/INSERT INTO)
+/// target. Write targets must be plain table names — record ids, `$params`,
+/// escaped identifiers, subqueries and expressions fail closed, since their
+/// table cannot be read off the text. Defence in depth only: the endpoint is
+/// Owner-only and operator-gated (AGENTS.md §elevated-query).
 pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result<(), String> {
-    for keyword in ["DEFINE", "REMOVE", "INFO", "SLEEP", "KILL"] {
+    for keyword in ELEVATED_BANNED_KEYWORDS {
         if contains_word(sql_upper, keyword) {
             return Err(format!("{keyword} is not allowed in elevated queries"));
         }
     }
+    // Reads that never name a FROM target: comments (could split a needle),
+    // record constructors / `.to_record()`, and `table:key` literals.
+    reject_comments(sql_upper)?;
+    reject_record_constructors(sql_upper, sql_upper)?;
+    reject_foreign_record_literals(sql_upper, allowed_tables)?;
     let bytes = sql_upper.as_bytes();
-    for keyword in ["FROM", "INTO", "UPDATE"] {
-        let mut start = 0;
-        while let Some(pos) = sql_upper[start..].find(keyword) {
-            let abs_pos = start + pos;
-            let before_ok = abs_pos == 0 || !is_ident(bytes[abs_pos - 1]);
-            let after_kw = abs_pos + keyword.len();
-            let after_ok = after_kw >= bytes.len() || !is_ident(bytes[after_kw]);
-            start = after_kw;
-            if !(before_ok && after_ok) {
+    let mut tables = Vec::new();
+    for pos in word_positions(sql_upper, "FROM") {
+        tables.extend(elevated_targets(bytes, pos + 4, TargetKind::Read)?);
+    }
+    for verb in ["UPDATE", "UPSERT", "CREATE", "DELETE"] {
+        for pos in word_positions(sql_upper, verb) {
+            // `INSERT … ON DUPLICATE KEY UPDATE field = …` names no target.
+            if verb == "UPDATE" && preceded_by_words(bytes, pos, &["DUPLICATE", "KEY"]) {
                 continue;
             }
-            let rest = sql_upper[after_kw..].trim_start();
-            if rest.starts_with('(') {
-                continue;
-            }
-            let table: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if !table.is_empty() && !allowed_tables.contains(&table.as_str()) {
-                return Err(format!(
-                    "table '{table}' is not allowed in elevated queries"
-                ));
-            }
+            tables.extend(elevated_targets(
+                bytes,
+                pos + verb.len(),
+                TargetKind::Write,
+            )?);
+        }
+    }
+    for pos in word_positions(sql_upper, "INSERT") {
+        let mut i = skip_ascii_ws(bytes, pos + 6);
+        while let Some(word) = ["RELATION", "IGNORE"].iter().find(|w| word_at(bytes, i, w)) {
+            i = skip_ascii_ws(bytes, i + word.len());
+        }
+        if !word_at(bytes, i, "INTO") {
+            return Err("INSERT must name its target table with INTO".to_string());
+        }
+    }
+    for pos in word_positions(sql_upper, "INTO") {
+        tables.extend(elevated_targets(bytes, pos + 4, TargetKind::Insert)?);
+    }
+    for table in tables {
+        if !allowed_tables.contains(&table.as_str()) {
+            return Err(format!(
+                "table '{table}' is not allowed in elevated queries"
+            ));
         }
     }
     Ok(())
+}
+
+/// Which clause an elevated target list belongs to (decides what may follow it).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetKind {
+    /// FROM: SELECT clauses (or `RETURN` after `DELETE FROM`); `(SELECT …)` sources allowed.
+    Read,
+    /// UPDATE/UPSERT/CREATE/DELETE: mutation clauses; plain table names only.
+    Write,
+    /// INSERT INTO: the data follows directly (`{`, `[`, `(cols)`, `$data`).
+    Insert,
+}
+
+/// The comma-separated target list starting at byte `i`; any element that is
+/// not a plain identifier (or, for reads, a parenthesized SELECT whose own
+/// FROM is scanned separately) fails closed.
+fn elevated_targets(bytes: &[u8], mut i: usize, kind: TargetKind) -> Result<Vec<String>, String> {
+    let unsupported = || UNSUPPORTED_ELEVATED_TARGET.to_string();
+    i = skip_ascii_ws(bytes, i);
+    if kind == TargetKind::Write {
+        // `DELETE FROM x` / `UPDATE ONLY x` — the target list follows.
+        while let Some(word) = ["FROM", "ONLY"].iter().find(|w| word_at(bytes, i, w)) {
+            i = skip_ascii_ws(bytes, i + word.len());
+        }
+    }
+    let mut tables = Vec::new();
+    loop {
+        i = skip_ascii_ws(bytes, i);
+        if kind == TargetKind::Read && bytes.get(i) == Some(&b'(') {
+            if !word_at(bytes, skip_ascii_ws(bytes, i + 1), "SELECT") {
+                return Err(unsupported());
+            }
+            i = matching_paren(bytes, i).ok_or_else(unsupported)? + 1;
+        } else {
+            let start = i;
+            while i < bytes.len() && is_ident(bytes[i]) {
+                i += 1;
+            }
+            if i == start {
+                return Err(unsupported());
+            }
+            tables.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
+        }
+        let next = skip_ascii_ws(bytes, i);
+        match bytes.get(next) {
+            Some(b',') => i = next + 1,
+            None | Some(b';' | b')') => return Ok(tables),
+            Some(b'{' | b'[' | b'(' | b'$') if kind == TargetKind::Insert => return Ok(tables),
+            Some(_) => {
+                let boundaries: &[&str] = match kind {
+                    TargetKind::Read => FROM_BOUNDARY_KEYWORDS,
+                    TargetKind::Write => MUTATION_BOUNDARY_KEYWORDS,
+                    TargetKind::Insert => &[],
+                };
+                let clean = boundaries.iter().any(|kw| word_at(bytes, next, kw))
+                    || (kind == TargetKind::Read && word_at(bytes, next, "RETURN"));
+                return if clean {
+                    Ok(tables)
+                } else {
+                    Err(unsupported())
+                };
+            }
+        }
+    }
+}
+
+/// True if the whole words `words` (in order) are the last tokens before byte `pos`.
+fn preceded_by_words(bytes: &[u8], mut pos: usize, words: &[&str]) -> bool {
+    for word in words.iter().rev() {
+        while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
+        }
+        if !(pos >= word.len()
+            && bytes[..pos].ends_with(word.as_bytes())
+            && (pos == word.len() || !is_ident(bytes[pos - word.len() - 1])))
+        {
+            return false;
+        }
+        pos -= word.len();
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -486,10 +610,12 @@ fn strip_comments(sql: &str) -> String {
 }
 
 /// Reject every way to name a record/table WITHOUT the table's name appearing
-/// as a plain word (escaped identifiers, record constructors, `r"..."`).
+/// as a plain word (escaped identifiers, record constructors incl. the
+/// `.to_record()` method, `r"..."`) — shared by the scoped dialect and
+/// elevated SQL (AGENTS.md §query-guard, §elevated-query).
 fn reject_record_constructors(canonical: &str, upper: &str) -> Result<(), String> {
     if canonical.contains('`') || canonical.contains('⟨') || canonical.contains('⟩') {
-        return Err("escaped identifiers (`...` / ⟨...⟩) are not allowed in scoped queries".into());
+        return Err("escaped identifiers (`...` / ⟨...⟩) are not allowed in queries".into());
     }
     // `strip_comments` first (R5): see its doc for why this is independent
     // belt-and-suspenders, not the primary defense.
@@ -499,12 +625,17 @@ fn reject_record_constructors(canonical: &str, upper: &str) -> Result<(), String
         "TYPE::THING",
         "TYPE::RECORD",
         "TYPE::TABLE",
+        // `type::field(s)` parse a string as an idiom at runtime.
+        "TYPE::FIELD",
         "RECORD::",
         "<RECORD",
+        // Method alias of `type::record` (`$s.to_record()`): a bound string
+        // var becomes a record of ANY table (2026-10-10 review).
+        "TO_RECORD",
     ] {
         if compact.contains(needle) {
             return Err(format!(
-                "record/table constructors ({}) are not allowed in scoped queries",
+                "record/table constructors ({}) are not allowed in queries",
                 needle.to_ascii_lowercase()
             ));
         }
@@ -515,9 +646,39 @@ fn reject_record_constructors(canonical: &str, upper: &str) -> Result<(), String
             && matches!(bytes[i + 1], b'\'' | b'"')
             && (i == 0 || !is_ident(bytes[i - 1]))
         {
-            return Err(
-                "record-id string literals (r\"...\") are not allowed in scoped queries".into(),
-            );
+            return Err("record-id string literals (r\"...\") are not allowed in queries".into());
+        }
+    }
+    Ok(())
+}
+
+/// Reject `table:key` record-id literals whose table is not in `readable`
+/// (uppercased). Lexer-free: string contents are scanned too. SurrealQL
+/// glues the `:` to both the table and the key (no whitespace), so spaced
+/// object keys (`{k: v}`) and `::` paths pass; digit-led runs (times inside
+/// datetime strings) can never name a real table — AGENTS.md §query-guard.
+fn reject_foreign_record_literals(sql_upper: &str, readable: &[&str]) -> Result<(), String> {
+    let bytes = sql_upper.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_ident(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_ident(bytes[i]) {
+            i += 1;
+        }
+        let glued_key = bytes.get(i) == Some(&b':')
+            && bytes
+                .get(i + 1)
+                .is_some_and(|b| *b != b':' && !b.is_ascii_whitespace());
+        let table = &sql_upper[start..i];
+        if glued_key && !bytes[start].is_ascii_digit() && !readable.contains(&table) {
+            return Err(format!(
+                "record id on table '{table}' is not allowed in queries (bind string values \
+                 via vars; write object keys as `key: value`)"
+            ));
         }
     }
     Ok(())
@@ -589,6 +750,7 @@ pub fn prepare_scoped_sql(
     validate_select_sql(&canonical)?;
     let upper = canonical.to_ascii_uppercase();
     reject_record_constructors(&canonical, &upper)?;
+    reject_foreign_record_literals(&upper, ALLOWED_TABLES)?;
     let targets = from_clause_targets(&upper)?;
 
     if mode != GuardMode::Query {
@@ -1078,10 +1240,28 @@ mod tests {
             "SELECT r\"no\" FROM verse",
             "SELECT `a` FROM node",
             "SELECT * FROM verse WHERE name = 'node'",
+            // 2026-10-10: method alias + literals of tables outside the whitelist.
+            "SELECT $v.to_record().* AS leak FROM verse",
+            "SELECT $v . to_record ( ) AS leak FROM verse",
+            "SELECT role:victim.* AS leak FROM verse",
+            "SELECT api_token:..1 AS leak FROM verse",
+            "SELECT type::field('x') FROM verse",
         ] {
             assert!(
                 prepare_scoped_sql(sql, &p(&["P1"]), GuardMode::Query).is_err(),
                 "should reject: {sql}"
+            );
+        }
+        // Not record ids: datetimes (digit-led), spaced object keys, `::` paths,
+        // and literals of whitelisted unscoped tables (already FROM-readable).
+        for sql in [
+            "SELECT * FROM verse WHERE created_at > '2026-01-01T00:00:00Z'",
+            "SELECT { k: 1 } AS o, string::lowercase(name) AS n FROM verse",
+            "SELECT verse:abc.name AS n FROM verse",
+        ] {
+            assert!(
+                prepare_scoped_sql(sql, &p(&["P1"]), GuardMode::Query).is_ok(),
+                "should accept: {sql}"
             );
         }
     }
@@ -1157,6 +1337,58 @@ mod tests {
                 .is_err()
         );
         assert!(validate_elevated_sql("UPDATE NODE SET X = (SELECT Y FROM ROLE)", TABLES).is_ok());
+    }
+
+    #[test]
+    fn elevated_write_targets_must_be_plain_whitelisted_tables() {
+        const TABLES: &[&str] = &["NODE", "PETAL"];
+        for (sql, allowed) in [
+            ("UPDATE NODE SET X = 1 WHERE NODE_ID = $ID", true),
+            ("DELETE FROM NODE WHERE NODE_ID = $ID RETURN BEFORE", true),
+            ("CREATE NODE CONTENT $DATA; SELECT * FROM PETAL;", true),
+            ("INSERT INTO NODE $ROWS ON DUPLICATE KEY UPDATE X = 1", true),
+            ("UPDATE NODE, PETAL SET X = 1", true),
+            // Verbs the old FROM/INTO/UPDATE-only scan never inspected.
+            ("DELETE ROLE", false),
+            ("CREATE ROLE CONTENT {}", false),
+            ("UPSERT ROLE SET R = 1", false),
+            ("INSERT [{}]", false),
+            // Later list elements, and targets whose table the text cannot show.
+            ("UPDATE NODE, ROLE SET R = 1", false),
+            ("UPDATE NODE AND ROLE SET R = 1", false),
+            ("UPDATE ROLE:ABC SET R = 1", false),
+            ("UPDATE $R SET R = 1", false),
+            ("UPDATE `ROLE` SET R = 1", false),
+            ("UPDATE (SELECT * FROM NODE) SET R = 1", false),
+            ("UPDATE NODE->OWNS->ROLE SET R = 1", false),
+            // Session switch / grants / edges.
+            ("SELECT * FROM NODE; USE DB OTHER", false),
+            ("ACCESS TOKEN GRANT FOR USER ROOT", false),
+            ("RELATE NODE:A->EDGE->NODE:B", false),
+            // Reads that name no FROM target (2026-10-10 review).
+            ("RETURN ROLE:VICTIM.*", false),
+            ("SELECT *, ROLE:VICTIM.* AS L FROM NODE", false),
+            ("RETURN $V.TO_RECORD().*", false),
+            ("RETURN TYPE::RECORD('ROLE', 'X').*", false),
+            ("RETURN R'ROLE:X'.*", false),
+            ("RETURN ⟨ROLE⟩:X.*", false),
+            ("RETURN TYPE/**/::/**/RECORD('ROLE', 'X')", false),
+            ("CREATE NODE CONTENT {ROLE:'OWNER'}", false),
+            ("CREATE NODE CONTENT {ROLE: 'OWNER'}", true),
+            // Only `ON DUPLICATE KEY UPDATE` skips the UPDATE-target check.
+            ("RETURN $KEY UPDATE ROLE SET R = 1", false),
+            (
+                "UPDATE NODE SET PARENT = NODE:ABC WHERE ID = NODE:XYZ",
+                true,
+            ),
+        ] {
+            assert_eq!(
+                validate_elevated_sql(sql, TABLES).is_ok(),
+                allowed,
+                "{sql}: {:?}",
+                validate_elevated_sql(sql, TABLES)
+            );
+        }
     }
 
     // ── DEC-C19 N1 — node_log removed, petal/room/model/crate_registry scoped ──

@@ -78,6 +78,36 @@ pub struct ApiConfig {
     /// `load_or_generate_keypair(&secret_store, "share_signer")` before
     /// calling `spawn_api_thread` — see AGENTS.md §share.
     pub share_signer: Arc<fe_identity::NodeKeypair>,
+    /// Operator opt-in for `/api/v1/query/elevated` — binaries pass
+    /// [`elevated_query_allowed_from_env`] (AGENTS.md §elevated-query).
+    pub elevated_query_allowed: bool,
+}
+
+/// Env var that opts a node into the raw-SQL `/api/v1/query/elevated` endpoint.
+pub const ELEVATED_ALLOW_ENV: &str = "FE_API_ELEVATED_ALLOW";
+
+/// Read the `FE_API_ELEVATED_ALLOW` opt-in once at startup (only `1` enables);
+/// warns loudly when enabled — see AGENTS.md §elevated-query.
+pub fn elevated_query_allowed_from_env() -> bool {
+    match std::env::var(ELEVATED_ALLOW_ENV) {
+        Ok(v) if v == "1" => {
+            tracing::warn!(
+                "{ELEVATED_ALLOW_ENV}=1: POST /api/v1/query/elevated is ENABLED — raw SurrealQL \
+                 writes for Owner tokens. It is NOT scope-confined (an Owner of ANY verse reaches \
+                 EVERY verse on this node) and its writes bypass the DB thread (not op-logged, \
+                 not replicated). Enable only on a single-tenant node"
+            );
+            true
+        }
+        Ok(v) if !v.is_empty() => {
+            tracing::warn!(
+                "{ELEVATED_ALLOW_ENV}={v:?} ignored (only `1` enables) — elevated query endpoint \
+                 stays disabled"
+            );
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Spawn a dedicated OS thread that owns a multi-threaded Tokio runtime and
@@ -125,6 +155,7 @@ async fn run_server(config: ApiConfig) {
         // the caller (both binaries load-or-generate it from their secret
         // store before calling `spawn_api_thread`) — see AGENTS.md §share.
         share_signer: config.share_signer,
+        elevated_query_allowed: config.elevated_query_allowed,
     });
 
     // Background task: listen for revocation notifications from Bevy thread

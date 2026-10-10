@@ -73,6 +73,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -364,6 +365,7 @@ fn test_state_with_replication(
         replication_tx: Some(repl_tx),
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     (state, repl_rx)
@@ -522,6 +524,7 @@ fn fallback_state(
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -743,6 +746,7 @@ async fn direct_path_with_db_reader_never_sends_the_fallback_command() {
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
 

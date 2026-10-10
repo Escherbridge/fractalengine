@@ -72,6 +72,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         replication_tx: None,
         distributed_tx: None,
         sim_control_tx: None,
+        elevated_query_allowed: false,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
