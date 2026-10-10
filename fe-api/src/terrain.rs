@@ -10,7 +10,7 @@ use fe_policy::Action;
 use fe_terrain::config::TerrainConfig;
 use serde::Deserialize;
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::types::{is_valid_ulid, ApiResponse};
 
 /// PUT /api/v1/petals/:petal_id/terrain — set terrain configuration.
@@ -33,15 +33,12 @@ pub async fn set_terrain_config(
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id")).into_response();
     }
 
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<serde_json::Value>::error(
-            "could not resolve petal scope",
-        ))
-        .into_response();
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error(
-            "insufficient scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ))
         .into_response();
     }
@@ -75,14 +72,12 @@ pub async fn get_terrain_config(
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id"));
     }
 
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<serde_json::Value>::error(
-            "could not resolve petal scope",
-        ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error(
-            "insufficient scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
     }
 
@@ -143,15 +138,12 @@ pub async fn delete_terrain_config(
         return Json(ApiResponse::<serde_json::Value>::error("invalid petal_id")).into_response();
     }
 
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<serde_json::Value>::error(
-            "could not resolve petal scope",
-        ))
-        .into_response();
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<serde_json::Value>::error(
-            "insufficient scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ))
         .into_response();
     }
@@ -306,26 +298,6 @@ pub(crate) async fn set_petal_terrain_core(
     }
 }
 
-async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
-    if let Some(ref db) = state.db_reader {
-        return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
-    }
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state
-        .api_cmd_tx
-        .send(fe_runtime::messages::ApiCommand::DbRequest {
-            cmd: fe_runtime::messages::DbCommand::ResolvePetalScope {
-                petal_id: petal_id.to_string(),
-            },
-            reply_tx,
-        })
-        .ok()?;
-    match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
-        Ok(Ok(fe_runtime::messages::DbResult::ScopeResolved { scope })) => scope,
-        _ => None,
-    }
-}
-
 /// Load the tileset identifiers bound to one petal's terrain configuration.
 async fn assigned_tilesets(
     state: &crate::server::ApiState,
@@ -450,10 +422,12 @@ fn uploaded_terrain_tileset_id(bytes: &[u8]) -> Result<String, &'static str> {
     }
 }
 
+/// Tile-plane status for a petal-access denial: an unknown and a foreign petal
+/// are one 404 (§existence-oracle); only role failures are 403.
 fn tile_access_status(message: &str) -> StatusCode {
     match message {
         "invalid petal_id" => StatusCode::BAD_REQUEST,
-        "could not resolve petal scope" => StatusCode::NOT_FOUND,
+        crate::rest::NOT_FOUND_OR_DENIED => StatusCode::NOT_FOUND,
         _ => StatusCode::FORBIDDEN,
     }
 }
@@ -977,11 +951,11 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            tile_access_status("could not resolve petal scope"),
+            tile_access_status(crate::rest::NOT_FOUND_OR_DENIED),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            tile_access_status("insufficient scope"),
+            tile_access_status("insufficient permissions"),
             StatusCode::FORBIDDEN
         );
     }

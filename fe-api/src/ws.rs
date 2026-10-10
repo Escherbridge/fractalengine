@@ -218,18 +218,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
             msg = recv_msg(&mut socket) => {
                 match msg {
                     Some(WsClientMsg::Subscribe { channel, petal_id }) => {
-                        // Resolve petal scope and enforce against token scope
-                        let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await else {
+                        // One denial for unknown and out-of-scope (§existence-oracle).
+                        if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+                            .await
+                            .is_none()
+                        {
                             send_msg(&mut socket, &WsServerMsg::Error {
                                 code: "not_found".into(),
-                                message: "could not resolve subscription scope".into(),
-                            }).await;
-                            continue;
-                        };
-                        if !fe_database::scope_contains(&claims.scope, &scope) {
-                            send_msg(&mut socket, &WsServerMsg::Error {
-                                code: "forbidden".into(),
-                                message: "subscription outside token scope".into(),
+                                message: crate::rest::NOT_FOUND_OR_DENIED.into(),
                             }).await;
                             continue;
                         }
@@ -272,20 +268,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             }).await;
                             continue;
                         }
-                        let Some(scope) = crate::rest::resolve_node_scope(&state, &node_id).await else {
+                        // One denial for unknown and out-of-scope (§existence-oracle).
+                        let Some(scope) =
+                            crate::rest::authorized_node_scope(&state, &claims, &node_id).await
+                        else {
                             send_msg(&mut socket, &WsServerMsg::Error {
                                 code: "not_found".into(),
-                                message: "could not resolve transform target scope".into(),
+                                message: crate::rest::NOT_FOUND_OR_DENIED.into(),
                             }).await;
                             continue;
                         };
-                        if !fe_database::scope_contains(&claims.scope, &scope) {
-                            send_msg(&mut socket, &WsServerMsg::Error {
-                                code: "forbidden".into(),
-                                message: "transform target outside token scope".into(),
-                            }).await;
-                            continue;
-                        }
                         let Some(petal_id) = petal_id_from_scope(&scope) else {
                             send_msg(&mut socket, &WsServerMsg::Error {
                                 code: "not_found".into(),
@@ -311,18 +303,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         transform_debounce.insert(node_id, (position, rotation, scale));
                     }
                     Some(WsClientMsg::SceneSubscribe { petal_id, .. }) => {
-                        // Resolve petal scope and enforce against token scope
-                        let Some(scope) = resolve_petal_scope_ws(&state, &petal_id).await else {
+                        // One denial for unknown and out-of-scope (§existence-oracle).
+                        if crate::rest::authorized_petal_scope(&state, &claims, &petal_id).await.is_none() {
                             send_msg(&mut socket, &WsServerMsg::Error {
                                 code: "not_found".into(),
-                                message: "could not resolve scene subscription scope".into(),
-                            }).await;
-                            continue;
-                        };
-                        if !fe_database::scope_contains(&claims.scope, &scope) {
-                            send_msg(&mut socket, &WsServerMsg::Error {
-                                code: "forbidden".into(),
-                                message: "scene subscription outside token scope".into(),
+                                message: crate::rest::NOT_FOUND_OR_DENIED.into(),
                             }).await;
                             continue;
                         }
@@ -684,7 +669,7 @@ async fn handle_entity_command(
 
     // Resolve the target's scope and enforce it against the token scope.
     let scope = match &command {
-        Ec::CreateNode { petal_id, .. } => resolve_petal_scope_ws(state, petal_id).await,
+        Ec::CreateNode { petal_id, .. } => crate::rest::resolve_petal_scope(state, petal_id).await,
         Ec::DeleteNode { node_id }
         | Ec::SetNodeProperty { node_id, .. }
         | Ec::DeleteNodeProperty { node_id, .. } => {
@@ -694,11 +679,8 @@ async fn handle_entity_command(
             crate::rest::resolve_node_scope(state, node_id).await
         }
     };
-    let Some(scope) = scope else {
-        return Err("could not resolve target scope".into());
-    };
-    if !fe_database::scope_contains(&claims.scope, &scope) {
-        return Err("insufficient scope".into());
+    if crate::rest::covered_scope(claims, scope).is_none() {
+        return Err(crate::rest::NOT_FOUND_OR_DENIED.into());
     }
 
     let db_cmd = match command {
@@ -756,31 +738,6 @@ async fn handle_entity_command(
         Ok(Ok(_)) => Err("unexpected response".into()),
         Ok(Err(_)) => Err("request cancelled".into()),
         Err(_) => Err("request timed out".into()),
-    }
-}
-
-/// Resolve a petal_id to its full scope string.
-///
-/// Uses a direct DB query when `db_reader` is available, falling back to the
-/// crossbeam channel otherwise.
-async fn resolve_petal_scope_ws(state: &ApiState, petal_id: &str) -> Option<String> {
-    if let Some(ref db) = state.db_reader {
-        return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
-    }
-    // Fallback: channel-based resolution
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state
-        .api_cmd_tx
-        .send(ApiCommand::DbRequest {
-            cmd: DbCommand::ResolvePetalScope {
-                petal_id: petal_id.to_string(),
-            },
-            reply_tx,
-        })
-        .ok()?;
-    match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
-        Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
-        _ => None,
     }
 }
 
@@ -1002,11 +959,11 @@ mod tests {
             request_id: "r2".into(),
             ok: false,
             data: None,
-            error: Some("insufficient scope".into()),
+            error: Some(crate::rest::NOT_FOUND_OR_DENIED.into()),
         };
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains("\"ok\":false"));
-        assert!(json.contains("insufficient scope"));
+        assert!(json.contains(crate::rest::NOT_FOUND_OR_DENIED));
         assert!(
             !json.contains("\"data\""),
             "data field must be omitted when None"

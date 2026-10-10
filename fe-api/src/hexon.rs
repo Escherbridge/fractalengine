@@ -10,7 +10,7 @@ use fe_identity::api_token::ApiClaims;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
 use fe_policy::{Action, AuthContext, RoleLevel};
@@ -169,12 +169,9 @@ pub(crate) async fn require_hexon_petal_access(
         return Err("insufficient permissions");
     }
 
-    let Some(scope) = crate::rest::resolve_petal_scope(state, petal_id).await else {
-        return Err("could not resolve petal scope");
+    let Some(scope) = crate::rest::authorized_petal_scope(state, claims, petal_id).await else {
+        return Err(crate::rest::NOT_FOUND_OR_DENIED);
     };
-    if require_scope(claims, &scope).is_err() {
-        return Err("insufficient scope");
-    }
 
     let subject = AuthContext::ApiToken {
         subject: claims.sub.clone(),

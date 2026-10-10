@@ -37,8 +37,9 @@ async fn harness_health_ready_and_authed_roundtrip() {
     assert_eq!(nodes[0]["node_id"], node_id);
     assert_eq!(nodes[0]["display_name"], "Smoke Node");
 
-    // Out-of-scope token -> 403 (scope enforcement is live).
+    // Out-of-scope token -> 404, the unknown-petal answer (scope enforcement
+    // is live; §existence-oracle).
     let foreign = h.mint_token("VERSE#someone-else", "viewer");
     let (status, _) = h.get(&gis_path, Some(&foreign)).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

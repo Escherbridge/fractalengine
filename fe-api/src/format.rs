@@ -10,7 +10,7 @@ use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 use surrealdb::engine::local::Db;
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 
 use crate::types::{is_valid_ulid, ApiResponse};
 
@@ -30,11 +30,11 @@ pub async fn export_petal(
     }
 
     // Resolve petal scope for enforcement
-    let Some(scope) = resolve_petal_scope_for_export(&state, &petal_id).await else {
-        return (StatusCode::NOT_FOUND, "could not resolve petal scope").into_response();
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return (StatusCode::FORBIDDEN, "insufficient scope").into_response();
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
+        return (StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED).into_response();
     }
 
     // Load nodes — use direct DB query if available
@@ -140,14 +140,12 @@ pub async fn import_petal(
     }
 
     // Resolve petal scope for enforcement
-    let Some(scope) = resolve_petal_scope_for_export(&state, &petal_id).await else {
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
         return axum::Json(ApiResponse::<serde_json::Value>::error(
-            "could not resolve petal scope",
-        ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return axum::Json(ApiResponse::<serde_json::Value>::error(
-            "insufficient scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
     }
 
@@ -321,28 +319,4 @@ async fn load_field_defs(db: &surrealdb::Surreal<Db>, petal_id: &str) -> Vec<fe_
             })
         })
         .collect()
-}
-
-/// Resolve a petal_id to its full scope string (reuses the rest module's helper).
-async fn resolve_petal_scope_for_export(
-    state: &crate::server::ApiState,
-    petal_id: &str,
-) -> Option<String> {
-    if let Some(ref db) = state.db_reader {
-        return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
-    }
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state
-        .api_cmd_tx
-        .send(ApiCommand::DbRequest {
-            cmd: DbCommand::ResolvePetalScope {
-                petal_id: petal_id.to_string(),
-            },
-            reply_tx,
-        })
-        .ok()?;
-    match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
-        Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
-        _ => None,
-    }
 }

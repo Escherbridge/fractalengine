@@ -79,17 +79,22 @@ pub fn nodes_of_kind_sql(petal_id: &str, kind: NodeKind) -> SpatialNodeQuery {
     )
 }
 
-/// All live stamp instances following a given path, in instance order
-/// ("all stamps on path X" — FR-6 acceptance). The path id rides in the binds
-/// (`$path_id`), never interpolated into the text.
-pub fn stamps_on_path_sql(path_id: &str) -> SpatialNodeQuery {
+/// All live stamp instances of `petal_id` following a given path, in instance
+/// order ("all stamps on path X" — FR-6 acceptance). Confined to the petal so a
+/// foreign `path_id` can never read another tenant's rows. Both ids ride in the
+/// binds (`$petal_id`/`$path_id`), never interpolated into the text.
+pub fn stamps_on_path_sql(petal_id: &str, path_id: &str) -> SpatialNodeQuery {
     (
         format!(
-            "SELECT * FROM node WHERE properties.{KIND_KEY} = '{}' AND properties.{STAMP_PATH_ID_KEY} = $path_id \
+            "SELECT * FROM node WHERE petal_id = $petal_id AND properties.{KIND_KEY} = '{}' \
+             AND properties.{STAMP_PATH_ID_KEY} = $path_id \
              AND tombstone = NONE ORDER BY properties.{STAMP_INSTANCE_INDEX_KEY} ASC",
             NodeKind::Stamp.as_tag(),
         ),
-        vec![("path_id".to_string(), path_id.to_string())],
+        vec![
+            ("petal_id".to_string(), petal_id.to_string()),
+            ("path_id".to_string(), path_id.to_string()),
+        ],
     )
 }
 
@@ -137,15 +142,23 @@ mod tests {
 
     #[test]
     fn stamps_on_path_sql_orders_by_instance_index() {
-        let (sql, binds) = stamps_on_path_sql("path-7");
+        let (sql, binds) = stamps_on_path_sql("p1", "path-7");
         assert!(sql.contains("properties.node_kind = 'stamp'"), "{sql}");
         assert!(sql.contains("properties.path_id = $path_id"), "{sql}");
+        // Petal-confined: a foreign path id must not reach another petal's rows.
+        assert!(sql.contains("petal_id = $petal_id"), "{sql}");
         assert!(
             sql.contains("ORDER BY properties.instance_index ASC"),
             "{sql}"
         );
         assert!(sql.contains("tombstone = NONE"), "{sql}");
-        assert_eq!(binds, vec![("path_id".to_string(), "path-7".to_string())]);
+        assert_eq!(
+            binds,
+            vec![
+                ("petal_id".to_string(), "p1".to_string()),
+                ("path_id".to_string(), "path-7".to_string()),
+            ]
+        );
         assert!(!sql.contains("path-7"), "{sql}");
     }
 
@@ -181,10 +194,16 @@ mod tests {
         assert!(sql.contains("petal_id = $petal_id"), "{sql}");
         assert_eq!(binds, vec![("petal_id".to_string(), hostile.to_string())]);
 
-        let (sql, binds) = stamps_on_path_sql(hostile);
+        let (sql, binds) = stamps_on_path_sql(hostile, hostile);
         assert!(!sql.contains(hostile), "id leaked into SQL text: {sql}");
         assert!(sql.contains("properties.path_id = $path_id"), "{sql}");
-        assert_eq!(binds, vec![("path_id".to_string(), hostile.to_string())]);
+        assert_eq!(
+            binds,
+            vec![
+                ("petal_id".to_string(), hostile.to_string()),
+                ("path_id".to_string(), hostile.to_string()),
+            ]
+        );
 
         let (sql, binds) = earthwork_volume_sql(hostile);
         assert!(!sql.contains(hostile), "id leaked into SQL text: {sql}");

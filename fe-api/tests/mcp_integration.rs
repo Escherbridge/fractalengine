@@ -304,6 +304,25 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             }
         }
         DbCommand::Ping => DbResult::Pong,
+        // Mirrors fe-database `promote_instance_handler` (DEC-C21 M7): an ABSENT
+        // path is tolerated, a FOREIGN one refused — the API must gate both alike.
+        DbCommand::PromoteInstance {
+            petal_id,
+            path_id,
+            instance_index,
+            ..
+        } => match m.node(&path_id).map(|n| n.petal_id.clone()) {
+            Some(owner) if owner != petal_id => {
+                DbResult::Error(format!("node {path_id} belongs to another petal"))
+            }
+            _ => DbResult::NodePromoted {
+                node_id: format!("{path_id}#inst-{instance_index}"),
+                petal_id,
+                path_id,
+                instance_index,
+                newly_promoted: true,
+            },
+        },
         DbCommand::GetNodeTransform { node_id } => match m.node(&node_id) {
             Some(n) => DbResult::NodeTransformLoaded {
                 node_id,
@@ -1088,6 +1107,31 @@ async fn per_endpoint_crud_tools_role_and_validation() {
     )
     .await;
     assert_tool_error(&resp, "instance_index is required");
+}
+
+/// §existence-oracle: `promote_instance` on the caller's OWN petal with a
+/// never-existing `path_id` and with another verse's real node as `path_id`
+/// answers identically (the DB tolerates the first and refuses the second, so
+/// the API gates both); a real own-petal path still promotes.
+#[tokio::test]
+async fn promote_instance_unknown_and_foreign_paths_are_indistinguishable() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let other = seed_chain(&model, "other");
+    let editor = claims(&home.verse_scope(), "editor");
+    let promote =
+        |path: &str| json!({ "petal_id": home.petal, "path_id": path, "instance_index": 0 });
+
+    let unknown = call_tool(&state, &editor, "promote_instance", promote(&ulid())).await;
+    let foreign = call_tool(&state, &editor, "promote_instance", promote(&other.node)).await;
+    assert_eq!(unknown["result"], foreign["result"], "promote is an oracle");
+    assert_tool_error(&unknown, NOT_FOUND_OR_DENIED);
+
+    let own = call_tool(&state, &editor, "promote_instance", promote(&home.node)).await;
+    assert_eq!(
+        tool_json(&own)["node_id"],
+        json!(format!("{}#inst-0", home.node))
+    );
 }
 
 // ---------------------------------------------------------------------------

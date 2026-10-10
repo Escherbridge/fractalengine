@@ -15,7 +15,7 @@ use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
 use fe_runtime::messages::{DbCommand, DbResult};
 use serde::Serialize;
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
 
@@ -371,11 +371,11 @@ pub async fn upload_petal_asset(
     if !is_valid_ulid(&petal_id) {
         return deny(StatusCode::BAD_REQUEST, "invalid petal_id");
     }
-    let Some(scope) = crate::rest::resolve_petal_scope(&state, &petal_id).await else {
-        return deny(StatusCode::NOT_FOUND, "petal not found");
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return deny(StatusCode::FORBIDDEN, "insufficient scope");
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
+        return deny(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED);
     }
     if state.blob_store.is_none() {
         return upload_error_response(&UploadError::StoreNotConfigured);

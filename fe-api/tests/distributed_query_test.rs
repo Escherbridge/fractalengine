@@ -248,7 +248,7 @@ async fn query_distributed_mode_denies_a_petal_outside_the_token_scope() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], false, "query response: {body}");
-    assert_eq!(body["error"], "insufficient scope");
+    assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED);
     assert!(
         seam.recorded().is_empty(),
         "a denied request must never reach the seam"
@@ -277,7 +277,7 @@ async fn query_distributed_mode_rejects_an_unknown_petal() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], false, "query response: {body}");
-    assert_eq!(body["error"], "unknown petal");
+    assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED);
     assert!(seam.recorded().is_empty());
 }
 

@@ -16,7 +16,7 @@ use fe_terrain::projection::Projection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
 
@@ -284,7 +284,7 @@ pub async fn list_gis_tracks(
 // ---------------------------------------------------------------------------
 
 /// Viewer+ role + petal-scope check. `Err(Response)` is the ready-to-return
-/// rejection (403 role/scope, 400 bad ULID, 404 unknown petal).
+/// rejection (403 role, 400 bad ULID, 404 unknown OR out-of-scope petal).
 async fn authorize_petal_read(
     state: &ApiState,
     claims: &ApiClaims,
@@ -296,11 +296,11 @@ async fn authorize_petal_read(
     if !is_valid_ulid(petal_id) {
         return Err(err(StatusCode::BAD_REQUEST, "invalid petal_id"));
     }
-    let Some(scope) = resolve_petal_scope(state, petal_id).await else {
-        return Err(err(StatusCode::NOT_FOUND, "petal not found"));
-    };
-    if require_scope(claims, &scope).is_err() {
-        return Err(err(StatusCode::FORBIDDEN, "insufficient scope"));
+    if crate::rest::authorized_petal_scope(state, claims, petal_id)
+        .await
+        .is_none()
+    {
+        return Err(err(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED));
     }
     Ok(())
 }
@@ -511,27 +511,6 @@ pub(crate) async fn run_select(
             data,
             correlation_id: Some(echoed),
         })) if echoed == correlation_id => Some(data),
-        _ => None,
-    }
-}
-
-/// Resolve a petal's full RBAC scope (direct query, else gateway channel).
-async fn resolve_petal_scope(state: &ApiState, petal_id: &str) -> Option<String> {
-    if let Some(ref db) = state.db_reader {
-        return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
-    }
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state
-        .api_cmd_tx
-        .send(ApiCommand::DbRequest {
-            cmd: DbCommand::ResolvePetalScope {
-                petal_id: petal_id.to_string(),
-            },
-            reply_tx,
-        })
-        .ok()?;
-    match tokio::time::timeout(Duration::from_secs(3), reply_rx).await {
-        Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
         _ => None,
     }
 }

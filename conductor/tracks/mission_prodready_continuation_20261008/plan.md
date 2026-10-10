@@ -118,7 +118,7 @@ machine-verified); the Hexon Manager UI button (its seam is verified);
 in-app GUI smoke of the whole build.
 
 **Deferred register (with triggers)** — see spec.md DEC entries: blob
-GC/quota (multi-tenant deploy); REST existence-leak message unification;
+GC/quota (multi-tenant deploy); ~~REST existence-leak message unification~~ (CLOSED 2026-10-10 — fe-api AGENTS.md §existence-oracle);
 /query/elevated scope filter; WKB local-frame axes (first GIS consumer);
 f32 anchor quantization; SetPetalTerrain reply correlation → unlocks the
 live tileset-binding path (TERRAIN_MUTATION_UNAVAILABLE product gap);

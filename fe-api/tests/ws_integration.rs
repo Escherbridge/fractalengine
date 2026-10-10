@@ -174,3 +174,86 @@ async fn ws_rejects_a_bad_token_and_closes() {
         other => panic!("expected the socket to close after bad auth, got {other:?}"),
     }
 }
+
+/// §existence-oracle over `/ws`: for every message that resolves a petal or
+/// node scope, a verse-A Owner socket gets a byte-identical reply for (i) an id
+/// that never existed and (ii) a real verse-B id — and that reply is a denial.
+#[tokio::test]
+async fn ws_unknown_and_foreign_ids_get_identical_denials() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed verse A");
+    let foreign = h.seed_hierarchy().await.expect("seed verse B");
+    let foreign_node = h
+        .seed_node(&foreign.petal_id, "B node", [0.0, 0.0, 0.0], None)
+        .await
+        .expect("seed B node");
+    let token = h.mint_token(&own.verse_scope(), "owner");
+    let addr = spawn_live_server(&h).await;
+
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .expect("ws connect");
+    assert_eq!(next_json(&mut ws).await["type"], "auth_required");
+    ws.send(WsMessage::Text(
+        json!({ "type": "auth", "access_token": token })
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("send auth");
+    assert_eq!(next_json(&mut ws).await["type"], "auth_ok");
+
+    let petal_msgs: [fn(&str) -> serde_json::Value; 3] = [
+        |p| json!({ "type": "subscribe", "channel": "transforms", "petal_id": p }),
+        |p| json!({ "type": "scene_subscribe", "petal_id": p }),
+        |p| {
+            json!({ "type": "entity_command", "request_id": "r",
+                     "command": { "op": "create_node", "petal_id": p, "name": "planted" } })
+        },
+    ];
+    let node_msgs: [fn(&str) -> serde_json::Value; 4] = [
+        |n| {
+            json!({ "type": "transform_update", "node_id": n,
+                     "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] })
+        },
+        |n| {
+            json!({ "type": "entity_command", "request_id": "r",
+                     "command": { "op": "delete_node", "node_id": n } })
+        },
+        |n| {
+            json!({ "type": "entity_command", "request_id": "r",
+                     "command": { "op": "set_node_property", "node_id": n, "key": "k", "value": 1 } })
+        },
+        |n| {
+            json!({ "type": "entity_command", "request_id": "r",
+                     "command": { "op": "delete_node_property", "node_id": n, "key": "k" } })
+        },
+    ];
+    let unknown_petal = ulid::Ulid::new().to_string();
+    let unknown_node = ulid::Ulid::new().to_string();
+    let probes = petal_msgs
+        .iter()
+        .map(|m| (m(&unknown_petal), m(&foreign.petal_id)))
+        .chain(
+            node_msgs
+                .iter()
+                .map(|m| (m(&unknown_node), m(&foreign_node))),
+        );
+
+    for (unknown, real_in_b) in probes {
+        let mut replies = Vec::new();
+        for msg in [&unknown, &real_in_b] {
+            ws.send(WsMessage::Text(msg.to_string().into()))
+                .await
+                .expect("send probe");
+            replies.push(next_json(&mut ws).await);
+        }
+        assert_eq!(replies[0], replies[1], "ws oracle on {unknown}");
+        let text = replies[0].to_string();
+        assert!(
+            text.contains(fe_api::rest::NOT_FOUND_OR_DENIED),
+            "not the uniform denial for {unknown}: {text}"
+        );
+    }
+    let _ = ws.close(None).await;
+}

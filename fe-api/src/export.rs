@@ -13,7 +13,7 @@ use fe_query::columnar::geoparquet::{
 };
 use serde::Deserialize;
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::crs::{resolve_petal_crs, CRS_EPSG_4326};
 use crate::limits;
 use crate::query_guard::{self, GuardMode};
@@ -87,12 +87,11 @@ async fn authorize_petal_export(
     if !is_valid_ulid(petal_id) {
         return Err(err(StatusCode::BAD_REQUEST, "invalid petal_id"));
     }
-    let Some(scope) = crate::rest::resolve_petal_scope(state, petal_id).await else {
-        return Err(err(StatusCode::NOT_FOUND, "unknown petal"));
-    };
-    if require_scope(claims, &scope).is_err() {
-        tracing::warn!(petal_id, sub = %claims.sub, "export denied: token scope does not cover petal");
-        return Err(err(StatusCode::FORBIDDEN, "insufficient scope"));
+    if crate::rest::authorized_petal_scope(state, claims, petal_id)
+        .await
+        .is_none()
+    {
+        return Err(err(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED));
     }
     Ok(())
 }

@@ -17,7 +17,6 @@ use fe_runtime::messages::{ApiCommand, CallerAuth, DbCommand, DbResult};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{require_role, require_scope};
-use crate::rest::{resolve_node_scope, resolve_petal_scope};
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
 
@@ -94,12 +93,11 @@ pub async fn get_node_address(
     if !is_addressable_node_id(&node_id) {
         return Json(ApiResponse::<AddressDto>::error("invalid node_id"));
     }
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::<AddressDto>::error("node not found"));
+    let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
+        return Json(ApiResponse::<AddressDto>::error(
+            crate::rest::NOT_FOUND_OR_DENIED,
+        ));
     };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<AddressDto>::error("insufficient scope"));
-    }
     match NodeAddress::from_scope_and_id(&scope, &node_id) {
         Ok(addr) => Json(ApiResponse::success(AddressDto::from_address(&addr))),
         Err(e) => Json(ApiResponse::<AddressDto>::error(format!(
@@ -133,7 +131,9 @@ pub async fn resolve_address(
         }
     };
     if require_scope(&claims, &addr.scope()).is_err() {
-        return Json(ApiResponse::<AddressDto>::error("insufficient scope"));
+        return Json(ApiResponse::<AddressDto>::error(
+            crate::rest::NOT_FOUND_OR_DENIED,
+        ));
     }
     Json(ApiResponse::success(AddressDto::from_address(&addr)))
 }
@@ -170,12 +170,11 @@ pub async fn get_node(
     if !is_addressable_node_id(&node_id) {
         return Json(ApiResponse::<EndpointNodeDto>::error("invalid node_id"));
     }
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::<EndpointNodeDto>::error("node not found"));
+    let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &node_id).await else {
+        return Json(ApiResponse::<EndpointNodeDto>::error(
+            crate::rest::NOT_FOUND_OR_DENIED,
+        ));
     };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<EndpointNodeDto>::error("insufficient scope"));
-    }
 
     match load_node(&state, &node_id, &scope).await {
         Ok(dto) => Json(ApiResponse::success(dto)),
@@ -267,11 +266,13 @@ pub async fn delete_node(
     if !is_addressable_node_id(&node_id) {
         return Json(ApiResponse::<DeleteDto>::error("invalid node_id"));
     }
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::<DeleteDto>::error("node not found"));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<DeleteDto>::error("insufficient scope"));
+    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
+        .await
+        .is_none()
+    {
+        return Json(ApiResponse::<DeleteDto>::error(
+            crate::rest::NOT_FOUND_OR_DENIED,
+        ));
     }
 
     let cmd = if q.cascade {
@@ -310,6 +311,17 @@ pub async fn delete_node(
     }
 }
 
+/// True iff `path_id` is a node of the (already authorized) `petal_id`. The DB
+/// handler tolerates an ABSENT path but refuses a FOREIGN one, so promotion is
+/// gated on both alike (§existence-oracle — shared by REST + MCP).
+pub(crate) async fn path_in_petal(state: &ApiState, path_id: &str, petal_id: &str) -> bool {
+    crate::rest::resolve_node_scope(state, path_id)
+        .await
+        .and_then(|scope| fe_database::parse_scope(&scope).ok())
+        .and_then(|parts| parts.petal_id)
+        .is_some_and(|owner| owner == petal_id)
+}
+
 #[derive(Debug, Serialize)]
 pub struct PromoteDto {
     pub node_id: String,
@@ -333,11 +345,14 @@ pub async fn promote_instance(
     if !is_valid_ulid(&petal_id) {
         return Json(ApiResponse::<PromoteDto>::error("invalid petal_id"));
     }
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
-        return Json(ApiResponse::<PromoteDto>::error("petal not found"));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<PromoteDto>::error("insufficient scope"));
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+        || !path_in_petal(&state, &path_id, &petal_id).await
+    {
+        return Json(ApiResponse::<PromoteDto>::error(
+            crate::rest::NOT_FOUND_OR_DENIED,
+        ));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -406,14 +421,12 @@ pub async fn list_nodes_by_kind(
             "invalid petal_id",
         ));
     }
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            "petal not found",
-        ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            "insufficient scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
     }
     let Some(kind) = fe_query::NodeKind::from_tag(&q.kind) else {
@@ -426,7 +439,9 @@ pub async fn list_nodes_by_kind(
     // kind in the petal. Both are fe-query generic-node SQL, tombstone-filtered.
     // Ids ride in `binds` ($petal_id/$path_id), never interpolated (injection-safe).
     let (sql, binds) = match (kind, q.path_id.as_deref()) {
-        (fe_query::NodeKind::Stamp, Some(path_id)) => fe_query::stamps_on_path_sql(path_id),
+        (fe_query::NodeKind::Stamp, Some(path_id)) => {
+            fe_query::stamps_on_path_sql(&petal_id, path_id)
+        }
         _ => fe_query::nodes_of_kind_sql(&petal_id, kind),
     };
 
@@ -450,14 +465,12 @@ pub async fn earthwork_summary(
             "invalid petal_id",
         ));
     }
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            "petal not found",
-        ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            "insufficient scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
     }
     let (sql, binds) = fe_query::earthwork_volume_sql(&petal_id);

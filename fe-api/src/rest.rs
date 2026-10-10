@@ -31,6 +31,37 @@ fn now_ms() -> u64 {
 /// denial never reveals whether an id exists (DEC-C21; §mcp-dispatch).
 pub const NOT_FOUND_OR_DENIED: &str = "not found or not permitted";
 
+/// `resolved` iff the token covers it — "unresolvable" and "out of scope"
+/// both collapse to `None`, the one [`NOT_FOUND_OR_DENIED`] denial
+/// (see `fe-api/AGENTS.md` §existence-oracle).
+pub(crate) fn covered_scope(claims: &ApiClaims, resolved: Option<String>) -> Option<String> {
+    let scope = resolved?;
+    if require_scope(claims, &scope).is_ok() {
+        return Some(scope);
+    }
+    tracing::debug!(sub = %claims.sub, scope, "denied: token scope does not cover resource");
+    None
+}
+
+/// Resolve-and-authorize a petal: its DB-resolved scope, or `None` (deny with
+/// [`NOT_FOUND_OR_DENIED`] whether it is missing, foreign, or the lookup failed).
+pub(crate) async fn authorized_petal_scope(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    petal_id: &str,
+) -> Option<String> {
+    covered_scope(claims, resolve_petal_scope(state, petal_id).await)
+}
+
+/// Resolve-and-authorize a node — [`authorized_petal_scope`]'s node twin.
+pub(crate) async fn authorized_node_scope(
+    state: &crate::server::ApiState,
+    claims: &ApiClaims,
+    node_id: &str,
+) -> Option<String> {
+    covered_scope(claims, resolve_node_scope(state, node_id).await)
+}
+
 /// True iff every caller-claimed ancestor id equals the DB-resolved `scope`'s chain.
 pub(crate) fn ancestry_matches(
     scope: &str,
@@ -319,11 +350,11 @@ pub async fn update_transform(
     }
 
     // Resolve node scope for enforcement
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
-        return Json(ApiResponse::error("could not resolve node scope"));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::error("insufficient scope"));
+    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
+        .await
+        .is_none()
+    {
+        return Json(ApiResponse::error(crate::rest::NOT_FOUND_OR_DENIED));
     }
 
     let broadcast_receivers = persist_transform(
@@ -416,13 +447,13 @@ pub async fn get_transform(
     }
 
     // Resolve node scope for enforcement
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
+    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<TransformDto>::error(
-            "could not resolve node scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<TransformDto>::error("insufficient scope"));
     }
 
     if let Some(ref db) = state.db_reader {
@@ -492,13 +523,13 @@ pub async fn set_node_property(
     }
 
     // Resolve node scope for enforcement — deny if resolution fails
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
+    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<PropertySetDto>::error(
-            "could not resolve node scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error("insufficient scope"));
     }
 
     match set_property_core(&state, &node_id, req.key, req.value).await {
@@ -607,13 +638,13 @@ pub async fn get_node_properties(
     }
 
     // Resolve node scope for enforcement — deny if resolution fails
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
+    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<PropertiesDto>::error(
-            "could not resolve node scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<PropertiesDto>::error("insufficient scope"));
     }
 
     match get_properties_core(&state, &node_id).await {
@@ -640,13 +671,13 @@ pub async fn delete_node_property(
     }
 
     // Resolve node scope for enforcement — deny if resolution fails
-    let Some(scope) = resolve_node_scope(&state, &node_id).await else {
+    if crate::rest::authorized_node_scope(&state, &claims, &node_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<PropertySetDto>::error(
-            "could not resolve node scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<PropertySetDto>::error("insufficient scope"));
     }
 
     match delete_property_core(&state, &node_id, &key).await {
@@ -1250,13 +1281,8 @@ pub async fn execute_analytics_query(
             "analytics authorization unavailable (no direct DB reader)",
         ));
     };
-    let Some(scope) = direct_resolve_petal_scope(db, &req.petal_id).await else {
-        return Json(ApiResponse::<QueryResultDto>::error(
-            "analytics authorization unavailable (petal scope could not be resolved)",
-        ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<QueryResultDto>::error("insufficient scope"));
+    if covered_scope(&claims, direct_resolve_petal_scope(db, &req.petal_id).await).is_none() {
+        return Json(ApiResponse::<QueryResultDto>::error(NOT_FOUND_OR_DENIED));
     }
 
     // Rate limiting (shared bucket with /query)
@@ -1377,7 +1403,7 @@ pub async fn create_field_def(
         return Json(ApiResponse::<FieldDefDto>::error("invalid scope"));
     }
     if require_scope(&claims, &req.scope).is_err() {
-        return Json(ApiResponse::<FieldDefDto>::error("insufficient scope"));
+        return Json(ApiResponse::<FieldDefDto>::error(NOT_FOUND_OR_DENIED));
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -1613,13 +1639,13 @@ pub async fn create_waypoint(
     if !is_valid_ulid(&petal_id) {
         return Json(ApiResponse::<CreatedEntityDto>::error("invalid petal_id"));
     }
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<CreatedEntityDto>::error(
-            "could not resolve petal scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<CreatedEntityDto>::error("insufficient scope"));
     }
     match create_waypoint_core(&state, &petal_id, &req).await {
         Ok(dto) => Json(ApiResponse::success(dto)),
@@ -1699,12 +1725,10 @@ pub async fn move_waypoint(
     }
 
     // Resolve node scope
-    let Some(scope) = resolve_node_scope(&state, &waypoint_id).await else {
-        return Json(ApiResponse::error("could not resolve node scope"));
+    let Some(scope) = crate::rest::authorized_node_scope(&state, &claims, &waypoint_id).await
+    else {
+        return Json(ApiResponse::error(crate::rest::NOT_FOUND_OR_DENIED));
     };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::error("insufficient scope"));
-    }
     match move_waypoint_core(&state, &waypoint_id, &scope, &req).await {
         Ok(payload) => Json(ApiResponse::<serde_json::Value>::success(payload)),
         Err(e) => Json(ApiResponse::error(e)),
@@ -1798,14 +1822,12 @@ pub async fn get_elevation_profile(
     }
 
     // Resolve node scope
-    let Some(scope) = resolve_node_scope(&state, &track_id).await else {
+    if crate::rest::authorized_node_scope(&state, &claims, &track_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<Vec<ElevationPointDto>>::error(
-            "could not resolve node scope",
-        ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<Vec<ElevationPointDto>>::error(
-            "insufficient scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
     }
 
@@ -1855,13 +1877,13 @@ pub async fn get_track_stats(
         return Json(ApiResponse::<TrackStatsDto>::error("invalid track_id"));
     }
 
-    let Some(scope) = resolve_node_scope(&state, &track_id).await else {
+    if crate::rest::authorized_node_scope(&state, &claims, &track_id)
+        .await
+        .is_none()
+    {
         return Json(ApiResponse::<TrackStatsDto>::error(
-            "could not resolve node scope",
+            crate::rest::NOT_FOUND_OR_DENIED,
         ));
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return Json(ApiResponse::<TrackStatsDto>::error("insufficient scope"));
     }
 
     // Try direct DB query

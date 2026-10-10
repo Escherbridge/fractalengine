@@ -229,8 +229,8 @@ async fn install_then_list_meta_and_tile_round_trip_with_petal_binding_authz() {
         .await;
     assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
-        "a foreign-petal token must not list another petal's tilesets"
+        StatusCode::NOT_FOUND,
+        "a foreign-petal token must not list another petal's tilesets (404 = unknown petal)"
     );
 
     let (status, _) = h
@@ -241,7 +241,7 @@ async fn install_then_list_meta_and_tile_round_trip_with_petal_binding_authz() {
         .await;
     assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
-        "a foreign-petal token must not read another petal's tileset meta"
+        StatusCode::NOT_FOUND,
+        "a foreign-petal token must not read another petal's tileset meta (404 = unknown petal)"
     );
 }

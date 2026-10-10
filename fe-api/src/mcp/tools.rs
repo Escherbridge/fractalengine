@@ -236,9 +236,14 @@ pub(super) fn promote_instance(call: ToolCall<'_>) -> ToolFuture<'_> {
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| "invalid instance_index".to_string())?;
+        let path_id = str_arg(call.args, "path_id").to_string();
+        // Unknown and foreign paths deny alike (§existence-oracle).
+        if !crate::endpoint::path_in_petal(call.state, &path_id, &petal_id).await {
+            return Err(crate::rest::NOT_FOUND_OR_DENIED.to_string());
+        }
         let cmd = DbCommand::PromoteInstance {
             petal_id,
-            path_id: str_arg(call.args, "path_id").to_string(),
+            path_id,
             instance_index,
             auth: caller_auth(call.claims),
         };
@@ -515,7 +520,7 @@ pub(super) fn list_tilesets(call: ToolCall<'_>) -> ToolFuture<'_> {
             .await
             .map_err(|status| match status.as_u16() {
                 403 => "insufficient permissions".to_string(),
-                404 => "petal not found".to_string(),
+                404 => crate::rest::NOT_FOUND_OR_DENIED.to_string(),
                 _ => "tileset lookup failed".to_string(),
             })
     })

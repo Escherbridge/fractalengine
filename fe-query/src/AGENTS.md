@@ -18,7 +18,10 @@ free of any fe-terrain/fe-renderer coupling. Builders (`nodes_of_kind_sql`,
 and the id values ride in `binds` — ids are ALWAYS bound, never interpolated, so
 they are not a SQL-injection surface (tag values stay inline as compile-time
 constants). Callers bind exactly like `fe-api::endpoint::load_node`. All are
-tombstone-filtered (`tombstone = NONE`). Volumes are already real m³ (computed
+tombstone-filtered (`tombstone = NONE`) and petal-confined
+(`petal_id = $petal_id` — `stamps_on_path_sql(petal_id, path_id)` took only
+the path until 2026-10-10, so a caller authorized for one petal could list
+another verse's stamps by naming a foreign path). Volumes are already real m³ (computed
 through the terrain scale authority upstream, N-1) — this crate only sums them.
 
 ## §gis

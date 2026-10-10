@@ -17,7 +17,7 @@
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::distributed_query::{DistributedQueryCall, DistributedQueryOutcome, TsQueryKind};
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::limits;
 use crate::query_guard;
 use crate::server::ApiState;
@@ -85,17 +85,11 @@ pub async fn run_distributed_timeseries_query(
     }
     // Resolve the petal's hierarchical scope and require token containment —
     // the same deny-by-default shape the ingest path applies.
-    let Some(scope) = crate::rest::resolve_petal_scope(state, &petal_id).await else {
-        return Err(TimeseriesQueryError::NotFound("unknown petal"));
+    let Some(scope) = crate::rest::authorized_petal_scope(state, claims, &petal_id).await else {
+        return Err(TimeseriesQueryError::NotFound(
+            crate::rest::NOT_FOUND_OR_DENIED,
+        ));
     };
-    if require_scope(claims, &scope).is_err() {
-        tracing::warn!(
-            petal_id,
-            sub = %claims.sub,
-            "distributed query denied: token scope does not cover petal"
-        );
-        return Err(TimeseriesQueryError::Forbidden("insufficient scope"));
-    }
     // The verse comes from the resolved scope, never from the request body.
     let Some(verse_id) = fe_database::parse_scope(&scope)
         .ok()

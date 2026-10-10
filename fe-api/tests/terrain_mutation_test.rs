@@ -250,7 +250,7 @@ async fn refused_puts_leave_the_stored_terrain_untouched() {
             &foreign,
             api_config(),
             StatusCode::OK,
-            "insufficient scope",
+            fe_api::rest::NOT_FOUND_OR_DENIED,
         ),
         (
             "not a TerrainConfig",

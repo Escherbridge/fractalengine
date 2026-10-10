@@ -274,7 +274,8 @@ async fn export_rejects_bad_role_scope_and_injection() {
     seed_node(&db, &pa, "n1", 0.0, 0.0, 0.0).await;
     let state = test_state(db);
 
-    // Wrong scope (different verse) → 403.
+    // Wrong scope (different verse) → 404, same as an unknown petal below
+    // (§existence-oracle: a foreign petal must not be distinguishable).
     let resp = export_parquet(
         State(state.clone()),
         Extension(test_claims("VERSE#v2", "viewer")),
@@ -283,7 +284,7 @@ async fn export_rejects_bad_role_scope_and_injection() {
         HeaderMap::new(),
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // Insufficient role → 403.
     let resp = export_csv(

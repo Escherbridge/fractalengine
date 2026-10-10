@@ -259,7 +259,8 @@ async fn nodes_rejects_out_of_scope_token() {
     let db = setup_test_db().await;
     seed_hierarchy(&db, &petal_id, None).await;
     let state = test_state(db);
-    // Viewer role but a token scoped to a *different* verse -> 403, not 404.
+    // Viewer role but a token scoped to a *different* verse -> 404, the same
+    // answer as an unknown petal (§existence-oracle).
     let claims = test_claims("VERSE#other", "viewer");
 
     let resp = list_gis_nodes(
@@ -270,7 +271,7 @@ async fn nodes_rejects_out_of_scope_token() {
     )
     .await;
 
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

@@ -230,9 +230,10 @@ async fn ingest_rejects_wrong_scope_role_and_foreign_anchor() {
     let state = test_state(db);
     let batch = || vec![reading("sensor-a", "temperature_c", 20.0, None)];
 
-    // Wrong scope (different verse) → 403.
+    // Wrong scope (different verse) → 404, indistinguishable from an unknown
+    // petal (§existence-oracle).
     let resp = post_readings(&state, test_claims("VERSE#v2", "editor"), &pa, batch()).await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // Viewer role (read-only) → 403.
     let resp = post_readings(&state, test_claims("VERSE#v1", "viewer"), &pa, batch()).await;
@@ -796,8 +797,8 @@ async fn fallback_guards_deny_before_the_seam() {
         "role denial happens before any channel traffic"
     );
 
-    // Foreign-verse scope → 403; scope was resolved (one command) but NO
-    // write reached the seam.
+    // Foreign-verse scope → 404 (same as unknown, §existence-oracle); scope
+    // was resolved (one command) but NO write reached the seam.
     let resp = post_readings(
         &harness.state,
         test_claims("VERSE#v2", "editor"),
@@ -805,7 +806,7 @@ async fn fallback_guards_deny_before_the_seam() {
         batch(),
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(
         observed_inserts(&harness).len(),
         0,

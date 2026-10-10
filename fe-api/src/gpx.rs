@@ -7,11 +7,11 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum_extra::extract::Multipart;
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+use fe_runtime::messages::{DbCommand, DbResult};
 use fe_terrain::gpx::{compute_stats, gpx_to_scene_commands, parse_gpx_bytes, scene_nodes_to_gpx};
 use fe_terrain::projection::Projection;
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::types::{is_valid_ulid, ApiResponse};
 
 /// POST /api/v1/petals/:petal_id/import/gpx
@@ -37,11 +37,11 @@ pub async fn import_gpx(
     }
 
     // Resolve scope
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
-        return envelope_error("could not resolve petal scope");
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return envelope_error("insufficient scope");
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
+        return envelope_error(crate::rest::NOT_FOUND_OR_DENIED);
     }
 
     // Read the uploaded GPX file
@@ -181,11 +181,11 @@ pub async fn export_gpx(
         return (StatusCode::BAD_REQUEST, "invalid petal_id").into_response();
     }
 
-    let Some(scope) = resolve_petal_scope(&state, &petal_id).await else {
-        return (StatusCode::NOT_FOUND, "could not resolve petal scope").into_response();
-    };
-    if require_scope(&claims, &scope).is_err() {
-        return (StatusCode::FORBIDDEN, "insufficient scope").into_response();
+    if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
+        .await
+        .is_none()
+    {
+        return (StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED).into_response();
     }
 
     // Load GPX nodes from DB
@@ -322,24 +322,4 @@ async fn read_multipart_field(multipart: &mut Multipart, field_name: &str) -> Op
         }
     }
     None
-}
-
-async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
-    if let Some(ref db) = state.db_reader {
-        return crate::rest::direct_resolve_petal_scope(db, petal_id).await;
-    }
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    state
-        .api_cmd_tx
-        .send(ApiCommand::DbRequest {
-            cmd: DbCommand::ResolvePetalScope {
-                petal_id: petal_id.to_string(),
-            },
-            reply_tx,
-        })
-        .ok()?;
-    match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
-        Ok(Ok(DbResult::ScopeResolved { scope })) => scope,
-        _ => None,
-    }
 }

@@ -159,13 +159,14 @@ async fn rbac_insufficient_role_denied() {
     assert_eq!(body["ok"], false);
     assert_eq!(body["error"], "insufficient permissions");
 
-    // Scoped read route: insufficient role and foreign scope both 403.
+    // Scoped read route: insufficient role is 403; a foreign scope is the
+    // unknown-petal 404 (§existence-oracle).
     let csv_path = format!("/api/v1/petals/{}/export.csv", hier.petal_id);
     let (status, _, _) = get_raw(&h, &csv_path, &none_token).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let foreign = h.mint_token("VERSE#someone-else", "viewer");
     let (status, _, _) = get_raw(&h, &csv_path, &foreign).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------

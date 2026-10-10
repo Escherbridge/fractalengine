@@ -161,7 +161,7 @@ async fn analytics_rejects_a_petal_outside_the_token_scope() {
     let body = body_json(response).await;
 
     assert_eq!(body["ok"], false);
-    assert_eq!(body["error"], "insufficient scope");
+    assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED);
 }
 
 #[tokio::test]

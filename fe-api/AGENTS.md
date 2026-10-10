@@ -15,7 +15,9 @@ hatch for reads that don't have (or don't need) a dedicated `DbCommand`.
 ## §websocket
 
 `ws.rs` treats every petal and node target as deny-by-default: resolve its
-hierarchical scope, require token containment, then subscribe or mutate. A
+hierarchical scope, require token containment, then subscribe or mutate (an
+unknown and an out-of-scope target answer the same `not_found` /
+`NOT_FOUND_OR_DENIED` error — §existence-oracle). A
 transform broadcast carries the resolved petal identifier rather than trusting
 client attribution. `SceneChange` events are filtered by their mandatory
 petal attribution; transform rollbacks use the same filter. When either
@@ -63,6 +65,74 @@ when a route lands.
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
 | MCP | `POST /mcp` (`mcp::mcp_handler`) — 29 tools, one `ToolSpec` table (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
+## §existence-oracle (REST/WS denial unification, 2026-10-10)
+
+**Contract.** Any handler that resolves a resource's scope FROM THE DB and then
+checks token containment must make "unresolvable" and "out of scope"
+indistinguishable — identical body text, `rest::NOT_FOUND_OR_DENIED` ("not
+found or not permitted"), AND identical status. Otherwise a verse-A token can
+probe whether any ULID exists in verse B (the old split: "could not resolve
+petal scope"/404 vs "insufficient scope"/403). Status follows the handler's
+convention: house-style handlers answer 200 + `{ok:false, error}`; real-status
+handlers (export, gis, gpx export, iot, upload, `.hexon` export, tile plane)
+answer 404 for both (the §assets precedent). MCP had this already (DEC-C21).
+
+**One core, no hand-rolled pairs.** `rest::covered_scope(claims, resolved)`
+is the only containment-after-resolution step; `rest::authorized_petal_scope`
+/ `authorized_node_scope` = resolve + `covered_scope`, returning the scope or
+`None` (= the uniform denial). REST handlers, `hexon::require_hexon_petal_access`
+(tileset mgmt, crate registry, tile plane), `timeseries_query`, the analytics
+query, WS subscribe/scene-subscribe/transform/entity commands and the MCP
+dispatcher all go through it — a new route that pairs `resolve_*_scope` with
+its own `require_scope` and a second message is the regression to look for.
+A resolver transport failure (DB error, channel closed, timeout) is also
+`None`: it answers the same denial whether or not the id exists, so a flaky
+backend never becomes an oracle (post-authz transport errors keep their
+502/503/504 — only an authorized caller reaches them).
+
+**Kept distinct** (they reveal nothing stored): role failures ("insufficient
+permissions" / 403 — checked before resolution), input shape ("invalid
+petal_id", bad params, 400), and the tile plane's "tileset not bound to YOUR
+petal" 404 (only reachable after the caller's own petal is authorized).
+Caller-supplied scopes with no DB lookup (`POST /field-defs`, `GET
+/field-defs/{scope}`, `GET /address?uri=`) carry no oracle but use the same
+text for consistency. `POST /query/share` checks only the token's own scope.
+
+**Second ids inside an authorized petal** (adversarial-review pass,
+2026-10-10). Authorizing the URL petal is not enough when the request carries
+ANOTHER id the handler then acts on. `promote_instance` (REST + MCP) takes a
+`path_id`: the DB handler tolerates an absent path but refuses a foreign one,
+so "promoted" vs "failed" told a verse-A editor whether any ULID was a node in
+verse B. `endpoint::path_in_petal` now requires the path to be a node OF the
+authorized petal — unknown and foreign both deny with the one text before any
+`DbCommand`. `GET /petals/{p}/nodes?kind=stamp&path_id=` used
+`fe_query::stamps_on_path_sql(path_id)` with no petal filter, which RETURNED
+another verse's stamp rows (a cross-tenant read, not just an oracle); the
+builder now takes `(petal_id, path_id)` and filters on both.
+
+**Test.** `tests/existence_oracle_test.rs` drives every affected route family
+through the real router with a verse-A Owner token, asking for (i) a
+never-existing ULID and (ii) a real verse-B resource, and requires
+byte-identical (status, body) that is a denial. Reverting any one route to a
+split message turns it red. Second-id rows put the probe inside the caller's
+OWN petal (`{pa}`): promote must deny both alike; the `?path_id=` listing must
+answer both alike (an empty list, `SAME_ANSWER_ROUTES`).
+`own_petal_path_still_promotes_and_lists_its_stamps` guards against
+over-denial; `tests/ws_integration.rs::ws_unknown_and_foreign_ids_get_identical_denials`
+covers the WS messages; `mcp_integration.rs::promote_instance_unknown_and_foreign_paths_are_indistinguishable`
+the MCP tool. `scripts/hexon-serve-verify.ps1` asserts the same on a live
+relay for the tile plane (foreign = unknown petal = 404).
+
+**Residuals (not closed here).** Timing: resolution cost still differs by
+branch — the scope lookups are unindexed `WHERE <id> = $x LIMIT 1` scans
+(an unknown id scans the whole table; a foreign petal stops at its row then
+scans `fractal`), so latency depends on table sizes, not just existence; a
+fix needs indexed id lookups plus a fixed-cost resolver. Tileset store
+mutation still says "tileset remains assigned to another petal" — inherent to
+refusing a shared-store delete (the caller can read its own binding), and a
+tileset-id fact, not a hierarchy-ULID one. The crate registry is a node-wide
+catalog: `install_crate` reveals whether a crate URI is published at all.
+
 ## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
 
 Makes every object a stable `fe://verse/fractal/petal/node` endpoint you can
@@ -80,7 +150,8 @@ Makes every object a stable `fe://verse/fractal/petal/node` endpoint you can
   typed `{"ok":false}`; never a panic. Shared with the MCP `read_node` tool.
 - **Write (FR-3).** `DELETE /api/v1/nodes/{id}[?cascade=true]` routes through T1's
   sync-safe `TombstoneNode` / `CascadeTombstoneNode` ops (never a raw drop, N-4);
-  `POST …/paths/{path}/instances/{i}/promote` through `PromoteInstance`. The API
+  `POST …/paths/{path}/instances/{i}/promote` through `PromoteInstance` (the
+  path must be a node of the URL petal — `path_in_petal`, §existence-oracle). The API
   is a *client* of the same ops the UI uses.
 - **Auth model (FR-3/FR-4, Q-2).** API/MCP callers are
   `CallerAuth::Identified { did, role }` — the token's already-resolved role
@@ -118,8 +189,9 @@ router in `server.rs`:
 **RBAC**: Viewer+ role + petal-scope coverage, resolved via
 `rest::direct_resolve_petal_scope` (or the `ResolvePetalScope` channel command
 when no `db_reader` is wired). Deny-by-default and real HTTP status codes,
-mirroring `§assets`: 400 (bad ULID / bad filter params), 403 (role or scope),
-404 (unknown petal), 502 (query transport failure). This is stricter than the
+mirroring `§assets`: 400 (bad ULID / bad filter params), 403 (role), 404
+(unknown OR out-of-scope petal — §existence-oracle), 502 (query transport
+failure). This is stricter than the
 older `rest.rs` handlers that return 200 + `{"ok":false}`; GIS reads follow the
 asset-delivery precedent because external consumers (dashboards, IoT) care
 about status codes.
@@ -243,8 +315,9 @@ The handler requires Viewer+, validates and directly resolves that petal's
 hierarchical scope, then requires token containment *before* registering the
 `EntityStore` table. The table is always registered with the authorized petal
 filter; caller SQL can never select an all-petals table. Analytics has no
-crossbeam scope-resolution fallback: without a direct DB reader, or when the
-petal cannot be resolved, it returns an explicit unavailable error.
+crossbeam scope-resolution fallback: without a direct DB reader it returns an
+explicit unavailable error; an unresolvable or out-of-scope petal is the one
+`NOT_FOUND_OR_DENIED` denial (§existence-oracle).
 
 The `EntityStore` is hydrated before the desktop API starts, but remains a hot,
 eventually refreshed cache rather than the canonical database. Authorization is
@@ -629,8 +702,8 @@ in-memory; no temp files) or local CSV serialization.
   the label in both. Precision note: parquet positions pass through
   `EntitySnapshot`'s `f32` (≈1 m at mid-latitudes) — acceptable v1, revisit if
   survey-grade egress is needed.
-- Status mapping: 400 bad query/coords/table, 403 role/scope, 404 unknown
-  petal, 413 row-cap/byte-ceiling (enforced on the readings path too — the
+- Status mapping: 400 bad query/coords/table, 403 role, 404 unknown or
+  out-of-scope petal (§existence-oracle), 413 row-cap/byte-ceiling (enforced on the readings path too — the
   anchor join is bounded by the already-capped distinct-node-id count, and
   the byte ceiling is checked against the final serialized body exactly as
   for nodes), 416 Range past EOF (DEC-C10), 429 rate limit, 502 query
@@ -742,8 +815,9 @@ owned by Petal B. Listing and storage summaries are filtered to the requested
 petal's bindings. API seeding changes are denied while P2P distribution is
 disabled. The tile data plane is authenticated and requires the same
 `petal_id`: each list, metadata, and tile-byte request re-resolves the petal
-scope and permits only IDs bound in that petal's terrain configuration. Unbound
-or unknown IDs both return 404, and byte responses are `private, no-store` so a
+scope and permits only IDs bound in that petal's terrain configuration. An
+unknown or foreign `petal_id` is 404 (§existence-oracle; only a role failure
+is 403), and unbound or unknown tileset IDs on an authorized petal are 404 too, and byte responses are `private, no-store` so a
 shared cache cannot replay a scoped tile to another caller.
 
 ## §terrain-mutation (SetPetalTerrain correlation, 2026-10-10)
@@ -790,7 +864,7 @@ future work). Design notes:
 
 - **Guard order mirrors export.rs**: `require_role("editor")` (writes need
   Editor+, unlike the Viewer+ read endpoints) → ULID check →
-  `resolve_petal_scope` → `require_scope` → per-DID rate limit
+  `authorized_petal_scope` (404 unknown-or-foreign, §existence-oracle) → per-DID rate limit
   (`limits::IOT_INGEST_RATE_PER_SEC`) → batch cap
   (`limits::IOT_INGEST_MAX_READINGS`, 413 past it).
 - **The write goes straight to `db_reader`** via

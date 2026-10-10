@@ -41,9 +41,12 @@
              tileset -> 200, correct content-type, real decoded-image magic
              bytes (not a synthetic placeholder -- these are the real F15
              archives).
-           - A token scoped to the FOREIGN petal -> 403 on the bound petal's
-             tileset list AND tile routes (fe-policy scope check fails before
-             the registry is ever touched).
+           - A token scoped to the FOREIGN petal -> 404 on the bound petal's
+             tileset list AND tile routes -- the SAME answer it gets for a
+             petal_id that never existed (fe-api AGENTS.md section
+             existence-oracle: an unknown and a foreign petal are
+             indistinguishable; only a role failure is 403). The scope check
+             still fails before the registry is ever touched.
            - The bound petal's OWN valid token against the UNBOUND third
              tileset's tile route -> 404, not 403 (authorize_tileset_read's
              `is_assigned_tileset` check fails after the scope check passes
@@ -418,16 +421,24 @@ try {
     Assert-True ($satResp.Bytes.Length -gt 1000) "satellite tile: non-trivial byte length ($($satResp.Bytes.Length) bytes)"
     Assert-True (Test-JpegMagic $satResp.Bytes) "satellite tile: real JPEG magic bytes (FF D8 FF)"
 
-    Write-Section "Foreign-petal token denied on the bound petal's tileset surface (403)"
+    Write-Section "Foreign-petal token denied on the bound petal's tileset surface (404, same as an unknown petal)"
+    # Existence-oracle contract: a petal the token cannot see answers exactly
+    # like a petal that does not exist, so a foreign token cannot probe ids.
+    $neverPetalId = '01HZZZZZZZZZZZZZZZZZZZZZZZ'
     $foreignListStatus = Get-ApiStatus GET "/api/v1/tilesets?petal_id=$petalId" $foreignToken $null
-    Assert-Equal $foreignListStatus 403 "foreign-petal token: list tilesets on bound petal -> 403"
+    Assert-Equal $foreignListStatus 404 "foreign-petal token: list tilesets on bound petal -> 404 (not 403)"
+    $unknownListStatus = Get-ApiStatus GET "/api/v1/tilesets?petal_id=$neverPetalId" $foreignToken $null
+    Assert-Equal $unknownListStatus $foreignListStatus "foreign-petal token: list on a never-existing petal_id answers the SAME status as on the bound petal"
     $foreignTileResp = Get-TileResponse $elevUrl.Replace("petal_id=$petalId", "petal_id=$foreignPetalId") $foreignToken
     # The foreign token's OWN scope IS the foreign petal (role/scope checks
     # pass), but that petal was never bound to any tileset at all --
     # deterministically 404 via is_assigned_tileset on an empty list, not 403.
     Assert-Equal $foreignTileResp.Status 404 "foreign petal's own valid token, requesting switzerland's tile under its own (unbound) petal_id -> 404"
     $crossTileResp = Get-TileResponse $elevUrl $foreignToken
-    Assert-Equal $crossTileResp.Status 403 "foreign-SCOPED token requesting the BOUND petal's tile (petal_id=bound) -> 403 (scope check fails before registry lookup)"
+    Assert-Equal $crossTileResp.Status 404 "foreign-SCOPED token requesting the BOUND petal's tile (petal_id=bound) -> 404, not 403 (scope check fails before registry lookup)"
+    $unknownTileResp = Get-TileResponse $elevUrl.Replace("petal_id=$petalId", "petal_id=$neverPetalId") $foreignToken
+    Assert-Equal $unknownTileResp.Status $crossTileResp.Status "foreign-SCOPED token on a never-existing petal_id answers the SAME status as on the bound petal"
+    Assert-Equal $unknownTileResp.Bytes.Length $crossTileResp.Bytes.Length "never-existing vs bound petal: identical (empty) denial body length"
 
     Write-Section "Unbound tileset (real, installed, never bound) -- denied without revealing existence (404)"
     $unboundUrl = "$BaseUrl/api/v1/tiles/elevation/$pacificId/8/0/0.png?petal_id=$petalId"

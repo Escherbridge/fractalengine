@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use fe_identity::api_token::ApiClaims;
 
-use crate::auth::{require_role_level, require_scope};
+use crate::auth::require_role_level;
 use crate::endpoint::is_addressable_node_id;
 use crate::server::ApiState;
 use crate::types::is_valid_ulid;
@@ -361,10 +361,8 @@ async fn authorize(
         ScopeRule::HierarchyArgs(target) => resolve_hierarchy_scope(state, args, target).await?,
     };
     let denied = || crate::rest::NOT_FOUND_OR_DENIED.to_string();
-    let scope = resolved.ok_or_else(denied)?;
-    if require_scope(claims, &scope).is_err() {
-        return Err(denied());
-    }
+    // Same resolve-and-authorize core as REST (§existence-oracle).
+    let scope = crate::rest::covered_scope(claims, resolved).ok_or_else(denied)?;
     // Ancestry is checked AFTER containment, so a mismatch reveals nothing
     // about a container the token cannot see.
     if !crate::rest::ancestry_matches(&scope, claimed.verse_id, claimed.fractal_id) {
@@ -528,7 +526,7 @@ mod tests {
             .and_then(|rest| rest.split("// Response helpers").next())
             .expect("dispatcher section");
         assert_eq!(body.matches("require_role_level(").count(), 1);
-        assert_eq!(body.matches("require_scope(").count(), 1);
+        assert_eq!(body.matches("covered_scope(").count(), 1);
     }
 
     /// Table integrity: unique names, a real role floor on every row (a

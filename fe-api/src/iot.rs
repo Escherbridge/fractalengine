@@ -13,7 +13,7 @@ use fe_identity::api_token::ApiClaims;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 use serde::Deserialize;
 
-use crate::auth::{require_role, require_scope};
+use crate::auth::require_role;
 use crate::limits;
 use crate::query_guard;
 use crate::server::ApiState;
@@ -60,13 +60,9 @@ pub async fn ingest_readings(
     if !is_valid_ulid(&petal_id) {
         return err(StatusCode::BAD_REQUEST, "invalid petal_id");
     }
-    let Some(scope) = crate::rest::resolve_petal_scope(&state, &petal_id).await else {
-        return err(StatusCode::NOT_FOUND, "unknown petal");
+    let Some(scope) = crate::rest::authorized_petal_scope(&state, &claims, &petal_id).await else {
+        return err(StatusCode::NOT_FOUND, crate::rest::NOT_FOUND_OR_DENIED);
     };
-    if require_scope(&claims, &scope).is_err() {
-        tracing::warn!(petal_id, sub = %claims.sub, "iot ingest denied: token scope does not cover petal");
-        return err(StatusCode::FORBIDDEN, "insufficient scope");
-    }
 
     let rate_key = format!("iot:{}", claims.sub);
     if let Err(e) = query_guard::check_rate_limit(
