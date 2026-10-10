@@ -80,6 +80,7 @@ struct Model {
     petals: Vec<(String, String, String)>,   // (id, fractal_id, name)
     nodes: Vec<NodeRec>,
     assets: Vec<(String, String)>, // (asset_id, content_hash)
+    terrain: HashMap<String, serde_json::Value>, // petal_id -> stored terrain
     log: Vec<serde_json::Value>,
 }
 
@@ -451,9 +452,25 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             }
         }
         DbCommand::GetPetalTerrain { petal_id } => DbResult::PetalTerrainLoaded {
+            terrain: m.terrain.get(&petal_id).cloned(),
             petal_id,
-            terrain: None,
+            correlation_id: None,
         },
+        DbCommand::SetPetalTerrain {
+            petal_id,
+            terrain,
+            correlation_id,
+        } => {
+            match &terrain {
+                Some(t) => m.terrain.insert(petal_id.clone(), t.clone()),
+                None => m.terrain.remove(&petal_id),
+            };
+            DbResult::PetalTerrainLoaded {
+                petal_id,
+                terrain,
+                correlation_id,
+            }
+        }
         // gis.rs run_select channel fallback: live nodes of the bound petal.
         DbCommand::RawQuery {
             sql,
@@ -1989,7 +2006,8 @@ async fn terrain_and_tileset_tools_reach_their_cores() {
     let home = seed_chain(&model, "home");
     let editor = claims(&home.verse_scope(), "editor");
 
-    // set_petal_terrain mirrors REST: validated, then refused (uncorrelated reply).
+    // set_petal_terrain mirrors REST: an invalid TerrainConfig never reaches
+    // the DB thread; a valid one is stored, and null clears it.
     let resp = call_tool(
         &state,
         &editor,
@@ -1998,6 +2016,26 @@ async fn terrain_and_tileset_tools_reach_their_cores() {
     )
     .await;
     assert_tool_error(&resp, "invalid terrain config");
+    assert!(model.lock().unwrap().terrain.is_empty());
+
+    let config = serde_json::to_value(fe_terrain::config::TerrainConfig {
+        enabled: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let resp = call_tool(
+        &state,
+        &editor,
+        "set_petal_terrain",
+        json!({ "petal_id": home.petal, "terrain": config }),
+    )
+    .await;
+    assert_eq!(tool_json(&resp)["terrain"], config);
+    assert_eq!(
+        model.lock().unwrap().terrain.get(&home.petal),
+        Some(&config)
+    );
+
     let resp = call_tool(
         &state,
         &editor,
@@ -2005,7 +2043,8 @@ async fn terrain_and_tileset_tools_reach_their_cores() {
         json!({ "petal_id": home.petal, "terrain": null }),
     )
     .await;
-    assert_tool_error(&resp, "temporarily unavailable");
+    assert!(tool_json(&resp)["terrain"].is_null());
+    assert!(model.lock().unwrap().terrain.is_empty());
 
     // list_tilesets: the petal binds none → empty list.
     let viewer = claims(&home.verse_scope(), "viewer");

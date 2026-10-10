@@ -151,6 +151,7 @@ fn persist(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
+        correlation_id: None,
     }) {
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);
@@ -692,6 +693,7 @@ fn persist_doc(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain.clone()),
+        correlation_id: None,
     }) {
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);
@@ -2003,9 +2005,11 @@ mod tests {
             "soil".into(),
         );
         match rx.try_recv().expect("terrain write") {
+            // GUI sets stay uncorrelated: their echo must never reach an API waiter.
             DbCommand::SetPetalTerrain {
                 petal_id,
                 terrain: Some(doc),
+                correlation_id: None,
             } => {
                 assert_eq!(petal_id, "petal-1");
                 assert_eq!(doc["proposals"][0]["delta"], json!(2.0));

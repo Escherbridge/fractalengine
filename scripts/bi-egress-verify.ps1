@@ -420,9 +420,9 @@ try {
     # coords=latlon honesty
     # -----------------------------------------------------------------------
     Write-Section "coords=latlon (no terrain origin on this petal)"
-    # REST/MCP terrain mutation is deliberately refused (fe-api terrain.rs), so
-    # a live relay petal can never carry an origin here; the known lat/lon
-    # value round-trip is pinned in fe-api's export_csv_local_vs_latlon_landmine.
+    # This script never sets a terrain on this petal (REST PUT terrain is live
+    # since 2026-10-10 but unused here), so it carries no origin; the known
+    # lat/lon value round-trip is pinned in fe-api's export_csv_local_vs_latlon_landmine.
     $latlonStatus = 0
     try { Invoke-WebRequest -Uri "$($nodeShareUrl)?coords=latlon" -UseBasicParsing | Out-Null; $latlonStatus = 200 }
     catch { $latlonStatus = [int]$_.Exception.Response.StatusCode }

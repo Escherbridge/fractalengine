@@ -298,10 +298,18 @@ is in pure functions in `fe-renderer/src/camera.rs` — no ECS dependencies, ful
 Per-petal terrain binding flows through the DB thread and out to fe-terrain:
 
 - **Persistence**: `DbCommand::{SetPetalTerrain, GetPetalTerrain}` →
-  `fe-database/src/handlers/petal_terrain.rs` (same SurrealQL statements as
-  `fe-api/src/terrain.rs`: `UPDATE petal SET terrain = $config` / `terrain = NONE`,
-  `SELECT terrain FROM petal`). Both reply `DbResult::PetalTerrainLoaded` (set echoes
-  the written value — authoritative confirmation for the UI's optimistic update).
+  `fe-database/src/handlers/petal_terrain.rs` (`UPDATE petal SET terrain = $config`
+  / `terrain = NONE` … `RETURN terrain`, `SELECT terrain FROM petal`). Both reply
+  `DbResult::PetalTerrainLoaded` (set echoes the value READ BACK from the written
+  row — authoritative confirmation for the UI's optimistic update).
+- **REST/MCP mutation is live** (2026-10-10): `PUT|DELETE /api/v1/petals/{p}/terrain`
+  and MCP `set_petal_terrain` validate the body as a `TerrainConfig` (DEC-C22
+  strictest reader) and send a correlated `SetPetalTerrain` (`correlation_id:
+  Some(ulid)`) through the API command channel; GUI sites send `None`. An
+  API-initiated set's echo still reaches the GUI arm and `terrain_bridge`, so a
+  host's live terrain follows API writes to its ACTIVE petal (both drop other
+  petals' echoes) — fe-runtime `src/AGENTS.md`
+  §api-reply-correlation, fe-api `AGENTS.md` §terrain-mutation.
 - **UI state**: `fe-ui/plugin.rs::PetalMapState` mirrors the active petal's
   `terrain.tileset_hexon_uris`. Loaded on petal switch by
   `load_petal_terrain_on_nav_change`; confirmed by the `PetalTerrainLoaded` arm in

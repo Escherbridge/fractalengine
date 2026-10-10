@@ -228,6 +228,7 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         DbCommand::InsertIotReadings { correlation_id, .. }
         | DbCommand::CreateAsset { correlation_id, .. }
         | DbCommand::CreateNodeWithAsset { correlation_id, .. }
+        | DbCommand::SetPetalTerrain { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
         _ => None,
     }
@@ -240,8 +241,10 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::IotReadingsRejected { correlation_id, .. }
         | DbResult::AssetCreated { correlation_id, .. }
         | DbResult::GltfImported { correlation_id, .. }
+        | DbResult::PetalTerrainLoaded { correlation_id, .. }
         | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
-        DbResult::QueryFailed { correlation_id, .. } => Some(correlation_id.as_str()),
+        DbResult::QueryFailed { correlation_id, .. }
+        | DbResult::PetalTerrainSetFailed { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
 }
@@ -275,6 +278,8 @@ enum ReplyKind {
     VerseTimeseriesSettings,
     AssetCreated,
     PlacedAsset,
+    /// API `SetPetalTerrain` replies (correlated only — see `reply_kind_of_result`).
+    PetalTerrainSet,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -311,6 +316,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         SetVerseTimeseriesSettings { .. } => ReplyKind::VerseTimeseriesSettings,
         CreateAsset { .. } => ReplyKind::AssetCreated,
         CreateNodeWithAsset { .. } => ReplyKind::PlacedAsset,
+        SetPetalTerrain { .. } => ReplyKind::PetalTerrainSet,
         _ => return None,
     })
 }
@@ -342,6 +348,13 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         QueryResult { .. } | QueryFailed { .. } => ReplyKind::QueryResult,
         IotReadingsInserted { .. } => ReplyKind::IotReadingsInserted,
         IotReadingsRejected { .. } => ReplyKind::IotReadingsInserted,
+        // Only an API set (correlated) is a `PetalTerrainSet` reply; a GUI set
+        // echo (`None`) stays in the Get family (§api-reply-correlation).
+        PetalTerrainLoaded {
+            correlation_id: Some(_),
+            ..
+        }
+        | PetalTerrainSetFailed { .. } => ReplyKind::PetalTerrainSet,
         PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
         VerseTimeseriesSettingsSet { .. } => ReplyKind::VerseTimeseriesSettings,
         AssetCreated { .. } => ReplyKind::AssetCreated,
@@ -465,8 +478,8 @@ impl PendingApiRequests {
     /// Route an untyped reply (the DB thread's universal `Error`) to the
     /// oldest pending request of any family that has NO correlation id
     /// (DEC-C19 N2). A correlated entry (RawQuery/InsertIotReadings/
-    /// CreateAsset/CreateNodeWithAsset) always gets its own typed
-    /// `QueryFailed`/rejection reply from the DB thread, so the untyped
+    /// CreateAsset/CreateNodeWithAsset/SetPetalTerrain) always gets its own
+    /// typed `QueryFailed`/rejection reply from the DB thread, so the untyped
     /// wildcard must skip past it rather than consume it — a correlated
     /// waiter stealing the wildcard would leave its own typed reply (which
     /// still arrives later) with no entry to land on, AND could leak an
@@ -881,6 +894,109 @@ mod tests {
         assert!(matches!(c_rx.try_recv(), Ok(DbResult::QueryFailed { .. })));
     }
 
+    fn set_terrain_cmd(correlation_id: Option<&str>) -> DbCommand {
+        DbCommand::SetPetalTerrain {
+            petal_id: "p".to_string(),
+            terrain: Some(serde_json::json!({ "enabled": true })),
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    fn terrain_set(correlation_id: Option<&str>, petal_id: &str) -> DbResult {
+        DbResult::PetalTerrainLoaded {
+            petal_id: petal_id.to_string(),
+            terrain: Some(serde_json::json!({ "owner": correlation_id })),
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    /// The terrain echo `rx` received, by its `owner` tag (None = nothing).
+    fn received_owner(
+        rx: &mut tokio::sync::oneshot::Receiver<DbResult>,
+    ) -> Option<serde_json::Value> {
+        match rx.try_recv().ok()? {
+            DbResult::PetalTerrainLoaded { terrain, .. } => Some(terrain.unwrap()["owner"].clone()),
+            DbResult::PetalTerrainSetFailed { correlation_id, .. } => {
+                Some(serde_json::json!(format!("failed:{correlation_id}")))
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+
+    /// API terrain sets (SetPetalTerrain correlation): a GUI set echo
+    /// (uncorrelated) never satisfies a pending API set; each correlated
+    /// reply — success or typed failure — reaches only its own waiter; a
+    /// timed-out caller's late reply is consumed by its own closed entry so
+    /// the family never shifts onto the next caller.
+    #[test]
+    fn terrain_set_replies_route_only_by_correlation_id() {
+        // (step, reply, delivered?, owner tag seen by [B, C]); A is closed.
+        type Step = (&'static str, DbResult, bool, [Option<serde_json::Value>; 2]);
+        let mut pending = PendingApiRequests::default();
+        let (a_tx, a_rx) = tokio::sync::oneshot::channel();
+        let (b_tx, mut b_rx) = tokio::sync::oneshot::channel();
+        let (c_tx, mut c_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&set_terrain_cmd(Some("a")), a_tx);
+        drop(a_rx); // A timed out
+        pending.enqueue_for(&set_terrain_cmd(Some("b")), b_tx);
+        pending.enqueue_for(&set_terrain_cmd(Some("c")), c_tx);
+
+        let steps: Vec<Step> = vec![
+            ("GUI set echo", terrain_set(None, "p"), false, [None, None]),
+            (
+                "A's late reply",
+                terrain_set(Some("a"), "p"),
+                false,
+                [None, None],
+            ),
+            (
+                "C's typed failure",
+                DbResult::PetalTerrainSetFailed {
+                    petal_id: "p".to_string(),
+                    error: "write failed".to_string(),
+                    correlation_id: "c".to_string(),
+                },
+                true,
+                [None, Some(serde_json::json!("failed:c"))],
+            ),
+            (
+                "B's reply",
+                terrain_set(Some("b"), "p"),
+                true,
+                [Some(serde_json::json!("b")), None],
+            ),
+            (
+                "B duplicate",
+                terrain_set(Some("b"), "p"),
+                false,
+                [None, None],
+            ),
+        ];
+        for (step, reply, delivered, [b_expect, c_expect]) in steps {
+            assert_eq!(pending.try_deliver(reply), delivered, "{step}: delivered");
+            assert_eq!(received_owner(&mut b_rx), b_expect, "{step}: B");
+            assert_eq!(received_owner(&mut c_rx), c_expect, "{step}: C");
+        }
+
+        // A GET waiter (uncorrelated family) still receives a GUI set echo —
+        // unchanged legacy routing — and never a correlated API set reply.
+        let (get_tx, mut get_rx) = tokio::sync::oneshot::channel();
+        let (set_tx, mut set_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(
+            &DbCommand::GetPetalTerrain {
+                petal_id: "p".to_string(),
+            },
+            get_tx,
+        );
+        pending.enqueue_for(&set_terrain_cmd(Some("d")), set_tx);
+        assert!(pending.try_deliver(terrain_set(Some("d"), "p")));
+        assert!(
+            get_rx.try_recv().is_err(),
+            "API set reply leaked to a GET waiter"
+        );
+        assert_eq!(received_owner(&mut set_rx), Some(serde_json::json!("d")));
+    }
+
     /// The hazard this replaced FIFO pairing for: an unsolicited
     /// `HierarchyLoaded` (the relay's startup scan, a GUI reload) must never be
     /// handed to a racing `/ready` `Ping`.
@@ -1239,6 +1355,16 @@ mod tests {
                 DbResult::PetalTerrainLoaded {
                     petal_id: "p".to_string(),
                     terrain: None,
+                    correlation_id: None,
+                },
+            ),
+            (set_terrain_cmd(Some("t1")), terrain_set(Some("t1"), "p")),
+            (
+                set_terrain_cmd(Some("t2")),
+                DbResult::PetalTerrainSetFailed {
+                    petal_id: "p".to_string(),
+                    error: "x".to_string(),
+                    correlation_id: "t2".to_string(),
                 },
             ),
             (
@@ -1301,6 +1427,11 @@ mod tests {
             reply_kind_of_result(&gltf_imported(None)),
             None,
             "a GUI ImportGltf result must never satisfy an API placement waiter"
+        );
+        assert_eq!(
+            reply_kind_of_result(&terrain_set(None, "p")),
+            Some(ReplyKind::PetalTerrain),
+            "a GUI SetPetalTerrain echo must never satisfy an API terrain-set waiter"
         );
         assert_eq!(
             reply_kind_of_result(&DbResult::ReplicatedRowApplied {

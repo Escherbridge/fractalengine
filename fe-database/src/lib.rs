@@ -1210,15 +1210,13 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Count node descendants failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {
-                        match handlers::petal_terrain::set_petal_terrain_handler(&db, &petal_id, terrain.as_ref()).await {
-                            Ok(()) => send_result(&tx, DbResult::PetalTerrainLoaded { petal_id, terrain }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Set petal terrain failed: {e}"))),
-                        }
+                    Ok(DbCommand::SetPetalTerrain { petal_id, terrain, correlation_id }) => {
+                        let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, petal_id, terrain, correlation_id).await;
+                        send_result(&tx, reply);
                     }
                     Ok(DbCommand::GetPetalTerrain { petal_id }) => {
                         match handlers::petal_terrain::get_petal_terrain_handler(&db, &petal_id).await {
-                            Ok(terrain) => send_result(&tx, DbResult::PetalTerrainLoaded { petal_id, terrain }),
+                            Ok(terrain) => send_result(&tx, DbResult::PetalTerrainLoaded { petal_id, terrain, correlation_id: None }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Get petal terrain failed: {e}"))),
                         }
                     }

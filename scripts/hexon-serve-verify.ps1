@@ -7,16 +7,16 @@
 .DESCRIPTION
     conductor/tracks/mission_prodready_continuation_20261008/m6-gis-regions-design.md.
 
-    REST/MCP petal-terrain mutation is deliberately refused
-    (fe-api/src/terrain.rs::TERRAIN_MUTATION_UNAVAILABLE, pending durable
-    DbCommand-reply correlation -- see fe-api/src/terrain.rs:153-177), so
-    there is NO authed path to bind a tileset to a petal on a live relay.
-    This script works around that the same way
-    fe-database/examples/seed_join_verse.rs already does for verse rows:
-    stop the relay, write the binding directly into its SurrealKV store
-    (same `UPDATE petal SET terrain = $config WHERE petal_id = $pid`
-    statement as the disabled handler), restart it. That is the
-    "binding path" this script documents in its own summary.
+    This script binds the tileset OFFLINE, the same way
+    fe-database/examples/seed_join_verse.rs does for verse rows: stop the
+    relay, write the binding directly into its SurrealKV store (same
+    `UPDATE petal SET terrain = $config WHERE petal_id = $pid` statement as
+    fe-database/src/handlers/petal_terrain.rs), restart it. It predates the
+    live path: since 2026-10-10 a running relay also accepts the authed REST
+    `PUT /api/v1/petals/{p}/terrain` / MCP `set_petal_terrain` (correlated
+    SetPetalTerrain replies -- fe-api AGENTS.md, section terrain-mutation). The
+    offline write is the "binding path" this script documents in its own
+    summary.
 
     Flow:
       1. Pre-install THREE real hexon tilesets into a fresh FE_HEXON_DIR via
@@ -354,8 +354,8 @@ try {
     $script:Relay1 = $null
 
     # -----------------------------------------------------------------------
-    # Direct-DB bind: the only available path (REST/MCP terrain mutation is
-    # refused -- see script header).
+    # Direct-DB (offline) bind -- see script header; a running relay also
+    # accepts authed REST PUT terrain / MCP set_petal_terrain now.
     # -----------------------------------------------------------------------
     Write-Section "Binding terrain directly (seed_join_verse bind-terrain -- relay stopped)"
     Log-Line "=== seed_join_verse bind-terrain ==="

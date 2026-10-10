@@ -15,13 +15,13 @@ use crate::types::{is_valid_ulid, ApiResponse};
 
 /// PUT /api/v1/petals/:petal_id/terrain — set terrain configuration.
 ///
-/// RBAC: Editor+ required. Temporarily unavailable until the gateway can
-/// correlate the durable `SetPetalTerrain` materialization result.
+/// RBAC: Editor+ required. The body must parse as a `TerrainConfig`; the DB
+/// thread's correlated echo is returned (fe-api AGENTS.md §terrain-mutation).
 pub async fn set_terrain_config(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
-    Json(_config): Json<TerrainConfig>,
+    Json(config): Json<serde_json::Value>,
 ) -> Response {
     if require_role(&claims, "editor").is_err() {
         return Json(ApiResponse::<serde_json::Value>::error(
@@ -45,8 +45,17 @@ pub async fn set_terrain_config(
         ))
         .into_response();
     }
+    if config.is_null() {
+        return TerrainWriteError::InvalidConfig(
+            "terrain config must be an object (DELETE clears)".to_string(),
+        )
+        .into_response();
+    }
 
-    terrain_mutation_unavailable()
+    terrain_write_response(
+        &petal_id,
+        set_petal_terrain_core(&state, &petal_id, &config).await,
+    )
 }
 
 /// GET /api/v1/petals/:petal_id/terrain — read terrain configuration.
@@ -117,8 +126,8 @@ pub async fn get_terrain_config(
 
 /// DELETE /api/v1/petals/:petal_id/terrain — remove terrain binding.
 ///
-/// RBAC: Editor+ required. Temporarily unavailable until the gateway can
-/// correlate the durable `SetPetalTerrain` materialization result.
+/// RBAC: Editor+ required. Clears via a correlated `SetPetalTerrain`
+/// (fe-api AGENTS.md §terrain-mutation).
 pub async fn delete_terrain_config(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -147,33 +156,154 @@ pub async fn delete_terrain_config(
         .into_response();
     }
 
-    terrain_mutation_unavailable()
-}
-
-/// Why petal-terrain mutations are refused (REST PUT/DELETE + MCP `set_petal_terrain`).
-pub(crate) const TERRAIN_MUTATION_UNAVAILABLE: &str = "terrain configuration mutations are temporarily unavailable until durable command replies are correlated";
-
-/// Reject mutation until the runtime can route the authoritative DB result to this request.
-fn terrain_mutation_unavailable() -> Response {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(ApiResponse::<serde_json::Value>::error(
-            TERRAIN_MUTATION_UNAVAILABLE,
-        )),
+    terrain_write_response(
+        &petal_id,
+        set_petal_terrain_core(&state, &petal_id, &serde_json::Value::Null).await,
     )
-        .into_response()
 }
 
-/// MCP `set_petal_terrain` core (caller has authorized the petal): validate
-/// the `terrain` argument (`null` clears, else a `TerrainConfig`), then refuse
-/// exactly as REST PUT/DELETE do — `SetPetalTerrain` replies are not yet
-/// correlated (fe-runtime §api-reply-correlation), so no success is claimed.
-pub(crate) fn set_petal_terrain_core(terrain: &serde_json::Value) -> Result<(), String> {
-    if !terrain.is_null() {
-        serde_json::from_value::<TerrainConfig>(terrain.clone())
-            .map_err(|e| format!("invalid terrain config: {e}"))?;
+/// How long a terrain mutation waits for the DB thread's echo (the IoT
+/// write-path precedent).
+const TERRAIN_WRITE_TIMEOUT_SECS: u64 = 10;
+
+/// Why a petal-terrain mutation did not land; never carries DB internals.
+#[derive(Debug)]
+pub(crate) enum TerrainWriteError {
+    /// The value does not parse as the `TerrainConfig` fe-terrain reads.
+    InvalidConfig(String),
+    /// DB thread unreachable, failed, or answered with someone else's reply.
+    WriteFailed,
+    /// No reply within [`TERRAIN_WRITE_TIMEOUT_SECS`].
+    TimedOut,
+}
+
+impl TerrainWriteError {
+    fn status(&self) -> StatusCode {
+        match self {
+            Self::InvalidConfig(_) => StatusCode::BAD_REQUEST,
+            Self::WriteFailed => StatusCode::BAD_GATEWAY,
+            Self::TimedOut => StatusCode::GATEWAY_TIMEOUT,
+        }
     }
-    Err(TERRAIN_MUTATION_UNAVAILABLE.to_string())
+
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::InvalidConfig(detail) => format!("invalid terrain config: {detail}"),
+            Self::WriteFailed => "terrain write failed".to_string(),
+            Self::TimedOut => "terrain write timed out (db thread)".to_string(),
+        }
+    }
+}
+
+impl IntoResponse for TerrainWriteError {
+    fn into_response(self) -> Response {
+        (
+            self.status(),
+            Json(ApiResponse::<serde_json::Value>::error(self.message())),
+        )
+            .into_response()
+    }
+}
+
+/// REST envelope for a terrain mutation: the stored terrain (GET's shape) or the error status.
+fn terrain_write_response(
+    petal_id: &str,
+    result: Result<Option<serde_json::Value>, TerrainWriteError>,
+) -> Response {
+    match result {
+        Ok(terrain) => Json(ApiResponse::success(serde_json::json!({
+            "petal_id": petal_id,
+            "terrain": terrain,
+        })))
+        .into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Shared REST PUT/DELETE + MCP `set_petal_terrain` core (caller has already
+/// authorized the petal): `null` clears, anything else must parse as a
+/// `TerrainConfig` (DEC-C22 strictest reader) and is stored as sent. Sends a
+/// correlated `SetPetalTerrain` to the DB thread (the single writer) and
+/// returns the terrain it echoes — fe-api AGENTS.md §terrain-mutation.
+pub(crate) async fn set_petal_terrain_core(
+    state: &crate::server::ApiState,
+    petal_id: &str,
+    terrain: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, TerrainWriteError> {
+    use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+
+    let terrain = if terrain.is_null() {
+        None
+    } else {
+        // serde would also accept a positional ARRAY as a struct; the column
+        // and every lenient `terrain.get(..)` reader need an object.
+        if !terrain.is_object() {
+            return Err(TerrainWriteError::InvalidConfig(
+                "terrain config must be a JSON object".to_string(),
+            ));
+        }
+        serde_json::from_value::<TerrainConfig>(terrain.clone())
+            .map_err(|e| TerrainWriteError::InvalidConfig(e.to_string()))?;
+        Some(terrain.clone())
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let correlation_id = ulid::Ulid::new().to_string();
+    let cmd = DbCommand::SetPetalTerrain {
+        petal_id: petal_id.to_string(),
+        terrain,
+        correlation_id: Some(correlation_id.clone()),
+    };
+    if state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest { cmd, reply_tx })
+        .is_err()
+    {
+        tracing::warn!(petal_id, "terrain write: API command channel closed");
+        return Err(TerrainWriteError::WriteFailed);
+    }
+    // Ours only if the echoed id AND petal match (defense in depth over the
+    // router's correlated delivery — fe-runtime §api-reply-correlation).
+    let ours = |reply_id: &str, reply_petal: &str| {
+        reply_id == correlation_id.as_str() && reply_petal == petal_id
+    };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(TERRAIN_WRITE_TIMEOUT_SECS),
+        reply_rx,
+    )
+    .await
+    {
+        Ok(Ok(DbResult::PetalTerrainLoaded {
+            petal_id: reply_petal,
+            terrain,
+            correlation_id: Some(reply_id),
+        })) if ours(&reply_id, &reply_petal) => Ok(terrain),
+        Ok(Ok(DbResult::PetalTerrainSetFailed {
+            petal_id: reply_petal,
+            error,
+            correlation_id: reply_id,
+        })) if ours(&reply_id, &reply_petal) => {
+            tracing::error!(petal_id, error = %error, "terrain write failed on the DB thread");
+            Err(TerrainWriteError::WriteFailed)
+        }
+        Ok(Ok(other)) => {
+            tracing::warn!(
+                petal_id,
+                correlation_id,
+                ?other,
+                "terrain write: reply correlation mismatch — refused"
+            );
+            Err(TerrainWriteError::WriteFailed)
+        }
+        Ok(Err(_)) => {
+            tracing::warn!(petal_id, "terrain write: DB reply channel dropped");
+            Err(TerrainWriteError::WriteFailed)
+        }
+        Err(_) => {
+            tracing::warn!(petal_id, "terrain write: DB thread timed out");
+            Err(TerrainWriteError::TimedOut)
+        }
+    }
 }
 
 async fn resolve_petal_scope(state: &crate::server::ApiState, petal_id: &str) -> Option<String> {
@@ -222,7 +352,13 @@ async fn assigned_tilesets(
             })
             .map_err(|_| "failed to load petal terrain")?;
         match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
-            Ok(Ok(fe_runtime::messages::DbResult::PetalTerrainLoaded { terrain, .. })) => terrain,
+            // The Get family is uncorrelated: refuse another petal's echo
+            // rather than authorize tiles against the wrong binding.
+            Ok(Ok(fe_runtime::messages::DbResult::PetalTerrainLoaded {
+                petal_id: reply_petal,
+                terrain,
+                ..
+            })) if reply_petal == petal_id => terrain,
             _ => return Err("failed to load petal terrain"),
         }
     };
@@ -806,10 +942,7 @@ pub async fn get_storage_info(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_assigned_tileset, terrain_mutation_unavailable, tile_access_status,
-        verify_exclusive_petal_tileset_binding,
-    };
+    use super::{is_assigned_tileset, tile_access_status, verify_exclusive_petal_tileset_binding};
     use axum::http::StatusCode;
 
     #[test]
@@ -850,14 +983,6 @@ mod tests {
         assert_eq!(
             tile_access_status("insufficient scope"),
             StatusCode::FORBIDDEN
-        );
-    }
-
-    #[test]
-    fn terrain_mutations_fail_explicitly_until_replies_are_correlated() {
-        assert_eq!(
-            terrain_mutation_unavailable().status(),
-            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 }

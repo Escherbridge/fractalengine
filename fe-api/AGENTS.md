@@ -53,7 +53,7 @@ when a route lands.
 | GIS reads (§gis) | `GET /api/v1/petals/{p}/gis/nodes`, `GET …/gis/tracks` |
 | Assets (§assets, §asset-ingest) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset`; upload `POST /api/v1/petals/{p}/assets` (multipart GLB) |
 | Petal archive / GPX | `GET /api/v1/petals/{p}/export`, `POST …/import`, `POST …/import/gpx`, `GET …/export/gpx` |
-| Terrain config | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
+| Terrain config (§terrain-mutation) | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
 | Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
 | Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: {…TsQueryKind…}` → §distributed-query), `POST /api/v1/query/elevated`, `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
@@ -652,6 +652,42 @@ scope and permits only IDs bound in that petal's terrain configuration. Unbound
 or unknown IDs both return 404, and byte responses are `private, no-store` so a
 shared cache cannot replay a scoped tile to another caller.
 
+## §terrain-mutation (SetPetalTerrain correlation, 2026-10-10)
+
+`terrain.rs::set_petal_terrain_core` backs REST `PUT|DELETE
+/api/v1/petals/{p}/terrain` and MCP `set_petal_terrain` (which replaced the
+former 503 `TERRAIN_MUTATION_UNAVAILABLE` refusal). Order: RBAC Editor+ →
+ULID check → petal scope resolution + `require_scope` (MCP: the dispatcher's
+`PetalArg` rule) → `TerrainConfig` validation → correlated write.
+
+- **Validation (DEC-C22).** A non-null value must deserialize as
+  `fe_terrain::config::TerrainConfig` — the strictest reader of the column
+  (`terrain_config_from_petal_json`) — else 400 / MCP `invalid terrain config`.
+  The RAW object is stored, not a re-serialization: additive keys fe-terrain
+  reads raw (`view_mode`) and GUI-owned keys survive a GET→edit→PUT round
+  trip. PUT requires an object; `null` (MCP) / DELETE clears. Because the body
+  is taken as `Json<Value>`, auth runs before config validation.
+- **Write path.** Always `api_cmd_tx` (`DbRequest`), never `db_reader` — the
+  DB thread is the single writer. A fresh ULID rides `correlation_id`; the
+  reply is accepted only if the echoed id AND `petal_id` match (502 on a
+  mismatch, never another caller's terrain). Success returns the terrain the
+  DB thread READ BACK after the write (GET's `{petal_id, terrain}` shape).
+- **Failures.** Correlated `PetalTerrainSetFailed` / closed channel → 502
+  `terrain write failed` (detail logged, not returned); no reply in
+  `TERRAIN_WRITE_TIMEOUT_SECS` (10, the IoT write precedent) → 504. Routing:
+  fe-runtime `src/AGENTS.md` §api-reply-correlation (family `PetalTerrainSet`).
+- **Validation also requires a JSON object**: serde would accept a
+  positional array as a `TerrainConfig`, but the column is `option<object>`
+  and lenient readers call `terrain.get(..)`.
+- **Host fan-out.** The write's echo also drives the desktop Bevy consumers
+  (map picker, `terrain_bridge`) — but ONLY when it is the desktop's active
+  petal: both drop other petals' echoes, so an API write to petal B never
+  replaces the terrain of the petal the user is viewing (fe-runtime
+  §api-reply-correlation). The tileset-list GET fallback
+  (`assigned_tilesets`, no `db_reader`) likewise refuses an echo for another
+  petal. Tests: `tests/terrain_mutation_test.rs` (full router,
+  real reply router + production DB reply builder against Mem SurrealDB).
+
 ## §iot-ingest (iot_spatial_reporting_20260714)
 
 `iot.rs` — `POST /api/v1/petals/:petal_id/iot/readings`, the minimal-v1
@@ -892,9 +928,8 @@ rewrite any verse's schema) and now require the field def's stored scope;
 promote_instance, query_timeseries, sim_* shipped legitimately); none are
 deleted or renamed.
 
-**Known gaps (F14 / follow-ups).** `set_petal_terrain` validates then
-refuses exactly like REST PUT/DELETE terrain (`SetPetalTerrain` replies are
-uncorrelated — fe-runtime §api-reply-correlation). `query` inherits
+**Known gaps (F14 / follow-ups).** (`set_petal_terrain` is no longer a gap —
+it shares REST PUT/DELETE's correlated core, §terrain-mutation.) `query` inherits
 `query_guard`'s verse/fractal-scoped tokens getting NO row filter
 (petal-scoped tokens are filtered). `place_asset` refuses an asset
 referenced only outside the token's scope (§assets — DEC-C21).

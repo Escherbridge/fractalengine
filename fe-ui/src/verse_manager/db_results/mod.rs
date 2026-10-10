@@ -336,15 +336,17 @@ pub(super) fn apply_db_results(
             DbResult::FieldDefCreated { .. }
             | DbResult::FieldDefUpdated { .. }
             | DbResult::FieldDefDeleted { .. } => {}
-            DbResult::PetalTerrainLoaded { petal_id, terrain } => {
-                terrain::handle_petal_terrain_loaded(
-                    petal_id,
-                    terrain,
-                    &nav,
-                    &mut petal_map,
-                    &mut caches.proposal_state,
-                )
-            }
+            // Both GUI and API-initiated (correlated) sets apply here, so the
+            // host's live terrain tracks every write (fe-runtime §api-reply-correlation).
+            DbResult::PetalTerrainLoaded {
+                petal_id, terrain, ..
+            } => terrain::handle_petal_terrain_loaded(
+                petal_id,
+                terrain,
+                &nav,
+                &mut petal_map,
+                &mut caches.proposal_state,
+            ),
             _ => {}
         }
 

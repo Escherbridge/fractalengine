@@ -183,7 +183,7 @@ static TOOLS: &[ToolSpec] = &[
     tool!(import_gpx, Editor, PetalArg("petal_id"),
         "Import a GPX document (base64, max 11 MiB decoded, max 10000 points) as track/waypoint nodes in a petal. Requires editor role + petal scope."),
     tool!(set_petal_terrain, Editor, PetalArg("petal_id"),
-        "Set (object) or clear (null) a petal's terrain config. Currently refused after validation exactly like REST PUT/DELETE terrain: durable SetPetalTerrain replies are not yet correlated. Requires editor role + petal scope."),
+        "Set (object) or clear (null) a petal's terrain config, like REST PUT/DELETE /petals/{id}/terrain. The object must be a valid TerrainConfig; returns the stored terrain. Requires editor role + petal scope."),
     tool!(list_tilesets, Viewer, PetalArg("petal_id"),
         "List the installed terrain tilesets bound to a petal's terrain config. Requires viewer role + petal scope."),
     tool!(install_tileset, Editor, PetalArg("petal_id"),

@@ -31,12 +31,11 @@
 //!     → F16/A29: writes the petal's `terrain.tileset_hexon_uris` directly
 //!       (same `UPDATE petal SET terrain = $config WHERE petal_id = $pid`
 //!       statement as `fe-database/src/handlers/petal_terrain.rs`'s
-//!       `set_petal_terrain_handler`). REST/MCP petal-terrain mutation is
-//!       deliberately refused (`fe-api/src/terrain.rs::TERRAIN_MUTATION_UNAVAILABLE`,
-//!       pending durable-reply correlation), so a live-relay verify script
-//!       has no authed path to bind a tileset to a petal — this direct write
-//!       is the only way to exercise the authed tile-SERVING routes end to
-//!       end against a real relay. The written value is a real
+//!       `set_petal_terrain_handler`). Kept as an OFFLINE tool for a STOPPED
+//!       relay's store (no token needed); a running relay now also accepts
+//!       the authed REST `PUT /api/v1/petals/{p}/terrain` / MCP
+//!       `set_petal_terrain` (fe-api AGENTS.md §terrain-mutation), which
+//!       validate against the same type. The written value is a real
 //!       `fe_terrain::config::TerrainConfig` (DEC-C22 FIX H) — fe-api's list
 //!       and tile-serving handlers only lenient-read the raw
 //!       `tileset_hexon_uris` JSON field, but the in-app engine reader

@@ -933,16 +933,22 @@ impl TestPeer {
                             }
                         }
                         // Petal terrain — test harness stub echoes the set value.
-                        Ok(DbCommand::SetPetalTerrain { petal_id, terrain }) => {
-                            if let Err(e) =
-                                db_result_tx.send(DbResult::PetalTerrainLoaded { petal_id, terrain })
-                            {
+                        Ok(DbCommand::SetPetalTerrain { petal_id, terrain, correlation_id }) => {
+                            if let Err(e) = db_result_tx.send(DbResult::PetalTerrainLoaded {
+                                petal_id,
+                                terrain,
+                                correlation_id,
+                            }) {
                                 tracing::warn!("PetalTerrainLoaded send failed: {e:?}");
                             }
                         }
                         Ok(DbCommand::GetPetalTerrain { petal_id }) => {
                             if let Err(e) = db_result_tx
-                                .send(DbResult::PetalTerrainLoaded { petal_id, terrain: None })
+                                .send(DbResult::PetalTerrainLoaded {
+                                    petal_id,
+                                    terrain: None,
+                                    correlation_id: None,
+                                })
                             {
                                 tracing::warn!("PetalTerrainLoaded send failed: {e:?}");
                             }

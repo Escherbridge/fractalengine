@@ -497,11 +497,14 @@ pub(super) fn import_gpx(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn set_petal_terrain(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
+        let petal_id = scoped_petal(&call)?;
         let Some(terrain) = call.args.get("terrain") else {
             return Err("terrain is required (an object, or null to clear)".to_string());
         };
-        crate::terrain::set_petal_terrain_core(terrain)?;
-        Ok(Value::Null)
+        let stored = crate::terrain::set_petal_terrain_core(call.state, &petal_id, terrain)
+            .await
+            .map_err(|e| e.message())?;
+        Ok(json!({ "petal_id": petal_id, "terrain": stored }))
     })
 }
 

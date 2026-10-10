@@ -8,18 +8,31 @@ use fe_terrain::petal_binding::{
     TerrainAssignmentMsg,
 };
 use fe_terrain::splat::{view_mode_from_terrain_json, TerrainViewModeMsg};
+use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::plugin::{
     ActiveDialog, HexonOp, InstalledTilesetDto, PendingHexonOps, StorageInfoDto, UiManager,
 };
 
-/// Forwards `DbResult::PetalTerrainLoaded` to the terrain runtime as an assignment.
+/// Forwards the ACTIVE petal's `DbResult::PetalTerrainLoaded` to the terrain
+/// runtime as an assignment; other petals' echoes are ignored (AGENTS.md §petal-map).
 pub fn bridge_petal_terrain(
     mut db_results: MessageReader<DbResult>,
+    nav: Res<NavigationManager>,
     mut assignments: MessageWriter<TerrainAssignmentMsg>,
     mut view_modes: MessageWriter<TerrainViewModeMsg>,
 ) {
     for result in db_results.read() {
-        if let DbResult::PetalTerrainLoaded { petal_id, terrain } = result {
+        // Correlated (API-initiated) sets apply too — see fe-runtime §api-reply-correlation.
+        if let DbResult::PetalTerrainLoaded {
+            petal_id, terrain, ..
+        } = result
+        {
+            // An API write (or API GET fallback) can target any petal; the
+            // runtime holds only the active one, so a foreign echo must not
+            // replace the viewport's terrain.
+            if nav.active_petal_id.as_deref() != Some(petal_id.as_str()) {
+                continue;
+            }
             let config = terrain.as_ref().and_then(terrain_config_from_petal_json);
             assignments.write(TerrainAssignmentMsg(PetalTerrainAssignment {
                 petal_id: petal_id.clone(),
@@ -109,5 +122,62 @@ pub fn drain_hexon_ops(
             };
             *loading = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded(petal_id: &str, enabled: bool, correlation_id: Option<&str>) -> DbResult {
+        let config = fe_terrain::config::TerrainConfig {
+            enabled,
+            ..Default::default()
+        };
+        DbResult::PetalTerrainLoaded {
+            petal_id: petal_id.to_string(),
+            terrain: Some(serde_json::to_value(config).expect("serialize TerrainConfig")),
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    /// The desktop views petal A; API writes to petal B (and B's GUI-less
+    /// echoes) must not reach the live terrain runtime, while A's echo —
+    /// GUI or API-initiated — still does.
+    #[test]
+    fn only_the_active_petals_terrain_reaches_the_runtime() {
+        let mut app = App::new();
+        app.add_message::<DbResult>()
+            .add_message::<TerrainAssignmentMsg>()
+            .add_message::<TerrainViewModeMsg>()
+            .insert_resource(NavigationManager {
+                active_petal_id: Some("petal-a".to_string()),
+                ..Default::default()
+            })
+            .add_systems(Update, bridge_petal_terrain);
+
+        let world = app.world_mut();
+        world.write_message(loaded("petal-b", true, Some("api-1")));
+        world.write_message(loaded("petal-b", false, None));
+        world.write_message(loaded("petal-a", true, Some("api-2")));
+        app.update();
+
+        let assignments: Vec<PetalTerrainAssignment> = app
+            .world_mut()
+            .resource_mut::<Messages<TerrainAssignmentMsg>>()
+            .drain()
+            .map(|TerrainAssignmentMsg(a)| a)
+            .collect();
+        assert_eq!(assignments.len(), 1, "{assignments:?}");
+        assert_eq!(assignments[0].petal_id, "petal-a");
+        assert!(assignments[0].config.as_ref().is_some_and(|c| c.enabled));
+        assert_eq!(
+            app.world_mut()
+                .resource_mut::<Messages<TerrainViewModeMsg>>()
+                .drain()
+                .count(),
+            1,
+            "view mode follows the same active-petal filter"
+        );
     }
 }

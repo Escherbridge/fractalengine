@@ -44,8 +44,9 @@ pub struct ApiHarness {
     pub keypair: Arc<NodeKeypair>,
     /// Backing dir for the harness blob store; deleted on drop.
     pub blob_dir: tempfile::TempDir,
-    // Held so ApiCommand sends fail fast-free (channel stays open; nothing consumes).
-    _api_cmd_rx: crossbeam::channel::Receiver<ApiCommand>,
+    // Held so ApiCommand sends never fail; unserviced unless a test takes it
+    // via `api_command_receiver`.
+    api_cmd_rx: crossbeam::channel::Receiver<ApiCommand>,
 }
 
 impl ApiHarness {
@@ -161,8 +162,14 @@ impl ApiHarness {
             db,
             keypair,
             blob_dir,
-            _api_cmd_rx: api_cmd_rx,
+            api_cmd_rx,
         })
+    }
+
+    /// The API→DB command receiver, for a test that services it like the DB
+    /// thread would (src/AGENTS.md §api-harness).
+    pub fn api_command_receiver(&self) -> crossbeam::channel::Receiver<ApiCommand> {
+        self.api_cmd_rx.clone()
     }
 
     /// DID of the harness identity (matches token `sub` and seeded `created_by`).

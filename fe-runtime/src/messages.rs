@@ -586,6 +586,10 @@ pub enum DbCommand {
     SetPetalTerrain {
         petal_id: String,
         terrain: Option<serde_json::Value>,
+        /// API-originated sets carry a fresh id the DB thread echoes on
+        /// `PetalTerrainLoaded`/`PetalTerrainSetFailed`; GUI sets send `None`
+        /// (fe-runtime src/AGENTS.md §api-reply-correlation).
+        correlation_id: Option<String>,
     },
     /// Load a petal's terrain config.
     GetPetalTerrain {
@@ -900,6 +904,15 @@ pub enum DbResult {
     PetalTerrainLoaded {
         petal_id: String,
         terrain: Option<serde_json::Value>,
+        /// Echoes `SetPetalTerrain.correlation_id` (`None` = GUI set or any Get).
+        correlation_id: Option<String>,
+    },
+    /// Failure of a CORRELATED (API-originated) `SetPetalTerrain`. GUI sets
+    /// (`correlation_id: None`) keep failing with `DbResult::Error`.
+    PetalTerrainSetFailed {
+        petal_id: String,
+        error: String,
+        correlation_id: String,
     },
     /// Result of `ApplyReplicatedRow` — how the DB thread reconciled one
     /// inbound replicated row (A4).

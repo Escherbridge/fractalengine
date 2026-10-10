@@ -61,9 +61,13 @@ use fractalengine_test_harness::api::ApiHarness;
 - The **real router** via `fe_api::server::build_router` over a real
   `ApiState`: `db_reader = Some(db)` (so every direct-read handler works),
   a tempdir-backed `FsBlobStore`, and a live `api_cmd_tx` whose receiver is
-  held open but **never serviced** — handlers that require the
+  held open but **not serviced by default** — handlers that require the
   crossbeam→DB-thread round-trip (most writes, `get_hierarchy`, …) will hang
-  or 5xx; test against `db_reader`-backed handlers or seed directly.
+  or 5xx; test against `db_reader`-backed handlers or seed directly. A test
+  that needs the round-trip takes `h.api_command_receiver()` and services it
+  on its own thread, filing requests in `PendingApiRequests` and answering
+  with the production fe-database reply builder against `h.db` (e.g.
+  `fe-api/tests/terrain_mutation_test.rs`).
 - Requests go through `tower::ServiceExt::oneshot` (`h.request(req)`), with
   `get`/`post_json` conveniences returning `(StatusCode, lenient JSON)`.
   Raw bodies: `api::body_bytes(resp)`.

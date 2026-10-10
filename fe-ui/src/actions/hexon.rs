@@ -165,6 +165,7 @@ pub(crate) fn set_petal_map(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain,
+        correlation_id: None,
     }) {
         Ok(()) => {
             // Optimistic local update only after the command is queued; DbResult::PetalTerrainLoaded confirms.
@@ -199,6 +200,7 @@ pub(crate) fn set_petal_map_scale(
     match db_sender.0.send(DbCommand::SetPetalTerrain {
         petal_id: petal_id.clone(),
         terrain: Some(terrain),
+        correlation_id: None,
     }) {
         Ok(()) => {
             petal_map.petal_id = Some(petal_id);

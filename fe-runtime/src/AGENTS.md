@@ -146,6 +146,31 @@ order:
   share redeemer could receive the desktop user's ad-hoc rows). fe-ui's
   dispatcher consumes only `correlation_id: None` query results; correlated
   ones flow solely to `try_deliver`.
+  **Terrain sets (2026-10-10).** `SetPetalTerrain` carries a
+  `correlation_id` (REST PUT/DELETE + MCP `set_petal_terrain` send a fresh
+  ULID; every GUI site sends `None`). The DB thread
+  (`fe_database::handlers::petal_terrain::set_petal_terrain_reply`) echoes
+  it on `PetalTerrainLoaded` with the terrain READ BACK from the written
+  row, and answers a correlated failure with `PetalTerrainSetFailed { petal_id,
+  error, correlation_id }` (GUI failures stay `Error`). Family
+  `ReplyKind::PetalTerrainSet` is mapped ONLY for a `Some` echo (PlacedAsset
+  precedent): an uncorrelated `PetalTerrainLoaded` (GUI set echo, any Get)
+  stays in the `PetalTerrain` Get family and can never satisfy an API set.
+  **Bevy fan-out decision:** a `DbResult` is never "taken" by the API path —
+  the relay's `deliver_pending_api_results` and fe-ui's `apply_db_results`
+  both read the Bevy `Messages<DbResult>` stream and only *clone* into
+  `try_deliver`, and `fractalengine/src/terrain_bridge.rs` reads the same
+  stream. So an API-initiated set reaches its waiter AND every host
+  consumer: fe-ui's `PetalTerrainLoaded` arm and `bridge_petal_terrain`
+  match `{ petal_id, terrain, .. }` (correlated or not) and apply it — but
+  ONLY for the host's active petal (both check `NavigationManager::
+  active_petal_id`; the terrain runtime holds one petal, and an API write may
+  target any petal the token covers, so an unfiltered bridge would replace
+  the viewport's terrain with petal B's). That keeps the desktop's map
+  picker / live terrain consistent with what the API just wrote. Filtering correlated echoes out of those arms (the QueryResult
+  pattern) would be wrong here: a query result is private to its caller, a
+  terrain write is shared scene state. `PetalTerrainSetFailed` has no Bevy
+  consumer (the API caller gets its 502; the host state did not change).
 - **Known sharp edge (NARROWED 2026-10-09 — DEC-C19 N2, was DEC-C13).**
   `Error` stays family-blind, but `deliver_to_oldest` now delivers only to
   the oldest UNCORRELATED waiter (correlated families always receive typed
