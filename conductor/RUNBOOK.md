@@ -2,7 +2,7 @@
 type: runbook
 title: FractalEngine session runbook
 updated: 2026-10-10
-head: 1e9be3a
+head: d4a4744
 ---
 
 # RUNBOOK — Prod-ready mission COMPLETE (2026-10-10)
@@ -30,14 +30,35 @@ replication + sharded timeseries fabric + verified BI egress" — from where the
 droid paused (usage-402, mid-F9). **Done 2026-10-09**: F9–F19 delivered,
 acceptance A20–A33 all validated.
 
-## 2. State — COMPLETE, verified, unpushed
+## 2. State — COMPLETE, verified, PUSHED
 
-- **Local `main` is 30 commits ahead of origin (14 factory + 16 continuation),
-  ending `1e9be3a`. NOTHING PUSHED** — the mission rule (A33) requires the
-  user's explicit go-ahead to push. Working tree clean.
+- **Pushed (corrected 2026-10-10).** The 30 mission commits (14 factory + 16
+  continuation) reached `origin/main` at `1e9be3a` on 2026-10-09 17:42 -0600 —
+  reflog `update by push` from this clone, confirmed by `git ls-remote`. The
+  first roll of this runbook (`cc080b9`) wrongly said "NOTHING PUSHED"; who
+  pushed is unrecorded, so the A33 go-ahead gate was bypassed for those 30.
+  The 2026-10-10 session pushed `cc080b9`, the lint fix, and this correction
+  on the user's explicit go-ahead.
+- **CI on `1e9be3a`** (run 38005764519): Linux build+test ✓, Windows build ✓,
+  **Lint ✗** → rolling `latest` prerelease skipped. Cause: CI's floating
+  stable is rustc 1.99.0 (local default 1.94.0) — 17× `clippy::double_must_use`
+  in fe-canonical-log, emitted by `#[async_trait]` 0.1.89's generated code.
+  Lint was already red on the pre-mission 2026-10-06 push. **Fix:** Cargo.lock
+  bump async-trait 0.1.89 → 0.1.92 in `d4a4744` (upstream #303; adds syn 3.0.7, MSRV 1.71),
+  no source change. That unmasked ONE more error CI never reached (clippy
+  halts at the first failing crate): `clippy::collapsible_match` at
+  `fe-sync/src/sharding.rs:367`, fixed as a match guard (behavior-identical;
+  covered by `sync_thread.rs` inbound-seam test at :3441). Local proof on
+  rustc 1.99.0: `clippy --workspace --all-targets --keep-going -- -D
+  warnings` EXIT 0 across all 24 members; `fmt --all --check` clean.
+  Tests on local 1.94.0 (also proves syn 3's MSRV fits): `cargo test -p
+  fe-sync -p fe-canonical-log -p fe-database` 964 passed / 0 failed / 15
+  ignored (22 binaries). The full-workspace test run is left to CI's Linux
+  job on this push — check it (§8 step 1).
 - **Verified, not just written** — final sweep on the closing tree:
   `cargo test --workspace` 3,245 passed / 0 failed / 21 ignored (96 binaries);
-  `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt
+  `cargo clippy --workspace --all-targets -- -D warnings` clean (local
+  rustc 1.94.0 — CI's 1.99.0 disagreed, see above); `cargo fmt
   --all --check` clean; harness bin 15/15 real-loopback-iroh scenarios; relay
   release build OK; e2e scripts checked in WITH logs: `scripts/
   bi-egress-verify.ps1` 49/49, `hexon-install-verify.ps1` 15/15,
@@ -89,8 +110,9 @@ Factory-era locked user decisions: D1–D4 in the mission library.
 
 ## 5. Assumptions
 
-- The user wants to push after their own in-app verification · default taken:
-  left unpushed · to reverse: `git push` (trivial).
+- The user's 2026-10-10 answer "remove" for `../gis-tile-etl` means "drop its
+  push from the plan" · default taken: push step removed, repo and `33eff03`
+  untouched · to reverse: re-add the step (nothing was deleted).
 - In-app verification is the user's own next action, not a new agent task ·
   default: recorded as user-gated · to reverse: none.
 - The old Workstream-G runbook content is recoverable from git and needs no
@@ -110,21 +132,29 @@ Factory-era locked user decisions: D1–D4 in the mission library.
 
 ## 7. Environment
 
-- Branch `main`, clean, ahead 30 of origin — **do not push without the user's
-  go-ahead**. No stashes, no running processes, no open worktrees from the
-  mission sessions.
+- Branch `main`, clean, in sync with origin after the 2026-10-10 push —
+  **still do not push without the user's go-ahead**. No stashes, no running
+  processes, no open worktrees from the mission sessions.
+- Toolchain `1.99.0` is installed locally (build `b940084d7`, identical to
+  CI's stable as of 2026-10-10): `cargo +1.99.0 clippy --workspace
+  --all-targets --keep-going -- -D warnings` reproduces the CI Lint job
+  (Linux-only `#[cfg]` code excepted). `--keep-going` matters — without it
+  clippy halts at the first failing crate and hides its dependents.
 - `tools/duckdb/duckdb.exe` (gitignored) used by the egress e2e.
 - Sibling repo `../gis-tile-etl`: commit `33eff03` added intl regions; built
   hexons live in ITS gitignored `dist/` (rebuild commands in
-  `sample-hexons/*/README.md`).
+  `sample-hexons/*/README.md`). It has **no git remote**; pushing it was
+  dropped from the plan 2026-10-10 (see §5).
 - Secrets: relay e2e seeds live only inside script runs; the keystore slots
   are `node_keypair` and `share_signer` (OS keystore on GUI; `FE_SECRET_*`
   env on relay — operator must export or keys are ephemeral, warned loudly).
 
 ## 8. Continuation plan (next session)
 
-1. **Confirm the push decision with the user** — 30 commits, local only. If
-   yes: `git push` (and push `gis-tile-etl` too — `33eff03` is local there).
+1. ~~Confirm the push decision~~ — moot, done 2026-10-10 (§2). **Confirm the
+   Lint job AND the Linux test job are green** on the pushed tip:
+   `gh run list --branch main --limit 1`.
+   If it is red again, reproduce with `cargo +1.99.0 clippy` (§7).
 2. **User runs the in-app verification** (not agent work): launch the GUI,
    install or view the Zurich/Fuji hexons, confirm terrain + scale bar, smoke
    the editor. File any findings as new track items.
@@ -134,14 +164,15 @@ Factory-era locked user decisions: D1–D4 in the mission library.
    `TERRAIN_MUTATION_UNAVAILABLE` product gap and unlocks live tileset
    binding; or return to the board's P0 slates (`conductor/tracks.md`:
    Spatial Builder Program, UI shell) or the canonical-data-log initiative.
-4. Housekeeping candidates: push-time CI will re-run the sweep — the repo was
-   CI-green pre-mission; the 30 commits have not run on GitHub Actions.
-   Expect the Lint job's floating stable toolchain quirk (see memory:
-   ci-stable-toolchain-drift).
+4. Housekeeping: the Lint job runs on floating `@stable`, so each rustc
+   release can turn latent warnings red again (memory:
+   ci-stable-toolchain-drift — third occurrence). Pinning the workflow's
+   toolchain is an unratified option; trigger: the next drift-only red.
 
 ## 9. Open questions
 
-- Push now or after in-app verify? (Trigger: user's next session.)
+- What did "remove" mean for `../gis-tile-etl` — only "don't push it", or
+  delete the repo/commit? Nothing was deleted. (Trigger: user's reply.)
 - Does `verse.namespace_id` readable via `/query` act as a read capability
   for the iroh replica? (Flagged by the M4 re-review; trigger: next fe-sync
   security pass.)
