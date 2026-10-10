@@ -71,7 +71,8 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # --keep-going: one failing crate must not hide its dependents' lints.
+        run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
 
   linux:
     name: Linux (build + test + artifacts)
