@@ -1,8 +1,8 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-10-10
-head: da922a6
+updated: 2026-10-11
+head: a210961
 ---
 
 # RUNBOOK — Prod-ready mission COMPLETE (2026-10-10)
@@ -176,33 +176,61 @@ Factory-era locked user decisions: D1–D4 in the mission library.
 
 ## 8. Continuation plan (next session)
 
-1. **Push decision (user).** The 2026-10-10 long-horizon session left LOCAL,
-   UNPUSHED commits after `6bce04b` (`git log origin/main..HEAD`):
-   `9cbdea6` SetPetalTerrain correlation (live REST/MCP terrain mutation),
-   `9c4da00` elevated-query lockdown + `/query` record-id read leak,
-   `6763302` existence-oracle unification + stamp cross-tenant read,
-   then TilesetMeta Default, CI `--keep-going`, and this docs close-out.
-   Three are **breaking for API clients** (see their commit bodies). After
-   pushing, confirm CI green: `gh run list --branch main --limit 1`.
-   (`6bce04b` itself went fully green — run 38081082445, `latest` published.)
-2. **User runs the in-app verification** (not agent work): launch the GUI,
-   install or view the Zurich/Fuji hexons, confirm terrain + scale bar, smoke
-   the editor. NEW since 2026-10-10: a REST PUT terrain to the petal you are
-   viewing should live-update it; to another petal it must NOT. File
-   findings as new track items.
-3. New work: the deferred register (plan.md retro) — every untriggered item
-   from the mission is now closed; the 2026-10-10 additions each carry a
-   trigger. Otherwise the board's P0 slates (`conductor/tracks.md`: Spatial
-   Builder Program, UI shell) or the canonical-data-log initiative.
-4. Housekeeping: Lint still runs on floating `@stable` (memory:
-   ci-stable-toolchain-drift), but clippy now runs `--keep-going` in CI, so
-   one red crate no longer hides its dependents. Pinning stays unratified.
+**State after the 2026-10-10/11 completeness campaign** (5 workflows; ledger
+`conductor/doneness-ledger.md`; memory `completeness-campaign-20261010`):
 
-## 9. Open questions
+- `origin/main` = `e96c972` — pushed 2026-10-10 17:35 -0600 from this clone
+  by someone OTHER than the campaign orchestrator (pushes were held; same
+  pattern as the 1e9be3a push). CI run 38095577669 on it: ALL GREEN, `latest`
+  published. It carries the 3 API-BREAKING 2026-10-10 commits (9c4da00,
+  6763302, 9cbdea6).
+- LOCAL, UNPUSHED (`git log origin/main..HEAD`): `9f7a882` board truth +
+  ledger · `7d40a4e` W2 data/API deferrals · `40590e9` W3 auth/API/OSS/
+  canonical-log · `4b30d17` W4 measure+grid, visibility groups P2-P6,
+  settings persistence · `d44f008` W5 iroh 0.35 -> 1.3 (FLAG DAY: 0.35 and
+  1.x peers cannot interoperate; first 1.x start migrates data/p2p with a
+  backup) · `a210961` responder-filter revert + non-blocking echo.
+- Final sweep on `a210961`'s tree: `cargo test --workspace` 3452 passed / 0
+  failed / 19 ignored (106 binaries); harness real-loopback-iroh 15/15 (x2
+  after the fix); e2e bi-egress 49/49, hexon-install 15/15, hexon-serve
+  40/40; workspace clippy (1.99.0) + fmt clean; check on local 1.94.0 clean.
+  NOT verified: fuzz CI step (needs Linux nightly sanitizers); relay-assisted
+  connection via a self-hosted iroh-relay 1.3; in-app GUI behavior.
 
-- What did "remove" mean for `../gis-tile-etl` — only "don't push it", or
-  delete the repo/commit? Nothing was deleted. (Trigger: user's reply.)
-- ~~Does `verse.namespace_id` readable via `/query` act as a read capability
-  for the iroh replica?~~ **Answered 2026-10-11 (SYNC-NSID-CAP): YES, and it
-  is live** — see `fe-sync/src/AGENTS.md` §namespace-id-capability. `/query`
-  now refuses it (`fe-api/AGENTS.md` §query-guard).
+1. **User: push decision** for the 6 local commits (W2-W5 include breaking
+   API/limits changes and the iroh flag day). Then watch CI — first real run
+   of the cargo-deny and bounded-fuzz lint steps.
+2. **User: in-app verification** — Measure tool (M) + metric grid, visibility
+   H/Shift+H/Alt+H/Isolate/Groups, settings.ron persistence, terrain REST
+   live-update (only the viewed petal), Zurich/Fuji terrain + scale bar.
+3. **User: decisions** (§9). Everything else agent-doable from the ledger is
+   done except large track phases (PAS-P3/P4/P5, CDL-W4, CDL-SPEC10) and
+   pending tracks excluded by the scope answer (hexon_unification,
+   map_scale_authority, road_builder_ux, crate_consolidation_r2).
+4. Housekeeping: `target/` is pruned between workflows (incremental + PDBs);
+   prune again before any large build.
+
+## 9. Open questions (decisions only the user can make)
+
+- **D-69 licence allow-list** — cargo-deny `licenses` is off in CI; 18
+  third-party crates sit outside the current allow-list.
+- **SYNC-ROLE-PROPAGATION** — roles never replicate, so non-owner hosts deny
+  non-owner authors and creator copies carry those rows; settlement race can
+  drop a late creator copy. Needs signed role claims / role-bearing ledger.
+- **Token client identity** — `ApiClaims.sub` is always the node DID, so
+  asset owner/quota are per-node, not per-client.
+- **Elevated scripts** — non-DML statements get no DB-side TIMEOUT; no
+  statement-count cap.
+- **D-11** dimension-callout persistence; **does hiding a GPX track hide its
+  stamps**; **durable home for per-petal render_distance**; **CDL-R2**
+  device-enrolment registry format.
+- **EGR-WKB** axis order, **EGR-F32** anchor precision, **FEAPI-BUILDER-CRS**
+  (fresh archives stamp crs None), **UISEM-FMAX-LINT** CI guard.
+- **0.35 store fixture** (`fe-sync/tests/fixtures/p2p_store_v035`, 7.1 MB,
+  untracked): commit / LFS / regenerate in CI — its test skips when absent.
+- **Tracked `.claude/settings.local.json`** holds 6 expired local API JWTs —
+  `git rm --cached` + ignore?
+- **Sample GLB licences** (duck = SCEA, box = CC-BY) unverified.
+- **`../gis-tile-etl`** — kept, never pushed (resolved 2026-10-10).
+- Does `verse.namespace_id` via `/query` act as a replica read capability?
+  (answered in W3 — see fe-api tests/namespace_capability_test.rs.)
