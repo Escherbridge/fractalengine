@@ -86,7 +86,10 @@ pub(crate) fn load_petal_terrain_on_nav_change(
     if let Some(petal_id) = nav.active_petal_id.clone() {
         if db_sender
             .0
-            .send(fe_runtime::messages::DbCommand::GetPetalTerrain { petal_id })
+            .send(fe_runtime::messages::DbCommand::GetPetalTerrain {
+                petal_id,
+                correlation_id: None,
+            })
             .is_err()
         {
             bevy::log::warn!("db_sender channel closed — GetPetalTerrain not dispatched");

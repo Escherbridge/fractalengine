@@ -89,6 +89,7 @@ mod tests {
             distributed_tx: None,
             sim_control_tx: None,
             elevated_query_allowed: false,
+            upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         })
     }

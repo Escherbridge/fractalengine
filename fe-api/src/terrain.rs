@@ -313,24 +313,35 @@ async fn assigned_tilesets(
             result.take(0).map_err(|_| "failed to load petal terrain")?;
         rows.first().and_then(|row| row.get("terrain")).cloned()
     } else {
+        use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let correlation_id = ulid::Ulid::new().to_string();
         state
             .api_cmd_tx
-            .send(fe_runtime::messages::ApiCommand::DbRequest {
-                cmd: fe_runtime::messages::DbCommand::GetPetalTerrain {
+            .send(ApiCommand::DbRequest {
+                cmd: DbCommand::GetPetalTerrain {
                     petal_id: petal_id.to_string(),
+                    correlation_id: Some(correlation_id.clone()),
                 },
                 reply_tx,
             })
             .map_err(|_| "failed to load petal terrain")?;
         match tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx).await {
-            // The Get family is uncorrelated: refuse another petal's echo
-            // rather than authorize tiles against the wrong binding.
-            Ok(Ok(fe_runtime::messages::DbResult::PetalTerrainLoaded {
+            // Ours only if the echoed id AND petal match; anything else
+            // (incl. `RequestFailed`) is refused rather than authorizing tiles
+            // against the wrong binding (fe-runtime §api-reply-correlation).
+            Ok(Ok(DbResult::PetalTerrainFetched {
                 petal_id: reply_petal,
                 terrain,
-                ..
-            })) if reply_petal == petal_id => terrain,
+                correlation_id: reply_id,
+            })) if reply_id == correlation_id && reply_petal == petal_id => terrain,
+            Ok(Ok(DbResult::RequestFailed {
+                error,
+                correlation_id: reply_id,
+            })) if reply_id == correlation_id => {
+                tracing::warn!(petal_id, error = %error, "terrain read failed on the DB thread");
+                return Err("failed to load petal terrain");
+            }
             _ => return Err("failed to load petal terrain"),
         }
     };
@@ -662,6 +673,12 @@ pub async fn install_hexon_tileset(
             )));
         }
     };
+    if bytes.len() > TILESET_ARCHIVE_MAX_BYTES {
+        return Json(ApiResponse::<serde_json::Value>::error(format!(
+            "tileset archive exceeds the {} MiB limit",
+            TILESET_ARCHIVE_MAX_BYTES / (1024 * 1024)
+        )));
+    }
 
     match install_tileset_bytes(&state, registry, &query.petal_id, bytes).await {
         Ok(installed) => Json(ApiResponse::success(installed)),
@@ -669,10 +686,12 @@ pub async fn install_hexon_tileset(
     }
 }
 
-/// Max `.hexon` tileset archive accepted by MCP `install_tileset` — the REST
-/// install route's effective cap (it sets no `DefaultBodyLimit`, so axum's
-/// 2 MiB default bounds the whole multipart body). DEC-C21 M5.
-pub const TILESET_ARCHIVE_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// Max `.hexon` tileset archive over REST multipart AND MCP `install_tileset`:
+/// the same envelope as [`crate::upload::MCP_MAX_ASSET_BYTES`] (base64 of 11 MiB
+/// plus JSON-RPC fits the 16 MiB `/mcp` body). DEC-C21 M5; fe-api AGENTS.md §asset-ingest.
+pub const TILESET_ARCHIVE_MAX_BYTES: usize = 11 * 1024 * 1024;
+/// Per-route body limit for the REST tileset install (archive + multipart slack).
+pub const TILESET_ROUTE_BODY_LIMIT: usize = TILESET_ARCHIVE_MAX_BYTES + 1024 * 1024;
 
 /// MCP `install_tileset` core: re-runs the REST pre-body guard (Editor+ petal
 /// scope + fe-policy `Install`) as defense in depth, then [`install_tileset_bytes`].

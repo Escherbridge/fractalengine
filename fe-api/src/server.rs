@@ -65,6 +65,9 @@ pub struct ApiState {
     /// Operator opt-in for `/api/v1/query/elevated` (env `FE_API_ELEVATED_ALLOW=1`,
     /// read once at startup); `false` = the endpoint refuses every call (§elevated-query).
     pub elevated_query_allowed: bool,
+    /// Per-owner cap on registered asset bytes (env `FE_API_UPLOAD_QUOTA_BYTES`,
+    /// read once at startup) — AGENTS.md §asset-ingest.
+    pub upload_quota_bytes: u64,
 }
 
 /// Build the complete axum [`Router`] (route inventory: fe-api/AGENTS.md §routes).
@@ -305,10 +308,12 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
             "/api/v1/analytics/query",
             post(crate::rest::execute_analytics_query),
         )
-        // Hexon tileset management
+        // Hexon tileset management (per-route body limit — §asset-ingest)
         .route(
             "/api/v1/hexons/tilesets/install",
-            post(crate::terrain::install_hexon_tileset),
+            post(crate::terrain::install_hexon_tileset).layer(DefaultBodyLimit::max(
+                crate::terrain::TILESET_ROUTE_BODY_LIMIT,
+            )),
         )
         .route(
             "/api/v1/hexons/tilesets/{hexon_id}",

@@ -229,12 +229,19 @@ async fn load_gpx_export_nodes(
         Err(_) => return vec![],
     };
     let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
+    export_tree_from_rows(&rows)
+}
 
-    // Build flat list, then reconstruct tree
+/// Turn `node` rows into the export tree: waypoints nest under the track named
+/// by `properties.gpx_track_id` (see `build_export_tree`).
+fn export_tree_from_rows(rows: &[serde_json::Value]) -> Vec<fe_terrain::ExportNode> {
     let mut all_nodes: Vec<(String, Option<String>, fe_terrain::ExportNode)> = Vec::new();
-    for n in &rows {
+    for n in rows {
         let node_id = n["node_id"].as_str().unwrap_or("").to_string();
-        let parent_id = n["parent_node_id"].as_str().map(|s| s.to_string());
+        // Waypoints link to their track via `properties.gpx_track_id`.
+        let parent_id = n["properties"]["gpx_track_id"]
+            .as_str()
+            .map(|s| s.to_string());
 
         let coords = &n["position"]["coordinates"];
         let x = coords[0].as_f64().unwrap_or(0.0) as f32;
@@ -254,43 +261,40 @@ async fn load_gpx_export_nodes(
         ));
     }
 
-    // Build tree: attach children to parents
-    // Collect children first
+    build_export_tree(all_nodes)
+}
+
+/// Nest each `(id, parent_id, node)` under its parent; a node whose parent is
+/// absent from `flat` (deleted/tombstoned track) stays a root rather than vanishing.
+fn build_export_tree(
+    flat: Vec<(String, Option<String>, fe_terrain::ExportNode)>,
+) -> Vec<fe_terrain::ExportNode> {
+    let loaded: std::collections::HashSet<String> =
+        flat.iter().map(|(id, _, _)| id.clone()).collect();
     let mut children_map: std::collections::HashMap<String, Vec<fe_terrain::ExportNode>> =
         std::collections::HashMap::new();
     let mut roots: Vec<fe_terrain::ExportNode> = Vec::new();
-
-    // Two-pass: first identify all children, then build tree
-    for (_node_id, parent_id, node) in &all_nodes {
-        if let Some(pid) = parent_id {
-            children_map
-                .entry(pid.clone())
-                .or_default()
-                .push(node.clone());
+    for (_, parent_id, node) in flat {
+        match parent_id.filter(|pid| loaded.contains(pid)) {
+            Some(pid) => children_map.entry(pid).or_default().push(node),
+            None => roots.push(node),
         }
     }
 
-    // Recursively attach children
     fn attach_children(
         node: &mut fe_terrain::ExportNode,
-        children_map: &std::collections::HashMap<String, Vec<fe_terrain::ExportNode>>,
+        children_map: &mut std::collections::HashMap<String, Vec<fe_terrain::ExportNode>>,
     ) {
-        if let Some(children) = children_map.get(&node.node_id) {
-            node.children = children.clone();
+        if let Some(children) = children_map.remove(&node.node_id) {
+            node.children = children;
             for child in &mut node.children {
                 attach_children(child, children_map);
             }
         }
     }
-
-    for (_node_id, parent_id, node) in all_nodes {
-        if parent_id.is_none() {
-            let mut root = node;
-            attach_children(&mut root, &children_map);
-            roots.push(root);
-        }
+    for root in &mut roots {
+        attach_children(root, &mut children_map);
     }
-
     roots
 }
 
@@ -322,4 +326,40 @@ async fn read_multipart_field(multipart: &mut Multipart, field_name: &str) -> Op
         }
     }
     None
+}
+
+#[cfg(test)]
+mod export_tree_tests {
+    use super::export_tree_from_rows;
+
+    #[test]
+    fn waypoint_nests_under_its_track_and_an_orphan_stays_a_root() {
+        let row = |id: &str, props: serde_json::Value| {
+            serde_json::json!({
+                "node_id": id,
+                "display_name": id,
+                "position": { "coordinates": [0.0, 0.0] },
+                "properties": props,
+            })
+        };
+        let tree = export_tree_from_rows(&[
+            row("track", serde_json::json!({ "gpx_type": "track" })),
+            row(
+                "wp",
+                serde_json::json!({ "gpx_type": "waypoint", "gpx_track_id": "track" }),
+            ),
+            row(
+                "orphan",
+                serde_json::json!({ "gpx_type": "waypoint", "gpx_track_id": "deleted-track" }),
+            ),
+        ]);
+        let ids: Vec<&str> = tree.iter().map(|n| n.node_id.as_str()).collect();
+        assert_eq!(ids, ["track", "orphan"]);
+        let track_children: Vec<&str> = tree[0]
+            .children
+            .iter()
+            .map(|n| n.node_id.as_str())
+            .collect();
+        assert_eq!(track_children, ["wp"]);
+    }
 }

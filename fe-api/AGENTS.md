@@ -123,11 +123,12 @@ covers the WS messages; `mcp_integration.rs::promote_instance_unknown_and_foreig
 the MCP tool. `scripts/hexon-serve-verify.ps1` asserts the same on a live
 relay for the tile plane (foreign = unknown petal = 404).
 
-**Residuals (not closed here).** Timing: resolution cost still differs by
-branch — the scope lookups are unindexed `WHERE <id> = $x LIMIT 1` scans
-(an unknown id scans the whole table; a foreign petal stops at its row then
-scans `fractal`), so latency depends on table sizes, not just existence; a
-fix needs indexed id lookups plus a fixed-cost resolver. Tileset store
+**Residuals (not closed here).** Timing: the scope lookups are now indexed
+point reads (`idx_petal_id` / `idx_fractal_id` / `idx_node_id` /
+`idx_verse_id`, fe-database AGENTS §schema-macro), so latency no longer grows
+with table size. What remains is the second-hop asymmetry: an unknown petal
+does 1 indexed lookup, a foreign petal 2 (petal → fractal), a sub-ms
+difference. The fixed-cost resolver that would erase it is still deferred. Tileset store
 mutation still says "tileset remains assigned to another petal" — inherent to
 refusing a shared-store delete (the caller can read its own binding), and a
 tileset-id fact, not a hierarchy-ULID one. The crate registry is a node-wide
@@ -258,8 +259,8 @@ Three GET endpoints, all under the JWT-authenticated router in `server.rs`:
 
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/api/v1/assets/{content_hash}` | raw blob by BLAKE3 hash, `application/octet-stream`, `private, max-age=31536000, immutable`. Viewer+, and the hash must belong to an `asset` row referenced by a node the token covers (`asset_reach` — DEC-C21; a hash is no longer a capability). |
-| GET | `/api/v1/assets/by-id/{asset_id}` | resolves `asset` row -> blob, serves with the **real** `content_type`/`name`/`size` from the DB. Granted iff ANY node referencing the asset is in the token's scope (`asset_reach`). |
+| GET | `/api/v1/assets/{content_hash}` | raw blob by BLAKE3 hash, `application/octet-stream`, `private, max-age=31536000, immutable`. Viewer+, and the hash must belong to an `asset` row the token reaches — its anchor petal or a referencing node is in scope (`asset_reach` — DEC-C21; a hash is no longer a capability). |
+| GET | `/api/v1/assets/by-id/{asset_id}` | resolves `asset` row -> blob, serves with the **real** `content_type`/`name`/`size` from the DB. Granted iff the asset's anchor petal OR ANY node referencing it is in the token's scope (`asset_reach`). |
 | GET | `/api/v1/nodes/{node_id}/asset` | resolves `node.asset_id` -> `asset` row -> blob. RBAC scope resolved from the node's parent chain (same `resolve_node_scope` helper as `/nodes/:id/transform`). |
 
 All three require Viewer+ role and that the node's/asset's scope be covered
@@ -275,24 +276,37 @@ differs from the rest of `rest.rs`, where most handlers return HTTP 200 with
 `{"ok": false, ...}` for historical reasons; asset delivery is byte-stream
 territory, so real status codes matter for HTTP caches/CDNs/downloaders.
 
-**Asset scope = referencing nodes (DEC-C21, `assets::asset_reach`)**: the
-`asset` table has no scope/owner column — only `node.asset_id` links an asset
-into the hierarchy, and two nodes (even in different petals) may share one
-`asset_id`. `asset_reach` reads EVERY referencing node's petal (capped:
-10 000 rows / 256 distinct petals, fail-closed beyond) and classifies the
-asset for a token as `Covered` (>= 1 referencing node in scope), `Foreign`
-(referenced only elsewhere, or the lookup failed) or `Unreferenced` (a fresh
-upload not yet placed). Reads (by-hash, by-id) require `Covered`; MCP
-`place_asset` refuses `Foreign` (so a token cannot launder another tenant's
-asset into its own petal and then read it through its own node) with the
-same text as an unknown id. Consequences, all deliberate: an uploaded-but-
-never-placed asset is not readable by hash/id until placed; a deny-by-default
-miss (row cap) is a false 404, never a leak; the `asset` table is no longer
-in the `/query` read whitelist (§query-guard). The old rule (authorize
-against the FIRST referencing node, `LIMIT 1`) was order-dependent and is
-gone. **Deferred (trigger: multi-tenant deploy):** an owner/petal column on
-`asset` written at upload, which would make `Unreferenced` uploads
-attributable and replace the reference scan.
+**Asset scope = anchor petal + referencing nodes (DEC-C21; FEAPI-ASSET-OWNER
+2026-10-11, `assets::asset_reach`)**: an API upload writes two ownership
+columns on its `asset` row — `owner_did` (the token `sub`) and `petal_id`
+(the **anchor petal** the upload was authorized against: the REST path petal
+/ MCP `upload_asset`'s `PetalArg`). Legacy and GUI-imported rows leave both
+`NONE` (additive schema; no backfill). Two nodes (even in different petals)
+may still share one `asset_id`. `asset_reach` classifies the asset(s) for a
+token, fail-closed on any lookup failure:
+
+1. **Anchor first.** If any requested row's anchor petal is covered by the
+   token → `Covered`, with no reference scan — the uploader's petal can read
+   its upload before it is placed and after it is placed elsewhere.
+2. **Reference scan** (legacy rows, assets shared into other petals): EVERY
+   referencing node's petal (capped: 10 000 rows / 256 distinct petals,
+   fail-closed beyond) — any in scope → `Covered`; all outside → `Foreign`.
+3. **Unplaced**: an owned row whose anchor is not covered → `Foreign`; a
+   legacy row (no owner/petal) → `Unreferenced` (unchanged behaviour).
+
+Reads (by-hash, by-id) require `Covered`; MCP `place_asset` refuses `Foreign`
+(so a token can neither launder another tenant's placed asset into its own
+petal nor claim another tenant's still-unplaced upload) with the same text as
+an unknown id. **`owner_did` alone grants nothing:** every token this node
+accepts is minted by the node keypair, so `sub` is the node DID for every
+caller — an "uploader-only" rule keyed on `sub` would let any token read any
+tenant's unplaced upload. The tenant boundary is the token scope, hence the
+anchor petal. `owner_did` is recorded for the quota (§asset-ingest) and for a
+future per-caller subject claim. Consequences, all deliberate: a legacy
+never-placed asset is not readable until placed; a deny-by-default miss (row
+cap) is a false 404, never a leak; the `asset` table is not in the `/query`
+read whitelist (§query-guard). Indexes: `idx_asset_owner` (quota sums),
+`idx_asset_content_hash` (by-hash reads, GC).
 
 **Directory-asset extension point**: the asset model is heading toward "any
 file, or a directory of files behind a placeholder" (the P2P bucket / "3D
@@ -508,10 +522,11 @@ never as its rows.
 10/s per DID (`/query`, exports) and per token (share redemption); share TTL
 default 1h / max 24h. Change limits there, nowhere else.
 
-## §elevated-query (`rest.rs::execute_elevated_query`, 2026-10-10)
+## §elevated-query (`rest.rs::execute_elevated_query`, 2026-10-10; DB-thread routing 2026-10-11)
 
 `POST /api/v1/query/elevated` runs caller-supplied multi-statement SurrealQL
-— including writes — directly on `db_reader`. It **cannot be scope-confined**:
+— including writes — on the DB thread (`DbCommand::ElevatedQuery`, ratified
+2026-10-10: route, do not remove). It **cannot be scope-confined**:
 raw SQL is not honestly filterable by string (the M4 review broke the old
 `/query` scope filter four ways — §query-guard), so there is no token-scope
 check at all. Until 2026-10-10 the only gate was Manager+, which let a
@@ -530,7 +545,7 @@ deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
   (`ApiHarness::spawn_with_elevated_query_allowed`).
 - **Guard order: opt-in → Owner (`require_role_level(Owner)`, typed — a
   role-string typo would parse to `RoleLevel::None` = admit-all) → 5/s per
-  DID → `validate_elevated_sql` → DB.** Owner of ANY scope passes, which is
+  DID → `validate_elevated_sql` → DB thread.** Owner of ANY scope passes, which is
   exactly why the endpoint is only for single-tenant nodes.
 - **Table whitelist `query_guard::ELEVATED_TABLES`** = scene content only:
   `NODE`, `FRACTAL`, `PETAL`, `FIELD_DEF`, `MODEL`, `ROOM`. Removed:
@@ -549,13 +564,62 @@ deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
   target list is checked element by element; write targets must be plain
   table names (record ids, `$params`, escaped identifiers, subqueries,
   `->` graph paths fail — filter with `WHERE`); `INSERT` must use `INTO`;
-  `USE` (would re-point the shared `db_reader` session), `ALTER`,
+  `USE` (would re-point the DB thread's session), `ALTER`,
   `REBUILD`, `ACCESS`, `SHOW`, `OPTION`, `RELATE`, `LIVE` join the
   DDL/`INFO`/`SLEEP`/`KILL` bans. Keywords inside string literals reject the
   query — bind literals through `vars`.
-- **Not the DB thread.** Writes bypass the single-writer DB thread: no
-  op-log entry, no replication to peers, no scene-change broadcast, no
-  `edit_seq` bump. A peer will not see them and the GUI will not refresh.
+- **DB-side `TIMEOUT 5s` on every DML statement (FEAPI-ELEV-TIMEOUT).**
+  `validate_elevated_sql` returns an `ElevatedPlan`: the script split into
+  top-level statements by `split_elevated_statements` (`;` splits only
+  outside strings, escaped identifiers and `()`/`[]`/`{}` nesting), each
+  statement starting with `SELECT`/`CREATE`/`UPDATE`/`UPSERT`/`DELETE`/`INSERT`
+  suffixed ` TIMEOUT 5s`, plus the lowercase write tables. `TIMEOUT`,
+  `PARALLEL`, `EXPLAIN` (a caller budget could raise ours; the other two
+  must follow it) and `BEGIN`/`COMMIT`/`CANCEL` (would break the DB thread's
+  transaction wrapper) are banned words. The API awaits
+  `ELEVATED_REPLY_TIMEOUT_SECS` (7 s) for the reply; `query timed out (5s)`
+  means only that backstop fired — the DB thread still finishes the script
+  and its late reply is dropped by the entry's pop-and-drop (fe-runtime
+  §api-reply-correlation), so a timed-out write MAY have landed.
+- **Single writer, exactly like the typed handlers** (fe-database
+  `handlers/elevated_query.rs`, `src/AGENTS.md` §handlers). Every script —
+  reads too — runs on the DB thread; `db_reader` is never used, so the
+  endpoint works on a channel-only (Windows) node. A script with no write
+  target runs as-is and is not op-logged. A write script:
+  1. refuses unless every write table is in the DB-side mirror
+     `ELEVATED_WRITABLE_TABLES` (the API parse is authoritative; this is a
+     second check) and the write tables hold ≤ `ELEVATED_DIFF_MAX_ROWS`
+     (20 000) rows in total — larger is refused before anything runs;
+  2. snapshots those tables (blake3 per row; nodes keep their
+     id/petal/tombstone state);
+  3. commits through `op_log::commit_operation_atomic`: ONE
+     `OpType::ElevatedQuery` entry (`node_id` = token `sub`, payload
+     `{sql, vars, actor_did, write_tables}`) in the SAME transaction as the
+     caller's statements — a failing or timed-out statement leaves neither
+     the log row nor any write;
+  4. diffs a post-snapshot (exact: the serial DB thread is the only writer
+     between the two), bumps `edit_seq` on updated nodes, and appends one
+     `node_log` fact (op `elevated_write`, `source_did` = token `sub`,
+     payload `{change: created|updated|deleted, row}`) per changed node —
+     the typed node handlers' best-effort history;
+  5. then emits: `SceneChange::NodeAdded` for a created/updated live node,
+     `NodeRemoved` for a newly tombstoned or hard-deleted live node, and one
+     `ReplicationEvent` per created/updated `node`/`fractal`/`petal` row (the
+     tables the inbound applier handles; `id` stripped, verse resolved
+     through the hierarchy). The reply carries `changed_rows`; the desktop
+     reloads its tree when it is > 0.
+- **Residuals (documented, not bugs):** `field_def`/`model`/`room` writes are
+  op-logged and local only — no inbound applier, so not replicated. Hard
+  deletes are not replicated (same as typed `DeleteNode`) — tombstone for a
+  sync-safe delete. Statements that do not start with a DML verb (`LET`,
+  `RETURN`, `IF`, `FOR`, a bare `(SELECT …)`) carry no DB-side `TIMEOUT`;
+  they are bounded only by the API's 7 s backstop, and the DB thread stays
+  busy until they finish — a dropped transaction future does NOT cancel the
+  embedded engine's spawned query task (verified 2026-10-11: the write
+  committed after the future was dropped), so no DB-thread wall-clock
+  budget can be enforced safely. A top-level `RETURN` inside a write
+  script ends the transaction's statement list early (SurrealDB
+  semantics): later statements do not run.
 - **Reads that name no FROM target are closed too (2026-10-10 adversarial
   review).** `RETURN role:x.*`, `SELECT *, role:x.* AS l FROM node`,
   `$v.to_record().*` (with `vars: {v: "role:x"}`), `type::record(…)`,
@@ -579,11 +643,17 @@ deny-by-default (fe-policy's ratified stance), mirroring `FE_SIM_ALLOW`
   `max_role: owner`, so no issued API token passes the Owner gate even on an
   opted-in node. Keep it that way unless the endpoint gains a real scope
   model.
-- Tests: `tests/elevated_query_test.rs` (router-level: off → refused;
-  Manager → refused; Owner reads/writes `node`; privilege rewrites refused
-  and rows unchanged), `tests/record_id_read_test.rs` (Owner cannot read a
-  seeded `role:victim` by id; the same vectors on `/query`) + `query_guard`
-  unit table `elevated_write_targets_must_be_plain_whitelisted_tables`.
+- Tests: `tests/elevated_query_test.rs` (router + real reply router + the
+  production `elevated_query_reply` via `serve_db_thread`: off → refused;
+  Manager → refused; Owner write → one op-log row, one `node_log` fact, one replication event
+  carrying the bumped `edit_seq`, one `NodeAdded`; a failing second
+  statement rolls back the first and the log; a long scan hits the DB-side
+  TIMEOUT in < 7 s and the next script still runs; works with
+  `db_reader: None`; privilege rewrites refused and rows unchanged),
+  `tests/record_id_read_test.rs` (Owner cannot read a seeded `role:victim`
+  by id; the same vectors on `/query`) + `query_guard` units
+  `elevated_write_targets_must_be_plain_whitelisted_tables` and
+  `elevated_plan_bounds_every_dml_and_names_its_write_tables`.
 
 ## §export
 
@@ -653,10 +723,19 @@ in-memory; no temp files) or local CSV serialization.
   before it, a timed-out caller's late rows or a GUI Query-tab result could
   be handed to the next public share redeemer); `RawQuery`'s own SELECT-only guard rail
   (`fe-database/src/lib.rs`) re-validates independently as defense in
-  depth. `/api/v1/query` (`rest.rs::execute_query`) and the `fmt=json`
-  branch of share redemption still require `db_reader` directly and were
-  deliberately left alone here (same root cause, larger blast radius —
-  noted as a follow-up, not fixed in F10).
+  depth. **CLOSED 2026-10-11 (EGR-DBREADER):** `/api/v1/query`
+  (`rest.rs::run_local_query`, shared by MCP `query`) and the `fmt=json`
+  branch of share redemption now use the same
+  `run_guarded_query_via_state` (correlated, `TIMEOUT 5s`, the
+  `EGRESS_FALLBACK` semaphore → "egress busy" 503). A gone DB bridge is an
+  honest error: `/query` answers an error envelope, share 503
+  (`query_guard::is_db_bridge_error`). Note the DB thread's `RawQuery`
+  keyword blocklist (`fe-database/src/handlers/raw_query.rs`: `IF`, `FOR`,
+  `RETURN`, …) is stricter than the API guard and can reject SQL the
+  direct `db_reader` path would run — that error is honest, not a leak.
+  Tests: `tests/export_share_test.rs` `*_channel_fallback_*` (real router +
+  production `raw_query_reply` over Mem SurrealDB, with GUI and foreign
+  correlated rows raced in).
 - **Range support (DEC-C10, F10, 2026-10-09).** `Accept-Ranges: bytes` used
   to be advertised with zero backing (grep found no Range/206 handling
   anywhere in `fe-api`). Verified live against the real `tools/duckdb`
@@ -757,9 +836,9 @@ HMAC because the identity stack is already ed25519 — no new secret type).
   lets a test share one key across two harness instances.
 - **Caching:** json redemptions also send `Cache-Control: private, no-store`
   (DEC-C18); parquet/csv redemptions inherit §export's ETag/If-Range.
-- **Windows (no `db_reader`):** `fmt=parquet|csv` redemptions work through the
-  correlated channel fallback; `fmt=json` (like `/api/v1/query`) still
-  answers 503 `shared query not available (no db_reader)` — unchanged.
+- **Windows (no `db_reader`):** every format redeems through the correlated
+  channel fallback (`fmt=json` since 2026-10-11, EGR-DBREADER — §export);
+  a saturated fallback or a gone DB bridge answers 503.
 
 ## §crs
 
@@ -852,8 +931,11 @@ ULID check → petal scope resolution + `require_scope` (MCP: the dispatcher's
   petal: both drop other petals' echoes, so an API write to petal B never
   replaces the terrain of the petal the user is viewing (fe-runtime
   §api-reply-correlation). The tileset-list GET fallback
-  (`assigned_tilesets`, no `db_reader`) likewise refuses an echo for another
-  petal. Tests: `tests/terrain_mutation_test.rs` (full router,
+  (`assigned_tilesets`, no `db_reader`) sends a CORRELATED `GetPetalTerrain`
+  (2026-10-11) and accepts only a `PetalTerrainFetched` echoing its id AND
+  petal; `RequestFailed` or anything else is refused. That reply is private
+  to the API caller — it no longer re-applies the read to the desktop's
+  terrain runtime, and a GUI load for the same petal cannot satisfy it. Tests: `tests/terrain_mutation_test.rs` (full router,
   real reply router + production DB reply builder against Mem SurrealDB).
 
 ## §iot-ingest (iot_spatial_reporting_20260714)
@@ -1047,9 +1129,10 @@ Manager for create_verse, Owner for sim_*. install_tileset was Manager under
 DEC-C14 ("deliberately stricter"); DEC-C21 M5 aligned it to Editor — REST
 install and fe-policy `Install` are both Editor, and a stricter MCP row only
 split the authority model. Its archive decode is capped at
-`terrain::TILESET_ARCHIVE_MAX_BYTES` (2 MiB = the REST route's effective
-cap: no `DefaultBodyLimit`, so axum's default) and archive parsing + the
-registry write run on `spawn_blocking` (both transports).
+`terrain::TILESET_ARCHIVE_MAX_BYTES` (11 MiB — the `/mcp` envelope
+arithmetic of §asset-ingest; the REST route shares the cap, see there) and
+archive parsing + the registry write run on `spawn_blocking` (both
+transports).
 
 **Wart history (fixed F13).** create_node / create_petal used to scope-check
 only when the caller supplied ancestry ids (omit them → role-only), and
@@ -1100,17 +1183,22 @@ deleted or renamed.
 it shares REST PUT/DELETE's correlated core, §terrain-mutation.) `query` inherits
 `query_guard`'s verse/fractal-scoped tokens getting NO row filter
 (petal-scoped tokens are filtered). `place_asset` refuses an asset
-referenced only outside the token's scope (§assets — DEC-C21).
+referenced only outside the token's scope, or an unplaced upload anchored in
+a petal the token does not cover (§assets — DEC-C21).
 
 ## §asset-ingest (F13 — mcp_scene_primitives FR-1/2/3/7)
 
 `src/upload.rs`. Both transports (REST multipart
 `POST /api/v1/petals/{p}/assets`, MCP `upload_asset` base64) share
 `ingest_glb_with_limit`: name check → `blob_store` present (else fail
-closed: REST 503 / MCP error) → `spawn_blocking { base64 decode (length
-pre-checked so oversize never allocates) → validate_glb → BLAKE3 +
-add_blob }` → `DbCommand::CreateAsset {name, content_type, size_bytes,
-content_hash, correlation_id}` → correlated `DbResult::AssetCreated`.
+closed: REST 503 / MCP error) → owner quota check (below) →
+`spawn_blocking { base64 decode (length pre-checked so oversize never
+allocates) → validate_glb → BLAKE3 + add_blob }` → `DbCommand::CreateAsset
+{name, content_type, size_bytes, content_hash, owner_did, petal_id,
+correlation_id}` (an `UploadOwner` = token `sub` + authorized anchor petal;
+§assets) → correlated `DbResult::AssetCreated`. The DB side is the public
+`handlers::crud::create_asset_reply`, which tests reuse to service the
+channel.
 
 - **Bytes never cross the channel — by construction.** `store_glb` consumes
   the `Vec<u8>` and returns `StoredGlb` (private fields: hash + size only);
@@ -1138,23 +1226,64 @@ content_hash, correlation_id}` → correlated `DbResult::AssetCreated`.
   unauthenticated requests are rejected by the auth layer first) → a few
   hundred MiB worst case, versus multiple GiB before. (The previous
   "~600 MB" figure assumed one call at the old 349 MiB cap; it was never a
-  bound.) Other routes keep axum's 2 MiB default. GPX via MCP caps at
+  bound.) **Tileset install (FEAPI-TILESET-2MIB, 2026-10-11):** REST
+  `POST /api/v1/hexons/tilesets/install` carries `DefaultBodyLimit` =
+  `TILESET_ROUTE_BODY_LIMIT` (11 MiB + 1 MiB multipart slack) and refuses an
+  archive over `TILESET_ARCHIVE_MAX_BYTES` = 11 MiB with an explicit
+  `ok:false` message (house-style 200 envelope); MCP `install_tileset` decodes
+  at most the same 11 MiB. Both import the archive through
+  `fe_format::HexonArchive::import`, whose per-entry/total decompression caps
+  (fe-format AGENTS.md §decompression-limits) bound what the larger archive
+  can inflate to. Known inefficiency, left as is: `install_tileset_bytes`
+  imports the archive twice (the ownership inspection, then
+  `TilesetRegistry::install`). Other routes keep axum's 2 MiB default. GPX via MCP caps at
   `MCP_GPX_MAX_BYTES` = 11 MiB decoded (same envelope arithmetic) and BOTH
   GPX transports cap parsed points at `limits::GPX_MAX_POINTS` = 10 000
   (each trackpoint is a `CreateNode` round trip; REST answers 413).
-- **Blob GC / quota — deferred (trigger: multi-tenant deploy).** Blobs are
-  never garbage-collected and there is no per-token/per-petal byte quota: a
-  re-upload of identical bytes dedupes at the blob layer, but every upload
-  adds an `asset` row and distinct bytes accumulate forever (bounded only by
-  the per-call caps above and disk). Acceptable for a single-tenant desktop
-  node; before any shared/multi-tenant deployment add (a) a reference-count
-  GC over `asset.content_hash` / `node.asset_id`, and (b) an upload quota
-  keyed by token subject, alongside the `asset` owner column (§assets).
+- **Upload quota (FEAPI-BLOB-GC, 2026-10-11).** `ApiState.upload_quota_bytes`
+  (env `FE_API_UPLOAD_QUOTA_BYTES`, read once by both binaries via
+  `upload_quota_bytes_from_env`; default 2 GiB, an unparseable value warns
+  and uses the default). `ingest_glb_with_limit` checks it right after the
+  name check and BEFORE any byte is decoded or stored:
+  `SELECT math::sum(size_bytes) … WHERE owner_did = $owner GROUP ALL` (via
+  `gis::run_select`, `idx_asset_owner`) + the incoming size — the exact
+  length for multipart, the base64-derived upper bound for MCP. Over →
+  `UploadError::QuotaExceeded` (REST 413, MCP tool error) and neither a blob
+  nor a row is written; a failed lookup fails closed (`RegisterFailed`).
+  Keyed by `owner_did` = token `sub` = the node DID (§assets), so today it is
+  a node-wide cap on API-registered bytes, not per tenant. Soft: two
+  concurrent uploads can each pass the check and overshoot by one upload.
+  Re-uploading identical bytes counts again (each upload adds a row).
+- **Blob GC (FEAPI-BLOB-GC, 2026-10-11).** A fire-and-forget
+  `DbCommand::GcUnreferencedAssets { grace_secs }` (fe-runtime src/AGENTS.md
+  §asset-gc: Bevy timer, `FE_ASSET_GC_INTERVAL_SECS` default 3600, `0`
+  disables; `FE_ASSET_GC_GRACE_SECS` default 86 400) runs
+  `fe_database::handlers::asset_gc` on the DB thread: delete `asset` rows that
+  no `node` row references (tombstoned nodes count — conservative) and whose
+  `created_at` is older than the grace (unparseable timestamps are kept);
+  then `BlobStore::remove_blob` each of their hashes that no remaining
+  `asset` row, no `crate_entry.asset_hash` and no node path stamp
+  (`properties.path_asset.asset_path = blob://{hash}.{ext}`) names. **Invariant: the blob
+  directory is never scanned for orphans** — replication row blobs
+  (`replicate_row`) and hexon blobs share the store and are not
+  asset-referenced. The single-writer DB thread makes the reference check and
+  the delete atomic with respect to placements. Residual: an upload whose
+  bytes equal a just-collected blob can race the GC between the API's
+  `add_blob` and `CreateAsset`; `create_asset_handler` re-verifies `has_blob`,
+  so that upload fails (`RegisterFailed`) instead of leaving a dangling row —
+  a retry succeeds.
 - **Placement:** `place_asset` → `DbCommand::CreateNodeWithAsset` (log-first
   `NodeCreated` op, rotation stored as Euler XYZ like `UpdateNodeTransform`)
   → `DbResult::GltfImported` with an echoed `correlation_id`. Only a
   correlated `GltfImported` is an API reply (`ReplyKind::PlacedAsset`); a GUI
   `ImportGltf` result (`None`) can never satisfy an API waiter, and the GUI's
   existing listener still spawns the placed node live.
+- **Typed DB-layer failure (2026-10-11, RT-CORR-EDGE).** A correlated
+  `CreateAsset` / `CreateNodeWithAsset` that fails on the DB thread is
+  answered with `DbResult::RequestFailed { error, correlation_id }`
+  (`register_asset` → `RegisterFailed` 502; `place_asset_core` → `unknown
+  asset` / `operation failed`) — immediately. It used to be the wildcard
+  `Error`, which never reaches a correlated waiter, so the caller hung for
+  the full 5 s `db_round_trip` timeout.
 - Re-uploading identical bytes is idempotent at the blob layer but creates a
   new asset row (dedupe-by-hash is out of scope).

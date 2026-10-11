@@ -81,6 +81,24 @@ pub struct ApiConfig {
     /// Operator opt-in for `/api/v1/query/elevated` — binaries pass
     /// [`elevated_query_allowed_from_env`] (AGENTS.md §elevated-query).
     pub elevated_query_allowed: bool,
+    /// Per-owner upload quota — binaries pass [`upload_quota_bytes_from_env`]
+    /// (AGENTS.md §asset-ingest).
+    pub upload_quota_bytes: u64,
+}
+
+/// Read `FE_API_UPLOAD_QUOTA_BYTES` once at startup; unset or unparseable
+/// falls back to [`upload::DEFAULT_UPLOAD_QUOTA_BYTES`] (AGENTS.md §asset-ingest).
+pub fn upload_quota_bytes_from_env() -> u64 {
+    match std::env::var(upload::UPLOAD_QUOTA_ENV) {
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                "{}={v:?} is not a byte count; using the default upload quota",
+                upload::UPLOAD_QUOTA_ENV
+            );
+            upload::DEFAULT_UPLOAD_QUOTA_BYTES
+        }),
+        Err(_) => upload::DEFAULT_UPLOAD_QUOTA_BYTES,
+    }
 }
 
 /// Env var that opts a node into the raw-SQL `/api/v1/query/elevated` endpoint.
@@ -94,8 +112,8 @@ pub fn elevated_query_allowed_from_env() -> bool {
             tracing::warn!(
                 "{ELEVATED_ALLOW_ENV}=1: POST /api/v1/query/elevated is ENABLED — raw SurrealQL \
                  writes for Owner tokens. It is NOT scope-confined (an Owner of ANY verse reaches \
-                 EVERY verse on this node) and its writes bypass the DB thread (not op-logged, \
-                 not replicated). Enable only on a single-tenant node"
+                 EVERY verse on this node); its writes are op-logged, replicated and broadcast \
+                 like typed edits. Enable only on a single-tenant node"
             );
             true
         }
@@ -156,6 +174,7 @@ async fn run_server(config: ApiConfig) {
         // store before calling `spawn_api_thread`) — see AGENTS.md §share.
         share_signer: config.share_signer,
         elevated_query_allowed: config.elevated_query_allowed,
+        upload_quota_bytes: config.upload_quota_bytes,
     });
 
     // Background task: listen for revocation notifications from Bevy thread

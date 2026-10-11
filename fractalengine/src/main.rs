@@ -413,6 +413,8 @@ fn main() {
         // Raw-SQL elevated endpoint: off unless FE_API_ELEVATED_ALLOW=1 (read
         // once here; loud WARN when on) — fe-api/AGENTS.md §elevated-query.
         elevated_query_allowed: fe_api::elevated_query_allowed_from_env(),
+        // Per-owner asset upload quota (default 2 GiB) — fe-api/AGENTS.md §asset-ingest.
+        upload_quota_bytes: fe_api::upload_quota_bytes_from_env(),
     });
 
     // ---- Entity Store (in-memory hot cache) ----

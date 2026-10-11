@@ -5915,6 +5915,7 @@ dependencies = [
  "ed25519-dalek",
  "fe-api",
  "fe-database",
+ "fe-hexon",
  "fe-identity",
  "fe-runtime",
  "fe-sync",

@@ -254,14 +254,16 @@ pub async fn redeem_share_url(
                 Ok(g) => g,
                 Err(e) => return share_query_err(e),
             };
-            let Some(ref db) = state.db_reader else {
-                return err(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "shared query not available (no db_reader)",
-                );
-            };
+            // `db_reader` or the correlated channel fallback (AGENTS.md §share).
             let vars = std::collections::HashMap::new();
-            match query_guard::run_guarded_query(db, &guarded, &vars, limits::QUERY_ROW_CAP).await {
+            match query_guard::run_guarded_query_via_state(
+                &state,
+                &guarded,
+                &vars,
+                limits::QUERY_ROW_CAP,
+            )
+            .await
+            {
                 Ok(data) => {
                     if let Err(e) = query_guard::enforce_byte_ceiling(
                         &data,
@@ -337,9 +339,9 @@ fn share_query_err(e: String) -> Response {
         err(StatusCode::GATEWAY_TIMEOUT, &e)
     } else if e.starts_with("row cap exceeded") || e.starts_with("result size exceeds") {
         err(StatusCode::PAYLOAD_TOO_LARGE, &e)
-    } else if e.starts_with("egress busy") {
+    } else if e.starts_with("egress busy") || query_guard::is_db_bridge_error(&e) {
         // DEC-C19 N3: the channel-fallback semaphore failed closed — an
-        // honest, bounded 503, not a retry-blind 400.
+        // honest, bounded 503, not a retry-blind 400. Same for a gone DB bridge.
         err(StatusCode::SERVICE_UNAVAILABLE, &e)
     } else {
         err(StatusCode::BAD_REQUEST, &e)

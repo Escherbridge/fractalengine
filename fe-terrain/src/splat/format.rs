@@ -168,14 +168,22 @@ pub fn read_baked_splats_from_archive(
         .collect();
 
     let mut out = Vec::new();
+    // Zip-bomb guard shared with `HexonArchive::import` (fe-format AGENTS.md §decompression-limits).
+    let mut budget = fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
     for name in names.iter().filter(|n| {
         n.starts_with(SPLATS_ZIP_PREFIX)
             && n.ends_with(SPLATS_ZIP_SUFFIX)
             && n.len() > SPLATS_ZIP_PREFIX.len() + SPLATS_ZIP_SUFFIX.len()
     }) {
         let mut file = archive.by_name(name)?;
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)?;
+        let declared = file.size();
+        let data = fe_format::read_entry_capped(
+            &mut file,
+            declared,
+            fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES,
+            &mut budget,
+        )
+        .with_context(|| format!("reading {name}"))?;
         let cache_key = name
             .strip_prefix(SPLATS_ZIP_PREFIX)
             .unwrap_or(name)

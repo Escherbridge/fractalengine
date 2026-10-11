@@ -152,9 +152,8 @@ layer wiring are **out of scope here** (per `metadata.json`, that's W-B's
   any hierarchy** — confirmed by reading `create_node_handler`
   (`fe-database/src/handlers/crud.rs`): it never populates `properties`, and
   the `node` schema has no `parent_node_id` column at all (grep across
-  `fe-database/src` returns zero hits outside the DTO-shape code in
-  `fe-api/src/gpx.rs`'s export path, which reads a field that was never
-  written). `gpx_bridge.rs` fixes the properties gap for the UI-driven path
+  `fe-database/src`; the HTTP export now reads `properties.gpx_track_id`
+  instead — Residual 3). `gpx_bridge.rs` fixes the properties gap for the UI-driven path
   via `SetNodeProperty`; the missing schema column is a residual (below).
 - `fe-terrain/src/terrain_plugin.rs`'s `GpxTrackLine` component
   (`{ track_node_id: String }`) + `render_gpx_tracks` system + `TrackRouteMap`
@@ -437,11 +436,22 @@ final sweep.
    trackpoint-node persistence path added here, or a different route-data
    source (e.g. re-parsing the original GPX file referenced by the track
    node, if its source path/hash were cached).
-3. `fe-api/src/gpx.rs`'s HTTP `import_gpx`/`export_gpx` endpoints are
-   unaffected by this pass and remain incomplete in the ways described
-   above (properties/hierarchy silently dropped on import; export reads a
-   `parent_node_id` field that is never written). Out of this track's
-   owned-file set (`fe-api/src/gpx.rs` is read-only here).
+3. `fe-api/src/gpx.rs`'s HTTP endpoints. **Export parent half CLOSED
+   (FE-GPX-HTTP-EXPORT-PARENT, 2026-10-11):** `load_gpx_export_nodes` nests a
+   waypoint under the track named by `properties.gpx_track_id` (the
+   never-written `parent_node_id` read is gone); a waypoint whose track is
+   absent/tombstoned stays a root instead of vanishing; and
+   `fe_terrain::scene_nodes_to_gpx` emits every waypoint anywhere in the tree
+   as a top-level `<wpt>` before the `<trk>`s (GPX 1.1 allows `<wpt>` only
+   there). Tests: `gpx.rs::export_tree_tests`,
+   `fe-api/tests/api_integration.rs::gpx_export_emits_track_and_both_waypoints_exactly_once`,
+   `fe-terrain/tests/gpx_test.rs::waypoint_nested_under_its_track_is_emitted_once_at_top_level`.
+   **Still open:** the exported `<trk>` is empty — `properties.gpx_points` is
+   not synthesized into `<trkseg>`/`<trkpt>`. The GUI does this in
+   `gpx_bridge.rs::points_to_export_children`; move that helper into
+   fe-terrain when the first API consumer needs track geometry. With no
+   `db_reader` the export returns an empty GPX. The import half
+   (properties/hierarchy dropped, above) is unchanged.
 4. `GpxImportStatus`'s exact field names are this worker's assumption,
    pending reconciliation with whatever fe-ui's `gpx_ops` worker actually
    ships (see above).

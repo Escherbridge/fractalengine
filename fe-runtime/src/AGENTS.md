@@ -35,11 +35,6 @@ are always objects, so this doesn't affect them. Do not "fix" this by
 reordering variants or making the enum tagged without confirming nothing
 depends on the current untagged wire shape (Tauri↔Bevy bridge).
 
-**Fast-follow:** the two `FsBlobStore` path conventions in `fe-hexon` need
-reconciling before the texture registry is wired at runtime (registry starts
-empty today, so it's currently inert) — flagged for whoever wires FR-4
-registry population / P2 texture install.
-
 ## §blob-store (P2P Mycelium Phase A)
 
 `blob_store.rs` defines the `BlobStore` trait, decoupling asset-byte storage
@@ -56,6 +51,18 @@ fe-runtime (trait)  <---  fe-database (uses handle)
 
 Hashes are raw BLAKE3 digests (`[u8; 32]`); hex encoding is provided for DB
 rows (`content_hash` column) and paths (`blob://{hex}.glb`).
+
+**Canonical on-disk layout (RT-FSBLOB, 2026-10-11).** Every filesystem blob
+store lays a blob out as `{root}/{hex[0..2]}/{hex}` (`blob_relative_path` /
+`canonical_blob_path`), and the default root is
+`{data_local_dir}/fractalengine/{DEFAULT_BLOB_DIR_NAME}` (`blobs`). Both
+`fe_sync::FsBlobStore` (the runtime store) and `fe_hexon::registry::FsBlobStore`
+(hexon installs, material/texture loading) build paths only through these
+helpers, so a hexon-installed blob is servable by the runtime store and a
+runtime-ingested blob loads in the material loader
+(`fe-test-harness/tests/blob_store_cross_read.rs`). Content addressing is the
+cross-read contract: the hexon store refuses a hash that is not 64 hex chars
+or does not match `blake3(data)`, and both write atomically (tmp + rename).
 
 `MockBlobStore` must produce the same digest as `FsBlobStore` so tests can
 cross-check hashes — that is why `fe-runtime` takes a direct `blake3`
@@ -171,16 +178,64 @@ order:
   pattern) would be wrong here: a query result is private to its caller, a
   terrain write is shared scene state. `PetalTerrainSetFailed` has no Bevy
   consumer (the API caller gets its 502; the host state did not change).
+  **Terrain reads (2026-10-11, FEAPI-GETTERRAIN-CORR).** `GetPetalTerrain`
+  carries a `correlation_id` too (the fe-api tile-auth fallback
+  `terrain.rs::assigned_tilesets` sends a ULID; fe-ui's petal-switch load
+  sends `None`). A correlated read is answered by a DISTINCT variant,
+  `PetalTerrainFetched { petal_id, terrain, correlation_id }`
+  (`handlers::petal_terrain::get_petal_terrain_reply`), in its own family
+  `ReplyKind::PetalTerrainFetch`. Unlike a set, a read is private to its
+  caller (the QueryResult precedent): fe-ui's `PetalTerrainLoaded` arm and
+  `terrain_bridge` never see it, so an API tile request no longer re-drives
+  the desktop's terrain runtime, and a GUI load / GUI set echo for the same
+  petal (family-identical before) can no longer satisfy the API waiter.
+- **Typed correlated failure — `RequestFailed` (2026-10-11, RT-CORR-EDGE).**
+  `DbResult::RequestFailed { error, correlation_id }` is the generic failure
+  for correlated commands whose family has no family-specific failure
+  variant: `GetPetalTerrain`, `CreateAsset`, `CreateNodeWithAsset` (DB side:
+  `handlers::correlated_failure`, which returns the legacy `Error` for
+  `None`). `try_deliver` routes it family-blind by id
+  (`deliver_by_correlation_id`: scans every queue for that id; a closed entry
+  consumes it, an unknown id is dropped). Before this, a DB-layer upload /
+  placement failure answered the correlated waiter with `Error`, which
+  `deliver_to_oldest` never hands to a correlated waiter (DEC-C19 N2), so the
+  API caller hung for the full 5 s `db_round_trip` timeout. The GUI never
+  sees `RequestFailed`; each API caller maps it to its error status. Later
+  correlated families reuse it instead of minting a new failure variant.
+- **Elevated queries (2026-10-11, FEAPI-ELEV-WRITES).** `ElevatedQuery`
+  always carries a `correlation_id: String` (only the API sends it — fe-api
+  `rest.rs::execute_elevated_query`, a fresh ULID) and is answered by
+  `ElevatedQueryResult { data, changed_rows, correlation_id }` in its own
+  family `ReplyKind::ElevatedQuery`, or by `RequestFailed` (the precedent
+  above — no new failure variant). The API awaits 7 s; a later reply is
+  consumed by its closed entry. fe-ui's dispatcher reads
+  `ElevatedQueryResult` only to reload its tree when `changed_rows > 0`,
+  then still `try_deliver`s it.
+- **Pop-and-drop (2026-10-11, RT-CORR-EDGE).** Uncorrelated delivery
+  (`deliver_to`, `deliver_uncorrelated`, and the `Error` wildcard which funnels
+  into `deliver_uncorrelated`) no longer SKIPS a closed entry: the oldest
+  eligible entry consumes the result, and a closed one (its caller timed out)
+  drops it. The DB thread is serial and answers each awaited command exactly
+  once, so within an API-only family the k-th reply belongs to the k-th
+  entry — skipping shifted every later caller by one. The invariant this
+  needs is "every enqueued entry is answered exactly once", so
+  `drain_api_commands` calls `PendingApiRequests::cancel(id)` (the id
+  `enqueue_for` returns) when the DB send fails — an entry for a command the
+  DB never received would otherwise swallow the family's next reply.
+  **Residual:** GUI-shared uncorrelated families (`NodeCreated`,
+  `NodeDeleted`, `NodePropertySet`, `VerseCreated`, `Hierarchy`) still pair
+  FIFO in the GUI binary — a GUI-initiated reply of the same family can land
+  on (or be consumed by) an API entry. Remedy when a caller needs it:
+  correlate that family (the IoT/RawQuery/terrain pattern).
 - **Known sharp edge (NARROWED 2026-10-09 — DEC-C19 N2, was DEC-C13).**
   `Error` stays family-blind, but `deliver_to_oldest` now delivers only to
   the oldest UNCORRELATED waiter (correlated families always receive typed
-  replies, so a bare `Error` can never reach a correlated waiter — e.g. a
-  share redeemer can no longer receive the desktop user's Query-tab error
-  text; if only correlated waiters are pending the error is dropped).
-  Among uncorrelated waiters the old edge remains: skip-closed shifting
-  after a timeout. **Revisit trigger:** any new timeout-capable write-path
-  caller — give its command a correlation id like the IoT/RawQuery families,
-  or take the global pop-and-drop change then.
+  replies — `QueryFailed`/`PetalTerrainSetFailed`/`IotReadingsRejected`/
+  `RequestFailed` — so a bare `Error` can never reach a correlated waiter;
+  if only correlated waiters are pending the error is dropped). The
+  skip-closed shifting edge among uncorrelated waiters is CLOSED by
+  pop-and-drop (2026-10-11); what remains is the GUI-shared-family residual
+  above.
 
 **Maintenance rule:** every `DbCommand` that expects a reply must be mapped in
 `reply_kind_of_command` and its reply in `reply_kind_of_result` —
@@ -189,6 +244,21 @@ Fire-and-forget commands (`TransformPersist`, telemetry writes) must send
 directly and must NOT enqueue a waiter: registering a waiter for a command the
 DB thread never answers leaves a dangling entry that later results can
 mis-deliver into.
+
+## §asset-gc (FEAPI-BLOB-GC, 2026-10-11)
+
+`asset_gc.rs` — `setup_core_systems` (so both binaries) inserts
+`AssetGcSchedule::from_env()` (env read once: `FE_ASSET_GC_INTERVAL_SECS`,
+default 3600, `0` disables; `FE_ASSET_GC_GRACE_SECS`, default 86 400) and runs
+`schedule_asset_gc`: a `Local<Timer>` that every interval `try_send`s
+`DbCommand::GcUnreferencedAssets { grace_secs }` on the Bevy-side
+`DbCommandSender` (never blocking the main thread; a full/closed channel is a
+`warn!`). It is **fire-and-forget** under the maintenance rule above: no waiter
+is registered and the command is deliberately absent from
+`reply_kind_of_command`; its success reply `AssetsGarbageCollected` maps to no
+family in `reply_kind_of_result`, so it can never satisfy an API waiter and
+just reaches Bevy messages. The DB side and the GC rules: fe-database
+src/AGENTS.md §handlers (`asset_gc`), fe-api AGENTS.md §asset-ingest.
 
 ## §sim-control (F9/A20)
 

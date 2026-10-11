@@ -261,6 +261,8 @@ pub struct InspectorFormState {
     pub query_sql_buf: String,
     pub query_result: Option<String>,
     pub query_loading: bool,
+    /// Correlation id of the in-flight Query-tab query (its reply's claim key).
+    pub query_request_id: Option<String>,
     // Property value editing state
     pub node_properties: serde_json::Value,
     pub node_properties_loading: bool,
@@ -304,6 +306,7 @@ impl Default for InspectorFormState {
             query_sql_buf: String::new(),
             query_result: None,
             query_loading: false,
+            query_request_id: None,
             node_properties: serde_json::Value::Object(Default::default()),
             node_properties_loading: false,
             prop_add_key_buf: String::new(),

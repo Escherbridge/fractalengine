@@ -80,6 +80,7 @@ fn test_state(db: Db) -> Arc<ApiState> {
         distributed_tx: None,
         sim_control_tx: None,
         elevated_query_allowed: false,
+        upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     })
 }
@@ -1380,28 +1381,7 @@ async fn db_side_statement_timeout_aborts_heavy_query() {
 async fn channel_fallback_never_receives_foreign_query_results() {
     use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
     let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded::<ApiCommand>(4);
-    let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
-    let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
-    let state = ApiState {
-        api_cmd_tx,
-        transform_broadcast_tx,
-        entity_change_tx,
-        verifying_key: ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap(),
-        revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
-        blob_store: None,
-        cors_origins: vec![],
-        db_reader: None,
-        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-        entity_store: None,
-        tileset_registry: None,
-        hexon_registry: None,
-        announcement_store: None,
-        replication_tx: None,
-        distributed_tx: None,
-        sim_control_tx: None,
-        elevated_query_allowed: false,
-        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
-    };
+    let state = channel_only_state(api_cmd_tx);
 
     // Stand-in for the Bevy drain + DB thread, using the REAL reply router.
     let router = std::thread::spawn(move || {
@@ -1445,4 +1425,154 @@ async fn channel_fallback_never_receives_foreign_query_results() {
     .expect("own result");
     router.join().unwrap();
     assert_eq!(rows, vec![serde_json::json!({ "petal_id": "MINE" })]);
+}
+
+// ---------------------------------------------------------------------------
+// EGR-DBREADER — /query + share fmt=json without `db_reader`
+// ---------------------------------------------------------------------------
+
+/// An `ApiState` with NO `db_reader` (the Windows deployment shape): every
+/// read rides `api_cmd_tx` to the DB thread.
+fn channel_only_state(
+    api_cmd_tx: crossbeam::channel::Sender<fe_runtime::messages::ApiCommand>,
+) -> ApiState {
+    let (transform_broadcast_tx, _) = tokio::sync::broadcast::channel(1);
+    let (entity_change_tx, _) = tokio::sync::broadcast::channel(1);
+    ApiState {
+        api_cmd_tx,
+        transform_broadcast_tx,
+        entity_change_tx,
+        verifying_key: ed25519_dalek::VerifyingKey::from_bytes(&[0u8; 32]).unwrap(),
+        revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+        blob_store: None,
+        cors_origins: vec![],
+        db_reader: None,
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: None,
+        tileset_registry: None,
+        hexon_registry: None,
+        announcement_store: None,
+        replication_tx: None,
+        distributed_tx: None,
+        sim_control_tx: None,
+        elevated_query_allowed: false,
+        upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
+        share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
+    }
+}
+
+/// `two_petal_fixture` without `db_reader`. A servicing task stands in for
+/// the Bevy drain + DB thread: the REAL `PendingApiRequests` router and the
+/// REAL `raw_query_reply` over the seeded DB. Before answering each request
+/// it races in a GUI Query-tab result (uncorrelated) and another caller's
+/// correlated result, both carrying petal B's row.
+async fn two_petal_channel_fixture() -> (Arc<ApiState>, String, String) {
+    use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+    let db = setup_test_db().await;
+    let (pa, pb) = (ulid(), ulid());
+    seed_petal(&db, &pa, false).await;
+    seed_petal(&db, &pb, false).await;
+    seed_node(&db, &pa, "node-in-a", 1.0, 1.0, 0.0).await;
+    seed_node(&db, &pb, "node-in-b", 2.0, 2.0, 0.0).await;
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded::<ApiCommand>(8);
+    let foreign_petal = pb.clone();
+    tokio::spawn(async move {
+        let mut pending = fe_runtime::app::PendingApiRequests::default();
+        let foreign = |correlation_id: Option<String>| DbResult::QueryResult {
+            data: vec![serde_json::json!({ "petal_id": foreign_petal, "node_id": "node-in-b" })],
+            correlation_id,
+        };
+        loop {
+            let request = match api_cmd_rx.try_recv() {
+                Ok(request) => request,
+                Err(crossbeam::channel::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    continue;
+                }
+                Err(crossbeam::channel::TryRecvError::Disconnected) => break,
+            };
+            let ApiCommand::DbRequest { cmd, reply_tx } = request else {
+                continue;
+            };
+            pending.enqueue_for(&cmd, reply_tx);
+            assert!(!pending.try_deliver(foreign(None)), "GUI rows delivered");
+            assert!(
+                !pending.try_deliver(foreign(Some(ulid()))),
+                "another caller's rows delivered"
+            );
+            let DbCommand::RawQuery {
+                sql,
+                vars,
+                correlation_id,
+            } = cmd
+            else {
+                panic!("only RawQuery is expected on this fallback: {cmd:?}");
+            };
+            let reply =
+                fe_database::handlers::raw_query::raw_query_reply(&db, &sql, &vars, correlation_id)
+                    .await;
+            pending.try_deliver(reply);
+        }
+    });
+    (Arc::new(channel_only_state(api_cmd_tx)), pa, pb)
+}
+
+/// EGR-DBREADER: `/api/v1/query` (and MCP `query`, which shares
+/// `run_local_query`) serves a petal-A token from the correlated channel
+/// when no `db_reader` is wired — only A's rows, never the raced-in B rows.
+#[tokio::test]
+async fn query_route_channel_fallback_returns_only_scoped_rows() {
+    let (state, pa, _pb) = two_petal_channel_fixture().await;
+    let sql = "SELECT * FROM node";
+    let (status, body) = hit(&state, &pa, Surface::QueryJson, sql).await;
+    assert_eq!(status, StatusCode::OK);
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(
+        body_rows(Surface::QueryJson, sql, &body),
+        vec![(pa.clone(), "node-in-a".to_string())]
+    );
+    assert!(envelope["data"]["crs"].as_str().is_some(), "{envelope}");
+}
+
+/// EGR-DBREADER: a `fmt=json` share link redeems through the same correlated
+/// channel without `db_reader` (it used to answer 503 unconditionally).
+#[tokio::test]
+async fn share_json_channel_fallback_returns_only_scoped_rows() {
+    let (state, pa, _pb) = two_petal_channel_fixture().await;
+    let sql = "SELECT * FROM node";
+    let (status, body) = hit(&state, &pa, Surface::ShareJson, sql).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        body_rows(Surface::ShareJson, sql, &body),
+        vec![(pa, "node-in-a".to_string())]
+    );
+}
+
+/// EGR-DBREADER: with no `db_reader` AND the DB bridge gone, both surfaces
+/// fail honestly — an error envelope / 503, never a 200 carrying rows.
+#[tokio::test]
+async fn query_channel_fallback_with_dead_db_bridge_is_an_honest_error() {
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded(1);
+    drop(api_cmd_rx);
+    let state = Arc::new(channel_only_state(api_cmd_tx));
+    let pa = ulid();
+
+    let (status, body) = hit(&state, &pa, Surface::QueryJson, "SELECT * FROM node").await;
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the /query envelope carries the error"
+    );
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert!(envelope["data"].is_null(), "no rows on failure: {envelope}");
+
+    let (status, body) = hit(&state, &pa, Surface::ShareJson, "SELECT * FROM node").await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
 }

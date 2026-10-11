@@ -170,7 +170,7 @@ Range requests work: DuckDB's httpfs issues ranged GETs and the relay answers 20
 - Use a petal-scoped token for parquet/CSV share minting and a verse-scoped (or broader) token for data operations.
 
 **503 Service Unavailable**
-- `"shared query not available (no db_reader)"` / `"query endpoint not available (no db_reader)"`: on Windows the relay's direct DB reader is routinely unavailable (SurrealKV file lock), and `fmt=json` shares and `/api/v1/query` still require it. Use `parquet`/`csv` shares or the export routes, which fall back to the DB-thread channel.
+- `"egress busy"`, `"internal channel closed"` or `"request cancelled"` (share redeem): without the direct DB reader (routine on Windows — SurrealKV file lock) `fmt=json` shares, `/api/v1/query` and the exports run over the bounded DB-thread channel; it is either saturated (retry shortly) or the DB thread is gone (restart the node). `/api/v1/query` reports the same text in its error envelope.
 
 **Invalid CRS error from DuckDB**
 - Parquet produced before 2026-10-09 has a spec-violating `crs` field in its GeoParquet metadata. Run `SET enable_geoparquet_conversion=false;` before reading it.

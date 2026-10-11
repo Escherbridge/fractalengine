@@ -254,8 +254,20 @@ pub enum DbCommand {
         size_bytes: u64,
         /// 64-hex BLAKE3 hash; the DB thread verifies the blob is present.
         content_hash: String,
+        /// Uploader DID (API token `sub`) — the `asset.owner_did` column.
+        owner_did: Option<String>,
+        /// Anchor petal the upload was authorized against — `asset.petal_id`.
+        petal_id: Option<String>,
         /// Echoed on `AssetCreated` (reply correlation, DEC-C13).
         correlation_id: Option<String>,
+    },
+    /// Maintenance: delete asset rows no node references and older than
+    /// `grace_secs`, then their blobs once nothing else names the hash.
+    /// FIRE-AND-FORGET from the Bevy GC timer — never awaited by an API caller,
+    /// so it is NOT in `reply_kind_of_command` (src/AGENTS.md §asset-gc).
+    /// Replies `AssetsGarbageCollected` on success only.
+    GcUnreferencedAssets {
+        grace_secs: u64,
     },
     /// Create a node bound to an existing asset row (MCP `place_asset`).
     /// `rotation` is Euler XYZ radians, stored as `UpdateNodeTransform` does.
@@ -517,6 +529,20 @@ pub enum DbCommand {
         /// (fe-runtime src/AGENTS.md §api-reply-correlation).
         correlation_id: Option<String>,
     },
+    /// `/api/v1/query/elevated` (Owner, operator opt-in): a pre-validated
+    /// multi-statement script run on the DB thread — writes atomic with one
+    /// op-log entry, then replicated + broadcast (fe-api AGENTS.md
+    /// §elevated-query). Replies `ElevatedQueryResult` or `RequestFailed`.
+    ElevatedQuery {
+        /// Top-level statements, each DML already carrying `TIMEOUT 5s`.
+        statements: Vec<String>,
+        vars: std::collections::HashMap<String, serde_json::Value>,
+        /// Lowercase tables the script may write (empty = read-only).
+        write_tables: Vec<String>,
+        /// The caller's DID (token `sub`), recorded on the op-log entry.
+        actor_did: String,
+        correlation_id: String,
+    },
     /// Execute a distributed-query local partial (M2/F7 — A15).
     ///
     /// Sent by the sync thread (requester AND responder sides) to run this
@@ -594,6 +620,10 @@ pub enum DbCommand {
     /// Load a petal's terrain config.
     GetPetalTerrain {
         petal_id: String,
+        /// API reads carry a fresh id answered by `PetalTerrainFetched`/
+        /// `RequestFailed`; GUI loads send `None` and get `PetalTerrainLoaded`
+        /// (fe-runtime src/AGENTS.md §api-reply-correlation).
+        correlation_id: Option<String>,
     },
     // --- Inbound P2P replication (A4 seam) ---
     /// Apply one row received from a peer's verse replica.
@@ -692,6 +722,11 @@ pub enum DbResult {
         content_hash: String,
         size_bytes: u64,
         correlation_id: Option<String>,
+    },
+    /// Result of `GcUnreferencedAssets` (uncorrelated; no API waiter).
+    AssetsGarbageCollected {
+        removed_assets: u64,
+        removed_blobs: u64,
     },
     HierarchyLoaded {
         verses: Vec<VerseHierarchyData>,
@@ -862,6 +897,13 @@ pub enum DbResult {
         /// Echoes `RawQuery.correlation_id` (`None` = GUI-originated).
         correlation_id: Option<String>,
     },
+    /// Result of `ElevatedQuery`: the caller's statements' rows and how many
+    /// rows the script changed (a GUI host reloads its tree when > 0).
+    ElevatedQueryResult {
+        data: Vec<serde_json::Value>,
+        changed_rows: usize,
+        correlation_id: String,
+    },
     /// Failure of a CORRELATED (API-originated) `RawQuery`. GUI queries
     /// (`correlation_id: None`) keep failing with `DbResult::Error`.
     QueryFailed {
@@ -911,6 +953,20 @@ pub enum DbResult {
     /// (`correlation_id: None`) keep failing with `DbResult::Error`.
     PetalTerrainSetFailed {
         petal_id: String,
+        error: String,
+        correlation_id: String,
+    },
+    /// Reply to a CORRELATED `GetPetalTerrain` — private to the API caller, so
+    /// GUI terrain consumers (which match `PetalTerrainLoaded`) never re-apply it.
+    PetalTerrainFetched {
+        petal_id: String,
+        terrain: Option<serde_json::Value>,
+        correlation_id: String,
+    },
+    /// Typed failure of a correlated command whose family has no
+    /// family-specific failure variant; the GUI never sees it, the API caller
+    /// maps it to its error status.
+    RequestFailed {
         error: String,
         correlation_id: String,
     },

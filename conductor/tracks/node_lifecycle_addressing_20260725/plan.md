@@ -29,7 +29,7 @@ Wave-1 tracks need; ship them first so consumers unblock early.
 
 ## Phase 3: Cascade + re-flow lifecycle (FR-2) [P1]
 
-- [x] Task: cascade tombstones across a subtree as one logical op; atomicity *(AUDIT 2026-10-10: tests `cascade_tombstones_three_level_subtree_atomically` (entity store) + `node_lifecycle_test.rs::cascade_tombstones_whole_subtree`; residual: op append and row UPDATE are not one transaction (fe-database/src/AGENTS.md §lifecycle) — ledgered)*
+- [x] Task: cascade tombstones across a subtree as one logical op; atomicity *(AUDIT 2026-10-10: tests `cascade_tombstones_three_level_subtree_atomically` (entity store) + `node_lifecycle_test.rs::cascade_tombstones_whole_subtree`; residual CLOSED 2026-10-11 (T1-TXN, commit pending): op append + row UPDATE now one transaction via `op_log::commit_operation_atomic_with`; evidence `crud.rs::tombstone_atomicity_tests` (injected THROWing node EVENT → zero op_log rows, zero tombstones; fault removed → 1 row, 3 tombstoned))*
       test on a 3-level tree; partial-failure leaves no half-deleted subtree.
 - [x] Task: emit `PathReflow`/stamp-delete lifecycle event carrying the owning *(AUDIT 2026-10-10: tests `stamp_delete_emits_reflow_for_owning_path`, `node_lifecycle_test.rs::tombstoning_a_promoted_stamp_reflows_with_deleted_index`)*
       path id (geometry re-flow is T2's; this is the hook + event only).

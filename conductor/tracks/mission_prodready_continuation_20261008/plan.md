@@ -117,26 +117,40 @@ scale-bar widget for the installed Zurich/Fuji hexons (numeric fields
 machine-verified); the Hexon Manager UI button (its seam is verified);
 in-app GUI smoke of the whole build.
 
-**Deferred register (with triggers)** — see spec.md DEC entries: blob
-GC/quota (multi-tenant deploy); ~~REST existence-leak message unification~~ (CLOSED 2026-10-10 — fe-api AGENTS.md §existence-oracle);
+**Deferred register (with triggers)** — see spec.md DEC entries: ~~blob
+GC/quota (multi-tenant deploy)~~ (CLOSED 2026-10-11, assets-limits batch,
+commit pending — fe-api AGENTS.md §asset-ingest; asset owner/petal columns
+§assets); ~~REST existence-leak message unification~~ (CLOSED 2026-10-10 — fe-api AGENTS.md §existence-oracle);
 ~~/query/elevated scope filter~~ (CLOSED 2026-10-10 `9c4da00` — unscopable, so
 fail-closed: `FE_API_ELEVATED_ALLOW=1` + Owner; fe-api AGENTS.md §elevated-query);
 WKB local-frame axes (first GIS consumer);
 f32 anchor quantization; ~~SetPetalTerrain reply correlation~~ (CLOSED
 2026-10-10 `9cbdea6` — REST/MCP terrain mutation live; §terrain-mutation);
-per-entry decompression caps (hexon registry go-live); ~~fe-format
+~~per-entry decompression caps (hexon registry go-live)~~ (CLOSED 2026-10-11,
+assets-limits batch, commit pending — fe-format AGENTS.md
+§decompression-limits; closes the security audit 2026-07-31 bomb finding); ~~fe-format
 TilesetMeta derive(Default)~~ (CLOSED 2026-10-10 — manual Default agreeing
-with serde's `default_crs`; fe-format AGENTS.md §scale); REST tileset
-install 2 MiB effective cap (first >2 MiB install).
+with serde's `default_crs`; fe-format AGENTS.md §scale); ~~REST tileset
+install 2 MiB effective cap (first >2 MiB install)~~ (CLOSED 2026-10-11,
+assets-limits batch, commit pending — 11 MiB on REST + MCP; fe-api AGENTS.md
+§asset-ingest).
 
 **Added 2026-10-10 (long-horizon session reviews), with triggers:**
-GetPetalTerrain correlation — the tileset GET fallback is uncorrelated; a
+~~GetPetalTerrain correlation — the tileset GET fallback is uncorrelated; a
 petal_id guard stops wrong-petal authorization but a GUI echo can still eat a
-waiter's slot (host serving tileset GETs without `db_reader` under GUI load);
-`/query/elevated` writes bypass the DB thread — no op-log/replication/
-broadcast — remove the endpoint or route it through `DbCommand` (first real
-consumer, or any multi-tenant deploy); elevated statements carry no DB-side
-TIMEOUT (before anyone sets `FE_API_ELEVATED_ALLOW=1`); existence-oracle
+waiter's slot (host serving tileset GETs without `db_reader` under GUI load)~~
+(CLOSED 2026-10-11, correlation batch, commit pending — private
+`PetalTerrainFetched`; fe-runtime src/AGENTS.md §api-reply-correlation);
+~~`/query/elevated` writes bypass the DB thread — no op-log/replication/
+broadcast — remove the endpoint or route it through `DbCommand`~~ (CLOSED
+2026-10-11, elevated-db-thread batch, commit pending — routed per USER
+2026-10-10: `DbCommand::ElevatedQuery`, atomic `op_log::commit_operation_atomic`
+entry + node_log + SceneChange + replication; `elevated_query_test`
+`owner_write_is_op_logged_replicated_and_broadcast`; fe-api AGENTS.md
+§elevated-query); ~~elevated statements carry no DB-side TIMEOUT~~ (CLOSED
+same batch — `TIMEOUT 5s` on every DML statement, caller TIMEOUT/PARALLEL/
+EXPLAIN/BEGIN/COMMIT/CANCEL banned; `long_scan_hits_the_db_side_timeout`);
+existence-oracle
 TIMING channel — no index on `petal.petal_id`/`fractal.fractal_id`/
 `node.node_id`, so missing-vs-foreign lookups differ in scan cost (multi-tenant
 deploy; indexes are also a perf win); `TilesetBuilder::package*` stamps

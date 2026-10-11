@@ -3,7 +3,7 @@
 //! Replaces the old `FractalArchive`. Handles both scene-type hexons (with
 //! `entities/` directory) and generic hexons (models, materials, terrain, etc.).
 
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, Write};
 
 use anyhow::{Context, Result};
 use zip::write::SimpleFileOptions;
@@ -11,6 +11,7 @@ use zip::write::SimpleFileOptions;
 use crate::{
     entries::{AssetEntry, EntryCatalog},
     license::License,
+    limits,
     manifest::HexonManifest,
     ExportNode, FieldDef, SchemaDefinition,
 };
@@ -255,79 +256,66 @@ impl HexonArchive {
     pub fn import(bytes: &[u8]) -> Result<HexonArchiveData> {
         let cursor = Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor).context("failed to open ZIP archive")?;
+        limits::check_entry_count(archive.len())?;
+        // One shared decompression budget for the whole import (zip-bomb guard).
+        let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+        let json = limits::MAX_JSON_ENTRY_BYTES;
+        let binary = limits::MAX_ENTRY_UNCOMPRESSED_BYTES;
 
         // manifest.json (required)
         let manifest: HexonManifest = {
-            let mut file = archive
-                .by_name("manifest.json")
+            let buf = read_optional(&mut archive, "manifest.json", json, &mut budget)?
                 .context("missing manifest.json")?;
-            let mut buf = String::new();
-            file.read_to_string(&mut buf)?;
-            serde_json::from_str(&buf).context("invalid manifest.json")?
+            serde_json::from_slice(&buf).context("invalid manifest.json")?
         };
 
         // entries.json (required)
         let entries: Vec<AssetEntry> = {
-            let mut file = archive
-                .by_name("entries.json")
+            let buf = read_optional(&mut archive, "entries.json", json, &mut budget)?
                 .context("missing entries.json")?;
-            let mut buf = String::new();
-            file.read_to_string(&mut buf)?;
             let catalog: EntryCatalog =
-                serde_json::from_str(&buf).context("invalid entries.json")?;
+                serde_json::from_slice(&buf).context("invalid entries.json")?;
             catalog.entries
         };
 
         // license.json (optional)
-        let license: Option<License> = match archive.by_name("license.json") {
-            Ok(mut file) => {
-                let mut buf = String::new();
-                file.read_to_string(&mut buf)?;
-                Some(serde_json::from_str(&buf).context("invalid license.json")?)
-            }
-            Err(_) => None,
-        };
+        let license: Option<License> =
+            match read_optional(&mut archive, "license.json", json, &mut budget)? {
+                Some(buf) => Some(serde_json::from_slice(&buf).context("invalid license.json")?),
+                None => None,
+            };
 
         // schema.json (optional)
-        let schema: SchemaDefinition = match archive.by_name("schema.json") {
-            Ok(mut file) => {
-                let mut buf = String::new();
-                file.read_to_string(&mut buf)?;
-                serde_json::from_str(&buf).context("invalid schema.json")?
-            }
-            Err(_) => SchemaDefinition { field_defs: vec![] },
-        };
+        let schema: SchemaDefinition =
+            match read_optional(&mut archive, "schema.json", json, &mut budget)? {
+                Some(buf) => serde_json::from_slice(&buf).context("invalid schema.json")?,
+                None => SchemaDefinition { field_defs: vec![] },
+            };
 
         // entities/nodes.json (optional — scene type only)
-        let nodes: Vec<ExportNode> = match archive.by_name("entities/nodes.json") {
-            Ok(mut file) => {
-                let mut buf = String::new();
-                file.read_to_string(&mut buf)?;
-                serde_json::from_str(&buf).context("invalid entities/nodes.json")?
-            }
-            Err(_) => vec![],
-        };
+        let nodes: Vec<ExportNode> =
+            match read_optional(&mut archive, "entities/nodes.json", binary, &mut budget)? {
+                Some(buf) => serde_json::from_slice(&buf).context("invalid entities/nodes.json")?,
+                None => vec![],
+            };
 
         // entities/field_defs.json (optional — scene type only)
-        let field_defs: Vec<FieldDef> = match archive.by_name("entities/field_defs.json") {
-            Ok(mut file) => {
-                let mut buf = String::new();
-                file.read_to_string(&mut buf)?;
-                serde_json::from_str(&buf).context("invalid entities/field_defs.json")?
-            }
-            Err(_) => vec![],
-        };
+        let field_defs: Vec<FieldDef> =
+            match read_optional(&mut archive, "entities/field_defs.json", json, &mut budget)? {
+                Some(buf) => {
+                    serde_json::from_slice(&buf).context("invalid entities/field_defs.json")?
+                }
+                None => vec![],
+            };
 
         // terrain/config.json (optional)
-        let terrain_config: Option<serde_json::Value> = match archive.by_name("terrain/config.json")
-        {
-            Ok(mut file) => {
-                let mut buf = String::new();
-                file.read_to_string(&mut buf)?;
-                Some(serde_json::from_str(&buf).context("invalid terrain/config.json")?)
-            }
-            Err(_) => None,
-        };
+        let terrain_config: Option<serde_json::Value> =
+            match read_optional(&mut archive, "terrain/config.json", json, &mut budget)? {
+                Some(buf) => {
+                    Some(serde_json::from_slice(&buf).context("invalid terrain/config.json")?)
+                }
+                None => None,
+            };
 
         // Collect file names for pattern-based extraction.
         // We need to collect names first because we can't borrow archive
@@ -339,97 +327,51 @@ impl HexonArchive {
             })
             .collect();
 
+        // Every remaining section: entries under `prefix` ending in `suffix`, keyed by
+        // the name with `prefix` stripped.
+        let mut collect = |prefix: &str, suffix: &str| -> Result<Vec<(String, Vec<u8>)>> {
+            let mut out = Vec::new();
+            for name in all_names
+                .iter()
+                .filter(|n| n.starts_with(prefix) && n.ends_with(suffix) && n.len() > prefix.len())
+            {
+                let data = read_optional(&mut archive, name, binary, &mut budget)?
+                    .with_context(|| format!("unreadable archive entry {name}"))?;
+                out.push((name[prefix.len()..].to_string(), data));
+            }
+            Ok(out)
+        };
+        let strip = |suffix: &'static str| {
+            move |(key, data): (String, Vec<u8>)| {
+                (key.strip_suffix(suffix).unwrap_or(&key).to_string(), data)
+            }
+        };
+
         // assets/*
-        let mut assets = Vec::new();
-        for name in all_names
-            .iter()
-            .filter(|n| n.starts_with("assets/") && n.len() > "assets/".len())
-        {
-            let mut file = archive.by_name(name)?;
-            let hash = name.strip_prefix("assets/").unwrap_or(name).to_string();
-            let mut data = Vec::new();
-            file.read_to_end(&mut data)?;
-            assets.push((hash, data));
-        }
-
+        let assets = collect("assets/", "")?;
         // terrain/tracks/*.gpx
-        let mut gpx_files = Vec::new();
-        for name in all_names
-            .iter()
-            .filter(|n| n.starts_with("terrain/tracks/") && n.ends_with(".gpx"))
-        {
-            let mut file = archive.by_name(name)?;
-            let filename = name
-                .strip_prefix("terrain/tracks/")
-                .unwrap_or(name)
-                .to_string();
-            let mut data = Vec::new();
-            file.read_to_end(&mut data)?;
-            gpx_files.push((filename, data));
-        }
-
+        let gpx_files = collect("terrain/tracks/", ".gpx")?;
         // terrain/overlays/*.geojson
-        let mut geojson_overlays = Vec::new();
-        for name in all_names
-            .iter()
-            .filter(|n| n.starts_with("terrain/overlays/") && n.ends_with(".geojson"))
-        {
-            let mut file = archive.by_name(name)?;
-            let filename = name
-                .strip_prefix("terrain/overlays/")
-                .unwrap_or(name)
-                .to_string();
-            let mut data = Vec::new();
-            file.read_to_end(&mut data)?;
-            geojson_overlays.push((filename, data));
-        }
+        let geojson_overlays = collect("terrain/overlays/", ".geojson")?;
+        // terrain/tiles/{z}/{x}/{y}.png (elevation tiles, keyed `{z}/{x}/{y}`)
+        let elevation_tiles = collect("terrain/tiles/", ".png")?
+            .into_iter()
+            .map(strip(".png"))
+            .collect();
+        // terrain/satellite/{z}/{x}/{y}.jpg (satellite imagery tiles, keyed `{z}/{x}/{y}`)
+        let satellite_tiles = collect("terrain/satellite/", ".jpg")?
+            .into_iter()
+            .map(strip(".jpg"))
+            .collect();
 
         // terrain/tileset_meta.json (optional — TerrainTileset type)
         let tileset_meta: Option<crate::manifest::TilesetMeta> =
-            match archive.by_name("terrain/tileset_meta.json") {
-                Ok(mut file) => {
-                    let mut buf = String::new();
-                    file.read_to_string(&mut buf)?;
-                    Some(serde_json::from_str(&buf).context("invalid terrain/tileset_meta.json")?)
-                }
-                Err(_) => None,
+            match read_optional(&mut archive, "terrain/tileset_meta.json", json, &mut budget)? {
+                Some(buf) => Some(
+                    serde_json::from_slice(&buf).context("invalid terrain/tileset_meta.json")?,
+                ),
+                None => None,
             };
-
-        // terrain/tiles/{z}/{x}/{y}.png (elevation tiles)
-        let mut elevation_tiles = Vec::new();
-        for name in all_names
-            .iter()
-            .filter(|n| n.starts_with("terrain/tiles/") && n.ends_with(".png"))
-        {
-            let mut file = archive.by_name(name)?;
-            let cache_key = name
-                .strip_prefix("terrain/tiles/")
-                .unwrap_or(name)
-                .strip_suffix(".png")
-                .unwrap_or(name)
-                .to_string();
-            let mut data = Vec::new();
-            file.read_to_end(&mut data)?;
-            elevation_tiles.push((cache_key, data));
-        }
-
-        // terrain/satellite/{z}/{x}/{y}.jpg (satellite imagery tiles)
-        let mut satellite_tiles = Vec::new();
-        for name in all_names
-            .iter()
-            .filter(|n| n.starts_with("terrain/satellite/") && n.ends_with(".jpg"))
-        {
-            let mut file = archive.by_name(name)?;
-            let cache_key = name
-                .strip_prefix("terrain/satellite/")
-                .unwrap_or(name)
-                .strip_suffix(".jpg")
-                .unwrap_or(name)
-                .to_string();
-            let mut data = Vec::new();
-            file.read_to_end(&mut data)?;
-            satellite_tiles.push((cache_key, data));
-        }
 
         Ok(HexonArchiveData {
             manifest,
@@ -449,12 +391,29 @@ impl HexonArchive {
     }
 }
 
+/// Read `name` under `cap` and the shared `budget`; `Ok(None)` when the entry is absent.
+fn read_optional<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+    cap: u64,
+    budget: &mut u64,
+) -> Result<Option<Vec<u8>>> {
+    let mut file = match archive.by_name(name) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    let declared = file.size();
+    limits::read_entry_capped(&mut file, declared, cap, budget)
+        .with_context(|| format!("reading {name}"))
+        .map(Some)
+}
+
 #[cfg(test)]
 mod scale_roundtrip_tests {
     use super::*;
     use crate::manifest::{ElevationEncoding, HexonType, TilesetMeta};
 
-    fn manifest() -> HexonManifest {
+    pub(super) fn manifest() -> HexonManifest {
         HexonManifest {
             schema_version: "1.0.0".into(),
             hexon_id: "scale-test".into(),
@@ -528,5 +487,116 @@ mod scale_roundtrip_tests {
         let data = HexonArchive::import(&bytes).expect("import failed");
         let round_tripped = data.tileset_meta.expect("tileset_meta must be present");
         assert_eq!(round_tripped, meta);
+    }
+}
+
+#[cfg(test)]
+mod decompression_limit_tests {
+    use super::*;
+    use crate::limits::{DECOMPRESSION_LIMIT_ERROR, MAX_ENTRY_UNCOMPRESSED_BYTES};
+
+    /// Stream `inflated` zero bytes into a Deflate entry without holding them in memory.
+    fn write_zeros(zip: &mut zip::ZipWriter<Cursor<Vec<u8>>>, name: &str, inflated: u64) {
+        let opts = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(1));
+        zip.start_file(name, opts).unwrap();
+        let chunk = vec![0u8; 1 << 20];
+        let mut left = inflated;
+        while left > 0 {
+            let n = left.min(chunk.len() as u64) as usize;
+            zip.write_all(&chunk[..n]).unwrap();
+            left -= n as u64;
+        }
+    }
+
+    /// A hexon with a valid manifest whose `bomb_entry` inflates to `inflated` zero bytes.
+    fn bomb_hexon(bomb_entry: &str, inflated: u64) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = SimpleFileOptions::default();
+        zip.start_file("manifest.json", opts).unwrap();
+        let manifest = super::scale_roundtrip_tests::manifest();
+        zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        if bomb_entry != "entries.json" {
+            zip.start_file("entries.json", opts).unwrap();
+            zip.write_all(br#"{"entries":[]}"#).unwrap();
+        }
+        write_zeros(&mut zip, bomb_entry, inflated);
+        zip.finish().unwrap().into_inner()
+    }
+
+    /// Rewrite the declared uncompressed size of `name` in both the local and
+    /// central headers — the "lying header" bomb variant.
+    fn falsify_declared_size(zip: &mut [u8], name: &str, declared: u32) {
+        let name = name.as_bytes();
+        let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+        let mut patched = 0;
+        for i in 0..zip.len().saturating_sub(46) {
+            let (sig, size_at, name_len_at, name_at) = match &zip[i..i + 4] {
+                [0x50, 0x4b, 3, 4] => (0, 22, 26, 30),
+                [0x50, 0x4b, 1, 2] => (1, 24, 28, 46),
+                _ => continue,
+            };
+            let len = u16_at(zip, i + name_len_at);
+            if zip.get(i + name_at..i + name_at + len) == Some(name) {
+                zip[i + size_at..i + size_at + 4].copy_from_slice(&declared.to_le_bytes());
+                patched |= 1 << sig;
+            }
+        }
+        assert_eq!(
+            patched, 0b11,
+            "both headers of the bomb entry must be patched"
+        );
+    }
+
+    fn assert_refused(bytes: &[u8]) {
+        let err = HexonArchive::import(bytes).expect_err("bomb must be refused");
+        assert!(
+            format!("{err:#}").contains(DECOMPRESSION_LIMIT_ERROR),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn asset_bomb_is_refused_on_declared_and_on_actual_size() {
+        let inflated = MAX_ENTRY_UNCOMPRESSED_BYTES + (8 << 20);
+        let mut bytes = bomb_hexon("assets/bomb", inflated);
+        assert!(
+            bytes.len() < (1 << 20),
+            "fixture must be a real bomb ({} bytes)",
+            bytes.len()
+        );
+        assert_refused(&bytes);
+
+        // Lying header: the declared size passes the pre-check, take() still stops it.
+        falsify_declared_size(&mut bytes, "assets/bomb", 1024);
+        assert_refused(&bytes);
+    }
+
+    #[test]
+    fn json_metadata_bomb_is_refused() {
+        assert_refused(&bomb_hexon("entries.json", 9 << 20));
+    }
+
+    #[test]
+    fn archive_within_limits_still_imports_its_assets() {
+        let asset = vec![42u8; 3 << 20];
+        let bytes = HexonArchive::export(
+            super::scale_roundtrip_tests::manifest(),
+            vec![],
+            vec![("abc".into(), asset.clone())],
+            None,
+            None,
+            Some(&[("run.gpx".into(), b"<gpx/>".to_vec())]),
+            None,
+        )
+        .unwrap();
+        let data = HexonArchive::import(&bytes).expect("normal archive imports");
+        assert_eq!(data.assets, vec![("abc".to_string(), asset)]);
+        assert_eq!(
+            data.gpx_files,
+            vec![("run.gpx".to_string(), b"<gpx/>".to_vec())]
+        );
     }
 }

@@ -6,6 +6,7 @@
 mod archive;
 pub mod entries;
 pub mod license;
+pub mod limits;
 pub mod manifest;
 pub mod signature;
 
@@ -13,6 +14,7 @@ pub mod signature;
 pub use archive::*;
 pub use entries::*;
 pub use license::*;
+pub use limits::read_entry_capped;
 pub use manifest::*;
 pub use signature::{sign_manifest, verify_manifest, verifying_key_to_did};
 

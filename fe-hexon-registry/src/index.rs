@@ -1,11 +1,12 @@
 //! Lazy zip-backed package index — see `AGENTS.md` §lazy zip indexing.
 
 use std::cmp::Ordering;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+
+use crate::limits;
 
 /// One indexed `.hexon` package (metadata only; blobs stay on disk).
 #[derive(Debug, Clone, Serialize)]
@@ -28,7 +29,8 @@ pub fn read_zip_json(path: &Path, name: &str) -> Result<serde_json::Value> {
     serde_json::from_slice(&bytes).with_context(|| format!("invalid JSON in {name}"))
 }
 
-/// Read a single named file from a `.hexon` zip without touching other entries.
+/// Read a single named file from a `.hexon` zip without touching other entries
+/// (decompression-capped — see `AGENTS.md` §decompression limits).
 pub fn read_zip_bytes(path: &Path, name: &str) -> Result<Vec<u8>> {
     let file =
         std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
@@ -37,9 +39,42 @@ pub fn read_zip_bytes(path: &Path, name: &str) -> Result<Vec<u8>> {
     let mut entry = archive
         .by_name(name)
         .with_context(|| format!("missing {name} in {}", path.display()))?;
-    let mut buf = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut buf)?;
-    Ok(buf)
+    let declared = entry.size();
+    let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+    limits::read_entry_capped(&mut entry, declared, limits::entry_cap(name), &mut budget)
+        .with_context(|| format!("reading {name} in {}", path.display()))
+}
+
+/// Publish-time validation: parse `manifest.json` and decompress every entry
+/// into a sink under the per-entry and whole-archive caps, so a zip bomb is
+/// refused before it is stored. Returns the raw manifest.
+pub fn validate_package(bytes: &[u8]) -> Result<serde_json::Value> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+    limits::check_entry_count(archive.len())?;
+    let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+    let manifest = {
+        let mut file = archive.by_name("manifest.json")?;
+        let declared = file.size();
+        let raw = limits::read_entry_capped(
+            &mut file,
+            declared,
+            limits::MAX_JSON_ENTRY_BYTES,
+            &mut budget,
+        )
+        .context("reading manifest.json")?;
+        serde_json::from_slice(&raw).context("invalid manifest.json")?
+    };
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if file.name() == "manifest.json" {
+            continue;
+        }
+        let name = file.name().to_string();
+        let declared = file.size();
+        limits::drain_entry_capped(&mut file, declared, limits::entry_cap(&name), &mut budget)
+            .with_context(|| format!("reading {name}"))?;
+    }
+    Ok(manifest)
 }
 
 /// Index one package by reading only `manifest.json` from its zip central directory.

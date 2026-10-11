@@ -147,17 +147,23 @@ impl HexonPackage {
 
     /// Open and parse a .fecrate ZIP from raw bytes.
     pub fn open(bytes: &[u8]) -> Result<HexonPackageData, anyhow::Error> {
-        let reader = Cursor::new(bytes.to_vec());
+        use fe_format::limits::{
+            check_entry_count, MAX_ARCHIVE_UNCOMPRESSED_BYTES, MAX_ENTRY_UNCOMPRESSED_BYTES,
+            MAX_JSON_ENTRY_BYTES,
+        };
+        let reader = Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(reader)
             .map_err(|e| anyhow::anyhow!("invalid ZIP archive: {}", e))?;
+        check_entry_count(archive.len())?;
+        // One decompression budget for the whole package (zip-bomb guard,
+        // fe-format AGENTS.md §decompression-limits).
+        let mut budget = MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+        let (json, binary) = (MAX_JSON_ENTRY_BYTES, MAX_ENTRY_UNCOMPRESSED_BYTES);
 
         // Read manifest.json (keep raw bytes for signature verification)
         let (manifest, manifest_raw): (HexonManifest, Vec<u8>) = {
-            let mut file = archive
-                .by_name("manifest.json")
-                .map_err(|e| anyhow::anyhow!("missing manifest.json: {}", e))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
+            let buf = read_named(&mut archive, "manifest.json", json, &mut budget)?
+                .ok_or_else(|| anyhow::anyhow!("missing manifest.json"))?;
             let parsed: HexonManifest = serde_json::from_slice(&buf)
                 .map_err(|e| anyhow::anyhow!("manifest.json parse error: {}", e))?;
             (parsed, buf)
@@ -165,64 +171,32 @@ impl HexonPackage {
 
         // Read entries.json
         let entries: Vec<AssetEntry> = {
-            let mut file = archive
-                .by_name("entries.json")
-                .map_err(|e| anyhow::anyhow!("missing entries.json: {}", e))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
+            let buf = read_named(&mut archive, "entries.json", json, &mut budget)?
+                .ok_or_else(|| anyhow::anyhow!("missing entries.json"))?;
             serde_json::from_slice(&buf)
                 .map_err(|e| anyhow::anyhow!("entries.json parse error: {}", e))?
         };
 
         // Read license.json
         let license: License = {
-            let mut file = archive
-                .by_name("license.json")
-                .map_err(|e| anyhow::anyhow!("missing license.json: {}", e))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
+            let buf = read_named(&mut archive, "license.json", json, &mut budget)?
+                .ok_or_else(|| anyhow::anyhow!("missing license.json"))?;
             serde_json::from_slice(&buf)
                 .map_err(|e| anyhow::anyhow!("license.json parse error: {}", e))?
         };
 
-        // Read optional signature.txt
+        // Read signature.txt
         let signature = {
-            let mut file = archive
-                .by_name("signature.txt")
-                .map_err(|e| anyhow::anyhow!("missing signature.txt: {}", e))?;
-            let mut buf = String::new();
-            file.read_to_string(&mut buf)?;
-            buf.trim().to_string()
+            let buf = read_named(&mut archive, "signature.txt", json, &mut budget)?
+                .ok_or_else(|| anyhow::anyhow!("missing signature.txt"))?;
+            String::from_utf8(buf)?.trim().to_string()
         };
 
         // Read optional icon.png
-        let icon = archive.by_name("icon.png").ok().and_then(|mut f| {
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).ok()?;
-            Some(buf)
-        });
+        let icon = read_named(&mut archive, "icon.png", binary, &mut budget)?;
 
-        // Read preview/* files
+        // Read preview/* and assets/{hash} files
         let mut previews = HashMap::new();
-        for i in 0..archive.len() {
-            let name = {
-                let file = archive.by_index(i)?;
-                file.enclosed_name()
-                    .and_then(|p| p.to_str())
-                    .map(|s| s.to_string())
-            };
-            if let Some(name) = name {
-                if name.starts_with("preview/") && name != "preview/" {
-                    let mut buf = Vec::new();
-                    let mut f = archive.by_index(i)?;
-                    f.read_to_end(&mut buf)?;
-                    let file_name = name.strip_prefix("preview/").unwrap_or(&name).to_string();
-                    previews.insert(file_name, buf);
-                }
-            }
-        }
-
-        // Read assets/{hash} files
         let mut assets = HashMap::new();
         for i in 0..archive.len() {
             let name = {
@@ -231,30 +205,29 @@ impl HexonPackage {
                     .and_then(|p| p.to_str())
                     .map(|s| s.to_string())
             };
-            if let Some(name) = name {
-                if name.starts_with("assets/") && name != "assets/" {
-                    let mut buf = Vec::new();
-                    let mut f = archive.by_index(i)?;
-                    f.read_to_end(&mut buf)?;
-                    let hash = name.strip_prefix("assets/").unwrap_or(&name).to_string();
-                    assets.insert(hash, buf);
-                }
+            let Some(name) = name else { continue };
+            let target = if let Some(file_name) = name.strip_prefix("preview/") {
+                (&mut previews, file_name)
+            } else if let Some(hash) = name.strip_prefix("assets/") {
+                (&mut assets, hash)
+            } else {
+                continue;
+            };
+            if target.1.is_empty() {
+                continue;
             }
+            let mut f = archive.by_index(i)?;
+            let declared = f.size();
+            let buf = fe_format::read_entry_capped(&mut f, declared, binary, &mut budget)
+                .map_err(|e| e.context(format!("reading {name}")))?;
+            target.0.insert(target.1.to_string(), buf);
         }
 
-        // Read optional README.md
-        let readme = archive.by_name("README.md").ok().and_then(|mut f| {
-            let mut buf = String::new();
-            f.read_to_string(&mut buf).ok()?;
-            Some(buf)
-        });
-
-        // Read optional schema.json
-        let schema = archive.by_name("schema.json").ok().and_then(|mut f| {
-            let mut buf = String::new();
-            f.read_to_string(&mut buf).ok()?;
-            Some(buf)
-        });
+        // Read optional README.md / schema.json (non-UTF-8 is treated as absent, as before)
+        let readme = read_named(&mut archive, "README.md", json, &mut budget)?
+            .and_then(|b| String::from_utf8(b).ok());
+        let schema = read_named(&mut archive, "schema.json", json, &mut budget)?
+            .and_then(|b| String::from_utf8(b).ok());
 
         // Verify signature against raw manifest bytes (not re-serialized)
         let sig_valid =
@@ -275,6 +248,23 @@ impl HexonPackage {
             signature_verified: sig_valid,
         })
     }
+}
+
+/// Read `name` under `cap` and the shared `budget`; `Ok(None)` when the entry is absent.
+fn read_named<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+    cap: u64,
+    budget: &mut u64,
+) -> Result<Option<Vec<u8>>, anyhow::Error> {
+    let mut file = match archive.by_name(name) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    let declared = file.size();
+    fe_format::read_entry_capped(&mut file, declared, cap, budget)
+        .map(Some)
+        .map_err(|e| e.context(format!("reading {name}")))
 }
 
 /// Extract a hexon URI from a manifest.
@@ -799,5 +789,42 @@ mod tests {
             );
         }
         // If open fails due to corruption, that's also acceptable
+    }
+
+    /// A signed-shape package whose `assets/bomb` inflates past the 64 MiB
+    /// per-entry cap from a sub-MiB archive must be refused by `open`.
+    #[test]
+    fn test_open_refuses_zip_bomb_asset() {
+        let keypair = test_signing_key();
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let plain = zip::write::FileOptions::default();
+        for (name, body) in [
+            (
+                "manifest.json",
+                serde_json::to_vec(&test_manifest(&keypair)).unwrap(),
+            ),
+            ("entries.json", b"[]".to_vec()),
+            ("license.json", serde_json::to_vec(&test_license()).unwrap()),
+            ("signature.txt", b"unsigned".to_vec()),
+        ] {
+            zip.start_file(name, plain).unwrap();
+            zip.write_all(&body).unwrap();
+        }
+        let deflate = zip::write::FileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(1));
+        zip.start_file("assets/bomb", deflate).unwrap();
+        let chunk = vec![0u8; 1 << 20];
+        for _ in 0..(64 + 8) {
+            zip.write_all(&chunk).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        assert!(bytes.len() < (1 << 20), "fixture must be a real bomb");
+
+        let err = HexonPackage::open(&bytes).expect_err("bomb must be refused");
+        assert!(
+            format!("{err:#}").contains(fe_format::limits::DECOMPRESSION_LIMIT_ERROR),
+            "unexpected error: {err:#}"
+        );
     }
 }

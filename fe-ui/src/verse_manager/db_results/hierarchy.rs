@@ -24,6 +24,16 @@ pub(super) fn handle_verse_joined(db_sender: &DbCommandSender) {
     }
 }
 
+/// `ElevatedQueryResult`: an API elevated write changed rows the tree mirrors
+/// (it has no typed result of its own) — reload so the desktop reflects it.
+pub(super) fn handle_elevated_query_result(changed_rows: usize, db_sender: &DbCommandSender) {
+    if changed_rows > 0 && db_sender.0.send(DbCommand::LoadHierarchy).is_err() {
+        bevy::log::error!(
+            "db_sender channel closed after an elevated write — DB thread may have crashed"
+        );
+    }
+}
+
 /// `DatabaseReset`: clear the in-memory tree and reload.
 pub(super) fn handle_database_reset(verse_mgr: &mut VerseManager, db_sender: &DbCommandSender) {
     bevy::log::info!("Database reset — clearing hierarchy");

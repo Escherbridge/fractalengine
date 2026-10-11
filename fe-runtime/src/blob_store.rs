@@ -1,11 +1,26 @@
 //! Content-addressed BLAKE3 blob storage trait (placement rationale:
 //! fe-runtime/src/AGENTS.md §blob-store).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Raw BLAKE3 hash bytes identifying a blob.
 pub type BlobHash = [u8; 32];
+
+/// Directory name of the shared on-disk blob root under the app data dir.
+pub const DEFAULT_BLOB_DIR_NAME: &str = "blobs";
+
+/// Canonical sharded layout of a blob under its store root: `{hex[0..2]}/{hex}`
+/// (fe-runtime/src/AGENTS.md §blob-store).
+pub fn blob_relative_path(hash: &BlobHash) -> PathBuf {
+    let hex = hash_to_hex(hash);
+    Path::new(&hex[0..2]).join(&hex)
+}
+
+/// Absolute path of `hash` under `root` in the canonical layout.
+pub fn canonical_blob_path(root: &Path, hash: &BlobHash) -> PathBuf {
+    root.join(blob_relative_path(hash))
+}
 
 /// Shared, thread-safe handle to a `BlobStore` implementation.
 ///

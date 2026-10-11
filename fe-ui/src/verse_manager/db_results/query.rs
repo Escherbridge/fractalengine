@@ -1,20 +1,61 @@
-//! Handlers for the shared untagged raw-query result channel and DB errors.
-//! GIS panel > Paths tab > ad-hoc Query tab claim priority; see ../AGENTS.md §db-results.
+//! Handlers for GUI `RawQuery` replies (routed by correlation id) and DB
+//! errors; see ../AGENTS.md §db-results and fe-ui/src/AGENTS.md §gis-query-ui.
 
 use crate::gis::{GisPanelState, PathEditorState};
 use crate::plugin::InspectorFormState;
 
-/// `QueryResult`: route to whichever caller is actually waiting.
+/// Correlated `QueryResult`/`QueryFailed`: land the reply ONLY in the buffer
+/// whose stored request id equals `id`, then clear that id + its pending flag.
+/// Returns `false` when no GUI buffer claims it (an API reply, or a stale id
+/// after the user re-submitted) so the caller forwards it to `try_deliver`.
+pub(super) fn route_query_reply(
+    id: &str,
+    reply: Result<&[serde_json::Value], &str>,
+    gis_panel: &mut GisPanelState,
+    path_state: &mut PathEditorState,
+    inspector: &mut InspectorFormState,
+) -> bool {
+    if gis_panel.query_request_id.as_deref() == Some(id) {
+        gis_panel.query_request_id = None;
+        gis_panel.query_pending = false;
+        match reply {
+            Ok(data) => gis_panel.results = crate::gis::parse_gis_rows(data),
+            Err(error) => gis_panel.last_error = Some(error.to_string()),
+        }
+    } else if path_state.tracks_request_id.as_deref() == Some(id) {
+        match reply {
+            Ok(data) => {
+                crate::actions::path::apply_track_rows(path_state, crate::gis::parse_gis_rows(data))
+            }
+            Err(error) => {
+                path_state.tracks_request_id = None;
+                path_state.tracks_pending = false;
+                path_state.last_error = Some(error.to_string());
+            }
+        }
+    } else if inspector.query_request_id.as_deref() == Some(id) {
+        inspector.query_request_id = None;
+        inspector.query_loading = false;
+        inspector.query_result = Some(match reply {
+            Ok(data) => {
+                serde_json::to_string_pretty(data).unwrap_or_else(|e| format!("Format error: {e}"))
+            }
+            Err(error) => format!("Error: {error}"),
+        });
+    } else {
+        return false;
+    }
+    true
+}
+
+/// Legacy uncorrelated `QueryResult` (no current GUI sender): flag-priority
+/// claim — GIS panel > Paths tab > ad-hoc Query tab.
 pub(super) fn handle_query_result(
     data: &[serde_json::Value],
     gis_panel: &mut GisPanelState,
     path_state: &mut PathEditorState,
     inspector: &mut InspectorFormState,
 ) {
-    // `RawQuery`'s result carries no request-id to correlate against,
-    // so whichever caller is actually waiting claims it: the GIS
-    // panel's queries take priority since they're the newer/rarer
-    // caller — the ad-hoc Query tab falls back to its own buffer.
     if gis_panel.query_pending {
         gis_panel.results = crate::gis::parse_gis_rows(data);
         gis_panel.query_pending = false;
@@ -28,13 +69,9 @@ pub(super) fn handle_query_result(
     }
 }
 
-/// `Error`: log, clear a stranded pen create, and route to the pending caller.
-pub(super) fn handle_error(
-    msg: &str,
-    gis_panel: &mut GisPanelState,
-    path_state: &mut PathEditorState,
-    inspector: &mut InspectorFormState,
-) {
+/// `Error`: log and clear a stranded pen create. Query buffers never take a
+/// bare `Error` — their failures arrive correlated as `QueryFailed`.
+pub(super) fn handle_error(msg: &str, path_state: &mut PathEditorState) {
     bevy::log::error!("DB error: {msg}");
     // HIGH-2: `DbResult::Error` carries only a message — no node id
     // or correlation id — so a failed `PathCreateTrack` (the DB
@@ -50,18 +87,5 @@ pub(super) fn handle_error(
             "Pen auto-create likely failed (DB error while a pen create was pending) — \
              cleared pending pen state; click again to retry: {msg}"
         );
-    }
-    // GIS panel queries take priority over the ad-hoc Query tab
-    // when both happen to be in flight — see `handle_query_result`
-    // for why these two share one untagged result channel.
-    if gis_panel.query_pending {
-        gis_panel.last_error = Some(msg.to_string());
-        gis_panel.query_pending = false;
-    } else if path_state.tracks_pending {
-        path_state.last_error = Some(msg.to_string());
-        path_state.tracks_pending = false;
-    } else if inspector.query_loading {
-        inspector.query_result = Some(format!("Error: {msg}"));
-        inspector.query_loading = false;
     }
 }

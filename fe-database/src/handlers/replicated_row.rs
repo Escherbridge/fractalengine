@@ -599,7 +599,7 @@ fn point_2d_of(row: &serde_json::Value) -> Option<(f64, f64)> {
 }
 
 /// Build the petal-scoped [`NodeDto`] for a live node apply's scene change.
-fn node_dto_from_row(row: &serde_json::Value, node_id: &str, petal_id: &str) -> NodeDto {
+pub(crate) fn node_dto_from_row(row: &serde_json::Value, node_id: &str, petal_id: &str) -> NodeDto {
     let name = row
         .get("display_name")
         .and_then(|v| v.as_str())
@@ -645,7 +645,7 @@ fn extract_f32_array<const N: usize>(
 }
 
 /// Best-effort scene-change send — a closed channel is shutdown, not an error.
-fn emit_scene_change(tx: Option<&SceneChangeSender>, change: SceneChange) {
+pub(crate) fn emit_scene_change(tx: Option<&SceneChangeSender>, change: SceneChange) {
     if let Some(tx) = tx {
         if tx.send(change).is_err() {
             tracing::warn!("Scene-change channel closed — scene subscriber may have shut down");

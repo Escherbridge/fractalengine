@@ -7,7 +7,7 @@
 //! API is async and tightly coupled to iroh tickets. Phase D will swap this
 //! implementation for an iroh-blobs store once we need peer fetching.
 
-use fe_runtime::blob_store::{BlobHash, BlobStore};
+use fe_runtime::blob_store::{canonical_blob_path, BlobHash, BlobStore, DEFAULT_BLOB_DIR_NAME};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -63,7 +63,7 @@ impl FsBlobStore {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("fractalengine")
-            .join("blobs")
+            .join(DEFAULT_BLOB_DIR_NAME)
     }
 
     /// Convenience constructor using `default_path()`.
@@ -71,11 +71,9 @@ impl FsBlobStore {
         Self::new(Self::default_path())
     }
 
-    /// Path layout: `{root}/{first_byte_hex}/{full_hex}`.
+    /// Path layout: the shared canonical `{root}/{hex[0..2]}/{hex}`.
     fn path_for(&self, hash: &BlobHash) -> PathBuf {
-        let hex = hex::encode(hash);
-        let shard = &hex[0..2];
-        self.root.join(shard).join(&hex)
+        canonical_blob_path(&self.root, hash)
     }
 
     pub fn root(&self) -> &Path {

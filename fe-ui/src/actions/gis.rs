@@ -16,19 +16,22 @@ fn submit_query(
     sql: String,
     vars: std::collections::HashMap<String, serde_json::Value>,
 ) {
+    let request_id = crate::actions::query::next_ui_query_id("gis");
     gis_state.query_pending = true;
+    gis_state.query_request_id = Some(request_id.clone());
     gis_state.last_error = None;
     if db_sender
         .0
         .send(DbCommand::RawQuery {
             sql,
             vars,
-            correlation_id: None,
+            correlation_id: Some(request_id),
         })
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — GIS RawQuery not dispatched");
         gis_state.query_pending = false;
+        gis_state.query_request_id = None;
         gis_state.last_error = Some("DB channel closed".to_string());
     }
 }

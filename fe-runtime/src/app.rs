@@ -63,12 +63,15 @@ pub fn setup_core_systems(app: &mut App, handles: BevyHandles) {
     if let Some(lifecycle_rx) = handles.lifecycle_rx {
         app.insert_resource(LifecycleEventReceiver(Arc::new(Mutex::new(lifecycle_rx))));
     }
+    // Periodic fire-and-forget asset GC (src/AGENTS.md §asset-gc); env read once here.
+    app.insert_resource(crate::asset_gc::AssetGcSchedule::from_env());
     app.add_systems(
         Update,
         (
             drain_network_events,
             drain_db_results,
             drain_lifecycle_events,
+            crate::asset_gc::schedule_asset_gc,
         ),
     );
 }
@@ -229,7 +232,9 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::CreateAsset { correlation_id, .. }
         | DbCommand::CreateNodeWithAsset { correlation_id, .. }
         | DbCommand::SetPetalTerrain { correlation_id, .. }
+        | DbCommand::GetPetalTerrain { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
+        DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
 }
@@ -244,7 +249,10 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::PetalTerrainLoaded { correlation_id, .. }
         | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
         DbResult::QueryFailed { correlation_id, .. }
-        | DbResult::PetalTerrainSetFailed { correlation_id, .. } => Some(correlation_id.as_str()),
+        | DbResult::PetalTerrainSetFailed { correlation_id, .. }
+        | DbResult::PetalTerrainFetched { correlation_id, .. }
+        | DbResult::ElevatedQueryResult { correlation_id, .. }
+        | DbResult::RequestFailed { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
 }
@@ -280,6 +288,10 @@ enum ReplyKind {
     PlacedAsset,
     /// API `SetPetalTerrain` replies (correlated only — see `reply_kind_of_result`).
     PetalTerrainSet,
+    /// API `GetPetalTerrain` replies (`PetalTerrainFetched`, correlated only).
+    PetalTerrainFetch,
+    /// `/query/elevated` replies (`ElevatedQueryResult`, correlated only).
+    ElevatedQuery,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -311,7 +323,12 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         UpdateFieldDef { .. } => ReplyKind::FieldDefUpdated,
         DeleteFieldDef { .. } => ReplyKind::FieldDefDeleted,
         RawQuery { .. } => ReplyKind::QueryResult,
+        ElevatedQuery { .. } => ReplyKind::ElevatedQuery,
         InsertIotReadings { .. } => ReplyKind::IotReadingsInserted,
+        GetPetalTerrain {
+            correlation_id: Some(_),
+            ..
+        } => ReplyKind::PetalTerrainFetch,
         GetPetalTerrain { .. } => ReplyKind::PetalTerrain,
         SetVerseTimeseriesSettings { .. } => ReplyKind::VerseTimeseriesSettings,
         CreateAsset { .. } => ReplyKind::AssetCreated,
@@ -346,6 +363,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         FieldDefUpdated { .. } => ReplyKind::FieldDefUpdated,
         FieldDefDeleted { .. } => ReplyKind::FieldDefDeleted,
         QueryResult { .. } | QueryFailed { .. } => ReplyKind::QueryResult,
+        ElevatedQueryResult { .. } => ReplyKind::ElevatedQuery,
         IotReadingsInserted { .. } => ReplyKind::IotReadingsInserted,
         IotReadingsRejected { .. } => ReplyKind::IotReadingsInserted,
         // Only an API set (correlated) is a `PetalTerrainSet` reply; a GUI set
@@ -356,6 +374,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         }
         | PetalTerrainSetFailed { .. } => ReplyKind::PetalTerrainSet,
         PetalTerrainLoaded { .. } => ReplyKind::PetalTerrain,
+        PetalTerrainFetched { .. } => ReplyKind::PetalTerrainFetch,
         VerseTimeseriesSettingsSet { .. } => ReplyKind::VerseTimeseriesSettings,
         AssetCreated { .. } => ReplyKind::AssetCreated,
         // Only an API placement (correlated) is a reply; a GUI `ImportGltf`
@@ -370,8 +389,8 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
 
 impl PendingApiRequests {
     /// Enqueue a DB request under the reply family `cmd` produces and return
-    /// its correlation id (insertion order, used only to route untyped
-    /// `Error` replies to the oldest waiter).
+    /// its entry id (insertion order: routes untyped `Error` replies to the
+    /// oldest waiter, and names the entry for [`Self::cancel`]).
     pub fn enqueue_for(
         &mut self,
         cmd: &DbCommand,
@@ -429,40 +448,82 @@ impl PendingApiRequests {
         entry.reply_tx.send(result).is_ok()
     }
 
-    /// Skip-closed FIFO restricted to entries WITHOUT a correlation id;
-    /// correlated entries are left in place for their own echoed reply.
+    /// Pop-and-drop FIFO restricted to entries WITHOUT a correlation id
+    /// (correlated entries wait for their own echoed reply): the oldest such
+    /// entry consumes `result` — a closed one (timed-out caller) drops it, so
+    /// a late reply never shifts onto the next waiter (src/AGENTS.md
+    /// §api-reply-correlation).
     fn deliver_uncorrelated(
         queue: &mut std::collections::VecDeque<PendingEntry>,
         result: DbResult,
     ) -> bool {
-        let mut idx = 0;
-        while idx < queue.len() {
-            if queue[idx].correlation_id.is_some() {
-                idx += 1;
-                continue;
-            }
-            let entry = queue.remove(idx).expect("idx is within the queue");
-            if entry.reply_tx.is_closed() {
-                continue;
-            }
-            let _ = entry.reply_tx.send(result);
-            return true;
-        }
-        false
+        let Some(position) = queue.iter().position(|e| e.correlation_id.is_none()) else {
+            return false;
+        };
+        let entry = queue
+            .remove(position)
+            .expect("position is within the queue");
+        Self::send_unless_closed(entry, result)
     }
 
-    /// Pop the next live entry (skipping ones whose receiver was dropped by a
-    /// timed-out caller) and send `result` to it.
+    /// Pop-and-drop FIFO: the head entry consumes `result`, a closed head
+    /// dropping it (see [`Self::deliver_uncorrelated`]).
     fn deliver_to(queue: &mut std::collections::VecDeque<PendingEntry>, result: DbResult) -> bool {
-        while let Some(entry) = queue.pop_front() {
-            if entry.reply_tx.is_closed() {
-                // Receiver dropped — discard stale entry and try the next one.
-                continue;
-            }
-            let _ = entry.reply_tx.send(result);
-            return true;
+        match queue.pop_front() {
+            Some(entry) => Self::send_unless_closed(entry, result),
+            None => false,
         }
-        false
+    }
+
+    /// Send to a removed entry; a closed one (its caller timed out) consumes
+    /// and drops the reply.
+    fn send_unless_closed(entry: PendingEntry, result: DbResult) -> bool {
+        if entry.reply_tx.is_closed() {
+            tracing::debug!("late DB reply for a timed-out API request — consumed by its entry");
+            return false;
+        }
+        entry.reply_tx.send(result).is_ok()
+    }
+
+    /// Hand a `RequestFailed` to the one entry (any family) filed under its
+    /// correlation id; a closed entry consumes it, an unknown id is dropped.
+    fn deliver_by_correlation_id(&mut self, correlation_id: &str, result: DbResult) -> bool {
+        let matches = |e: &PendingEntry| e.correlation_id.as_deref() == Some(correlation_id);
+        let queue = self
+            .by_kind
+            .values_mut()
+            .chain(std::iter::once(&mut self.uncorrelated))
+            .find(|queue| queue.iter().any(matches));
+        let Some(queue) = queue else {
+            tracing::debug!(
+                correlation_id,
+                "correlated failure has no pending waiter — dropped"
+            );
+            return false;
+        };
+        let position = queue
+            .iter()
+            .position(matches)
+            .expect("queue was selected for containing the id");
+        let entry = queue
+            .remove(position)
+            .expect("position is within the queue");
+        Self::send_unless_closed(entry, result)
+    }
+
+    /// Remove the entry `enqueue_for` returned `id` for (its command never
+    /// reached the DB thread), so it cannot consume a later reply.
+    pub fn cancel(&mut self, id: u64) {
+        for queue in self
+            .by_kind
+            .values_mut()
+            .chain(std::iter::once(&mut self.uncorrelated))
+        {
+            if let Some(position) = queue.iter().position(|e| e.id == id) {
+                queue.remove(position);
+                return;
+            }
+        }
     }
 
     /// The id of the oldest entry in `queue` that has no correlation id, if
@@ -522,6 +583,10 @@ impl PendingApiRequests {
     pub fn try_deliver(&mut self, result: DbResult) -> bool {
         if matches!(result, DbResult::Error(_)) {
             return self.deliver_to_oldest(result);
+        }
+        if let DbResult::RequestFailed { correlation_id, .. } = &result {
+            let correlation_id = correlation_id.clone();
+            return self.deliver_by_correlation_id(&correlation_id, result);
         }
         match reply_kind_of_result(&result) {
             Some(kind) => {
@@ -588,8 +653,11 @@ pub fn drain_api_commands(
     for _ in 0..64 {
         match rx.try_recv() {
             Ok(ApiCommand::DbRequest { cmd, reply_tx }) => {
-                pending.enqueue_for(&cmd, reply_tx);
+                let entry_id = pending.enqueue_for(&cmd, reply_tx);
                 if let Err(e) = db_tx.0.send(cmd) {
+                    // Never answered: under pop-and-drop it would swallow the
+                    // family's next reply.
+                    pending.cancel(entry_id);
                     tracing::warn!("API DB request dropped — DB command channel closed: {e}");
                 }
             }
@@ -737,6 +805,8 @@ mod tests {
             content_type: "model/gltf-binary".to_string(),
             size_bytes: 12,
             content_hash: "00".repeat(32),
+            owner_did: None,
+            petal_id: None,
             correlation_id: correlation_id.map(str::to_string),
         }
     }
@@ -982,12 +1052,7 @@ mod tests {
         // unchanged legacy routing — and never a correlated API set reply.
         let (get_tx, mut get_rx) = tokio::sync::oneshot::channel();
         let (set_tx, mut set_rx) = tokio::sync::oneshot::channel();
-        pending.enqueue_for(
-            &DbCommand::GetPetalTerrain {
-                petal_id: "p".to_string(),
-            },
-            get_tx,
-        );
+        pending.enqueue_for(&get_terrain_cmd("p", None), get_tx);
         pending.enqueue_for(&set_terrain_cmd(Some("d")), set_tx);
         assert!(pending.try_deliver(terrain_set(Some("d"), "p")));
         assert!(
@@ -995,6 +1060,189 @@ mod tests {
             "API set reply leaked to a GET waiter"
         );
         assert_eq!(received_owner(&mut set_rx), Some(serde_json::json!("d")));
+    }
+
+    fn get_terrain_cmd(petal_id: &str, correlation_id: Option<&str>) -> DbCommand {
+        DbCommand::GetPetalTerrain {
+            petal_id: petal_id.to_string(),
+            correlation_id: correlation_id.map(str::to_string),
+        }
+    }
+
+    fn terrain_fetched(petal_id: &str, correlation_id: &str) -> DbResult {
+        DbResult::PetalTerrainFetched {
+            petal_id: petal_id.to_string(),
+            terrain: Some(serde_json::json!({ "owner": petal_id })),
+            correlation_id: correlation_id.to_string(),
+        }
+    }
+
+    /// FEAPI-GETTERRAIN-CORR: two API terrain reads in flight answered out
+    /// of order, with a GUI load echo for one of the petals racing between —
+    /// each fetched reply lands on its own waiter and the GUI echo on neither.
+    #[test]
+    fn concurrent_terrain_fetches_never_misroute() {
+        let mut pending = PendingApiRequests::default();
+        let (a_tx, mut a_rx) = tokio::sync::oneshot::channel();
+        let (b_tx, mut b_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&get_terrain_cmd("A", Some("ga")), a_tx);
+        pending.enqueue_for(&get_terrain_cmd("B", Some("gb")), b_tx);
+
+        assert!(pending.try_deliver(terrain_fetched("B", "gb")));
+        assert!(
+            !pending.try_deliver(DbResult::PetalTerrainLoaded {
+                petal_id: "A".to_string(),
+                terrain: None,
+                correlation_id: None,
+            }),
+            "a GUI load echo must not satisfy an API terrain read"
+        );
+        assert!(a_rx.try_recv().is_err(), "GUI echo leaked to API waiter A");
+        assert!(pending.try_deliver(terrain_fetched("A", "ga")));
+
+        for (rx, petal) in [(&mut a_rx, "A"), (&mut b_rx, "B")] {
+            match rx.try_recv() {
+                Ok(DbResult::PetalTerrainFetched {
+                    petal_id, terrain, ..
+                }) => {
+                    assert_eq!(petal_id, petal);
+                    assert_eq!(terrain.unwrap()["owner"], petal);
+                }
+                other => panic!("{petal} expected its own fetched terrain, got {other:?}"),
+            }
+        }
+    }
+
+    /// RT-CORR-EDGE pop-and-drop: caller A times out, B enqueues, A's late
+    /// (uncorrelated) reply arrives — A's closed entry consumes it instead of
+    /// skipping to B, so B receives exactly its own reply.
+    #[test]
+    fn late_uncorrelated_reply_is_consumed_by_its_timed_out_entry_not_the_next_waiter() {
+        let transform = |node_id: &str| DbResult::NodeTransformLoaded {
+            node_id: node_id.to_string(),
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: [1.0; 3],
+        };
+        let get = |node_id: &str| DbCommand::GetNodeTransform {
+            node_id: node_id.to_string(),
+        };
+        let mut pending = PendingApiRequests::default();
+        let (a_tx, a_rx) = tokio::sync::oneshot::channel();
+        let (b_tx, mut b_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&get("a"), a_tx);
+        drop(a_rx); // A's timeout
+        pending.enqueue_for(&get("b"), b_tx);
+
+        assert!(
+            !pending.try_deliver(transform("a")),
+            "A's late reply is consumed by A's closed entry"
+        );
+        assert!(b_rx.try_recv().is_err(), "B must not receive A's reply");
+
+        assert!(pending.try_deliver(transform("b")));
+        assert!(matches!(
+            b_rx.try_recv(),
+            Ok(DbResult::NodeTransformLoaded { ref node_id, .. }) if node_id == "b"
+        ));
+    }
+
+    /// The same rule on the wildcard path: a timed-out uncorrelated waiter's
+    /// late `Error` is consumed by its own entry, never shifted to the next.
+    #[test]
+    fn late_error_is_consumed_by_the_timed_out_oldest_waiter() {
+        let mut pending = PendingApiRequests::default();
+        let (a_tx, a_rx) = tokio::sync::oneshot::channel();
+        let (b_tx, mut b_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&DbCommand::Ping, a_tx);
+        drop(a_rx);
+        pending.enqueue_for(&DbCommand::Ping, b_tx);
+
+        assert!(!pending.try_deliver(DbResult::Error("a failed".to_string())));
+        assert!(b_rx.try_recv().is_err(), "B must not receive A's error");
+        assert!(pending.try_deliver(DbResult::Pong));
+        assert!(matches!(b_rx.try_recv(), Ok(DbResult::Pong)));
+    }
+
+    /// RT-CORR-EDGE: a correlated asset upload / placement that fails at the
+    /// DB layer gets an immediate typed `RequestFailed` on ITS waiter (it
+    /// used to hang to the timeout: the wildcard `Error` never reaches a
+    /// correlated waiter); other families and ids are untouched.
+    #[test]
+    fn request_failed_reaches_only_its_correlated_entry_across_families() {
+        let mut pending = PendingApiRequests::default();
+        let (upload_tx, mut upload_rx) = tokio::sync::oneshot::channel();
+        let (place_tx, mut place_rx) = tokio::sync::oneshot::channel();
+        let (ping_tx, mut ping_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&create_asset_cmd(Some("up")), upload_tx);
+        pending.enqueue_for(&DbCommand::Ping, ping_tx);
+        pending.enqueue_for(&place_asset_cmd(Some("pl")), place_tx);
+        let failed = |id: &str| DbResult::RequestFailed {
+            error: format!("{id} failed"),
+            correlation_id: id.to_string(),
+        };
+
+        assert!(pending.try_deliver(failed("pl")));
+        assert!(matches!(
+            place_rx.try_recv(),
+            Ok(DbResult::RequestFailed { ref correlation_id, .. }) if correlation_id == "pl"
+        ));
+        assert!(
+            upload_rx.try_recv().is_err(),
+            "placement failure leaked to upload"
+        );
+        assert!(
+            ping_rx.try_recv().is_err(),
+            "placement failure leaked to Ping"
+        );
+
+        assert!(
+            !pending.try_deliver(failed("unknown")),
+            "an id with no waiter is dropped"
+        );
+        assert!(pending.try_deliver(failed("up")));
+        assert!(matches!(
+            upload_rx.try_recv(),
+            Ok(DbResult::RequestFailed { ref correlation_id, .. }) if correlation_id == "up"
+        ));
+        assert!(ping_rx.try_recv().is_err());
+        assert!(
+            !pending.try_deliver(failed("up")),
+            "the consumed entry cannot be answered twice"
+        );
+    }
+
+    /// RT-CORR-EDGE: a command that never reached the DB thread must not
+    /// leave an entry that, under pop-and-drop, would swallow the next
+    /// caller's reply.
+    #[test]
+    fn failed_db_send_cancels_the_entry() {
+        let (api_tx, api_rx) = crossbeam::channel::bounded(4);
+        let (db_tx, db_rx) = crossbeam::channel::bounded(4);
+        drop(db_rx); // DB thread gone
+        let mut app = App::new();
+        app.insert_resource(ApiCommandReceiver(Arc::new(Mutex::new(api_rx))));
+        app.insert_resource(DbCommandSender(db_tx));
+        app.init_resource::<PendingApiRequests>();
+        app.add_systems(Update, drain_api_commands);
+
+        let (dead_tx, _dead_rx) = tokio::sync::oneshot::channel();
+        api_tx
+            .send(ApiCommand::DbRequest {
+                cmd: DbCommand::Ping,
+                reply_tx: dead_tx,
+            })
+            .unwrap();
+        app.update();
+
+        let (live_tx, mut live_rx) = tokio::sync::oneshot::channel();
+        let mut pending = app.world_mut().resource_mut::<PendingApiRequests>();
+        pending.enqueue_for(&DbCommand::Ping, live_tx);
+        assert!(pending.try_deliver(DbResult::Pong));
+        assert!(
+            matches!(live_rx.try_recv(), Ok(DbResult::Pong)),
+            "the unsent request's entry must not consume the next reply"
+        );
     }
 
     /// The hazard this replaced FIFO pairing for: an unsolicited
@@ -1349,15 +1597,14 @@ mod tests {
                 },
             ),
             (
-                DbCommand::GetPetalTerrain {
-                    petal_id: "p".to_string(),
-                },
+                get_terrain_cmd("p", None),
                 DbResult::PetalTerrainLoaded {
                     petal_id: "p".to_string(),
                     terrain: None,
                     correlation_id: None,
                 },
             ),
+            (get_terrain_cmd("p", Some("g1")), terrain_fetched("p", "g1")),
             (set_terrain_cmd(Some("t1")), terrain_set(Some("t1"), "p")),
             (
                 set_terrain_cmd(Some("t2")),
@@ -1395,6 +1642,20 @@ mod tests {
             ),
             (create_asset_cmd(Some("c1")), asset_created(Some("c1"))),
             (place_asset_cmd(Some("c2")), gltf_imported(Some("c2"))),
+            (
+                DbCommand::ElevatedQuery {
+                    statements: vec!["SELECT * FROM node TIMEOUT 5s".to_string()],
+                    vars: std::collections::HashMap::new(),
+                    write_tables: Vec::new(),
+                    actor_did: "did:key:z".to_string(),
+                    correlation_id: "e1".to_string(),
+                },
+                DbResult::ElevatedQueryResult {
+                    data: Vec::new(),
+                    changed_rows: 0,
+                    correlation_id: "e1".to_string(),
+                },
+            ),
         ];
 
         for (cmd, result) in cases {

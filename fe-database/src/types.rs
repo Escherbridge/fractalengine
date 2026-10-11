@@ -33,6 +33,8 @@ pub enum OpType {
     NodeTombstoned,
     /// FR-5: a stamp instance was promoted to a full addressable node.
     NodePromoted,
+    /// An Owner's `/query/elevated` write script (fe-api AGENTS.md §elevated-query).
+    ElevatedQuery,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

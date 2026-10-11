@@ -220,7 +220,12 @@ define_table! {
         size_bytes:   i64            => "TYPE int",
         data:         Option<String> => "TYPE option<string> VALUE $value OR NONE",
         created_at:   String         => "TYPE string",
-        content_hash: Option<String> => "TYPE option<string>"
+        content_hash: Option<String> => "TYPE option<string>",
+        /// Uploader DID (API token `sub`); `NONE` on legacy / non-API rows.
+        /// Reach + quota rules: fe-api/AGENTS.md §assets, §asset-ingest.
+        owner_did:    Option<String> => "TYPE option<string>",
+        /// Anchor petal the upload was authorized against; `NONE` on legacy rows.
+        petal_id:     Option<String> => "TYPE option<string>"
     }
 }
 
@@ -419,6 +424,24 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?
         .check()
         .map_err(|e| anyhow::anyhow!("idx_fractal_verse: {e}"))?;
+    // Own-id point lookups (scope resolvers, existence oracle). Plain, not UNIQUE:
+    // see src/AGENTS.md §schema-macro "Id lookup indexes".
+    for (name, table, field) in [
+        ("idx_petal_id", "petal", "petal_id"),
+        ("idx_fractal_id", "fractal", "fractal_id"),
+        ("idx_node_id", "node", "node_id"),
+        ("idx_verse_id", "verse", "verse_id"),
+        // Asset ownership (quota sums) + content-hash reads (`GET /assets/{hash}`, GC).
+        ("idx_asset_owner", "asset", "owner_did"),
+        ("idx_asset_content_hash", "asset", "content_hash"),
+    ] {
+        db.query(format!(
+            "DEFINE INDEX IF NOT EXISTS {name} ON TABLE {table} FIELDS {field}"
+        ))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+    }
     db.query("DEFINE INDEX IF NOT EXISTS idx_role_scope ON TABLE role FIELDS scope")
         .await?
         .check()

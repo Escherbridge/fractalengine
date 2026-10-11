@@ -583,10 +583,20 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         }
                     }
                     // F13 API asset ingest: metadata only — bytes were stored API-side.
-                    Ok(DbCommand::CreateAsset { name, content_type, size_bytes, content_hash, correlation_id }) => {
-                        match handlers::crud::create_asset_handler(&db, &blob_store, &name, &content_type, size_bytes, &content_hash).await {
-                            Ok(asset_id) => send_result(&tx, DbResult::AssetCreated { asset_id, content_hash, size_bytes, correlation_id }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Create asset failed: {e}"))),
+                    Ok(DbCommand::CreateAsset { name, content_type, size_bytes, content_hash, owner_did, petal_id, correlation_id }) => {
+                        let registration = handlers::crud::AssetRegistration { name, content_type, size_bytes, content_hash, owner_did, petal_id };
+                        send_result(&tx, handlers::crud::create_asset_reply(&db, &blob_store, registration, correlation_id).await);
+                    }
+                    // Fire-and-forget maintenance (src/AGENTS.md §handlers asset_gc): a
+                    // failure is only logged — an uncorrelated `Error` would reach the
+                    // oldest API waiter.
+                    Ok(DbCommand::GcUnreferencedAssets { grace_secs }) => {
+                        match handlers::asset_gc::gc_unreferenced_assets(&db, &blob_store, grace_secs).await {
+                            Ok(report) => send_result(&tx, DbResult::AssetsGarbageCollected {
+                                removed_assets: report.removed_assets,
+                                removed_blobs: report.removed_blobs,
+                            }),
+                            Err(e) => tracing::warn!("asset GC pass failed: {e}"),
                         }
                     }
                     Ok(DbCommand::CreateNodeWithAsset { petal_id, name, asset_id, position, rotation, scale, correlation_id }) => {
@@ -622,7 +632,7 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                                 }
                                 send_result(&tx, DbResult::GltfImported { node_id, asset_id, petal_id, name, asset_path, position, correlation_id });
                             }
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Place asset failed: {e}"))),
+                            Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id, format!("Place asset failed: {e}"))),
                         }
                     }
                     Ok(DbCommand::LoadHierarchy) => {
@@ -1214,11 +1224,9 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, petal_id, terrain, correlation_id).await;
                         send_result(&tx, reply);
                     }
-                    Ok(DbCommand::GetPetalTerrain { petal_id }) => {
-                        match handlers::petal_terrain::get_petal_terrain_handler(&db, &petal_id).await {
-                            Ok(terrain) => send_result(&tx, DbResult::PetalTerrainLoaded { petal_id, terrain, correlation_id: None }),
-                            Err(e) => send_result(&tx, DbResult::Error(format!("Get petal terrain failed: {e}"))),
-                        }
+                    Ok(DbCommand::GetPetalTerrain { petal_id, correlation_id }) => {
+                        let reply = handlers::petal_terrain::get_petal_terrain_reply(&db, petal_id, correlation_id).await;
+                        send_result(&tx, reply);
                     }
                     Ok(DbCommand::CreateFieldDef { scope, entity_type, key, value_type, default_val }) => {
                         match handlers::field_def::create_field_def_handler(&db, &scope, &entity_type, &key, &value_type, default_val.as_ref(), &local_did).await {
@@ -1259,62 +1267,20 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                         }
                     }
                     Ok(DbCommand::RawQuery { sql, vars, correlation_id }) => {
-                        // Correlated (API) failures get their own echoed reply so a
-                        // timed-out caller's error can't land on another waiter;
-                        // GUI queries (`None`) keep the universal `Error`.
-                        let query_failed = |error: String| match &correlation_id {
-                            Some(id) => DbResult::QueryFailed { error, correlation_id: id.clone() },
-                            None => DbResult::Error(error),
-                        };
-                        // Security: only allow single SELECT statements.
-                        let sql_trimmed = sql.trim();
-                        let sql_upper = sql_trimmed.to_uppercase();
-                        let blocked = sql_trimmed.contains(';')
-                            || !sql_upper.starts_with("SELECT")
-                            || ["CREATE","UPDATE","DELETE","DEFINE","REMOVE","RELATE","INSERT",
-                                "LET","RETURN","INFO","FOR","THROW","SLEEP","BREAK","LIVE","KILL",
-                                "IF","BEGIN","COMMIT","CANCEL"]
-                                .iter()
-                                .any(|kw| {
-                                    let mut start = 0;
-                                    while let Some(pos) = sql_upper[start..].find(kw) {
-                                        let abs = start + pos;
-                                        let before = abs == 0 || !sql_upper.as_bytes()[abs - 1].is_ascii_alphanumeric() && sql_upper.as_bytes()[abs - 1] != b'_';
-                                        let after_pos = abs + kw.len();
-                                        let after = after_pos >= sql_upper.len() || !sql_upper.as_bytes()[after_pos].is_ascii_alphanumeric() && sql_upper.as_bytes()[after_pos] != b'_';
-                                        if before && after { return true; }
-                                        start = abs + kw.len();
-                                    }
-                                    false
-                                });
-                        if blocked {
-                            send_result(&tx, query_failed("only single SELECT statements are allowed".to_string()));
-                        } else {
-                            let mut query_builder = db.query(&sql);
-                            for (key, value) in &vars {
-                                query_builder = query_builder.bind((key.clone(), value.clone()));
-                            }
-                            // `.check()`: a failed statement (incl. a DB-side `TIMEOUT`)
-                            // must never read as an empty-but-successful result.
-                            match query_builder.await.and_then(|r| r.check()) {
-                                Ok(mut response) => {
-                                    let mut data = Vec::new();
-                                    let num = response.num_statements();
-                                    for idx in 0..num {
-                                        match response.take::<Vec<serde_json::Value>>(idx) {
-                                            Ok(rows) => {
-                                                data.extend(rows);
-                                            }
-                                            Err(_) => break,
-                                        }
-                                    }
-                                    send_result(&tx, DbResult::QueryResult { data, correlation_id: correlation_id.clone() });
-                                }
-                                Err(e) => {
-                                    send_result(&tx, query_failed(format!("query failed: {e}")));
-                                }
-                            }
-                        }
+                        let reply = handlers::raw_query::raw_query_reply(&db, &sql, &vars, correlation_id).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::ElevatedQuery { statements, vars, write_tables, actor_did, correlation_id }) => {
+                        let reply = handlers::elevated_query::elevated_query_reply(
+                            &db,
+                            handlers::elevated_query::ElevatedSinks {
+                                blob_store: &blob_store,
+                                repl_tx: repl_tx.as_ref(),
+                                entity_change_tx: entity_change_tx.as_ref(),
+                            },
+                            handlers::elevated_query::ElevatedRequest { statements, vars, write_tables, actor_did, correlation_id },
+                        ).await;
+                        send_result(&tx, reply);
                     }
                     // M2/F7 (A15): a distributed-query local partial. The
                     // spec is structured; the handler renders its own SQL

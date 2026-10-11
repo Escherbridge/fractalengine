@@ -320,3 +320,64 @@ async fn token_gates_api_when_set() {
     let (status, _) = get(&router, "/health").await;
     assert_eq!(status, StatusCode::OK);
 }
+
+fn error_text(body: &[u8]) -> String {
+    let v: serde_json::Value = serde_json::from_slice(body).expect("body not JSON");
+    assert_eq!(v["ok"], false, "expected error envelope, got: {v}");
+    v["error"].as_str().unwrap_or_default().to_string()
+}
+
+#[tokio::test]
+async fn publish_refuses_zip_bombs_without_storing_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    let honest = fixtures::bomb_hexon("bomb", "assets/bomb", fixtures::BOMB_INFLATED_BYTES);
+    assert!(honest.len() < (1 << 20), "fixture must be a real bomb");
+    let mut lying = honest.clone();
+    fixtures::falsify_declared_size(&mut lying, "assets/bomb", 1024);
+    let json_bomb = fixtures::bomb_hexon("bomb", "entries.json", 9 << 20);
+
+    for bomb in [honest, lying, json_bomb] {
+        let (status, body) = post_publish(&router, bomb, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            error_text(&body).contains(fe_hexon_registry::limits::DECOMPRESSION_LIMIT_ERROR),
+            "unexpected error: {}",
+            error_text(&body)
+        );
+    }
+    assert!(!tmp.path().join("bomb@1.0.0.hexon").exists());
+    let (_, body) = get(&router, "/health").await;
+    assert_eq!(json_data(&body)["indexed"], 0);
+}
+
+#[tokio::test]
+async fn reads_of_a_bomb_already_on_disk_fail_bounded() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Placed directly on disk (e.g. by an operator), bypassing publish validation.
+    let mut asset_bomb =
+        fixtures::bomb_hexon("asset-bomb", "assets/bomb", fixtures::BOMB_INFLATED_BYTES);
+    fixtures::falsify_declared_size(&mut asset_bomb, "assets/bomb", 1024);
+    std::fs::write(tmp.path().join("asset-bomb@1.0.0.hexon"), asset_bomb).unwrap();
+    let catalog_bomb = fixtures::bomb_hexon("catalog-bomb", "entries.json", 9 << 20);
+    std::fs::write(tmp.path().join("catalog-bomb@1.0.0.hexon"), catalog_bomb).unwrap();
+    let router = router_for(tmp.path(), None, false);
+
+    // Manifests are small, so both still index and their manifests are served.
+    let (_, body) = get(&router, "/health").await;
+    assert_eq!(json_data(&body)["indexed"], 2);
+
+    for uri in [
+        "/api/v1/hexons/asset-bomb/entries/bomb/asset",
+        "/api/v1/hexons/catalog-bomb/entries",
+    ] {
+        let (status, body) = get(&router, uri).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{uri}");
+        assert!(
+            error_text(&body).contains(fe_hexon_registry::limits::DECOMPRESSION_LIMIT_ERROR),
+            "{uri}: {}",
+            error_text(&body)
+        );
+    }
+}

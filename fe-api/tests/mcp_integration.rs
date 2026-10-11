@@ -21,7 +21,7 @@ use serde_json::json;
 use fe_api::mcp::{mcp_handler, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule};
 use fe_api::rest::NOT_FOUND_OR_DENIED;
 use fe_api::server::ApiState;
-use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UNKNOWN_ASSET};
+use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UploadOwner, UNKNOWN_ASSET};
 use fe_database::RoleLevel;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::blob_store::{hash_from_hex, BlobHash, BlobStore, BlobStoreHandle};
@@ -80,6 +80,8 @@ struct Model {
     petals: Vec<(String, String, String)>,   // (id, fractal_id, name)
     nodes: Vec<NodeRec>,
     assets: Vec<(String, String)>, // (asset_id, content_hash)
+    /// asset_id -> (owner_did, anchor petal_id), as `CreateAsset` writes them.
+    asset_owners: HashMap<String, (Option<String>, Option<String>)>,
     terrain: HashMap<String, serde_json::Value>, // petal_id -> stored terrain
     log: Vec<serde_json::Value>,
 }
@@ -117,6 +119,18 @@ impl Model {
 
 fn ulid() -> String {
     ulid::Ulid::new().to_string()
+}
+
+/// The DB thread's failure reply (`handlers::correlated_failure`): typed for
+/// a correlated caller, the wildcard `Error` otherwise.
+fn failed(correlation_id: Option<String>, error: String) -> DbResult {
+    match correlation_id {
+        Some(correlation_id) => DbResult::RequestFailed {
+            error,
+            correlation_id,
+        },
+        None => DbResult::Error(error),
+    }
 }
 
 /// Temp-dir blob store keyed by BLAKE3 (the production FsBlobStore contract).
@@ -395,21 +409,29 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             content_type,
             size_bytes,
             content_hash,
+            owner_did,
+            petal_id,
             correlation_id,
         } => {
             m.log.push(json!({
                 "cmd": "CreateAsset", "name": name, "content_type": content_type,
                 "size_bytes": size_bytes, "content_hash": content_hash,
+                "owner_did": owner_did, "petal_id": petal_id,
             }));
             let present = hash_from_hex(&content_hash)
                 .ok()
                 .zip(store)
                 .is_some_and(|(h, s)| s.has_blob(&h));
             if !present {
-                return DbResult::Error("CreateAsset blob is not present in the blob store".into());
+                return failed(
+                    correlation_id,
+                    "CreateAsset blob is not present in the blob store".into(),
+                );
             }
             let asset_id = ulid();
             m.assets.push((asset_id.clone(), content_hash.clone()));
+            m.asset_owners
+                .insert(asset_id.clone(), (owner_did, petal_id));
             DbResult::AssetCreated {
                 asset_id,
                 content_hash,
@@ -430,9 +452,10 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 "cmd": "CreateNodeWithAsset", "petal_id": petal_id, "asset_id": asset_id,
             }));
             let Some((_, hash)) = m.assets.iter().find(|(id, _)| *id == asset_id).cloned() else {
-                return DbResult::Error(format!(
-                    "CreateNodeWithAsset matched no asset with asset_id = {asset_id}"
-                ));
+                return failed(
+                    correlation_id,
+                    format!("CreateNodeWithAsset matched no asset with asset_id = {asset_id}"),
+                );
             };
             let node_id = ulid();
             m.nodes.push(NodeRec {
@@ -470,11 +493,25 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 petal_id: petal_id.unwrap_or_default(),
             }
         }
-        DbCommand::GetPetalTerrain { petal_id } => DbResult::PetalTerrainLoaded {
-            terrain: m.terrain.get(&petal_id).cloned(),
+        // Mirrors `get_petal_terrain_reply`: a correlated (API) read is private.
+        DbCommand::GetPetalTerrain {
             petal_id,
-            correlation_id: None,
-        },
+            correlation_id,
+        } => {
+            let terrain = m.terrain.get(&petal_id).cloned();
+            match correlation_id {
+                Some(correlation_id) => DbResult::PetalTerrainFetched {
+                    petal_id,
+                    terrain,
+                    correlation_id,
+                },
+                None => DbResult::PetalTerrainLoaded {
+                    petal_id,
+                    terrain,
+                    correlation_id: None,
+                },
+            }
+        }
         DbCommand::SetPetalTerrain {
             petal_id,
             terrain,
@@ -497,17 +534,15 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             correlation_id,
         } => {
             m.log.push(json!({ "cmd": "RawQuery", "sql": sql }));
-            // assets.rs::asset_reach: petals of every node referencing $aids.
-            if let Some(aids) = vars.get("aids").and_then(|v| v.as_array()) {
-                let data = m
-                    .nodes
+            // assets.rs::asset_reach: ownership columns of $asset_ids.
+            if let Some(ids) = vars.get("asset_ids").and_then(|v| v.as_array()) {
+                let data = ids
                     .iter()
-                    .filter(|n| {
-                        n.asset_id
-                            .as_deref()
-                            .is_some_and(|a| aids.iter().any(|x| x.as_str() == Some(a)))
+                    .filter_map(|id| id.as_str())
+                    .filter_map(|id| {
+                        let (owner, petal) = m.asset_owners.get(id)?;
+                        Some(json!({ "asset_id": id, "owner_did": owner, "petal_id": petal }))
                     })
-                    .map(|n| json!({ "petal_id": n.petal_id }))
                     .collect();
                 return DbResult::QueryResult {
                     data,
@@ -568,6 +603,7 @@ fn emu(with_store: bool) -> Emu {
         distributed_tx: None,
         sim_control_tx: None,
         elevated_query_allowed: false,
+        upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let model = Arc::new(Mutex::new(Model::default()));
@@ -1688,6 +1724,9 @@ async fn upload_asset_round_trip_then_place() {
     assert_eq!(create.len(), 1);
     assert_eq!(create[0]["content_hash"], hash.as_str());
     assert_eq!(create[0]["content_type"], "model/gltf-binary");
+    // … attributed to the token subject and anchored at the authorized petal.
+    assert_eq!(create[0]["owner_did"], editor.sub.as_str());
+    assert_eq!(create[0]["petal_id"], home.petal.as_str());
 
     // place_asset binds a node to it; an unknown asset is refused.
     let resp = call_tool(
@@ -1740,9 +1779,16 @@ async fn upload_asset_rejects_bad_bytes_and_writes_nothing() {
     assert_tool_error(&resp, "not valid standard base64");
 
     // Oversize, through the same core with an injected cap (no 256 MiB fixture).
-    let err = ingest_glb_with_limit(&state, "big.glb", GlbPayload::Base64(b64(&tiny_glb())), 16)
-        .await
-        .unwrap_err();
+    let owner = UploadOwner::new(&editor, &home.petal);
+    let err = ingest_glb_with_limit(
+        &state,
+        &owner,
+        "big.glb",
+        GlbPayload::Base64(b64(&tiny_glb())),
+        16,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, UploadError::TooLarge { max: 16 });
 
     assert_eq!(store.blob_count(), 0, "nothing written to the blob store");
@@ -1784,6 +1830,20 @@ async fn place_asset_rejects_a_foreign_scope_asset() {
     )
     .await;
     let foreign_asset = tool_json(&resp)["asset_id"].as_str().unwrap().to_string();
+    // Still unplaced: anchored in the foreign petal, so home cannot claim it.
+    let resp = call_tool(
+        &state,
+        &home_editor,
+        "place_asset",
+        json!({ "petal_id": home.petal, "asset_id": foreign_asset, "name": "Early grab" }),
+    )
+    .await;
+    assert_eq!(tool_text(&resp), UNKNOWN_ASSET, "unplaced foreign upload");
+    assert!(model
+        .lock()
+        .unwrap()
+        .logged("CreateNodeWithAsset")
+        .is_empty());
     let resp = call_tool(
         &state,
         &foreign_editor,

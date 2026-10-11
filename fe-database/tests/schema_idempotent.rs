@@ -118,3 +118,39 @@ async fn fractal_schema_is_idempotent() {
         .await
         .expect("second apply must not error");
 }
+
+/// The scope resolvers' own-id point lookups (`WHERE petal_id = $x LIMIT 1`, …)
+/// are index-backed, and re-applying the schema keeps them (idempotent).
+#[tokio::test]
+async fn id_lookup_indexes_exist_after_apply_all() {
+    let db = test_db().await;
+    apply_schema(&db).await.expect("first apply");
+    apply_schema(&db)
+        .await
+        .expect("second apply must not error");
+    for (table, index, field) in [
+        ("petal", "idx_petal_id", "petal_id"),
+        ("fractal", "idx_fractal_id", "fractal_id"),
+        ("node", "idx_node_id", "node_id"),
+        ("verse", "idx_verse_id", "verse_id"),
+    ] {
+        let mut res: surrealdb::IndexedResults = db
+            .query(format!("INFO FOR TABLE {table}"))
+            .await
+            .expect("INFO FOR TABLE");
+        let info: Option<serde_json::Value> = res.take(0).expect("take INFO");
+        let indexes = info
+            .as_ref()
+            .and_then(|i| i.get("indexes"))
+            .and_then(|i| i.as_object())
+            .unwrap_or_else(|| panic!("INFO FOR TABLE {table} has no indexes map: {info:?}"));
+        let definition = indexes
+            .get(index)
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("{table} lacks {index}: {indexes:?}"));
+        assert!(
+            definition.contains(field),
+            "{index} must index {table}.{field}: {definition}"
+        );
+    }
+}

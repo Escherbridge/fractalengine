@@ -52,7 +52,9 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
 
 - `hierarchy.rs` — tree structure: `Seeded`, `HierarchyLoaded`,
   `DatabaseReset`, `VerseJoined`, `Verse/Fractal/PetalCreated`,
-  `EntityRenamed`, `EntityDeleted`.
+  `EntityRenamed`, `EntityDeleted`, and `ElevatedQueryResult` (an API
+  `/query/elevated` write with `changed_rows > 0` has no typed result the
+  tree could apply, so it reloads; the result still reaches `try_deliver`).
 - `nodes.rs` — single-node lifecycle: `GltfImported`, `NodeCreated` (pen
   auto-create flush + Paths-tab re-query), `NodeDeleted`.
 - `roles.rs` — invites, peer roles, local role, log-only acks, and (M2/F6)
@@ -67,8 +69,10 @@ now a thin dispatcher (`db_results/mod.rs`) over one `handle_*` function per
   that result** — this preserves the original mega-match's `continue`
   control flow exactly (stale/unselected property results were never
   delivered to pending API requests).
-- `query.rs` — the shared untagged `QueryResult`/`Error` channel with its
-  GIS-panel > Paths-tab > Query-tab claim priority.
+- `query.rs` — GUI `QueryResult`/`QueryFailed` routed by request id
+  (`route_query_reply`; claimed → `continue`, unclaimed → `try_deliver`),
+  the legacy uncorrelated flag-priority claim, and `Error`'s pen-create
+  cleanup (fe-ui/src/AGENTS.md §gis-query-ui).
 - `fields.rs` / `terrain.rs` — field-def lists, petal terrain docs. `terrain.rs`
   also rehydrates `ProposalEditState` (5th param via DescriptorCaches.proposal_state).
 
@@ -89,7 +93,7 @@ like `ScopeResolved` are consumed solely via `pending_api.try_deliver`).
 
 **§fresh-create namespace id (F22/M2).** CreateVerse does NOT trigger a
 hierarchy reload — the only `LoadHierarchy` triggers are Seeded / VerseJoined
-/ DatabaseReset / an external API poll. So `handle_verse_created` is the only
+/ DatabaseReset / an elevated write that changed rows / an external API poll. So `handle_verse_created` is the only
 place a freshly created verse's `namespace_id` enters the tree, and it now
 takes it from the `DbResult::VerseCreated` payload (the DB handler computes
 it) and appends/updates the `VerseEntry` with it. Without this the entry had

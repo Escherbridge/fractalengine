@@ -212,11 +212,12 @@ mod loader_tests {
         let dir = tempdir().expect("tempdir");
         let store = FsBlobStore::new(dir.path().to_path_buf());
         let png = make_png_bytes(4, 4);
-        store.store("albedo-hash", &png).expect("store blob");
+        let albedo_hash = crate::signature::asset_hash(&png);
+        store.store(&albedo_hash, &png).expect("store blob");
 
         let handle = MaterialHandle {
             entry_id: "mat-1".to_string(),
-            albedo_hash: Some("albedo-hash".to_string()),
+            albedo_hash: Some(albedo_hash),
             normal_hash: None,
             roughness_hash: None,
             ao_hash: None,
@@ -238,7 +239,8 @@ mod loader_tests {
 
         let handle = MaterialHandle {
             entry_id: "mat-2".to_string(),
-            albedo_hash: Some("does-not-exist".to_string()),
+            // A valid hash of bytes that were never stored.
+            albedo_hash: Some(crate::signature::asset_hash(b"never stored")),
             normal_hash: None,
             roughness_hash: None,
             ao_hash: None,

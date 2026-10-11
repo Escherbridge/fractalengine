@@ -86,6 +86,10 @@ pub const STATEMENT_TIMEOUT_SECS: u64 = 5;
 /// DB aborts (and frees its thread) first.
 const CLIENT_TIMEOUT_SECS: u64 = STATEMENT_TIMEOUT_SECS + 1;
 
+/// How long `/query/elevated` awaits the DB thread: the DB-side budget plus
+/// slack for the diff + broadcast (AGENTS.md §elevated-query).
+pub const ELEVATED_REPLY_TIMEOUT_SECS: u64 = STATEMENT_TIMEOUT_SECS + 2;
+
 const UNSUPPORTED_FROM: &str =
     "unsupported FROM target (only table names or subqueries are allowed)";
 
@@ -333,12 +337,26 @@ fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
 pub const ELEVATED_TABLES: &[&str] = &["NODE", "FRACTAL", "PETAL", "FIELD_DEF", "MODEL", "ROOM"];
 
 /// Whole-word bans in elevated SQL: schema/DDL, session switching (`USE`
-/// would re-point the shared `db_reader` connection), access grants,
-/// changefeeds, import mode, graph edges, and blocking/live statements.
+/// would re-point the DB thread's connection), access grants, changefeeds,
+/// import mode, graph edges, blocking/live statements, a caller `TIMEOUT`
+/// (could raise the budget; `PARALLEL`/`EXPLAIN` must follow it), and
+/// transaction control (would break the DB thread's atomic wrapper).
 const ELEVATED_BANNED_KEYWORDS: &[&str] = &[
     "DEFINE", "REMOVE", "ALTER", "REBUILD", "INFO", "USE", "ACCESS", "SHOW", "OPTION", "RELATE",
-    "SLEEP", "KILL", "LIVE",
+    "SLEEP", "KILL", "LIVE", "TIMEOUT", "PARALLEL", "EXPLAIN", "BEGIN", "COMMIT", "CANCEL",
 ];
+
+/// Statement verbs that get the DB-side `TIMEOUT` appended (AGENTS.md §elevated-query).
+const ELEVATED_DML_VERBS: &[&str] = &["SELECT", "CREATE", "UPDATE", "UPSERT", "DELETE", "INSERT"];
+
+/// A validated elevated script, ready for the DB thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElevatedPlan {
+    /// Top-level statements; each DML one ends with ` TIMEOUT 5s`.
+    pub statements: Vec<String>,
+    /// Lowercase, deduplicated write targets (empty = read-only script).
+    pub write_tables: Vec<String>,
+}
 
 /// Clauses that may follow a mutation target (UPDATE/UPSERT/CREATE/DELETE).
 const MUTATION_BOUNDARY_KEYWORDS: &[&str] = &[
@@ -355,7 +373,10 @@ const UNSUPPORTED_ELEVATED_TARGET: &str = "unsupported target in elevated query 
 /// escaped identifiers, subqueries and expressions fail closed, since their
 /// table cannot be read off the text. Defence in depth only: the endpoint is
 /// Owner-only and operator-gated (AGENTS.md §elevated-query).
-pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result<(), String> {
+pub fn validate_elevated_sql(sql: &str, allowed_tables: &[&str]) -> Result<ElevatedPlan, String> {
+    // ASCII-only uppercasing keeps the validated text byte-aligned with `sql`.
+    let sql_upper = sql.to_ascii_uppercase();
+    let sql_upper = sql_upper.as_str();
     for keyword in ELEVATED_BANNED_KEYWORDS {
         if contains_word(sql_upper, keyword) {
             return Err(format!("{keyword} is not allowed in elevated queries"));
@@ -368,6 +389,7 @@ pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result
     reject_foreign_record_literals(sql_upper, allowed_tables)?;
     let bytes = sql_upper.as_bytes();
     let mut tables = Vec::new();
+    let mut writes = Vec::new();
     for pos in word_positions(sql_upper, "FROM") {
         tables.extend(elevated_targets(bytes, pos + 4, TargetKind::Read)?);
     }
@@ -377,7 +399,7 @@ pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result
             if verb == "UPDATE" && preceded_by_words(bytes, pos, &["DUPLICATE", "KEY"]) {
                 continue;
             }
-            tables.extend(elevated_targets(
+            writes.extend(elevated_targets(
                 bytes,
                 pos + verb.len(),
                 TargetKind::Write,
@@ -394,16 +416,83 @@ pub fn validate_elevated_sql(sql_upper: &str, allowed_tables: &[&str]) -> Result
         }
     }
     for pos in word_positions(sql_upper, "INTO") {
-        tables.extend(elevated_targets(bytes, pos + 4, TargetKind::Insert)?);
+        writes.extend(elevated_targets(bytes, pos + 4, TargetKind::Insert)?);
     }
-    for table in tables {
+    for table in tables.iter().chain(&writes) {
         if !allowed_tables.contains(&table.as_str()) {
             return Err(format!(
                 "table '{table}' is not allowed in elevated queries"
             ));
         }
     }
-    Ok(())
+    let mut write_tables: Vec<String> = writes.iter().map(|t| t.to_ascii_lowercase()).collect();
+    write_tables.sort();
+    write_tables.dedup();
+    let statements = split_elevated_statements(sql)
+        .into_iter()
+        .map(|statement| {
+            let upper = statement.to_ascii_uppercase();
+            if ELEVATED_DML_VERBS
+                .iter()
+                .any(|verb| word_at(upper.as_bytes(), 0, verb))
+            {
+                format!("{statement} TIMEOUT {STATEMENT_TIMEOUT_SECS}s")
+            } else {
+                statement
+            }
+        })
+        .collect();
+    Ok(ElevatedPlan {
+        statements,
+        write_tables,
+    })
+}
+
+/// Split a script into trimmed, non-empty top-level statements: `;` splits
+/// only outside strings (`'…'`/`"…"`, backslash escapes), escaped identifiers
+/// (`⟨…⟩`/`` `…` ``) and `(…)`/`[…]`/`{…}` nesting (lexer modelled on
+/// [`normalize_whitespace`]).
+pub fn split_elevated_statements(sql: &str) -> Vec<String> {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let end = match c {
+            '\'' | '"' | '`' | '⟨' => {
+                let close = if c == '⟨' { '⟩' } else { c };
+                let mut j = i + 1;
+                while j < chars.len() && chars[j] != close {
+                    j += if chars[j] == '\\' { 2 } else { 1 };
+                }
+                (j + 1).min(chars.len())
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                i + 1
+            }
+            ')' | ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                i + 1
+            }
+            ';' if depth == 0 => {
+                statements.push(std::mem::take(&mut current));
+                i += 1;
+                continue;
+            }
+            _ => i + 1,
+        };
+        current.extend(&chars[i..end]);
+        i = end;
+    }
+    statements.push(current);
+    statements
+        .into_iter()
+        .map(|statement| statement.trim().to_string())
+        .filter(|statement| !statement.is_empty())
+        .collect()
 }
 
 /// Which clause an elevated target list belongs to (decides what may follow it).
@@ -941,6 +1030,11 @@ pub async fn run_guarded_query(
 /// `TIMEOUT` statements indefinitely.
 const EGRESS_FALLBACK_PERMITS: usize = 4;
 
+/// Channel-fallback error when the API→DB command channel is closed.
+const DB_BRIDGE_CLOSED: &str = "internal channel closed";
+/// Channel-fallback error when the DB bridge dropped the reply unanswered.
+const DB_BRIDGE_CANCELLED: &str = "request cancelled";
+
 /// How long a channel-fallback request waits for a free permit before
 /// failing closed with a clean, honest error — short on purpose: queueing
 /// here would silently eat into `CLIENT_TIMEOUT_SECS`, which the caller
@@ -1000,7 +1094,7 @@ pub async fn run_guarded_query_via_state(
             },
             reply_tx,
         })
-        .map_err(|_| "internal channel closed".to_string())?;
+        .map_err(|_| DB_BRIDGE_CLOSED.to_string())?;
     use fe_runtime::messages::DbResult;
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(CLIENT_TIMEOUT_SECS),
@@ -1019,7 +1113,7 @@ pub async fn run_guarded_query_via_state(
         Ok(Ok(DbResult::Error(e))) => return Err(format!("query failed: {e}")),
         // Defense in depth over the router: anything else is never our rows.
         Ok(Ok(_)) => return Err("query failed: uncorrelated reply".to_string()),
-        Ok(Err(_)) => return Err("request cancelled".to_string()),
+        Ok(Err(_)) => return Err(DB_BRIDGE_CANCELLED.to_string()),
         Err(_) => return Err(format!("query timed out ({CLIENT_TIMEOUT_SECS}s)")),
     };
     if data.len() > row_cap {
@@ -1052,6 +1146,12 @@ pub fn enforce_byte_ceiling(
 pub fn is_timeout_error(e: &str) -> bool {
     let lower = e.to_ascii_lowercase();
     lower.contains("timed out") || lower.contains("timeout")
+}
+
+/// True when the channel fallback could not reach the DB thread at all
+/// (command channel closed, or the reply dropped unanswered).
+pub fn is_db_bridge_error(e: &str) -> bool {
+    e == DB_BRIDGE_CLOSED || e == DB_BRIDGE_CANCELLED
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1381,6 +1481,14 @@ mod tests {
                 "UPDATE NODE SET PARENT = NODE:ABC WHERE ID = NODE:XYZ",
                 true,
             ),
+            // A caller budget or transaction control would escape the DB
+            // thread's TIMEOUT / atomic wrapper.
+            ("SELECT * FROM NODE TIMEOUT 1H", false),
+            ("UPDATE NODE SET X = 1 PARALLEL", false),
+            ("SELECT * FROM NODE EXPLAIN", false),
+            ("BEGIN TRANSACTION; UPDATE NODE SET X = 1", false),
+            ("UPDATE NODE SET X = 1; COMMIT TRANSACTION", false),
+            ("UPDATE NODE SET X = 1; CANCEL TRANSACTION", false),
         ] {
             assert_eq!(
                 validate_elevated_sql(sql, TABLES).is_ok(),
@@ -1389,6 +1497,40 @@ mod tests {
                 validate_elevated_sql(sql, TABLES)
             );
         }
+    }
+
+    #[test]
+    fn elevated_plan_bounds_every_dml_and_names_its_write_tables() {
+        const TABLES: &[&str] = &["NODE", "PETAL", "FRACTAL"];
+        let plan = validate_elevated_sql(
+            "LET $n = 'a;b'; update node set display_name = $n where node_id = $id; \
+             SELECT * FROM petal;INSERT INTO Fractal [{ name: \"x;y\" }];  ; \
+             UPDATE node SET tags = { a: 1; }; RETURN $n",
+            TABLES,
+        )
+        .expect("valid script");
+        assert_eq!(
+            plan.statements,
+            vec![
+                "LET $n = 'a;b'".to_string(),
+                "update node set display_name = $n where node_id = $id TIMEOUT 5s".to_string(),
+                "SELECT * FROM petal TIMEOUT 5s".to_string(),
+                "INSERT INTO Fractal [{ name: \"x;y\" }] TIMEOUT 5s".to_string(),
+                "UPDATE node SET tags = { a: 1; } TIMEOUT 5s".to_string(),
+                "RETURN $n".to_string(),
+            ],
+            "split only at top-level `;`, case preserved, TIMEOUT on DML only"
+        );
+        assert_eq!(plan.write_tables, vec!["fractal", "node"]);
+
+        let read_only =
+            validate_elevated_sql("SELECT * FROM node WHERE x = $x", TABLES).expect("read-only");
+        assert!(read_only.write_tables.is_empty());
+        assert_eq!(
+            split_elevated_statements(r"SELECT 'a\';b' FROM node; RETURN 1"),
+            vec![r"SELECT 'a\';b' FROM node", "RETURN 1"],
+            "an escaped quote does not end the string"
+        );
     }
 
     // ── DEC-C19 N1 — node_log removed, petal/room/model/crate_registry scoped ──

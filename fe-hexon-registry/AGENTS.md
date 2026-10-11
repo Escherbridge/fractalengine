@@ -28,6 +28,29 @@ Instead (`src/index.rs`):
   packages are skipped with a warning, never fatal. Publish triggers a full
   rescan (simple + always consistent with the directory).
 
+### Decompression limits (REG-DECOMP, 2026-10-11)
+
+Every zip read is bounded (`src/limits.rs`; security audit 2026-07-31
+decompression-bomb finding). Per entry: `.json` names ≤ 8 MiB, everything
+else ≤ 64 MiB; ≤ 1 GiB total per archive; ≤ 200 000 entries. An entry is
+refused when its **declared** size exceeds the limit (before any
+allocation — `index.rs` used to `Vec::with_capacity(entry.size())`) and when
+its **actual** output does (`take(limit + 1)`), so a lying header cannot
+inflate past the cap either.
+
+- **Publish** (`index::validate_package`): reads `manifest.json` capped, then
+  streams EVERY entry into a sink under the same per-entry caps and the
+  shared 1 GiB budget. A bomb is a 400 and is never written to disk, so it
+  cannot be stored and blow up a later GET.
+- **GET** (`read_zip_bytes`, also used by startup/reindex manifest reads):
+  capped per entry. A package placed on disk by other means that trips a cap
+  answers 500 with the limit message (the asset route no longer reports it
+  as a 404 "blob missing"); `scan_dir` still indexes it when its manifest is
+  small.
+- The constants mirror `fe_format::limits` but are duplicated on purpose:
+  fe-format depends on fe-runtime (bevy), which this container must not pull
+  in. Keep the two in sync.
+
 ### URI resolution
 
 `{uri}` = `hexon_id` or `hexon_id@version` (axum percent-decodes path
@@ -55,8 +78,8 @@ fixture host.
 
 ### Publish validation
 
-Body is raw `.hexon` bytes. Validation = open as zip, parse `manifest.json`,
-require `hexon_id`/`version`/`hexon_type`/`publisher_did`, and restrict
+Body is raw `.hexon` bytes. Validation = open as zip, bounded-decompress
+every entry (see Decompression limits), parse `manifest.json`, require `hexon_id`/`version`/`hexon_type`/`publisher_did`, and restrict
 `hexon_id`/`version` to the spec charset (`[A-Za-z0-9_.-]`, plus `+` for
 semver build metadata) so the derived filename `{id}@{version}.hexon` can
 never traverse paths.
@@ -71,7 +94,7 @@ never traverse paths.
 | GET | `/api/v1/hexons/{uri}/entries` | raw entries.json |
 | GET | `/api/v1/hexons/{uri}/entries/{entry_id}/asset` | blob via entry `asset_hash` → `assets/{hash}` |
 | GET | `/api/v1/hexons/{uri}/download` | whole file, `application/x-hexon+zip` |
-| POST | `/api/v1/hexons/publish` | raw bytes body (≤1 GiB), writes + reindexes |
+| POST | `/api/v1/hexons/publish` | raw bytes body (≤1 GiB), every entry decompression-capped (§design), writes + reindexes |
 
 JSON endpoints use the fe-api `ApiResponse` envelope (`{ok, data, error}`);
 binary endpoints return raw bytes.

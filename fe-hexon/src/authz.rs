@@ -154,7 +154,7 @@ mod tests {
         let entries = vec![AssetEntry {
             entry_id: "model_001".to_string(),
             kind: EntryKind::Model,
-            asset_hash: "abc123".to_string(),
+            asset_hash: crate::signature::asset_hash(b"fake model data"),
             format: "gltf".to_string(),
             label: "Authz Model".to_string(),
             tags: vec![],
@@ -174,7 +174,10 @@ mod tests {
             encrypted_key: None,
         };
         let mut assets = HashMap::new();
-        assets.insert("abc123".to_string(), b"fake model data".to_vec());
+        assets.insert(
+            crate::signature::asset_hash(b"fake model data"),
+            b"fake model data".to_vec(),
+        );
         let zip_bytes = HexonPackage::build(
             manifest,
             entries,

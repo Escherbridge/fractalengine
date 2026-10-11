@@ -369,13 +369,20 @@ pub(super) fn sim_inject_fault(call: ToolCall<'_>) -> ToolFuture<'_> {
 
 pub(super) fn upload_asset(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
+        let petal_id = scoped_petal(&call)?;
+        let owner = crate::upload::UploadOwner::new(call.claims, &petal_id);
         let payload = GlbPayload::Base64(str_arg(call.args, "data_base64").to_string());
         let name = str_arg(call.args, "name");
         // The /mcp body cap bounds this transport; big GLBs use REST multipart.
-        let asset =
-            crate::upload::ingest_glb_with_limit(call.state, name, payload, MCP_MAX_ASSET_BYTES)
-                .await
-                .map_err(|e| e.message())?;
+        let asset = crate::upload::ingest_glb_with_limit(
+            call.state,
+            &owner,
+            name,
+            payload,
+            MCP_MAX_ASSET_BYTES,
+        )
+        .await
+        .map_err(|e| e.message())?;
         Ok(serde_json::to_value(asset).unwrap_or_default())
     })
 }
@@ -835,7 +842,7 @@ pub(super) mod schema {
             "type": "object",
             "properties": {
                 "petal_id": { "type": "string", "description": "The petal whose terrain already binds this tileset id" },
-                "data_base64": { "type": "string", "description": "Standard base64 of the .hexon terrain-tileset archive (max 2 MiB decoded)" }
+                "data_base64": { "type": "string", "description": "Standard base64 of the .hexon terrain-tileset archive (max 11 MiB decoded)" }
             },
             "required": ["petal_id", "data_base64"]
         })

@@ -20,19 +20,22 @@ pub(crate) fn query_tracks(
     petal_id: String,
 ) {
     let (sql, vars) = gis::track_query(&petal_id);
+    let request_id = crate::actions::query::next_ui_query_id("tracks");
     path_state.tracks_pending = true;
+    path_state.tracks_request_id = Some(request_id.clone());
     path_state.last_error = None;
     if db_sender
         .0
         .send(DbCommand::RawQuery {
             sql,
             vars,
-            correlation_id: None,
+            correlation_id: Some(request_id),
         })
         .is_err()
     {
         bevy::log::warn!("db_sender channel closed — Paths RawQuery not dispatched");
         path_state.tracks_pending = false;
+        path_state.tracks_request_id = None;
         path_state.last_error = Some("DB channel closed".to_string());
     }
 }
@@ -423,6 +426,7 @@ pub(crate) fn apply_track_rows(
 ) {
     path_state.tracks = rows;
     path_state.tracks_pending = false;
+    path_state.tracks_request_id = None;
 }
 
 /// Total arc length (petal-local meters) of an ordered point list — the sum of

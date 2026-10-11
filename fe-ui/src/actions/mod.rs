@@ -536,7 +536,7 @@ pub(crate) struct ToolStateParams<'w> {
 /// Replaces: forward_webview_open_request, drain_portal_panel_actions, handle_url_save.
 pub(crate) fn process_ui_actions(
     mut ui_mgr: ResMut<UiManager>,
-    inspector: Res<InspectorFormState>,
+    mut inspector: ResMut<InspectorFormState>,
     mut node_mgr: ResMut<crate::node_manager::NodeManager>,
     mut transform_query: Query<&mut Transform>,
     mut browser_commands: MessageWriter<BrowserCommand>,
@@ -644,7 +644,7 @@ pub(crate) fn process_ui_actions(
                 }
             },
             UiAction::SubmitQuery { sql, scope: _ } => {
-                query::submit(&db_sender, sql);
+                query::submit(&db_sender, &mut inspector, sql);
             }
             UiAction::LoadNodeProperties { node_id } => {
                 node_props::load(&db_sender, node_id);

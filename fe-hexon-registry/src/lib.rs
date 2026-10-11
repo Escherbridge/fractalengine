@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod index;
+pub mod limits;
 pub mod routes;
 
 pub use config::RegistryConfig;

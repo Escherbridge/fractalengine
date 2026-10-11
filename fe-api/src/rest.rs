@@ -1109,6 +1109,8 @@ pub async fn execute_query(
 /// The `/api/v1/query` local-store path, shared with the MCP `query` tool
 /// (caller has checked the role): rate limit (per DID) → SELECT-only
 /// validation → token-scope filter injection → row cap → byte ceiling → CRS.
+/// Runs on `db_reader` or, without one, the correlated DB-thread channel
+/// (AGENTS.md §export).
 pub(crate) async fn run_local_query(
     state: &crate::server::ApiState,
     claims: &ApiClaims,
@@ -1127,13 +1129,13 @@ pub(crate) async fn run_local_query(
     )
     .await?;
 
-    let Some(ref db) = state.db_reader else {
-        return Err("query endpoint not available (no db_reader)".to_string());
-    };
-
-    let data =
-        crate::query_guard::run_guarded_query(db, &guarded, vars, crate::limits::QUERY_ROW_CAP)
-            .await?;
+    let data = crate::query_guard::run_guarded_query_via_state(
+        state,
+        &guarded,
+        vars,
+        crate::limits::QUERY_ROW_CAP,
+    )
+    .await?;
     crate::query_guard::enforce_byte_ceiling(
         &data,
         crate::limits::QUERY_MAX_RESPONSE_BYTES,
@@ -1155,10 +1157,10 @@ pub(crate) async fn run_local_query(
 /// Contract (AGENTS.md §elevated-query): disabled unless the operator opted
 /// in (`ApiState.elevated_query_allowed`, env `FE_API_ELEVATED_ALLOW=1`);
 /// Owner only; NOT scope-confined — an Owner token of any verse reaches every
-/// verse's rows on this node, so enable only on a single-tenant node. Writes
-/// go straight to `db_reader`, bypassing the DB thread: they are not
-/// op-logged, not replicated, and not broadcast to the scene.
-/// Rate limited to 5 req/s per user.
+/// verse's rows on this node, so enable only on a single-tenant node. The
+/// script runs on the DB thread (single writer): a write is atomic with one
+/// op-log entry, then broadcast to the scene and replicated. Every DML
+/// statement carries a DB-side `TIMEOUT 5s`. Rate limited to 5 req/s per user.
 pub async fn execute_elevated_query(
     State(state): State<Arc<crate::server::ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -1190,56 +1192,63 @@ pub async fn execute_elevated_query(
         return Json(ApiResponse::<QueryResultDto>::error(e));
     }
 
-    let sql_trimmed = req.sql.trim();
-    // ASCII-only uppercasing keeps the validated text byte-aligned with the executed text.
-    let sql_upper = sql_trimmed.to_ascii_uppercase();
-
-    if let Err(e) =
-        crate::query_guard::validate_elevated_sql(&sql_upper, crate::query_guard::ELEVATED_TABLES)
-    {
-        return Json(ApiResponse::<QueryResultDto>::error(e));
-    }
-
-    let Some(ref db) = state.db_reader else {
-        return Json(ApiResponse::<QueryResultDto>::error(
-            "elevated query endpoint not available (no db_reader)",
-        ));
+    let plan = match crate::query_guard::validate_elevated_sql(
+        req.sql.trim(),
+        crate::query_guard::ELEVATED_TABLES,
+    ) {
+        Ok(plan) => plan,
+        Err(e) => return Json(ApiResponse::<QueryResultDto>::error(e)),
     };
 
-    let mut query_builder = db.query(sql_trimmed);
-    for (key, value) in &req.vars {
-        query_builder = query_builder.bind((key.clone(), value.clone()));
+    let correlation_id = ulid::Ulid::new().to_string();
+    let cmd = DbCommand::ElevatedQuery {
+        statements: plan.statements,
+        vars: req.vars,
+        write_tables: plan.write_tables,
+        actor_did: claims.sub.clone(),
+        correlation_id: correlation_id.clone(),
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .api_cmd_tx
+        .send(ApiCommand::DbRequest { cmd, reply_tx })
+        .is_err()
+    {
+        tracing::warn!("ElevatedQuery send failed (DB bridge gone)");
+        return Json(ApiResponse::<QueryResultDto>::error(
+            "internal channel closed",
+        ));
     }
-
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        query_builder.await
-    })
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(crate::query_guard::ELEVATED_REPLY_TIMEOUT_SECS),
+        reply_rx,
+    )
     .await;
-
-    match result {
-        Ok(Ok(mut response)) => {
-            let mut data = Vec::new();
-            let num = response.num_statements();
-            for idx in 0..num {
-                match response.take::<Vec<serde_json::Value>>(idx) {
-                    Ok(rows) => {
-                        data.extend(rows);
-                    }
-                    Err(_) => break,
-                }
-            }
-            Json(ApiResponse::success(QueryResultDto {
-                data,
-                crs: None,
-                distributed: None,
-            }))
-        }
-        Ok(Err(e)) => Json(ApiResponse::<QueryResultDto>::error(format!(
-            "query failed: {e}"
+    match reply {
+        Ok(Ok(DbResult::ElevatedQueryResult {
+            data,
+            correlation_id: echoed,
+            ..
+        })) if echoed == correlation_id => Json(ApiResponse::success(QueryResultDto {
+            data,
+            crs: None,
+            distributed: None,
+        })),
+        Ok(Ok(DbResult::RequestFailed {
+            error,
+            correlation_id: echoed,
+        })) if echoed == correlation_id => Json(ApiResponse::<QueryResultDto>::error(format!(
+            "query failed: {error}"
         ))),
-        Err(_) => Json(ApiResponse::<QueryResultDto>::error(
-            "query timed out (10s)",
+        // Defense in depth over the router: anything else is never our reply.
+        Ok(Ok(_)) => Json(ApiResponse::<QueryResultDto>::error(
+            "query failed: uncorrelated reply",
         )),
+        Ok(Err(_)) => Json(ApiResponse::<QueryResultDto>::error("request cancelled")),
+        Err(_) => Json(ApiResponse::<QueryResultDto>::error(format!(
+            "query timed out ({}s)",
+            crate::query_guard::STATEMENT_TIMEOUT_SECS
+        ))),
     }
 }
 
@@ -2347,6 +2356,7 @@ mod tests {
             distributed_tx: None,
             sim_control_tx: None,
             elevated_query_allowed: false,
+            upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 

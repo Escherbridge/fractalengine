@@ -20,23 +20,35 @@ pub fn scene_nodes_to_gpx(nodes: &[ExportNode], projection: &Projection) -> Stri
     xml.push_str("xmlns=\"http://www.topografix.com/GPX/1/1\" ");
     xml.push_str("xmlns:gpxtpx=\"http://www.garmin.com/xmlschemas/TrackPointExtension/v1\">\n");
 
-    // Separate waypoints and tracks
+    // GPX 1.1 allows `<wpt>` only at top level, before `<trk>`: emit every
+    // waypoint in the tree (incl. ones nested under their track) first.
+    write_waypoints_recursive(&mut xml, nodes, projection);
     for node in nodes {
-        let gpx_type = node
-            .properties
-            .as_ref()
-            .and_then(|p| p["gpx_type"].as_str())
-            .unwrap_or("");
-
-        match gpx_type {
-            "waypoint" => write_waypoint(&mut xml, node, projection),
-            "track" => write_track(&mut xml, node, projection),
-            _ => {}
+        if gpx_type_of(node) == "track" {
+            write_track(&mut xml, node, projection);
         }
     }
 
     xml.push_str("</gpx>\n");
     xml
+}
+
+/// The node's `properties.gpx_type`, or `""`.
+fn gpx_type_of(node: &ExportNode) -> &str {
+    node.properties
+        .as_ref()
+        .and_then(|p| p["gpx_type"].as_str())
+        .unwrap_or("")
+}
+
+/// Depth-first: write each `waypoint` node anywhere under `nodes` once.
+fn write_waypoints_recursive(xml: &mut String, nodes: &[ExportNode], projection: &Projection) {
+    for node in nodes {
+        if gpx_type_of(node) == "waypoint" {
+            write_waypoint(xml, node, projection);
+        }
+        write_waypoints_recursive(xml, &node.children, projection);
+    }
 }
 
 fn write_waypoint(xml: &mut String, node: &ExportNode, projection: &Projection) {

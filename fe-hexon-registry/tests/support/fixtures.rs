@@ -151,3 +151,63 @@ pub fn write_fixture_set(dir: &Path) {
             .expect("fixture write failed");
     }
 }
+
+/// Zero bytes one bomb entry inflates to: just over the 64 MiB per-entry cap,
+/// while the compressed archive stays well under 1 MiB.
+pub const BOMB_INFLATED_BYTES: u64 = (64 << 20) + (8 << 20);
+
+/// A hexon with a valid manifest and catalog whose `bomb_entry` inflates to
+/// `inflated` zero bytes; streamed in 1 MiB chunks, never held in memory.
+/// The catalog lists entry `bomb` with asset hash `bomb` (→ `assets/bomb`).
+pub fn bomb_hexon(id: &str, bomb_entry: &str, inflated: u64) -> Vec<u8> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let plain = SimpleFileOptions::default();
+    zip.start_file("manifest.json", plain).unwrap();
+    let manifest = manifest(id, "1.0.0", HexonType::Model, "Bomb", "zip bomb", &[]);
+    zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+        .unwrap();
+    if bomb_entry != "entries.json" {
+        zip.start_file("entries.json", plain).unwrap();
+        zip.write_all(br#"{"entries":[{"entry_id":"bomb","kind":"model","asset_hash":"bomb","format":"bin","label":"bomb"}]}"#)
+            .unwrap();
+    }
+    let deflate = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(1));
+    zip.start_file(bomb_entry, deflate).unwrap();
+    let chunk = vec![0u8; 1 << 20];
+    let mut left = inflated;
+    while left > 0 {
+        let n = left.min(chunk.len() as u64) as usize;
+        zip.write_all(&chunk[..n]).unwrap();
+        left -= n as u64;
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// Rewrite the declared uncompressed size of `name` in its local and central
+/// headers — the "lying header" bomb variant.
+pub fn falsify_declared_size(zip: &mut [u8], name: &str, declared: u32) {
+    let name = name.as_bytes();
+    let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+    let mut patched = 0;
+    for i in 0..zip.len().saturating_sub(46) {
+        let (sig, size_at, name_len_at, name_at) = match &zip[i..i + 4] {
+            [0x50, 0x4b, 3, 4] => (0, 22, 26, 30),
+            [0x50, 0x4b, 1, 2] => (1, 24, 28, 46),
+            _ => continue,
+        };
+        let len = u16_at(zip, i + name_len_at);
+        if zip.get(i + name_at..i + name_at + len) == Some(name) {
+            zip[i + size_at..i + size_at + 4].copy_from_slice(&declared.to_le_bytes());
+            patched |= 1 << sig;
+        }
+    }
+    assert_eq!(
+        patched, 0b11,
+        "both headers of the bomb entry must be patched"
+    );
+}

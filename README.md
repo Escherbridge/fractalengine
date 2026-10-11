@@ -104,6 +104,9 @@ cargo test -p fe-identity
 |---|---|---|---|
 | `RUST_LOG` | No | `info` | Log level filter (`trace`, `debug`, `info`, `warn`, `error`) |
 | `SURREAL_SYNC_DATA` | Yes (set at runtime) | `false` | **Must be `true`** for crash-safe database writes |
+| `FE_API_UPLOAD_QUOTA_BYTES` | No | `2147483648` | Cap on registered API-uploaded asset bytes per owner (413 past it) |
+| `FE_ASSET_GC_INTERVAL_SECS` | No | `3600` | Seconds between unreferenced-asset GC passes (`0` disables) |
+| `FE_ASSET_GC_GRACE_SECS` | No | `86400` | Minimum age of an unreferenced asset before GC deletes it |
 
 ---
 

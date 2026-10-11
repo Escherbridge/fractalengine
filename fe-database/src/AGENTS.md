@@ -344,6 +344,31 @@ Legacy `CreateNode` and hard `DeleteNode` now record `NodeCreated` and
 pre-track physical-row semantics, including its direct-GPX-waypoint cascade;
 the newer tombstone commands remain the only sync-safe deletion path.
 
+**Atomic variant — `commit_operation_atomic(db, entry, statements,
+bindings)` (2026-10-11).** When the materialization is a list of SurrealQL
+statements (no Rust-side logic between them), prefer this seam: it stamps the
+HLC and runs `BEGIN; CREATE op_log CONTENT $__op_entry; <statements>; COMMIT`
+as ONE transaction, so a failing statement rolls back the log row too — no
+appended-but-unmaterialized window (proven by
+`a_failing_statement_rolls_back_the_op_log_row_too`, the
+`apply_marker_store` SPEC-4 §3.5 recipe). It returns the lamport clock and
+each executed caller statement's rows: the result slots are
+`[BEGIN, CREATE, caller…, COMMIT]` (BEGIN and COMMIT each occupy a NONE slot
+in SurrealDB 3.0.5), so caller rows are slots `2..len-1`; a caller `RETURN`
+ends the transaction's statement list early, so fewer rows than statements
+can come back. Bindings starting `__op_` are refused (reserved). On failure
+the error is the first statement error that is not SurrealDB's generic
+"not executed due to a failed transaction" echo (`most_specific_error`).
+Both seams serialize the entry through one helper (`op_entry_json`, nulls
+stripped like `Repo::create_raw`). `commit_operation_atomic_with(db, entry,
+|lamport| (statements, bindings))` is the same seam for statements that must
+carry the op's own clock; `commit_operation_atomic` delegates to it. Callers:
+`handlers/elevated_query.rs`, and `TombstoneNode` / `CascadeTombstoneNode`
+(`crud.rs::commit_tombstone_atomic`, §lifecycle). Do NOT wrap a
+call in `tokio::time::timeout` expecting a rollback: dropping the future does
+not cancel the embedded engine's spawned query task (the transaction still
+commits) — bound statements with a DB-side `TIMEOUT` instead.
+
 This is substrate hardening only. `OpLogEntry` still uses the legacy local
 format and placeholder signatures; do not add canonical-envelope, signature,
 or wire semantics here.
@@ -353,7 +378,17 @@ or wire semantics here.
 `handlers/` holds the command handlers extracted from the DB dispatch loop,
 one sub-module per domain:
 
-- `crud` — Verse/Fractal/Petal/Node creation, GLTF import, hierarchy loading
+- `crud` — Verse/Fractal/Petal/Node creation, GLTF import, hierarchy loading;
+  API asset registration (`create_asset_reply` / `AssetRegistration`, which
+  writes the `owner_did` + anchor `petal_id` columns — fe-api AGENTS.md §assets)
+- `asset_gc` — `GcUnreferencedAssets` (fe-api AGENTS.md §asset-ingest): deletes
+  `asset` rows no `node` references (tombstoned nodes count) older than the
+  grace, then removes only THEIR blobs that no remaining `asset` /
+  `crate_entry.asset_hash` / node `properties.path_asset.asset_path`
+  (`blob://{hash}.{ext}` stamp descriptor) names. Never scans the blob directory (replication
+  and hexon blobs share the store). Fire-and-forget: success replies
+  `AssetsGarbageCollected`; failure is only logged, because an uncorrelated
+  `Error` would be delivered to the oldest API waiter
 - `entity` — rename, delete, description updates
 - `entity_property` — custom property CRUD for nodes
 - `field_def` — field definition schema CRUD
@@ -365,7 +400,25 @@ one sub-module per domain:
 - `seed` — default data seeding
 - `admin` — database reset
 - `crate_registry` — hexon crate registry install/uninstall
-- `petal_terrain` — per-petal terrain config get/set
+- `petal_terrain` — per-petal terrain config get/set; `*_reply` builders answer
+  correlated (API) callers privately (`PetalTerrainFetched` / `RequestFailed`)
+- `raw_query` — `RawQuery` reply (`raw_query_reply`): SELECT-only keyword
+  blocklist, `QueryResult`/`QueryFailed` echoing the caller's correlation id
+- `elevated_query` — `ElevatedQuery` reply (`elevated_query_reply`), the
+  `/api/v1/query/elevated` single-writer path (fe-api AGENTS.md
+  §elevated-query): DB-side table mirror `ELEVATED_WRITABLE_TABLES`; a
+  read-only script runs as-is; a write script is capped at
+  `ELEVATED_DIFF_MAX_ROWS` (20 000) rows across its write tables, then
+  snapshot → `commit_operation_atomic` (one `OpType::ElevatedQuery` entry) →
+  post-snapshot diff → `edit_seq += 1` on updated nodes → one `node_log`
+  `elevated_write` fact per changed node (§node-log) → `SceneChange`s →
+  `replicate_row_with_petal` per created/updated `node`/`fractal`/`petal` row
+  (durable first, then events). Node scene mapping reuses
+  `replicated_row::node_dto_from_row`. No wall-clock budget wraps the call
+  (a dropped future does not cancel the transaction — §log-first-commit);
+  DML statements arrive with `TIMEOUT 5s`
+- `mod.rs::correlated_failure` — `RequestFailed` for a correlated caller, the
+  wildcard `Error` otherwise (fe-runtime src/AGENTS.md §api-reply-correlation)
 - `iot_reading` — append-only IoT sensor-reading ingestion (§iot-readings)
 - `ts_partial` — local partial execution for distributed timeseries queries
   (§ts-partials): renders the structured spec's SQL via the fe-query builders,
@@ -523,6 +576,16 @@ The right-hand side of `=>` for each field is the SurrealQL type clause
 (everything after `ON TABLE <name>`); it can include `ASSERT`, `VALUE`,
 `DEFAULT`, and `FLEXIBLE` modifiers.
 
+**Id lookup indexes.** `apply_all` also defines `idx_petal_id`,
+`idx_fractal_id`, `idx_node_id`, `idx_verse_id` on each hierarchy table's OWN
+id column, backing the scope resolvers' `WHERE <id> = $x LIMIT 1` point reads
+(crud.rs `resolve_*_scope_handler`, fe-api `rest.rs` resolvers — fe-api
+AGENTS §existence-oracle). They are plain, not UNIQUE: a UNIQUE definition
+validates existing rows eagerly and would fail startup on a store holding
+duplicate ids written by raw/elevated SQL (cf. the `reading_id` fallback);
+the goal is lookup cost, not enforcement. `IF NOT EXISTS` keeps them
+idempotent on populated stores (`schema_idempotent.rs::id_lookup_indexes_exist_after_apply_all`).
+
 ## §scope
 
 Scope strings are `VERSE#<v>[-FRACTAL#<f>[-PETAL#<p>]]` (`scope.rs`).
@@ -562,13 +625,17 @@ tombstone for anything sync-safe.
 over the durable parent edges (`properties.parent_id` / `gpx_track_id` /
 `owning_path_id`, de-duplicated, depth-capped), appends its operation through
 §log-first-commit, then stamps the whole set in one UPDATE statement. The
-operation append and row update are not yet one transaction: a failed update
-leaves a replayable pending operation rather than unlogged state.
+operation append and the row update are ONE transaction
+(`commit_tombstone_atomic` → `op_log::commit_operation_atomic_with`, whose
+closure builds the `$ts` marker from the stamped lamport): a failing update
+rolls the `NodeTombstoned` row back too, so there is never a
+logged-but-unapplied cascade (`tombstone_atomicity_tests` injects a THROWing
+node EVENT). The single-node `tombstone_node_handler` uses the same seam.
 The dispatcher emits one petal-scoped `SceneChange::NodeRemoved` per id in the
 materialized subtree, so `EntityStore` and WebSocket mirrors discard every
 affected descendant rather than only the cascade root.
 An already-tombstoned root is an idempotent no-op: the handler returns an empty
-affected set before `commit_operation`, so it appends no second operation,
+affected set before the atomic commit, so it appends no second operation,
 updates no rows, and emits no duplicate scene or lifecycle event.
 
 **Merge non-resurrection (`merge.rs`, N-4).** `apply_replicated_node` is the

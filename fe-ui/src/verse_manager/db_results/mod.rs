@@ -92,6 +92,10 @@ pub(super) fn apply_db_results(
                 &mut caches.ts_settings,
             ),
             DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
+            // Still falls through to `try_deliver`: the API caller awaits it.
+            DbResult::ElevatedQueryResult { changed_rows, .. } => {
+                hierarchy::handle_elevated_query_result(*changed_rows, &db_sender)
+            }
             DbResult::DatabaseReset { .. } => {
                 caches.primitive.clear();
                 caches.path_asset.clear();
@@ -271,15 +275,42 @@ pub(super) fn apply_db_results(
             DbResult::ScopedApiTokensListed { tokens, total } => {
                 tokens::handle_scoped_api_tokens_listed(tokens, *total, &mut ui_mgr, &mut inspector)
             }
-            // Correlated (API-originated) results belong to their API waiter
-            // only — they fall through to `try_deliver` below (M4 fix B2).
+            // GUI queries are correlated (`ui-*` ids): a reply lands only in
+            // the buffer holding its id; anything unclaimed (an API waiter's
+            // ULID) falls through to `try_deliver` (M4 fix B2).
+            DbResult::QueryResult {
+                data,
+                correlation_id: Some(id),
+            } => {
+                if query::route_query_reply(
+                    id,
+                    Ok(data),
+                    &mut gis_panel,
+                    &mut path_state,
+                    &mut inspector,
+                ) {
+                    continue;
+                }
+            }
+            DbResult::QueryFailed {
+                error,
+                correlation_id,
+            } => {
+                if query::route_query_reply(
+                    correlation_id,
+                    Err(error),
+                    &mut gis_panel,
+                    &mut path_state,
+                    &mut inspector,
+                ) {
+                    continue;
+                }
+            }
             DbResult::QueryResult {
                 data,
                 correlation_id: None,
             } => query::handle_query_result(data, &mut gis_panel, &mut path_state, &mut inspector),
-            DbResult::Error(msg) => {
-                query::handle_error(msg, &mut gis_panel, &mut path_state, &mut inspector)
-            }
+            DbResult::Error(msg) => query::handle_error(msg, &mut path_state),
             // Property handlers return `false` to skip `try_deliver` for stale/unselected results.
             DbResult::NodePropertiesLoaded {
                 node_id,
@@ -449,6 +480,15 @@ mod tests {
         hierarchy::handle_seeded(&tx);
         assert!(matches!(rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
         hierarchy::handle_verse_joined(&tx);
+        assert!(matches!(rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
+    }
+
+    #[test]
+    fn only_an_elevated_write_that_changed_rows_reloads_the_tree() {
+        let (tx, rx) = sender();
+        hierarchy::handle_elevated_query_result(0, &tx);
+        assert!(rx.try_recv().is_err(), "a read-only script changes nothing");
+        hierarchy::handle_elevated_query_result(3, &tx);
         assert!(matches!(rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
     }
 
@@ -1057,53 +1097,92 @@ mod tests {
 
     // --- query / error routing ---
 
-    #[test]
-    fn error_routes_by_claim_priority() {
-        // gis panel first
-        let (mut gis, mut path, mut ins) = (
-            GisPanelState::default(),
-            PathEditorState::default(),
-            InspectorFormState::default(),
-        );
+    type QueryBuffers = (GisPanelState, PathEditorState, InspectorFormState);
+
+    /// Each GUI query sender mints its own id into its own buffer.
+    fn buffers_with_ids(gis_id: &str, tracks_id: &str, query_id: &str) -> QueryBuffers {
+        let (mut gis, mut path, mut ins) = QueryBuffers::default();
         gis.query_pending = true;
-        query::handle_error("boom", &mut gis, &mut path, &mut ins);
-        assert_eq!(gis.last_error.as_deref(), Some("boom"));
-        assert!(!gis.query_pending);
-        // then paths tab
-        let (mut gis, mut path, mut ins) = (
-            GisPanelState::default(),
-            PathEditorState::default(),
-            InspectorFormState::default(),
-        );
+        gis.query_request_id = Some(gis_id.to_string());
         path.tracks_pending = true;
-        query::handle_error("boom", &mut gis, &mut path, &mut ins);
-        assert_eq!(path.last_error.as_deref(), Some("boom"));
-        // then ad-hoc query tab
-        let (mut gis, mut path, mut ins) = (
-            GisPanelState::default(),
-            PathEditorState::default(),
-            InspectorFormState::default(),
-        );
+        path.tracks_request_id = Some(tracks_id.to_string());
         ins.query_loading = true;
-        query::handle_error("boom", &mut gis, &mut path, &mut ins);
-        assert_eq!(ins.query_result.as_deref(), Some("Error: boom"));
-        assert!(!ins.query_loading);
+        ins.query_request_id = Some(query_id.to_string());
+        (gis, path, ins)
     }
 
+    fn track_row(node_id: &str) -> serde_json::Value {
+        json!({
+            "node_id": node_id,
+            "display_name": node_id,
+            "position": { "type": "Point", "coordinates": [0.0, 0.0] },
+            "elevation": 0.0,
+        })
+    }
+
+    /// FEUI-QUERY-REPLY-ROUTING: GIS, Paths and Query-tab queries all in
+    /// flight, replies arriving in reverse order (and one as a failure) —
+    /// each lands in its own buffer, never by flag priority.
     #[test]
-    fn query_result_falls_back_to_inspector_buffer() {
-        let (mut gis, mut path, mut ins) = (
-            GisPanelState::default(),
-            PathEditorState::default(),
-            InspectorFormState::default(),
-        );
-        ins.query_loading = true;
-        query::handle_query_result(&[json!({"a": 1})], &mut gis, &mut path, &mut ins);
+    fn interleaved_query_replies_land_in_their_own_buffers() {
+        let (mut gis, mut path, mut ins) =
+            buffers_with_ids("ui-gis-1", "ui-tracks-2", "ui-query-3");
+        let query_rows = [json!({ "tab": "query" })];
+        let track_rows = [track_row("track-1")];
+        let replies: [(&str, Result<&[serde_json::Value], &str>); 3] = [
+            ("ui-query-3", Ok(&query_rows)),
+            ("ui-tracks-2", Ok(&track_rows)),
+            ("ui-gis-1", Err("gis boom")),
+        ];
+        for (id, reply) in replies {
+            assert!(
+                query::route_query_reply(id, reply, &mut gis, &mut path, &mut ins),
+                "{id} must be claimed"
+            );
+        }
         assert!(ins
             .query_result
             .as_deref()
-            .is_some_and(|s| s.contains("\"a\": 1")));
-        assert!(!ins.query_loading);
+            .is_some_and(|s| s.contains("\"tab\": \"query\"")));
+        assert!(!ins.query_loading && ins.query_request_id.is_none());
+        assert_eq!(path.tracks.len(), 1);
+        assert_eq!(path.tracks[0].node_id, "track-1");
+        assert!(!path.tracks_pending && path.tracks_request_id.is_none());
+        assert_eq!(gis.last_error.as_deref(), Some("gis boom"));
+        assert!(
+            gis.results.is_empty(),
+            "the Query-tab rows must not reach GIS"
+        );
+        assert!(!gis.query_pending && gis.query_request_id.is_none());
+    }
+
+    /// An API waiter's ULID-correlated reply and a stale GUI id (the user
+    /// re-submitted, minting a new one) claim no buffer and touch nothing.
+    #[test]
+    fn foreign_or_stale_query_ids_claim_nothing() {
+        for id in ["01HZXAPIULIDAPIULIDAPIULID", "ui-gis-0"] {
+            let (mut gis, mut path, mut ins) =
+                buffers_with_ids("ui-gis-1", "ui-tracks-2", "ui-query-3");
+            let rows = [json!({ "leak": true })];
+            assert!(
+                !query::route_query_reply(id, Ok(&rows), &mut gis, &mut path, &mut ins),
+                "{id} must not be claimed"
+            );
+            assert!(gis.query_pending && gis.results.is_empty());
+            assert!(path.tracks_pending && path.tracks.is_empty());
+            assert!(ins.query_loading && ins.query_result.is_none());
+        }
+    }
+
+    /// A bare DB `Error` (some unrelated command failed) no longer clobbers
+    /// an in-flight query buffer — query failures arrive as `QueryFailed`.
+    #[test]
+    fn bare_error_leaves_pending_query_buffers_alone() {
+        let (gis, mut path, ins) = buffers_with_ids("ui-gis-1", "ui-tracks-2", "ui-query-3");
+        query::handle_error("unrelated failure", &mut path);
+        assert!(gis.query_pending && gis.last_error.is_none());
+        assert!(path.tracks_pending && path.last_error.is_none());
+        assert!(ins.query_loading && ins.query_result.is_none());
     }
 
     // --- property handlers (continue semantics) ---

@@ -12,11 +12,28 @@ Bevy) wraps the decoded bytes into `bevy::image::Image` + `StandardMaterial`
 — see `fe-ui/src/verse_manager/AGENTS.md` §primitives. Missing/undecodable
 blobs resolve to `None` per role rather than failing the whole material.
 
-`registry::FsBlobStore::default_path()`/`open_default()` mirror
-`fe_sync::FsBlobStore`'s convention (`{dirs::data_local_dir()}/fractalengine/...`)
-but live in a separate directory (`hexon_blobs/`) since hexon-installed
-material/texture blobs are a distinct content-addressed store from the P2P
-sync blob store.
+## §blob-store (RT-FSBLOB, 2026-10-11)
+
+`registry::FsBlobStore` shares the runtime store's canonical layout
+(`{root}/{hex[0..2]}/{hex}`, fe-runtime/src/AGENTS.md §blob-store) and its
+default root (`{data_local_dir}/fractalengine/blobs`), so hexon installs and
+the P2P/runtime store are ONE content-addressed store. `store` refuses a
+non-64-hex hash or a `blake3(data)` mismatch (`RegistryError::Package`) and
+writes atomically; `has` answers `false` for an invalid hash. The old flat
+`hexon_blobs/{hash}` directory is not migrated: production never constructs a
+`HexonRegistry` (only `TilesetRegistry`), so nothing was ever installed
+there. Test fixtures must use `signature::asset_hash(&bytes)`, not fake hashes.
+
+## §package-open limits (REG-DECOMP, 2026-10-11)
+
+`HexonPackage::open` reads every entry through
+`fe_format::read_entry_capped` with one shared budget per package (JSON /
+text entries 8 MiB, binary 64 MiB, 1 GiB total, ≤ 200 000 entries — fe-format
+AGENTS.md §decompression-limits), so a crate install (`fe-api/src/hexon.rs`)
+refuses a zip bomb instead of inflating it. This is why fe-format is a
+regular dependency here. Behaviour change: a read error on the optional
+`icon.png` / `README.md` / `schema.json` now fails `open` instead of being
+treated as absent (a non-UTF-8 README/schema is still treated as absent).
 
 ## §authz (auth_policy_pattern_20260710 — Phase 8.4 gap closure)
 

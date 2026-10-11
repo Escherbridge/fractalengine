@@ -69,12 +69,11 @@ pub struct GisPanelState {
     pub bbox_max: [String; 2],
     // Shared result state
     pub results: Vec<GisResultRow>,
-    /// `true` while a `RawQuery` round-trip issued by this panel is in
-    /// flight — lets `verse_manager::db_results` route the (untagged)
-    /// `DbResult::QueryResult` here instead of the inspector's ad-hoc Query
-    /// tab buffer. See AGENTS.md for why `DbResult::QueryResult` has no
-    /// request-id to correlate against instead.
+    /// `true` while a `RawQuery` round-trip issued by this panel is in flight.
     pub query_pending: bool,
+    /// Correlation id of the in-flight panel query; only the reply echoing it
+    /// lands here (`verse_manager::db_results::query::route_query_reply`).
+    pub query_request_id: Option<String>,
     pub last_error: Option<String>,
     /// Export-tab "Copy for BI" card state (analytics_egress_20260714).
     pub(crate) egress: egress_strings::EgressCardState,
@@ -93,6 +92,7 @@ impl Default for GisPanelState {
             bbox_max: ["50".into(), "50".into()],
             results: Vec::new(),
             query_pending: false,
+            query_request_id: None,
             last_error: None,
             egress: egress_strings::EgressCardState::default(),
         }
@@ -220,11 +220,11 @@ pub struct PathPointRow {
 pub struct PathEditorState {
     /// Track nodes in the active petal, refreshed via `track_query`.
     pub tracks: Vec<GisResultRow>,
-    /// `true` while a `RawQuery` round-trip for the track list is in
-    /// flight — same routing flag idiom as `GisPanelState::query_pending`,
-    /// kept separate since Paths and Query/Annotations can be open on
-    /// different tabs whose `RawQuery` replies would otherwise collide.
+    /// `true` while a `RawQuery` round-trip for the track list is in flight.
     pub tracks_pending: bool,
+    /// Correlation id of the in-flight track-list query; only the reply
+    /// echoing it lands in `tracks` (see `GisPanelState::query_request_id`).
+    pub tracks_request_id: Option<String>,
     /// Buffer for the "New Path" name field.
     pub new_track_name_buf: String,
     /// The track node currently selected for editing, if any.
@@ -445,6 +445,7 @@ impl PathEditorState {
         self.stop_editing();
         self.tracks.clear();
         self.tracks_pending = false;
+        self.tracks_request_id = None;
         self.last_error = None;
         self.pending_track_delete = None;
     }

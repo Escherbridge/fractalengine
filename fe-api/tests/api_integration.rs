@@ -396,3 +396,50 @@ async fn query_byte_ceiling_errors_not_truncates() {
     assert!(err.contains("result size exceeds ceiling (8 MiB)"), "{err}");
     assert!(body["data"].is_null(), "no partial data on limit violation");
 }
+
+/// GPX export over HTTP: a waypoint linked to its track by
+/// `properties.gpx_track_id` nests under it and is still exported (as a
+/// top-level `<wpt>`), and an orphan waypoint is exported as a root — each once.
+#[tokio::test]
+async fn gpx_export_emits_track_and_both_waypoints_exactly_once() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let hier = h.seed_hierarchy().await.expect("seed hierarchy");
+    let p = &hier.petal_id;
+    let track = h
+        .seed_node(
+            p,
+            "Ridge",
+            [0.0, 0.0, 0.0],
+            Some(json!({ "gpx_type": "track" })),
+        )
+        .await
+        .expect("seed track");
+    h.seed_node(
+        p,
+        "Summit",
+        [1.0, 0.0, 1.0],
+        Some(json!({ "gpx_type": "waypoint", "name": "Summit", "gpx_track_id": track })),
+    )
+    .await
+    .expect("seed track waypoint");
+    h.seed_node(
+        p,
+        "Spring",
+        [2.0, 0.0, 2.0],
+        Some(json!({ "gpx_type": "waypoint", "name": "Spring", "gpx_track_id": ulid::Ulid::new().to_string() })),
+    )
+    .await
+    .expect("seed orphan waypoint");
+    let token = h.mint_token(&hier.verse_scope(), "editor");
+
+    let (status, ctype, body) =
+        get_raw(&h, &format!("/api/v1/petals/{p}/export/gpx"), &token).await;
+    let xml = String::from_utf8(body).expect("utf-8 GPX");
+
+    assert_eq!(status, StatusCode::OK, "{xml}");
+    assert_eq!(ctype, "application/gpx+xml");
+    assert_eq!(xml.matches("<trk>").count(), 1, "{xml}");
+    assert_eq!(xml.matches("<wpt ").count(), 2, "{xml}");
+    assert_eq!(xml.matches("<name>Summit</name>").count(), 1, "{xml}");
+    assert_eq!(xml.matches("<name>Spring</name>").count(), 1, "{xml}");
+}

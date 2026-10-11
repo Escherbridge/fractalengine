@@ -167,11 +167,106 @@ where
     })
 }
 
+/// Binding-name prefix reserved for [`commit_operation_atomic`]'s own binds.
+pub const RESERVED_OP_BINDING_PREFIX: &str = "__op_";
+
+/// Log-first commit where the op-log row and `statements` share ONE SurrealDB
+/// transaction: a failing statement rolls back the log row too. Returns the
+/// stamped lamport clock and each executed caller statement's rows (the
+/// op-log CREATE and BEGIN/COMMIT slots are offset out). See `src/AGENTS.md`
+/// §log-first-commit.
+pub async fn commit_operation_atomic(
+    db: &Db,
+    entry: OpLogEntry,
+    statements: &[String],
+    bindings: Vec<(String, serde_json::Value)>,
+) -> anyhow::Result<(u64, Vec<Vec<serde_json::Value>>)> {
+    let statements = statements.to_vec();
+    commit_operation_atomic_with(db, entry, move |_| (statements, bindings)).await
+}
+
+/// [`commit_operation_atomic`] whose statements and bindings are built from the
+/// stamped lamport clock (e.g. a tombstone marker carrying the op's HLC).
+pub async fn commit_operation_atomic_with<F>(
+    db: &Db,
+    mut entry: OpLogEntry,
+    build: F,
+) -> anyhow::Result<(u64, Vec<Vec<serde_json::Value>>)>
+where
+    F: FnOnce(u64) -> (Vec<String>, Vec<(String, serde_json::Value)>),
+{
+    let (lamport, hlc_ts) = next_hlc_timestamp();
+    let (statements, bindings) = build(lamport);
+    if let Some((name, _)) = bindings
+        .iter()
+        .find(|(name, _)| name.starts_with(RESERVED_OP_BINDING_PREFIX))
+    {
+        anyhow::bail!("binding '{name}' uses the reserved '{RESERVED_OP_BINDING_PREFIX}' prefix");
+    }
+    entry.lamport_clock = lamport;
+    entry.hlc_timestamp = hlc_ts;
+
+    let mut script = String::from("BEGIN TRANSACTION;\nCREATE op_log CONTENT $__op_entry;\n");
+    for (index, statement) in statements.iter().enumerate() {
+        let trimmed = statement.trim().trim_end_matches(';').trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("statement {index} is empty");
+        }
+        script.push_str(trimmed);
+        script.push_str(";\n");
+    }
+    script.push_str("COMMIT TRANSACTION;");
+
+    let mut query = db.query(script).bind(("__op_entry", op_entry_json(entry)?));
+    for binding in bindings {
+        query = query.bind(binding);
+    }
+    let mut response = query.await.context("atomic operation commit failed")?;
+    let errors = response.take_errors();
+    if !errors.is_empty() {
+        anyhow::bail!("{}", most_specific_error(errors));
+    }
+    // Slots: [BEGIN, CREATE op_log, caller…, COMMIT]. A caller `RETURN`
+    // skips the rest of the transaction's statements, so there may be fewer
+    // caller slots than statements (src/AGENTS.md §log-first-commit).
+    let num = response.num_statements();
+    let mut rows = Vec::with_capacity(statements.len());
+    for index in 2..num.saturating_sub(1) {
+        rows.push(
+            response
+                .take::<Vec<serde_json::Value>>(index)
+                .with_context(|| format!("reading statement {} result", index - 2))?,
+        );
+    }
+    Ok((lamport, rows))
+}
+
+/// The error that explains a failed transaction: the first one that is not
+/// SurrealDB's generic "not executed due to a failed transaction" echo.
+pub(crate) fn most_specific_error(
+    errors: std::collections::HashMap<usize, surrealdb::Error>,
+) -> String {
+    let mut errors: Vec<(usize, String)> = errors
+        .into_iter()
+        .map(|(index, error)| (index, error.to_string()))
+        .collect();
+    errors.sort_by_key(|(index, _)| *index);
+    errors
+        .iter()
+        .find(|(_, text)| !text.contains("due to a failed transaction"))
+        .or_else(|| errors.first())
+        .map(|(_, text)| text.clone())
+        .unwrap_or_default()
+}
+
 /// Persist a pre-stamped operation entry. Only [`commit_operation`] may call this.
 async fn append_operation_log(db: &Db, entry: OpLogEntry) -> anyhow::Result<()> {
-    let val = serde_json::to_value(entry)?;
-    Repo::<OpLog>::create_raw(db, val).await?;
-    Ok(())
+    Repo::<OpLog>::create_raw(db, op_entry_json(entry)?).await
+}
+
+/// The stored JSON shape of an op-log entry, shared by both commit seams.
+fn op_entry_json(entry: OpLogEntry) -> anyhow::Result<serde_json::Value> {
+    Ok(crate::repo::strip_json_nulls(serde_json::to_value(entry)?))
 }
 
 pub async fn query_petal_at_time(
@@ -289,6 +384,129 @@ mod tests {
         let (b, _) = next_hlc_timestamp();
         assert_eq!(b & 0xFFFF, 0, "counter should reset to 0 after overflow");
         assert!(b > a, "b should still be monotonically greater");
+    }
+
+    async fn op_log_count(db: &Db) -> usize {
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT count() AS n FROM op_log GROUP ALL")
+            .await
+            .expect("count op_log")
+            .take(0)
+            .expect("count rows");
+        rows.first().and_then(|row| row["n"].as_u64()).unwrap_or(0) as usize
+    }
+
+    async fn probe_db() -> Db {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("op_log").use_db("op_log").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("apply schema");
+        db.query("DEFINE TABLE IF NOT EXISTS atomicity_probe SCHEMALESS")
+            .await
+            .expect("probe table")
+            .check()
+            .expect("probe table ok");
+        db
+    }
+
+    fn probe_entry() -> OpLogEntry {
+        OpLogEntry {
+            lamport_clock: 0,
+            hlc_timestamp: String::new(),
+            node_id: crate::types::NodeId("did:key:z6MkProbe".to_string()),
+            op_type: crate::types::OpType::ElevatedQuery,
+            payload: serde_json::json!({ "probe": true }),
+            sig: "00".repeat(64),
+        }
+    }
+
+    // The HLC lock is held across awaits on purpose: other tests reset the
+    // process-global HLC to `None`, and the commit stamps it.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn atomic_commit_logs_once_and_returns_each_statement_rows() {
+        let _g = lock_and_reset();
+        init_hlc(0);
+        let db = probe_db().await;
+        let (lamport, rows) = commit_operation_atomic(
+            &db,
+            probe_entry(),
+            &[
+                "CREATE atomicity_probe CONTENT { tag: $tag }".to_string(),
+                "SELECT VALUE tag FROM atomicity_probe".to_string(),
+            ],
+            vec![("tag".to_string(), serde_json::json!("kept"))],
+        )
+        .await
+        .expect("atomic commit");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1], vec![serde_json::json!("kept")]);
+
+        assert_eq!(op_log_count(&db).await, 1);
+        let logged: Vec<serde_json::Value> = db
+            .query("SELECT lamport_clock, op_type FROM op_log")
+            .await
+            .expect("read op_log")
+            .take(0)
+            .expect("op_log rows");
+        assert_eq!(logged[0]["lamport_clock"].as_u64(), Some(lamport));
+        assert_eq!(logged[0]["op_type"], "ElevatedQuery");
+        // A `LET` slot (no rows) inside the transaction does not break slot reading.
+        let (_, rows) = commit_operation_atomic(
+            &db,
+            probe_entry(),
+            &[
+                "LET $t = 'let-bound'".to_string(),
+                "CREATE atomicity_probe CONTENT { tag: $t }".to_string(),
+                "SELECT VALUE tag FROM atomicity_probe WHERE tag = 'let-bound'".to_string(),
+            ],
+            Vec::new(),
+        )
+        .await
+        .expect("atomic commit with LET");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2], vec![serde_json::json!("let-bound")]);
+        assert_eq!(op_log_count(&db).await, 2, "one entry per commit");
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn a_failing_statement_rolls_back_the_op_log_row_too() {
+        let _g = lock_and_reset();
+        init_hlc(0);
+        let db = probe_db().await;
+        let error = commit_operation_atomic(
+            &db,
+            probe_entry(),
+            &[
+                "CREATE atomicity_probe CONTENT { tag: 'doomed' }".to_string(),
+                "THROW 'induced failure'".to_string(),
+            ],
+            Vec::new(),
+        )
+        .await
+        .expect_err("a throwing statement must fail the whole commit");
+        assert!(error.to_string().contains("induced failure"), "{error}");
+        assert_eq!(op_log_count(&db).await, 0, "the log row rolled back");
+        let probes: Vec<serde_json::Value> = db
+            .query("SELECT * FROM atomicity_probe")
+            .await
+            .expect("read probes")
+            .take(0)
+            .expect("probe rows");
+        assert!(probes.is_empty(), "the write rolled back: {probes:?}");
+
+        let refused = commit_operation_atomic(
+            &db,
+            probe_entry(),
+            &["RETURN 1".to_string()],
+            vec![("__op_entry".to_string(), serde_json::json!({}))],
+        )
+        .await
+        .expect_err("a caller binding may not shadow the log entry");
+        assert!(refused.to_string().contains("reserved"), "{refused}");
+        assert_eq!(op_log_count(&db).await, 0);
     }
 
     /// A fixed fake clock source for the override tests (a real test would

@@ -14,6 +14,7 @@ remote = ["dep:reqwest"]
 fe-runtime = { path = "../fe-runtime" }
 fe-identity = { path = "../fe-identity" }
 fe-policy = { path = "../fe-policy" }
+fe-format = { path = "../fe-format" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -36,7 +37,6 @@ dirs = "5"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
 
 [dev-dependencies]
-fe-format = { path = "../fe-format" }
 fe-terrain = { path = "../fe-terrain" }
 fe-hexon-registry = { path = "../fe-hexon-registry" }
 axum = { workspace = true }

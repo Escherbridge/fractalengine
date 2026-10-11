@@ -78,7 +78,9 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "SetPetalTerrain",
     "SetVerseTimeseriesSettings",
     "CreateAsset",
+    "GcUnreferencedAssets",
     "CreateNodeWithAsset",
+    "ElevatedQuery",
 ];
 
 /// Registry of every currently-dispatched mutation kind's canonical-mapping

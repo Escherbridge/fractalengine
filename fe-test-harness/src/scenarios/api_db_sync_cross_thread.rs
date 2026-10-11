@@ -19,13 +19,11 @@
 //! bob's durable store proves the row that crossed the API is the row that
 //! landed on the other peer.
 //!
-//! `/api/v1/query` is NOT used for the read-back: it hard-requires
-//! `db_reader` (fe-api/src/rest.rs::run_local_query), which this scenario
-//! deliberately leaves unset to force the DB-thread channel contract FR-5
-//! names. Reading back through a route that cannot run with that
-//! contract active would prove nothing about the seam under test; the
-//! read-back therefore uses the harness's own established pattern
-//! (`DbCommand::RawQuery`, see `two_peer_replica_sync.rs` step 7).
+//! The read-back uses bob's DB thread directly (`DbCommand::RawQuery`, the
+//! harness pattern of `two_peer_replica_sync.rs` step 7), not `/api/v1/query`:
+//! the row must be proven on the OTHER peer's durable store. (`/query` no
+//! longer hard-requires `db_reader` — it falls back to the correlated
+//! DB-thread channel, fe-api AGENTS.md §export.)
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -155,6 +153,7 @@ async fn run_async() -> Result<TestResult> {
         distributed_tx: None,
         sim_control_tx: None,
         elevated_query_allowed: false,
+        upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
     });
     let router = build_router(state.clone());

@@ -29,6 +29,10 @@ pub const MCP_ROUTE_BODY_LIMIT: usize = 16 * 1024 * 1024;
 /// the JSON-RPC envelope fits under [`MCP_ROUTE_BODY_LIMIT`]; larger GLBs use
 /// REST multipart.
 pub const MCP_MAX_ASSET_BYTES: usize = 11 * 1024 * 1024;
+/// Env var overriding the per-owner upload quota (bytes) — §asset-ingest.
+pub const UPLOAD_QUOTA_ENV: &str = "FE_API_UPLOAD_QUOTA_BYTES";
+/// Default per-owner upload quota: 2 GiB of registered asset bytes.
+pub const DEFAULT_UPLOAD_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Concurrent `/mcp` requests admitted; the rest queue (§asset-ingest).
 pub const MCP_MAX_CONCURRENT_CALLS: usize = 8;
 /// Client text for an asset_id that is unknown OR not usable from the
@@ -63,6 +67,10 @@ pub enum UploadError {
     StoreFailed,
     /// The DB thread refused or never answered the `CreateAsset` metadata.
     RegisterFailed,
+    /// The owner's registered bytes plus this upload exceed the quota (413).
+    QuotaExceeded {
+        quota: u64,
+    },
 }
 
 impl UploadError {
@@ -85,6 +93,11 @@ impl UploadError {
             }
             Self::StoreFailed => "asset storage failed".into(),
             Self::RegisterFailed => "asset registration failed".into(),
+            Self::QuotaExceeded { quota } => {
+                format!(
+                    "upload quota exceeded: this owner may register at most {quota} asset bytes"
+                )
+            }
         }
     }
 
@@ -92,7 +105,7 @@ impl UploadError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::StoreNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
-            Self::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::TooLarge { .. } | Self::QuotaExceeded { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::StoreFailed | Self::RegisterFailed => StatusCode::BAD_GATEWAY,
             _ => StatusCode::BAD_REQUEST,
         }
@@ -105,6 +118,24 @@ pub enum GlbPayload {
     Bytes(Vec<u8>),
     /// Standard base64 text (MCP JSON).
     Base64(String),
+}
+
+/// Who an upload is attributed to: the token subject and the authorized
+/// anchor petal (the `asset.owner_did` / `asset.petal_id` columns — §assets).
+#[derive(Debug, Clone)]
+pub struct UploadOwner {
+    pub owner_did: String,
+    pub petal_id: String,
+}
+
+impl UploadOwner {
+    /// Attribute an upload to `claims.sub`, anchored at the authorized `petal_id`.
+    pub fn new(claims: &fe_identity::api_token::ApiClaims, petal_id: &str) -> Self {
+        Self {
+            owner_did: claims.sub.clone(),
+            petal_id: petal_id.to_string(),
+        }
+    }
 }
 
 /// A registered asset — the only thing a caller ever gets back.
@@ -188,6 +219,7 @@ fn store_glb(
 /// Send the metadata-only `CreateAsset` and await its correlated reply.
 async fn register_asset(
     state: &ApiState,
+    owner: &UploadOwner,
     name: String,
     stored: StoredGlb,
 ) -> Result<IngestedAsset, UploadError> {
@@ -197,6 +229,8 @@ async fn register_asset(
         content_type: GLB_CONTENT_TYPE.to_string(),
         size_bytes: stored.size_bytes,
         content_hash: stored.content_hash.clone(),
+        owner_did: Some(owner.owner_did.clone()),
+        petal_id: Some(owner.petal_id.clone()),
         correlation_id: Some(correlation_id.clone()),
     };
     match crate::rest::db_round_trip(state, cmd).await {
@@ -212,8 +246,13 @@ async fn register_asset(
                 size_bytes,
             })
         }
-        Ok(DbResult::Error(e)) => {
-            tracing::warn!("CreateAsset refused: {e}");
+        // The DB thread's typed failure for a correlated caller (immediate —
+        // the wildcard `Error` never reaches a correlated waiter).
+        Ok(DbResult::RequestFailed {
+            error,
+            correlation_id: echoed,
+        }) if echoed == correlation_id => {
+            tracing::warn!("CreateAsset refused: {error}");
             Err(UploadError::RegisterFailed)
         }
         Ok(other) => {
@@ -227,10 +266,49 @@ async fn register_asset(
     }
 }
 
+/// Upper bound of the decoded payload size, known before decoding.
+fn payload_upper_bound(payload: &GlbPayload) -> u64 {
+    match payload {
+        GlbPayload::Bytes(bytes) => bytes.len() as u64,
+        GlbPayload::Base64(text) => (text.len() as u64).div_ceil(4) * 3,
+    }
+}
+
+/// Refuse (before any byte is stored) an upload that would push the owner's
+/// registered asset bytes past `state.upload_quota_bytes`. Fails closed.
+async fn check_upload_quota(
+    state: &ApiState,
+    owner: &UploadOwner,
+    incoming: u64,
+) -> Result<(), UploadError> {
+    let quota = state.upload_quota_bytes;
+    let rows = crate::gis::run_select(
+        state,
+        "SELECT math::sum(size_bytes) AS used FROM asset WHERE owner_did = $owner GROUP ALL",
+        vec![("owner".to_string(), serde_json::json!(owner.owner_did))],
+    )
+    .await
+    .ok_or_else(|| {
+        tracing::warn!("upload quota lookup failed; refusing upload");
+        UploadError::RegisterFailed
+    })?;
+    let used = rows
+        .first()
+        .and_then(|row| row.get("used"))
+        .and_then(|used| used.as_u64().or_else(|| used.as_f64().map(|f| f as u64)))
+        .unwrap_or(0);
+    if used.saturating_add(incoming) > quota {
+        tracing::warn!(owner = %owner.owner_did, used, incoming, quota, "upload quota exceeded");
+        return Err(UploadError::QuotaExceeded { quota });
+    }
+    Ok(())
+}
+
 /// Shared ingest core for both transports, with an injectable size cap.
-/// The caller has authorized the anchor petal.
+/// The caller has authorized `owner.petal_id` (the anchor petal).
 pub async fn ingest_glb_with_limit(
     state: &ApiState,
+    owner: &UploadOwner,
     name: &str,
     payload: GlbPayload,
     max_len: usize,
@@ -245,22 +323,24 @@ pub async fn ingest_glb_with_limit(
     let Some(store) = state.blob_store.clone() else {
         return Err(UploadError::StoreNotConfigured);
     };
+    check_upload_quota(state, owner, payload_upper_bound(&payload)).await?;
     let stored = tokio::task::spawn_blocking(move || store_glb(&store, payload, max_len))
         .await
         .map_err(|e| {
             tracing::error!("asset store task failed: {e}");
             UploadError::StoreFailed
         })??;
-    register_asset(state, name.to_string(), stored).await
+    register_asset(state, owner, name.to_string(), stored).await
 }
 
 /// [`ingest_glb_with_limit`] at [`MAX_ASSET_BYTES`].
 pub async fn ingest_glb(
     state: &ApiState,
+    owner: &UploadOwner,
     name: &str,
     payload: GlbPayload,
 ) -> Result<IngestedAsset, UploadError> {
-    ingest_glb_with_limit(state, name, payload, MAX_ASSET_BYTES).await
+    ingest_glb_with_limit(state, owner, name, payload, MAX_ASSET_BYTES).await
 }
 
 /// A node placed from an asset (MCP `place_asset`).
@@ -325,7 +405,10 @@ pub async fn place_asset_core(
             asset_path,
             position,
         }),
-        DbResult::Error(e) => {
+        DbResult::RequestFailed {
+            error: e,
+            correlation_id: echoed,
+        } if echoed == correlation_id => {
             tracing::warn!("place_asset refused: {e}");
             if e.contains("matched no asset") {
                 Err(UNKNOWN_ASSET.to_string())
@@ -415,7 +498,8 @@ pub async fn upload_petal_asset(
         .or(file_name)
         .unwrap_or_else(|| "asset.glb".to_string());
 
-    match ingest_glb(&state, &name, GlbPayload::Bytes(bytes)).await {
+    let owner = UploadOwner::new(&claims, &petal_id);
+    match ingest_glb(&state, &owner, &name, GlbPayload::Bytes(bytes)).await {
         Ok(asset) => (
             StatusCode::CREATED,
             Json(ApiResponse::success(

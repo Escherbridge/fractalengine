@@ -35,3 +35,7 @@ ed25519-dalek = { workspace = true }
 rand = "0.8"
 axum = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+# Cross-store blob layout test (tests/blob_store_cross_read.rs, RT-FSBLOB).
+fe-hexon = { path = "../fe-hexon" }

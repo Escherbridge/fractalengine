@@ -5,7 +5,7 @@ use crate::handlers::preconditions::require_petal_scope;
 use crate::repo::{Db, Repo};
 use crate::schema::{Fractal, Role, Verse};
 use fe_runtime::messages::{
-    FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
+    DbResult, FractalHierarchyData, NodeHierarchyData, PetalHierarchyData, VerseHierarchyData,
 };
 
 use super::invite::{generate_namespace_secret, store_namespace_secret};
@@ -459,17 +459,54 @@ pub(crate) async fn import_gltf_handler(
 // API asset ingest (F13 — fe-api/AGENTS.md §asset-ingest)
 // ---------------------------------------------------------------------------
 
+/// The metadata `DbCommand::CreateAsset` carries (no bytes), including the
+/// ownership columns (fe-api/AGENTS.md §assets).
+#[derive(Debug, Clone, Default)]
+pub struct AssetRegistration {
+    pub name: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+    /// 64-hex BLAKE3 hash of a blob already in the shared store.
+    pub content_hash: String,
+    pub owner_did: Option<String>,
+    pub petal_id: Option<String>,
+}
+
+/// `CreateAsset`'s reply: `AssetCreated`, or the correlated failure. Shared by
+/// the DB dispatch loop and tests that service the API→DB channel.
+pub async fn create_asset_reply(
+    db: &Db,
+    blob_store: &BlobStoreHandle,
+    registration: AssetRegistration,
+    correlation_id: Option<String>,
+) -> DbResult {
+    match create_asset_handler(db, blob_store, &registration).await {
+        Ok(asset_id) => DbResult::AssetCreated {
+            asset_id,
+            content_hash: registration.content_hash,
+            size_bytes: registration.size_bytes,
+            correlation_id,
+        },
+        Err(e) => super::correlated_failure(&correlation_id, format!("Create asset failed: {e}")),
+    }
+}
+
 /// Register an asset row for a blob the API thread already stored. No bytes
 /// reach this thread; the blob's presence in the shared store is verified.
 #[instrument(skip(db, blob_store))]
 pub(crate) async fn create_asset_handler(
     db: &Db,
     blob_store: &BlobStoreHandle,
-    name: &str,
-    content_type: &str,
-    size_bytes: u64,
-    content_hash: &str,
+    registration: &AssetRegistration,
 ) -> anyhow::Result<String> {
+    let AssetRegistration {
+        name,
+        content_type,
+        size_bytes,
+        content_hash,
+        owner_did,
+        petal_id,
+    } = registration;
     let hash = hash_from_hex(content_hash)
         .map_err(|e| anyhow::anyhow!("CreateAsset invalid content_hash: {e}"))?;
     if !blob_store.has_blob(&hash) {
@@ -479,7 +516,7 @@ pub(crate) async fn create_asset_handler(
         anyhow::bail!("CreateAsset requires a name and content_type");
     }
     let size_bytes =
-        i64::try_from(size_bytes).map_err(|_| anyhow::anyhow!("CreateAsset size overflow"))?;
+        i64::try_from(*size_bytes).map_err(|_| anyhow::anyhow!("CreateAsset size overflow"))?;
 
     let asset_id = ulid::Ulid::new().to_string();
     db.query(
@@ -490,6 +527,8 @@ pub(crate) async fn create_asset_handler(
             size_bytes: $size_bytes,
             data: NONE,
             content_hash: $content_hash,
+            owner_did: $owner_did,
+            petal_id: $petal_id,
             created_at: $now,
         }",
     )
@@ -498,6 +537,8 @@ pub(crate) async fn create_asset_handler(
     .bind(("content_type", content_type.to_string()))
     .bind(("size_bytes", size_bytes))
     .bind(("content_hash", content_hash.to_string()))
+    .bind(("owner_did", owner_did.clone()))
+    .bind(("petal_id", petal_id.clone()))
     .bind(("now", chrono::Utc::now().to_rfc3339()))
     .await?
     .check()
@@ -1216,6 +1257,30 @@ fn tombstone_marker(hlc: u64, source_did: &str) -> serde_json::Value {
     })
 }
 
+/// Append a `NodeTombstoned` entry and run `update` (which sets `tombstone = $ts`)
+/// in ONE transaction; `$ts` is the marker stamped with the op's own lamport
+/// clock. See AGENTS.md §lifecycle.
+async fn commit_tombstone_atomic(
+    db: &Db,
+    entry: crate::types::OpLogEntry,
+    update: &str,
+    target: (&str, serde_json::Value),
+    source_did: &str,
+) -> anyhow::Result<()> {
+    let (target_name, target_value) = target;
+    crate::op_log::commit_operation_atomic_with(db, entry, |lamport| {
+        (
+            vec![update.to_string()],
+            vec![
+                ("ts".to_string(), tombstone_marker(lamport, source_did)),
+                (target_name.to_string(), target_value),
+            ],
+        )
+    })
+    .await?;
+    Ok(())
+}
+
 /// Sync-safe delete (FR-1): **soft-delete** the node by stamping a durable
 /// `tombstone` marker (HLC + source) on the row — never a raw row drop (N-4) —
 /// and record a tombstone entry in the op-log. The row persists so the delete
@@ -1255,30 +1320,22 @@ pub(crate) async fn tombstone_node_handler(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    let materialized_petal_id = meta.petal_id.clone();
-    let materialized_reflow_path = meta.reflow_path.clone();
-    let materialized_instance_index = meta.instance_index;
-    let outcome = crate::op_log::commit_operation(db, entry, |lamport| async move {
-        let marker = tombstone_marker(lamport, source_did);
-        db.query(
-            "UPDATE node SET tombstone = $ts \
-             WHERE (node_id = $nid OR properties.gpx_track_id = $nid) AND tombstone = NONE",
-        )
-        .bind(("ts", marker))
-        .bind(("nid", node_id.to_string()))
-        .await
-        .map_err(|e| anyhow::anyhow!("TombstoneNode soft-delete query failed: {e}"))?
-        .check()
-        .map_err(|e| anyhow::anyhow!("TombstoneNode soft-delete statement failed: {e}"))?;
-
-        Ok(TombstoneDurableOutcome {
-            petal_id: materialized_petal_id,
-            reflow_path: materialized_reflow_path,
-            deleted_instance_index: materialized_instance_index,
-            tombstoned_ids: vec![node_id.to_string()],
-        })
-    })
-    .await?;
+    commit_tombstone_atomic(
+        db,
+        entry,
+        "UPDATE node SET tombstone = $ts \
+         WHERE (node_id = $nid OR properties.gpx_track_id = $nid) AND tombstone = NONE",
+        ("nid", serde_json::json!(node_id)),
+        source_did,
+    )
+    .await
+    .map_err(|e| e.context("TombstoneNode soft-delete failed"))?;
+    let outcome = TombstoneDurableOutcome {
+        petal_id: meta.petal_id.clone(),
+        reflow_path: meta.reflow_path.clone(),
+        deleted_instance_index: meta.instance_index,
+        tombstoned_ids: vec![node_id.to_string()],
+    };
 
     tracing::info!(
         "Tombstoned node {node_id} (petal {}) — durable soft-delete + op-log",
@@ -1387,25 +1444,21 @@ pub(crate) async fn cascade_tombstone_node_handler(
         sig: "00".repeat(64),
         hlc_timestamp: String::new(),
     };
-    let materialized_petal_id = petal_id.clone();
-    let materialized_ids = ids.clone();
-    let outcome = crate::op_log::commit_operation(db, entry, |lamport| async move {
-        let marker = tombstone_marker(lamport, source_did);
-        db.query("UPDATE node SET tombstone = $ts WHERE node_id IN $ids")
-            .bind(("ts", marker))
-            .bind(("ids", materialized_ids.clone()))
-            .await
-            .map_err(|e| anyhow::anyhow!("CascadeTombstoneNode query failed: {e}"))?
-            .check()
-            .map_err(|e| anyhow::anyhow!("CascadeTombstoneNode statement failed: {e}"))?;
-        Ok(TombstoneDurableOutcome {
-            petal_id: materialized_petal_id,
-            reflow_path: None,
-            deleted_instance_index: None,
-            tombstoned_ids: materialized_ids,
-        })
-    })
-    .await?;
+    commit_tombstone_atomic(
+        db,
+        entry,
+        "UPDATE node SET tombstone = $ts WHERE node_id IN $ids",
+        ("ids", serde_json::json!(ids)),
+        source_did,
+    )
+    .await
+    .map_err(|e| e.context("CascadeTombstoneNode failed"))?;
+    let outcome = TombstoneDurableOutcome {
+        petal_id: petal_id.clone(),
+        reflow_path: None,
+        deleted_instance_index: None,
+        tombstoned_ids: ids.clone(),
+    };
 
     tracing::info!(
         "Cascade-tombstoned {} node(s) rooted at {node_id} (petal {petal_id})",
@@ -1953,16 +2006,26 @@ mod asset_ingest_tests {
         let (db, store, hash) = setup().await;
 
         let absent = hash_to_hex(&[9u8; 32]);
-        let err = create_asset_handler(&db, &store, "a.glb", "model/gltf-binary", 12, &absent)
+        let registration = |content_hash: &str| AssetRegistration {
+            name: "a.glb".into(),
+            content_type: "model/gltf-binary".into(),
+            size_bytes: 12,
+            content_hash: content_hash.into(),
+            owner_did: Some("did:key:z6MkUploader".into()),
+            petal_id: Some("petal-1".into()),
+        };
+        let err = create_asset_handler(&db, &store, &registration(&absent))
             .await
             .expect_err("absent blob must be refused");
         assert!(err.to_string().contains("not present"), "{err}");
 
-        let asset_id = create_asset_handler(&db, &store, "a.glb", "model/gltf-binary", 12, &hash)
+        let asset_id = create_asset_handler(&db, &store, &registration(&hash))
             .await
             .expect("present blob registers");
         let mut res = db
-            .query("SELECT content_hash, data, size_bytes FROM asset WHERE asset_id = $aid")
+            .query(
+                "SELECT content_hash, data, size_bytes, owner_did, petal_id FROM asset                  WHERE asset_id = $aid",
+            )
             .bind(("aid", asset_id))
             .await
             .unwrap();
@@ -1970,6 +2033,8 @@ mod asset_ingest_tests {
         assert_eq!(rows[0]["content_hash"], hash.as_str());
         assert!(rows[0]["data"].is_null(), "no inline bytes: {}", rows[0]);
         assert_eq!(rows[0]["size_bytes"], 12);
+        assert_eq!(rows[0]["owner_did"], "did:key:z6MkUploader");
+        assert_eq!(rows[0]["petal_id"], "petal-1");
     }
 
     #[tokio::test]
@@ -1993,9 +2058,19 @@ mod asset_ingest_tests {
         let rows: Vec<serde_json::Value> = res.take(0).unwrap_or_default();
         assert!(rows.is_empty(), "no node row on a refused placement");
 
-        let asset_id = create_asset_handler(&db, &store, "a.glb", "model/gltf-binary", 12, &hash)
-            .await
-            .unwrap();
+        let asset_id = create_asset_handler(
+            &db,
+            &store,
+            &AssetRegistration {
+                name: "a.glb".into(),
+                content_type: "model/gltf-binary".into(),
+                size_bytes: 12,
+                content_hash: hash.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         let (node_id, asset_path) = create_node_with_asset_handler(
             &db,
             "petal-1",
@@ -2073,5 +2148,136 @@ mod asset_ingest_tests {
             resolve_verse_scope_handler(&db, "nope").await.unwrap(),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod tombstone_atomicity_tests {
+    use super::*;
+
+    /// Schema-applied in-memory DB with a verse→fractal→petal chain and a root
+    /// node carrying two `properties.parent_id` children. Returns `(db, root, ids)`.
+    async fn seeded_subtree() -> (Db, String, Vec<String>) {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("apply schema");
+        db.query(
+            "CREATE verse CONTENT { verse_id: 'verse-1', name: 'v', created_by: 'did:key:z6MkA', created_at: '2026-01-01' };
+             CREATE fractal CONTENT { fractal_id: 'fractal-1', verse_id: 'verse-1', owner_did: 'did:key:z6MkA', name: 'f', created_at: '2026-01-01' };
+             CREATE petal CONTENT { petal_id: 'petal-1', fractal_id: 'fractal-1', name: 'p', node_id: 'n', created_at: '2026-01-01' };",
+        )
+        .await
+        .expect("seed scope chain")
+        .check()
+        .expect("seed scope chain statements");
+        crate::op_log::init_hlc(0);
+        let root = create_node_handler(&db, "petal-1", "root", [0.0, 0.0, 0.0])
+            .await
+            .expect("create root");
+        let mut ids = vec![root.clone()];
+        for name in ["child-a", "child-b"] {
+            let child = create_node_handler(&db, "petal-1", name, [1.0, 0.0, 0.0])
+                .await
+                .expect("create child");
+            db.query("UPDATE node SET properties.parent_id = $root WHERE node_id = $child")
+                .bind(("root", root.clone()))
+                .bind(("child", child.clone()))
+                .await
+                .expect("link child")
+                .check()
+                .expect("link child statement");
+            ids.push(child);
+        }
+        (db, root, ids)
+    }
+
+    async fn tombstoned_op_rows(db: &Db) -> usize {
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT lamport_clock FROM op_log WHERE op_type = 'NodeTombstoned'")
+            .await
+            .expect("read op_log")
+            .take(0)
+            .expect("op_log rows");
+        rows.len()
+    }
+
+    async fn live_count(db: &Db, ids: &[String]) -> usize {
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT node_id FROM node WHERE node_id IN $ids AND tombstone = NONE")
+            .bind(("ids", ids.to_vec()))
+            .await
+            .expect("read nodes")
+            .take(0)
+            .expect("node rows");
+        rows.len()
+    }
+
+    /// A failing row update rolls the cascade's op-log row back with it: never
+    /// a logged-but-unapplied cascade. With the fault removed the same call
+    /// commits one op and tombstones the whole subtree.
+    #[tokio::test]
+    async fn cascade_tombstone_rolls_back_its_op_log_row_when_the_update_fails() {
+        let (db, root, ids) = seeded_subtree().await;
+        db.query(
+            "DEFINE EVENT fail_tombstone ON TABLE node \
+             WHEN $after.tombstone != NONE THEN { THROW 'induced' }",
+        )
+        .await
+        .expect("define fault")
+        .check()
+        .expect("define fault statement");
+
+        let error = cascade_tombstone_node_handler(&db, &root, "did:key:z6MkA")
+            .await
+            .expect_err("the injected fault must fail the cascade");
+        assert!(format!("{error:#}").contains("induced"), "{error:#}");
+        assert_eq!(
+            tombstoned_op_rows(&db).await,
+            0,
+            "the op-log row rolled back"
+        );
+        assert_eq!(live_count(&db, &ids).await, 3, "no node was tombstoned");
+
+        db.query("REMOVE EVENT fail_tombstone ON TABLE node")
+            .await
+            .expect("remove fault")
+            .check()
+            .expect("remove fault statement");
+        let outcome = cascade_tombstone_node_handler(&db, &root, "did:key:z6MkA")
+            .await
+            .expect("cascade commits once the fault is gone");
+        assert_eq!(outcome.tombstoned_ids.len(), 3);
+        assert_eq!(tombstoned_op_rows(&db).await, 1);
+        assert_eq!(
+            live_count(&db, &ids).await,
+            0,
+            "the whole subtree is tombstoned"
+        );
+    }
+
+    /// The single-node tombstone shares the seam: a failed update logs nothing.
+    #[tokio::test]
+    async fn tombstone_rolls_back_its_op_log_row_when_the_update_fails() {
+        let (db, root, _) = seeded_subtree().await;
+        db.query(
+            "DEFINE EVENT fail_tombstone ON TABLE node \
+             WHEN $after.tombstone != NONE THEN { THROW 'induced' }",
+        )
+        .await
+        .expect("define fault")
+        .check()
+        .expect("define fault statement");
+
+        tombstone_node_handler(&db, &root, "did:key:z6MkA")
+            .await
+            .expect_err("the injected fault must fail the tombstone");
+        assert_eq!(
+            tombstoned_op_rows(&db).await,
+            0,
+            "the op-log row rolled back"
+        );
+        assert_eq!(live_count(&db, std::slice::from_ref(&root)).await, 1);
     }
 }

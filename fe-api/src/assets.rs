@@ -31,7 +31,7 @@ const DIRECTORY_ASSET_CONTENT_TYPE: &str = "application/x-fe-directory";
 const MAX_ASSET_RESPONSE_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 
 // ---------------------------------------------------------------------------
-// Asset scope: derived from referencing nodes (asset rows have no owner column)
+// Asset scope: anchor petal (owned rows) + referencing nodes — AGENTS.md §assets
 // ---------------------------------------------------------------------------
 
 /// Distinct referencing petals inspected per lookup (fail-closed beyond it).
@@ -42,20 +42,47 @@ const MAX_ASSET_REFERENCE_ROWS: usize = 10_000;
 /// How an asset relates to a token's scope (DEC-C21; see AGENTS.md §assets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetReach {
-    /// No node references the asset yet (a fresh, not-yet-placed upload).
+    /// No node references the asset yet and it carries no ownership (legacy row).
     Unreferenced,
-    /// At least one referencing node lies inside the token's scope.
+    /// The token covers the asset's anchor petal, or a referencing node.
     Covered,
-    /// Referenced only outside the token's scope — or the lookup failed.
+    /// Referenced only outside the token's scope, an unplaced upload anchored
+    /// in a petal the token does not cover, or the lookup failed.
     Foreign,
 }
 
-/// Classify `asset_ids` against the token scope through EVERY node that
-/// references them (direct reader, else the RawQuery channel). Fails closed.
+/// Classify `asset_ids` against the token scope: an owned row's anchor petal
+/// first, then EVERY node that references them (direct reader, else the
+/// RawQuery channel). Fails closed.
 pub async fn asset_reach(state: &ApiState, claims: &ApiClaims, asset_ids: &[String]) -> AssetReach {
     if asset_ids.is_empty() {
         return AssetReach::Unreferenced;
     }
+    let Some(owner_rows) = crate::gis::run_select(
+        state,
+        "SELECT asset_id, owner_did, petal_id FROM asset WHERE asset_id IN $asset_ids",
+        vec![("asset_ids".to_string(), serde_json::json!(asset_ids))],
+    )
+    .await
+    else {
+        tracing::warn!("asset ownership lookup failed; denying");
+        return AssetReach::Foreign;
+    };
+    let field = |row: &serde_json::Value, key: &str| {
+        row.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let mut anchors: Vec<String> = owner_rows
+        .iter()
+        .filter_map(|row| field(row, "petal_id"))
+        .collect();
+    anchors.sort_unstable();
+    anchors.dedup();
+    if any_petal_covered(state, claims, &anchors).await {
+        return AssetReach::Covered;
+    }
+
     let sql = format!(
         "SELECT petal_id FROM node WHERE asset_id IN $aids LIMIT {MAX_ASSET_REFERENCE_ROWS}"
     );
@@ -71,22 +98,40 @@ pub async fn asset_reach(state: &ApiState, claims: &ApiClaims, asset_ids: &[Stri
     };
     let mut petals: Vec<String> = rows
         .iter()
-        .filter_map(|row| row.get("petal_id").and_then(serde_json::Value::as_str))
-        .map(str::to_string)
+        .filter_map(|row| field(row, "petal_id"))
         .collect();
     petals.sort_unstable();
     petals.dedup();
-    if petals.is_empty() {
-        return AssetReach::Unreferenced;
+    if !petals.is_empty() {
+        return if any_petal_covered(state, claims, &petals).await {
+            AssetReach::Covered
+        } else {
+            AssetReach::Foreign
+        };
     }
+    // Unplaced: an owned upload is reachable only through its anchor petal
+    // (checked above); `owner_did` alone grants nothing — every token this
+    // node mints carries the node DID as `sub` (AGENTS.md §assets).
+    let owned = owner_rows
+        .iter()
+        .any(|row| field(row, "owner_did").is_some() || field(row, "petal_id").is_some());
+    if owned {
+        AssetReach::Foreign
+    } else {
+        AssetReach::Unreferenced
+    }
+}
+
+/// Whether the token's scope covers any of `petals` (bounded; unresolvable petals deny).
+async fn any_petal_covered(state: &ApiState, claims: &ApiClaims, petals: &[String]) -> bool {
     for petal_id in petals.iter().take(MAX_ASSET_REFERENCE_PETALS) {
         if let Some(scope) = crate::rest::resolve_petal_scope(state, petal_id).await {
             if require_scope(claims, &scope).is_ok() {
-                return AssetReach::Covered;
+                return true;
             }
         }
     }
-    AssetReach::Foreign
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -95,9 +140,9 @@ pub async fn asset_reach(state: &ApiState, claims: &ApiClaims, asset_ids: &[Stri
 
 /// GET /api/v1/assets/:content_hash
 ///
-/// Viewer+; the hash must belong to an `asset` row referenced by a node the
-/// token's scope covers (DEC-C21 — a hash alone is no longer a capability).
-/// Unknown, unreferenced and foreign hashes all deny with one 404.
+/// Viewer+; the hash must belong to an `asset` row the token reaches — its
+/// anchor petal or a referencing node in scope ([`asset_reach`], DEC-C21 — a
+/// hash alone is not a capability). Every other hash denies with one 404.
 pub async fn get_asset(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -234,10 +279,9 @@ pub async fn get_node_asset(
 /// GET /api/v1/assets/by-id/:asset_id — resolve asset -> blob directly, for
 /// callers that already hold an `asset_id` (e.g. from a prior hierarchy fetch).
 ///
-/// Assets carry no scope of their own, so the read is granted iff ANY node
-/// referencing the asset lies in the token's scope ([`asset_reach`] — DEC-C21
-/// replaced the old first-referencing-node rule). Unknown, unreferenced and
-/// foreign ids all deny with one 404.
+/// Granted iff the asset's anchor petal or ANY node referencing it lies in
+/// the token's scope ([`asset_reach`], AGENTS.md §assets). Unknown,
+/// unreachable and foreign ids all deny with one 404.
 pub async fn get_asset_by_id(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -578,6 +622,7 @@ mod tests {
             distributed_tx: None,
             sim_control_tx: None,
             elevated_query_allowed: false,
+            upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         })
     }
@@ -696,6 +741,7 @@ mod tests {
             distributed_tx: None,
             sim_control_tx: None,
             elevated_query_allowed: false,
+            upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
@@ -782,6 +828,7 @@ mod tests {
             distributed_tx: None,
             sim_control_tx: None,
             elevated_query_allowed: false,
+            upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
@@ -847,6 +894,7 @@ mod tests {
             distributed_tx: None,
             sim_control_tx: None,
             elevated_query_allowed: false,
+            upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         });
 
@@ -883,6 +931,7 @@ mod tests {
             distributed_tx: None,
             sim_control_tx: None,
             elevated_query_allowed: false,
+            upload_quota_bytes: crate::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
         })
     }

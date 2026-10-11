@@ -257,15 +257,23 @@ button. Three modes:
   `VerseManager` (used for sidebar rendering/gimbal), so the bbox filter
   (`gis::bbox_contains`, pure) runs client-side over `verse_mgr.find_petal(..).nodes`
   directly — this is a deliberate design choice, not a fallback residual.
-- **Result routing residual:** `DbResult::QueryResult`/`DbResult::Error`
-  carry no request-id, so `db_results::apply_db_results` can't tell "this
-  reply is for the GIS panel" vs "this reply is for the inspector's ad-hoc
-  Query tab" apart from a `GisPanelState.query_pending` flag checked first
-  (GIS claims the reply when pending, the Query tab is the fallback). If a
-  user manages to have both an ad-hoc query and a GIS query in flight in
-  the same frame window, one reply will go to the wrong buffer — accepted
-  as a pre-existing architectural constraint of the untagged `RawQuery`
-  channel, not something this track introduced.
+- **Result routing — by request id (residual CLOSED 2026-10-11,
+  FEUI-QUERY-REPLY-ROUTING).** Every GUI `RawQuery` sender (GIS panel
+  `actions/gis.rs::submit_query`, Paths list `actions/path.rs::query_tracks`,
+  Query tab `actions/query.rs::submit`) mints `next_ui_query_id(kind)`
+  (`ui-{kind}-{n}`, a process-wide counter — the hyphens make it impossible
+  to collide with an API ULID), stores it in its own buffer
+  (`GisPanelState.query_request_id`, `PathEditorState.tracks_request_id`,
+  `InspectorFormState.query_request_id`) and sends it as `correlation_id`.
+  The DB thread echoes it on `QueryResult` and answers a failure with
+  `QueryFailed`; `db_results/query.rs::route_query_reply` lands the reply
+  ONLY in the buffer holding that id, then clears the id + pending flag. A
+  stale id (the user re-submitted, minting a new one) or an API waiter's
+  ULID claims nothing and falls through to `try_deliver`. A bare
+  `DbResult::Error` no longer touches any query buffer (it only clears a
+  stranded pen create). The old flag-priority claim (GIS > Paths > Query)
+  survives only for a legacy `correlation_id: None` result, which no GUI
+  sender emits.
 - **Click-to-select:** reuses the exact sidebar mechanism — clicking a
   result row sets `NodeManager.pending_sidebar_select` (resolved to an
   `Entity` next frame by `node_manager::sidebar_sync`) and
@@ -337,8 +345,8 @@ previously the Query section and Layer Manager were both always visible
 stacked in one window. **Annotations tab** reuses the exact
 `GisQueryMode::Annotated` query flow (`run_query`/`gis_state.results`) behind
 a dedicated Refresh button rather than inventing a second results channel —
-`DbResult::QueryResult`'s untagged-reply routing (see the residual note
-above) is fragile enough already without a third claimant. Rows show a color
+one panel query id per GIS panel keeps the routing simple (see the
+id-routing note above). Rows show a color
 swatch (parsed from the query's new `annotation_color` column via
 `GisResultRow.annotation_color`), title, and node name; click-to-select
 reuses the same `pending_sidebar_select`/`CameraFocusTarget` mechanism as
@@ -408,11 +416,10 @@ pattern exactly (queue + status resource, no fe-ui-side I/O).
    marks annotated nodes. `gis::query::track_query` builds the same
    "`SELECT` where `properties[key] != NONE`" shape as `annotation_query`;
    `actions::path::query_tracks` submits it via `DbCommand::RawQuery`, and
-   `PathEditorState.tracks_pending` claims the untagged `DbResult::QueryResult`/
-   `Error` reply in `verse_manager/db_results.rs` — a **third** claimant on
-   top of `GisPanelState.query_pending`/the inspector's ad-hoc Query tab (see
-   the existing residual note above); checked after `gis_panel.query_pending`,
-   before the inspector fallback.
+   `PathEditorState.tracks_request_id` claims the correlated
+   `DbResult::QueryResult`/`QueryFailed` reply in
+   `verse_manager/db_results/query.rs` — routed by id, independent of the GIS
+   panel and the inspector's Query tab (see the id-routing note above).
 3. **Point-list editing reads back persisted `gpx_points` on track select.**
    Track-row clicks in `path_editor_card::render_track_list` push
    `UiAction::PathSelectTrack { track_node_id }` (selection bypasses the

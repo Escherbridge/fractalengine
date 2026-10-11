@@ -17,6 +17,7 @@ use tokio_util::io::ReaderStream;
 use tower_http::trace::TraceLayer;
 
 use crate::index::{self, HexonIndexEntry};
+use crate::limits;
 
 /// Max accepted publish body (1 GiB — tilesets are large).
 const MAX_PUBLISH_BYTES: usize = 1 << 30;
@@ -191,7 +192,7 @@ async fn manifest(State(state): State<Arc<RegistryState>>, Path(uri): Path<Strin
     };
     match zip_json(entry.path, "manifest.json").await {
         Ok(m) => Json(ApiResponse::success(m)).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
     }
 }
 
@@ -202,7 +203,7 @@ async fn entries(State(state): State<Arc<RegistryState>>, Path(uri): Path<String
     };
     match zip_json(entry.path, "entries.json").await {
         Ok(c) => Json(ApiResponse::success(c)).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
     }
 }
 
@@ -216,7 +217,7 @@ async fn asset(
     };
     let catalog = match zip_json(entry.path.clone(), "entries.json").await {
         Ok(c) => c,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
     };
     let hash = catalog
         .get("entries")
@@ -245,6 +246,10 @@ async fn asset(
             Bytes::from(bytes),
         )
             .into_response(),
+        // A stored blob over the decompression limits is a server-side content fault, not a 404.
+        Ok(Err(e)) if format!("{e:#}").contains(limits::DECOMPRESSION_LIMIT_ERROR) => {
+            json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+        }
         Ok(Err(_)) => json_err(
             StatusCode::NOT_FOUND,
             format!("blob missing for entry: {entry_id}"),
@@ -291,19 +296,12 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
         return json_err(StatusCode::BAD_REQUEST, "empty body");
     }
 
-    // Validate by reading manifest.json from the uploaded zip.
+    // Validate the manifest and bound every entry's decompression (zip-bomb guard).
     let bytes = body.clone();
-    let manifest = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_ref()))?;
-        let mut file = archive.by_name("manifest.json")?;
-        let mut buf = String::new();
-        std::io::Read::read_to_string(&mut file, &mut buf)?;
-        Ok(serde_json::from_str(&buf)?)
-    })
-    .await;
+    let manifest = tokio::task::spawn_blocking(move || index::validate_package(&bytes)).await;
     let manifest = match manifest {
         Ok(Ok(m)) => m,
-        Ok(Err(e)) => return json_err(StatusCode::BAD_REQUEST, format!("invalid .hexon: {e}")),
+        Ok(Err(e)) => return json_err(StatusCode::BAD_REQUEST, format!("invalid .hexon: {e:#}")),
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
 

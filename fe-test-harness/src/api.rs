@@ -38,7 +38,7 @@ impl SeededHierarchy {
 pub struct ApiHarness {
     pub router: axum::Router,
     pub state: Arc<ApiState>,
-    /// Same handle as `state.db_reader` — use for direct seeding/assertions.
+    /// The harness DB (also `state.db_reader` unless spawned without one) — seeding/assertions.
     pub db: Arc<Db>,
     /// Signs API tokens; its verifying key is installed in `ApiState`.
     pub keypair: Arc<NodeKeypair>,
@@ -47,6 +47,31 @@ pub struct ApiHarness {
     // Held so ApiCommand sends never fail; unserviced unless a test takes it
     // via `api_command_receiver`.
     api_cmd_rx: crossbeam::channel::Receiver<ApiCommand>,
+}
+
+/// Which optional seams / operator settings a harness is spawned with.
+struct HarnessOptions {
+    distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
+    sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
+    share_signer: Option<Arc<NodeKeypair>>,
+    tileset_registry: Option<Arc<fe_terrain::tiles::TilesetRegistry>>,
+    elevated_query_allowed: bool,
+    with_db_reader: bool,
+    upload_quota_bytes: u64,
+}
+
+impl Default for HarnessOptions {
+    fn default() -> Self {
+        Self {
+            distributed_tx: None,
+            sim_control_tx: None,
+            share_signer: None,
+            tileset_registry: None,
+            elevated_query_allowed: false,
+            with_db_reader: true,
+            upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
+        }
+    }
 }
 
 impl ApiHarness {
@@ -83,7 +108,11 @@ impl ApiHarness {
     /// independently-rotatable slot (DEC-C9), but the test only needs key
     /// identity to be externally controllable.
     pub async fn spawn_with_share_signer(share_signer: Arc<NodeKeypair>) -> Result<Self> {
-        Self::spawn_with_all_seams(None, None, Some(share_signer), None, false).await
+        Self::spawn_with_options(HarnessOptions {
+            share_signer: Some(share_signer),
+            ..HarnessOptions::default()
+        })
+        .await
     }
 
     /// Like [`Self::spawn`], wiring a `TilesetRegistry` (F14/T2): the real
@@ -95,30 +124,67 @@ impl ApiHarness {
     pub async fn spawn_with_tileset_registry(
         tileset_registry: Arc<fe_terrain::tiles::TilesetRegistry>,
     ) -> Result<Self> {
-        Self::spawn_with_all_seams(None, None, None, Some(tileset_registry), false).await
+        Self::spawn_with_options(HarnessOptions {
+            tileset_registry: Some(tileset_registry),
+            ..HarnessOptions::default()
+        })
+        .await
     }
 
     /// Like [`Self::spawn`], with the operator opt-in for
     /// `/api/v1/query/elevated` switched ON (`FE_API_ELEVATED_ALLOW=1` in the
     /// binaries) — every other constructor leaves it off, the production default.
     pub async fn spawn_with_elevated_query_allowed() -> Result<Self> {
-        Self::spawn_with_all_seams(None, None, None, None, true).await
+        Self::spawn_with_options(HarnessOptions {
+            elevated_query_allowed: true,
+            ..HarnessOptions::default()
+        })
+        .await
+    }
+
+    /// Like [`Self::spawn`], with a per-owner upload quota of `quota_bytes`
+    /// (`FE_API_UPLOAD_QUOTA_BYTES` in the binaries; default 2 GiB elsewhere).
+    pub async fn spawn_with_upload_quota(quota_bytes: u64) -> Result<Self> {
+        Self::spawn_with_options(HarnessOptions {
+            upload_quota_bytes: quota_bytes,
+            ..HarnessOptions::default()
+        })
+        .await
+    }
+
+    /// [`Self::spawn_with_elevated_query_allowed`] with `db_reader: None` — the
+    /// API reaches the DB only over the command channel (the Windows shape).
+    pub async fn spawn_elevated_without_db_reader() -> Result<Self> {
+        Self::spawn_with_options(HarnessOptions {
+            elevated_query_allowed: true,
+            with_db_reader: false,
+            ..HarnessOptions::default()
+        })
+        .await
     }
 
     async fn spawn_with_seams(
         distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
         sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
     ) -> Result<Self> {
-        Self::spawn_with_all_seams(distributed_tx, sim_control_tx, None, None, false).await
+        Self::spawn_with_options(HarnessOptions {
+            distributed_tx,
+            sim_control_tx,
+            ..HarnessOptions::default()
+        })
+        .await
     }
 
-    async fn spawn_with_all_seams(
-        distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
-        sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
-        share_signer: Option<Arc<NodeKeypair>>,
-        tileset_registry: Option<Arc<fe_terrain::tiles::TilesetRegistry>>,
-        elevated_query_allowed: bool,
-    ) -> Result<Self> {
+    async fn spawn_with_options(options: HarnessOptions) -> Result<Self> {
+        let HarnessOptions {
+            distributed_tx,
+            sim_control_tx,
+            share_signer,
+            tileset_registry,
+            elevated_query_allowed,
+            with_db_reader,
+            upload_quota_bytes,
+        } = options;
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
             .await
             .context("in-memory SurrealDB")?;
@@ -150,7 +216,7 @@ impl ApiHarness {
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             blob_store: Some(blob_store),
             cors_origins: vec!["*".to_string()],
-            db_reader: Some(db.clone()),
+            db_reader: with_db_reader.then(|| db.clone()),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry,
@@ -161,6 +227,7 @@ impl ApiHarness {
             sim_control_tx,
             share_signer: share_signer.unwrap_or_else(|| Arc::new(NodeKeypair::generate())),
             elevated_query_allowed,
+            upload_quota_bytes,
         });
 
         let router = build_router(state.clone());

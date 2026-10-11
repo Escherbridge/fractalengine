@@ -412,3 +412,35 @@ fn build_export_tree(commands: &[fe_terrain::DbCommand]) -> Vec<ExportNode> {
 
     export_nodes
 }
+
+#[test]
+fn waypoint_nested_under_its_track_is_emitted_once_at_top_level() {
+    let projection = Projection::new(47.61, -122.34, 50.0);
+    let nested = ExportNode {
+        node_id: "wp-nested".into(),
+        name: "Summit".into(),
+        position: [0.0, 0.0, 0.0],
+        properties: Some(serde_json::json!({
+            "gpx_type": "waypoint", "name": "Summit", "lat": 47.62, "lon": -122.33,
+        })),
+        children: vec![],
+    };
+    let track = ExportNode {
+        node_id: "track-0".into(),
+        name: "Ridge".into(),
+        position: [0.0, 0.0, 0.0],
+        properties: Some(serde_json::json!({"gpx_type": "track"})),
+        children: vec![nested],
+    };
+
+    let gpx_xml = scene_nodes_to_gpx(&[track], &projection);
+
+    assert_eq!(gpx_xml.matches("<wpt ").count(), 1, "{gpx_xml}");
+    assert!(gpx_xml.contains("<name>Summit</name>"), "{gpx_xml}");
+    let wpt_at = gpx_xml.find("<wpt ").expect("wpt");
+    let trk_at = gpx_xml.find("<trk>").expect("trk");
+    assert!(
+        wpt_at < trk_at,
+        "GPX 1.1 puts <wpt> before <trk>: {gpx_xml}"
+    );
+}

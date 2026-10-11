@@ -36,9 +36,9 @@ pub enum RegistryError {
     Package(#[from] anyhow::Error),
 }
 
-/// Content-addressed blob store for asset files.
-///
-/// Stores assets under `assets/<blake3_hash>` so identical blobs are only stored once.
+/// Content-addressed blob store for asset files, sharing the runtime store's
+/// canonical `{root}/{hex[0..2]}/{hex}` layout so either side reads the other's
+/// blobs (fe-hexon/src/AGENTS.md §blob-store).
 pub struct FsBlobStore {
     base_dir: PathBuf,
 }
@@ -50,39 +50,67 @@ impl FsBlobStore {
     }
 
     /// Store a blob if it doesn't already exist. Returns true if newly stored.
+    /// Refuses a non-BLAKE3-hex `hash` or one that does not match `data`.
     pub fn store(&self, hash: &str, data: &[u8]) -> Result<bool, RegistryError> {
-        let path = self.blob_path(hash);
+        let path = self.blob_path(hash)?;
+        if blake3::hash(data).to_hex().as_str() != hash.to_ascii_lowercase() {
+            return Err(RegistryError::Package(anyhow::anyhow!(
+                "blob hash mismatch: data does not hash to {hash}"
+            )));
+        }
         if path.exists() {
             return Ok(false); // already exists (shared content addressing)
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let shard_dir = path.parent().expect("canonical blob path has a parent");
+        std::fs::create_dir_all(shard_dir)?;
+        // Atomic write (tmp + same-directory rename), as fe-sync's FsBlobStore.
+        let tmp_path = shard_dir.join(format!("{}.tmp", hash.to_ascii_lowercase()));
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&tmp_path)?;
+            file.write_all(data)?;
+            file.sync_all()?;
         }
-        std::fs::write(&path, data)?;
-        Ok(true)
+        match std::fs::rename(&tmp_path, &path) {
+            Ok(()) => Ok(true),
+            Err(_) if path.exists() => {
+                let _ = std::fs::remove_file(&tmp_path);
+                Ok(false)
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                Err(RegistryError::Io(error))
+            }
+        }
     }
 
-    /// Check if a blob exists.
+    /// Check if a blob exists (`false` for an invalid hash).
     pub fn has(&self, hash: &str) -> bool {
-        self.blob_path(hash).exists()
+        self.blob_path(hash).is_ok_and(|path| path.exists())
     }
 
     /// Read a blob by hash.
     pub fn load(&self, hash: &str) -> Result<Vec<u8>, RegistryError> {
-        std::fs::read(self.blob_path(hash)).map_err(RegistryError::Io)
+        std::fs::read(self.blob_path(hash)?).map_err(RegistryError::Io)
     }
 
-    /// Get the path for a blob by hash.
-    fn blob_path(&self, hash: &str) -> PathBuf {
-        self.base_dir.join(hash)
+    /// Canonical path for a hex BLAKE3 hash; errors on a non-64-hex hash.
+    fn blob_path(&self, hash: &str) -> Result<PathBuf, RegistryError> {
+        let parsed = fe_runtime::blob_store::hash_from_hex(hash)
+            .map_err(|_| RegistryError::Package(anyhow::anyhow!("invalid blob hash")))?;
+        Ok(fe_runtime::blob_store::canonical_blob_path(
+            &self.base_dir,
+            &parsed,
+        ))
     }
 
-    /// Default hexon blob store location: `{dirs::data_local_dir()}/fractalengine/hexon_blobs/`.
+    /// Default location: the runtime blob root,
+    /// `{dirs::data_local_dir()}/fractalengine/blobs/` (same as fe-sync's store).
     pub fn default_path() -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("fractalengine")
-            .join("hexon_blobs")
+            .join(fe_runtime::blob_store::DEFAULT_BLOB_DIR_NAME)
     }
 
     /// Convenience constructor using [`Self::default_path`].
@@ -321,7 +349,7 @@ impl HexonRegistry {
 
     /// Get the blob path for an asset hash.
     pub fn get_blob_path(&self, asset_hash: &str) -> Option<PathBuf> {
-        let path = self.blob_store.blob_path(asset_hash);
+        let path = self.blob_store.blob_path(asset_hash).ok()?;
         if path.exists() {
             Some(path)
         } else {
@@ -425,10 +453,12 @@ mod tests {
 
     fn test_package(keypair: &SigningKey) -> HexonPackageData {
         let manifest = test_manifest(keypair);
+        let model_bytes = b"fake model data".to_vec();
+        let model_hash = crate::signature::asset_hash(&model_bytes);
         let entries = vec![AssetEntry {
             entry_id: "model_001".to_string(),
             kind: EntryKind::Model,
-            asset_hash: "def456".to_string(),
+            asset_hash: model_hash.clone(),
             format: "gltf".to_string(),
             label: "Test Model".to_string(),
             tags: vec!["test".to_string()],
@@ -449,7 +479,7 @@ mod tests {
         };
 
         let mut assets = HashMap::new();
-        assets.insert("def456".to_string(), b"fake model data".to_vec());
+        assets.insert(model_hash, model_bytes);
 
         let zip_bytes = HexonPackage::build(
             manifest.clone(),

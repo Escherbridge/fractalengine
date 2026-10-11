@@ -880,6 +880,25 @@ impl TestPeer {
                                 }
                             }
                         }
+                        // Production handler: atomic op-log + replication like the real DB thread.
+                        Ok(DbCommand::ElevatedQuery { statements, vars, write_tables, actor_did, correlation_id }) => {
+                            use fe_database::handlers::elevated_query::{
+                                elevated_query_reply, ElevatedRequest, ElevatedSinks,
+                            };
+                            let reply = elevated_query_reply(
+                                &db,
+                                ElevatedSinks {
+                                    blob_store: &db_blob_store,
+                                    repl_tx: Some(&db_repl_tx),
+                                    entity_change_tx: None,
+                                },
+                                ElevatedRequest { statements, vars, write_tables, actor_did, correlation_id },
+                            )
+                            .await;
+                            if let Err(e) = db_result_tx.send(reply) {
+                                tracing::warn!("ElevatedQuery reply send failed: {e:?}");
+                            }
+                        }
                         Ok(DbCommand::CreateFieldDef { scope, key, .. }) => {
                             if let Err(e) = db_result_tx.send(DbResult::FieldDefCreated {
                                 field_def_id: ulid::Ulid::new().to_string(),
@@ -942,15 +961,22 @@ impl TestPeer {
                                 tracing::warn!("PetalTerrainLoaded send failed: {e:?}");
                             }
                         }
-                        Ok(DbCommand::GetPetalTerrain { petal_id }) => {
-                            if let Err(e) = db_result_tx
-                                .send(DbResult::PetalTerrainLoaded {
+                        Ok(DbCommand::GetPetalTerrain { petal_id, correlation_id }) => {
+                            // Mirrors `get_petal_terrain_reply`: an API read is private.
+                            let reply = match correlation_id {
+                                Some(correlation_id) => DbResult::PetalTerrainFetched {
+                                    petal_id,
+                                    terrain: None,
+                                    correlation_id,
+                                },
+                                None => DbResult::PetalTerrainLoaded {
                                     petal_id,
                                     terrain: None,
                                     correlation_id: None,
-                                })
-                            {
-                                tracing::warn!("PetalTerrainLoaded send failed: {e:?}");
+                                },
+                            };
+                            if let Err(e) = db_result_tx.send(reply) {
+                                tracing::warn!("PetalTerrain reply send failed: {e:?}");
                             }
                         }
                         // Lifecycle ops (node_lifecycle_addressing_20260725) are covered by
@@ -967,6 +993,27 @@ impl TestPeer {
                                         .to_string(),
                                 ))
                                 .ok();
+                        }
+                        // Fire-and-forget asset GC: the production handler; a
+                        // failure is only logged (no uncorrelated `Error`).
+                        Ok(DbCommand::GcUnreferencedAssets { grace_secs }) => {
+                            match fe_database::handlers::asset_gc::gc_unreferenced_assets(
+                                &db,
+                                &db_blob_store,
+                                grace_secs,
+                            )
+                            .await
+                            {
+                                Ok(report) => {
+                                    db_result_tx
+                                        .send(DbResult::AssetsGarbageCollected {
+                                            removed_assets: report.removed_assets,
+                                            removed_blobs: report.removed_blobs,
+                                        })
+                                        .ok();
+                                }
+                                Err(e) => tracing::warn!("harness peer asset GC failed: {e}"),
+                            }
                         }
                         // F13 API asset ingest — covered by fe-database/fe-api
                         // tests, not this mock peer — surface, don't drop.
