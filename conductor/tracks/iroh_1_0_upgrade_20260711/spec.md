@@ -11,7 +11,7 @@ decisions: ../../decisions/hexon-p2p-commons-20260711.md
 
 **Track ID:** `iroh_1_0_upgrade_20260711`
 **Type:** Chore / dependency migration
-**Status:** Queued — **hard external deadline: December 31, 2026**
+**Status:** In progress — port landed 2026-10-11 (uncommitted; tests and the relay-assisted criterion open, see [plan.md](./plan.md)) — **hard external deadline: December 31, 2026**
 **Decision basis:** decisions §D5-2
 
 ## Forcing function

@@ -54,9 +54,10 @@ graph LR
     end
 
     subgraph P2P["Peer-to-Peer"]
-        Iroh[iroh 0.35]
-        IrohB[iroh-blobs 0.35]
-        IrohG[iroh-gossip 0.35]
+        Iroh[iroh 1.3]
+        IrohB[iroh-blobs 0.103]
+        IrohG[iroh-gossip 0.101]
+        IrohD[iroh-docs 0.101]
     end
 
     subgraph Data["Data Layer"]

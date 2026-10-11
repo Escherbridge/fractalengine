@@ -1520,11 +1520,12 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
 /// History (F20/M1 scrutiny finding 3): this used to be a keyed-BLAKE3
 /// digest, which can never equal the Ed25519 id iroh-docs registers a
 /// document under — so a verse imported with its secret could never be
-/// reopened read-only by the stored id (`Client::open` missed). Verse rows
+/// reopened read-only by the stored id (the docs client's `open` missed). Verse rows
 /// written before the fix still carry BLAKE3 hex in `namespace_id`;
 /// fe-sync's secretless open falls back to scanning known docs for the
 /// verse's manifest row on a stored-id miss (compatibility story). New
-/// verses store this id, which `Client::open` resolves directly.
+/// verses store this id, which `iroh_docs::api::DocsApi::open` (iroh-docs 0.101;
+/// `Client::open` on 0.35) resolves directly.
 ///
 /// Same seed → same Ed25519 keypair, so the derivation is deterministic and
 /// identical across peers with the same secret.
@@ -1563,7 +1564,7 @@ mod namespace_id_tests {
     /// F20/M1 finding 3: the derived id must BE the iroh-docs namespace id
     /// — the Ed25519 public key of the secret's signing key (what
     /// `NamespaceSecret::from_bytes(secret).id()` yields in iroh-docs), not a
-    /// private digest that `Client::open` can never resolve. Same-key
+    /// private digest that `DocsApi::open` can never resolve. Same-key
     /// equivalence is pinned cross-crate in fe-sync's
     /// `derive_namespace_id_matches_iroh_namespace_id`.
     #[test]

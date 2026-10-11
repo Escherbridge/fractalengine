@@ -6,9 +6,10 @@
 //! bind the thread enters **offline mode** — it stays alive, responds to
 //! commands, but all network-dependent operations are no-ops.
 //!
-//! The command loop is a `tokio::select!` over the command channel and the
-//! per-replica inbound event pumps (A2/A4): crossbeam's receiver has no
-//! async API, so a bridge thread forwards commands into a tokio channel
+//! The command loop is a `tokio::select!` over the command channel, the
+//! per-replica inbound event pumps (A2/A4), the gossip compute pumps, and
+//! the home-relay status watcher (SYNC-RELAYWATCH): crossbeam's receiver has
+//! no async API, so a bridge thread forwards commands into a tokio channel
 //! before the select.
 
 use std::collections::HashMap;
@@ -18,8 +19,9 @@ use std::sync::Arc;
 use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
 use fe_runtime::messages::DbCommand;
 
-use iroh_gossip::net::{Event as GossipTopicEvent, Gossip, GossipEvent, GossipReceiver};
-use iroh_gossip::proto::TopicId;
+use iroh::Watcher as _;
+use iroh_gossip::api::{Event as GossipTopicEvent, GossipReceiver};
+use iroh_gossip::{Gossip, TopicId};
 
 use crate::distributed_query::{
     handle_gossip_incoming, submit_distributed_query, DistributedTransport, GossipIncoming,
@@ -30,7 +32,7 @@ use crate::docs_engine::{p2p_data_dir, DocsStack};
 use crate::endpoint::SyncEndpoint;
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
 use crate::placement::Retention;
-use crate::relay_config::{RelayConfig, RelayHealth};
+use crate::relay_config::{RelayConfig, RelayHealth, RelayStatusSummary};
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator,
     ReplicatorFuture, RowChange, VerseReplicator,
@@ -40,8 +42,9 @@ use crate::verse_peers;
 use crate::virtual_transport::{VirtualReplica, VirtualTransportFactory};
 
 /// Env var carrying bootstrap peers for every opened replica: **semicolon**
-/// `-separated` iroh `NodeAddr` JSON entries (or bare `NodeId` hex), parsed
-/// with iroh's own serde/FromStr types. Semicolons because `NodeAddr` JSON
+/// `-separated` iroh `EndpointAddr` JSON entries (the legacy 0.35 `NodeAddr`
+/// JSON shape is still accepted; a bare `EndpointId` is rejected loudly),
+/// parsed with iroh's own serde/FromStr types. Semicolons because the JSON
 /// itself contains commas — a comma-separated list would be ambiguous.
 /// Invalid entries are skipped loudly, never fatal (see AGENTS.md
 /// §relay-health for the relay config this rides alongside).
@@ -149,35 +152,60 @@ fn send_sync_event(evt_tx: &SyncEventSender, event: SyncEvent) {
     }
 }
 
+/// The iroh 0.35 `NodeAddr` JSON shape (`{node_id, relay_url,
+/// direct_addresses}`) — still accepted in bootstrap config so existing
+/// `FE_SYNC_BOOTSTRAP` strings keep parsing after the iroh 1.x port.
+#[derive(serde::Deserialize)]
+struct LegacyNodeAddr {
+    node_id: iroh::EndpointId,
+    #[serde(default)]
+    relay_url: Option<iroh::RelayUrl>,
+    #[serde(default)]
+    direct_addresses: std::collections::BTreeSet<std::net::SocketAddr>,
+}
+
+impl From<LegacyNodeAddr> for iroh::EndpointAddr {
+    fn from(legacy: LegacyNodeAddr) -> Self {
+        let relay = legacy.relay_url.map(iroh::TransportAddr::Relay);
+        let direct = legacy
+            .direct_addresses
+            .into_iter()
+            .map(iroh::TransportAddr::Ip);
+        iroh::EndpointAddr::from_parts(legacy.node_id, relay.into_iter().chain(direct))
+    }
+}
+
 /// Parse one bootstrap peer entry with iroh's own types: a JSON-serialized
-/// `iroh::NodeAddr` (what `SyncEvent::Started.node_addr` emits), or a bare
-/// hex `NodeId` (which carries no address and therefore cannot be dialed —
-/// that is reported loudly and skipped).
-fn parse_bootstrap_peer(entry: &str) -> Option<iroh::NodeAddr> {
+/// `iroh::EndpointAddr` (what `SyncEvent::Started.node_addr` emits), the
+/// legacy 0.35 `NodeAddr` JSON shape, or a bare `EndpointId` (hex/base32 —
+/// which carries no address and therefore cannot be dialed: that is
+/// reported loudly and skipped).
+fn parse_bootstrap_peer(entry: &str) -> Option<iroh::EndpointAddr> {
     let entry = entry.trim();
     if entry.is_empty() {
         return None;
     }
-    match serde_json::from_str::<iroh::NodeAddr>(entry) {
-        Ok(addr) => Some(addr),
-        Err(json_err) => {
-            use std::str::FromStr;
-            match iroh::NodeId::from_str(entry) {
-                Ok(node_id) => {
-                    tracing::warn!(
-                        node_id = %node_id.fmt_short(),
-                        "bootstrap entry carries no address (expected NodeAddr JSON) — skipped"
-                    );
-                    None
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        entry = %entry.truncate_str(80),
-                        "invalid FE_SYNC_BOOTSTRAP entry (NodeAddr JSON or NodeId hex expected) — skipped: {json_err}"
-                    );
-                    None
-                }
-            }
+    let json_err = match serde_json::from_str::<iroh::EndpointAddr>(entry) {
+        Ok(addr) => return Some(addr),
+        Err(e) => e,
+    };
+    if let Ok(legacy) = serde_json::from_str::<LegacyNodeAddr>(entry) {
+        return Some(legacy.into());
+    }
+    match entry.parse::<iroh::EndpointId>() {
+        Ok(node_id) => {
+            tracing::warn!(
+                node_id = %node_id.fmt_short(),
+                "bootstrap entry carries no address (expected EndpointAddr JSON) — skipped"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                entry = %entry.truncate_str(80),
+                "invalid FE_SYNC_BOOTSTRAP entry (EndpointAddr JSON expected) — skipped: {json_err}"
+            );
+            None
         }
     }
 }
@@ -203,11 +231,11 @@ impl TruncateStr for str {
 
 /// Resolve the configured bootstrap peers from [`BOOTSTRAP_ENV_VAR`].
 ///
-/// Entries are **semicolon-separated** (a `NodeAddr` JSON contains commas,
-/// so the list separator must not). Invalid entries fail loudly at startup
-/// (one warn each) and are skipped — a bad config must never take the sync
-/// thread down.
-fn bootstrap_peers_from_env() -> Vec<iroh::NodeAddr> {
+/// Entries are **semicolon-separated** (an `EndpointAddr` JSON contains
+/// commas, so the list separator must not). Invalid entries fail loudly at
+/// startup (one warn each) and are skipped — a bad config must never take
+/// the sync thread down.
+fn bootstrap_peers_from_env() -> Vec<iroh::EndpointAddr> {
     std::env::var(BOOTSTRAP_ENV_VAR)
         .ok()
         .map(|raw| {
@@ -218,7 +246,7 @@ fn bootstrap_peers_from_env() -> Vec<iroh::NodeAddr> {
         .unwrap_or_default()
 }
 
-/// Derive an iroh-gossip 0.35 `TopicId` (32 bytes) from a topic key string.
+/// Derive an iroh-gossip `TopicId` (32 bytes) from a topic key string.
 fn gossip_topic_id(topic_key: &str) -> TopicId {
     let bytes: [u8; 32] = *blake3::hash(topic_key.as_bytes()).as_bytes();
     TopicId::from(bytes)
@@ -309,7 +337,10 @@ impl AnyReplicator {
         }
     }
 
-    fn start_sync(&self, peers: Vec<iroh::NodeAddr>) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+    fn start_sync(
+        &self,
+        peers: Vec<iroh::EndpointAddr>,
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
         match self {
             Self::Iroh(r) => Box::pin(r.start_sync(peers)),
             Self::Virtual(r) => r.start_sync(peers),
@@ -432,10 +463,10 @@ pub fn spawn_sync_thread_with_transport(
 
             // The node's iroh identity (the same ed25519 key the DID derives
             // from — F20 alignment). On the real path this IS the endpoint's
-            // NodeId; in virtual mode it is the identity the sim hub tags
+            // EndpointId; in virtual mode it is the identity the sim hub tags
             // this peer's gossip deliveries with (F9/A21), so the F23
             // forged-attribution gate authenticates sim envelopes verbatim.
-            let local_node = secret_key.public();
+            let local_node: iroh::EndpointId = secret_key.public();
 
             // Phase F.1: Create the iroh endpoint first. A virtual transport
             // (sim lab, F8/A19) skips the bind entirely — no real network, no
@@ -472,18 +503,18 @@ pub fn spawn_sync_thread_with_transport(
                         "Sync thread started (online)"
                     );
                     // Our own dialable address, for peers/relays joining us
-                    // (serialized NodeAddr JSON — `parse_bootstrap_peer`
-                    // reads this exact form).
-                    let node_addr = match ep.inner().node_addr().await {
-                        Ok(addr) => Some(addr),
+                    // (serialized EndpointAddr JSON — `parse_bootstrap_peer`
+                    // reads this exact form). With a relay configured this
+                    // waits (bounded) for a home relay so the address
+                    // carries the relay URL.
+                    let node_addr = ep.node_addr().await;
+                    let addr_json = match serde_json::to_string(&node_addr) {
+                        Ok(json) => Some(json),
                         Err(e) => {
-                            tracing::warn!("Could not resolve our node addr: {e}");
+                            tracing::warn!("Could not serialize our endpoint addr: {e}");
                             None
                         }
                     };
-                    let addr_json = node_addr
-                        .as_ref()
-                        .and_then(|a| serde_json::to_string(a).ok());
                     send_sync_event(
                         &evt_tx,
                         SyncEvent::Started {
@@ -524,12 +555,13 @@ pub fn spawn_sync_thread_with_transport(
                 }
             };
 
-            // Real iroh-docs 0.35 stack (A1): Blobs (fs) + Gossip + Docs
+            // Real iroh 1.x docs stack (A1): Blobs (fs) + Gossip + Docs
             // (persistent redb) + Router accepting all three ALPNs, with
-            // persistent stores under the data dir. Absent in offline mode
-            // (endpoint bind failure or stack spawn failure) — the holder
-            // then reports unavailable and replicators degrade to the
-            // in-memory mock. See AGENTS.md §iroh-0.35 and docs_engine.rs.
+            // persistent stores under the data dir (a legacy 0.35 store is
+            // migrated first). Absent in offline mode (endpoint bind failure,
+            // store migration or stack spawn failure) — the holder then
+            // reports unavailable and replicators degrade to the in-memory
+            // mock. See AGENTS.md §iroh-1.x and docs_engine.rs.
             let p2p_dir = p2p_dir.unwrap_or_else(p2p_data_dir);
             let docs_stack: Option<Arc<DocsStack>> = match endpoint.as_ref() {
                 Some(ep) => match DocsStack::spawn(ep.inner().clone(), &p2p_dir).await {
@@ -544,7 +576,14 @@ pub fn spawn_sync_thread_with_transport(
                             p2p_dir = %p2p_dir.display(),
                             "Failed to spawn P2P docs stack — degrading to offline/mock replication: {e}"
                         );
-                        relay_health = relay_health.on_error();
+                        // iroh 1.x binds without contacting a relay, so
+                        // the post-bind health is `Unknown`; a stack failure
+                        // keeps 0.35's one-step degradation (`Degraded`)
+                        // rather than claiming the relay is unreachable.
+                        relay_health = match relay_health {
+                            RelayHealth::Unknown => RelayHealth::Degraded,
+                            other => other.on_error(),
+                        };
                         send_sync_event(
                             &evt_tx,
                             SyncEvent::RelayHealthChanged {
@@ -583,13 +622,23 @@ pub fn spawn_sync_thread_with_transport(
                 None => ReplicaTransport::Iroh(docs_engine_holder.clone()),
             };
 
-            // TODO(ultrapilot): continuous relay-health monitoring.
-            // `endpoint.inner().home_relay()` returns a `Watcher<Option<RelayUrl>>`
-            // that would let us detect relay loss mid-session (Healthy ->
-            // Degraded/Unreachable via `RelayHealth::on_error`, and recovery via
-            // `on_success`), but wiring it requires watching the stream alongside
-            // the select! loop below. Only the startup bind result and the
-            // P2P-stack spawn outcome are tracked today — see AGENTS.md §relay-health.
+            // SYNC-RELAYWATCH: continuous relay-health monitoring. The
+            // endpoint's home-relay status watcher feeds a select! branch
+            // below, folding every status change through
+            // `RelayHealth::on_relay_status` (connected → Healthy, errors →
+            // Degraded → Unreachable, auth denial → Unreachable) and emitting
+            // `RelayHealthChanged` on change. Absent when relays are disabled
+            // (health is the `Disabled` fixed point), in virtual mode,
+            // offline, and when the P2P stack failed to spawn (the watcher
+            // would otherwise overwrite that loud `Degraded` with `Healthy`
+            // as soon as a relay connects — replication is still down).
+            // `stream()` yields the current value first, so a relay already
+            // connected during `node_addr()` confirms immediately.
+            // See AGENTS.md §relay-health.
+            let mut relay_watch: Option<RelayStatusStream> = endpoint
+                .as_ref()
+                .filter(|ep| ep.relay_enabled() && docs_stack.is_some())
+                .map(|ep| Box::pin(ep.home_relay_status().stream()) as RelayStatusStream);
 
             // Track active gossip subscriptions (topic key -> live sender)
             // plus the per-topic inbound pumps. F7 splits each GossipTopic:
@@ -670,9 +719,23 @@ pub fn spawn_sync_thread_with_transport(
             }
 
             // Command loop (select! over commands + inbound replica rows +
-            // inbound gossip compute traffic).
+            // inbound gossip compute traffic + home-relay status).
             loop {
                 tokio::select! {
+                    maybe_status = next_relay_status(&mut relay_watch), if relay_watch.is_some() => {
+                        match maybe_status {
+                            Some(statuses) => {
+                                relay_health = apply_relay_status(
+                                    relay_health,
+                                    &statuses,
+                                    &evt_tx,
+                                );
+                            }
+                            // Watcher disconnected (last endpoint clone
+                            // dropped) — stop polling it.
+                            None => relay_watch = None,
+                        }
+                    }
                     maybe_row = inbound_rx.recv() => {
                         // `None` (all pumps closed) needs no handling —
                         // commands still flow.
@@ -751,7 +814,8 @@ pub fn spawn_sync_thread_with_transport(
                                     gossip_inbound_tx.clone(),
                                     &verse_id,
                                     &peers,
-                                );
+                                )
+                                .await;
                                 handle_open_verse_replica(
                                     &mut replicas,
                                     &mut inbound_pumps,
@@ -940,6 +1004,71 @@ pub fn spawn_sync_thread_with_transport(
             send_sync_event(&evt_tx, SyncEvent::Stopped);
         });
     })
+}
+
+/// The home-relay status stream the select loop watches (SYNC-RELAYWATCH).
+type RelayStatusStream =
+    std::pin::Pin<Box<dyn futures_lite::Stream<Item = Vec<iroh::endpoint::RelayStatus>> + Send>>;
+
+/// Next home-relay status snapshot; `None` once the watcher disconnects.
+/// Only polled while `watch` is `Some` (the select! branch precondition).
+async fn next_relay_status(
+    watch: &mut Option<RelayStatusStream>,
+) -> Option<Vec<iroh::endpoint::RelayStatus>> {
+    use futures_lite::StreamExt;
+    watch.as_mut()?.next().await
+}
+
+/// Fold one home-relay status snapshot into the relay health, logging and
+/// emitting [`SyncEvent::RelayHealthChanged`] only when the value changes
+/// (see AGENTS.md §relay-health).
+fn apply_relay_status(
+    current: RelayHealth,
+    statuses: &[iroh::endpoint::RelayStatus],
+    evt_tx: &SyncEventSender,
+) -> RelayHealth {
+    let summaries: Vec<RelayStatusSummary> = statuses
+        .iter()
+        .map(RelayStatusSummary::from_status)
+        .collect();
+    for status in statuses {
+        if let Some(reason) = status.auth_denied_reason() {
+            // Logged once per descent into `Unreachable`, not on every
+            // retry snapshot iroh publishes while the denial persists.
+            if current == RelayHealth::Unreachable {
+                tracing::debug!(relay = %status.url(), reason, "relay still denies our authentication");
+                continue;
+            }
+            tracing::error!(
+                relay = %status.url(),
+                reason,
+                "Relay server denied our authentication — it will not recover on its own"
+            );
+        } else if let Some(err) = status.last_error() {
+            tracing::debug!(relay = %status.url(), "home relay connection error: {err}");
+        }
+    }
+    fold_relay_health(current, &summaries, evt_tx)
+}
+
+/// The emit-on-change half of [`apply_relay_status`], over summaries (the
+/// seam the SYNC-RELAYWATCH test drives — upstream `RelayStatus` has no
+/// public constructor).
+fn fold_relay_health(
+    current: RelayHealth,
+    summaries: &[RelayStatusSummary],
+    evt_tx: &SyncEventSender,
+) -> RelayHealth {
+    let next = current.on_relay_status(summaries);
+    if next != current {
+        if next.is_problem() {
+            tracing::warn!(from = ?current, to = ?next, "Relay health degraded (home-relay watcher)");
+        } else {
+            tracing::info!(from = ?current, to = ?next, "Relay health changed (home-relay watcher)");
+        }
+        send_sync_event(evt_tx, SyncEvent::RelayHealthChanged { health: next });
+    }
+    next
 }
 
 /// Bridge-thread helper: forward one command into the tokio channel.
@@ -1198,7 +1327,7 @@ async fn handle_open_verse_replica(
     verse_id: &str,
     namespace_id: &str,
     namespace_secret: Option<String>,
-    peers: &[iroh::NodeAddr],
+    peers: &[iroh::EndpointAddr],
     local_did: &str,
     evt_tx: &SyncEventSender,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
@@ -1676,17 +1805,17 @@ pub(crate) fn derive_gossip_topic(verse_id: &str) -> String {
 /// pump shape forwards. A factory without a gossip plane (`join_gossip_topic`
 /// default) leaves the verse honestly topic-less, as before F9.
 #[allow(clippy::too_many_arguments)]
-fn subscribe_to_verse_gossip_topic(
+async fn subscribe_to_verse_gossip_topic(
     endpoint: Option<&SyncEndpoint>,
     gossip_host: &Option<Gossip>,
     virtual_transport: &Option<Arc<dyn VirtualTransportFactory>>,
     local_did: &str,
-    local_node: iroh::NodeId,
+    local_node: iroh::EndpointId,
     gossip_senders: &mut HashMap<String, TopicSender>,
     gossip_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
     gossip_inbound_tx: tokio::sync::mpsc::Sender<GossipIncoming>,
     verse_id: &str,
-    peers: &[iroh::NodeAddr],
+    peers: &[iroh::EndpointAddr],
 ) {
     let topic_key = derive_gossip_topic(verse_id);
 
@@ -1734,7 +1863,7 @@ fn subscribe_to_verse_gossip_topic(
         return;
     };
 
-    // The gossip join below dials by bare NodeId and is ONE-SHOT: it can
+    // The gossip join below dials by bare EndpointId and is ONE-SHOT: it can
     // only resolve an address the endpoint's address book already knows.
     // The docs sync (`start_sync`) dials these same peers only in the
     // background, so without this the join races the docs dial that would
@@ -1742,14 +1871,11 @@ fn subscribe_to_verse_gossip_topic(
     // topic with no neighbor for the whole session (every compute broadcast
     // reaches nobody). Register every bootstrap peer's address up front so
     // the join always resolves.
+    // (iroh 1.x: the endpoint's in-memory address book — `MemoryLookup` —
+    // replaces 0.35's `add_node_addr`; registration is infallible.)
     if let Some(ep) = endpoint {
         for peer in peers {
-            if let Err(e) = ep.inner().add_node_addr(peer.clone()) {
-                tracing::warn!(
-                    verse_id,
-                    "add_node_addr for a gossip bootstrap peer failed: {e}"
-                );
-            }
+            ep.add_peer_addr(peer.clone());
         }
     }
 
@@ -1759,9 +1885,15 @@ fn subscribe_to_verse_gossip_topic(
     // neighbors, and the same peer set the replica dials for doc sync is the
     // one to gossip with. Empty on a fresh host (the dialed side joins via
     // its own bootstrap set).
-    let bootstrap: Vec<iroh::NodeId> = peers.iter().map(|p| p.node_id).collect();
+    let bootstrap: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
 
-    match gossip.subscribe(gossip_topic_id(&topic_key), bootstrap) {
+    // iroh-gossip 0.101's subscribe is async: awaiting it hands the Join to
+    // the gossip actor before the open sequence starts, which keeps the
+    // subscribe-before-open ordering (§gossip-bootstrap) intact.
+    match gossip
+        .subscribe(gossip_topic_id(&topic_key), bootstrap)
+        .await
+    {
         Ok(handle) => {
             tracing::debug!(verse_id, "Subscribed to verse gossip topic");
             let (sender, receiver) = handle.split();
@@ -1803,8 +1935,8 @@ async fn pump_virtual_gossip_topic(
 }
 
 /// Drain one topic's gossip event stream, forwarding messages to the sync
-/// loop's aggregated inbound channel. Membership events (Joined /
-/// NeighborUp / NeighborDown) are intentionally not consumed — nothing acts
+/// loop's aggregated inbound channel. Membership events (NeighborUp /
+/// NeighborDown) are intentionally not consumed — nothing acts
 /// on them today. A pump is a separate task, so the awaiting send below is
 /// backpressure, not a self-drain (§self-drain applies to the select loop
 /// itself).
@@ -1816,7 +1948,7 @@ async fn pump_gossip_topic(
     use futures_lite::StreamExt;
     loop {
         match receiver.next().await {
-            Some(Ok(GossipTopicEvent::Gossip(GossipEvent::Received(message)))) => {
+            Some(Ok(GossipTopicEvent::Received(message))) => {
                 let incoming = GossipIncoming {
                     verse_id: verse_id.clone(),
                     from: message.delivered_from,
@@ -1834,7 +1966,7 @@ async fn pump_gossip_topic(
             Some(Ok(GossipTopicEvent::Lagged)) => {
                 tracing::warn!(verse_id, "gossip topic receiver lagged — messages missed");
             }
-            Some(Ok(_)) => {} // Joined / NeighborUp / NeighborDown — not consumed
+            Some(Ok(GossipTopicEvent::NeighborUp(_) | GossipTopicEvent::NeighborDown(_))) => {} // not consumed
             Some(Err(e)) => {
                 tracing::warn!(verse_id, "gossip topic stream error: {e}");
             }
@@ -1847,7 +1979,7 @@ async fn pump_gossip_topic(
 ///
 /// This is called when closing a verse replica: drop the sender half and
 /// abort the receiver pump — both halves gone leaves the topic in
-/// iroh-gossip 0.35.
+/// iroh-gossip.
 fn unsubscribe_from_verse_gossip_topic(
     gossip_senders: &mut HashMap<String, TopicSender>,
     gossip_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
@@ -2020,6 +2152,58 @@ mod tests {
     use fe_runtime::blob_store::mock::MockBlobStore;
     use std::sync::Arc;
 
+    /// SYNC-RELAYWATCH acceptance: home-relay snapshots fold through the
+    /// watcher's emit seam into `SyncStatus.health` (Unknown → Healthy →
+    /// Degraded → Healthy), and an unchanged snapshot emits nothing.
+    #[test]
+    fn relay_watch_drives_health_into_sync_status() {
+        use crate::status::{
+            drain_sync_events, SyncEventReceiverRes, SyncStatus, TilesetEventBuffer,
+        };
+        use bevy::prelude::{App, Update};
+
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
+        let mut app = App::new();
+        app.init_resource::<SyncStatus>();
+        app.init_resource::<TilesetEventBuffer>();
+        app.insert_resource(SyncEventReceiverRes(Arc::new(std::sync::Mutex::new(
+            evt_rx,
+        ))));
+        app.add_systems(Update, drain_sync_events);
+
+        let connected = [RelayStatusSummary {
+            connected: true,
+            ..Default::default()
+        }];
+        let errored = [RelayStatusSummary {
+            has_error: true,
+            ..Default::default()
+        }];
+        let queued = |app: &App| {
+            app.world()
+                .resource::<SyncEventReceiverRes>()
+                .0
+                .lock()
+                .unwrap()
+                .len()
+        };
+        let mut health = RelayHealth::Unknown;
+        for (snapshot, expected) in [
+            (&connected[..], RelayHealth::Healthy),
+            (&errored[..], RelayHealth::Degraded),
+            (&connected[..], RelayHealth::Healthy),
+            // Still connected: no transition, so no event.
+            (&connected[..], RelayHealth::Healthy),
+        ] {
+            let before = health;
+            health = fold_relay_health(health, snapshot, &evt_tx);
+            assert_eq!(health, expected);
+            assert_eq!(queued(&app), usize::from(before != expected));
+            app.update();
+            assert_eq!(app.world().resource::<SyncStatus>().health, expected);
+        }
+    }
+
     #[test]
     fn fetch_blob_local_hit_emits_ready() {
         let store: BlobStoreHandle = Arc::new(MockBlobStore::new());
@@ -2163,7 +2347,7 @@ mod tests {
 
         fn start_sync(
             &self,
-            _peers: Vec<iroh::NodeAddr>,
+            _peers: Vec<iroh::EndpointAddr>,
         ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
             Box::pin(async { Ok(()) })
         }
@@ -2571,7 +2755,7 @@ mod tests {
 
     /// A deterministic test node identity (same construction the
     /// distributed-query tests use).
-    fn test_node_id(seed: u8) -> iroh::NodeId {
+    fn test_node_id(seed: u8) -> iroh::EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
     }
 
@@ -2583,8 +2767,8 @@ mod tests {
         let mut gossip_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
         let (tx, _rx) = tokio::sync::mpsc::channel::<GossipIncoming>(8);
 
-        // Should not panic, just skip
-        subscribe_to_verse_gossip_topic(
+        // Should not panic, just skip (returns before any await).
+        futures_lite::future::block_on(subscribe_to_verse_gossip_topic(
             None,
             &gossip_host,
             &no_virtual,
@@ -2595,7 +2779,7 @@ mod tests {
             tx,
             "verse-test",
             &[],
-        );
+        ));
 
         // No topics should be created without a host
         assert!(gossip_senders.is_empty(), "no topics without gossip host");
@@ -2638,7 +2822,7 @@ mod tests {
         struct LoopbackTopic {
             tx: tokio::sync::mpsc::Sender<VirtualGossipMessage>,
             rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<VirtualGossipMessage>>>,
-            node: iroh::NodeId,
+            node: iroh::EndpointId,
         }
         impl VirtualGossipTopic for LoopbackTopic {
             fn broadcast(&self, content: bytes::Bytes) -> Result<(), String> {
@@ -2674,7 +2858,7 @@ mod tests {
                 &self,
                 _topic_key: &str,
                 _local_did: &str,
-                local_node: iroh::NodeId,
+                local_node: iroh::EndpointId,
             ) -> Option<Arc<dyn VirtualGossipTopic>> {
                 let (tx, rx) = tokio::sync::mpsc::channel(16);
                 Some(Arc::new(LoopbackTopic {
@@ -2710,7 +2894,8 @@ mod tests {
                 tx,
                 "verse-test",
                 &[],
-            );
+            )
+            .await;
             assert!(
                 senders.is_empty(),
                 "a factory without a gossip plane leaves the verse topic-less"
@@ -2732,7 +2917,8 @@ mod tests {
                 tx.clone(),
                 "verse-test",
                 &[],
-            );
+            )
+            .await;
             let sender = senders
                 .get(&derive_gossip_topic("verse-test"))
                 .expect("virtual sender registered");
@@ -2762,7 +2948,8 @@ mod tests {
                 tx.clone(),
                 "verse-test",
                 &[],
-            );
+            )
+            .await;
             assert_eq!(senders.len(), 1, "re-subscribe is a no-op");
         });
     }
@@ -2853,17 +3040,33 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn parse_bootstrap_peer_accepts_node_addr_json() {
+    fn parse_bootstrap_peer_accepts_endpoint_addr_json() {
         // Round-trip through iroh's own serde types — the exact form
         // `SyncEvent::Started.node_addr` emits.
-        let addr = iroh::NodeAddr::new(iroh::SecretKey::from_bytes(&[7u8; 32]).public());
+        let addr = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7u8; 32]).public())
+            .with_relay_url("https://relay.example.com".parse().unwrap())
+            .with_ip_addr("127.0.0.1:4433".parse().unwrap());
         let json = serde_json::to_string(&addr).unwrap();
         assert_eq!(parse_bootstrap_peer(&json), Some(addr));
     }
 
     #[test]
-    fn parse_bootstrap_peer_rejects_bare_node_id() {
-        // A bare NodeId carries no address — undialable, so skipped loudly.
+    fn parse_bootstrap_peer_accepts_legacy_035_node_addr_json() {
+        // Existing FE_SYNC_BOOTSTRAP strings (iroh 0.35 `NodeAddr` JSON)
+        // keep parsing — into the equivalent EndpointAddr.
+        let id = iroh::SecretKey::from_bytes(&[10u8; 32]).public();
+        let legacy = format!(
+            r#"{{"node_id":"{id}","relay_url":"https://relay.example.com/","direct_addresses":["127.0.0.1:4433"]}}"#
+        );
+        let expected = iroh::EndpointAddr::new(id)
+            .with_relay_url("https://relay.example.com/".parse().unwrap())
+            .with_ip_addr("127.0.0.1:4433".parse().unwrap());
+        assert_eq!(parse_bootstrap_peer(&legacy), Some(expected));
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_rejects_bare_endpoint_id() {
+        // A bare EndpointId carries no address — undialable, so skipped loudly.
         let node_id = iroh::SecretKey::from_bytes(&[8u8; 32]).public();
         assert_eq!(parse_bootstrap_peer(&node_id.to_string()), None);
     }
@@ -2879,9 +3082,10 @@ mod tests {
         let _env_guard = SYNC_THREAD_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let addr = iroh::NodeAddr::new(iroh::SecretKey::from_bytes(&[9u8; 32]).public());
+        let addr = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[9u8; 32]).public())
+            .with_ip_addr("127.0.0.1:4433".parse().unwrap());
         let json = serde_json::to_string(&addr).unwrap();
-        // Semicolon-separated: NodeAddr JSON contains commas, so the list
+        // Semicolon-separated: EndpointAddr JSON contains commas, so the list
         // separator must not be a comma (this test pins that exact contract).
         std::env::set_var(BOOTSTRAP_ENV_VAR, format!("{json};not-a-peer;;{json}"));
 
@@ -3798,7 +4002,7 @@ mod tests {
                 .await
                 .expect("alice authors row");
         }
-        let addr_a = endpoint.inner().node_addr().await.expect("alice addr");
+        let addr_a = endpoint.node_addr().await;
 
         // Peer B: a REAL sync thread (the system under test).
         let secret_b = iroh::SecretKey::from_bytes(&[62u8; 32]);
@@ -4271,8 +4475,8 @@ mod tests {
         else {
             panic!("this test requires an online stack, got {started:?}");
         };
-        let addr_b: iroh::NodeAddr =
-            serde_json::from_str(&addr_json).expect("creator NodeAddr JSON");
+        let addr_b: iroh::EndpointAddr =
+            serde_json::from_str(&addr_json).expect("creator EndpointAddr JSON");
 
         // The verse the creator is about to make — real ULID + derived
         // namespace id, exactly the values create_verse_handler writes.

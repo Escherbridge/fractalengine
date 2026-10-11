@@ -36,7 +36,10 @@ pub trait VirtualReplica: VerseReplicator {
     /// Join the live sync swarm for this replica, dialing `peers`. No-op for
     /// virtual transports whose membership is scripted in the hub rather
     /// than dialed.
-    fn start_sync(&self, peers: Vec<iroh::NodeAddr>) -> ReplicatorFuture<'_, anyhow::Result<()>>;
+    fn start_sync(
+        &self,
+        peers: Vec<iroh::EndpointAddr>,
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>>;
 
     /// Record a failed open on an AVAILABLE transport (F20 finding 4
     /// parity: the replica stays registered but loudly non-replicating).
@@ -90,21 +93,21 @@ pub trait VirtualTransportFactory: Send + Sync {
         &self,
         _topic_key: &str,
         _local_did: &str,
-        _local_node: iroh::NodeId,
+        _local_node: iroh::EndpointId,
     ) -> Option<std::sync::Arc<dyn VirtualGossipTopic>> {
         None
     }
 }
 
 /// One inbound message on a virtual gossip topic — the hub's analogue of
-/// iroh-gossip's `GossipEvent::Received`. `direct` mirrors
+/// iroh-gossip's `api::Event::Received`. `direct` mirrors
 /// `DeliveryScope::is_direct()`: hub deliveries are 0-hop from their
 /// publisher, so they are always direct and `from` always authenticates the
 /// envelope author (the F23 forged-attribution gate applies verbatim).
 #[derive(Debug, Clone)]
 pub struct VirtualGossipMessage {
     /// The publisher's node identity (its DID's ed25519 key).
-    pub from: iroh::NodeId,
+    pub from: iroh::EndpointId,
     /// Always `true` from the hub (0-hop delivery) — see above.
     pub direct: bool,
     /// The raw frame (`ComputeEnvelope` bytes for the compute plane).
@@ -116,7 +119,7 @@ pub struct VirtualGossipMessage {
 /// `GossipTopic` shape the real path uses.
 ///
 /// Delivery semantics are the hub's: a broadcast schedules one delivery per
-/// current subscriber OTHER than the publisher (iroh-gossip 0.35 parity — a
+/// current subscriber OTHER than the publisher (iroh-gossip parity — a
 /// sender never receives its own broadcast; the F23 SELF_ECHO admission
 /// gate stays as defense for the real path's topology edge cases) under
 /// the hub's scripted latency/partition/churn, and a subscriber that was offline or

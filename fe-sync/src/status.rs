@@ -53,7 +53,7 @@ pub fn drain_sync_events(
             SyncEvent::Started { online, node_addr } => {
                 status.online = online;
                 status.node_addr = node_addr;
-                // The dialable NodeAddr JSON is what peers/relays paste into
+                // The dialable EndpointAddr JSON is what peers/relays paste into
                 // FE_SYNC_BOOTSTRAP — log it raw (not Debug-escaped) so it is
                 // copy-pasteable off the start banner, in exactly the form
                 // `parse_bootstrap_peer` accepts.
@@ -115,7 +115,7 @@ pub fn drain_sync_events(
             } => {
                 // F20 finding 4: honest replica status — this verse is NOT
                 // replicating while its document remains unopenable on an
-                // online stack. Loud by design (see AGENTS.md §iroh-0.35:
+                // online stack. Loud by design (see AGENTS.md §iroh-1.x:
                 // the mock fallback is offline-only).
                 tracing::error!(
                     verse_id,
@@ -138,7 +138,7 @@ pub fn drain_sync_events(
                 tileset_buf.events.push(ev);
             }
             // Peer transform updates — applying to local nodes is deferred.
-            // TODO(iroh-0.35): apply peer NodeTransformed to the local ECS/world.
+            // TODO(iroh-1.x): apply peer NodeTransformed to the local ECS/world.
             SyncEvent::NodeTransformed {
                 ref node_id,
                 ref verse_id,

@@ -5,7 +5,7 @@ practical workflow; for build details see [BUILDING.md](BUILDING.md).
 
 ## Quickstart
 
-1. Install Rust 1.83+ (stable) — full prerequisites per platform are in
+1. Install Rust 1.91+ (stable) — full prerequisites per platform are in
    [BUILDING.md](BUILDING.md).
 2. Clone and build:
 

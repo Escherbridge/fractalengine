@@ -495,7 +495,7 @@ impl SimNet {
         &self,
         topic: &str,
         author: &str,
-        author_node: iroh::NodeId,
+        author_node: iroh::EndpointId,
         token: u64,
         content: bytes::Bytes,
     ) -> Result<(), String> {
@@ -794,14 +794,14 @@ impl SimVerseReplicator {
 
 /// A peer's membership on a hub gossip topic (F9/A21): the
 /// `VirtualGossipTopic` the sync thread's compute plane drives. Broadcasts
-/// carry the member's iroh `NodeId` as `from` (0-hop, so `direct`), which is
+/// carry the member's iroh `EndpointId` as `from` (0-hop, so `direct`), which is
 /// what lets fe-sync's F23 sender-identity gate authenticate sim envelopes
 /// verbatim. Dropping the last handle leaves the topic.
 pub struct SimGossipTopic {
     net: Arc<SimNet>,
     topic: String,
     peer: String,
-    node: iroh::NodeId,
+    node: iroh::EndpointId,
     token: u64,
     inbound: Mutex<Option<tokio::sync::mpsc::Receiver<VirtualGossipMessage>>>,
 }
@@ -809,7 +809,7 @@ pub struct SimGossipTopic {
 impl SimGossipTopic {
     /// Join `topic` as `peer` (DID — the hub's link key) / `node` (the
     /// identity its frames are tagged with).
-    pub fn join(net: Arc<SimNet>, topic: &str, peer: &str, node: iroh::NodeId) -> Self {
+    pub fn join(net: Arc<SimNet>, topic: &str, peer: &str, node: iroh::EndpointId) -> Self {
         let (rx, token) = net.join_topic(topic, peer);
         Self {
             net,
@@ -910,7 +910,10 @@ impl VirtualReplica for SimVerseReplicator {
     /// Membership is scripted in the hub (`register_peer`/churn faults), so
     /// there is nothing to dial — the iroh `start_sync` equivalent is the
     /// subscription the sync thread's pump already holds.
-    fn start_sync(&self, _peers: Vec<iroh::NodeAddr>) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+    fn start_sync(
+        &self,
+        _peers: Vec<iroh::EndpointAddr>,
+    ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
         Box::pin(async { Ok(()) })
     }
 
@@ -979,7 +982,7 @@ impl VirtualTransportFactory for SimTransportFactory {
         &self,
         topic_key: &str,
         local_did: &str,
-        local_node: iroh::NodeId,
+        local_node: iroh::EndpointId,
     ) -> Option<Arc<dyn VirtualGossipTopic>> {
         Some(Arc::new(SimGossipTopic::join(
             self.net.clone(),
@@ -1274,7 +1277,7 @@ mod tests {
 
     // --- Gossip plane (F9/A21) ------------------------------------------------
 
-    fn node(seed: u8) -> iroh::NodeId {
+    fn node(seed: u8) -> iroh::EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
     }
 
@@ -1311,7 +1314,7 @@ mod tests {
         bytes::Bytes::from_static(text.as_bytes())
     }
 
-    /// iroh-gossip 0.35 parity: a broadcast reaches every OTHER member and
+    /// iroh-gossip parity (0.35 and 0.101 alike): a broadcast reaches every OTHER member and
     /// never loops back to its publisher.
     #[test]
     fn gossip_broadcast_reaches_every_other_member_never_the_publisher() {
@@ -1321,7 +1324,11 @@ mod tests {
         assert_eq!(f.net.step(), 2, "two frames × one other member");
         let first = f.beta_rx.try_recv().expect("first frame");
         assert_eq!(first.content.as_ref(), b"req-1");
-        assert_eq!(first.from, node(1), "tagged with the publisher's NodeId");
+        assert_eq!(
+            first.from,
+            node(1),
+            "tagged with the publisher's EndpointId"
+        );
         assert!(first.direct, "hub deliveries are 0-hop");
         assert_eq!(
             f.beta_rx.try_recv().expect("second").content.as_ref(),

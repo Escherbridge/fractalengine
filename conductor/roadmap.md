@@ -109,7 +109,9 @@ official registry are CLOSED-source** to enable a **marketplace**.
   public APIs (the seed of the satellite pipeline).
 - `hexon_scale_orchestration_20260712` (planned) — real-world scale +
   rulers/measurement.
-- iroh 0.35 P2P blobs are the transport; relay EOL 2026-12-31 is a clock.
+- iroh P2P blobs are the transport — iroh 1.3 / iroh-blobs 0.103 since the 2026-10-11 port
+  (track iroh_1_0_upgrade_20260711), which retires the 0.35 relay-EOL (2026-12-31) clock
+  once every deployed peer has upgraded (flag day).
 
 **Strategic call to make:** where does the line fall between the **open-core**
 FractalEngine (engine + format + a reference foundry?) and the **closed**

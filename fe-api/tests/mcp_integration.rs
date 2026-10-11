@@ -2779,7 +2779,7 @@ async fn mcp_structured_fuzz_never_panics_or_leaks_to_channel() {
             let (auth_ok, mutation) = if i == 0 {
                 (true, None)
             } else {
-                let auth_ok = rng.next_u64() % 2 == 0;
+                let auth_ok = rng.next_u64().is_multiple_of(2);
                 let mutation = if keys.is_empty() {
                     None // sim_stop/sim_status/get_hierarchy take no args
                 } else {

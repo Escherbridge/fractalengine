@@ -49,7 +49,6 @@ merely restate them will be deduplicated against this list.
     other crates: `ammonia` via surrealdb-core, `h2`, `rustls`, and
     `webbrowser` via bevy_egui.
   - Advisories with no fix in the line our dependencies pin:
-    `hickory-proto` 0.25 and `rustls-webpki` 0.102 via iroh 0.35;
     `quick-xml` 0.39 via tauri's plist reader; and `rsa` (RUSTSEC-2023-0071,
     no upstream fix; reached only through jsonwebtoken, while FractalEngine
     signs and verifies EdDSA only).

@@ -15,6 +15,8 @@ Thumbs.db
 
 # Runtime data
 data/
+# ...except the committed iroh 0.35 store fixture (fe-sync AGENTS.md §store-migration)
+!fe-sync/tests/fixtures/p2p_store_v035/blobs/data/
 coverage/
 
 # Environment

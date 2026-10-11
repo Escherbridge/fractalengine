@@ -267,13 +267,17 @@ Open: evidence pack (PAS-P0), headless relay verification (PAS-P1V), chunk trans
 (`handle_request_chunk` still emits `ChunkFailed`, PAS-P3), residency ledger + lazy
 tiles (PAS-P4), settings persistence (PAS-P4B), `PartialHexonFetch` (PAS-P5), close-out.
 
-### [ ] iroh_1_0_upgrade — 0.35 → 1.x behind the VerseReplicator seam
+### [~] iroh_1_0_upgrade — 0.35 → 1.x behind the VerseReplicator seam
 
-_Link: [./tracks/iroh_1_0_upgrade_20260711/](./tracks/iroh_1_0_upgrade_20260711/) · pending · **HARD DEADLINE 2026-12-31** (n0 hosted-relay 0.35 EOL)_
+_Link: [./tracks/iroh_1_0_upgrade_20260711/](./tracks/iroh_1_0_upgrade_20260711/) · in_progress · **HARD DEADLINE 2026-12-31** (n0 hosted-relay 0.35 EOL)_
 
-`Cargo.toml` still pins 0.35 (incl. `iroh-quinn-proto` 0.13 for BBR). Now a port of a
-live 0.35 stack, not greenfield wiring (IROH-1X). Timing/posture decisions D-22/D-23
-are still open in the register.
+Port landed in the working tree 2026-10-11 (uncommitted): iroh 1.3 / iroh-docs 0.101 /
+iroh-gossip 0.101 / iroh-blobs 0.103.1 + noq-proto 1.3 (BBRv3), 0.35 store migration,
+legacy bootstrap-JSON compat, and the home-relay health watcher (SYNC-RELAYWATCH).
+`cargo check --workspace --tests` and workspace clippy `-D warnings` are clean. Open: the
+orchestrator's test sweep (incl. the 0.35-fixture migration test and the harness
+loopback scenarios), the relay-assisted connection against a self-hosted 1.x relay, and
+the flag-day rollout. Timing/posture decisions D-22/D-23 remain open in the register.
 
 ### [ ] crate_consolidation_r2 — user-directed crate merges
 

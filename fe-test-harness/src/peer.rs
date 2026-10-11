@@ -41,7 +41,7 @@ pub struct TestPeer {
     pub db_result_rx: Receiver<DbResult>,
     pub sync_cmd_tx: SyncCommandSender,
     pub sync_evt_rx: SyncEventReceiver,
-    /// This peer's dialable iroh `NodeAddr` (serialized JSON, from
+    /// This peer's dialable iroh `EndpointAddr` (serialized JSON, from
     /// `SyncEvent::Started`) — `None` in offline mode. Peers join this one's
     /// replicas by passing it in `OpenVerseReplica.bootstrap_peers`.
     pub sync_node_addr: Option<String>,
@@ -1103,8 +1103,8 @@ impl TestPeer {
             other => anyhow::bail!("unexpected DB result on start: {other:?}"),
         }
 
-        // Wait for Sync Started (capturing our dialable NodeAddr for peers
-        // that want to join us — serialized NodeAddr JSON).
+        // Wait for Sync Started (capturing our dialable EndpointAddr for peers
+        // that want to join us — serialized EndpointAddr JSON).
         let sync_started = sync_evt_rx
             .recv_timeout(DEFAULT_TIMEOUT)
             .context("timeout waiting for Sync Started")?;

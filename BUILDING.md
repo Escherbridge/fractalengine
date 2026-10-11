@@ -2,7 +2,7 @@
 
 ## Prerequisites (all platforms)
 
-- **Rust 1.83+** (stable toolchain)
+- **Rust 1.91+** (stable toolchain)
 - **Git**
 
 ```bash

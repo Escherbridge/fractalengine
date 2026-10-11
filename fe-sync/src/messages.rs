@@ -23,14 +23,15 @@ pub enum SyncCommand {
     /// capability; without it the namespace is opened read-only (a previously
     /// imported / ticket-joined replica).
     ///
-    /// `bootstrap_peers` carries serialized iroh `NodeAddr` entries (JSON) to
+    /// `bootstrap_peers` carries serialized iroh `EndpointAddr` entries (JSON) to
     /// dial when the replica starts syncing — empty for the default
     /// `FE_SYNC_BOOTSTRAP` set.
     OpenVerseReplica {
         verse_id: String,
         namespace_id: String,
         namespace_secret: Option<String>,
-        /// JSON-serialized `iroh::NodeAddr` values parsed with iroh's own
+        /// JSON-serialized `iroh::EndpointAddr` values (the legacy 0.35
+        /// `NodeAddr` JSON shape is still accepted) parsed with iroh's own
         /// serde types; invalid entries warn loudly and are skipped.
         bootstrap_peers: Vec<String>,
     },
@@ -115,7 +116,7 @@ pub enum SyncEvent {
     /// `online == true` means the iroh endpoint bound successfully and the
     /// node is reachable (at least via relay).  `false` means the thread is
     /// running in offline/local-only mode. `node_addr` is the JSON-serialized
-    /// `iroh::NodeAddr` peers can dial us on, when online.
+    /// `iroh::EndpointAddr` peers can dial us on, when online.
     Started {
         online: bool,
         node_addr: Option<String>,

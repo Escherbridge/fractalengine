@@ -16,7 +16,12 @@ for all UI chrome.
 Key technologies:
 - **Bevy 0.15+**: ECS, asset loading, gizmos, events (MessageReader)
 - **bevy_egui**: All UI panels rendered via egui inside a Bevy app
-- **iroh-docs**: P2P document sync — each Verse has a namespace_id that identifies its replica
+- **iroh-docs**: P2P document sync — each Verse has a namespace_id that identifies its replica.
+  The stack is iroh 1.3 / iroh-docs 0.101 / iroh-gossip 0.101 / iroh-blobs 0.103.1 (ported from
+  0.35 on 2026-10-11; wire-incompatible with 0.35, so peers upgrade together; default relays are
+  n0's rate-limited public v1 fleet, so production should set `FE_SYNC_RELAY`). Port notes, the
+  on-disk store migration and the relay-health watcher: `fe-sync/src/AGENTS.md` §iroh-1.x,
+  §store-migration, §relay-health.
 - **SurrealDB** (embedded, SurrealKV backend, via `fe-database`): local persistence of the full hierarchy and asset metadata
 - **crossbeam channels**: DB thread and sync thread communicate back to Bevy via channels + MessageReader
 
@@ -32,7 +37,7 @@ fractalengine/          (workspace root)
 ├── fe-database/        Async DB functions (SurrealDB embedded, SurrealKV backend), called from a spawned thread; session-cache auth helpers live at fe_database::session_cache (absorbed from fe-auth 2026-07-17)
 ├── fe-sync/            P2P sync thread (iroh-docs); SyncCommand / SyncCommandSenderRes
 ├── fe-runtime/         Shared message types: DbCommand, DbResult, SyncCommand
-├── fe-network/         Low-level iroh networking helpers
+├── fe-network/         libp2p network thread (no iroh dependency — its iroh_blobs/iroh_docs modules are local placeholders; the real iroh stack lives in fe-sync)
 ├── fe-webview/         Embedded webview for node webpage_url display (Tauri backend default)
 ├── fe-identity/        Identity key management
 └── fe-test-harness/    Integration test utilities

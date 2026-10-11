@@ -37,7 +37,7 @@ resolver = "2"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Escherbridge/fractalengine"
-rust-version = "1.83"
+rust-version = "1.91"
 
 [workspace.dependencies]
 bevy = { version = "0.18", default-features = false, features = [
@@ -66,21 +66,29 @@ axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 surrealdb = { version = "3.0", features = ["kv-surrealkv", "kv-mem"] }
 libp2p = { version = "0.56", features = ["kad", "quic", "tokio", "macros"] }
-iroh = "0.35"
-iroh-blobs = "0.35"
-iroh-gossip = "0.35"
-# `rpc` (not a default feature upstream) enables Docs::client() — the Doc
-# handle the replicator layer writes/reads replicas through.
-iroh-docs = { version = "0.35", features = ["rpc"] }
-# quinn fork used by iroh 0.35 — needed only for congestion::BbrConfig (fe-sync BBR)
-iroh-quinn-proto = "0.13"
-# pinned by iroh-docs 0.35 — fe-sync names the in-process Doc client connector type
-quic-rpc = "0.20"
-# pinned by iroh-blobs 0.35 — fe-sync reads blob content via AsyncSliceReaderExt
-iroh-io = "0.6"
-# Feature-unification shim: netwatch 0.5.0 (iroh dep) uses socket2::Type::RAW
+# iroh 1.x stack (pin "1.3": every v1 minor is wire-compatible; 1.2+ needed for
+# RelayStatus::auth_denied_reason). 0.35 <-> 1.x peers cannot interoperate —
+# flag-day upgrade; see fe-sync/src/AGENTS.md §iroh-1.x.
+iroh = "1.3"
+# 0.103.0 was yanked — pin the patch release.
+iroh-blobs = "0.103.1"
+iroh-gossip = "0.101"
+# Default features carry `rpc` (DocsApi), `fs-store` and `redb-v2-migration`
+# (tuple-table rewrite on first open of a 0.35 store) — never set
+# default-features = false without re-adding them.
+iroh-docs = "0.101"
+# noq quinn fork used by iroh 1.x — needed only for congestion::Bbr3Config
+# (fe-sync BBR). Must match iroh's own noq-proto so ControllerFactory unifies;
+# see fe-sync/src/AGENTS.md §congestion-control.
+noq-proto = { version = "1.3", default-features = false }
+# Migration-only: redb 2.6 is the last release that can upgrade a 0.35-written
+# file-format-v2 store (docs.redb, blobs/blobs.db) to v3 before iroh-docs 0.101 /
+# iroh-blobs 0.103 (redb 4) open it. See fe-sync/src/AGENTS.md §store-migration.
+redb_v2 = { package = "redb", version = "2.6.4" }
+# Feature-unification shim: netwatch 0.5.0 (iroh 0.35 dep) used socket2::Type::RAW
 # on macOS without enabling socket2/all — declaring it here turns the feature
-# on graph-wide so the macOS CI build compiles. Drop when iroh/netwatch fix it.
+# on graph-wide so the macOS CI build compiles.
+# TODO(iroh-1.x): netwatch is now 0.19.x; drop this shim once macOS CI passes without it.
 socket2 = { version = "0.5", features = ["all"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
 jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }

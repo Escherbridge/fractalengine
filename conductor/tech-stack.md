@@ -73,14 +73,23 @@ Runtimes never nest.
   - Kademlia DHT for peer discovery and Petal metadata publication
   - mDNS for LAN discovery
   - Noise encryption + Yamux multiplexing + QUIC transport (`quic` feature)
-- **iroh 0.35** (`fe-sync`, `fe-identity`) — P2P data layer
-  - `iroh-gossip` — epidemic broadcast for real-time events + signed revocations (ported to 0.35)
-  - `iroh-docs` — **TARGET** replication layer for petal world-state; currently
-    mock-backed behind the VerseReplicator seam (p2p_mycelium_completion
-    track); real Engine wiring may land directly against iroh 1.x
-    (iroh_1_0_upgrade — hosted-relay wire protocol EOL 2026-12-31)
-  - `iroh-quinn-proto 0.13` pinned for the BBR congestion controller — see `fe-sync/src/AGENTS.md` §congestion-control
-  - iroh relay — encrypted relay for NAT traversal fallback
+- **iroh 1.3** (`fe-sync`, `fe-identity`; `fe-sim` for types) — P2P data layer
+  (ported from 0.35 on 2026-10-11, track iroh_1_0_upgrade_20260711; MSRV 1.91;
+  wire-incompatible with 0.35 — every peer upgrades together; see
+  `fe-sync/src/AGENTS.md` §iroh-1.x)
+  - `iroh-gossip 0.101` — epidemic broadcast for real-time events and the
+    distributed-query compute plane (ALPN `/iroh-gossip/1`)
+  - `iroh-docs 0.101` — live replication layer for verse rows (real stack since
+    p2p_mycelium_completion; the mock is offline-only); in-process client is
+    `iroh_docs::api::DocsApi`
+  - `iroh-blobs 0.103.1` — `FsStore` + `BlobsProtocol` backing the docs content
+  - `noq-proto 1.3` pinned in lockstep with iroh for the BBRv3 congestion
+    controller — see `fe-sync/src/AGENTS.md` §congestion-control
+  - `redb 2.6` (renamed `redb_v2`) — migration-only: upgrades 0.35-written
+    stores to the redb v3 file format (§store-migration)
+  - iroh relay — encrypted relay for NAT traversal fallback; default is n0's
+    public, rate-limited v1 fleet; production sets `FE_SYNC_RELAY` to a
+    self-hosted `iroh-relay` 1.x server
 - **Blob distribution**: BLAKE3 content-addressed blob store (`fe-sync/src/blob_store.rs`)
   served over the iroh endpoint; map packages (hexons) distribute the same way
 

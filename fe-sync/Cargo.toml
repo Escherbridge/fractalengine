@@ -26,9 +26,9 @@ iroh = { workspace = true }
 iroh-blobs = { workspace = true }
 iroh-docs = { workspace = true }
 iroh-gossip = { workspace = true }
-iroh-quinn-proto = { workspace = true }
-iroh-io = { workspace = true }
-quic-rpc = { workspace = true }
+noq-proto = { workspace = true }
+# migration-only (0.35 store v2->v3 file-format upgrade) — see src/AGENTS.md §store-migration
+redb_v2 = { workspace = true }
 bytes = { workspace = true }
 futures-lite = "2.3"
 # see workspace Cargo.toml — socket2/all shim for netwatch's macOS build

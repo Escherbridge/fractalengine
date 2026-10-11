@@ -1,0 +1,18 @@
+[package]
+name = "v035_fixture_gen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+iroh = "0.35"
+iroh-blobs = "0.35"
+iroh-gossip = "0.35"
+iroh-docs = { version = "0.35", features = ["rpc"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = "1"
+serde_json = "1"
+blake3 = "1"
+hex = "0.4"

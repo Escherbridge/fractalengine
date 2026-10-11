@@ -1,23 +1,35 @@
 //! Thin wrapper around [`iroh::Endpoint`] for P2P Mycelium networking (Phase D).
 //!
 //! The [`SyncEndpoint`] manages the iroh QUIC endpoint lifecycle:
-//! construction from a deterministic secret key, relay connectivity, and
-//! graceful shutdown.
+//! construction from a deterministic secret key, relay connectivity, the
+//! in-memory peer address book, and graceful shutdown. See
+//! `fe-sync/src/AGENTS.md` §iroh-1.x.
 
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use anyhow::Result;
+use iroh::address_lookup::MemoryLookup;
 
 use crate::relay_config::RelayConfig;
 
 /// Wraps an [`iroh::Endpoint`] with convenience accessors for the sync thread.
 pub struct SyncEndpoint {
     endpoint: iroh::Endpoint,
+    /// Out-of-band peer addresses (bootstrap peers), consulted when a peer is
+    /// dialed by bare [`iroh::EndpointId`] — iroh 1.x's replacement for
+    /// 0.35's `Endpoint::add_node_addr` (see AGENTS.md §gossip-bootstrap).
+    address_book: MemoryLookup,
+    /// Whether any relay is configured (`false` for [`RelayConfig::Disabled`]).
+    relay_enabled: bool,
 }
 
-/// Guards the one-time startup warning about iroh 0.35's EOL-bound default relays.
-static DEFAULT_RELAY_EOL_WARNING: Once = Once::new();
+/// How long [`SyncEndpoint::node_addr`] waits for a home relay — iroh's own
+/// net-report budget (`iroh::NET_REPORT_TIMEOUT`, in seconds).
+const HOME_RELAY_WAIT: Duration = Duration::from_secs(iroh::NET_REPORT_TIMEOUT);
+
+/// Guards the one-time startup warning about the rate-limited public n0 relays.
+static DEFAULT_RELAY_WARNING: Once = Once::new();
 
 /// Count of `SyncEndpoint`s bound in this process — the sim lab's
 /// "no real network" assertion (F8/A19): a scenario run on a virtual
@@ -32,78 +44,120 @@ pub fn bound_endpoint_count() -> u64 {
     BOUND_ENDPOINTS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Warn — once per process — that iroh's default n0-hosted relay servers EOL
-/// 2026-12-31 (see AGENTS.md §relay-health, decision D-77). Called whenever a
-/// [`SyncEndpoint`] binds against [`RelayConfig::Default`].
-fn warn_default_relay_eol_once() {
-    DEFAULT_RELAY_EOL_WARNING.call_once(|| {
+/// Warn — once per process — that iroh's default public n0 relays are
+/// shared, rate-limited infrastructure (see AGENTS.md §relay-health).
+/// Called whenever a [`SyncEndpoint`] binds against [`RelayConfig::Default`].
+fn warn_default_relay_once() {
+    DEFAULT_RELAY_WARNING.call_once(|| {
         tracing::warn!(
-            eol_date = "2026-12-31",
             env_var = crate::relay_config::RELAY_CONFIG_ENV_VAR,
-            "Using iroh's default n0-hosted relay servers — this infrastructure \
-             EOLs 2026-12-31. Configure a custom RelayConfig before then, or P2P \
-             connectivity for offline/behind-NAT peers will quietly degrade. \
-             See fe-sync/src/AGENTS.md §relay-health."
+            "Using iroh's default public n0 relay servers — shared infrastructure \
+             that rate-limits relayed traffic. Configure a custom RelayConfig \
+             (FE_SYNC_RELAY or the Settings relay; self-host iroh-relay 1.x) for \
+             production. See fe-sync/src/AGENTS.md §relay-health."
         );
     });
 }
 
 /// QUIC transport config with explicit BBR (see AGENTS.md §congestion-control).
-fn bbr_transport_config() -> iroh::endpoint::TransportConfig {
-    let mut transport = iroh::endpoint::TransportConfig::default();
-    // Re-apply iroh's builder default (replaced wholesale by a custom config).
-    transport.keep_alive_interval(Some(Duration::from_secs(1)));
-    transport.congestion_controller_factory(Arc::new(
-        iroh_quinn_proto::congestion::BbrConfig::default(),
-    ));
-    transport
+///
+/// The builder starts from iroh's own multipath-tuned defaults (keep-alive,
+/// path idle timeout, …), so only the congestion controller is overridden.
+fn bbr_transport_config() -> iroh::endpoint::QuicTransportConfig {
+    iroh::endpoint::QuicTransportConfig::builder()
+        .congestion_controller_factory(Arc::new(noq_proto::congestion::Bbr3Config::default()))
+        .build()
 }
 
 impl SyncEndpoint {
     /// Create a new endpoint bound per `relay_config`.
     ///
     /// The `secret_key` determines the node identity — the same 32-byte seed
-    /// always produces the same [`iroh::NodeId`]. `relay_config` is validated
-    /// (via [`RelayConfig::to_relay_mode`]) *before* the bind attempt, so a
-    /// misconfigured custom relay URL fails loudly here rather than queuing
-    /// silently on first dial (see AGENTS.md §relay-health). Binding against
-    /// [`RelayConfig::Default`] logs a one-time EOL warning for iroh 0.35's
-    /// n0-hosted relay infra (2026-12-31).
+    /// always produces the same [`iroh::EndpointId`]. `relay_config` is
+    /// validated (via [`RelayConfig::to_relay_mode`]) *before* the bind
+    /// attempt, so a misconfigured custom relay URL fails loudly here rather
+    /// than queuing silently on first dial (see AGENTS.md §relay-health).
+    /// Binding against [`RelayConfig::Default`] logs a one-time warning that
+    /// the public n0 relays are rate-limited.
+    ///
+    /// Built on `presets::Minimal` (crypto provider only): no pkarr/DNS
+    /// address publishing — peers are addressed out-of-band through the
+    /// in-memory address book, exactly as on 0.35.
     pub async fn new(secret_key: iroh::SecretKey, relay_config: &RelayConfig) -> Result<Self> {
         let relay_mode = relay_config.to_relay_mode()?;
         if relay_config.is_default_infra() {
-            warn_default_relay_eol_once();
+            warn_default_relay_once();
         }
-        let endpoint = iroh::Endpoint::builder()
+        let address_book = MemoryLookup::new();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(secret_key)
             .relay_mode(relay_mode)
             .transport_config(bbr_transport_config())
+            .address_lookup(address_book.clone())
             .bind()
-            .await?;
+            .await
+            .map_err(|e| anyhow::anyhow!("binding iroh endpoint: {e}"))?;
         BOUND_ENDPOINTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tracing::info!(
-            congestion_controller = "bbr",
+            congestion_controller = "bbr3",
             relay_config = ?relay_config,
             "iroh endpoint bound"
         );
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            address_book,
+            relay_enabled: !matches!(relay_config, RelayConfig::Disabled),
+        })
     }
 
     /// The unique public-key identifier of this node.
-    pub fn node_id(&self) -> iroh::NodeId {
-        self.endpoint.node_id()
+    pub fn node_id(&self) -> iroh::EndpointId {
+        self.endpoint.id()
     }
 
-    /// Retrieve the full [`iroh::NodeAddr`] (node ID + relay URL + direct
-    /// addresses).
+    /// Our own dialable [`iroh::EndpointAddr`] (endpoint id + relay URL +
+    /// direct addresses).
     ///
-    /// This is async because iroh may need to wait for relay/STUN discovery
-    /// to complete.
-    pub async fn node_addr(&self) -> Result<iroh::NodeAddr> {
-        self.endpoint.node_addr().await
+    /// With a relay configured this first waits — bounded by
+    /// [`HOME_RELAY_WAIT`] (iroh's net-report timeout) — for a home relay connection so the
+    /// address carries the relay URL; on timeout it returns the current
+    /// snapshot (local addresses only) with a warn. With relays disabled it
+    /// never waits (`Endpoint::online` would pend forever there).
+    pub async fn node_addr(&self) -> iroh::EndpointAddr {
+        if self.relay_enabled
+            && tokio::time::timeout(HOME_RELAY_WAIT, self.endpoint.online())
+                .await
+                .is_err()
+        {
+            tracing::warn!(
+                timeout = ?HOME_RELAY_WAIT,
+                "no home relay connected yet — advertising local addresses only"
+            );
+        }
+        self.endpoint.addr()
     }
 
-    /// A reference to the inner endpoint, for future protocol integration.
+    /// Register a peer's address in the endpoint's address book so a later
+    /// dial by bare [`iroh::EndpointId`] (gossip join, docs sync) resolves.
+    /// Addresses merge with any already known for that peer.
+    pub fn add_peer_addr(&self, addr: iroh::EndpointAddr) {
+        self.address_book.add_endpoint_info(addr);
+    }
+
+    /// Watcher over the connection status of the endpoint's home relays
+    /// (SYNC-RELAYWATCH input — see AGENTS.md §relay-health).
+    pub fn home_relay_status(
+        &self,
+    ) -> impl iroh::Watcher<Value = Vec<iroh::endpoint::RelayStatus>> + use<> {
+        self.endpoint.home_relay_status()
+    }
+
+    /// Whether a relay is configured for this endpoint.
+    pub fn relay_enabled(&self) -> bool {
+        self.relay_enabled
+    }
+
+    /// A reference to the inner endpoint, for protocol integration.
     pub fn inner(&self) -> &iroh::Endpoint {
         &self.endpoint
     }
@@ -128,6 +182,11 @@ mod tests {
         match ep {
             Ok(ep) => {
                 assert_eq!(ep.node_id(), expected_id);
+                // Disabled relays: the address resolves immediately (never
+                // waits on `online()`) and names our own id.
+                let addr = ep.node_addr().await;
+                assert_eq!(addr.id, expected_id);
+                assert!(!ep.relay_enabled());
                 ep.shutdown().await;
             }
             Err(e) => {
@@ -153,8 +212,8 @@ mod tests {
 
     #[test]
     fn bbr_transport_config_constructs() {
-        // Type-level guarantee that the BbrConfig factory unifies with iroh's
-        // re-exported ControllerFactory (same iroh-quinn-proto instance).
+        // Type-level guarantee that the Bbr3Config factory unifies with
+        // iroh's re-exported ControllerFactory (same noq-proto instance).
         let _ = bbr_transport_config();
     }
 

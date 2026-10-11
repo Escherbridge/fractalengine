@@ -101,6 +101,20 @@ acceptance A20–A33 all validated.
   `CARGO_PROFILE_DEV_DEBUG=0` (several-fold smaller, `-j4`-safe — with
   debuginfo, rustc OOMs above `-j2`); `RUST_MIN_STACK=134217728` for anything
   touching surrealdb.
+- **iroh 1.x port (2026-10-11, IROH-1X; UNCOMMITTED, test sweep pending).**
+  The workspace builds on iroh 1.3 / iroh-docs 0.101 / iroh-gossip 0.101 /
+  iroh-blobs 0.103.1 + noq-proto 1.3 (BBRv3), MSRV 1.91. **Flag day:** 0.35
+  and 1.x peers cannot talk, so all deployed peers and relays upgrade
+  together. **Store migration ops:** the first 1.x start on an existing
+  `FE_P2P_DIR` copies it to `<dir>.v035.bak-<unix_ts>` (twice the disk for
+  that start), upgrades `docs.redb` + `blobs/blobs.db` with redb 2.6
+  `upgrade()`, then writes `<dir>/.fe-store-format` = `iroh1`. No marker
+  means the next start retries. A failure leaves the node offline/mock
+  (loud). Rollback: stop the node, replace the dir with the backup, run a
+  0.35 build. Details: `fe-sync/src/AGENTS.md` §store-migration. Hermetic
+  runs keep `FE_SYNC_RELAY=disabled` (with a relay, `node_addr()` waits up to
+  `iroh::NET_REPORT_TIMEOUT` for `online()`). Track:
+  `conductor/tracks/iroh_1_0_upgrade_20260711/plan.md`.
 - **C: is a 1.9 TB drive at ~90% full from NON-project data** — flagged to the
   user; project caches were a symptom.
 - **fe-hermes / fe-pi siblings are pruned git-worktree stubs** of this repo

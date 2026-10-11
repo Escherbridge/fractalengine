@@ -41,7 +41,9 @@ impl NodeKeypair {
     /// Convert to an [`iroh::SecretKey`] sharing the same ed25519 seed.
     ///
     /// Both `ed25519-dalek` and `iroh` derive the full keypair deterministically
-    /// from a 32-byte seed, so the resulting `NodeId` matches `self.verifying_key()`.
+    /// from a 32-byte seed, so the resulting `EndpointId` matches `self.verifying_key()`
+    /// (iroh-base 1.x uses its own ed25519-dalek 3.x internally; only the seed bytes
+    /// cross this boundary, so the two dalek majors coexist).
     pub fn to_iroh_secret(&self) -> iroh::SecretKey {
         iroh::SecretKey::from_bytes(&self.seed_bytes())
     }

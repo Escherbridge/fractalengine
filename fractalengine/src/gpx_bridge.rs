@@ -654,7 +654,9 @@ fn track_pick_shape(
         let prepared = prepare_track_zone(&positions);
         let fill_triangles = prepared
             .triangle_indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|triangle| {
                 [0, 1, 2].map(|offset| {
                     let point = prepared.points[triangle[offset] as usize];

@@ -1,7 +1,8 @@
 //! Relay server configuration + reachability health (P2P relay-health hardening,
 //! track `p2p_asset_streaming_20260718` FR-1 / decision D-77).
 //!
-//! See `AGENTS.md` §relay-health for the EOL timeline and design rationale.
+//! See `AGENTS.md` §relay-health for the relay-infrastructure notes, the
+//! health model, and the continuous home-relay watcher (SYNC-RELAYWATCH).
 
 use std::str::FromStr;
 
@@ -12,9 +13,10 @@ use std::str::FromStr;
 /// into `Custom` or `Disabled`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum RelayConfig {
-    /// iroh's n0-hosted default relay servers.
+    /// iroh's n0-hosted default (public, rate-limited) relay servers.
     ///
-    /// This infrastructure EOLs **2026-12-31** — see AGENTS.md §relay-health.
+    /// Fine for development; production should configure `Custom` — see
+    /// AGENTS.md §relay-health.
     #[default]
     Default,
     /// No relay — direct/LAN-only connectivity.
@@ -130,7 +132,7 @@ impl RelayConfig {
             Self::Default => Ok(iroh::RelayMode::Default),
             Self::Disabled => Ok(iroh::RelayMode::Disabled),
             Self::Custom(urls) => {
-                let mut nodes = Vec::with_capacity(urls.len());
+                let mut relays = Vec::with_capacity(urls.len());
                 for raw in urls {
                     let url = iroh::RelayUrl::from_str(raw).map_err(|e| {
                         RelayConfigError::InvalidUrl {
@@ -138,14 +140,19 @@ impl RelayConfig {
                             reason: e.to_string(),
                         }
                     })?;
-                    nodes.push(iroh::RelayNode::from(url));
+                    relays.push(url);
                 }
-                Ok(iroh::RelayMode::Custom(nodes.into_iter().collect()))
+                if relays.is_empty() {
+                    // iroh 1.x refuses to bind a Custom map with no relays.
+                    return Err(RelayConfigError::Empty);
+                }
+                Ok(iroh::RelayMode::custom(relays))
             }
         }
     }
 
-    /// `true` if this config relies on iroh's default (n0-hosted, EOL-bound) infra.
+    /// `true` if this config relies on iroh's default (public, rate-limited
+    /// n0-hosted) relay infra.
     pub fn is_default_infra(&self) -> bool {
         matches!(self, Self::Default)
     }
@@ -172,11 +179,16 @@ pub enum RelayHealth {
 
 impl RelayHealth {
     /// Health immediately after a successful [`crate::endpoint::SyncEndpoint::new`].
+    ///
+    /// iroh 1.x binds without contacting a relay, so a successful bind proves
+    /// nothing about relay reachability: relay configs start at `Unknown` and
+    /// the home-relay watcher ([`Self::on_relay_status`]) promotes them once a
+    /// relay connects. `Disabled` is the fixed point.
     pub fn on_bind_success(relay_config: &RelayConfig) -> Self {
         if matches!(relay_config, RelayConfig::Disabled) {
             Self::Disabled
         } else {
-            Self::Healthy
+            Self::Unknown
         }
     }
 
@@ -208,6 +220,53 @@ impl RelayHealth {
     /// `true` for states an operator should treat as "something's wrong".
     pub fn is_problem(self) -> bool {
         matches!(self, Self::Degraded | Self::Unreachable)
+    }
+
+    /// Fold one home-relay status snapshot into the health (SYNC-RELAYWATCH).
+    ///
+    /// Any connected relay → [`Self::on_success`]; otherwise an auth denial →
+    /// `Unreachable` directly (it never self-heals); otherwise any recorded
+    /// connection error → [`Self::on_error`] (two strikes from `Healthy`, the
+    /// anti-flap rule); an empty snapshot (no home relay chosen yet) or one
+    /// with no error yet leaves the health unchanged. `Disabled` is a fixed
+    /// point.
+    pub fn on_relay_status(self, statuses: &[RelayStatusSummary]) -> Self {
+        if self == Self::Disabled {
+            return Self::Disabled;
+        }
+        if statuses.iter().any(|s| s.connected) {
+            self.on_success()
+        } else if statuses.iter().any(|s| s.auth_denied) {
+            Self::Unreachable
+        } else if statuses.iter().any(|s| s.has_error) {
+            self.on_error()
+        } else {
+            self
+        }
+    }
+}
+
+/// Pure summary of one `iroh::endpoint::RelayStatus` — the input to
+/// [`RelayHealth::on_relay_status`]. (Upstream `RelayStatus::new` is
+/// crate-private, so the mapping is tested against this summary.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RelayStatusSummary {
+    /// The endpoint is connected to this home relay.
+    pub connected: bool,
+    /// A connection attempt to this relay has failed (`last_error()` is set).
+    pub has_error: bool,
+    /// The relay denied our authentication (`auth_denied_reason()` is set).
+    pub auth_denied: bool,
+}
+
+impl RelayStatusSummary {
+    /// Summarize an upstream relay status entry.
+    pub fn from_status(status: &iroh::endpoint::RelayStatus) -> Self {
+        Self {
+            connected: status.is_connected(),
+            has_error: status.last_error().is_some(),
+            auth_denied: status.auth_denied_reason().is_some(),
+        }
     }
 }
 
@@ -367,16 +426,17 @@ mod tests {
     }
 
     #[test]
-    fn on_bind_success_healthy_for_default_and_custom() {
+    fn on_bind_success_unknown_for_default_and_custom() {
+        // A bind contacts no relay on iroh 1.x — the watcher confirms later.
         assert_eq!(
             RelayHealth::on_bind_success(&RelayConfig::Default),
-            RelayHealth::Healthy
+            RelayHealth::Unknown
         );
         assert_eq!(
             RelayHealth::on_bind_success(&RelayConfig::Custom(
                 vec!["https://x.example.com".into()]
             )),
-            RelayHealth::Healthy
+            RelayHealth::Unknown
         );
     }
 
@@ -419,6 +479,57 @@ mod tests {
     #[test]
     fn on_success_disabled_is_unaffected() {
         assert_eq!(RelayHealth::Disabled.on_success(), RelayHealth::Disabled);
+    }
+
+    // -------------------------------------------------------------------
+    // RelayHealth::on_relay_status (SYNC-RELAYWATCH mapping)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn on_relay_status_transition_table() {
+        let connected = RelayStatusSummary {
+            connected: true,
+            ..Default::default()
+        };
+        let errored = RelayStatusSummary {
+            has_error: true,
+            ..Default::default()
+        };
+        let denied = RelayStatusSummary {
+            has_error: true,
+            auth_denied: true,
+            ..Default::default()
+        };
+        let pending = RelayStatusSummary::default();
+        use RelayHealth::*;
+        let cases: &[(RelayHealth, &[RelayStatusSummary], RelayHealth)] = &[
+            // First connection confirms the relay.
+            (Unknown, &[connected], Healthy),
+            (Degraded, &[connected], Healthy),
+            (Unreachable, &[connected], Healthy),
+            // One connected home relay outweighs a failing one.
+            (Healthy, &[errored, connected], Healthy),
+            // Two strikes from Healthy (anti-flap).
+            (Healthy, &[errored], Degraded),
+            (Degraded, &[errored], Unreachable),
+            (Unknown, &[errored], Unreachable),
+            // Auth denial never self-heals: straight to Unreachable.
+            (Healthy, &[denied], Unreachable),
+            // No home relay chosen yet / no failure observed: unchanged.
+            (Unknown, &[], Unknown),
+            (Healthy, &[], Healthy),
+            (Healthy, &[pending], Healthy),
+            // Disabled is a fixed point.
+            (Disabled, &[connected], Disabled),
+            (Disabled, &[denied], Disabled),
+        ];
+        for (from, statuses, expected) in cases {
+            assert_eq!(
+                from.on_relay_status(statuses),
+                *expected,
+                "{from:?} + {statuses:?}"
+            );
+        }
     }
 
     #[test]

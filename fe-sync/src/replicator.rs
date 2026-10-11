@@ -9,14 +9,14 @@
 //! methods return hand-boxed futures ([`ReplicatorFuture`]) — the same
 //! desugaring `async-trait` performs, minus the dependency.
 //!
-//! `IrohDocsReplicator` rides the real iroh-docs 0.35 `Doc` client
+//! `IrohDocsReplicator` rides the real iroh-docs 0.101 `Doc` API
 //! (`set_bytes` / `subscribe` / `del` / `close`) whenever the P2P stack is
 //! online, and degrades to the in-memory [`MockVerseReplicator`] only when
 //! it is not (offline bind failure, stack spawn failure). On an ONLINE
 //! stack, a document-open failure leaves a loudly non-replicating replica
 //! (writes warn and fail, `snapshot`/`subscribe` error — F20 finding 4),
 //! never a usable in-memory success path. See `fe-sync/src/AGENTS.md`
-//! §iroh-0.35.
+//! §iroh-1.x.
 //!
 //! **One authenticated author identity (F20 finding 2):** the docs author
 //! is the endpoint identity (imported + made default at
@@ -31,9 +31,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use bytes::Bytes;
 use futures_lite::{Stream, StreamExt};
-use iroh_blobs::store::fs::Store as FsBlobStore;
+use iroh_docs::api::{Doc, DocsApi};
 use iroh_docs::engine::LiveEvent;
-use iroh_docs::rpc::client::docs::Doc;
 use iroh_docs::{AuthorId, Capability, NamespaceId, NamespaceSecret};
 use tokio::sync::mpsc;
 
@@ -41,14 +40,8 @@ use tokio::sync::mpsc;
 pub type ReplicatorFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
-/// The in-process docs client connector — the transport `MemClient` rides.
-type DocsFlumeConnector = quic_rpc::transport::flume::FlumeConnector<
-    iroh_docs::rpc::proto::Response,
-    iroh_docs::rpc::proto::Request,
->;
-
-/// A live iroh-docs document handle as handed out by the in-process client.
-pub type DocHandle = Doc<DocsFlumeConnector>;
+/// A live iroh-docs document handle as handed out by the in-process docs API.
+pub type DocHandle = Doc;
 
 // ---------------------------------------------------------------------------
 // RowChange — a single replicated row event
@@ -353,14 +346,14 @@ impl IncomingEntryApplicator {
 // IrohDocsEngineHolder — holds the real iroh-docs stack (Phase F.1, A1)
 // ---------------------------------------------------------------------------
 
-/// Holder for the real iroh-docs 0.35 P2P stack
+/// Holder for the real iroh-docs P2P stack
 /// ([`crate::docs_engine::DocsStack`]: Blobs + Gossip + Docs + Router).
 ///
 /// The sync thread constructs it `online` when the endpoint bound and the
 /// full stack spawned, and leaves it empty in offline mode (bind failure or
 /// stack spawn failure) — `is_available()` then reports `false` and
 /// replicators degrade to the in-memory mock without crashing.
-/// See `fe-sync/src/AGENTS.md` §iroh-0.35.
+/// See `fe-sync/src/AGENTS.md` §iroh-1.x.
 #[derive(Default)]
 pub struct IrohDocsEngineHolder {
     stack: Option<Arc<crate::docs_engine::DocsStack>>,
@@ -387,12 +380,12 @@ impl IrohDocsEngineHolder {
         self.stack.as_deref()
     }
 
-    /// Clone of the docs RPC client, when online.
+    /// Clone of the in-process docs API, when online.
     ///
     /// The handle the replicator layer uses for `import_namespace` /
     /// `set_bytes` / `subscribe` / `start_sync` / `close` — the real
     /// Doc-backed path rides this seam.
-    pub fn docs_client(&self) -> Option<iroh_docs::rpc::client::docs::MemClient> {
+    pub fn docs_client(&self) -> Option<DocsApi> {
         self.stack.as_ref().map(|s| s.docs_client())
     }
 }
@@ -401,7 +394,7 @@ impl IrohDocsEngineHolder {
 // IrohDocsReplicator — backed by the real iroh-docs Doc client (A2)
 // ---------------------------------------------------------------------------
 
-/// Implementation of `VerseReplicator` backed by iroh-docs 0.35.
+/// Implementation of `VerseReplicator` backed by iroh-docs 0.101.
 ///
 /// Online (the stack spawned and the namespace capability usable) every
 /// operation rides the real `Doc` handle: `write_row` → `set_bytes` (or `del`
@@ -501,7 +494,7 @@ impl IrohDocsReplicator {
     /// offline, so a bad config is never silently deferred past startup.
     /// With a valid secret the verse namespace is imported as a **write
     /// capability** (`Capability::Write(NamespaceSecret)`); without one the
-    /// namespace id is opened read-only (`Client::open` — a previously
+    /// namespace id is opened read-only (`DocsApi::open` — a previously
     /// imported or ticket-joined replica).
     ///
     /// **Secretless reopen fallback (F20/M1 finding 3):** production
@@ -512,7 +505,7 @@ impl IrohDocsReplicator {
     /// verse's manifest row (`verse/{verse_id}`) and reopens that doc
     /// read-only — the compatibility path for BLAKE3 values in live DBs.
     /// New verses store the aligned id (`fe_database::derive_namespace_id`
-    /// now returns the Ed25519 id), which `Client::open` resolves directly.
+    /// now returns the Ed25519 id), which `DocsApi::open` resolves directly.
     ///
     /// Offline stacks return `Ok(())` with no doc (the sanctioned mock
     /// fallback). An error return while online is recorded by the caller as
@@ -531,8 +524,7 @@ impl IrohDocsReplicator {
         };
 
         let author = client
-            .authors()
-            .default()
+            .author_default()
             .await
             .map_err(|e| anyhow::anyhow!("resolving default author: {e}"))?;
 
@@ -593,7 +585,7 @@ impl IrohDocsReplicator {
     /// Join the live sync swarm for this replica, dialing `peers`.
     ///
     /// No-op on the mock fallback (no document to sync).
-    pub async fn start_sync(&self, peers: Vec<iroh::NodeAddr>) -> anyhow::Result<()> {
+    pub async fn start_sync(&self, peers: Vec<iroh::EndpointAddr>) -> anyhow::Result<()> {
         let Some(doc) = self.live_doc() else {
             return Ok(());
         };
@@ -691,7 +683,7 @@ impl VerseReplicator for IrohDocsReplicator {
             let (tx, rx) = mpsc::channel::<RowChange>(1024);
             let handle = tokio::spawn(pump_live_events(
                 Box::pin(stream),
-                stack.blobs().store().clone(),
+                stack.blob_store().clone(),
                 tx,
             ));
             *self.pump.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle.abort_handle());
@@ -713,7 +705,7 @@ impl VerseReplicator for IrohDocsReplicator {
             let Some(stack) = self.engine_holder.stack() else {
                 anyhow::bail!("document open but stack unavailable");
             };
-            let blobs = stack.blobs().store().clone();
+            let blobs = stack.blob_store().clone();
 
             // Latest entry per key (a key may have been written by several
             // authors); `include_empty` keeps `Doc::del` tombstones in the set.
@@ -833,10 +825,7 @@ fn parse_namespace_id(ns_hex: &str) -> anyhow::Result<NamespaceId> {
 /// by content instead — the one whose `verse/{verse_id}` key exists. Scan
 /// cost is one local `get_one` per known doc (all reads against the local
 /// redb store, no network). `None` when no known doc claims the verse.
-async fn find_doc_by_verse_manifest(
-    client: &iroh_docs::rpc::client::docs::MemClient,
-    verse_id: &str,
-) -> Option<DocHandle> {
+async fn find_doc_by_verse_manifest(client: &DocsApi, verse_id: &str) -> Option<DocHandle> {
     let manifest_key = format!("verse/{verse_id}");
     let mut stream = client.list().await.ok()?;
     while let Some(item) = stream.next().await {
@@ -854,7 +843,7 @@ async fn find_doc_by_verse_manifest(
         let query = iroh_docs::store::Query::key_exact(manifest_key.as_bytes()).build();
         match doc.get_one(query).await {
             Ok(Some(_)) => return Some(doc),
-            Ok(None) => continue,
+            Ok(None) => {}
             Err(e) => {
                 // An unreadable doc must not abort the scan of the rest.
                 tracing::warn!(
@@ -862,8 +851,12 @@ async fn find_doc_by_verse_manifest(
                     ns = %doc_id.fmt_short(),
                     "manifest probe failed during doc scan: {e}"
                 );
-                continue;
             }
+        }
+        // iroh-docs 0.101's `Doc` has no close-on-drop (0.35's rpc handle
+        // did): release the probe's open-handle refcount explicitly.
+        if let Err(e) = doc.close().await {
+            tracing::debug!(ns = %doc_id.fmt_short(), "closing probed doc failed: {e}");
         }
     }
     None
@@ -881,7 +874,7 @@ struct PendingContent {
 
 /// Map an iroh peer public key to the app's `did:key` identity form.
 ///
-/// The endpoint identity's `NodeId` did:key IS the app DID (fe-identity's
+/// The endpoint identity's `EndpointId` did:key IS the app DID (fe-identity's
 /// keypair and the iroh secret share the ed25519 seed), which is what makes
 /// author attribution and the A3 role gate agree across peers.
 /// `pub(crate)` since F23: the distributed-query transport uses the same
@@ -905,23 +898,27 @@ fn author_did_key(author: &AuthorId) -> String {
         .unwrap_or_else(|| author.to_string())
 }
 
-/// Read one blob's full content bytes from the iroh-blobs fs store.
-async fn read_blob_bytes(store: &FsBlobStore, hash: &iroh_blobs::Hash) -> anyhow::Result<Bytes> {
-    use iroh_blobs::store::Map;
-    use iroh_io::AsyncSliceReaderExt;
+/// Read one blob's full content bytes from the iroh-blobs store.
+///
+/// Completeness is checked first so an absent or partial blob is a clean
+/// error (the callers defer it to the live pump), never a partial read.
+async fn read_blob_bytes(
+    store: &iroh_blobs::api::Store,
+    hash: &iroh_blobs::Hash,
+) -> anyhow::Result<Bytes> {
+    use iroh_blobs::api::blobs::BlobStatus;
 
-    let entry = store
-        .get(hash)
+    match store
+        .status(*hash)
         .await
         .map_err(|e| anyhow::anyhow!("blob store lookup: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("blob {} not in the local store", hash))?;
-    if !entry.is_complete() {
-        anyhow::bail!("blob {} is incomplete", hash);
+    {
+        BlobStatus::Complete { .. } => {}
+        BlobStatus::NotFound => anyhow::bail!("blob {} not in the local store", hash),
+        BlobStatus::Partial { .. } => anyhow::bail!("blob {} is incomplete", hash),
     }
-    // The fs store's `data_reader` is a synchronous inherent method.
-    let mut reader = entry.data_reader();
-    reader
-        .read_to_end()
+    store
+        .get_bytes(*hash)
         .await
         .map_err(|e| anyhow::anyhow!("reading blob bytes: {e}"))
 }
@@ -937,7 +934,7 @@ async fn read_blob_bytes(store: &FsBlobStore, hash: &iroh_blobs::Hash) -> anyhow
 ///   immediately as tombstones.
 async fn pump_live_events(
     mut stream: std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<LiveEvent>> + Send>>,
-    blobs: FsBlobStore,
+    blobs: iroh_blobs::api::Store,
     out: mpsc::Sender<RowChange>,
 ) {
     // Entries whose content hash has not finished downloading yet.
@@ -968,7 +965,7 @@ async fn pump_live_events(
                 };
                 // F20/M1 finding 2: attribute authorship from the ENTRY
                 // author (`entry.author()` — the key that signed the entry),
-                // never from `from` — iroh-docs 0.35's `InsertRemote.from`
+                // never from `from` — iroh-docs' `InsertRemote.from`
                 // is the FORWARDING neighbor, not the author. With the docs
                 // author imported from the endpoint identity at stack
                 // spawn, `entry.author()` maps to the same did:key the A3
@@ -1123,7 +1120,7 @@ pub trait PetalReplicator: Send + Sync {
 // IrohPetalReplicator — petal-level replication backed by iroh-docs
 // ---------------------------------------------------------------------------
 
-/// Petal-level replicator using iroh-docs 0.35.
+/// Petal-level replicator using iroh-docs.
 ///
 /// Each petal gets its own iroh-docs namespace. Key encoding:
 /// `/{table}/{record_id}` (e.g., `/node/{node_id}`).
@@ -1583,7 +1580,7 @@ mod tests {
         // be running to serve the entry to the peer that dials her (the same
         // passive-side rule `handle_open_verse_replica` follows).
         let mut bob_rx = bob.subscribe().await.expect("bob subscribes");
-        let addr_a = ep_a.node_addr().await.expect("alice node addr");
+        let addr_a = ep_a.addr();
         bob.start_sync(vec![addr_a])
             .await
             .expect("bob syncs with alice");
@@ -1614,7 +1611,7 @@ mod tests {
         // docs author) — the same did:key the A3 gate resolves. It is NOT
         // the app-level "did:key:alice" string, and NOT the forwarding
         // neighbor's raw key form.
-        let alice_endpoint_did = peer_did_key(&ep_a.node_id());
+        let alice_endpoint_did = peer_did_key(&ep_a.id());
         assert_eq!(
             change.author_id, alice_endpoint_did,
             "live author must be the entry author (endpoint identity did:key)"

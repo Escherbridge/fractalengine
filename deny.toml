@@ -87,14 +87,8 @@ ignore = [
     { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 (via iroh/reqwest): 0.23.45 bumps aws-lc-rs/aws-lc-sys — graph change" },
     { id = "RUSTSEC-2026-0257", reason = "webbrowser 1.2.1 (via bevy_egui; Unix BROWSER env only): 1.2.2 changes its dependency set — graph change" },
     # Transitive: fixed only in a new minor/major the upstream crate has not adopted.
-    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25 (transitive via iroh 0.35): no 0.25 fix; iroh upgrade track" },
-    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25 (transitive via iroh 0.35): fixed in 0.26 only; iroh upgrade track" },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
-    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
-    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
-    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
-    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
     # Unmaintained, but a direct workspace dependency (fe-terrain baked-splat codec).
     { id = "RUSTSEC-2025-0141", reason = "bincode 1 (direct, fe-terrain splat/format.rs): unmaintained, no vulnerability; replacement is a follow-up" },
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 (via jsonwebtoken; FE signs/verifies EdDSA only, RSA never used): no upstream fix exists" },

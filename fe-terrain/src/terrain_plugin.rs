@@ -1295,8 +1295,7 @@ fn recompute_smooth_normals(positions: &[[f32; 3]], indices: Option<&Indices>) -
         return normals;
     };
     let idx: Vec<usize> = indices.iter().collect();
-    for tri in idx.chunks_exact(3) {
-        let [i0, i1, i2] = [tri[0], tri[1], tri[2]];
+    for &[i0, i1, i2] in idx.as_chunks::<3>().0 {
         if i0 >= positions.len() || i1 >= positions.len() || i2 >= positions.len() {
             continue;
         }

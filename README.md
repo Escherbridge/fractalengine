@@ -35,7 +35,7 @@ Pre-1.0, under active development. What that means concretely:
 - HTTP/WS API gateway on `127.0.0.1:8765` — REST, live scene subscriptions, MCP tools — plus a headless relay binary (Docker image available)
 - JWT auth, hierarchical RBAC, deny-by-default policy engine
 - Plugin system (library) — Rhai and WASM sandboxes against the stable `fe-sdk` API, with UI slots; not yet hosted by the shipped `fractalengine` / `fe-relay` binaries
-- **Peer-to-peer sync** — a real iroh-docs 0.35 stack replicates whole verses with deny-by-default RBAC enforced at the DB thread (never trusted from a peer), plus a switchable mirror/sharded/balanced timeseries fabric for IoT readings with honest per-query coverage reporting. See [Peer-to-Peer Sync & Distributed Data](#peer-to-peer-sync--distributed-data) below.
+- **Peer-to-peer sync** — a real iroh 1.3 / iroh-docs 0.101 stack replicates whole verses with deny-by-default RBAC enforced at the DB thread (never trusted from a peer), plus a switchable mirror/sharded/balanced timeseries fabric for IoT readings with honest per-query coverage reporting. See [Peer-to-Peer Sync & Distributed Data](#peer-to-peer-sync--distributed-data) below.
 - **BI egress** (the headline): GeoParquet/CSV export of nodes and IoT readings, signed share URLs, and an in-app "Copy for BI" card — verified end to end against DuckDB (see [docs/bi-egress.md](docs/bi-egress.md))
 
 **In progress**
@@ -46,7 +46,7 @@ Pre-1.0, under active development. What that means concretely:
 
 **Planned**
 
-- Road/path builder input layer, map-authoritative scale everywhere, portable petal snapshots, iroh 1.0 upgrade (before the 2026-12-31 relay EOL)
+- Road/path builder input layer, map-authoritative scale everywhere, portable petal snapshots
 
 Per-track doneness and the remaining work queue: [conductor/doneness-ledger.md](conductor/doneness-ledger.md).
 
@@ -62,7 +62,7 @@ placeholder signatures. Do not rely on op-log integrity guarantees yet.
 
 | Requirement | Version | Install |
 |---|---|---|
-| Rust (stable) | 1.83+ | `rustup toolchain install stable` |
+| Rust (stable) | 1.91+ | `rustup toolchain install stable` |
 | rustfmt | latest | `rustup component add rustfmt` |
 | clippy | latest | `rustup component add clippy` |
 
@@ -159,9 +159,10 @@ bytes, never shared mutable state.
 
 ## Peer-to-Peer Sync & Distributed Data
 
-The Sync Thread (T4) runs a real **iroh / iroh-docs / iroh-gossip 0.35** stack —
-`Blobs` + `Gossip` + `Docs` + a `Router` accepting all three ALPNs — with
-persistent stores under `FE_P2P_DIR`. A verse's replica is a CRDT-backed
+The Sync Thread (T4) runs a real **iroh 1.3 / iroh-docs 0.101 / iroh-gossip 0.101 /
+iroh-blobs 0.103** stack — `BlobsProtocol` + `Gossip` + `Docs` + a `Router`
+accepting all three ALPNs — with persistent stores under `FE_P2P_DIR` (an
+existing iroh 0.35 store is backed up and upgraded in place on first start). A verse's replica is a CRDT-backed
 iroh-docs document: opening one subscribes the verse's gossip topic, dials
 bootstrap peers, and replays the doc's current entries through the same
 inbound path a live write takes, so a row denied before RBAC converged
@@ -191,10 +192,13 @@ replicator remains mock-backed — it is not part of this path.)
   the five `sim_*` tools appear only on a simulation-lab host) behind one
   table-driven authorization path: a role floor plus a scope rule resolved from the DB,
   never from caller-supplied ancestry ids.
-- **Relay EOL note.** iroh 0.35's default n0-hosted relay infrastructure is
-  EOL **2026-12-31**. Point `FE_SYNC_RELAY` (or the desktop's Settings >
-  Network relay field, persisted in `settings.ron`; the env var wins) at a
-  custom relay (or set it to `disabled` for LAN-only) before then — see
+- **Relays and the iroh 1.x flag day.** iroh 0.35 and 1.x peers cannot
+  interoperate, so every peer of a swarm upgrades together (any iroh v1 minor
+  talks to any other). The default relays are n0's public iroh v1 fleet —
+  supported for the life of v1, but shared and rate-limited. For production,
+  point `FE_SYNC_RELAY` (or the desktop's Settings > Network relay field,
+  persisted in `settings.ron`; the env var wins) at your own `iroh-relay` 1.x
+  server, or set it to `disabled` for LAN-only — see
   [fractalengine-relay/README.md](fractalengine-relay/README.md).
 
 ---
@@ -251,9 +255,10 @@ Verse                the top-level P2P namespace
 | `bevy` | 0.18 | ECS 3D engine |
 | `surrealdb` | 3.0 | Embedded database (SurrealKV backend) |
 | `libp2p` | 0.56 | Peer discovery (Kademlia DHT, mDNS, QUIC) |
-| `iroh-blobs` | 0.35 | BLAKE3 content-addressed asset distribution |
-| `iroh-gossip` | 0.35 | Epidemic broadcast for zone events |
-| `iroh-docs` | 0.35 | CRDT key-value sync |
+| `iroh` | 1.3 | QUIC endpoint, relays, NAT traversal |
+| `iroh-blobs` | 0.103 | BLAKE3 content-addressed asset distribution |
+| `iroh-gossip` | 0.101 | Epidemic broadcast for zone events |
+| `iroh-docs` | 0.101 | CRDT key-value sync |
 | `ed25519-dalek` | 2.2 | Ed25519 signatures |
 | `jsonwebtoken` | 10.3 | JWT minting/verification |
 | `wry` | 0.54 | Embedded WebView (Tauri org) |

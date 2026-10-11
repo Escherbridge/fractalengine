@@ -30,7 +30,7 @@ use fe_runtime::distributed_query::{
     PartialShard, TsPartialRows, TsQueryKind, PARTIAL_ROW_CAP,
 };
 use fe_runtime::messages::DbCommand;
-use iroh_gossip::net::GossipSender;
+use iroh_gossip::api::GossipSender;
 
 use crate::messages::SyncEvent;
 use crate::sharding::VerseFabric;
@@ -96,12 +96,12 @@ pub enum ComputeEnvelope {
 #[derive(Debug, Clone)]
 pub struct GossipIncoming {
     pub verse_id: String,
-    pub from: iroh::NodeId,
+    pub from: iroh::EndpointId,
     /// Whether the message was delivered DIRECTLY from its publisher
     /// (`DeliveryScope::is_direct()`: neighbor broadcast or 0 swarm hops).
     /// Only then does `from` authenticate the ENVELOPE author — a relayed
     /// delivery's `from` is the forwarding neighbor, not the original
-    /// broadcaster (iroh-gossip 0.35 `GossipEvent` docs). The F23 identity
+    /// broadcaster (iroh-gossip `Message::delivered_from` docs). The F23 identity
     /// check enforces `from_did == did_key(from)` strictly on direct
     /// deliveries; relayed deliveries cannot be wire-verified and fall back
     /// to claim-based admission (see §distributed-query in this crate's
@@ -2251,7 +2251,7 @@ mod tests {
 
     /// A deterministic test node identity — its did:key IS the app DID of
     /// the peer that "sent" the envelope (the F20 alignment).
-    fn test_node_id(seed: u8) -> iroh::NodeId {
+    fn test_node_id(seed: u8) -> iroh::EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
     }
 
@@ -2287,7 +2287,7 @@ mod tests {
 
     fn gossip_incoming(
         verse_id: &str,
-        from: iroh::NodeId,
+        from: iroh::EndpointId,
         direct: bool,
         envelope: &ComputeEnvelope,
     ) -> GossipIncoming {
@@ -2329,7 +2329,7 @@ mod tests {
     }
 
     /// The node whose did:key the fixture fabric declares as a peer.
-    fn requester_node() -> iroh::NodeId {
+    fn requester_node() -> iroh::EndpointId {
         test_node_id(7)
     }
 

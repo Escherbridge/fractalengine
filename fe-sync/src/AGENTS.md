@@ -11,28 +11,33 @@ shard creation.
 
 ## §congestion-control — explicit BBR (track p2p_unblock_now_20260711 FR-4)
 
-iroh 0.35's default QUIC congestion controller is **CUBIC**
-(`iroh-quinn-proto` `TransportConfig::default()` sets
-`congestion_controller_factory: CubicConfig`). Per iroh#4286, iroh-blobs
-throughput differs ~30x between BBR (~40% of link) and CUBIC (~1-1.5%), so
-`endpoint.rs::bbr_transport_config()` explicitly selects BBR:
+QUIC's default congestion controller is **CUBIC** — on iroh 0.35
+(`iroh-quinn-proto` `TransportConfig::default()`) and still on iroh 1.x
+(noq-proto 1.3 `TransportConfig::default()` sets `CubicConfig`). Per
+iroh#4286, iroh-blobs throughput differs ~30x between BBR (~40% of link) and
+CUBIC (~1-1.5%), so `endpoint.rs::bbr_transport_config()` explicitly selects
+BBR:
 
-- iroh 0.35 *does* expose the knob: `Endpoint::builder().transport_config()`
-  takes a `quinn::TransportConfig` (re-exported as
-  `iroh::endpoint::TransportConfig`), applied to both client and server
-  configs. The concrete `BbrConfig` is NOT re-exported by iroh (only the
-  `Controller`/`ControllerFactory` traits are), so fe-sync depends directly
-  on **`iroh-quinn-proto = "0.13"`** — the exact quinn fork+version iroh
-  0.35 pins, so the trait objects unify. When `iroh_1_0_upgrade_20260711`
-  bumps iroh, this dep must be bumped in lockstep (iroh 1.0 may also change
-  the default; re-verify then).
-- Passing a custom `TransportConfig` replaces iroh's builder default
-  wholesale, which only set `keep_alive_interval(1s)` — so
-  `bbr_transport_config()` re-applies that.
-- Startup logging: `SyncEndpoint::new` logs
-  `congestion_controller = "bbr"` at info on successful bind (quinn has no
-  endpoint-level "active controller" getter; the config is authoritative,
-  `Connection::congestion_state()` exists only per-connection).
+- iroh 1.x exposes the knob as `iroh::endpoint::QuicTransportConfig::builder()
+  .congestion_controller_factory(..).build()`, handed to
+  `Endpoint::builder(..).transport_config(..)`. The concrete controller is NOT
+  re-exported by iroh (only the `Controller`/`ControllerFactory` traits), so
+  fe-sync depends directly on **`noq-proto = "1.3"`** — the quinn fork iroh
+  1.3 itself depends on (`noq`/`noq-proto ^1.3.0`), so the trait objects
+  unify. **Lockstep rule:** every iroh bump must re-check that the
+  workspace `noq-proto` resolves to the same version iroh uses (a mismatch is
+  a type error at `congestion_controller_factory`, caught by the
+  `bbr_transport_config_constructs` test).
+- noq 1.0 replaced quinn's BBR (v1) with **BBRv3** (`noq_proto::congestion::
+  Bbr3Config`); that is what fe-sync selects now. The startup log reads
+  `congestion_controller = "bbr3"`.
+- `QuicTransportConfig::builder()` starts from iroh's own multipath-tuned
+  defaults (keep-alive, path keep-alive/idle timeouts, max paths), so the
+  0.35-era hack that re-applied `keep_alive_interval(1s)` is gone — only the
+  congestion controller is overridden.
+- Startup logging: `SyncEndpoint::new` logs the controller at info on a
+  successful bind (there is no endpoint-level "active controller" getter;
+  the config is authoritative).
 
 ## §sync-thread-blocking-io
 
@@ -42,64 +47,123 @@ syscall inside the async block stalls every queued gossip/replica/blob task.
 `tokio::task::spawn_blocking` (track p2p_unblock_now_20260711 FR-3). Keep new
 filesystem or other blocking calls in this file off the runtime the same way.
 
-## §iroh-0.35 — migration state (P2P Mycelium Phase F)
+## §iroh-1.x — the P2P stack on iroh 1.3 (ported from 0.35, 2026-10-11)
 
-fe-sync was ported from the pre-0.35 iroh APIs to **iroh / iroh-docs / iroh-gossip 0.35**.
-Two subsystems restructured significantly upstream; here is what was ported vs. deferred.
+fe-sync runs on **iroh 1.3 / iroh-docs 0.101 / iroh-gossip 0.101 /
+iroh-blobs 0.103.1** (ported from the 0.35 stack; earlier still from the
+pre-0.35 APIs). The port was faithful — same behavior and guarantees — and
+this section records the API seams it moved through. 0.35 and 1.x peers are
+**wire-incompatible** (relay protocol, QUIC multipath, noq, gossip ALPN
+`/iroh-gossip/0` → `/iroh-gossip/1`): every peer and relay node of a swarm
+upgrades together (flag day). Within v1, every minor is wire-compatible.
 
-### iroh-gossip 0.35 — ported (real API)
+**Verification status at port time (2026-10-11):** `cargo check --workspace
+--tests` and `cargo +1.99.0 clippy --workspace --all-targets -D warnings`
+are clean; **no test had been run yet** (one serial sweep was deferred to
+the end of the port). The relay-assisted connection against a self-hosted
+iroh-relay 1.x (track acceptance criterion) is still unverified. Track:
+`conductor/tracks/iroh_1_0_upgrade_20260711/plan.md`.
 
-The old `iroh_gossip::{Host, Topic, TopicId}` surface was removed upstream. Current wiring:
+API map (0.35 → 1.x) for the seams fe-sync uses:
 
-- Instance: `iroh_gossip::net::Gossip`, spawned once per online sync thread via
-  `Gossip::builder().spawn(endpoint).await` (`sync_thread.rs`, offline mode → `None`).
-- Topic id: `iroh_gossip::proto::TopicId` (32 bytes). Derived from the verse topic string
-  with `gossip_topic_id()` (blake3 → `[u8;32]` → `TopicId::from`).
-- Subscription: `gossip.subscribe(topic_id, bootstrap) -> GossipTopic`. We hold the live
-  `GossipTopic` handles in `gossip_topics: HashMap<String, GossipTopic>`; **dropping a handle
-  is how you leave a topic** (there is no `unsubscribe(topic_id)` anymore).
-- Broadcast: `GossipTopic::broadcast(Bytes).await` (now async — the tileset
-  advertisement handler is therefore `async`). Unsigned transform broadcasts
-  are intentionally absent.
+- Identity/addressing: `NodeId` → `EndpointId`, `NodeAddr {node_id,
+  relay_url, direct_addresses}` → `EndpointAddr {id, addrs:
+  {Relay(url) | Ip(addr)}}`, `endpoint.node_id()` → `endpoint.id()`,
+  `endpoint.node_addr().await` → `endpoint.addr()` (sync snapshot;
+  `SyncEndpoint::node_addr` waits — bounded by `iroh::NET_REPORT_TIMEOUT` —
+  for `online()` first when a relay is configured, never under `Disabled`,
+  where `online()` would pend forever).
+- Endpoint construction: `Endpoint::builder(presets::Minimal)` (crypto
+  provider only — deliberately NOT `presets::N0`, which would add pkarr/DNS
+  publishing to n0's `iroh.link` that 0.35 fe-sync never did) +
+  `secret_key` + `relay_mode` + `transport_config` (§congestion-control) +
+  `address_lookup(MemoryLookup)`.
+- Address book: `endpoint.add_node_addr(addr)` was removed upstream;
+  `SyncEndpoint` owns one `iroh::address_lookup::MemoryLookup` and exposes
+  `add_peer_addr(EndpointAddr)` (infallible). iroh-docs adds its own
+  lookup for `start_sync` peers; the lookups compose (§gossip-bootstrap).
+- Bootstrap JSON: `FE_SYNC_BOOTSTRAP` / `OpenVerseReplica.bootstrap_peers`
+  / `SyncEvent::Started.node_addr` now carry `EndpointAddr` JSON.
+  `parse_bootstrap_peer` still accepts the legacy 0.35 `NodeAddr` JSON shape
+  (converted to the equivalent `EndpointAddr`) so existing config strings
+  keep parsing; a bare id (hex or base32) is still rejected loudly
+  (undialable).
 
-**Inbound consumption is now live for the compute plane (F7/F9).** The
+### iroh-gossip 0.101 — ported (real API)
+
+- Instance: `iroh_gossip::Gossip`, built once per online stack via
+  `Gossip::builder().max_message_size(..).spawn(endpoint)` — synchronous and
+  infallible on 0.101. Offline mode → `None`.
+- Topic id: `iroh_gossip::TopicId` (32 bytes). Derived from the verse topic
+  string with `gossip_topic_id()` (blake3 → `[u8;32]` → `TopicId::from`).
+- Subscription: `gossip.subscribe(topic_id, bootstrap).await ->
+  GossipTopic` — **async on 0.101** (it hands the Join request to the gossip
+  actor), so `subscribe_to_verse_gossip_topic` is async and is awaited in the
+  open sequence BEFORE the doc open (§gossip-bootstrap). We hold the split
+  halves: the `api::GossipSender` in `gossip_senders` (via `TopicSender`),
+  the `api::GossipReceiver` in a pump task; **dropping both halves is how you
+  leave a topic** (there is no `unsubscribe(topic_id)`).
+- Events: the 0.35 nesting `Event::Gossip(GossipEvent::Received(m))` is
+  flattened to `api::Event::{Received(Message), NeighborUp, NeighborDown,
+  Lagged}`. `Message {content, scope: DeliveryScope, delivered_from}` and
+  `DeliveryScope::is_direct()` (`Neighbors | Swarm(Round(0))`) are
+  unchanged, so the F23 gate input is byte-for-byte the same
+  (§transport-admission-control). A broadcaster still never receives its own
+  broadcast (plumtree `broadcast` emits no local event).
+- Broadcast: `GossipSender::broadcast(Bytes).await` (best-effort; messages
+  queue until a neighbor is available). Unsigned transform broadcasts are
+  intentionally absent.
+
+**Inbound consumption is live for the compute plane (F7/F9).** The
 distributed-query fan-out (`distributed_query.rs::handle_gossip_incoming`,
 real and virtual transports alike) drains the verse's gossip topic for
-`ComputeEnvelope` request/response frames — the deferral below is
-resolved for that consumer. Tileset advertisement, which rides the SAME
-topic, remains outbound-only: `handle_advertise_tilesets` broadcasts but no
-inbound handler parses a `TilesetAdvertisement` frame, and the
-`SyncEvent::PeerTilesetAdvertisement` / `SyncEvent::NodeTransformed`
+`ComputeEnvelope` request/response frames. Tileset advertisement, which
+rides the SAME topic, remains outbound-only: `handle_advertise_tilesets`
+broadcasts but no inbound handler parses a `TilesetAdvertisement` frame, and
+the `SyncEvent::PeerTilesetAdvertisement` / `SyncEvent::NodeTransformed`
 variants `status.rs` drains defensively are never actually emitted anywhere
-in this crate — dead wire-format placeholders, not a live path. Outbound
-`broadcast` is best-effort (messages queue until a neighbor is available).
-Inbound *connections* are routed since the P2P stack landed (see §iroh-0.35
-below): the stack's `Router` accepts `GOSSIP_ALPN`.
+in this crate — dead wire-format placeholders, not a live path. Inbound
+*connections* are routed by the stack's `Router`, which accepts
+`iroh_gossip::ALPN` (`/iroh-gossip/1`).
 
-### iroh-docs 0.35 — stack and replicators both real (A1/A2); mock is offline-only
+### iroh-docs 0.101 — stack and replicators both real (A1/A2); mock is offline-only
 
-Current as of F2/A2 (2026-10-07) and F23's transport-admission hardening
-(2026-10-08) — see §inbound-apply, §sharding, §distributed-query, and
-§transport-admission-control below for what the sync thread does with this
-stack once it's up.
+Current as of F2/A2 (2026-10-07), F23's transport-admission hardening
+(2026-10-08) and the iroh 1.x port (2026-10-11) — see §inbound-apply,
+§sharding, §distributed-query, and §transport-admission-control below for
+what the sync thread does with this stack once it's up.
 
-The full P2P stack now spawns in the sync thread (`docs_engine.rs::DocsStack`):
-`iroh_blobs::net_protocol::Blobs::persistent(<dir>/blobs)` +
-`iroh_gossip::net::Gossip::builder().spawn(endpoint)` +
-`iroh_docs::protocol::Docs::persistent(<dir>)` (which wires `Engine::spawn` +
-the redb replica store `docs.redb` + persistent default-author storage) +
-`iroh::protocol::Router` accepting all three ALPNs (`/iroh-bytes/4`,
-`/iroh-gossip/0`, `/iroh-sync/1`). Persistent stores live under `FE_P2P_DIR`
-(`p2p_data_dir()`, default `data/p2p`); the dir is created at spawn.
+The full P2P stack spawns in the sync thread (`docs_engine.rs::DocsStack`):
+the legacy-store migration (§store-migration) →
+`iroh_blobs::store::fs::FsStore::load(<dir>/blobs)` +
+`iroh_blobs::BlobsProtocol::new(&store, None)` + `Gossip::builder()...
+.spawn(endpoint)` + `iroh_docs::protocol::Docs::persistent(<dir>)
+.spawn(endpoint, blobs_store, gossip)` (the redb replica store `docs.redb` +
+persistent default-author storage) + `iroh::protocol::Router` accepting all
+three ALPNs (`/iroh-bytes/4`, `/iroh-gossip/1`, `/iroh-sync/1`). Persistent
+stores live under `FE_P2P_DIR` (`p2p_data_dir()`, default `data/p2p`); the
+dir is created at spawn. The in-process docs client is
+`iroh_docs::api::DocsApi` (`Docs` derefs to it; 0.35's quic-rpc `MemClient`
+/ `Doc<FlumeConnector>` are gone — `DocHandle = iroh_docs::api::Doc`). Blob
+reads go through `iroh_blobs::api::Store` (`status` first, then
+`get_bytes`); `iroh-io` and `quic-rpc` are no longer dependencies.
+`FsStore` runs its own multi-thread tokio runtime (its drop uses
+`block_in_place` on that runtime's own worker, which upstream intends to be
+safe under the sync thread's current-thread runtime and inside
+`#[tokio::test]` — **not yet exercised by a test run at port time**; the
+orchestrator sweep's stack/harness tests are the proof); the Router's
+shutdown calls each handler's `shutdown`, which shuts the blob store and the
+docs engine down.
 
-- The stack spawns only when the endpoint bound. On **bind failure** or
-  **stack-spawn failure** the sync thread degrades to offline mode: the
+- The stack spawns only when the endpoint bound. On **bind failure**,
+  **store-migration failure** or **stack-spawn failure** the sync thread
+  degrades to offline mode: the
   holder stays empty (`is_available() == false`), gossip is absent, and
   replicators use the in-memory mock — loudly (`error!` +
   `SyncEvent::RelayHealthChanged`), never a crash.
 - `IrohDocsEngineHolder` is a real holder (`Option<Arc<DocsStack>>`):
   `is_available()` reflects the stack; `docs_client()` hands out the
-  `MemClient` clone the replicator layer will write through.
+  `DocsApi` clone the replicator layer writes through.
 - **One gossip instance per endpoint.** Gossip is owned by the stack; a
   second `Gossip` spawned outside it would never see inbound connections
   (the Router routes to the stack's instance only). Likewise two stacks in
@@ -107,13 +171,13 @@ the redb replica store `docs.redb` + persistent default-author storage) +
   second spawn fail (→ degrade).
 - **Real Doc-backed replicators (F2 / A2):** the `VerseReplicator` /
   `PetalReplicator` traits are async (hand-boxed `ReplicatorFuture`, no
-  async-trait dep), and `IrohDocsReplicator` rides the real 0.35 `Doc`
-  client whenever the stack is online: `open_document` imports the
+  async-trait dep), and `IrohDocsReplicator` rides the real
+  `iroh_docs::api::Doc` whenever the stack is online: `open_document` imports the
   `Capability::Write(NamespaceSecret)` (secret hex) or opens the namespace
   read-only without one, `write_row` → `Doc::set_bytes` (empty payload →
   `Doc::del`, the empty-entry tombstone), `subscribe` → a `LiveEvent` pump
   (`InsertRemote` + `ContentReady` → `RowChange`s carrying the payload
-  bytes read from the stack's blobs store; `InsertLocal` skipped for loop
+  bytes read from the stack's blob store; `InsertLocal` skipped for loop
   prevention; empty entries emitted as tombstones), `close` → pump abort +
   `Doc::close`. **Mock fallback is offline-only** — `is_available() == false`
   (bind failure, stack-spawn failure — loud, never a crash). An
@@ -128,26 +192,31 @@ the redb replica store `docs.redb` + persistent default-author storage) +
 
 - **Entry author identity (F20 finding 2).** `DocsStack::spawn` imports the
   endpoint's own `SecretKey` as the docs author and sets it default
-  (`authors().import` + `set_default`), so `entry.author()` resolves to the
-  endpoint `NodeId` did:key — the SAME identity the fe-identity keypair
+  (`DocsApi::author_import` + `author_set_default`), so `entry.author()`
+  resolves to the endpoint `EndpointId` did:key — the SAME identity the fe-identity keypair
   exposes (`to_iroh_seed` shares the seed), which is what the A3 gate on the
   DB thread resolves roles against. Both the live pump and the snapshot
   attribute `RowChange.author_id` from `entry.author()` (`author_did_key`),
   never from `InsertRemote.from` (the FORWARDING neighbor — a ≥3-member doc
-  would otherwise judge the relaying node, not the author). The per-dir
-  `client.authors().default()` author is unrelated to the app identity and
-  must not be used for attribution. Loop prevention stays correct because
+  would otherwise judge the relaying node, not the author). Any other
+  per-dir default author is unrelated to the app identity and must not be
+  used for attribution. Loop prevention stays correct because
   our own writes are authored by that same endpoint identity.
 - **Namespace ids (F20 finding 3).** `fe_database::derive_namespace_id`
   returns the Ed25519 verifying key of the namespace secret — the id the doc
   actually registers under (`NamespaceSecret::from_bytes(secret).id()`), so
-  the secretless open (`client.open(stored_id)`) finds a previously imported
+  the secretless open (`DocsApi::open(stored_id)`) finds a previously imported
   doc on the same persisted store. Legacy keyed-BLAKE3 ids still in live DBs
   can never match; the secretless path falls back to scanning known docs for
   the one whose `verse/{verse_id}` manifest key exists
-  (`find_doc_by_verse_manifest`).
+  (`find_doc_by_verse_manifest`). iroh-docs 0.101's `Doc` has **no
+  close-on-drop** (0.35's rpc `Doc` closed itself when its last clone
+  dropped), so the scan explicitly `close()`s every probed doc that is not
+  the match — the engine refcounts open handles, and an unclosed probe
+  would leak an open replica per known doc on every legacy reopen. Any new
+  code that opens a `Doc` must close it the same way.
 
-`status.rs` also carries a `TODO(iroh-0.35)` for applying inbound peer `SyncEvent::NodeTransformed`
+`status.rs` also carries a `TODO(iroh-1.x)` for applying inbound peer `SyncEvent::NodeTransformed`
 to the local world (currently logged, not applied). Unlike the compute plane above, nothing in
 this crate ever emits that variant today — the comment marks a future capability, not a live gap
 waiting on gossip wiring (gossip itself is wired; see §write-policy for why an unsigned networked
@@ -157,6 +226,57 @@ Runtime behavior: row bytes traverse the real network. The fe-test-harness
 scenario `two_peer_replica_sync` proves A2 end-to-end (two in-process peers
 over loopback, READ-BACK from the joining peer's durable store).
 
+## §store-migration — 0.35 data dirs on the 1.x stack (`p2p_store_migration.rs`)
+
+**Why:** iroh-docs 0.35 / iroh-blobs 0.35 (redb 2.4) wrote `docs.redb` and
+`blobs/blobs.db` in redb **file format v2**. iroh-docs 0.101 / iroh-blobs
+0.103 open them with redb 4, which refuses v2 files ("upgrade required") —
+an existing `data/p2p` would otherwise fail `DocsStack::spawn` and degrade
+the node to offline/mock forever.
+
+**What runs:** `DocsStack::spawn` calls `migrate_legacy_p2p_store(dir)` on
+the blocking pool before any store opens:
+
+1. Marker `<dir>/.fe-store-format` == `iroh1` → no-op.
+2. No legacy redb file present → write the marker (fresh dir). Stores the
+   1.x stack creates are therefore always marked and never re-examined.
+3. Otherwise: **copy** the whole dir to `<dir>.v035.bak-<unix_ts>` (written
+   as `<…>.partial` and renamed only once complete, so an interrupted copy
+   never masquerades as the rollback; never
+   moved or deleted — it is the rollback), open each legacy file with
+   `redb_v2` (the workspace's `redb = "2.6.4"` alias — the last redb that
+   can upgrade v2→v3) and call `Database::upgrade()`, then write the marker.
+   Any error is returned loudly and the marker is not written, so the next
+   start retries.
+
+iroh-docs 0.101's default `redb-v2-migration` feature then rewrites the
+tuple tables (`records-1`, `latest-by-author-1`, `records-by-key-1`) on
+first open — the 0.35 schema is identical to the one that feature targets.
+iroh-blobs 0.103 needs only the file-format step (same table type names,
+same postcard encodings, same `data/{hash}.data|.obao4` layout).
+**Never build iroh-docs with `default-features = false` without re-adding
+`fs-store` + `redb-v2-migration`.**
+
+**Failure → offline/mock**, exactly like a stack-spawn failure (`error!` +
+`SyncEvent::RelayHealthChanged`). Rollback: stop the node, replace `<dir>`
+with the backup copy, run a 0.35 build. Last resort: move the dir away and
+start fresh — rows written locally stay in SurrealDB, but doc-only rows
+(peers' entries not yet admitted by the A3 gate) only come back by
+re-syncing from 1.x peers.
+
+**Proof:** `p2p_store_migration::tests::legacy_v035_fixture_migrates_and_reads_back`
+copies the committed 0.35-written fixture `fe-sync/tests/fixtures/p2p_store_v035/`
+(written by a real iroh 0.35 / iroh-docs 0.35 / iroh-blobs 0.35 build — the
+standalone, non-member generator crate beside it, `p2p_store_v035_gen/`,
+mirrors the 0.35 `DocsStack` + `IrohDocsReplicator` write path:
+`SecretKey [7;32]`, `NamespaceSecret [23;32]`, a verse manifest row, a small
+row, a 40 KiB row that lands in `blobs/data/`, and a `Doc::del` tombstone),
+migrates it, spawns the 1.x `DocsStack` on it, reopens the doc secretlessly
+and asserts every `expected.json` row (len, blake3, tombstone flag), plus
+that a second migration is a no-op. The root `.gitignore` ignores `data/`, so
+it carries a negation for the fixture's `blobs/data/` dir. The test skips
+loudly if the fixture is ever removed.
+
 ## §namespace-id-capability (SYNC-NSID-CAP, 2026-10-11)
 
 **Question** (RUNBOOK §9, flagged by the M4 re-review): is `verse.namespace_id`, readable
@@ -165,13 +285,13 @@ design, and it is LIVE today — not latent.**
 
 - `fe_database::derive_namespace_id` (`fe-database/src/lib.rs:1444`) returns the namespace
   secret's Ed25519 verifying key — the iroh-docs `NamespaceId` the doc registers under
-  (§iroh-0.35 "Namespace ids").
-- In iroh-docs 0.35 a read capability *is* a `NamespaceId`: `sync.rs` defines
+  (§iroh-1.x "Namespace ids").
+- In iroh-docs (0.35 and 0.101 alike) a read capability *is* a `NamespaceId`: `sync.rs` defines
   `Capability::Read(NamespaceId)` beside `Capability::Write(NamespaceSecret)`. fe-sync itself
   opens a replica read-only from nothing but the id (`replicator.rs:554-555`,
-  `parse_namespace_id` → `client.open(ns)`).
+  `parse_namespace_id` → `DocsApi::open(ns)`).
 - Inbound docs sync is not peer-authorized: iroh-docs `engine/state.rs::accept_request`
-  rejects only `NotFound` (namespace not syncing) — any `NodeId` that names a namespace this
+  rejects only `NotFound` (namespace not syncing; unchanged in 0.101) — any `EndpointId` that names a namespace this
   node is syncing is served. fe-sync runs `start_sync` on every doc-backed open, and
   `sync_thread.rs:535/573` spawns the real `DocsStack` (Router accepting `iroh_docs::ALPN`) and
   `IrohDocsEngineHolder::online` whenever the endpoint binds. (The claim that the docs engine
@@ -219,11 +339,12 @@ also lives (landed F3, 2026-10-07: deny-by-default, Editor+, roles resolved
 from the local tables at the verse scope — never wire-supplied).
 
 Bootstrap peers (A9 prep): `FE_SYNC_BOOTSTRAP` holds **semicolon-separated**
-`NodeAddr` JSON entries (semicolons because the JSON contains commas), parsed
-with iroh's own types; bare `NodeId` hex carries no address and is skipped
+`EndpointAddr` JSON entries (semicolons because the JSON contains commas),
+parsed with iroh's own types — the legacy 0.35 `NodeAddr` JSON shape is still
+accepted (§iroh-1.x); a bare `EndpointId` carries no address and is skipped
 loudly. `OpenVerseReplica.bootstrap_peers` carries the same entry form
 per-verse and merges with the env set (deduped); `SyncEvent::Started.node_addr`
-emits our own dialable `NodeAddr` JSON in exactly that form (F4 also logs it
+emits our own dialable `EndpointAddr` JSON in exactly that form (F4 also logs it
 raw — not Debug-escaped — on the `SyncStatus updated: started` banner so it
 is copy-pasteable into `FE_SYNC_BOOTSTRAP`).
 
@@ -337,26 +458,36 @@ it. Local gimbal commits still update the in-memory view and local DB. A
 networked transform must be represented as a signed canonical operation that
 passes the same admission model before it can enter gossip or a replica.
 
-## §relay-health (track `p2p_asset_streaming_20260718` FR-1 / decision D-77)
+## §relay-health (track `p2p_asset_streaming_20260718` FR-1 / decision D-77; SYNC-RELAYWATCH 2026-10-11)
 
-**Why:** iroh 0.35's default n0-hosted relay servers **EOL 2026-12-31**. Before
-this hardening pass, relay failure was quiet: default relay binding with no
-`relay_url` config wired, offline detection only checked bind failure — post-EOL,
-gossip/replica traffic would have queued silently forever. This section documents
-the config + health model that replaces that silence.
+**Why:** relay failure used to be quiet — default relay binding with no
+relay config wired, offline detection only checked bind failure, so a dead
+relay meant gossip/replica traffic queued silently forever. The original
+trigger was iroh 0.35's n0 relays EOLing 2026-12-31; the iroh 1.x port
+(§iroh-1.x) moved fe-sync onto the v1 relay fleet
+(`{use1,usw1,euc1,aps1}-1.relay.n0.iroh.link`, supported for the life of
+iroh v1). Those public relays are **shared and rate-limited for relayed
+traffic** (iroh ≥1.1 logs a warning when a client is throttled), so
+production deployments should still configure their own relay (`Custom`;
+self-host the `iroh-relay` 1.x binary, feature `server`). This section
+documents the config + health model that replaces the silence.
 
 ### `RelayConfig` (`relay_config.rs`)
 
 Three variants, matching the D-77 hardening note verbatim: `Default` (iroh's
-n0-hosted infra — the EOL-bound one), `Disabled` (direct/LAN-only), `Custom(Vec<String>)`
+n0-hosted public v1 relays — shared and rate-limited), `Disabled` (direct/LAN-only), `Custom(Vec<String>)`
 (operator relay URLs). `RelayConfig::parse` accepts the keywords
 `"default"`/`"disabled"`/`"none"` or a comma-separated URL list, validating every
 URL eagerly with iroh's own `iroh::RelayUrl` parser (`FromStr`) so a
 misconfiguration fails at parse time — and again at `to_relay_mode()` time in
 case a `Custom` value was hand-built bypassing `parse` — rather than on first
 dial. `to_relay_mode()` converts to the `iroh::RelayMode` the endpoint builder
-expects (`iroh::RelayMode::{Default,Disabled,Custom(RelayMap)}` — all
-re-exported directly from the `iroh` crate; no new dependency was needed).
+expects (`iroh::RelayMode::{Default,Disabled,Custom(RelayMap)}`, the custom
+map built with `RelayMode::custom(urls)`; iroh 1.x refuses to bind an empty
+custom map, so an empty URL list is `RelayConfigError::Empty`). iroh's
+`Staging` mode is deliberately not exposed. Name clash to remember: iroh 1.x
+exports its own `iroh::RelayConfig` (the per-relay entry) — keep iroh paths
+fully qualified next to `crate::relay_config::RelayConfig`.
 
 `RelayConfig::from_env()` is what `spawn_sync_thread` calls; it is
 `resolve(env, settings)` over two sources, with this precedence:
@@ -378,40 +509,67 @@ the OnceLock seam keeps the source transport-agnostic for the iroh 1.x port.
 
 ### `RelayHealth` (`relay_config.rs`, surfaced via `SyncStatus::health`)
 
-Five states: `Unknown` (default, pre-signal) → `Healthy` / `Disabled` (from
-`on_bind_success`, which reads the `RelayConfig` to tell "no relay needed" apart
-from "relay reachable") or `Unreachable` (from `on_bind_failure`, hard bind
-failure). Runtime signals move the state with `on_error`/`on_success`:
-`Healthy` degrades one step to `Degraded` before reaching `Unreachable` (two
-consecutive failures, not one, to avoid flapping on a single transient error);
-`Disabled` is a fixed point — a disabled relay cannot "fail" or "recover".
-`is_problem()` (`Degraded`/`Unreachable`) is what a consumer should alarm on;
-`Disabled` and `Unknown` are deliberately excluded.
+Five states: `Unknown` (default, pre-signal), `Healthy`, `Degraded`,
+`Unreachable`, `Disabled`. `on_bind_success` reads the `RelayConfig`:
+`Disabled` → `Disabled` (no relay needed — not a failure), anything else →
+**`Unknown`** — on iroh 1.x a bind contacts no relay, so a successful bind
+proves nothing about reachability (on 0.35 this was `Healthy`). A hard bind
+failure is `on_bind_failure` → `Unreachable`. Runtime signals move the
+state with `on_error`/`on_success`: `Healthy` degrades one step to
+`Degraded` before reaching `Unreachable` (two consecutive failures, not
+one, to avoid flapping on a single transient error); `Disabled` is a fixed
+point — a disabled relay cannot "fail" or "recover". `is_problem()`
+(`Degraded`/`Unreachable`) is what a consumer should alarm on; `Disabled`
+and `Unknown` are deliberately excluded.
 
-Wired today: the endpoint bind result (`on_bind_success`/`on_bind_failure`) and
-a gossip-spawn failure right after a successful bind (`on_error`) — both in
-`sync_thread.rs`'s startup sequence, both emitting a new
-`SyncEvent::RelayHealthChanged { health }` that `status.rs::drain_sync_events`
-applies to `SyncStatus.health`, loud-logging (`warn!`) whenever the new health
-`is_problem()`.
+Every transition emits `SyncEvent::RelayHealthChanged { health }`, which
+`status.rs::drain_sync_events` applies to `SyncStatus.health`, loud-logging
+(`warn!`) whenever the new health `is_problem()`. Signals wired:
 
-**TODO(ultrapilot) — continuous monitoring not wired.** `iroh::Endpoint::home_relay()`
-returns a `Watcher<Option<RelayUrl>>` that would let the sync thread detect
-relay loss *mid-session* (not just at startup), but wiring it means turning the
-command loop's blocking `cmd_rx.recv()` into a `tokio::select!` against the
-watcher stream — a bigger structural change than this pass's scope. Only the
-startup bind result and the gossip-spawn outcome are tracked; a live watcher
-loop is the natural next step.
+1. the endpoint bind result (`on_bind_success`/`on_bind_failure`);
+2. a P2P-stack spawn / store-migration failure right after a successful
+   bind → `Degraded` (the 0.35 one-step degradation; from the post-bind
+   `Unknown` this is set explicitly, since `Unknown.on_error()` would claim
+   `Unreachable` for what is a local store problem). The watcher below is
+   NOT started when the stack failed, so this signal is never overwritten
+   by a later `Healthy` while replication is down;
+3. **the continuous home-relay watcher (SYNC-RELAYWATCH).** When a relay is
+   configured (not `Disabled`, not virtual, not offline, stack spawned), the sync thread
+   takes `SyncEndpoint::home_relay_status().stream()` (iroh 1.x
+   `Endpoint::home_relay_status()` — a `Watcher<Vec<RelayStatus>>`, one
+   entry per home relay) as a `tokio::select!` branch beside commands,
+   inbound rows and gossip. `stream()` (not `stream_updates_only`) yields
+   the current value first, so a relay that connected while `node_addr()`
+   waited on `online()` promotes `Unknown → Healthy` immediately. Each
+   snapshot is summarized (`RelayStatusSummary::from_status` — upstream
+   `RelayStatus::new` is crate-private, so the pure mapping
+   `RelayHealth::on_relay_status` is table-tested against the summary):
+   any connected relay → `on_success`; else an auth denial
+   (`auth_denied_reason()`, iroh ≥1.2) → `Unreachable` directly + `error!`
+   (logged on the descent only; repeat snapshots while already
+   `Unreachable` log at debug)
+   (it never self-heals); else any `last_error()` → `on_error` (two
+   strikes); an empty snapshot (no home relay chosen yet) or no error yet →
+   unchanged. `RelayHealthChanged` is emitted only when the value changes.
+   The watcher only disconnects when the last `Endpoint` clone drops; a
+   `None` from the stream retires the branch (no busy loop). `last_error()`
+   is logged, never matched on (upstream: an opaque `AnyError`). Tests:
+   `relay_config::tests::on_relay_status_transition_table` (the mapping) and
+   `sync_thread::tests::relay_watch_drives_health_into_sync_status` (the
+   emit-on-change seam `fold_relay_health` → `drain_sync_events` →
+   `SyncStatus.health`, Unknown → Healthy → Degraded → Healthy).
 
-### EOL warning
+### Default-relay warning
 
-`endpoint.rs::warn_default_relay_eol_once()` logs one `WARN` per process (a
+`endpoint.rs::warn_default_relay_once()` logs one `WARN` per process (a
 `std::sync::Once` guard) the first time a `SyncEndpoint` binds against
-`RelayConfig::Default`, naming the 2026-12-31 date and pointing at this section.
-Deliberately not unit-tested for the "fires exactly once" property — `Once` is
-process-global static state, so asserting on it across `#[test]` functions in
-the same test binary would be order-dependent; the pure decision of *whether*
-to warn (`RelayConfig::is_default_infra`) is what's tested instead.
+`RelayConfig::Default`: the public n0 relays are rate-limited, configure
+`FE_SYNC_RELAY` / the Settings relay for production. (On 0.35 this was the
+2026-12-31 EOL warning.) Deliberately not unit-tested for the "fires exactly
+once" property — `Once` is process-global static state, so asserting on it
+across `#[test]` functions in the same test binary would be order-dependent;
+the pure decision of *whether* to warn (`RelayConfig::is_default_infra`) is
+what's tested instead.
 
 ## §lifecycle-forwarding (`lifecycle.rs`, track `node_lifecycle_addressing_20260725` FR-6)
 
@@ -481,12 +639,12 @@ replication model is forbidden.
   `GossipSender`, so the real path is unchanged), and
   `pump_virtual_gossip_topic` forwards inbound frames as `GossipIncoming`
   exactly like the real pump — the command loop cannot tell the planes
-  apart. The sync thread passes its own DID + iroh `NodeId` (one ed25519
+  apart. The sync thread passes its own DID + iroh `EndpointId` (one ed25519
   key), so the F23 sender-identity gate applies to sim frames verbatim. A
   factory without a gossip plane (the trait default `None`) leaves the verse
   honestly topic-less (`SubmitComputeTask` runs local-only). fe-sim's
-  `SimNet` implements it with NO self-echo (iroh-gossip 0.35 never delivers
-  a sender's own broadcast back to it — the hub matched that on 2026-10-09,
+  `SimNet` implements it with NO self-echo (iroh-gossip — 0.35 and 0.101
+  alike — never delivers a sender's own broadcast back to it — the hub matched that on 2026-10-09,
   DEC-C13; the `SELF_ECHO` gate remains as defense), scripted
   latency/partition/churn, and NO history (fe-sim `src/AGENTS.md`
   §gossip-plane).
@@ -724,8 +882,14 @@ shape is unit-testable without a gossip stack.
    cannot impersonate a declared peer. Applies to BOTH responses and requests
    → `drop_reason::FORGED_SENDER`. **Residual (honest):** a RELAYED delivery's
    `from` is the forwarding neighbor, not the original broadcaster (iroh-gossip
-   0.35 `GossipEvent` docs), so relayed deliveries cannot be wire-verified and
-   fall back to claim-based admission. Relays are therefore the residual hole
+   docs: `delivered_from` "is not the same as the original author"; the
+   `DeliveryScope::is_direct()` semantics are byte-for-byte identical in 0.35
+   and 0.101), so relayed deliveries cannot be wire-verified and fall back to
+   claim-based admission. "Relayed" here means a gossip SWARM hop (plumtree
+   forwarding), NOT an iroh relay SERVER: a connection routed through an iroh
+   relay server is still an end-to-end-authenticated QUIC/TLS connection to
+   that `EndpointId`, so relay-server routing does not weaken the
+   direct-delivery identity check. Relays are therefore the residual hole
    for attribution; it is not closable without per-message signing
    (deferred — the causal-DAG membership resolver is blocked on the same
    per-operation signing, see §write-policy).
@@ -778,11 +942,14 @@ shape is unit-testable without a gossip stack.
 ### §gossip-bootstrap — the Join-drop race (fixed 2026-10-08)
 
 `subscribe_to_verse_gossip_topic` (sync_thread.rs) must run **before** the
-open sequence, and it must register every bootstrap peer with
-`Endpoint::add_node_addr` before `gossip.subscribe(topic, bootstrap)`:
+open sequence, and it must register every bootstrap peer in the endpoint's
+address book (`SyncEndpoint::add_peer_addr` → iroh 1.x `MemoryLookup`, the
+replacement for 0.35's `Endpoint::add_node_addr`) before
+`gossip.subscribe(topic, bootstrap).await` (async on iroh-gossip 0.101 — the
+open handler awaits it, so the ordering is unchanged):
 
-- **Why `add_node_addr` first:** the one-shot `subscribe` dials the bootstrap
-  peers immediately; a bare `NodeId` with no address-book entry cannot be
+- **Why register addresses first:** the one-shot `subscribe` dials the bootstrap
+  peers immediately; a bare `EndpointId` with no address-book entry cannot be
   dialed and the join silently targets nobody. Registering the addresses
   first makes the join dial succeed on the first try (the docs `start_sync`
   dials in the background and races this otherwise).

@@ -65,7 +65,7 @@ pub fn run() -> Result<TestResult> {
         .map_err(|v: Vec<u8>| anyhow::anyhow!("secret must be 32 bytes, got {}", v.len()))?;
     let ns_id_hex = hex::encode(fe_database::derive_namespace_id(&secret_bytes));
 
-    // 2. Bob joins the namespace first, dialing alice's NodeAddr — imports
+    // 2. Bob joins the namespace first, dialing alice's EndpointAddr — imports
     //    the same write capability (same doc id) and starts syncing toward her.
     bob.sync_cmd_tx
         .send(SyncCommand::OpenVerseReplica {

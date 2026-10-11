@@ -126,13 +126,13 @@ fan-out (`SubmitComputeTask` request + per-host partial responses) rides the
 SAME `(due_ms, seq)` heap, latency, partitions, and churn as doc rows.
 
 - **Membership** is per topic key, one entry per join; the member's DID is
-  its link key (same as the doc plane), its iroh `NodeId` tags the frames it
+  its link key (same as the doc plane), its iroh `EndpointId` tags the frames it
   publishes (`from`, `direct: true` — hub deliveries are 0-hop). The sync
   thread passes its own `local_did`/`local_node` (one ed25519 key — F20), so
   fe-sync's F23 forged-attribution gate authenticates sim envelopes exactly
   as it does direct iroh deliveries.
 - **Broadcast = one delivery per CURRENT member linked to the publisher,
-  publisher EXCLUDED** (iroh-gossip 0.35 parity: a sender never receives its
+  publisher EXCLUDED** (iroh-gossip parity, 0.35 and 0.101 alike: a sender never receives its
   own broadcast). Until 2026-10-09 the hub self-echoed — harmless (fe-sync's
   `SELF_ECHO` gate dropped our own request; our own response routed to no
   collector) but a sim/prod drift that inflated `gossip_deliveries` with

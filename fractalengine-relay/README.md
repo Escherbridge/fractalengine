@@ -21,8 +21,8 @@ The relay listens on `0.0.0.0:8765` by default.
 | `FE_DB_PATH` | `data/fractalengine.db` | SurrealDB storage path |
 | `FE_P2P_DIR` | `data/p2p` | iroh-docs/blobs data dir (persistent replica store) |
 | `FE_CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins |
-| `FE_SYNC_RELAY` | `default` | iroh relay mode: `default` / `disabled` / comma-separated relay URLs (n0's hosted relays EOL 2026-12-31) |
-| `FE_SYNC_BOOTSTRAP` | (none) | Semicolon-separated iroh `NodeAddr` JSON entries to dial for every opened replica (invalid entries warn + skip) |
+| `FE_SYNC_RELAY` | `default` | iroh relay mode: `default` / `disabled` / comma-separated relay URLs. `default` = n0's public iroh v1 relays (shared, rate-limited — configure your own for production; see [Relays](#relays-iroh-1x)) |
+| `FE_SYNC_BOOTSTRAP` | (none) | Semicolon-separated iroh 1.x `EndpointAddr` JSON entries to dial for every opened replica; the legacy iroh 0.35 `NodeAddr` JSON shape is still accepted (invalid entries and bare ids warn + skip) |
 | `FE_SHUTDOWN_AFTER_SECS` | (never) | Request the same graceful shutdown a signal would, after N seconds (smoke tests, one-shot containers) |
 | `SURREAL_DATASTORE_SYNC_DATA` | `every` | SurrealKV fsync cadence (`never` / `every` / duration >100ms) |
 | `RUST_LOG` | (none) | Log level filter (`info`, `debug`, `fe_api=debug`, etc.) |
@@ -39,7 +39,7 @@ The relay uses `EnvBackend` for secrets. Keys are mapped to env vars as `FE_SECR
 
 - Node keypair: `FE_SECRET_FRACTALENGINE_NODE_KEYPAIR`. If unset, the relay generates an ephemeral keypair on startup (new iroh node id every run).
 - Share-URL signing key (A24): `FE_SECRET_FRACTALENGINE_SHARE_SIGNER`. If unset, a new key generates each launch and every previously issued shareable query URL stops verifying — a dedicated slot, independent of the node keypair (full ops guidance is a later pass).
-- Verse namespace secrets: `FE_SECRET_FRACTALENGINE_VERSE_<VERSE_ULID>_NS_SECRET_FRACTALENGINE` = 64 hex chars. A verse's P2P replica opens only when its secret is available from this mapping — without one, startup logs a loud warning and skips that verse. The namespace id is derived from the secret (blake3 keyed hash), so no row update is needed.
+- Verse namespace secrets: `FE_SECRET_FRACTALENGINE_VERSE_<VERSE_ULID>_NS_SECRET_FRACTALENGINE` = 64 hex chars. A verse's P2P replica opens only when its secret is available from this mapping — without one, startup logs a loud warning and skips that verse. The namespace id is derived from the secret (its Ed25519 verifying key — the id iroh-docs registers the doc under), so no row update is needed.
 
   **Process-lifetime secrets for REST-created verses.** `POST /api/v1/verses` generates the verse's namespace secret into the relay's `EnvBackend` **in-memory override only** — it is never written to a real environment variable or persisted anywhere. After a relay restart, that override is gone: the verse's replica can never re-open unless you env-inject the slot above (`FE_SECRET_FRACTALENGINE_VERSE_<ULID>_NS_SECRET_FRACTALENGINE`, 64 hex) yourself before the next launch. The GUI binary is unaffected (it persists secrets to the OS keystore). A proper invite-generation-over-REST/MCP flow with real secret persistence is deferred — tracked on the conductor `p2p_mycelium_completion_20260701` track (phase 2 notes) — not scheduled in this mission.
 
@@ -52,7 +52,24 @@ The relay is a fully applying replica of every verse it hosts:
 - **Reconciliation** — each open replays the replica's current doc entries through the same inbound apply path, so rows denied before a role or the verse manifest converged locally get a second chance.
 - **Inbound admission** — the fe-policy role gate at the DB layer applies (deny-by-default, Editor+, roles resolved from local tables, never wire-supplied).
 
-To join an existing swarm, copy the dialable `NodeAddr` JSON from the peer's startup log (`SyncStatus updated: started — dialable address above`) into `FE_SYNC_BOOTSTRAP`. Note: two SurrealKV connections cannot coexist in one process, so the relay's direct API reader falls back to the command channel whenever the DB writer holds the store — that is normal, not an error.
+To join an existing swarm, copy the dialable `EndpointAddr` JSON from the peer's startup log (`SyncStatus updated: started — dialable address above`) into `FE_SYNC_BOOTSTRAP`. Note: two SurrealKV connections cannot coexist in one process, so the relay's direct API reader falls back to the command channel whenever the DB writer holds the store — that is normal, not an error.
+
+```bash
+# iroh 1.x EndpointAddr JSON (what the start banner prints):
+FE_SYNC_BOOTSTRAP='{"id":"<64-hex endpoint id>","addrs":[{"Relay":"https://relay.example.com/"},{"Ip":"203.0.113.7:41234"}]}'
+# Legacy iroh 0.35 NodeAddr JSON is still parsed (converted to the above):
+FE_SYNC_BOOTSTRAP='{"node_id":"<64-hex>","relay_url":"https://relay.example.com/","direct_addresses":["203.0.113.7:41234"]}'
+```
+
+With a relay configured, startup waits up to iroh's `NET_REPORT_TIMEOUT` for a home relay so the printed address carries its relay URL; under `FE_SYNC_RELAY=disabled` it prints the local IP addresses immediately.
+
+### Relays (iroh 1.x)
+
+- **Flag day.** The P2P stack runs iroh 1.3 (iroh-docs/iroh-gossip 0.101, iroh-blobs 0.103). iroh 0.35 and 1.x peers **cannot talk to each other** — upgrade every GUI peer and relay node of a swarm together. Within iroh v1, every minor version interoperates.
+- **Default relays.** `FE_SYNC_RELAY=default` uses n0's public v1 relays (`{use1,usw1,euc1,aps1}-1.relay.n0.iroh.link`), which n0 runs for the life of iroh v1 but which are shared and rate-limited for relayed traffic. The relay logs one `WARN` at startup when it binds against them.
+- **Production.** Run your own iroh relay server (the `iroh-relay` 1.x binary from the `iroh-relay` crate, feature `server`) and set `FE_SYNC_RELAY=https://<your-relay-host>`. Note that `fe-relay` (this binary) is an application peer, **not** an iroh relay server.
+- **Health.** `SyncStatus.health` starts `Unknown` when a relay is configured and moves to `Healthy` once a home relay connects; a home-relay watcher degrades it (`Degraded` → `Unreachable`) on repeated connection errors or an auth denial, and recovers it on reconnect (fe-sync/src/AGENTS.md §relay-health).
+- **Upgrading an existing `FE_P2P_DIR`.** The first 1.x start copies the dir to `<FE_P2P_DIR>.v035.bak-<unix_ts>`, upgrades its two redb files in place, and writes a `.fe-store-format` marker. Budget twice the dir's disk space for that start. If the migration fails, the node runs offline and the backup is your rollback (fe-sync/src/AGENTS.md §store-migration).
 
 ### Windows / per-handle-lock platforms
 

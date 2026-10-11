@@ -1,20 +1,22 @@
-//! Real iroh-docs 0.35 P2P stack: Blobs (fs) + Gossip + Docs (persistent
-//! redb) + a Router accepting all three ALPNs (A1, P2P Mycelium Phase F).
+//! Real iroh 1.x P2P stack (iroh-docs 0.101 / iroh-blobs 0.103 /
+//! iroh-gossip 0.101): Blobs (fs) + Gossip + Docs (persistent redb) + a
+//! Router accepting all three ALPNs (A1, P2P Mycelium Phase F).
 //!
 //! [`DocsStack`] owns every long-lived protocol actor for one online sync
 //! thread so that spawning and shutting them down is a single operation.
 //! It is built over an **already-bound** endpoint; when the endpoint fails
 //! to bind (or the stack cannot spawn) the sync thread runs without a
 //! stack and the replicator layer degrades to the in-memory mock — never
-//! a crash. See `fe-sync/src/AGENTS.md` §iroh-0.35.
+//! a crash. See `fe-sync/src/AGENTS.md` §iroh-1.x and §store-migration.
 //!
 //! Persistent layout under the data dir ([`p2p_data_dir`], env
 //! [`P2P_DIR_ENV_VAR`], default `data/p2p`):
 //!
 //! ```text
-//! <dir>/blobs/          — iroh-blobs fs store (bao data + outboards)
-//! <dir>/docs.redb       — iroh-docs replica store
-//! <dir>/default-author  — hex-encoded default author key (the endpoint identity)
+//! <dir>/blobs/             — iroh-blobs fs store (blobs.db + data/ outboards)
+//! <dir>/docs.redb          — iroh-docs replica store
+//! <dir>/default-author     — hex-encoded default author key (the endpoint identity)
+//! <dir>/.fe-store-format   — store format marker (see p2p_store_migration.rs)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -22,10 +24,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 
 use iroh::protocol::Router;
-use iroh_blobs::net_protocol::Blobs;
-use iroh_blobs::store::fs::Store as FsBlobStore;
+use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::BlobsProtocol;
 use iroh_docs::protocol::Docs;
-use iroh_gossip::net::Gossip;
+use iroh_gossip::Gossip;
 
 /// Env var selecting the persistent P2P data dir.
 pub const P2P_DIR_ENV_VAR: &str = "FE_P2P_DIR";
@@ -52,14 +54,15 @@ pub fn resolve_p2p_dir(env_value: Option<&str>) -> PathBuf {
 /// The full P2P protocol stack owned by an online sync thread.
 ///
 /// The [`Router`] accepts all three ALPNs so inbound peer connections are
-/// routable: blobs (`/iroh-bytes/4`), gossip (`/iroh-gossip/0`), docs
+/// routable: blobs (`/iroh-bytes/4`), gossip (`/iroh-gossip/1`), docs
 /// (`/iroh-sync/1`). Before the router existed inbound protocol connections
-/// were silently unroutable (see AGENTS.md §iroh-0.35).
+/// were silently unroutable (see AGENTS.md §iroh-1.x).
 pub struct DocsStack {
     endpoint: iroh::Endpoint,
-    blobs: Blobs<FsBlobStore>,
+    blob_store: FsStore,
+    blobs: BlobsProtocol,
     gossip: Gossip,
-    docs: Docs<FsBlobStore>,
+    docs: Docs,
     router: Router,
     data_dir: PathBuf,
 }
@@ -68,15 +71,17 @@ impl DocsStack {
     /// Spawn the full stack over an already-bound endpoint.
     ///
     /// `data_dir` is created if missing; every persistent store lives under
-    /// it. Any failure returns an error — the caller degrades to
-    /// offline/mock mode rather than panicking. Directory creation runs on
-    /// the blocking pool (see AGENTS.md §sync-thread-blocking-io).
+    /// it. A legacy iroh 0.35 store is migrated first (backup copy + redb
+    /// file-format upgrade — AGENTS.md §store-migration). Any failure returns
+    /// an error — the caller degrades to offline/mock mode rather than
+    /// panicking. Directory creation and the migration run on the blocking
+    /// pool (see AGENTS.md §sync-thread-blocking-io).
     ///
     /// **One authenticated author identity (F20/M1 finding 2):** the
     /// endpoint's identity key is imported as the docs author and made the
     /// node-wide default, so every write the replicator layer publishes is
     /// authored by the endpoint identity and `entry.author()` maps to the
-    /// same `did:key` the A3 inbound gate resolves (endpoint `NodeId`
+    /// same `did:key` the A3 inbound gate resolves (endpoint `EndpointId`
     /// did:key == the app DID — fe-identity's keypair and the iroh secret
     /// share the ed25519 seed). Left un-imported, the docs default author
     /// would be an unrelated per-`FE_P2P_DIR` key that maps to no role
@@ -85,17 +90,34 @@ impl DocsStack {
     pub async fn spawn(endpoint: iroh::Endpoint, data_dir: impl AsRef<Path>) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         // redb and the docs author storage need the parent dir to exist;
-        // the blobs fs store creates its own subtree.
+        // the blobs fs store creates its own subtree. A 0.35-written store is
+        // upgraded BEFORE any 1.x store opens it (redb 4 refuses v2 files).
         let dir = data_dir.clone();
-        tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir))
-            .await
-            .context("joining P2P data dir creation task")?
-            .with_context(|| format!("creating P2P data dir {}", data_dir.display()))?;
+        let migration = tokio::task::spawn_blocking(move || -> Result<_> {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("creating P2P data dir {}", dir.display()))?;
+            crate::p2p_store_migration::migrate_legacy_p2p_store(&dir)
+                .context("migrating the legacy iroh 0.35 P2P store")
+        })
+        .await
+        .context("joining P2P data dir preparation task")??;
+        if let crate::p2p_store_migration::MigrationOutcome::Migrated {
+            backup_dir,
+            upgraded,
+        } = &migration
+        {
+            tracing::warn!(
+                p2p_dir = %data_dir.display(),
+                backup = %backup_dir.display(),
+                upgraded = upgraded.len(),
+                "Legacy iroh 0.35 P2P store migrated (the backup copy is the rollback)"
+            );
+        }
 
-        let blobs = Blobs::persistent(data_dir.join("blobs"))
+        let blob_store = FsStore::load(data_dir.join("blobs"))
             .await
-            .context("opening persistent iroh-blobs store")?
-            .build(&endpoint);
+            .map_err(|e| anyhow::anyhow!("opening persistent iroh-blobs store: {e}"))?;
+        let blobs = BlobsProtocol::new(&blob_store, None);
         let gossip = Gossip::builder()
             // F7's distributed-query transport rides gossip envelopes (the
             // request carries a shard list; responses carry per-shard
@@ -106,11 +128,13 @@ impl DocsStack {
             // sync thread still bounds payloads itself via
             // `distributed_query::GOSSIP_ENVELOPE_BUDGET` + row caps.
             .max_message_size(crate::distributed_query::GOSSIP_MAX_MESSAGE_SIZE)
-            .spawn(endpoint.clone())
-            .await
-            .context("spawning iroh-gossip")?;
+            .spawn(endpoint.clone());
         let docs = Docs::persistent(data_dir.clone())
-            .spawn(&blobs, &gossip)
+            .spawn(
+                endpoint.clone(),
+                iroh_blobs::api::Store::from(blob_store.clone()),
+                gossip.clone(),
+            )
             .await
             .context("spawning persistent iroh-docs engine")?;
 
@@ -119,36 +143,35 @@ impl DocsStack {
         // writes, live events, and snapshots all carry one authenticated
         // author identity — see the method doc comment.
         let identity_author = iroh_docs::Author::from_bytes(&endpoint.secret_key().to_bytes());
-        let authors = docs.client().authors();
-        authors
-            .import(identity_author.clone())
+        let identity_author_id = identity_author.id();
+        docs.author_import(identity_author)
             .await
             .context("importing the endpoint identity as the docs author")?;
-        authors
-            .set_default(identity_author.id())
+        docs.author_set_default(identity_author_id)
             .await
             .context("setting the endpoint identity as the default docs author")?;
         tracing::info!(
-            author = %identity_author.id(),
-            node_id = %endpoint.node_id().fmt_short(),
+            author = %identity_author_id,
+            node_id = %endpoint.id().fmt_short(),
             "Docs author imported from the endpoint identity"
         );
 
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs.clone())
-            .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
+            .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(iroh_docs::ALPN, docs.clone())
             .spawn();
         tracing::info!(
-            node_id = %endpoint.node_id().fmt_short(),
+            node_id = %endpoint.id().fmt_short(),
             p2p_dir = %data_dir.display(),
             blobs_alpn = %String::from_utf8_lossy(iroh_blobs::ALPN),
-            gossip_alpn = %String::from_utf8_lossy(iroh_gossip::net::GOSSIP_ALPN),
+            gossip_alpn = %String::from_utf8_lossy(iroh_gossip::ALPN),
             docs_alpn = %String::from_utf8_lossy(iroh_docs::ALPN),
             "P2P stack online: blobs + gossip + docs routed"
         );
         Ok(Self {
             endpoint,
+            blob_store,
             blobs,
             gossip,
             docs,
@@ -163,13 +186,18 @@ impl DocsStack {
     }
 
     /// This node's public key identifier.
-    pub fn node_id(&self) -> iroh::NodeId {
-        self.endpoint.node_id()
+    pub fn node_id(&self) -> iroh::EndpointId {
+        self.endpoint.id()
     }
 
-    /// The persistent blobs protocol (fs store under `<data_dir>/blobs`).
-    pub fn blobs(&self) -> &Blobs<FsBlobStore> {
+    /// The persistent blobs protocol (routed for inbound blob requests).
+    pub fn blobs(&self) -> &BlobsProtocol {
         &self.blobs
+    }
+
+    /// The persistent blob store (fs store under `<data_dir>/blobs`).
+    pub fn blob_store(&self) -> &iroh_blobs::api::Store {
+        &self.blob_store
     }
 
     /// The gossip instance routed for inbound swarm connections.
@@ -178,17 +206,16 @@ impl DocsStack {
     }
 
     /// The docs engine (persistent replica store at `<data_dir>/docs.redb`).
-    pub fn docs(&self) -> &Docs<FsBlobStore> {
+    pub fn docs(&self) -> &Docs {
         &self.docs
     }
 
-    /// Clone of the in-process docs RPC client (author/doc/entry ops).
+    /// Clone of the in-process docs API (author/doc/entry ops).
     ///
     /// This is the handle the replicator layer uses for `import_namespace`,
-    /// `set_bytes`, `subscribe`, `start_sync` and `close` (requires the
-    /// iroh-docs `rpc` feature).
-    pub fn docs_client(&self) -> iroh_docs::rpc::client::docs::MemClient {
-        self.docs.client().clone()
+    /// `set_bytes`, `subscribe`, `start_sync` and `close`.
+    pub fn docs_client(&self) -> iroh_docs::api::DocsApi {
+        self.docs.api().clone()
     }
 
     /// The accept-loop router for all three ALPNs.
@@ -201,7 +228,8 @@ impl DocsStack {
         &self.data_dir
     }
 
-    /// Shut the protocol handlers down (docs engine flush).
+    /// Shut the protocol handlers down (docs engine flush, blob store
+    /// shutdown — the router calls each handler's `shutdown`).
     ///
     /// The endpoint close stays with the caller (`SyncEndpoint::shutdown`)
     /// so the existing sync-thread shutdown order is preserved.
@@ -277,14 +305,22 @@ mod tests {
         assert_eq!(stack.data_dir(), dir.path());
 
         // The docs engine answers through the client (author storage is
-        // loaded at engine spawn — a default author proves the engine lives).
+        // loaded at engine spawn — a default author proves the engine lives),
+        // and it is the endpoint identity (F20 alignment).
         let author = stack
             .docs_client()
-            .authors()
-            .default()
+            .author_default()
             .await
             .expect("default author from persistent storage");
         assert_ne!(author, iroh_docs::AuthorId::default());
+        assert_eq!(author.as_bytes(), stack.node_id().as_bytes());
+        // A fresh dir is stamped with the 1.x store-format marker.
+        assert!(
+            dir.path()
+                .join(crate::p2p_store_migration::STORE_FORMAT_MARKER)
+                .is_file(),
+            "store format marker"
+        );
 
         stack.shutdown().await;
     }
@@ -301,21 +337,16 @@ mod tests {
 
         // A second bare endpoint connects to the stack's node for each
         // routed ALPN; an unknown ALPN must be refused by the handshake.
-        let client = iroh::Endpoint::builder()
+        let client = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
             .bind()
             .await
             .expect("client endpoint bind");
-        let addr = stack.endpoint().node_addr().await.expect("node addr");
-        client.add_node_addr(addr).expect("add node addr");
+        let addr = stack.endpoint().addr();
 
-        for alpn in [
-            iroh_blobs::ALPN,
-            iroh_gossip::net::GOSSIP_ALPN,
-            iroh_docs::ALPN,
-        ] {
+        for alpn in [iroh_blobs::ALPN, iroh_gossip::ALPN, iroh_docs::ALPN] {
             let alpn_name = String::from_utf8_lossy(alpn).to_string();
-            match client.connect(stack.node_id(), alpn).await {
+            match client.connect(addr.clone(), alpn).await {
                 Ok(_conn) => tracing::debug!(alpn_name, "routed"),
                 Err(e) => panic!("ALPN {alpn_name} should route through the stack: {e}"),
             }
@@ -323,7 +354,7 @@ mod tests {
         // Negative control: the router refuses an ALPN it does not accept.
         assert!(
             client
-                .connect(stack.node_id(), b"/not-a-protocol/1")
+                .connect(addr.clone(), b"/not-a-protocol/1")
                 .await
                 .is_err(),
             "unknown ALPN must be refused"
@@ -350,9 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn alpn_constants_match_iroh_035_wire_protocols() {
+    fn alpn_constants_match_iroh_1x_wire_protocols() {
         assert_eq!(iroh_blobs::ALPN, b"/iroh-bytes/4");
-        assert_eq!(iroh_gossip::net::GOSSIP_ALPN, b"/iroh-gossip/0");
+        // iroh-gossip 0.101 bumped the gossip ALPN (0.35 was /iroh-gossip/0).
+        assert_eq!(iroh_gossip::ALPN, b"/iroh-gossip/1");
         assert_eq!(iroh_docs::ALPN, b"/iroh-sync/1");
     }
 }
