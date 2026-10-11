@@ -231,12 +231,25 @@ fn clamp_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
     }
 }
 
-pub(crate) fn manifest_save(petal_id: String, manifest: PetalManifest) {
+/// Applies a manifest save: the active petal's `render_distance` becomes the
+/// session residency override (no durable manifest store exists yet — see
+/// AGENTS.md §app-settings).
+pub(crate) fn manifest_save(
+    petal_id: String,
+    manifest: PetalManifest,
+    active_petal: Option<&str>,
+    render_override: &mut crate::settings::PetalRenderOverride,
+) {
     bevy::log::info!(
         "PetalManifest: save requested for petal {petal_id} ({} hexons)",
         manifest.hexons.len()
     );
-    // TODO: PATCH /api/v1/petals/{petal_id}/manifest
+    if active_petal == Some(petal_id.as_str()) {
+        *render_override = crate::settings::PetalRenderOverride {
+            petal_id: Some(petal_id),
+            render_distance: Some(manifest.render_distance),
+        };
+    }
 }
 
 pub(crate) fn manifest_open(ui_mgr: &mut UiManager, petal_id: String, petal_name: String) {

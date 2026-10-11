@@ -5621,6 +5621,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "crossbeam",
+ "dirs 5.0.1",
  "fe-database",
  "fe-hexon",
  "fe-identity",
@@ -5630,8 +5631,10 @@ dependencies = [
  "fe-sync",
  "fe-webview",
  "rfd",
+ "ron",
  "serde",
  "serde_json",
+ "tempfile",
  "url",
 ]
 

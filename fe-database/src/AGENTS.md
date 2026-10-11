@@ -402,6 +402,8 @@ one sub-module per domain:
 - `crate_registry` — hexon crate registry install/uninstall
 - `petal_terrain` — per-petal terrain config get/set; `*_reply` builders answer
   correlated (API) callers privately (`PetalTerrainFetched` / `RequestFailed`)
+- `visibility_groups` — petal Group registry get/set + persisted scope eyes
+  (`*_reply` builders, Editor+ via fe-policy; §lifecycle "Visibility groups")
 - `raw_query` — `RawQuery` reply (`raw_query_reply`): SELECT-only keyword
   blocklist, `QueryResult`/`QueryFailed` echoing the caller's correlation id
 - `elevated_query` — `ElevatedQuery` reply (`elevated_query_reply`), the
@@ -586,6 +588,19 @@ duplicate ids written by raw/elevated SQL (cf. the `reading_id` fallback);
 the goal is lookup cost, not enforcement. `IF NOT EXISTS` keeps them
 idempotent on populated stores (`schema_idempotent.rs::id_lookup_indexes_exist_after_apply_all`).
 
+**`array<object>` FLEXIBLE (VIS-PH4 `petal.visibility_groups`).** SurrealDB 3
+rejects `FLEXIBLE` on a bare `array` ("FLEXIBLE can only be used with types
+containing object"), and `TYPE option<array<object>> FLEXIBLE` still rejects
+the ELEMENT objects' keys in a SCHEMAFULL table ("Found field
+'visibility_groups[0].id', but no such field exists"). Defining the column
+auto-creates its element field `visibility_groups[*]`, so `IF NOT EXISTS`
+silently skips a re-declaration; `apply_all` therefore runs
+`DEFINE FIELD OVERWRITE visibility_groups[*] ON TABLE petal TYPE object FLEXIBLE`
+after the petal table (OVERWRITE is idempotent). The new eyes
+(`verse`/`fractal`/`petal.view_hidden`, `option<bool>`) need no backfill:
+`NONE` = visible. Pinned by
+`schema_idempotent.rs::visibility_fields_apply_to_a_populated_pre_phase4_store`.
+
 ## §scope
 
 Scope strings are `VERSE#<v>[-FRACTAL#<f>[-PETAL#<p>]]` (`scope.rs`).
@@ -706,6 +721,58 @@ zero UI changes. `CountNodeDescendants` is read-only (no auth, like
 `GetNodeProperties`) and shares `collect_live_subtree` with the cascade BFS so
 the confirm-dialog count and the actual cascade can never drift; the root is
 excluded ("its N child nodes") and tombstoned rows don't count.
+
+**Node view (`SetNodeView` / `LoadPetalViewState`, hierarchy_visibility_groups
+Phase 3, `handlers/node_view.rs`).** A node's visibility override persists as
+`properties['view.state']` (`"show"`/`"hide"`; ABSENT = Auto) and its Group
+membership as `properties['view.groups']` (ABSENT = none). D-15 forbids raw
+`SetNodeProperty` for these, so the arm follows the lifecycle order: validate
+(state ∈ auto|show|hide, ≤ 64 group ids of 1-64 chars) → tombstone-aware
+resolve (`resolve_live_node_petal`: missing/tombstoned = failure) → petal scope
+→ `lifecycle_auth_context` (`Local` resolves the real local role) →
+`authorize_node_edit` (Editor+) → writes. Each key goes through the same
+`PropertySet`/`PropertyDeleted` op-log commit `SetNodeProperty` uses (reuses
+`entity_property`'s handlers, so HLC + log-first are inherited); `"auto"` and
+an empty group list DELETE their key rather than store a default. Success
+emits one `SceneChange::PropertyChanged` per touched key (owning petal) and
+replies `NodeViewSet` with the read-back values; failures go through
+`correlated_failure` (`RequestFailed` when correlated — the GUI always
+correlates (`fe-ui:view:{node_id}`) so a refusal never lands on an API waiter
+as a wildcard `Error`). `LoadPetalViewState` is one read-only SELECT that
+projects only the two keys (a track's bag also holds its whole `gpx_points`)
+over live nodes of the petal carrying either key. `SetNodeView` is registered
+`UnmappedDeferred` in the SPEC-8 mapping inventory; the load is a read and is
+excluded per §inventory-scope.
+
+**Visibility groups + scope eyes (`SetPetalVisibilityGroups` /
+`GetPetalVisibilityGroups` / `SetScopeHidden`, hierarchy_visibility_groups
+Phase 4, `handlers/visibility_groups.rs`).** The petal's Group registry is the
+`petal.visibility_groups` column (`[{id, name, visible, order}]`, D-3) and the
+verse/fractal/petal eyes are `view_hidden` (`true` or `NONE`, D-1 — the petal
+eye is persisted too, so the chain has no session-only gap). Set follows the
+lifecycle order: validate (≤ 256 groups, unique ids of 1-64 chars — the same
+cap as a node's `view.groups` ids — names 1-80 chars trimmed, finite `order`)
+→ resolve the petal/fractal/verse scope (missing row = failure, never an
+empty answer) → `lifecycle_auth_context` → `fe_policy::authorize_node_edit`
+(`Write` at ANY scope string, so it is reused rather than adding an
+`authorize_scope_edit`) → `UPDATE` → reply. The registry write is a
+WHOLE-registry replace: O(groups), and membership (`view.groups` on nodes) is
+never touched — a deleted Group leaves dangling ids that hide nothing.
+Set and Get both reply `PetalVisibilityGroupsLoaded` (Set echoes the stored
+value); `SetScopeHidden` replies `ScopeHiddenSet`; failures are
+`correlated_failure`. `load_hierarchy` reads `view_hidden` off its
+`SELECT *` rows into the hierarchy DTOs so the sidebar hydrates on
+`HierarchyLoaded`. The `*_reply` builders are `pub` so fe-api's tests serve
+them on a simulated DB thread. Both writes are `UnmappedDeferred` in the
+mapping inventory. Durable tests: `tests/visibility_groups_test.rs` (Viewer
+denied + nothing stored, Editor round-trip, survives a DB-thread restart on
+the same store, eyes reach `HierarchyLoaded`, missing rows fail).
+
+**Store release on DB-thread exit.** After the command loop the thread drops
+its `Surreal` handle and yields/sleeps briefly INSIDE its runtime so the
+SurrealKV engine finishes closing; without that the file lock outlived the
+joined thread (os error 33 on Windows) and an in-process reopen of the same
+path — the restart tests above and `node_view_test.rs` — failed.
 
 **Promotion write-side contract.** `promote_instance_handler` writes
 `properties: { node_kind: 'stamp', path_id, owning_path_id, instance_index }` —

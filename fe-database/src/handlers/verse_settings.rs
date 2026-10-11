@@ -115,6 +115,7 @@ mod tests {
             ts_mode: "mirror".to_string(),
             ts_replication_factor: 1,
             ts_bucket_width_ms: fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS as i64,
+            view_hidden: None,
         }
     }
 

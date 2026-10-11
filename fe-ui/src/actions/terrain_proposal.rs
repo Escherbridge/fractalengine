@@ -2411,4 +2411,57 @@ mod tests {
         );
         assert_eq!(doc["proposals"][0]["delta"], json!(4.0));
     }
+
+    #[test]
+    fn delete_region_drops_only_its_record_then_tombstones_its_node() {
+        let (tx, rx) = crossbeam::channel::bounded(8);
+        let sender = DbCommandSender(tx);
+        let mut earthwork = EarthworkNodeMap::default();
+        earthwork.record("r1", "node-r1");
+        let mut petal_map = PetalMapState {
+            petal_id: Some("petal-1".into()),
+            terrain_json: Some(json!({
+                "enabled": true,
+                "proposals": [
+                    { "id": "r1", "op": "raise", "footprint": [], "material": "earth" },
+                    { "id": "p1", "op": "raise", "footprint": [], "delta": 1.0 }
+                ]
+            })),
+            ..Default::default()
+        };
+        handle_delete_region(
+            &sender,
+            &mut petal_map,
+            &mut SculptToolState::default(),
+            &mut earthwork,
+            Some("petal-1".into()),
+            "r1".into(),
+        );
+        match rx.try_recv().expect("terrain write") {
+            DbCommand::SetPetalTerrain {
+                petal_id,
+                terrain: Some(doc),
+                ..
+            } => {
+                assert_eq!(petal_id, "petal-1");
+                let ids: Vec<&str> = doc["proposals"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|r| r["id"].as_str())
+                    .collect();
+                assert_eq!(ids, vec!["p1"], "region dropped, palette kept");
+            }
+            other => panic!("expected SetPetalTerrain, got {other:?}"),
+        }
+        assert!(matches!(
+            rx.try_recv().expect("node tombstone"),
+            DbCommand::TombstoneNode {
+                node_id,
+                auth: CallerAuth::Local,
+            } if node_id == "node-r1"
+        ));
+        assert!(rx.try_recv().is_err(), "exactly two commands");
+        assert_eq!(earthwork.node_for("r1"), None, "bookkeeping forgotten");
+    }
 }

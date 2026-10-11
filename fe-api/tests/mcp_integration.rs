@@ -31,8 +31,8 @@ use fe_runtime::messages::{
 };
 use fractalengine_test_harness::api::ApiHarness;
 
-/// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 9 shipped extras.
-const EXPECTED_TOOLS: [&str; 29] = [
+/// DEC-C14: the 20-name mcp_scene_primitives vocabulary + 11 shipped extras.
+const EXPECTED_TOOLS: [&str; 31] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -62,6 +62,9 @@ const EXPECTED_TOOLS: [&str; 29] = [
     "move_waypoint",
     "import_gpx",
     "set_petal_terrain",
+    // VIS-PH6: visibility-Group registry
+    "list_visibility_groups",
+    "set_visibility_group",
     "list_tilesets",
     "install_tileset",
     "get_gis_nodes",
@@ -187,6 +190,7 @@ fn hierarchy(m: &Model) -> Vec<VerseHierarchyData> {
             name: vname.clone(),
             namespace_id: None,
             timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
+            view_hidden: false,
             fractals: m
                 .fractals
                 .iter()
@@ -194,6 +198,7 @@ fn hierarchy(m: &Model) -> Vec<VerseHierarchyData> {
                 .map(|(fid, _, fname)| FractalHierarchyData {
                     id: fid.clone(),
                     name: fname.clone(),
+                    view_hidden: false,
                     petals: m
                         .petals
                         .iter()
@@ -201,6 +206,7 @@ fn hierarchy(m: &Model) -> Vec<VerseHierarchyData> {
                         .map(|(pid, _, pname)| PetalHierarchyData {
                             id: pid.clone(),
                             name: pname.clone(),
+                            view_hidden: false,
                             nodes: m
                                 .nodes
                                 .iter()
@@ -624,7 +630,7 @@ fn emu(with_store: bool) -> Emu {
         replication_tx: None,
         distributed_tx: None,
         // A lab-host seam whose bridge is gone: every row stays advertised
-        // (the per-tool sweeps cover all 29) and sim verbs fail closed with
+        // (the per-tool sweeps cover all 31) and sim verbs fail closed with
         // "sim control bridge unavailable" instead of hanging.
         sim_control_tx: Some(fe_runtime::sim_control::sim_control_channel().0),
         elevated_query_allowed: false,
@@ -824,7 +830,7 @@ async fn tools_list_inventory() {
         .copied()
         .filter(|n| !n.starts_with("sim_"))
         .collect();
-    assert_eq!(names, non_lab, "24 tools off a sim lab host");
+    assert_eq!(names, non_lab, "26 tools off a sim lab host");
     // tools/list and the dispatch table are one source of truth.
     let table: Vec<&str> = tool_specs()
         .iter()
@@ -851,7 +857,7 @@ async fn tools_list_inventory() {
         assert_eq!(tool_text(&body), format!("unknown tool: {name}"));
     }
 
-    // A sim lab host advertises all 29 (DEC-C14: 24 non-sim + 5 sim control).
+    // A sim lab host advertises all 31 (DEC-C14: 26 non-sim + 5 sim control).
     let (tx, _rx) = fe_runtime::sim_control::sim_control_channel();
     let lab = ApiHarness::spawn_with_sim_control_tx(Some(tx))
         .await
@@ -1946,7 +1952,7 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
             spec.name
         );
     }
-    assert_eq!(scoped, 21, "every non-Global/None row is scope-checked");
+    assert_eq!(scoped, 23, "every non-Global/None row is scope-checked");
     assert!(
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"
@@ -2631,7 +2637,7 @@ impl SplitMix64 {
     }
 }
 
-/// A superset of every property name used across all 29 tool schemas, filled
+/// A superset of every property name used across all 31 tool schemas, filled
 /// with values valid enough to clear `check_required_args` and reach the
 /// handler. [`fuzz_args_for`] trims it to ONE tool's schema keys; one random
 /// key of that schema is then replaced per iteration — see [`mutate`].
@@ -2650,6 +2656,7 @@ fn fuzz_baseline_args(home: &Chain, asset_id: &str) -> serde_json::Value {
         "terrain": serde_json::Value::Null,
         "bbox": "0,0,10,10", "bbox_ll": "0,0,1,1", "radius": 5.0, "cx": 0.0, "cz": 0.0,
         "sql": "SELECT 1", "vars": {},
+        "group_id": "fuzz-group", "visible": true, "order": 0.0, "delete": false,
     })
 }
 

@@ -5,37 +5,155 @@
 //! `fe-ui/src/AGENTS.md` §gis-query-ui and `fe-terrain/src/AGENTS.md`
 //! §petal_binding for the consuming side.
 
-/// A single layer row for display: name, visibility, opacity.
+use crate::actions::UiAction;
+use crate::settings::AppSettings;
+use crate::visibility::{Group, VisibilityState};
+
+/// What one Layer Manager row controls (D-11, ui_ux §7 unified overlay
+/// registry): a terrain layer by config name, a visibility Group by id, or one
+/// of the ruler overlays held in `AppSettings`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LayerUiEntry {
-    pub name: String,
-    pub visible: bool,
-    pub opacity: f32,
+pub enum OverlayKey {
+    TerrainLayer(String),
+    Group(String),
+    ScaleBar,
+    WorldGrid,
 }
 
-/// Extracts the `layers` array of a petal terrain JSON doc for display.
-/// Returns an empty vec for a missing/malformed `layers` field.
-pub(crate) fn layer_entries_from_terrain_json(
-    terrain_json: &serde_json::Value,
-) -> Vec<LayerUiEntry> {
-    terrain_json
+/// One row of the unified overlay registry: `(name, visible, opacity)`.
+/// `opacity` is `None` for overlays that have no opacity knob.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayEntry {
+    pub key: OverlayKey,
+    pub name: String,
+    pub visible: bool,
+    pub opacity: Option<f32>,
+}
+
+/// Terrain layer config names the registry offers, in row order — every one is
+/// rendered by fe-terrain (`gpx_track`/`geojson_overlay` as CATEGORY layers,
+/// fe-terrain `src/AGENTS.md` §petal_binding).
+pub(crate) const TERRAIN_LAYER_NAMES: [&str; 4] =
+    ["satellite", "terrain", "gpx_track", "geojson_overlay"];
+
+/// Display name for a terrain layer config name.
+fn terrain_layer_label(name: &str) -> String {
+    match name {
+        "satellite" => "Satellite".to_string(),
+        "terrain" => "Terrain".to_string(),
+        "gpx_track" => "GPX tracks".to_string(),
+        "geojson_overlay" => "GeoJSON overlays".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// A stored layer's `(visible, opacity)`; absent layer → `(true, 1.0)`.
+fn terrain_layer_state(terrain_json: &serde_json::Value, name: &str) -> (bool, f32) {
+    let layer = terrain_json
         .get("layers")
         .and_then(|l| l.as_array())
-        .map(|arr| {
+        .and_then(|arr| {
             arr.iter()
-                .filter_map(|l| {
-                    let name = l.get("name")?.as_str()?.to_string();
-                    let visible = l.get("visible").and_then(|v| v.as_bool()).unwrap_or(true);
-                    let opacity = l.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0) as f32;
-                    Some(LayerUiEntry {
-                        name,
-                        visible,
-                        opacity,
-                    })
+                .find(|l| l.get("name").and_then(|n| n.as_str()) == Some(name))
+        });
+    let visible = layer
+        .and_then(|l| l.get("visible"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let opacity = layer
+        .and_then(|l| l.get("opacity"))
+        .and_then(|o| o.as_f64())
+        .unwrap_or(1.0) as f32;
+    (visible, opacity)
+}
+
+/// The ONE overlay registry the Layer Manager renders: terrain layers (only
+/// when the petal has a map), then Groups in registry order, then the scale
+/// bar and metric grid. Pure.
+pub(crate) fn overlay_registry(
+    terrain_json: Option<&serde_json::Value>,
+    visibility: &VisibilityState,
+    settings: &AppSettings,
+) -> Vec<OverlayEntry> {
+    let mut rows = Vec::new();
+    if let Some(doc) = terrain_json {
+        for name in TERRAIN_LAYER_NAMES {
+            let (visible, opacity) = terrain_layer_state(doc, name);
+            rows.push(OverlayEntry {
+                key: OverlayKey::TerrainLayer(name.to_string()),
+                name: terrain_layer_label(name),
+                visible,
+                opacity: Some(opacity),
+            });
+        }
+    }
+    rows.extend(visibility.groups().iter().map(|g| OverlayEntry {
+        key: OverlayKey::Group(g.id.clone()),
+        name: g.name.clone(),
+        visible: g.visible,
+        opacity: None,
+    }));
+    rows.push(OverlayEntry {
+        key: OverlayKey::ScaleBar,
+        name: "Scale bar".to_string(),
+        visible: settings.show_scale_bar,
+        opacity: None,
+    });
+    rows.push(OverlayEntry {
+        key: OverlayKey::WorldGrid,
+        name: "Metric grid".to_string(),
+        visible: settings.show_world_grid,
+        opacity: None,
+    });
+    rows
+}
+
+/// The action a visibility toggle on `key` dispatches. A Group toggle is a
+/// whole-registry replace (D-3), so it needs the current `groups`; terrain
+/// layers persist through the petal terrain doc (`GisSetLayer`). Pure.
+pub(crate) fn apply_overlay_toggle(
+    key: &OverlayKey,
+    visible: bool,
+    petal_id: &str,
+    groups: &[Group],
+) -> UiAction {
+    match key {
+        OverlayKey::TerrainLayer(name) => UiAction::GisSetLayer {
+            petal_id: petal_id.to_string(),
+            layer_name: name.clone(),
+            visible: Some(visible),
+            opacity: None,
+        },
+        OverlayKey::Group(id) => UiAction::SetGroupRegistry {
+            petal_id: petal_id.to_string(),
+            groups: groups
+                .iter()
+                .map(|g| Group {
+                    visible: if &g.id == id { visible } else { g.visible },
+                    ..g.clone()
                 })
-                .collect()
-        })
-        .unwrap_or_default()
+                .collect(),
+        },
+        OverlayKey::ScaleBar | OverlayKey::WorldGrid => UiAction::SetAppOverlay {
+            key: key.clone(),
+            visible,
+        },
+    }
+}
+
+/// Writes a ruler-overlay toggle into `AppSettings`; `false` for a key that is
+/// not an app overlay (nothing written).
+pub(crate) fn apply_app_overlay(
+    settings: &mut AppSettings,
+    key: &OverlayKey,
+    visible: bool,
+) -> bool {
+    match key {
+        OverlayKey::ScaleBar => settings.show_scale_bar = visible,
+        OverlayKey::WorldGrid => settings.show_world_grid = visible,
+        OverlayKey::TerrainLayer(_) | OverlayKey::Group(_) => return false,
+    }
+    true
 }
 
 /// Returns a mutated clone of `terrain_json` with the named layer's
@@ -166,40 +284,127 @@ mod tests {
         })
     }
 
+    fn group(id: &str, name: &str, visible: bool) -> Group {
+        Group {
+            id: id.into(),
+            name: name.into(),
+            visible,
+        }
+    }
+
     #[test]
-    fn layer_entries_extracts_defaults() {
-        let entries = layer_entries_from_terrain_json(&sample_doc());
-        assert_eq!(entries.len(), 2);
+    fn overlay_registry_lists_layers_then_groups_then_ruler_overlays() {
+        let mut visibility = VisibilityState::default();
+        visibility.replace_groups(vec![
+            group("g1", "Utilities", false),
+            group("g2", "Phase 2", true),
+        ]);
+        let settings = AppSettings {
+            show_scale_bar: false,
+            show_world_grid: true,
+            ..AppSettings::default()
+        };
+        let rows = overlay_registry(Some(&sample_doc()), &visibility, &settings);
+        let summary: Vec<(OverlayKey, &str, bool, Option<f32>)> = rows
+            .iter()
+            .map(|r| (r.key.clone(), r.name.as_str(), r.visible, r.opacity))
+            .collect();
+        let layer = |n: &str| OverlayKey::TerrainLayer(n.into());
         assert_eq!(
-            entries[0],
-            LayerUiEntry {
-                name: "satellite".into(),
-                visible: true,
-                opacity: 1.0
-            }
-        );
-        assert_eq!(
-            entries[1],
-            LayerUiEntry {
-                name: "terrain".into(),
-                visible: true,
-                opacity: 0.8
-            }
+            summary,
+            vec![
+                (layer("satellite"), "Satellite", true, Some(1.0)),
+                (layer("terrain"), "Terrain", true, Some(0.8)),
+                (layer("gpx_track"), "GPX tracks", true, Some(1.0)),
+                (
+                    layer("geojson_overlay"),
+                    "GeoJSON overlays",
+                    true,
+                    Some(1.0)
+                ),
+                (OverlayKey::Group("g1".into()), "Utilities", false, None),
+                (OverlayKey::Group("g2".into()), "Phase 2", true, None),
+                (OverlayKey::ScaleBar, "Scale bar", false, None),
+                (OverlayKey::WorldGrid, "Metric grid", true, None),
+            ]
         );
     }
 
     #[test]
-    fn layer_entries_empty_for_missing_layers_field() {
-        assert!(layer_entries_from_terrain_json(&serde_json::json!({})).is_empty());
+    fn overlay_registry_without_a_map_has_no_terrain_rows() {
+        let rows = overlay_registry(None, &VisibilityState::default(), &AppSettings::default());
+        let keys: Vec<OverlayKey> = rows.into_iter().map(|r| r.key).collect();
+        assert_eq!(keys, vec![OverlayKey::ScaleBar, OverlayKey::WorldGrid]);
+    }
+
+    #[test]
+    fn overlay_toggle_maps_each_key_to_its_action() {
+        let groups = vec![group("g1", "A", true), group("g2", "B", true)];
+        match apply_overlay_toggle(
+            &OverlayKey::TerrainLayer("gpx_track".into()),
+            false,
+            "p1",
+            &groups,
+        ) {
+            UiAction::GisSetLayer {
+                petal_id,
+                layer_name,
+                visible,
+                opacity,
+            } => {
+                assert_eq!(
+                    (petal_id.as_str(), layer_name.as_str()),
+                    ("p1", "gpx_track")
+                );
+                assert_eq!((visible, opacity), (Some(false), None));
+            }
+            other => panic!("expected GisSetLayer, got {other:?}"),
+        }
+        match apply_overlay_toggle(&OverlayKey::Group("g2".into()), false, "p1", &groups) {
+            UiAction::SetGroupRegistry { petal_id, groups } => {
+                assert_eq!(petal_id, "p1");
+                let flags: Vec<(&str, bool)> =
+                    groups.iter().map(|g| (g.id.as_str(), g.visible)).collect();
+                assert_eq!(flags, vec![("g1", true), ("g2", false)]);
+            }
+            other => panic!("expected SetGroupRegistry, got {other:?}"),
+        }
+        assert!(matches!(
+            apply_overlay_toggle(&OverlayKey::WorldGrid, true, "p1", &groups),
+            UiAction::SetAppOverlay {
+                key: OverlayKey::WorldGrid,
+                visible: true
+            }
+        ));
+    }
+
+    #[test]
+    fn app_overlay_writes_only_its_own_setting() {
+        let mut settings = AppSettings::default();
+        assert!(apply_app_overlay(
+            &mut settings,
+            &OverlayKey::ScaleBar,
+            false
+        ));
+        assert!(!settings.show_scale_bar);
+        assert!(apply_app_overlay(
+            &mut settings,
+            &OverlayKey::WorldGrid,
+            true
+        ));
+        assert!(settings.show_world_grid);
+        assert!(!apply_app_overlay(
+            &mut settings,
+            &OverlayKey::Group("g".into()),
+            false
+        ));
     }
 
     #[test]
     fn set_layer_field_updates_existing_layer_visible_only() {
         let updated = set_layer_field(&sample_doc(), "satellite", Some(false), None);
-        let entries = layer_entries_from_terrain_json(&updated);
-        assert!(!entries[0].visible);
         // opacity untouched (still default 1.0 since it wasn't set before either)
-        assert_eq!(entries[0].opacity, 1.0);
+        assert_eq!(terrain_layer_state(&updated, "satellite"), (false, 1.0));
         // sibling fields preserved
         assert_eq!(updated["world_scale"], serde_json::json!(0.01));
     }
@@ -207,22 +412,15 @@ mod tests {
     #[test]
     fn set_layer_field_updates_opacity_only() {
         let updated = set_layer_field(&sample_doc(), "terrain", None, Some(0.3));
-        let entries = layer_entries_from_terrain_json(&updated);
-        assert_eq!(entries[1].opacity, 0.3);
-        assert!(
-            entries[1].visible,
-            "visible must be untouched when only opacity is set"
-        );
+        // visible must be untouched when only opacity is set
+        assert_eq!(terrain_layer_state(&updated, "terrain"), (true, 0.3));
     }
 
     #[test]
     fn set_layer_field_inserts_missing_layer() {
-        let updated = set_layer_field(&sample_doc(), "gpx_track", Some(true), Some(0.5));
-        let entries = layer_entries_from_terrain_json(&updated);
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[2].name, "gpx_track");
-        assert!(entries[2].visible);
-        assert_eq!(entries[2].opacity, 0.5);
+        let updated = set_layer_field(&sample_doc(), "gpx_track", Some(false), Some(0.5));
+        assert_eq!(updated["layers"].as_array().map(Vec::len), Some(3));
+        assert_eq!(terrain_layer_state(&updated, "gpx_track"), (false, 0.5));
     }
 
     #[test]
@@ -261,7 +459,7 @@ mod tests {
         assert_eq!(view_mode_from_terrain_json(&updated), ViewMode::Splats);
         // sibling fields preserved
         assert_eq!(updated["world_scale"], serde_json::json!(0.01));
-        assert_eq!(layer_entries_from_terrain_json(&updated).len(), 2);
+        assert_eq!(updated["layers"], sample_doc()["layers"]);
     }
 
     #[test]

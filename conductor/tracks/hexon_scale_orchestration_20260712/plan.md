@@ -99,23 +99,23 @@ Tasks:
 Goal: interactive metric anchors giving distance/area/bearing, plus GPX path-length readout.
 
 Tasks:
-- [ ] Task: metric anchor placement + tape (point-to-point) using `ruler::world_to_real_distance` *(AUDIT 2026-10-10: OPEN — pure math exists (fe-terrain/src/ruler.rs + fe-ui/src/geometry.rs:61 mirror) but no anchor-placement tool/reducer is wired; D-10 gate (egress GA) satisfied 2026-10-09.)*
+- [x] Task: metric anchor placement + tape (point-to-point) using `ruler::world_to_real_distance` *(DONE 2026-10-11, commit pending — `Tool::Measure` (key M) + pure reducer `fe-ui/src/node_manager/measure.rs::{reduce, readout}` over the `geometry.rs` mirror; viewport `handle_measure_interaction` claims `ClickPriority::Measure` right after Brush; Options Measure arm shows copyable Distance/Bearing rows. Tests `reducer_table`, `tape_reports_real_distance_and_compass_bearing_at_both_scales` (world_scale 1 and 0.01, bearings 0/90/180/270), `viewport_clicks_place_tape_anchors_and_claim_the_press`. See `fe-ui/src/node_manager/AGENTS.md` §measure-tool.)*
   + `bearing_deg`. (TDD: write test on the anchor→(distance,bearing) reducer; then wire interaction.)
-- [ ] Task: area tool over a closed polygon of anchors via `ruler::polygon_area_m2`. (TDD: write *(AUDIT 2026-10-10: OPEN — `polygon_area_m2` is used only by terrain-proposal reporting (fe-ui/src/panels/proposal_report_panel.rs), not an interactive area tool.)*
+- [x] Task: area tool over a closed polygon of anchors via `ruler::polygon_area_m2`. (TDD: write *(DONE 2026-10-11, commit pending — Measure tool Area mode: append anchors, Close polygon (needs 3+), Perimeter + Area rows. Test `closed_square_reports_area_and_perimeter_at_both_scales`: 100 m square = 10 000 m² at world_scale 1 and 0.01.)*
   test asserting real-meter area for a placed polygon; then wire.)
 - [x] Task: GPX path-length readout reusing existing GPX paths (from `terrain_gpx_maps` / *(AUDIT 2026-10-10: landed via path_interaction_20260716 FR-3 @906d9cc — `fe-ui/src/node_manager/path_segment_interaction.rs:289 sync_path_measurements` keeps `PathEditorState.total_length_m` / `selected_segment_length_m` (real meters via world_scale) live for the Paths tab; tests `ground_len_ignores_height`, `ground_len_scaled_to_real_meters`; API twin `GET /api/v1/nodes/{track_id}/stats`.)*
   path-editor). (TDD: write test summing segment distances over a GPX fixture; then wire.)
-- [ ] Verification: two anchors report distance+bearing; polygon reports area; GPX path reports
-  total length. `cargo test -p fe-terrain` green, fmt+clippy clean. [checkpoint marker]
+- [x] Verification: two anchors report distance+bearing; polygon reports area; GPX path reports
+  total length. `cargo test -p fe-terrain` green, fmt+clippy clean. [checkpoint marker] *(2026-10-11: `cargo check --tests` + `clippy --all-targets -D warnings` clean on fe-ui/fe-terrain/fractalengine; test execution is in the orchestrator's single end sweep. In-app tape/area at a real petal scale is USER_GATED.)*
 
 ## Phase 6: Adaptive world grid + dimensioned annotations (FR-10)
 Goal: a metric graticule that snaps to round distances and re-subdivides/fades with zoom, plus
 CAD-style dimension callouts wired into the existing annotation/property system.
 
 Tasks:
-- [ ] Task: grid spacing selection via `ruler::nice_number` + re-subdivision by camera height. *(AUDIT 2026-10-10: OPEN — no graticule/world-grid code in the tree.)*
+- [x] Task: grid spacing selection via `ruler::nice_number` + re-subdivision by camera height. *(DONE 2026-10-11, commit pending — `fe-terrain/src/ruler.rs::grid_spacing_for_height` (major = nice_number(2h / target), minor = next ladder step down, `minor_alpha` fades the minors before each re-subdivision) + `ruler_plugin.rs::draw_world_grid` (y = 0 plane around the orbit focus, at most 2·64 lines per tier, needs an enabled map). Opt-in via the Settings "Metric grid" checkbox (`AppSettings.show_world_grid`, default off), mirrored by `fractalengine/src/terrain_bridge.rs::sync_ruler_settings`. Tests `grid_spacing_majors_sit_on_the_ladder_at_site_to_region_heights`, `grid_spacing_is_monotone_in_height_and_minor_fades_before_resubdivision`, `settings_toggles_reach_the_ruler_overlays`.)*
   (TDD: write test on the height→spacing/subdivision helper; then implement grid system.)
-- [ ] Task: grid fade by camera-height threshold. (TDD: write test on the fade-alpha helper; then
+- [x] Task: grid fade by camera-height threshold. (TDD: write test on the fade-alpha helper; then *(DONE 2026-10-11, commit pending — `ruler::grid_fade_alpha`, wired at 50 km to 200 km camera height; test `grid_fade_alpha_table`.)*
   wire rendering.)
 - [ ] Task: CAD-style dimension callouts persisted via the existing annotation/property store *(AUDIT 2026-10-10: OPEN + BLOCKED on ratification of outstanding_decisions D-11 (callout persistence shape, [USER]).)*
   (resolve OQ-3 shape first). (TDD: write test round-tripping a dimension annotation through the

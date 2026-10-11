@@ -1,37 +1,13 @@
-//! Session-only hierarchy visibility + groups — Phases 0-1 of
-//! `hierarchy_visibility_groups_20260808`. See `resolve.rs` for the pure
-//! lattice and `conductor/tracks/hierarchy_visibility_groups_20260808/spec.md`
-//! for the full design + ratification.
-//!
-//! NO PERSISTENCE yet. `VisibilityState` resets on app restart — node
-//! overrides / group membership move to node properties (`view.state` /
-//! `view.groups`) and the group registry to `petal.visibility_groups` in
-//! Phases 3-4 (RATIFICATION #2/#3). Fractal/verse hidden sets ARE ratified to
-//! persist eventually (RATIFICATION #1, a Phase 4 schema migration) but are
-//! session-held here too, same as everything else in this resource.
-//!
-//! Lattice fields are `pub(crate)` (crate-internal only — never `pub`, so
-//! `fe-ui` consumers outside the crate can't see them). PRODUCTION mutation
-//! (toggle fns, node overrides, solo set/clear, group edits) routes
-//! exclusively through the `VisibilityState` methods below, which bump
-//! `epoch` (review finding F3a; see `sync_node_visibility` docs for why that
-//! counter exists instead of Bevy's `ResMut::is_changed()`) — `panels/
-//! sidebar.rs` is the one production call site and is fully migrated to
-//! them. Fields stay `pub(crate)` rather than fully module-private only to
-//! keep `node_manager/viewport_pick.rs`'s existing test fixtures (crate-
-//! internal test code, out of this module's edit boundary this wave)
-//! compiling; nothing outside `panels/sidebar.rs` mutates the lattice in
-//! production. `resolve.rs` (a descendant module) reads fields directly, as
-//! does any other crate-internal reader.
-//!
-//! Phase 2 wires the resolver into every picker + camera-focus path
-//! (spawn-then-hide, RATIFICATION #7) — NOT built here (FX2's separate work
-//! this wave). Force-deselect-on-hide (RATIFICATION D-13) IS built here:
-//! `sync_node_visibility` clears `NodeManager.selected` the frame its node
-//! becomes effectively hidden. Until Phase 2 lands the picker/camera-focus
-//! filters, hidden nodes stay pickable/focusable in the viewport — documented,
-//! not a bug in this phase.
+//! Hierarchy visibility + groups (`hierarchy_visibility_groups_20260808`).
+//! `resolve.rs` is the pure lattice, [`pickable`] the one picker rule,
+//! `cache.rs` the `view.state`/`view.groups` persistence, `groups.rs` the
+//! persisted Group registry + scope eyes. Rationale, the
+//! picker list and what is still session-only: `fe-ui/src/AGENTS.md`
+//! §visibility. Mutate only through the `VisibilityState` methods (they bump
+//! `epoch`, finding F3a).
 
+pub mod cache;
+pub mod groups;
 pub mod resolve;
 
 use std::collections::{HashMap, HashSet};
@@ -61,29 +37,29 @@ pub enum OverrideState {
 }
 
 /// Transient isolate/solo lens (RATIFICATION: NOT part of the persisted
-/// lattice — session-only, cleared on petal switch and on Escape; the Escape
-/// ladder rung is Phase 2 / `node_manager/shortcuts.rs`, out of scope here).
-/// A set of node ids, not scopes — see spec §3.1.
+/// lattice — session-only, cleared on petal switch and by the Escape ladder's
+/// `ClearIsolate` rung in `node_manager/shortcuts.rs`). A set of node ids, not
+/// scopes — see spec §3.1.
 #[derive(Debug, Clone, Default)]
 pub struct SoloSet {
     pub members: HashSet<String>,
 }
 
-/// A visibility Group row. Session placeholder for the petal-scoped
-/// `petal.visibility_groups` registry Phases 3-4 will persist (RATIFICATION
-/// #2/#3). The user-facing word is "Group" (RATIFICATION #18) — use it in all
-/// copy, never "Layer" (collides with terrain layers) or "View set".
-#[derive(Debug, Clone)]
+/// A visibility Group row of the active petal's persisted registry
+/// (`petal.visibility_groups`, `groups.rs`). The user-facing word is "Group"
+/// (RATIFICATION #18) — use it in all copy, never "Layer" (collides with
+/// terrain layers) or "View set".
+#[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     pub id: String,
     pub name: String,
     pub visible: bool,
 }
 
-/// Session-only visibility state: per-node tri-state overrides, session
-/// -hidden petal/fractal/verse id sets, the Group registry + node membership
-/// map, and the transient solo lens. See module docs — nothing here survives
-/// app restart in this phase.
+/// Visibility state: per-node tri-state overrides, hidden petal/fractal/verse
+/// id sets, the active petal's Group registry + node membership (all mirrors
+/// of persisted values, hydrated by `cache.rs` / `groups.rs`), and the
+/// session-only solo lens.
 ///
 /// Lattice fields are `pub(crate)` (see module docs for why not fully
 /// private). Mutate exclusively through the methods below (they keep `epoch`
@@ -96,10 +72,9 @@ pub struct VisibilityState {
     pub(crate) hidden_petals: HashSet<String>,
     pub(crate) hidden_fractals: HashSet<String>,
     pub(crate) hidden_verses: HashSet<String>,
-    /// Session placeholder for the future `petal.visibility_groups` registry.
+    /// The active petal's Group registry, in display order (`groups.rs`).
     pub(crate) groups: Vec<Group>,
-    /// node_id -> group ids it belongs to. Session placeholder for the future
-    /// `view.groups` node property.
+    /// node_id -> group ids it belongs to (persisted `view.groups`, `cache.rs`).
     pub(crate) group_membership: HashMap<String, Vec<String>>,
     /// Transient isolate/solo overlay — never persisted (spec §3.1).
     pub(crate) solo: Option<SoloSet>,
@@ -126,22 +101,22 @@ impl VisibilityState {
         self.epoch += 1;
     }
 
-    /// Toggles whether `verse_id` is session-hidden (sidebar verse-row eye).
-    /// Bumps `epoch`.
+    /// Toggles whether `verse_id` is hidden, session-only (tests / fixtures;
+    /// the sidebar eye persists through `groups::set_scope_hidden`). Bumps `epoch`.
     pub fn toggle_verse_hidden(&mut self, verse_id: &str) {
         toggle_scope_hidden(&mut self.hidden_verses, verse_id);
         self.bump_epoch();
     }
 
-    /// Toggles whether `fractal_id` is session-hidden (sidebar fractal-row
-    /// eye). Bumps `epoch`.
+    /// Toggles whether `fractal_id` is hidden, session-only (tests / fixtures;
+    /// the sidebar eye persists through `groups::set_scope_hidden`). Bumps `epoch`.
     pub fn toggle_fractal_hidden(&mut self, fractal_id: &str) {
         toggle_scope_hidden(&mut self.hidden_fractals, fractal_id);
         self.bump_epoch();
     }
 
-    /// Toggles whether `petal_id` is session-hidden (sidebar petal-row eye).
-    /// Bumps `epoch`.
+    /// Toggles whether `petal_id` is hidden, session-only (tests / fixtures;
+    /// the sidebar eye persists through `groups::set_scope_hidden`). Bumps `epoch`.
     pub fn toggle_petal_hidden(&mut self, petal_id: &str) {
         toggle_scope_hidden(&mut self.hidden_petals, petal_id);
         self.bump_epoch();
@@ -172,8 +147,8 @@ impl VisibilityState {
         self.solo.as_ref()
     }
 
-    /// Activates the isolate/solo lens over exactly `members` (Phase 2 UI —
-    /// not wired to any control yet). Bumps `epoch`.
+    /// Activates the isolate/solo lens over exactly `members` (Alt+H, row-menu
+    /// "Isolate"). Bumps `epoch`.
     pub fn set_solo(&mut self, members: HashSet<String>) {
         self.solo = Some(SoloSet { members });
         self.bump_epoch();
@@ -188,8 +163,99 @@ impl VisibilityState {
         }
     }
 
-    /// Registers a new visibility Group (Phase 3-4 persistence target,
-    /// session-only for now — see module docs). Bumps `epoch`.
+    /// The active petal's Group registry, in display order.
+    pub fn groups(&self) -> &[Group] {
+        &self.groups
+    }
+
+    /// Replaces the whole Group registry (load, echo, or a local edit). A
+    /// no-op (no `epoch` bump) when nothing changed. Membership is untouched —
+    /// an id no longer in the registry simply stops hiding anything.
+    pub fn replace_groups(&mut self, groups: Vec<Group>) {
+        if self.groups != groups {
+            self.groups = groups;
+            self.bump_epoch();
+        }
+    }
+
+    /// How many nodes list `group_id` in their membership.
+    pub fn group_member_count(&self, group_id: &str) -> usize {
+        self.group_membership
+            .values()
+            .filter(|ids| ids.iter().any(|id| id == group_id))
+            .count()
+    }
+
+    /// `node_id`'s Group ids (empty when it has none).
+    pub fn node_groups(&self, node_id: &str) -> &[String] {
+        self.group_membership
+            .get(node_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Whether a verse/fractal/petal eye is closed.
+    pub fn is_scope_hidden(&self, level: fe_runtime::messages::ScopeLevel, id: &str) -> bool {
+        self.hidden_set(level).contains(id)
+    }
+
+    /// Opens/closes one verse/fractal/petal eye; bumps `epoch` only on change.
+    pub fn set_scope_hidden(
+        &mut self,
+        level: fe_runtime::messages::ScopeLevel,
+        id: &str,
+        hidden: bool,
+    ) {
+        let set = self.hidden_set_mut(level);
+        let changed = if hidden {
+            set.insert(id.to_string())
+        } else {
+            set.remove(id)
+        };
+        if changed {
+            self.bump_epoch();
+        }
+    }
+
+    /// Replaces all three hidden-scope sets (persisted eyes from
+    /// `HierarchyLoaded`); bumps `epoch` only on change.
+    pub fn replace_hidden_scopes(
+        &mut self,
+        verses: HashSet<String>,
+        fractals: HashSet<String>,
+        petals: HashSet<String>,
+    ) {
+        if self.hidden_verses != verses
+            || self.hidden_fractals != fractals
+            || self.hidden_petals != petals
+        {
+            self.hidden_verses = verses;
+            self.hidden_fractals = fractals;
+            self.hidden_petals = petals;
+            self.bump_epoch();
+        }
+    }
+
+    fn hidden_set(&self, level: fe_runtime::messages::ScopeLevel) -> &HashSet<String> {
+        use fe_runtime::messages::ScopeLevel;
+        match level {
+            ScopeLevel::Verse => &self.hidden_verses,
+            ScopeLevel::Fractal => &self.hidden_fractals,
+            ScopeLevel::Petal => &self.hidden_petals,
+        }
+    }
+
+    fn hidden_set_mut(&mut self, level: fe_runtime::messages::ScopeLevel) -> &mut HashSet<String> {
+        use fe_runtime::messages::ScopeLevel;
+        match level {
+            ScopeLevel::Verse => &mut self.hidden_verses,
+            ScopeLevel::Fractal => &mut self.hidden_fractals,
+            ScopeLevel::Petal => &mut self.hidden_petals,
+        }
+    }
+
+    /// Registers a new visibility Group locally (tests / fixtures; production
+    /// edits go through `groups::set_group_registry`). Bumps `epoch`.
     pub fn add_group(&mut self, group: Group) {
         self.groups.push(group);
         self.bump_epoch();
@@ -225,6 +291,42 @@ impl VisibilityState {
         self.bump_epoch();
     }
 
+    /// "Show all" for one branch (Shift+H / row menu): drops every `Hide`
+    /// override among `node_ids` and their tracks' stamp instances, un-hides
+    /// the branch's petal/fractal/verse and clears solo, in ONE epoch bump.
+    /// Returns the ids whose `Hide` it cleared (stamp ids last, sorted) so the
+    /// caller can persist the node ones as Auto. `Show` overrides and group
+    /// visibility are left alone.
+    pub fn show_all_in<'a>(
+        &mut self,
+        ancestry: NodeAncestry,
+        node_ids: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<String> {
+        let node_ids: Vec<&str> = node_ids.into_iter().collect();
+        let mut cleared: Vec<String> = node_ids
+            .iter()
+            .filter(|id| self.node_override(id) == OverrideState::Hide)
+            .map(|id| id.to_string())
+            .collect();
+        let mut stamp_ids: Vec<String> = self
+            .node_overrides
+            .iter()
+            .filter(|(id, state)| **state == OverrideState::Hide && stamp_track_in(id, &node_ids))
+            .map(|(id, _)| id.clone())
+            .collect();
+        stamp_ids.sort();
+        cleared.extend(stamp_ids);
+        for id in &cleared {
+            self.node_overrides.remove(id);
+        }
+        self.hidden_petals.remove(ancestry.petal_id);
+        self.hidden_fractals.remove(ancestry.fractal_id);
+        self.hidden_verses.remove(ancestry.verse_id);
+        self.solo = None;
+        self.bump_epoch();
+        cleared
+    }
+
     /// Memoized wrapper around [`hidden_count_in_active_petal`] for the
     /// status-bar chip (F19): recomputes only when `epoch` or the active
     /// petal id differs from the cached pass, O(1) otherwise. See that
@@ -245,6 +347,106 @@ impl VisibilityState {
         let count = hidden_count_in_active_petal(hierarchy, nav, self);
         self.hidden_count_cache = Some((cache_epoch, cache_petal, count));
         count
+    }
+}
+
+/// Whether `id` is a stamp-instance marker of one of `track_ids` (stamps are
+/// session-only overrides — they have no node row to persist to).
+pub(crate) fn stamp_track_in(id: &str, track_ids: &[&str]) -> bool {
+    crate::verse_manager::parse_stamp_marker_id(id)
+        .is_some_and(|(track, _)| track_ids.contains(&track))
+}
+
+/// The active petal's ancestry from the navigation cursor (missing levels =
+/// `""`, which no hidden set contains) — the construction every picker shares.
+pub(crate) fn active_ancestry(nav: &NavigationManager) -> NodeAncestry<'_> {
+    NodeAncestry {
+        verse_id: nav.active_verse_id.as_deref().unwrap_or(""),
+        fractal_id: nav.active_fractal_id.as_deref().unwrap_or(""),
+        petal_id: nav.active_petal_id.as_deref().unwrap_or(""),
+    }
+}
+
+/// THE picker rule (D-7/D-12/D-13/D-14): an active-petal node may be picked,
+/// right-clicked, sidebar-selected, path-edited, snapped to or camera-focused
+/// only while it is effectively visible. Every surface calls this; none
+/// re-derives it.
+pub(crate) fn pickable(node_id: &str, nav: &NavigationManager, vis: &VisibilityState) -> bool {
+    effective_visibility(node_id, active_ancestry(nav), vis)
+}
+
+/// Whether `visibility` (an entity's own component) leaves it drawn. An entity
+/// hidden outside the lattice — a GPX ribbon whose map layer or style is off —
+/// is no pick target either (D-12: nothing invisible is clickable).
+pub(crate) fn rendered(visibility: Option<&Visibility>) -> bool {
+    !matches!(visibility, Some(Visibility::Hidden))
+}
+
+/// "Hide others" targets: every node of the petal except `keep` that is not
+/// already overridden to `Hide`. Pure.
+fn hide_others_targets<'a>(
+    petal_node_ids: impl IntoIterator<Item = &'a str>,
+    keep: &str,
+    vis: &VisibilityState,
+) -> Vec<String> {
+    petal_node_ids
+        .into_iter()
+        .filter(|id| *id != keep && vis.node_override(id) != OverrideState::Hide)
+        .map(str::to_string)
+        .collect()
+}
+
+/// "Show all" producer shared by Shift+H and the sidebar row menu: the session
+/// clear ([`VisibilityState::show_all_in`]) plus one persisted Auto write per
+/// Hide override it removed.
+pub(crate) fn show_all_and_persist<'a>(
+    vis: &mut VisibilityState,
+    ancestry: NodeAncestry,
+    node_ids: impl IntoIterator<Item = &'a str>,
+    ui_mgr: &mut crate::actions::UiManager,
+) {
+    use fe_runtime::messages::ScopeLevel;
+    // The branch's closed ancestor eyes are persisted (VIS-PH4), so their
+    // re-open is persisted too — otherwise a restart would re-hide them.
+    for (level, id) in [
+        (ScopeLevel::Verse, ancestry.verse_id),
+        (ScopeLevel::Fractal, ancestry.fractal_id),
+        (ScopeLevel::Petal, ancestry.petal_id),
+    ] {
+        if vis.is_scope_hidden(level, id) {
+            ui_mgr.push_action(crate::actions::UiAction::SetScopeHidden {
+                level,
+                id: id.to_string(),
+                hidden: false,
+            });
+        }
+    }
+    let cleared = vis.show_all_in(ancestry, node_ids);
+    // Stamp-instance overrides are session-only: nothing to persist.
+    for node_id in cleared
+        .into_iter()
+        .filter(|id| crate::verse_manager::parse_stamp_marker_id(id).is_none())
+    {
+        ui_mgr.push_action(crate::actions::UiAction::SetNodeView {
+            node_id,
+            state: OverrideState::Auto,
+        });
+    }
+}
+
+/// "Hide others" producer (sidebar row menu): one persisted Hide write per
+/// [`hide_others_targets`] node.
+pub(crate) fn hide_others_and_persist<'a>(
+    vis: &VisibilityState,
+    petal_node_ids: impl IntoIterator<Item = &'a str>,
+    keep: &str,
+    ui_mgr: &mut crate::actions::UiManager,
+) {
+    for node_id in hide_others_targets(petal_node_ids, keep, vis) {
+        ui_mgr.push_action(crate::actions::UiAction::SetNodeView {
+            node_id,
+            state: OverrideState::Hide,
+        });
     }
 }
 
@@ -398,17 +600,20 @@ fn compute_sync_decision(
 /// writer) owns. Entries are pruned once their entity despawns.
 ///
 /// D-13: force-deselects `NodeManager.selected` the same frame its node
-/// becomes effectively hidden.
+/// becomes effectively hidden. Pickers/camera-focus filter via [`pickable`].
 ///
-/// NOTE (documented, matches RATIFICATION #7's accepted consequence):
-/// pickers / camera-focus / gimbal do not yet consult the resolver — hidden
-/// nodes stay pickable until Phase 2 wires the filters (separate work this
-/// wave).
+/// Also re-applies when node entities spawn (late GLTF/ribbon/stamp spawns
+/// after the petal-switch pass) and re-asserts the hide on an entity it hid
+/// that another writer re-showed (Layer Manager toggle, ribbon build) — see
+/// `fe-ui/src/AGENTS.md` §visibility.
+#[allow(clippy::too_many_arguments)] // one apply system; each param is one authority or read
 pub(crate) fn sync_node_visibility(
     mut state: ResMut<VisibilityState>,
     nav: Res<NavigationManager>,
     hierarchy: Res<VerseManager>,
     spawned: Query<(Entity, &SpawnedNodeMarker)>,
+    newly_spawned: Query<(), Added<SpawnedNodeMarker>>,
+    reshown: Query<(Entity, &Visibility), Changed<Visibility>>,
     mut commands: Commands,
     mut node_mgr: ResMut<NodeManager>,
     mut last_petal: Local<Option<String>>,
@@ -421,7 +626,17 @@ pub(crate) fn sync_node_visibility(
         state.clear_solo();
     }
 
-    if !should_apply(petal_switched, *last_epoch, state.epoch()) {
+    for (entity, visibility) in &reshown {
+        if *visibility != Visibility::Hidden && hidden_by_us.contains(&entity) {
+            commands.entity(entity).insert(Visibility::Hidden);
+        }
+    }
+
+    if !should_apply(
+        petal_switched || !newly_spawned.is_empty(),
+        *last_epoch,
+        state.epoch(),
+    ) {
         return;
     }
     *last_epoch = state.epoch();
@@ -681,6 +896,60 @@ mod tests {
         assert!(should_apply(true, 5, 5));
     }
 
+    /// The real apply system: a node spawned AFTER the petal-switch pass (late
+    /// GLTF / ribbon spawn, restart hydration first) is still hidden, and a
+    /// hidden ribbon re-shown by another writer (Layer Manager toggle) is
+    /// re-hidden; a visible node stays untouched by both rules.
+    #[test]
+    fn late_spawns_are_hidden_and_a_foreign_reshow_is_reverted() {
+        let mut app = App::new();
+        let mut state = VisibilityState::default();
+        state.set_node_override("n1", OverrideState::Hide);
+        app.insert_resource(state)
+            .insert_resource(two_petal_hierarchy())
+            .insert_resource(NavigationManager {
+                active_verse_id: Some("v1".into()),
+                active_fractal_id: Some("f1".into()),
+                active_petal_id: Some("p1".into()),
+                ..Default::default()
+            })
+            .init_resource::<NodeManager>()
+            .add_systems(Update, sync_node_visibility);
+        app.update(); // petal-entry pass: nothing spawned yet
+
+        let marker = |node_id: &str| SpawnedNodeMarker {
+            node_id: node_id.into(),
+            petal_id: "p1".into(),
+        };
+        let hidden = app.world_mut().spawn(marker("n1")).id();
+        let shown = app.world_mut().spawn(marker("n2")).id();
+        app.update();
+        let visibility = |app: &App, e: Entity| app.world().get::<Visibility>(e).copied();
+        assert_eq!(
+            visibility(&app, hidden),
+            Some(Visibility::Hidden),
+            "late spawn"
+        );
+        assert_eq!(visibility(&app, shown), None, "visible node untouched");
+
+        // A layer toggle writes Inherited onto every layer-bound entity.
+        app.world_mut()
+            .entity_mut(hidden)
+            .insert(Visibility::Inherited);
+        app.world_mut().entity_mut(shown).insert(Visibility::Hidden);
+        app.update();
+        assert_eq!(
+            visibility(&app, hidden),
+            Some(Visibility::Hidden),
+            "re-hidden"
+        );
+        assert_eq!(
+            visibility(&app, shown),
+            Some(Visibility::Hidden),
+            "another writer's hide is never overridden"
+        );
+    }
+
     // --- F12: per-entity ancestry ---
 
     #[test]
@@ -879,6 +1148,149 @@ mod tests {
         assert_eq!(
             state.hidden_count_in_active_petal_cached(&hierarchy, &nav_p2),
             0
+        );
+    }
+
+    // --- Phase 2: the shared picker rule + Show all / Hide others ---
+
+    fn nav_in_p1() -> NavigationManager {
+        NavigationManager {
+            active_verse_id: Some("v1".into()),
+            active_fractal_id: Some("f1".into()),
+            active_petal_id: Some("p1".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pickable_refuses_every_effectively_hidden_cause() {
+        let nav = nav_in_p1();
+        type Setup = fn(&mut VisibilityState);
+        let cases: [(&str, Setup, bool); 6] = [
+            ("nothing hidden", |_| {}, true),
+            (
+                "own Hide override",
+                |s| s.set_node_override("n1", OverrideState::Hide),
+                false,
+            ),
+            (
+                "hidden petal ancestor",
+                |s| s.toggle_petal_hidden("p1"),
+                false,
+            ),
+            (
+                "hidden verse ancestor",
+                |s| s.toggle_verse_hidden("v1"),
+                false,
+            ),
+            (
+                "solo excludes it",
+                |s| s.set_solo(HashSet::from(["n2".to_string()])),
+                false,
+            ),
+            (
+                "Show override beats a hidden ancestor",
+                |s| {
+                    s.toggle_fractal_hidden("f1");
+                    s.set_node_override("n1", OverrideState::Show);
+                },
+                true,
+            ),
+        ];
+        for (label, setup, expected) in cases {
+            let mut state = VisibilityState::default();
+            setup(&mut state);
+            assert_eq!(pickable("n1", &nav, &state), expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn show_all_in_clears_the_branch_hides_and_solo_in_one_epoch_and_reports_cleared_ids() {
+        let mut state = VisibilityState::default();
+        state.set_node_override("n1", OverrideState::Hide);
+        state.set_node_override("n2", OverrideState::Show);
+        state.set_node_override("other-petal-node", OverrideState::Hide);
+        state.toggle_petal_hidden("p1");
+        state.toggle_fractal_hidden("f1");
+        state.toggle_verse_hidden("v1");
+        state.toggle_fractal_hidden("f2"); // another branch — untouched
+        state.set_solo(HashSet::from(["n2".to_string()]));
+        let before = state.epoch();
+
+        let cleared = state.show_all_in(active_ancestry(&nav_in_p1()), ["n1", "n2"]);
+
+        assert_eq!(cleared, vec!["n1".to_string()], "only Hide overrides clear");
+        assert_eq!(state.epoch(), before + 1);
+        assert_eq!(state.node_override("n2"), OverrideState::Show);
+        assert_eq!(
+            state.node_override("other-petal-node"),
+            OverrideState::Hide,
+            "nodes outside the branch keep their override"
+        );
+        assert!(state.solo().is_none());
+        assert!(pickable("n1", &nav_in_p1(), &state));
+        assert!(state.hidden_fractals.contains("f2"));
+    }
+
+    #[test]
+    fn show_all_also_restores_hidden_stamps_of_the_branch_tracks_without_persisting_them() {
+        let mut state = VisibilityState::default();
+        state.set_node_override("t1", OverrideState::Hide);
+        state.set_node_override("t1::stamp::3", OverrideState::Hide);
+        state.set_node_override("elsewhere::stamp::0", OverrideState::Hide);
+        let mut ui_mgr = crate::actions::UiManager::default();
+
+        show_all_and_persist(
+            &mut state,
+            active_ancestry(&nav_in_p1()),
+            ["t1"],
+            &mut ui_mgr,
+        );
+
+        assert!(pickable("t1::stamp::3", &nav_in_p1(), &state));
+        assert_eq!(
+            state.node_override("elsewhere::stamp::0"),
+            OverrideState::Hide,
+            "a stamp of a track outside the branch keeps its override"
+        );
+        let writes: Vec<String> = ui_mgr
+            .drain_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                crate::actions::UiAction::SetNodeView { node_id, .. } => Some(node_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            writes,
+            vec!["t1".to_string()],
+            "stamps have no row to persist"
+        );
+    }
+
+    #[test]
+    fn hide_others_persists_a_hide_for_every_other_not_yet_hidden_node() {
+        let mut state = VisibilityState::default();
+        state.set_node_override("n3", OverrideState::Hide);
+        let mut ui_mgr = crate::actions::UiManager::default();
+
+        hide_others_and_persist(&state, ["n1", "n2", "n3", "n4"], "n1", &mut ui_mgr);
+
+        let writes: Vec<(String, OverrideState)> = ui_mgr
+            .drain_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                crate::actions::UiAction::SetNodeView { node_id, state } => Some((node_id, state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            writes,
+            vec![
+                ("n2".to_string(), OverrideState::Hide),
+                ("n4".to_string(), OverrideState::Hide),
+            ],
+            "the kept node and the already-hidden n3 get no write"
         );
     }
 }

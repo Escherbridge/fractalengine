@@ -49,6 +49,7 @@ pub(crate) async fn create_verse_handler(
             .to_string(),
         ts_replication_factor: 1,
         ts_bucket_width_ms: fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS as i64,
+        view_hidden: None,
     };
     let row_json = serde_json::to_value(&verse_row)?;
 
@@ -100,6 +101,7 @@ pub(crate) async fn create_fractal_handler(
         name: name.to_string(),
         description: Some(String::new()),
         created_at: now.clone(),
+        view_hidden: None,
     };
     let row_json = serde_json::to_value(&fractal_row)?;
 
@@ -858,6 +860,9 @@ pub(crate) async fn load_hierarchy_handler(
                                             PetalHierarchyData {
                                                 id: petal_id,
                                                 name: petal_name,
+                                                view_hidden: p["view_hidden"]
+                                                    .as_bool()
+                                                    .unwrap_or(false),
                                                 nodes,
                                             }
                                         })
@@ -868,6 +873,7 @@ pub(crate) async fn load_hierarchy_handler(
                             FractalHierarchyData {
                                 id: fractal_id,
                                 name: fractal_name,
+                                view_hidden: f["view_hidden"].as_bool().unwrap_or(false),
                                 petals,
                             }
                         })
@@ -882,6 +888,7 @@ pub(crate) async fn load_hierarchy_handler(
                 // M2/F6: surface the persisted ts_* columns (missing/invalid
                 // values fall back to the mirror defaults — from_verse_row).
                 timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::from_verse_row(v),
+                view_hidden: v["view_hidden"].as_bool().unwrap_or(false),
                 fractals,
             }
         })

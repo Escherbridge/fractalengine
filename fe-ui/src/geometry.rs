@@ -92,6 +92,44 @@ pub fn polygon_area_m2(vertices: &[[f64; 3]], scale: f64) -> f64 {
     (sum.abs() / 2.0) / (sanitized * sanitized)
 }
 
+/// Human-readable distance label: m below 1 km, km above. Mirror of
+/// `fe_terrain::ruler::format_distance_m` (do NOT import).
+pub(crate) fn format_distance_m(meters: f64) -> String {
+    if !meters.is_finite() || meters <= 0.0 {
+        return "0 m".to_string();
+    }
+    if meters >= 1000.0 {
+        let km = meters / 1000.0;
+        if km >= 10.0 || km.fract().abs() < 1e-9 {
+            format!("{km:.0} km")
+        } else {
+            format!("{km:.1} km")
+        }
+    } else if meters >= 1.0 {
+        if meters.fract().abs() < 1e-9 {
+            format!("{meters:.0} m")
+        } else {
+            format!("{meters:.1} m")
+        }
+    } else {
+        format!("{meters:.2} m")
+    }
+}
+
+/// Human-readable area label: m² below 1 km², km² above.
+pub(crate) fn format_area_m2(square_meters: f64) -> String {
+    if !square_meters.is_finite() || square_meters <= 0.0 {
+        return "0 m\u{b2}".to_string();
+    }
+    if square_meters >= 1_000_000.0 {
+        format!("{:.2} km\u{b2}", square_meters / 1_000_000.0)
+    } else if square_meters >= 10.0 {
+        format!("{square_meters:.0} m\u{b2}")
+    } else {
+        format!("{square_meters:.2} m\u{b2}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +287,23 @@ mod tests {
             polygon_area_m2(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 1.0),
             0.0
         );
+    }
+
+    #[test]
+    fn format_distance_matches_the_fe_terrain_ruler_labels() {
+        assert_eq!(format_distance_m(500.0), "500 m");
+        assert_eq!(format_distance_m(2.5), "2.5 m");
+        assert_eq!(format_distance_m(0.5), "0.50 m");
+        assert_eq!(format_distance_m(1500.0), "1.5 km");
+        assert_eq!(format_distance_m(50_000.0), "50 km");
+        assert_eq!(format_distance_m(f64::NAN), "0 m");
+    }
+
+    #[test]
+    fn format_area_switches_to_square_kilometers_at_one_million() {
+        assert_eq!(format_area_m2(10_000.0), "10000 m\u{b2}");
+        assert_eq!(format_area_m2(2.5), "2.50 m\u{b2}");
+        assert_eq!(format_area_m2(2_500_000.0), "2.50 km\u{b2}");
+        assert_eq!(format_area_m2(-1.0), "0 m\u{b2}");
     }
 }

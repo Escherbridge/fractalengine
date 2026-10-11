@@ -300,6 +300,7 @@ mod tests {
                 name: "Runtime Verse".into(),
                 namespace_id: None,
                 timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
+                view_hidden: false,
                 fractals: Vec::new(),
             }],
         });
@@ -362,6 +363,7 @@ mod tests {
                     name: "Startup Verse".into(),
                     namespace_id: None,
                     timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
+                    view_hidden: false,
                     fractals: Vec::new(),
                 },
                 VerseHierarchyData {
@@ -369,6 +371,7 @@ mod tests {
                     name: "No Secret Verse".into(),
                     namespace_id: None,
                     timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
+                    view_hidden: false,
                     fractals: Vec::new(),
                 },
             ],
@@ -405,6 +408,7 @@ mod tests {
                 name: "Startup Verse".into(),
                 namespace_id: None,
                 timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
+                view_hidden: false,
                 fractals: Vec::new(),
             }],
         });

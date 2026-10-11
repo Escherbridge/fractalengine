@@ -36,7 +36,10 @@ pub(super) fn update_hovered_axis(
     // Same guard set as drag-start (`handle_gimbal_interaction`) and the draw
     // (`gimbal.rs`): tools with no live entity gimbal must not pay for a
     // per-frame raycast, and must not highlight an axis they cannot grab.
-    if matches!(tool.active_tool, Tool::Select | Tool::Pen | Tool::Brush) {
+    if matches!(
+        tool.active_tool,
+        Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure
+    ) {
         return;
     }
     let Some(ref sel) = manager.selected else {
@@ -172,7 +175,10 @@ pub(super) fn handle_gimbal_interaction(
     // priority) on a press near a projected axis and start a no-op drag that
     // steals a click meant for PathPlace (pen append). The Pen drag branch below
     // is already a no-op, so early-returning loses nothing. See AGENTS.md §pen-tool.
-    if matches!(tool.active_tool, Tool::Select | Tool::Pen | Tool::Brush) {
+    if matches!(
+        tool.active_tool,
+        Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure
+    ) {
         return;
     }
     let Some(sel) = manager.selected.as_mut() else {
@@ -244,7 +250,7 @@ pub(super) fn handle_gimbal_interaction(
                         Quat::from_axis_angle(axis_dir, movement * 0.01) * drag.start_rot;
                 }
                 // Pen is a path-drawing mode, not a transform gizmo — no drag.
-                Tool::Select | Tool::Pen | Tool::Brush => {}
+                Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure => {}
             }
             return;
         }

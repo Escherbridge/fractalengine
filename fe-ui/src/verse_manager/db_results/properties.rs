@@ -43,7 +43,11 @@ pub(super) fn handle_node_properties_loaded(
     path_asset_cache: &mut PathAssetCache,
     stamp_state: &mut crate::actions::asset::StampInteractionState,
     earthwork_map: &mut crate::actions::terrain_proposal::EarthworkNodeMap,
+    visibility: &mut crate::visibility::VisibilityState,
 ) -> bool {
+    // Phase 3 visibility: a persisted `view.state`/`view.groups` in the bag
+    // re-hydrates the session lattice (third instance of this cache idiom).
+    crate::visibility::cache::hydrate_from_properties(visibility, node_id, properties);
     // FR-1 petal-wide path: every properties broadcast feeds the primitive
     // descriptor cache, selected or not (see ../AGENTS.md §primitives).
     primitive_cache.note_properties(node_id, properties);

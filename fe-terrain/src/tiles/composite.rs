@@ -75,6 +75,11 @@ impl CompositeTileSource {
         self.tile_source_mode = mode;
     }
 
+    /// The mode tile lookups currently honour.
+    pub fn tile_source_mode(&self) -> &crate::config::TileSourceMode {
+        &self.tile_source_mode
+    }
+
     /// Check if demo mode is active (no hexons loaded + Hybrid mode + FE_DEMO_TILE_URL set).
     pub fn is_demo_mode(&self) -> bool {
         self.tile_source_mode == crate::config::TileSourceMode::Hybrid

@@ -26,8 +26,11 @@ end-to-end design.
   precedent pinned this down), and the bbox predicate/parser
   (`bbox_contains`, `parse_bbox_fields`) used by the panel's client-side
   bbox mode.
-- `layers.rs` — `LayerUiEntry` (display row) + `layer_entries_from_terrain_json`
-  (read) + `set_layer_field` (pure mutate-and-return-clone of the stored
+- `layers.rs` — the unified overlay registry (VIS-PH5, ui_ux §7):
+  `OverlayKey`/`OverlayEntry` rows built by `overlay_registry` (terrain
+  layers, then visibility Groups, then the scale bar / metric grid),
+  `apply_overlay_toggle` (row → `UiAction`) and `apply_app_overlay`; see
+  `fe-ui/src/AGENTS.md` §gis-query-ui. Plus `set_layer_field` (pure mutate-and-return-clone of the stored
   terrain JSON — find-or-insert a layer by `name`, update only the
   `Some(..)` fields). Also owns `ViewMode` (Mesh/Splats/Hybrid) +
   `view_mode_from_terrain_json`/`set_view_mode_field` — same mutate-clone
@@ -36,8 +39,9 @@ end-to-end design.
 
 Only `annotation_query`/`property_filter_query`/`parse_gis_rows`/
 `bbox_contains`/`parse_bbox_fields` (from `query.rs`) and
-`layer_entries_from_terrain_json`/`set_layer_field`/`set_view_mode_field`/
-`view_mode_from_terrain_json`/`LayerUiEntry`/`ViewMode` (from `layers.rs`)
+`overlay_registry`/`apply_overlay_toggle`/`apply_app_overlay`/`set_layer_field`/
+`set_view_mode_field`/`view_mode_from_terrain_json`/`OverlayEntry`/`OverlayKey`/`ViewMode`
+(from `layers.rs`)
 are re-exported at `crate::gis::*`; `GisPanelState`/`GisPanelTab`/
 `GisQueryMode`/`GisResultRow` live directly in `mod.rs`. `layers`/`query`
 submodules themselves stay private — go through the `crate::gis::*`

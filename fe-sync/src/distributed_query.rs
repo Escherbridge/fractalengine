@@ -1035,6 +1035,30 @@ pub mod drop_reason {
     pub const PETAL_UNKNOWN: &str = "petal unknown here";
     /// The verse topic's sender is gone (replica closed mid-request).
     pub const TOPIC_CLOSED: &str = "topic closed under us";
+    /// None of the requested shards is one this peer's receive-side
+    /// retention keeps — answering would cost a DB round trip for nothing.
+    pub const NOT_HOSTED: &str = "no requested shard is hosted here";
+}
+
+/// The requested shards this peer would RETAIN on receive
+/// (`placement::retention_decision`: mirror mode, an unknown ledger shard, or
+/// a ledger host set naming `local_did`) — the responder answers only these.
+/// See `AGENTS.md` §distributed-query.
+fn hosted_subset(
+    fabric: &VerseFabric,
+    local_did: &str,
+    shards: Vec<PartialShard>,
+) -> Vec<PartialShard> {
+    shards
+        .into_iter()
+        .filter(|s| {
+            crate::placement::retention_decision(
+                &fabric.settings,
+                fabric.shards.get(&s.shard).map(|e| e.hosts.as_slice()),
+                local_did,
+            ) == crate::placement::Retention::Retain
+        })
+        .collect()
 }
 
 /// Handle one inbound gossip message: route responses, answer requests.
@@ -1059,6 +1083,9 @@ pub mod drop_reason {
 ///    topic cannot read. Claim-based for relayed requests; honest about
 ///    convergence (a responder that has not converged the requester's
 ///    declaration yet refuses until it does).
+///
+/// After admission, the responder answers only for shards it retains on
+/// receive ([`hosted_subset`]); a request naming none is `NOT_HOSTED`.
 pub fn handle_gossip_incoming(
     transport: &DistributedTransport,
     fabrics: &HashMap<String, VerseFabric>,
@@ -1183,6 +1210,37 @@ pub fn handle_gossip_incoming(
                     );
                     return GossipDisposition::Dropped(drop_reason::PETAL_UNKNOWN);
                 }
+            }
+            // Responder shard filtering: execute only for shards this peer
+            // retains on receive, so a non-host never pays a DB round trip.
+            let fabric = fabrics.get(&incoming.verse_id);
+            let shards = if is_aggregate {
+                fabric
+                    .map(|f| hosted_subset(f, &transport.local_did, shards))
+                    .unwrap_or_default()
+            } else {
+                shards
+            };
+            let hosts_any = if is_aggregate {
+                !shards.is_empty()
+            } else {
+                fabric.is_some_and(|f| {
+                    f.shards.iter().any(|(key, entry)| {
+                        key.starts_with(&petal_prefix)
+                            && crate::placement::retention_decision(
+                                &f.settings,
+                                Some(entry.hosts.as_slice()),
+                                &transport.local_did,
+                            ) == crate::placement::Retention::Retain
+                    })
+                })
+            };
+            if !hosts_any {
+                tracing::debug!(
+                    request_id,
+                    "compute request names no shard hosted here — not answering"
+                );
+                return GossipDisposition::Dropped(drop_reason::NOT_HOSTED);
             }
             let Some(sender) =
                 gossip_senders.get(&crate::sync_thread::derive_gossip_topic(&incoming.verse_id))
@@ -2242,9 +2300,10 @@ mod tests {
     }
 
     /// A transport whose local peer is `did:local`, plus the verse fabric
-    /// with `p1/a/0` sharded to the requester and the requester DECLARED
-    /// (the honest requester shape). Returns the requester's own did:key —
-    /// the identity its endpoint authenticates as.
+    /// with `p1/a/0` hosted by the requester AND `did:local` (balanced R=2,
+    /// so admission reaches the responder) and the requester DECLARED (the
+    /// honest requester shape). Returns the requester's own did:key — the
+    /// identity its endpoint authenticates as.
     fn admission_setup() -> (
         DistributedTransport,
         HashMap<String, VerseFabric>,
@@ -2255,10 +2314,12 @@ mod tests {
         let transport = DistributedTransport::new("did:local".into(), None, evt_tx);
         let requester_did = crate::replicator::peer_did_key(&requester_node());
         let mut fabric = VerseFabric::default();
-        fabric.note_verse_row(&serde_json::json!({"ts_mode": "sharded"}));
+        fabric.note_verse_row(
+            &serde_json::json!({"ts_mode": "balanced", "ts_replication_factor": 2}),
+        );
         fabric.note_shard_row(&serde_json::json!({
-            "shard": "p1/a/0", "hosts": [requester_did.clone()],
-            "mode": "sharded", "replication_factor": 1, "bucket_width_ms": 60_000,
+            "shard": "p1/a/0", "hosts": [requester_did.clone(), "did:local"],
+            "mode": "balanced", "replication_factor": 2, "bucket_width_ms": 60_000,
             "range_start_ms": 0, "range_end_ms": 60_000, "row_count": 1, "size_bytes": 10
         }));
         fabric.note_peer_declaration(&requester_did, PeerDeclaration::default());
@@ -2552,5 +2613,184 @@ mod tests {
             ),
             GossipDisposition::Routed
         );
+    }
+
+    // ── Responder shard filtering (SYNC-RESPONDER) ─────────────────────────
+
+    /// A virtual topic that accepts and discards broadcasts — lets the
+    /// responder path run to its DB send without a real gossip swarm.
+    struct NullTopic;
+
+    impl crate::virtual_transport::VirtualGossipTopic for NullTopic {
+        fn broadcast(&self, _content: bytes::Bytes) -> Result<(), String> {
+            Ok(())
+        }
+        fn take_inbound(
+            &self,
+        ) -> Option<tokio::sync::mpsc::Receiver<crate::virtual_transport::VirtualGossipMessage>>
+        {
+            None
+        }
+    }
+
+    /// Transport, fabrics, open senders, requester DID, and the DB inbox.
+    type ResponderFixture = (
+        DistributedTransport,
+        HashMap<String, VerseFabric>,
+        HashMap<String, TopicSender>,
+        String,
+        crossbeam::channel::Receiver<DbCommand>,
+    );
+
+    /// `admission_setup` with a live DB channel + an open verse topic, and
+    /// the `p1/a/0` ledger row's hosts replaced by `hosts`.
+    fn responder_setup(hosts: &[&str]) -> ResponderFixture {
+        let (_, mut fabrics, _, requester_did) = admission_setup();
+        let (db_tx, db_rx) = crossbeam::channel::bounded(8);
+        let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
+        let transport = DistributedTransport::new("did:local".into(), Some(db_tx), evt_tx);
+        let fabric = fabrics.get_mut("v-1").expect("fixture verse");
+        fabric
+            .shards
+            .get_mut("p1/a/0")
+            .expect("fixture shard")
+            .hosts = hosts.iter().map(|h| h.to_string()).collect();
+        let mut senders = HashMap::new();
+        senders.insert(
+            crate::sync_thread::derive_gossip_topic("v-1"),
+            TopicSender::Virtual(Arc::new(NullTopic)),
+        );
+        (transport, fabrics, senders, requester_did, db_rx)
+    }
+
+    fn partial_shard(key: &str) -> PartialShard {
+        PartialShard {
+            shard: key.into(),
+            anchor_node_id: "a".into(),
+            range_start_ms: 0,
+            range_end_ms: 60_000,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn non_host_skips_the_db_round_trip_and_a_host_executes_only_its_shards() {
+        // Non-host: the ledger names someone else for the only requested
+        // shard -> dropped before any DB command is issued.
+        let (transport, fabrics, senders, requester_did, db_rx) =
+            responder_setup(&["did:key:z6MkSomeoneElse"]);
+        let env = request_envelope(
+            "req-1",
+            "v-1",
+            &requester_did,
+            agg_spec(0, 60_000),
+            agg_shards(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", requester_node(), true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::NOT_HOSTED)
+        );
+        assert!(
+            db_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a non-host must not touch its DB"
+        );
+
+        // Host of p1/a/0 asked for p1/a/0 + a foreign-hosted p1/a/1: the
+        // DB executes the hosted shard only.
+        let (transport, mut fabrics, senders, requester_did, db_rx) =
+            responder_setup(&["did:local"]);
+        fabrics
+            .get_mut("v-1")
+            .unwrap()
+            .note_shard_row(&serde_json::json!({
+                "shard": "p1/a/1", "hosts": ["did:key:z6MkSomeoneElse"],
+                "mode": "balanced", "replication_factor": 1, "bucket_width_ms": 60_000,
+                "range_start_ms": 60_000, "range_end_ms": 120_000, "row_count": 1, "size_bytes": 10
+            }));
+        let env = request_envelope(
+            "req-2",
+            "v-1",
+            &requester_did,
+            agg_spec(0, 120_000),
+            vec![partial_shard("p1/a/0"), partial_shard("p1/a/1")],
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", requester_node(), true, &env)
+            ),
+            GossipDisposition::Answered
+        );
+        match db_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a host executes its partial")
+        {
+            DbCommand::ExecuteTsPartial { shards, .. } => {
+                let keys: Vec<&str> = shards.iter().map(|s| s.shard.as_str()).collect();
+                assert_eq!(keys, vec!["p1/a/0"]);
+            }
+            other => panic!("unexpected DB command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hosted_subset_matches_receive_side_retention() {
+        let mut fabric = fabric_with_shards(
+            VerseTimeseriesSettings {
+                mode: TimeseriesMode::Sharded,
+                ..Default::default()
+            },
+            &[
+                ("p1/a/0", 0, 60_000, &["did:local"]),
+                ("p1/a/1", 60_000, 120_000, &["did:other"]),
+                ("p1/a/2", 120_000, 180_000, &["did:other", "did:local"]),
+            ],
+        );
+        let requested: Vec<PartialShard> = ["p1/a/0", "p1/a/1", "p1/a/2", "p1/a/9"]
+            .into_iter()
+            .map(partial_shard)
+            .collect();
+        let kept = |f: &VerseFabric| -> Vec<String> {
+            hosted_subset(f, "did:local", requested.clone())
+                .into_iter()
+                .map(|s| s.shard)
+                .collect()
+        };
+        // Hosted + unknown-ledger (retained on receive, so maybe stored).
+        assert_eq!(kept(&fabric), vec!["p1/a/0", "p1/a/2", "p1/a/9"]);
+        // Mirror: every peer holds every shard.
+        fabric.settings.mode = TimeseriesMode::Mirror;
+        assert_eq!(kept(&fabric).len(), 4);
+    }
+
+    #[test]
+    fn raw_request_on_a_petal_hosted_elsewhere_is_not_hosted() {
+        let (transport, fabrics, senders, requester_did, db_rx) =
+            responder_setup(&["did:key:z6MkSomeoneElse"]);
+        let env = request_envelope(
+            "req-raw",
+            "v-1",
+            &requester_did,
+            TsQueryKind::AllReadings {
+                petal_id: "p1".into(),
+            },
+            Vec::new(),
+        );
+        assert_eq!(
+            handle_gossip_incoming(
+                &transport,
+                &fabrics,
+                &senders,
+                gossip_incoming("v-1", requester_node(), true, &env)
+            ),
+            GossipDisposition::Dropped(drop_reason::NOT_HOSTED)
+        );
+        assert!(db_rx.try_recv().is_err());
     }
 }

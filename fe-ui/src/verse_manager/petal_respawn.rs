@@ -91,13 +91,12 @@ pub(super) fn respawn_on_petal_change(
             // MAX_PETAL_NODES, and halted under the app-wide mesh-budget gate.
             // At petal-entry the whole petal is the near region (distance 0 →
             // full ranked ceiling), so no node is dropped one-shot. The true
-            // per-frame distance taper is the residency-ledger system's job.
-            // TODO(ultrapilot): drive per-node/per-frame distance from the
-            // camera position + PetalManifest.render_distance override once the
-            // ledger system lands (p2p_asset_streaming FR-7).
+            // per-frame distance taper is the residency-ledger system's job
+            // (p2p_asset_streaming Phase 4); the petal's render-distance
+            // override already applies via `render_distance_for`.
             let ceiling = super::spawn::distance_ranked_allowance(
                 0.0,
-                residency.settings.render_distance,
+                residency.render_distance_for(pid),
                 residency
                     .settings
                     .entity_cap

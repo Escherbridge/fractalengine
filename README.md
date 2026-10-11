@@ -112,6 +112,13 @@ cargo test -p fe-identity
 | `FE_ASSET_GC_INTERVAL_SECS` | No | `3600` | Seconds between unreferenced-asset GC passes (`0` disables) |
 | `FE_ASSET_GC_GRACE_SECS` | No | `86400` | Minimum age of an unreferenced asset before GC deletes it |
 
+Desktop settings (render distance, caps, offline tiles, camera, relay, scale
+bar, metric grid) persist as RON at `<config dir>/fractalengine/settings.ron`
+(`%APPDATA%\fractalengine\settings.ron` on Windows); a corrupt file is kept
+as `settings.ron.corrupt-<ts>` and defaults load. Viewport keys added
+2026-10-11: `M` Measure tool (tape / area), `H` hide selection, `Shift+H`
+show all, `Alt+H` isolate (Esc clears it).
+
 ---
 
 ## Architecture Overview
@@ -180,13 +187,14 @@ replicator remains mock-backed — it is not part of this path.)
 - **BI egress.** Export nodes and IoT readings as Parquet/CSV over signed,
   time-limited share URLs for DuckDB, PowerBI, or a spreadsheet — no database
   credentials required. See [docs/bi-egress.md](docs/bi-egress.md).
-- **MCP surface.** 29 machine-callable tools (24 advertised on a normal host;
+- **MCP surface.** 31 machine-callable tools (26 advertised on a normal host;
   the five `sim_*` tools appear only on a simulation-lab host) behind one
   table-driven authorization path: a role floor plus a scope rule resolved from the DB,
   never from caller-supplied ancestry ids.
 - **Relay EOL note.** iroh 0.35's default n0-hosted relay infrastructure is
-  EOL **2026-12-31**. Point `FE_SYNC_RELAY` at a custom relay (or set it to
-  `disabled` for LAN-only) before then — see
+  EOL **2026-12-31**. Point `FE_SYNC_RELAY` (or the desktop's Settings >
+  Network relay field, persisted in `settings.ron`; the env var wins) at a
+  custom relay (or set it to `disabled` for LAN-only) before then — see
   [fractalengine-relay/README.md](fractalengine-relay/README.md).
 
 ---
@@ -284,6 +292,8 @@ The `fe-api` crate provides an axum-based HTTP/WebSocket API on port 8765.
 | PATCH | `/api/v1/nodes/:id/transform` | Bearer JWT | Update node transform |
 | GET | `/api/v1/nodes/:id/transform` | Bearer JWT | Read node transform |
 | GET | `/api/v1/assets/:content_hash` | Bearer JWT | Content-addressed asset delivery (immutable caching) |
+| GET / PUT | `/api/v1/petals/:pid/visibility-groups` | Bearer JWT | Read (Viewer+) / replace (Editor+) a petal's visibility Group registry |
+| PATCH / DELETE | `/api/v1/petals/:pid/visibility-groups/:gid` | Bearer JWT | Upsert / remove one Group (Editor+) |
 
 ### WebSocket Protocol (`/ws`)
 

@@ -13,8 +13,10 @@
     "2026-07-25: created from in-app QA ask #2. FR-1 object-aware menu built from the existing HitTarget/Operation dispatch classification. FR-2 Delete wired to T1 tombstone+cascade (with child-count confirm) — this is the real fix for 'no way to remove a node' + 'removing properties leaves an empty node' (clear-props is a distinct verb; delete removes). FR-3 duplicate/rename/edit-props/promote-to-node/copy-API/report. FR-4 copy-API + report call a T5 seam; disabled-with-hint until T5 lands (no silent failure, ui_ux §6).",
     "depends_on node_lifecycle_addressing (delete FR-1, cascade FR-2, promote FR-5). COORDINATES endpoint_api_surface (the copy-API-string/report seam). File partition: owns fe-ui ui_shell/modal.rs + dialogs/{context_menu,node_options}.rs — disjoint from shell_ux_sidebar (shell seam), stamped_asset_nodes (path section), sculpt_earthwork_regions (terrain section). Does NOT edit right_sidebar.rs. Wave 1 parallel.",
     "Open Qs: Q-1 per-type verb sets (recommended defaults enumerated in spec), Q-2 cascade confirm always w/ child count (recommended), Q-3 T5-dependent verbs disabled-with-hint pre-T5 (recommended), Q-4 radial deferred (D-A9, recommended).",
-    "NOT started. /slice deferred per user."
+    "NOT started. /slice deferred per user.",
+    "2026-10-11 (2026-10-11 spatial-builder-residue batch, commit pending): region-delete gap closed — HitTarget::EarthworkRegion classified by context_pick::pick_ground_region, Delete routes to SculptDeleteRegion; retro.md written. Remaining: user-gated in-app re-verify. Residual: region Copy API/Report Volume stay disabled-with-hint (no node_id on the classified target)."
   ],
-  "doneness_note": "All FR-1..FR-4 code landed (leaf 4f765fe, integration 623145f, T5 seam cdd3291; later D16 classifier work 4d0c12d). Only retro + user-gated in-app re-verify remain. Gap found: earthwork-region delete via right-click routes to TerrainProposalDelete (context_menu.rs:298) which by design never removes material-tagged region entries; SculptDeleteRegion has a handler (actions/terrain_proposal.rs:1222) but no UI producer.",
-  "audited": "2026-10-10"
+  "doneness_note": "2026-10-11 (2026-10-11 spatial-builder-residue batch, commit pending): region-delete gap closed — HitTarget::EarthworkRegion classified by context_pick::pick_ground_region, Delete routes to SculptDeleteRegion; retro.md written. Remaining: user-gated in-app re-verify. Residual: region Copy API/Report Volume stay disabled-with-hint (no node_id on the classified target).",
+  "audited": "2026-10-10",
+  "retro": "retro.md"
 }

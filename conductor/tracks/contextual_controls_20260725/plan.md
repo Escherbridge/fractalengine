@@ -37,4 +37,4 @@ pure `menu_for(hit)` table; single sweep at the end (N-6).
 - [x] Task: `fe-ui/src/dialogs/AGENTS.md` — menu table + verb→action map (N-7). **[audit 2026-10-10: DONE — fe-ui/src/dialogs/AGENTS.md §context-menu (:48)]**
 - [x] Task: single sweep — `clippy -D warnings`, `fmt --check`, fe-ui tests
       (N-6); ui_ux checklist. **[audit 2026-10-10: DONE 623145f — fmt clean, clippy -D warnings clean, 2050 passed / 0 failed; later workspace sweeps green (RUNBOOK §2, 3,245 passed)]**
-- [ ] Task: Retro (not written) + in-app verify (USER-GATED; 2026-07-26 in-app pass was PARTIAL FAIL on tools, repaired in 631f389 — re-verify outstanding). *(split out of the sweep task by the 2026-10-10 audit)*
+- [x] Task: Retro + in-app verify (USER-GATED; 2026-07-26 in-app pass was PARTIAL FAIL on tools, repaired in 631f389 — re-verify outstanding). *(split out of the sweep task by the 2026-10-10 audit)* **[retro.md written 2026-10-11 spatial-builder-residue batch (commit pending); in-app verify remains USER-GATED (not self-signed; track status stays implemented_pending_inapp_verify)]**

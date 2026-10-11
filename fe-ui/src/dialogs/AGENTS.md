@@ -111,37 +111,21 @@ frame). Wiring per verb:
   promotion state (`render_gated_verb_button` — explicit hint, never silent);
   Scale/Rotate + Slide route to the Tools-sidebar per-stamp editor
   (`PathSelectTrack` + `ToolPanelState.stamp_edit_index`) with a toast.
-- The classifier only produces `Node`/`Stamp`/`Empty` today —
-  vertex/handle/segment/proposal menus render correctly if a future
-  classifier yields those hits; their unwired verbs toast instead of
-  silently no-oping (N-8).
+- The classifier (`node_manager::context_pick`) produces `Node`, `Stamp`,
+  `PathVertex`, `PathHandle`, `PathSegment`, `TerrainProposal` (palette
+  overlay), `EarthworkRegion` (committed Brush/shape region) and `Empty`.
+  Ground overlays route Delete through `proposal_delete_action`: a palette
+  proposal → `TerrainProposalDelete` (drops its record); an earthwork region →
+  `SculptDeleteRegion` (drops the record AND tombstones its endpoint node via
+  `actions::terrain_proposal::handle_delete_region`). A region's menu is
+  `ReportVolume`/`CopyApi`/`Delete` — no `EditRegionParams`, since regions are
+  not in the palette mirror. Region `CopyApi`/`ReportVolume` render
+  disabled-with-hint: the target carries no `node_id` yet (N-8, never silent).
 
 ## §settings
 
-D-78 (`p2p_asset_streaming_20260718` FR-7), added by ultrapilot worker w4a.
-
-- `settings.rs` — `ActiveDialog::Settings` (stateless unit variant, same
-  mutual-exclusion idiom as `PeerDebug`). Reads/writes
-  `crate::settings::AppSettings` (w4b) **directly** — no `UiAction`
-  round-trip, since there's no derived/queued side effect to route through
-  the action queue (contrast with e.g. `PetalManifestSave`, which persists to
-  the DB). First two live knobs: `render_distance` and
-  `mesh_budget_ceiling` (the cheapest first knob per the decision record —
-  `MeshInstanceBudget.ceiling` is already a runtime field). More knobs
-  (stamp caps, tile source mode, camera, P2P relay/peer config) land as
-  `AppSettings` grows further fields — this dialog just needs matching rows
-  added.
-- Reachability: a **"⚙ Settings"** button in `panels/toolbar.rs`'s right
-  cluster (beside Data/Tools/Maps), pushing `UiAction::SettingsToggle`
-  (cross-worker variant, w4b `actions/mod.rs`) rather than a direct
-  `ui_mgr.open_dialog(ActiveDialog::Settings)` call — routed through the
-  action queue so w4b's `process_ui_actions` can fold in future side effects
-  (e.g. settings persistence) alongside the dialog toggle. TODO seam: the
-  button compiles once `SettingsToggle` + its match arm land.
-- `dialogs::settings_window` is called from `panels::gardener_console`
-  alongside the other `render_*_dialog` calls — see `panels/AGENTS.md`
-  §terrain-tools for the `gardener_console` signature change this and the
-  terrain proposal panels required (`app_settings` param).
+The floating Settings dialog is gone; Settings is the right-sidebar section
+`ui_shell/right_sidebar.rs::render_settings_section` (see `ui_shell/AGENTS.md` §right).
 
 ## §map-terminology
 

@@ -358,15 +358,23 @@ dial. `to_relay_mode()` converts to the `iroh::RelayMode` the endpoint builder
 expects (`iroh::RelayMode::{Default,Disabled,Custom(RelayMap)}` — all
 re-exported directly from the `iroh` crate; no new dependency was needed).
 
-`RelayConfig::from_env()` reads the `FE_SYNC_RELAY` env var (falling back to
-`Default` with a warning on a missing var or parse failure) and is what
-`spawn_sync_thread` calls today. **This is a stopgap** — `spawn_sync_thread`'s
-signature was deliberately left unchanged (env var instead of a parameter) so
-this pass didn't have to touch its 3 external call sites
-(`fractalengine/src/main.rs`, `fractalengine-relay/src/main.rs`,
-`fe-test-harness/src/peer.rs` — all outside `fe-sync/src/`). FR-7 (application
-settings surface, D-78) is the intended real home for this value; swap
-`from_env()` for an `AppSettings`-sourced `RelayConfig` then.
+`RelayConfig::from_env()` is what `spawn_sync_thread` calls; it is
+`resolve(env, settings)` over two sources, with this precedence:
+
+1. `FE_SYNC_RELAY` (env) — the ops override, always wins when set;
+2. the application-settings spec (`AppSettings.relay`, persisted in fe-ui's
+   `settings.ron`), registered by the GUI binary with
+   `set_settings_relay_spec(raw)` **before** it spawns the sync thread
+   (a process-wide `OnceLock`; first call wins);
+3. otherwise `Default`.
+
+A source that fails to parse warns and yields `Default` — it does **not** fall
+through to the next source, so a typo never silently picks a different relay
+set. The settings value is read once at endpoint build, so a change in the
+Settings section applies after restart. Hosts that never register a spec
+(`fractalengine-relay`, the test harness, examples) behave exactly as before
+(env or `Default`). `spawn_sync_thread`'s signature is unchanged on purpose:
+the OnceLock seam keeps the source transport-agnostic for the iroh 1.x port.
 
 ### `RelayHealth` (`relay_config.rs`, surfaced via `SyncStatus::health`)
 
@@ -626,20 +634,22 @@ diagnostics echo.
   renders a partial with its own `RESPONDER_EXEC_CAP_MS` budget, replying as
   a topic broadcast (the topic is exactly the replica members — everyone
   else's `route` ignores foreign request ids).
-- **Responder shard filtering is NOT implemented (F23 honesty pass).** A
-  responder runs the shard list it was asked for verbatim — it does not
-  narrow to shards IT hosts. Correctness does not depend on it: receive-side
-  retention (§sharding) means a non-host holds no rows for a shard it does
-  not host, so its partial for that shard is empty, and the merge's
-  per-shard attribution (`fold_attribution`/`covered_by_answered_hosts`)
-  only ever credits a shard to a peer in that shard's ledger host set. A
-  non-host answering an aggregate request is therefore a harmless empty
-  contribution (wasted DB work, no wrong data); the coverage metadata can
-  never be widened by it. The earlier doc phrasing ("a host answers only for
-  hosted shards") overstated the code — this is the correction. Wiring true
-  responder-side filtering would be a pure efficiency win (skip a DB round
-  trip for shards we do not host) and is a reasonable follow-up, not a
-  correctness fix.
+- **Responder shard filtering (retention-consistent).** After admission,
+  `handle_gossip_incoming` narrows the request to the shards this peer
+  RETAINS on receive — `hosted_subset` applies exactly
+  `placement::retention_decision` (mirror mode, an unknown-ledger shard, or a
+  ledger host set naming `local_did` → keep), so a skipped shard is one this
+  peer never stored. Aggregates execute only the kept subset; raw/latest
+  requests (no shard list) answer only if at least one petal-prefixed ledger
+  shard is retained. Nothing kept → `Dropped(NOT_HOSTED)` before the gossip
+  sender lookup, i.e. a non-host never issues `DbCommand::ExecuteTsPartial`.
+  The merge is untouched: per-shard attribution
+  (`fold_attribution`/`covered_by_answered_hosts`) already credited only
+  ledger hosts, so filtering removes wasted DB work, not wrong data. One
+  behavioural edge: rows over-retained from BEFORE a sharded/balanced mode
+  switch (or before the ledger converged) are no longer offered by a formal
+  non-host as a fallback when the formal host is offline — they were only
+  ever a best-effort fallback, never counted as coverage.
 - **Commutative merges** (`merge_partials`): aggregates fold
   count/sum/min/max per (anchor, window) — mean is carried as
   (sum, count), computed only at the end, so partials merge in ANY order and

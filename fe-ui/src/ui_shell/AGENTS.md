@@ -37,7 +37,9 @@ buttons are byte-for-byte the same behavior.
 
 **Section-toggle wiring.** The **Options** button toggles
 `RightSidebarSection::Options` via `right.toggle(Options)` — the SOLE reveal path
-for tool options. Data/Settings/Maps have no section variant and are unchanged.
+for tool options. **Settings** and **Maps** toggle their own sections the same
+way (`right.toggle(Settings|Maps)`, D-A10). **Data** has no section variant: it
+still flips the floating `GisPanelState.open` window.
 
 **Tooltips (FR-8).** Each mode button's hover text comes from
 `toolbar::tool_tooltip_text(def)`, which joins `TOOL_DEFS` (glyph/name/shortcut)
@@ -48,27 +50,38 @@ string — so button, shortcut, and description can't drift. The redundant
 
 ## §left (FR-5)
 
-The left sidebar's visibility is now a **policy**, not a per-frame stomp. The
-pure `left_visibility(policy, right_open, user_intent) -> bool`:
+The left sidebar's visibility is a **policy**, not a per-frame stomp. The pure
+`left_visibility(policy, user_intent) -> bool` (`left_sidebar.rs`) has exactly
+one policy, `LeftSidebarPolicy::Manual` → `user_intent`: the sidebar is
+**user-sticky** (D-A11 / Q-3 — the old auto-collapse-on-selection policy was
+removed outright, not defaulted off). It stays where the user last set it,
+unaffected by selection, an open right section, or a petal switch
+(session-scoped, Q-2). The enum survives only as the decision seam that keeps
+the function pure and testable.
 
-- `AutoCollapse` → `!right_open` (reproduces the pre-refactor
-  `sidebar.open = !(portal_is_open() || selected_entity().is_some())` — `user_intent`
-  is ignored).
-- `Manual` → `user_intent` (the seam for a future manual toggle; only option).
-
-`render_left_sidebar` applies the policy to `sidebar.open` **before** rendering
-(the old stomp ran after render; the one-frame difference is absorbed by
-`show_animated`). `right_open` is computed in `gardener_console` post-topbar
-(so a topbar deselect is reflected), exactly as the old stomp was.
-`VisibilityState` is threaded via gardener_console.
+- **Toggle:** `LeftSidebarState.user_intent` is flipped by the topbar ☰ button
+  and by Ctrl/Cmd+B, both in `topbar.rs::render_topbar` (bare B is the Brush
+  tool shortcut — `panels/toolbar.rs`).
+- `render_left_sidebar` writes `sidebar.open = left_visibility(..)` **before**
+  rendering. There is NO `!right_open` stomp any more — opening a right section
+  never closes the left sidebar.
+- `VisibilityState` (hierarchy eyes) is threaded via `gardener_console`.
 
 ## §right (FR-6) — precedence + the section-fn seam
 
-`RightSidebarSection = { Inspector, Options, TerrainTools, ProposalReport, Settings, Maps }`
+`RightSidebarSection = { Inspector, Options, TerrainTools, ProposalReport, Settings, Maps, Groups }`
 is the mutually-exclusive right region — **one section at a time** (RATIFIED
 Q-2). `RightSidebarState.requested: Option<RightSidebarSection>` is the explicit
-toggle (topbar / in-panel rail); `None` means selection-default. Rail has 6 glyphs
-sourced from ALL_SECTIONS (PathTools retired; Options now hosts all tool-specific controls).
+toggle (topbar / in-panel rail); `None` means selection-default. The rail has 7
+glyphs sourced from `ALL_SECTIONS` (Inspector, Options, TerrainTools,
+ProposalReport, Settings, Maps, Groups — PathTools retired; Options hosts all
+tool-specific controls). Settings is `render_settings_section` (the former
+floating Settings window, now the sole Settings surface); Maps is the former
+Hexon Manager dialog; Groups (slug `"groups"`, VIS-PH5 / D-10) is the ONE
+editor of the active petal's visibility Groups — the left sidebar only reads
++ toggles them and reaches this section through `RevealSection { slug:
+"groups" }` (its "Manage Groups…" button and the node row's "Add selection to
+group…").
 
 **Section-toggle wiring.** `RevealSection { slug }` is the addressable idempotent
 reveal (cross-links, context menu, future fe-api/MCP); topbar/rail stay toggles
@@ -92,7 +105,7 @@ also enforces it at the state level: requesting a new section replaces, never
 stacks.
 
 **The section-fn seam (CRITICAL — do not collapse).** There is exactly ONE
-render fn per variant; all six are now filled (the one-fn-per-section split is
+render fn per variant; all seven are now filled (the one-fn-per-section split is
 what kept the P4 and P5 slices conflict-free):
 
 | Section | Fn | Content | Landed by |
@@ -103,6 +116,7 @@ what kept the P4 and P5 slices conflict-free):
 | ProposalReport | `render_proposal_report_section` | proposal report body (ex-"Proposal Report" window) | P4 |
 | Settings | `render_settings_section` | app-settings knobs (render distance, mesh budget) + the per-verse Timeseries Fabric controls (§timeseries-settings) | — |
 | Maps | — | map/hexon manager (ActiveDialog::HexonManager) | — |
+| Groups | `render_groups_section` | Group create/rename/delete/eye/reorder (whole-registry `SetGroupRegistry`) + "Add selection to group" / "Remove from group" for the selected node (`SetNodeGroups`); empty Group shows "No members — select nodes and use Add to group" | VIS-PH5 |
 
 Migrated tool sections keep their logic + tests verbatim and their authority
 rules (path/stamp sections key ONLY on `PathEditorState.editing_track_id`, never

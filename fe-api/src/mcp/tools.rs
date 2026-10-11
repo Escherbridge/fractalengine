@@ -525,6 +525,57 @@ pub(super) fn set_petal_terrain(call: ToolCall<'_>) -> ToolFuture<'_> {
     })
 }
 
+pub(super) fn list_visibility_groups(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let petal_id = scoped_petal(&call)?;
+        let groups = crate::visibility::get_groups_core(call.state, &petal_id)
+            .await
+            .map_err(|e| e.message())?;
+        Ok(json!({ "petal_id": petal_id, "groups": groups }))
+    })
+}
+
+/// Upsert (`name`/`visible`/`order`) or delete (`delete: true`) ONE Group —
+/// the REST PATCH/DELETE read-modify-write (same last-writer-wins window).
+pub(super) fn set_visibility_group(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let petal_id = scoped_petal(&call)?;
+        let group_id = str_arg(call.args, "group_id").to_string();
+        if group_id.is_empty() {
+            return Err("group_id is required".to_string());
+        }
+        let delete = call
+            .args
+            .get("delete")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let patch = crate::visibility::GroupPatch {
+            name: call
+                .args
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            visible: call.args.get("visible").and_then(Value::as_bool),
+            order: call.args.get("order").and_then(Value::as_f64),
+        };
+        let groups = crate::visibility::modify_group_core(
+            call.state,
+            &petal_id,
+            caller_auth(call.claims),
+            |groups| {
+                if delete {
+                    crate::visibility::remove_group(groups, &group_id)
+                } else {
+                    crate::visibility::upsert_group(groups, &group_id, patch)
+                }
+            },
+        )
+        .await
+        .map_err(|e| e.message())?;
+        Ok(json!({ "petal_id": petal_id, "groups": groups }))
+    })
+}
+
 pub(super) fn list_tilesets(call: ToolCall<'_>) -> ToolFuture<'_> {
     Box::pin(async move {
         let petal_id = scoped_petal(&call)?;
@@ -835,6 +886,25 @@ pub(super) mod schema {
                 "terrain": { "type": ["object", "null"], "description": "A TerrainConfig object, or null to clear" }
             },
             "required": ["petal_id"]
+        })
+    }
+
+    pub fn list_visibility_groups() -> Value {
+        json!({ "type": "object", "properties": { "petal_id": { "type": "string" } }, "required": ["petal_id"] })
+    }
+
+    pub fn set_visibility_group() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "petal_id": { "type": "string" },
+                "group_id": { "type": "string", "description": "Stable Group id (created if absent and a name is given)" },
+                "name": { "type": "string", "description": "1..=80 chars; required to create" },
+                "visible": { "type": "boolean" },
+                "order": { "type": "number", "description": "Display order (ascending)" },
+                "delete": { "type": "boolean", "description": "true removes the Group" }
+            },
+            "required": ["petal_id", "group_id"]
         })
     }
 

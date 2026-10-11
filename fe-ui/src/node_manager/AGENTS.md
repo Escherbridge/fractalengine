@@ -11,12 +11,26 @@ Escape/right-click/tool/petal change cancels. Bare B activates Brush and opens
 its contextual controls;
 Ctrl/Cmd+B remains the sidebar toggle.
 
-`path_point_interaction.rs::snap_path_position` is the viewport snap seam:
-the nearest current-track anchor within the metric radius wins, then XZ grid
-rounding applies; Y is always preserved. It is used only for Pen append and
-single-point drag release. A snapped release updates both the live marker and
-the authoritative edit row before queueing persistence. Multi-point and
-whole-track transforms remain unsnapped, and cross-track anchors are deferred.
+`path_point_interaction.rs::snap_path_position` is the viewport snap seam.
+Candidates within the metric radius are the edited track's own buffer rows
+plus every OTHER track's anchors in the active petal
+(`collect_foreign_anchors`, fed by `TrackPickShape.anchors` — the un-flattened
+route anchors the gpx bridge attaches; the edited track and other petals are
+skipped). The winner ranks by (tier, XZ distance): tier 0 is a foreign
+endpoint (first/last anchor of an OPEN track — a closed zone ring has none),
+tier 1 is everything else, so endpoints beat nearer interior vertices
+(road_builder FR-5). A foreign win copies the target `[f32; 3]` verbatim,
+Y included (D-3, bitwise-equal); an own-track win keeps the cursor's Y. No
+candidate in range → XZ grid rounding, Y preserved. Snapped endpoints share
+COORDINATES, not identity: there is no topology graph, node merge or junction
+record, and moving one track later does not move the other (the documented
+FR-5 limitation, seed input for `procedural_roads`). It is used only for Pen
+append and single-point drag release; the query lives in the
+`ForeignSnapSources` SystemParam so the host system stays under Bevy's param
+limit; it carries the visibility filter (hidden tracks never snap, see
+§visibility-pickers). A snapped release updates both the
+live marker and the authoritative edit row before queueing persistence.
+Multi-point and whole-track transforms remain unsnapped.
 
 Right-click classification only fills `ContextTarget`; it does not mutate
 `NodeManager` or select/promote stamps. Viewport pick stays in the main chain;
@@ -71,6 +85,68 @@ System functions are `pub(super)` (visible to `mod.rs`'s plugin
 registration only) — this module's public surface is just `NodeManager`
 itself; nothing outside `fe-ui` should call the per-frame systems directly.
 
+## §measure-tool — Tape / Area measurement (`measure.rs`, hexon_scale FR-9)
+
+The Measure tool (key `M`, `Tool::Measure`) places ground-plane anchors and
+reports real-unit readouts. It is the first in-app use of the ruler math the
+fe-ui `geometry.rs` mirror carries (`world_to_real_distance`, `bearing_deg`,
+`polygon_area_m2`).
+
+- **One reducer.** `MeasureState { mode, anchors, closed }` changes ONLY through
+  `reduce(state, MeasureEvent)` — viewport clicks (`Place`) and the Options
+  arm's buttons (`Undo`/`Clear`/`Close`/`SetMode`) share it, so there is one
+  set of rules: Tape keeps at most two anchors and a third `Place` restarts at
+  the new point; Area appends (capped at `MAX_MEASURE_ANCHORS`); `Close` needs
+  Area mode and at least 3 anchors; `Undo` first reopens a closed polygon, then
+  pops; a `Place` after a closed polygon starts a new one; `SetMode` to a
+  different mode starts over; non-finite points are ignored.
+- **Readout honesty (NFR-4).** `readout(state, world_scale)` returns real meters
+  only when the scale is usable (`scaled`); otherwise the same numbers are world
+  units and `readout_rows` labels them so. The scale comes from
+  `measure_world_scale`: `PetalMapState.world_scale` (the fe-ui authority,
+  ui_ux §2) only when the active petal has an ENABLED map, else NaN — the same
+  "no map, world units" rule the fe-terrain scale bar follows. Bearing is
+  omitted for a zero-length tape (it would be meaningless). Area is reported
+  only once the polygon is closed; while open the row reads "Length so far".
+- **Interaction.** `handle_measure_interaction` runs right after Brush in the
+  chain, nested with it as `(brush, measure).chain()` only because the outer
+  tuple is at Bevy's 20-element limit. It claims `ClickPriority::Measure` on a
+  fresh press whose ray hits the y = 0 plane (`brush_interaction::ground_hit`),
+  so no path/gimbal/node consumer sees a measuring click; the anchor's Y is the
+  terrain height-field sample when one exists (drawing only — every metric is
+  XZ-planar). A click that misses the plane falls through, and `dispatch`
+  resolves `Tool::Measure` to `Operation::None` for node/empty hits, so it never
+  selects or deselects (same rule as Brush).
+- **Lifetime.** Anchors are session-only and cleared when the tool changes away
+  from Measure (including Escape rung 3, which returns to Select) and when the
+  active petal changes (`Local<Option<String>>` idiom). Not persisted, and not a
+  gesture: a placed anchor is finished work, so it is not in `GestureParams`.
+- **Drawing.** `draw_measure_overlay` (registered `.after` the interaction
+  system, outside the chain) draws anchor rings, segments, and the closing edge
+  in the always-on-top gimbal gizmo group, only while Measure is active (ui_ux
+  §7 mode-gated overlay).
+- **Not here.** Dimension callouts persisted as annotations (HS-P6-CALLOUT)
+  stay blocked on decision D-11.
+
+## §visibility-pickers — the one picker rule (hierarchy_visibility_groups D-7/D-12)
+
+Hiding is spawn-then-hide, so every interaction surface here filters on
+`crate::visibility::pickable` (active-petal ancestry from `NavigationManager`,
+same lattice the renderer applies): `viewport_pick`, `context_pick` (ray tier
+AND the ground-stamp tier, by the stamp's own marker id), `sidebar_sync` (a
+hidden `pending_sidebar_select` is consumed, refused, toasted — the current
+selection is kept), `pointer::open_track_on_select` (`track_to_open` refuses a
+hidden track; an open session whose track becomes hidden is closed with
+`stop_editing`, arm 4 then drops its selection; the silent-pick toast and the
+Paths→viewport selection arm ignore hidden tracks), `path_segment_interaction`
+(defensive guard, unreachable after the bridge rule) and `ForeignSnapSources`.
+The ray tiers (`viewport_pick`, `context_pick`) and `ForeignSnapSources` also
+skip an entity whose own `Visibility` is `Hidden` (`visibility::rendered`) — a
+ribbon hidden by its map layer or style is drawn by nobody and clickable by
+nobody. Proposal/earthwork ground tiers are not nodes and are unaffected. Never write a
+second copy of the rule — call `pickable`. Rationale: `fe-ui/src/AGENTS.md`
+§visibility.
+
 ## §staged-escape — four-rung gesture cancellation
 
 The canonical staged Escape (codified in `ui_ux.md §5`): four rungs with ratified
@@ -89,6 +165,10 @@ lags both ways — stale-FALSE on the frame a gesture starts (the unsafe directi
 frame's right-click still opens the object menu) and stale-TRUE on the frame it releases.
 
 1. Gesture-cancel (tool-specific: pen/handle drag cancel)
+   - `ClearIsolate` (D-17, "Esc clears isolate first"): clears an active solo
+     lens. Implemented as first-AFTER-a-live-gesture, not literally first — a
+     mid-drag Escape must still cancel the drag (F5). `escape_rung` takes
+     `solo_active`; the ladder tests pin the order.
 2. `stop_editing` + `deselect` (one-press back-out, clearing track edit + selection)
 3. `deselect` (node selection only)
 4. `activate(Select)` (switch tool)
@@ -440,10 +520,23 @@ the transition-only `Local<bool>`/`Local<Option<String>>` pair (unchanged)
 guards against re-firing every frame. The two selection authorities stay
 split (`ui_ux.md` §5, sacred) — this only feeds Authority B's track list.
 
+**Silent-pick notice (FR-2 follow-up, `ui_ux.md` §6).** The eager load can
+still lose a race: a ribbon clicked while the list is in flight is not in
+`tracks`, so `track_to_open` is false and nothing opens. `open_track_on_select`
+now surfaces that no-op — `silent_track_pick_warning` is true only when the
+selected entity carries `TrackPickShape` (so an ordinary node click never
+qualifies — the per-click-spam risk that deferred this), it is unlisted,
+`tracks_pending` is set, and this petal load has not warned yet
+(`Local<bool>`, re-armed whenever `advance_petal_tracking` reports a
+transition). It logs one `warn!` and shows a toast. The toast says to press Esc
+and click again because the bridge only reacts to selection CHANGES — re-clicking
+an already-selected ribbon does nothing; auto-opening once the list lands is
+not done (a behaviour change beyond the ratified notice).
+
 **Precise ribbon picking (`path_interaction_20260716`, FR-1).** The old AABB
 pick made a km-scale flat ribbon a giant flat box that swallowed clicks meant
 for nearby objects. The bridge now also attaches a `TrackPickShape { points,
-half_width, closed, fill_triangles, centroid }` (fe-ui component, re-exported at
+half_width, closed, fill_triangles, centroid, anchors }` (fe-ui component, re-exported at
 `fe_ui::node_manager::TrackPickShape`, populated in `tag_track_lines_selectable`
 from the track's route + style — the RAW world polyline, no y-lift). In
 `handle_viewport_click`, an entity carrying `TrackPickShape` SKIPS the AABB slab
@@ -517,10 +610,12 @@ ownership instead of racing ad-hoc booleans (replaces the old
 `resolve_pointer_frame` is the FIRST system in the `.chain()`.
 
 - **Priority table** (highest first — the `.chain()` order is NORMATIVE, D14-A;
-  Brush claims 2nd priority while active by design):
+  Brush claims 2nd priority while active by design, Measure right after it):
 
   | Priority      | Consumer system                     | Claims when                          |
   | ------------- | ----------------------------------- | ------------------------------------ |
+  | `Brush`       | `handle_brush_interaction`          | Brush active + press hits the ground plane (see §brush-tool-and-context-hardening) |
+  | `Measure`     | `measure::handle_measure_interaction` | Measure active + press hits the ground plane (see §measure-tool) |
   | `PathHandle`  | `handle_path_handle_interaction` (pen_curve_tool_20260722 FR-5, ratified Q7 — runs first) | press picks a bezier-handle marker of the edited track (see §pen-tool) |
   | `Gimbal`      | `handle_path_gimbal_drag` (FR-3 vertex/segment, runs first) → `handle_gimbal_interaction` (entity) | press hits a gimbal axis |
   | `PathMarker`  | `handle_path_point_interaction`     | press picks an existing marker (Pen mode, Select-while-editing per FR-2, or while a drag is active) |
@@ -568,7 +663,7 @@ drop_selection_of_closed_track):
 - **Claim-priority table (`router.rs::hit_target_rank`).** The pure, total
   `hit_target_rank(&HitTarget) -> u8` makes the object-level pick preference
   explicit: `handle > vertex > segment > gimbal-axis > node > stamp > proposal
-  > terrain-cell > empty` (lower rank = higher priority). This is the "which
+  > earthwork-region > terrain-cell > empty` (lower rank = higher priority). This is the "which
   target owns a click that could resolve to several" ordering — distinct from,
   but consistent with, the per-system `ClickPriority` `.chain()` that ENFORCES
   it at runtime (§input-router). No in-tree consumer reads it yet
@@ -648,7 +743,8 @@ does NOT replace `router.rs`'s first-claim-wins arbitration (§input-router): th
 per-frame consumer systems still own the PRESS contest; the table is the shared
 decision model they (and the FR-3 drag) consult. `HitTarget` is the raw pick
 result (`Empty`/`Node`/`PathVertex`/`PathHandle`/`PathSegment`/`Stamp`/
-`TerrainProposal`/`TerrainCell`/`GimbalAxis`); `Operation` is the resolved verb
+`TerrainProposal`/`EarthworkRegion`/`TerrainCell`/`GimbalAxis`; `EarthworkRegion`
+is right-click-only and resolves to `None`); `Operation` is the resolved verb
 (`SelectNode`/
 `SelectVertex`/`SelectSegment`/`SelectStamp`/`SelectProposal`/`PlacePathPoint`/
 `PlaceNode`/`BeginGimbalDrag`/`MoveVertex`/`MoveSegment`/`MoveHandle`/
@@ -727,8 +823,13 @@ REUSES the left-click pick machinery — the exact `handle_viewport_click` loop
 (`TrackPickShape` polyline else `pick_node_aabb` subtree DFS, active-petal
 filtered) over a fresh camera ray built from the stored `screen_pos` (right
 click never touches the left-click `ClickArbiter`). Classifier now resolves
-`PathVertex`/`PathHandle`/`PathSegment`/`TerrainProposal` — narrow-phase vs path
-markers for the edited track; PNPOLY vs ProposalEditState footprints; edited-ribbon
+`PathVertex`/`PathHandle`/`PathSegment`/`TerrainProposal`/`EarthworkRegion` —
+narrow-phase vs path markers for the edited track; PNPOLY vs ProposalEditState
+footprints (palette proposals); then PNPOLY vs the `material`-tagged entries of
+the active petal's `PetalMapState.terrain_json` `proposals[]`
+(`pick_ground_region` — committed Brush/shape regions, which the palette mirror
+deliberately never holds, so without this tier a region was unreachable and its
+delete could only ever drop a palette record); edited-ribbon
 Node→PathSegment reclassify. A hit whose entity carries `PathAssetInstance` is
 a stamp: `(track, index)` comes from `source_track_id` +
 `verse_manager::parse_stamp_marker_id` (the marker-id format has one producer,

@@ -41,6 +41,22 @@ const ROUTES: &[(&str, &str, Payload)] = &[
         Payload::Json(|| json!({})),
     ),
     ("DELETE", "/api/v1/petals/{p}/terrain", Payload::None),
+    ("GET", "/api/v1/petals/{p}/visibility-groups", Payload::None),
+    (
+        "PUT",
+        "/api/v1/petals/{p}/visibility-groups",
+        Payload::Json(|| json!({ "groups": [] })),
+    ),
+    (
+        "PATCH",
+        "/api/v1/petals/{p}/visibility-groups/g1",
+        Payload::Json(|| json!({ "name": "G" })),
+    ),
+    (
+        "DELETE",
+        "/api/v1/petals/{p}/visibility-groups/g1",
+        Payload::None,
+    ),
     (
         "POST",
         "/api/v1/petals/{p}/waypoints",

@@ -13,8 +13,10 @@
     "2026-07-25: created from in-app QA. FR-1 curve-follow fixes the reported 'stamps don't follow curved paths' (stamps space on the flattened polyline; must sample the bezier at correct arc-length + true tangent). FR-2/3 make each stamp an individually addressable node (T1 lazy promotion) with scale+rotate overrides and free-translate disabled (position path-derived). FR-4 GPU instancing + spatial pick for the tens-of-thousands ceiling (D-A6). FR-5 delete→path re-flow consumes T1 FR-2.",
     "Depends on node_lifecycle_addressing (promotion FR-5, address FR-4, reflow event FR-2). File partition: owns fe-terrain mesh/{curve,track,marker} + stamp materializer (actions/asset.rs, actions/path.rs), fe-renderer {loader,ingester,viewport}.rs + new instancing.rs, fe-ui path-tools SECTION CONTENT only (NOT right_sidebar.rs — that seam is shell_ux_sidebar's). Disjoint from sculpt_earthwork within fe-terrain/fe-renderer → Wave 1 parallel.",
     "Open Qs: Q-1 slide-along-path affordance (allow 1-D slide — recommended), Q-2 promotion granularity (per-stamp on select — recommended), Q-3 override precedence (per-stamp wins — recommended), Q-4 tangent default (keep OFF but fix to curve tangent — recommended).",
-    "N-1 CRITICAL: all stamp geometry in raw petal-local meters, no world_scale (2026-07-19 ribbon regression precedent). NOT started. /slice deferred per user."
+    "N-1 CRITICAL: all stamp geometry in raw petal-local meters, no world_scale (2026-07-19 ribbon regression precedent). NOT started. /slice deferred per user.",
+    "2026-10-11 (2026-10-11 spatial-builder-residue batch, commit pending): N-9 row-count test landed (materialized_stamps_add_no_rows_and_one_promotion_adds_exactly_one); gimbal translate lock closed earlier in 40590e9; retro.md written. Remaining: user-gated in-app verify; recorded follow-ups (custom instanced pipeline, criterion bench)."
   ],
-  "doneness_note": "FR-1..FR-5 landed (leaf 56ccc3b, integration 623145f, tool restore 631f389). Open: N-9 row-count test, viewport-gimbal translate lock for stamps (CONFIRMED missing 2026-10-10 consolidation — gimbal task un-ticked), custom instanced pipeline + criterion bench (recorded follow-ups), retro, user-gated in-app verify.",
-  "audited": "2026-10-10"
+  "doneness_note": "2026-10-11 (2026-10-11 spatial-builder-residue batch, commit pending): N-9 row-count test landed (materialized_stamps_add_no_rows_and_one_promotion_adds_exactly_one); gimbal translate lock closed earlier in 40590e9; retro.md written. Remaining: user-gated in-app verify; recorded follow-ups (custom instanced pipeline, criterion bench).",
+  "audited": "2026-10-10",
+  "retro": "retro.md"
 }

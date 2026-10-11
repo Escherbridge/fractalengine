@@ -7,5 +7,8 @@ pub mod stack;
 pub mod style;
 
 pub use geojson::{parse_geojson, GeoJsonResult, MarkerInstance, PolygonMesh, PolylineMesh};
-pub use stack::{layer_type_from_config_name, LayerId, LayerStack, LayerType, MapLayer};
+pub use stack::{
+    geojson_layer_for, gpx_layer_for, layer_type_from_config_name, LayerId, LayerStack, LayerType,
+    MapLayer,
+};
 pub use style::{compute_vertex_colors, viridis, ColorMode, TrackPoint};

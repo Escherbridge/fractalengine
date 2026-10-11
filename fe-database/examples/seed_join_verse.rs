@@ -129,6 +129,7 @@ async fn run_seed() -> anyhow::Result<()> {
                 ts_mode: "mirror".to_string(),
                 ts_replication_factor: 1,
                 ts_bucket_width_ms: fe_runtime::DEFAULT_BUCKET_WIDTH_MS as i64,
+                view_hidden: None,
             },
         )
         .await?;

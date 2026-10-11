@@ -20,6 +20,8 @@ pub enum Tool {
     Pen,
     /// Paint spaced, non-destructive earthwork dabs in the viewport.
     Brush,
+    /// Tape (distance + bearing) and Area measurements on the ground plane.
+    Measure,
 }
 
 /// One viewport tool: button glyph, user-facing name, shortcut, key binding.
@@ -35,7 +37,7 @@ pub(crate) struct ToolDef {
 
 /// Single source for toolbar buttons/tooltips, the keyboard bindings
 /// (`node_manager::shortcuts`), and the viewport hint line — so they can't drift.
-pub(crate) const TOOL_DEFS: [ToolDef; 6] = [
+pub(crate) const TOOL_DEFS: [ToolDef; 7] = [
     ToolDef {
         tool: Tool::Select,
         glyph: "\u{2B1A}",
@@ -77,6 +79,14 @@ pub(crate) const TOOL_DEFS: [ToolDef; 6] = [
         name: "Brush",
         key: "B",
         key_code: KeyCode::KeyB,
+    },
+    ToolDef {
+        tool: Tool::Measure,
+        // BMP arrow, not the U+1F4CF ruler color emoji: egui recolors it like its siblings.
+        glyph: "\u{2194}",
+        name: "Measure",
+        key: "M",
+        key_code: KeyCode::KeyM,
     },
 ];
 
@@ -223,6 +233,7 @@ mod tests {
             Tool::Scale,
             Tool::Pen,
             Tool::Brush,
+            Tool::Measure,
         ] {
             assert!(
                 TOOL_DEFS.iter().any(|d| d.tool == t),

@@ -496,6 +496,53 @@ pub enum DbCommand {
     CountNodeDescendants {
         node_id: String,
     },
+    /// Persist a node's visibility view properties (`view.state` /
+    /// `view.groups`, hierarchy_visibility_groups D-2/D-6). Auth-carrying
+    /// (D-15): authorized Editor+ like `RenameNode`, never a raw
+    /// `SetNodeProperty`. See fe-database/src/AGENTS.md §lifecycle.
+    SetNodeView {
+        node_id: String,
+        /// `"auto" | "show" | "hide"`; `"auto"` removes the key. `None` = unchanged.
+        state: Option<String>,
+        /// Group ids the node belongs to; empty removes the key. `None` = unchanged.
+        groups: Option<Vec<String>>,
+        /// Caller identity — authorized before mutating (see `TombstoneNode`).
+        auth: CallerAuth,
+        /// `Some` routes a failure to `RequestFailed`; `None` to `Error`.
+        correlation_id: Option<String>,
+    },
+    /// Read every live node in `petal_id` carrying a persisted view property —
+    /// read-only (no auth, mirrors `GetNodeProperties`). Replies
+    /// `PetalViewStateLoaded`.
+    LoadPetalViewState {
+        petal_id: String,
+    },
+    /// Replace a petal's whole visibility-Group registry (`petal.visibility_groups`,
+    /// hierarchy_visibility_groups D-3) — O(groups), never touches membership
+    /// (`view.groups` lives on nodes). Auth-carrying: Editor+ at the petal scope
+    /// (fe-database/src/AGENTS.md §lifecycle). Replies `PetalVisibilityGroupsLoaded`.
+    SetPetalVisibilityGroups {
+        petal_id: String,
+        groups: Vec<VisibilityGroupDto>,
+        auth: CallerAuth,
+        /// `Some` routes a failure to `RequestFailed`; `None` to `Error`.
+        correlation_id: Option<String>,
+    },
+    /// Read a petal's visibility-Group registry (read-only; REST gates Viewer+).
+    /// Replies `PetalVisibilityGroupsLoaded`; a missing petal fails.
+    GetPetalVisibilityGroups {
+        petal_id: String,
+        correlation_id: Option<String>,
+    },
+    /// Persist a verse/fractal/petal eye (`view_hidden`, D-1). Auth-carrying:
+    /// Editor+ at that scope. Replies `ScopeHiddenSet`.
+    SetScopeHidden {
+        level: ScopeLevel,
+        id: String,
+        hidden: bool,
+        auth: CallerAuth,
+        correlation_id: Option<String>,
+    },
     // --- Field definition (property schema) management ---
     /// Create a new field definition for a scope.
     CreateFieldDef {
@@ -871,6 +918,35 @@ pub enum DbResult {
         node_id: String,
         count: usize,
     },
+    /// Result of `SetNodeView` — the persisted view properties after the write
+    /// (`state: None` = the key is absent, i.e. Auto).
+    NodeViewSet {
+        node_id: String,
+        petal_id: String,
+        state: Option<String>,
+        groups: Option<Vec<String>>,
+        /// Echoes `SetNodeView.correlation_id`.
+        correlation_id: Option<String>,
+    },
+    /// Result of `LoadPetalViewState` — every live node with a persisted view.
+    PetalViewStateLoaded {
+        petal_id: String,
+        entries: Vec<NodeViewDto>,
+    },
+    /// The stored visibility-Group registry of `petal_id` — the reply to both
+    /// `GetPetalVisibilityGroups` and `SetPetalVisibilityGroups` (the echo).
+    PetalVisibilityGroupsLoaded {
+        petal_id: String,
+        groups: Vec<VisibilityGroupDto>,
+        correlation_id: Option<String>,
+    },
+    /// Result of `SetScopeHidden` — the persisted eye.
+    ScopeHiddenSet {
+        level: ScopeLevel,
+        id: String,
+        hidden: bool,
+        correlation_id: Option<String>,
+    },
     // --- Field definition results ---
     /// Result of `CreateFieldDef`.
     FieldDefCreated {
@@ -1016,6 +1092,8 @@ pub struct VerseHierarchyData {
     /// M2/F6: the verse's timeseries replication settings (ts_* columns),
     /// so the settings surface and the UI tree speak the persisted truth.
     pub timeseries: crate::timeseries::VerseTimeseriesSettings,
+    /// Persisted verse eye (`verse.view_hidden`, VIS-PH4); `false` = visible.
+    pub view_hidden: bool,
     pub fractals: Vec<FractalHierarchyData>,
 }
 
@@ -1023,6 +1101,8 @@ pub struct VerseHierarchyData {
 pub struct FractalHierarchyData {
     pub id: String,
     pub name: String,
+    /// Persisted fractal eye (`fractal.view_hidden`); `false` = visible.
+    pub view_hidden: bool,
     pub petals: Vec<PetalHierarchyData>,
 }
 
@@ -1030,6 +1110,8 @@ pub struct FractalHierarchyData {
 pub struct PetalHierarchyData {
     pub id: String,
     pub name: String,
+    /// Persisted petal eye (`petal.view_hidden`); `false` = visible.
+    pub view_hidden: bool,
     pub nodes: Vec<NodeHierarchyData>,
 }
 
@@ -1064,6 +1146,34 @@ pub struct DbConfirmedTransform {
 // ---------------------------------------------------------------------------
 // Scene graph change events (Phase 3: scene streaming)
 // ---------------------------------------------------------------------------
+
+/// One visibility Group of a petal's registry (hierarchy_visibility_groups
+/// D-3). Membership is NOT here — it is each node's `view.groups`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VisibilityGroupDto {
+    pub id: String,
+    pub name: String,
+    pub visible: bool,
+    /// Display order (ascending); any finite number.
+    pub order: f64,
+}
+
+/// Which hierarchy level a persisted eye (`SetScopeHidden`) addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ScopeLevel {
+    Verse,
+    Fractal,
+    Petal,
+}
+
+/// One node's persisted visibility view (`view.state` / `view.groups`);
+/// `None` = the property is absent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NodeViewDto {
+    pub node_id: String,
+    pub state: Option<String>,
+    pub groups: Option<Vec<String>>,
+}
 
 /// A DTO for node data sent over the scene streaming protocol.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1426,6 +1536,38 @@ mod lifecycle_vocabulary_tests {
             },
             DbCommand::CountNodeDescendants {
                 node_id: "n1".into(),
+            },
+            DbCommand::SetNodeView {
+                node_id: "n1".into(),
+                state: Some("hide".into()),
+                groups: None,
+                auth: CallerAuth::Local,
+                correlation_id: None,
+            },
+            DbCommand::LoadPetalViewState {
+                petal_id: "p1".into(),
+            },
+            DbCommand::SetPetalVisibilityGroups {
+                petal_id: "p1".into(),
+                groups: vec![VisibilityGroupDto {
+                    id: "g1".into(),
+                    name: "G".into(),
+                    visible: false,
+                    order: 0.0,
+                }],
+                auth: CallerAuth::Local,
+                correlation_id: None,
+            },
+            DbCommand::GetPetalVisibilityGroups {
+                petal_id: "p1".into(),
+                correlation_id: Some("c".into()),
+            },
+            DbCommand::SetScopeHidden {
+                level: ScopeLevel::Fractal,
+                id: "f1".into(),
+                hidden: true,
+                auth: CallerAuth::Local,
+                correlation_id: None,
             },
         ] {
             let _ = format!("{:?}", cmd.clone());

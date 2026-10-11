@@ -36,6 +36,9 @@ pub(crate) fn render_gis_panel(
     path_state: &mut gis::PathEditorState,
     path_status: &PathEditStatus,
     cursor_world: &ViewportCursorWorld,
+    // VIS-PH5: the unified overlay registry's Group + ruler-overlay rows.
+    visibility: &crate::visibility::VisibilityState,
+    app_settings: &crate::settings::AppSettings,
 ) {
     if !gis_state.open {
         return;
@@ -98,7 +101,12 @@ pub(crate) fn render_gis_panel(
                 }
                 GisPanelTab::Layers => {
                     crate::panels::layer_manager_card::layer_manager_section(
-                        ui, petal_map, ui_mgr, &petal_id,
+                        ui,
+                        petal_map,
+                        ui_mgr,
+                        &petal_id,
+                        visibility,
+                        app_settings,
                     );
                 }
                 GisPanelTab::Paths => {

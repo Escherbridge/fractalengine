@@ -5,7 +5,9 @@
 //! idiom the verse header already established (`Layout::right_to_left`). All
 //! visibility state lives in `crate::visibility::VisibilityState`; this file
 //! only renders it and writes user clicks back — the resolver
-//! (`crate::visibility::resolve`) owns the actual precedence logic. See
+//! (`crate::visibility::resolve`) owns the actual precedence logic. Node eye
+//! clicks persist via `UiAction::SetNodeView`; node rows carry the D-8
+//! right-click menu (Isolate / Hide others / Show all). See
 //! `panels/AGENTS.md` §sidebar and `conductor/tracks/
 //! hierarchy_visibility_groups_20260808/spec.md` §4.
 
@@ -19,7 +21,7 @@ use crate::plugin::{CameraFocusTarget, SidebarState};
 use crate::theme;
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
 use crate::visibility::{self, NodeAncestry, OverrideState, VisibilityState};
-use fe_runtime::messages::DbCommand;
+use fe_runtime::messages::{DbCommand, ScopeLevel};
 
 pub(crate) fn left_sidebar(
     ctx: &egui::Context,
@@ -60,6 +62,7 @@ pub(crate) fn left_sidebar(
                         vis_state,
                     );
                     ui.add_space(8.0);
+                    sidebar_section_groups(ui, nav, ui_mgr, vis_state);
                     sidebar_section_space_overview(ui, dashboard);
                     ui.add_space(4.0);
                 });
@@ -266,7 +269,7 @@ fn render_verse_tree(
             nav.navigate_to_verse(verse_id.clone(), verse_name.clone());
         }
         if eye_clicked {
-            vis_state.toggle_verse_hidden(&verse_id);
+            push_scope_eye(ui_mgr, vis_state, ScopeLevel::Verse, &verse_id);
         }
     }
 
@@ -360,7 +363,7 @@ fn render_fractals(
             nav.navigate_to_fractal(fractal_id.clone(), fractal_name.clone());
         }
         if eye_clicked {
-            vis_state.toggle_fractal_hidden(&fractal_id);
+            push_scope_eye(ui_mgr, vis_state, ScopeLevel::Fractal, &fractal_id);
         }
     }
 }
@@ -386,16 +389,11 @@ fn render_petals(
         let own_visible =
             visibility::petal_effective_visible(&petal_id, fractal_id, verse_id, vis_state);
         let glyph = visibility::glyph_for_bool(own_visible);
-        // RATIFICATION #4: the ACTIVE petal's eye is disabled — you can't hide
-        // the petal you're standing in.
-        let eye_enabled = !is_active;
-        let eye_tooltip = if is_active {
-            "Can't hide the petal you're in"
-        } else if own_visible {
-            "Hide petal"
-        } else {
-            "Show petal"
-        };
+        let (eye_enabled, eye_tooltip) = petal_eye(
+            is_active,
+            own_visible,
+            vis_state.is_scope_hidden(ScopeLevel::Petal, &petal_id),
+        );
 
         let header_text = egui::RichText::new(&petal_name).color(if !own_visible {
             theme::TEXT_MUTED
@@ -463,11 +461,81 @@ fn render_petals(
             nav.navigate_to_petal(petal_id.clone());
         }
         if eye_clicked {
-            vis_state.toggle_petal_hidden(&petal_id);
+            push_scope_eye(ui_mgr, vis_state, ScopeLevel::Petal, &petal_id);
         }
     }
 }
 
+/// A petal eye's `(enabled, tooltip)`. RATIFICATION #4: the ACTIVE petal can't
+/// be hidden — but a petal persisted hidden and then entered can still be SHOWN
+/// (otherwise its contents stay hidden with a dead eye). Pure.
+fn petal_eye(is_active: bool, own_visible: bool, own_flag_hidden: bool) -> (bool, &'static str) {
+    match (is_active, own_flag_hidden) {
+        (true, true) => (true, "Show petal"),
+        (true, false) => (false, "Can't hide the petal you're in"),
+        (false, _) if own_visible => (true, "Hide petal"),
+        (false, _) => (true, "Show petal"),
+    }
+}
+
+/// Flip one verse/fractal/petal eye through the persisted producer
+/// (optimistic + authed `SetScopeHidden`, D-1).
+fn push_scope_eye(
+    ui_mgr: &mut UiManager,
+    vis_state: &VisibilityState,
+    level: ScopeLevel,
+    id: &str,
+) {
+    ui_mgr.push_action(UiAction::SetScopeHidden {
+        level,
+        id: id.to_string(),
+        hidden: !vis_state.is_scope_hidden(level, id),
+    });
+}
+
+/// A node row's right-click verb (D-8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeRowVerb {
+    Isolate,
+    HideOthers,
+    ShowAll,
+    /// Selects the row and reveals the right-sidebar Groups editor (D-10).
+    AddToGroup,
+}
+
+/// Apply a node-row menu verb: Isolate is session-only solo; Hide others and
+/// Show all persist through `UiAction::SetNodeView`.
+fn apply_node_row_verb(
+    verb: NodeRowVerb,
+    node_id: &str,
+    petal_node_ids: &[&str],
+    ancestry: NodeAncestry<'_>,
+    vis_state: &mut VisibilityState,
+    ui_mgr: &mut UiManager,
+) {
+    match verb {
+        NodeRowVerb::Isolate => {
+            vis_state.set_solo(std::collections::HashSet::from([node_id.to_string()]))
+        }
+        NodeRowVerb::HideOthers => visibility::hide_others_and_persist(
+            vis_state,
+            petal_node_ids.iter().copied(),
+            node_id,
+            ui_mgr,
+        ),
+        NodeRowVerb::ShowAll => visibility::show_all_and_persist(
+            vis_state,
+            ancestry,
+            petal_node_ids.iter().copied(),
+            ui_mgr,
+        ),
+        NodeRowVerb::AddToGroup => ui_mgr.push_action(UiAction::RevealSection {
+            slug: "groups".to_string(),
+        }),
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // one tree level: rows, selection, menu, eyes
 fn render_nodes(
     ui: &mut egui::Ui,
     nodes: &[NodeEntry],
@@ -481,6 +549,7 @@ fn render_nodes(
     let mut node_click: Option<(String, [f32; 3])> = None;
     let mut node_alt_click: Option<(String, String, String)> = None;
     let mut override_write: Option<(String, OverrideState)> = None;
+    let mut row_verb: Option<(String, NodeRowVerb)> = None;
 
     for node in nodes.iter() {
         let node_id = node.id.clone();
@@ -538,6 +607,21 @@ fn render_nodes(
             });
 
         let label_resp: egui::Response = row.inner;
+        if is_active_petal {
+            label_resp.context_menu(|ui| {
+                for (label, verb) in [
+                    ("Isolate", NodeRowVerb::Isolate),
+                    ("Hide others", NodeRowVerb::HideOthers),
+                    ("Show all", NodeRowVerb::ShowAll),
+                    ("Add selection to group…", NodeRowVerb::AddToGroup),
+                ] {
+                    if ui.button(label).clicked() {
+                        row_verb = Some((node_id.clone(), verb));
+                        ui.close();
+                    }
+                }
+            });
+        }
 
         let is_alt = ui.input(|inp| inp.modifiers.alt);
 
@@ -575,12 +659,23 @@ fn render_nodes(
         });
     }
 
-    // Apply the eye click's tri-state write (RATIFICATION #6 — Auto is
-    // represented by absence, keeping the map small; `set_node_override`
-    // handles that + bumps `VisibilityState::epoch` — see `visibility/mod.rs`
-    // module docs).
+    // Apply the eye click's tri-state write (RATIFICATION #6) through the
+    // persisted producer: optimistic session write + authed SetNodeView.
     if let Some((nid, next)) = override_write {
-        vis_state.set_node_override(&nid, next);
+        if next != vis_state.node_override(&nid) {
+            ui_mgr.push_action(UiAction::SetNodeView {
+                node_id: nid,
+                state: next,
+            });
+        }
+    }
+
+    if let Some((nid, verb)) = row_verb {
+        if verb == NodeRowVerb::AddToGroup {
+            node_mgr.pending_sidebar_select = Some(nid.clone());
+        }
+        let petal_node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        apply_node_row_verb(verb, &nid, &petal_node_ids, ancestry, vis_state, ui_mgr);
     }
 }
 
@@ -601,6 +696,77 @@ fn add_button_inline(
                 kind,
                 parent_id: parent_id.to_string(),
                 name_buf: String::new(),
+            });
+        }
+    });
+}
+
+/// Collapsed "Groups" section (D-10): the active petal's Groups with their eye
+/// + member count — read + toggle only; editing lives in the right sidebar.
+fn sidebar_section_groups(
+    ui: &mut egui::Ui,
+    nav: &NavigationManager,
+    ui_mgr: &mut UiManager,
+    vis_state: &VisibilityState,
+) {
+    let Some(petal_id) = nav.active_petal_id.as_deref() else {
+        return;
+    };
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Groups")
+            .strong()
+            .color(theme::TEXT_SECTION),
+    )
+    .default_open(false)
+    .show(ui, |ui| {
+        let groups = vis_state.groups();
+        if groups.is_empty() {
+            ui.label(
+                egui::RichText::new("No Groups in this petal.")
+                    .small()
+                    .italics()
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+        for group in groups {
+            ui.horizontal(|ui| {
+                let members = vis_state.group_member_count(&group.id);
+                let name_color = if group.visible {
+                    theme::TEXT_STRONG
+                } else {
+                    theme::TEXT_MUTED
+                };
+                ui.label(egui::RichText::new(&group.name).color(name_color));
+                ui.label(
+                    egui::RichText::new(format!("({members})"))
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let tooltip = if group.visible {
+                        "Hide this Group"
+                    } else {
+                        "Show this Group"
+                    };
+                    if eye_button(ui, visibility::glyph_for_bool(group.visible), true, tooltip) {
+                        ui_mgr.push_action(UiAction::SetGroupRegistry {
+                            petal_id: petal_id.to_string(),
+                            groups: visibility::groups::with_group_visible(
+                                groups,
+                                &group.id,
+                                !group.visible,
+                            ),
+                        });
+                    }
+                });
+            });
+        }
+        if ui
+            .add(egui::Button::new("Manage Groups…").small())
+            .clicked()
+        {
+            ui_mgr.push_action(UiAction::RevealSection {
+                slug: "groups".to_string(),
             });
         }
     });
@@ -631,4 +797,36 @@ fn sidebar_section_space_overview(ui: &mut egui::Ui, dashboard: &DashboardState)
             });
         ui.add_space(4.0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::petal_eye;
+
+    #[test]
+    fn the_active_petal_can_be_shown_but_never_hidden() {
+        // (is_active, own_visible, own_flag_hidden) -> (enabled, tooltip)
+        let cases = [
+            (
+                (true, true, false),
+                (false, "Can't hide the petal you're in"),
+            ),
+            // Persisted hidden, then entered: the eye must stay usable to show it.
+            ((true, false, true), (true, "Show petal")),
+            // Hidden only through a hidden fractal/verse: fix it up there.
+            (
+                (true, false, false),
+                (false, "Can't hide the petal you're in"),
+            ),
+            ((false, true, false), (true, "Hide petal")),
+            ((false, false, true), (true, "Show petal")),
+        ];
+        for ((active, visible, flag), expected) in cases {
+            assert_eq!(
+                petal_eye(active, visible, flag),
+                expected,
+                "{active} {visible} {flag}"
+            );
+        }
+    }
 }

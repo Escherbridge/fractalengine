@@ -21,6 +21,8 @@ pub(crate) mod curve;
 mod dispatch;
 mod gimbal_interaction;
 mod inspector_sync;
+/// hexon_scale FR-9 Measure tool: Tape/Area reducer + viewport anchors. See AGENTS.md §measure-tool.
+pub mod measure;
 /// FR-3 drag: gimbal-drag a selected path vertex/segment. See AGENTS.md §dispatch.
 mod path_gimbal_drag;
 /// FR-5 (pen_curve_tool_20260722): bezier-handle markers + drag. See AGENTS.md §pen-tool.
@@ -266,6 +268,7 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<NodeManager>();
         app.init_resource::<router::ClickArbiter>();
         app.init_resource::<brush_interaction::BrushGesture>();
+        app.init_resource::<measure::MeasureState>();
         app.init_resource::<path_point_interaction::PathPointDrag>();
         app.init_resource::<path_point_interaction::PenHandleDrag>();
         app.init_resource::<path_handle_interaction::PathHandleDrag>();
@@ -281,9 +284,15 @@ impl Plugin for NodeManagerPlugin {
                 sidebar_sync::sync_sidebar_to_manager,
                 router::resolve_pointer_frame, // arbitrate left-click ownership for this frame (first)
                 // This registration order is NORMATIVE for `ClickPriority` (D14-A):
-                // Brush claims 2nd, ahead of every other consumer, while active.
-                brush_interaction::handle_brush_interaction, // Brush owns viewport gestures while active
-                gimbal_interaction::update_hovered_axis,     // hover detection (before interaction)
+                // Brush claims 2nd, ahead of every other consumer, while active;
+                // Measure claims right after it (nested only to stay within Bevy's
+                // 20-element tuple limit — the inner `.chain()` keeps the order).
+                (
+                    brush_interaction::handle_brush_interaction, // Brush owns viewport gestures while active
+                    measure::handle_measure_interaction, // Measure places anchors while active
+                )
+                    .chain(),
+                gimbal_interaction::update_hovered_axis, // hover detection (before interaction)
                 path_handle_interaction::sync_path_handle_markers, // keep handle markers current before their pick
                 path_handle_interaction::handle_path_handle_interaction, // claims PathHandle FIRST — Q7 handle > vertex > gimbal
                 path_gimbal_drag::handle_path_gimbal_drag, // FR-3: claims Gimbal FIRST for a selected vertex/segment
@@ -312,6 +321,7 @@ impl Plugin for NodeManagerPlugin {
                 path_segment_interaction::sync_path_measurements
                     .after(path_segment_interaction::handle_path_segment_interaction)
                     .before(inspector_sync::sync_manager_to_inspector),
+                measure::draw_measure_overlay.after(measure::handle_measure_interaction),
             )
                 .in_set(UiSet::Selection),
         );

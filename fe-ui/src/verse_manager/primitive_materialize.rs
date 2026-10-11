@@ -148,7 +148,7 @@ pub(super) fn materialize_cached_primitives(
     // = active petal is the near region; per-frame taper is the ledger's job.
     let ceiling = super::spawn::distance_ranked_allowance(
         0.0,
-        residency.settings.render_distance,
+        residency.render_distance_for(petal_id),
         residency
             .settings
             .entity_cap

@@ -80,7 +80,13 @@ define_table! {
         #[serde(skip_serializing_if = "Option::is_none")]
         hexon_manifest: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
         #[serde(skip_serializing_if = "Option::is_none")]
-        terrain: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE"
+        terrain: Option<serde_json::Value> => "TYPE option<object> FLEXIBLE",
+        /// Visibility-Group registry `[{id, name, visible, order}]` (VIS-PH4, D-3).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        visibility_groups: Option<serde_json::Value> => "TYPE option<array<object>> FLEXIBLE",
+        /// Persisted petal eye (VIS-PH4); `NONE` = visible.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        view_hidden: Option<bool> => "TYPE option<bool>"
     }
 }
 
@@ -146,7 +152,10 @@ define_table! {
         /// M2/F6: durability slider R (1..N); hosts per shard in balanced mode.
         ts_replication_factor:   i64    => "TYPE int DEFAULT 1",
         /// M2/F6: shard bucket width (ms), epoch-aligned; default 1 day.
-        ts_bucket_width_ms:       i64    => "TYPE int DEFAULT 86400000"
+        ts_bucket_width_ms:       i64    => "TYPE int DEFAULT 86400000",
+        /// Persisted verse eye (VIS-PH4, D-1); `NONE` = visible.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        view_hidden: Option<bool> => "TYPE option<bool>"
     }
 }
 
@@ -173,7 +182,10 @@ define_table! {
         owner_did:   String         => "TYPE string",
         name:        String         => "TYPE string",
         description: Option<String> => "TYPE option<string>",
-        created_at:  String         => "TYPE string"
+        created_at:  String         => "TYPE string",
+        /// Persisted fractal eye (VIS-PH4, D-1); `NONE` = visible.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        view_hidden: Option<bool> => "TYPE option<bool>"
     }
 }
 
@@ -387,6 +399,13 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<VerseMemberRow>::apply_schema(db).await?;
     Repo::<Fractal>::apply_schema(db).await?;
     Repo::<Petal>::apply_schema(db).await?;
+    // VIS-PH4: see AGENTS.md §schema-macro "array<object> FLEXIBLE" — the
+    // auto-created element field must be re-declared FLEXIBLE (OVERWRITE is
+    // idempotent; IF NOT EXISTS would silently skip the auto-created one).
+    db.query("DEFINE FIELD OVERWRITE visibility_groups[*] ON TABLE petal TYPE object FLEXIBLE")
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("petal.visibility_groups element: {e}"))?;
     Repo::<Room>::apply_schema(db).await?;
     Repo::<Model>::apply_schema(db).await?;
     Repo::<Role>::apply_schema(db).await?;

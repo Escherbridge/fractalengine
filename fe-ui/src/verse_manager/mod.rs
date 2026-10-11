@@ -31,9 +31,12 @@ pub use path_asset_materialize::{
 };
 // T4 right-click classification: the stamp marker-id format + the per-instance
 // marker component, consumed by `node_manager::context_pick`.
+/// Hard never-crash backstops that `settings::sanitize` clamps the soft caps to.
+pub(crate) use path_asset_materialize::MAX_STAMPS_PER_PETAL;
 pub(crate) use path_asset_materialize::{parse_stamp_marker_id, stamp_marker_id};
 pub use primitive_materialize::PrimitiveDescriptorCache;
 pub use primitive_reconcile::PrimitiveMaterialAssets;
+pub(crate) use spawn::MAX_PETAL_NODES;
 pub use spawn::{build_primitive_mesh, PathAssetInstance, PrimitiveNode};
 
 // ---------------------------------------------------------------------------

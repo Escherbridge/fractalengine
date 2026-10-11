@@ -52,10 +52,9 @@ const MAX_TILE_VERTICES: usize = 1_100_000;
 /// see fe-renderer `src/AGENTS.md` §terrain-height.
 const MAX_HEIGHT_GRID_AXIS: usize = 65;
 
-/// Interim cap on proposal ghost meshes per petal (NFR-2). The true residency
-/// budget (`spawn_allowance`/`mesh_instance_watchdog`) lives in the fractalengine
-/// binary; see `render_terrain_proposals` for the TODO seam.
-const MAX_PROPOSAL_OVERLAYS: usize = 4_096;
+/// Hard per-petal cap on proposal ghost meshes (NFR-2); the live allowance
+/// arrives via [`ProposalOverlayBudget`]. See `src/AGENTS.md` §terrain-proposals.
+pub const MAX_PROPOSAL_OVERLAYS: usize = 4_096;
 
 /// Take up to `requested` features from an overlay's shared budget.
 fn take_feature_budget(remaining: &mut usize, requested: usize) -> usize {
@@ -126,6 +125,11 @@ pub struct LayerEntity {
     pub layer_id: LayerId,
 }
 
+/// A GPX ribbon its own style hides (`gis.track.visible = false`): a layer
+/// toggle must never un-hide it (`sync_layer_visibility`).
+#[derive(Component)]
+pub struct StyleHidden;
+
 /// Marker component for spawned terrain chunk entities.
 #[derive(Component)]
 pub struct TerrainChunk {
@@ -166,11 +170,36 @@ pub struct ProposalOverlayEntity {
     pub proposal_id: String,
 }
 
-/// Tracks the assignment revision the proposal ghosts were last built for, so
-/// they rebuild only when the petal's proposals actually change.
+/// Bookkeeping for the last proposal-ghost build: the revision it served, which
+/// proposals it built, how many footprint vertices were grounded, and whether
+/// the budget truncated it. See `src/AGENTS.md` §terrain-proposals.
 #[derive(Resource, Default)]
 pub struct ProposalRenderState {
     last_revision: Option<u64>,
+    /// Indices into `config.proposals` of the ghosts currently resident.
+    built: Vec<usize>,
+    /// Some built ghost used the no-base fallback height (awaits terrain).
+    ungrounded: bool,
+    /// Grounded footprint vertices across `built` at build time.
+    grounded_vertices: usize,
+    /// The build stopped early at the overlay allowance.
+    truncated: bool,
+}
+
+/// Mesh-residency allowance for NEW proposal ghosts (NFR-2): the headroom under
+/// the app's mesh-instance ceiling, written by the binary's budget bridge.
+/// Defaults to [`MAX_PROPOSAL_OVERLAYS`] when no bridge runs.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProposalOverlayBudget {
+    pub allowance: usize,
+}
+
+impl Default for ProposalOverlayBudget {
+    fn default() -> Self {
+        Self {
+            allowance: MAX_PROPOSAL_OVERLAYS,
+        }
+    }
 }
 
 /// Chunk marker: earthwork regions were last baked into this chunk's mesh at
@@ -250,6 +279,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ActiveTileSource>()
             .init_resource::<FailedTiles>()
             .init_resource::<ProposalRenderState>()
+            .init_resource::<ProposalOverlayBudget>()
             .init_resource::<EarthworkBakeState>()
             .insert_resource(LayerStack::new())
             .add_message::<TerrainAssignmentMsg>()
@@ -371,7 +401,7 @@ fn update_terrain_lod(
 /// Offline-first chunk spawning: an adaptive tile ring (frustum-sized, nearest-first)
 /// around the camera at the desired zoom; see AGENTS.md §terrain_plugin.
 #[allow(clippy::too_many_arguments)]
-fn fetch_and_spawn_terrain_chunks(
+pub fn fetch_and_spawn_terrain_chunks(
     camera_query: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
     chunk_query: Query<&TerrainChunk>,
     lod_config: Res<TerrainLodConfig>,
@@ -795,18 +825,22 @@ fn render_gpx_tracks(
         // toggle isn't a cheap in-place `Visibility` flip — it persists the
         // `gis.track.visible` prop, which despawns+respawns the `GpxTrackLine`
         // via the bridge and re-runs this build, same as a color/width change.
-        e.try_insert(if style.visible {
+        // Per-source `gpx_track` layer, else the category layer (§petal_binding
+        // "Category layers"): the ribbon shows only if BOTH its style and that
+        // layer are visible. Applied here too because a re-assignment rebuilds
+        // ribbons after `sync_layer_visibility`'s change-gated pass has run.
+        let layer = crate::layers::gpx_layer_for(&layer_stack, &track.track_node_id);
+        let layer_visible = layer.is_none_or(|l| l.visible);
+        e.try_insert(if style.visible && layer_visible {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         });
-
-        let layer_id = find_layer(
-            &layer_stack,
-            |t| matches!(t, LayerType::GpxTrack { node_id, .. } if node_id == &track.track_node_id),
-        );
-        if let Some(layer_id) = layer_id {
-            e.try_insert(LayerEntity { layer_id });
+        if !style.visible {
+            e.try_insert(StyleHidden);
+        }
+        if let Some(layer) = layer {
+            e.try_insert(LayerEntity { layer_id: layer.id });
         }
     }
 }
@@ -872,10 +906,14 @@ fn render_geojson_overlays(
             }
         };
 
-        let layer_id = find_layer(
-            &layer_stack,
-            |t| matches!(t, LayerType::GeoJsonOverlay { source_path } if source_path == &overlay.source_path),
-        );
+        // Per-source `geojson_overlay` layer, else the category layer.
+        let layer = crate::layers::geojson_layer_for(&layer_stack, &overlay.source_path);
+        let layer_id = layer.map(|l| l.id);
+        let initial_visibility = if layer.is_none_or(|l| l.visible) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
 
         // One shared budget across the three feature kinds so a huge overlay
         // saturates instead of spawning millions of entities.
@@ -916,7 +954,7 @@ fn render_geojson_overlays(
                 GeoJsonProcessed,
             ));
             if let Some(layer_id) = layer_id {
-                child.insert(LayerEntity { layer_id });
+                child.insert((LayerEntity { layer_id }, initial_visibility));
             }
         }
 
@@ -944,7 +982,7 @@ fn render_geojson_overlays(
                 GeoJsonProcessed,
             ));
             if let Some(layer_id) = layer_id {
-                child.insert(LayerEntity { layer_id });
+                child.insert((LayerEntity { layer_id }, initial_visibility));
             }
         }
 
@@ -968,41 +1006,109 @@ fn render_geojson_overlays(
                 GeoJsonProcessed,
             ));
             if let Some(layer_id) = layer_id {
-                child.insert(LayerEntity { layer_id });
+                child.insert((LayerEntity { layer_id }, initial_visibility));
             }
         }
     }
 }
 
+/// Footprint vertices of `proposal` whose ghost height rests on a real base
+/// sample (all of them for an absolute Flatten/Level with a target).
+fn proposal_grounded_vertices(
+    base: &impl Fn(f32, f32) -> Option<f32>,
+    proposal: &crate::terrain_proposal::TerrainProposal,
+) -> usize {
+    use crate::terrain_proposal::TerrainOp;
+    let absolute = matches!(proposal.op, TerrainOp::Flatten | TerrainOp::Level)
+        && proposal.target_height.is_some();
+    if absolute {
+        return proposal.footprint.len();
+    }
+    proposal
+        .footprint
+        .iter()
+        .filter(|&&[x, z]| base(x, z).is_some())
+        .count()
+}
+
+/// Ghost-set rebuild gate: a new assignment revision, newly grounded footprint
+/// vertices (chunks arrived under an ungrounded ghost), or more budget for a
+/// truncated set.
+fn proposals_need_rebuild(
+    last_revision: Option<u64>,
+    revision: u64,
+    coverage_grew: bool,
+    truncated: bool,
+    budget_grew: bool,
+) -> bool {
+    last_revision != Some(revision) || coverage_grew || (truncated && budget_grew)
+}
+
+/// Ghosts a rebuild may hold: the new-spawn allowance plus the resident ghosts
+/// the rebuild despawns first, hard-capped at [`MAX_PROPOSAL_OVERLAYS`].
+fn proposal_overlay_capacity(allowance: usize, resident: usize) -> usize {
+    allowance
+        .saturating_add(resident)
+        .min(MAX_PROPOSAL_OVERLAYS)
+}
+
 /// Render non-destructive terrain proposals as ghosted/tinted meshes over the
-/// READ-ONLY [`TerrainHeightField`] (FR-5, NFR-1). Rebuilds only when the petal's
-/// assignment revision changes (proposal edits round-trip through
-/// `apply_terrain_assignments`). Tagged to the `ProposalOverlay` layer for
-/// visibility; capped by `MAX_PROPOSAL_OVERLAYS` (NFR-2 interim). See
-/// `src/AGENTS.md` §terrain-proposals.
+/// READ-ONLY [`TerrainHeightField`] (FR-5, NFR-1). Rebuilds on an assignment
+/// revision change, when terrain chunks ground a ghost built on the no-base
+/// fallback, or when the residency budget grows under a truncated set. Tagged
+/// to the `ProposalOverlay` layer for visibility; bounded by
+/// [`ProposalOverlayBudget`] (NFR-2). See `src/AGENTS.md` §terrain-proposals.
 #[allow(clippy::too_many_arguments)]
 fn render_terrain_proposals(
     active: Res<ActivePetalTerrain>,
     layer_stack: Res<LayerStack>,
     height_field: Option<Res<TerrainHeightField>>,
+    budget: Res<ProposalOverlayBudget>,
     existing: Query<Entity, With<ProposalOverlayEntity>>,
     mut state: ResMut<ProposalRenderState>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Revision-gated: skip unless the active assignment changed since last build.
-    if state.last_revision == Some(active.revision) {
+    let config = active.config.as_ref().filter(|c| c.enabled);
+    // READ-ONLY base sampler over the true heightfield — NEVER mutated (NFR-1).
+    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
+
+    let capacity = proposal_overlay_capacity(budget.allowance, state.built.len());
+    // Re-ground check samples only while a ghost awaits terrain and chunks moved.
+    let coverage_grew = state.ungrounded
+        && height_field.as_ref().is_some_and(|f| f.is_changed())
+        && config.is_some_and(|c| {
+            let grounded: usize = state
+                .built
+                .iter()
+                .filter_map(|&i| c.proposals.get(i))
+                .map(|p| proposal_grounded_vertices(&base, p))
+                .sum();
+            grounded > state.grounded_vertices
+        });
+    if !proposals_need_rebuild(
+        state.last_revision,
+        active.revision,
+        coverage_grew,
+        state.truncated,
+        capacity > state.built.len(),
+    ) {
         return;
     }
+    let state = &mut *state;
     state.last_revision = Some(active.revision);
+    state.built.clear();
+    state.ungrounded = false;
+    state.grounded_vertices = 0;
+    state.truncated = false;
 
-    // Sole despawner of proposal ghosts: clear the previous petal's set.
+    // Sole despawner of proposal ghosts: clear the previous build.
     for entity in existing.iter() {
         commands.entity(entity).despawn();
     }
 
-    let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+    let Some(config) = config else {
         return;
     };
     if config.proposals.is_empty() {
@@ -1011,20 +1117,17 @@ fn render_terrain_proposals(
 
     let layer_id = find_layer(&layer_stack, |t| matches!(t, LayerType::ProposalOverlay));
 
-    // READ-ONLY base sampler over the true heightfield — NEVER mutated (NFR-1).
-    let base = |x: f32, z: f32| height_field.as_ref().and_then(|f| f.height_at(x, z));
-
-    let mut remaining = MAX_PROPOSAL_OVERLAYS;
-    for proposal in &config.proposals {
+    for (index, proposal) in config.proposals.iter().enumerate() {
         // T3: earthwork regions bake into the chunk meshes (`bake_earthwork_regions`)
         // — never double-visualize records that pass the complete region predicate.
         if proposal.is_earthwork_region() {
             continue;
         }
-        if remaining == 0 {
+        if state.built.len() >= capacity {
+            state.truncated = true;
             tracing::warn!(
-                cap = MAX_PROPOSAL_OVERLAYS,
-                "proposal overlays saturated cap; truncating"
+                cap = capacity,
+                "proposal overlays reached the residency budget; truncating"
             );
             break;
         }
@@ -1033,7 +1136,10 @@ fn render_terrain_proposals(
         else {
             continue;
         };
-        remaining -= 1;
+        let grounded = proposal_grounded_vertices(&base, proposal);
+        state.grounded_vertices += grounded;
+        state.ungrounded |= grounded < proposal.footprint.len();
+        state.built.push(index);
 
         let mut mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -1057,15 +1163,6 @@ fn render_terrain_proposals(
             entity.insert(LayerEntity { layer_id });
         }
     }
-    // TODO(ultrapilot): route these spawns through the residency mesh budget
-    // (`spawn_allowance` / `mesh_instance_watchdog`, NFR-2) — those live in the
-    // fractalengine binary and are unreachable from fe-terrain. MAX_PROPOSAL_OVERLAYS
-    // is the interim per-petal cap until that bridge exists.
-    // TODO(ultrapilot): revision-gate means a relative-op ghost built before the
-    // height field has coverage stays at its `target`/0.0 fallback; rebuild (or
-    // re-ground) when terrain chunks arrive for the footprint. (Earthwork regions
-    // do NOT share this gap: `bake_earthwork_regions` re-bakes late-arriving
-    // chunks via the per-chunk `EarthworkBaked` marker.)
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,26 +1450,30 @@ fn bake_earthwork_regions(
     }
 }
 
+/// A layer-bound entity's visibility, optional material, and style-hidden flag.
+type LayerBoundEntity = (
+    &'static LayerEntity,
+    &'static mut Visibility,
+    Option<&'static MeshMaterial3d<StandardMaterial>>,
+    Has<StyleHidden>,
+);
+
 /// Synchronize [`LayerStack`] visibility/opacity to layer-bound entities (on change only).
 fn sync_layer_visibility(
     layer_stack: Res<LayerStack>,
-    mut query: Query<(
-        &LayerEntity,
-        &mut Visibility,
-        Option<&MeshMaterial3d<StandardMaterial>>,
-    )>,
+    mut query: Query<LayerBoundEntity>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if !layer_stack.is_changed() {
         return;
     }
 
-    for (layer_entity, mut visibility, material_handle) in query.iter_mut() {
+    for (layer_entity, mut visibility, material_handle, style_hidden) in query.iter_mut() {
         let Some(layer) = layer_stack.get_layer(layer_entity.layer_id) else {
             continue;
         };
 
-        *visibility = if layer.visible {
+        *visibility = if layer.visible && !style_hidden {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -1641,6 +1742,225 @@ mod tests {
         assert!(
             z_scaled < z_unscaled,
             "inverting scale must pick a lower zoom"
+        );
+    }
+
+    // --- proposal ghost rebuild gate + residency budget (TERRAIN-REGROUND/RESIDENCY) ---
+
+    use crate::terrain_proposal::{TerrainOp, TerrainProposal};
+    use fe_renderer::terrain_height::HeightTile;
+
+    fn square_proposal(id: &str, op: TerrainOp, origin: f32) -> TerrainProposal {
+        TerrainProposal {
+            id: id.into(),
+            op,
+            footprint: vec![
+                [origin, origin],
+                [origin + 10.0, origin],
+                [origin + 10.0, origin + 10.0],
+                [origin, origin + 10.0],
+            ],
+            target_height: None,
+            delta: Some(2.0),
+            material: None,
+        }
+    }
+
+    /// Flat 2x2 height tile at `anchor` (ground height = `anchor.y`).
+    fn flat_tile(anchor: Vec3, tile_size: f32) -> HeightTile {
+        HeightTile {
+            anchor,
+            tile_size,
+            grid: vec![0.0; 4],
+            width: 2,
+            height: 2,
+        }
+    }
+
+    /// Headless app running only `render_terrain_proposals` over `proposals`.
+    fn proposal_app(proposals: Vec<TerrainProposal>, allowance: usize) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<ProposalRenderState>()
+            .insert_resource(ProposalOverlayBudget { allowance })
+            .insert_resource(LayerStack::new())
+            .insert_resource(TerrainHeightField::default())
+            .insert_resource(ActivePetalTerrain {
+                petal_id: Some("petal".into()),
+                config: Some(TerrainConfig {
+                    enabled: true,
+                    proposals,
+                    ..TerrainConfig::default()
+                }),
+                revision: 1,
+            })
+            .add_systems(Update, render_terrain_proposals);
+        app
+    }
+
+    /// Resident ghosts as `(entity, proposal_id, vertex Ys)`, sorted by id.
+    fn ghosts(app: &mut App) -> Vec<(Entity, String, Vec<f32>)> {
+        let world = app.world_mut();
+        let mut query = world.query::<(Entity, &Mesh3d, &ProposalOverlayEntity)>();
+        let rows: Vec<(Entity, Handle<Mesh>, String)> = query
+            .iter(world)
+            .map(|(e, m, p)| (e, m.0.clone(), p.proposal_id.clone()))
+            .collect();
+        let meshes = world.resource::<Assets<Mesh>>();
+        let mut out: Vec<_> = rows
+            .into_iter()
+            .map(|(e, handle, id)| {
+                let ys = meshes
+                    .get(&handle)
+                    .and_then(|m| m.attribute(Mesh::ATTRIBUTE_POSITION))
+                    .and_then(|a| a.as_float3())
+                    .map(|p| p.iter().map(|v| v[1]).collect())
+                    .unwrap_or_default();
+                (e, id, ys)
+            })
+            .collect();
+        out.sort_by(|a, b| a.1.cmp(&b.1));
+        out
+    }
+
+    #[test]
+    fn relative_ghost_regrounds_once_covering_chunks_arrive() {
+        let mut app = proposal_app(vec![square_proposal("p", TerrainOp::Raise, 10.0)], 64);
+        app.update();
+        let before = ghosts(&mut app);
+        assert_eq!(before.len(), 1);
+        assert!(
+            before[0].2.iter().all(|y| *y == 0.0),
+            "no terrain yet -> 0.0 fallback: {:?}",
+            before[0].2
+        );
+
+        // A chunk that misses the footprint changes the field but grounds nothing.
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 9, 9), flat_tile(Vec3::new(1000.0, 5.0, 1000.0), 100.0));
+        app.update();
+        assert_eq!(
+            ghosts(&mut app)[0].0,
+            before[0].0,
+            "no rebuild without coverage"
+        );
+
+        // The covering chunk arrives -> the ghost rebuilds onto base + delta.
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 0, 0), flat_tile(Vec3::new(0.0, 5.0, 0.0), 100.0));
+        app.update();
+        let grounded = ghosts(&mut app);
+        assert_eq!(grounded.len(), 1);
+        assert_ne!(grounded[0].0, before[0].0, "ghost replaced");
+        assert!(
+            grounded[0].2.iter().all(|y| (*y - 7.0).abs() < 1e-5),
+            "ghost sits at base 5 + delta 2: {:?}",
+            grounded[0].2
+        );
+
+        // Steady state: idle frames and further chunk churn keep the same entity.
+        app.update();
+        app.world_mut()
+            .resource_mut::<TerrainHeightField>()
+            .insert((10, 1, 1), flat_tile(Vec3::new(-500.0, 1.0, -500.0), 100.0));
+        app.update();
+        assert_eq!(
+            ghosts(&mut app)[0].0,
+            grounded[0].0,
+            "grounded ghost never churns"
+        );
+    }
+
+    #[test]
+    fn proposal_ghosts_stop_at_the_residency_budget_and_grow_with_it() {
+        let proposals: Vec<_> = (0..5)
+            .map(|i| square_proposal(&format!("p{i}"), TerrainOp::Raise, i as f32 * 20.0))
+            .collect();
+        let mut app = proposal_app(proposals, 2);
+        app.update();
+        let first = ghosts(&mut app);
+        assert_eq!(first.len(), 2, "allowance 2 -> exactly 2 ghosts");
+
+        // Budget exhausted: no growth and no churn.
+        app.world_mut()
+            .resource_mut::<ProposalOverlayBudget>()
+            .allowance = 0;
+        app.update();
+        let idle: Vec<Entity> = ghosts(&mut app).iter().map(|g| g.0).collect();
+        assert_eq!(idle, first.iter().map(|g| g.0).collect::<Vec<_>>());
+
+        // Headroom appears -> the truncated set rebuilds to the full 5.
+        app.world_mut()
+            .resource_mut::<ProposalOverlayBudget>()
+            .allowance = 10;
+        app.update();
+        assert_eq!(ghosts(&mut app).len(), 5);
+
+        // At the ceiling, a proposal edit may re-spend the resident ghosts'
+        // slots but never spawn past them.
+        app.world_mut()
+            .resource_mut::<ProposalOverlayBudget>()
+            .allowance = 0;
+        {
+            let mut active = app.world_mut().resource_mut::<ActivePetalTerrain>();
+            let config = active.config.as_mut().unwrap();
+            config
+                .proposals
+                .push(square_proposal("p5", TerrainOp::Raise, 200.0));
+            active.revision += 1;
+        }
+        app.update();
+        assert_eq!(ghosts(&mut app).len(), 5, "edit at the ceiling holds at 5");
+    }
+
+    #[test]
+    fn grounded_vertices_count_base_samples_except_absolute_level() {
+        let half = |x: f32, _z: f32| (x < 15.0).then_some(1.0);
+        let none = |_x: f32, _z: f32| None;
+        let raise = square_proposal("r", TerrainOp::Raise, 10.0);
+        assert_eq!(proposal_grounded_vertices(&half, &raise), 2);
+        assert_eq!(proposal_grounded_vertices(&none, &raise), 0);
+        let mut flatten = square_proposal("f", TerrainOp::Flatten, 10.0);
+        assert_eq!(proposal_grounded_vertices(&none, &flatten), 0, "no target");
+        flatten.target_height = Some(3.0);
+        assert_eq!(proposal_grounded_vertices(&none, &flatten), 4, "absolute");
+        let mut pad = square_proposal("p", TerrainOp::Pad, 10.0);
+        pad.target_height = Some(3.0);
+        assert_eq!(
+            proposal_grounded_vertices(&none, &pad),
+            0,
+            "pad = max(base, target) still depends on base"
+        );
+    }
+
+    #[test]
+    fn rebuild_gate_and_capacity_table() {
+        // (last_revision, revision, coverage_grew, truncated, budget_grew, rebuild)
+        let cases = [
+            (None, 1, false, false, false, true),
+            (Some(1), 2, false, false, false, true),
+            (Some(1), 1, false, false, false, false),
+            (Some(1), 1, true, false, false, true),
+            (Some(1), 1, false, true, false, false),
+            (Some(1), 1, false, false, true, false),
+            (Some(1), 1, false, true, true, true),
+        ];
+        for (last, rev, cov, trunc, grew, want) in cases {
+            assert_eq!(
+                proposals_need_rebuild(last, rev, cov, trunc, grew),
+                want,
+                "{last:?} {rev} {cov} {trunc} {grew}"
+            );
+        }
+        assert_eq!(proposal_overlay_capacity(2, 3), 5);
+        assert_eq!(proposal_overlay_capacity(0, 0), 0);
+        assert_eq!(
+            proposal_overlay_capacity(usize::MAX, 7),
+            MAX_PROPOSAL_OVERLAYS
         );
     }
 }

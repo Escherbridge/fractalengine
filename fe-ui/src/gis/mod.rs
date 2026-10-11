@@ -8,8 +8,8 @@ mod layers;
 mod query;
 
 pub(crate) use layers::{
-    layer_entries_from_terrain_json, set_layer_field, set_view_mode_field,
-    view_mode_from_terrain_json, ViewMode,
+    apply_app_overlay, apply_overlay_toggle, overlay_registry, set_layer_field,
+    set_view_mode_field, view_mode_from_terrain_json, OverlayEntry, OverlayKey, ViewMode,
 };
 pub(crate) use query::{
     annotation_query, bbox_contains, decode_gpx_points, parse_bbox_fields, parse_filter_value,

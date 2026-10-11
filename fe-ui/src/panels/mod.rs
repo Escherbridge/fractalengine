@@ -123,6 +123,8 @@ pub fn gardener_console(
     // state — sidebar eye toggles read/write it, the status bar reads the
     // effectively-hidden count off it. See `visibility/mod.rs`.
     vis_state: &mut crate::visibility::VisibilityState,
+    // hexon_scale FR-9: Measure tool anchors, edited by the Options Measure arm.
+    measure_state: &mut crate::node_manager::measure::MeasureState,
 ) -> egui::Rect {
     // Repair conditional editor state; see `panels/AGENTS.md` §numeric-boundary.
     path_editor_card::sanitize_path_editor_numeric_state(path_state);
@@ -198,6 +200,8 @@ pub fn gardener_console(
             app_settings,
             ts_settings,
             tool,
+            measure_state,
+            vis_state,
         )
     });
 
@@ -330,6 +334,8 @@ pub fn gardener_console(
             path_state,
             path_status,
             cursor_world,
+            vis_state,
+            app_settings,
         )
     });
 
@@ -456,6 +462,7 @@ mod tests {
         };
         let mut modal = crate::ui_shell::modal::ModalManagerState::default();
         let mut vis_state = crate::visibility::VisibilityState::default();
+        let mut measure_state = crate::node_manager::measure::MeasureState::default();
 
         {
             let mut render = |section: Option<RightSidebarSection>, active_tool: Tool| {
@@ -501,6 +508,7 @@ mod tests {
                         &mut right,
                         &mut modal,
                         &mut vis_state,
+                        &mut measure_state,
                     );
                 });
             };
@@ -512,7 +520,13 @@ mod tests {
             }
             // Plus every Options arm — the dispatcher is the new numeric
             // boundary for the pen/stamp/sculpt buffers (D6-B/D7/D8).
-            for t in [Tool::Select, Tool::Move, Tool::Pen, Tool::Brush] {
+            for t in [
+                Tool::Select,
+                Tool::Move,
+                Tool::Pen,
+                Tool::Brush,
+                Tool::Measure,
+            ] {
                 render(Some(RightSidebarSection::Options), t);
             }
         }

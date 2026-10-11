@@ -66,11 +66,11 @@ inline in `dispatch_commands`.
 - `position_overlay_system` is a change-detection shell today. Sprint-4 plan:
   project the selected model's AABB to screen space and drive
   `surface.position()`; the projection math waits on wry surface integration.
-- Two activation tests (`selecting_model_with_allowed_url_sets_active_portal`,
-  `selecting_model_with_no_url_sets_active_portal_but_no_navigate`) are
-  `#[ignore = "needs full Bevy app (validation phase)"]` stubs:
-  `MessageWriter`-driven activation needs a full Bevy app, so the behavior is
-  exercised at the validation phase rather than in unit tests.
+- Activation is covered headlessly: the two activation tests spawn a
+  `(ModelUrlMeta, Selected)` entity in a `MinimalPlugins` app and drain
+  `Messages<BrowserCommand>` after one frame (no backend system consumes them
+  in that app), asserting `Navigate` + `SwitchTab{ExternalUrl}` for an allowed
+  URL and neither for absent/empty/policy-blocked URLs.
 
 ## §security — security.rs
 

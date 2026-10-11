@@ -925,3 +925,78 @@ fn ui_and_api_tombstones_write_the_same_op_log_entry() {
         );
     }
 }
+
+// --- N-9 (stamped_asset_nodes Ph2): stamps cost zero rows until promoted ---
+
+impl Harness {
+    /// Live (non-tombstoned) `node` rows in `petal_id` matching `extra` SQL.
+    fn count_live_nodes(&self, petal_id: &str, extra: &str) -> u64 {
+        let rows = self.select(
+            &format!(
+                "SELECT count() AS n FROM node WHERE petal_id = $p AND tombstone = NONE \
+                 {extra} GROUP ALL"
+            ),
+            serde_json::json!({ "p": petal_id }),
+        );
+        rows.first().and_then(|r| r["n"].as_u64()).unwrap_or(0)
+    }
+}
+
+#[test]
+fn materialized_stamps_add_no_rows_and_one_promotion_adds_exactly_one() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let path = h.create_node(&petal, "stamp path");
+    let before_stamping = h.count_live_nodes(&petal, "");
+
+    // A 250 m route at 5 m spacing: ~50 stamps the UI materializes from this
+    // property bag alone (verse_manager/path_asset_materialize.rs) — no rows.
+    h.set_property(
+        &path,
+        "path_asset",
+        serde_json::json!({
+            "asset_path": "blob://x.glb",
+            "spacing_mode": "fixed_spacing",
+            "spacing_value": 5.0,
+            "count": 0,
+            "tangent_align": true
+        }),
+    );
+    h.set_property(
+        &path,
+        "gpx_points",
+        serde_json::json!([[0.0, 0.0, 0.0, 0.0], [250.0, 0.0, 0.0, 1.0]]),
+    );
+    let before = h.count_live_nodes(&petal, "");
+    assert_eq!(before, before_stamping, "stamping a path writes no rows");
+    assert_eq!(
+        h.count_live_nodes(&petal, "AND properties.node_kind = 'stamp'"),
+        0
+    );
+
+    let promote = || {
+        h.send(DbCommand::PromoteInstance {
+            petal_id: petal.clone(),
+            path_id: path.clone(),
+            instance_index: 7,
+            auth: editor(),
+        });
+        match h.recv() {
+            DbResult::NodePromoted { newly_promoted, .. } => newly_promoted,
+            o => panic!("expected NodePromoted, got {o:?}"),
+        }
+    };
+    assert!(promote(), "first selection promotes");
+    assert_eq!(
+        h.count_live_nodes(&petal, ""),
+        before + 1,
+        "one promotion adds exactly one row"
+    );
+    assert_eq!(
+        h.count_live_nodes(&petal, "AND properties.node_kind = 'stamp'"),
+        1
+    );
+
+    assert!(!promote(), "re-promotion is idempotent");
+    assert_eq!(h.count_live_nodes(&petal, ""), before + 1, "no second row");
+}

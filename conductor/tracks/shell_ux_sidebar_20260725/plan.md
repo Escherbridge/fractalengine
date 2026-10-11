@@ -36,8 +36,8 @@ satisfaction track in the program — good momentum opener for Wave 0.
 
 ## Phase 4: Docs + integrated sweep [P1]
 
-- [ ] Task: update `fe-ui/src/ui_shell/AGENTS.md` + `panels/AGENTS.md` — sticky
-      policy + the two new sections (N-7). **[audit 2026-10-10: OPEN — sections documented (fe-ui/src/ui_shell/AGENTS.md:67,104) but §left (:49-58) still describes the removed `AutoCollapse` policy and a 3-arg `left_visibility(policy, right_open, user_intent)`; §topbar (:35-40) still says Settings/Maps have no section variant; fe-ui/src/dialogs/AGENTS.md §settings (:119-142) still describes the deleted floating Settings window + `SettingsToggle` seam]**
+- [x] Task: update `fe-ui/src/ui_shell/AGENTS.md` + `panels/AGENTS.md` — sticky
+      policy + the two new sections (N-7). **[audit 2026-10-10: OPEN — sections documented (fe-ui/src/ui_shell/AGENTS.md:67,104) but §left (:49-58) still describes the removed `AutoCollapse` policy and a 3-arg `left_visibility(policy, right_open, user_intent)`; §topbar (:35-40) still says Settings/Maps have no section variant; fe-ui/src/dialogs/AGENTS.md §settings (:119-142) still describes the deleted floating Settings window + `SettingsToggle` seam]** **[DONE 2026-10-11 spatial-builder-residue batch (commit pending): ui_shell/AGENTS.md §left = `left_visibility(policy, user_intent)` Manual-only + Ctrl/Cmd+B + no stomp, §topbar/§right list the six ALL_SECTIONS; dialogs/AGENTS.md §settings is a pointer to `render_settings_section` + real classifier hit kinds; fe-ui/src/AGENTS.md SettingsToggle sentence removed; `grep -rn "AutoCollapse\|SettingsToggle" fe-ui --include=*.md` = 0]**
 - [x] Task: single sweep — `clippy -D warnings`, `fmt --check`, fe-ui tests
       (N-6); ui_ux §5/§7/§9 pre-merge checklist. **[audit 2026-10-10: DONE b3f4df4 — commit records compile + clippy -D warnings + fmt + full tests green; re-swept in 623145f]**
-- [ ] Task: retro; in-app verify is user-gated (note it, do not self-sign).
+- [x] Task: retro; in-app verify is user-gated (note it, do not self-sign). **[retro.md written 2026-10-11 spatial-builder-residue batch (commit pending); in-app verify remains USER-GATED (not self-signed; track status stays implemented_pending_inapp_verify)]**

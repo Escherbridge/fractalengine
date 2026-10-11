@@ -233,6 +233,10 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::CreateNodeWithAsset { correlation_id, .. }
         | DbCommand::SetPetalTerrain { correlation_id, .. }
         | DbCommand::GetPetalTerrain { correlation_id, .. }
+        | DbCommand::SetNodeView { correlation_id, .. }
+        | DbCommand::SetPetalVisibilityGroups { correlation_id, .. }
+        | DbCommand::GetPetalVisibilityGroups { correlation_id, .. }
+        | DbCommand::SetScopeHidden { correlation_id, .. }
         | DbCommand::RawQuery { correlation_id, .. } => correlation_id.as_deref(),
         DbCommand::ElevatedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
@@ -247,6 +251,9 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::AssetCreated { correlation_id, .. }
         | DbResult::GltfImported { correlation_id, .. }
         | DbResult::PetalTerrainLoaded { correlation_id, .. }
+        | DbResult::NodeViewSet { correlation_id, .. }
+        | DbResult::PetalVisibilityGroupsLoaded { correlation_id, .. }
+        | DbResult::ScopeHiddenSet { correlation_id, .. }
         | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
         DbResult::QueryFailed { correlation_id, .. }
         | DbResult::PetalTerrainSetFailed { correlation_id, .. }
@@ -292,6 +299,14 @@ enum ReplyKind {
     PetalTerrainFetch,
     /// `/query/elevated` replies (`ElevatedQueryResult`, correlated only).
     ElevatedQuery,
+    /// `SetNodeView` replies (`NodeViewSet`).
+    NodeViewSet,
+    /// `LoadPetalViewState` replies (`PetalViewStateLoaded`).
+    PetalViewState,
+    /// `Set`/`GetPetalVisibilityGroups` replies (`PetalVisibilityGroupsLoaded`).
+    VisibilityGroups,
+    /// `SetScopeHidden` replies (`ScopeHiddenSet`).
+    ScopeHidden,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -334,6 +349,12 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         CreateAsset { .. } => ReplyKind::AssetCreated,
         CreateNodeWithAsset { .. } => ReplyKind::PlacedAsset,
         SetPetalTerrain { .. } => ReplyKind::PetalTerrainSet,
+        SetNodeView { .. } => ReplyKind::NodeViewSet,
+        LoadPetalViewState { .. } => ReplyKind::PetalViewState,
+        SetPetalVisibilityGroups { .. } | GetPetalVisibilityGroups { .. } => {
+            ReplyKind::VisibilityGroups
+        }
+        SetScopeHidden { .. } => ReplyKind::ScopeHidden,
         _ => return None,
     })
 }
@@ -383,6 +404,10 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
             correlation_id: Some(_),
             ..
         } => ReplyKind::PlacedAsset,
+        NodeViewSet { .. } => ReplyKind::NodeViewSet,
+        PetalViewStateLoaded { .. } => ReplyKind::PetalViewState,
+        PetalVisibilityGroupsLoaded { .. } => ReplyKind::VisibilityGroups,
+        ScopeHiddenSet { .. } => ReplyKind::ScopeHidden,
         _ => return None,
     })
 }
@@ -871,6 +896,68 @@ mod tests {
             Ok(DbResult::GltfImported { correlation_id: Some(ref c), .. }) if c == "b"
         ));
         assert!(rx_a.try_recv().is_err(), "B's reply must not reach A");
+    }
+
+    /// VIS-PH3: a correlated `SetNodeView` is filed under its id, so its own
+    /// `NodeViewSet` echo reaches it and the desktop's `fe-ui:view:` echo does not.
+    #[test]
+    fn a_correlated_set_node_view_receives_its_own_echo() {
+        let echo = |correlation_id: &str| DbResult::NodeViewSet {
+            node_id: "n1".to_string(),
+            petal_id: "p".to_string(),
+            state: Some("hide".to_string()),
+            groups: None,
+            correlation_id: Some(correlation_id.to_string()),
+        };
+        let mut pending = PendingApiRequests::default();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(
+            &DbCommand::SetNodeView {
+                node_id: "n1".to_string(),
+                state: Some("hide".to_string()),
+                groups: None,
+                auth: crate::messages::CallerAuth::Local,
+                correlation_id: Some("api-view-1".to_string()),
+            },
+            tx,
+        );
+        assert!(!pending.try_deliver(echo("fe-ui:view:n1")));
+        assert!(pending.try_deliver(echo("api-view-1")));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DbResult::NodeViewSet { correlation_id: Some(ref c), .. }) if c == "api-view-1"
+        ));
+    }
+
+    /// VIS-PH6: the desktop's own registry echo (its `fe-ui:` correlation id, or
+    /// none) never satisfies an API visibility-groups waiter; the API's echo does.
+    #[test]
+    fn visibility_group_replies_reach_only_their_own_api_waiter() {
+        let loaded = |correlation_id: Option<&str>| DbResult::PetalVisibilityGroupsLoaded {
+            petal_id: "p".to_string(),
+            groups: Vec::new(),
+            correlation_id: correlation_id.map(str::to_string),
+        };
+        let mut pending = PendingApiRequests::default();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(
+            &DbCommand::GetPetalVisibilityGroups {
+                petal_id: "p".to_string(),
+                correlation_id: Some("api-1".to_string()),
+            },
+            tx,
+        );
+        assert!(!pending.try_deliver(loaded(None)));
+        assert!(!pending.try_deliver(loaded(Some("fe-ui:groups:p"))));
+        assert!(
+            rx.try_recv().is_err(),
+            "a GUI echo leaked to the API waiter"
+        );
+        assert!(pending.try_deliver(loaded(Some("api-1"))));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DbResult::PetalVisibilityGroupsLoaded { correlation_id: Some(ref c), .. }) if c == "api-1"
+        ));
     }
 
     /// F24 cross-delivery (DEC-C13): caller A times out (receiver dropped),

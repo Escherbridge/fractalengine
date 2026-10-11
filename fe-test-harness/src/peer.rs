@@ -986,7 +986,12 @@ impl TestPeer {
                         | Ok(DbCommand::PromoteInstance { .. })
                         | Ok(DbCommand::RenameNode { .. })
                         | Ok(DbCommand::DuplicateNode { .. })
-                        | Ok(DbCommand::CountNodeDescendants { .. }) => {
+                        | Ok(DbCommand::CountNodeDescendants { .. })
+                        | Ok(DbCommand::SetNodeView { .. })
+                        | Ok(DbCommand::LoadPetalViewState { .. })
+                        | Ok(DbCommand::SetPetalVisibilityGroups { .. })
+                        | Ok(DbCommand::GetPetalVisibilityGroups { .. })
+                        | Ok(DbCommand::SetScopeHidden { .. }) => {
                             db_result_tx
                                 .send(DbResult::Error(
                                     "node lifecycle op not simulated by the test-harness peer"
@@ -1629,6 +1634,7 @@ async fn load_hierarchy(db: &surrealdb::Surreal<Db>) -> anyhow::Result<Vec<Verse
                 petals.push(PetalHierarchyData {
                     id: petal_id,
                     name: petal_name,
+                    view_hidden: false,
                     nodes,
                 });
             }
@@ -1636,6 +1642,7 @@ async fn load_hierarchy(db: &surrealdb::Surreal<Db>) -> anyhow::Result<Vec<Verse
             fractals.push(FractalHierarchyData {
                 id: fractal_id,
                 name: fractal_name,
+                view_hidden: false,
                 petals,
             });
         }
@@ -1647,6 +1654,7 @@ async fn load_hierarchy(db: &surrealdb::Surreal<Db>) -> anyhow::Result<Vec<Verse
             // M2/F6: the harness SELECT doesn't fetch ts_* columns, so the
             // mirror defaults apply (equivalent to a pre-F6 verse row).
             timeseries: fe_runtime::timeseries::VerseTimeseriesSettings::default(),
+            view_hidden: false,
             fractals,
         });
     }

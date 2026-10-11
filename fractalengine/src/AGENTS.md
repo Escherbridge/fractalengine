@@ -7,6 +7,58 @@ terrain + webview), and bridges the background threads to Bevy resources.
 turn fe-ui's queued ops into real side effects (the UI crate has no DB / blob /
 filesystem access by design).
 
+## §proposal-budget
+
+`terrain_bridge::sync_proposal_overlay_budget` mirrors fe-ui's
+`MeshInstanceBudget` into fe-terrain's `ProposalOverlayBudget` (fe-terrain
+cannot see fe-ui; this binary is the only crate that sees both). The pure
+`proposal_overlay_allowance(exceeded, ceiling, last_count)` is 0 once the
+watchdog has tripped, else the headroom `ceiling − last_count` capped at
+`MAX_PROPOSAL_OVERLAYS`. It runs in **PreUpdate** on purpose: the watchdog
+counts `Mesh3d` in `Last`, so by the next frame's PreUpdate the count
+already includes the ghosts the terrain plugin spawned — the render system
+in Update then sees headroom that excludes its own residents (it adds them
+back itself; see fe-terrain `src/AGENTS.md` §terrain-proposals). Running in
+Update unordered could let the render read a pre-spawn allowance and
+overshoot. A raised `mesh_budget_ceiling` setting flows through
+automatically.
+
+## §ruler-settings
+
+`terrain_bridge::sync_ruler_settings` (Update) copies fe-ui's
+`AppSettings.show_scale_bar` / `show_world_grid` (the right-sidebar Settings
+checkboxes) into fe-terrain's `RulerSettings.show_scale_bar` / `show_grid`,
+which gate the scale-bar HUD and the adaptive metric grid (fe-terrain
+`src/AGENTS.md` §ruler_plugin). Same reason as §proposal-budget: fe-ui has no
+fe-terrain dependency, so only this binary can join them. Each field is
+written only when it differs, so `RulerSettings` change detection stays quiet.
+Ordering does not matter: a toggle lands at most one frame late.
+
+## §tile-mode
+
+`terrain_bridge::apply_global_tile_mode` applies fe-ui's `AppSettings.tile_mode`
+(the Settings section's "Offline tiles (no network)" checkbox) onto
+fe-terrain's active `CompositeTileSource`. **Assumption (PAS-P4B, recorded in
+the track plan):** only `Offline` is a global override — a no-network switch;
+any other value lets the petal's own `TerrainConfig.tile_source_mode` govern
+(`effective_tile_mode`). Reversal: drop this system and the checkbox. It is
+ordered `.after(apply_terrain_assignments).before(fetch_and_spawn_terrain_chunks)`
+because an assignment rebuilds the composite with the petal's mode; running in
+between means the first chunk fetch of a new petal already honours Offline (an
+unordered system could let one frame of network fetches through). It writes
+only when the mode differs, so `ActiveTileSource` change detection stays quiet.
+
+## §app-settings
+
+`main.rs` calls `fe_ui::settings::load_startup_settings()` right after tracing
+init — before any thread spawns — because the relay spec must be registered
+(`fe_sync::relay_config::set_settings_relay_spec`) before the sync thread builds
+its iroh endpoint. The same `AppSettings` is then inserted before
+`GardenerConsolePlugin` (whose `init_resource` keeps it), together with
+`SettingsPersistence { path }`, which is what enables fe-ui's debounced save.
+Other hosts (relay binary, tests) never insert `SettingsPersistence`, so they
+never write the user's config dir. See fe-ui `src/AGENTS.md` §app-settings.
+
 ## §entity-store-analytics
 
 `main.rs` creates one `Arc<EntityStore>` before spawning the local API thread.

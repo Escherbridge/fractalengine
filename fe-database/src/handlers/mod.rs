@@ -13,6 +13,7 @@ pub mod field_def;
 pub mod invite;
 pub mod iot_reading;
 pub mod node_log;
+pub mod node_view;
 pub mod petal_terrain;
 pub(crate) mod preconditions;
 pub mod raw_query;
@@ -22,6 +23,7 @@ pub mod seed;
 pub mod transform;
 pub mod ts_partial;
 pub mod verse_settings;
+pub mod visibility_groups;
 
 use crossbeam::channel::Sender;
 use fe_runtime::messages::DbResult;

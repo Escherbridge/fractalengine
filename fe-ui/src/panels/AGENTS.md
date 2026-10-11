@@ -43,7 +43,14 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
   overview. Eye toggles at all 4 tree levels (CollapsingState::show_header for
   the right-aligned gutter, same persistent-id scheme), muted hidden rows, active-petal
   eye disabled (D4), tri-state override cycle with hidden-reason tooltips.
-  VisibilityState threaded via gardener_console.
+  VisibilityState threaded via gardener_console. Node-row eye clicks persist via
+  `UiAction::SetNodeView`; verse/fractal/petal eye clicks persist via
+  `UiAction::SetScopeHidden` (`push_scope_eye`); active-petal node rows carry
+  the D-8 right-click menu (Isolate / Hide others / Show all / "Add selection
+  to group…" — the last selects the row and reveals the right-sidebar Groups
+  section, `fe-ui/src/AGENTS.md` §visibility). A collapsed "Groups" section
+  under the tree lists the active petal's Groups with eye + member count
+  (read + toggle only, D-10) and a "Manage Groups…" reveal.
 - `inspector.rs` — right inspector panel: entity/transform/**Portal
   URLs**/properties/schema/API-access tabs. The "Portal URLs" section is
   the browser-integration seam — see root `AGENTS.md` §portal before
@@ -73,8 +80,10 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
   `render_results`, plus a Refresh button). Layers tab: embeds
   `layer_manager_card`. State lives in `crate::gis::GisPanelState`; see root
   `AGENTS.md` §gis-query-ui.
-- `layer_manager_card.rs` — visibility/opacity toggles for the active
-  petal's terrain layer stack, round-tripped through `SetPetalTerrain`, plus
+- `layer_manager_card.rs` — renders ONLY the unified overlay registry
+  (`gis::overlay_registry`: terrain layers incl. live GPX/GeoJSON category
+  layers, visibility Groups, scale bar, metric grid — one row widget, VIS-PH5),
+  terrain-layer toggles round-tripped through `SetPetalTerrain`, plus
   the Mesh/Splats/Hybrid view-mode selector (`render_view_mode_row`,
   additive `"view_mode"` terrain JSON field). See root `AGENTS.md`
   §gis-query-ui.
@@ -110,7 +119,7 @@ manager calls. See `fe-ui/src/ui_shell/AGENTS.md` for the manager topology, the
 
 ## §tool-options — active-tool options dispatcher
 
-`tool_options.rs` (`ui_shell::right_sidebar::render_tool_options_section`) is the single active-tool options dispatcher (one arm per Tool: Selection/Transform/Pen/Brush), reuse-don't-rewrite rule. Each arm renders live controls (mutable numeric radius/strength/op + toggles) OR options_hints (static advisory text for tools with no live controls), mutually exclusive per tool. The `active_petal_id` param threads through for geometry conversions (world_scale). Shape-region Apply wiring routes through `SculptShapeRegion`; `SculptDeleteRegion` still unwired — needs EarthworkNodeMap, follow-up.
+`tool_options.rs` (`ui_shell::right_sidebar::render_tool_options_section`) is the single active-tool options dispatcher (one arm per Tool: Selection/Transform/Pen/Brush/Measure), reuse-don't-rewrite rule. Each arm renders live controls (mutable numeric radius/strength/op + toggles) OR options_hints (static advisory text for tools with no live controls), mutually exclusive per tool. The `active_petal_id` param threads through for geometry conversions (world_scale). Shape-region Apply wiring routes through `SculptShapeRegion`; region delete is produced by the viewport right-click menu (`dialogs/AGENTS.md` §context-menu → `SculptDeleteRegion`). The Measure arm (hexon_scale FR-9) renders the Tape/Area picker, the readout rows as `copy_row` boxes, and Undo/Clear/Close polygon; it mutates `MeasureState` only through `node_manager::measure::reduce` (see `node_manager/AGENTS.md` §measure-tool), with the scale from `measure_world_scale` (unscaled reads "world units").
 
 ## §tool-panel
 

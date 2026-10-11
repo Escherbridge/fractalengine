@@ -52,6 +52,49 @@ pub fn layer_type_from_config_name(name: &str, source: Option<&str>) -> Option<L
     }
 }
 
+/// The layer a GPX ribbon for `node_id` binds to: a per-source `gpx_track`
+/// layer for that node, else the CATEGORY `gpx_track` layer (empty source).
+/// See `src/AGENTS.md` §petal_binding "Category layers".
+pub fn gpx_layer_for<'a>(stack: &'a LayerStack, node_id: &str) -> Option<&'a MapLayer> {
+    bound_layer(
+        stack,
+        |t| match t {
+            LayerType::GpxTrack {
+                node_id: source, ..
+            } => Some(source.as_str()),
+            _ => None,
+        },
+        node_id,
+    )
+}
+
+/// The layer a GeoJSON overlay at `source_path` binds to: per-source layer,
+/// else the CATEGORY `geojson_overlay` layer (empty source).
+pub fn geojson_layer_for<'a>(stack: &'a LayerStack, source_path: &str) -> Option<&'a MapLayer> {
+    bound_layer(
+        stack,
+        |t| match t {
+            LayerType::GeoJsonOverlay {
+                source_path: source,
+            } => Some(source.as_str()),
+            _ => None,
+        },
+        source_path,
+    )
+}
+
+/// Per-source match first, then the empty-source category layer of the same kind.
+fn bound_layer<'a>(
+    stack: &'a LayerStack,
+    source_of: impl Fn(&LayerType) -> Option<&str>,
+    source: &str,
+) -> Option<&'a MapLayer> {
+    let of_kind = || stack.iter().filter(|l| source_of(&l.layer_type).is_some());
+    of_kind()
+        .find(|l| !source.is_empty() && source_of(&l.layer_type) == Some(source))
+        .or_else(|| of_kind().find(|l| source_of(&l.layer_type) == Some("")))
+}
+
 /// A single compositable layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapLayer {
@@ -281,6 +324,43 @@ mod tests {
             }
             other => panic!("expected GeoJsonOverlay, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn overlay_binding_prefers_per_source_layer_then_category_layer() {
+        let mut stack = LayerStack::new();
+        let category = stack.add_layer(MapLayer::new(
+            layer_type_from_config_name("gpx_track", None).unwrap(),
+            0,
+        ));
+        let specific = stack.add_layer(MapLayer::new(
+            layer_type_from_config_name("gpx_track", Some("node-7")).unwrap(),
+            1,
+        ));
+        let geo_category = stack.add_layer(MapLayer::new(
+            layer_type_from_config_name("geojson_overlay", None).unwrap(),
+            2,
+        ));
+        stack.add_layer(MapLayer::new(LayerType::Satellite, 3));
+
+        assert_eq!(
+            gpx_layer_for(&stack, "node-7").map(|l| l.id),
+            Some(specific)
+        );
+        assert_eq!(
+            gpx_layer_for(&stack, "node-8").map(|l| l.id),
+            Some(category)
+        );
+        assert_eq!(
+            geojson_layer_for(&stack, "/data/a.geojson").map(|l| l.id),
+            Some(geo_category)
+        );
+
+        // No layer of the kind at all → unbound (the ribbon stays visible).
+        let mut bare = LayerStack::new();
+        bare.add_layer(MapLayer::new(LayerType::Terrain, 0));
+        assert!(gpx_layer_for(&bare, "node-7").is_none());
+        assert!(geojson_layer_for(&bare, "/data/a.geojson").is_none());
     }
 
     #[test]

@@ -211,6 +211,20 @@ order:
   consumed by its closed entry. fe-ui's dispatcher reads
   `ElevatedQueryResult` only to reload its tree when `changed_rows > 0`,
   then still `try_deliver`s it.
+- **Visibility groups (2026-10-11, VIS-PH4/6).** `SetPetalVisibilityGroups`,
+  `GetPetalVisibilityGroups` and `SetScopeHidden` carry `correlation_id` and
+  are correlated families (`ReplyKind::VisibilityGroups` — Set and Get both
+  answer `PetalVisibilityGroupsLoaded` — and `ReplyKind::ScopeHidden`);
+  failures are `RequestFailed`. The desktop correlates its own writes too
+  (`fe-ui:groups:{petal}` / `fe-ui:scope-eye:{id}`), so its echoes and
+  refusals have no API entry and are dropped by `try_deliver`
+  (`app.rs::tests::visibility_group_replies_reach_only_their_own_api_waiter`)
+  while fe-ui still reads them off the Bevy stream. Like a terrain set, a
+  registry write is shared scene state: fe-ui applies ANY
+  `PetalVisibilityGroupsLoaded` for its active petal, API-initiated included.
+  `SetNodeView` (VIS-PH3, `ReplyKind::NodeViewSet`) is correlated the same
+  way on BOTH sides (`correlation_of_command` + `correlation_of_result`): a
+  correlated command filed without its id would never match its own echo.
 - **Pop-and-drop (2026-10-11, RT-CORR-EDGE).** Uncorrelated delivery
   (`deliver_to`, `deliver_uncorrelated`, and the `Error` wildcard which funnels
   into `deliver_uncorrelated`) no longer SKIPS a closed entry: the oldest

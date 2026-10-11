@@ -134,6 +134,7 @@ pub async fn seed_default_data(
             ts_mode: "mirror".to_string(),
             ts_replication_factor: 1,
             ts_bucket_width_ms: fe_runtime::timeseries::DEFAULT_BUCKET_WIDTH_MS as i64,
+            view_hidden: None,
         },
     )
     .await?;
@@ -170,6 +171,7 @@ pub async fn seed_default_data(
             name: "Genesis Fractal".to_string(),
             description: Some(format!("The seed fractal for {local_did}")),
             created_at: now.clone(),
+            view_hidden: None,
         },
     )
     .await?;

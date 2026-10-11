@@ -164,12 +164,13 @@ batch; **[adopt-when-touched]** = apply whenever you edit the surface; **[future
   tool/editing mode that needs it — reference pattern `viewport_labels.rs:1-7` — or
   (b) an opt-in layer. Screen-space HUD elements are fixed-size and edge-anchored
   (`status_bar.rs:18-19`).
-- **[future-track]** Unified overlay-layer contract: every renderable overlay category
-  (terrain, paths, annotations, IoT markers, measurements, graticule) registers a
-  `(name, visible, opacity)` entry in ONE registry surfaced by the Layer Manager card.
-  Today `LayerUiEntry` is terrain-only (`gis/layers.rs:9-14`); scale-bar and
-  path-overlay booleans migrate first. New overlay features MUST register rather than
-  invent a bespoke toggle.
+- Unified overlay-layer contract (landed VIS-PH5, 2026-10-11): every renderable overlay
+  category registers a `(name, visible, opacity)` entry in ONE registry surfaced by the
+  Layer Manager card — `gis::overlay_registry` → `OverlayEntry { key: OverlayKey, .. }`
+  (`fe-ui/src/gis/layers.rs`). Registered today: terrain layers (incl. live GPX/GeoJSON
+  category layers), visibility Groups, scale bar, metric grid. Annotations, IoT markers
+  and measurements are not registered yet. New overlay features MUST add an
+  `OverlayKey` rather than invent a bespoke toggle.
 - **[adopt-when-touched]** No invisible empty states for scale-bearing HUD: when no
   map scale exists, show a dimmed "unscaled (world units)" state, not nothing
   (`ruler_plugin.rs:56-58`).
@@ -190,7 +191,8 @@ batch; **[adopt-when-touched]** = apply whenever you edit the surface; **[future
 | Terrain artifact | **map** / **Map Manager** | "tileset"; "hexon" as the artifact | "hexon" reserved for the package format in publish/import contexts ("Install map from .hexon file") |
 | Node webpage field | **Portal URL** | "Webpage URL", "External URL" | one label in Node Options and inspector (`node_options.rs:49,73`, `inspector.rs:535-599`); both save paths trim identically |
 | Petal contents | (per existing labels) | "room" | "room" removed from status bar, viewport, and sidebar Space overview (2026-07-17) |
-| Named visibility set of nodes | **Group** | — | left sidebar lists + toggles; management lives in right-sidebar Options surface; distinct from terrain "Layer" |
+| Named visibility set of nodes | **Group** | — | left sidebar lists + toggles; management lives in the right-sidebar Groups section (`RevealSection { slug: "groups" }`); distinct from terrain "Layer" |
+| Point-to-point / polygon measurement tool | **Measure** (modes **Tape**, **Area**) | "Ruler" for the tool | "ruler" stays the internal name of the scale-bar / metric-grid layer (`fe-terrain` `ruler.rs`); the Settings toggles read "Scale bar" and "Metric grid" (hexon_scale FR-9/FR-10, 2026-10-11) |
 | Dev internals | — | crate names, `AGENTS.md`, "residual", repo paths | see §6 |
 
 The verse/fractal/petal vocabulary is **canon** (D-72 RATIFIED 2026-07-17: keep the

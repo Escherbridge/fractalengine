@@ -11,7 +11,7 @@ use crate::plugin::SpawnedNodeMarker;
 
 /// Hard cap on scene entities spawned per petal — mirrors `MAX_STAMPS`; a
 /// runaway node count saturates here instead of wedging the renderer.
-pub(super) const MAX_PETAL_NODES: usize = 10_000;
+pub(crate) const MAX_PETAL_NODES: usize = 10_000;
 
 /// Additional spawns allowed given `already` live and `requested` wanted,
 /// saturating at `max`. Pure so the cap math is unit-testable.
@@ -62,6 +62,17 @@ pub(crate) fn distance_ranked_allowance(
 pub(super) struct ResidencyBudget<'w> {
     pub mesh_budget: Res<'w, crate::plugin::MeshInstanceBudget>,
     pub settings: Res<'w, crate::settings::AppSettings>,
+    pub render_override: Res<'w, crate::settings::PetalRenderOverride>,
+}
+
+impl ResidencyBudget<'_> {
+    /// Render distance for `petal_id`: its session override, else the global setting.
+    pub fn render_distance_for(&self, petal_id: &str) -> f32 {
+        crate::settings::effective_render_distance(
+            self.settings.render_distance,
+            self.render_override.for_petal(petal_id),
+        )
+    }
 }
 
 /// Resolve an asset path to a loadable scene path: append `#Scene0` only for
@@ -286,6 +297,85 @@ pub(super) fn spawn_fallback_sign(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Resource, Default)]
+    struct ReportedRenderDistance(f32);
+
+    fn report_active_render_distance(
+        residency: ResidencyBudget,
+        nav: Res<crate::navigation_manager::NavigationManager>,
+        mut out: ResMut<ReportedRenderDistance>,
+    ) {
+        if let Some(petal) = nav.active_petal_id.as_deref() {
+            out.0 = residency.render_distance_for(petal);
+        }
+    }
+
+    #[test]
+    fn active_petal_manifest_save_overrides_the_residency_render_distance() {
+        use crate::settings::PetalRenderOverride;
+        let mut app = App::new();
+        let mut nav = crate::navigation_manager::NavigationManager::default();
+        nav.navigate_to_petal("p1");
+        app.insert_resource(nav)
+            .insert_resource(crate::plugin::MeshInstanceBudget::default())
+            .insert_resource(crate::settings::AppSettings::default())
+            .init_resource::<PetalRenderOverride>()
+            .init_resource::<ReportedRenderDistance>()
+            .add_systems(
+                Update,
+                (
+                    crate::settings::clear_petal_render_override_on_nav_change,
+                    report_active_render_distance,
+                )
+                    .chain(),
+            );
+        let reported = |app: &App| app.world().resource::<ReportedRenderDistance>().0;
+        let save = |app: &mut App, petal: &str, distance: f32| {
+            let manifest = crate::terrain_map::PetalManifest {
+                render_distance: distance,
+                ..Default::default()
+            };
+            let active = app
+                .world()
+                .resource::<crate::navigation_manager::NavigationManager>()
+                .active_petal_id
+                .clone();
+            let mut render_override = app.world_mut().resource_mut::<PetalRenderOverride>();
+            crate::actions::hexon::manifest_save(
+                petal.to_string(),
+                manifest,
+                active.as_deref(),
+                &mut render_override,
+            );
+        };
+
+        app.update();
+        assert_eq!(reported(&app), 500.0, "global default");
+
+        save(&mut app, "p2", 50.0);
+        app.update();
+        assert_eq!(
+            reported(&app),
+            500.0,
+            "a non-active petal's save is ignored"
+        );
+
+        save(&mut app, "p1", 120.0);
+        app.update();
+        assert_eq!(reported(&app), 120.0, "active petal's manifest wins");
+
+        app.world_mut()
+            .resource_mut::<crate::navigation_manager::NavigationManager>()
+            .navigate_to_petal("p2");
+        app.update();
+        assert_eq!(reported(&app), 500.0, "override does not follow navigation");
+        assert_eq!(
+            *app.world().resource::<PetalRenderOverride>(),
+            PetalRenderOverride::default(),
+            "cleared on petal change"
+        );
+    }
 
     #[test]
     fn spawn_allowance_passes_through_under_cap() {

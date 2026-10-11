@@ -18,16 +18,20 @@ Single workspace sweep at the end per standing policy.
 
 ## Phase 0: Evidence pack (FR-2) — no gate
 
-- [ ] Task: Tile/asset size histogram across real hexons (user's installed
+- [x] Task: Tile/asset size histogram across real hexons (user's installed
       tilesets + gis-tile-etl outputs); record p50/p90/p99 and per-zoom
       distributions into ./evidence.md (grounds D-73 bundle sizing)
-- [ ] Task: Read + digest `_archive/render_distance_lod_20260407` and
+      — DONE 2026-10-11: `./evidence.md` §1-§3 (7 archives, per-(hexon,kind,zoom) p50/p90/p99/max; real tile pair ~110 KB p50 → bundle floor ~128 KiB, 1 MiB ≈ 6-9 pairs).
+- [x] Task: Read + digest `_archive/render_distance_lod_20260407` and
       `_archive/relay_data_horizon_20260407`; fold deltas into the decision
       record before ratification (relay_data_horizon was NOT covered by the
       exploration sweep)
-- [ ] Task: Double-residency memory math + `Arc<HexonTileSource>` dedup
+      — DONE 2026-10-11: `./evidence.md` §4; deltas folded into the decision record's "Evidence (2026-10-11)" section (data horizon orthogonal to D-74; archived pinning `RelayConfig` ≠ D-77 relay-server `RelayConfig`).
+- [x] Task: Double-residency memory math + `Arc<HexonTileSource>` dedup
       sketch (consumer map of `registry.load_all` vs per-assignment loads)
-- [ ] Verification: decision record updated with evidence deltas [checkpoint]
+      — DONE 2026-10-11: `./evidence.md` §5 (load_all consumed only by fe-api tile routes; renderer copy from `petal_binding.rs:153`; 14.6 MiB today, ~3.8 GB projected at z12; registry-owned `Arc` sketch).
+- [x] Verification: decision record updated with evidence deltas [checkpoint]
+      — DONE 2026-10-11: `conductor/decisions/p2p-streaming-20260718.md` "## Evidence (2026-10-11)" + risk #8 + D-74 prior-art line updated.
 
 ## Phase 1: Relay loud-fail hardening (FR-1) — no gate
 
@@ -76,20 +80,21 @@ Single workspace sweep at the end per standing policy.
 
 ## Phase 4b: Application settings surface (FR-7 / D-78) — decision-independent
 
-- [ ] Task: `AppSettings` Bevy `Resource` in fe-ui + RON/TOML persistence under
+- [x] Task: `AppSettings` Bevy `Resource` in fe-ui + RON/TOML persistence under
       the platform config dir (load-on-start, save-on-change; RON per the
       archived render_distance_lod design unless TOML is chosen — see open Q)
-      — AUDIT 2026-10-10: PARTIAL — Resource + serde round-trip tests landed 320ebfe (`fe-ui/src/settings.rs:35`, tests `:94-128`); persistence NOT built (`fe-ui/src/settings.rs:73` `TODO(ultrapilot): load/save AppSettings as RON`).
-- [ ] Task: `ActiveDialog::Settings` egui window; first knob = live
+      — DONE 2026-10-11 (PAS-P4B, commit pending): RON at `dirs::config_dir()/fractalengine/settings.ron` (`fe-ui/src/settings.rs::{settings_path, load_settings_from, save_settings_to, sanitize}`); missing → defaults, partial → `#[serde(default)]` fill, corrupt → defaults + bad file kept as `settings.ron.corrupt-<ts>`; atomic tmp+rename save; trailing-edge 1 s debounced save (`SettingsSaveDebounce` / `save_app_settings_debounced`, only when the GUI binary inserts `SettingsPersistence`); loaded in `fractalengine/src/main.rs` before any thread spawns. Tests `saved_settings_survive_a_restart`, `missing_file_loads_defaults`, `corrupt_file_loads_defaults_and_keeps_a_backup`, `partial_file_fills_missing_fields_from_defaults`, `loaded_values_are_sanitized`, `sanitize_clamps_every_knob`, `debounce_saves_once_after_the_quiet_period`, `debounced_save_writes_only_with_persistence_configured`.
+- [x] Task: `ActiveDialog::Settings` egui window; first knob = live
       `MeshInstanceBudget.ceiling` (already a runtime field), then render
       distance, entity/stamp caps, tile mode, camera sensitivity/zoom/easing,
       relay/peer config (TDD: settings (de)serialize round-trip, clamp ranges)
-      — AUDIT 2026-10-10: PARTIAL — the window was re-homed as a right-sidebar Settings section by shell_ux_sidebar FR-1 (`fe-ui/src/panels/mod.rs:289-291`); live knobs are render distance + mesh ceiling only (`fe-ui/src/ui_shell/right_sidebar.rs:477-520`). Entity/stamp caps, tile mode, camera and relay/peer knobs are not exposed; relay config is still env-sourced (`fe-sync/src/relay_config.rs:91` TODO).
-- [ ] Task: Route the hardcoded `const` limits through `AppSettings` with current
+      — DONE 2026-10-11 (PAS-P4B, commit pending): right-sidebar Settings section (`fe-ui/src/ui_shell/right_sidebar.rs::render_settings_section`) now exposes render distance, mesh ceiling, entity cap, stamp ceiling, Offline-tiles checkbox, camera orbit-sensitivity / zoom-speed multipliers (live via `settings::sync_app_settings_to_camera`, test `camera_multipliers_scale_the_live_controller` + `camera_base_consts_match_the_controller_defaults`) and a relay text field validated by `RelayConfig::parse` ("Applies after restart"). **Not exposed (ui_ux §6, no faked settings):** `camera_easing` — persisted, no consumer (controller `easing_rate` is a rate, not a 0–1 factor); peer config — no consumer. **Assumption (tile mode):** `AppSettings.tile_mode = Offline` is a global no-network override applied by `fractalengine/src/terrain_bridge.rs::apply_global_tile_mode`; any other value lets the petal's `TerrainConfig.tile_source_mode` govern (test `global_offline_setting_overrides_the_petal_tile_mode`). Reversal: drop that system + the checkbox. Relay: `fe-sync/src/relay_config.rs::resolve` (env `FE_SYNC_RELAY` > settings > Default; invalid → Default, test `resolve_precedence_table`); the GUI registers the spec via `set_settings_relay_spec` before spawning the sync thread.
+- [x] Task: Route the hardcoded `const` limits through `AppSettings` with current
       constants as defaults; `PetalManifest.render_distance` = per-petal override
-      — AUDIT 2026-10-10: PARTIAL — residency reads `settings.render_distance` / `settings.stamp_ceiling` (`path_asset_materialize.rs:426-427`) and `sync_app_settings_to_mesh_budget` mirrors the ceiling (`settings.rs:81`); `PetalManifest.render_distance` is editable (`fe-ui/src/dialogs/petal_manifest.rs:58`) but no residency system reads it as an override.
-- [ ] Verification: settings persist across restart; ledger + terrain editor read
+      — DONE 2026-10-11 (PAS-P4B, commit pending): `entity_cap` / `stamp_ceiling` / `mesh_budget_ceiling` default to and are clamped under the hard caps; `effective_render_distance` + session `PetalRenderOverride` (set by `actions/hexon.rs::manifest_save` for the active petal, cleared on petal change); every spawner reads `ResidencyBudget::render_distance_for` (`petal_respawn.rs`, `primitive_materialize.rs`, `path_asset_materialize.rs`). Tests `effective_render_distance_prefers_a_valid_override`, `active_petal_manifest_save_overrides_the_residency_render_distance`. **Open decision:** `PetalManifest` has no durable store (manifest_save was a log stub; `petal.hexon_manifest` has no handlers and is a signed publishing artifact), so the override is session-only — where should a durable per-petal render distance live?
+- [x] Verification: settings persist across restart; ledger + terrain editor read
       the same resource [checkpoint]
+      — 2026-10-11: restart persistence proven at the save/load seam (`saved_settings_survive_a_restart`); residency spawners and the terrain bridge read the one `AppSettings` resource. `cargo +1.99.0 clippy --all-targets -D warnings` clean on fe-sync/fe-terrain/fe-ui/fractalengine; `cargo test -p fe-ui` 965 passed, `-p fractalengine` 62 passed, `-p fe-sync` 225 passed (logs `.omc/research/pas-test-*.log`). **USER_GATED:** change a knob → restart → value persists; relay field takes effect after restart; camera multipliers feel right; Offline checkbox stops tile network fetches.
 
 ## Phase 5: Registry parity + integrity (FR-5 + FR-6, after D-75/D-76)
 

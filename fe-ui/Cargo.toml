@@ -22,8 +22,12 @@ url = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rfd = { workspace = true }
+# AppSettings persistence (settings.ron under the platform config dir).
+ron = "0.12"
+dirs = "5"
 
 [dev-dependencies]
 # tests only (navigation replica-lifecycle test wires an in-memory secret
 # store to assert the full OpenVerseReplica command parity with the relay)
 fe-identity = { path = "../fe-identity" }
+tempfile = "3"

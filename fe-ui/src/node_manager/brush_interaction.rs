@@ -77,7 +77,8 @@ impl BrushGesture {
     }
 }
 
-fn ground_hit(ray: Ray3d) -> Option<[f32; 2]> {
+/// Ray hit on the y = 0 ground plane as `[x, z]` (shared with the Measure tool).
+pub(super) fn ground_hit(ray: Ray3d) -> Option<[f32; 2]> {
     let direction = *ray.direction;
     if direction.y.abs() <= f32::EPSILON {
         return None;

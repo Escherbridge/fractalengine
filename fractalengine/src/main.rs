@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use bevy::prelude::IntoScheduleConfigs;
 use fe_identity::NodeIdentity;
 use fe_runtime::app::{
     ApiCommandReceiver, ApiCommandSender, BevyHandles, PendingApiRequests, TransformBroadcastSender,
@@ -36,6 +37,11 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
+
+    // Application settings (D-78) load first: the relay spec must be registered
+    // before the sync thread builds its endpoint. See src/AGENTS.md §app-settings.
+    let (app_settings, settings_path) = fe_ui::settings::load_startup_settings();
+    fe_sync::relay_config::set_settings_relay_spec(app_settings.relay.clone());
 
     let ch = ChannelHandles::new();
 
@@ -484,6 +490,12 @@ fn main() {
 
     // Add 3D viewport (camera, grid, lighting, axis gizmo) and UI overlay
     app.add_plugins(fe_renderer::viewport::ViewportPlugin);
+    // Persisted settings replace the plugin's defaults (init_resource keeps an
+    // existing resource); SettingsPersistence enables the debounced save.
+    app.insert_resource(app_settings);
+    if let Some(path) = settings_path {
+        app.insert_resource(fe_ui::settings::SettingsPersistence { path });
+    }
     app.add_plugins(fe_ui::plugin::GardenerConsolePlugin);
     // Terrain runtime: petal map assignments + tileset registry bridge.
     app.add_plugins(fe_terrain::terrain_plugin::TerrainPlugin);
@@ -499,7 +511,23 @@ fn main() {
         (
             terrain_bridge::bridge_petal_terrain,
             terrain_bridge::drain_hexon_ops,
+            // Settings-section ruler toggles → fe-terrain RulerSettings.
+            terrain_bridge::sync_ruler_settings,
         ),
+    );
+    // Global Offline tile mode overrides the petal's mode on the freshly built
+    // composite before any chunk fetch. See src/AGENTS.md §tile-mode.
+    app.add_systems(
+        bevy::prelude::Update,
+        terrain_bridge::apply_global_tile_mode
+            .after(fe_terrain::petal_binding::apply_terrain_assignments)
+            .before(fe_terrain::terrain_plugin::fetch_and_spawn_terrain_chunks),
+    );
+    // Mesh budget -> proposal-ghost allowance; PreUpdate so the terrain render
+    // reads the watchdog's previous-frame count. See src/AGENTS.md §proposal-budget.
+    app.add_systems(
+        bevy::prelude::PreUpdate,
+        terrain_bridge::sync_proposal_overlay_budget,
     );
     // Asset-download bridge: drains fe-ui's queued node-asset downloads, copying
     // resolved blobs into the user's downloads folder. See src/AGENTS.md §assets.

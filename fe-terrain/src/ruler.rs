@@ -121,9 +121,180 @@ pub fn format_distance_m(meters: f64) -> String {
     }
 }
 
+/// Adaptive world-grid spacing: a major/minor pair on the 1/2/5×10ⁿ ladder.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridSpacing {
+    /// Major line spacing (meters).
+    pub major_m: f64,
+    /// Minor line spacing (meters): the ladder step below `major_m`.
+    pub minor_m: f64,
+    /// Minor-line opacity `[0, 1]`: fades out as the major spacing nears its
+    /// next ladder step, so re-subdivision on zoom never pops.
+    pub minor_alpha: f32,
+}
+
+/// The 1/2/5×10ⁿ ladder value strictly below `x` (positive, finite `x`).
+fn next_nice_down(x: f64) -> f64 {
+    let magnitude = 10f64.powf(x.log10().floor());
+    [5.0, 2.0, 1.0, 0.5]
+        .into_iter()
+        .map(|f| f * magnitude)
+        .find(|candidate| *candidate < x * (1.0 - 1e-9))
+        .unwrap_or(magnitude * 0.5)
+}
+
+/// The raw-span band `[lo, hi)` that [`nice_number`] snaps onto `major`.
+fn nice_band(major: f64) -> (f64, f64) {
+    let magnitude = 10f64.powf(major.log10().floor());
+    let fraction = major / magnitude;
+    let (lo, hi) = if fraction < 1.5 {
+        (0.75, 1.5)
+    } else if fraction < 3.5 {
+        (1.5, 3.5)
+    } else {
+        (3.5, 7.5)
+    };
+    (lo * magnitude, hi * magnitude)
+}
+
+/// Grid spacing for a camera `cam_height_m` (real meters above the ground
+/// plane) aiming for about `target_major_lines` majors across the view
+/// (visible span ≈ `2·h`, the 90° down-looking approximation). `None` on
+/// degenerate input. See `src/AGENTS.md` §ruler.
+pub fn grid_spacing_for_height(cam_height_m: f64, target_major_lines: f64) -> Option<GridSpacing> {
+    let valid_height = cam_height_m.is_finite() && cam_height_m > 0.0;
+    let valid_target = target_major_lines.is_finite() && target_major_lines > 0.0;
+    if !(valid_height && valid_target) {
+        return None;
+    }
+    let raw = 2.0 * cam_height_m / target_major_lines;
+    if !(raw.is_finite() && raw > 0.0) {
+        return None;
+    }
+    let major_m = nice_number(raw);
+    let minor_m = next_nice_down(major_m);
+    // Log-space position of `raw` inside the band that snaps to `major_m`:
+    // 0 at the band floor (minor fully shown) → 1 at the next ladder step.
+    let (lo, hi) = nice_band(major_m);
+    let t = ((raw / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0);
+    Some(GridSpacing {
+        major_m,
+        minor_m,
+        minor_alpha: (1.0 - t) as f32,
+    })
+}
+
+/// Whole-grid opacity by camera height: `1` at or below `fade_start_m`, `0`
+/// at or above `fade_end_m`, linear between; `0` on non-finite input.
+pub fn grid_fade_alpha(cam_height_m: f64, fade_start_m: f64, fade_end_m: f64) -> f32 {
+    if !(cam_height_m.is_finite() && fade_start_m.is_finite() && fade_end_m.is_finite()) {
+        return 0.0;
+    }
+    if cam_height_m <= fade_start_m {
+        return 1.0;
+    }
+    if cam_height_m >= fade_end_m {
+        return 0.0;
+    }
+    (1.0 - (cam_height_m - fade_start_m) / (fade_end_m - fade_start_m)) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether `v` is 1, 2, or 5 × 10ⁿ.
+    fn on_ladder(v: f64) -> bool {
+        let fraction = v / 10f64.powf(v.log10().floor());
+        [1.0, 2.0, 5.0, 10.0]
+            .iter()
+            .any(|f| (fraction - f).abs() < 1e-6)
+    }
+
+    #[test]
+    fn grid_spacing_majors_sit_on_the_ladder_at_site_to_region_heights() {
+        // (camera height m, expected major m) with ~10 majors across 2·h.
+        for (height, want) in [
+            (10.0, 2.0),
+            (150.0, 20.0),
+            (2_000.0, 500.0),
+            (40_000.0, 10_000.0),
+        ] {
+            let spacing = grid_spacing_for_height(height, 10.0).expect("valid input");
+            assert_eq!(spacing.major_m, want, "height {height}");
+            assert!(on_ladder(spacing.minor_m), "minor {}", spacing.minor_m);
+            assert!(spacing.minor_m < spacing.major_m);
+            assert!((0.0..=1.0).contains(&spacing.minor_alpha));
+        }
+    }
+
+    #[test]
+    fn grid_minor_is_the_next_ladder_step_down() {
+        for (major, minor) in [
+            (1.0, 0.5),
+            (2.0, 1.0),
+            (5.0, 2.0),
+            (10.0, 5.0),
+            (200.0, 100.0),
+        ] {
+            assert_eq!(next_nice_down(major), minor, "major {major}");
+        }
+    }
+
+    #[test]
+    fn grid_spacing_is_monotone_in_height_and_minor_fades_before_resubdivision() {
+        let mut previous_major = 0.0;
+        let mut height = 1.0;
+        while height < 1.0e6 {
+            let spacing = grid_spacing_for_height(height, 10.0).unwrap();
+            assert!(on_ladder(spacing.major_m), "major {}", spacing.major_m);
+            assert!(
+                spacing.major_m >= previous_major,
+                "major shrank at height {height}"
+            );
+            previous_major = spacing.major_m;
+            height *= 1.07;
+        }
+        // Just below a re-subdivision (raw 1.49 → major 1) the minor lines
+        // are almost gone; just above it (raw 1.5 → major 2) they are full.
+        let before = grid_spacing_for_height(1.49 * 5.0, 10.0).unwrap();
+        let after = grid_spacing_for_height(1.5 * 5.0, 10.0).unwrap();
+        assert_eq!((before.major_m, after.major_m), (1.0, 2.0));
+        assert!(before.minor_alpha < 0.05, "{}", before.minor_alpha);
+        assert!(after.minor_alpha > 0.95, "{}", after.minor_alpha);
+    }
+
+    #[test]
+    fn grid_spacing_rejects_degenerate_input() {
+        for (height, target) in [
+            (0.0, 10.0),
+            (-5.0, 10.0),
+            (f64::NAN, 10.0),
+            (f64::INFINITY, 10.0),
+            (100.0, 0.0),
+            (100.0, f64::NAN),
+        ] {
+            assert!(grid_spacing_for_height(height, target).is_none());
+        }
+    }
+
+    #[test]
+    fn grid_fade_alpha_table() {
+        for (height, want) in [
+            (10.0, 1.0),
+            (1_000.0, 1.0),
+            (1_500.0, 0.5),
+            (2_000.0, 0.0),
+            (9_999.0, 0.0),
+            (f64::NAN, 0.0),
+        ] {
+            assert!(
+                (grid_fade_alpha(height, 1_000.0, 2_000.0) - want).abs() < 1e-6,
+                "height {height}"
+            );
+        }
+        assert_eq!(grid_fade_alpha(10.0, f64::NAN, 2_000.0), 0.0);
+    }
 
     #[test]
     fn nice_number_snaps_to_1_2_5_sequence() {

@@ -11,8 +11,10 @@
     "2026-07-25: created from in-app QA asks #4 (Settings/Maps still modal → sidebar sections) and #5 (left sidebar auto-closes too often → user-sticky). Both build directly on the landed ui_shell seam: the one-section right rail + section-fn seam (ui_shell FR-6, RATIFIED Q-2) and the owned left-sidebar policy (ui_shell FR-5, which explicitly left 'user intent respected later' — this track is the 'later').",
     "OWNS THE fe-ui SHELL SEAM (ui_shell/{mod,left_sidebar,right_sidebar}.rs, panels/mod.rs, dialogs/{settings,hexon_manager}.rs). Per the program partition, Wave-1 tracks (T2/T3/T4) do NOT edit right_sidebar.rs; any new section registration is routed through this track. This is the single shared-seam rule /slice must enforce.",
     "Open Qs: Q-1 rail placement (ordinary sections — recommended), Q-2 sticky scope (session-scoped now — recommended), Q-3 auto-collapse fate (remove entirely — recommended).",
-    "NOT started. /slice deferred per user (2026-07-25: write specs, do not slice yet). Cheapest track — good Wave-0 momentum opener alongside the spine."
+    "NOT started. /slice deferred per user (2026-07-25: write specs, do not slice yet). Cheapest track — good Wave-0 momentum opener alongside the spine.",
+    "2026-10-11 (2026-10-11 spatial-builder-residue batch, commit pending): stale ui_shell/dialogs/fe-ui AGENTS.md docs corrected (grep AutoCollapse|SettingsToggle = 0); retro.md written. Remaining: user-gated in-app verify."
   ],
-  "doneness_note": "FR-1/FR-2/FR-3 landed in b3f4df4 (Wave 0 T6). Remaining: stale directory docs (ui_shell §left/§topbar, dialogs §settings), retro, user-gated in-app verify.",
-  "audited": "2026-10-10"
+  "doneness_note": "2026-10-11 (2026-10-11 spatial-builder-residue batch, commit pending): stale ui_shell/dialogs/fe-ui AGENTS.md docs corrected (grep AutoCollapse|SettingsToggle = 0); retro.md written. Remaining: user-gated in-app verify.",
+  "audited": "2026-10-10",
+  "retro": "retro.md"
 }

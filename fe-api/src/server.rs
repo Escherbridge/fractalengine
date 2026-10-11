@@ -225,6 +225,17 @@ pub fn build_router(state: Arc<ApiState>) -> Router {
                 .put(crate::terrain::set_terrain_config)
                 .delete(crate::terrain::delete_terrain_config),
         )
+        // Petal visibility-Group registry (VIS-PH6, AGENTS.md §visibility-groups)
+        .route(
+            "/api/v1/petals/{petal_id}/visibility-groups",
+            get(crate::visibility::list_visibility_groups)
+                .put(crate::visibility::replace_visibility_groups),
+        )
+        .route(
+            "/api/v1/petals/{petal_id}/visibility-groups/{group_id}",
+            patch(crate::visibility::patch_visibility_group)
+                .delete(crate::visibility::delete_visibility_group),
+        )
         // Petal-scoped tile data plane
         .route(
             "/api/v1/tiles/elevation/{tileset_id}/{z}/{x}/{y_png}",

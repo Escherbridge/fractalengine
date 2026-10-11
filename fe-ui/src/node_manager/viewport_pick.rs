@@ -13,23 +13,15 @@ use super::selection::SelectionKind;
 use super::NodeManager;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::{SpawnedNodeMarker, ToolState};
-use crate::visibility::{effective_visibility, NodeAncestry, VisibilityState};
-
-/// Whether a node may win a viewport pick: an EFFECTIVELY hidden node (own
-/// override, hidden ancestor scope, group, or a solo lens it is not in) is not
-/// pickable — ratified D-13/D-14, `hierarchy_visibility_groups_20260808`. Pure
-/// wrapper so the picker's own rule is named and testable, rather than an
-/// inline call to someone else's resolver.
-///
-/// NOTE: this is the minimal D-13/D-14 slice. The remaining pick surfaces —
-/// `context_pick` (right-click), `pointer`, `sidebar_sync`, and the path
-/// segment/vertex/handle filters — stay Phase-2 work of that track.
-fn node_is_pickable(node_id: &str, ancestry: NodeAncestry, visibility: &VisibilityState) -> bool {
-    effective_visibility(node_id, ancestry, visibility)
-}
+use crate::visibility::{pickable, rendered, VisibilityState};
 
 pub(super) fn handle_viewport_click(
-    node_query: Query<(Entity, &SpawnedNodeMarker, Option<&TrackPickShape>)>,
+    node_query: Query<(
+        Entity,
+        &SpawnedNodeMarker,
+        Option<&TrackPickShape>,
+        Option<&Visibility>,
+    )>,
     g_transform_query: Query<&GlobalTransform>,
     aabb_query: Query<&Aabb>,
     children_query: Query<&Children>,
@@ -52,24 +44,17 @@ pub(super) fn handle_viewport_click(
     let Some(ray) = arbiter.ray() else { return };
 
     let active_petal = nav.active_petal_id.as_deref();
-    // Built exactly as `visibility::sync_node_visibility` builds it — same
-    // resource, same active-scope fallbacks, so the picker and the renderer
-    // can never disagree about what "hidden" means.
-    let ancestry = NodeAncestry {
-        verse_id: nav.active_verse_id.as_deref().unwrap_or(""),
-        fractal_id: nav.active_fractal_id.as_deref().unwrap_or(""),
-        petal_id: nav.active_petal_id.as_deref().unwrap_or(""),
-    };
     let mut best: Option<(Entity, f32, String)> = None;
 
-    for (entity, marker, pick_shape) in node_query.iter() {
+    for (entity, marker, pick_shape, drawn) in node_query.iter() {
         if active_petal
             .map(|pid| pid != marker.petal_id.as_str())
             .unwrap_or(false)
         {
             continue;
         }
-        if !node_is_pickable(&marker.node_id, ancestry, &visibility) {
+        // D-13/D-14: hidden nodes never win a pick (shared picker rule).
+        if !pickable(&marker.node_id, &nav, &visibility) || !rendered(drawn) {
             continue;
         }
         // FR-1: a rendered track ribbon carries `TrackPickShape` (its actual
@@ -252,13 +237,72 @@ fn ray_aabb_hit(
 }
 
 // ---------------------------------------------------------------------------
-// Tests — pure ray/AABB math (Bevy-App-free). Mesh-picking correctness is
-// validated in-app; only the geometry helper is unit-tested here.
+// Tests — pure ray/AABB math, plus one App-level pick-refusal flow. Mesh-picking
+// correctness is validated in-app.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ribbon its map layer (or style) hides — `Visibility::Hidden` set outside
+    /// the lattice — refuses the click; shown again, the same click selects it.
+    #[test]
+    fn a_ribbon_hidden_by_its_layer_is_not_picked_until_shown() {
+        use crate::panels::toolbar::Tool;
+        let down =
+            || ClickArbiter::pressed_along(Ray3d::new(Vec3::new(5.0, 50.0, 0.0), Dir3::NEG_Y));
+        let mut app = App::new();
+        app.insert_resource(NavigationManager {
+            active_petal_id: Some("p1".into()),
+            ..Default::default()
+        })
+        .insert_resource(ToolState {
+            active_tool: Tool::Select,
+        })
+        .init_resource::<VisibilityState>()
+        .init_resource::<NodeManager>()
+        .insert_resource(down())
+        .add_systems(Update, handle_viewport_click);
+        let ribbon = app
+            .world_mut()
+            .spawn((
+                SpawnedNodeMarker {
+                    node_id: "t1".into(),
+                    petal_id: "p1".into(),
+                },
+                TrackPickShape {
+                    points: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                    anchors: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                    half_width: 1.0,
+                    closed: false,
+                    fill_triangles: Vec::new(),
+                    centroid: Vec3::new(5.0, 0.0, 0.0),
+                },
+                Visibility::Hidden,
+            ))
+            .id();
+
+        app.update();
+        assert!(
+            app.world().resource::<NodeManager>().selected.is_none(),
+            "an invisible ribbon must not take the click"
+        );
+
+        app.world_mut()
+            .entity_mut(ribbon)
+            .insert(Visibility::Inherited);
+        app.insert_resource(down());
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<NodeManager>()
+                .selected
+                .as_ref()
+                .map(|s| s.node_id.as_str()),
+            Some("t1")
+        );
+    }
 
     /// A unit box centered at the origin in identity local space.
     fn unit_box() -> (Affine3A, Vec3, Vec3) {
@@ -382,42 +426,6 @@ mod tests {
             |e| children.get(&e).cloned().unwrap_or_default(),
         );
         assert_eq!(t, Some(3.0));
-    }
-
-    // --- D-13/D-14: hidden nodes are not pickable ---
-
-    #[test]
-    fn a_hidden_node_is_not_pickable_and_its_visible_sibling_still_is() {
-        use crate::visibility::OverrideState;
-
-        let ancestry = NodeAncestry {
-            verse_id: "v1",
-            fractal_id: "f1",
-            petal_id: "p1",
-        };
-        let mut visibility = VisibilityState::default();
-        assert!(node_is_pickable("n1", ancestry, &visibility));
-        visibility
-            .node_overrides
-            .insert("n1".into(), OverrideState::Hide);
-        assert!(!node_is_pickable("n1", ancestry, &visibility));
-        assert!(
-            node_is_pickable("n2", ancestry, &visibility),
-            "only the overridden node drops out of the pick set"
-        );
-    }
-
-    #[test]
-    fn a_node_under_a_hidden_petal_is_not_pickable() {
-        // Ancestor-scope hiding reaches the picker too, not just the renderer.
-        let ancestry = NodeAncestry {
-            verse_id: "v1",
-            fractal_id: "f1",
-            petal_id: "p1",
-        };
-        let mut visibility = VisibilityState::default();
-        visibility.hidden_petals.insert("p1".into());
-        assert!(!node_is_pickable("n1", ancestry, &visibility));
     }
 
     #[test]

@@ -38,8 +38,11 @@ pub enum HitTarget {
     PathSegment { idx: usize },
     /// A materialized path-asset stamp entity.
     Stamp(Entity),
-    /// An existing proposed terrain-edit overlay.
+    /// An existing proposed terrain-edit overlay (palette proposal).
     TerrainProposal { id: String },
+    /// A committed Brush/shape-tool earthwork region (material-tagged record
+    /// in the petal terrain doc) — right-click only; see AGENTS.md §context-pick.
+    EarthworkRegion { id: String },
     /// Bare terrain surface. Left-click treats it as empty ground; the
     /// right-click menu offers the same verbs as `Empty` (`dialogs::context_menu`).
     TerrainCell,
@@ -93,7 +96,8 @@ pub enum Operation {
 ///   keeps placing points instead of selecting a node — placement dominates).
 /// - Brush owns its own gesture upstream (it claims the frame in
 ///   `brush_interaction`, ahead of every consumer of this table), so here it
-///   resolves to `None`: it must never select and never deselect.
+///   resolves to `None`: it must never select and never deselect. Measure
+///   (claims in `measure`, right after Brush) follows the same rule.
 /// - An empty hit places a point in Pen, else clears the selection.
 pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Operation {
     match hit {
@@ -102,7 +106,7 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
             // Pen intent dominates: an empty-ground append still wins over
             // selecting the node the ray grazed (matches §pen-tool routing).
             Tool::Pen => Operation::PlacePathPoint,
-            Tool::Brush => Operation::None,
+            Tool::Brush | Tool::Measure => Operation::None,
             _ => Operation::SelectNode(entity),
         },
         // A concrete object hit selects that object regardless of tool; WHEN such
@@ -114,11 +118,14 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
         HitTarget::PathSegment { idx } => Operation::SelectSegment { idx },
         HitTarget::Stamp(entity) => Operation::SelectStamp(entity),
         HitTarget::TerrainProposal { id } => Operation::SelectProposal { id },
+        // Regions are not in the palette mirror, so there is nothing to select;
+        // they are only produced by the right-click classifier.
+        HitTarget::EarthworkRegion { .. } => Operation::None,
         // Bare terrain reads as empty ground for left-click (its right-click
         // verb set matches `Empty` too — `dialogs::context_menu`).
         HitTarget::TerrainCell | HitTarget::Empty => match tool {
             Tool::Pen => Operation::PlacePathPoint,
-            Tool::Brush => Operation::None,
+            Tool::Brush | Tool::Measure => Operation::None,
             _ => Operation::Deselect,
         },
     }
@@ -419,6 +426,15 @@ mod tests {
             ),
             Operation::SelectProposal { id: "p7".into() }
         );
+        // A region is right-click-only: left-click never selects or deselects.
+        assert_eq!(
+            resolve_operation(
+                Tool::Select,
+                &SelectionKind::Node(entity(1)),
+                HitTarget::EarthworkRegion { id: "r1".into() }
+            ),
+            Operation::None
+        );
     }
 
     #[test]
@@ -468,6 +484,23 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_operation(Tool::Brush, &SelectionKind::Node(entity(1)), hit.clone()),
+                Operation::None,
+                "{hit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn measure_never_selects_and_never_deselects() {
+        // A click that slips past the Measure claim (no ground hit) must not
+        // drop the user's selection or grab a node mid-measurement.
+        for hit in [
+            HitTarget::Empty,
+            HitTarget::TerrainCell,
+            HitTarget::Node(entity(9)),
+        ] {
+            assert_eq!(
+                resolve_operation(Tool::Measure, &SelectionKind::Node(entity(1)), hit.clone()),
                 Operation::None,
                 "{hit:?}"
             );

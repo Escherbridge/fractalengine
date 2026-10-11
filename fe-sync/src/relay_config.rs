@@ -47,6 +47,36 @@ impl std::error::Error for RelayConfigError {}
 /// [`RelayConfig::from_env`]).
 pub const RELAY_CONFIG_ENV_VAR: &str = "FE_SYNC_RELAY";
 
+/// Relay spec from the GUI's persisted `AppSettings`, registered once before
+/// the sync thread spawns.
+static SETTINGS_RELAY_SPEC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Registers the settings-sourced relay spec (first call wins; later calls are ignored).
+pub fn set_settings_relay_spec(raw: String) {
+    if SETTINGS_RELAY_SPEC.set(raw).is_err() {
+        tracing::warn!("settings relay spec already registered; ignoring the new value");
+    }
+}
+
+/// Relay precedence: the environment override wins over the settings spec;
+/// absent both → [`RelayConfig::Default`]. A spec that fails to parse warns and
+/// falls back to `Default` (it does not fall through to the next source).
+pub fn resolve(env: Option<&str>, settings: Option<&str>) -> RelayConfig {
+    let (source, raw) = match (env, settings) {
+        (Some(raw), _) => (RELAY_CONFIG_ENV_VAR, raw),
+        (None, Some(raw)) => ("settings.relay", raw),
+        (None, None) => return RelayConfig::Default,
+    };
+    RelayConfig::parse(raw).unwrap_or_else(|e| {
+        tracing::warn!(
+            source,
+            error = %e,
+            "Invalid relay config, falling back to default n0 relays"
+        );
+        RelayConfig::Default
+    })
+}
+
 impl RelayConfig {
     /// Parse an operator-supplied relay config string.
     ///
@@ -84,28 +114,14 @@ impl RelayConfig {
         Ok(Self::Custom(urls))
     }
 
-    /// Read [`RELAY_CONFIG_ENV_VAR`] and parse it, falling back to
-    /// [`RelayConfig::Default`] (with a loud warning) on a missing var or a
-    /// parse failure.
-    ///
-    /// TODO(ultrapilot): promote this to a real `AppSettings`-sourced value
-    /// once FR-7 (application settings surface, D-78) lands. `spawn_sync_thread`'s
-    /// signature is intentionally left unchanged here to avoid touching its 3
-    /// external call sites (`fractalengine/src/main.rs`,
-    /// `fractalengine-relay/src/main.rs`, `fe-test-harness/src/peer.rs`) which
-    /// are outside this worker's `fe-sync/src/**` write scope.
+    /// The startup relay config: [`RELAY_CONFIG_ENV_VAR`] if set, else the
+    /// application-settings spec registered via [`set_settings_relay_spec`],
+    /// else [`RelayConfig::Default`]. See AGENTS.md §relay-health.
     pub fn from_env() -> Self {
-        match std::env::var(RELAY_CONFIG_ENV_VAR) {
-            Ok(raw) => Self::parse(&raw).unwrap_or_else(|e| {
-                tracing::warn!(
-                    var = RELAY_CONFIG_ENV_VAR,
-                    error = %e,
-                    "Invalid relay config in environment, falling back to default n0 relays"
-                );
-                Self::Default
-            }),
-            Err(_) => Self::Default,
-        }
+        resolve(
+            std::env::var(RELAY_CONFIG_ENV_VAR).ok().as_deref(),
+            SETTINGS_RELAY_SPEC.get().map(String::as_str),
+        )
     }
 
     /// Convert to the [`iroh::RelayMode`] the endpoint builder expects.
@@ -255,6 +271,40 @@ mod tests {
     fn parse_rejects_all_blank_custom_entries() {
         let err = RelayConfig::parse(" , , ").unwrap_err();
         assert_eq!(err, RelayConfigError::Empty);
+    }
+
+    // -------------------------------------------------------------------
+    // resolve (env > settings > default)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn resolve_precedence_table() {
+        let custom = |url: &str| RelayConfig::Custom(vec![url.to_string()]);
+        let cases: [(Option<&str>, Option<&str>, RelayConfig); 7] = [
+            (None, None, RelayConfig::Default),
+            (None, Some("disabled"), RelayConfig::Disabled),
+            (
+                None,
+                Some("https://settings.example.com"),
+                custom("https://settings.example.com"),
+            ),
+            (
+                Some("https://env.example.com"),
+                Some("disabled"),
+                custom("https://env.example.com"),
+            ),
+            (Some("disabled"), None, RelayConfig::Disabled),
+            // An invalid source falls back to Default, never to the next source.
+            (Some("not a url"), Some("disabled"), RelayConfig::Default),
+            (None, Some("not a url"), RelayConfig::Default),
+        ];
+        for (env, settings, expected) in cases {
+            assert_eq!(
+                resolve(env, settings),
+                expected,
+                "env {env:?}, settings {settings:?}"
+            );
+        }
     }
 
     #[test]

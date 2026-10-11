@@ -21,6 +21,9 @@ pub(super) enum ClickPriority {
     /// other consumer — including the path/gimbal arms, which independently
     /// early-return on `Tool::Brush` anyway.
     Brush,
+    /// Measure tool anchor placement (hexon_scale FR-9). Registered right after
+    /// Brush; claims a fresh press only while Measure is the active tool.
+    Measure,
     /// Drag a bezier handle marker of the edited track (pen_curve_tool_20260722
     /// FR-5, ratified Q7): outranks the gimbal arm AND the vertex marker, so an
     /// overlapping handle + vertex resolves to the handle.
@@ -129,6 +132,19 @@ impl ClickArbiter {
     pub(super) fn phase(&self) -> PointerPhase {
         self.phase
     }
+
+    /// Test seam: an unclaimed, available fresh press along `ray`, as
+    /// `resolve_pointer_frame` leaves it for a click inside the viewport.
+    #[cfg(test)]
+    pub(super) fn pressed_along(ray: Ray3d) -> Self {
+        Self {
+            available: true,
+            cursor: Some(Vec2::ZERO),
+            ray: Some(ray),
+            phase: PointerPhase::Press,
+            owner: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +153,7 @@ impl ClickArbiter {
 
 /// Effective claim priority of a resolved [`HitTarget`] — LOWER rank wins.
 /// Pure + total over every `HitTarget` variant: `handle > vertex > segment >
-/// gimbal-axis > node > stamp > proposal > terrain-cell > empty`. This is the
+/// gimbal-axis > node > stamp > proposal > earthwork-region > terrain-cell > empty`. This is the
 /// object-level pick preference (which target owns a click that could resolve
 /// to several), distinct from the per-system [`ClickPriority`] chain that
 /// enforces it at runtime. See `node_manager/AGENTS.md` §pointer-manager.
@@ -151,8 +167,9 @@ pub(crate) fn hit_target_rank(hit: &HitTarget) -> u8 {
         HitTarget::Node(_) => 4,
         HitTarget::Stamp(_) => 5,
         HitTarget::TerrainProposal { .. } => 6,
-        HitTarget::TerrainCell => 7,
-        HitTarget::Empty => 8,
+        HitTarget::EarthworkRegion { .. } => 7,
+        HitTarget::TerrainCell => 8,
+        HitTarget::Empty => 9,
     }
 }
 
@@ -260,6 +277,9 @@ mod tests {
             HitTarget::TerrainProposal {
                 id: "p".to_string(),
             },
+            HitTarget::EarthworkRegion {
+                id: "r".to_string(),
+            },
             HitTarget::TerrainCell,
             HitTarget::Empty,
         ];
@@ -299,6 +319,7 @@ mod tests {
         // consumer inserted in only one of the two places trips here.
         let chain = [
             ClickPriority::Brush,
+            ClickPriority::Measure,
             ClickPriority::PathHandle,
             ClickPriority::Gimbal,
             ClickPriority::PathMarker,
@@ -322,6 +343,7 @@ mod tests {
         let mut arb = available_arbiter();
         for who in [
             ClickPriority::Brush,
+            ClickPriority::Measure,
             ClickPriority::PathHandle,
             ClickPriority::Gimbal,
             ClickPriority::PathMarker,

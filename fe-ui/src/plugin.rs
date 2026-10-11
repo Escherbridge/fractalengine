@@ -468,6 +468,7 @@ mod tests {
             Tool::Scale,
             Tool::Pen,
             Tool::Brush,
+            Tool::Measure,
         ] {
             tool.activate(t, &mut right);
             assert_eq!(tool.active_tool, t, "{t:?} should activate");
@@ -500,6 +501,7 @@ mod tests {
             Tool::Scale,
             Tool::Pen,
             Tool::Brush,
+            Tool::Measure,
         ] {
             let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
             tool.activate(t, &mut right);
@@ -693,8 +695,20 @@ impl Plugin for GardenerConsolePlugin {
         // `visibility/mod.rs`.
         app.init_resource::<crate::visibility::VisibilityState>();
         app.add_systems(Update, crate::visibility::sync_node_visibility);
-        // Mirror AppSettings.mesh_budget_ceiling → MeshInstanceBudget.ceiling live.
-        app.add_systems(Update, crate::settings::sync_app_settings_to_mesh_budget);
+        // Mirror AppSettings.mesh_budget_ceiling → MeshInstanceBudget.ceiling live,
+        // camera multipliers → OrbitCameraController, debounced settings.ron save
+        // (only when the binary inserted SettingsPersistence), and the per-petal
+        // render-distance override lifecycle. See AGENTS.md §app-settings.
+        app.init_resource::<crate::settings::PetalRenderOverride>();
+        app.add_systems(
+            Update,
+            (
+                crate::settings::sync_app_settings_to_mesh_budget,
+                crate::settings::sync_app_settings_to_camera,
+                crate::settings::save_app_settings_debounced,
+                crate::settings::clear_petal_render_override_on_nav_change,
+            ),
+        );
         // Guarantee the renderer scale resource exists so fe-ui can drive it
         // (idempotent with CameraControllerPlugin's own init).
         app.init_resource::<fe_renderer::camera::CameraScaleSettings>();
@@ -764,6 +778,18 @@ impl Plugin for GardenerConsolePlugin {
             Update,
             crate::terrain_map::drain_tileset_events.in_set(UiSet::ProcessActions),
         );
+        // Phase 3 visibility: hydrate the active petal's persisted view state.
+        app.add_systems(
+            Update,
+            crate::visibility::cache::load_petal_view_state_on_nav_change
+                .in_set(UiSet::ProcessActions),
+        );
+        // Phase 4: swap in the active petal's persisted Group registry.
+        app.add_systems(
+            Update,
+            crate::visibility::groups::load_petal_groups_on_nav_change
+                .in_set(UiSet::ProcessActions),
+        );
         // Mirror the active petal's world scale into the renderer's camera settings.
         app.add_systems(
             Update,
@@ -827,6 +853,8 @@ struct MiscUiParams<'w> {
     // new top-level `gardener_ui_system` param) — that system is already at
     // Bevy's 16-`SystemParam` ceiling.
     vis_state: ResMut<'w, crate::visibility::VisibilityState>,
+    // hexon_scale FR-9: Measure tool anchors for the Options Measure arm.
+    measure_state: ResMut<'w, crate::node_manager::measure::MeasureState>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -896,6 +924,7 @@ fn gardener_ui_system(
         &mut ui_shell.right_sidebar,
         &mut ui_shell.modal,
         &mut misc.vis_state,
+        &mut misc.measure_state,
     );
     viewport_rect.0 = rect;
 
@@ -955,11 +984,7 @@ fn focus_target_visible(
 /// Resolves a pending focus request to a world position, preferring the live
 /// spawned entity's transform over the cached fallback (camera_focus_clip_20260716
 /// FR-2 — see `SpawnedNodeMarker` resolution idiom in `node_manager/sidebar_sync.rs`).
-///
-/// NOTE: the visibility refusal below is the minimal D-13/D-14 slice alongside
-/// `node_manager::viewport_pick`. The remaining surfaces — `context_pick`
-/// (right-click), `pointer`, `sidebar_sync`, and the path segment/vertex/handle
-/// filters — stay Phase-2 work of `hierarchy_visibility_groups_20260808`.
+/// Refuses an effectively-hidden target (D-14, the shared picker rule).
 fn apply_camera_focus(
     mut focus_target: ResMut<CameraFocusTarget>,
     mut query: Query<&mut fe_renderer::camera::OrbitCameraController>,
@@ -968,13 +993,7 @@ fn apply_camera_focus(
     visibility: Res<crate::visibility::VisibilityState>,
 ) {
     if let Some((node_id, fallback)) = focus_target.target.take() {
-        // Built exactly as `visibility::sync_node_visibility` builds it, so the
-        // camera and the renderer agree on what "hidden" means.
-        let ancestry = crate::visibility::NodeAncestry {
-            verse_id: nav.active_verse_id.as_deref().unwrap_or(""),
-            fractal_id: nav.active_fractal_id.as_deref().unwrap_or(""),
-            petal_id: nav.active_petal_id.as_deref().unwrap_or(""),
-        };
+        let ancestry = crate::visibility::active_ancestry(&nav);
         // Never fly to something the user cannot see: DROP the request (it was
         // already `take`n) rather than parking the camera on empty space.
         if !focus_target_visible(&node_id, ancestry, &visibility) {

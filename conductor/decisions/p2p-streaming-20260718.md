@@ -180,6 +180,8 @@ the spike.
 `render_distance_lod_20260407` (3-tier LOD, 1000 m hard limit) and
 `relay_data_horizon_20260407` (data/sync half of the dual-interest model) — the
 latter was not covered by any exploration report and is an open input.
+**Digested 2026-10-11** — see "## Evidence (2026-10-11)" below: neither archive
+contradicts D-74; the data-horizon layering is orthogonal sync scope.
 
 ## D-75 — Registry/HTTP parity (partial fetch over the hosted path)
 
@@ -284,10 +286,46 @@ phase in `p2p_asset_streaming` (FR-7). Consumed by both the residency ledger
    spawn_blocking or it stalls gossip/replication.
 7. **Chunk pipeline is scaffolding, not behavior** — `package_chunked` has no
    production callers; the download tracker has no cross-restart resume.
-8. **Bundle sizing is theory** — 16 KiB–tens-of-MB economics come from iroh
-   DESIGN.md, not from measured hexon tile-size distributions; histogram first.
+8. ~~**Bundle sizing is theory**~~ — **measured 2026-10-11** (see
+   "## Evidence (2026-10-11)"): real tile pairs are ~110 KB p50 / ~165 KB max, so
+   the effective bundle floor is one pair (~128 KiB), not 16 KiB; 1 MiB ≈ 6–9
+   pairs.
 9. **`get_tile_sync` main-thread latency** is tolerable only because bytes are
    pre-resident; lazy loading must prove it doesn't hitch frames or the async
    path becomes mandatory.
 10. **Offline-provenance separation** — Offline mode deliberately skips the
     online-origin disk cache; a unified streaming cache must preserve this.
+
+## Evidence (2026-10-11)
+
+Phase 0 evidence pack: `conductor/tracks/p2p_asset_streaming_20260718/evidence.md`
+(measured at `40590e9`, reproduction script in its appendix).
+
+- **Risk #8 (bundle sizing) — now measured.** Corpus: 3 gis-tile-etl tilesets
+  (0.8 / 1.4 / 7.3 MiB), the sample hexons, and the one installed tileset. Real
+  elevation tiles (terrain-RGB PNG, Stored) are p50 ≈ 92–100 KB, max 145 KB;
+  satellite JPEG p50 ≈ 17–21 KB; an elevation+satellite pair is ~110 KB p50 /
+  ~165 KB max. Size is roughly flat with zoom, so bytes scale with tile count
+  (×4 per zoom step). Implication for D-73 A4: the ratified 16 KiB–tens-of-MB
+  range holds, but **no real tile fits a 16 KiB bundle**; the practical floor is
+  one pair (~128 KiB), and the existing packager's 1 MiB granularity
+  (`builder.rs:288-297`) ≈ one 3×3 spatial block. Every archive measured today
+  fits in 1–8 one-MiB bundles; the streaming payoff only appears at ≥ z11
+  regional coverage (projection: PNW at z12 ≈ 1.9 GB). Elevation and satellite
+  for a block should share a bundle; entity hexons (≤ 6 KiB) ship whole.
+  **D-73 itself is unchanged.**
+- **D-74 mandated prior art — digested.** `render_distance_lod_20260407`: the
+  settings design is carried into Phase 4b (RON under the platform config dir);
+  its `Visibility`-toggle render volume is superseded by D-74's spawn gating; the
+  1000 m hard limit is not carried over (real-world-scale petals; `0` = halt).
+  `relay_data_horizon_20260407`: its ACTIVE/WARM/COLD/PINNED data horizon is
+  sync scope, orthogonal to D-74's in-petal render residency; its
+  `RelayConfig { pinned_verses, … }` is a **different concept** from D-77's
+  relay-server `RelayConfig` (revive under another name if pinning returns).
+  **D-74 itself is unchanged.**
+- **Risk #5 (double residency) — quantified.** `TilesetRegistry::load_all` is
+  consumed only by the fe-api tile routes; the renderer uses a second copy loaded
+  per assignment (`petal_binding.rs:153`). Today: 7.3 MiB × 2 = 14.6 MiB; at
+  projected z12 coverage ~3.8 GB, plus a ~1× transient spike per petal switch.
+  `Arc<HexonTileSource>` dedup sketch (registry owns, composite shares) is in
+  evidence.md §5 and is a prerequisite of the Phase 4 lazy source.

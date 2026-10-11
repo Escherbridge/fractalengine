@@ -51,6 +51,11 @@ pub(super) struct DescriptorCaches<'w, 's> {
         Without<super::spawn::PathAssetInstance>,
     >,
     mesh_budget: Res<'w, crate::plugin::MeshInstanceBudget>,
+    /// Phase 3 visibility hydration target (`view.state`/`view.groups` via
+    /// `NodePropertiesLoaded`, `PetalViewStateLoaded`, `NodeViewSet`).
+    visibility: ResMut<'w, crate::visibility::VisibilityState>,
+    /// Toast clock for the "Visibility not saved" failure notice.
+    time: Res<'w, Time>,
 }
 
 pub(super) fn apply_db_results(
@@ -80,17 +85,21 @@ pub(super) fn apply_db_results(
     for result in reader.read() {
         match result {
             DbResult::Seeded { .. } => hierarchy::handle_seeded(&db_sender),
-            DbResult::HierarchyLoaded { verses } => hierarchy::handle_hierarchy_loaded(
-                verses,
-                &mut verse_mgr,
-                &mut nav,
-                &mut commands,
-                &asset_server,
-                &mut pending_api,
-                &mut already_spawned,
-                mesh_budget_exceeded,
-                &mut caches.ts_settings,
-            ),
+            DbResult::HierarchyLoaded { verses } => {
+                // Phase 4: the persisted verse/fractal/petal eyes ride the tree.
+                crate::visibility::groups::hydrate_scope_hidden(&mut caches.visibility, verses);
+                hierarchy::handle_hierarchy_loaded(
+                    verses,
+                    &mut verse_mgr,
+                    &mut nav,
+                    &mut commands,
+                    &asset_server,
+                    &mut pending_api,
+                    &mut already_spawned,
+                    mesh_budget_exceeded,
+                    &mut caches.ts_settings,
+                )
+            }
             DbResult::VerseJoined { .. } => hierarchy::handle_verse_joined(&db_sender),
             // Still falls through to `try_deliver`: the API caller awaits it.
             DbResult::ElevatedQueryResult { changed_rows, .. } => {
@@ -330,8 +339,51 @@ pub(super) fn apply_db_results(
                     &mut caches.path_asset,
                     &mut caches.stamp_state,
                     &mut caches.earthwork_map,
+                    &mut caches.visibility,
                 ) {
                     continue;
+                }
+            }
+            DbResult::NodeViewSet {
+                node_id,
+                state,
+                groups,
+                ..
+            } => crate::visibility::cache::apply_node_view_echo(
+                &mut caches.visibility,
+                node_id,
+                state.as_deref(),
+                groups.as_deref(),
+            ),
+            DbResult::PetalViewStateLoaded { entries, .. } => {
+                crate::visibility::cache::apply_petal_view_state(&mut caches.visibility, entries)
+            }
+            DbResult::PetalVisibilityGroupsLoaded {
+                petal_id, groups, ..
+            } => crate::visibility::groups::apply_registry_loaded(
+                &mut caches.visibility,
+                nav.active_petal_id.as_deref(),
+                petal_id,
+                groups,
+            ),
+            DbResult::ScopeHiddenSet {
+                level, id, hidden, ..
+            } => caches.visibility.set_scope_hidden(*level, id, *hidden),
+            DbResult::RequestFailed {
+                error,
+                correlation_id,
+            } => {
+                if let Some(toast) =
+                    crate::visibility::cache::view_write_failure_toast(correlation_id, error)
+                        .or_else(|| {
+                            crate::visibility::groups::registry_write_failure_toast(
+                                correlation_id,
+                                error,
+                            )
+                        })
+                {
+                    bevy::log::warn!("visibility write not persisted: {error}");
+                    ui_mgr.show_toast(toast, caches.time.elapsed_secs_f64());
                 }
             }
             DbResult::NodePropertySet { node_id, key } => {
@@ -1204,6 +1256,7 @@ mod tests {
             &mut pa_cache,
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::visibility::VisibilityState::default(),
         );
         assert!(
             !delivered,
@@ -1229,11 +1282,34 @@ mod tests {
             &mut pa_cache,
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::visibility::VisibilityState::default(),
         );
         assert!(!delivered, "selection gate unchanged");
         assert!(
             cache.get("n1").is_some(),
             "FR-1: cache fed without selection"
+        );
+    }
+
+    #[test]
+    fn properties_loaded_hydrates_a_persisted_hide_even_when_unselected() {
+        let mut visibility = crate::visibility::VisibilityState::default();
+        properties::handle_node_properties_loaded(
+            "n1",
+            Some("p1"),
+            &json!({ "view.state": "hide" }),
+            &mut PathEditorState::default(),
+            &NodeManager::default(),
+            &mut InspectorFormState::default(),
+            &mut super::super::PrimitiveDescriptorCache::default(),
+            &mut super::super::PathAssetCache::default(),
+            &mut crate::actions::asset::StampInteractionState::default(),
+            &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut visibility,
+        );
+        assert_eq!(
+            visibility.node_override("n1"),
+            crate::visibility::OverrideState::Hide
         );
     }
 
@@ -1264,6 +1340,7 @@ mod tests {
             &mut pa,
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::visibility::VisibilityState::default(),
         );
         assert!(!delivered, "selection gate unchanged");
         assert!(
@@ -1299,6 +1376,7 @@ mod tests {
             &mut pa,
             &mut stamps,
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::visibility::VisibilityState::default(),
         );
         let stamp = StampRef {
             track_node_id: "path-1".into(),
@@ -1386,6 +1464,7 @@ mod tests {
             &mut pa_cache,
             &mut crate::actions::asset::StampInteractionState::default(),
             &mut crate::actions::terrain_proposal::EarthworkNodeMap::default(),
+            &mut crate::visibility::VisibilityState::default(),
         );
         assert!(delivered);
         assert_eq!(ins.node_properties, props);

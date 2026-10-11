@@ -56,6 +56,7 @@ when a route lands.
 | Assets (§assets, §asset-ingest) | `GET /api/v1/assets/{content_hash}`, `GET /api/v1/assets/by-id/{asset_id}`, `GET /api/v1/nodes/{id}/asset`; upload `POST /api/v1/petals/{p}/assets` (multipart GLB) |
 | Petal archive / GPX | `GET /api/v1/petals/{p}/export`, `POST …/import`, `POST …/import/gpx`, `GET …/export/gpx` |
 | Terrain config (§terrain-mutation) | `GET\|PUT\|DELETE /api/v1/petals/{p}/terrain` |
+| Visibility Groups (§visibility-groups) | `GET\|PUT /api/v1/petals/{p}/visibility-groups`, `PATCH\|DELETE …/visibility-groups/{group_id}` |
 | Tile data plane | `GET /api/v1/tiles/elevation/{id}/{z}/{x}/{y}.png?petal_id=...`, `GET /api/v1/tiles/satellite/{id}/{z}/{x}/{y}.jpg?petal_id=...`, `GET /api/v1/tilesets?petal_id=...`, `GET /api/v1/tilesets/{id}/meta?petal_id=...` |
 | Field defs | `POST /api/v1/field-defs`, `GET /api/v1/field-defs/{scope}`, `PATCH\|DELETE /api/v1/field-defs/by-id/{id}` |
 | Query / BI egress (§query-guard, §export, §share) | `POST /api/v1/query` (body `distributed: {…TsQueryKind…}` → §distributed-query), `POST /api/v1/query/elevated` (§elevated-query — OFF unless `FE_API_ELEVATED_ALLOW=1`; Owner; NOT scope-confined), `POST /api/v1/query/share`, `GET /api/v1/petals/{p}/export.parquet`, `GET …/export.csv`, `POST /api/v1/analytics/query` (merged `iot_reading` table via §distributed-query) |
@@ -63,7 +64,7 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 29-row `ToolSpec` table, 24 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 31-row `ToolSpec` table, 26 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -1002,6 +1003,31 @@ ULID check → petal scope resolution + `require_scope` (MCP: the dispatcher's
   terrain runtime, and a GUI load for the same petal cannot satisfy it. Tests: `tests/terrain_mutation_test.rs` (full router,
   real reply router + production DB reply builder against Mem SurrealDB).
 
+## §visibility-groups (VIS-PH6, hierarchy_visibility_groups Phase 6)
+
+`visibility.rs` serves a petal's visibility-Group registry
+(`[{id, name, visible, order}]`, fe-database §lifecycle "Visibility groups"):
+`GET` (Viewer+) and `PUT` (Editor+, whole-registry replace, body
+`{"groups": [...]}`) on `/api/v1/petals/{p}/visibility-groups`, and `PATCH`
+(upsert one Group; a NEW id needs `name`, `visible` defaults true, `order`
+to last+1) / `DELETE` (unknown id → 404) on `…/{group_id}`. Gate order
+mirrors `terrain.rs`: `require_role_level` (fe-policy `RoleFloorPolicy` over
+`api_token_context`) → ULID → `rest::authorized_petal_scope` (missing and
+foreign petals are the SAME `NOT_FOUND_OR_DENIED` body,
+`tests/visibility_groups_api_test.rs`) → the DB thread, which re-checks
+Editor+ at the petal scope from `endpoint::caller_auth(&claims)`. Every call
+is a correlated `ApiCommand::DbRequest` (fresh ULID; reply must echo the id
+AND petal) with a 10 s timeout; a malformed registry is a 400 BEFORE the
+round trip (`fe_database::handlers::visibility_groups::validate_groups`, the
+same validator the DB thread runs); a DB refusal/failure is 502 "failed or
+not permitted" (detail logged). **PATCH/DELETE are read-modify-write** under
+a correlated Get→Set pair (`modify_group_core`): a registry write that lands
+between the two is overwritten (last writer wins, the same whole-registry
+merge the column has everywhere — D-3 accepted it; the registry is
+O(groups) and rarely co-edited). MCP `list_visibility_groups` (Viewer) and
+`set_visibility_group` (Editor; `group_id` + `name`/`visible`/`order`, or
+`delete: true`) share these cores.
+
 ## §iot-ingest (iot_spatial_reporting_20260714)
 
 `iot.rs` — `POST /api/v1/petals/:petal_id/iot/readings`, the minimal-v1
@@ -1195,7 +1221,7 @@ defense in depth.
 |---|---|---|
 | `None` | self-filtering read (token scope narrows output) | get_hierarchy, query |
 | `Global` | no resource scope exists — role-only by design | create_verse (Manager), sim_* (Owner) |
-| `PetalArg(k)` | `args[k]` petal → `resolve_petal_scope` | promote_instance, query_timeseries, upload_asset, place_asset, create_waypoint, import_gpx, set_petal_terrain, list_tilesets, install_tileset, get_gis_nodes |
+| `PetalArg(k)` | `args[k]` petal → `resolve_petal_scope` | promote_instance, query_timeseries, upload_asset, place_asset, create_waypoint, import_gpx, set_petal_terrain, list_visibility_groups, set_visibility_group, list_tilesets, install_tileset, get_gis_nodes |
 | `NodeArg(k)` | `args[k]` node → `resolve_node_scope` | update_transform, read_node, node_address, delete_node, set/get/delete_property, move_waypoint |
 | `HierarchyArgs(target)` | the id AT `target` (Verse/Fractal/Petal) is DB-resolved; shallower ids sent must match the stored chain; a DEEPER id is rejected outright | create_fractal→Verse, create_petal→Fractal, create_node→Petal |
 
@@ -1249,10 +1275,11 @@ rewrite any verse's schema) and now require the field def's stored scope;
 `GET /api/v1/field-defs/{scope}` requires the token to cover `{scope}`.
 
 **Honest arithmetic (DEC-C14).** A26's "20 tools" = the mcp_scene_primitives
-20-name vocabulary, now fully present. The table has 29 rows: 24 non-sim +
+20-name vocabulary, now fully present. The table has 31 rows: 26 non-sim +
 5 sim — an intentional, documented superset (read_node, node_address,
-promote_instance, query_timeseries, sim_* shipped legitimately); none are
-deleted or renamed. `tools/list` returns 29 on a sim lab host and 24
+promote_instance, query_timeseries, list_visibility_groups,
+set_visibility_group, sim_* shipped legitimately); none are
+deleted or renamed. `tools/list` returns 31 on a sim lab host and 26
 everywhere else (the GUI always; the relay without `sim-control`) —
 `tools_list_inventory` pins both configurations.
 

@@ -208,6 +208,10 @@ static TOOLS: &[ToolSpec] = &[
         "Import a GPX document (base64, max 11 MiB decoded, max 10000 points) as track/waypoint nodes in a petal. Requires editor role + petal scope."),
     tool!(set_petal_terrain, Editor, PetalArg("petal_id"),
         "Set (object) or clear (null) a petal's terrain config, like REST PUT/DELETE /petals/{id}/terrain. The object must be a valid TerrainConfig; returns the stored terrain. Requires editor role + petal scope."),
+    tool!(list_visibility_groups, Viewer, PetalArg("petal_id"),
+        "List a petal's visibility Groups ({id, name, visible, order}), like REST GET /petals/{id}/visibility-groups. Requires viewer role + petal scope."),
+    tool!(set_visibility_group, Editor, PetalArg("petal_id"),
+        "Upsert one visibility Group (name/visible/order; a new group needs a name) or delete it (delete: true), like REST PATCH/DELETE /petals/{id}/visibility-groups/{group_id}. Returns the stored registry. Requires editor role + petal scope; the DB re-checks Editor+ via fe-policy."),
     tool!(list_tilesets, Viewer, PetalArg("petal_id"),
         "List the installed terrain tilesets bound to a petal's terrain config. Requires viewer role + petal scope."),
     tool!(install_tileset, Editor, PetalArg("petal_id"),
@@ -592,7 +596,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(TOOLS.len(), 29, "DEC-C14: 24 non-sim + 5 sim");
+        assert_eq!(TOOLS.len(), 31, "DEC-C14: 26 non-sim + 5 sim");
     }
 
     #[test]

@@ -746,4 +746,75 @@ mod tests {
         .unwrap();
         assert_eq!(adjusted, 4.0);
     }
+
+    /// Plan Phase 2 determinism gate: every op × footprint × scale yields
+    /// bit-identical heights and volumes on repeat (no RNG, no hash-order).
+    #[test]
+    fn sculpt_ops_are_bit_identical_on_repeat() {
+        let base = |x: f32, z: f32| Some((x * 0.37).sin() * 4.0 + (z * 0.11).cos() * 2.5);
+        let footprints = [
+            Footprint::Rect {
+                min: [-6.0, -4.0],
+                max: [7.0, 9.0],
+            },
+            Footprint::Circle {
+                center: [1.5, 2.0],
+                radius: 6.5,
+            },
+            Footprint::Polygon {
+                verts: vec![[-5.0, -5.0], [8.0, -3.0], [6.0, 7.0], [-2.0, 9.0]],
+            },
+        ];
+        let ops = [
+            SculptOp::Raise,
+            SculptOp::Lower,
+            SculptOp::Level,
+            SculptOp::Smooth,
+        ];
+        let samples: Vec<[f32; 2]> = (-8..=10)
+            .flat_map(|i| (-8..=10).map(move |j| [i as f32 * 0.9, j as f32 * 0.9]))
+            .collect();
+        let bits = |hs: &[Option<f32>]| -> Vec<Option<u32>> {
+            hs.iter().map(|h| h.map(f32::to_bits)).collect()
+        };
+        let cf_bits = |cf: CutFill| (cf.cut_m3.to_bits(), cf.fill_m3.to_bits(), cf.scaled);
+
+        for footprint in &footprints {
+            for op in ops {
+                for world_scale in [1.0, 0.01] {
+                    let case = format!("{op:?} {footprint:?} scale {world_scale}");
+                    let run = || apply_sculpt(&base, footprint, op, 3.0, 1.5, 0.6, 0.5, &samples);
+                    let first = run();
+                    assert!(
+                        first
+                            .iter()
+                            .zip(&samples)
+                            .any(|(h, &[x, z])| h.is_some_and(|h| Some(h) != base(x, z))),
+                        "{case}: the op must actually change some heights"
+                    );
+                    assert_eq!(bits(&first), bits(&run()), "{case}: heights");
+
+                    let volume =
+                        || sculpt_cut_fill(&base, footprint, op, 3.0, 1.5, 0.6, 0.5, world_scale);
+                    let cf = volume();
+                    assert!(cf.cut_m3 + cf.fill_m3 > 0.0, "{case}: non-trivial volume");
+                    assert_eq!(cf_bits(cf), cf_bits(volume()), "{case}: volume");
+
+                    let region = EarthworkRegion {
+                        id: "r".into(),
+                        op,
+                        footprint: footprint.to_polygon(),
+                        material: "earth".into(),
+                        target_height: Some(3.0),
+                        delta: Some(0.6),
+                    };
+                    assert_eq!(
+                        cf_bits(region.cut_fill(&base, 0.5, world_scale)),
+                        cf_bits(region.cut_fill(&base, 0.5, world_scale)),
+                        "{case}: region volume"
+                    );
+                }
+            }
+        }
+    }
 }

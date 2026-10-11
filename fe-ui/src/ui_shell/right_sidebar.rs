@@ -16,6 +16,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::Resource;
 use bevy_egui::egui;
+use fe_database::handlers::node_view::MAX_VIEW_GROUPS;
+use fe_database::handlers::visibility_groups::{MAX_GROUP_NAME_CHARS, MAX_VISIBILITY_GROUPS};
 
 use crate::actions::terrain_proposal::SculptToolState;
 use crate::actions::{UiAction, UiManager};
@@ -38,6 +40,8 @@ use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::ProposalEditState;
 use crate::theme;
 use crate::verse_manager::VerseManager;
+use crate::visibility::groups as group_ops;
+use crate::visibility::VisibilityState;
 use fe_runtime::messages::DbCommand;
 
 /// The mutually-exclusive right-sidebar sections (one at a time — never-double).
@@ -58,17 +62,22 @@ pub enum RightSidebarSection {
     Settings,
     /// Map manager (was `ActiveDialog::HexonManager`), FR-2.
     Maps,
+    /// Visibility-Group management (D-10): create/rename/delete/toggle/reorder
+    /// the active petal's Groups + selection membership. The left sidebar is
+    /// read + toggle only; its "Add selection to group…" reveals this by slug.
+    Groups,
 }
 
 /// Every section, in rail order. Single source for the rail, the slug table,
 /// and the round-trip tests — a new variant that forgets a slug fails to build.
-pub const ALL_SECTIONS: [RightSidebarSection; 6] = [
+pub const ALL_SECTIONS: [RightSidebarSection; 7] = [
     RightSidebarSection::Inspector,
     RightSidebarSection::Options,
     RightSidebarSection::TerrainTools,
     RightSidebarSection::ProposalReport,
     RightSidebarSection::Settings,
     RightSidebarSection::Maps,
+    RightSidebarSection::Groups,
 ];
 
 impl RightSidebarSection {
@@ -83,6 +92,7 @@ impl RightSidebarSection {
             RightSidebarSection::ProposalReport => "report",
             RightSidebarSection::Settings => "settings",
             RightSidebarSection::Maps => "maps",
+            RightSidebarSection::Groups => "groups",
         }
     }
 
@@ -145,6 +155,7 @@ pub fn section_label(section: RightSidebarSection) -> &'static str {
         RightSidebarSection::ProposalReport => "Proposal Report",
         RightSidebarSection::Settings => "Settings",
         RightSidebarSection::Maps => "Maps",
+        RightSidebarSection::Groups => "Groups",
     }
 }
 
@@ -206,6 +217,12 @@ pub fn render_right_sidebar(
     // of the live selection/gimbal readouts. Read-only here: `activate` is the
     // single writer (`plugin.rs`).
     tool: &ToolState,
+    // Measure tool anchors (hexon_scale FR-9): the Options Measure arm's
+    // Undo/Clear/Close/mode buttons run the same reducer as viewport clicks.
+    measure_state: &mut crate::node_manager::measure::MeasureState,
+    // VIS-PH5: the Groups section reads the registry + membership; edits go
+    // out as `UiAction`s (optimistic + authed in the reducer).
+    visibility: &VisibilityState,
 ) {
     let portal_open = ui_mgr.portal_is_open();
     if portal_open {
@@ -246,6 +263,11 @@ pub fn render_right_sidebar(
             ui_mgr,
             hierarchy,
             nav.active_petal_id.as_deref(),
+            measure_state,
+            crate::node_manager::measure::measure_world_scale(
+                petal_map,
+                nav.active_petal_id.as_deref(),
+            ),
         ),
         Some(RightSidebarSection::TerrainTools) => render_terrain_tools_section(
             ctx,
@@ -271,6 +293,14 @@ pub fn render_right_sidebar(
             ui_mgr,
             petal_map,
             nav.active_petal_id.as_deref(),
+        ),
+        Some(RightSidebarSection::Groups) => render_groups_section(
+            ctx,
+            state,
+            ui_mgr,
+            visibility,
+            nav.active_petal_id.as_deref(),
+            node_mgr.selected.as_ref().map(|s| s.node_id.as_str()),
         ),
         None => {} // unreachable: portal short-circuited above
     }
@@ -344,6 +374,8 @@ fn render_options_section(
     ui_mgr: &mut UiManager,
     verse_mgr: &VerseManager,
     active_petal_id: Option<&str>,
+    measure_state: &mut crate::node_manager::measure::MeasureState,
+    measure_world_scale: f64,
 ) {
     let kind = project_selection(
         node_mgr
@@ -372,6 +404,8 @@ fn render_options_section(
             ui_mgr,
             verse_mgr,
             active_petal_id,
+            measure_state,
+            measure_world_scale,
         );
     });
 }
@@ -474,62 +508,83 @@ fn render_settings_section(
     nav: &NavigationManager,
     db_tx: &crossbeam::channel::Sender<DbCommand>,
 ) {
-    app_settings.render_distance = if app_settings.render_distance.is_finite() {
-        app_settings.render_distance.clamp(1.0, 1_000_000.0)
-    } else {
-        AppSettings::default().render_distance
-    };
+    crate::settings::sanitize(app_settings);
     section_chrome(ctx, state, RightSidebarSection::Settings, |ui| {
-        ui.label(
-            egui::RichText::new("Rendering")
-                .strong()
-                .color(theme::TEXT_SECTION),
-        );
-        ui.add_space(4.0);
-
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Render distance")
-                    .small()
-                    .color(theme::TEXT_DIM),
-            );
+        settings_heading(ui, "Rendering");
+        settings_row(ui, "Render distance", |ui| {
             ui.add(
                 egui::DragValue::new(&mut app_settings.render_distance)
                     .speed(1.0)
-                    .range(1.0..=1_000_000.0)
+                    .range(0.0..=crate::settings::RENDER_DISTANCE_MAX)
                     .suffix(" wu"),
             )
             .on_hover_text(
-                "Global default render distance; PetalManifest.render_distance overrides per-petal",
+                "Global residency horizon (0 stops spawning); a petal manifest's render distance overrides it for that petal",
             );
         });
-
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Mesh budget ceiling")
-                    .small()
-                    .color(theme::TEXT_DIM),
+        settings_row(ui, "Mesh budget ceiling", |ui| {
+            usize_drag(
+                ui,
+                &mut app_settings.mesh_budget_ceiling,
+                crate::plugin::MAX_MESH_INSTANCES,
+            )
+            .on_hover_text("MeshInstanceBudget.ceiling — the mesh-instance watchdog gate");
+        });
+        settings_row(ui, "Entity cap", |ui| {
+            usize_drag(
+                ui,
+                &mut app_settings.entity_cap,
+                crate::verse_manager::MAX_PETAL_NODES,
+            )
+            .on_hover_text(
+                "Soft cap on scene nodes spawned per petal; applies on next petal entry",
             );
-            // usize has no native egui DragValue support; round-trip via u64.
-            let mut ceiling = app_settings.mesh_budget_ceiling as u64;
-            if ui
-                .add(egui::DragValue::new(&mut ceiling).range(1..=u32::MAX as u64))
-                .on_hover_text("MeshInstanceBudget.ceiling — the mesh-instance watchdog gate")
-                .changed()
-            {
-                app_settings.mesh_budget_ceiling = ceiling as usize;
-            }
+        });
+        settings_row(ui, "Stamp ceiling", |ui| {
+            usize_drag(
+                ui,
+                &mut app_settings.stamp_ceiling,
+                crate::verse_manager::MAX_STAMPS_PER_PETAL,
+            )
+            .on_hover_text("Soft cap on path-asset stamps per petal; applies on the next restamp");
+        });
+
+        // hexon_scale FR-8/FR-10 ruler overlays (mirrored into fe-terrain's
+        // RulerSettings by the main binary's terrain bridge).
+        ui.checkbox(&mut app_settings.show_scale_bar, "Scale bar")
+            .on_hover_text("Bottom-left real-distance scale bar");
+        ui.checkbox(&mut app_settings.show_world_grid, "Metric grid")
+            .on_hover_text("Ground grid at round metric spacing (1 / 2 / 5 × 10ⁿ m); needs a map");
+
+        ui.add_space(8.0);
+        settings_heading(ui, "Terrain");
+        let mut offline = app_settings.tile_mode == crate::settings::TileSourceMode::Offline;
+        if ui
+            .checkbox(&mut offline, "Offline tiles (no network)")
+            .on_hover_text(
+                "Serve terrain only from installed hexons; off = each petal's own tile source mode",
+            )
+            .changed()
+        {
+            app_settings.tile_mode = if offline {
+                crate::settings::TileSourceMode::Offline
+            } else {
+                crate::settings::TileSourceMode::Hybrid
+            };
+        }
+
+        ui.add_space(8.0);
+        settings_heading(ui, "Camera");
+        settings_row(ui, "Orbit sensitivity", |ui| {
+            multiplier_drag(ui, &mut app_settings.camera_sensitivity);
+        });
+        settings_row(ui, "Zoom speed", |ui| {
+            multiplier_drag(ui, &mut app_settings.camera_zoom_speed);
         });
 
         ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(
-                "Additional knobs (stamp caps, tile source mode, camera, P2P relay/peer config) land as AppSettings grows further fields.",
-            )
-            .small()
-            .color(theme::TEXT_MUTED)
-            .italics(),
-        );
+        settings_heading(ui, "Network");
+        render_relay_setting(ui, app_settings);
 
         // --- Timeseries fabric (M2/F6 — per active verse) ---
         ui.add_space(12.0);
@@ -543,6 +598,81 @@ fn render_settings_section(
         ui.add_space(2.0);
         render_timeseries_fabric_controls(ui, ts_settings, nav, db_tx);
     });
+}
+
+/// Bold sub-heading inside the Settings section.
+fn settings_heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .strong()
+            .color(theme::TEXT_SECTION),
+    );
+    ui.add_space(4.0);
+}
+
+/// One `label  widget` row in the Settings section.
+fn settings_row(ui: &mut egui::Ui, label: &str, widget: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).small().color(theme::TEXT_DIM));
+        widget(ui);
+    });
+}
+
+/// `usize` knob in `1..=max` (egui has no native usize DragValue; round-trips via u64).
+fn usize_drag(ui: &mut egui::Ui, value: &mut usize, max: usize) -> egui::Response {
+    let mut wide = *value as u64;
+    let response = ui.add(egui::DragValue::new(&mut wide).range(1..=max as u64));
+    if response.changed() {
+        *value = wide as usize;
+    }
+    response
+}
+
+/// Camera multiplier knob (× the controller's default).
+fn multiplier_drag(ui: &mut egui::Ui, value: &mut f32) {
+    ui.add(
+        egui::DragValue::new(value)
+            .speed(0.01)
+            .range(crate::settings::CAMERA_MULTIPLIER_RANGE)
+            .suffix(" ×"),
+    );
+}
+
+/// Relay-server spec editor: only a spec `RelayConfig::parse` accepts is stored;
+/// the sync thread reads it once at startup.
+fn render_relay_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
+    let buffer_id = ui.id().with("relay_spec_buffer");
+    let mut buffer = ui
+        .data_mut(|data| data.get_temp::<String>(buffer_id))
+        .unwrap_or_else(|| app_settings.relay.clone());
+    settings_row(ui, "Relay", |ui| {
+        ui.add(egui::TextEdit::singleline(&mut buffer).desired_width(160.0))
+            .on_hover_text(
+                "default | disabled | comma-separated relay URLs (FE_SYNC_RELAY overrides)",
+            );
+    });
+    match fe_sync::relay_config::RelayConfig::parse(&buffer) {
+        Ok(_) => {
+            let trimmed = buffer.trim();
+            if trimmed != app_settings.relay {
+                app_settings.relay = trimmed.to_string();
+            }
+            ui.label(
+                egui::RichText::new("Applies after restart")
+                    .small()
+                    .color(theme::TEXT_MUTED)
+                    .italics(),
+            );
+        }
+        Err(err) => {
+            ui.label(
+                egui::RichText::new(format!("Not saved: {err}"))
+                    .small()
+                    .color(theme::STATUS_OFFLINE),
+            );
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(buffer_id, buffer));
 }
 
 /// The per-verse timeseries-fabric controls (M2/F6 — A13): mode picker, the
@@ -770,6 +900,174 @@ fn seed_hexon_manager() -> ActiveDialog {
 // section fn above. All five sections are filled as of P5 (FR-8).
 // ---------------------------------------------------------------------------
 
+/// Empty-group copy (spec §4.5 — calm state, never blank).
+pub(crate) const EMPTY_GROUP_COPY: &str = "No members — select nodes and use Add to group";
+
+/// Groups section (D-10): the ONE editor for the active petal's Group
+/// registry. Every edit is a whole-registry `UiAction::SetGroupRegistry`
+/// (pure transforms in `visibility::groups`); membership edits are
+/// `UiAction::SetNodeGroups` for the selected node.
+fn render_groups_section(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    ui_mgr: &mut UiManager,
+    visibility: &VisibilityState,
+    active_petal_id: Option<&str>,
+    selected_node_id: Option<&str>,
+) {
+    section_chrome(ctx, state, RightSidebarSection::Groups, |ui| {
+        let Some(petal_id) = active_petal_id else {
+            ui.label(
+                egui::RichText::new("Open a petal to manage its Groups.")
+                    .small()
+                    .color(theme::TEXT_MUTED)
+                    .italics(),
+            );
+            return;
+        };
+        let groups = visibility.groups();
+        let push_registry = |ui_mgr: &mut UiManager, next: Vec<crate::visibility::Group>| {
+            ui_mgr.push_action(UiAction::SetGroupRegistry {
+                petal_id: petal_id.to_string(),
+                groups: next,
+            });
+        };
+
+        // Create.
+        let new_name_id = egui::Id::new("groups_section_new_name");
+        let mut new_name: String = ui.data(|d| d.get_temp(new_name_id)).unwrap_or_default();
+        ui.horizontal(|ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut new_name)
+                    .hint_text("New group name")
+                    .char_limit(MAX_GROUP_NAME_CHARS)
+                    .desired_width(160.0),
+            );
+            let submitted = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            // The DB refuses an over-long name or a registry past its cap.
+            let can_add = !new_name.trim().is_empty() && groups.len() < MAX_VISIBILITY_GROUPS;
+            let clicked = ui
+                .add_enabled(can_add, egui::Button::new("Add group"))
+                .clicked();
+            if can_add && (clicked || submitted) {
+                push_registry(ui_mgr, group_ops::with_group_added(groups, &new_name));
+                new_name.clear();
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(new_name_id, new_name));
+        ui.add_space(6.0);
+
+        if groups.is_empty() {
+            ui.label(
+                egui::RichText::new("No Groups yet — name one above.")
+                    .small()
+                    .color(theme::TEXT_MUTED)
+                    .italics(),
+            );
+            return;
+        }
+
+        // A stamp instance has no node row to carry `view.groups`.
+        let selected_node_id =
+            selected_node_id.filter(|id| crate::verse_manager::parse_stamp_marker_id(id).is_none());
+        let selected_groups = selected_node_id.map(|id| visibility.node_groups(id));
+        for (index, group) in groups.iter().enumerate() {
+            ui.separator();
+            ui.horizontal(|ui| {
+                let mut visible = group.visible;
+                if ui
+                    .checkbox(&mut visible, "")
+                    .on_hover_text("Show or hide every member of this Group")
+                    .changed()
+                {
+                    push_registry(
+                        ui_mgr,
+                        group_ops::with_group_visible(groups, &group.id, visible),
+                    );
+                }
+                // Rename: edit a per-group buffer, commit on focus loss.
+                let buffer_id = egui::Id::new(("groups_section_rename", group.id.as_str()));
+                let mut name: String = ui
+                    .data(|d| d.get_temp(buffer_id))
+                    .unwrap_or_else(|| group.name.clone());
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .char_limit(MAX_GROUP_NAME_CHARS)
+                        .desired_width(120.0),
+                );
+                if edit.lost_focus() {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() && trimmed != group.name {
+                        push_registry(
+                            ui_mgr,
+                            group_ops::with_group_renamed(groups, &group.id, trimmed),
+                        );
+                    }
+                    ui.data_mut(|d| d.remove::<String>(buffer_id));
+                } else if edit.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(buffer_id, name));
+                }
+                if ui
+                    .add_enabled(index > 0, egui::Button::new("\u{25B2}").small())
+                    .on_hover_text("Move up")
+                    .clicked()
+                {
+                    push_registry(ui_mgr, group_ops::with_group_moved(groups, index, -1));
+                }
+                if ui
+                    .add_enabled(
+                        index + 1 < groups.len(),
+                        egui::Button::new("\u{25BC}").small(),
+                    )
+                    .on_hover_text("Move down")
+                    .clicked()
+                {
+                    push_registry(ui_mgr, group_ops::with_group_moved(groups, index, 1));
+                }
+                if ui
+                    .add(egui::Button::new("Delete").small())
+                    .on_hover_text("Delete the Group (its members are not deleted)")
+                    .clicked()
+                {
+                    push_registry(ui_mgr, group_ops::with_group_removed(groups, &group.id));
+                }
+            });
+
+            let members = visibility.group_member_count(&group.id);
+            ui.label(
+                egui::RichText::new(if members == 0 {
+                    EMPTY_GROUP_COPY.to_string()
+                } else {
+                    format!("{members} member{}", if members == 1 { "" } else { "s" })
+                })
+                .small()
+                .color(theme::TEXT_MUTED),
+            );
+
+            if let (Some(node_id), Some(current)) = (selected_node_id, selected_groups) {
+                let member = current.iter().any(|id| id == &group.id);
+                let label = if member {
+                    "Remove from group"
+                } else {
+                    "Add selection to group"
+                };
+                let can_join = member || current.len() < MAX_VIEW_GROUPS;
+                if ui
+                    .add_enabled(can_join, egui::Button::new(label).small())
+                    .clicked()
+                {
+                    if let Some(next) = group_ops::membership_with(current, &group.id, !member) {
+                        ui_mgr.push_action(UiAction::SetNodeGroups {
+                            node_id: node_id.to_string(),
+                            groups: next,
+                        });
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Shared SidePanel chrome (header + rail + separator + scrollable, padded
 /// body) — the seam EVERY section fn renders through, Inspector included
 /// (D10). That "every" is load-bearing: the rail lives in here, so a section
@@ -826,6 +1124,7 @@ fn section_glyph(section: RightSidebarSection) -> &'static str {
         RightSidebarSection::ProposalReport => "\u{1F4C4}",
         RightSidebarSection::Settings => "\u{2699}",
         RightSidebarSection::Maps => "\u{1F4E6}",
+        RightSidebarSection::Groups => "\u{25C9}",
     }
 }
 
@@ -861,7 +1160,7 @@ mod tests {
         RightSidebarState { requested: req }
     }
 
-    const ALL: [RightSidebarSection; 6] = ALL_SECTIONS;
+    const ALL: [RightSidebarSection; 7] = ALL_SECTIONS;
 
     #[test]
     fn portal_short_circuits_to_none_regardless_of_toggle_or_selection() {

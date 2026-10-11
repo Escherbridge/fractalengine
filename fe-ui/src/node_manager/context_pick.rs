@@ -18,10 +18,12 @@ use crate::dialogs::{ActiveDialog, ContextTarget};
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
+use crate::terrain_map::PetalMapState;
 use crate::terrain_proposal_state::{ProposalEditState, ProposalRecord};
 use crate::verse_manager::{
     parse_stamp_marker_id, stamp_marker_id, PathAssetInstance, StampRenderIndex,
 };
+use crate::visibility::{pickable, VisibilityState};
 use fe_renderer::instancing::DEFAULT_CELL_SIZE_M;
 
 /// Ground-pick radius for stamps (meters): one `StampSpatialIndex` grid cell —
@@ -194,6 +196,25 @@ fn pick_ground_proposal(proposals: &[ProposalRecord], point: [f32; 2]) -> Option
         .map(|p| p.id.clone())
 }
 
+/// First committed earthwork region (a `material`-tagged entry of the terrain
+/// doc's `proposals[]`, which the palette mirror never holds) whose XZ footprint
+/// contains `point`; doc order wins ties. Palette entries are ignored. Pure.
+fn pick_ground_region(terrain_json: Option<&serde_json::Value>, point: [f32; 2]) -> Option<String> {
+    terrain_json?
+        .get("proposals")?
+        .as_array()?
+        .iter()
+        .filter(|entry| entry.get("material").is_some())
+        .find(|entry| {
+            let footprint: Vec<[f32; 2]> = entry
+                .get("footprint")
+                .and_then(|f| serde_json::from_value(f.clone()).ok())
+                .unwrap_or_default();
+            point_in_footprint(point, &footprint)
+        })
+        .and_then(|entry| entry.get("id")?.as_str().map(str::to_string))
+}
+
 /// Writes a resolved [`ContextTarget`] back into the still-open dialog. No-op
 /// if the dialog closed or moved on between classification and this write
 /// (defensive — classification runs the same frame it opens, but never
@@ -209,8 +230,8 @@ fn write_target(ui_mgr: &mut UiManager, resolved: ContextTarget) {
 /// §click-priority), tier for tier: path HANDLE beats path VERTEX beats
 /// PathSegment (the edited track's ribbon) beats the ray's closest entity hit
 /// (Node/Stamp — same ordering as `handle_viewport_click`) beats the
-/// ground-stamp fallback beats a terrain PROPOSAL footprint, worst case
-/// `Empty`.
+/// ground-stamp fallback beats a terrain PROPOSAL footprint beats a committed
+/// EARTHWORK REGION footprint, worst case `Empty`.
 ///
 /// `PathSegment` is a real tier, not a tie-break (finding F10): a hit anywhere
 /// along the edited track's ribbon outranks a NEARER hit on any other node,
@@ -226,13 +247,16 @@ fn write_target(ui_mgr: &mut UiManager, resolved: ContextTarget) {
 /// ui_semantics_unification_20260808 §5 Phase 5).
 /// Classification is read-only and never changes either selection authority.
 /// Always resolves (worst case `Empty`), so the menu cannot hang
-/// unclassified.
+/// unclassified. Effectively-hidden nodes and stamps are skipped by every
+/// entity tier (D-7/D-12 shared picker rule); proposal/region ground tiers are
+/// not nodes and are unaffected.
 #[allow(clippy::too_many_arguments)] // one system, one job: classify a right-click
 pub(super) fn classify_context_menu(
     mut ui_mgr: ResMut<UiManager>,
     nav: Res<NavigationManager>,
     path_state: Res<PathEditorState>,
     proposal_state: Res<ProposalEditState>,
+    petal_map: Res<PetalMapState>,
     node_query: Query<(
         Entity,
         &SpawnedNodeMarker,
@@ -246,6 +270,8 @@ pub(super) fn classify_context_menu(
     handle_query: Query<(&GlobalTransform, &PathHandleMarker)>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
     stamp_index: Res<StampRenderIndex>,
+    visibility: Res<VisibilityState>,
+    drawn: Query<&Visibility>,
 ) {
     let (screen, world) = match &ui_mgr.active_dialog {
         ActiveDialog::ContextMenu {
@@ -319,6 +345,11 @@ pub(super) fn classify_context_menu(
             if active_petal
                 .map(|pid| pid != marker.petal_id.as_str())
                 .unwrap_or(false)
+            {
+                continue;
+            }
+            if !pickable(&marker.node_id, &nav, &visibility)
+                || !crate::visibility::rendered(drawn.get(entity).ok())
             {
                 continue;
             }
@@ -414,7 +445,18 @@ pub(super) fn classify_context_menu(
     // ground-projected click. First hit in sorted track order wins (tracks
     // overlapping within one cell are an accepted tie-break).
     let ground_stamp = if best.is_none() {
-        pick_ground_stamp(&stamp_index, active_petal, world[0], world[2], &node_query)
+        nearest_visible_ground_stamp(&stamp_index, active_petal, world[0], world[2], |id| {
+            pickable(id, &nav, &visibility)
+        })
+        .map(|(track, index)| {
+            let marker_id = stamp_marker_id(&track, index);
+            let entity = node_query
+                .iter()
+                .find(|(_, marker, _, _)| marker.node_id == marker_id)
+                .map(|(entity, _, _, _)| entity)
+                .unwrap_or(Entity::PLACEHOLDER);
+            (track, index, entity)
+        })
     } else {
         None
     };
@@ -434,6 +476,22 @@ pub(super) fn classify_context_menu(
             );
             return;
         }
+        // Same ground tier, after the palette: committed earthwork regions live
+        // only in the active petal's terrain doc (never in the palette mirror).
+        let doc = petal_map.terrain_json.as_ref().filter(|_| {
+            petal_map.petal_id.is_some() && petal_map.petal_id.as_deref() == active_petal
+        });
+        if let Some(id) = pick_ground_region(doc, [world[0], world[2]]) {
+            write_target(
+                &mut ui_mgr,
+                ContextTarget {
+                    hit: HitTarget::EarthworkRegion { id },
+                    node_id: None,
+                    stamp: None,
+                },
+            );
+            return;
+        }
     }
 
     let resolved = resolve_context_target(best.map(|(_, hit)| hit), ground_stamp);
@@ -441,21 +499,17 @@ pub(super) fn classify_context_menu(
 }
 
 /// Nearest active-petal stamp within [`STAMP_PICK_RADIUS_M`] of ground point
-/// `(x, z)`, resolved back to its live entity by marker id
+/// `(x, z)` whose marker id `is_visible` accepts (a hidden stamp falls through
+/// to the next track in sorted order). The caller resolves the live entity
 /// (`Entity::PLACEHOLDER` when the instance is mid-respawn — the stamp verbs
-/// key on the `(track, index)` payload, never on the entity).
-fn pick_ground_stamp(
+/// key on the `(track, index)` payload, never on the entity). Pure.
+fn nearest_visible_ground_stamp(
     stamp_index: &StampRenderIndex,
     active_petal: Option<&str>,
     x: f32,
     z: f32,
-    node_query: &Query<(
-        Entity,
-        &SpawnedNodeMarker,
-        Option<&TrackPickShape>,
-        Option<&PathAssetInstance>,
-    )>,
-) -> Option<(String, usize, Entity)> {
+    is_visible: impl Fn(&str) -> bool,
+) -> Option<(String, usize)> {
     let petal = active_petal?;
     let mut track_ids: Vec<&String> = stamp_index
         .tracks
@@ -469,13 +523,9 @@ fn pick_ground_stamp(
             continue;
         };
         if let Some(index) = data.index.pick_nearest(x, z, STAMP_PICK_RADIUS_M) {
-            let marker_id = stamp_marker_id(track_id, index);
-            let entity = node_query
-                .iter()
-                .find(|(_, marker, _, _)| marker.node_id == marker_id)
-                .map(|(entity, _, _, _)| entity)
-                .unwrap_or(Entity::PLACEHOLDER);
-            return Some((track_id.clone(), index, entity));
+            if is_visible(&stamp_marker_id(track_id, index)) {
+                return Some((track_id.clone(), index));
+            }
         }
     }
     None
@@ -693,6 +743,77 @@ mod tests {
     #[test]
     fn pick_ground_proposal_empty_set_is_none() {
         assert_eq!(pick_ground_proposal(&[], [0.0, 0.0]), None);
+    }
+
+    #[test]
+    fn pick_ground_region_hits_only_material_tagged_entries() {
+        let doc = serde_json::json!({
+            "enabled": true,
+            "proposals": [
+                { "id": "p1", "op": "raise", "footprint": square(), "delta": 1.0 },
+                { "id": "r1", "op": "lower", "footprint": square(), "material": "earth" },
+                { "id": "r2", "op": "raise", "material": "earth",
+                  "footprint": [[20.0, 20.0], [30.0, 20.0], [30.0, 30.0], [20.0, 30.0]] }
+            ]
+        });
+        // Overlapping palette p1 is skipped; the region under it is the hit.
+        assert_eq!(
+            pick_ground_region(Some(&doc), [5.0, 5.0]),
+            Some("r1".into())
+        );
+        assert_eq!(
+            pick_ground_region(Some(&doc), [25.0, 25.0]),
+            Some("r2".into())
+        );
+        assert_eq!(pick_ground_region(Some(&doc), [100.0, 100.0]), None);
+        let palette_only = serde_json::json!({
+            "proposals": [{ "id": "p1", "op": "raise", "footprint": square() }]
+        });
+        assert_eq!(pick_ground_region(Some(&palette_only), [5.0, 5.0]), None);
+        assert_eq!(pick_ground_region(None, [5.0, 5.0]), None);
+    }
+
+    // --- D-7/D-12: hidden stamps are skipped by the ground-stamp tier ---
+
+    #[test]
+    fn the_ground_stamp_tier_skips_hidden_stamps_and_other_petals() {
+        use crate::verse_manager::StampTrackRenderData;
+        use fe_renderer::instancing::StampSpatialIndex;
+
+        let track = |petal: &str| StampTrackRenderData {
+            petal_id: petal.to_string(),
+            index: StampSpatialIndex::build(&[[0.0, 0.0, 0.0]], DEFAULT_CELL_SIZE_M),
+            batches: Vec::new(),
+        };
+        let mut index = StampRenderIndex::default();
+        index.tracks.insert("track-a".into(), track("p1"));
+        index.tracks.insert("track-b".into(), track("p1"));
+        index.tracks.insert("track-c".into(), track("p2"));
+        let hidden_a = stamp_marker_id("track-a", 0);
+
+        // (label, active petal, hidden marker id — "*" hides every stamp, expected track)
+        let cases = [
+            (
+                "all visible: first in sorted order",
+                Some("p1"),
+                None,
+                Some("track-a"),
+            ),
+            (
+                "track-a's stamp hidden: falls to track-b",
+                Some("p1"),
+                Some(hidden_a.as_str()),
+                Some("track-b"),
+            ),
+            ("everything hidden: no stamp", Some("p1"), Some("*"), None),
+            ("no active petal", None, None, None),
+        ];
+        for (label, petal, hidden, expected) in cases {
+            let picked = nearest_visible_ground_stamp(&index, petal, 0.0, 0.0, |id| {
+                hidden.is_none_or(|h| h != "*" && h != id)
+            });
+            assert_eq!(picked.map(|(t, _)| t).as_deref(), expected, "{label}");
+        }
     }
 
     // --- F10: right-click must agree with left-click's PathSegment tier ---

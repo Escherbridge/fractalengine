@@ -25,7 +25,7 @@ sanitized radius. Missing petal/map is a warned, visible no-op.
 | Module | Owns |
 | --- | --- |
 | `plugin` | `GardenerConsolePlugin`, `UiSet` ordering, the `EguiPrimaryContextPass` entry system, cross-crate re-export shims (see §compat), UI-only resources that don't belong to a specific domain manager (`SidebarState`, `ToolState`, `InspectorFormState`, `LocalUserRole`, `CameraFocusTarget`, `ViewportCursorWorld`, `ViewportRect`, `SpawnedNodeMarker`). `ToolState::activate` is the SOLE writer of `active_tool` (re-press toggles back to Select; one-shot Options reveal at activation edge only). |
-| `visibility` | Session-only Phases 0-1 of hierarchy_visibility_groups_20260808 (pure resolver in visibility/resolve.rs — solo lens > tri-state override > ancestor chain > ANY-hidden-group). `sync_node_visibility` applies Visibility to SpawnedNodeMarker entities; pickers/camera do NOT yet respect hidden — Phase 2. |
+| `visibility` | hierarchy_visibility_groups_20260808: pure resolver (`resolve.rs` — solo lens > tri-state override > ancestor chain > ANY-hidden-group), `VisibilityState`, `sync_node_visibility` (spawn-then-hide apply + D-13 force-deselect), the shared picker rule `pickable()`, `cache.rs` (persisted `view.state`/`view.groups`) and `groups.rs` (persisted Group registry + verse/fractal/petal eyes). See §visibility. |
 | `actions` | `UiAction` (the one-frame action queue enum) + `UiManager` (queue + portal + active dialog + toast) + `process_ui_actions`, split into domain files (`portal`, `node_props`, `hexon`, `query`, `transform`). See §actions and §inspector-transform. |
 | `portal` | `PortalState` + the pure webview-rect-sync math (`compute_portal_rect`). See §portal — this is the browser-integration seam. |
 | `dialogs` | `ActiveDialog` (mutual-exclusion enum) + one render function per floating dialog/window. |
@@ -37,7 +37,7 @@ sanitized radius. Missing petal/map is a warned, visible no-op.
 | `panels` | The top-level egui shell (`gardener_console`) + one file per panel (toolbar, status bar, sidebar tree, inspector tabs, query tab, portal toolbar). |
 | `node_manager` | `NodeManager` (single source of truth for selection) + gimbal interaction/hover/pick, viewport click-to-select, transform broadcast, inspector sync — one file per concern. |
 | `verse_manager` | `VerseManager` (in-memory verse/fractal/petal/node tree) + `DbResult` draining, GLTF/fallback-sign spawning, petal-switch respawn. Also the residency-ledger primitive (`spawn::distance_ranked_allowance` + `spawn::ResidencyBudget`). See §residency-ledger. |
-| `settings` | `AppSettings` (D-78 application settings Resource) + `TileSourceMode` + `sync_app_settings_to_mesh_budget`. See §app-settings. |
+| `settings` | `AppSettings` (D-78 application settings Resource) + `TileSourceMode` + RON persistence (`load_settings_from`/`save_settings_to`/`sanitize`, debounced save) + live syncs (mesh budget, camera) + `PetalRenderOverride`/`effective_render_distance`. See §app-settings. |
 | `terrain_proposal_state` | `ProposalEditState` (Resource) + `ProposalRecord`/`ProposalOp` + pure `to_json`/`from_json`. The fe-ui-local mirror of the persisted proposal contract. See §terrain-proposal-editor. |
 | `geometry` | fe-ui-local pure mirror of fe-terrain's ruler math (`polygon_area_m2`/`world_to_real_distance`/`bearing_deg`). See §geometry-mirror. |
 | `navigation_manager`, `viewport`, `atlas`, `gimbal`, `theme`, `role_chip` | Unchanged from before this decomposition; not god-files. |
@@ -298,12 +298,25 @@ world-scale idiom exactly: every `changed()` frame writes a **local-only**
 preview into `petal_map.terrain_json` (so dragging feels live), while the
 persisting `UiAction::GisSetLayer` only fires on `drag_stopped()` (or a
 non-drag `changed()`, e.g. a discrete click) to avoid flooding
-`SetPetalTerrain` sends during a drag. Only `"satellite"`/`"terrain"` are
-currently mapped to a `LayerType` in `fe-terrain::petal_binding` (see
-`fe-terrain/src/AGENTS.md` §petal_binding); GPX-track/GeoJSON-overlay
-checkboxes are shown **disabled with a tooltip** explaining they're inert —
-tracked as a residual per FR-3, not wired to any config since fe-ui must
-not couple to fe-terrain's layer-name mapping.
+`SetPetalTerrain` sends during a drag.
+
+**Unified overlay registry (VIS-PH5, D-11 / ui_ux §7).** The card renders
+ONLY from `gis::overlay_registry(terrain_json, &VisibilityState,
+&AppSettings) -> Vec<OverlayEntry { key, name, visible, opacity }>` — one row
+widget for every overlay: the four terrain layers (`satellite`, `terrain`,
+`gpx_track`, `geojson_overlay`; only when the petal has a map), the active
+petal's Groups (registry order), then the scale bar and metric grid
+(`AppSettings.show_scale_bar`/`show_world_grid` — the same fields the
+Settings section edits, so there is still ONE state per overlay, not two
+toggles). A checkbox dispatches `gis::apply_overlay_toggle(key, visible,
+petal_id, groups)`: terrain layer → `GisSetLayer`, Group → whole-registry
+`SetGroupRegistry`, ruler overlay → `SetAppOverlay` (applied by the reducer
+via `apply_app_overlay`). It takes the petal id and current registry because
+both persisted writes need them (a deviation from the planned two-argument
+shape). GPX/GeoJSON rows are LIVE: an empty-source `gpx_track` /
+`geojson_overlay` layer is a CATEGORY layer every ribbon/overlay binds to
+(fe-terrain `src/AGENTS.md` §petal_binding) — the old inert "Coming soon"
+rows are gone.
 
 ### Round 2 additions (GIS Round-2 worker W-A)
 
@@ -647,34 +660,73 @@ active petal's scene — the amplification behind the crash.
 ## §app-settings — the D-78 application settings surface
 
 `settings::AppSettings` (Resource) is the single home for user-tunable knobs
-(D-78, ratified 2026-07-18). It resurrects the never-built
-`render_distance_lod_20260407` design. Fields: `render_distance` (global
-soft-residency horizon, default 500), `mesh_budget_ceiling` (seeded from
-`plugin::MAX_MESH_INSTANCES`), `entity_cap` (soft per-petal node cap, default
-mirrors `MAX_PETAL_NODES`), `stamp_ceiling` (soft per-petal stamp cap, default
-mirrors `MAX_STAMPS_PER_PETAL`), `tile_mode` (`TileSourceMode::{Offline,Online,
-Hybrid}`), and camera prefs (`camera_sensitivity`/`camera_zoom_speed`/
-`camera_easing`). The `const` HARD caps stay as the never-crash backstops; the
-settings fields are the soft budgets routed through them (`.min(HARD_CAP)` at
-each spawn site) — a lowered `entity_cap` shrinks spawns, a corrupt/oversized one
-can never breach the backstop.
+(D-78, ratified 2026-07-18). It resurrects the `render_distance_lod_20260407`
+design. Fields: `render_distance` (global soft-residency horizon, default 500;
+`0` halts spawning), `mesh_budget_ceiling` (seeded from
+`plugin::MAX_MESH_INSTANCES`), `entity_cap` / `stamp_ceiling` (soft per-petal
+caps, defaults mirror the hard caps), `tile_mode`, `camera_sensitivity` /
+`camera_zoom_speed` / `camera_easing`, the ruler toggles `show_scale_bar`
+(default on) / `show_world_grid` (default off), and `relay` (P2P relay spec).
+The `const` HARD caps stay as the never-crash backstops; the settings fields are
+soft budgets routed through them (`.min(HARD_CAP)` at each spawn site, and
+`sanitize` clamps to the same caps).
 
-- **Live mesh-ceiling sync:** `sync_app_settings_to_mesh_budget` (registered in
-  `plugin.rs`, `Update`) mirrors `AppSettings.mesh_budget_ceiling` into the live
-  `MeshInstanceBudget.ceiling` so a settings change re-ceilings the watchdog
-  without a restart. Single-compare, runs every frame.
-- **Persistence is a seam.** In-memory only for now; the serde derives make RON
-  persistence under the platform config dir (`~/.config/fractalengine/settings.ron`)
-  a drop-in — see the `// TODO(ultrapilot)` in `settings.rs`. `#[serde(default)]`
-  on the struct + each enum's `Default` means a partial/legacy doc loads with
-  missing fields filled from defaults (forward/backward compat).
-- **The Settings *window* is w4a's.** `AppSettings` (state) is owned here;
-  `ActiveDialog::Settings` + the egui `settings_window` render system are w4a's.
-  `UiAction::SettingsToggle` currently logs a debug seam (the variant does not
-  exist yet) — the coordinator wires it to flip `ActiveDialog::Settings` once
-  w4a lands. The per-petal render-distance override
-  (`PetalManifest.render_distance`) is not yet a resident resource, so the
-  ledger reads only the global `AppSettings.render_distance` today (seam).
+- **Persistence (PAS-P4B).** `settings_path()` = `dirs::config_dir()/fractalengine/settings.ron`
+  (`%APPDATA%\fractalengine\settings.ron` on Windows). `load_settings_from`:
+  missing → defaults; partial → `#[serde(default)]` fills the gaps; unparseable
+  RON or non-UTF-8 bytes → defaults + a warning, and the bad file is renamed to
+  `settings.ron.corrupt-<unix-secs>` so it is kept for inspection and the next
+  save cannot overwrite it; any other read error (e.g. permissions) → defaults
+  + a warning with the file left in place. Every load ends in `sanitize`. `save_settings_to` is
+  atomic (write `settings.ron.tmp`, then rename over).
+- **Who writes the disk.** Only a host that inserts `SettingsPersistence { path }`
+  (the GUI binary, after `load_startup_settings()`) gets saves; tests and other
+  hosts never touch the user's config dir. `save_app_settings_debounced` uses
+  `SettingsSaveDebounce`: the first observed value is the loaded state (never
+  re-saved), every value change restarts a `SAVE_DEBOUNCE_SECS` (1 s) timer, and
+  a value that returns to the saved state cancels the pending save — so dragging
+  a slider writes once, after the drag settles. Comparison is by value
+  (`PartialEq`): the Settings section takes `&mut AppSettings` every frame, so
+  `is_changed()` would always be true. A failed save warns and is not retried
+  until the next change. A change made less than 1 s before quitting is lost
+  (no save-on-exit hook).
+- **`sanitize`** clamps: `render_distance` finite `0..=RENDER_DISTANCE_MAX`
+  (50 000; non-finite → default), ceilings `1..=` their hard caps, camera
+  multipliers `CAMERA_MULTIPLIER_RANGE` (0.1–10), `camera_easing` 0–1, and an
+  unparseable `relay` → `"default"`. The Settings section calls it every frame
+  before drawing (so a bad value never renders).
+- **Live consumers.** `sync_app_settings_to_mesh_budget` mirrors
+  `mesh_budget_ceiling` into `MeshInstanceBudget.ceiling`;
+  `sync_app_settings_to_camera` sets `OrbitCameraController.sensitivity` /
+  `zoom_speed` to `BASE_CAMERA_* × multiplier` (the base consts mirror
+  `OrbitCameraController::default()`, pinned by a test). `entity_cap` applies on
+  the next petal entry / primitive pass, `stamp_ceiling` on the next restamp.
+  `tile_mode` is applied by the main binary's `terrain_bridge::apply_global_tile_mode`
+  (only `Offline` overrides the petal's mode; fractalengine `src/AGENTS.md`
+  §tile-mode). `relay` is read once at startup by fe-sync (`FE_SYNC_RELAY` env
+  wins; fe-sync `src/AGENTS.md` §relay-health); its text field stores only a
+  spec `RelayConfig::parse` accepts and says "Applies after restart".
+- **Knobs not exposed (ui_ux §6 — no faked settings).** `camera_easing` is
+  persisted but has no consumer (the controller's `easing_rate` is a rate, not
+  the 0–1 factor), so it has no widget.
+- **Per-petal override.** `PetalRenderOverride { petal_id, render_distance }`
+  (session-only) is set by `actions::hexon::manifest_save` when the saved
+  manifest is for the active petal, and reset by
+  `clear_petal_render_override_on_nav_change` when the active petal changes.
+  `effective_render_distance(global, override)` lets a finite, positive override
+  win (clamped to `RENDER_DISTANCE_MAX`, the same ceiling `sanitize` puts on the
+  global knob — a manifest value is not a way around it); `ResidencyBudget::render_distance_for(petal)` (verse_manager/spawn.rs) is
+  what every spawner reads. **There is no durable home for
+  `PetalManifest.render_distance`** (manifest_save had only a log stub;
+  `petal.hexon_manifest` has no handlers and is a signed publishing artifact), so
+  the override does not survive navigation or restart — an open decision.
+- **Ruler toggles cross a crate boundary.** fe-ui has no fe-terrain
+  dependency, so the main binary's `terrain_bridge::sync_ruler_settings` mirrors
+  `show_scale_bar`/`show_world_grid` into fe-terrain's `RulerSettings`. Keep the
+  names: they are persisted fields and VIS-PH5's overlay registry rows.
+- **The Settings surface** is the right-sidebar Settings section
+  (`ui_shell/right_sidebar.rs::render_settings_section`), which reads/writes
+  `AppSettings` directly; there is no Settings dialog or toggle action.
 
 ## §residency-ledger — distance-ranked spawn budgets (D-74)
 
@@ -701,11 +753,14 @@ non-finite/negative distance is a defensive `0`.
   is the near region, so distance `0` → full ranked ceiling → **no node is
   dropped one-shot** (a per-frame taper would strand nodes permanently since
   these spawners don't re-run per frame). The *live* per-frame distance taper —
-  ranking individual entities by camera distance + `PetalManifest` override — is
-  the future residency-ledger system's job (`p2p_asset_streaming` FR-7), marked
-  with `// TODO(ultrapilot)` seams at the call sites. What the batch path *does*
-  gain now: the configurable `entity_cap`/`stamp_ceiling` and the
-  `render_distance ≤ 0` kill-switch.
+  ranking individual entities by camera distance — is the future
+  residency-ledger system's job (`p2p_asset_streaming` Phase 4). What the batch
+  path *does* gain now: the configurable `entity_cap`/`stamp_ceiling`, the
+  `render_distance ≤ 0` kill-switch, and the active petal's session
+  render-distance override via `ResidencyBudget::render_distance_for`
+  (§app-settings). With distance `0`, an override only matters when the global
+  value is `0` (an override re-enables that petal); the distance it carries is
+  what the Phase 4 taper will consume.
 - **Hard backstops kept.** `MAX_PETAL_NODES` (10k), `MAX_STAMPS` (4096/track),
   `MAX_STAMPS_PER_PETAL` (65,536), and the 2M mesh watchdog are untouched — the
   ranked ceiling is always `.min()`-ed under them. The FR-4 stamp delete-cascade
@@ -831,3 +886,92 @@ Kept byte-for-byte equivalent to `fe_terrain::ruler` — if either changes, sync
 by hand. **Metrically honest:** an unusable `world_scale` (≤0/unset) sanitizes to
 `1.0`, so the returned numbers are world units, not meters — callers surface the
 "no map scale" chip (NFR-4) rather than fabricating meters.
+
+## §visibility — hide/isolate that is real everywhere (hierarchy_visibility_groups)
+
+**One resolver, one picker rule.** `resolve::effective_visibility` is the only
+lattice; `visibility::pickable(node_id, nav, vis)` (built on
+`active_ancestry(nav)`) is the only "may this be interacted with" rule. D-7
+ratified SPAWN-THEN-HIDE, so hidden entities still exist in the ECS and the
+picker filters ARE the hide mechanism — every surface calls `pickable`, none
+re-derives it: viewport click (`viewport_pick`), right-click classification
+(`context_pick`, incl. the ground-stamp tier), sidebar select (`sidebar_sync`,
+refused with a toast), the path bridge (`pointer::open_track_on_select`:
+a hidden track cannot open and an open one closes), path-segment clicks,
+foreign-anchor snapping (`ForeignSnapSources`) and camera focus
+(`plugin::apply_camera_focus`). Stamps are filtered on their OWN marker id
+(`stamp_marker_id`) — the same id `sync_node_visibility` hides; hiding a track
+does not hide its stamps (no inheritance invented — open question). An entity
+hidden OUTSIDE the lattice (a GPX ribbon whose map layer or `gis.track.visible`
+style is off sets `Visibility::Hidden` itself) is not a ray-pick or snap target
+either: `viewport_pick`, `context_pick` and `ForeignSnapSources` also require
+`visibility::rendered(Option<&Visibility>)` (the VIS-PH5 layer checkboxes made
+that path live; nothing invisible is clickable).
+
+**Apply timing (`sync_node_visibility`).** The apply pass runs on an `epoch`
+change, a petal switch, AND any frame with `Added<SpawnedNodeMarker>` — node
+entities spawn late (GLTF loads, ribbons after tracks load, stamps, restart
+hydration landing before the spawn), and an epoch-only gate would leave them
+visible. It also re-asserts `Visibility::Hidden` on any entity in
+`hidden_by_us` whose `Visibility` another writer changed back (a Layer
+Manager toggle or ribbon rebuild writes `Inherited` on every layer-bound
+entity). It never touches an entity it did not hide. Known gap (pre-existing):
+restoring a lattice-hidden ribbon writes `Inherited`, which can un-hide a
+ribbon whose map layer is off.
+
+**Verbs.** H hides the selection, Shift+H shows all (active branch: Hide
+overrides, petal/fractal/verse hidden sets, solo — `show_all_in`, one epoch),
+Alt+H isolates the selection (`node_manager/shortcuts.rs`). A stamp instance
+has no node row, so H on a stamp is a session-only override (no write, no
+"not saved" toast) and Show all also clears the Hide overrides of the
+branch's tracks' stamps (`stamp_track_in`) without persisting them; the
+Groups section offers no membership buttons for a stamp. The sidebar node
+row's right-click menu (D-8) offers Isolate / Hide others / Show all through
+the same producers (`show_all_and_persist`, `hide_others_and_persist`). Esc
+clears isolate on the `ClearIsolate` rung (node_manager §staged-escape).
+
+**Persistence (Phase 3, `cache.rs`).** Overrides persist as node properties
+`view.state` (`show`/`hide`; absent = Auto) and membership as `view.groups`,
+written ONLY through the auth-carrying `DbCommand::SetNodeView` (D-15,
+`CallerAuth::Local`, Editor+ in fe-database) — never raw `SetNodeProperty`.
+Every persisted override goes through `UiAction::SetNodeView`
+(`cache::set_node_view`: optimistic session write, then the command,
+correlated `fe-ui:view:{node_id}`). Hydration is the third
+`NodePropertiesLoaded`-fed cache idiom (`hydrate_from_properties`, next to the
+primitive/path-asset caches) plus `LoadPetalViewState` on every petal entry
+(`load_petal_view_state_on_nav_change`). Rules: a PRESENT key is applied, an
+ABSENT key leaves the session value alone (it may be a write the DB refused);
+the `NodeViewSet` echo is authoritative for both keys (absent = Auto/none),
+whichever caller wrote it. A refused write keeps the session state and toasts
+"Visibility not saved (you need Editor access)" (ui_ux §6 — never fake
+persistence; `RequestFailed` matched by correlation prefix, not message
+sniffing). Solo is never persisted and hydration never touches it.
+
+**Group registry + scope eyes (Phase 4, `groups.rs`).** The active petal's
+Groups (`VisibilityState.groups`, display order) mirror `petal.visibility_groups`
+and the verse/fractal/petal eyes mirror `view_hidden` (D-1 persisted all
+three levels — a session-only petal eye between two persisted ones would be
+incoherent). Writes: `UiAction::SetGroupRegistry` (whole-registry replace;
+pure transforms `with_group_added/visible/renamed/removed/moved`, `order` =
+display index on the wire, new ids slugged from the name by `next_group_id`),
+`UiAction::SetScopeHidden` (every sidebar scope eye, and Show all re-opens
+the branch's closed eyes so a restart cannot re-hide them), and
+`UiAction::SetNodeGroups` (membership = Phase 3's `SetNodeView { groups }`).
+All are optimistic + `CallerAuth::Local`, correlated `fe-ui:groups:{petal}` /
+`fe-ui:scope-eye:{id}`; a refusal keeps the session value and toasts "Groups
+not saved (you need Editor access)". The Groups editor caps names at
+`MAX_GROUP_NAME_CHARS`, the registry at `MAX_VISIBILITY_GROUPS` and per-node
+membership at `MAX_VIEW_GROUPS` (fe-database's validation bounds), so the UI
+never offers an edit the DB must refuse. Hydration: `load_petal_groups_on_nav_change`
+clears the registry and sends `GetPetalVisibilityGroups` on every petal entry
+(correlated `fe-ui:groups-load:{petal}` — a failed READ is never toasted as
+"not saved");
+`PetalVisibilityGroupsLoaded` (Get, Set echo, or an API write) replaces the
+registry ONLY for the active petal; `HierarchyLoaded` REPLACES the three
+hidden sets (`hydrate_scope_hidden`) — authoritative, so a refused session
+eye lasts until the next hierarchy load. The active petal's eye cannot HIDE
+it (D-4), but a petal persisted hidden and then entered keeps an enabled
+"Show petal" eye (`panels/sidebar.rs::petal_eye`), otherwise its contents
+would stay hidden behind a dead eye.
+
+**Still session-only:** solo.

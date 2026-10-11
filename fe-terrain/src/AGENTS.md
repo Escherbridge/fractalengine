@@ -45,6 +45,21 @@ per frame and, in one pass:
    — this is what lets fe-ui's GPX/GeoJSON visibility checkboxes drive those layers
    (previously they were disabled because no `LayerStack` entry existed). `z_order`
    = config index, opacity defaults to 1.0.
+
+   **Category layers (VIS-PH5).** A `gpx_track` / `geojson_overlay` layer with
+   an EMPTY source is a CATEGORY layer: it governs every ribbon / overlay of that
+   kind that has no per-source layer of its own. The binding is the pure
+   `layers::gpx_layer_for(stack, node_id)` / `geojson_layer_for(stack, path)`
+   (per-source first, else the category layer, else unbound = visible), used by
+   `render_gpx_tracks` and `render_geojson_overlays`. That is what makes fe-ui's
+   Layer Manager "GPX tracks" / "GeoJSON overlays" rows live (fe-ui writes the
+   category layer by name, without a source). Two rules keep it honest:
+   (a) visibility is applied AT BUILD TIME too (`style.visible && layer.visible`)
+   because a terrain re-assignment despawns and rebuilds ribbons AFTER
+   `sync_layer_visibility`'s change-gated pass for that stack has run;
+   (b) a ribbon its own style hides (`gis.track.visible = false`) carries
+   `StyleHidden`, and `sync_layer_visibility` never un-hides it — a layer toggle
+   can only hide more, never override the per-track style.
 4. Despawns every `TerrainChunk`, `GpxTrackLine`, `GeoJsonOverlay`, and
    `GeoJsonProcessed` entity so content respawns under the new config.
 
@@ -83,6 +98,11 @@ registry's in-memory sources cache.
 Bevy plugin for terrain chunks, GPX tracks, waypoints, GeoJSON overlays, and
 layer visibility. System chain order matters: `apply_terrain_assignments`
 runs first so the frame's assignment is visible to everything downstream.
+
+`fetch_and_spawn_terrain_chunks` is `pub` (and `CompositeTileSource` exposes
+`tile_source_mode()`) only so the main binary can order its global
+Offline-mode override between `apply_terrain_assignments` and the first fetch
+(fractalengine `src/AGENTS.md` §tile-mode).
 
 **Offline-first chunk pipeline** (`fetch_and_spawn_terrain_chunks`):
 - Early-outs: no enabled config, no composite/projection, no camera, or at
@@ -340,6 +360,19 @@ target pixel width), `format_distance_m` (m below 1 km, km above, one decimal
 only when it carries signal). Degenerate inputs return `0.0`/`None`/`"0 m"`
 rather than NaN so the HUD silently hides instead of drawing garbage.
 
+Adaptive world grid (FR-10) is pure here too. `grid_spacing_for_height(h,
+target)` takes the visible span as `2·h` (the 90° down-looking approximation,
+no FOV input), snaps `span / target` with `nice_number` to the MAJOR spacing,
+and takes the ladder step below it (`next_nice_down`: 1→0.5, 2→1, 5→2) as the
+MINOR spacing. `minor_alpha` is the log-space position of the raw span inside
+the band that `nice_number` maps onto that major (`nice_band`: [0.75, 1.5),
+[1.5, 3.5), [3.5, 7.5) × 10ⁿ), inverted: minors are fully shown just after a
+re-subdivision and fade to about 0 just before the next one, so zooming never
+pops a whole tier in or out. `grid_fade_alpha(h, start, end)` fades the WHOLE
+grid by camera height (1 below start, 0 above end, linear between, 0 on
+non-finite input). Majors are monotone non-decreasing in height (asserted by a
+sweep test).
+
 ## §ruler_plugin
 
 `ruler_plugin.rs` (render-gated) draws the FR-8 scale bar as a bevy_egui 0.39
@@ -351,6 +384,22 @@ believe. `RulerSettings.show_scale_bar` (default on) is the reflection-free
 toggle seam for fe-ui (C6: bounds/toggles reach UI via the API surface, not a
 fe-terrain dep). Registered from `TerrainPlugin::build`, not `main.rs`. If
 `EguiPlugin` is absent (headless), the pass never runs — the plugin is inert.
+
+`draw_world_grid` (Update, default `Gizmos` group, depth-tested) draws the
+FR-10 metric grid when `RulerSettings.show_grid` is on (default OFF — opt-in
+layer, ui_ux §7). It needs an enabled terrain config (no map means no meters,
+so no grid; the scale bar's "world units" chip already covers that state).
+Spacing is `grid_spacing_for_height` on the real camera height
+(`world_to_real_height` with the effective world scale), converted meters to
+world units by the same scale. Lines lie on the y = 0 plane around the orbit
+focus, snapped to the spacing so they do not swim while panning;
+terrain-following is out of scope (they hide under raised terrain, like
+fe-renderer's world-unit grid). Each tier draws at most 2·64 lines
+(`GRID_HALF_LINES` each side per axis); minor lines that coincide with a major
+line are skipped. The whole grid fades out between `GRID_FADE_START_M` (50 km)
+and `GRID_FADE_END_M` (200 km) of camera height, where a planar metric grid
+stops being useful. The toggles arrive from fe-ui's `AppSettings` via the main
+binary's `terrain_bridge::sync_ruler_settings`.
 
 ## §tile-budget — per-tile mesh + overlay feature caps (oom_guardrails_20260717)
 
@@ -420,10 +469,32 @@ Persistence + rendering (render-gated):
   `TerrainAssignmentMsg` path with no new config surface (spec: petal-config is
   the lower-risk v1 vs a hexon proposal-layer).
 - `render_terrain_proposals` (terrain_plugin.rs) is the SOLE despawner/spawner of
-  `ProposalOverlayEntity` ghosts. Revision-gated on `ActivePetalTerrain.revision`
-  (a proposal edit bumps it via the round-trip), so it rebuilds only on change —
-  it is NOT in `apply_terrain_assignments`' despawn query (avoids a double
-  despawn). T3: records that ARE earthwork regions (`is_earthwork_region`,
+  `ProposalOverlayEntity` ghosts — it is NOT in `apply_terrain_assignments`'
+  despawn query (avoids a double despawn). `proposals_need_rebuild` rebuilds the
+  whole set on exactly three triggers, otherwise the ghosts are left alone
+  (no per-frame churn):
+  1. `ActivePetalTerrain.revision` changed (a proposal edit bumps it via the
+     round-trip).
+  2. **Re-ground**: a relative-op ghost built before terrain covered its
+     footprint sits on the `target`/`0.0` fallback. `ProposalRenderState`
+     records `ungrounded` + the grounded-vertex count of the built set
+     (`proposal_grounded_vertices`: vertices with a base sample, or all of them
+     for an absolute Flatten/Level with a target). Only while `ungrounded` AND
+     `TerrainHeightField::is_changed()` (deref'd mutably only on chunk
+     insert/remove/clear) does it re-sample, and it rebuilds only when the
+     grounded count GREW — so chunks streaming in elsewhere, or evictions, never
+     churn a ghost. Mirrors the per-chunk `EarthworkBaked` late-chunk pattern.
+  3. **Residency** (NFR-2): `ProposalOverlayBudget.allowance` is the headroom
+     for NEW ghosts, written by the binary
+     (`fractalengine/src/terrain_bridge.rs::sync_proposal_overlay_budget`, from
+     fe-ui's `MeshInstanceBudget`: 0 once the watchdog trips, else
+     `ceiling − last_count`). A rebuild may hold
+     `proposal_overlay_capacity = min(allowance + resident ghosts,
+     MAX_PROPOSAL_OVERLAYS)` because it despawns the residents first; a build
+     that stops early sets `truncated`, and a truncated set rebuilds when the
+     capacity exceeds what it holds. At the ceiling an edit re-spends the
+     residents' slots but never spawns past them. Default allowance (no bridge)
+     = `MAX_PROPOSAL_OVERLAYS` (4,096, the hard per-petal cap). T3: records that ARE earthwork regions (`is_earthwork_region`,
   `material` present) are skipped here — they bake instead (§sculpt). Each ghost is a `ProposalGhost` mesh with a per-op tinted, blended,
   unlit, double-sided material from `fe_renderer::terrain_overlay`, tagged to the
   `MapLayer::ProposalOverlay` layer.
@@ -432,10 +503,8 @@ Persistence + rendering (render-gated):
   `apply_terrain_assignments` auto-adds one (topmost z) when a petal has
   proposals but declares no such layer, so the visibility toggle works
   out-of-the-box. Ghosts with a bound layer honor `sync_layer_visibility`.
-- NFR-2: `MAX_PROPOSAL_OVERLAYS = 4,096` is the interim per-petal cap. The true
-  residency budget (`spawn_allowance`/`mesh_instance_watchdog`) lives in the
-  fractalengine binary and is unreachable from fe-terrain — see the
-  `TODO(ultrapilot)` seam in `render_terrain_proposals`.
+- NFR-2: ghosts are bounded by the live residency budget (trigger 3 above);
+  `MAX_PROPOSAL_OVERLAYS = 4,096` remains the hard per-petal cap.
 
 ## §sculpt — earthwork region engine (sculpt_earthwork_regions_20260725, D-A8)
 

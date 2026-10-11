@@ -1,12 +1,15 @@
-//! Scale-bar HUD overlay (FR-8); see `src/AGENTS.md` §ruler_plugin.
+//! Scale-bar HUD overlay (FR-8) + opt-in adaptive metric world grid (FR-10);
+//! see `src/AGENTS.md` §ruler_plugin.
 
 use bevy::prelude::Projection as CameraProjection;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::petal_binding::ActivePetalTerrain;
-use crate::ruler::{format_distance_m, meters_per_pixel, scale_bar_spec};
-use crate::scale::world_to_real_height;
+use crate::ruler::{
+    format_distance_m, grid_fade_alpha, grid_spacing_for_height, meters_per_pixel, scale_bar_spec,
+};
+use crate::scale::{sanitize_world_scale, world_to_real_height};
 
 /// Target on-screen bar width (px) before nice-number snapping.
 const TARGET_BAR_PX: f64 = 120.0;
@@ -16,19 +19,32 @@ const BAR_MARGIN: f32 = 16.0;
 const TICK_H: f32 = 6.0;
 /// Fallback vertical FOV when the camera is not perspective (Bevy default).
 const DEFAULT_FOV_Y: f64 = std::f64::consts::FRAC_PI_4;
+/// Major grid lines aimed for across the visible ground span.
+const GRID_TARGET_MAJOR_LINES: f64 = 10.0;
+/// Lines drawn each side of the focus, per axis, per tier (≤ 2·64 per tier).
+const GRID_HALF_LINES: i32 = 32;
+/// Camera heights (real m) over which the whole grid fades out.
+const GRID_FADE_START_M: f64 = 50_000.0;
+const GRID_FADE_END_M: f64 = 200_000.0;
+/// Base line opacities before fades.
+const GRID_MAJOR_ALPHA: f32 = 0.28;
+const GRID_MINOR_ALPHA: f32 = 0.12;
 
-/// Ruler-layer HUD toggles; fe-ui flips these via the terrain API surface,
-/// never a direct fe-terrain dependency (C6).
+/// Ruler-layer toggles; mirrored from fe-ui's `AppSettings` by the main
+/// binary's `terrain_bridge::sync_ruler_settings`, never a direct dep (C6).
 #[derive(Resource, Clone)]
 pub struct RulerSettings {
     /// Show the bottom-left scale bar (default on).
     pub show_scale_bar: bool,
+    /// Show the adaptive metric world grid (default off — opt-in layer).
+    pub show_grid: bool,
 }
 
 impl Default for RulerSettings {
     fn default() -> Self {
         Self {
             show_scale_bar: true,
+            show_grid: false,
         }
     }
 }
@@ -39,7 +55,8 @@ pub struct RulerPlugin;
 impl Plugin for RulerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RulerSettings>()
-            .add_systems(EguiPrimaryContextPass, draw_scale_bar);
+            .add_systems(EguiPrimaryContextPass, draw_scale_bar)
+            .add_systems(Update, draw_world_grid);
     }
 }
 
@@ -122,4 +139,93 @@ fn draw_unscaled_chip(ectx: &egui::Context) {
     let rect = egui::Rect::from_min_size(pos, galley.size()).expand(4.0);
     painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(120));
     painter.galley(pos, galley, dim);
+}
+
+/// Metric grid on the y = 0 plane around the orbit focus: 1/2/5×10ⁿ m spacing
+/// from `grid_spacing_for_height`, converted to world units by the map scale.
+/// Hidden without an enabled map (no meters to draw). Not terrain-following.
+fn draw_world_grid(
+    settings: Res<RulerSettings>,
+    active: Res<ActivePetalTerrain>,
+    cameras: Query<(
+        &GlobalTransform,
+        &fe_renderer::camera::OrbitCameraController,
+    )>,
+    mut gizmos: Gizmos,
+) {
+    if !settings.show_grid {
+        return;
+    }
+    let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+        return;
+    };
+    let Ok((cam_tx, orbit)) = cameras.single() else {
+        return;
+    };
+    let scale = sanitize_world_scale(config.effective_world_scale());
+    let cam_height_m = world_to_real_height(f64::from(cam_tx.translation().y), scale);
+    let fade = grid_fade_alpha(cam_height_m, GRID_FADE_START_M, GRID_FADE_END_M);
+    let Some(spacing) = grid_spacing_for_height(cam_height_m, GRID_TARGET_MAJOR_LINES) else {
+        return;
+    };
+    if fade <= 0.0 {
+        return;
+    }
+    let major_w = (spacing.major_m * scale) as f32;
+    let minor_w = (spacing.minor_m * scale) as f32;
+    let focus = Vec2::new(orbit.focus.x, orbit.focus.z);
+    let major = Color::srgba(1.0, 1.0, 1.0, GRID_MAJOR_ALPHA * fade);
+    draw_grid_tier(&mut gizmos, focus, major_w, None, major);
+    let minor_alpha = GRID_MINOR_ALPHA * fade * spacing.minor_alpha;
+    if minor_alpha > 0.0 {
+        let minor = Color::srgba(1.0, 1.0, 1.0, minor_alpha);
+        draw_grid_tier(&mut gizmos, focus, minor_w, Some(major_w), minor);
+    }
+}
+
+/// One tier of grid lines (both axes) snapped to `step` around `focus`,
+/// skipping lines that coincide with the `skip_multiple_of` tier.
+fn draw_grid_tier(
+    gizmos: &mut Gizmos,
+    focus: Vec2,
+    step: f32,
+    skip_multiple_of: Option<f32>,
+    color: Color,
+) {
+    if !(step.is_finite() && step > 0.0) {
+        return;
+    }
+    let half_extent = step * GRID_HALF_LINES as f32;
+    let origin = Vec2::new(
+        (focus.x / step).round() * step,
+        (focus.y / step).round() * step,
+    );
+    if !(origin.is_finite() && half_extent.is_finite()) {
+        return;
+    }
+    let coincides = |value: f32| {
+        skip_multiple_of.is_some_and(|coarse| {
+            let nearest = (value / coarse).round() * coarse;
+            (value - nearest).abs() < step * 1e-3
+        })
+    };
+    for k in -GRID_HALF_LINES..GRID_HALF_LINES {
+        let offset = k as f32 * step;
+        let x = origin.x + offset;
+        if !coincides(x) {
+            gizmos.line(
+                Vec3::new(x, 0.0, origin.y - half_extent),
+                Vec3::new(x, 0.0, origin.y + half_extent),
+                color,
+            );
+        }
+        let z = origin.y + offset;
+        if !coincides(z) {
+            gizmos.line(
+                Vec3::new(origin.x - half_extent, 0.0, z),
+                Vec3::new(origin.x + half_extent, 0.0, z),
+                color,
+            );
+        }
+    }
 }

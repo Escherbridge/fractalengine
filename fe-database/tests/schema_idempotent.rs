@@ -154,3 +154,66 @@ async fn id_lookup_indexes_exist_after_apply_all() {
         );
     }
 }
+
+/// VIS-PH4: a store populated BEFORE the visibility fields existed (simulated by
+/// removing them) re-applies the schema without touching its rows — every new
+/// field reads NONE (= visible / no groups), and the petal registry column then
+/// stores nested group objects verbatim.
+#[tokio::test]
+async fn visibility_fields_apply_to_a_populated_pre_phase4_store() {
+    let db = test_db().await;
+    apply_schema(&db).await.expect("first apply");
+    db.query(
+        "REMOVE FIELD view_hidden ON TABLE verse;\
+         REMOVE FIELD view_hidden ON TABLE fractal;\
+         REMOVE FIELD view_hidden ON TABLE petal;\
+         REMOVE FIELD visibility_groups[*] ON TABLE petal;\
+         REMOVE FIELD visibility_groups ON TABLE petal;\
+         CREATE verse SET verse_id = 'v1', name = 'V', created_by = 'did:key:z6Mk', created_at = '2026-01-01';\
+         CREATE fractal SET fractal_id = 'f1', verse_id = 'v1', owner_did = 'did:key:z6Mk', name = 'F', created_at = '2026-01-01';\
+         CREATE petal SET petal_id = 'p1', name = 'P', node_id = 'n1', created_at = '2026-01-01', fractal_id = 'f1'",
+    )
+    .await
+    .expect("seed pre-phase-4 rows")
+    .check()
+    .expect("seed statements");
+
+    apply_schema(&db)
+        .await
+        .expect("re-apply on a populated store");
+    apply_schema(&db).await.expect("and again (idempotent)");
+
+    let mut res = db
+        .query(
+            "SELECT name, view_hidden FROM verse WHERE verse_id = 'v1';\
+             SELECT name, view_hidden FROM fractal WHERE fractal_id = 'f1';\
+             SELECT name, view_hidden, visibility_groups FROM petal WHERE petal_id = 'p1'",
+        )
+        .await
+        .expect("read back");
+    for (statement, name) in [(0, "V"), (1, "F"), (2, "P")] {
+        let rows: Vec<serde_json::Value> = res.take(statement).expect("take");
+        assert_eq!(rows.len(), 1, "row {name} intact");
+        assert_eq!(rows[0]["name"], name);
+        assert!(
+            rows[0]["view_hidden"].is_null(),
+            "{name}: new field is NONE"
+        );
+    }
+
+    let groups = serde_json::json!([
+        {"id": "g1", "name": "Utilities", "visible": false, "order": 0.5}
+    ]);
+    let mut res = db
+        .query("UPDATE petal SET visibility_groups = $g WHERE petal_id = 'p1' RETURN visibility_groups")
+        .bind(("g", groups.clone()))
+        .await
+        .expect("write registry")
+        .check()
+        .expect("registry accepted by the column type");
+    let rows: Vec<serde_json::Value> = res.take(0).expect("take");
+    assert_eq!(
+        rows[0]["visibility_groups"], groups,
+        "nested objects kept verbatim"
+    );
+}

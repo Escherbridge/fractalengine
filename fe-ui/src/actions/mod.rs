@@ -8,7 +8,7 @@
 pub(crate) mod asset;
 pub(crate) mod gis;
 mod gpx;
-mod hexon;
+pub(crate) mod hexon;
 pub(crate) mod node;
 pub(crate) mod node_props;
 pub(crate) mod path;
@@ -402,6 +402,45 @@ pub enum UiAction {
     RevealSection {
         slug: String,
     },
+
+    // --- hierarchy_visibility_groups Phase 3 ---
+    /// Set a node's tri-state visibility override: optimistic session write +
+    /// authed `DbCommand::SetNodeView` (D-15). Produced by the sidebar eye, the
+    /// H key and the row menu's Hide others / Show all. See
+    /// `visibility::cache::set_node_view`.
+    SetNodeView {
+        node_id: String,
+        state: crate::visibility::OverrideState,
+    },
+
+    // --- hierarchy_visibility_groups Phases 4-5 ---
+    /// Replace the active petal's whole Group registry: optimistic session
+    /// write + authed `SetPetalVisibilityGroups` (D-3). Produced by the right
+    /// sidebar Groups section, the left sidebar Group eyes and the Layer
+    /// Manager. See `visibility::groups::set_group_registry`.
+    SetGroupRegistry {
+        petal_id: String,
+        groups: Vec<crate::visibility::Group>,
+    },
+    /// Open/close a verse/fractal/petal eye: optimistic + authed
+    /// `SetScopeHidden` (D-1). The active petal's eye is never offered (D-4).
+    SetScopeHidden {
+        level: fe_runtime::messages::ScopeLevel,
+        id: String,
+        hidden: bool,
+    },
+    /// Replace one node's Group membership (`view.groups`) via the authed
+    /// `SetNodeView { groups }` — "Add selection to group" / "Remove from group".
+    SetNodeGroups {
+        node_id: String,
+        groups: Vec<String>,
+    },
+    /// Toggle a ruler overlay row of the unified overlay registry
+    /// (`OverlayKey::ScaleBar` / `WorldGrid`) in `AppSettings`.
+    SetAppOverlay {
+        key: crate::gis::OverlayKey,
+        visible: bool,
+    },
 }
 
 /// Centralized UI state resource.
@@ -530,6 +569,13 @@ pub(crate) struct ToolStateParams<'w> {
     /// holds the same resource in a different schedule, so there is no
     /// same-frame access conflict.
     right_sidebar: ResMut<'w, crate::ui_shell::right_sidebar::RightSidebarState>,
+    /// `UiAction::SetNodeView`'s optimistic session target (bundled for the
+    /// same param-ceiling reason as `right_sidebar`).
+    visibility: ResMut<'w, crate::visibility::VisibilityState>,
+    /// `UiAction::SetAppOverlay`'s target (ruler overlay rows, VIS-PH5).
+    app_settings: ResMut<'w, crate::settings::AppSettings>,
+    /// `UiAction::PetalManifestSave`'s target (session render-distance override).
+    render_override: ResMut<'w, crate::settings::PetalRenderOverride>,
 }
 
 /// Drains all UiActions queued during the egui pass and processes them.
@@ -564,6 +610,9 @@ pub(crate) fn process_ui_actions(
         mut sculpt_state,
         mut earthwork_map,
         mut right_sidebar,
+        mut visibility,
+        mut app_settings,
+        mut render_override,
     } = tool_state;
     // Fold pen-tool actions queued by `render_tool_panel` into the main queue
     // (the Tools panel has no `ui_mgr` handle — see panels/tool_panel.rs).
@@ -707,7 +756,12 @@ pub(crate) fn process_ui_actions(
                 );
             }
             UiAction::PetalManifestSave { petal_id, manifest } => {
-                hexon::manifest_save(petal_id, manifest);
+                hexon::manifest_save(
+                    petal_id,
+                    manifest,
+                    nav.active_petal_id.as_deref(),
+                    &mut render_override,
+                );
             }
             UiAction::PetalManifestOpen {
                 petal_id,
@@ -1109,6 +1163,44 @@ pub(crate) fn process_ui_actions(
                 // its round-trip live with the enum in `right_sidebar.rs`.
                 if !right_sidebar.reveal_slug(&slug) {
                     bevy::log::warn!("UiAction::RevealSection: unknown surface slug {slug:?}");
+                }
+            }
+            UiAction::SetNodeView { node_id, state } => {
+                crate::visibility::cache::set_node_view(
+                    &db_sender,
+                    &mut visibility,
+                    node_id,
+                    state,
+                );
+            }
+            UiAction::SetGroupRegistry { petal_id, groups } => {
+                crate::visibility::groups::set_group_registry(
+                    &db_sender,
+                    &mut visibility,
+                    petal_id,
+                    groups,
+                );
+            }
+            UiAction::SetScopeHidden { level, id, hidden } => {
+                crate::visibility::groups::set_scope_hidden(
+                    &db_sender,
+                    &mut visibility,
+                    level,
+                    id,
+                    hidden,
+                );
+            }
+            UiAction::SetNodeGroups { node_id, groups } => {
+                crate::visibility::groups::set_node_groups(
+                    &db_sender,
+                    &mut visibility,
+                    node_id,
+                    groups,
+                );
+            }
+            UiAction::SetAppOverlay { key, visible } => {
+                if !crate::gis::apply_app_overlay(&mut app_settings, &key, visible) {
+                    bevy::log::warn!("UiAction::SetAppOverlay: {key:?} is not an app overlay");
                 }
             }
         }

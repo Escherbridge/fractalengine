@@ -91,6 +91,17 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
             // section's Brush arm (this string was unreachable — finding #15).
             options_hints: &[],
         },
+        Tool::Measure => ToolPanelDescriptor {
+            title: "Measure",
+            subtitle: "Measure ground distance, bearing, and area",
+            use_zone: &[
+                "Tape: click two points for distance and bearing",
+                "Area: click three or more points, then Close polygon",
+                "Read and copy the result in the Options panel",
+            ],
+            // Mode, readout, Undo/Clear/Close are live in the Options arm.
+            options_hints: &[],
+        },
     }
 }
 
@@ -169,7 +180,7 @@ mod tests {
     use super::*;
     use bevy::prelude::Entity;
 
-    fn all_tools() -> [Tool; 6] {
+    fn all_tools() -> [Tool; 7] {
         [
             Tool::Select,
             Tool::Move,
@@ -177,6 +188,7 @@ mod tests {
             Tool::Scale,
             Tool::Pen,
             Tool::Brush,
+            Tool::Measure,
         ]
     }
 
@@ -201,7 +213,7 @@ mod tests {
                 "{tool:?} has no live Options controls and no hints either"
             );
         }
-        for tool in [Tool::Pen, Tool::Brush] {
+        for tool in [Tool::Pen, Tool::Brush, Tool::Measure] {
             assert!(
                 panel_descriptor(tool).options_hints.is_empty(),
                 "{tool:?} renders real controls; a hint list would be stale copy"

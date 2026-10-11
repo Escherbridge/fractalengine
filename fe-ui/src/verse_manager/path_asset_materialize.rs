@@ -338,7 +338,7 @@ fn stamp_transform(
 
 /// Petal-wide stamp budget: the per-track `MAX_STAMPS` (4096) still allows
 /// tracks × 4096 stamps, so one materializer pass saturates here overall.
-const MAX_STAMPS_PER_PETAL: usize = 65_536;
+pub(crate) const MAX_STAMPS_PER_PETAL: usize = 65_536;
 
 /// Take up to `requested` stamps from the shared petal budget; returns how many
 /// may spawn. Pure so the saturation math is unit-testable.
@@ -423,7 +423,7 @@ pub(super) fn materialize_path_assets(
     } else {
         super::spawn::distance_ranked_allowance(
             0.0,
-            residency.settings.render_distance,
+            residency.render_distance_for(active_petal),
             residency.settings.stamp_ceiling.min(MAX_STAMPS_PER_PETAL),
         )
     };

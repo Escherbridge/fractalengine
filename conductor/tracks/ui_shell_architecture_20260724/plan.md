@@ -72,7 +72,7 @@ Tasks:
       path-like" from an ordinary node click needs data not available at that
       call site (e.g. a `TrackPickShape` check) — adding a warning without it
       risks per-click log spam on every non-track selection while the list is
-      still loading. Left for a follow-up pass.
+      still loading. Left for a follow-up pass. **[CLOSED 2026-10-11 spatial-builder-residue batch (commit pending): `node_manager/pointer/mod.rs::silent_track_pick_warning` fires only for an entity carrying `TrackPickShape` that is unlisted while `tracks_pending`, once per petal load (Local re-armed on `advance_petal_tracking` transitions) — one `warn!` + a toast (ui_ux §6); test silent_track_pick_notice_fires_once_per_load_and_never_on_ordinary_clicks drives the real system in a minimal App]**
       (TDD: exactly one refresh request per petal change
       [`advance_petal_tracking_fires_exactly_once_per_transition`]; `track_to_open`
       existing tests green; refresh not re-fired while `tracks_pending`

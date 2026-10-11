@@ -9,7 +9,9 @@ use super::dispatch::{resolve_operation, HitTarget, Operation};
 use super::router::{ClickArbiter, ClickPriority};
 use super::selection::project_selection;
 use crate::gis::PathEditorState;
+use crate::navigation_manager::NavigationManager;
 use crate::plugin::{SpawnedNodeMarker, ToolState};
+use crate::visibility::{pickable, VisibilityState};
 
 /// Vertical lift baked into the rendered ribbon (`fe_terrain`'s `track_mesh`
 /// `y_offset`). Picking geometry adds it so the ray test hits where the ribbon
@@ -30,6 +32,9 @@ const PICK_SLOP: f32 = 0.3;
 pub struct TrackPickShape {
     /// Raw world-space polyline points in track order (no y-lift).
     pub points: Vec<Vec3>,
+    /// Un-flattened anchor positions in track order, raw world space — the
+    /// cross-track snap targets (`path_point_interaction::collect_foreign_anchors`).
+    pub anchors: Vec<Vec3>,
     /// Half the ribbon width in world units.
     pub half_width: f32,
     /// Whether the polyline also represents a pickable filled zone.
@@ -194,16 +199,29 @@ fn ground_len_world(a: [f32; 3], b: [f32; 3]) -> f64 {
 // and `NodePick` — so while editing it wins the re-pick of the ribbon-as-node.
 // ---------------------------------------------------------------------------
 
+/// Whether the edited track's ribbon may take segment clicks: a session is open
+/// and its track is effectively visible. Defensive — the pointer bridge already
+/// closes a hidden track's session (D-7/D-12). Pure.
+fn edited_ribbon_pickable(
+    editing_track_id: Option<&str>,
+    nav: &NavigationManager,
+    visibility: &VisibilityState,
+) -> bool {
+    editing_track_id.is_some_and(|track| pickable(track, nav, visibility))
+}
+
 pub(super) fn handle_path_segment_interaction(
     tool: Res<ToolState>,
     mut arbiter: ResMut<ClickArbiter>,
     mut path_state: ResMut<PathEditorState>,
     rendered_shapes: Query<(&TrackPickShape, &SpawnedNodeMarker)>,
+    nav: Res<NavigationManager>,
+    visibility: Res<VisibilityState>,
 ) {
     if !arbiter.is_fresh_press() || !arbiter.is_available() {
         return;
     }
-    if path_state.editing_track_id.is_none() {
+    if !edited_ribbon_pickable(path_state.editing_track_id.as_deref(), &nav, &visibility) {
         return;
     }
     let Some(ray) = arbiter.ray() else { return };
@@ -327,6 +345,19 @@ pub(super) fn sync_path_measurements(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hidden_edited_ribbon_takes_no_segment_clicks() {
+        let nav = NavigationManager {
+            active_petal_id: Some("p1".into()),
+            ..Default::default()
+        };
+        let mut vis = VisibilityState::default();
+        assert!(edited_ribbon_pickable(Some("t1"), &nav, &vis));
+        assert!(!edited_ribbon_pickable(None, &nav, &vis), "no session");
+        vis.set_node_override("t1", crate::visibility::OverrideState::Hide);
+        assert!(!edited_ribbon_pickable(Some("t1"), &nav, &vis));
+    }
 
     #[test]
     fn ray_hits_segment_straight_down() {

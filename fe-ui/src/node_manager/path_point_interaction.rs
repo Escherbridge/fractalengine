@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use super::curve;
 use super::dispatch::{resolve_operation, HitTarget, Operation};
+use super::path_segment_interaction::TrackPickShape;
 use super::router::{sweep_stranded_drag, ClickArbiter, ClickPriority, PointerPhase};
 use super::selection::project_selection;
 use crate::actions::{UiAction, UiManager};
@@ -16,7 +17,7 @@ use crate::gis::{
 use crate::navigation_manager::NavigationManager;
 use crate::panels::tool_panel::ToolPanelState;
 use crate::panels::toolbar::Tool;
-use crate::plugin::{Billboard, ToolState};
+use crate::plugin::{Billboard, SpawnedNodeMarker, ToolState};
 use crate::terrain_map::PetalMapState;
 
 /// Default name for a track auto-created by the first Pen click when none is
@@ -249,10 +250,99 @@ fn pen_gesture_fate(
     }
 }
 
+/// A snap target beyond the edited track's own buffer (road_builder FR-5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SnapCandidate {
+    /// Raw world position, copied verbatim on a win (D-3).
+    pub position: [f32; 3],
+    /// Belongs to a track other than the one being edited.
+    pub foreign: bool,
+    /// First/last anchor of an open track (outranks interior vertices).
+    pub endpoint: bool,
+}
+
+/// Anchors of every OTHER visible track in the active petal as snap
+/// candidates: the edited track (its live buffer is authoritative), other
+/// petals and tracks `is_visible` rejects (hidden tracks don't snap, D-7) are
+/// skipped; endpoints are the first/last anchor of an open track (a closed
+/// zone ring has none). Shared seam for later network tooling. Pure.
+pub(crate) fn collect_foreign_anchors<'a>(
+    shapes: impl Iterator<Item = (&'a str, &'a str, &'a TrackPickShape)>,
+    editing_track_id: Option<&str>,
+    active_petal: Option<&str>,
+    is_visible: impl Fn(&str) -> bool,
+) -> Vec<SnapCandidate> {
+    let Some(petal) = active_petal else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (node_id, petal_id, shape) in shapes {
+        if petal_id != petal || Some(node_id) == editing_track_id || !is_visible(node_id) {
+            continue;
+        }
+        let last = shape.anchors.len().saturating_sub(1);
+        out.extend(
+            shape
+                .anchors
+                .iter()
+                .enumerate()
+                .map(|(i, a)| SnapCandidate {
+                    position: a.to_array(),
+                    foreign: true,
+                    endpoint: !shape.closed && (i == 0 || i == last),
+                }),
+        );
+    }
+    out
+}
+
+/// The rendered tracks a Pen/marker release may snap onto (FR-5), bundled so
+/// the host system stays under Bevy's param limit; filtered by the shared
+/// visibility picker rule.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct ForeignSnapSources<'w, 's> {
+    shapes: Query<
+        'w,
+        's,
+        (
+            &'static SpawnedNodeMarker,
+            &'static TrackPickShape,
+            Option<&'static Visibility>,
+        ),
+    >,
+    nav: Res<'w, NavigationManager>,
+    visibility: Res<'w, crate::visibility::VisibilityState>,
+}
+
+impl ForeignSnapSources<'_, '_> {
+    /// [`collect_foreign_anchors`] over every spawned track ribbon.
+    fn candidates(
+        &self,
+        editing_track_id: Option<&str>,
+        active_petal: Option<&str>,
+    ) -> Vec<SnapCandidate> {
+        collect_foreign_anchors(
+            self.shapes
+                .iter()
+                // A ribbon its map layer/style hides offers no snap targets.
+                .filter(|(_, _, drawn)| crate::visibility::rendered(*drawn))
+                .map(|(m, s, _)| (m.node_id.as_str(), m.petal_id.as_str(), s)),
+            editing_track_id,
+            active_petal,
+            |id| crate::visibility::pickable(id, &self.nav, &self.visibility),
+        )
+    }
+}
+
+/// Snap seam: within the metric radius the best candidate wins by (tier, XZ
+/// distance) -- tier 0 = a foreign endpoint, tier 1 = everything else -- and a
+/// foreign win returns its coordinate EXACTLY while a same-track win keeps the
+/// cursor's Y; otherwise XZ grid rounding. See AGENTS.md §path-points.
 fn snap_path_position(
     position: [f32; 3],
     anchors: &[PathPointRow],
     skip_index: Option<usize>,
+    foreign: &[SnapCandidate],
     settings: PathSnapSettings,
     world_scale: f64,
 ) -> [f32; 3] {
@@ -267,21 +357,43 @@ fn snap_path_position(
         },
         world_scale,
     );
-    let mut nearest: Option<(f32, [f32; 3])> = None;
-    for (index, anchor) in anchors.iter().enumerate() {
-        if Some(index) == skip_index
-            || !anchor.position[0].is_finite()
-            || !anchor.position[2].is_finite()
-        {
+    let own = anchors
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != skip_index)
+        .map(|(_, anchor)| SnapCandidate {
+            position: anchor.position,
+            foreign: false,
+            endpoint: false,
+        });
+    let mut best: Option<((u8, f32), SnapCandidate)> = None;
+    for candidate in own.chain(foreign.iter().copied()) {
+        // Same-track rows only need finite XZ (their Y is never copied).
+        let finite = candidate.position[0].is_finite()
+            && candidate.position[2].is_finite()
+            && (!candidate.foreign || candidate.position[1].is_finite());
+        if !finite {
             continue;
         }
-        let distance = (position[0] - anchor.position[0]).hypot(position[2] - anchor.position[2]);
-        if distance <= radius && nearest.is_none_or(|(best, _)| distance < best) {
-            nearest = Some((distance, anchor.position));
+        let distance =
+            (position[0] - candidate.position[0]).hypot(position[2] - candidate.position[2]);
+        if distance > radius {
+            continue;
+        }
+        let rank = (
+            u8::from(!(candidate.foreign && candidate.endpoint)),
+            distance,
+        );
+        if best.is_none_or(|(best_rank, _)| rank < best_rank) {
+            best = Some((rank, candidate));
         }
     }
-    if let Some((_, anchor)) = nearest {
-        return [anchor[0], position[1], anchor[2]];
+    if let Some((_, winner)) = best {
+        return if winner.foreign {
+            winner.position
+        } else {
+            [winner.position[0], position[1], winner.position[2]]
+        };
     }
 
     let step = meters_to_world(
@@ -325,6 +437,7 @@ fn release_pen_gesture(
     default_kind: CornerKind,
     path_state: &mut PathEditorState,
     nav: &NavigationManager,
+    foreign: &[SnapCandidate],
     world_scale: f64,
     ui_mgr: &mut UiManager,
 ) {
@@ -343,6 +456,7 @@ fn release_pen_gesture(
         pen.anchor,
         &path_state.points,
         None,
+        foreign,
         path_state.snap,
         world_scale,
     );
@@ -560,6 +674,7 @@ pub(super) fn handle_path_point_interaction(
     mut ui_mgr: ResMut<UiManager>,
     mut marker_tx: Query<(&mut Transform, &PathPointMarker)>,
     marker_pick: Query<(&GlobalTransform, &PathPointMarker)>,
+    snap_sources: ForeignSnapSources,
     mut arbiter: ResMut<ClickArbiter>,
 ) {
     // Stranded-gesture sweep: a Hover frame (button up) with a live drag means
@@ -598,6 +713,11 @@ pub(super) fn handle_path_point_interaction(
     // Ctrl-raised height flows through automatically, FR-1a). A pen press-drag
     // resolves via the pure threshold decision (pen_curve_tool_20260722 FR-4).
     if arbiter.phase() == PointerPhase::Release {
+        let foreign = if drag.active.is_some() || pen_drag.active.is_some() {
+            snap_sources.candidates(editing_track_id.as_deref(), nav.active_petal_id.as_deref())
+        } else {
+            Vec::new()
+        };
         if let Some(state) = drag.active.take() {
             // A drag can only start while editing a track, so `editing_track_id`
             // is `Some` here.
@@ -610,6 +730,7 @@ pub(super) fn handle_path_point_interaction(
                     [p.x, p.y, p.z],
                     &path_state.points,
                     Some(state.index),
+                    &foreign,
                     path_state.snap,
                     petal_map.world_scale,
                 );
@@ -634,6 +755,7 @@ pub(super) fn handle_path_point_interaction(
                 tool_panel.pen_new_anchor_kind,
                 &mut path_state,
                 &nav,
+                &foreign,
                 petal_map.world_scale,
                 &mut ui_mgr,
             );
@@ -887,8 +1009,14 @@ mod tests {
 
     #[test]
     fn snap_grid_rounds_negative_coordinates_and_preserves_y() {
-        let snapped =
-            snap_path_position([-1.6, 7.0, -2.4], &[], None, snap_settings(1.0, 0.0), 1.0);
+        let snapped = snap_path_position(
+            [-1.6, 7.0, -2.4],
+            &[],
+            None,
+            &[],
+            snap_settings(1.0, 0.0),
+            1.0,
+        );
         assert_eq!(snapped, [-2.0, 7.0, -2.0]);
     }
 
@@ -899,6 +1027,7 @@ mod tests {
             [0.35, 9.0, 0.0],
             &anchors,
             None,
+            &[],
             snap_settings(10.0, 1.0),
             1.0,
         );
@@ -912,6 +1041,7 @@ mod tests {
             [1.0, 4.0, 0.0],
             &anchors,
             None,
+            &[],
             snap_settings(10.0, 1.0),
             1.0,
         );
@@ -925,6 +1055,7 @@ mod tests {
             [0.14, 3.0, -0.16],
             &anchors,
             None,
+            &[],
             snap_settings(100.0, 10.0),
             0.001,
         );
@@ -952,6 +1083,7 @@ mod tests {
             CornerKind::Corner,
             &mut path_state,
             &nav,
+            &[],
             1.0,
             &mut ui,
         );
@@ -961,6 +1093,151 @@ mod tests {
             }
             other => panic!("unexpected action: {other:?}"),
         }
+    }
+
+    // --- cross-track anchor snap (road_builder FR-5, D-3) ---
+
+    fn shape(anchors: &[[f32; 3]], closed: bool) -> TrackPickShape {
+        let anchors: Vec<Vec3> = anchors.iter().copied().map(Vec3::from_array).collect();
+        TrackPickShape {
+            points: anchors.clone(),
+            anchors,
+            half_width: 0.5,
+            closed,
+            fill_triangles: Vec::new(),
+            centroid: Vec3::ZERO,
+        }
+    }
+
+    fn bits(p: [f32; 3]) -> [u32; 3] {
+        p.map(f32::to_bits)
+    }
+
+    #[test]
+    fn foreign_anchor_in_radius_snaps_bitwise_exact_including_y() {
+        let target = [0.1 + 0.2, 7.123_457, -3.3];
+        let other = shape(&[target, [50.0, 0.0, 0.0]], false);
+        let foreign = collect_foreign_anchors(
+            [("other", "p1", &other)].into_iter(),
+            Some("edited"),
+            Some("p1"),
+            |_| true,
+        );
+        let snapped = snap_path_position(
+            [0.6, 0.0, -3.0],
+            &[],
+            None,
+            &foreign,
+            snap_settings(1.0, 1.0),
+            1.0,
+        );
+        assert_eq!(bits(snapped), bits(target), "D-3: verbatim [f32; 3]");
+    }
+
+    #[test]
+    fn foreign_endpoint_beats_a_closer_interior_vertex_and_own_anchor() {
+        // Interior vertex 0.1 away, own-track anchor 0.2 away, endpoint 0.8 away.
+        let other = shape(&[[0.8, 1.0, 0.0], [0.1, 2.0, 0.0], [9.0, 3.0, 0.0]], false);
+        let foreign = collect_foreign_anchors(
+            [("other", "p1", &other)].into_iter(),
+            Some("edited"),
+            Some("p1"),
+            |_| true,
+        );
+        let snapped = snap_path_position(
+            [0.0, 5.0, 0.0],
+            &[point([0.2, 4.0, 0.0])],
+            None,
+            &foreign,
+            snap_settings(10.0, 1.0),
+            1.0,
+        );
+        assert_eq!(snapped, [0.8, 1.0, 0.0]);
+        // Without endpoints in range, the nearest of interior/own wins by
+        // distance; an own-track win keeps the cursor's Y.
+        let snapped = snap_path_position(
+            [0.25, 5.0, 0.0],
+            &[point([0.2, 4.0, 0.0])],
+            None,
+            &foreign[1..2],
+            snap_settings(10.0, 1.0),
+            1.0,
+        );
+        assert_eq!(snapped, [0.2, 5.0, 0.0]);
+    }
+
+    #[test]
+    fn out_of_radius_foreign_anchor_falls_through_to_grid() {
+        let other = shape(&[[3.0, 1.0, 0.0], [9.0, 1.0, 0.0]], false);
+        let foreign = collect_foreign_anchors(
+            [("other", "p1", &other)].into_iter(),
+            None,
+            Some("p1"),
+            |_| true,
+        );
+        let snapped = snap_path_position(
+            [1.4, 5.0, 0.2],
+            &[],
+            None,
+            &foreign,
+            snap_settings(1.0, 1.0),
+            1.0,
+        );
+        assert_eq!(snapped, [1.0, 5.0, 0.0]);
+    }
+
+    #[test]
+    fn foreign_candidates_skip_the_edited_track_and_other_petals() {
+        let edited = shape(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], false);
+        let elsewhere = shape(&[[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]], false);
+        let zone = shape(&[[4.0, 0.0, 0.0], [5.0, 0.0, 0.0], [4.0, 0.0, 1.0]], true);
+        let road = shape(&[[6.0, 0.0, 0.0], [7.0, 0.0, 0.0], [8.0, 0.0, 0.0]], false);
+        let foreign = collect_foreign_anchors(
+            [
+                ("edited", "p1", &edited),
+                ("elsewhere", "p2", &elsewhere),
+                ("zone", "p1", &zone),
+                ("road", "p1", &road),
+            ]
+            .into_iter(),
+            Some("edited"),
+            Some("p1"),
+            |_| true,
+        );
+        let xs: Vec<(f32, bool)> = foreign
+            .iter()
+            .map(|c| (c.position[0], c.endpoint))
+            .collect();
+        assert_eq!(
+            xs,
+            vec![
+                (4.0, false),
+                (5.0, false),
+                (4.0, false),
+                (6.0, true),
+                (7.0, false),
+                (8.0, true)
+            ],
+            "edited + other-petal tracks contribute nothing; a closed zone has no endpoints"
+        );
+        assert!(
+            collect_foreign_anchors([("road", "p1", &road)].into_iter(), None, None, |_| true)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_hidden_track_contributes_no_snap_candidates() {
+        let hidden = shape(&[[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], false);
+        let shown = shape(&[[6.0, 0.0, 0.0], [7.0, 0.0, 0.0]], false);
+        let foreign = collect_foreign_anchors(
+            [("hidden", "p1", &hidden), ("shown", "p1", &shown)].into_iter(),
+            None,
+            Some("p1"),
+            |id| id != "hidden",
+        );
+        let xs: Vec<f32> = foreign.iter().map(|c| c.position[0]).collect();
+        assert_eq!(xs, vec![6.0, 7.0]);
     }
 
     #[test]

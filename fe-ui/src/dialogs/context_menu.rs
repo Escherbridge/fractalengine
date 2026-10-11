@@ -96,6 +96,8 @@ pub(crate) fn menu_for(hit: &HitTarget) -> Vec<Verb> {
             vec![SetCornerSmooth, DeletePoint]
         }
         HitTarget::TerrainProposal { .. } => vec![EditRegionParams, ReportVolume, CopyApi, Delete],
+        // Regions are not in the palette mirror, so there is no params editor.
+        HitTarget::EarthworkRegion { .. } => vec![ReportVolume, CopyApi, Delete],
         HitTarget::GimbalAxis => vec![],
     }
 }
@@ -293,14 +295,19 @@ pub(crate) fn edit_region_actions(verb: Verb, hit: &HitTarget) -> Option<[UiActi
     }
 }
 
-/// A `TerrainProposal`'s delete confirm routes to `TerrainProposalDelete`
-/// (proposals aren't nodes — `DeleteNode`/cascade doesn't apply). `None` for
-/// every other target, which stays on the node-backed delete path. Pure.
+/// Ground-overlay delete routing (proposals aren't nodes — `DeleteNode`/cascade
+/// doesn't apply): a palette `TerrainProposal` → `TerrainProposalDelete`; an
+/// `EarthworkRegion` → `SculptDeleteRegion` (drops the record AND tombstones
+/// its endpoint node). `None` for every other target, which stays on the
+/// node-backed delete path. Pure.
 pub(crate) fn proposal_delete_action(hit: &HitTarget) -> Option<UiAction> {
     match hit {
         HitTarget::TerrainProposal { id } => {
             Some(UiAction::TerrainProposalDelete { id: id.clone() })
         }
+        HitTarget::EarthworkRegion { id } => Some(UiAction::SculptDeleteRegion {
+            region_id: id.clone(),
+        }),
         _ => None,
     }
 }
@@ -621,6 +628,14 @@ fn render_target_menu(
         }
         (HitTarget::TerrainProposal { id }, _) => {
             ui.label(
+                egui::RichText::new(format!("Terrain proposal {id}"))
+                    .small()
+                    .color(theme::TEXT_DIM),
+            );
+            ui.separator();
+        }
+        (HitTarget::EarthworkRegion { id }, _) => {
+            ui.label(
                 egui::RichText::new(format!("Earthwork region {id}"))
                     .small()
                     .color(theme::TEXT_DIM),
@@ -847,9 +862,13 @@ fn render_delete_confirm(
         "Delete this stamp? Its node is tombstoned and the path re-flows the \
          remaining stamps. This cannot be undone."
             .to_string()
-    } else if proposal_delete.is_some() {
+    } else if matches!(target.hit, HitTarget::EarthworkRegion { .. }) {
         "Delete this earthwork region? Its baked terrain contribution is \
-         reverted. This cannot be undone."
+         reverted and its node is tombstoned. This cannot be undone."
+            .to_string()
+    } else if proposal_delete.is_some() {
+        "Delete this terrain proposal? Its proposed overlay is removed. \
+         This cannot be undone."
             .to_string()
     } else if matches!(target.hit, HitTarget::PathSegment { .. }) {
         // The point count is only readable while this track is the open one —
@@ -923,6 +942,7 @@ mod tests {
                 side: HandleSide::In,
             },
             HitTarget::TerrainProposal { id: "r1".into() },
+            HitTarget::EarthworkRegion { id: "r2".into() },
             HitTarget::GimbalAxis,
         ]
     }
@@ -996,15 +1016,20 @@ mod tests {
     }
 
     #[test]
-    fn earthwork_region_reports_volume_and_deletes() {
+    fn terrain_proposal_and_earthwork_region_menus() {
         assert_eq!(
-            menu_for(&HitTarget::TerrainProposal { id: "r1".into() }),
+            menu_for(&HitTarget::TerrainProposal { id: "p1".into() }),
             vec![
                 Verb::EditRegionParams,
                 Verb::ReportVolume,
                 Verb::CopyApi,
                 Verb::Delete,
             ]
+        );
+        // A committed region has no palette params editor.
+        assert_eq!(
+            menu_for(&HitTarget::EarthworkRegion { id: "r1".into() }),
+            vec![Verb::ReportVolume, Verb::CopyApi, Verb::Delete]
         );
     }
 
@@ -1023,6 +1048,7 @@ mod tests {
                     | HitTarget::Stamp(_)
                     | HitTarget::PathSegment { .. }
                     | HitTarget::TerrainProposal { .. }
+                    | HitTarget::EarthworkRegion { .. }
             );
             let point = matches!(
                 hit,
@@ -1369,13 +1395,26 @@ mod tests {
     }
 
     #[test]
-    fn proposal_delete_action_only_for_terrain_proposal() {
-        assert!(matches!(
-            proposal_delete_action(&HitTarget::TerrainProposal { id: "r1".into() }),
-            Some(UiAction::TerrainProposalDelete { id }) if id == "r1"
-        ));
-        assert!(proposal_delete_action(&HitTarget::Node(entity(1))).is_none());
-        assert!(proposal_delete_action(&HitTarget::Stamp(entity(2))).is_none());
+    fn ground_overlay_delete_routes_by_overlay_kind() {
+        // A region delete must reach `SculptDeleteRegion` (record + node
+        // tombstone); a palette proposal only drops its record.
+        for (hit, expect) in [
+            (
+                HitTarget::EarthworkRegion { id: "r1".into() },
+                Some(UiAction::SculptDeleteRegion {
+                    region_id: "r1".into(),
+                }),
+            ),
+            (
+                HitTarget::TerrainProposal { id: "p1".into() },
+                Some(UiAction::TerrainProposalDelete { id: "p1".into() }),
+            ),
+            (HitTarget::Node(entity(1)), None),
+            (HitTarget::Stamp(entity(2)), None),
+        ] {
+            let got = proposal_delete_action(&hit);
+            assert_eq!(format!("{got:?}"), format!("{expect:?}"), "{hit:?}");
+        }
     }
 
     #[test]
@@ -1399,12 +1438,16 @@ mod tests {
                 );
             }
         }
-        let region = HitTarget::TerrainProposal { id: "r1".into() };
-        for verb in menu_for(&region) {
-            let routed = edit_region_actions(verb, &region).is_some()
-                || proposal_delete_action(&region).is_some() && verb == Verb::Delete
-                || matches!(verb, Verb::CopyApi | Verb::Report | Verb::ReportVolume); // seam-gated, node.rs pattern
-            assert!(routed, "TerrainProposal verb {verb:?} has no routing");
+        for region in [
+            HitTarget::TerrainProposal { id: "p1".into() },
+            HitTarget::EarthworkRegion { id: "r1".into() },
+        ] {
+            for verb in menu_for(&region) {
+                let routed = edit_region_actions(verb, &region).is_some()
+                    || proposal_delete_action(&region).is_some() && verb == Verb::Delete
+                    || matches!(verb, Verb::CopyApi | Verb::Report | Verb::ReportVolume); // seam-gated, node.rs pattern
+                assert!(routed, "{region:?} verb {verb:?} has no routing");
+            }
         }
         // F20: PathSegment is reachable now (right-click on an edited ribbon),
         // so it joins the net. Delete/CopyApi/Report route through the shared

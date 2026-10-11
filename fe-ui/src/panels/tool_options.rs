@@ -18,6 +18,9 @@ use bevy_egui::egui;
 use crate::actions::terrain_proposal::{SculptOpKind, SculptShapeMode, SculptToolState};
 use crate::actions::{UiAction, UiManager};
 use crate::gis::PathEditorState;
+use crate::node_manager::measure::{
+    readout, readout_rows, MeasureEvent, MeasureMode, MeasureState,
+};
 use crate::node_manager::SelectionKind;
 use crate::panels::tool_inspector::panel_descriptor;
 use crate::panels::tool_panel::ToolPanelState;
@@ -40,6 +43,8 @@ pub(crate) enum ToolOptionsArm {
     Pen,
     /// Brush — sculpt radius/strength/op/material + shape mode + cross-links.
     Brush,
+    /// Measure — Tape/Area mode, live readout, Undo/Clear/Close polygon.
+    Measure,
 }
 
 /// Map the active tool to its options arm. Pure + total.
@@ -49,6 +54,7 @@ pub(crate) fn options_arm(tool: Tool) -> ToolOptionsArm {
         Tool::Move | Tool::Rotate | Tool::Scale => ToolOptionsArm::Transform,
         Tool::Pen => ToolOptionsArm::Pen,
         Tool::Brush => ToolOptionsArm::Brush,
+        Tool::Measure => ToolOptionsArm::Measure,
     }
 }
 
@@ -57,7 +63,10 @@ pub(crate) fn options_arm(tool: Tool) -> ToolOptionsArm {
 /// Pure; keeps the descriptor hints and the rendered bodies from drifting into
 /// double-documenting the same control (finding #15's failure mode).
 pub(crate) fn arm_has_live_controls(arm: ToolOptionsArm) -> bool {
-    matches!(arm, ToolOptionsArm::Pen | ToolOptionsArm::Brush)
+    matches!(
+        arm,
+        ToolOptionsArm::Pen | ToolOptionsArm::Brush | ToolOptionsArm::Measure
+    )
 }
 
 /// The one options dispatcher, called by
@@ -80,6 +89,8 @@ pub(crate) fn render(
     ui_mgr: &mut UiManager,
     verse_mgr: &VerseManager,
     active_petal_id: Option<&str>,
+    measure: &mut MeasureState,
+    measure_world_scale: f64,
 ) {
     let arm = options_arm(active_tool);
     match arm {
@@ -89,6 +100,7 @@ pub(crate) fn render(
             render_pen_options(ui, tool_panel_state, path_state, ui_mgr, verse_mgr)
         }
         ToolOptionsArm::Brush => render_brush_options(ui, sculpt_state, ui_mgr, active_petal_id),
+        ToolOptionsArm::Measure => render_measure_options(ui, measure, measure_world_scale, ui_mgr),
     }
     // Never-blank (`ui_ux.md §7`): an arm without live controls falls back to
     // the descriptor's calm "(soon)" lines — one table, no duplicated copy.
@@ -406,6 +418,80 @@ fn render_brush_cross_links(ui: &mut egui::Ui, ui_mgr: &mut UiManager) {
     });
 }
 
+/// Measure arm (hexon_scale FR-9): mode picker, live readout rows (each a
+/// copyable value box), and the Undo / Clear / Close polygon buttons. Every
+/// button goes through the same `measure::reduce` as viewport clicks.
+fn render_measure_options(
+    ui: &mut egui::Ui,
+    measure: &mut MeasureState,
+    world_scale: f64,
+    ui_mgr: &mut UiManager,
+) {
+    ui.label(egui::RichText::new("Mode").small().color(theme::TEXT_DIM));
+    ui.horizontal(|ui| {
+        for mode in MeasureMode::ALL {
+            if ui
+                .selectable_label(measure.mode == mode, mode.label())
+                .clicked()
+            {
+                measure.apply(MeasureEvent::SetMode(mode));
+            }
+        }
+    });
+    ui.add_space(4.0);
+
+    let current = readout(measure, world_scale);
+    let rows = readout_rows(&current, measure.closed);
+    if rows.is_empty() {
+        let hint = match measure.mode {
+            MeasureMode::Tape => "Click two points in the viewport.",
+            MeasureMode::Area => "Click three or more points, then Close polygon.",
+        };
+        ui.label(
+            egui::RichText::new(hint)
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
+    }
+    for (label, value) in &rows {
+        crate::panels::widgets::copy_row(ui, ui_mgr, label, value);
+    }
+    if !current.scaled {
+        ui.label(
+            egui::RichText::new("no map scale — showing world units")
+                .small()
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(!measure.is_empty(), egui::Button::new("Undo"))
+            .clicked()
+        {
+            measure.apply(MeasureEvent::Undo);
+        }
+        if ui
+            .add_enabled(!measure.is_empty(), egui::Button::new("Clear"))
+            .clicked()
+        {
+            measure.apply(MeasureEvent::Clear);
+        }
+        if measure.mode == MeasureMode::Area {
+            let can_close = measure.anchors.len() >= 3 && !measure.closed;
+            if ui
+                .add_enabled(can_close, egui::Button::new("Close polygon"))
+                .clicked()
+            {
+                measure.apply(MeasureEvent::Close);
+            }
+        }
+    });
+}
+
 /// Build a `RevealSection` action from a section, so call sites cannot mistype
 /// a slug literal. Pure.
 pub(crate) fn reveal(section: RightSidebarSection) -> UiAction {
@@ -418,7 +504,7 @@ pub(crate) fn reveal(section: RightSidebarSection) -> UiAction {
 mod tests {
     use super::*;
 
-    fn all_tools() -> [Tool; 6] {
+    fn all_tools() -> [Tool; 7] {
         [
             Tool::Select,
             Tool::Move,
@@ -426,6 +512,7 @@ mod tests {
             Tool::Scale,
             Tool::Pen,
             Tool::Brush,
+            Tool::Measure,
         ]
     }
 
@@ -437,6 +524,7 @@ mod tests {
         }
         assert_eq!(options_arm(Tool::Pen), ToolOptionsArm::Pen);
         assert_eq!(options_arm(Tool::Brush), ToolOptionsArm::Brush);
+        assert_eq!(options_arm(Tool::Measure), ToolOptionsArm::Measure);
     }
 
     #[test]
@@ -470,6 +558,7 @@ mod tests {
     fn pen_and_brush_are_the_live_arms() {
         assert!(arm_has_live_controls(ToolOptionsArm::Pen));
         assert!(arm_has_live_controls(ToolOptionsArm::Brush));
+        assert!(arm_has_live_controls(ToolOptionsArm::Measure));
         assert!(!arm_has_live_controls(ToolOptionsArm::Selection));
         assert!(!arm_has_live_controls(ToolOptionsArm::Transform));
     }

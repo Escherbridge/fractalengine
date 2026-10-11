@@ -20,15 +20,15 @@ system. TDD on the footprint/sculpt/volume math; single sweep at the end (N-6).
 
 ## Phase 2: Sculpt operations (FR-2) [P1]
 
-- [ ] Task: raise/lower/level/smooth over the footprint against the existing
+- [x] Task: raise/lower/level/smooth over the footprint against the existing
       surface (`mesh/{terrain,interp}.rs`); only-inside-region test; determinism
-      test. **[audit 2026-10-10: PARTIAL (consolidator re-check: un-ticked — the task's required determinism test is absent) — ops DONE 09e8e2e — tests apply_gates_outside_and_applies_inside, level_at_full_strength_is_absolute_lower_is_relative, smooth_relaxes_toward_region_mean, nfr1_base_sampler_unmutated_after_apply_and_volume (sculpt/mod.rs). Determinism: ops are pure RNG-free fns but no dedicated determinism test exists (ledger)]**
+      test. **[audit 2026-10-10: PARTIAL (consolidator re-check: un-ticked — the task's required determinism test is absent) — ops DONE 09e8e2e — tests apply_gates_outside_and_applies_inside, level_at_full_strength_is_absolute_lower_is_relative, smooth_relaxes_toward_region_mean, nfr1_base_sampler_unmutated_after_apply_and_volume (sculpt/mod.rs). Determinism: ops are pure RNG-free fns but no dedicated determinism test exists (ledger)]** **[DONE 2026-10-11 spatial-builder-residue batch (commit pending): `sculpt_ops_are_bit_identical_on_repeat` (fe-terrain/src/sculpt/mod.rs) — every op x Rect/Circle/Polygon x world_scale {1.0, 0.01}: apply_sculpt heights, sculpt_cut_fill and EarthworkRegion::cut_fill compared via to_bits() across repeat runs]**
 
 ## Phase 3: Modification-region node (FR-3) [P1]
 
 - [x] Task: create a region node via T1 lifecycle carrying footprint + material +
       op/params; addressable (T1 FR-4); re-select re-opens params. **[audit 2026-10-10: DONE 623145f — earthwork regions become node rows (node_kind=earthwork_region + material + cut/fill); tests earthwork_node_properties_carry_the_endpoint_contract, brush_commit_persists_region_and_creates_endpoint_node, hydrate_earthwork_region_binds_and_seeds_gate (fe-ui/src/actions/terrain_proposal.rs); EditRegionParams verb context_menu.rs:281]**
-- [x] Task: delete/revert semantics per ratified Q-2; serialization round-trip. **[audit 2026-10-10: DONE (handler) — handle_delete_region actions/terrain_proposal.rs:1222 drops the record + tombstones the node; tests remove_region_reverts_by_dropping_the_record, region_json_round_trips_with_material_default. RESIDUAL: `UiAction::SculptDeleteRegion` has no UI producer (only the dispatch arm actions/mod.rs:1062) — see ledger]**
+- [x] Task: delete/revert semantics per ratified Q-2; serialization round-trip. **[audit 2026-10-10: DONE (handler) — handle_delete_region actions/terrain_proposal.rs:1222 drops the record + tombstones the node; tests remove_region_reverts_by_dropping_the_record, region_json_round_trips_with_material_default. RESIDUAL: `UiAction::SculptDeleteRegion` has no UI producer (only the dispatch arm actions/mod.rs:1062) — see ledger]** **[RESIDUAL CLOSED 2026-10-11 spatial-builder-residue batch (commit pending): right-click on a committed region classifies as `HitTarget::EarthworkRegion` (node_manager/context_pick.rs `pick_ground_region` over material-tagged terrain-doc entries) and its Delete confirm routes to `SculptDeleteRegion` (dialogs/context_menu.rs `proposal_delete_action`); tests ground_overlay_delete_routes_by_overlay_kind, pick_ground_region_hits_only_material_tagged_entries, delete_region_drops_only_its_record_then_tombstones_its_node]**
 
 ## Phase 4: Cut/fill volume in real units (FR-4) [P1]
 
@@ -50,5 +50,5 @@ system. TDD on the footprint/sculpt/volume math; single sweep at the end (N-6).
       region-node, volume method + tolerance (N-7). **[audit 2026-10-10: DONE — fe-terrain/src/AGENTS.md §sculpt (:440) + §Earthwork bake (:504) + §earthwork-validity-and-strength (:6)]**
 - [x] Task: single sweep — `clippy -D warnings`, `fmt --check`, workspace tests
       (N-6); ui_ux checklist on the sculpt panel. **[audit 2026-10-10: DONE 623145f — fmt clean, clippy -D warnings clean, 2050 passed / 0 failed]**
-- [ ] Task: retro; in-app verify user-gated. (Deferred phase: layered strata +
+- [x] Task: retro; in-app verify user-gated. **[retro.md written 2026-10-11 spatial-builder-residue batch (commit pending); in-app verify remains USER-GATED (not self-signed; track status stays implemented_pending_inapp_verify)]** (Deferred phase: layered strata +
       survey-grade volume — file as a follow-up if pursued.)

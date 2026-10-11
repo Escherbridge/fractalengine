@@ -682,8 +682,22 @@ fn track_pick_shape(
     if style.closed && pick_points.len() >= 3 {
         pick_points.push(pick_points[0]);
     }
+    // Un-flattened anchors: the cross-track snap targets (road_builder FR-5).
+    let anchors = route
+        .points
+        .iter()
+        .map(|p| {
+            Vec3::new(
+                p.position[0] as f32,
+                p.position[1] as f32,
+                p.position[2] as f32,
+            )
+        })
+        .filter(|v| v.is_finite())
+        .collect();
     Some(TrackPickShape {
         points: pick_points,
+        anchors,
         half_width,
         closed: style.closed,
         fill_triangles,
@@ -2505,6 +2519,38 @@ mod tests {
     use super::*;
     use fe_terrain::config::TerrainConfig;
     use std::path::PathBuf;
+
+    #[test]
+    fn pick_shape_anchors_are_the_unflattened_route_points() {
+        // A curved anchor flattens into many ribbon points; the snap targets
+        // must stay the three authored anchors, bit-for-bit.
+        let mut route_map = TrackRouteMap::default();
+        let anchor = |x: f64, z: f64| TimestampedRoutePoint {
+            position: [x, 0.25, z],
+            ..Default::default()
+        };
+        let mut curved = anchor(10.0, 0.0);
+        curved.handle_in = Some([-2.0, 0.0, 3.0]);
+        curved.handle_out = Some([2.0, 0.0, -3.0]);
+        curved.corner = CornerKind::Symmetric;
+        route_map.routes.insert(
+            "t1".into(),
+            TrackRoute {
+                points: vec![anchor(0.0, 0.0), curved, anchor(20.0, 5.5)],
+                total_duration_secs: 0.0,
+            },
+        );
+        let shape = track_pick_shape(&route_map, &TrackStyleMap::default(), "t1").unwrap();
+        assert!(shape.points.len() > 3, "ribbon is flattened");
+        assert_eq!(
+            shape.anchors,
+            vec![
+                Vec3::new(0.0, 0.25, 0.0),
+                Vec3::new(10.0, 0.25, 0.0),
+                Vec3::new(20.0, 0.25, 5.5)
+            ]
+        );
+    }
 
     // pen_curve_tool_20260722 Phase 1: bezier wire-format (4/12-slot) round-trips.
     #[test]

@@ -14,16 +14,17 @@ also covers the `/ws` realtime surface, the `/mcp` tool table, and the unmounted
 **Mechanical cross-check.** Run from the repo root:
 
 ```bash
-grep -o '"/[^"]*"' fe-api/src/server.rs | sort -u | wc -l   # -> 68
+grep -o '"/[^"]*"' fe-api/src/server.rs | sort -u | wc -l   # -> 70
 ```
 
-There are **68 distinct path literals**, and each one appears in this file. That is 65
-`/api/v1/*` paths plus `/ready`, `/ws` and `/mcp`. The 68 paths carry **74 method rows**,
-because some paths take more than one method: 73 rows in the route tables, plus `POST /mcp`,
-which is described in its own section.
+There are **70 distinct path literals**, and each one appears in this file. That is 67
+`/api/v1/*` paths plus `/ready`, `/ws` and `/mcp`. The 70 paths carry **78 method rows**,
+because some paths take more than one method: 77 rows in the route tables, plus `POST /mcp`,
+which is described in its own section. (VIS-PH6, 2026-10-11, added the two
+visibility-groups paths and their four method rows.)
 
-A scripted check confirmed that every one of the 68 literals appears in this file as a
-backticked path, and that the route tables hold 73 method rows. `/ws/canonical` is not in
+A scripted check confirmed that every one of the 68 literals (pre-VIS-PH6) appears in this
+file as a backticked path, and that the route tables held 73 method rows. `/ws/canonical` is not in
 `server.rs`; it is listed separately as N/A.
 
 **Legend.**
@@ -101,6 +102,10 @@ All test paths below are relative to `fe-api/tests/` unless they name another cr
 
 | Method | Path | Handler | Covering test | Note |
 |---|---|---|---|---|
+| GET | `/api/v1/petals/{petal_id}/visibility-groups` | `visibility::list_visibility_groups` | `visibility_groups_api_test.rs::a_viewer_reads_but_cannot_replace_and_an_editor_round_trips`, `a_foreign_petal_is_denied_exactly_like_a_missing_one`; EO | |
+| PUT | `/api/v1/petals/{petal_id}/visibility-groups` | `visibility::replace_visibility_groups` | `visibility_groups_api_test.rs::a_viewer_reads_but_cannot_replace_and_an_editor_round_trips`, `a_foreign_petal_is_denied_exactly_like_a_missing_one`; EO | |
+| PATCH | `/api/v1/petals/{petal_id}/visibility-groups/{group_id}` | `visibility::patch_visibility_group` | `visibility_groups_api_test.rs::patch_upserts_one_group_and_delete_removes_it`; EO | |
+| DELETE | `/api/v1/petals/{petal_id}/visibility-groups/{group_id}` | `visibility::delete_visibility_group` | `visibility_groups_api_test.rs::patch_upserts_one_group_and_delete_removes_it`; EO | |
 | GET | `/api/v1/petals/{petal_id}/terrain` | `terrain::get_terrain_config` | `terrain_mutation_test.rs::rest_put_persists_terrain_that_get_reads_back`; EO | |
 | PUT | `/api/v1/petals/{petal_id}/terrain` | `terrain::set_terrain_config` | `terrain_mutation_test.rs::rest_put_persists_terrain_that_get_reads_back`, `refused_puts_leave_the_stored_terrain_untouched`, `rest_put_answers_with_its_own_write_when_a_gui_set_races_it`; EO | |
 | DELETE | `/api/v1/petals/{petal_id}/terrain` | `terrain::delete_terrain_config` | `terrain_mutation_test.rs::rest_delete_clears_the_stored_terrain`; EO | |
@@ -177,14 +182,14 @@ EO; there is no happy path to test until a host wires a registry.
 **Transport and table.** The route has a 16 MiB body cap and an 8-way concurrency limit. All
 calls go through one `ToolSpec` table, as described in fe-api/AGENTS.md §mcp-dispatch.
 
-**Tool counts.** The table has **29 rows**. `tools/list` advertises **24 tools on a non-lab
-host** (the GUI always; the relay without `sim-control`) and **29 on a sim lab host**. On a
+**Tool counts.** The table has **31 rows**. `tools/list` advertises **26 tools on a non-lab
+host** (the GUI always; the relay without `sim-control`) and **31 on a sim lab host**. On a
 non-lab host, the five `sim_*` rows are hidden and answer `unknown tool` (SIM-GUI-TOOLS).
 `mcp_integration.rs::tools_list_inventory` asserts both configurations.
 
 **Whole-table tests.** Every row is also covered by these tests:
 - `every_tool_rejects_a_sub_min_role_token`: role floor.
-- `every_scoped_tool_rejects_a_foreign_scope_token`: 21 scoped rows.
+- `every_scoped_tool_rejects_a_foreign_scope_token`: 23 scoped rows.
 - `mcp_structured_fuzz_never_panics_or_leaks_to_channel`: every tool reaches its handler.
 
 **Protocol tests.** `unknown_method_and_unknown_tool` and `malformed_arguments_error_not_panic`
@@ -203,10 +208,11 @@ cover the JSON-RPC envelope.
 | set_property / get_properties / delete_property | `mcp_integration.rs::property_tools_round_trip`, `mcp_full_scene_loop` |
 | create_waypoint / move_waypoint / import_gpx | `mcp_integration.rs::waypoint_and_gpx_tools_round_trip`, `move_waypoint_preserves_rotation_and_scale`, `import_gpx_refuses_more_points_than_the_cap` |
 | set_petal_terrain / list_tilesets / install_tileset | `mcp_integration.rs::terrain_and_tileset_tools_reach_their_cores`; `terrain_mutation_test.rs::mcp_set_petal_terrain_sets_then_clears`; `hexon_tileset_test.rs::five_mib_tileset_installs_via_rest_and_mcp` |
+| list_visibility_groups / set_visibility_group | `visibility_groups_api_test.rs::mcp_set_then_list_visibility_groups` (Editor upsert + delete, Viewer list, Viewer write refused) |
 | get_gis_nodes | `mcp_integration.rs::property_tools_round_trip`, `mcp_full_scene_loop` |
 | query | `mcp_integration.rs::query_tool_uses_the_guarded_local_pipeline` |
 
-`/mcp` itself is a path literal in `server.rs` and is counted in the 68.
+`/mcp` itself is a path literal in `server.rs` and is counted in the 70.
 
 ## Not in the router
 

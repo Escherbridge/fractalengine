@@ -1220,6 +1220,86 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Count node descendants failed: {e}"))),
                         }
                     }
+                    Ok(DbCommand::SetNodeView { node_id, state, groups, auth, correlation_id }) => {
+                        // Lifecycle order (§lifecycle "Node view"): validate → tombstone-aware
+                        // scope resolve → caller's real role → Editor+ → op-logged writes.
+                        let reply = 'reply: {
+                            if let Err(e) = handlers::node_view::validate_view_request(state.as_deref(), groups.as_deref()) {
+                                break 'reply handlers::correlated_failure(&correlation_id, format!("SetNodeView rejected: {e}"));
+                            }
+                            let petal_id = match handlers::node_view::resolve_live_node_petal(&db, &node_id).await {
+                                Ok(Some(petal_id)) => petal_id,
+                                Ok(None) => break 'reply handlers::correlated_failure(&correlation_id, format!("SetNodeView: no live node {node_id}")),
+                                Err(e) => break 'reply handlers::correlated_failure(&correlation_id, format!("SetNodeView failed: {e}")),
+                            };
+                            let Some(scope) = handlers::crud::resolve_petal_scope_handler(&db, &petal_id).await.ok().flatten() else {
+                                break 'reply handlers::correlated_failure(&correlation_id, format!("SetNodeView: cannot resolve scope for {node_id}"));
+                            };
+                            let ctx = lifecycle_auth_context(&db, &local_did, &auth, &scope).await;
+                            let decision = fe_policy::authorize_node_edit(&ctx, &fe_policy::Scope::new(scope));
+                            if !decision.is_allow() {
+                                break 'reply handlers::correlated_failure(&correlation_id, format!(
+                                    "SetNodeView denied for {}: {}", ctx.subject_label(),
+                                    decision.reason().unwrap_or("unauthorized"),
+                                ));
+                            }
+                            match handlers::node_view::set_node_view_handler(&db, &node_id, state.as_deref(), groups.as_deref()).await {
+                                Ok(view) => {
+                                    if let Some(ref ect) = entity_change_tx {
+                                        let written = [
+                                            (state.is_some(), handlers::node_view::VIEW_STATE_KEY, serde_json::json!(view.state)),
+                                            (groups.is_some(), handlers::node_view::VIEW_GROUPS_KEY, serde_json::json!(view.groups)),
+                                        ];
+                                        for (_, key, value) in written.into_iter().filter(|(touched, _, _)| *touched) {
+                                            let _ = ect.send(fe_runtime::messages::SceneChange::PropertyChanged {
+                                                node_id: node_id.clone(),
+                                                petal_id: petal_id.clone(),
+                                                key: key.to_string(),
+                                                value,
+                                            });
+                                        }
+                                    }
+                                    if let Err(e) = handlers::node_log::append_node_log(
+                                        &db, &node_id, "view_set", &local_did,
+                                        &serde_json::json!({"state": view.state, "groups": view.groups}),
+                                    ).await {
+                                        tracing::warn!("node_log append failed for {node_id}: {e}");
+                                    }
+                                    DbResult::NodeViewSet {
+                                        node_id,
+                                        petal_id,
+                                        state: view.state,
+                                        groups: view.groups,
+                                        correlation_id,
+                                    }
+                                }
+                                Err(e) => handlers::correlated_failure(&correlation_id, format!("SetNodeView failed: {e}")),
+                            }
+                        };
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::LoadPetalViewState { petal_id }) => {
+                        match handlers::node_view::load_petal_view_state_handler(&db, &petal_id).await {
+                            Ok(entries) => send_result(&tx, DbResult::PetalViewStateLoaded { petal_id, entries }),
+                            Err(e) => send_result(&tx, DbResult::Error(format!("Load petal view state failed: {e}"))),
+                        }
+                    }
+                    Ok(DbCommand::SetPetalVisibilityGroups { petal_id, groups, auth, correlation_id }) => {
+                        let reply = handlers::visibility_groups::set_petal_visibility_groups_reply(
+                            &db, &local_did, petal_id, groups, auth, correlation_id,
+                        ).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::GetPetalVisibilityGroups { petal_id, correlation_id }) => {
+                        let reply = handlers::visibility_groups::get_petal_visibility_groups_reply(&db, petal_id, correlation_id).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::SetScopeHidden { level, id, hidden, auth, correlation_id }) => {
+                        let reply = handlers::visibility_groups::set_scope_hidden_reply(
+                            &db, &local_did, level, id, hidden, auth, correlation_id,
+                        ).await;
+                        send_result(&tx, reply);
+                    }
                     Ok(DbCommand::SetPetalTerrain { petal_id, terrain, correlation_id }) => {
                         let reply = handlers::petal_terrain::set_petal_terrain_reply(&db, petal_id, terrain, correlation_id).await;
                         send_result(&tx, reply);
@@ -1410,6 +1490,13 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                 tracing::debug!(elapsed_ms = %cmd_start.elapsed().as_millis(), "DB command processed");
             }
             tracing::info!("Database thread shutting down");
+            // Release the store while this runtime can still drive the
+            // engine's shutdown, so a reopen of the same path succeeds.
+            drop(db);
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             send_result(&tx, DbResult::Stopped);
         });
     });

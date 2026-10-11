@@ -452,16 +452,70 @@ mod tests {
     // Phase 2 — Activation system
     // -----------------------------------------------------------------------
 
-    #[test]
-    #[ignore = "needs full Bevy app (validation phase)"]
-    fn selecting_model_with_allowed_url_sets_active_portal() {
-        // Stub — see src/AGENTS.md §petal-portal-deferred.
+    /// Spawn a selected model with `external_url`, run one frame, and return
+    /// it plus every `BrowserCommand` written that frame.
+    fn select_model(external_url: Option<&str>) -> (App, Entity, Vec<BrowserCommand>) {
+        let mut app = minimal_app_with_portal_plugin();
+        let entity = app
+            .world_mut()
+            .spawn((
+                ModelUrlMeta {
+                    external_url: external_url.map(str::to_string),
+                    config_url: None,
+                },
+                Selected,
+            ))
+            .id();
+        app.update();
+        let commands = app
+            .world_mut()
+            .resource_mut::<Messages<BrowserCommand>>()
+            .drain()
+            .collect();
+        (app, entity, commands)
     }
 
     #[test]
-    #[ignore = "needs full Bevy app (validation phase)"]
+    fn selecting_model_with_allowed_url_sets_active_portal() {
+        let (app, entity, commands) = select_model(Some("https://example.com"));
+        assert_eq!(app.world().resource::<ActivePortal>().entity, Some(entity));
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                BrowserCommand::Navigate { url } if url.host_str() == Some("example.com")
+            )),
+            "navigates to the model's URL: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                BrowserCommand::SwitchTab {
+                    tab: BrowserTab::ExternalUrl
+                }
+            )),
+            "switches to the external tab: {commands:?}"
+        );
+    }
+
+    #[test]
     fn selecting_model_with_no_url_sets_active_portal_but_no_navigate() {
-        // Stub — see src/AGENTS.md §petal-portal-deferred.
+        // Absent, empty, and policy-blocked URLs all open the portal without
+        // navigating or switching tabs.
+        for external_url in [None, Some(""), Some("http://127.0.0.1/admin")] {
+            let (app, entity, commands) = select_model(external_url);
+            assert_eq!(
+                app.world().resource::<ActivePortal>().entity,
+                Some(entity),
+                "{external_url:?}"
+            );
+            assert!(
+                !commands.iter().any(|c| matches!(
+                    c,
+                    BrowserCommand::Navigate { .. } | BrowserCommand::SwitchTab { .. }
+                )),
+                "{external_url:?}: {commands:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

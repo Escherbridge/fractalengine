@@ -24,7 +24,7 @@ TDD on the samplers + override math; single sweep at the end (N-6).
 
 - [x] Task: viewport pick resolves an individual stamp; on first individual
       select, promote via T1 FR-5 → stable address (T1 FR-4). **[audit 2026-10-10: DONE 56ccc3b+623145f — StampRenderIndex/pick_nearest (fe-renderer/src/instancing.rs) used by node_manager/context_pick.rs; select→PromoteInstance→NodePromoted round-trip; tests select_flags_first_unpromoted_stamp_for_promotion, selecting_already_promoted_stamp_does_not_promote_again (fe-ui/src/actions/asset.rs), promote_is_authorized_and_idempotent + promotion_writes_the_stamp_read_contract_properties (fe-database/tests/node_lifecycle_test.rs)]**
-- [ ] Task: row-count test (N-9) — un-selected stamps add zero store rows. **[audit 2026-10-10: OPEN — promotion is select-gated (asset.rs tests above) but no test asserts the store row count stays flat for un-selected stamps]**
+- [x] Task: row-count test (N-9) — un-selected stamps add zero store rows. **[audit 2026-10-10: OPEN — promotion is select-gated (asset.rs tests above) but no test asserts the store row count stays flat for un-selected stamps]** **[DONE 2026-10-11 spatial-builder-residue batch (commit pending): `materialized_stamps_add_no_rows_and_one_promotion_adds_exactly_one` (fe-database/tests/node_lifecycle_test.rs) — a ~50-stamp path adds 0 `node` rows; one PromoteInstance adds exactly 1 live row (node_kind='stamp'); re-promote adds 0]**
 
 ## Phase 3: Position-locked gimbal + scale/rotate overrides (FR-3) [P1]
 
@@ -51,4 +51,4 @@ TDD on the samplers + override math; single sweep at the end (N-6).
       sampling, override model, instancing/pick (N-7). **[audit 2026-10-10: DONE — fe-terrain/src/mesh/AGENTS.md §curve-stamps (:72), fe-renderer/src/AGENTS.md §instancing (:134), fe-ui/src/actions/AGENTS.md]**
 - [x] Task: single sweep — `clippy -D warnings`, `fmt --check`, workspace tests
       (N-6); ui_ux checklist on the path-tools section. **[audit 2026-10-10: DONE 623145f — fmt clean, clippy -D warnings clean, 2050 passed / 0 failed]**
-- [ ] Task: retro; in-app verify user-gated.
+- [x] Task: retro; in-app verify user-gated. **[retro.md written 2026-10-11 spatial-builder-residue batch (commit pending); in-app verify remains USER-GATED (not self-signed; track status stays implemented_pending_inapp_verify)]**

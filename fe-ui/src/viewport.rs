@@ -128,6 +128,14 @@ pub fn viewport_petal_space(
             egui::FontId::proportional(12.0),
             theme::TEXT_VIEWPORT_HINT,
         );
+    } else if active_tool == Some(toolbar::Tool::Measure) {
+        ui.painter().text(
+            egui::pos2(center.x, rect.max.y - 40.0),
+            egui::Align2::CENTER_CENTER,
+            "Measure: click the ground to place points  \u{2022}  read and copy the result in Options  \u{2022}  Esc returns to Select",
+            egui::FontId::proportional(12.0),
+            theme::TEXT_VIEWPORT_HINT,
+        );
     } else if node_mgr.selected_entity().is_none() {
         ui.painter().text(
             egui::pos2(center.x, rect.max.y - 56.0),
