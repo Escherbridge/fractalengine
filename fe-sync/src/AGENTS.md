@@ -792,22 +792,56 @@ diagnostics echo.
   renders a partial with its own `RESPONDER_EXEC_CAP_MS` budget, replying as
   a topic broadcast (the topic is exactly the replica members — everyone
   else's `route` ignores foreign request ids).
-- **Responder shard filtering (retention-consistent).** After admission,
-  `handle_gossip_incoming` narrows the request to the shards this peer
-  RETAINS on receive — `hosted_subset` applies exactly
-  `placement::retention_decision` (mirror mode, an unknown-ledger shard, or a
-  ledger host set naming `local_did` → keep), so a skipped shard is one this
-  peer never stored. Aggregates execute only the kept subset; raw/latest
-  requests (no shard list) answer only if at least one petal-prefixed ledger
-  shard is retained. Nothing kept → `Dropped(NOT_HOSTED)` before the gossip
-  sender lookup, i.e. a non-host never issues `DbCommand::ExecuteTsPartial`.
-  The merge is untouched: per-shard attribution
-  (`fold_attribution`/`covered_by_answered_hosts`) already credited only
-  ledger hosts, so filtering removes wasted DB work, not wrong data. One
-  behavioural edge: rows over-retained from BEFORE a sharded/balanced mode
-  switch (or before the ledger converged) are no longer offered by a formal
-  non-host as a fallback when the formal host is offline — they were only
-  ever a best-effort fallback, never counted as coverage.
+- **Creator copies are load-bearing — the responder answers EVERY
+  requested shard (SYNC-RESPONDER, reverted 2026-10-11).** A responder runs
+  the shard list it was asked for verbatim (aggregates) or the whole petal
+  (raw/latest); it does NOT narrow to shards it formally hosts. This is a
+  correctness requirement, not wasted DB work: roles are store-local and
+  never replicate (`role` rows are `NotApplicable` inbound), so in a
+  sharded/balanced fabric a non-owner host resolves a non-owner author to the
+  manifest's `viewer` default and DENIES that author's readings at the A3
+  inbound gate (`admit_inbound_row`, fe-database `src/AGENTS.md` §handlers
+  `replicated_row`). The author's own durable creator copy is then the ONLY
+  copy of those rows, and the author is not a ledger host for them. Commit
+  4b30d17 added `hosted_subset` filtering (ledgered as "a pure efficiency
+  win, not a correctness fix") — that was
+  false: the author dropped the request as `NOT_HOSTED`, the denying host
+  answered an honest-looking covered-empty, and the merged result was
+  silently incomplete. The harness `distributed_query` scenario caught it
+  (leg 1 never matched ground truth); provisioning Editor roles in the
+  harness would have made it pass by hiding the production default, so the
+  filter was reverted instead. The merge already does the right thing with
+  a non-host's rows (`merge_aggregates`: a formal host's NON-EMPTY answer
+  wins, else any non-empty answer; `fold_attribution` credits row-bearing
+  shards as covered). Pinned by
+  `a_non_host_authors_creator_copy_serves_rows_its_denying_host_refused`
+  (requester → author + denying host over an in-process wire; both the
+  aggregate and the raw leg fail if filtering is reintroduced).
+  **Deferred — responder filtering waits on role propagation.** Re-enable
+  hosted-shard filtering only once a host can admit every legitimate
+  author's rows, i.e. roles propagate (a role-bearing ledger or signed role
+  claims). That is the same per-operation-signing dependency as
+  §transport-admission-control item 5; ledger row SYNC-ROLE-PROPAGATION.
+  **Settlement residual (open, not fixed here):** the collector settles a
+  query once every EXPECTED host (ledger hosts) answered and the local
+  partial resolved — or, for aggregates, once every shard has a non-empty
+  partial. A non-host author is never expected, so if the denying host's
+  empty answer lands before the author's creator copy, the query settles
+  without it (aggregate and raw alike). Delivery order decides; the pinning
+  test fixes the author-first order. Closing this needs either role
+  propagation (the host then holds the rows) or a short grace window after
+  formal-host settlement for unexpected answerers.
+- **Diagnostics echo is non-blocking.** The collector runs as a task on the
+  sync thread's current-thread runtime (§sync-thread-blocking-io), so its
+  `ComputeResultReady` echo is a `try_send` (drop-and-warn when the event
+  channel is full) — the merged outcome has already gone out on the
+  embedded reply channel, which is the authoritative answer. A blocking
+  send here parked the WHOLE sync runtime behind a lagging event consumer:
+  the harness `distributed_query` leg-1 retry loop never drains sync events,
+  so the 65th echo froze alice's gossip/replica/command loop and the next
+  query surfaced as an opaque "no outcome within the deadline" instead of
+  the leg's real assertion. Pinned by
+  `a_full_event_channel_drops_the_echo_instead_of_stalling_later_queries`.
 - **Commutative merges** (`merge_partials`): aggregates fold
   count/sum/min/max per (anchor, window) — mean is carried as
   (sum, count), computed only at the end, so partials merge in ANY order and
