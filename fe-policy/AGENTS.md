@@ -53,9 +53,34 @@ denial and allows, so the gate ships before enforcement flips.
   `AuthContext::Capability`; does not replace fe-plugin's types (spec: they
   are already the right shape).
 
-Deferred (not this slice): `TokenScopePolicy`, `OwnershipPolicy`, the
-fe-api adapter, and causal-DAG membership ops (blocked on per-op signing,
-decisions §D5-1).
+- `RoleFloorPolicy(RoleLevel)` — action-agnostic "role ≥ floor". Exists
+  because fe-api's `require_role_level(Owner)` has no verb in
+  `RoleLevelPolicy::standard()` (Owner is unmapped there). A floor of
+  `RoleLevel::None` admits everyone — the historical `require_role("typo")`
+  admit-all semantics, documented at `fe-api/src/auth.rs`, kept on purpose.
+- `TokenScopePolicy` — action-agnostic API-token scope gate: allows iff the
+  subject is `AuthContext::ApiToken` and one of its `scopes` contains the
+  resource (`scope_contains`). Did/Anonymous/Capability subjects deny with
+  "token-scope: subject carries no token scope"; `Scope::global()` (`*`) is
+  never covered (deny-by-default). **Production caller:**
+  `fe-api/src/auth.rs::require_scope` (and `require_role_and_scope`), the
+  gate under every REST/WS/MCP scope check; proven by
+  `fe-api/tests/api_integration.rs::foreign_verse_token_is_denied_by_token_scope_policy`.
+- `OwnershipPolicy::new(owner_did)` — owner-only gate. Ownership is
+  pre-fetched resource data carried in the policy instance (§design
+  constraints: no I/O); allows iff `Did { did }` or `ApiToken { subject }`
+  equals the owner. **Production caller:**
+  `fe-hexon/src/authz.rs::HexonRegistry::publish_as` (republish of a
+  `crate_id` by a different signed `publisher_did` denied) and `uninstall_as`
+  on the `"global"` published record; reached from fe-api `publish_crate`.
+
+`scope_contains` (keyword-boundary prefix containment, `VERSE#v1` never
+covers `VERSE#v10`) lives in `types.rs` with `Scope::contains`; fe-database
+re-exports it (`fe_database::scope_contains`) so existing call sites are
+unchanged.
+
+Deferred (not this slice): causal-DAG membership ops (blocked on per-op
+signing, decisions §D5-1).
 
 ## §node-lifecycle (`node_lifecycle.rs`)
 

@@ -253,15 +253,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                         scale,
                     }) => {
                         // Enforce editor role — viewers cannot push transforms.
-                        let role = fe_database::RoleLevel::from(claims.max_role.as_str());
-                        if !role.can_edit() {
+                        if crate::auth::require_role_level(&claims, fe_database::RoleLevel::Editor).is_err() {
                             send_msg(&mut socket, &WsServerMsg::Error {
                                 code: "forbidden".into(),
                                 message: "editor role required for transform updates".into(),
                             }).await;
                             continue;
                         }
-                        if !crate::types::is_valid_ulid(&node_id) {
+                        if !crate::endpoint::is_addressable_node_id(&node_id) {
                             send_msg(&mut socket, &WsServerMsg::Error {
                                 code: "invalid_request".into(),
                                 message: "invalid node_id".into(),
@@ -278,6 +277,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>) {
                             }).await;
                             continue;
                         };
+                        if let Some(denial) =
+                            crate::rest::stamp_translate_denied(&state, &node_id, position).await
+                        {
+                            send_msg(&mut socket, &WsServerMsg::Error {
+                                code: "forbidden".into(),
+                                message: denial.into(),
+                            }).await;
+                            continue;
+                        }
                         let Some(petal_id) = petal_id_from_scope(&scope) else {
                             send_msg(&mut socket, &WsServerMsg::Error {
                                 code: "not_found".into(),
@@ -662,8 +670,7 @@ async fn handle_entity_command(
     use crate::types::EntityCommand as Ec;
 
     // All CUD ops require editor role — mirrors the REST/TransformUpdate policy.
-    let role = fe_database::RoleLevel::from(claims.max_role.as_str());
-    if !role.can_edit() {
+    if crate::auth::require_role_level(claims, fe_database::RoleLevel::Editor).is_err() {
         return Err("editor role required for entity commands".into());
     }
 

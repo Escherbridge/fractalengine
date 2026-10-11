@@ -18,7 +18,7 @@ use axum::{Extension, Json};
 use base64::Engine as _;
 use serde_json::json;
 
-use fe_api::mcp::{mcp_handler, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule};
+use fe_api::mcp::{mcp_handler, tool_specs, HierarchyTarget, JsonRpcRequest, ScopeRule, ToolSeam};
 use fe_api::rest::NOT_FOUND_OR_DENIED;
 use fe_api::server::ApiState;
 use fe_api::upload::{ingest_glb_with_limit, GlbPayload, UploadError, UploadOwner, UNKNOWN_ASSET};
@@ -329,13 +329,33 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
             Some(owner) if owner != petal_id => {
                 DbResult::Error(format!("node {path_id} belongs to another petal"))
             }
-            _ => DbResult::NodePromoted {
-                node_id: format!("{path_id}#inst-{instance_index}"),
-                petal_id,
-                path_id,
-                instance_index,
-                newly_promoted: true,
-            },
+            _ => {
+                // Mirrors the real handler: a node_kind=stamp row at the origin.
+                let node_id = format!("{path_id}#inst-{instance_index}");
+                let newly_promoted = m.node(&node_id).is_none();
+                if newly_promoted {
+                    let mut properties = serde_json::Map::new();
+                    properties.insert("node_kind".into(), json!("stamp"));
+                    properties.insert("path_id".into(), json!(path_id));
+                    m.nodes.push(NodeRec {
+                        id: node_id.clone(),
+                        petal_id: petal_id.clone(),
+                        name: format!("{path_id} #{instance_index}"),
+                        position: [0.0; 3],
+                        rotation: [0.0; 3],
+                        scale: [1.0; 3],
+                        asset_id: None,
+                        properties,
+                    });
+                }
+                DbResult::NodePromoted {
+                    node_id,
+                    petal_id,
+                    path_id,
+                    instance_index,
+                    newly_promoted,
+                }
+            }
         },
         DbCommand::GetNodeTransform { node_id } => match m.node(&node_id) {
             Some(n) => DbResult::NodeTransformLoaded {
@@ -450,6 +470,8 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
         } => {
             m.log.push(json!({
                 "cmd": "CreateNodeWithAsset", "petal_id": petal_id, "asset_id": asset_id,
+                "name": name, "position": position.to_vec(),
+                "rotation": rotation.to_vec(), "scale": scale.to_vec(),
             }));
             let Some((_, hash)) = m.assets.iter().find(|(id, _)| *id == asset_id).cloned() else {
                 return failed(
@@ -601,7 +623,10 @@ fn emu(with_store: bool) -> Emu {
         announcement_store: None,
         replication_tx: None,
         distributed_tx: None,
-        sim_control_tx: None,
+        // A lab-host seam whose bridge is gone: every row stays advertised
+        // (the per-tool sweeps cover all 29) and sim verbs fail closed with
+        // "sim control bridge unavailable" instead of hanging.
+        sim_control_tx: Some(fe_runtime::sim_control::sim_control_channel().0),
         elevated_query_allowed: false,
         upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         share_signer: Arc::new(fe_identity::NodeKeypair::generate()),
@@ -765,15 +790,12 @@ fn b64(bytes: &[u8]) -> String {
 // (a) tools/list inventory + initialize (full router)
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn tools_list_inventory() {
-    let h = ApiHarness::spawn().await.expect("spawn harness");
-    let token = h.mint_token("VERSE#v1", "viewer");
-
+/// `tools/list` names on `h`, asserting the JSON-RPC envelope and row shape.
+async fn listed_tools(h: &ApiHarness, token: &str) -> Vec<String> {
     let (status, body) = h
         .post_json(
             "/mcp",
-            Some(&token),
+            Some(token),
             &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
         )
         .await;
@@ -781,18 +803,67 @@ async fn tools_list_inventory() {
     assert_eq!(body["jsonrpc"], "2.0");
     assert_eq!(body["id"], 1);
     let tools = body["result"]["tools"].as_array().expect("tools array");
-    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    assert_eq!(
-        names, EXPECTED_TOOLS,
-        "exact 29-tool inventory (DEC-C14: 24 non-sim + 5 sim control)"
-    );
-    // tools/list and the dispatch table are one source of truth.
-    let table: Vec<&str> = tool_specs().iter().map(|t| t.name).collect();
-    assert_eq!(names, table);
     for t in tools {
         assert!(t["description"].is_string(), "{t}");
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");
     }
+    tools
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[tokio::test]
+async fn tools_list_inventory() {
+    // A host with no sim bridge hides the five sim_* rows (SIM-GUI-TOOLS)...
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let token = h.mint_token("VERSE#v1", "viewer");
+    let names = listed_tools(&h, &token).await;
+    let non_lab: Vec<&str> = EXPECTED_TOOLS
+        .iter()
+        .copied()
+        .filter(|n| !n.starts_with("sim_"))
+        .collect();
+    assert_eq!(names, non_lab, "24 tools off a sim lab host");
+    // tools/list and the dispatch table are one source of truth.
+    let table: Vec<&str> = tool_specs()
+        .iter()
+        .filter(|t| t.requires.is_none())
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(names, table);
+
+    // ...and does not reveal them on call either: an owner gets the
+    // unknown-tool answer, byte-identical to a name that never existed.
+    let owner = h.mint_token("VERSE#v1", "owner");
+    for name in ["sim_start", "nonexistent_tool"] {
+        let (_, body) = h
+            .post_json(
+                "/mcp",
+                Some(&owner),
+                &json!({
+                    "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                    "params": { "name": name, "arguments": { "script": "default" } }
+                }),
+            )
+            .await;
+        assert_eq!(body["result"]["isError"], true, "{body}");
+        assert_eq!(tool_text(&body), format!("unknown tool: {name}"));
+    }
+
+    // A sim lab host advertises all 29 (DEC-C14: 24 non-sim + 5 sim control).
+    let (tx, _rx) = fe_runtime::sim_control::sim_control_channel();
+    let lab = ApiHarness::spawn_with_sim_control_tx(Some(tx))
+        .await
+        .expect("spawn lab harness");
+    let lab_token = lab.mint_token("VERSE#v1", "viewer");
+    assert_eq!(listed_tools(&lab, &lab_token).await, EXPECTED_TOOLS);
+    let full_table: Vec<&str> = tool_specs().iter().map(|t| t.name).collect();
+    assert_eq!(full_table, EXPECTED_TOOLS);
+    assert!(tool_specs()
+        .iter()
+        .filter(|t| t.name.starts_with("sim_"))
+        .all(|t| t.requires == Some(ToolSeam::SimControl)));
 
     // initialize + notifications/initialized handshake.
     let (_, body) = h
@@ -1204,6 +1275,88 @@ async fn update_transform_world_units_pass_through_unconverted() {
 }
 
 // ---------------------------------------------------------------------------
+// T5-LOCK: a promoted stamp's position is path-locked (D-A5)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn update_transform_rejects_moving_a_promoted_stamp() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let editor = claims(&home.verse_scope(), "editor");
+    let promoted = call_tool(
+        &state,
+        &editor,
+        "promote_instance",
+        json!({ "petal_id": home.petal, "path_id": home.node, "instance_index": 0 }),
+    )
+    .await;
+    let stamp = tool_json(&promoted)["node_id"]
+        .as_str()
+        .expect("stamp id")
+        .to_string();
+    let transform = |position: [f32; 3], rotation: [f32; 3]| {
+        json!({ "node_id": stamp, "position": position, "rotation": rotation,
+                "scale": [1.0, 1.0, 1.0] })
+    };
+
+    let resp = call_tool(
+        &state,
+        &editor,
+        "update_transform",
+        transform([3.0, 0.0, 0.0], [0.0; 3]),
+    )
+    .await;
+    assert_tool_error(&resp, "position is locked");
+    // move_waypoint is a second translate surface: same lock, and no lat/lon/ele
+    // property write either.
+    let resp = call_tool(
+        &state,
+        &editor,
+        "move_waypoint",
+        json!({ "node_id": stamp, "lat": 47.7, "lon": -122.4 }),
+    )
+    .await;
+    assert_tool_error(&resp, "position is locked");
+    settle(&state).await;
+    assert!(
+        model
+            .lock()
+            .unwrap()
+            .logged("UpdateNodeTransform")
+            .is_empty(),
+        "a denied move must not reach the DB channel"
+    );
+    assert!(
+        model.lock().unwrap().logged("SetNodeProperty").is_empty(),
+        "a denied waypoint move must not write lat/lon/ele"
+    );
+
+    let resp = call_tool(
+        &state,
+        &editor,
+        "update_transform",
+        transform([0.0; 3], [0.0, 0.75, 0.0]),
+    )
+    .await;
+    assert_eq!(tool_json(&resp), json!({ "status": "ok" }));
+    let cmd = await_logged(&model, "UpdateNodeTransform").await;
+    assert_eq!(cmd["node_id"], stamp.as_str());
+    assert_eq!(cmd["rotation"], json!([0.0, 0.75, 0.0]));
+    assert_eq!(model.lock().unwrap().logged("UpdateNodeTransform").len(), 1);
+
+    // A plain node still moves freely.
+    let resp = call_tool(
+        &state,
+        &editor,
+        "update_transform",
+        json!({ "node_id": home.node, "position": [9.0, 9.0, 9.0],
+                "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] }),
+    )
+    .await;
+    assert_eq!(tool_json(&resp), json!({ "status": "ok" }));
+}
+
+// ---------------------------------------------------------------------------
 // (e) the three F13 warts — FIXED (were KNOWN-WEAK role-only paths)
 // ---------------------------------------------------------------------------
 
@@ -1440,16 +1593,24 @@ async fn rest_reply(resp: axum::response::Response) -> (StatusCode, serde_json::
     (status, serde_json::from_slice(&bytes).expect("json body"))
 }
 
+/// REST hierarchical create_node with the legacy body `{name: "rest-node"}`.
 async fn rest_create_node(
     state: &Arc<ApiState>,
     c: &ApiClaims,
-    (verse, fractal, petal): (&str, &str, &str),
+    path: (&str, &str, &str),
 ) -> (StatusCode, serde_json::Value) {
-    let req = fe_api::types::CreateNodeRequest {
-        petal_id: None,
-        name: "rest-node".to_string(),
-        position: None,
-    };
+    rest_create_node_body(state, c, path, json!({ "name": "rest-node" })).await
+}
+
+/// REST hierarchical create_node with `body` deserialized as the router would.
+async fn rest_create_node_body(
+    state: &Arc<ApiState>,
+    c: &ApiClaims,
+    (verse, fractal, petal): (&str, &str, &str),
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let req: fe_api::types::CreateNodeRequest =
+        serde_json::from_value(body).expect("CreateNodeRequest body");
     let resp = fe_api::rest::create_node(
         State(state.clone()),
         Extension(c.clone()),
@@ -1512,10 +1673,112 @@ async fn rest_create_node_rejects_a_foreign_petal_behind_an_own_prefix() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["name"], "rest-node");
     let created = model.lock().unwrap().logged("CreateNode");
     assert_eq!(created.len(), 1);
     assert_eq!(created[0]["petal_id"], home.petal.as_str());
+    // MCP-2.4: the legacy body (no asset_id/rotation/scale) is byte-identical —
+    // the same envelope, the same CreateNode, nothing asset-shaped.
+    let id = body["data"]["id"].as_str().expect("node id").to_string();
+    assert_eq!(
+        body,
+        json!({ "ok": true, "data": { "id": id, "name": "rest-node" }, "error": null })
+    );
+    assert_eq!(created[0]["position"], json!([0.0, 0.0, 0.0]));
+    assert!(model
+        .lock()
+        .unwrap()
+        .logged("CreateNodeWithAsset")
+        .is_empty());
+}
+
+/// MCP-2.4: REST create_node with `asset_id` is `place_asset` — the same core,
+/// the verbatim rotation/scale (no unit math, spec D5), and the same denial
+/// text MCP gives a foreign-scope asset.
+#[tokio::test]
+async fn rest_create_node_with_asset_id_is_place_asset() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let foreign = seed_chain(&model, "foreign");
+    let home_editor = claims(&home.verse_scope(), "editor");
+    let foreign_editor = claims(&foreign.verse_scope(), "editor");
+    let home_path = (
+        home.verse.as_str(),
+        home.fractal.as_str(),
+        home.petal.as_str(),
+    );
+    let upload = |c: ApiClaims, petal: String| {
+        let state = state.clone();
+        async move {
+            let resp = call_tool(
+                &state,
+                &c,
+                "upload_asset",
+                json!({ "petal_id": petal, "name": "m.glb", "data_base64": b64(&tiny_glb()) }),
+            )
+            .await;
+            tool_json(&resp)["asset_id"].as_str().unwrap().to_string()
+        }
+    };
+
+    // Happy: own asset, verbatim transform → CreateNodeWithAsset + asset_path.
+    let own_asset = upload(home_editor.clone(), home.petal.clone()).await;
+    let (status, body) = rest_create_node_body(
+        &state,
+        &home_editor,
+        home_path,
+        json!({ "name": "Placed", "asset_id": own_asset, "position": [1.5, 2.5, 3.5],
+                "rotation": [0.1, 0.2, 0.3], "scale": [2.0, 3.0, 4.0] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["name"], "Placed");
+    assert_eq!(body["data"]["asset_id"], own_asset.as_str());
+    let hash = model.lock().unwrap().assets[0].1.clone();
+    assert_eq!(body["data"]["asset_path"], format!("blob://{hash}.glb"));
+    let placed = model.lock().unwrap().logged("CreateNodeWithAsset");
+    assert_eq!(placed.len(), 1);
+    assert_eq!(placed[0]["petal_id"], home.petal.as_str());
+    assert_eq!(placed[0]["position"], json!([1.5, 2.5, 3.5]));
+    assert_eq!(placed[0]["rotation"], json!([0.1f32, 0.2f32, 0.3f32]));
+    assert_eq!(placed[0]["scale"], json!([2.0, 3.0, 4.0]));
+    assert!(model.lock().unwrap().logged("CreateNode").is_empty());
+
+    // Foreign-scope asset: REST denies with exactly MCP place_asset's text.
+    let foreign_asset = upload(foreign_editor, foreign.petal.clone()).await;
+    let (status, body) = rest_create_node_body(
+        &state,
+        &home_editor,
+        home_path,
+        json!({ "name": "Stolen", "asset_id": foreign_asset }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let mcp = call_tool(
+        &state,
+        &home_editor,
+        "place_asset",
+        json!({ "petal_id": home.petal, "asset_id": foreign_asset, "name": "Stolen" }),
+    )
+    .await;
+    assert_eq!(body["error"], tool_text(&mcp).as_str());
+    assert_eq!(body["error"], UNKNOWN_ASSET);
+
+    // rotation/scale without asset_id would be silently dropped by CreateNode.
+    let (status, body) = rest_create_node_body(
+        &state,
+        &home_editor,
+        home_path,
+        json!({ "name": "Rotated", "rotation": [0.0, 1.0, 0.0] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "rotation/scale require asset_id");
+    assert_eq!(
+        model.lock().unwrap().logged("CreateNodeWithAsset").len(),
+        1,
+        "neither refusal reached the DB channel"
+    );
+    assert!(model.lock().unwrap().logged("CreateNode").is_empty());
 }
 
 /// POST .../verses/{v}/fractals/{f}/petals: the fractal's stored verse is the
@@ -1748,6 +2011,135 @@ async fn upload_asset_round_trip_then_place() {
     )
     .await;
     assert_tool_error(&resp, "unknown asset_id");
+}
+
+/// The node `node_id` in `get_hierarchy`'s output, if listed.
+fn hierarchy_node(hier: &serde_json::Value, node_id: &str) -> Option<serde_json::Value> {
+    hier.as_array()?
+        .iter()
+        .flat_map(|v| v["fractals"].as_array().into_iter().flatten())
+        .flat_map(|f| f["petals"].as_array().into_iter().flatten())
+        .flat_map(|p| p["nodes"].as_array().into_iter().flatten())
+        .find(|n| n["id"] == node_id)
+        .cloned()
+}
+
+/// MCP-TEST-LOOP (mcp_scene_primitives Task 5.2 / spec FR-8): one agent
+/// session builds, edits, reads and removes a scene object entirely over
+/// `/mcp` with a verse-scoped Editor token.
+#[tokio::test]
+async fn mcp_full_scene_loop() {
+    let Emu { state, model, .. } = emu(true);
+    let home = seed_chain(&model, "home");
+    let editor = claims(&home.verse_scope(), "editor");
+
+    // 1. upload_asset
+    let resp = call_tool(
+        &state,
+        &editor,
+        "upload_asset",
+        json!({ "petal_id": home.petal, "name": "loop.glb", "data_base64": b64(&tiny_glb()) }),
+    )
+    .await;
+    let asset_id = tool_json(&resp)["asset_id"].as_str().unwrap().to_string();
+
+    // 2. place_asset
+    let resp = call_tool(
+        &state,
+        &editor,
+        "place_asset",
+        json!({ "petal_id": home.petal, "asset_id": asset_id, "name": "Loop Node",
+                "position": [1.0, 0.0, 1.0] }),
+    )
+    .await;
+    let placed = tool_json(&resp);
+    let node_id = placed["node_id"].as_str().unwrap().to_string();
+    assert_eq!(placed["asset_id"], asset_id.as_str());
+
+    // 3. set_property
+    let resp = call_tool(
+        &state,
+        &editor,
+        "set_property",
+        json!({ "node_id": node_id, "key": "gis.annotation.title", "value": "Survey" }),
+    )
+    .await;
+    tool_json(&resp);
+
+    // 4. update_transform (a plain placed node — the stamp lock does not apply)
+    let resp = call_tool(
+        &state,
+        &editor,
+        "update_transform",
+        json!({ "node_id": node_id, "position": [7.5, 2.0, -3.25],
+                "rotation": [0.0, 1.5, 0.0], "scale": [2.0, 2.0, 2.0] }),
+    )
+    .await;
+    assert_eq!(tool_json(&resp), json!({ "status": "ok" }));
+    settle(&state).await; // the persist is fire-and-forget
+
+    // 5. read back: the property and the new position, through the GIS read and the
+    //    hierarchy (a bbox around the NEW position finds it; around the old one, not).
+    let resp = call_tool(
+        &state,
+        &editor,
+        "get_properties",
+        json!({ "node_id": node_id }),
+    )
+    .await;
+    assert_eq!(
+        tool_json(&resp)["properties"]["gis.annotation.title"],
+        "Survey"
+    );
+    let resp = call_tool(
+        &state,
+        &editor,
+        "get_gis_nodes",
+        json!({ "petal_id": home.petal, "bbox": "7,-4,8,-3" }),
+    )
+    .await;
+    let gis = tool_json(&resp);
+    let gis_nodes = gis["nodes"].as_array().expect("gis nodes");
+    assert_eq!(gis_nodes.len(), 1, "{gis}");
+    assert_eq!(gis_nodes[0]["node_id"], node_id.as_str());
+    assert_eq!(gis_nodes[0]["position"], json!([7.5, -3.25]));
+    assert_eq!(gis_nodes[0]["elevation"], 2.0);
+    assert_eq!(gis_nodes[0]["annotation"]["title"], "Survey");
+    let resp = call_tool(
+        &state,
+        &editor,
+        "get_gis_nodes",
+        json!({ "petal_id": home.petal, "bbox": "0.5,0.5,1.5,1.5" }),
+    )
+    .await;
+    assert_eq!(
+        tool_json(&resp)["nodes"],
+        json!([]),
+        "no longer at its placed spot"
+    );
+    let resp = call_tool(&state, &editor, "get_hierarchy", json!({})).await;
+    let node = hierarchy_node(&tool_json(&resp), &node_id).expect("placed node listed");
+    assert_eq!(node["position"], json!([7.5, 2.0, -3.25]));
+    assert_eq!(node["has_asset"], true);
+
+    // 6. delete_node
+    let resp = call_tool(
+        &state,
+        &editor,
+        "delete_node",
+        json!({ "node_id": node_id }),
+    )
+    .await;
+    assert_eq!(tool_json(&resp)["tombstoned"], true);
+
+    // 7. gone from the hierarchy; the seeded sibling is untouched.
+    let resp = call_tool(&state, &editor, "get_hierarchy", json!({})).await;
+    let hier = tool_json(&resp);
+    assert!(
+        hierarchy_node(&hier, &node_id).is_none(),
+        "deleted node gone"
+    );
+    assert!(hierarchy_node(&hier, &home.node).is_some(), "sibling kept");
 }
 
 #[tokio::test]

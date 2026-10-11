@@ -45,3 +45,18 @@ these methods; an installed crate bound to one petal cannot be read or removed
 through another petal's API scope. The ungated `install`/`uninstall`/
 `list_installed`/`search_local` methods remain only for the trusted local
 desktop path. Network-facing callers must use the `*_as` methods.
+
+**Publish ownership (AP-3.4).** `publish_as` first requires Manager+ via
+`RoleLevelPolicy` (`Action::Publish`; the fe-api route additionally demands
+Owner), then — when any installed entry already carries the same
+`manifest.crate_id` under a *different* `publisher_did` — evaluates
+`fe_policy::OwnershipPolicy::new(existing.publisher_did)` against the
+package's **signed** `publisher_did`, so only the first publisher may
+republish that crate id (any version). The ownership subject is the signed
+manifest DID, not the API token: `ApiClaims.sub` is always the node DID, so a
+token cannot identify a publisher. Otherwise it calls `install(package,
+"global")` and keeps the `AlreadyInstalled` semantics. `uninstall_as` on the
+`"global"` (`PUBLISHED_BINDING`) record additionally requires
+`OwnershipPolicy` with the manifest's publisher DID; petal unbinding stays
+Editor-gated. The API never names `"global"` (its routes require a ULID
+`petal_id`), so unpublish is registry-level only today.

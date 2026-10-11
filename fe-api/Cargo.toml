@@ -54,5 +54,8 @@ tower = { version = "0.5", features = ["util"] }
 # path to it.
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
+# Scope-sensitive CapabilityVerifier double (canonical_ws::handler tests, CDL-R6).
+# Already in Cargo.lock via fe-canonical-log at this version: no new compile unit.
+async-trait = "0.1"
 
 

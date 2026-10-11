@@ -57,6 +57,7 @@ struct HarnessOptions {
     tileset_registry: Option<Arc<fe_terrain::tiles::TilesetRegistry>>,
     elevated_query_allowed: bool,
     with_db_reader: bool,
+    with_blob_store: bool,
     upload_quota_bytes: u64,
 }
 
@@ -69,6 +70,7 @@ impl Default for HarnessOptions {
             tileset_registry: None,
             elevated_query_allowed: false,
             with_db_reader: true,
+            with_blob_store: true,
             upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
         }
     }
@@ -163,6 +165,16 @@ impl ApiHarness {
         .await
     }
 
+    /// Like [`Self::spawn`], with `blob_store: None` — a host that cannot
+    /// store asset bytes, so uploads fail closed (503).
+    pub async fn spawn_without_blob_store() -> Result<Self> {
+        Self::spawn_with_options(HarnessOptions {
+            with_blob_store: false,
+            ..HarnessOptions::default()
+        })
+        .await
+    }
+
     async fn spawn_with_seams(
         distributed_tx: Option<fe_runtime::distributed_query::DistributedQueryCallSender>,
         sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender>,
@@ -183,6 +195,7 @@ impl ApiHarness {
             tileset_registry,
             elevated_query_allowed,
             with_db_reader,
+            with_blob_store,
             upload_quota_bytes,
         } = options;
         let db: Db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
@@ -214,7 +227,7 @@ impl ApiHarness {
             entity_change_tx,
             verifying_key: keypair.verifying_key(),
             revoked_jtis: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
-            blob_store: Some(blob_store),
+            blob_store: with_blob_store.then_some(blob_store),
             cors_origins: vec!["*".to_string()],
             db_reader: with_db_reader.then(|| db.clone()),
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
@@ -422,6 +435,39 @@ impl ApiHarness {
             q = q.bind(("props", p));
         }
         q.await?.check()?;
+        Ok(node_id)
+    }
+
+    /// Seed a promoted stamp row (`<path ulid>#inst-<index>`, `node_kind = 'stamp'`)
+    /// at `[x, y, z]` — the shape `promote_instance_handler` writes. Returns its id.
+    pub async fn seed_promoted_stamp(
+        &self,
+        petal_id: &str,
+        instance_index: u32,
+        position: [f64; 3],
+    ) -> Result<String> {
+        let path_id = ulid::Ulid::new().to_string();
+        let node_id = format!("{path_id}#inst-{instance_index}");
+        self.db
+            .query(
+                "CREATE node CONTENT { node_id: $nid, petal_id: $pid, display_name: $name, \
+                 asset_id: NONE, position: <geometry<point>> [$x, $z], elevation: $ele, \
+                 rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0], \
+                 interactive: true, created_at: $now, \
+                 properties: { node_kind: 'stamp', path_id: $path, owning_path_id: $path, \
+                 instance_index: $idx } }",
+            )
+            .bind(("nid", node_id.clone()))
+            .bind(("pid", petal_id.to_string()))
+            .bind(("name", format!("{path_id} #{instance_index}")))
+            .bind(("x", position[0]))
+            .bind(("z", position[2]))
+            .bind(("ele", position[1]))
+            .bind(("now", now_rfc3339()))
+            .bind(("path", path_id))
+            .bind(("idx", i64::from(instance_index)))
+            .await?
+            .check()?;
         Ok(node_id)
     }
 

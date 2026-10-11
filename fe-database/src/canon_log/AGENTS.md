@@ -50,11 +50,14 @@ closure load already verified the signature for that exact address.
 **This section previously claimed "there are exactly two entrances to `verified_op_log`, and
 both verify [a signature]," and justified `append_admitted` on the grounds that "a
 `VerifiedEnvelopeMeta` only exists downstream of `admit_candidate`." That justification was
-false, and so is the fact it argued from.** `VerifiedEnvelopeMeta`'s own doc-comment
-(`fe_canonical_log::materialize::traits`) says its name "is a claim about provenance, and the
-type does not enforce it" — every field is `pub`, the type is deliberately not
-`#[non_exhaustive]`, and a value built by struct literal "carries no cryptographic weight
-whatsoever." Nothing stops a caller from constructing one and calling `append_admitted` with it.
+false, and so is the fact it argued from.** Since CDL-R1 (2026-10-11) `VerifiedEnvelopeMeta`
+is `#[non_exhaustive]`, so no crate outside `fe-canonical-log` can build one by struct literal
+(a `compile_fail` doctest on the type pins this; this crate's tests now mint theirs from a
+real signed envelope via `verify_from_bytes`). But the unverified projection
+`fe_canonical_log::materialize::verified_envelope_meta_from(&CompleteEnvelope, op_id)` is
+still `pub` (RUNBOOK a31c403 §10a residual 5, `CDL-R-ACCEPTED`): any caller holding a decoded-but-unadmitted envelope can mint
+one with a chosen `op_id` and call `append_admitted` with it. The seal narrows the forging
+door; it does not close it.
 
 - `append_admitted(&VerifiedEnvelopeMeta, bytes)` verifies content-addressing ONLY —
   `Hash32::of(bytes) == meta.op_id` — and writes `meta`'s fields straight into the index
@@ -315,6 +318,20 @@ Two things keep the interim honest:
   unanswered question, and an unanswered question refuses — which is the distinction
   `AuthorityState`'s three states exist to preserve. With no anchor configured, every chain
   rooted anywhere is denied.
+
+**Recipient-side key-wrap issuer check (CDL-R2, 2026-10-11).** `DurableAuthorizationView` also
+implements `fe_canonical_log::crypto::IssuerAuthorityView`, so `open_scope_key` has a production
+answer to "is this wrap's issuer Manager+ for that epoch scope". It asks the question exactly as
+`admit_epoch_bump` asks SPEC-3 §5.1 — `principal_is_manager_plus(issuer, scope, epoch)` against
+the role table — and does NOT route through `authority_is_manager_plus`: the wrap's
+`CapabilityRef.chain_id` names a certificate chain, not an `issuer_authority_id`, so feeding it
+to the anchor check would be a second, invented mapping that refuses every real wrap. The
+`chain_id` is therefore not resolved here (no chain store exists to resolve it against); the
+signed reference's epoch is checked by `open_scope_key` itself. `ManagerPlus`→`Granted`,
+`NotManagerPlus`→`Refused`, `Unknown`→`Unknown`; both non-`Granted` answers refuse. Test:
+`opening_a_wrap_asks_the_durable_view_whether_its_issuer_is_manager_plus`. The
+`DeviceEnrolmentView` half has no production implementor: the enrolment artifact is an
+unratified owner decision (`fe-canonical-log/src/crypto/AGENTS.md` §what-is-structural).
 
 `version()` comes from a process-monotonic counter incremented on every load, so a §5.3 cache
 key recorded against an older view can never satisfy a newer one. It resets on restart, which

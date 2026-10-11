@@ -1,4 +1,7 @@
 # cargo-deny configuration — see THIRD-PARTY-LICENSES.md for the licensing policy.
+# CI (build-artifacts.yml lint job) runs `check advisories bans sources`;
+# `licenses` is held out until the allow-list decision in
+# conductor/tracks/oss_release_20260717/plan.md task 1.3 is ratified.
 
 [licenses]
 allow = [
@@ -13,27 +16,89 @@ allow = [
     "Unicode-DFS-2016",
     "MPL-2.0",
 ]
-# BUSL-1.1 permitted ONLY for the embedded SurrealDB engine (see THIRD-PARTY-LICENSES.md).
+# BUSL-1.1 permitted ONLY for the embedded SurrealDB engine crates (`surrealdb*`,
+# see THIRD-PARTY-LICENSES.md). SurrealDB 3.x splits the engine across these five.
 exceptions = [
     { name = "surrealdb", allow = ["BUSL-1.1"] },
     { name = "surrealdb-core", allow = ["BUSL-1.1"] },
+    { name = "surrealdb-protocol", allow = ["BUSL-1.1"] },
+    { name = "surrealdb-types", allow = ["BUSL-1.1"] },
+    { name = "surrealdb-types-derive", allow = ["BUSL-1.1"] },
 ]
 
-# surrealdb crates declare `license-file` (BUSL text), not an SPDX expression.
-# On first `cargo deny check licenses` run, fill each entry's license-files
-# hash from the reported value if detection fails.
+# These surrealdb crates declare `license-file` (BUSL text), not an SPDX
+# expression. The hash is cargo-deny's xxHash32 (seed 0) of the crate's LICENSE;
+# a new SurrealDB release whose LICENSE text changes makes the clarification
+# lapse (cargo-deny falls back to license-file detection) — recompute then.
 [[licenses.clarify]]
 crate = "surrealdb"
 expression = "BUSL-1.1"
-license-files = []
+license-files = [{ path = "LICENSE", hash = 0xbb1191d7 }]
 
 [[licenses.clarify]]
 crate = "surrealdb-core"
 expression = "BUSL-1.1"
-license-files = []
+license-files = [{ path = "LICENSE", hash = 0xbb1191d7 }]
+
+[[licenses.clarify]]
+crate = "surrealdb-types"
+expression = "BUSL-1.1"
+license-files = [{ path = "LICENSE", hash = 0xbb1191d7 }]
+
+[[licenses.clarify]]
+crate = "surrealdb-types-derive"
+expression = "BUSL-1.1"
+license-files = [{ path = "LICENSE", hash = 0xbb1191d7 }]
 
 [advisories]
 yanked = "warn"
+# Unmaintained-only advisories fail the check only for crates the workspace
+# depends on directly; transitive ones (paste, unic-*, instant, …) are upstream's.
+unmaintained = "workspace"
+# Every ignore below is a known, triaged vulnerability with no zero-graph-change
+# fix available (see SECURITY.md "Known limitations" for the per-ID rationale).
+ignore = [
+    # wasmtime 29.0.1 (fe-plugin WASM host) — fixed only in later majors; the
+    # plugin system is dormant (no plugin loaded at runtime, security audit
+    # 2026-07-31). Upgrade tracked as a fe-plugin follow-up.
+    { id = "RUSTSEC-2025-0046", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2025-0118", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0006", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0020", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0021", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0085", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0086", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0087", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0088", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0089", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0091", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0092", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0093", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0094", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0095", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0096", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0222", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0269", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    { id = "RUSTSEC-2026-0316", reason = "wasmtime 29: fix needs a major bump; fe-plugin WASM host dormant" },
+    # Transitive: the patch release re-resolves other crates (graph change).
+    { id = "RUSTSEC-2026-0193", reason = "ammonia 4.1.2 (via surrealdb-core): 4.1.4 bumps html5ever/markup5ever — graph change" },
+    { id = "RUSTSEC-2026-0213", reason = "ammonia 4.1.2 (via surrealdb-core): 4.1.4 bumps html5ever/markup5ever — graph change" },
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.4.14 (via hyper/reqwest): 0.4.16 re-resolves socket2/windows-sys — graph change" },
+    { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 (via iroh/reqwest): 0.23.45 bumps aws-lc-rs/aws-lc-sys — graph change" },
+    { id = "RUSTSEC-2026-0257", reason = "webbrowser 1.2.1 (via bevy_egui; Unix BROWSER env only): 1.2.2 changes its dependency set — graph change" },
+    # Transitive: fixed only in a new minor/major the upstream crate has not adopted.
+    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25 (transitive via iroh 0.35): no 0.25 fix; iroh upgrade track" },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25 (transitive via iroh 0.35): fixed in 0.26 only; iroh upgrade track" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102 (transitive via iroh 0.35 stack): fixed in 0.103 only" },
+    # Unmaintained, but a direct workspace dependency (fe-terrain baked-splat codec).
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1 (direct, fe-terrain splat/format.rs): unmaintained, no vulnerability; replacement is a follow-up" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 (via jsonwebtoken; FE signs/verifies EdDSA only, RSA never used): no upstream fix exists" },
+]
 
 [bans]
 multiple-versions = "allow"

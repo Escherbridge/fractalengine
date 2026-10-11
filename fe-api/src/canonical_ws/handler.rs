@@ -1307,14 +1307,19 @@ async fn send_frame(
     }
 }
 
-async fn send_protocol_error(socket: &mut WebSocket, category: ProtocolErrorCategory) {
-    send_frame(
-        socket,
+/// The `protocol_error` frame a refusal of `category` puts on the wire.
+fn protocol_error_frame(category: ProtocolErrorCategory) -> Frame {
+    Frame::new(
         MessageType::ProtocolError,
         None,
         ProtocolErrorBody { category }.to_cbor(),
     )
-    .await;
+}
+
+async fn send_protocol_error(socket: &mut WebSocket, category: ProtocolErrorCategory) {
+    if let Ok(bytes) = encode_frame(&protocol_error_frame(category)) {
+        let _ = socket.send(Message::Binary(bytes.into())).await;
+    }
 }
 
 fn current_unix_ms() -> u64 {
@@ -2182,5 +2187,259 @@ mod tests {
             )
             .is_empty());
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // existence oracle (CDL-WS-ORACLE): missing vs foreign scopes are indistinguishable
+    // -----------------------------------------------------------------------
+
+    /// A scope no branch registry has ever seen.
+    fn never_registered_scope() -> Scope {
+        Scope::verse_wide(Identifier32([0x77; 32]))
+    }
+
+    fn tuple_for(scope: Scope) -> CursorTuple {
+        CursorTuple {
+            verse_id: scope.verse_id(),
+            branch_id: Identifier32([0x22; 32]),
+            subscription_scope: scope,
+            projection_identity: sample_projection(),
+        }
+    }
+
+    /// The bytes one refusal puts on the wire, via the production frame encoders.
+    fn refusal_bytes(frame: Frame) -> Vec<u8> {
+        encode_frame(&frame).expect("encode refusal frame")
+    }
+
+    /// A peer probing scopes outside its authority must learn nothing about which exist:
+    /// `subscribe`, `resume`, and `snapshot_ack` naming a never-registered scope and a
+    /// registered foreign scope (it holds committed deltas) put byte-identical refusals on the
+    /// wire. See `AGENTS.md` §existence-oracle.
+    #[tokio::test]
+    async fn missing_and_foreign_scopes_get_byte_identical_refusals() {
+        let registry = Arc::new(InMemoryBranchRegistry::new());
+        registry.commit(tuple_for(foreign_scope()), Hash32([0x44; 32]), Vec::new());
+        let verifier = Arc::new(MockCapabilityVerifier::new());
+        verifier.register(sample_chain_bytes(), sample_authorization());
+        let canonical = canonical_state_with(verifier, inert_pipeline(), registry.clone());
+        let registered_foreign = registry
+            .snapshot_cursor(&foreign_scope())
+            .await
+            .expect("the foreign scope is registered");
+        assert!(registry
+            .snapshot_cursor(&never_registered_scope())
+            .await
+            .is_err());
+
+        let mut refusals: Vec<[Vec<u8>; 3]> = Vec::new();
+        for scope in [never_registered_scope(), foreign_scope()] {
+            let mut auth = empty_auth();
+            let generation = accept_sample_binding(&auth).await;
+            *auth.pinned.write().await = pinned_status(sample_scope(), vec![sample_scope()]);
+
+            // subscribe naming the probed scope.
+            let subscribe =
+                dispatch_subscribe(&canonical, &mut auth, &subscribe_body(generation, scope), 0)
+                    .await
+                    .expect_err("a scope outside the session is refused");
+            assert_eq!(subscribe, ProtocolErrorCategory::ScopeNotAuthorized);
+
+            // resume of an own subscription with a cursor naming the probed scope; its frontier
+            // claim matches what was delivered, so it clears the ledger gate and the scope
+            // reaches `resolve_resume`.
+            auth.subscriptions
+                .bind([7; 16], sample_subscription_record(sample_scope()))
+                .expect("bind own subscription");
+            let delivered = Hash32([0x01; 32]);
+            auth.frontier_ledgers
+                .entry([7; 16])
+                .or_default()
+                .record_delivered(delivered);
+            let claim = fe_canonical_log::frontier::SortedFrontier::try_new([delivered])
+                .expect("frontier")
+                .commitment();
+            let cursor = cursor_with_claim(tuple_for(scope), claim, vec![1]);
+            assert!(
+                verify_resume_cursor_frontier(auth.frontier_ledgers.get(&[7; 16]), &cursor).is_ok(),
+                "the probe must get past the ledger to the scope-bearing path"
+            );
+            let resume = dispatch_resume(
+                &canonical,
+                &auth,
+                &ResumeBody {
+                    session_generation: generation,
+                    subscription_id: [7; 16],
+                    prior_cursor: cursor,
+                },
+                0,
+            )
+            .await;
+            let resume_frame = match resume {
+                Ok(ResumeOutcome::SnapshotRequired(required)) => {
+                    Frame::new(MessageType::SnapshotRequired, None, required.to_cbor())
+                }
+                Ok(ResumeOutcome::Replayed { .. }) => panic!("a probed scope replayed"),
+                Err(category) => protocol_error_frame(category),
+            };
+
+            // snapshot_ack naming a cursor for the probed scope (a real registry cursor for the
+            // registered one, a fabricated one for the never-registered one).
+            let ack_cursor = if scope == foreign_scope() {
+                registered_foreign.clone()
+            } else {
+                cursor_with_claim(tuple_for(scope), Hash32::of_empty(), vec![0])
+            };
+            let ack = dispatch_snapshot_ack(
+                &mut auth,
+                &SnapshotAckBody {
+                    session_generation: generation,
+                    subscription_id: [7; 16],
+                    snapshot_cursor: ack_cursor,
+                },
+            )
+            .expect_err("an unminted cursor is refused");
+
+            refusals.push([
+                refusal_bytes(protocol_error_frame(subscribe)),
+                refusal_bytes(resume_frame),
+                refusal_bytes(protocol_error_frame(ack)),
+            ]);
+            assert!(!covers(&auth, scope).await);
+        }
+        assert_eq!(
+            refusals[0], refusals[1],
+            "missing vs foreign must be indistinguishable on the wire"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // scope-sensitive capability (CDL-R6)
+    // -----------------------------------------------------------------------
+
+    /// A capability verifier that honours scope: it grants exactly `granted` and its
+    /// descendants, unlike [`MockCapabilityVerifier`], which ignores the requested scope.
+    struct ScopeSensitiveVerifier {
+        granted: Scope,
+        authorization: VerifiedAuthorization,
+        consulted_scopes: std::sync::Mutex<Vec<Scope>>,
+    }
+
+    impl ScopeSensitiveVerifier {
+        fn granting(granted: Scope) -> Arc<Self> {
+            Arc::new(Self {
+                granted,
+                authorization: sample_authorization(),
+                consulted_scopes: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn consulted_scopes(&self) -> Vec<Scope> {
+            self.consulted_scopes.lock().expect("verifier lock").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CapabilityVerifier for ScopeSensitiveVerifier {
+        async fn verify(
+            &self,
+            _capability_chain_bytes: &[u8],
+            _requested_verb: u8,
+            _requested_object_class: u8,
+            requested_scope: &Scope,
+        ) -> Result<VerifiedAuthorization, WireError> {
+            self.consulted_scopes
+                .lock()
+                .expect("verifier lock")
+                .push(*requested_scope);
+            if self.granted.contains(requested_scope) {
+                Ok(self.authorization.clone())
+            } else {
+                Err(WireError::CapabilityNotVerified)
+            }
+        }
+    }
+
+    /// A second petal of [`sample_scope`]'s verse: inside the epoch, outside [`narrow_scope`].
+    fn sibling_petal_scope() -> Scope {
+        Scope::new(
+            Identifier32([0x11; 32]),
+            Some(Identifier32([0x33; 32])),
+            None,
+        )
+        .expect("sibling petal scope")
+    }
+
+    /// A capability narrower than the pinned epoch: the verifier's scope decision is what
+    /// admits the granted petal and refuses its in-epoch sibling.
+    #[tokio::test]
+    async fn a_capability_narrower_than_the_epoch_admits_only_its_own_scope() {
+        let verifier = ScopeSensitiveVerifier::granting(narrow_scope());
+        let canonical = canonical_state_with(
+            verifier.clone(),
+            inert_pipeline(),
+            Arc::new(InMemoryBranchRegistry::new()),
+        );
+        let mut auth = empty_auth();
+        let generation = accept_sample_binding(&auth).await;
+        *auth.pinned.write().await = pinned_status(sample_scope(), Vec::new());
+
+        assert_eq!(
+            dispatch_subscribe(
+                &canonical,
+                &mut auth,
+                &subscribe_body(generation, narrow_scope()),
+                0
+            )
+            .await,
+            Ok(())
+        );
+        assert!(covers(&auth, narrow_scope()).await);
+
+        let mut sibling = subscribe_body(generation, sibling_petal_scope());
+        sibling.subscription_id = [8; 16];
+        assert_eq!(
+            dispatch_subscribe(&canonical, &mut auth, &sibling, 0).await,
+            Err(ProtocolErrorCategory::ScopeNotAuthorized)
+        );
+        assert!(!covers(&auth, sibling_petal_scope()).await);
+        assert!(auth.subscriptions.get([8; 16]).is_none());
+        assert_eq!(
+            verifier.consulted_scopes(),
+            vec![narrow_scope(), sibling_petal_scope()],
+            "the sibling passed epoch containment, so only the verifier refused it"
+        );
+    }
+
+    /// An epoch narrower than the capability: only the `epoch_scope.contains` gate stands
+    /// between a broad chain and a scope the session never pinned.
+    #[tokio::test]
+    async fn an_epoch_narrower_than_the_capability_still_bounds_the_subscription() {
+        let verifier = ScopeSensitiveVerifier::granting(sample_scope());
+        let canonical = canonical_state_with(
+            verifier.clone(),
+            inert_pipeline(),
+            Arc::new(InMemoryBranchRegistry::new()),
+        );
+        let mut auth = empty_auth();
+        let generation = accept_sample_binding(&auth).await;
+        *auth.pinned.write().await = pinned_status(narrow_scope(), Vec::new());
+
+        assert_eq!(
+            dispatch_subscribe(
+                &canonical,
+                &mut auth,
+                &subscribe_body(generation, sample_scope()),
+                0
+            )
+            .await,
+            Err(ProtocolErrorCategory::ScopeNotAuthorized)
+        );
+        assert!(!covers(&auth, sample_scope()).await);
+        assert!(auth.subscriptions.get([7; 16]).is_none());
+        assert!(
+            verifier.consulted_scopes().is_empty(),
+            "the epoch gate refused before the (permissive) verifier was asked"
+        );
     }
 }

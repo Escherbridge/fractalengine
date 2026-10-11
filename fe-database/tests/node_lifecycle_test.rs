@@ -766,3 +766,162 @@ fn tombstoning_a_promoted_stamp_reflows_with_deleted_index() {
     }
     assert!(h.life_rx.try_recv().is_err());
 }
+
+// --- T5-LOCK (D-A5): a promoted stamp's position is path-locked ---
+
+#[test]
+fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    h.send(DbCommand::PromoteInstance {
+        petal_id: petal.clone(),
+        path_id: "path".into(),
+        instance_index: 1,
+        auth: editor(),
+    });
+    let stamp = match h.recv() {
+        DbResult::NodePromoted { node_id, .. } => node_id,
+        o => panic!("expected NodePromoted, got {o:?}"),
+    };
+    let transform = |node_id: &str| {
+        h.send(DbCommand::GetNodeTransform {
+            node_id: node_id.into(),
+        });
+        match h.recv() {
+            DbResult::NodeTransformLoaded {
+                position,
+                rotation,
+                scale,
+                ..
+            } => (position, rotation, scale),
+            o => panic!("expected NodeTransformLoaded, got {o:?}"),
+        }
+    };
+    let (origin, _, _) = transform(&stamp);
+
+    // Moving it is refused before the op-log commit: the row is unchanged.
+    h.send(DbCommand::UpdateNodeTransform {
+        node_id: stamp.clone(),
+        position: [origin[0] + 4.0, origin[1], origin[2]],
+        rotation: [0.0, 1.0, 0.0],
+        scale: [3.0, 3.0, 3.0],
+    });
+    let (position, rotation, scale) = transform(&stamp);
+    assert_eq!(position, origin, "a stamp must not translate");
+    assert_eq!(rotation, [0.0, 0.0, 0.0], "a rejected move writes nothing");
+    assert_eq!(scale, [1.0, 1.0, 1.0]);
+
+    // Same position, new rotation/scale: persisted.
+    h.send(DbCommand::UpdateNodeTransform {
+        node_id: stamp.clone(),
+        position: origin,
+        rotation: [0.0, 1.0, 0.0],
+        scale: [2.0, 2.0, 2.0],
+    });
+    let (position, rotation, scale) = transform(&stamp);
+    assert_eq!(position, origin);
+    assert_eq!(rotation, [0.0, 1.0, 0.0]);
+    assert_eq!(scale, [2.0, 2.0, 2.0]);
+
+    // A plain node still moves freely.
+    let node = h.create_node(&petal, "plain");
+    h.send(DbCommand::UpdateNodeTransform {
+        node_id: node.clone(),
+        position: [4.0, 0.0, 2.0],
+        rotation: [0.0; 3],
+        scale: [1.0; 3],
+    });
+    assert_eq!(transform(&node).0, [4.0, 0.0, 2.0]);
+}
+
+// --- T5 parity: a UI delete and an API delete write the same op-log entry ---
+
+impl Harness {
+    /// Rows of a read-only SELECT through the DB thread's `RawQuery` path.
+    fn select(&self, sql: &str, vars: serde_json::Value) -> Vec<serde_json::Value> {
+        let vars = vars
+            .as_object()
+            .map(|m| m.clone().into_iter().collect())
+            .unwrap_or_default();
+        self.send(DbCommand::RawQuery {
+            sql: sql.into(),
+            vars,
+            correlation_id: None,
+        });
+        match self.recv() {
+            DbResult::QueryResult { data, .. } => data,
+            o => panic!("expected QueryResult, got {o:?}"),
+        }
+    }
+}
+
+/// Sorted top-level keys of a JSON object.
+fn keys(v: &serde_json::Value) -> Vec<String> {
+    let mut k: Vec<String> = v
+        .as_object()
+        .unwrap_or_else(|| panic!("not an object: {v}"))
+        .keys()
+        .cloned()
+        .collect();
+    k.sort();
+    k
+}
+
+#[test]
+fn ui_and_api_tombstones_write_the_same_op_log_entry() {
+    let h = Harness::start();
+    let petal = h.create_hierarchy();
+    let ui_node = h.create_node(&petal, "via UI");
+    let api_node = h.create_node(&petal, "via API");
+
+    // The UI sends `CallerAuth::Local`; REST/MCP send `Identified` (fe-api
+    // `endpoint::caller_auth`). Both reach the one tombstone handler.
+    for (node, auth) in [(&ui_node, local()), (&api_node, editor())] {
+        h.send(DbCommand::TombstoneNode {
+            node_id: node.clone(),
+            auth,
+        });
+        assert!(
+            matches!(h.recv(), DbResult::NodeDeleted { .. }),
+            "{node} tombstoned"
+        );
+    }
+
+    let entries = h.select(
+        "SELECT * FROM op_log WHERE node_id IN $ids AND op_type = 'NodeTombstoned' \
+         ORDER BY lamport_clock ASC",
+        serde_json::json!({ "ids": [ui_node, api_node] }),
+    );
+    assert_eq!(entries.len(), 2, "one entry per delete: {entries:?}");
+    let (ui, api) = (&entries[0], &entries[1]);
+    assert_eq!(ui["node_id"], ui_node.as_str());
+    assert_eq!(api["node_id"], api_node.as_str());
+    for e in [ui, api] {
+        assert_eq!(e["op_type"], "NodeTombstoned", "{e}");
+        assert_eq!(e["payload"]["petal_id"], petal.as_str(), "{e}");
+    }
+    assert_eq!(keys(ui), keys(api), "same op-log row shape");
+    assert_eq!(keys(&ui["payload"]), keys(&api["payload"]), "same payload");
+    assert_ne!(ui["lamport_clock"], api["lamport_clock"]);
+    assert_eq!(api["payload"]["source_did"], "did:key:z6MkEditor");
+
+    // The row markers match too, each stamped with its own op's clock + source.
+    let rows = h.select(
+        "SELECT node_id, tombstone FROM node WHERE node_id IN $ids",
+        serde_json::json!({ "ids": [ui_node, api_node] }),
+    );
+    assert_eq!(rows.len(), 2);
+    for (entry, node) in [(ui, &ui_node), (api, &api_node)] {
+        let marker = &rows.iter().find(|r| r["node_id"] == node.as_str()).unwrap()["tombstone"];
+        assert_eq!(
+            keys(marker),
+            ["hlc", "source_did", "tombstoned_at"],
+            "{marker}"
+        );
+        assert_eq!(marker["hlc"], entry["lamport_clock"], "{node}");
+        assert_eq!(
+            marker["source_did"], entry["payload"]["source_did"],
+            "{node}"
+        );
+    }
+}

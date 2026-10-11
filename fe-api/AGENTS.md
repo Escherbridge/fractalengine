@@ -63,7 +63,7 @@ when a route lands.
 | Hexon tilesets | `POST /api/v1/hexons/tilesets/install?petal_id=…`, `DELETE /api/v1/hexons/tilesets/{id}?petal_id=…`, `PATCH …/{id}/seeding?petal_id=…`, `GET /api/v1/hexons/tilesets?petal_id=…`, `GET /api/v1/hexons/storage?petal_id=…` |
 | Hexon crate registry | `POST /api/v1/crates/publish`, `POST /api/v1/crates/{uri}/install?petal_id=…`, `DELETE …/{uri}/uninstall?petal_id=…`, `GET /api/v1/crates/search?petal_id=…`, `GET /api/v1/crates/installed?petal_id=…`, `GET /api/v1/crates/{uri}?petal_id=…`, `GET …/{uri}/entries?petal_id=…`, `GET …/{uri}/entries/{entry_id}/asset?petal_id=…`, `GET /api/v1/crates/available?petal_id=…` |
 | Sim control (§sim-control) | `POST /api/v1/sim/start`, `POST /api/v1/sim/stop`, `GET /api/v1/sim/status`, `POST /api/v1/sim/step`, `POST /api/v1/sim/inject-fault` |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 29 tools, one `ToolSpec` table (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 29-row `ToolSpec` table, 24 advertised off a sim lab host (§mcp-dispatch); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -133,6 +133,12 @@ mutation still says "tileset remains assigned to another petal" — inherent to
 refusing a shared-store delete (the caller can read its own binding), and a
 tileset-id fact, not a hierarchy-ULID one. The crate registry is a node-wide
 catalog: `install_crate` reveals whether a crate URI is published at all.
+**Open follow-up (recorded 2026-10-11, SYNC-NSID-CAP):** `/query` still serves
+`verse` and `fractal` rows across ALL verses on the node (names, `created_by`,
+`created_at`, `default_access`) — only `namespace_id` and the verse record id
+are hidden (§query-guard). Verse/fractal scope filtering (a verse-scoped
+FROM-substitution mirroring the petal one, keyed on the token's verse) is a
+separate existence-oracle item, not done here.
 
 ## §endpoint-surface (`endpoint.rs`, track `endpoint_api_surface_20260725`, T5)
 
@@ -160,6 +166,26 @@ Makes every object a stable `fe://verse/fractal/petal/node` endpoint you can
   the same scope-containment check every node op does (`require_scope` on the
   resolved node/petal scope); **fe-policy is the authoritative Editor+ gate** at
   the DB thread (N-5 — the API layer carries identity, does not decide policy).
+- **Stamp position lock (FR-3 / D-A5, T5-LOCK).** A promoted stamp's position
+  is path-derived, so a transform write that moves it is refused on every
+  transport (REST `PATCH …/transform`, MCP `update_transform`, WS
+  `transform_update`, and `move_waypoint_core` — MCP `move_waypoint` takes
+  addressable ids, and is refused before its lat/lon/ele property writes too)
+  while rotation/scale-only writes pass. Two layers:
+  `rest.rs::stamp_translate_denied` is the cheap fail-fast check run BEFORE the
+  optimistic broadcast (the persist is fire-and-forget, so a later DB denial
+  would arrive after subscribers already saw the move) — it only reads the row
+  for ids containing `#inst-`, because `promote_instance_handler` mints exactly
+  `<path>#inst-<n>` and `DuplicateNode` strips stamp identity, so plain nodes
+  pay no I/O; an unreadable stamp row fails closed. The **authoritative** guard
+  is fe-database `update_node_transform_handler` (any `node_kind = stamp` row,
+  checked before the op-log commit; fe-database/src/AGENTS.md §lifecycle). REST
+  and WS accept `is_addressable_node_id` ids on the transform route so a
+  promoted stamp can be rotated/scaled at all (MCP already did). Deferred: API
+  rotation/scale on a stamp writes the row's `rotation`/`scale` columns, but the
+  renderer reads the `stamp.override.*` properties (`fe-ui/src/actions/asset.rs`
+  `STAMP_SCALE_KEY`/`STAMP_ROTATION_KEY`) — mapping API rotation/scale onto the
+  overrides is a follow-up, not part of T5-LOCK.
 - **Generic node abstraction + type tags (FR-6, N-10).** Promoted stamps (T2) and
   earthwork regions (T3) are ordinary `node` rows tagged by
   `properties.node_kind` (`stamp` / `earthwork_region`). This track reads them
@@ -176,6 +202,21 @@ Makes every object a stable `fe://verse/fractal/petal/node` endpoint you can
   (`rest.rs`/`gis.rs`/`gpx.rs`/`format.rs`/`export.rs`, `endpoint.rs`). The raw
   BI `/query` path is intentionally *not* filtered — an analyst may query
   historical/tombstoned rows deliberately (documented open item).
+
+## §auth-policy (AP-3.1 / AP-3.4, auth_policy_pattern_20260710)
+
+Every REST/WS/MCP role and scope check evaluates through fe-policy — no
+hand-rolled role or scope math in this crate. `auth.rs::api_token_context` is
+the ONE `AuthContext` builder for an API token (`ApiToken { subject: sub,
+scopes: [scope], role: max_role }`); hexon routes reuse it. The helper
+signatures and `StatusCode::FORBIDDEN` errors are unchanged, so callers did not
+move: `require_role_level` evaluates `RoleFloorPolicy(required)` (keeps the
+"a `None` floor admits everyone" semantics of a typo'd `require_role` string),
+`require_scope` evaluates `TokenScopePolicy` against `Scope::new(resource)`,
+and `require_role_and_scope` is one `AllOf` of both evaluated through a
+`PolicyEngine` (one warn-logged decision per denial). The two WS Editor gates
+(`transform_update`, `entity_command`) call `require_role_level(Editor)`.
+Policy semantics: `fe-policy/AGENTS.md` §policies.
 
 ## §gis
 
@@ -352,9 +393,10 @@ BEFORE its DB thread spawns (no event gap), drains on a dedicated thread, and
 hydrates from pre-startup rows when its API read connection opens — closing
 the relay's `entity_store: None` TODO that kept the merged analytics surface
 dead on every platform. A relay-side hydration failure fails the surface
-closed (`entity_store: None`) rather than serving a partial nodes table;
-the GUI's pre-extraction local copies of these fns remain until its
-mechanical migration.
+closed (`entity_store: None`) rather than serving a partial nodes table.
+The GUI (`fractalengine/src/main.rs`) calls these shared fns directly — its
+pre-extraction local copies and their duplicate tests were deleted
+(FEAPI-GUI-HYDRATE, 2026-10-11), so the module's own tests are the only copy.
 
 **Honest-unavailable posture on per-handle-lock platforms (Windows).** The
 analytics authorization resolves the petal scope through the DIRECT reader by
@@ -497,6 +539,28 @@ test now pins the rejection). `crate_entry` carries no
 `petal_id` column and stays deliberately unscoped. Function namespaces
 outside the banned constructors (e.g. a future `fn::`/`api::`) are not
 enumerated.
+
+*`verse.namespace_id` is a capability, not a column (SYNC-NSID-CAP,
+2026-10-11).* It is the iroh-docs `NamespaceId`, which IS
+`Capability::Read` — any peer holding it plus a serving node's address can
+sync the whole verse replica (fe-sync/src/AGENTS.md §namespace-id-capability).
+`VERSE` is allow-listed but not petal-scoped, so before this any token could
+`SELECT namespace_id FROM verse` across every verse on the node. Now, in every
+`GuardMode` (Query, Egress share, Export — all reach VERSE only through
+`prepare_scoped_sql`): (1) any SQL whose uppercased canonical text contains
+the word `NAMESPACE_ID` (projection, `WHERE` probe, even a string literal) is
+refused with `NAMESPACE_ID_REFUSAL` ("namespace_id is not queryable (replica
+read capability)"); (2) every `verse` FROM target is rewritten to
+`(SELECT * OMIT id, namespace_id FROM verse)` — `id` is omitted too because
+`SELECT id.* FROM verse` would re-fetch the whole record, capability
+included (`verse_id` still identifies the row); (3) `verse`, like the
+petal-scoped tables, may only appear as a FROM target, which kills the
+`verse:<key>.*` record-literal dereference. OMIT parses on the embedded
+SurrealDB 3.0 (proven by `tests/namespace_capability_test.rs`). Unit tests:
+`verse_targets_never_expose_the_replica_capability`,
+`namespace_id_and_verse_record_literals_are_refused_in_every_mode`.
+Behaviour change for clients: `/query` verse rows no longer carry `id` or
+`namespace_id`, and a query mentioning `verse` outside FROM is refused.
 
 Execution goes through `run_guarded_query` / `run_guarded_query_via_state`:
 **M4 fix M2** appends `\nTIMEOUT 5s` to every guarded statement (the newline
@@ -1074,7 +1138,12 @@ handlers and the MCP arm both call them, so the guard lives once.
   reaches the seam.
 - **Fail closed off a lab host.** `ApiState.sim_control_tx` is `None` on
   every default build (GUI permanently; relay unless built with
-  `--features sim-control`) → 503 "sim control not configured".
+  `--features sim-control`) → REST 503 "sim control not configured". MCP
+  goes further (SIM-GUI-TOOLS, 2026-10-11): the five `sim_*` rows carry
+  `requires: Some(ToolSeam::SimControl)`, so off a lab host they are absent
+  from `tools/list` and `tools/call` answers `unknown tool: sim_start` —
+  byte-identical to a name that never existed, so a non-lab host neither
+  advertises nor confirms the lab surface (§mcp-dispatch).
 - **Seam** = `fe_runtime::sim_control` (`SimControlCall { cmd, reply_tx }`,
   JSON payloads — fe-api never depends on fe-sim). Reply-embedded call →
   `try_send` (Full → 503 busy, Disconnected → 502), reply awaited via
@@ -1091,15 +1160,21 @@ handlers and the MCP arm both call them, so the guard lives once.
 - Tests: `tests/sim_control_test.rs` owns the receiver (a one-session
   emulator) through the full router; the real bridge/session is proven in
   fe-sim (`control.rs` / `session.rs` tests). The five MCP `sim_*` tools
-  are `{Global, Owner}` rows in the §mcp-dispatch table (F13); the per-verb
-  guard stays as defense in depth.
+  are `{Global, Owner, requires SimControl}` rows in the §mcp-dispatch table
+  (F13); the per-verb guard (and its 503) stays for REST and as defense in
+  depth.
 
 ## §mcp-dispatch (F13/A26 — DEC-C14, DEC-C15; 2026-10-09)
 
 `src/mcp/mod.rs` owns ONE table, `TOOLS: &[ToolSpec]`
-(`{name, description, input_schema, min_role: RoleLevel, scope_rule, handler}`);
-`tools/list` and `tools/call` both derive from it. `tools/call` =
-lookup → `authorize` → schema-`required` check → handler. `authorize` is the
+(`{name, description, input_schema, min_role: RoleLevel, scope_rule, requires, handler}`);
+`tools/list` and `tools/call` both derive from it. `requires:
+Option<ToolSeam>` names a host seam the row depends on (today only
+`SimControl` = `ApiState.sim_control_tx`); `tool_available(spec, state)`
+filters BOTH `tools/list` and the `tools/call` lookup, so an unwired row is
+indistinguishable from an unknown name (`unknown tool: {name}`) and is
+checked before authz. `tools/call` =
+lookup (available rows only) → `authorize` → schema-`required` check → handler. `authorize` is the
 **only** MCP authz code: typed role floor (`require_role_level` — a string
 role typo would parse to `RoleLevel::None` = admit-all, so the table is
 typed and a test forbids a `None` floor), then the row's `ScopeRule`
@@ -1174,10 +1249,12 @@ rewrite any verse's schema) and now require the field def's stored scope;
 `GET /api/v1/field-defs/{scope}` requires the token to cover `{scope}`.
 
 **Honest arithmetic (DEC-C14).** A26's "20 tools" = the mcp_scene_primitives
-20-name vocabulary, now fully present. `tools/list` returns 29: 24 non-sim +
+20-name vocabulary, now fully present. The table has 29 rows: 24 non-sim +
 5 sim — an intentional, documented superset (read_node, node_address,
 promote_instance, query_timeseries, sim_* shipped legitimately); none are
-deleted or renamed.
+deleted or renamed. `tools/list` returns 29 on a sim lab host and 24
+everywhere else (the GUI always; the relay without `sim-control`) —
+`tools_list_inventory` pins both configurations.
 
 **Known gaps (F14 / follow-ups).** (`set_petal_terrain` is no longer a gap —
 it shares REST PUT/DELETE's correlated core, §terrain-mutation.) `query` inherits
@@ -1200,6 +1277,17 @@ correlation_id}` (an `UploadOwner` = token `sub` + authorized anchor petal;
 `handlers::crud::create_asset_reply`, which tests reuse to service the
 channel.
 
+- **REST place (MCP-2.4, 2026-10-11).** `POST …/petals/{p}/nodes` and the legacy
+  `POST /api/v1/nodes` accept optional `asset_id` / `rotation` / `scale`. With `asset_id`,
+  `rest.rs::create_node_in_petal` calls the same `upload::place_asset_core` as MCP
+  `place_asset`, AFTER the route's own write-target authz. The response is the house 200
+  envelope with `{id, name, asset_id, asset_path}`. `UNKNOWN_ASSET` (unknown OR foreign-scope
+  asset) is 404 with MCP's exact text, a malformed id is 400, and values pass through verbatim
+  with no unit math (spec D5). With rotation or scale but no `asset_id` the call is 400: plain
+  `CreateNode` has no columns for them, and dropping them silently would be worse. With all
+  three absent, the legacy path and its response are byte-identical. Tests:
+  `tests/mcp_integration.rs` REST-twins lane, on the same emulator and foreign-asset fixture
+  as the MCP tests.
 - **Bytes never cross the channel — by construction.** `store_glb` consumes
   the `Vec<u8>` and returns `StoredGlb` (private fields: hash + size only);
   `register_asset`, the sole `CreateAsset` sender, accepts only `StoredGlb`.

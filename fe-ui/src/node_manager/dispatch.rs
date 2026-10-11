@@ -130,11 +130,19 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
 /// supports Move, so any tool resolves to `MoveVertex`/`MoveSegment` (FR-3).
 /// Entity-backed selections (node / stamp / whole track) use the entity gimbal,
 /// which stays closed outside the transform tools (`handle_gimbal_interaction`).
+/// A stamp's position is path-locked (D-A5), so it never drags under Move.
 fn resolve_gimbal(tool: Tool, kind: &SelectionKind) -> Operation {
     match kind {
         SelectionKind::PathVertex { idx, .. } => Operation::MoveVertex { idx: *idx },
         SelectionKind::PathSegment { idx, .. } => Operation::MoveSegment { idx: *idx },
-        SelectionKind::Node(_) | SelectionKind::Stamp(_) | SelectionKind::PathTrack { .. } => {
+        SelectionKind::Stamp(_) => {
+            if matches!(tool, Tool::Rotate | Tool::Scale) {
+                Operation::BeginGimbalDrag
+            } else {
+                Operation::None
+            }
+        }
+        SelectionKind::Node(_) | SelectionKind::PathTrack { .. } => {
             if matches!(tool, Tool::Move | Tool::Rotate | Tool::Scale) {
                 Operation::BeginGimbalDrag
             } else {
@@ -181,15 +189,31 @@ mod tests {
     }
 
     #[test]
-    fn gimbal_on_stamp_and_track_begin_entity_drag() {
-        assert_eq!(
-            resolve_operation(
+    fn stamp_gimbal_never_translates() {
+        // D-A5: a stamp's position is path-derived — Move has no gimbal drag;
+        // rotate/scale (the sparse overrides) still begin one. A Node is unaffected.
+        let stamp = SelectionKind::Stamp(entity(2));
+        let table = [
+            (Tool::Move, &stamp, Operation::None),
+            (Tool::Rotate, &stamp, Operation::BeginGimbalDrag),
+            (Tool::Scale, &stamp, Operation::BeginGimbalDrag),
+            (
                 Tool::Move,
-                &SelectionKind::Stamp(entity(2)),
-                HitTarget::GimbalAxis
+                &SelectionKind::Node(entity(2)),
+                Operation::BeginGimbalDrag,
             ),
-            Operation::BeginGimbalDrag
-        );
+        ];
+        for (tool, kind, want) in table {
+            assert_eq!(
+                resolve_operation(tool, kind, HitTarget::GimbalAxis),
+                want,
+                "{tool:?} {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gimbal_on_track_begins_entity_drag() {
         assert_eq!(
             resolve_operation(
                 Tool::Rotate,

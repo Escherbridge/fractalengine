@@ -167,6 +167,11 @@ pub(super) fn update_transform(call: ToolCall<'_>) -> ToolFuture<'_> {
         let position = vec3_arg(call.args, "position", [0.0; 3])?;
         let rotation = vec3_arg(call.args, "rotation", [0.0; 3])?;
         let scale = vec3_arg(call.args, "scale", [1.0; 3])?;
+        if let Some(denial) =
+            crate::rest::stamp_translate_denied(call.state, node_id, position).await
+        {
+            return Err(denial.to_string());
+        }
         // Same core as REST PATCH .../transform (fire-and-forget persist).
         crate::rest::persist_transform(call.state, call.claims, node_id, position, rotation, scale);
         Ok(json!({ "status": "ok" }))

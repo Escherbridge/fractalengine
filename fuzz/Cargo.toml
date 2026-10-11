@@ -2,16 +2,32 @@
 name = "fractalengine-fuzz"
 version = "0.0.1"
 edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone workspace (standard cargo-fuzz layout); the root workspace excludes "fuzz".
+[workspace]
 
 [dependencies]
 libfuzzer-sys = "0.4"
 fe-identity = { path = "../fe-identity" }
-ed25519-dalek = { workspace = true }
+ed25519-dalek = "2.2"
 
 [[bin]]
 name = "jwt_parse"
 path = "targets/jwt_parse.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "ed25519_verify"
 path = "targets/ed25519_verify.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

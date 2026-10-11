@@ -3,7 +3,8 @@
 use std::sync::{Arc, OnceLock};
 
 use fe_policy::{
-    Action, AuthContext, Decision, PolicyEngine, PublicReadPolicy, RoleLevelPolicy, Scope,
+    Action, AuthContext, Decision, OwnershipPolicy, Policy, PolicyEngine, PublicReadPolicy,
+    RoleLevelPolicy, Scope,
 };
 
 use crate::manifest::{HexonKind, HexonManifest, InstalledCrate};
@@ -28,7 +29,52 @@ pub fn authorize(subject: &AuthContext, action: &Action, scope: &str) -> Result<
     }
 }
 
+/// The petal binding that marks a crate's published (registry-level) record.
+pub const PUBLISHED_BINDING: &str = "global";
+
+/// Owner-only gate: `subject` must be `owner_did` (see src/AGENTS.md §authz).
+fn require_owner(
+    owner_did: &str,
+    subject: &AuthContext,
+    action: &Action,
+    resource: &str,
+) -> Result<(), RegistryError> {
+    let scope = Scope::new(resource);
+    let decision = OwnershipPolicy::new(owner_did).evaluate(subject, action, &scope);
+    fe_policy::engine::log_decision("ownership", subject, action, &scope, &decision);
+    match decision {
+        Decision::Allow => Ok(()),
+        Decision::Deny(reason) => Err(RegistryError::PermissionDenied(reason)),
+    }
+}
+
 impl HexonRegistry {
+    /// Policy-gated publish: Manager+ (RoleLevelPolicy), then only the signed
+    /// publisher DID that first published a `crate_id` may republish it.
+    pub fn publish_as(
+        &mut self,
+        subject: &AuthContext,
+        package: HexonPackageData,
+    ) -> Result<InstalledCrate, RegistryError> {
+        authorize(subject, &Action::Publish, PUBLISHED_BINDING)?;
+        let publisher = AuthContext::Did {
+            did: package.manifest.publisher_did.clone(),
+            role: fe_policy::RoleLevel::None,
+        };
+        if let Some(existing) = self.list_installed(None).into_iter().find(|installed| {
+            installed.manifest.crate_id == package.manifest.crate_id
+                && installed.manifest.publisher_did != package.manifest.publisher_did
+        }) {
+            require_owner(
+                &existing.manifest.publisher_did,
+                &publisher,
+                &Action::Publish,
+                &format!("crate:{}", package.manifest.crate_id),
+            )?;
+        }
+        self.install(package, PUBLISHED_BINDING)
+    }
+
     /// Policy-gated install: requires Editor+ at the petal scope.
     pub fn install_as(
         &mut self,
@@ -48,11 +94,19 @@ impl HexonRegistry {
         petal_id: &str,
     ) -> Result<(), RegistryError> {
         authorize(subject, &Action::Write, petal_id)?;
-        if self
+        let Some(installed) = self
             .get_installed(hexon_uri)
-            .is_some_and(|installed| installed.petal_id != petal_id)
-        {
+            .filter(|installed| installed.petal_id == petal_id)
+        else {
             return Err(RegistryError::NotFound(hexon_uri.to_string()));
+        };
+        if installed.petal_id == PUBLISHED_BINDING {
+            require_owner(
+                &installed.manifest.publisher_did,
+                subject,
+                &Action::Write,
+                hexon_uri,
+            )?;
         }
         self.uninstall(hexon_uri, petal_id)
     }
@@ -124,7 +178,11 @@ mod tests {
     }
 
     fn test_package() -> HexonPackageData {
-        let keypair = SigningKey::generate(&mut OsRng);
+        signed_package(&SigningKey::generate(&mut OsRng), "1.0.0")
+    }
+
+    /// A signed package of the fixed `authz-model-v1` crate at `version`.
+    fn signed_package(keypair: &SigningKey, version: &str) -> HexonPackageData {
         let pub_key = keypair.verifying_key();
         let publisher_did = {
             use multibase::Base;
@@ -137,7 +195,7 @@ mod tests {
             crate_id: "authz-model-v1".to_string(),
             publisher_did,
             publisher_name: "Authz Publisher".to_string(),
-            version: "1.0.0".to_string(),
+            version: version.to_string(),
             build_id: "build-authz".to_string(),
             name: "Authz Model".to_string(),
             description: "Policy gate test crate".to_string(),
@@ -187,7 +245,7 @@ mod tests {
             HashMap::new(),
             None,
             None,
-            &keypair,
+            keypair,
         )
         .expect("build should succeed");
         HexonPackage::open(&zip_bytes).expect("open should succeed")
@@ -313,6 +371,83 @@ mod tests {
             .search_local_as(&AuthContext::Anonymous, "anything", &[], None)
             .expect("anonymous search is a public read");
         assert!(searched.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn publisher(package: &HexonPackageData) -> AuthContext {
+        AuthContext::Did {
+            did: package.manifest.publisher_did.clone(),
+            role: RoleLevel::Owner,
+        }
+    }
+
+    #[test]
+    fn republish_by_a_different_signer_is_denied() {
+        let (mut registry, dir) = temp_registry("republish");
+        let key_a = SigningKey::generate(&mut OsRng);
+        let key_b = SigningKey::generate(&mut OsRng);
+        let a_v1 = signed_package(&key_a, "1.0.0");
+        let a_did = a_v1.manifest.publisher_did.clone();
+        registry
+            .publish_as(&did(RoleLevel::Owner), a_v1)
+            .expect("first publish by A");
+
+        // Same crate_id signed by B: denied whether same or new version.
+        for version in ["1.0.0", "1.1.0"] {
+            let result =
+                registry.publish_as(&did(RoleLevel::Owner), signed_package(&key_b, version));
+            assert!(
+                matches!(result, Err(RegistryError::PermissionDenied(_))),
+                "B republishing {version} must be denied, got {result:?}"
+            );
+        }
+        let held = registry.list_installed(None);
+        assert_eq!(held.len(), 1, "only A's record remains");
+        assert_eq!(held[0].manifest.publisher_did, a_did);
+
+        // A publishing v2 of its own crate is allowed.
+        registry
+            .publish_as(&did(RoleLevel::Owner), signed_package(&key_a, "2.0.0"))
+            .expect("owner republish allowed");
+        assert_eq!(registry.list_installed(Some(PUBLISHED_BINDING)).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_still_requires_manager_role() {
+        let (mut registry, dir) = temp_registry("publish_role");
+        let result = registry.publish_as(&did(RoleLevel::Editor), test_package());
+        assert!(matches!(result, Err(RegistryError::PermissionDenied(_))));
+        assert!(registry.list_installed(None).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_publisher_may_unpublish_the_global_record() {
+        let (mut registry, dir) = temp_registry("unpublish");
+        let a_pkg = signed_package(&SigningKey::generate(&mut OsRng), "1.0.0");
+        let a = publisher(&a_pkg);
+        let uri = hexon_uri(&a_pkg.manifest);
+        registry
+            .publish_as(&did(RoleLevel::Owner), a_pkg)
+            .expect("publish");
+
+        let b = AuthContext::Did {
+            did: "did:key:z6MkSomeoneElse".to_string(),
+            role: RoleLevel::Owner,
+        };
+        let denied = registry.uninstall_as(&b, &uri, PUBLISHED_BINDING);
+        assert!(matches!(denied, Err(RegistryError::PermissionDenied(_))));
+        assert_eq!(
+            registry.list_installed(None).len(),
+            1,
+            "deny must not unpublish"
+        );
+
+        registry
+            .uninstall_as(&a, &uri, PUBLISHED_BINDING)
+            .expect("publisher may unpublish");
+        assert!(registry.list_installed(None).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

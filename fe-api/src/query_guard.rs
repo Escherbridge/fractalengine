@@ -60,6 +60,17 @@ const PETAL_SCOPED_TABLES: &[&str] = &[
     "CRATE_REGISTRY",
 ];
 
+/// The table whose rows carry the iroh-docs replica read capability (`namespace_id`).
+const VERSE_TABLE: &str = "VERSE";
+
+/// What every `VERSE` FROM target becomes: the capability column and the record id (whose
+/// `id.*` would re-fetch it) are never visible — AGENTS.md §query-guard.
+const VERSE_SAFE_SOURCE: &str = "(SELECT * OMIT id, namespace_id FROM verse)";
+
+/// Refusal for any query naming the capability column (fe-sync/src/AGENTS.md
+/// §namespace-id-capability).
+pub const NAMESPACE_ID_REFUSAL: &str = "namespace_id is not queryable (replica read capability)";
+
 /// SELECT clauses that may follow a FROM target (SurrealQL 3 `parse_select_stmt`
 /// order). Anything else after a target (an operator) would extend the target
 /// EXPRESSION — `FROM verse AND role` evaluates to the `role` table.
@@ -840,6 +851,9 @@ pub fn prepare_scoped_sql(
     let upper = canonical.to_ascii_uppercase();
     reject_record_constructors(&canonical, &upper)?;
     reject_foreign_record_literals(&upper, ALLOWED_TABLES)?;
+    if contains_word(&upper, "NAMESPACE_ID") {
+        return Err(NAMESPACE_ID_REFUSAL.into());
+    }
     let targets = from_clause_targets(&upper)?;
 
     if mode != GuardMode::Query {
@@ -851,8 +865,12 @@ pub fn prepare_scoped_sql(
         }
     }
 
-    // Every mention of a petal-scoped table must be a FROM target we rewrite.
-    for table in PETAL_SCOPED_TABLES {
+    // Every mention of a petal-scoped table (or `verse`, e.g. a `verse:<id>` record literal)
+    // must be a FROM target we rewrite.
+    for table in PETAL_SCOPED_TABLES
+        .iter()
+        .chain(std::iter::once(&VERSE_TABLE))
+    {
         for pos in word_positions(&upper, table) {
             if !targets.iter().any(|t| t.start == pos) {
                 return Err(format!(
@@ -872,6 +890,8 @@ pub fn prepare_scoped_sql(
                 t.start..t.end,
                 &format!("(SELECT * FROM {original} WHERE {filter})"),
             );
+        } else if t.table == VERSE_TABLE {
+            out.replace_range(t.start..t.end, VERSE_SAFE_SOURCE);
         }
     }
     if mode == GuardMode::Export {
@@ -1324,9 +1344,65 @@ mod tests {
             .unwrap();
         assert_eq!(out.sql, "SELECT * FROM (SELECT * FROM node WHERE false)");
 
-        // Non-petal tables are untouched.
-        let out = prepare_scoped_sql("SELECT * FROM verse", &p(&["P1"]), GuardMode::Query).unwrap();
-        assert_eq!(out.sql, "SELECT * FROM verse");
+        // Non-petal tables other than `verse` are untouched.
+        let out =
+            prepare_scoped_sql("SELECT * FROM fractal", &p(&["P1"]), GuardMode::Query).unwrap();
+        assert_eq!(out.sql, "SELECT * FROM fractal");
+    }
+
+    /// `verse.namespace_id` is the iroh-docs replica read capability (fe-sync/src/AGENTS.md
+    /// §namespace-id-capability): every `verse` FROM target hides it and the record id that
+    /// would re-fetch it, in every guard mode, nested or not.
+    #[test]
+    fn verse_targets_never_expose_the_replica_capability() {
+        for (sql, mode, expected) in [
+            (
+                "SELECT * FROM verse",
+                GuardMode::Query,
+                "SELECT * FROM (SELECT * OMIT id, namespace_id FROM verse)",
+            ),
+            (
+                "SELECT name, (SELECT verse_id FROM Verse) AS v FROM fractal",
+                GuardMode::Query,
+                "SELECT name, (SELECT verse_id FROM (SELECT * OMIT id, namespace_id FROM verse)) \
+                 AS v FROM fractal",
+            ),
+            (
+                "SELECT id.* AS full FROM verse",
+                GuardMode::Egress,
+                "SELECT id.* AS full FROM (SELECT * OMIT id, namespace_id FROM verse)",
+            ),
+        ] {
+            assert_eq!(
+                prepare_scoped_sql(sql, &[], mode).expect(sql).sql,
+                expected,
+                "{sql}"
+            );
+        }
+    }
+
+    /// Naming the column, or reaching a verse row by record id, is refused outright.
+    #[test]
+    fn namespace_id_and_verse_record_literals_are_refused_in_every_mode() {
+        for mode in [GuardMode::Query, GuardMode::Egress, GuardMode::Export] {
+            for sql in [
+                "SELECT namespace_id FROM verse",
+                "SELECT verse_id FROM verse WHERE namespace_id = 'abc'",
+                "SELECT * FROM fractal WHERE name = 'namespace_id'",
+            ] {
+                assert_eq!(
+                    prepare_scoped_sql(sql, &[], mode).unwrap_err(),
+                    NAMESPACE_ID_REFUSAL,
+                    "{sql} ({mode:?})"
+                );
+            }
+            let err = prepare_scoped_sql("SELECT verse:abc.* AS leak FROM fractal", &[], mode)
+                .unwrap_err();
+            assert!(
+                err.contains("may only appear as a FROM table name"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -1353,11 +1429,12 @@ mod tests {
             );
         }
         // Not record ids: datetimes (digit-led), spaced object keys, `::` paths,
-        // and literals of whitelisted unscoped tables (already FROM-readable).
+        // and literals of whitelisted unscoped tables (already FROM-readable) —
+        // except `verse`, whose literal would bypass the capability rewrite.
         for sql in [
             "SELECT * FROM verse WHERE created_at > '2026-01-01T00:00:00Z'",
             "SELECT { k: 1 } AS o, string::lowercase(name) AS n FROM verse",
-            "SELECT verse:abc.name AS n FROM verse",
+            "SELECT fractal:abc.name AS n FROM verse",
         ] {
             assert!(
                 prepare_scoped_sql(sql, &p(&["P1"]), GuardMode::Query).is_ok(),

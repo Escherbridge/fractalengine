@@ -26,6 +26,15 @@ pub struct CreateNodeRequest {
     pub petal_id: Option<String>,
     pub name: String,
     pub position: Option<[f32; 3]>,
+    /// Bind the node to an uploaded asset (routes through `place_asset_core`).
+    #[serde(default)]
+    pub asset_id: Option<String>,
+    /// Euler XYZ radians, verbatim; only accepted with `asset_id`.
+    #[serde(default)]
+    pub rotation: Option<[f32; 3]>,
+    /// Verbatim scale; only accepted with `asset_id`.
+    #[serde(default)]
+    pub scale: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Deserialize)]

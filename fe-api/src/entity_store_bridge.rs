@@ -1,8 +1,5 @@
-//! Analytics hot-cache wiring shared by the host binaries — see
-//! `fe-api/AGENTS.md` §analytics-query. Extracted verbatim from the GUI
-//! binary's startup (F24) so the relay hydrates and mirrors the
-//! `EntityStore` the same way; the GUI keeps its local pre-extraction copy
-//! until its migration (mechanical, follow-up).
+//! Analytics hot-cache wiring shared by both host binaries (GUI and relay)
+//! — see `fe-api/AGENTS.md` §analytics-query.
 
 use fe_entity_store::EntityStore;
 

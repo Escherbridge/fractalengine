@@ -13,7 +13,7 @@ use tracing::{info, warn};
 use crate::auth::require_role;
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
-use fe_policy::{Action, AuthContext, RoleLevel};
+use fe_policy::{Action, AuthContext};
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -173,11 +173,7 @@ pub(crate) async fn require_hexon_petal_access(
         return Err(crate::rest::NOT_FOUND_OR_DENIED);
     };
 
-    let subject = AuthContext::ApiToken {
-        subject: claims.sub.clone(),
-        scopes: vec![claims.scope.clone()],
-        role: RoleLevel::from(claims.max_role.as_str()),
-    };
+    let subject = crate::auth::api_token_context(claims);
     fe_hexon::authz::authorize(&subject, &action, &scope)
         .map_err(|_| "insufficient permissions")?;
     Ok(subject)
@@ -231,11 +227,15 @@ pub async fn publish_crate(
     // Install into registry
     let registry = _registry;
     let mut reg = registry.lock().unwrap();
-    match reg.install(package.clone(), "global") {
+    let subject = crate::auth::api_token_context(&claims);
+    match reg.publish_as(&subject, package.clone()) {
         Ok(_) => ok(to_manifest_dto(&package.manifest)),
         Err(fe_hexon::registry::RegistryError::AlreadyInstalled(_)) => {
             // Already published — return manifest anyway
             ok(to_manifest_dto(&package.manifest))
+        }
+        Err(fe_hexon::registry::RegistryError::PermissionDenied(_)) => {
+            err("insufficient permissions")
         }
         Err(e) => err(&format!("publish failed: {}", e)),
     }

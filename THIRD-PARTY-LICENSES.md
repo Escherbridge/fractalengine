@@ -9,7 +9,8 @@ Zlib / Unicode / MPL-2.0); the one notable exception is called out below.
 ## SurrealDB — Business Source License 1.1
 
 The `surrealdb` and `surrealdb-core` crates (version 3.0.5 at time of
-writing) are licensed under the **Business Source License 1.1 (BUSL-1.1)**,
+writing), together with the engine's split-out `surrealdb-types`,
+`surrealdb-types-derive` (3.0.5) and `surrealdb-protocol` (0.8.3) crates, are licensed under the **Business Source License 1.1 (BUSL-1.1)**,
 Licensor SurrealDB Ltd. FractalEngine embeds the SurrealDB storage engine
 (`kv-surrealkv` / `kv-mem`) directly into both shipped binaries
 (`fractalengine` and `fe-relay`) — it is not an optional or external service.

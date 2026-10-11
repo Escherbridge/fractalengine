@@ -110,9 +110,11 @@ their fields cannot.
 forward-compatibility boilerplate: it makes the struct literal writable only inside
 `fe-canonical-log`, so `fe-api`, `fe-database`, and every future consumer can obtain one only
 from `verify_chain`/`verify_chain_bytes`. Field reads are unaffected and no call site changed.
-The same treatment is NOT applied to `materialize::VerifiedEnvelopeMeta`, which `fe-database`
-builds with struct literals in a test helper; that type's guarantee remains a documented
-obligation and its own doc comment says so rather than implying otherwise.
+`materialize::VerifiedEnvelopeMeta` received the same seal on 2026-10-11 (CDL-R1) once its
+last out-of-crate struct literal (`fe-database` `canon_log::admission` tests) was replaced by a
+real signed envelope admitted through `verify_from_bytes`; a `compile_fail` doctest pins it.
+Unlike `VerifiedCapability` it still has a public unverified door,
+`verified_envelope_meta_from` (RUNBOOK a31c403 §10a residual 5, open by decision), so its seal closes literals only.
 
 `PinnedSession` is the weaker of the two and the honest statement is that **it does not carry
 the grant it was pinned from**. It records the leaf principal, chain, certificate, epoch scope,

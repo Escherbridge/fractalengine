@@ -12,6 +12,9 @@ pub use engine::{Policy, PolicyEngine};
 pub use node_lifecycle::{
     authorize_instance_promotion, authorize_node_delete, authorize_node_edit, MIN_DELETE_ROLE,
 };
-pub use policies::{CapabilityPolicy, PublicReadPolicy, RoleLevelPolicy};
+pub use policies::{
+    CapabilityPolicy, OwnershipPolicy, PublicReadPolicy, RoleFloorPolicy, RoleLevelPolicy,
+    TokenScopePolicy,
+};
 pub use role_level::RoleLevel;
-pub use types::{Action, AuthContext, Decision, Scope};
+pub use types::{scope_contains, Action, AuthContext, Decision, Scope};

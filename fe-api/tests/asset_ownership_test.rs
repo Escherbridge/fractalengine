@@ -279,3 +279,68 @@ async fn upload_past_the_owner_quota_is_413_and_writes_nothing() {
         "no blob for the refused upload"
     );
 }
+
+/// MCP-TEST-UPLOAD (mcp_scene_primitives Task 2.2): every refused REST upload
+/// answers its distinct status + text and writes neither a row nor a blob.
+/// The 201 + fetch happy row is `unplaced_upload_is_readable_from_its_anchor_petal_only`.
+#[tokio::test]
+async fn refused_uploads_write_nothing() {
+    enum Host {
+        Default,
+        NoBlobStore,
+    }
+    let rows = [
+        (
+            "viewer on the anchor petal",
+            Host::Default,
+            "viewer",
+            false,
+            StatusCode::FORBIDDEN,
+            "insufficient permissions",
+        ),
+        (
+            "editor of a foreign verse",
+            Host::Default,
+            "editor",
+            true,
+            StatusCode::NOT_FOUND,
+            fe_api::rest::NOT_FOUND_OR_DENIED,
+        ),
+        (
+            "host without a blob store",
+            Host::NoBlobStore,
+            "editor",
+            false,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "asset upload unavailable: no blob store configured",
+        ),
+    ];
+    for (label, host, role, foreign_token, status_want, error_want) in rows {
+        let h = match host {
+            Host::Default => ApiHarness::spawn().await,
+            Host::NoBlobStore => ApiHarness::spawn_without_blob_store().await,
+        }
+        .expect("spawn harness");
+        if h.state.blob_store.is_some() {
+            serve_create_asset(&h);
+        }
+        let (verse, fractal, petals) = seed_petals(&h, &["Target"]).await;
+        let (other_verse, ..) = seed_petals(&h, &["Elsewhere"]).await;
+        let scope = if foreign_token {
+            format!("VERSE#{other_verse}")
+        } else {
+            fe_database::build_scope(&verse, Some(&fractal), Some(&petals[0]))
+        };
+        let token = h.mint_token(&scope, role);
+
+        let bytes = glb(64, 9);
+        let (status, body) = upload(&h, &token, &petals[0], &bytes).await;
+        assert_eq!(status, status_want, "{label}: {body}");
+        assert_eq!(body["error"], error_want, "{label}");
+        assert!(asset_rows(&h).await.is_empty(), "{label}: no asset row");
+        if let Some(store) = h.state.blob_store.as_ref() {
+            let hash = hash_from_hex(&hex::encode(blake3::hash(&bytes).as_bytes())).unwrap();
+            assert!(!store.has_blob(&hash), "{label}: no blob");
+        }
+    }
+}

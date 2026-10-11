@@ -40,31 +40,52 @@ repo has never been publicly pushed.
 
 README currently claims signed mutations ("immutable op-log with Lamport clock +
 ed25519 signature"; "all gossip payloads signed") while production write paths stamp
-`sig: "00".repeat(64)`. Fresh workspace grep 2026-07-17 (post-crate-consolidation —
-the former fe-auth revocation site now lives in fe-database): **13 sites, all in
-fe-database**:
+`sig: "00".repeat(64)`.
 
-| # | Site |
-| --- | --- |
-| 1 | `fe-database/src/space_manager.rs:48` |
-| 2 | `fe-database/src/space_manager.rs:84` |
-| 3 | `fe-database/src/space_manager.rs:174` |
-| 4 | `fe-database/src/space_manager.rs:234` |
-| 5 | `fe-database/src/session_cache.rs:60` (`revoke_session`; moved verbatim from `fe-auth/src/revocation.rs` in the 2026-07-17 fe-auth absorption) |
-| 6 | `fe-database/src/role_manager.rs:111` |
-| 7 | `fe-database/src/role_manager.rs:147` |
-| 8 | `fe-database/src/queries.rs:20` |
-| 9 | `fe-database/src/queries.rs:56` |
-| 10 | `fe-database/src/queries.rs:91` |
-| 11 | `fe-database/src/handlers/transform.rs:44` |
-| 12 | `fe-database/src/handlers/entity_property.rs:68` |
-| 13 | `fe-database/src/handlers/entity_property.rs:158` |
+**Ratified status — D-CL24(5)** (`conductor/decisions/canonical-data-log-20260808.md:69`):
+"all pre-canonical `op_log` rows are inherently unsigned and untrusted — no signature
+backfill and no dual-read". Legacy op_log rows are permanently unsigned; real signing
+lives in the canonical log (fe-canonical-log), not in these sites. This register is the
+disclosure artifact for SECURITY.md and README.
 
-(A 14th cosmetic placeholder, `signature_placeholder_here` at
-`fe-hexon/src/manifest.rs:27`, is test-fixture-only — not in the register.)
+**Re-grep (2026-10-11, working tree on 7d40a4e):**
+`git grep -n '"00"\.repeat(64)' -- '*.rs'` → **22 hits in 9 files, all fe-database**:
+21 production write paths + 1 `#[cfg(test)]` fixture. (Equivalent:
+`rg -n '"00"\.repeat\(64\)' --type rust -g '!target'`.) Task 6.4 is a re-run of this
+command against the table below.
+
+| # | Site | Purpose (op written with the placeholder sig) |
+| --- | --- | --- |
+| 1 | [fe-database/src/handlers/crud.rs:219](../../../fe-database/src/handlers/crud.rs#L219) | `create_node_handler` — NodeCreated |
+| 2 | [fe-database/src/handlers/crud.rs:318](../../../fe-database/src/handlers/crud.rs#L318) | `delete_node_handler` — NodeDeleted |
+| 3 | [fe-database/src/handlers/crud.rs:604](../../../fe-database/src/handlers/crud.rs#L604) | `create_node_with_asset_handler` — NodeCreated |
+| 4 | [fe-database/src/handlers/crud.rs:1320](../../../fe-database/src/handlers/crud.rs#L1320) | `tombstone_node_handler` — NodeTombstoned |
+| 5 | [fe-database/src/handlers/crud.rs:1444](../../../fe-database/src/handlers/crud.rs#L1444) | `cascade_tombstone_node_handler` — NodeTombstoned |
+| 6 | [fe-database/src/handlers/crud.rs:1561](../../../fe-database/src/handlers/crud.rs#L1561) | `promote_instance_handler` — NodePromoted |
+| 7 | [fe-database/src/handlers/elevated_query.rs:137](../../../fe-database/src/handlers/elevated_query.rs#L137) | `run_write` — ElevatedQuery audit row |
+| 8 | [fe-database/src/handlers/entity_property.rs:34](../../../fe-database/src/handlers/entity_property.rs#L34) | `set_entity_property_handler` |
+| 9 | [fe-database/src/handlers/entity_property.rs:128](../../../fe-database/src/handlers/entity_property.rs#L128) | `delete_entity_property_handler` |
+| 10 | [fe-database/src/handlers/transform.rs:36](../../../fe-database/src/handlers/transform.rs#L36) | `update_node_transform_handler` |
+| 11 | [fe-database/src/queries.rs:21](../../../fe-database/src/queries.rs#L21) | `create_petal` |
+| 12 | [fe-database/src/queries.rs:58](../../../fe-database/src/queries.rs#L58) | `create_room` |
+| 13 | [fe-database/src/queries.rs:95](../../../fe-database/src/queries.rs#L95) | `place_model` |
+| 14 | [fe-database/src/role_manager.rs:110](../../../fe-database/src/role_manager.rs#L110) | `assign_role_checked` |
+| 15 | [fe-database/src/role_manager.rs:149](../../../fe-database/src/role_manager.rs#L149) | `revoke_role_checked` |
+| 16 | [fe-database/src/session_cache.rs:60](../../../fe-database/src/session_cache.rs#L60) | `revoke_session` (moved from fe-auth 2026-07-17) |
+| 17 | [fe-database/src/space_manager.rs:44](../../../fe-database/src/space_manager.rs#L44) | `update_petal_metadata` |
+| 18 | [fe-database/src/space_manager.rs:103](../../../fe-database/src/space_manager.rs#L103) | `set_petal_visibility` |
+| 19 | [fe-database/src/space_manager.rs:204](../../../fe-database/src/space_manager.rs#L204) | `update_room_metadata` |
+| 20 | [fe-database/src/space_manager.rs:270](../../../fe-database/src/space_manager.rs#L270) | `update_model_metadata` |
+| 21 | [fe-database/src/space_manager.rs:341](../../../fe-database/src/space_manager.rs#L341) | `upsert_model_kv` |
+| T | [fe-database/src/op_log.rs:420](../../../fe-database/src/op_log.rs#L420) | `probe_entry` — `#[cfg(test)]` fixture, not a production path |
+
+Drift since the 2026-07-17 register (13 sites): crud.rs 0→6 (node-lifecycle spine
+c6fdf0d and later handler work), space_manager.rs 4→5, elevated_query.rs 0→1 (7d40a4e),
+op_log.rs test fixture +1; the original sites' line numbers shifted. (A cosmetic `signature_placeholder_here` in
+`fe-hexon/src/manifest.rs` is test-fixture-only — not in the register.)
 
 - **Requirement:** before public push, EITHER (a) real op-log signing via fe-identity
-  keys at all 13 sites — but per-op signing is unratified D5-1-adjacent scope, so this
+  keys at all 21 production sites — but per-op signing is unratified D5-1-adjacent scope, so this
   path is BLOCKED-ON-USER — OR (b) amend the README Key Design Invariants to state
   op-log signing is NOT yet implemented and list it in SECURITY.md known limitations.
   Shipping the current README text with these sites intact is a false security claim.

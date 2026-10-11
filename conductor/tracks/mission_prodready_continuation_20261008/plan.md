@@ -30,7 +30,7 @@ its commit hash + evidence line appended here.
   2. MAJOR process-global HLC skew: sim `start_ms` in the future persists into production stamps across restarts (op_log forward-only + init_hlc(max_persisted)); past start_ms breaks monotonicity; ≥2^48 truncates; chrono-range panics abort the relay. Role guard = Owner of ANY verse.
   3. MAJOR F24 ingest correlation: late reply after 10s timeout delivers to the NEXT waiting client (app.rs:338-347 skips closed entries; no petal/correlation check in iot.rs fallback).
   - Minors batched into the fix pass: #4 validate caps (readings/peers), #6 self-echo drift vs real iroh-gossip (skip author; fix the gossip_deliveries>0 assert), #7 exact min/max/count compares + shard-membership assert, #8 merge_actions position test, #10 doc-comment hijack.
-  - Deferred with triggers: #5 step idempotency (→ document; revisit if a real client retries), #9 F24 hydration/drain startup race (→ F19 sweep note), MCP sim tools advertised on GUI (→ F13 table refactor), auto_pump dead code (→ F13/F17 decide expose-or-remove), 1-ULP legacy rows (none in prod; no backfill).
+  - Deferred with triggers: #5 step idempotency (→ document; revisit if a real client retries), #9 F24 hydration/drain startup race (→ F19 sweep note), ~~MCP sim tools advertised on GUI (→ F13 table refactor)~~ (CLOSED 2026-10-11, SIM-GUI-TOOLS: `ToolSpec.requires: Some(ToolSeam::SimControl)` hides them off a lab host; `tools_list_inventory` asserts 24/29), auto_pump dead code (→ F13/F17 decide expose-or-remove), 1-ULP legacy rows (none in prod; no backfill).
   - Claims verified to hold: real-gossip path drift-free; float_roundtrip safe (no canonical-path float parsing); lock poisoning recoverable; teardown order correct; scenarios include_str-coupled (no drift).
   - **Fixes LANDED @ `2023809`** (combined with F11 — change sets interleave in relay main.rs). Verdict now: **M3 VALIDATED**. Gate: fe-runtime 93, fe-database 277, fe-sync 221, fe-sim 43, fe-query 123, fe-api all suites, harness 26 + 14/14 real-transport scenarios.
   - Residual risk (documented, accepted): co-resident production DB-thread stamps DURING a sim session read sim time — restore can't undo those; mitigations are the start_ms<=now validation + FE_SIM_ALLOW + lab-relay-only doctrine (F17 README).
@@ -155,8 +155,12 @@ TIMING channel — no index on `petal.petal_id`/`fractal.fractal_id`/
 `node.node_id`, so missing-vs-foreign lookups differ in scan cost (multi-tenant
 deploy; indexes are also a perf win); `TilesetBuilder::package*` stamps
 `crs: None` on freshly built archives so they read as legacy (next CRS-
-dependent egress or builder touch); `canonical_ws` not audited against
-§existence-oracle (when it is routed in server.rs).
+dependent egress or builder touch); ~~`canonical_ws` not audited against
+§existence-oracle (when it is routed in server.rs)~~ (CLOSED 2026-10-11,
+CDL-WS-ORACLE, pre-mount: no divergence found;
+`canonical_ws/handler.rs::missing_and_foreign_scopes_get_byte_identical_refusals`
+pins subscribe/resume/snapshot_ack refusal bytes; fe-api/src/canonical_ws/AGENTS.md
+§existence-oracle).
 
 ## Verification evidence log
 

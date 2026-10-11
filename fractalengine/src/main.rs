@@ -345,7 +345,10 @@ fn main() {
             db.use_ns("fractalengine").use_db("fractalengine").await?;
             Ok::<_, surrealdb::Error>(db)
         }) {
-            Ok(db) => match rt.block_on(hydrate_entity_store(&db, &entity_store)) {
+            Ok(db) => match rt.block_on(fe_api::entity_store_bridge::hydrate_entity_store(
+                &db,
+                &entity_store,
+            )) {
                 Ok(node_count) => {
                     tracing::info!(
                         node_count,
@@ -543,118 +546,8 @@ struct SceneChangeReceiver(crossbeam::channel::Receiver<fe_runtime::messages::Sc
 #[derive(bevy::prelude::Resource, Clone)]
 struct SharedEntityStore(Arc<fe_entity_store::EntityStore>);
 
-/// Hydrate the shared analytics cache from every live local node before API startup.
-async fn hydrate_entity_store(
-    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
-    store: &fe_entity_store::EntityStore,
-) -> anyhow::Result<usize> {
-    let query = db.query(
-        // `created_at` is selected only to satisfy SurrealDB 3.x, which rejects an ORDER BY
-        // idiom that the projection does not carry. Rows land as `serde_json::Value` and
-        // `snapshot_from_node_row` reads keys by name, so the extra column is inert.
-        "SELECT node_id, petal_id, position, elevation, rotation, scale, properties, created_at \
-         FROM node WHERE tombstone = NONE ORDER BY created_at ASC",
-    );
-    let mut response = tokio::time::timeout(std::time::Duration::from_secs(10), query)
-        .await
-        .map_err(|_| anyhow::anyhow!("local node hydration query timed out"))?
-        .map_err(|error| anyhow::anyhow!("local node hydration query failed: {error}"))?;
-    let rows: Vec<serde_json::Value> = response
-        .take(0)
-        .map_err(|error| anyhow::anyhow!("local node hydration response failed: {error}"))?;
-    let hydrated_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    for row in &rows {
-        store.upsert(snapshot_from_node_row(row, hydrated_at_ms)?);
-    }
-    Ok(rows.len())
-}
-
-/// Convert a validated local node row into the EntityStore's analytics shape.
-fn snapshot_from_node_row(
-    row: &serde_json::Value,
-    updated_at_ms: u64,
-) -> anyhow::Result<fe_entity_store::EntitySnapshot> {
-    let node_id = required_row_string(row, "node_id")?;
-    let petal_id = required_row_string(row, "petal_id")?;
-    let coordinates = row
-        .pointer("/position/coordinates")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("node {node_id} has no position.coordinates array"))?;
-    let position = [
-        required_row_number(coordinates, 0, "position.coordinates")?,
-        row.get("elevation")
-            .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| anyhow::anyhow!("node {node_id} has no elevation"))? as f32,
-        required_row_number(coordinates, 1, "position.coordinates")?,
-    ];
-    let rotation = required_row_array3(row, "rotation")?;
-    let scale = required_row_array3(row, "scale")?;
-    let properties = match row.get("properties") {
-        Some(value) if value.is_null() => None,
-        Some(value) if value.is_object() => Some(value.clone()),
-        Some(_) => anyhow::bail!("node {node_id} has non-object properties"),
-        None => None,
-    };
-
-    Ok(fe_entity_store::EntitySnapshot {
-        node_id,
-        petal_id,
-        position,
-        rotation,
-        scale,
-        properties,
-        updated_at_ms,
-        node_log: Vec::new(),
-    })
-}
-
-/// Read a nonempty string field from a direct local node row.
-fn required_row_string(row: &serde_json::Value, field: &str) -> anyhow::Result<String> {
-    let value = row
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("node row has no {field}"))?;
-    Ok(value.to_string())
-}
-
-/// Read one finite f32 from a direct local node row array.
-fn required_row_number(
-    values: &[serde_json::Value],
-    index: usize,
-    field: &str,
-) -> anyhow::Result<f32> {
-    let value = values
-        .get(index)
-        .and_then(serde_json::Value::as_f64)
-        .filter(|value| value.is_finite())
-        .ok_or_else(|| anyhow::anyhow!("node row has invalid {field}[{index}]"))?;
-    let value = value as f32;
-    if !value.is_finite() {
-        anyhow::bail!("node row has invalid {field}[{index}]");
-    }
-    Ok(value)
-}
-
-/// Read the three visible transform components used by the analytics snapshot.
-fn required_row_array3(row: &serde_json::Value, field: &str) -> anyhow::Result<[f32; 3]> {
-    let values = row
-        .get(field)
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("node row has no {field} array"))?;
-    Ok([
-        required_row_number(values, 0, field)?,
-        required_row_number(values, 1, field)?,
-        required_row_number(values, 2, field)?,
-    ])
-}
-
 /// Bevy system: drain scene change events from the bridge channel into the
-/// `EntityStore` hot cache each frame.
+/// `EntityStore` hot cache each frame (shared conversion in `fe_api::entity_store_bridge`).
 fn drain_scene_changes_to_store(
     receiver: bevy::prelude::Res<SceneChangeReceiver>,
     store: bevy::prelude::Res<SharedEntityStore>,
@@ -665,152 +558,9 @@ fn drain_scene_changes_to_store(
         .as_millis() as u64;
 
     while let Ok(change) = receiver.0.try_recv() {
-        // Convert fe_runtime::messages::SceneChange to fe_entity_store::SceneChange
-        let store_change = match change {
-            fe_runtime::messages::SceneChange::NodeAdded { node } => {
-                fe_entity_store::SceneChange::NodeAdded {
-                    node: fe_entity_store::NodeSnapshot {
-                        node_id: node.node_id,
-                        petal_id: node.petal_id,
-                        name: node.name,
-                        position: node.position,
-                        rotation: node.rotation,
-                        scale: node.scale,
-                        has_asset: node.has_asset,
-                        asset_path: node.asset_path,
-                    },
-                }
-            }
-            fe_runtime::messages::SceneChange::NodeRemoved { node_id, .. } => {
-                fe_entity_store::SceneChange::NodeRemoved { node_id }
-            }
-            fe_runtime::messages::SceneChange::NodeRenamed {
-                node_id, new_name, ..
-            } => fe_entity_store::SceneChange::NodeRenamed { node_id, new_name },
-            fe_runtime::messages::SceneChange::NodeTransform {
-                node_id,
-                position,
-                rotation,
-                scale,
-                ..
-            } => fe_entity_store::SceneChange::NodeTransform {
-                node_id,
-                position,
-                rotation,
-                scale,
-            },
-            fe_runtime::messages::SceneChange::TransformFailed {
-                node_id,
-                position,
-                rotation,
-                scale,
-                ..
-            } => fe_entity_store::SceneChange::TransformFailed {
-                node_id,
-                position,
-                rotation,
-                scale,
-            },
-            fe_runtime::messages::SceneChange::PropertyChanged {
-                node_id,
-                key,
-                value,
-                ..
-            } => fe_entity_store::SceneChange::PropertyChanged {
-                node_id,
-                key,
-                value,
-            },
-        };
-        store.0.apply_scene_change(&store_change, now_ms);
-    }
-}
-
-#[cfg(test)]
-mod analytics_hydration_tests {
-    use super::*;
-
-    #[test]
-    fn node_row_hydrates_the_entity_store_shape() {
-        let row = serde_json::json!({
-            "node_id": "node-1",
-            "petal_id": "petal-1",
-            "position": { "coordinates": [1.0, 3.0] },
-            "elevation": 2.0,
-            "rotation": [0.1, 0.2, 0.3, 1.0],
-            "scale": [1.0, 2.0, 3.0],
-            "properties": { "kind": "marker" }
-        });
-
-        let snapshot = snapshot_from_node_row(&row, 42).expect("valid node row");
-
-        assert_eq!(snapshot.node_id, "node-1");
-        assert_eq!(snapshot.petal_id, "petal-1");
-        assert_eq!(snapshot.position, [1.0, 2.0, 3.0]);
-        assert_eq!(snapshot.rotation, [0.1, 0.2, 0.3]);
-        assert_eq!(snapshot.scale, [1.0, 2.0, 3.0]);
-        assert_eq!(
-            snapshot.properties,
-            Some(serde_json::json!({ "kind": "marker" }))
+        store.0.apply_scene_change(
+            &fe_api::entity_store_bridge::runtime_scene_change_to_store(change),
+            now_ms,
         );
-        assert_eq!(snapshot.updated_at_ms, 42);
-    }
-
-    #[test]
-    fn malformed_node_row_rejects_startup_hydration() {
-        let row = serde_json::json!({
-            "node_id": "node-1",
-            "petal_id": "petal-1",
-            "position": { "coordinates": [1.0] },
-            "elevation": 2.0,
-            "rotation": [0.0, 0.0, 0.0],
-            "scale": [1.0, 1.0, 1.0]
-        });
-
-        assert!(snapshot_from_node_row(&row, 42).is_err());
-    }
-
-    #[tokio::test]
-    async fn hydration_loads_each_live_node_before_api_startup() {
-        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
-            .await
-            .expect("in-memory SurrealDB");
-        db.use_ns("test").use_db("test").await.expect("ns/db");
-        fe_database::schema::apply_all(&db)
-            .await
-            .expect("apply schema");
-        db.query(
-            "CREATE node CONTENT { \
-             node_id: 'live-node', petal_id: 'petal-1', \
-             position: <geometry<point>> [1.0, 3.0], elevation: 2.0, \
-             rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0], \
-             interactive: true, created_at: '2026-08-08T00:00:00Z' }",
-        )
-        .await
-        .expect("create live node")
-        .check()
-        .expect("live node query succeeded");
-        db.query(
-            "CREATE node CONTENT { \
-             node_id: 'deleted-node', petal_id: 'petal-1', \
-             position: <geometry<point>> [4.0, 6.0], elevation: 5.0, \
-             rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0], \
-             interactive: true, created_at: '2026-08-08T00:00:00Z', \
-             tombstone: { hlc: 1, source_did: 'did:key:test' } }",
-        )
-        .await
-        .expect("create tombstoned node")
-        .check()
-        .expect("tombstoned node query succeeded");
-
-        let store = fe_entity_store::EntityStore::new();
-        let count = hydrate_entity_store(&db, &store)
-            .await
-            .expect("hydrate live nodes");
-
-        assert_eq!(count, 1);
-        assert_eq!(store.node_count(), 1);
-        assert_eq!(store.get("live-node").unwrap().position, [1.0, 2.0, 3.0]);
-        assert!(store.get("deleted-node").is_none());
     }
 }

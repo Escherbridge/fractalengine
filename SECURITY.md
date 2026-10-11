@@ -31,10 +31,31 @@ These are known, publicly acknowledged gaps in the current codebase. They
 are tracked for resolution before a production-ready release; reports that
 merely restate them will be deduplicated against this list.
 
-- **Op-log entries are not yet signed.** The op-log format reserves an
-  ed25519 signature field, but production write paths currently stamp a
-  placeholder (all-zero) signature — including session-revocation entries.
-  Do not rely on op-log signatures for integrity or non-repudiation yet.
+- **Legacy op-log entries are unsigned.** The op-log format reserves an
+  ed25519 signature field, but 21 production write paths in `fe-database`
+  stamp a placeholder (all-zero) signature, session revocation among them.
+  Per decision D-CL24(5), these pre-canonical `op_log` rows are permanently
+  unsigned and untrusted: there is no signature backfill. Signed operations
+  belong to the canonical log. Do not rely on `op_log` signatures for
+  integrity or non-repudiation. The site-by-site register is in
+  `conductor/tracks/oss_release_20260717/spec.md` (FR-2). It was
+  re-verified 2026-10-11 with `git grep -n '"00"\.repeat(64)' -- '*.rs'`,
+  which returned 22 hits: 21 production sites plus 1 test fixture.
+- **Known dependency advisories are triaged, not yet fixed.** `deny.toml`
+  explicitly ignores these RustSec IDs, each with a reason:
+  - 19 for `wasmtime` 29 in the dormant WASM plugin host. Each needs a major
+    upgrade.
+  - Several transitive advisories whose patched release would re-resolve
+    other crates: `ammonia` via surrealdb-core, `h2`, `rustls`, and
+    `webbrowser` via bevy_egui.
+  - Advisories with no fix in the line our dependencies pin:
+    `hickory-proto` 0.25 and `rustls-webpki` 0.102 via iroh 0.35;
+    `quick-xml` 0.39 via tauri's plist reader; and `rsa` (RUSTSEC-2023-0071,
+    no upstream fix; reached only through jsonwebtoken, while FractalEngine
+    signs and verifies EdDSA only).
+
+  CI runs `cargo deny check advisories bans sources`, so any new advisory
+  fails the lint job.
 - **Peer write admission has residual gaps.** Inbound replicated rows are
   admitted on the database thread only when their author holds Editor+ at
   the verse scope (fe-policy, deny-by-default). Residuals: rows for a verse

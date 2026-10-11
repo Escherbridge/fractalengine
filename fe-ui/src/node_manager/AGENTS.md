@@ -658,10 +658,19 @@ tool/selection only where intent changes: Pen keeps placing a point even over a
 grazed node; a gimbal-axis press drags the current selection. Per the ratified
 decision (2026-07-19 "grab it wherever it's shown"), a path vertex/segment
 resolves to `MoveVertex`/`MoveSegment` in EVERY tool (its gimbal is always drawn
-as a Move handle, so it must always be grabbable); an entity-backed selection
-(node / stamp / whole track) resolves to `BeginGimbalDrag` only in the transform
-tools (`Move`/`Rotate`/`Scale`), matching the entity gimbal that stays closed in
-Select/Pen. WHEN a given hit can occur is the router's gate, not the table's
+as a Move handle, so it must always be grabbable); a node or whole track
+resolves to `BeginGimbalDrag` only in the transform tools (`Move`/`Rotate`/
+`Scale`), matching the entity gimbal that stays closed in Select/Pen. **Stamp
+exception (D-A5, STAMP-GIMBAL-TRANSLATE-LOCK):** a stamp's position is
+path-derived, so `SelectionKind::Stamp` resolves to `BeginGimbalDrag` only for
+`Rotate`/`Scale` and to `None` under `Move`. A bridged stamp entity carries
+`SpawnedNodeMarker` as well as `PathAssetInstance`, so it IS pickable into
+`NodeManager`; `handle_gimbal_interaction` therefore classifies the selection
+via a `With<PathAssetInstance>` query (Stamp vs Node) before consulting the
+table, skips the translation write if the tool switches to Move mid-drag, and
+`draw_gimbal_system` draws no Move handle for a stamp (no drawn-but-dead
+handle). The API/DB twin of this lock is `fe-api` `stamp_translate_denied` +
+the fe-database transform guard (T5-LOCK). WHEN a given hit can occur is the router's gate, not the table's
 concern — the table stays decoupled from the per-tool pick guards.
 
 **Handle variants (pen_curve_tool_20260722 FR-5).** `HitTarget::PathHandle

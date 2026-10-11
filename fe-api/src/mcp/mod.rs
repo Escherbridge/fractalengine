@@ -107,7 +107,24 @@ pub struct ToolSpec {
     pub input_schema: fn() -> serde_json::Value,
     pub min_role: RoleLevel,
     pub scope_rule: ScopeRule,
+    /// Host seam the tool needs; without it the tool is hidden and unknown.
+    pub requires: Option<ToolSeam>,
     pub(crate) handler: ToolHandler,
+}
+
+/// An optional host seam a tool depends on (see AGENTS.md §mcp-dispatch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSeam {
+    /// The sim-lab bridge (`ApiState.sim_control_tx`).
+    SimControl,
+}
+
+/// Whether this host wires the seam `spec` needs.
+pub fn tool_available(spec: &ToolSpec, state: &ApiState) -> bool {
+    match spec.requires {
+        None => true,
+        Some(ToolSeam::SimControl) => state.sim_control_tx.is_some(),
+    }
 }
 
 /// The full tool table (read-only view for tests and docs).
@@ -116,13 +133,20 @@ pub fn tool_specs() -> &'static [ToolSpec] {
 }
 
 macro_rules! tool {
+    ($name:ident, $role:ident, $rule:expr, requires $seam:ident, $desc:expr) => {
+        tool!(@spec $name, $role, $rule, Some(ToolSeam::$seam), $desc)
+    };
     ($name:ident, $role:ident, $rule:expr, $desc:expr) => {
+        tool!(@spec $name, $role, $rule, None, $desc)
+    };
+    (@spec $name:ident, $role:ident, $rule:expr, $requires:expr, $desc:expr) => {
         ToolSpec {
             name: stringify!($name),
             description: $desc,
             input_schema: tools::schema::$name,
             min_role: RoleLevel::$role,
             scope_rule: $rule,
+            requires: $requires,
             handler: tools::$name,
         }
     };
@@ -155,15 +179,15 @@ static TOOLS: &[ToolSpec] = &[
         "Materialize a full addressable node for a single stamp instance (lazy promotion, idempotent). Requires editor role + petal scope; authorized by fe-policy."),
     tool!(query_timeseries, Viewer, PetalArg("petal_id"),
         "Run a distributed timeseries query over a petal's sharded IoT fabric. The query fans out to online peers hosting the petal's shards and merges commutatively (aggregate: mean/min/max/count as an exact monoid; raw rows: union deduped by reading_id; latest: max timestamp per anchor). Results carry covered/missing shard honesty metadata — an offline peer's shards are invisible at replication factor 1, served from a surviving mirror at R>=2. Requires viewer role + petal scope."),
-    tool!(sim_start, Owner, Global,
+    tool!(sim_start, Owner, Global, requires SimControl,
         "Start a deterministic simulation-lab session (fe-sim): spawns in-process simulated peers on a virtual network and prepares the scripted fleet. One session at a time. Requires owner role and a host started as a sim lab."),
-    tool!(sim_stop, Owner, Global,
+    tool!(sim_stop, Owner, Global, requires SimControl,
         "Stop the live sim session: settle every peer, return the canonical outcome fingerprint, and tear it down. Requires owner role."),
-    tool!(sim_status, Owner, Global,
+    tool!(sim_status, Owner, Global, requires SimControl,
         "Snapshot the live sim session (peers + online state, action cursor, sim clock offset, readings ingested, injected faults, network counters); {running:false} when idle. Requires owner role."),
-    tool!(sim_step, Owner, Global,
+    tool!(sim_step, Owner, Global, requires SimControl,
         "Execute the next n scripted actions (fleet ticks, scripted faults, distributed queries) of the live sim session; returns the queries completed. Requires owner role."),
-    tool!(sim_inject_fault, Owner, Global,
+    tool!(sim_inject_fault, Owner, Global, requires SimControl,
         "Apply a network fault to the live sim session NOW: peer_offline / peer_online {peer}, partition {groups}, heal, set_latency {latency_ms}. Requires owner role."),
     // --- F13: the 13 mcp_scene_primitives tools (DEC-C14) ---
     tool!(upload_asset, Editor, PetalArg("petal_id"),
@@ -206,9 +230,11 @@ struct ToolDefinition {
     input_schema: serde_json::Value,
 }
 
-fn tool_definitions() -> Vec<ToolDefinition> {
+/// The tools this host advertises: rows whose seam is wired.
+fn tool_definitions(state: &ApiState) -> Vec<ToolDefinition> {
     TOOLS
         .iter()
+        .filter(|t| tool_available(t, state))
         .map(|t| ToolDefinition {
             name: t.name,
             description: t.description,
@@ -246,7 +272,7 @@ pub async fn mcp_handler(
         "tools/list" => JsonRpcResponse {
             jsonrpc: "2.0".into(),
             id: req.id,
-            result: Some(serde_json::json!({ "tools": tool_definitions() })),
+            result: Some(serde_json::json!({ "tools": tool_definitions(&state) })),
             error: None,
         },
 
@@ -293,7 +319,11 @@ async fn handle_tool_call(
     tool_name: &str,
     args: serde_json::Value,
 ) -> JsonRpcResponse {
-    let Some(spec) = TOOLS.iter().find(|t| t.name == tool_name) else {
+    // A tool whose seam is unwired answers exactly like an unknown name.
+    let Some(spec) = TOOLS
+        .iter()
+        .find(|t| t.name == tool_name && tool_available(t, state))
+    else {
         return tool_error(id, &format!("unknown tool: {tool_name}"));
     };
     // Non-object arguments degrade to `{}` (then fail the required-args check).

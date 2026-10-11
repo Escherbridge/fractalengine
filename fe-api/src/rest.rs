@@ -281,7 +281,7 @@ pub async fn create_node(
     ) {
         return create_denied(StatusCode::NOT_FOUND, NOT_FOUND_OR_DENIED);
     }
-    create_node_in_petal(&state, petal_id, req).await
+    create_node_in_petal(&state, &claims, petal_id, req).await
 }
 
 /// POST /api/v1/nodes — legacy flat create (for MCP and existing integrations).
@@ -305,15 +305,48 @@ pub async fn create_node_legacy(
     if !write_target_authorized(&claims, target.as_deref(), None, None) {
         return create_denied(StatusCode::NOT_FOUND, NOT_FOUND_OR_DENIED);
     }
-    create_node_in_petal(&state, petal_id, req).await
+    create_node_in_petal(&state, &claims, petal_id, req).await
 }
 
-/// `CreateNode` into an authorized petal (shared by both REST node creates).
+/// `CreateNode` into an authorized petal (shared by both REST node creates);
+/// with `asset_id` it is MCP `place_asset` (fe-api/AGENTS.md §asset-ingest).
 async fn create_node_in_petal(
     state: &crate::server::ApiState,
+    claims: &ApiClaims,
     petal_id: String,
     req: CreateNodeRequest,
 ) -> Response {
+    if let Some(asset_id) = req.asset_id.as_deref() {
+        if !is_valid_ulid(asset_id) {
+            return create_denied(StatusCode::BAD_REQUEST, "invalid asset_id");
+        }
+        let placed = crate::upload::place_asset_core(
+            state,
+            claims,
+            &petal_id,
+            &req.name,
+            asset_id,
+            req.position.unwrap_or([0.0; 3]),
+            req.rotation.unwrap_or([0.0; 3]),
+            req.scale.unwrap_or([1.0; 3]),
+        )
+        .await;
+        return match placed {
+            Ok(p) => Json(ApiResponse::success(serde_json::json!({
+                "id": p.node_id,
+                "name": p.name,
+                "asset_id": p.asset_id,
+                "asset_path": p.asset_path,
+            })))
+            .into_response(),
+            Err(e) if e == crate::upload::UNKNOWN_ASSET => create_denied(StatusCode::NOT_FOUND, &e),
+            Err(e) => create_failed(e),
+        };
+    }
+    if req.rotation.is_some() || req.scale.is_some() {
+        // CreateNode carries no rotation/scale; dropping them silently is worse.
+        return create_denied(StatusCode::BAD_REQUEST, "rotation/scale require asset_id");
+    }
     let cmd = DbCommand::CreateNode {
         petal_id,
         name: req.name,
@@ -345,7 +378,7 @@ pub async fn update_transform(
         return Json(ApiResponse::error("insufficient permissions"));
     }
 
-    if !is_valid_ulid(&node_id) {
+    if !crate::endpoint::is_addressable_node_id(&node_id) {
         return Json(ApiResponse::error("invalid node_id"));
     }
 
@@ -355,6 +388,10 @@ pub async fn update_transform(
         .is_none()
     {
         return Json(ApiResponse::error(crate::rest::NOT_FOUND_OR_DENIED));
+    }
+
+    if let Some(denial) = stamp_translate_denied(&state, &node_id, req.position).await {
+        return Json(ApiResponse::error(denial));
     }
 
     let broadcast_receivers = persist_transform(
@@ -371,6 +408,31 @@ pub async fn update_transform(
         "broadcast_receivers": broadcast_receivers,
         "persist": "queued"
     })))
+}
+
+/// D-A5 translate lock, checked BEFORE the optimistic broadcast: a promoted
+/// stamp (`<path>#inst-<n>`, the only `node_kind = stamp` rows) may not move.
+/// Plain ids pay no I/O; the DB handler stays authoritative (§endpoint-surface).
+pub(crate) async fn stamp_translate_denied(
+    state: &crate::server::ApiState,
+    node_id: &str,
+    position: [f32; 3],
+) -> Option<&'static str> {
+    const DENIAL: &str =
+        "stamp position is locked to its path (D-A5); only rotation/scale may change";
+    if !node_id.contains("#inst-") {
+        return None;
+    }
+    match load_node_transform(state, node_id).await {
+        Ok(stored) => stored
+            .position
+            .iter()
+            .zip(position)
+            .any(|(stored, requested)| (requested - stored).abs() > 1e-4)
+            .then_some(DENIAL),
+        // Unreadable stamp row: fail closed (deny-by-default) before broadcasting.
+        Err(_) => Some("could not verify the stamp position lock"),
+    }
 }
 
 /// Transform write core shared by REST `update_transform` and the MCP tool
@@ -1769,6 +1831,10 @@ pub(crate) async fn move_waypoint_core(
         },
         None => [req.lat as f32, ele as f32, req.lon as f32],
     };
+    // D-A5: a promoted stamp is path-locked — refuse before any write (incl. lat/lon props).
+    if let Some(denial) = stamp_translate_denied(state, waypoint_id, position).await {
+        return Err(denial.to_string());
+    }
 
     // A move is a reposition only: keep the node's stored rotation/scale
     // (`TransformPersist` writes all three, so they must be read first).

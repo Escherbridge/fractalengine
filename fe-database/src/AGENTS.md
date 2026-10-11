@@ -620,6 +620,16 @@ without being physically gone. The node's direct gpx waypoints
 retains a hard row drop — it is the pre-track hard-delete op, superseded by the
 tombstone for anything sync-safe.
 
+**Stamp position lock (D-A5, T5-LOCK).** `update_node_transform_handler`
+(handlers/transform.rs) reads `properties.node_kind` + the stored position in
+one SELECT after `require_node_exists`; for a `node_kind = 'stamp'` row whose
+requested position differs from the stored one by more than 1e-4 on any axis
+it bails with `position-locked: stamp …` BEFORE `commit_operation`, so no
+op-log row is appended and the row is unchanged. Rotation/scale-only updates
+(same position) proceed. The dispatcher's existing error arm turns the Err into
+a `SceneChange::TransformFailed` rollback, which covers the UI/WS path too.
+fe-api's `stamp_translate_denied` is only the fail-fast pre-broadcast twin.
+
 **Cascade = one materialized subtree update (FR-2).**
 `cascade_tombstone_node_handler` BFS-collects the N-level descendant subtree
 over the durable parent edges (`properties.parent_id` / `gpx_track_id` /

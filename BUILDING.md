@@ -122,10 +122,11 @@ docker build -f docker/Dockerfile.relay -t fractalengine-relay .
 docker run -p 8765:8765 -v relay-data:/data fractalengine-relay
 ```
 
-Released images are published to GHCR on every `v*` tag:
+Released images are published to GHCR on every `v*` tag (`latest` moves only on
+stable tags; pre-release tags such as `v0.3.0-rc1` are pullable by name):
 
 ```bash
-docker pull ghcr.io/jadezaher/fractalengine-relay:latest
+docker pull ghcr.io/escherbridge/fractalengine-relay:latest
 ```
 
 ### Secrets in containers

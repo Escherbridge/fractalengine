@@ -188,6 +188,7 @@ Factory-era locked user decisions: D1–D4 in the mission library.
 
 - What did "remove" mean for `../gis-tile-etl` — only "don't push it", or
   delete the repo/commit? Nothing was deleted. (Trigger: user's reply.)
-- Does `verse.namespace_id` readable via `/query` act as a read capability
-  for the iroh replica? (Flagged by the M4 re-review; trigger: next fe-sync
-  security pass.)
+- ~~Does `verse.namespace_id` readable via `/query` act as a read capability
+  for the iroh replica?~~ **Answered 2026-10-11 (SYNC-NSID-CAP): YES, and it
+  is live** — see `fe-sync/src/AGENTS.md` §namespace-id-capability. `/query`
+  now refuses it (`fe-api/AGENTS.md` §query-guard).

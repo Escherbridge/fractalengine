@@ -21,20 +21,32 @@ use crate::signing::SigningError;
 /// scope matching, SPEC-2 scope-propagated lineage resolution, and SPEC-3 permission cells are
 /// all unimplementable without it.
 ///
-/// **The name is a claim about provenance, and the type does not enforce it.** Every field is
-/// `pub`, so a value of this type is evidence of verification only when it came out of
-/// [`VerifiedEnvelopeMeta::verify_from_bytes`], [`verify_envelope_meta`], or
-/// [`verify_and_project_envelope`] -- the three doors that run `signing::decode_and_admit`
-/// first. A value built by struct literal, or by the hazardous projection
-/// [`verified_envelope_meta_from`], carries no cryptographic weight whatsoever; treating one as
-/// admitted is the mistake this note exists to prevent.
+/// **Sealed against struct literals outside this crate** (`#[non_exhaustive]`): an external
+/// crate obtains a value only from [`VerifiedEnvelopeMeta::verify_from_bytes`],
+/// [`verify_envelope_meta`], or [`verify_and_project_envelope`] -- the doors that run
+/// `signing::decode_and_admit` first -- or from the hazardous unverified projection
+/// [`verified_envelope_meta_from`], which remains a public door (see its HAZARD note and
+/// `materialize/AGENTS.md`). The seal therefore closes the literal door only; it does not make
+/// every value proof of verification. Fields stay `pub` for reading.
 ///
-/// The fields stay public, and the type is deliberately NOT `#[non_exhaustive]`, because
-/// out-of-crate test harnesses in `fe-database` build fixture values with struct literals.
-/// `capability::VerifiedCapability` closes the same seam structurally precisely because it has
-/// no such consumer; until this one's literals are gone, the guarantee here is a documented
-/// obligation, not a type-level one, and must not be described as anything stronger.
+/// An external struct literal, even with every field correctly typed, is refused:
+///
+/// ```compile_fail,E0639
+/// use fe_canonical_log::envelope::{Hash32, Identifier32, Scope};
+/// let _forged = fe_canonical_log::materialize::VerifiedEnvelopeMeta {
+///     op_id: Hash32([0x01; 32]),
+///     operation_kind: 100,
+///     scope: Scope::verse_wide(Identifier32([0x02; 32])),
+///     branch_id: Identifier32([0x03; 32]),
+///     schema_hash: Hash32([0x04; 32]),
+///     parents: Vec::new(),
+///     author_public_key: [0x05; 32],
+///     wall_ms: 1_000,
+///     counter: 0,
+/// };
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VerifiedEnvelopeMeta {
     /// Content address of the complete envelope.
     pub op_id: Hash32,

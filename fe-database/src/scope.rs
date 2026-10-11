@@ -184,16 +184,9 @@ pub fn scope_level(scope: &str) -> Result<ScopeLevel, ScopeError> {
     }
 }
 
-/// True if `token_scope` grants access to `resource_scope` — higher scopes
-/// cover everything beneath them (resolution rules: fe-database/src/AGENTS.md §scope).
-pub fn scope_contains(token_scope: &str, resource_scope: &str) -> bool {
-    if token_scope == resource_scope {
-        return true;
-    }
-    // Token scope must be a proper prefix ending at a keyword boundary.
-    // e.g. "VERSE#v1" is a prefix of "VERSE#v1-FRACTAL#f1" at the "-FRACTAL#" boundary.
-    resource_scope.starts_with(token_scope) && resource_scope[token_scope.len()..].starts_with('-')
-}
+/// Scope containment now lives in fe-policy (single home for authz math);
+/// re-exported so `fe_database::scope_contains` paths keep working.
+pub use fe_policy::scope_contains;
 
 #[cfg(test)]
 mod tests {

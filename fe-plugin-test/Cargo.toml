@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "Testing utilities for FractalEngine plugins — mock hosts, fixtures, assertions"
 
 [dependencies]
-fe-sdk = { path = "../fe-sdk" }
+fe-sdk = { version = "0.1.0", path = "../fe-sdk" }
 rhai = "1.19"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

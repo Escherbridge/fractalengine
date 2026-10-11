@@ -92,6 +92,10 @@ cargo build --release -p fractalengine-relay
 # The pre-commit trio
 cargo fmt && cargo clippy -- -D warnings && cargo test
 
+# CI's lint job also runs these two (fuzzing needs nightly + Linux)
+cargo deny check advisories bans sources
+cd fuzz && cargo +nightly fuzz run jwt_parse -- -max_total_time=60
+
 # Single crate
 cargo test -p fe-identity
 ```
@@ -176,8 +180,9 @@ replicator remains mock-backed — it is not part of this path.)
 - **BI egress.** Export nodes and IoT readings as Parquet/CSV over signed,
   time-limited share URLs for DuckDB, PowerBI, or a spreadsheet — no database
   credentials required. See [docs/bi-egress.md](docs/bi-egress.md).
-- **MCP surface.** 29 machine-callable tools behind one table-driven
-  authorization path: a role floor plus a scope rule resolved from the DB,
+- **MCP surface.** 29 machine-callable tools (24 advertised on a normal host;
+  the five `sim_*` tools appear only on a simulation-lab host) behind one
+  table-driven authorization path: a role floor plus a scope rule resolved from the DB,
   never from caller-supplied ancestry ids.
 - **Relay EOL note.** iroh 0.35's default n0-hosted relay infrastructure is
   EOL **2026-12-31**. Point `FE_SYNC_RELAY` at a custom relay (or set it to
@@ -275,7 +280,7 @@ The `fe-api` crate provides an axum-based HTTP/WebSocket API on port 8765.
 | POST | `/api/v1/verses` | Bearer JWT | Create a verse |
 | POST | `/api/v1/verses/:vid/fractals` | Bearer JWT | Create a fractal |
 | POST | `/api/v1/verses/:vid/fractals/:fid/petals` | Bearer JWT | Create a petal |
-| POST | `/api/v1/verses/:vid/fractals/:fid/petals/:pid/nodes` | Bearer JWT | Create a node |
+| POST | `/api/v1/verses/:vid/fractals/:fid/petals/:pid/nodes` | Bearer JWT | Create a node (optional `asset_id` places an asset the petal owns) |
 | PATCH | `/api/v1/nodes/:id/transform` | Bearer JWT | Update node transform |
 | GET | `/api/v1/nodes/:id/transform` | Bearer JWT | Read node transform |
 | GET | `/api/v1/assets/:content_hash` | Bearer JWT | Content-addressed asset delivery (immutable caching) |

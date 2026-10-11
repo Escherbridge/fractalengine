@@ -443,3 +443,332 @@ async fn gpx_export_emits_track_and_both_waypoints_exactly_once() {
     assert_eq!(xml.matches("<name>Summit</name>").count(), 1, "{xml}");
     assert_eq!(xml.matches("<name>Spring</name>").count(), 1, "{xml}");
 }
+
+// ---------------------------------------------------------------------------
+// AP-3.4: TokenScopePolicy is the production scope gate (require_scope)
+// ---------------------------------------------------------------------------
+
+/// A foreign-verse Editor gets the uniform denial on two `require_scope`-gated
+/// routes (a pure URI resolve and a DB-backed node read) while the own-verse
+/// token passes — red if `require_scope` stops delegating to
+/// `TokenScopePolicy` or its containment is inverted.
+#[tokio::test]
+async fn foreign_verse_token_is_denied_by_token_scope_policy() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed hierarchy");
+    let node_id = h
+        .seed_node(&own.petal_id, "scoped", [0.0, 0.0, 0.0], None)
+        .await
+        .expect("seed node");
+    let address = format!(
+        "/api/v1/address?uri=fe://{}/{}/{}/{}",
+        own.verse_id, own.fractal_id, own.petal_id, node_id
+    );
+    let read = format!("/api/v1/nodes/{node_id}");
+
+    let foreign = h.mint_token("VERSE#other", "editor");
+    let own_token = h.mint_token(&own.verse_scope(), "editor");
+    for path in [&address, &read] {
+        let (_, body) = h.get(path, Some(&foreign)).await;
+        assert_eq!(body["ok"], false, "{path}: {body}");
+        assert_eq!(body["error"], fe_api::rest::NOT_FOUND_OR_DENIED, "{path}");
+
+        let (_, body) = h.get(path, Some(&own_token)).await;
+        assert_eq!(body["ok"], true, "{path}: {body}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T5-LOCK: REST PATCH .../transform cannot free-translate a promoted stamp
+// ---------------------------------------------------------------------------
+
+async fn patch_transform(
+    h: &ApiHarness,
+    token: &str,
+    node_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+) -> serde_json::Value {
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!(
+            "/api/v1/nodes/{}/transform",
+            node_id.replace('#', "%23")
+        ))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({ "position": position, "rotation": rotation, "scale": [2.0, 2.0, 2.0] })
+                .to_string(),
+        ))
+        .expect("build request");
+    serde_json::from_slice(&body_bytes(h.request(req).await).await).expect("json body")
+}
+
+/// Persisted transforms that reached the DB channel so far (fire-and-forget).
+fn drained_persists(
+    rx: &crossbeam::channel::Receiver<fe_runtime::messages::ApiCommand>,
+) -> Vec<(String, [f32; 3])> {
+    rx.try_iter()
+        .filter_map(|cmd| match cmd {
+            fe_runtime::messages::ApiCommand::TransformPersist {
+                node_id, rotation, ..
+            } => Some((node_id, rotation)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn rest_transform_rejects_moving_a_promoted_stamp_but_rotates_it() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed hierarchy");
+    let stamp = h
+        .seed_promoted_stamp(&own.petal_id, 0, [5.0, 1.0, 7.0])
+        .await
+        .expect("seed stamp");
+    let token = h.mint_token(&own.verse_scope(), "editor");
+    let rx = h.api_command_receiver();
+
+    let moved = patch_transform(&h, &token, &stamp, [6.0, 1.0, 7.0], [0.0; 3]).await;
+    assert_eq!(moved["ok"], false, "{moved}");
+    assert!(
+        moved["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("position is locked"),
+        "{moved}"
+    );
+    assert!(
+        drained_persists(&rx).is_empty(),
+        "a denied move must not persist"
+    );
+
+    let rotated = patch_transform(&h, &token, &stamp, [5.0, 1.0, 7.0], [0.0, 1.5, 0.0]).await;
+    assert_eq!(rotated["ok"], true, "{rotated}");
+    assert_eq!(
+        drained_persists(&rx),
+        vec![(stamp.clone(), [0.0, 1.5, 0.0])],
+        "rotation-only change persists"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T5-PARITY (endpoint_api_surface Phase 3): API ops == UI ops, real-row reads
+// ---------------------------------------------------------------------------
+
+/// DELETE `/api/v1/nodes/{id}{query}`; answers the one DB request like the DB
+/// thread and returns (response envelope, the `DbCommand` that reached it).
+async fn delete_capturing_command(
+    h: &ApiHarness,
+    token: &str,
+    node_id: &str,
+    query: &str,
+) -> (serde_json::Value, fe_runtime::messages::DbCommand) {
+    use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
+    let rx = h.api_command_receiver();
+    let db_thread =
+        std::thread::spawn(
+            move || match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(ApiCommand::DbRequest { cmd, reply_tx }) => {
+                    let node_id = match &cmd {
+                        DbCommand::TombstoneNode { node_id, .. }
+                        | DbCommand::CascadeTombstoneNode { node_id, .. } => node_id.clone(),
+                        other => panic!("delete sent {other:?}"),
+                    };
+                    let _ = reply_tx.send(DbResult::NodeDeleted {
+                        node_id,
+                        petal_id: String::new(),
+                    });
+                    cmd
+                }
+                other => panic!("no DbRequest reached the DB channel: {other:?}"),
+            },
+        );
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/nodes/{node_id}{query}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("build request");
+    let body = serde_json::from_slice(&body_bytes(h.request(req).await).await).expect("json");
+    (body, db_thread.join().expect("db thread"))
+}
+
+/// 6a, API half: REST DELETE sends exactly the op the UI's `handle_delete`
+/// sends (`TombstoneNode` / `CascadeTombstoneNode`), differing only in the
+/// caller: `Identified{token sub, role}` vs the UI's `Local`. The DB half
+/// (`node_lifecycle_test::ui_and_api_tombstones_write_the_same_op_log_entry`)
+/// proves both callers then write the same op-log entry.
+#[tokio::test]
+async fn rest_delete_sends_the_ui_tombstone_op_with_an_identified_caller() {
+    use fe_runtime::messages::{CallerAuth, DbCommand};
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed hierarchy");
+    let node = h
+        .seed_node(&own.petal_id, "doomed", [0.0; 3], None)
+        .await
+        .expect("seed node");
+    let token = h.mint_token(&own.verse_scope(), "editor");
+    let identified = |cmd: &DbCommand| match cmd {
+        DbCommand::TombstoneNode { node_id, auth } => (false, node_id.clone(), auth.clone()),
+        DbCommand::CascadeTombstoneNode { node_id, auth } => (true, node_id.clone(), auth.clone()),
+        other => panic!("not a tombstone op: {other:?}"),
+    };
+    let caller = |auth: CallerAuth| match auth {
+        CallerAuth::Identified { did, role } => (did, role),
+        other => panic!("API caller must be Identified, got {other:?}"),
+    };
+
+    let (body, cmd) = delete_capturing_command(&h, &token, &node, "").await;
+    assert_eq!(body["ok"], true, "{body}");
+    assert_eq!(body["data"]["tombstoned"], true);
+    let (cascade, node_id, auth) = identified(&cmd);
+    assert!(!cascade);
+    assert_eq!(node_id, node);
+    assert_eq!(caller(auth), (h.did(), "editor".to_string()));
+
+    let (body, cmd) = delete_capturing_command(&h, &token, &node, "?cascade=true").await;
+    assert_eq!(body["data"]["cascade"], true, "{body}");
+    let (cascade, node_id, auth) = identified(&cmd);
+    assert!(cascade);
+    assert_eq!(node_id, node);
+    assert_eq!(caller(auth), (h.did(), "editor".to_string()));
+}
+
+/// 6b: the earthwork summary sums the volumes of the petal's LIVE region rows
+/// (real SurrealDB aggregation, not a fixture). A tombstoned region, a region
+/// in another petal and a plain node with volume-shaped keys are excluded.
+#[tokio::test]
+async fn earthwork_summary_sums_live_region_rows() {
+    use fe_query::spatial_nodes::{CUT_VOLUME_KEY, FILL_VOLUME_KEY, KIND_KEY};
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed hierarchy");
+    let other_petal = h
+        .seed_petal(&own.fractal_id, "Other Petal", None)
+        .await
+        .expect("other petal");
+    let region = |cut: f64, fill: f64| json!({ KIND_KEY: "earthwork_region", CUT_VOLUME_KEY: cut, FILL_VOLUME_KEY: fill });
+    for (petal, cut, fill) in [
+        (&own.petal_id, 120.5, 30.0),
+        (&own.petal_id, 79.5, 70.25),
+        (&other_petal, 1000.0, 1000.0),
+    ] {
+        h.seed_node(petal, "region", [0.0; 3], Some(region(cut, fill)))
+            .await
+            .expect("seed region");
+    }
+    let deleted = h
+        .seed_node(
+            &own.petal_id,
+            "deleted region",
+            [0.0; 3],
+            Some(region(5000.0, 5000.0)),
+        )
+        .await
+        .expect("seed deleted region");
+    h.db.query(
+        "UPDATE node SET tombstone = { hlc: 1, source_did: 'did:key:test' } WHERE node_id = $nid",
+    )
+    .bind(("nid", deleted))
+    .await
+    .expect("tombstone region")
+    .check()
+    .expect("tombstone check");
+    h.seed_node(
+        &own.petal_id,
+        "plain",
+        [0.0; 3],
+        Some(json!({ CUT_VOLUME_KEY: 9.0 })),
+    )
+    .await
+    .expect("seed plain");
+
+    let token = h.mint_token(&own.verse_scope(), "viewer");
+    let (_, body) = h
+        .get(
+            &format!("/api/v1/petals/{}/earthwork/summary", own.petal_id),
+            Some(&token),
+        )
+        .await;
+    assert_eq!(body["ok"], true, "{body}");
+    let summary = &body["data"][0];
+    assert_eq!(summary["region_count"], 2, "{body}");
+    assert_eq!(summary["total_cut_m3"].as_f64(), Some(200.0), "{body}");
+    assert_eq!(summary["total_fill_m3"].as_f64(), Some(100.25), "{body}");
+}
+
+/// 6c: `GET /api/v1/nodes/{id}` reads each object type through the one
+/// generic endpoint: `kind` from `properties.node_kind`, and the
+/// type-specific payload in `data.properties`.
+#[tokio::test]
+async fn read_node_returns_each_type_specific_payload() {
+    use fe_query::spatial_nodes::{
+        CUT_VOLUME_KEY, FILL_VOLUME_KEY, KIND_KEY, MATERIAL_KEY, STAMP_INSTANCE_INDEX_KEY,
+        STAMP_PATH_ID_KEY,
+    };
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let own = h.seed_hierarchy().await.expect("seed hierarchy");
+    let stamp = h
+        .seed_promoted_stamp(&own.petal_id, 3, [5.0, 1.0, 7.0])
+        .await
+        .expect("seed stamp");
+    let region = h
+        .seed_node(
+            &own.petal_id,
+            "cut",
+            [0.0; 3],
+            Some(json!({ KIND_KEY: "earthwork_region", CUT_VOLUME_KEY: 42.5,
+                         FILL_VOLUME_KEY: 7.0, MATERIAL_KEY: "clay" })),
+        )
+        .await
+        .expect("seed region");
+    let points = json!([[0.0, 0.0, 0.0, 0.0], [10.0, 0.0, 5.0, 1.0]]);
+    let path = h
+        .seed_node(
+            &own.petal_id,
+            "ridge",
+            [0.0; 3],
+            Some(json!({ "gpx_type": "track", "gpx_points": points })),
+        )
+        .await
+        .expect("seed path");
+    let token = h.mint_token(&own.verse_scope(), "viewer");
+
+    let mut dtos = Vec::new();
+    for id in [&stamp, &region, &path] {
+        let (_, body) = h
+            .get(
+                &format!("/api/v1/nodes/{}", id.replace('#', "%23")),
+                Some(&token),
+            )
+            .await;
+        assert_eq!(body["ok"], true, "{id}: {body}");
+        assert_eq!(body["data"]["node_id"], id.as_str());
+        dtos.push(body["data"].clone());
+    }
+
+    let stamp_dto = &dtos[0];
+    assert_eq!(stamp_dto["kind"], "stamp");
+    let props = &stamp_dto["data"]["properties"];
+    assert_eq!(props[STAMP_INSTANCE_INDEX_KEY], 3);
+    assert_eq!(
+        props[STAMP_PATH_ID_KEY],
+        stamp.split("#inst-").next().unwrap()
+    );
+
+    let region_dto = &dtos[1];
+    assert_eq!(region_dto["kind"], "earthwork_region");
+    let props = &region_dto["data"]["properties"];
+    assert_eq!(props[CUT_VOLUME_KEY].as_f64(), Some(42.5));
+    assert_eq!(props[FILL_VOLUME_KEY].as_f64(), Some(7.0));
+    assert_eq!(props[MATERIAL_KEY], "clay");
+
+    let path_dto = &dtos[2];
+    assert!(
+        path_dto["kind"].is_null(),
+        "a path is a plain node: {path_dto}"
+    );
+    assert_eq!(path_dto["data"]["properties"]["gpx_type"], "track");
+    assert_eq!(path_dto["data"]["properties"]["gpx_points"], points);
+}

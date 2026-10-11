@@ -1,7 +1,7 @@
 //! Plugin transaction trait for the extension SDK.
 //!
 //! Extension authors use [`PluginTransaction`] to batch scene mutations.
-//! The engine provides a concrete implementation via [`PluginContext::transaction()`].
+//! The engine provides a concrete implementation via [`PluginContext::transaction()`](crate::context::PluginContext::transaction).
 //!
 //! The trait is object-safe so it can be passed as `Box<dyn PluginTransaction>`.
 

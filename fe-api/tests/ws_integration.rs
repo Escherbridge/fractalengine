@@ -257,3 +257,66 @@ async fn ws_unknown_and_foreign_ids_get_identical_denials() {
     }
     let _ = ws.close(None).await;
 }
+
+/// T5-LOCK over `/ws`: moving a promoted stamp gets a `forbidden` error frame
+/// and is never broadcast; a rotation-only update is broadcast as usual.
+#[tokio::test]
+async fn ws_transform_update_cannot_move_a_promoted_stamp() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let chain = h.seed_hierarchy().await.expect("seed hierarchy");
+    let stamp = h
+        .seed_promoted_stamp(&chain.petal_id, 0, [5.0, 1.0, 7.0])
+        .await
+        .expect("seed stamp");
+    let token = h.mint_token(&chain.verse_scope(), "editor");
+    let addr = spawn_live_server(&h).await;
+
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .expect("ws connect");
+    assert_eq!(next_json(&mut ws).await["type"], "auth_required");
+    ws.send(WsMessage::Text(
+        json!({ "type": "auth", "access_token": token })
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("send auth");
+    assert_eq!(next_json(&mut ws).await["type"], "auth_ok");
+    ws.send(WsMessage::Text(
+        json!({ "type": "subscribe", "channel": "transforms", "petal_id": chain.petal_id })
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("send subscribe");
+    assert_eq!(next_json(&mut ws).await["type"], "subscribed");
+
+    let update = |position: [f32; 3], rotation: [f32; 3]| {
+        json!({ "type": "transform_update", "node_id": stamp, "position": position,
+                 "rotation": rotation, "scale": [1.0, 1.0, 1.0] })
+        .to_string()
+    };
+    ws.send(WsMessage::Text(update([6.0, 1.0, 7.0], [0.0; 3]).into()))
+        .await
+        .expect("send move");
+    let denied = next_json(&mut ws).await;
+    assert_eq!(denied["code"], "forbidden", "{denied}");
+    assert!(
+        denied["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("position is locked"),
+        "{denied}"
+    );
+
+    ws.send(WsMessage::Text(
+        update([5.0, 1.0, 7.0], [0.0, 0.5, 0.0]).into(),
+    ))
+    .await
+    .expect("send rotate");
+    let broadcast = next_json(&mut ws).await;
+    assert_eq!(broadcast["node_id"], stamp.as_str(), "{broadcast}");
+    assert_eq!(broadcast["rotation"], json!([0.0, 0.5, 0.0]));
+    let _ = ws.close(None).await;
+}

@@ -102,6 +102,94 @@ impl Policy for CapabilityPolicy {
     }
 }
 
+/// Allows any action iff the subject's role is at least the floor. A floor of
+/// `RoleLevel::None` admits everyone (fe-api `require_role_level` semantics).
+pub struct RoleFloorPolicy(pub RoleLevel);
+
+impl Policy for RoleFloorPolicy {
+    fn evaluate(&self, subject: &AuthContext, action: &Action, resource: &Scope) -> Decision {
+        let role = subject.role();
+        if role.is_at_least(self.0) {
+            Decision::Allow
+        } else {
+            Decision::deny(format!(
+                "role-floor: '{}' has role '{role}' at scope '{resource}' — '{action}' requires '{}'+",
+                subject.subject_label(),
+                self.0
+            ))
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "role-floor"
+    }
+}
+
+/// Action-agnostic API-token scope gate: allows iff the subject is an
+/// `ApiToken` one of whose scopes contains `resource` (keyword-boundary prefix).
+pub struct TokenScopePolicy;
+
+impl Policy for TokenScopePolicy {
+    fn evaluate(&self, subject: &AuthContext, _action: &Action, resource: &Scope) -> Decision {
+        let AuthContext::ApiToken { scopes, .. } = subject else {
+            return Decision::deny("token-scope: subject carries no token scope");
+        };
+        if scopes
+            .iter()
+            .any(|granted| Scope::new(granted.as_str()).contains(resource))
+        {
+            Decision::Allow
+        } else {
+            Decision::deny(format!(
+                "token-scope: '{}' scopes do not cover '{resource}'",
+                subject.subject_label()
+            ))
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "token-scope"
+    }
+}
+
+/// Owner-only gate over pre-fetched ownership data: allows iff the subject's
+/// DID (or API-token subject) equals `owner_did`. Anonymous/Capability deny.
+pub struct OwnershipPolicy {
+    owner_did: String,
+}
+
+impl OwnershipPolicy {
+    pub fn new(owner_did: impl Into<String>) -> Self {
+        Self {
+            owner_did: owner_did.into(),
+        }
+    }
+}
+
+impl Policy for OwnershipPolicy {
+    fn evaluate(&self, subject: &AuthContext, action: &Action, resource: &Scope) -> Decision {
+        let identity = match subject {
+            AuthContext::Did { did, .. } => did,
+            AuthContext::ApiToken { subject, .. } => subject,
+            AuthContext::Anonymous | AuthContext::Capability { .. } => {
+                return Decision::deny("ownership: subject carries no owner identity");
+            }
+        };
+        if *identity == self.owner_did {
+            Decision::Allow
+        } else {
+            Decision::deny(format!(
+                "ownership: '{}' is not the owner of '{resource}' — '{action}' is owner-only",
+                subject.subject_label()
+            ))
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "ownership"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +291,133 @@ mod tests {
         // Non-custom actions fail closed.
         assert!(!policy
             .evaluate(&subject, &Action::Read, &Scope::global())
+            .is_allow());
+    }
+
+    fn token(scope: &str, role: RoleLevel) -> AuthContext {
+        AuthContext::ApiToken {
+            subject: "did:key:z6MkNode".to_string(),
+            scopes: vec![scope.to_string()],
+            role,
+        }
+    }
+
+    #[test]
+    fn token_scope_table() {
+        let policy = TokenScopePolicy;
+        let v1 = token("VERSE#v1", RoleLevel::Editor);
+        // (subject, resource, allowed)
+        let table = [
+            (&v1, "VERSE#v1-FRACTAL#f-PETAL#p", true),
+            (&v1, "VERSE#v1", true),
+            (&v1, "VERSE#v2-FRACTAL#f-PETAL#p", false),
+            (&v1, "VERSE#v10-FRACTAL#f", false),
+            (&v1, "*", false),
+        ];
+        for (subject, resource, allowed) in table {
+            assert_eq!(
+                policy
+                    .evaluate(subject, &Action::Write, &Scope::new(resource))
+                    .is_allow(),
+                allowed,
+                "{resource}"
+            );
+        }
+        let petal_token = token("VERSE#v1-FRACTAL#f-PETAL#p", RoleLevel::Owner);
+        assert!(!policy
+            .evaluate(&petal_token, &Action::Read, &Scope::new("VERSE#v1"))
+            .is_allow());
+    }
+
+    #[test]
+    fn token_scope_denies_non_token_subjects() {
+        let resource = Scope::new("VERSE#v1-FRACTAL#f-PETAL#p");
+        for subject in [
+            did(RoleLevel::Owner),
+            AuthContext::Anonymous,
+            AuthContext::Capability {
+                plugin_id: "ext".into(),
+                capabilities: vec!["VERSE#v1".into()],
+            },
+        ] {
+            let d = TokenScopePolicy.evaluate(&subject, &Action::Read, &resource);
+            assert_eq!(
+                d.reason(),
+                Some("token-scope: subject carries no token scope")
+            );
+        }
+    }
+
+    #[test]
+    fn ownership_table() {
+        let owner = "did:key:z6MkOwner";
+        let policy = OwnershipPolicy::new(owner);
+        let scope = Scope::new("crate:x");
+        let table = [
+            (
+                AuthContext::Did {
+                    did: owner.into(),
+                    role: RoleLevel::None,
+                },
+                true,
+            ),
+            (
+                AuthContext::ApiToken {
+                    subject: owner.into(),
+                    scopes: vec![],
+                    role: RoleLevel::Viewer,
+                },
+                true,
+            ),
+            (
+                AuthContext::Did {
+                    did: "did:key:z6MkOther".into(),
+                    role: RoleLevel::Owner,
+                },
+                false,
+            ),
+            (AuthContext::Anonymous, false),
+            (
+                AuthContext::Capability {
+                    plugin_id: owner.into(),
+                    capabilities: vec![],
+                },
+                false,
+            ),
+        ];
+        for (subject, allowed) in table {
+            assert_eq!(
+                policy
+                    .evaluate(&subject, &Action::Publish, &scope)
+                    .is_allow(),
+                allowed,
+                "{subject:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn role_floor_table() {
+        let scope = Scope::global();
+        // (floor, subject role, allowed)
+        let table = [
+            (RoleLevel::Editor, RoleLevel::Viewer, false),
+            (RoleLevel::Editor, RoleLevel::Editor, true),
+            (RoleLevel::Owner, RoleLevel::Manager, false),
+            (RoleLevel::Owner, RoleLevel::Owner, true),
+            (RoleLevel::None, RoleLevel::None, true),
+        ];
+        for (floor, role, allowed) in table {
+            assert_eq!(
+                RoleFloorPolicy(floor)
+                    .evaluate(&did(role), &Action::Custom("any".into()), &scope)
+                    .is_allow(),
+                allowed,
+                "floor {floor} role {role}"
+            );
+        }
+        assert!(!RoleFloorPolicy(RoleLevel::Viewer)
+            .evaluate(&AuthContext::Anonymous, &Action::Read, &scope)
             .is_allow());
     }
 }

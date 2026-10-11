@@ -251,6 +251,34 @@ only a registry backed by durable storage knows the true member set at an arbitr
 Both checks are meant to compose: this one is cheap and connection-local,
 `registry.validate()` (already called inside `resolve_resume`) remains authoritative.
 
+## §existence-oracle (CDL-WS-ORACLE, 2026-10-11 — a pre-mount audit)
+
+`ScopeNotAuthorized` is documented as "deny without private-object existence details"
+(`wire/error.rs`), so a peer probing scopes outside its authority must not be able to tell a scope
+that exists elsewhere from one that exists nowhere. This was audited before any mount
+(CANON-WS stays NO_GO), across every scope-bearing emission in `handler.rs`:
+
+- `dispatch_authorize`: every verifier and binding failure maps to `ScopeNotAuthorized`; the
+  epoch/expiry `AuthorizationRevalidationRequired` runs only AFTER the chain verified the scope,
+  so it speaks about the caller's own authority.
+- `dispatch_subscribe`: generation, binding, liveness, `epoch_scope.contains`, then the verifier —
+  none of which reads a registry. A foreign or missing scope dies at containment.
+- `dispatch_resume`: coverage is read from the bound record (only scopes that passed subscribe),
+  then the connection-local ledger, then `resolve_resume` compares the cursor tuple to the record
+  BEFORE `registry.validate` / `replay_after`, so a cursor naming any other scope is
+  `SnapshotRequired(CursorInvalid)` without a registry lookup.
+- `dispatch_snapshot_ack`: matches only against this connection's own minted cursors.
+- `dispatch_snapshot_fanout` reads the snapshot source only for covered, live subscriptions and
+  sends nothing on error; preview checks `covers` before the rate limiter.
+
+Result: no divergence found, so no code change was needed beyond extracting
+`protocol_error_frame` (the exact frame `send_protocol_error` encodes) so a test can compare wire
+bytes. `missing_and_foreign_scopes_get_byte_identical_refusals` drives `subscribe`, `resume` and
+`snapshot_ack` with a never-registered scope and a registered foreign scope (one with committed
+deltas) and asserts the encoded refusals are byte-identical. Invariant to keep: any new scope-
+bearing branch must check authority (containment / record match) BEFORE it consults the branch
+registry or snapshot source. A mount must keep this test green.
+
 ## Known limitations
 
 - **`PinnedSession::leaf_certificate_id` stands in as `chain_id`.** `wire::session::
@@ -286,12 +314,13 @@ Both checks are meant to compose: this one is cheap and connection-local,
   authorization decision is testable anyway because it is a pure function
   (`subscriptions_authorized_for_delta`); the send loop around it is not.
 - **`MockCapabilityVerifier`'s accept/reject decision still ignores `requested_scope`** — it
-  matches on chain bytes alone, same as before. What changed: the mock now also *records* the
-  full request (chain bytes, verb, object class, scope) behind a `requests()` accessor separate
-  from the pre-existing `calls()`, and
-  `an_authorized_subscribe_re_verifies_the_chain_before_the_scope_becomes_covered` asserts on it.
-  That closes the gap this note used to describe: the test now proves `subscribe`'s
-  re-verification call carried the scope that was actually subscribed (`narrow_scope`), not just
-  that the verifier was consulted with the right chain bytes. `epoch_scope.contains` remains the
-  thing that makes containment itself scope-sensitive; this assertion is about what
-  `dispatch_subscribe` forwards to the verifier, a distinct property.
+  matches on chain bytes alone, and records the full request behind `requests()` so
+  `an_authorized_subscribe_re_verifies_the_chain_before_the_scope_becomes_covered` can prove
+  `subscribe` forwards the subscribed scope. The end-to-end scope-sensitivity proof (CDL-R6,
+  2026-10-11) uses a separate test-module double, `ScopeSensitiveVerifier`, that grants exactly
+  one scope and its descendants: `a_capability_narrower_than_the_epoch_admits_only_its_own_scope`
+  shows the verifier's scope verdict is load-bearing (an in-epoch sibling petal is refused by
+  check 5 alone), and `an_epoch_narrower_than_the_capability_still_bounds_the_subscription`
+  shows check 4 (`epoch_scope.contains`) is the sole refuser when the chain is broader than the
+  pin — that test goes red if check 4 is deleted. The route stays unmounted
+  (§deliberately-unmounted).

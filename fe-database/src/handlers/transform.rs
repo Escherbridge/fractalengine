@@ -18,6 +18,7 @@ pub(crate) async fn update_node_transform_handler(
     scale: [f32; 3],
 ) -> anyhow::Result<()> {
     require_node_exists(db, node_id, "UpdateNodeTransform").await?;
+    reject_stamp_translate(db, node_id, position).await?;
 
     let payload = serde_json::json!({
         "node_id": node_id,
@@ -66,6 +67,48 @@ pub(crate) async fn update_node_transform_handler(
         Ok(())
     })
     .await
+}
+
+/// Max per-axis drift treated as "position unchanged" for the stamp lock.
+const STAMP_POSITION_EPSILON: f64 = 1e-4;
+
+/// D-A5 position lock: a `node_kind = 'stamp'` row is path-derived, so a
+/// request that moves it fails BEFORE the op-log commit (no row, no op).
+/// Rotation/scale-only updates pass. See src/AGENTS.md §lifecycle.
+async fn reject_stamp_translate(db: &Db, node_id: &str, position: [f32; 3]) -> anyhow::Result<()> {
+    let mut res = db
+        .query(
+            "SELECT properties.node_kind AS node_kind, position, elevation FROM node \
+             WHERE node_id = $nid LIMIT 1",
+        )
+        .bind(("nid", node_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("UpdateNodeTransform stamp-lock read failed: {e}"))?;
+    let rows: Vec<serde_json::Value> = res
+        .take(0)
+        .map_err(|e| anyhow::anyhow!("UpdateNodeTransform stamp-lock take failed: {e}"))?;
+    let Some(row) = rows.first() else {
+        return Ok(());
+    };
+    if row["node_kind"].as_str() != Some("stamp") {
+        return Ok(());
+    }
+    let coords = &row["position"]["coordinates"];
+    let stored = [
+        coords[0].as_f64().unwrap_or(0.0),
+        row["elevation"].as_f64().unwrap_or(0.0),
+        coords[1].as_f64().unwrap_or(0.0),
+    ];
+    let moved = stored
+        .iter()
+        .zip(position)
+        .any(|(stored, requested)| (f64::from(requested) - stored).abs() > STAMP_POSITION_EPSILON);
+    if moved {
+        anyhow::bail!(
+            "position-locked: stamp {node_id} is path-derived (D-A5); only rotation/scale may change"
+        );
+    }
+    Ok(())
 }
 
 /// Persist a portal URL change for a node's associated model.

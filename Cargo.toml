@@ -29,6 +29,8 @@ members = [
     # feature (F9/A20) — default builds never compile it.
     "fe-sim",
 ]
+# cargo-fuzz targets are their own workspace (nightly + libFuzzer); see fuzz/Cargo.toml.
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

@@ -165,6 +165,7 @@ pub(super) fn handle_gimbal_interaction(
     aabb_query: Query<&bevy::camera::primitives::Aabb>,
     children_query: Query<&Children>,
     mut arbiter: ResMut<ClickArbiter>,
+    stamp_query: Query<(), With<crate::verse_manager::PathAssetInstance>>,
 ) {
     // Only the transform gizmo tools run the gimbal. Select has no gizmo; Pen
     // draws paths — running here would let `pick_axis` claim `Gimbal` (highest
@@ -178,6 +179,7 @@ pub(super) fn handle_gimbal_interaction(
         return;
     };
     let entity = sel.entity;
+    let is_stamp = stamp_query.contains(entity);
 
     let Ok(window) = windows.single() else { return };
     let cursor = window.cursor_position();
@@ -201,6 +203,8 @@ pub(super) fn handle_gimbal_interaction(
             };
             let axis_dir = axis_vec(drag.axis);
             match tool.active_tool {
+                // D-A5: a stamp is path-locked; a tool switch mid-drag must not translate it.
+                Tool::Move if is_stamp => {}
                 Tool::Move => {
                     let movement = (cursor_pos - drag.start_cursor).dot(drag.axis_screen_dir);
                     let scale_factor = (g_tx.translation() - cam_tx.translation())
@@ -264,13 +268,15 @@ pub(super) fn handle_gimbal_interaction(
             // an entity-backed selection begins an entity gimbal drag only in
             // the transform tools. The Select/Pen early-return above already
             // enforces this; routing keeps the decision in one place.
-            // Node/Stamp/PathTrack resolve identically for a gimbal-axis hit,
-            // so `Node` stands in for the concrete entity kind.
-            if resolve_operation(
-                tool.active_tool,
-                &SelectionKind::Node(entity),
-                HitTarget::GimbalAxis,
-            ) != Operation::BeginGimbalDrag
+            // A bridged stamp resolves as `Stamp` (no Move drag, D-A5);
+            // Node/PathTrack resolve identically, so `Node` stands in for both.
+            let kind = if is_stamp {
+                SelectionKind::Stamp(entity)
+            } else {
+                SelectionKind::Node(entity)
+            };
+            if resolve_operation(tool.active_tool, &kind, HitTarget::GimbalAxis)
+                != Operation::BeginGimbalDrag
             {
                 return;
             }
@@ -348,6 +354,7 @@ pub(super) fn draw_gimbal_system(
     g_transform_query: Query<&GlobalTransform>,
     aabb_query: Query<&bevy::camera::primitives::Aabb>,
     children_query: Query<&Children>,
+    stamp_query: Query<(), With<crate::verse_manager::PathAssetInstance>>,
     gizmos: Gizmos<GimbalGizmoGroup>,
 ) {
     // Path selections draw a gimbal at a resolved world point (they have no
@@ -400,6 +407,10 @@ pub(super) fn draw_gimbal_system(
 
     // Entity selections (node / bridged stamp) use the entity-based gimbal.
     let Some(sel) = &manager.selected else { return };
+    // D-A5: no Move handle on a path-locked stamp (no drawn-but-dead handle).
+    if tool.active_tool == Tool::Move && stamp_query.contains(sel.entity) {
+        return;
+    }
     let Some(center) = gimbal_center(sel.entity, &g_transform_query, &aabb_query, &children_query)
     else {
         return;

@@ -281,21 +281,43 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fe_canonical_log::envelope::{Hash32, Identifier32, Scope};
+    use ed25519_dalek::SigningKey;
+    use fe_canonical_log::envelope::{
+        Author, CapabilityRef, Hash32, Hlc, Identifier32, PayloadRef, Scope, UnsignedEnvelope,
+        PROTOCOL_VERSION,
+    };
+    use fe_canonical_log::signing::sign_envelope;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Mints the meta through the verifying door: a real signed kind-100 envelope, admitted.
     fn sample_meta() -> VerifiedEnvelopeMeta {
-        VerifiedEnvelopeMeta {
-            op_id: Hash32([0x01; 32]),
+        let signing_key = SigningKey::from_bytes(&[0x05; 32]);
+        let unsigned = UnsignedEnvelope {
+            protocol_version: PROTOCOL_VERSION,
             operation_kind: 100,
             scope: Scope::verse_wide(Identifier32([0x02; 32])),
-            branch_id: Identifier32([0x03; 32]),
+            author: Author::from_public_key(signing_key.verifying_key().to_bytes()),
+            capability: CapabilityRef {
+                chain_id: Hash32([0x06; 32]),
+                scope_epoch: 0,
+            },
             schema_hash: Hash32([0x04; 32]),
+            branch_id: Identifier32([0x03; 32]),
             parents: Vec::new(),
-            author_public_key: [0x05; 32],
-            wall_ms: 1_000,
-            counter: 0,
-        }
+            hlc: Hlc::new(1_000, 0),
+            payload: PayloadRef::empty(),
+        };
+        let encoded = sign_envelope(&signing_key, &unsigned)
+            .expect("sign sample")
+            .encode_canonical()
+            .expect("encode sample");
+        let meta = VerifiedEnvelopeMeta::verify_from_bytes(&encoded).expect("admit sample");
+        assert_eq!(
+            meta.op_id,
+            Hash32::of(&encoded),
+            "op_id is derived, not chosen"
+        );
+        meta
     }
 
     struct CountingVerifier {

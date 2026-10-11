@@ -157,6 +157,40 @@ Runtime behavior: row bytes traverse the real network. The fe-test-harness
 scenario `two_peer_replica_sync` proves A2 end-to-end (two in-process peers
 over loopback, READ-BACK from the joining peer's durable store).
 
+## §namespace-id-capability (SYNC-NSID-CAP, 2026-10-11)
+
+**Question** (RUNBOOK §9, flagged by the M4 re-review): is `verse.namespace_id`, readable
+through fe-api `/query`, a read capability for the verse's iroh replica? **Verdict: YES, by
+design, and it is LIVE today — not latent.**
+
+- `fe_database::derive_namespace_id` (`fe-database/src/lib.rs:1444`) returns the namespace
+  secret's Ed25519 verifying key — the iroh-docs `NamespaceId` the doc registers under
+  (§iroh-0.35 "Namespace ids").
+- In iroh-docs 0.35 a read capability *is* a `NamespaceId`: `sync.rs` defines
+  `Capability::Read(NamespaceId)` beside `Capability::Write(NamespaceSecret)`. fe-sync itself
+  opens a replica read-only from nothing but the id (`replicator.rs:554-555`,
+  `parse_namespace_id` → `client.open(ns)`).
+- Inbound docs sync is not peer-authorized: iroh-docs `engine/state.rs::accept_request`
+  rejects only `NotFound` (namespace not syncing) — any `NodeId` that names a namespace this
+  node is syncing is served. fe-sync runs `start_sync` on every doc-backed open, and
+  `sync_thread.rs:535/573` spawns the real `DocsStack` (Router accepting `iroh_docs::ALPN`) and
+  `IrohDocsEngineHolder::online` whenever the endpoint binds. (The claim that the docs engine
+  never serves was stale: that described the pre-A1 holder.)
+- So id + a serving node's address = the full replica (every row the verse replicates). The
+  write half stays safe: writing needs the `NamespaceSecret`, and inbound rows still pass the
+  DB-thread admission gate (§inbound-apply, §write-policy).
+
+**Consequence.** Treat `namespace_id` as a secret wherever it leaves the process. fe-api
+`/query` (and share/export, which reach `verse` through the same `prepare_scoped_sql`) now
+refuses the column and hides it from every `verse` row (fe-api/AGENTS.md §query-guard). No
+other fe-api route returns it. The id still travels where it must — the local UI's own verse
+tree and replica open — and anyone a verse is shared with necessarily holds it.
+
+**Not done here (needs a decision, no network change in this pass):** peer-level admission on
+the docs ALPN (an iroh-docs accept callback that consults verse membership), and rotating the
+namespace of a verse whose id may already have leaked. Both are network-plane changes owned by
+the next fe-sync security pass.
+
 ## §inbound-apply (F2 / A2+A4)
 
 The sync thread's command loop is a `tokio::select!` over two streams

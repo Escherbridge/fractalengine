@@ -30,3 +30,9 @@ sample-hexons/dist/
 
 # Local tooling fetched for e2e verification (BI egress A22) - never committed
 /tools/
+
+# cargo-fuzz outputs (fuzz/ is its own workspace)
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/

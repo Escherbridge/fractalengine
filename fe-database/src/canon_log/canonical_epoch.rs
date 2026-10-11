@@ -10,7 +10,8 @@ use fe_canonical_log::capability::{
     RevalidationGate,
 };
 use fe_canonical_log::cbor;
-use fe_canonical_log::envelope::{Hash32, Scope};
+use fe_canonical_log::crypto::{AuthorizationRecord, IssuerAuthorityView};
+use fe_canonical_log::envelope::{CapabilityRef, Hash32, Scope};
 use fe_canonical_log::kind::OperationKind;
 use fe_canonical_log::signing::decode_and_admit;
 use fe_policy::RoleLevel;
@@ -623,12 +624,35 @@ impl ManagerAuthorityView for DurableAuthorizationView {
     }
 }
 
+/// The recipient-side §10.2.1 issuer question, asked the way `admit_epoch_bump` asks SPEC-3 §5.1:
+/// is this principal Manager+ at this exact epoch scope. See `canon_log/AGENTS.md`
+/// §interim-manager-authority.
+impl IssuerAuthorityView for DurableAuthorizationView {
+    fn issuer_manager_authority(
+        &self,
+        issuer: &Principal,
+        _capability: &CapabilityRef,
+        scope: &Scope,
+        scope_epoch: u64,
+    ) -> AuthorizationRecord {
+        match self.principal_is_manager_plus(issuer, scope, scope_epoch) {
+            AuthorityState::ManagerPlus => AuthorizationRecord::Granted,
+            AuthorityState::NotManagerPlus => AuthorizationRecord::Refused,
+            AuthorityState::Unknown => AuthorizationRecord::Unknown,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
+    use fe_canonical_log::crypto::{
+        open_scope_key, wrap_scope_key, CryptoError, DeviceEnrolmentView, DevicePublicKey,
+        DeviceSecretKey, RecipientDeviceBinding, ScopeKeyWrap, ScopeKeyWrapRequest, SealingKey,
+    };
     use fe_canonical_log::envelope::{
         Author, CapabilityRef, CompleteEnvelope, Hlc, Identifier32, PayloadRef, UnsignedEnvelope,
         PROTOCOL_VERSION,
@@ -819,6 +843,103 @@ mod tests {
             AuthorityState::Unknown,
             "a verse-scoped role does not answer a petal-scoped question"
         );
+    }
+
+    /// Enrols exactly one device for one principal; the device-enrolment registry is unbuilt,
+    /// so this double stands in for the issuing side only.
+    struct EnrolsOneDevice(Principal, DevicePublicKey);
+
+    impl DeviceEnrolmentView for EnrolsOneDevice {
+        fn device_enrolment(
+            &self,
+            recipient: &Principal,
+            device_key: DevicePublicKey,
+        ) -> AuthorizationRecord {
+            if *recipient == self.0 && device_key == self.1 {
+                AuthorizationRecord::Granted
+            } else {
+                AuthorizationRecord::Refused
+            }
+        }
+    }
+
+    /// A wrap of `scope_key` for [`verse_scope`] at epoch 1, signed by `issuer_seed`'s key.
+    fn wrap_issued_by(
+        issuer_seed: u8,
+        device: &DeviceSecretKey,
+        scope_key: &SealingKey,
+    ) -> ScopeKeyWrap {
+        let issuer_key = SigningKey::from_bytes(&[issuer_seed; 32]);
+        let issuer = Principal::from_public_key(issuer_key.verifying_key().to_bytes());
+        let recipient = Principal::from_public_key(
+            SigningKey::from_bytes(&[0x0a; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        let enrolment = EnrolsOneDevice(recipient.clone(), device.public_key());
+        let binding = RecipientDeviceBinding::resolve(
+            &enrolment,
+            &recipient,
+            device.public_key(),
+            &verse_scope(),
+            1,
+        )
+        .expect("enrolled device binding");
+        wrap_scope_key(
+            &issuer_key,
+            &ScopeKeyWrapRequest {
+                recipient_device_binding: &binding,
+                scope_key,
+                issuer: &issuer,
+                issuer_capability: CapabilityRef {
+                    chain_id: Hash32([0x33; 32]),
+                    scope_epoch: 1,
+                },
+            },
+        )
+        .expect("wrap scope key")
+    }
+
+    /// The recipient-side issuer check reads the durable role table: a Manager issuer's wrap
+    /// opens, an Editor's is refused, and an issuer with no role row is an unanswered question.
+    #[tokio::test]
+    async fn opening_a_wrap_asks_the_durable_view_whether_its_issuer_is_manager_plus() {
+        let db = memory_database().await;
+        for (seed, role) in [(0x07u8, "manager"), (0x08u8, "editor")] {
+            let principal = Principal::from_public_key(
+                SigningKey::from_bytes(&[seed; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            );
+            db.query("CREATE role CONTENT { peer_did: $did, scope: $scope, role: $role }")
+                .bind(("did", principal.did.clone()))
+                .bind(("scope", interim_authority_scope_key(&verse_scope())))
+                .bind(("role", role.to_string()))
+                .await
+                .expect("seed role")
+                .check()
+                .expect("seed role check");
+        }
+        let view = DurableAuthorizationView::load(&db, None)
+            .await
+            .expect("view load");
+        let device = DeviceSecretKey::from_bytes([0x0b; 32]);
+        let scope_key = SealingKey::from_bytes([0x5c; 32]);
+
+        let opened = open_scope_key(&wrap_issued_by(0x07, &device, &scope_key), &device, &view)
+            .expect("a Manager issuer's wrap opens");
+        assert_eq!(opened, scope_key);
+
+        for (seed, record) in [
+            (0x08u8, AuthorizationRecord::Refused),
+            (0x09u8, AuthorizationRecord::Unknown),
+        ] {
+            assert_eq!(
+                open_scope_key(&wrap_issued_by(seed, &device, &scope_key), &device, &view),
+                Err(CryptoError::IssuerNotAuthorized { record }),
+                "issuer seed {seed:#x} must not unlock key material"
+            );
+        }
     }
 
     #[tokio::test]

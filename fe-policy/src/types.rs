@@ -99,6 +99,21 @@ impl Scope {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// True if this scope covers `other` (see [`scope_contains`]).
+    pub fn contains(&self, other: &Scope) -> bool {
+        scope_contains(&self.0, &other.0)
+    }
+}
+
+/// True if `token_scope` grants access to `resource_scope` — higher scopes
+/// cover everything beneath them, only at a `-` keyword boundary (so
+/// `VERSE#v1` never covers `VERSE#v10`). See AGENTS.md §types.
+pub fn scope_contains(token_scope: &str, resource_scope: &str) -> bool {
+    if token_scope == resource_scope {
+        return true;
+    }
+    resource_scope.starts_with(token_scope) && resource_scope[token_scope.len()..].starts_with('-')
 }
 
 impl fmt::Display for Scope {
