@@ -16,7 +16,7 @@
       "name": "Build Infrastructure",
       "status": "complete",
       "tasks": 5,
-      "notes": "config.toml updated for multi-target; BUILDING.md scaffold created"
+      "notes": "config.toml updated for multi-target; BUILDING.md scaffold created | AUDIT 2026-10-10: Linux verified green (1.2); macOS aarch64 verified then descoped (6aaeabd); Windows ARM64 (1.4) still needs a v* tag."
     },
     {
       "id": 2,
@@ -30,11 +30,13 @@
       "name": "Documentation and Verification",
       "status": "in_progress",
       "tasks": 3,
-      "notes": "BUILDING.md complete; needs cross-platform verification (Linux/macOS/ARM64 Windows compile)"
+      "notes": "BUILDING.md complete; needs cross-platform verification (Linux/macOS/ARM64 Windows compile) | AUDIT 2026-10-10: 3.2 partial (Linux CI is the scoped 3-crate sweep only); 3.3 launch smoke test is manual/user-gated."
     }
   ],
   "blockers": [
-    "Awaiting first green CI runs: Linux (apt deps fixed 2026-07-15 after glib-sys failure in run 29390918844), macOS job (new in build-artifacts.yml), Windows ARM64 (release.yml on next v* tag)"
+    "Windows ARM64 compile needs the first v* tag (release.yml windows-arm64 job never run)",
+    "Task 3.3 binary launch smoke test is manual (user-gated)",
+    "macOS descoped by owner 2026-08-20 (6aaeabd) — FR-2 macOS items are void unless re-scoped"
   ],
   "notes": "2026-07-15: CI now covers Linux compile+scoped tests (workflow deps fixed), macOS aarch64 compile+scoped tests (job added), Windows ARM64 compile (release.yml windows-arm64 job, next tag). Local Win-ARM64 compile check deferred-to-CI (memory-constrained dev machine, surrealdb-core). Still unverified: macOS launch smoke test (Task 3.3), macOS x86_64 compile, green-run evidence for all three. VALIDATED 2026-07-19: in_progress — confirmed via `gh run list`/`gh run view` (build-artifacts.yml run 29687337676, 2026-07-19): Windows x64, Linux x86_64, and macOS aarch64 build+test jobs ALL GREEN (Task 3.2 green-run gap for those 3 targets now closed; only the newly-added Lint job fails, unrelated to this track). NOT closed: no `v*` tag has ever been pushed (`git tag -l v*` empty, `gh run list --workflow=release.yml` empty) so Windows ARM64 and macOS x86_64 (release.yml-only targets) remain fully unverified; Task 3.3 (binary launch smoke test) remains manual/unverified. remaining: Windows ARM64 + macOS x86_64 compile verification (needs a tag push), Task 3.3 smoke test.\n2026-07-24: the 2026-07-19 'only the newly-added Lint job fails' caveat above is SUPERSEDED — Lint fixed by b75ad2a/3dae0ee/f5d9673; CI run 30055712210 on f5d9673 = success (all jobs green incl. Lint). Track's own remaining items unchanged (Windows ARM64 + macOS x86_64 via a v* tag push, Task 3.3 launch smoke test).",
   "alignment": {
@@ -42,5 +44,7 @@
     "priority": "P2",
     "rationale": "Platform base; phase-3 CI verification. Sequence with release_ci.",
     "assessed": "2026-07-14"
-  }
+  },
+  "doneness_note": "Linux x86_64 build+test green in CI (29687337676, 38095577669); Windows x64 build green + full workspace locally (3,245 passed). macOS was verified green on 2026-07-19 and then removed at owner direction (6aaeabd, 2026-08-20). Open: Windows ARM64 (needs v* tag), Linux --workspace test run, Task 3.3 launch smoke test (user-gated).",
+  "audited": "2026-10-10"
 }

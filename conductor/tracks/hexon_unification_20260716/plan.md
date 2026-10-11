@@ -58,7 +58,7 @@ authz, remote client) built on fe-format types; duplicate format code deleted.
 
 Tasks:
 
-- [ ] Task: Promote fe-format from dev-dependency to real dependency of
+- [ ] Task: (AUDIT 2026-10-10: OPEN — `fe-hexon/Cargo.toml:39` still lists fe-format under [dev-dependencies]; `fe-hexon/src/manifest.rs:99` still has `crate_id`; `.fecrate` still referenced in `fe-hexon/src/{package,publisher}.rs`, `fe-api/src/hexon.rs`, `fe-database/src/schema.rs`; no `PetalSnapshot`/`HexonType::Script` anywhere; `fe-api/src/hexon.rs:246-295` `install_crate` still records no petal association. No task in Phases 1-6 has landed.) Promote fe-format from dev-dependency to real dependency of
       fe-hexon; delete duplicate types in `fe-hexon/src/manifest.rs`,
       re-exporting `fe_format::{HexonManifest, HexonType, AssetEntry, License,
       ...}` for a smaller diff (TDD: port `manifest.rs` round-trip tests to

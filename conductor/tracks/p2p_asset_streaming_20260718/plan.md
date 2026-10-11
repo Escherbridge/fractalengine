@@ -31,11 +31,14 @@ Single workspace sweep at the end per standing policy.
 
 ## Phase 1: Relay loud-fail hardening (FR-1) — no gate
 
-- [ ] Task: `RelayConfig` (Default/Custom/Disabled) plumbed into
+- [x] Task: `RelayConfig` (Default/Custom/Disabled) plumbed into
       `SyncEndpoint::new`; startup warning on EOL-bound default n0 relays (TDD:
       config parsing + warning emission)
-- [ ] Task: Relay health surfaced in `SyncStatus` (TDD: status transitions)
+      — AUDIT 2026-10-10: DONE 320ebfe — `fe-sync/src/relay_config.rs:14` enum + `:100` EOL warn + `:133` `is_default_infra`; `fe-sync/src/endpoint.rs:72` `SyncEndpoint::new(secret_key, &RelayConfig)`; tests `relay_config.rs:206-276` (incl. `is_default_infra_only_for_default_variant`).
+- [x] Task: Relay health surfaced in `SyncStatus` (TDD: status transitions)
+      — AUDIT 2026-10-10: DONE 320ebfe — `fe-sync/src/status.rs:30` `health: RelayHealth`, `:104` `SyncEvent::RelayHealthChanged` applied; startup bind + gossip-spawn outcomes only (continuous `home_relay()` watcher still `TODO(ultrapilot)` at `fe-sync/src/sync_thread.rs:586`).
 - [ ] Verification: headless run shows relay mode + health; sweep-deferred [checkpoint]
+      — AUDIT 2026-10-10: OPEN — no recorded headless run showing relay mode/health.
 
 ## Phase 2: Ratification wall — RESOLVED 2026-07-18
 
@@ -64,6 +67,7 @@ Single workspace sweep at the end per standing policy.
 - [ ] Task: Distance-ranked ledger resource replacing `mesh_budget.exceeded`
       boolean; first system in VerseManagerPlugin chain; hysteresis (TDD: pure
       ledger math, ring membership, hysteresis windows)
+      — AUDIT 2026-10-10: PARTIAL — soft distance-ranked allowance with hysteresis taper landed 320ebfe (`fe-ui/src/verse_manager/spawn.rs:34` `distance_ranked_allowance`, tests `spawn.rs:321-338`; called from `petal_respawn.rs:98`, `primitive_materialize.rs:149`, `path_asset_materialize.rs:424`), but it still sits behind the `mesh_budget.exceeded` boolean and no pointer-set `{(hexon_uri, bundle_hash)}` ledger resource exists (D-74 shape).
 - [ ] Task: Lazy `HexonTileSource` (offset-index header phase, on-demand member
       reads); async `fetch_tile` dispatch; double-residency dedup via Arc (TDD)
 - [ ] Task: Despawn-on-exit-ring eviction wired to the ledger (TDD)
@@ -75,12 +79,15 @@ Single workspace sweep at the end per standing policy.
 - [ ] Task: `AppSettings` Bevy `Resource` in fe-ui + RON/TOML persistence under
       the platform config dir (load-on-start, save-on-change; RON per the
       archived render_distance_lod design unless TOML is chosen — see open Q)
+      — AUDIT 2026-10-10: PARTIAL — Resource + serde round-trip tests landed 320ebfe (`fe-ui/src/settings.rs:35`, tests `:94-128`); persistence NOT built (`fe-ui/src/settings.rs:73` `TODO(ultrapilot): load/save AppSettings as RON`).
 - [ ] Task: `ActiveDialog::Settings` egui window; first knob = live
       `MeshInstanceBudget.ceiling` (already a runtime field), then render
       distance, entity/stamp caps, tile mode, camera sensitivity/zoom/easing,
       relay/peer config (TDD: settings (de)serialize round-trip, clamp ranges)
+      — AUDIT 2026-10-10: PARTIAL — the window was re-homed as a right-sidebar Settings section by shell_ux_sidebar FR-1 (`fe-ui/src/panels/mod.rs:289-291`); live knobs are render distance + mesh ceiling only (`fe-ui/src/ui_shell/right_sidebar.rs:477-520`). Entity/stamp caps, tile mode, camera and relay/peer knobs are not exposed; relay config is still env-sourced (`fe-sync/src/relay_config.rs:91` TODO).
 - [ ] Task: Route the hardcoded `const` limits through `AppSettings` with current
       constants as defaults; `PetalManifest.render_distance` = per-petal override
+      — AUDIT 2026-10-10: PARTIAL — residency reads `settings.render_distance` / `settings.stamp_ceiling` (`path_asset_materialize.rs:426-427`) and `sync_app_settings_to_mesh_budget` mirrors the ceiling (`settings.rs:81`); `PetalManifest.render_distance` is editable (`fe-ui/src/dialogs/petal_manifest.rs:58`) but no residency system reads it as an override.
 - [ ] Verification: settings persist across restart; ledger + terrain editor read
       the same resource [checkpoint]
 

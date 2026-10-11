@@ -3,7 +3,7 @@
   "description": "Data-layer spine of the Spatial Builder Program: sync-safe delete (tombstone + cascade + path-reflow event) that fixes the empty-husk bug, a stable per-node addressing scheme (substrate for the read/write API and stamp-as-node), and a lazy node-promotion primitive so tens-of-thousands of addressable stamp nodes stay smooth. Owns fe-entity-store, fe-database, fe-policy, fe-sync exclusively.",
   "type": "feature",
   "created_at": "2026-07-25T00:00:00Z",
-  "status": "pending",
+  "status": "done",
   "alignment": "P0 PROGRAM SPINE — Spatial Builder Program (grilling 2026-07-25, decisions/spatial-builder-program-20260725.md D-A4/D-A5/D-A6/D-A7). Blocks all four Wave-1 tracks. User-owned UX pillar per roadmap 2026-07-14 + spatial-analytics roadmap 2026-07-14.",
   "depends_on": [],
   "blocks": [
@@ -17,5 +17,7 @@
     "Owns the data core exclusively (fe-entity-store/fe-database/fe-policy/fe-sync) — zero file overlap; Wave 0 runs fully parallel with shell_ux_sidebar. Must land Phases 1-2 before Wave-1 consumers (T2 reflow+promotion, T4 delete+cascade, T5 address+events).",
     "Open Qs await ratification: Q-1 address form (internal stable key now, public URI in T5 — recommended), Q-2 promotion trigger (on first select/edit — recommended), Q-3 cascade confirm (always — recommended), Q-4 tombstone GC (unbounded for now, follow-up).",
     "NOT started. /slice deferred per user (2026-07-25: write specs, do not slice yet)."
-  ]
+  ],
+  "audited": "2026-10-10",
+  "doneness_note": "AUDIT 2026-10-10: DONE — all 15 plan items ticked with evidence. Spine landed @c6fdf0d (address.rs, tombstone/cascade/promotion in fe-entity-store + fe-database, fe-policy node_lifecycle gate, fe-sync lifecycle forwarder) + aeba832 (CallerAuth::Local); consumers integrated @623145f/631f389; the commit's 'live P2P merge wiring deferred' follow-up is CLOSED — fe-database/src/handlers/replicated_row.rs routes inbound rows through merge::apply_replicated_node (mission M1, 2364600/20c3a96) and fe-test-harness scenario two_peer_tombstone_sync covers it. Open residuals (ledgered): cascade op-append + row UPDATE not one transaction (fe-database/src/AGENTS.md §lifecycle); tombstone GC/compaction (Q-4 ratified 'unbounded for now', needs a merge-safety proof). In-app verification of delete/cascade/promote is user-gated. The metadata 'notes' array above predates the work ('NOT started') and is kept for history."
 }

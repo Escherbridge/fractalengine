@@ -1,710 +1,363 @@
 ---
 type: Track Index
 title: FractalEngine Project Tracks
-timestamp: 2026-07-17T00:00:00Z
+timestamp: 2026-10-10T00:00:00Z
 ---
 
 # Project Tracks
 
 Live board for open work, ordered by the [roadmap](./roadmap.md) go-forward slate
-(2026-07-14 alignment pass), not by historical waves.
+(2026-07-14 alignment pass), not by historical waves. The classified remaining-work
+queue (what is agent-doable, what needs a ratification, what is user-gated) lives in
+the **[doneness ledger](./doneness-ledger.md)**; this board says *where each track
+stands*, the ledger says *what to do next*.
 
-> **Conventions:** each open track lives at `./tracks/<id>/`; its `metadata.json` is the
+> **Conventions:** each track lives at `./tracks/<id>/`; its `metadata.json` is the
 > machine source of truth for status (canon: `pending` | `in_progress` | `spec_only` |
-> `done` | `superseded`), dependencies (`depends_on`/`blocks`), and the 2026-07-14
-> `alignment` verdict. Archived tracks live under [`./tracks/_archive/`](./tracks/_archive/)
-> — 28 folders moved there 2026-07-15 in the session close-out; see the
-> [consolidated session retro](./tracks/_archive/session_retro_20260715/retro.md) for
-> per-track outcomes and verification evidence (commits `c32e873` → `626f307`).
-> A `depends_on`/`blocks` entry naming an archived track is a **satisfied dependency**
-> (delivered and archived), not a dangling reference — no cross-check needed.
+> `done` | `superseded`, plus three audit statuses introduced 2026-10-10:
+> `implemented_pending_inapp_verify` — code landed and tested, only the user's in-app
+> check remains; `blocked_on_ratification` — remaining work waits on a user decision;
+> `off_strategy` — 2026-07-14 alignment verdict DEFER, no work scheduled), dependencies
+> (`depends_on`/`blocks`), and the 2026-07-14 `alignment` verdict. Archived tracks live
+> under [`./tracks/_archive/`](./tracks/_archive/); a `depends_on`/`blocks` entry naming
+> an archived track is a **satisfied dependency**.
 
-**Open tracks: 33.**
+**Tracks: 41 non-archive folders — 9 done (awaiting archival), 32 open.**
+Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 5 `pending` ·
+4 `spec_only` · 2 `blocked_on_ratification` · 2 `off_strategy` · 1 meta (`ux_qa_review`).
 
-> **Recount 2026-10-09 (F18 conductor reconciliation):** re-tallied fresh —
-> **41 non-archive track folders, 33 open** (`status` not in `{done,
-> superseded}`), by coincidence the same headline number as the stale
-> 2026-07-19 count below even though the underlying set of tracks has
-> completely turned over since (archivals, new Spatial Builder Program
-> tracks, this close-out). This pass closed 5 absorbed tracks to `done`
-> (`p2p_mycelium_completion_20260701`, `analytics_egress_20260714`,
-> `iot_spatial_reporting_20260714`, `api_mcp_integration_tests_20260717`,
-> `mcp_scene_primitives_20260716`) and opened 3 new record-only tracks
-> already `done` at creation (`timeseries_fabric_20261009`,
-> `simulation_lab_20261009`, `bi_verification_20261009`) — net zero change
-> to the open count from this pass alone (−5 +0, since the new tracks never
-> counted as open). One folder, `hexon_unification_20260716/metadata.json`,
-> has a pre-existing trailing-comma JSON syntax error that breaks automated
-> parsing (not introduced or fixed by this pass — out of scope); its status
-> was confirmed `pending` by manual read and is counted as open above.
-
-> **Validation pass 2026-07-19** (5-worker swarm, code-reading + git evidence only —
-> build env memory-blocked, no test execution). Every track's `metadata.json` re-validated
-> against committed git + a dated `VALIDATED 2026-07-19` note appended. **Status corrections:**
-> `terrain_editor_overhaul` `pending`→`in_progress` (FR-1..6 landed @ `320ebfe`; 4 in-app
-> regression fixes uncommitted), `p2p_asset_streaming` `pending`→`in_progress` (settings/
-> ledger/relay @ `320ebfe`; FR-3 chunk transfer still stubbed), `oss_release` `pending`→
-> `in_progress` (D-69/D-70 ratified @ `b555082`), `thorns_shields` `pending`→`in_progress`
-> (fuzz targets + threat-model docs @ `d5cc361`). New track `tool_inspector_ux_20260719`
-> added (Phase 1 local-only). **0 archived** — no track met the `done` bar (all carry
-> remaining acceptance items or uncommitted/unverified work). Nearest-to-done:
-> `runtime_instance_guardrails` (crash fix committed + verified @ `46e19de`; needs retro +
-> FR-6 live-run sign-off to archive).
-
-> **Pruning pass 2026-07-24** (evidence-based board assessment + user live in-app test).
-> **5 folders archived** to [`./tracks/_archive/`](./tracks/_archive/), each with a retro:
-> `runtime_instance_guardrails` (done — GPU-OOM root cause fixed @ `46e19de`, FR-6 render
-> horizon delivered cross-track @ `320ebfe`, no recurrence over two live runs),
-> `terrain_editor_overhaul` (done — FR-1..6 @ `320ebfe` + the four regression fixes @
-> `f223bfa`; failed 2026-07-24 viewport path-point-selection acceptance TRANSFERRED to
-> `ui_shell_architecture_20260724`), `tool_inspector_ux` (superseded — Phase 1 + FR-7
-> delivered @ `f223bfa`; always-open sidebar replaced by a tooltip model, Phases 2-6
-> subsumed by `ui_shell_architecture_20260724`), `ux_interaction_hardening` (superseded —
-> FR-5 camera hardening delivered @ `320ebfe`; FR-1..4 absorbed into
-> `ui_shell_architecture_20260724`), `drag_drop_placement` (superseded — spec-only on a
-> void base, re-spec routes through the shell track). **Stale CI-failure notes struck**:
-> the release_ci + cross_platform_desktop "Lint failing" validation notes are superseded —
-> CI fully green @ `f5d9673` (run 30055712210; lint fixes `b75ad2a`/`3dae0ee`/`f5d9673`);
-> release_ci remaining = task 2.7 (live `v*` tag e2e) only. **pen_curve_tool status
-> corrected** pending→in_progress (Phases 1-6 implemented; see its entry). **2026-07-24
-> in-app findings logged** to
-> [ux_qa_review findings](./tracks/ux_qa_review_20260714/findings.md) (viewport
-> point-selection gap, gardener_ui_system terrain crash, sidebar→tooltip).
+> **Doneness reconciliation 2026-10-10** (three parallel auditors + a consolidation
+> pass; code-reading and git evidence only, no cargo). Every plan checkbox was checked
+> against the tree. **Status corrections:** `node_lifecycle_addressing` pending→done;
+> `endpoint_api_surface` pending→in_progress; `contextual_controls`, `shell_ux_sidebar`,
+> `stamped_asset_nodes`, `sculpt_earthwork_regions` pending→implemented_pending_inapp_verify
+> (Spatial Builder Wave 0/1 landed c6fdf0d→631f389, the board still said "NOT started");
+> `pen_curve_tool`, `ui_shell_architecture`, `ui_semantics_unification`
+> →implemented_pending_inapp_verify; `inspector_settings`, `outstanding_decisions`
+> →blocked_on_ratification; `light_box`, `profile_manager` →off_strategy;
+> `canonical_data_log` Wave 3 recorded as landed (b820b67 + 3R fa0d9d9/d01b098).
+> **Consolidator un-ticks** (task's own acceptance test absent): `mcp_scene_primitives`
+> 2.2 + 5.2 (track done→in_progress), `sculpt_earthwork_regions` determinism test,
+> `stamped_asset_nodes` viewport-gimbal translate lock. **JSON repaired:**
+> `hexon_unification` (trailing comma), `p2p_mycelium_completion` (BOM + mojibake).
+> Earlier board history (2026-07-19 validation, 2026-07-24 pruning, 2026-10-09 F18
+> recount) is in `git log -- conductor/tracks.md`.
 
 ---
 
-## P0 — ACTIVE: Prod-ready mission continuation (factory handover, 2026-10-08)
+## Done — awaiting archival
 
-### [~] mission_prodready_continuation — finish factory mission mis_6c57917e: F9–F19 (sim control surface, BI egress e2e, MCP 20 tools, GIS hexons, close-out)
+Closed with evidence; move to `_archive/` with a retro when convenient.
 
-- Track: [./tracks/mission_prodready_continuation_20261008/](./tracks/mission_prodready_continuation_20261008/)
-- Factory (droid) delivered M1 (real P2P core), M2 (sharded timeseries fabric +
-  distributed query), most of M3 (sim lab F8/F24) across 14 local commits, then
-  paused on usage-402 mid-F9 (2026-10-09T04:41Z). This track owns the
-  continuation: acceptance = mission validation contract A20–A33; decision log
-  DEC-C* in the track spec; per-feature evidence in the track plan.
-- The M2 sync-plane conductor notes accumulated on
-  [p2p_mycelium_completion_20260701](./tracks/p2p_mycelium_completion_20260701/)
-  — F18 consolidates them into dedicated timeseries-fabric / simulation-lab /
-  BI-verification tracks at close.
-- **2026-10-09 (F18 close-out status update):** M3 (sim lab, F8+F9, A18–A21)
-  **VALIDATED**; M4 (BI egress, F10–F12, A22–A25) **VALIDATED** after the
-  FAIL → fix → STILL-FAILING → remediation review saga closed clean; M5 (MCP
-  + API, F13–F14, A26–A27) **LANDED**, milestone review still in flight; M6
-  (GIS hexons, F15, A28) **LANDED**, F16 (A29, hexon install + relay tile
-  serving) remains `in_progress`; M7 close-out F17 (A30, docs) **LANDED**,
-  F18 (this pass, A31) **IN PROGRESS**, F19 (A32+A33, final sweep) `pending`.
-  Five absorbed tracks closed `done` with dated VALIDATED notes (see their
-  own `metadata.json`): [p2p_mycelium_completion_20260701](./tracks/p2p_mycelium_completion_20260701/),
-  [analytics_egress_20260714](./tracks/analytics_egress_20260714/),
-  [iot_spatial_reporting_20260714](./tracks/iot_spatial_reporting_20260714/),
-  [api_mcp_integration_tests_20260717](./tracks/api_mcp_integration_tests_20260717/),
-  [mcp_scene_primitives_20260716](./tracks/mcp_scene_primitives_20260716/).
-  Three new record-only tracks opened for board navigation (no new work — see
-  each `spec.md` for pointers to where the implementation notes actually
-  live): [timeseries_fabric_20261009](./tracks/timeseries_fabric_20261009/)
-  (M2 sync-plane: ReplicationMode row/timeseries, shard ledger + placement,
-  distributed query fan-out, admission control, verse-manifest race fixes),
-  [simulation_lab_20261009](./tracks/simulation_lab_20261009/) (`fe-sim`
-  crate: SimClock, virtual transport/gossip planes, deterministic scenarios,
-  ScenarioSession control surface), [bi_verification_20261009](./tracks/bi_verification_20261009/)
-  (the M4 live-DuckDB e2e proof + the full adversarial review saga, DEC-C16–C20).
+- [x] **mission_prodready_continuation** — factory mission F9–F19, A20–A33 validated;
+  pushed at `1e9be3a`; deferred register ledgered —
+  [./tracks/mission_prodready_continuation_20261008/](./tracks/mission_prodready_continuation_20261008/)
+- [x] **node_lifecycle_addressing** — Spatial Builder SPINE: tombstone/cascade/reflow,
+  `fe://` addresses, lazy promotion, `CallerAuth::Local` (c6fdf0d, aeba832; live P2P
+  tombstone merge via `two_peer_tombstone_sync`). Residuals: cascade not one txn
+  (T1-TXN), tombstone GC (T1-GC) —
+  [./tracks/node_lifecycle_addressing_20260725/](./tracks/node_lifecycle_addressing_20260725/)
+- [x] **analytics_egress** — BI egress: GeoParquet/CSV export, signed share URLs, CRS
+  stamping, "Copy for BI" card; live DuckDB e2e 49/49 (`scripts/bi-egress-verify.ps1`),
+  [docs/bi-egress.md](../docs/bi-egress.md) —
+  [./tracks/analytics_egress_20260714/](./tracks/analytics_egress_20260714/)
+- [x] **iot_spatial_reporting** — `iot_reading` rows, ingest endpoint, timeseries builder,
+  readings export (F11 2023809). Poll-connector catalog stays future work (D-6) —
+  [./tracks/iot_spatial_reporting_20260714/](./tracks/iot_spatial_reporting_20260714/)
+- [x] **api_mcp_integration_tests** — ApiHarness + api/mcp suites, strict `wart_*`
+  denials (635b8c5). One non-blocking item: endpoint inventory artifact (API-INV-1) —
+  [./tracks/api_mcp_integration_tests_20260717/](./tracks/api_mcp_integration_tests_20260717/)
+- [x] **p2p_mycelium_completion** — real iroh-docs 0.35 replication (F1–F4, F20–F23);
+  phases 2/3/5 superseded, per-petal topics superseded by SPEC-3. Residual: relay
+  REST-created verse secrets are process-lifetime (MYC-SECRETS) —
+  [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
+- [x] **timeseries_fabric**, **simulation_lab**, **bi_verification** — record-only
+  tracks for mission M2/M3/M4 —
+  [timeseries_fabric_20261009](./tracks/timeseries_fabric_20261009/) ·
+  [simulation_lab_20261009](./tracks/simulation_lab_20261009/) ·
+  [bi_verification_20261009](./tracks/bi_verification_20261009/)
+
+---
 
 ## P0 — Spatial Builder Program (user planning grill 2026-07-25)
 
-Six tracks from the 2026-07-25 planning grilling (12 decision-forcing questions,
-3 rounds). Anchor decision record:
+Anchor decision record:
 [./decisions/spatial-builder-program-20260725.md](./decisions/spatial-builder-program-20260725.md)
-(product thesis, register D-A1..A11, shared NFR pool N-1..N-10, and the
-**conflict-free file partition** for `/slice`). **Thesis:** a Cities:Skylines-
-simple spatial *builder* where every artifact is a persistent, addressable,
-real-world-scale data endpoint with a full read/write API — no modes, one shell,
-tool/selection-driven context; the analyst is served by the API/query layer, the
-civil engineer by the to-scale rule. **Wave DAG:** Wave 0 = `node_lifecycle_
-addressing` ‖ `shell_ux_sidebar` (different crates); Wave 1 = `stamped_asset_
-nodes` ‖ `sculpt_earthwork_regions` ‖ `contextual_controls` ‖
-`endpoint_api_surface` (all depend on the spine). **`/slice` deferred by user
-2026-07-25** ("write specs, don't slice yet"); every track is `pending`, NOT
-started.
+(thesis, D-A1..A11, NFR pool N-1..N-10, file partition). **Wave 0 + Wave 1 landed**
+(leaves c6fdf0d→cdd3291, serial integration 623145f, tool restore 631f389). The
+2026-07-26 in-app pass was PARTIAL FAIL; the regressions were fixed (631f389, 4d0c12d)
+but **no in-app re-verify has happened** (SB-INAPP-VERIFY, user-gated). No track has a
+retro yet (SB-RETROS). The spine (`node_lifecycle_addressing`) is done — see above.
 
-### [ ] node_lifecycle_addressing — SPINE: tombstone delete + cascade + re-flow, stable addresses, lazy promotion
+### [~] shell_ux_sidebar — Settings & Maps → sidebar sections, user-sticky left sidebar
 
-_Link: [./tracks/node_lifecycle_addressing_20260725/](./tracks/node_lifecycle_addressing_20260725/) · pending · P0 PROGRAM SPINE (Wave 0) · blocks all four Wave-1 tracks_
+_Link: [./tracks/shell_ux_sidebar_20260725/](./tracks/shell_ux_sidebar_20260725/) · implemented_pending_inapp_verify · 7 done / 2 open_
 
-The data-layer foundation (D-A4/A5/A6/A7). Sync-safe delete (tombstone + cascade
-+ path-reflow event, never a raw drop — fixes the "empty husk" bug), a stable
-per-node addressing scheme (substrate for the read/write API + stamp-as-node),
-and a lazy node-promotion primitive so tens-of-thousands of addressable stamp
-nodes stay smooth. Owns `fe-entity-store` / `fe-database` / `fe-policy` /
-`fe-sync` exclusively — zero file overlap, Wave 0 parallel with the shell track.
+FR-1/2/3 landed in b3f4df4: sticky `left_visibility` + Ctrl+B, Settings and Maps are
+right-sidebar sections, the floating Settings window is deleted. Open: the fe-ui
+directory docs still describe AutoCollapse and the deleted window (SHELL-STALE-DOCS);
+retro; in-app verify.
 
-### [ ] shell_ux_sidebar — Settings & Maps → sidebar sections, user-sticky left sidebar
+### [~] stamped_asset_nodes — curve-following addressable stamps with overrides + instancing
 
-_Link: [./tracks/shell_ux_sidebar_20260725/](./tracks/shell_ux_sidebar_20260725/) · pending · P1 UX (Wave 0) · continuation of ui_shell_architecture_20260724_
+_Link: [./tracks/stamped_asset_nodes_20260725/](./tracks/stamped_asset_nodes_20260725/) · implemented_pending_inapp_verify · 9 done / 3 open_
 
-Finishes "no modes, one shell" (D-A1/A10/A11): migrate the Settings + Maps
-(hexon manager) modals into tool-contextual right-sidebar sections like the
-other tools, and make the left sidebar user-driven sticky (open until closed).
-**Owns the fe-ui shell seam** (`ui_shell/{mod,left_sidebar,right_sidebar}.rs`,
-`panels/mod.rs`, `dialogs/{settings,hexon_manager}.rs`) — the section-registry
-owner; Wave-1 tracks route new-section registration through it. The program's
-cheapest, highest-daily-satisfaction track.
+Arc-length curve sampling + true tangent, lazy promotion on select, sparse scale/rotate
+overrides, instancing data layer + 10k pick bench, reflow (56ccc3b, 623145f, 631f389).
+Open: N-9 row-count test; the **viewport Move gimbal still drags a bridged stamp**
+(un-ticked 2026-10-10 — `gimbal_interaction.rs:267` treats Stamp as Node;
+STAMP-GIMBAL-TRANSLATE-LOCK); retro/in-app.
 
-### [ ] stamped_asset_nodes — stamps become curve-following addressable nodes with scale/rotate overrides + instancing
+### [~] sculpt_earthwork_regions — brush/shape sculpt + reportable cut/fill region nodes
 
-_Link: [./tracks/stamped_asset_nodes_20260725/](./tracks/stamped_asset_nodes_20260725/) · pending · P1 BUILDER UX (Wave 1) · depends_on node_lifecycle_addressing_
+_Link: [./tracks/sculpt_earthwork_regions_20260725/](./tracks/sculpt_earthwork_regions_20260725/) · implemented_pending_inapp_verify · 9 done / 2 open_
 
-In-app QA asks #1/#2 (D-A5/A6). Stamps follow the actual curve (not the
-flattened polyline), each is an individually addressable node with per-stamp
-scale + rotation overrides and free-translate disabled (position path-derived),
-backed by GPU instancing + a spatial pick index for the tens-of-thousands
-ceiling. Owns `fe-terrain mesh/{curve,track,marker}` + stamp materializer,
-`fe-renderer {loader,ingester,viewport}` + new `instancing.rs`, and the fe-ui
-path-tools section content (not `right_sidebar.rs`).
+Footprints, raise/lower/level/smooth, region nodes with real-unit cut/fill, report +
+REST summary (09e8e2e, 623145f, 631f389). Open: determinism test (un-ticked
+2026-10-10); retro/in-app. Gap: `SculptDeleteRegion` has a handler but **no UI
+producer**, so a region cannot be deleted from the app (SB-EARTHWORK-DELETE).
 
-### [ ] sculpt_earthwork_regions — brush/shape sculpt tool + reportable cut/fill volume region nodes
+### [~] contextual_controls — object-aware right-click menu with real Delete
 
-_Link: [./tracks/sculpt_earthwork_regions_20260725/](./tracks/sculpt_earthwork_regions_20260725/) · pending · P1 BIM/BUILDER (Wave 1) · depends_on node_lifecycle_addressing_
+_Link: [./tracks/contextual_controls_20260725/](./tracks/contextual_controls_20260725/) · implemented_pending_inapp_verify · 8 done / 1 open_
 
-In-app QA ask #3 (D-A8 + R1Q4). A tactile sculpt tool (brush + defined shapes)
-to select the affected area, and earthwork edits that become persistent
-addressable "modification region" nodes (footprint + material + real-unit
-cut/fill volume via the scale authority) baked into the surface and reportable/
-queryable like any node. First BIM-grade terraforming primitive; layered strata
-is a later phase. Owns `fe-terrain terrain_proposal + mesh/{terrain,interp,skirt}
-+ layers` + new sculpt module, `fe-renderer {terrain_overlay,terrain_height}` +
-brush overlay, fe-ui terrain-tools section content + new sculpt panel.
+`menu_for(HitTarget)` table, Delete/cascade, rename/duplicate/promote, copy-API/report
+via the T5 seam (4f765fe, 623145f, D16 classifier 4d0c12d). Open: retro + in-app.
 
-### [ ] contextual_controls — object-aware right-click menu with real Delete + comprehensive verbs
+### [~] endpoint_api_surface — every object a read/write API endpoint (+ MCP)
 
-_Link: [./tracks/contextual_controls_20260725/](./tracks/contextual_controls_20260725/) · pending · P1 BUILDER UX (Wave 1) · depends_on node_lifecycle_addressing · coordinates endpoint_api_surface_
+_Link: [./tracks/endpoint_api_surface_20260725/](./tracks/endpoint_api_surface_20260725/) · in_progress · 5 done / 4 open_
 
-In-app QA ask #2 (D-A9). An object-aware context menu (verbs depend on the hit
-target) replacing the thin create-node/place-asset menu; ships the missing
-Delete wired to the spine's tombstone+cascade (fixes "no way to remove a node")
-plus duplicate/rename/edit-props/promote-to-node/copy-API-string/report. Menu-
-first; radial deferred. Owns `fe-ui ui_shell/modal.rs` + `dialogs/{context_menu,
-node_options}.rs`.
-
-### [ ] endpoint_api_surface — every object a read/write API endpoint (+ MCP drive, egress seam)
-
-_Link: [./tracks/endpoint_api_surface_20260725/](./tracks/endpoint_api_surface_20260725/) · pending · P1 DATA/ANALYTICS (Wave 1) · depends_on node_lifecycle_addressing · coordinates contextual_controls_
-
-The "API on every endpoint" idea (D-A4/A3). Every object is a stable public
-endpoint with full read + write (GET data / mutate via the spine's sync-safe
-ops, authorized by fe-policy), exposed over REST + the existing MCP tools so an
-agent/external tool can drive the scene; also emits the copy-API-string / report
-seam the analyst persona and the context menu (T4) consume, and makes stamp +
-region nodes first-class in fe-query. Owns `fe-api/*` + `fe-query/*` +
-`fe-renderer/addressing.rs` — the cleanest-isolated Wave-1 track.
+Addresses (`/nodes/{id}/address`, `/address?uri=`), per-object GET, DELETE/cascade,
+promote, MCP `read_node`/`node_address`, egress strings (cdd3291, 623145f). Open:
+stamp position-lock not enforced on REST/MCP `update_transform` (T5-LOCK); UI-vs-API
+op-log parity + earthwork summary on real rows (T5-PARITY); trigger-op vocabulary
+needs ratification (T5-TRIGGER); retro.
 
 ---
 
-## P0 — UI shell architecture (user-directed 2026-07-24)
+## P0 — UI shell + UI semantics
 
-### [ ] ui_shell_architecture — pointer/tab/modal manager decoupling + right-sidebar tool inspector + P0 crash/selection fixes
+### [~] ui_shell_architecture — pointer/tab/modal managers + right-sidebar tool inspector
 
-_Link: [./tracks/ui_shell_architecture_20260724/](./tracks/ui_shell_architecture_20260724/) · pending · P0 UX + P0 STABILITY (user live-test findings 2026-07-24) · supersedes tool_inspector_ux + ux_interaction_hardening (both archived 2026-07-24)_
+_Link: [./tracks/ui_shell_architecture_20260724/](./tracks/ui_shell_architecture_20260724/) · implemented_pending_inapp_verify · 23 done / 6 open_
 
-User-directed re-coupling of the UI rendering system: **1 pointer/cursor-ops
-manager** (consolidating the click-claim/drag surfaces), **1 tab-interaction
-manager per core area** (topbar / left sidebar / right sidebar), **1 modal
-manager** (tooltips + transient overlays, panic-guarded panels); floating tool
-windows (terrain/path/tools) migrate into the **right-sidebar inspector**
-revealed on toggle; the always-open tool-descriptions sidebar becomes
-**tooltips**. **Phase 0 (P0, ratification-independent, lands first):**
-(a) gardener_ui_system terrain crash (panic poisons the whole egui pass, exit
-101 — leading hypothesis: proposals-only `terrain_json` on a config-less
-petal); (b) viewport path-point selection — ROOT CAUSE CONFIRMED: the
-`viewport_pick.rs` track-open gate needs `path_state.tracks`, which only loads
-while the Data window's Paths tab renders; fix = eager-load on petal change.
-Absorbs ux_interaction_hardening FR-1..4 (incl. FR-3 gimbal damping); carries
-terrain_editor_overhaul's transferred viewport-selection acceptance; unblocks
-pen_curve_tool in-app verification. 5 open questions await ratification
-(spec §Open questions); road_builder_ux + inspector_settings coordinate.
+Phases 0–6 landed and pushed (a731369..dbe2e39, efe2126). The FR-1 terrain crash was
+closed out of band (190188f proposals-only doc shape + 631f389 smart_aim NaN from
+`f32::MAX` DragValue ranges). All 6 open boxes are user-gated in-app checkpoints.
+Small doable follow-up: debounced warning on a silent path-pick no-op
+(UISHELL-SILENT-PICK-WARN). `panic = "abort"` kept by ratification.
+
+### [~] ui_semantics_unification — unified tool toggles + Options surface
+
+_Link: [./tracks/ui_semantics_unification_20260808/](./tracks/ui_semantics_unification_20260808/) · implemented_pending_inapp_verify_
+
+All phases committed in 4d0c12d (mislabelled as the visibility-resolver commit; 62
+files). Open: in-app verify; record the D-1..D-18 rulings in spec §4
+(UISEM-RULINGS-RECORD); optional `f32::MAX`-in-`.range(` lint (needs a yes).
+
+### [~] hierarchy_visibility_groups — sidebar eyes at all 4 levels + named Groups
+
+_Link: [./tracks/hierarchy_visibility_groups_20260808/](./tracks/hierarchy_visibility_groups_20260808/) · in_progress_
+
+All 18 decisions ratified 2026-08-08. Phases 0–1 + part of Phase 2 landed in 4d0c12d
+(resolver, eyes, chip, viewport-pick + camera filters, force-deselect). Phases 2–6 are
+agent-doable: remaining pickers + H/Shift+H/Alt+H + Isolate menu (VIS-PH2), persisted
+`view.state`/`view.groups` (VIS-PH3), petal group registry + persisted fractal/verse
+eyes (VIS-PH4), Groups section + unified layer registry (VIS-PH5), REST/MCP (VIS-PH6).
 
 ---
 
 ## P0 — UX test findings (2026-07-16, user-driven UX pillar)
 
-Bugs and asks from the user's live UX testing session, 2026-07-16 (logged in
-[ux_qa_review findings](./tracks/ux_qa_review_20260714/findings.md)). The four
-fix tracks (path_interaction, gpx_stamp_persistence, inspector_units_width,
-camera_focus_clip) landed same-day — full sweep green (1517 tests, clippy
--D warnings, fmt), in-app verification user-gated — and were archived
-2026-07-17; see the [batch retro](./tracks/_archive/ux_retro_20260716/retro.md).
-Remaining:
+The four 2026-07-16 fix tracks were archived 2026-07-17
+([batch retro](./tracks/_archive/ux_retro_20260716/retro.md)). Remaining:
 
 ### [ ] road_builder_ux — C:S-inspired road/path builder input layer
 
-_Link: [./tracks/road_builder_ux_20260716/](./tracks/road_builder_ux_20260716/) · pending · P0 UX (user-driven, 2026-07-16)_
+_Link: [./tracks/road_builder_ux_20260716/](./tracks/road_builder_ux_20260716/) · pending · 0 / 30_
 
-Straight/curved(quadratic-bezier)/freeform drag-to-place segments with C:S-style
-chaining, 45°/90° angle snap, guidelines + ghost preview, snap-to-existing-path
-(coordinate-share only — no topology graph, feeds a future `procedural_roads`
-track), live metric length via a `metric_scale()` seam. New `path_kind`
-designed|recorded property (absence ⇒ recorded, zero migration) so analytics can
-filter designed roads from GPS traces. Input layer ONLY — ribbon meshes,
-intersections, upgrade tool, zoning all deferred (user-ratified hybrid, 2026-07-16).
+Not started. Design user-ratified 2026-07-16 (input layer only); its prerequisite
+(ui_shell pointer-ops manager) has landed, so it is buildable: `path_kind` provenance
+(ROAD-PATH-KIND, independent) then snap core, `Tool::Road`, ghost/guides/readout
+(ROAD-CORE). Curved mode should reuse pen_curve's bezier authoring.
 
-### [~] pen_curve_tool — Illustrator-style Pen curve tool (bezier anchors + corner settings)
+### [~] pen_curve_tool — Illustrator-style Pen curve tool
 
-_Link: [./tracks/pen_curve_tool_20260722/](./tracks/pen_curve_tool_20260722/) · in_progress (Phases 1-6 implemented; Phase 7 + in-app re-verify pending) · P1 UX (user-directed 2026-07-22) · depends_on terrain_editor_overhaul, tool_inspector_ux (both archived 2026-07-24 — satisfied deps)_
+_Link: [./tracks/pen_curve_tool_20260722/](./tracks/pen_curve_tool_20260722/) · implemented_pending_inapp_verify · 31 done_
 
-Illustrator-style cubic-bezier Pen tool: per-anchor in/out handles +
-Corner/Smooth/Symmetric classification, click=corner / press-drag=smooth /
-Alt-drag=corner-break, and a per-anchor "corner settings" smoothness slider
-that auto-derives collinear handles. Reuses the existing de Casteljau
-tessellation (`node_manager/curve.rs`); geometry stays in raw petal-local
-meters (no `world_scale`); legacy straight polylines render byte-identically.
-**Phases 1-6 implemented**: Phases 1-2 pushed @ `01c175d` (CI green); Phases
-3-6 landed 2026-07-24 with a 14-finding review-fix pass. **In-app test
-2026-07-24**: cannot select/manipulate existing points — suspected app-wide
-viewport selection routing (owned by `ui_shell_architecture_20260724`, not
-pen-specific) — plus an unrelated `gardener_ui_system` terrain crash (same
-track owns it). Remaining: Phase 7 close-out + in-app re-verify.
+Phases 1–7 landed and pushed (34a5160 Ph1-2, Ph3-6 + retro 2026-07-24). The 2026-07-24
+point-selection blocker was fixed by ui_shell FR-2. Only the user's in-app re-verify
+and archival remain.
 
 ---
 
 ## P0 — Analytics engine critical path
 
-The primary roadmap goal: spatial ANALYTICS engine with BI egress (copy a SQL string /
-API URL into PowerBI or a spreadsheet). Ordered per roadmap slate.
+BI egress (the headline) is **done** — see above. Remaining analytics work:
 
-### [~] analytics_egress — BI Last-Mile Egress (the killer feature)
+### [~] hexon_scale_orchestration — real-world scale + rulers
 
-_Link: [./tracks/analytics_egress_20260714/](./tracks/analytics_egress_20260714/) · in_progress · P0 CORE-ANALYTICS_
+_Link: [./tracks/hexon_scale_orchestration_20260712/](./tracks/hexon_scale_orchestration_20260712/) · in_progress · 17 done / 7 open_
 
-Phases 1–5 landed 2026-07-15: real GeoParquet writer/reader in fe-query (arrow/parquet
-54.x, WKB Point Z, CRS-honest `geo` metadata) behind a `parquet` feature; fe-api
-`export.parquet`/`.csv` endpoints with DuckDB-httpfs headers; shared `query_guard`
-pipeline + D4 cost/row/timeout limits (row-cap = error-not-truncate); ed25519 signed
-share URLs (authed mint + public redemption with scope ceiling); three-branch CRS
-resolution stamped on every egress path; GIS-panel Export tab "Copy for BI" card
-(SQL / URLs / DuckDB snippet / curl, 12 tested builders). ~20 new tests. Remaining:
-Phase 6 (e2e + docs + workspace sweep); follow-ups — persistent share-signer key wiring
-in main.rs, in-app HTTP mint call (curl display shipped instead).
-
-### [~] hexon_scale_orchestration — Real-World Scale + Rulers (CRS/GSD spine)
-
-_Link: [./tracks/hexon_scale_orchestration_20260712/](./tracks/hexon_scale_orchestration_20260712/) · in_progress · P0 CORE-ANALYTICS_
-
-Hexon-authoritative scale in `TilesetMeta` (+ Web-Mercator backfill), mixed-GSD
-reconciliation in `CompositeTileSource`, then a measurement layer. Phases 1–4 done
-(scale plumbing + `RulerPlugin` scale-bar HUD landed 2026-07-15). Remaining: Phase 5
-(measurement tools — tape/area/bearing + GPX path length) and Phase 6
-(graticule/annotations). Metrically-correct reporting gates egress GA; rulers trail.
+Phases 1–4 done (scale plumbing, `RulerPlugin` scale bar); GPX path-length readout done
+(906d9cc). Open: tape/bearing + area tools (HS-P5), adaptive metric grid (HS-P6-GRID),
+dimension callouts (blocked on D-11), user in-app check. The D-10 gate (egress GA) is met.
 
 ### [ ] map_scale_authority — map-authoritative scale for placement + UI numbers
 
-_Link: [./tracks/map_scale_authority_20260716/](./tracks/map_scale_authority_20260716/) · pending · P1 CORE-ANALYTICS · complements hexon_scale_orchestration (owns scale CORRECTNESS; that track owns measurement TOOLS)_
+_Link: [./tracks/map_scale_authority_20260716/](./tracks/map_scale_authority_20260716/) · pending · 0 / 21_
 
-User directive 2026-07-16: the map always sets the scale — no per-asset scale
-metadata. One canonical world_scale accessor (new `fe-format/src/scale.rs`;
-fe-terrain delegates via re-export), placement handlers default node scale from
-petal terrain (kills the hardcoded `[1,1,1]` in ImportGltf/create_node), 6+
-duplicated fe-ui conversion formulas become shims, API unit contract documented
-(world units on the wire, meters at the UI edge), terrain-height snap-on-place
-in scope as an independently de-scopable phase (fixes the y=0 placement issue).
+Not started (no `fe-format/src/scale.rs`; `crud.rs`/`lib.rs` still hardcode scale
+`[1,1,1]`). Design binding since 2026-07-16; Phases 1–3 + 5 agent-doable (MSA-P1..P3,
+P5 — P3 also closes the ux_qa scale-authority split); Phase 4 snap-on-place waits on D-38.
 
-### [~] auth_policy_pattern — Policy Engine (RBAC-on-results backbone)
+### [~] auth_policy_pattern — policy engine (RBAC-on-results backbone)
 
-_Link: [./tracks/auth_policy_pattern_20260710/](./tracks/auth_policy_pattern_20260710/) · in_progress (promoted spec→impl 2026-07-15) · P1 ENABLING_
+_Link: [./tracks/auth_policy_pattern_20260710/](./tracks/auth_policy_pattern_20260710/) · in_progress · 13 done / 3 open_
 
-Implementation slice landed 2026-07-15: new `fe-policy` crate (deny-by-default
-`Policy::evaluate`, `RoleLevel` moved here canonically), fe-database `require_write_role`
-delegates to the engine, fe-hexon Phase 8.4 RBAC gap closed (`install_as`/`uninstall_as`
-gated Editor+), fe-plugin/fe-webview thin adapters.
-CORRECTED 2026-10-07 (F20 board-drift pass): the fe-sync §D1 `PolicyHandle` write gate
-named above was superseded by F3 — peer admission now lives on the DB thread
-(`ApplyReplicatedRow` → `admit_inbound_row`, fe-policy Editor+ at verse scope,
-deny-by-default); `write_policy.rs` keeps `PolicyHandle` as a building block only, and
-the "flip fe-sync to strict" item is closed as superseded
-(fe-sync/src/AGENTS.md §write-policy).
-Remaining: fe-api adapter, TokenScopePolicy/OwnershipPolicy, causal-DAG membership +
-strong-removal resolver (blocked on per-op ed25519 signing, decisions D5-1).
-
-### [~] iot_spatial_reporting — IoT as Queryable Spatial Rows
-
-_Link: [./tracks/iot_spatial_reporting_20260714/](./tracks/iot_spatial_reporting_20260714/) · in_progress · P1 CORE-ANALYTICS · depends on analytics_egress_
-
-Landed 2026-07-15: `iot_reading` table + `insert_readings` handler with read-back tests
-(FR-1), fe-query `builder/timeseries.rs` (FR-3), batch ingestion endpoint
-`POST /petals/:id/iot/readings` + query_guard whitelist seam (FR-4); FR-2 (node_log cap)
-was pre-satisfied by p2p_unblock_now (`9ef76a1`). Remaining: FR-5 — reading-shaped
-parquet/CSV export (plan Phase 4) + the inherited bim_primitives FR-8
-statistical-analysis seam (2026-07-17, spec §Inherited seam).
+fe-policy crate, fe-database/fe-hexon routing, hexon HTTP routes through the engine
+(916a3ae), inbound peer admission at the DB thread (F3, supersedes the sync-thread
+`PolicyHandle` flip). Open: fe-api `auth.rs` still bypasses the engine (AP-3.1);
+`TokenScopePolicy` + `OwnershipPolicy` absent (AP-3.4). Task 3.5 (causal-DAG
+membership) is stale — superseded by the canonical data log (D-CL24(5)).
 
 ---
 
 ## P1 — Platform
 
-### [~] api_mcp_integration_tests — reusable API harness + api/mcp integration suites
+### [~] mcp_scene_primitives — MCP primitive vocabulary for AI scene construction
 
-_Link: [./tracks/api_mcp_integration_tests_20260717/](./tracks/api_mcp_integration_tests_20260717/) · in_progress · P1 ENABLING_
+_Link: [./tracks/mcp_scene_primitives_20260716/](./tracks/mcp_scene_primitives_20260716/) · in_progress (was done) · 23 done / 3 open_
 
-Reusable integration-test harness (in-mem SurrealDB + **real** fe-api router +
-tower `oneshot`), consumed by `api_integration.rs` (query-guard limits,
-SQL-injection attempts, RBAC negatives, GIS round-trips, egress CSV) and
-`mcp_integration.rs` (MCP tool round-trips + KNOWN-WEAK authz markers for the
-create_node / create_petal / update_transform gaps, cross-referencing
-mcp_scene_primitives). Gives `fractalengine-test-harness` its first downstream
-consumer (closes the styleguide SG-08 gap). FR-5 appended 2026-07-18 (user
-ask): comprehensive expansion — remaining endpoint families (WS/realtime if
-present, hexon/tileset, IoT ingest+export, share-URL mint→redeem, auth token
-lifecycle), cross-thread DB↔API↔sync scenarios via the harness, MCP
-negative/fuzz coverage. Acceptance: both suites green in the workspace sweep.
+All functionality shipped: CreateAsset/CreateNodeWithAsset, multipart upload, ToolSpec
+dispatcher, 29 tools with exact inventory test, RBAC negatives (F13 635b8c5, F14,
+5b06795, 9cbdea6). Reopened 2026-10-10 for owed tests: REST upload 201/403/503
+(MCP-TEST-UPLOAD), one chained FR-8 loop (MCP-TEST-LOOP), plus REST `create_node`
+with `asset_id`/rotation/scale (MCP-2.4).
 
-### [ ] crate_consolidation_r2 — user-directed merges with audit counter-evidence embedded
+### [~] canonical_data_log — signed canonical log program (SPEC-1..10, Workstream G)
 
-_Link: [./tracks/crate_consolidation_r2_20260718/](./tracks/crate_consolidation_r2_20260718/) · pending · P1 PLATFORM (user directive 2026-07-18)_
+_Link: [./tracks/canonical_data_log_20260808/](./tracks/canonical_data_log_20260808/) · in_progress · local implementation GO, network rollout NO-GO_
 
-User directive 2026-07-18: the 22-crate workspace is itself an anti-pattern —
-crate count is a cost, sparse crates should merge. Re-opens exactly three
-candidates against the [2026-07-17 audit's](./decisions/crate-consolidation-20260717.md)
-KEEP verdicts, each with the counter-evidence embedded and an accept/defer
-gate: G-1 fe-plugin-test→fe-plugin as a `test-utils` feature (F8 cost: OSS
-plugin authors pull wasmtime+bevy to test); G-2 fe-hexon-registry→fe-hexon as
-a feature-gated bin (F7 cost: docker engine-closure + foundry extraction path;
-the fe-format merge question routes as a gate INSIDE hexon_unification's
-scope — no parallel workstream); G-3 fe-query→fe-api evidence-first
-(preliminary grep: fe-database ALSO consumes fe-query ⇒ naive merge inverts
-layering — consumer map is the gate artifact). fe-network untouchable
-(D-71 RESOLVED-KEEP: P2P is the differentiator). Merges are structure-only.
-
-### [~] release_ci — Cross-Compilation Pipeline + Docker Image
-
-_Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/) · in_progress · P2 ENABLING_
-
-Phase 1 done (`build-artifacts.yml` 3-OS PR check, rust-cache blessed over sccache,
-Linux glib apt deps fixed after run 29390918844). Phase 2 tasks 2.1–2.6 done
-(`release.yml` 8-target matrix, lipo universal binary, SHA256SUMS, gh-release publish,
-GHCR docker job, `Cross.toml`). Remaining: task 2.7 end-to-end tag verification
-(requires a live GitHub run). Docker relay image = shipping vehicle for the analytics
-backend.
-
-### [~] oss_release — open-source release checklist
-
-_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · in_progress (D-69/D-70 ratified @ b555082; Apache-2.0 SINGLE, scaffolding + CI lint gate landed; many items BLOCKED-ON-USER) · P1 ENABLING · D-69 + D-70 RATIFIED 2026-07-17 (Apache-2.0; conductor/ public)_
-
-The full pre-public-push gate, sourced from the 2026-07-17 OSS-release audit
-(REL-01..11) + crate-consolidation audit ([decision record](./decisions/crate-consolidation-20260717.md)).
-License **ratified 2026-07-17: Apache-2.0 single** (LICENSE-APACHE, workspace
-`license = "Apache-2.0"`, THIRD-PARTY-LICENSES + deny.toml, SECURITY.md draft);
-conductor/ ships public with its README framing. Checklist: placeholder ed25519 signature
-register disclosure (13 sites, all fe-database post-consolidation), SurrealDB
-BUSL-1.1 notice maintenance, crates.io metadata verification, SECURITY.md contact
-finalization, CI lint gate + badge, community health files, and the pre-push
-preflight (secrets re-scan, decision-register review, README claims audit).
-Ratification-gated items are marked BLOCKED-ON-USER in the plan.
-
-### [~] cross_platform_desktop — Linux/macOS/Windows-ARM64 Builds
-
-_Link: [./tracks/cross_platform_desktop_20260429/](./tracks/cross_platform_desktop_20260429/) · in_progress · P2 PLATFORM-KEEP · blocks release_ci_
-
-Phases 1–2 done. Phase 3 awaits green CI evidence: Linux (deps fixed 2026-07-15),
-macOS aarch64 (new PR job), Windows ARM64 (release.yml, next `v*` tag). Local
-Win-ARM64 compile deferred-to-CI (memory-constrained dev machine). Still unverified:
-macOS launch smoke test, macOS x86_64 compile.
-
-### [~] p2p_asset_streaming — fine-grained hexon transfer + scene-driven residency
-
-_Link: [./tracks/p2p_asset_streaming_20260718/](./tracks/p2p_asset_streaming_20260718/) · in_progress (FR-1 relay + FR-7/D-78 settings + FR-4 soft residency landed @ 320ebfe; **FR-3 chunk transfer still STUBBED** — sync_thread.rs:767-793 emits ChunkFailed; FR-5/FR-6 unbuilt) · P1 PLATFORM (user-driven 2026-07-18; P2P = main differentiator per D-71) · decision round **D-73…D-78 RATIFIED 2026-07-18**_
-
-User ask 2026-07-18: stream parts of multiple hexons based on what's actually
-in the scene (render distance + entity caps) instead of forcing full downloads.
-Decision round in [decisions/p2p-streaming-20260718.md](./decisions/p2p-streaming-20260718.md)
-**RATIFIED 2026-07-18** — user locked the staged defaults ("no new primitive;
-leverage pointers to multiple hexons"): A4 HashSeq of size-tuned chunk bundles
-reusing the existing `package_chunked`/RequestChunk scaffolding (protocol exists
-in types + UI wiring, sync-thread handlers are stubs); D-74 residency ledger
-driving an **ephemeral pointer-set** `{(hexon_uri, bundle_hash), …}` recomputed
-per frame — **no materialized scene artifact**, so no staleness (content-addressed
-blobs make the pointer-set free + cross-hexon-dedup free); C1 registry
-member-granular routes behind one `PartialHexonFetch` trait; D2 Merkle-extended
-signature root; E2 build-on-0.35 behind a transport trait; **D-78 new: a
-dedicated application-settings surface** (FR-7 — no settings surface exists
-today; resurrects the archived render_distance_lod `AppSettings`). The
-Ratification section answers P2P mechanics, renderer effect, and 2-layer limit
-enforcement (hard watchdog backstops + soft distance-ranked ledger; promote
-DIAG-15M census to a shared resource for the closed-loop GPU-byte horizon).
-Phases 0–1 (evidence pack + relay loud-fail hardening for the 2026-12-31 EOL) +
-Phase 4b (settings) are decision-independent and executable now. FR-4 implements
-runtime_instance_guardrails' specced-but-unbuilt FR-6 render horizon; integrity
-fields route through hexon_unification.
-
-### [ ] iroh_1_0_upgrade — 0.35 → 1.0 behind the VerseReplicator seam
-
-_Link: [./tracks/iroh_1_0_upgrade_20260711/](./tracks/iroh_1_0_upgrade_20260711/) · pending · **HARD DEADLINE 2026-12-31** (n0 hosted-relay 0.35 wire-protocol EOL)_
-
-P2 now, rises P1 by Q4 — calendar-driven, independent of the wave chain. Coordinate
-with p2p_mycelium_completion (wire real iroh-docs against 1.x directly if still in
-flight). Gotcha recorded 2026-07-15: fe-sync pins `iroh-quinn-proto` 0.13 for BBR —
-bump in lockstep and re-verify the congestion-controller default
-(fe-sync/src/AGENTS.md §congestion-control).
+SPEC-1..8 owner-approved; HARD-1..6, Waves 1–3 (+3R remediation) landed. Open and
+agent-doable: Wave 4 serial integration incl. the six D-CL20 bypass counters
+(CDL-W4), seal `VerifiedEnvelopeMeta` (CDL-R1), production enrolment/issuer views
+(CDL-R2), scope-sensitive WS test (CDL-R6), SPEC-10 draft (CDL-SPEC10). Needs a
+ratification: SPEC-9 availability floor, provisional CBOR numbering, rotation-fork
+resolver, WIT s64, dual-emit cut-over. Network rollout, relay seeding, inbound P2P and
+mounting `/ws/canonical` stay owner-gated. The old "is_available() must stay false"
+constraint now applies to the canonical path only (F1/F2 made the legacy row path real).
 
 ### [ ] hexon_unification — one canonical .hexon + portable petal snapshot
 
-_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · pending · P1 PLATFORM · subsumes hexon_path_asset FR-5 + inherits its FR-6 (archived 2026-07-17)_
+_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · pending · 0 / 37_
 
-Collapse the fe-hexon `.fecrate` parallel stack onto fe-format v1.0.0 (fe-format
-stays the lean format layer; fe-hexon rebuilt as the runtime layer — registry,
-publisher, remote client, authz — on fe-format types; dead `.fecrate` code deleted,
-fe-api `/crates/*` re-pointed) and add a `PetalSnapshot` hexon type packaging a
-petal's full SurrealDB state + op-log (HLC-ordered, sigs verbatim per D5-1),
-Manager+ gated, with export→import→export round-trip determinism as the acceptance
-gate. User directives 2026-07-16: v1.0.0 upheld; registry compat may break freely.
+Not started: fe-format is still only a dev-dependency of fe-hexon, `crate_id` and
+`.fecrate` remain, no `PetalSnapshot`, `install_crate` records no petal association.
+Fully ratified (user directives 2026-07-16) and agent-doable in order HU-P1→P6.
 
-### [ ] mcp_scene_primitives — MCP primitive vocabulary for AI scene construction
+### [~] p2p_asset_streaming — fine-grained hexon transfer + scene-driven residency
 
-_Link: [./tracks/mcp_scene_primitives_20260716/](./tracks/mcp_scene_primitives_20260716/) · pending · P1 PLATFORM · primitives only (user-ratified 2026-07-16)_
+_Link: [./tracks/p2p_asset_streaming_20260718/](./tracks/p2p_asset_streaming_20260718/) · in_progress · 8 done / 24 open · D-73…D-78 ratified_
 
-Close the asset-ingestion gap — glb upload writes blobs API-side through the
-shared BlobStore handle (bytes never cross the bounded crossbeam channel;
-metadata-only `DbCommand::CreateAsset`), new `CreateNodeWithAsset` reusing
-`DbResult::GltfImported` — and grow `/mcp` from 6 to 20 tools behind a
-table-driven ToolSpec/ScopeRule dispatcher that also fixes the 3 weak-authz
-warts (create_node / create_petal / update_transform scope checks). Acceptance:
-headless e2e upload→place→property→move→read→delete over MCP with RBAC
-negatives. No semantic city verbs (tripwire-tested); 256 MiB glb-only limit.
+Done: Phase-1 `RelayConfig` + relay health with the EOL warning (320ebfe). Partial:
+soft residency allowance (no ledger), settings surface (no persistence, two knobs).
+Open: evidence pack (PAS-P0), headless relay verification (PAS-P1V), chunk transport
+(`handle_request_chunk` still emits `ChunkFailed`, PAS-P3), residency ledger + lazy
+tiles (PAS-P4), settings persistence (PAS-P4B), `PartialHexonFetch` (PAS-P5), close-out.
+
+### [ ] iroh_1_0_upgrade — 0.35 → 1.x behind the VerseReplicator seam
+
+_Link: [./tracks/iroh_1_0_upgrade_20260711/](./tracks/iroh_1_0_upgrade_20260711/) · pending · **HARD DEADLINE 2026-12-31** (n0 hosted-relay 0.35 EOL)_
+
+`Cargo.toml` still pins 0.35 (incl. `iroh-quinn-proto` 0.13 for BBR). Now a port of a
+live 0.35 stack, not greenfield wiring (IROH-1X). Timing/posture decisions D-22/D-23
+are still open in the register.
+
+### [ ] crate_consolidation_r2 — user-directed crate merges
+
+_Link: [./tracks/crate_consolidation_r2_20260718/](./tracks/crate_consolidation_r2_20260718/) · pending · 0 / 15_
+
+Nothing executed. Phase 1 evidence (consumer maps, closure sizes) is agent-doable
+(CC-P1); merges G-1/G-2/G-3 wait on gate decisions (CC-GATES). Spot evidence:
+fe-plugin-test has zero consumers; fe-query is consumed by fe-api AND fe-database.
+
+### [~] oss_release — open-source release checklist
+
+_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · in_progress · 17 done / 15 open · Apache-2.0 ratified_
+
+Licence files, THIRD-PARTY-LICENSES (BUSL-1.1), README/SECURITY claims, crate
+descriptions done. 2026-10-10: README Status corrected, SECURITY.md stale "permissive
+sync gate" bullet replaced, root AGENTS.md SQLite line fixed. Open: cargo-deny CI step
+(OSS-1.3), placeholder-signature register now 20 sites (OSS-1.5), GHCR URL in
+BUILDING.md (OSS-2.4), fe-sdk docs, publish dry-runs, root `.glb` strays, pre-push
+preflight; user-gated: vulnerability reporting toggle, publishing gate, visibility.
+
+### [~] release_ci — cross-compilation pipeline + Docker image
+
+_Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/) · in_progress · 9 done / 1 open_
+
+Only task 2.7 remains: the first `v*` tag run (user-gated). Its artifact checklist must
+be re-derived after macOS removal (6aaeabd): Linux x64, Windows x64, Windows ARM64,
+musl relay ×2, GHCR image. Latest main CI 38095577669 is fully green.
+
+### [~] cross_platform_desktop — Linux / Windows-ARM64 builds
+
+_Link: [./tracks/cross_platform_desktop_20260429/](./tracks/cross_platform_desktop_20260429/) · in_progress · 12 done / 2 open_
+
+Linux compile green (29687337676, 38095577669); macOS compiled once then descoped by the
+owner (6aaeabd). Open: Windows ARM64 (same tag run as release_ci 2.7), Linux
+`--workspace` tests (tied to D-66 CI scope), manual launch smoke test.
 
 ---
 
 ## Foundry-candidate specs (separate hexon-foundry project)
 
-All four carry the 2026-07-14 FOUNDRY-CANDIDATE/-ADJACENT verdict: keep specs here as
-reference, do **not** implement in the analytics core. Gated on decision
-**[D-12 (open/closed line)](./tracks/outstanding_decisions_20260715/spec.md)** — where
-open-core FractalEngine ends and the closed foundry/registry/marketplace begins. All
-presuppose real per-op ed25519 signing (13 placeholder sites, decisions D5-1).
+2026-07-14 FOUNDRY-CANDIDATE verdict: reference only, do **not** implement in the
+analytics core; gated on **[D-12 (open/closed line)](./tracks/outstanding_decisions_20260715/spec.md)**.
+Their signing / HashSeq / log-first premises are now realized in-core by
+`canonical_data_log`; legacy op-log rows stay permanently unsigned (D-CL24(5)).
 
-- [ ] **hexon_delta_format** — replayable op-log hexons, HashSeq container, log-first
-  WAL — spec_only — [./tracks/hexon_delta_format_20260710/](./tracks/hexon_delta_format_20260710/)
-- [ ] **hexon_p2p_bucket** — 3D visual IPFS, handshake-then-swarm, relay-as-seeder —
-  spec_only; inherited fe-renderer loader finish + P2P blob fetch from
-  hexon_path_asset (its FR-3/FR-5) — [./tracks/hexon_p2p_bucket_20260710/](./tracks/hexon_p2p_bucket_20260710/)
-- [ ] **verse_services** — accelerator-only per-verse services (seeder/presence/
-  materializer); reconstruct-without-service invariant — spec_only —
+- [ ] **hexon_delta_format** — replayable op-log hexons — spec_only —
+  [./tracks/hexon_delta_format_20260710/](./tracks/hexon_delta_format_20260710/)
+- [ ] **hexon_p2p_bucket** — 3D visual IPFS; partial FR-4 exists in core (asset GET by
+  hash, GLB upload); `fe-network/src/iroh_blobs.rs` still a stub — spec_only —
+  [./tracks/hexon_p2p_bucket_20260710/](./tracks/hexon_p2p_bucket_20260710/)
+- [ ] **verse_services** — accelerator-only per-verse services — spec_only —
   [./tracks/verse_services_20260711/](./tracks/verse_services_20260711/)
-- [~] **p2p_mycelium_completion** — F1 DocsStack wires persistent blobs/docs,
-  Gossip, and all three Router ALPNs; F2 (2026-10-07) makes the replicator layer
-  real (async traits, Doc::set_bytes/subscribe/close, capability import, payload
-  RowChanges, empty-entry tombstones, per-replica pumps → select! loop, DB-thread
-  ApplyReplicatedRow with geometry-safe merge + SceneChange; harness A2 scenario
-  two_peer_replica_sync passes with durable READ-BACK); F3 (2026-10-07) lands the
-  inbound fe-policy role gate (admit_inbound_row: verse-scope resolution from
-  local tables, deny-by-default, Editor+, bootstrap window, Denied outcome),
-  empty-entry tombstone apply + scene-change petal attribution, the petal-bounds
-  inline-literal geometry cast, and the rbac::get_role full-row projection fix;
-  harness A5 scenario two_peer_tombstone_sync proves N-4 over the real transport;
-  F4 (2026-10-07) makes the relay a fully applying replica (db_cmd_tx threaded,
-  startup LoadHierarchy scan + VerseCreated replica opens with EnvBackend secret
-  lookup, snapshot-based startup reconciliation so A3-denied rows get a second
-  chance, try_send bridge with drop-and-warn, SIGINT/SIGTERM/FE_SHUTDOWN_AFTER_SECS
-  → dual Shutdown commands → exit 0 e2e, FE_SYNC_BOOTSTRAP parsed with iroh's
-  NodeAddr types + start_sync'd per replica, ApiConfig gets shared blob store +
-  replication sender; also fixed the relay's first-frame TilesetEventBuffer panic
-  and the missing headless DbResult→pending-API delivery that 503'd /ready) —
-  cross-relay convergence e2e honestly deferred (no unauthenticated relay write
-  surface; seam proven by the harness scenarios); F20 (2026-10-07, M1 scrutiny
-  round-1) repairs the four confirmed blocking defects — deadlock-free
-  seed_reconciliation (snapshot applies directly through the inbound handler,
-  never awaiting into the channel the loop itself drains; 300-entry regression
-  test proves Shutdown still processes), one entry-author identity
-  (DocsStack::spawn imports the endpoint key as the docs author; live pump +
-  snapshot both attribute from entry.author(), never the forwarding neighbor),
-  Ed25519-aligned namespace ids with a legacy-BLAKE3 manifest-scan fallback
-  (secretless reopen of a persisted doc now works), and offline-only mock
-  fallback (an online open failure is a loud non-replicating replica via
-  ReplicaOpenFailed, writes error — never a false-healthy in-memory success);
-  fold-ins: inbound verse-manifest default_access {viewer,none} validation,
-  relay Seed send warn-on-error, shared relay OpenedReplicas set (no
-  close+reopen churn); F21 (2026-10-07, M1 user-testing round-1 fix) closes
-  the verse-manifest open race at the seam — a WriteRowEntry for a
-  not-yet-open verse is retained (bounded 1024, drop-oldest) and republished
-  FIFO through the normal write path after the open (never on a failed open),
-  so the manifest row create_verse_handler emits ~100ms before the
-  VerseCreated/navigation open always enters its doc: fresh relay + fresh
-  peers now converge it (live relay e2e: republishing count=1 in the log, and
-  inspect_doc reads verse/<ULID> back out of the stopped relay's own
-  docs.redb; fe-sync 149 tests, harness 11/11; new GUI navigation test pins
-  the fe-ui open path); F6 (2026-10-08, assertions A13+A14) lands the sharded
-  hybrid timeseries fabric — shard id (petal, anchor, time bucket,
-  div_euclid epoch-aligned), shard ledger `__shards/*` + peer declarations
-  `__peers/*` riding the verse's own namespace (a joining peer converges the
-  placement picture from the reconciliation snapshot), the per-verse fabric
-  as SYNC-PLANE state consumed at the inbound seam (never DB state); pure
-  deterministic placement (mirror=all, sharded=1, balanced=R clamped to the
-  reachable peers; power-of-choices; seeders as the reserved overflow tier —
-  a first-draft unreachable seeder branch was caught and fixed with a
-  regression test; loud least-utilized last resort only for a homeless
-  shard; the smallest peer never caps the fleet total); settings canonical
-  in fe-runtime timeseries.rs, persisted on the verse row's ts_* columns
-  (mirror default = exact pre-F6 behavior), replicated by the verse
-  manifest (the DB handler re-emits it on every settings change) and
-  learned by peers' fabrics from both directions of verse-doc traffic;
-  receive-side transfer routing (mirror retains all; unknown shard retains
-  — the safe default; non-host skips, silent by design), the ledger row
-  published before the first reading; the settings surface in the
-  right-sidebar Settings section (mode radios, R slider 1..16, bucket
-  width) through a dedicated TimeseriesSettingsState bundled into
-  DescriptorCaches (apply_db_results is at Bevy's 16-SystemParam ceiling);
-  SetShardDeclaration/GetShardLedger sync commands (fabric dump for
-  diagnostics + the harness); harness scenario 11 two_peer_shard_fabric
-  proves A13/A14 over the real loopback transport (balanced R=2 plans both
-  peers; manifest re-publish switches modes on both fabrics; a 1-byte
-  capacity declaration excludes the declaring peer and a later reading for
-  a non-hosted shard never lands in its store; a ~2-shard cap still places
-  all 8 one-host shards — SUM never MIN; both starved → never-homeless last
-  resort); fe-sync 183 tests, harness 13/13; residual recorded honestly: R
-  is a request (fewer-than-R is honest, not an error), mirror ignores
-  capacity by contract, host sets never re-plan on churn (deferred), F7's
-  targeted transport is the natural next step; F7 (2026-10-08, assertions
-  A15+A16+A17) lands the distributed query fan-out — `SubmitComputeTask` is
-  a real transport over the verse compute gossip topic (request/response
-  correlation by `request_id`, bounded concurrency 8, pending cap 64, 3 s
-  default / 10 s max deadline, 448 KiB envelope budget with trim+truncated
-  flag, 256-shard honest target cap), the planner splits the STRUCTURED
-  spec (`TsQueryKind`, never SQL) into per-host partials (windows target
-  overlapping shards; latest/all target every petal shard), commutative
-  merges fold count/sum/min/max with mean derived at the end (order-free,
-  mirror-duplicate-safe), raw dedupes by `reading_id`, latest keeps max
-  timestamp, and the A16 covered/missing/answered honesty metadata rides
-  every outcome (a creator's over-retained copy is honestly covered via row
-  attribution; an offline R=1 host's exclusive shard is missing;
-  answered-but-empty is covered); local execution renders partial SQL from
-  the spec via fe-query builders (new fe-database `ts_partial` handler —
-  remote SQL never accepted from the wire); A17 surfaces behind one guarded
-  bridge in fe-api `timeseries_query.rs` (Viewer+, petal scope resolution +
-  containment, rate limit; verse from the resolved scope, never the body):
-  `POST /api/v1/query` distributed mode, the analytics merged `iot_reading`
-  table (registered only when the caller's SQL references it), and the MCP
-  `query_timeseries` tool (11 tools), riding `ApiState.distributed_tx`
-  bridged by both binaries; send-side targeted delivery evaluated and NOT
-  adopted (doc writes are one-shot broadcasts with no reply correlation; a
-  parallel per-host fabric would duplicate the F6 receive-side retention
-  decision — receive-side retention stands); a gossip bootstrap race
-  root-caused from an `iroh_gossip=debug` capture and fixed (the verse
-  topic subscribe now runs BEFORE the open sequence + `add_node_addr`
-  before the one-shot join — the gossip actor DROPS a Join for a
-  not-yet-subscribed topic, one-shot no retry, which killed a joiner's
-  compute path in ~1/3 runs; residual microsecond window documented with
-  the join-retry-monitor follow-up); harness scenario 12
-  `distributed_query` proves A15/A16 with 3 peers over the real gossip
-  transport (exact 3-host aggregate merge == union ground truth, raw
-  dedupe, latest, all-covered, creator-copy attribution, carol-exclusive
-  missing after her replica closes, R=2 mirror serves the row) — 6/6
-  consecutive single-scenario passes + full harness 14/14 on debug and on
-  release (final tree; FE_SYNC_RELAY=disabled); fe-api 11 A17 tests;
-  workspace tests 87 suites 0 failed; fmt + clippy --workspace -D warnings
-  clean; residual: the Join-drop microsecond window above, R>1 mirror
-  duplicates are merge-idempotent by construction; petal namespaces, gossip
-  receive, per-petal topics, tileset P2P remain open; FUTURE-OPS (deferred,
-  not scheduled): relay REST-created verses have process-lifetime secrets
-  (EnvBackend in-memory only, no persistence/extraction — replicas can
-  never re-open after a relay restart; GUI persists to the OS keystore;
-  workaround: env-inject the verse's FE_SECRET_…NS_SECRET or seed via
-  fixtures) — in_progress, FOUNDRY-ADJACENT P2; n0 relay EOL 2026-12-31 —
-  [./tracks/p2p_mycelium_completion_20260701/](./tracks/p2p_mycelium_completion_20260701/)
-  F22 (2026-10-08, M2 scrutiny round-1 fix, feature F22-m2-gui-verse-open-path):
-  CORRECTION — the F21 sentence above ('new GUI navigation test pins the fe-ui
-  open path') was false. That test fabricated `namespace_id: Some(...)`, a state
-  the real fresh-create flow never had, so GUI-created verses never sent
-  `OpenVerseReplica`, their retained manifest was dropped at shutdown, and fresh
-  peers never converged it. Fixed state: the DB-computed id now rides
-  `DbResult::VerseCreated` into the GUI tree entry (`handle_verse_created`);
-  `open_replica`'s None branch warns instead of silently returning; the relay
-  opens with the provided id; and the GUI test pins the real fresh-create state
-  end-to-end. F21's fe-sync seam is untouched. (fe-ui 900 tests; harness 14/14.)
-  F23 (2026-10-08, M2 scrutiny round-1 fix 2 of 2 + sync-plane admission-control
-  hardening, feature F23-m2-sync-plane-hardening): the API→sync seam no longer
-  blocking-sends (try_send: Full → honest `Unavailable`, Disconnected →
-  `BadGateway`; the bounded-64 seam can no longer pin API workers when the sync
-  thread is alive-but-wedged), and the transport/ledger seams gained
-  deny-by-default admission. ADMISSION POSTURE (the conductor note this feature
-  was minted to carry): (1) transport identity verification — a compute
-  request's envelope `verse_id` must equal the arrival topic's verse, and on a
-  DIRECT gossip delivery the claimed `from_did` must equal `did_key(from)` (the
-  F20 endpoint-identity==fe-DID alignment), so forged-attribution envelopes
-  cannot masquerade as a formal host's answer or impersonate a declared peer;
-  RELAYED deliveries cannot be wire-verified (iroh-gossip's `from` is the
-  forwarding neighbor) and fall back to claim-based admission — documented
-  residual. (2) requester admission — a requesting peer must be a DECLARED
-  fabric peer (`__peers/{did}`) before a responder executes anything;
-  implemented (fits the seam: the fabric already holds the peer set).
-  (3) ledger self-declaration — a `__peers` row's key must name its own signed
-  author (a forged `__peers/{other_did}` capacity row is dropped; honest
-  self-declaration converges). (4) `__shards` Editor+ gate — EVALUATED, NOT
-  implemented, and the residual is recorded honestly in fe-sync/src/AGENTS.md
-  §transport-admission-control for orchestrator review: roles are DB-thread
-  state (the local `role` table), the sync plane consumes `__shards`/`__peers`
-  before the DB thread, and no doc-side role row exists — so no honest seam-side
-  role gate is constructible; the weaker membership shape would look like
-  protection without being one (a declared peer can still publish a false
-  ledger), so it was deliberately not forced. Fold-ins: envelope-budget
-  no-progress guard (a single over-budget row now errors instead of looping),
-  failed-partial honesty (`TsPartialRows.failed` — a DB-errored host surfaces in
-  `missing_hosts`, never as an authoritative covered-empty), `PendingQueries`
-  duplicate-id refusal (no live-collector clobber), a UNIQUE `reading_id` index
-  with a loud non-unique fallback for stores predating it, and `petal_id`
-  documented as informational at the DB→sync bridge. Harness `peer.rs`
-  `create_verse`/`seed_test_data` now derive namespace ids via
-  `fe_database::derive_namespace_id` (the F20 conductor claim is now true);
-  scenarios 13/14 satisfy the new checks honestly with no checks weakened.
-  (fe-sync 215 + fe-database 196 + fe-api 89 + suites green; harness 14/14;
-  clippy --all-targets -D warnings clean; relay release build ok.)
-  F8 (2026-10-09, M3, feature F8-m3-simulation-lab; A18+A19): the simulation
-  lab landed as the new fe-sim crate — SimClock (accelerable; HLC source
-  override in fe-database op_log), a virtual transport implementing the SAME
-  VerseReplicator trait (fe-sync virtual_transport.rs +
-  spawn_sync_thread_with_transport; sim sync threads bind no iroh endpoint —
-  pinned by bound_endpoint_count), the deterministic SimNet hub (scripted
-  membership/latency/partitions/churn, heap-ordered deliveries), pure sensor
-  models + declarative fleet config ingesting real iot_reading rows through
-  the F5/F7 InsertIotReadings seam, and a scripted-scenario runner + `fe-sim`
-  CLI. Determinism proof: the same script run twice yields identical per-peer
-  fingerprints; no-real-network proof: the endpoint count never moves. Honest
-  limits: the gossip plane is not virtualized (rosters stay empty — mirror
-  mode unaffected; sharded/balanced placement + the compute transport are
-  F9/A21's seam); the REST/MCP control surface is F9/A20. (fe-sim 24 tests
-  incl. both assertion proofs; fe-sync 216; clippy/fmt clean.)
 
 ---
 
 ## Backlog / deferred
 
-No blocking dependencies; opportunistic or explicitly deferred (see each
-`metadata.json` `alignment` field).
-
-- [~] **inspector_settings** — FR-3 (hierarchy inspection) + FR-4 (Access-tab RBAC UI)
-  remain; FR-1 SaveUrl `is_url_allowed` landed 2026-07-15, FR-2 folded to shipped tab
-  set — [./tracks/inspector_settings_20260419/](./tracks/inspector_settings_20260419/)
-- [~] **thorns_shields** — security hardening + pre-launch docs; in_progress: fuzz targets
-  (ed25519/jwt) + threat-model/security-checklist/unwrap-audit docs landed @ d5cc361, but
-  `scripts/audit.sh` never committed, no fuzz CI job, 2 v2 gaps (DNS-rebinding, oversized-content)
-  open — [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
-- [ ] **sso_federation** — enterprise OIDC/SSO, spec_only P2 —
+- [~] **thorns_shields** — security hardening; fuzz targets + threat model landed
+  (d5cc361). Open: unwrap/expect census script + rewritten audit (TS-FR1), fuzz CI job
+  (TS-FR3); two webview v2 gaps await a v1/v2 call (TS-FR2) —
+  [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
+- [ ] **inspector_settings** — blocked_on_ratification: FR-1/FR-2 shipped; FR-3
+  (hierarchy inspection) and FR-4 (Access tab) have zero code and wait on D-32/D-33 —
+  [./tracks/inspector_settings_20260419/](./tracks/inspector_settings_20260419/)
+- [ ] **sso_federation** — enterprise OIDC/SSO, spec_only P2, never scheduled —
   [./tracks/sso_federation_20260429/](./tracks/sso_federation_20260429/)
-- [ ] **light_box** — default lighting rig; OFF-STRATEGY defer —
+- [ ] **light_box** — default lighting rig; off_strategy (zero code) —
   [./tracks/light_box_20260402/](./tracks/light_box_20260402/)
-- [ ] **profile_manager** — identity/profile UI + P2P sync; OFF-STRATEGY defer
-  (PeerRegistry dep satisfied) — [./tracks/profile_manager_20260419/](./tracks/profile_manager_20260419/)
+- [ ] **profile_manager** — identity/profile UI + P2P sync; off_strategy (zero code) —
+  [./tracks/profile_manager_20260419/](./tracks/profile_manager_20260419/)
 
 ---
 
 ## Meta tracks
 
-- [~] **ux_qa_review** — QA harness for the **user-owned** UX review of the shipped
-  2026-07 GPX/path/analytics surfaces; review-only, its `findings.md` seeds the future
-  UX implementation track (roadmap defers UX to the user — do not pre-empt);
-  in_progress: live-testing batch #1 (2026-07-16, 9 findings) triaged and closed,
-  audit-sourced findings logged 2026-07-17 —
+- [~] **ux_qa_review** — review-only harness for the **user-owned** UX review (never
+  `done` by design). Batch #2 findings are fixed in code pending the user's re-check;
+  open findings (undo, modifier conventions, onboarding framing) wait on D-29 —
   [./tracks/ux_qa_review_20260714/](./tracks/ux_qa_review_20260714/)
-- [ ] **outstanding_decisions_20260715** — **[the ratification register](./tracks/outstanding_decisions_20260715/spec.md)**:
-  72 entries (34 USER decisions, 38 DEFAULTED) from the 2026-07-14/15 audit + 3-wave
-  session, plus the 2026-07-17 OSS/consolidation appendix (D-69..D-72), awaiting user
-  ratify/override/kill — including D-12 (foundry split) and
-  D-68 (egress guard bypass fixes) —
+- [ ] **outstanding_decisions_20260715** — blocked_on_ratification —
+  **[the ratification register](./tracks/outstanding_decisions_20260715/spec.md)**: 72
+  entries, 4 resolved (D-69..D-72). The 2026-10-10 audit appendix marks 10 as overtaken
+  by later decisions/landed work (close on confirmation), 3 as user actions, and 55
+  awaiting ratification. **Time-critical: D-22/D-23** (iroh relay EOL 2026-12-31) —
   [./tracks/outstanding_decisions_20260715/](./tracks/outstanding_decisions_20260715/)
 
 ---

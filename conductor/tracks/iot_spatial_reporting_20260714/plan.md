@@ -81,9 +81,9 @@ Style constraints (all phases): ~300-line files, terse one-line doc comments (ra
 
 ## Phase 4 — FR-5 remaining polish + sweep (NOT this session)
 
-- [ ] **Task 4.1 — Reading-shaped parquet/CSV export.** `export.parquet`/`export.csv` are node-snapshot-shaped (`prepare_export` rejects non-`node` tables); a readings export needs a flat reading→row mapping (+ optional anchor-position join and `coords=latlon` via the petal `Projection`) before IoT rows flow to DuckDB/PowerBI **files** — until then `/query` JSON + shared URLs are the IoT egress. Coordinate with `analytics_egress_20260714` Phase-6 e2e.
-- [ ] **Task 4.2 — FR-4 "external API" puller.** This track lands the minimal v1 ingestion shape (authenticated batch POST — webhook-able). A poll-based connector catalog is explicitly future work per spec.
-- [ ] **Task 4.3 — Integrated sweep.** `cargo test -p fe-database -p fe-query -p fe-api` + clippy, once, at session end per test policy.
+- [x] **Task 4.1 — Reading-shaped parquet/CSV export.** *(AUDIT 2026-10-10: F11 @2023809 — fe-api/src/export.rs:110 `classify_export_table` two-table whitelist + batched anchor join; tests `export_share_test.rs::export_readings_round_trips_scope_filtered_with_anchor_position`, `export_readings_latlon_converts_anchor_position`, `share_readings_parquet_round_trip_is_scope_filtered`; DuckDB-read live in scripts/bi-egress-verify.log.)* `export.parquet`/`export.csv` are node-snapshot-shaped (`prepare_export` rejects non-`node` tables); a readings export needs a flat reading→row mapping (+ optional anchor-position join and `coords=latlon` via the petal `Projection`) before IoT rows flow to DuckDB/PowerBI **files** — until then `/query` JSON + shared URLs are the IoT egress. Coordinate with `analytics_egress_20260714` Phase-6 e2e.
+- [ ] **Task 4.2 — FR-4 "external API" puller.** *(AUDIT 2026-10-10: STILL OPEN by design — spec marks the poll-connector catalog future work; outstanding_decisions D-6 [DEFAULTED] 'polling connectors remain future work'. Ledger: OFF_STRATEGY_OR_SPEC_ONLY.)* This track lands the minimal v1 ingestion shape (authenticated batch POST — webhook-able). A poll-based connector catalog is explicitly future work per spec.
+- [x] **Task 4.3 — Integrated sweep.** *(AUDIT 2026-10-10: F19 workspace sweep 3,245/0 @1e9be3a (fe-database/fe-query/fe-api included).)* `cargo test -p fe-database -p fe-query -p fe-api` + clippy, once, at session end per test policy.
 
 ## Cross-track notes
 

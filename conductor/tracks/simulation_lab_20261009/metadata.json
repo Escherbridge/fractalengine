@@ -12,5 +12,7 @@
     "conductor/tracks/mission_prodready_continuation_20261008/plan.md",
     "conductor/tracks/mission_prodready_continuation_20261008/spec.md",
     "docs/simulation-lab.md"
-  ]
+  ],
+  "audited": "2026-10-10",
+  "doneness_note": "AUDIT 2026-10-10: done confirmed (closed record; A18-A21 evidenced by c0266e3, 1f2b6fd, 4854227, 2023809). Carried residuals (ledgered, none blocking): co-resident production DB-thread stamps read sim time during a session (fe-sim/src/AGENTS.md §hlc-sim, mitigated by start_ms<=now + FE_SIM_ALLOW lab-relay doctrine); inbound bounded(64) DB-channel drop under burst (§honest-limits); sim step idempotency undocumented-for-retry (M3 minor #5); MCP sim_* tools listed in the GUI's tools/list even though the GUI has no sim-control seam (fe-api/src/mcp/mod.rs:158-166, static table); auto_pump is demo-only (fe-sim/src/clock.rs:91)."
 }

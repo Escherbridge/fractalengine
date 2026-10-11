@@ -197,7 +197,7 @@ Add to release workflow:
 
 ---
 
-### Task 2.7 — Test release workflow [ ] (PENDING — requires live GitHub tag run)
+### Task 2.7 — Test release workflow [ ] (PENDING — requires live GitHub tag run) — AUDIT 2026-10-10: OPEN — `release.yml` triggers on `v*` tags only (`release.yml:9-11`) and no `v*` tag exists. The "8 jobs / macOS universal" checklist below is STALE: 6aaeabd (2026-08-20) removed the macOS matrix + lipo job, so the expected artifact count is now lower; re-derive it from `release.yml` before tagging.
 
 Create a test tag `v0.0.0-ci-test` to trigger the workflow. Verify:
 - All 8 jobs complete

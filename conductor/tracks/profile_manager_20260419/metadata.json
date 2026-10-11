@@ -3,9 +3,11 @@
   "description": "User Profile Manager — Identity Display, Profile Editing, Identity Management, P2P Profile Sync",
   "type": "feature",
   "created_at": "2026-04-19T00:00:00Z",
-  "status": "pending",
+  "status": "off_strategy",
   "wave_rationale": "Wave assignment removed 2026-07-14 per OFF-STRATEGY/DEFER alignment verdict; do not schedule. P4 needs PeerRegistry (exists).",
-  "depends_on": ["shared_peer_infra_20260419"],
+  "depends_on": [
+    "shared_peer_infra_20260419"
+  ],
   "notes": "depends_on shared_peer_infra_20260419 (P4 hard dependency per spec.md) is archived/satisfied — PeerRegistry at fe-runtime/src/peer_registry.rs, NodeIdentity at fe-identity/src/resource.rs.",
   "alignment": {
     "verdict": "OFF-STRATEGY / DEFER",
@@ -13,5 +15,7 @@
     "rationale": "Social/identity cosmetics; off the analytics path. Defer.",
     "assessed": "2026-07-14"
   },
-  "notes_validation": "VALIDATED 2026-07-19: pending (unchanged) — `git grep` for ProfileAnnounce, PeerProfileCache, and a `profiles` SurrealDB table across *.rs returns zero hits. No profile UI, identity-management panel, or P2P profile-sync code exists. Stated dependency shared_peer_infra_20260419 (PeerRegistry, NodeIdentity) is confirmed satisfied/archived per existing notes, so Phases 1-3 are unblocked but still unstarted. remaining: all 4 FRs (profile display, profile editing, identity management, P2P/DB integration)."
+  "notes_validation": "VALIDATED 2026-07-19: pending (unchanged) — `git grep` for ProfileAnnounce, PeerProfileCache, and a `profiles` SurrealDB table across *.rs returns zero hits. No profile UI, identity-management panel, or P2P profile-sync code exists. Stated dependency shared_peer_infra_20260419 (PeerRegistry, NodeIdentity) is confirmed satisfied/archived per existing notes, so Phases 1-3 are unblocked but still unstarted. remaining: all 4 FRs (profile display, profile editing, identity management, P2P/DB integration).",
+  "doneness_note": "Nothing implemented (git grep ProfileAnnounce/PeerProfileCache = 0 hits, 2026-10-10); alignment verdict OFF-STRATEGY / DEFER, wave removed 2026-07-14. No plan items closed.",
+  "audited": "2026-10-10"
 }

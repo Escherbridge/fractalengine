@@ -125,6 +125,7 @@ Phases 3-6 build, CI green @ `f5d9673`). All three are owned by
   the Authority B (`PathEditorState`) edit mode — app-wide, not pen-specific
   (this was also terrain_editor_overhaul's failed residual acceptance).
 - **Status:** transferred to `ui_shell_architecture_20260724`.
+- **Audit 2026-10-10:** FIXED in code — eager track-list load on petal change (`node_manager/viewport_pick.rs::advance_petal_tracking`, ui_shell FR-2); awaiting the user's in-app re-check.
 - **Severity:** major
 
 ### [BLOCKER] terrain — terrain tools crash the app (gardener_ui_system panic, exit 101)
@@ -135,6 +136,7 @@ Phases 3-6 build, CI green @ `f5d9673`). All three are owned by
   bevy_egui `run_egui_context_pass_loop_system` panic ("pass output has not
   been prepared") and `Main::run_main` abort, exit code 101.
 - **Status:** owned by `ui_shell_architecture_20260724`.
+- **Audit 2026-10-10:** FIXED in code — 190188f (malformed proposals-only terrain doc) + 631f389 / `sanitize_numeric_state()` (emath smart_aim NaN from `f32::MAX` DragValue ranges, root-caused in ui_semantics_unification_20260808); awaiting the user's in-app re-check.
 - **Severity:** blocker
 
 ### [MINOR] styling — tool-descriptions sidebar always open wastes real estate
@@ -145,6 +147,7 @@ Phases 3-6 build, CI green @ `f5d9673`). All three are owned by
 - **Suggested fix:** replace with a tooltip model (user verdict 2026-07-24);
   `tool_inspector_ux_20260719` superseded accordingly.
 - **Status:** owned by `ui_shell_architecture_20260724`.
+- **Audit 2026-10-10:** FIXED — left tool panel retired, rich tooltips from `TOOL_DEFS` + `panel_descriptor` (ui_shell FR-8, a731369).
 - **Severity:** minor
 
 ---

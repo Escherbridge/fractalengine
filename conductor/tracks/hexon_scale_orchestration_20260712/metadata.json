@@ -18,5 +18,7 @@
     "priority": "P0",
     "rationale": "Scale/GSD/CRS spine — metrically-correct reporting needs this. Land FR-1..5 before egress GA; rulers trail.",
     "assessed": "2026-07-14"
-  }
+  },
+  "audited": "2026-10-10",
+  "doneness_note": "AUDIT 2026-10-10: in_progress confirmed. Phases 1-4 [x] (9ef76a1/f062921/51bc90e/320ebfe). Phase 5: GPX path-length readout DONE via 906d9cc (sync_path_measurements); tape/bearing anchors + area tool NOT built (pure math only). Phase 6 (grid spacing, fade, dimension callouts) NOT started. Sequencing gate D-10 ('rulers trail egress GA') is satisfied — egress validated 2026-10-09 — so tape/area/grid are agent-doable from spec FR-9/FR-10; callouts stay blocked on D-11 [USER]. All remaining work also carries a user-gated in-app verification. Overlap watch: map_scale_authority_20260716 FR-3 audits the same UI numbers; keep fe-terrain/src/scale.rs public API stable."
 }

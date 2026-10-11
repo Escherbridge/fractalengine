@@ -17,7 +17,7 @@ Key technologies:
 - **Bevy 0.15+**: ECS, asset loading, gizmos, events (MessageReader)
 - **bevy_egui**: All UI panels rendered via egui inside a Bevy app
 - **iroh-docs**: P2P document sync — each Verse has a namespace_id that identifies its replica
-- **SQLite** (via `fe-database`): local persistence of the full hierarchy and asset metadata
+- **SurrealDB** (embedded, SurrealKV backend, via `fe-database`): local persistence of the full hierarchy and asset metadata
 - **crossbeam channels**: DB thread and sync thread communicate back to Bevy via channels + MessageReader
 
 ---

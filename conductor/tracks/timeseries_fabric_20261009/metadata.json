@@ -12,5 +12,7 @@
     "conductor/tracks/p2p_mycelium_completion_20260701/metadata.json",
     "conductor/tracks/mission_prodready_continuation_20261008/plan.md",
     "conductor/tracks/mission_prodready_continuation_20261008/spec.md"
-  ]
+  ],
+  "audited": "2026-10-10",
+  "doneness_note": "AUDIT 2026-10-10: done confirmed (closed record; A11-A17 evidenced by fa09a47, 9b170e7, c7559d5, 5e72762, 4ded0fe, 138ea3d, 0105bba). Carried residuals (ledgered): iot_reading retention/GC deliberately not wired (fe-database/src/AGENTS.md §replication-mode); `__shards` Editor+ gate evaluated and not forced (no seam-side role check — spec.md Admission control); replication-bridge Full-drop best-effort loss (outstanding_decisions D-63)."
 }

@@ -21,8 +21,8 @@ Watch for the rustc/surrealdb ICE workaround on big rebuilds
 
 Goal: current consumer graphs for all three pairs, no stale audit data.
 
-- [ ] Task: FR-3 consumer map — grep all workspace Cargo.tomls for fe-query + use-site check (confirm/refute the preliminary fe-database dependency and what it actually uses); record as an artifact in this folder
-- [ ] Task: FR-1/FR-2 dep snapshot — fe-plugin-test consumer list, fe-hexon-registry dep closure vs fe-hexon closure (sizes the docker-image cost of G-2)
+- [ ] Task: FR-3 consumer map — grep all workspace Cargo.tomls for fe-query + use-site check (confirm/refute the preliminary fe-database dependency and what it actually uses); record as an artifact in this folder — AUDIT 2026-10-10: OPEN (no artifact recorded). Spot check: `fe-query` is still depended on by BOTH `fe-api/Cargo.toml` and `fe-database/Cargo.toml`, so the layering-inversion risk stands.
+- [ ] Task: FR-1/FR-2 dep snapshot — fe-plugin-test consumer list, fe-hexon-registry dep closure vs fe-hexon closure (sizes the docker-image cost of G-2) — AUDIT 2026-10-10: OPEN (no artifact). Spot check: no workspace Cargo.toml depends on `fe-plugin-test` (zero consumers); `fe-hexon-registry` is a dev-dependency of `fe-hexon` and is built by `docker/Dockerfile.hexon-registry`.
 - [ ] Task: Cross-reference task — add the format-merge gate to hexon_unification_20260716 (spec note + plan task there; sequencing note both directions)
 - [ ] Verification: evidence artifacts complete; gates ready to decide [checkpoint]
 

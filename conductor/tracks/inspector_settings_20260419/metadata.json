@@ -3,15 +3,19 @@
   "description": "Portal URL Persistence, Inspector Tabs, Hierarchy Inspection, Auth Settings UI",
   "type": "feature",
   "created_at": "2026-04-19T00:00:00Z",
-  "status": "in_progress",
+  "status": "blocked_on_ratification",
   "execution_wave": 4,
   "wave_rationale": "Backlog UI track; P4 needs PeerRegistry (exists).",
-  "depends_on": ["shared_peer_infra_20260419"],
+  "depends_on": [
+    "shared_peer_infra_20260419"
+  ],
   "notes": "FR-1 residue + FR-2 reconcile done; FR-3 (hierarchy inspection) and FR-4 (Access tab RBAC UI) remain. 2026-07-15: SaveUrl now enforces is_url_allowed (SaveUrlOutcome in actions/portal.rs, toast on Blocked) + restart round-trip test in node_manager/inspector_sync.rs. FR-2 FOLDED to shipped tab set {Properties, ApiAccess, Query} — spec Phase 2 rewritten as-built; active_tab persists across selections by design (only per-tab sensitive state resets via inspector_sync). FR-4 Access = new fourth InspectorTab variant. Phase-4 dependency shared_peer_infra_20260419 is archived/satisfied. VALIDATED 2026-07-19: in_progress — `git grep InspectedEntity` returns zero hits (FR-3 not started), no Access-tab/AccessTabState code found (FR-4 not started); FR-1/FR-2 confirmed shipped as noted above (fe-ui/src/panels/inspector.rs, fe-ui/src/node_manager/inspector_sync.rs, latest touch 320ebfe); remaining: FR-3 hierarchy inspection (InspectedEntity enum + petal/fractal/verse tabs), FR-4 Access tab RBAC UI (both fully unimplemented).\nCOORDINATE-WITH 2026-07-24: FR-3 (hierarchy inspection) and FR-4 (Access-tab RBAC UI) should build on ui_shell_architecture_20260724's right-sidebar tab-manager architecture instead of extending the current InspectorTab enum directly — sequence after that track defines the tab-manager seam.",
   "alignment": {
     "verdict": "PLATFORM-KEEP",
     "priority": "P2",
     "rationale": "FR-1 portal-URL gap + FR-4 Access/RBAC UI align w/ hardening; UX track absorbs presentation.",
     "assessed": "2026-07-14"
-  }
+  },
+  "doneness_note": "FR-1 (portal URL persistence) + FR-2 (tab fold to Properties/ApiAccess/Query) shipped. FR-3 hierarchy inspection and FR-4 Access-tab RBAC UI remain fully unimplemented (git grep InspectedEntity / AccessTabState / InspectorTab::Access = 0 hits, 2026-10-10) and are gated on outstanding_decisions D-32 [USER] (is FR-3 still wanted; cut FR-4 to a read/write role list) and D-33 residuals. Phase 1 manual verification is user-gated.",
+  "audited": "2026-10-10"
 }

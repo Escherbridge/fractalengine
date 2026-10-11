@@ -160,3 +160,54 @@ Sources: 2026-07-17 OSS-release audit (REL-01..REL-11, feeds track `oss_release_
 ## How to resolve
 
 Edit the entry in place: append a dated resolution line (`Resolved 2026-07-NN: <ratified/overridden/killed — note>`) and flip its tag to **[RESOLVED]**. Checklist "yes" = a one-line ratification on the entry. When every entry is resolved, set metadata.json status to `completed` and archive the track. UX-theme entries (D-28..D-38, D-64, D-65) are mirrored one-line into `../ux_qa_review_20260714/findings.md`; this file is the authoritative copy.
+
+## Doneness audit — 2026-10-10 (agent audit; NOT a ratification)
+
+This appendix records what later work did to each entry. It ratifies nothing:
+entries stay open until the user resolves them per "How to resolve" above. The
+4 entries resolved by the user 2026-07-17 (D-69, D-70, D-71, D-72) are not
+repeated.
+
+**Overtaken by later user decisions or landed work (candidates to close as
+superseded — user confirms):**
+
+- D-1, D-2 — superseded by user-ratified mission decision **D1 (2026-10-06)**:
+  "DuckDB-first: hardened parquet-over-HTTP + signed share URLs" (factory
+  mission library/decisions.md). Live-verified by scripts/bi-egress-verify.ps1
+  (49/49 @770acd3); IoT file egress now exists (F11 @2023809).
+- D-10 — its gate ("rulers/callouts after egress GA") is met: BI egress
+  validated 2026-10-09 (mission M4). hexon_scale Phase 5/6 are unblocked except
+  callouts (D-11).
+- D-14 — p2p_mycelium priority is moot: mission M1/M2 turned the real iroh-docs
+  P2P stack on (2364600, 853af53, fa09a47, 9b170e7, c7559d5).
+- D-21 — superseded: the sync write path IS gated now (fe-database
+  `admit_inbound_row` Editor+ inbound gate, 20c3a96; F23 sync-plane admission
+  control, 138ea3d).
+- D-36 — path-asset stamping end state superseded by the Spatial Builder
+  program's stamps-as-addressable-nodes (D-A1/D-A5, stamped_asset_nodes_20260725,
+  56ccc3b + 623145f).
+- D-50 — answered by D-CI2 (2026-08-20): macOS removed from CI (6aaeabd).
+- D-55 — superseded: the share signer is persistent (DEC-C9, F11 @2023809;
+  fe-api/tests/share_signer_persistence_test.rs).
+- D-61 — superseded: a true node rename op exists (Rename spine op @623145f;
+  fe-database/tests/node_lifecycle_test.rs
+  `rename_is_authorized_persists_and_emits_one_event`).
+- D-68 — superseded and tightened: since 9c4da00 the elevated endpoint no longer
+  retains role/verse_member (fe-api/AGENTS.md §elevated-query); node_log left
+  the /query whitelist @770acd3.
+
+**Needs a user action, not a decision:** D-29 (hands-on UX-QA pass), D-46
+(confirm Download button in the running app), D-53 (repo settings/tag for
+GHCR + Releases; the rolling `latest` channel landed 99233f4 per D-CI3).
+
+**Partly overtaken:** D-51 (macOS half answered by D-CI2; ARM64/matrix remain),
+D-66 (its "mirrored on macOS" clause is moot after D-CI2), D-54 (GeoParquet
+crs is now spec-legal null + `fe:crs`, DEC-C16 @1ea14ba), D-9 (same DEC-C16
+encoding change), D-4 (row scoping is now FROM-substitution, M4 @667aa18, not
+`inject_scope_filter`), D-38 (map_scale_authority_20260716 FR-5 proposes
+snap-on-place).
+
+**Time-critical:** D-22 (iroh 1.0 timing) / D-23 (relay posture) — the iroh
+0.35 relay EOL is 2026-12-31.
+
+All remaining entries are unchanged: still awaiting ratification.

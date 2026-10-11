@@ -99,11 +99,11 @@ Tasks:
 Goal: interactive metric anchors giving distance/area/bearing, plus GPX path-length readout.
 
 Tasks:
-- [ ] Task: metric anchor placement + tape (point-to-point) using `ruler::world_to_real_distance`
+- [ ] Task: metric anchor placement + tape (point-to-point) using `ruler::world_to_real_distance` *(AUDIT 2026-10-10: OPEN — pure math exists (fe-terrain/src/ruler.rs + fe-ui/src/geometry.rs:61 mirror) but no anchor-placement tool/reducer is wired; D-10 gate (egress GA) satisfied 2026-10-09.)*
   + `bearing_deg`. (TDD: write test on the anchor→(distance,bearing) reducer; then wire interaction.)
-- [ ] Task: area tool over a closed polygon of anchors via `ruler::polygon_area_m2`. (TDD: write
+- [ ] Task: area tool over a closed polygon of anchors via `ruler::polygon_area_m2`. (TDD: write *(AUDIT 2026-10-10: OPEN — `polygon_area_m2` is used only by terrain-proposal reporting (fe-ui/src/panels/proposal_report_panel.rs), not an interactive area tool.)*
   test asserting real-meter area for a placed polygon; then wire.)
-- [ ] Task: GPX path-length readout reusing existing GPX paths (from `terrain_gpx_maps` /
+- [x] Task: GPX path-length readout reusing existing GPX paths (from `terrain_gpx_maps` / *(AUDIT 2026-10-10: landed via path_interaction_20260716 FR-3 @906d9cc — `fe-ui/src/node_manager/path_segment_interaction.rs:289 sync_path_measurements` keeps `PathEditorState.total_length_m` / `selected_segment_length_m` (real meters via world_scale) live for the Paths tab; tests `ground_len_ignores_height`, `ground_len_scaled_to_real_meters`; API twin `GET /api/v1/nodes/{track_id}/stats`.)*
   path-editor). (TDD: write test summing segment distances over a GPX fixture; then wire.)
 - [ ] Verification: two anchors report distance+bearing; polygon reports area; GPX path reports
   total length. `cargo test -p fe-terrain` green, fmt+clippy clean. [checkpoint marker]
@@ -113,11 +113,11 @@ Goal: a metric graticule that snaps to round distances and re-subdivides/fades w
 CAD-style dimension callouts wired into the existing annotation/property system.
 
 Tasks:
-- [ ] Task: grid spacing selection via `ruler::nice_number` + re-subdivision by camera height.
+- [ ] Task: grid spacing selection via `ruler::nice_number` + re-subdivision by camera height. *(AUDIT 2026-10-10: OPEN — no graticule/world-grid code in the tree.)*
   (TDD: write test on the height→spacing/subdivision helper; then implement grid system.)
 - [ ] Task: grid fade by camera-height threshold. (TDD: write test on the fade-alpha helper; then
   wire rendering.)
-- [ ] Task: CAD-style dimension callouts persisted via the existing annotation/property store
+- [ ] Task: CAD-style dimension callouts persisted via the existing annotation/property store *(AUDIT 2026-10-10: OPEN + BLOCKED on ratification of outstanding_decisions D-11 (callout persistence shape, [USER]).)*
   (resolve OQ-3 shape first). (TDD: write test round-tripping a dimension annotation through the
   property store; then wire.)
 - [ ] Verification: grid snaps to round metric spacing, re-subdivides on zoom, fades beyond

@@ -55,7 +55,7 @@ Tasks:
   - Ensure empty strings are normalized to `None` before persistence.
   - Run `cargo clippy` and `cargo fmt --check`.
 
-- [ ] Verification: Phase 1 Manual Verification [checkpoint marker]
+- [ ] Verification: Phase 1 Manual Verification [checkpoint marker] **[audit 2026-10-10: USER-GATED in-app; automated half covered by SaveUrlOutcome (fe-ui/src/actions/portal.rs) + restart round-trip test in fe-ui/src/node_manager/inspector_sync.rs]**
   - Run `cargo test`.
   - Launch the application, select a node, enter a URL, click Save.
   - Restart the application, select the same node -- confirm URL is displayed.

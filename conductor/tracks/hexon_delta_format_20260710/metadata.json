@@ -19,5 +19,7 @@
     "assessed": "2026-07-14",
     "foundry_project": true
   },
-  "validation_notes": "VALIDATED 2026-07-19: spec_only — confirmed unchanged; no HashSeq usage found in fe-hexon/fe-format (git grep clean), OpLogEntry.sig still a placeholder field (fe-database/src/types.rs), no log-first WAL implementation. Foundry-candidate, deliberately not implemented in the analytics core per 2026-07-14 alignment. Kept as reference. remaining: everything (spec-only by design); do NOT archive."
+  "validation_notes": "VALIDATED 2026-07-19: spec_only — confirmed unchanged; no HashSeq usage found in fe-hexon/fe-format (git grep clean), OpLogEntry.sig still a placeholder field (fe-database/src/types.rs), no log-first WAL implementation. Foundry-candidate, deliberately not implemented in the analytics core per 2026-07-14 alignment. Kept as reference. remaining: everything (spec-only by design); do NOT archive.",
+  "doneness_note": "Unchanged and intentionally unimplemented (FOUNDRY-CANDIDATE, 2026-07-14). Its core premise is now superseded in-core by canonical_data_log: per-op ed25519 signing, HashSeq segments and the log-first write seam live in fe-canonical-log (signing.rs, segment/hashseq.rs) and fe-database (op_log.rs commit_operation, canon_log/); D-CL24(5) declares the legacy op_log placeholder signatures permanently unsigned, so the '13 placeholder sigs' prerequisite will never be satisfied here. Keep as foundry reference only.",
+  "audited": "2026-10-10"
 }

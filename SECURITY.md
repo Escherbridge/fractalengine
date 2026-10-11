@@ -35,9 +35,15 @@ merely restate them will be deduplicated against this list.
   ed25519 signature field, but production write paths currently stamp a
   placeholder (all-zero) signature — including session-revocation entries.
   Do not rely on op-log signatures for integrity or non-repudiation yet.
-- **The sync write gate is permissive.** Write-path policy enforcement
-  (fe-policy) is wired but currently runs in a permissive mode pending the
-  strict flip. Peers you sync with should be treated as trusted.
+- **Peer write admission has residual gaps.** Inbound replicated rows are
+  admitted on the database thread only when their author holds Editor+ at
+  the verse scope (fe-policy, deny-by-default). Residuals: rows for a verse
+  whose manifest has not arrived yet are admitted on the replica capability
+  alone (bootstrap window); an admitted row's references into other verses
+  are not yet checked; and compute/ledger gossip frames relayed through a
+  neighbour cannot be attributed on the wire, so they fall back to
+  claim-based admission. Treat anyone holding a verse's namespace
+  capability as able to write to it.
 - **The plugin sandbox is young.** Rhai and WebAssembly plugins run with
   operation limits, fuel metering, and capability manifests, but the
   sandbox has not had an external audit. Only install plugins you trust.

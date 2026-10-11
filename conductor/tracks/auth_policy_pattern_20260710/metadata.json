@@ -19,5 +19,7 @@
     "priority": "P1",
     "rationale": "Deny-by-default Policy::evaluate = backbone for RBAC-on-query-results. Promote spec->impl, minimal slice first.",
     "assessed": "2026-07-14"
-  }
+  },
+  "doneness_note": "Phases 1-2 done (fe-policy crate + 5 adapters, 9ef76a1/f062921). Phase 3: 3.2 done by supersession (fe-api hexon routes use *_as / fe_hexon::authz::authorize since 916a3ae; fe-hexon-registry is a token-gated fixture by design); 3.3 done by supersession (F3: DB-thread admit_inbound_row Editor+ gate, 20c3a96). OPEN: 3.1 fe-api/src/auth.rs require_role/require_scope still bypass the engine; 3.4 TokenScopePolicy/OwnershipPolicy not implemented. 3.5 causal-DAG membership is STALE — superseded by canonical_data_log SPEC-2/3 (D-CL18, D-CL24(5)).",
+  "audited": "2026-10-10"
 }

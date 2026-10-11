@@ -14,5 +14,7 @@
     "conductor/tracks/mission_prodready_continuation_20261008/spec.md",
     "docs/bi-egress.md",
     "scripts/bi-egress-verify.ps1"
-  ]
+  ],
+  "audited": "2026-10-10",
+  "doneness_note": "AUDIT 2026-10-10: done confirmed (closed record). Re-run scripts/bi-egress-verify.ps1 to re-verify after export/share changes; 2026-10-10 commits 9c4da00 (/query/elevated fail-closed + record-id read leak) and 6763302 (uniform missing-vs-foreign denial) touched the query surface after the last recorded 49/49 run. CORRECTION to spec.md 'Known limitations' bullet 3: only the EXPORT path and distributed /query ride the channel fallback; plain POST /api/v1/query (fe-api/src/rest.rs execute_query: 'query endpoint not available (no db_reader)') and the share-redemption fmt=json branch (fe-api/src/share.rs:257-260) still require db_reader directly — the F10 follow-up noted in fe-api/AGENTS.md §export. Open limitations (ledgered): WKB local-frame axes, f32 anchor quantization, that db_reader gap."
 }

@@ -21,5 +21,7 @@
     "assessed": "2026-07-14",
     "foundry_project": true
   },
-  "validation_notes": "VALIDATED 2026-07-19: spec_only — confirmed unchanged; depends on hexon_delta_format_20260710 which is itself still spec_only (per-op signing not built), so this track cannot have progressed. Foundry-candidate, deliberately not implemented in the analytics core. Kept as reference. remaining: everything (spec-only by design, blocked on prerequisite tracks); do NOT archive."
+  "validation_notes": "VALIDATED 2026-07-19: spec_only — confirmed unchanged; depends on hexon_delta_format_20260710 which is itself still spec_only (per-op signing not built), so this track cannot have progressed. Foundry-candidate, deliberately not implemented in the analytics core. Kept as reference. remaining: everything (spec-only by design, blocked on prerequisite tracks); do NOT archive.",
+  "doneness_note": "Unchanged (FOUNDRY-CANDIDATE). Both prerequisites moved: auth_policy_pattern's engine exists, and per-op signing now lives in canonical_data_log rather than hexon_delta_format. The relay and fe-hexon-registry remain the only 'service class' instances; nothing in the accelerator-only service class itself is built.",
+  "audited": "2026-10-10"
 }

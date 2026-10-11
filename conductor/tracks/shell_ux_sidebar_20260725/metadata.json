@@ -3,7 +3,7 @@
   "description": "Finish 'no modes, one shell': migrate Settings and Maps (hexon manager) modals into tool-contextual right-sidebar sections like the other tools, and make the left sidebar user-driven sticky (open until closed) instead of auto-collapsing on selection. fe-ui shell seam owner; Wave 0, independent of the data spine.",
   "type": "chore",
   "created_at": "2026-07-25T00:00:00Z",
-  "status": "pending",
+  "status": "implemented_pending_inapp_verify",
   "alignment": "P1 UX — Spatial Builder Program (grilling 2026-07-25, D-A1/D-A10/D-A11). User-owned UX pillar per roadmap 2026-07-14; direct continuation of ui_shell_architecture_20260724 (one-section right rail + owned left-sidebar policy).",
   "depends_on": [],
   "blocks": [],
@@ -12,5 +12,7 @@
     "OWNS THE fe-ui SHELL SEAM (ui_shell/{mod,left_sidebar,right_sidebar}.rs, panels/mod.rs, dialogs/{settings,hexon_manager}.rs). Per the program partition, Wave-1 tracks (T2/T3/T4) do NOT edit right_sidebar.rs; any new section registration is routed through this track. This is the single shared-seam rule /slice must enforce.",
     "Open Qs: Q-1 rail placement (ordinary sections — recommended), Q-2 sticky scope (session-scoped now — recommended), Q-3 auto-collapse fate (remove entirely — recommended).",
     "NOT started. /slice deferred per user (2026-07-25: write specs, do not slice yet). Cheapest track — good Wave-0 momentum opener alongside the spine."
-  ]
+  ],
+  "doneness_note": "FR-1/FR-2/FR-3 landed in b3f4df4 (Wave 0 T6). Remaining: stale directory docs (ui_shell §left/§topbar, dialogs §settings), retro, user-gated in-app verify.",
+  "audited": "2026-10-10"
 }

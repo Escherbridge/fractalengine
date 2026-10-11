@@ -3,7 +3,7 @@
   "description": "Default 3-point lighting rig, light presets (Studio/Outdoor/Dark), light entity persistence, light inspector panel",
   "type": "feature",
   "created_at": "2026-04-02T00:00:00Z",
-  "status": "pending",
+  "status": "off_strategy",
   "execution_wave": 4,
   "wave_rationale": "Backlog Wave-2 feature (lighting rig); no blocking deps.",
   "alignment": {
@@ -12,5 +12,7 @@
     "rationale": "Visual polish (default lighting). Defer.",
     "assessed": "2026-07-14"
   },
-  "notes": "VALIDATED 2026-07-19: pending (unchanged) — `git grep` for PetalLight, LightPreset, spawn_default_light_box, LightKind across *.rs returns zero hits. No lighting subsystem exists; FractalEngine still relies on Bevy defaults. None of the 6 FRs implemented. remaining: all 6 FRs (light component system, default 3-point rig, presets, SurrealDB light schema/persistence, light inspector panel, default spawn-on-load)."
+  "notes": "VALIDATED 2026-07-19: pending (unchanged) — `git grep` for PetalLight, LightPreset, spawn_default_light_box, LightKind across *.rs returns zero hits. No lighting subsystem exists; FractalEngine still relies on Bevy defaults. None of the 6 FRs implemented. remaining: all 6 FRs (light component system, default 3-point rig, presets, SurrealDB light schema/persistence, light inspector panel, default spawn-on-load).",
+  "doneness_note": "Nothing implemented (git grep PetalLight/LightPreset/LightKind = 0 hits, 2026-10-10); alignment verdict OFF-STRATEGY / DEFER (2026-07-14). No plan items closed.",
+  "audited": "2026-10-10"
 }

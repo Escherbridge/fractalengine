@@ -13,5 +13,7 @@
     "conductor/tracks/iot_spatial_reporting_20260714/spec.md",
     "conductor/tracks/api_mcp_integration_tests_20260717/spec.md",
     "conductor/tracks/mcp_scene_primitives_20260716/spec.md"
-  ]
+  ],
+  "audited": "2026-10-10",
+  "doneness_note": "AUDIT 2026-10-10: DONE confirmed — every plan item now [x] with commit evidence (F9 1f2b6fd+4854227; F10 2a4026e; F11 2023809; F12 a6d23f3; F13 635b8c5; F14 a5f0b7b; F15 33eff03/dbb6461; F16 0c4bc2d; F17 7b11c1a; F18 f7cc47b; F19 1e9be3a; M4 667aa18+770acd3; M5 5b06795). The stale [ ]/[~] markers were a duplicate M3 placeholder and the M4/M5 FAIL headers whose fix passes are recorded beneath them. CORRECTION to notes: the mission commits are NOT unpushed — they reached origin/main at 1e9be3a on 2026-10-09 (conductor/RUNBOOK.md §2, corrected 2026-10-10). Deferred register (plan.md retro) closed 2026-10-10: SetPetalTerrain correlation 9cbdea6, /query/elevated fail-closed 9c4da00, existence-oracle unification 6763302, TilesetMeta Default 7760be1. Still open (ledgered): blob GC/quota + asset owner column; WKB local-frame axes; f32 anchor quantization; REST tileset 2 MiB cap; per-entry decompression caps; GetPetalTerrain correlation; /query/elevated writes bypass the DB thread + no DB-side TIMEOUT; existence-oracle timing (no petal.petal_id/fractal.fractal_id/node.node_id indexes in fe-database/src/schema.rs); TilesetBuilder crs: None on fresh archives; canonical_ws existence-oracle audit; MCP sim_* tools advertised on the GUI's tools/list; /query + share fmt=json still need db_reader. User-gated: in-app terrain render + scale-bar widget for Zurich/Fuji hexons, Hexon Manager UI button, whole-build GUI smoke."
 }

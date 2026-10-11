@@ -34,19 +34,21 @@ Pre-1.0, under active development. What that means concretely:
 - GPX import and path editing — pen tool with curves, vertex/segment selection, repeated-model stamping along paths
 - HTTP/WS API gateway on `127.0.0.1:8765` — REST, live scene subscriptions, MCP tools — plus a headless relay binary (Docker image available)
 - JWT auth, hierarchical RBAC, deny-by-default policy engine
-- Plugin system — Rhai and WASM sandboxes against the stable `fe-sdk` API, with UI slots
+- Plugin system (library) — Rhai and WASM sandboxes against the stable `fe-sdk` API, with UI slots; not yet hosted by the shipped `fractalengine` / `fe-relay` binaries
 - **Peer-to-peer sync** — a real iroh-docs 0.35 stack replicates whole verses with deny-by-default RBAC enforced at the DB thread (never trusted from a peer), plus a switchable mirror/sharded/balanced timeseries fabric for IoT readings with honest per-query coverage reporting. See [Peer-to-Peer Sync & Distributed Data](#peer-to-peer-sync--distributed-data) below.
+- **BI egress** (the headline): GeoParquet/CSV export of nodes and IoT readings, signed share URLs, and an in-app "Copy for BI" card — verified end to end against DuckDB (see [docs/bi-egress.md](docs/bi-egress.md))
 
 **In progress**
 
-- **BI egress** (the headline): GeoParquet/CSV export endpoints, signed share URLs, and an in-app "Copy for BI" card — core landed; end-to-end verification and docs remain
-- Measurement tools (tape/area/bearing) on top of the landed real-world-scale plumbing
-- IoT spatial reporting — ingestion and time-series queries landed; reading-shaped export remains
-- Release pipeline — the 8-target build matrix exists; the first tag-triggered release has not yet run
+- Measurement tools (tape/area/bearing, metric grid) on top of the landed real-world-scale plumbing; GPX path-length readout is done
+- Release pipeline — Linux/Windows x64, Windows ARM64, musl relay and GHCR image jobs exist; the first tag-triggered release has not yet run
+- Recent editor work (stamps as addressable nodes, earthwork sculpt regions, object-aware context menu, per-object REST/MCP endpoints) is landed and test-green but awaits in-app verification
 
 **Planned**
 
-- Road/path builder input layer, map-authoritative scale everywhere, portable petal snapshots, an expanded MCP vocabulary for AI scene construction, iroh 1.0 upgrade
+- Road/path builder input layer, map-authoritative scale everywhere, portable petal snapshots, iroh 1.0 upgrade (before the 2026-12-31 relay EOL)
+
+Per-track doneness and the remaining work queue: [conductor/doneness-ledger.md](conductor/doneness-ledger.md).
 
 **Known limitation:** op-log entries and gossip payloads carry ed25519
 signature *fields*, but signing is not yet implemented — current entries hold
@@ -108,7 +110,7 @@ cargo test -p fe-identity
 ## Architecture Overview
 
 FractalEngine runs as a single native desktop application with a
-**seven-thread topology**:
+**seven-thread topology** (T7 is the plugin-host library's design; no shipped binary starts it yet):
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -201,7 +203,7 @@ Verse                the top-level P2P namespace
 
 ## Workspace Crates
 
-22 crates; the load-bearing ones:
+24 crates; the load-bearing ones:
 
 | Crate | Purpose | Thread |
 |---|---|---|
@@ -319,6 +321,7 @@ persists are rolled back via `transform_rollback`.
 | [conductor/tech-stack.md](conductor/tech-stack.md) | Technology decisions and constraints |
 | [conductor/roadmap.md](conductor/roadmap.md) | Strategic roadmap + go-forward slate |
 | [conductor/tracks.md](conductor/tracks.md) | Live implementation-track board |
+| [conductor/doneness-ledger.md](conductor/doneness-ledger.md) | Per-track doneness + classified remaining-work queue |
 
 ---
 

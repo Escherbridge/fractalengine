@@ -32,7 +32,7 @@ Goal: the terrain tools no longer crash the app, and path points/handles are
 selectable + draggable from direct viewport interaction.
 
 Tasks:
-- [ ] Task: **Crash repro + root cause (FR-1).** NOT DONE this pass (2026-07-24
+- [x] Task: **Crash repro + root cause (FR-1).** NOT DONE this pass (2026-07-24
       worker: FR-2 + panic-hook diagnostic infra only). The fc9800f/190188f
       data-shape fix already landed on `main` (proposals-only `terrain_json`
       shape hardening), but the live panic payload from the user's reported
@@ -50,13 +50,13 @@ Tasks:
       payload; write the finding (hypothesis held + backtrace) to
       `conductor/tracks/ui_shell_architecture_20260724/finding-crash.md`.
       Check H-C2 (stale `selected_point`/`selected_segment` indexing in fresh
-      pen-curve panel code) and H-C3 (egui invariant) only if H-C1 clears.
-- [ ] Task: **Crash fix + regression test (FR-1).** NOT DONE this pass — blocked
+      pen-curve panel code) and H-C3 (egui invariant) only if H-C1 clears. **[audit 2026-10-10: DONE out-of-band — two root causes fixed: (1) H-C1 malformed proposals-only terrain doc, 190188f; (2) the gardener_ui_system emath smart_aim NaN abort from unbounded `.range(..=f32::MAX)` DragValues introduced in 320ebfe, root-caused + adversarially verified by ui_semantics_unification_20260808 (spec.md header) and fixed in 631f389 + `sanitize_numeric_state()` (fe-ui/src/panels/tool_panel.rs:222, actions/terrain_proposal.rs:351). finding-crash.md was never written; data/panic.log holds no terrain payload (only an unrelated 2026-09-03 blob-store startup error, now a clean exit at fractalengine/src/main.rs:46-52)]**
+- [x] Task: **Crash fix + regression test (FR-1).** NOT DONE this pass — blocked
       on the repro/root-cause task above. (TDD: write the failing
       test first from the captured repro — e.g. if H-C1: a unit test feeding a
       proposals-only terrain doc through the consumer that panicked; then fix;
       then refactor.) No new `unwrap`/`expect`/unguarded index in the touched
-      path.
+      path. **[audit 2026-10-10: DONE — regression tests sculpt_numeric_state_recovers_from_non_finite_values (fe-ui/src/panels/terrain_tools_panel.rs:566), numeric_state_recovers_from_nan_and_infinity (tool_panel.rs:1035), embed_none_base_doc_carries_every_field_terrain_config_requires (actions/terrain_proposal.rs); in-app repro matrix re-run is USER-GATED]**
 - [x] Task: **Point-selection enabling fix (FR-2).** DONE (2026-07-24, local,
       not committed). Eager-load
       `path_state.tracks` on active-petal change: extended the petal-change
@@ -87,7 +87,7 @@ Tasks:
       NOT re-verified here — it was already covered by that file's own tests
       and this pass didn't touch it; full end-to-end reachability remains
       in-app/user-gated (see Verification below).
-- [ ] Verification: NOT DONE this pass — user-gated in-app step, and FR-1
+- [ ] Verification: **[audit 2026-10-10: USER-GATED only — FR-1 code fixes landed (see above)]** NOT DONE this pass — user-gated in-app step, and FR-1
       (terrain-tools crash) is still open so the full Phase-0 checkpoint isn't
       closeable yet. fresh session → click imported path in viewport → markers
       appear, vertex + bezier-handle drag work under Select/Move/Pen; terrain
@@ -121,7 +121,7 @@ Tasks:
       every left-click decision routes through `ClickArbiter` claim +
       `resolve_operation`; fix any stragglers found. (TDD: existing
       interaction tests stay green; add a table test for any newly-routed arm.)
-- [ ] Verification: full `node_manager` test module green; in-app smoke —
+- [ ] **[audit 2026-10-10: USER-GATED in-app; automated half green — a731369/dbe2e39 sweep, later workspace sweeps]** Verification: full `node_manager` test module green; in-app smoke —
       click-claim behavior unchanged (node pick, vertex drag, ribbon segment,
       gimbal). [checkpoint]
 
@@ -158,7 +158,7 @@ Tasks:
       the portal toolbar. (TDD: pure `active_section(state, selection,
       portal_open)` precedence test — portal > explicit toggle > selection
       default; never-blank guarantee.)
-- [ ] Verification: pixel-parity smoke in-app (same surfaces, same places);
+- [ ] **[audit 2026-10-10: USER-GATED in-app; automated half green — a731369/dbe2e39 sweep, later workspace sweeps]** Verification: pixel-parity smoke in-app (same surfaces, same places);
       all pre-existing panel tests green; `gardener_console` param list
       unchanged or reduced. [checkpoint]
 
@@ -184,7 +184,7 @@ Tasks:
       is caught once, disabled, frame completes; zero-allocation happy path
       [no Box/String when no panic]; debug-propagation behind cfg tested via
       the release-shaped path.)
-- [ ] Verification: inject a panic into a scratch panel in-app — app survives,
+- [ ] **[audit 2026-10-10: USER-GATED in-app; automated half green — a731369/dbe2e39 sweep, later workspace sweeps]** Verification: inject a panic into a scratch panel in-app — app survives,
       error chip visible, other panels functional. [checkpoint]
 
 ## Phase 4: Floating tool windows → right-sidebar sections (FR-9) [P1]
@@ -214,7 +214,7 @@ Tasks:
       shim; topbar/rail toggles are now the only reveal path. (TDD: checklist
       diff shows zero lost controls; no dangling `terrain_tools_open`-class
       flags left unread.)
-- [ ] Verification: every workflow (stamp along path, add/delete terrain
+- [ ] **[audit 2026-10-10: USER-GATED in-app; automated half green — a731369/dbe2e39 sweep, later workspace sweeps]** Verification: every workflow (stamp along path, add/delete terrain
       proposal, read proposal report) executes from the right sidebar; old
       windows gone; crash repro matrix re-run clean. [checkpoint]
 
@@ -238,7 +238,7 @@ Tasks:
       equivalent); honor Open Q-1's ratified answer (default: remove entirely).
       Update the supersession note in `tool_inspector_ux_20260719` handling —
       orchestrator flips that track's metadata to `superseded`.
-- [ ] Verification: no always-open tool panel; hover each of S/G/R/X/P buttons
+- [ ] **[audit 2026-10-10: USER-GATED in-app; automated half green — a731369/dbe2e39 sweep, later workspace sweeps]** Verification: no always-open tool panel; hover each of S/G/R/X/P buttons
       shows its tooltip; Tool section carries the readouts; viewport visibly
       wider. [checkpoint]
 
