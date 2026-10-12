@@ -46,7 +46,8 @@ multi-round `AskUserQuestion` loop. Do not start building until the loop ends.
 4. **Open decisions** — walk the NEEDS_RATIFICATION rows of the ledger in batches of ≤4
    (multiSelect "which can you decide now", then one question per checked item with concrete
    options + freeform). Priority: D-69 project licence (v1 gate), CDL-R2 device-enrolment
-   registry format, the 0.35 fixture commit, pending-track gating decisions, the
+   registry format, the 0.35 fixture commit, the 20 SCEA Duck copies in
+   `fractalengine/assets/imported/` (untrack + ignore vs keep), pending-track gating decisions, the
    `outstanding_decisions_20260715` register (55 items — ask whether to batch-ratify).
 5. **Context the agent lacks — desired retrieval (ask explicitly, freeform-first):**
    - Who/what is the other actor that pushed `1e9be3a` and `e96c972` (a hermes-agent session?
@@ -110,9 +111,14 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **origin/main = `9e09b12`** (pushed 2026-10-12). Local after it: `f986ee1` (untrack
-  `.claude/settings.local.json`), this runbook, and the sample-GLB replacement (in flight at
-  writing time) — push on green.
+- **origin/main = `9e09b12` + `f986ee1` `26546ec` `e2a3349`** (all pushed 2026-10-12 under
+  push-on-green; the last three are docs/assets only): untrack `.claude/settings.local.json`
+  (its `.gitignore` line landed in `e2a3349`), this runbook, and the sample-GLB swap —
+  `duck.glb` (SCEA, non-OSI) → CC0 Khronos "Cameras" `cameras.glb` (2 embedded cameras, still
+  the `deactivate_foreign_cameras` regression asset); `info_panel.glb` verified CC-BY-4.0.
+- **Open licence residual:** `fractalengine/assets/imported/` tracks 20 byte-identical copies of
+  the SCEA Duck (runtime import cache). Untracking them deletes the files on other clones at
+  their next pull and may break nodes whose `asset_path` points there — USER decision (§0c.4).
 - CI for `9e09b12` was being watched at writing time — **verify in §0a**. It is the FIRST real run
   of the cargo-deny and bounded-fuzz lint steps (fuzz was only `cargo check`ed locally; sanitizer
   builds need Linux nightly). If Lint is red, fix that first.
@@ -261,8 +267,8 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - Done: retro (§1); 5-round grill loop → §3 decisions; pushed `e96c972..9e09b12`; untracked
   `.claude/settings.local.json` (`f986ee1`); runbook rewritten.
 - Reviewed: every phase in the §2 ledger has a verdict.
-- In flight: sample-GLB replacement agent (verified licences, keep the embedded-camera regression
-  asset) — commit + push on green; CI watch for `9e09b12`.
+- Also done: sample GLBs licence-verified/replaced (`e2a3349`); ledger OSS-4.3 updated.
+- In flight: CI on the pushed tip (verify in §0a).
 - Blocked: nothing; remaining decisions are the ledger's NEEDS_RATIFICATION rows.
 - Next: §0 grill loop, then the large-phases campaign.
 
