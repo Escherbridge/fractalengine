@@ -1,236 +1,278 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-10-11
-head: a210961
+updated: 2026-10-12
+head: f986ee1
 ---
 
-# RUNBOOK — Prod-ready mission COMPLETE (2026-10-10)
+# FractalEngine — Runbook
 
-Read this first, then descend only where it points. Foundation under it:
-`conductor/product.md`, `tech-stack.md`, `workflow.md`, `tracks.md`.
+**Last updated:** 2026-10-12 · **Branch:** `main` · **Last commit:** see `git log -1`
+(written at `f986ee1` + this runbook commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
 
-> **Supersedes** the 2026-08-20 runbook (Canonical Data Log / Workstream G —
-> recover via `git log -- conductor/RUNBOOK.md`). Its standing constraint
-> "no network enablement" is now FALSE: the factory mission turned the real
-> P2P stack on. The canonical-data-log workstream itself remains a separate,
-> unfinished initiative (track `canonical_data_log_20260808`, GO-protocol /
-> NO-GO-implementation per its 2026-08-08 review).
+Foundation under this file: `conductor/product.md`, `tech-stack.md`, `workflow.md`,
+`tracks.md`, and the work queue `conductor/doneness-ledger.md`.
 
-**Primary record:** `conductor/tracks/mission_prodready_continuation_20261008/`
-— `plan.md` (per-feature evidence, milestone review verdicts, retro, deferred
-register) and `spec.md` (decision log DEC-C1…C22). Factory-era record:
-`C:\Users\atooz\.factory\missions\77c4c579-4f99-403f-8bcf-3b1ae3f0c718\`
-(mission.md, validation-contract.md A1–A33, library/decisions.md D1–D4).
+## 0. Session-open protocol — AGGRESSIVE GRILL LOOP (do this BEFORE any work)
 
-## 1. Goal (was)
+User directive 2026-10-12: every session opens by re-aligning with the user through a
+multi-round `AskUserQuestion` loop. Do not start building until the loop ends.
 
-Finish factory mission mis_6c57917e — "FractalEngine prod-ready: real P2P
-replication + sharded timeseries fabric + verified BI egress" — from where the
-droid paused (usage-402, mid-F9). **Done 2026-10-09**: F9–F19 delivered,
-acceptance A20–A33 all validated.
+**0a. Retrieve context first (silently, cheap, before the first question):**
+1. `git status --short --branch`, `git log --oneline -10`, `git reflog show refs/remotes/origin/main -n 5`
+   — did ANOTHER actor push since `9e09b12`/`f986ee1`? (It happened twice: §1 incidents.)
+2. `gh run list --branch main --limit 3` — CI verdict on the last pushed tip (§2 names the run to check).
+3. Read §2 State, §3 Decisions, §4 Assumptions of this file; skim `conductor/doneness-ledger.md`
+   class counts (`grep -c NEEDS_RATIFICATION conductor/doneness-ledger.md` etc.).
+4. Memory: `completeness-campaign-20261010`, `long-horizon-autonomy-directive-20261010`,
+   `verify-workflow-stopped-before-relaunch` (they hold the working rules).
+5. `df -h /c`, and `Get-Process cargo,rustc,clippy-driver,fe-relay,duckdb` — nothing should be running.
+   Report drift between this file and reality in the first message, before asking anything.
 
-## 2. State — COMPLETE, verified, PUSHED
+**0b. Grill rules:**
+- Minimum 3 rounds unless the user picks "Done" earlier; max 4 questions per round;
+  **multiSelect by default**; every question explicitly invites freeform ("Other") input —
+  the user prefers to type context; the recommended option goes first with its *flip*
+  (what changes downstream) in the description.
+- Record each round's answers into §3 Decisions immediately (rolling) — never at the end only.
+- Every round ends with a "keep grilling? / Done" question whose options name the next topics.
+- Unasked items become ranked lines in §4 Assumptions.
 
-- **Pushed (corrected 2026-10-10).** The 30 mission commits (14 factory + 16
-  continuation) reached `origin/main` at `1e9be3a` on 2026-10-09 17:42 -0600 —
-  reflog `update by push` from this clone, confirmed by `git ls-remote`. The
-  first roll of this runbook (`cc080b9`) wrongly said "NOTHING PUSHED"; who
-  pushed is unrecorded, so the A33 go-ahead gate was bypassed for those 30.
-  The 2026-10-10 session pushed `cc080b9`, the lint fix, and this correction
-  on the user's explicit go-ahead.
-- **CI on `1e9be3a`** (run 38005764519): Linux build+test ✓, Windows build ✓,
-  **Lint ✗** → rolling `latest` prerelease skipped. Cause: CI's floating
-  stable is rustc 1.99.0 (local default 1.94.0) — 17× `clippy::double_must_use`
-  in fe-canonical-log, emitted by `#[async_trait]` 0.1.89's generated code.
-  Lint was already red on the pre-mission 2026-10-06 push. **Fix:** Cargo.lock
-  bump async-trait 0.1.89 → 0.1.92 in `d4a4744` (upstream #303; adds syn 3.0.7, MSRV 1.71),
-  no source change. That unmasked ONE more error CI never reached (clippy
-  halts at the first failing crate): `clippy::collapsible_match` at
-  `fe-sync/src/sharding.rs:367`, fixed as a match guard (behavior-identical;
-  covered by `sync_thread.rs` inbound-seam test at :3441). Local proof on
-  rustc 1.99.0: `clippy --workspace --all-targets --keep-going -- -D
-  warnings` EXIT 0 across all 24 members; `fmt --all --check` clean.
-  Tests on local 1.94.0 (also proves syn 3's MSRV fits): `cargo test -p
-  fe-sync -p fe-canonical-log -p fe-database` 964 passed / 0 failed / 15
-  ignored (22 binaries). The full-workspace test run is left to CI's Linux
-  job on this push — check it (§8 step 1).
-- **2026-10-10 long-horizon session (local, unpushed — §8 step 1).** Four
-  small implement → adversarial-review-and-fix workflows, each gated (fmt +
-  workspace clippy on 1.99.0 + affected-crate tests + both e2e scripts where
-  fe-api changed): SetPetalTerrain correlation; elevated-query lockdown;
-  existence-oracle unification; TilesetMeta Default. The reviews found and
-  fixed FOUR live security holes beyond their briefs: `/query` read any
-  record by id (`role:x.*`, `$v.to_record()`); the elevated validator never
-  inspected DELETE/CREATE/UPSERT targets; `?kind=stamp&path_id=` read
-  another verse's stamps; an API terrain write to petal B replaced the
-  desktop's live petal-A terrain. Lesson: the reviewer that FIXES finds more
-  than the brief names — keep briefs scoped but let it chase.
-- **Verified, not just written** — final sweep on the closing tree:
-  `cargo test --workspace` 3,245 passed / 0 failed / 21 ignored (96 binaries);
-  `cargo clippy --workspace --all-targets -- -D warnings` clean (local
-  rustc 1.94.0 — CI's 1.99.0 disagreed, see above); `cargo fmt
-  --all --check` clean; harness bin 15/15 real-loopback-iroh scenarios; relay
-  release build OK; e2e scripts checked in WITH logs: `scripts/
-  bi-egress-verify.ps1` 49/49, `hexon-install-verify.ps1` 15/15,
-  `hexon-serve-verify.ps1` 37/37.
-- **Review ledger** (every milestone has a recorded verdict in plan.md):
-  M3 PASS-WITH-FIXES → fixed → validated; M4 FAIL → fixes → re-review
-  STILL-FAILING → remediation + grammar audit → validated; M5 FAIL → fixes →
-  validated-with-notes; M6 PASS-WITH-FIXES → fixed → validated (acceptance
-  re-runs green). M7 = the F19 sweep above.
-- **User-gated residuals** (cannot verify headlessly): in-app terrain render +
-  scale-bar widget for the installed Zurich/Fuji hexons (numeric scale fields
-  machine-verified to ~0.03%); the Hexon Manager UI install button (its
-  underlying seam is verified); a general in-app smoke of this build.
+**0c. Topics to cover (in this order; drop what is already settled in §3):**
+1. **Delta since last session** — anything the user did (in-app checks, pushes, decisions made
+   elsewhere, new constraints, budget/time). Ask what they verified in-app and what broke.
+2. **Direction** — confirm the §7 order (large phases first) or reorder; anything to add/drop.
+3. **Working rules & outputs** — confirm §3 "Working rules" + "Outputs"; ask what to change.
+4. **Open decisions** — walk the NEEDS_RATIFICATION rows of the ledger in batches of ≤4
+   (multiSelect "which can you decide now", then one question per checked item with concrete
+   options + freeform). Priority: D-69 project licence (v1 gate), CDL-R2 device-enrolment
+   registry format, the 0.35 fixture commit, pending-track gating decisions, the
+   `outstanding_decisions_20260715` register (55 items — ask whether to batch-ratify).
+5. **Context the agent lacks — desired retrieval (ask explicitly, freeform-first):**
+   - Who/what is the other actor that pushed `1e9be3a` and `e96c972` (a hermes-agent session?
+     the user?) — should it be stopped or locked down?
+   - In-app verification results for W4 UI work (Measure/grid, visibility groups, settings.ron,
+     terrain live-update) and the Zurich/Fuji terrain + scale bar.
+   - Self-hosted relay plan (D-23): where it will run, domain/TLS, who operates it.
+   - v1 OSS release: target date, project licence (D-69), what "ready" means beyond §3's gate.
+   - External commitments, consumers, or demos that change priority.
+   - Machine constraints (disk, RAM, LM Studio usage) for long builds.
+6. **Budget/cadence** — how long the next campaign may run, report cadence (end-only), model tiers.
 
-## 3. Key context a fresh read would miss
+## 1. Retro — everything completed 2026-10-09 → 2026-10-12
 
-- **Every milestone review found real issues green CI had certified** — the
-  retro in plan.md lists them. The four reviewer-named lessons are now house
-  doctrine: (1) a scoped-table list is a denylist — denormalized copies
-  (node_log) live one table over; (2) shared cores + separate guards = drift —
-  authz chokepoints protect only what routes through them (the REST twins);
-  (3) a writer of a shared JSON column must satisfy the STRICTEST reader
-  (bind-terrain vs fe-terrain's serde parser); (4) serialize builds AND
-  source/Cargo.toml edits — a mid-build manifest edit stacked 236 GB of
-  artifacts and zeroed the disk.
-- **Build ops on this machine** (DEC-C12, plan.md): disk check before every
-  gate; prune `target/debug/incremental` + stale `deps/*.pdb` when < 10 GB
-  free (PDBs once held 215 GB); workspace sweeps run
-  `CARGO_PROFILE_DEV_DEBUG=0` (several-fold smaller, `-j4`-safe — with
-  debuginfo, rustc OOMs above `-j2`); `RUST_MIN_STACK=134217728` for anything
-  touching surrealdb.
-- **iroh 1.x port (2026-10-11, IROH-1X; UNCOMMITTED, test sweep pending).**
-  The workspace builds on iroh 1.3 / iroh-docs 0.101 / iroh-gossip 0.101 /
-  iroh-blobs 0.103.1 + noq-proto 1.3 (BBRv3), MSRV 1.91. **Flag day:** 0.35
-  and 1.x peers cannot talk, so all deployed peers and relays upgrade
-  together. **Store migration ops:** the first 1.x start on an existing
-  `FE_P2P_DIR` copies it to `<dir>.v035.bak-<unix_ts>` (twice the disk for
-  that start), upgrades `docs.redb` + `blobs/blobs.db` with redb 2.6
-  `upgrade()`, then writes `<dir>/.fe-store-format` = `iroh1`. No marker
-  means the next start retries. A failure leaves the node offline/mock
-  (loud). Rollback: stop the node, replace the dir with the backup, run a
-  0.35 build. Details: `fe-sync/src/AGENTS.md` §store-migration. Hermetic
-  runs keep `FE_SYNC_RELAY=disabled` (with a relay, `node_addr()` waits up to
-  `iroh::NET_REPORT_TIMEOUT` for `online()`). Track:
-  `conductor/tracks/iroh_1_0_upgrade_20260711/plan.md`.
-- **C: is a 1.9 TB drive at ~90% full from NON-project data** — flagged to the
-  user; project caches were a symptom.
-- **fe-hermes / fe-pi siblings are pruned git-worktree stubs** of this repo
-  (not standalone clones); `git -C` against them errors harmlessly.
-- The e2e scripts are the standing re-runnable verification — they boot a real
-  relay, mint tokens offline (`fe-identity --example mint_api_token` sharing
-  the relay's seed env — there is deliberately NO HTTP mint route), seed via
-  REST, and attach real DuckDB (`tools/duckdb/duckdb.exe` v1.5.6, gitignored).
+**A. Push reconciliation + CI (2026-10-10).** The 30 prod-ready-mission commits had already been
+pushed (`1e9be3a`) by another actor although the prior runbook said "nothing pushed" →
+runbook corrected (`6bce04b`). CI Lint had been red since August: rustc 1.99's
+`clippy::double_must_use` fired 17× inside `#[async_trait]` expansion (fixed by bumping
+async-trait 0.1.89→0.1.92, upstream #303) and `--keep-going` exposed one hidden
+`collapsible_match` (`d4a4744`) → first fully-green main since 2026-08-20.
 
-## 4. Decisions
+**B. Security/correctness, 4 workflows (2026-10-10; pushed in `e96c972` by another actor, CI green):**
+`9cbdea6` SetPetalTerrain reply correlation (REST/MCP terrain mutation live; HIGH fix: an API
+write to petal B no longer hijacks the desktop's live petal A) · `9c4da00` `/query/elevated`
+fail-closed + **Viewer `/query` could read any record by id** (`role:x.*`, `$v.to_record()`) —
+closed · `6763302` one uniform denial for missing vs foreign resources (`rest::covered_scope`)
++ stamp cross-tenant read via `?path_id=` closed · `7760be1` TilesetMeta Default · `da922a6`
+CI clippy `--keep-going`. Reviewers found 4 live holes beyond their briefs.
 
-All in `conductor/tracks/mission_prodready_continuation_20261008/spec.md`
-(DEC-C1…C22), each with rationale. Highest-leverage: DEC-C7 (sim control =
-fe-runtime seam + relay-only feature), DEC-C14 (29 tools = documented
-superset of the 20-name vocabulary), DEC-C16 (GeoParquet crs=null + fe:crs),
-DEC-C19/C20 (guard hardening layers), DEC-C22 (strictest-reader rule).
-Factory-era locked user decisions: D1–D4 in the mission library.
+**C. Completeness campaign, 5 workflows (2026-10-10/11):**
 
-## 5. Assumptions
+| Commit | Workflow | Delivered |
+|---|---|---|
+| `9f7a882` | W1 | Board truth: 41 tracks verified vs code/git; `doneness-ledger.md` (181 items) |
+| `7d40a4e` | W2 | 14 data/API deferrals: GetPetalTerrain + GUI RawQuery correlation, elevated writes via DB thread (snapshot → atomic op-log commit → diff → replicate), atomic tombstones, id indexes, asset owner + GC + quota, zip-bomb caps |
+| `40590e9` | W3 | 23 items: fe-policy TokenScope/Ownership/RoleFloor + fe-api routed through it, stamp translate lock, REST/MCP surface tests, cargo-deny + bounded fuzz in CI, canonical-log hardening |
+| `4b30d17` | W4 | Measure tool (M) + metric grid, visibility groups P2–P6 (pickers, H keys, persistence, registry, REST/MCP), settings.ron persistence, editor/terrain residue |
+| `d44f008` | W5 | iroh 0.35 → 1.3 (docs 0.101, gossip 0.101, blobs 0.103.1, noq BBRv3, MSRV 1.91), store migration, relay-health watcher. **Flag day** |
+| `a210961` | fix | Reverted W4 responder filtering (creator copies are load-bearing) + non-blocking query echo |
+| `9e09b12` | docs | Runbook close-out |
 
-- The user's 2026-10-10 answer "remove" for `../gis-tile-etl` means "drop its
-  push from the plan" · default taken: push step removed, repo and `33eff03`
-  untouched · to reverse: re-add the step (nothing was deleted).
-- In-app verification is the user's own next action, not a new agent task ·
-  default: recorded as user-gated · to reverse: none.
-- The old Workstream-G runbook content is recoverable from git and needs no
-  copy kept · to reverse: `git show ca338bc:conductor/RUNBOOK.md`.
+Final sweep (tests deferred until code complete, per user rule): `cargo test --workspace`
+**3452 passed / 0 failed** (106 binaries; was 3245); harness real-loopback iroh **15/15 ×2**;
+e2e bi-egress 49/49, hexon-install 15/15, hexon-serve 40/40. Pushed `e96c972..9e09b12`
+on 2026-10-12 under the new push-on-green rule.
 
-## 6. Relevant files
+**Incidents (and the rule each produced):**
+1. External pushes bypassed the go-ahead gate twice → user now authorizes agent push-on-green;
+   the other actor is still unidentified (§0c.5).
+2. Two W4 workflows ran concurrently ~2 h (orchestrator misjudged a "stopped" workflow from a file
+   mtime) → reconcile found no duplicate code; rule: always `TaskStop` the prior id first.
+3. The campaign introduced a regression (W4 responder filtering → silently incomplete
+   distributed queries); the final sweep caught it; the first debug fix (provision roles in the
+   harness) would have **hidden** it → reverted instead; pinned by a test.
+4. The original W4 ran tests against the no-tests rule → user stopped it.
 
-- `conductor/tracks/mission_prodready_continuation_20261008/plan.md` — the
-  whole story: evidence log, review verdicts, retro, deferred register.
-- `conductor/tracks/mission_prodready_continuation_20261008/spec.md` — DEC log.
-- `fe-api/src/query_guard.rs` — the hardened egress guard (source
-  substitution + egress re-check); read its AGENTS.md section before touching.
-- `fe-api/src/mcp/mod.rs` — the ToolSpec/ScopeRule dispatcher (29 tools).
-- `fe-sim/src/session.rs` + `fe-api/src/sim.rs` — sim control surface.
-- `scripts/*-verify.ps1` + `.log` — re-runnable acceptance evidence.
-- `docs/bi-egress.md`, `docs/simulation-lab.md` — operator docs.
+**What worked:** reviewers that fix their own findings (real holes found in every workflow);
+compile+clippy gates between workflows + ONE final sweep; capture-then-grep logs; pruning
+`target/` between workflows (~110 GB reclaimed). **What didn't:** process-state verification;
+trusting "pure efficiency" claims; push control; a board that silently drifts stale.
 
-## 7. Environment
+## 2. State
 
-- Branch `main`, clean, AHEAD of origin by the 2026-10-10 long-horizon
-  commits (§8 step 1) — **do not push without the user's go-ahead**. No stashes, no running
-  processes, no open worktrees from the mission sessions.
-- Toolchain `1.99.0` is installed locally (build `b940084d7`, identical to
-  CI's stable as of 2026-10-10): `cargo +1.99.0 clippy --workspace
-  --all-targets --keep-going -- -D warnings` reproduces the CI Lint job
-  (Linux-only `#[cfg]` code excepted). `--keep-going` matters — without it
-  clippy halts at the first failing crate and hides its dependents.
-- `tools/duckdb/duckdb.exe` (gitignored) used by the egress e2e.
-- Sibling repo `../gis-tile-etl`: commit `33eff03` added intl regions; built
-  hexons live in ITS gitignored `dist/` (rebuild commands in
-  `sample-hexons/*/README.md`). It has **no git remote**; pushing it was
-  dropped from the plan 2026-10-10 (see §5).
-- Secrets: relay e2e seeds live only inside script runs; the keystore slots
-  are `node_keypair` and `share_signer` (OS keystore on GUI; `FE_SECRET_*`
-  env on relay — operator must export or keys are ephemeral, warned loudly).
+- **origin/main = `9e09b12`** (pushed 2026-10-12). Local after it: `f986ee1` (untrack
+  `.claude/settings.local.json`), this runbook, and the sample-GLB replacement (in flight at
+  writing time) — push on green.
+- CI for `9e09b12` was being watched at writing time — **verify in §0a**. It is the FIRST real run
+  of the cargo-deny and bounded-fuzz lint steps (fuzz was only `cargo check`ed locally; sanitizer
+  builds need Linux nightly). If Lint is red, fix that first.
+- **Verified:** the final sweep above. **Not verified:** in-app GUI behavior of W4 work;
+  relay-assisted connection through a self-hosted iroh-relay 1.3; the fuzz CI step; the 0.35 store
+  migration on a REAL user data dir (only the committed generator + the local fixture).
+- Untracked on purpose: `fe-sync/tests/fixtures/p2p_store_v035/` (7.1 MB; the migration test
+  skips when absent — a skip-as-green smell; commit decision open).
 
-## 8. Continuation plan (next session)
+### Review ledger
 
-**State after the 2026-10-10/11 completeness campaign** (5 workflows; ledger
-`conductor/doneness-ledger.md`; memory `completeness-campaign-20261010`):
+| Phase | Checkpoint | Findings | Verdict |
+|---|---|---|---|
+| CI fix `d4a4744` | independent review of async-trait diff | 1 misread corrected | SOUND |
+| `9cbdea6` terrain correlation | adversarial review-and-fix | 1H 3M 2L | FIXED |
+| `9c4da00` elevated + query guard | security review-and-fix | 1H (record-id leak) 2M 1L | FIXED |
+| `6763302` existence oracle | review-and-fix | 1H (stamp cross-tenant) 2M | FIXED |
+| `7760be1` TilesetMeta | review-and-fix | 1L advisory | SOUND |
+| W2 `7d40a4e` | review-and-fix | 1H (zip-bomb reserve) 1M (GC vs stamp blob) 4L | FIXED |
+| W3 `40590e9` | review-and-fix | 1M (stamp lock bypass via move_waypoint) 1L | FIXED |
+| W4 `4b30d17` | 2 reviews + reconcile | 1H (hidden ribbons pickable) 2M 4L | FIXED |
+| W5 `d44f008` | review-and-fix | 1H (watcher masked stack-failure health) 1M (doc handle leak) 3L | FIXED |
+| Final sweep | full tests + harness + e2e | harness 14/15 → root-caused, `a210961` | GREEN after fix |
 
-- `origin/main` = `e96c972` — pushed 2026-10-10 17:35 -0600 from this clone
-  by someone OTHER than the campaign orchestrator (pushes were held; same
-  pattern as the 1e9be3a push). CI run 38095577669 on it: ALL GREEN, `latest`
-  published. It carries the 3 API-BREAKING 2026-10-10 commits (9c4da00,
-  6763302, 9cbdea6).
-- LOCAL, UNPUSHED (`git log origin/main..HEAD`): `9f7a882` board truth +
-  ledger · `7d40a4e` W2 data/API deferrals · `40590e9` W3 auth/API/OSS/
-  canonical-log · `4b30d17` W4 measure+grid, visibility groups P2-P6,
-  settings persistence · `d44f008` W5 iroh 0.35 -> 1.3 (FLAG DAY: 0.35 and
-  1.x peers cannot interoperate; first 1.x start migrates data/p2p with a
-  backup) · `a210961` responder-filter revert + non-blocking echo.
-- Final sweep on `a210961`'s tree: `cargo test --workspace` 3452 passed / 0
-  failed / 19 ignored (106 binaries); harness real-loopback-iroh 15/15 (x2
-  after the fix); e2e bi-egress 49/49, hexon-install 15/15, hexon-serve
-  40/40; workspace clippy (1.99.0) + fmt clean; check on local 1.94.0 clean.
-  NOT verified: fuzz CI step (needs Linux nightly sanitizers); relay-assisted
-  connection via a self-hosted iroh-relay 1.3; in-app GUI behavior.
+## 3. Decisions
 
-1. **User: push decision** for the 6 local commits (W2-W5 include breaking
-   API/limits changes and the iroh flag day). Then watch CI — first real run
-   of the cargo-deny and bounded-fuzz lint steps.
-2. **User: in-app verification** — Measure tool (M) + metric grid, visibility
-   H/Shift+H/Alt+H/Isolate/Groups, settings.ron persistence, terrain REST
-   live-update (only the viewed petal), Zurich/Fuji terrain + scale bar.
-3. **User: decisions** (§9). Everything else agent-doable from the ledger is
-   done except large track phases (PAS-P3/P4/P5, CDL-W4, CDL-SPEC10) and
-   pending tracks excluded by the scope answer (hexon_unification,
-   map_scale_authority, road_builder_ux, crate_consolidation_r2).
-4. Housekeeping: `target/` is pruned between workflows (incremental + PDBs);
-   prune again before any large build.
+**From the 2026-10-12 grill (user):**
+- **Next work order:** large in-progress phases FIRST — PAS-P3+P4 (transport + chunk handlers +
+  resumable downloads; residency ledger / lazy tiles / exit-ring eviction), PAS-P5 (partial
+  hexon fetch), CDL Wave 4 integration, CDL SPEC-10 observation plane. Then role propagation,
+  the decision backlog, pending tracks (all four streams are in scope).
+- **Role propagation:** replicate the `role` table as ordinary replicated rows, admitted only when
+  the author is Manager+ at the verse scope (owner bootstraps from `verse.created_by`). Chosen
+  over signed role grants (simpler, no new signature format). After it lands: fix the
+  distributed-query settlement race, then consider re-enabling responder filtering.
+- **Token client identity:** add a `client` claim at mint; asset `owner_did`/quota key on it;
+  `sub` stays the issuing node DID.
+- **iroh:** hard flag day — "no consumers of the tool; iroh 1.0 is part of v1". No 0.35 window.
+- **D-23 relay posture:** the self-hosted iroh-relay 1.3 container is the production default
+  (FE_SYNC_RELAY / settings); n0 relays only as dev fallback.
+- **Licences:** allow all 7 outlier licences in deny.toml and turn `cargo deny check licenses`
+  on in CI.
+- **D-11:** dimension callouts persist as addressable nodes (`node_kind=dimension_callout`).
+- **Hiding a GPX track hides its stamps** (cascade on `owning_path_id`); a per-stamp override wins.
+- **Per-petal render_distance:** a `petal.render_distance` column (replicates); session override on top.
+- **Query contracts (no consumers yet, breaking is cheap):** WKB petal-local frame = east,north,up
+  `(x, -z, y)`; f64 positions end to end in egress; fresh tilesets stamp `crs=EPSG:4326`;
+  elevated: DB-side TIMEOUT on every statement + 32-statement cap.
+- **v1 ship gate:** public OSS release ready.
+- **Push rule:** the agent may push when the gate is green (no per-batch ask) and must watch CI.
+- **Do-now (2026-10-12):** pushed `9e09b12`; untracked `.claude/settings.local.json`; replace
+  licence-unverified sample GLBs (keep an embedded-camera regression asset).
 
-## 9. Open questions (decisions only the user can make)
+**Working rules (user, standing):** small sequential workflows (builds never overlap; `TaskStop`
+the previous workflow id before relaunch); reviewers fix their own findings (no read-only
+reviewers); **no tests until the code is complete** — compile + clippy between workflows, one full
+test + e2e + harness sweep at the end; prune `target/debug/incremental` + PDBs at every safe
+point; network access granted; **report at the end** (not mid-run).
 
-- **D-69 licence allow-list** — cargo-deny `licenses` is off in CI; 18
-  third-party crates sit outside the current allow-list.
-- **SYNC-ROLE-PROPAGATION** — roles never replicate, so non-owner hosts deny
-  non-owner authors and creator copies carry those rows; settlement race can
-  drop a late creator copy. Needs signed role claims / role-bearing ledger.
-- **Token client identity** — `ApiClaims.sub` is always the node DID, so
-  asset owner/quota are per-node, not per-client.
-- **Elevated scripts** — non-DML statements get no DB-side TIMEOUT; no
-  statement-count cap.
-- **D-11** dimension-callout persistence; **does hiding a GPX track hide its
-  stamps**; **durable home for per-petal render_distance**; **CDL-R2**
-  device-enrolment registry format.
-- **EGR-WKB** axis order, **EGR-F32** anchor precision, **FEAPI-BUILDER-CRS**
-  (fresh archives stamp crs None), **UISEM-FMAX-LINT** CI guard.
-- **0.35 store fixture** (`fe-sync/tests/fixtures/p2p_store_v035`, 7.1 MB,
-  untracked): commit / LFS / regenerate in CI — its test skips when absent.
-- **Tracked `.claude/settings.local.json`** holds 6 expired local API JWTs —
-  `git rm --cached` + ignore?
-- **Sample GLB licences** (duck = SCEA, box = CC-BY) unverified.
-- **`../gis-tile-etl`** — kept, never pushed (resolved 2026-10-10).
-- Does `verse.namespace_id` via `/query` act as a replica read capability?
-  (answered in W3 — see fe-api tests/namespace_capability_test.rs.)
+**Outputs (user, standing):** reports are published as **artifacts** — status + decisions on top,
+teaching depth inside (file:line links, quoted load-bearing lines, why/what-to-watch, Sharpen),
+diagrams where they help.
+
+**Carried from earlier:** DEC-C1…C22 (`conductor/tracks/mission_prodready_continuation_20261008/spec.md`);
+canonical-data-log network rollout / relay seeding / inbound P2P / `/ws/canonical` mount stay
+NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never pushed.
+
+## 4. Assumptions (highest reversal cost first — confirm the top line before building on it)
+
+- Role-table replication semantics: last-writer-wins by HLC per (verse, peer) row; revocation =
+  tombstoned role row; the owner role is never replicated-in (derived from `created_by`) ·
+  default taken: as stated · to reverse: redesign before anything depends on it (moderate).
+- Order after the large phases = role propagation → implement the 2026-10-12 decisions → ratify
+  backlog → pending tracks · default: as stated · to reverse: reorder §7 (cheap).
+- Legacy API tokens without a `client` claim are treated as node-level ownership · to reverse:
+  force re-mint (cheap now — no consumers).
+- WKB east-north-up applies only to petal-local outputs; `coords=latlon` output unchanged · to
+  reverse: one switch in fe-query (cheap).
+- "Report at the end" = one artifact per workflow/campaign end, no mid-run chatter except
+  blockers · to reverse: cadence change (cheap).
+- The 0.35 store fixture stays untracked (the user did not pick "commit") · to reverse: `git add` 7.1 MB.
+- Docs-only commits may be pushed without re-running the full sweep · to reverse: gate them too.
+
+## 5. Environment & gotchas
+
+- **Build doctrine (house rule):** never edit source/Cargo.toml/Cargo.lock while cargo runs (a
+  mid-build manifest edit once stacked 236 GB and zeroed the disk); one builder at a time; sweeps
+  use `CARGO_PROFILE_DEV_DEBUG=0 RUST_MIN_STACK=134217728 -j4`; prune `target/debug/incremental`
+  + `*.pdb` between workflows (`target/` reached 150 GB). `du` on `target/` takes minutes.
+- **House doctrine from reviews:** a scoped-table list is a denylist (denormalized copies live one
+  table over); shared cores + separate guards = drift; a writer of a shared JSON column must
+  satisfy the STRICTEST reader; "pure efficiency" changes that remove redundancy need a
+  correctness check (creator copies were load-bearing).
+- **Toolchains:** local default 1.94.0, CI floating stable (1.99.0 at writing); 1.96/1.97.1/1.98/
+  1.99.0 installed; MSRV now **1.91**. Reproduce CI Lint with `cargo +1.99.0 clippy --workspace
+  --all-targets --keep-going -- -D warnings`.
+- **iroh 1.x store migration ops:** the first 1.x start on an existing `FE_P2P_DIR` copies it to
+  `<dir>.v035.bak-<unix_ts>`, upgrades `docs.redb` + `blobs/blobs.db`, writes
+  `.fe-store-format=iroh1`; failure → loud offline/mock; rollback = restore backup + run a 0.35
+  build (`fe-sync/src/AGENTS.md` §store-migration). Hermetic runs: `FE_SYNC_RELAY=disabled`.
+- **Standing verification:** `cargo run -p fractalengine-test-harness` (15 real-loopback scenarios;
+  `iroh_docs "Failed to close connection"` warnings are loopback noise) and
+  `scripts/{bi-egress,hexon-install,hexon-serve}-verify.ps1` (boot a real relay, mint tokens
+  offline via `fe-identity --example mint_api_token`, attach `tools/duckdb/duckdb.exe`, gitignored).
+- **Secrets:** relay keys via `FE_SECRET_*` env (operator must export or keys are ephemeral);
+  GUI keys in the OS keystore; relay e2e seeds live only inside script runs. Never in files.
+- **Other actors:** something else pushes from this clone (§0c.5). `fe-hermes`/`fe-pi` siblings
+  are pruned worktree stubs. A concurrent hermes-agent session has shared this tree before.
+- **C: drive** 1.9 TB, ~85% full mostly from non-project data; ~290 GB free at writing.
+
+## 6. Key files
+
+- `conductor/doneness-ledger.md` — per-track doneness + classified work queue (source for §7).
+- `conductor/tracks/p2p_asset_streaming_20260718/plan.md` + `evidence.md` — PAS-P3..P5 (next).
+- `conductor/tracks/canonical_data_log_20260808/` — CDL Wave 4 / SPEC-10 (local only).
+- `fe-sync/src/AGENTS.md` §distributed-query ("Creator copies are load-bearing"),
+  §store-migration, §relay-health — read before touching sync.
+- `fe-database/src/handlers/replicated_row.rs` — A3 inbound admission (role propagation lands here).
+- `fe-api/AGENTS.md` §existence-oracle, §elevated-query, §query-guard — authz contracts.
+- `fe-sync/src/distributed_query.rs` — test `a_non_host_authors_creator_copy_serves_rows_its_denying_host_refused` pins the revert.
+
+## 7. Continuation plan
+
+1. **Run §0** (context retrieval → aggressive grill loop). Record answers into §3/§4 as you go.
+2. **CI check:** if the last pushed run is red (likely suspects: the new fuzz step or cargo-deny),
+   fix it first; `cargo +1.99.0 clippy` reproduces Lint.
+3. **Large-phases campaign** (sequential workflows, compile+clippy gates, tests at the end):
+   PAS-P3+P4 → PAS-P5 → CDL Wave 4 → CDL SPEC-10. Each workflow: plan from the ledger rows +
+   track plan.md, executors, a reviewer that fixes, a small docs/README pass, local commit.
+   `TaskStop` the previous workflow before each launch; prune caches between them.
+4. **Role propagation** (replicate the role table with Manager+ admission) → fix the
+   distributed-query settlement race → only then reconsider responder filtering.
+   Security review mandatory (auth path).
+5. **Implement the 2026-10-12 decisions:** `client` token claim; dimension-callout nodes; GPX
+   hide cascades to stamps; `petal.render_distance`; query contracts (WKB ENU, f64, EPSG:4326,
+   elevated timeout + 32 cap); self-hosted relay default + the relay-assisted acceptance test
+   against a self-hosted iroh-relay 1.3; deny.toml licences + CI `licenses` on.
+6. **Final sweep** (full tests + harness + e2e) → push on green → watch CI → report as an artifact.
+7. Then: ratify the remaining backlog via grill loops; pending tracks (hexon_unification,
+   map_scale_authority, road_builder_ux, crate_consolidation_r2) each need their own go;
+   v1 gate = public OSS release readiness (`oss_release_20260717`).
+
+## 8. Session log
+
+### 2026-10-12 — handoff after the completeness campaign
+- Done: retro (§1); 5-round grill loop → §3 decisions; pushed `e96c972..9e09b12`; untracked
+  `.claude/settings.local.json` (`f986ee1`); runbook rewritten.
+- Reviewed: every phase in the §2 ledger has a verdict.
+- In flight: sample-GLB replacement agent (verified licences, keep the embedded-camera regression
+  asset) — commit + push on green; CI watch for `9e09b12`.
+- Blocked: nothing; remaining decisions are the ledger's NEEDS_RATIFICATION rows.
+- Next: §0 grill loop, then the large-phases campaign.
+
+## 9. Recommended invocations
+
+- **`Workflow` with the reusable `completeness-batch-workflow` script** (sequential batches, plan →
+  executors → review-and-fix, compile-only gates) — trigger: "large phases, ratified, sequential,
+  no tests until code complete".
+- **`/security-review`** (or a security review-and-fix agent) on role propagation — trigger:
+  "touches inbound admission / RBAC".
+- **`Artifact`** for every end-of-campaign report — trigger: "user rule: reports as artifacts,
+  status + decisions on top, teach depth, diagrams".
+- **`/handoff rolling`** at each workflow boundary — trigger: "multi-hour campaign; keep §8 live".
