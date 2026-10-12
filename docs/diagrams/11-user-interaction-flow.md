@@ -44,7 +44,7 @@ sequenceDiagram
     Op->>UI: Right-click in viewport
     UI->>UI: Show context menu at world position
     Op->>UI: Click "Import GLB..."
-    UI->>UI: Open file dialog → select duck.glb
+    UI->>UI: Open file dialog → select model.glb
 
     UI->>T1: DbCommand::ImportGltf { petal_id, name, file_path, position }
     T1->>T3: Process command

@@ -38,3 +38,6 @@ sample-hexons/dist/
 /fuzz/corpus/
 /fuzz/artifacts/
 /fuzz/coverage/
+
+# Local Claude Code settings (per-machine; held expired local API JWTs until 2026-10-12)
+.claude/settings.local.json

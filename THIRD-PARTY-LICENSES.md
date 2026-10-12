@@ -35,6 +35,22 @@ What BUSL-1.1 means in practice:
   `surrealdb-core` crates and at <https://github.com/surrealdb/surrealdb>.
   The summary above is informational, not legal advice.
 
+## Sample 3D models (`fractalengine/assets/samples/`)
+
+The source tree ships two small dev/test glTF models, both from the
+[Khronos glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)
+repository. Their licences were checked against upstream on 2026-10-12. See
+`fractalengine/assets/samples/README.md` for details.
+
+- **`cameras.glb`**: "Cameras" by Marco Hutter (<https://github.com/javagl/>),
+  dedicated to the public domain under
+  [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/legalcode).
+  Repackaged from `.gltf` + `.bin` into a single `.glb`.
+- **`info_panel.glb`**: "Box" © 2017 Cesium, licensed under
+  [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/legalcode).
+  Source: <https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Box>.
+  The file was renamed but not modified.
+
 ## Full inventory
 
 The complete third-party license inventory is generated from `Cargo.lock`

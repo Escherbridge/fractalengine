@@ -140,7 +140,12 @@ truth alignment → community/CI → metadata → ratification → preflight + p
           present, but consider `include`-ing LICENSE-APACHE before a real publish.
 - [x] 4.3 Root .glb strays (`camera.glb` 14-byte placeholder, `duck.glb`,
       `info_panel.glb`) relocated under assets/ or examples/; camera.glb replaced.
-      — AUDIT 2026-10-10: OPEN — all three still at the repo root.
+      — DONE 2026-10-11/12: moved to fractalengine/assets/samples/ (40590e9); camera.glb
+      (a saved 404 page) deleted; duck.glb (SCEA, non-OSI) replaced by CC0 Khronos
+      "Cameras" as cameras.glb (2 embedded cameras — keeps the camera regression asset);
+      info_panel.glb verified CC-BY-4.0 (c) 2017 Cesium and attributed in
+      THIRD-PARTY-LICENSES.md. Residual: 20 tracked SCEA Duck copies under
+      fractalengine/assets/imported/ (runtime import cache) — user decision.
       — DONE 2026-10-11: `git mv` duck.glb and info_panel.glb into
         `fractalengine/assets/samples/`, the Bevy AssetServer root, so they now load as
         `samples/<name>.glb`. `git rm camera.glb`: its 14 bytes were the text
