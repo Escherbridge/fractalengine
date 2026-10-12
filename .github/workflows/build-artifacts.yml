@@ -99,10 +99,14 @@ jobs:
       - name: Fuzz (bounded)
         timeout-minutes: 30
         working-directory: fuzz
+        # --target: the prebuilt cargo-fuzz is a static musl binary and defaults to
+        # its own triple; ASan cannot link against musl's static libc.
+        env:
+          FUZZ_TARGET_TRIPLE: x86_64-unknown-linux-gnu
         run: |
-          cargo +nightly fuzz build
-          cargo +nightly fuzz run jwt_parse -- -max_total_time=60 -rss_limit_mb=2048
-          cargo +nightly fuzz run ed25519_verify -- -max_total_time=60 -rss_limit_mb=2048
+          cargo +nightly fuzz build --target "$FUZZ_TARGET_TRIPLE"
+          cargo +nightly fuzz run --target "$FUZZ_TARGET_TRIPLE" jwt_parse -- -max_total_time=60 -rss_limit_mb=2048
+          cargo +nightly fuzz run --target "$FUZZ_TARGET_TRIPLE" ed25519_verify -- -max_total_time=60 -rss_limit_mb=2048
 
   linux:
     name: Linux (build + test + artifacts)
