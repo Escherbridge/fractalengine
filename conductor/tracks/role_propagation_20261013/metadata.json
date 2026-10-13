@@ -1,0 +1,60 @@
+{
+  "id": "role_propagation_20261013",
+  "type": "feature",
+  "security_critical": true,
+  "title": "Role propagation + distributed-query settlement race + responder filtering",
+  "description": "Replicate verse roles as per-grantor role statements (owner bootstraps from verse.created_by, never replicated in), materialized by one order-independent fe-policy fixpoint shared by the DB and sync planes; deferred (not denied) admission for unconverged rows; manifest identity immutability + invite owner pin; P2P-REF-CONFINE; sync-plane __shards/__holders gates; holder-aware settlement; responder filtering re-enabled as hosted-or-held.",
+  "status": "planned",
+  "created_at": "2026-10-13T00:00:00Z",
+  "updated_at": "2026-10-13T00:00:00Z",
+  "priority": "P1",
+  "execution_order_note": "RUNBOOK section 7: runs after PAS-P3+P4, PAS-P5, CDL Wave 4, CDL SPEC-10; then the 2026-10-12 decisions. Re-grep all cited lines before each slice.",
+  "ledger_rows": ["SYNC-ROLE-PROPAGATION", "SYNC-RESPONDER", "P2P-REF-CONFINE", "SYNC-SIGNED-PLANE (__shards gate part only)"],
+  "decisions_ref": "conductor/RUNBOOK.md section 3 (2026-10-12 grill: role propagation; 2026-10-13 R1 direction)",
+  "assumption_refinement": "RUNBOOK section 4 'LWW by HLC per (verse, peer) row' refined to per-(scope, peer, grantor) statements: owner override, max over valid Manager grants, cascade on grantor loss (plan.md section 0) — pending user confirmation",
+  "depends_on": [],
+  "blocks": ["D-32 inspector FR-4 (role list + invites + presets + audit)", "D-48 CRUD behind fe-policy Manager+ (multi-peer correctness)"],
+  "plan": "./plan.md",
+  "spec": "./spec.md",
+  "progress": { "done": 0, "open": 10, "plan": "./plan.md" },
+  "partitions": {
+    "computed_at": "2026-10-13T00:00:00Z",
+    "computed_at_commit": "877e801",
+    "confidence": "planned",
+    "slices": [
+      { "id": "RP-1", "task": "fe-policy pure role-grant model (validate + least-fixpoint materialize)", "model": "sonnet", "depends_on": [],
+        "owns": [{"path": "fe-policy/src/role_grants.rs", "status": "future"}, "fe-policy/src/lib.rs", "fe-policy/AGENTS.md"] },
+      { "id": "RP-2", "task": "fe-database local statements, materialized role cache, outbound publish, migration, governance gate parity", "model": "opus", "depends_on": ["RP-1"],
+        "owns": ["fe-database/src/schema.rs", "fe-database/src/rbac.rs", "fe-database/src/role_manager.rs", "fe-database/src/handlers/rbac.rs", "fe-database/src/handlers/crud.rs", "fe-database/src/handlers/seed.rs", "fe-database/src/handlers/verse_settings.rs", "fe-database/src/lib.rs", "fe-database/src/migration/mod.rs", {"path": "fe-database/src/migration/role_grants.rs", "status": "future"}, "fe-database/src/handlers/elevated_query.rs", "fe-database/examples/seed_join_verse.rs", "fe-database/src/AGENTS.md"] },
+      { "id": "RP-3", "task": "inbound role statements + deferred admission queue + ReplicatedRowOutcome::Deferred", "model": "opus", "depends_on": ["RP-2"],
+        "owns": ["fe-database/src/handlers/replicated_row.rs", {"path": "fe-database/src/handlers/inbound_admissions.rs", "status": "future"}, "fe-database/src/handlers/mod.rs", "fe-database/src/lib.rs", "fe-runtime/src/messages.rs", "fe-test-harness/src/peer.rs"] },
+      { "id": "RP-4", "task": "manifest identity immutability + governance fields + invite owner pin + P2P-REF-CONFINE + scope-precise admission + bootstrap narrowed to manifest", "model": "opus", "depends_on": ["RP-3"],
+        "owns": ["fe-database/src/handlers/replicated_row.rs", "fe-database/src/invite.rs", "fe-database/src/handlers/invite.rs", "fe-database/src/handlers/inbound_admissions.rs", "fe-database/src/AGENTS.md"] },
+      { "id": "RP-5", "task": "sync-plane role view, all-authors role snapshot, __shards gate + quarantine, governed note_verse_row, requester Viewer+ gate", "model": "sonnet", "depends_on": ["RP-4"],
+        "owns": ["fe-sync/src/sharding.rs", "fe-sync/src/replicator.rs", "fe-sync/src/sync_thread.rs", "fe-sync/src/distributed_query.rs", "fe-sync/src/AGENTS.md"] },
+      { "id": "RP-6", "task": "settlement race: __holders, expected answerers + holder wait, deferred_shards honesty, merge rejects sub-Editor answerers", "model": "opus", "depends_on": ["RP-5"],
+        "owns": ["fe-sync/src/distributed_query.rs", "fe-sync/src/sharding.rs", "fe-sync/src/sync_thread.rs", "fe-runtime/src/distributed_query.rs", "fe-database/src/handlers/ts_partial.rs", "fe-database/src/lib.rs", "fe-test-harness/src/peer.rs"] },
+      { "id": "RP-7", "task": "responder filtering re-enabled (hosted ∪ held ∪ unknown) + pinning test flipped", "model": "sonnet", "depends_on": ["RP-6"],
+        "owns": ["fe-sync/src/distributed_query.rs", "fe-sync/src/AGENTS.md"] },
+      { "id": "RP-8", "task": "harness: real AssignRole, role_propagation scenario, distributed_query grants + hosts-hold-all leg, invite owner leg", "model": "sonnet", "depends_on": ["RP-7"],
+        "owns": ["fe-test-harness/src/peer.rs", {"path": "fe-test-harness/src/scenarios/role_propagation.rs", "status": "future"}, "fe-test-harness/src/scenarios/mod.rs", "fe-test-harness/src/scenarios/distributed_query.rs", "fe-test-harness/src/scenarios/invite_flow.rs", "fe-test-harness/src/main.rs", "fe-test-harness/src/AGENTS.md"] },
+      { "id": "RP-9", "task": "SECURITY review-and-fix (fresh context, threat matrix T1-T15, reviewer fixes own findings)", "model": "opus", "depends_on": ["RP-8"],
+        "owns": [{"path": "conductor/tracks/role_propagation_20261013/review-rp9.md", "status": "future", "note": "plus fix-only edits to any RP-1..RP-8 file"}] },
+      { "id": "RP-10", "task": "docs consolidation pass", "model": "haiku", "depends_on": ["RP-9"],
+        "owns": ["AGENTS.md", "fe-database/src/AGENTS.md", "fe-sync/src/AGENTS.md", "fe-policy/AGENTS.md", "fe-runtime/src/AGENTS.md", "conductor/tracks/role_propagation_20261013/plan.md"] }
+    ],
+    "shared_writes": [
+      { "path": "fe-database/src/lib.rs", "owner": "RP-2, RP-3, RP-6 (sequential)", "reason": "DB dispatch arms for AssignRole/RevokeRole, ApplyReplicatedRow, ExecuteTsPartial" },
+      { "path": "fe-test-harness/src/peer.rs", "owner": "RP-3, RP-6, RP-8 (sequential)", "reason": "harness DB loop must call the same InboundAdmissions + real role handlers" },
+      { "path": "fe-sync/src/distributed_query.rs", "owner": "RP-5, RP-6, RP-7 (sequential)", "reason": "requester gate, settlement, responder filter" }
+    ],
+    "tripwires": [
+      "slices are strictly sequential — the shared_writes are only safe because no two slices overlap",
+      "never observe remote HLCs into the local clock",
+      "role/ snapshot must query all authors (Query::key_prefix), not single_latest_per_key",
+      "InboundAdmissions is the one entry point for both production and harness DB loops",
+      "hosted-only responder filtering must never return (rewritten pinning test guards it)"
+    ],
+    "integration_slice": "RP-8"
+  }
+}

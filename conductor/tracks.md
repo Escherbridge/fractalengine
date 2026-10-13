@@ -1,7 +1,7 @@
 ---
 type: Track Index
 title: FractalEngine Project Tracks
-timestamp: 2026-10-10T00:00:00Z
+timestamp: 2026-10-13T00:00:00Z
 ---
 
 # Project Tracks
@@ -22,9 +22,17 @@ stands*, the ledger says *what to do next*.
 > under [`./tracks/_archive/`](./tracks/_archive/); a `depends_on`/`blocks` entry naming
 > an archived track is a **satisfied dependency**.
 
-**Tracks: 41 non-archive folders — 9 done (awaiting archival), 32 open.**
+**Tracks: 40 non-archive folders — 9 done (awaiting archival), 31 open.**
 Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 5 `pending` ·
-4 `spec_only` · 2 `blocked_on_ratification` · 2 `off_strategy` · 1 meta (`ux_qa_review`).
+4 `spec_only` · 2 `blocked_on_ratification` · 1 `off_strategy` · 1 meta (`ux_qa_review`).
+
+> **2026-10-13 bookkeeping:** `light_box` archived (D-40, user-accepted); `outstanding_decisions`
+> 64/68 open entries resolved in this pass (14 superseded, 28 ratified-as-written, 22 R4-R6
+> decisions) — 4 remain (D-26 open, D-29/D-46/D-53 await a user action), so it stays
+> `blocked_on_ratification`. `tauri_host_shell_spike`'s archived metadata amended with an explicit
+> NO-GO verdict (D-42, supersedes its exit report's CONDITIONAL-GO); `terrain_splat_view`'s
+> archived metadata amended with the D-43 (not revived) / D-44 (spec amended to shipped design)
+> outcome. Counts above reflect `light_box`'s move to `_archive/`.
 
 > **Doneness reconciliation 2026-10-10** (three parallel auditors + a consolidation
 > pass; code-reading and git evidence only, no cargo). Every plan checkbox was checked
@@ -344,8 +352,6 @@ Their signing / HashSeq / log-first premises are now realized in-core by
   [./tracks/inspector_settings_20260419/](./tracks/inspector_settings_20260419/)
 - [ ] **sso_federation** — enterprise OIDC/SSO, spec_only P2, never scheduled —
   [./tracks/sso_federation_20260429/](./tracks/sso_federation_20260429/)
-- [ ] **light_box** — default lighting rig; off_strategy (zero code) —
-  [./tracks/light_box_20260402/](./tracks/light_box_20260402/)
 - [ ] **profile_manager** — identity/profile UI + P2P sync; off_strategy (zero code) —
   [./tracks/profile_manager_20260419/](./tracks/profile_manager_20260419/)
 
@@ -359,9 +365,13 @@ Their signing / HashSeq / log-first premises are now realized in-core by
   [./tracks/ux_qa_review_20260714/](./tracks/ux_qa_review_20260714/)
 - [ ] **outstanding_decisions_20260715** — blocked_on_ratification —
   **[the ratification register](./tracks/outstanding_decisions_20260715/spec.md)**: 72
-  entries, 4 resolved (D-69..D-72). The 2026-10-10 audit appendix marks 10 as overtaken
-  by later decisions/landed work (close on confirmation), 3 as user actions, and 55
-  awaiting ratification. **Time-critical: D-22/D-23** (iroh relay EOL 2026-12-31) —
+  entries. **68 resolved** (4 ratified 2026-07-17: D-69..D-72; 64 resolved 2026-10-13 per
+  the 2026-10-13 grill, RUNBOOK §3 R1-R6: 14 superseded, 28 ratified-as-written, 22 R4-R6
+  decisions incl. the generic-asset/device-payload model D-5/D-17, inspector FR-3+full-FR-4
+  D-32, and the light_box/tauri/splat/onboarding/SSO/CRUD dispositions D-40/D-42/D-43/D-47/
+  D-27/D-48/D-51). **4 remain open**: D-26 (SSO token lifetime — proposal rejected, no
+  override given); D-29, D-46, D-53 (each needs a user ACTION, not a decision). D-22/D-23
+  (iroh relay EOL 2026-12-31) resolved in this pass —
   [./tracks/outstanding_decisions_20260715/](./tracks/outstanding_decisions_20260715/)
 
 ---
@@ -395,14 +405,17 @@ One line per batch; full detail lives in each folder under
 - **2026-07-15 — session close-out** (28 folders incl. the burst above): plus
   p2p_unblock_now, asset_download_fix, headless_relay, build_size_mobile_prep,
   code_review_cleanup + mega_function/perf_hotpaths/clippy trio, terrain_splat_view
-  (verified already-done), petal_seed + seedling_onboarding (superseded) — outcomes in
+  (verified already-done; **amended 2026-10-13: D-43 LOD fix not revived, D-44 spec
+  amended to shipped design**), petal_seed + seedling_onboarding (superseded) —
+  outcomes in
   [session_retro_20260715/retro.md](./tracks/_archive/session_retro_20260715/retro.md)
 - **2026-07-17 — board-hygiene batch** (7 folders + batch retro): the four 2026-07-16
   P0 UX tracks path_interaction, gpx_stamp_persistence, inspector_units_width,
   camera_focus_clip (done 07-16, in-app verify user-gated — consolidated
   [ux_retro_20260716/retro.md](./tracks/_archive/ux_retro_20260716/retro.md)); plus
   tauri_host_shell_spike (superseded — shelved OFF-STRATEGY 07-14, exit report
-  delivered, CONDITIONAL GO), bim_primitives_on_paths (FR-8 seam folded into
+  delivered, CONDITIONAL GO; **amended 2026-10-13: closed NO-GO per D-42**),
+  bim_primitives_on_paths (FR-8 seam folded into
   iot_spatial_reporting), hexon_path_asset (FR-5 subsumed / FR-6 inherited by
   hexon_unification)
 - **2026-07-24 — pruning-pass batch** (5 folders, each with its own
@@ -414,3 +427,6 @@ One line per batch; full detail lives in each folder under
   delivered @ 06abf7f; sidebar→tooltip, Phases 2-6 subsumed),
   ux_interaction_hardening (superseded — FR-5 shipped @ 7bdcfbe; FR-1..4
   absorbed), drag_drop_placement (superseded — spec-only on a void base)
+- **2026-10-13 — bookkeeping batch** (1 folder): light_box (superseded — D-40,
+  user-accepted archive; zero code existed) —
+  [`_archive/light_box_20260402/`](./tracks/_archive/light_box_20260402/)

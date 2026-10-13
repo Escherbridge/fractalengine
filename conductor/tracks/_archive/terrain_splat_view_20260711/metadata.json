@@ -18,5 +18,6 @@
     "rationale": "Cosmetic alt render mode; zero egress value. Defer until analytics last-mile lands.",
     "assessed": "2026-07-14"
   },
-  "archived_at": "2026-07-15T00:00:00Z"
+  "archived_at": "2026-07-15T00:00:00Z",
+  "resolution_note": "RESOLVED 2026-10-13 (outstanding_decisions_20260715): D-43 — user accepted NOT reviving the low-resolution splat fix (splat_desired_zoom / LOD zoom-selection follow-up stays reverted/archived, per 2026-10-13 grill §R6). D-44 — spec amended-by-reference to the shipped design: the unshipped FR-4 niceties (splat_ready flag, bake_splats example, gis-tile-etl bake stage) are dropped, not carried as debt; FR-4's actually-shipped scope (delivered by splat_hexon_bake_20260712) stands. No code changes; track stays archived/done exactly where it was."
 }

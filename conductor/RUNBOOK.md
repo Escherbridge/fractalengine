@@ -213,6 +213,23 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 - R6 · Relay host (D-23): undecided — the relay-assisted acceptance test runs against a LOCAL
   iroh-relay 1.3 container; `FE_SYNC_RELAY` stays a settings placeholder until a host exists.
 - R6 · Loop ended by the user ("Done: start building") after 6 rounds.
+- R7 (mid-campaign, after the planning swarm) · **Role statements from a not-yet-Manager+
+  author are HELD BACK as Deferred** until the author has authority (user chose this over
+  stored-but-inactive) → the implementation MUST re-try deferred rows whenever an author's
+  authority changes so the outcome stays delivery-order independent. **Grant authority: any
+  Manager, within their own subtree** (petal Manager → that petal and below; fractal Manager →
+  that fractal; verse Manager/Owner → whole verse) — overrides the critic's verse-only rule.
+- R7 · Confirmed defaults: petal creators NO LONGER become petal Owners (escalation fix, migrate
+  existing implicit rows); generic asset + device payloads + format descriptors are built in THIS
+  campaign (CDL-SPEC10 A3–A6; supersedes my §4 "second campaign" assumption); seeders never
+  re-bundle sealed tilesets; CDL-W4 defaults (unavailable capability chain/epoch key → quarantine,
+  erratum E-W4-1; new wire numbers provisional in the one register; equivalence evidence = dev run
+  until an owner run charter exists).
+- R7 · **SPEC-10: PRE-APPROVED** — Phase B (observation module, columnar codec, shadow
+  sealer) builds straight after the draft using the draft's recommended defaults; user reviews after.
+- R7 · CI: **Lint must warn, not fail the run** (don't let cargo-deny/clippy drift block the
+  build or the `latest` publish), and the rolling release must publish a **download users can
+  actually run** (packaged per platform with assets).
 
 **From the 2026-10-12 grill (user):**
 - **Next work order:** large in-progress phases FIRST — PAS-P3+P4 (transport + chunk handlers +
@@ -349,6 +366,24 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
    v1 gate = public OSS release readiness (`oss_release_20260717`).
 
 ## 8. Session log
+
+### 2026-10-13 — grill loop → purge → W0 + planning swarm (rolling)
+- Done: 6-round grill (§3 R1–R6, §4); git identity → `Jade Zaher` (+ Claude co-author trailer);
+  deleted `../fe-hermes`, `../fe-pi`, `../fe-pibridge` + branches `impl/tauri-{hermes,pi,pibridge}`
+  (user); **SCEA Duck purged from all history** (blob `217170d2`, filter-repo, 260 commits
+  rewritten, 905 citations remapped in 160 docs + memory) and force-pushed atomically with leases
+  (`main`, 3 remote branches, tag `latest`) → origin/main `877e801`.
+- Backup: `../backups/2026-10-13-pre-duck-purge/` (all-refs bundle, imported/ copies, 0.35
+  fixture, refs before/after, filter-repo log). Old→new map: `.git/filter-repo/commit-map`.
+- Accountability critic: brief `.omc/accountability/critic-brief.md`, log
+  `conductor/accountability-log.md`; runs at workflow boundaries (hourly cron denied by the
+  permission classifier).
+- Finding: CI's Linux test step is scoped to `fe-ui fe-terrain fractalengine` (D-66) — fe-sync's
+  own tests never ran in CI; W0 adds a fixture-generation + migration-test step.
+- In flight: CI watch `bdxqawa1s` (run on `877e801`); W0 workflow `wf_aa8dded9-e92` (task
+  `wnzsvkwjm`); planning swarm `wf_7f0fd597-d05` (task `wtenzbfpx`) writing
+  `campaign-plan-*-20261013.md` under the PAS/CDL tracks + new track `role_propagation_20261013`.
+- Next: W0 gate → commit → critic tick → W1 PAS-P3+P4 from its plan file (sequential builds).
 
 ### 2026-10-12 — handoff after the completeness campaign
 - Done: retro (§1); 5-round grill loop → §3 decisions; pushed `a064144..4765bc5`; untracked

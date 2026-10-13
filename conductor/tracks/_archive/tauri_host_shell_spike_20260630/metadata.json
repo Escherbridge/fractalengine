@@ -6,6 +6,7 @@
   "archived": true,
   "archived_at": "2026-07-17",
   "notes": "Shelved per 2026-07-14 OFF-STRATEGY alignment; exit report delivered (spike-exit-report.md, 2026-07-01), verdict CONDITIONAL GO. Phase 3 POC never run — spike terminated at the report. Archived 2026-07-17 board-hygiene batch.",
+  "resolution_note": "RESOLVED 2026-10-13: D-42 (outstanding_decisions_20260715) — user ACCEPTED closing this spike formally NO-GO (2026-10-13 grill §R6: \"Tauri shell spike closed NO-GO (Tauri stays the webview backend only)\"), superseding the exit report's own CONDITIONAL-GO verdict and foreclosing the desktop-shell-inversion option it rated \"viable with 2-4 weeks work\". No further action: track stays archived exactly where it already was (archived 2026-07-17); only this verdict is new.",
   "execution_wave": 4,
   "wave_rationale": "Backlog P2 exploratory SPIKE; off critical path.",
   "priority": "P3",
