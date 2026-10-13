@@ -10,16 +10,16 @@ resource: ./spec.md
 
 ## What shipped
 
-- **4f765fe** (Wave 1 leaf): `dialogs/context_menu.rs` — the pure `menu_for(HitTarget)`
+- **25d908c** (Wave 1 leaf): `dialogs/context_menu.rs` — the pure `menu_for(HitTarget)`
   verb table (spec Q-1), verb labels/tooltips, the two-step in-menu delete confirm with a
   live descendant count, and node-scoped `verb_action` routing (Delete is the sync-safe
   tombstone cascade, never a raw drop).
-- **cdd3291** (T5): the egress seam. Copy API / Report render disabled-with-hint until
+- **e5688ca** (T5): the egress seam. Copy API / Report render disabled-with-hint until
   `gis::egress_strings` yields a string (FR-4, ui_ux §6).
-- **623145f** (serial integration pass): `node_manager/context_pick.rs::classify_context_menu`
+- **195f5cc** (serial integration pass): `node_manager/context_pick.rs::classify_context_menu`
   fills `ContextTarget` with the same pick machinery as left-click (ray/AABB +
   `TrackPickShape`, stamp ground fallback via `StampRenderIndex`).
-- **4d0c12d** (D16 classifier work): right-click resolves `PathVertex` / `PathHandle` /
+- **e76bbb9** (D16 classifier work): right-click resolves `PathVertex` / `PathHandle` /
   `PathSegment` / `TerrainProposal`, with the edited-ribbon tier matching left-click (F10).
 - **This batch (2026-10-11 spatial-builder-residue, commit pending)**: committed earthwork
   regions are now right-clickable. `HitTarget::EarthworkRegion` comes from
@@ -30,10 +30,10 @@ resource: ./spec.md
 
 ## Lessons
 
-- **Leaf-wave vs integration-wave.** With strict file boundaries the leaf (4f765fe) could
+- **Leaf-wave vs integration-wave.** With strict file boundaries the leaf (25d908c) could
   build the menu table and verbs but not wire them. The wiring lived in shared central
   files (`panels/mod.rs`, `node_manager/mod.rs`), so classification only went live in the
-  serial integration pass (623145f). Plan that serial wave explicitly. The tell is a leaf
+  serial integration pass (195f5cc). Plan that serial wave explicitly. The tell is a leaf
   whose every open item names a central file.
 - **A table test is not reachability.** `menu_for` was exhaustively tested from day one,
   but for weeks the classifier produced only `Node`/`Stamp`/`Empty`, and region Delete
@@ -41,8 +41,8 @@ resource: ./spec.md
   its producer as well as a menu test for its verbs.
 - **In-app verify catches what tests cannot.** The 2026-07-26 in-app pass found an emath
   `smart_aim` NaN panic in `gardener_ui_system`, plus dead tool panels, after a fully green
-  sweep (2050 tests). 631f389 restored the tools, and the NaN came from unbounded
-  `DragValue` ranges (closed 631f389+WIP, see ui_semantics audit). Numeric UI needs
+  sweep (2050 tests). 118e666 restored the tools, and the NaN came from unbounded
+  `DragValue` ranges (closed 118e666+WIP, see ui_semantics audit). Numeric UI needs
   finite-range guards, not only unit tests.
 
 ## Open residuals

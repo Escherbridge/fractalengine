@@ -90,5 +90,5 @@ baked splats loads and renders (holey but stable) via the fallback.
 
 Reverted predecessor `splat_lod_zoom_20260712` (in `conductor/tracks/_archive/`).
 Reverted code on branch `archive/splat-coverage-experiment-20260712`
-(commits `9839094`, `4be8ec4`) — `fe-terrain/src/splat/interpolate.rs` there
+(commits `b5232df`, `69f9887`) — `fe-terrain/src/splat/interpolate.rs` there
 is the algorithm to lift and optimize for the bake step.

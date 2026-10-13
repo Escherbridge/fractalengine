@@ -54,7 +54,7 @@ distinguishable — and never silently bridges them.
   operation is cancel-safe (Escape semantics consistent across pen/edit/place
   modes per the staged ladder), no orphaned in-flight state on petal switch or
   tool switch mid-drag, undo-safe point manipulation, drag handles with
-  forgiving hit areas (narrow-phase picking prior art from 906d9cc), and
+  forgiving hit areas (narrow-phase picking prior art from 0082c64), and
   keyboard parity for nudge/delete on the selected point. Acceptance: an
   interrupted edit (Escape, tool switch, petal switch) never leaves ghost
   geometry or stale editor state.

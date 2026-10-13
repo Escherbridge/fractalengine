@@ -10,20 +10,20 @@ resource: ./spec.md
 
 ## What shipped
 
-- **c6fdf0d / aeba832** (T1 spine, prerequisite): `PromoteInstance` lazy promotion
+- **c99dcf2 / 2377089** (T1 spine, prerequisite): `PromoteInstance` lazy promotion
   (FR-5), tombstone/cascade/reflow, and `CallerAuth::Local`.
-- **56ccc3b** (Wave 1 leaf):
+- **9106d29** (Wave 1 leaf):
   - an arc-length curve sampler for both spacing modes, with true-tangent alignment
     (`fe-terrain/src/mesh/curve.rs`);
   - sparse scale/rotation overrides and the 1-D slide;
   - the `StampRenderIndex` pick index and instancing (`fe-renderer/src/instancing.rs`).
-- **623145f** (integration):
+- **195f5cc** (integration):
   - curve-follow stamps in the materializer (`verse_manager/path_asset_materialize.rs`);
   - the select → `PromoteInstance` → `NodePromoted` round-trip;
   - the override round-trip;
   - the lifecycle crossbeam→Bevy pump.
-- **631f389**: restored the tool panels lost in the integration regression.
-- **40590e9** (STAMP-GIMBAL-TRANSLATE-LOCK / T5-LOCK): a stamp never translates (D-A5).
+- **118e666**: restored the tool panels lost in the integration regression.
+- **49e2de0** (STAMP-GIMBAL-TRANSLATE-LOCK / T5-LOCK): a stamp never translates (D-A5).
   - `resolve_gimbal` gives a stamp no Move drag.
   - The DB rejects a stamp translate before the op-log commit.
 - **This batch (2026-10-11 spatial-builder-residue, commit pending)**: the N-9 row-count
@@ -40,11 +40,11 @@ resource: ./spec.md
   tested, not the row count. The promise lives at the store, so the test belongs there
   too, driven through `DbCommand` against a real on-disk DB.
 - **Two enforcement layers for one invariant.** The D-A5 position lock needed both the UI
-  gimbal table and the DB handler (40590e9). The UI-only lock had looked done until the
+  gimbal table and the DB handler (49e2de0). The UI-only lock had looked done until the
   consolidation audit found `SelectionKind::Node` standing in for stamps at the gimbal
   hit.
 - **Leaf vs integration.** As with T3/T4, the leaf could prove the math. Curve-follow only
-  became visible once the materializer was wired in the serial pass (623145f).
+  became visible once the materializer was wired in the serial pass (195f5cc).
 
 ## Open residuals
 

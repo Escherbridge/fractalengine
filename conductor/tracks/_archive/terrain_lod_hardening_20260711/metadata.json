@@ -13,6 +13,6 @@
     "terrain_splat_view_20260711"
   ],
   "archived": true,
-  "notes": "user report 2026-07-11 with screenshot: black vertical seam lines between tiles, clipping when zooming out, quality drop at lowest level. Part of GIS-hardening ultrapilot run (W1). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "user report 2026-07-11 with screenshot: black vertical seam lines between tiles, clipping when zooming out, quality drop at lowest level. Part of GIS-hardening ultrapilot run (W1). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "archived_at": "2026-07-15T00:00:00Z"
 }

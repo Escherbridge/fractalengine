@@ -11,6 +11,6 @@
   ],
   "blocks": [],
   "archived": true,
-  "notes": "user 2026-07-11: 'expose UI for editing querying and orchestrating this data'. Shares gis.annotation.* property contract with the endpoints track. fe-ui must not depend on fe-terrain. Part of GIS-hardening ultrapilot run (W4). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "user 2026-07-11: 'expose UI for editing querying and orchestrating this data'. Shares gis.annotation.* property contract with the endpoints track. fe-ui must not depend on fe-terrain. Part of GIS-hardening ultrapilot run (W4). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "archived_at": "2026-07-15T00:00:00Z"
 }

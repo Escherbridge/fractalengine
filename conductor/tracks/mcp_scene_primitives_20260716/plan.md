@@ -36,14 +36,14 @@ Goal: `CreateAsset` and `CreateNodeWithAsset` commands exist, handled on the
 DB thread, carrying only metadata — asset bytes never enter the channel.
 
 Tasks:
-- [x] Task 1.1: `DbCommand::CreateAsset` + `DbResult::AssetCreated` + *(AUDIT 2026-10-10: fe-runtime/src/messages.rs:251 `CreateAsset`; fe-database/src/handlers/crud.rs:465 `create_asset_handler`; test `crud.rs::create_asset_requires_the_blob_and_stores_metadata_only` — F13 @635b8c5)*
+- [x] Task 1.1: `DbCommand::CreateAsset` + `DbResult::AssetCreated` + *(AUDIT 2026-10-10: fe-runtime/src/messages.rs:251 `CreateAsset`; fe-database/src/handlers/crud.rs:465 `create_asset_handler`; test `crud.rs::create_asset_requires_the_blob_and_stores_metadata_only` — F13 @f65aaa2)*
       `create_asset_handler` (TDD: fe-database integration test via
       `spawn_db_thread_with_sync` — send `CreateAsset { name, content_type,
       size_bytes, content_hash }`, assert `AssetCreated { asset_id,
       content_hash }` and the asset row (`data: NONE`, hash set) via direct
       DB read; then implement handler as the asset-row half of
       `import_gltf_handler` (crud.rs ~307–332) with **no file I/O**; refactor)
-- [x] Task 1.2: `DbCommand::CreateNodeWithAsset` + handler (TDD: test — *(AUDIT 2026-10-10: messages.rs:263 `CreateNodeWithAsset`; crud.rs:513 `create_node_with_asset_handler`; test `crud.rs::place_asset_binds_the_asset_and_rejects_unknown_ids` — F13 @635b8c5)*
+- [x] Task 1.2: `DbCommand::CreateNodeWithAsset` + handler (TDD: test — *(AUDIT 2026-10-10: messages.rs:263 `CreateNodeWithAsset`; crud.rs:513 `create_node_with_asset_handler`; test `crud.rs::place_asset_binds_the_asset_and_rejects_unknown_ids` — F13 @f65aaa2)*
       seeded asset row + `CreateNodeWithAsset { petal_id, name, asset_id,
       position, rotation, scale, correlation_id }` yields
       `DbResult::GltfImported` (reused — spec D2, no new DbResult variant)
@@ -58,7 +58,7 @@ Tasks:
       `cargo check` across the workspace (compile-driven; **no fe-ui edits
       should be needed** — if one appears, stop and re-scope)
 - [x] Verification: targeted `cargo test -p fe-database` green; grep confirms
-      no new `DbCommand` variant carries a byte buffer [checkpoint marker] *(AUDIT 2026-10-10: fe-api/AGENTS.md §asset-ingest 'Bytes never cross the channel — by construction' (`StoredGlb` capability type); fe-database 281 green @5b06795)*
+      no new `DbCommand` variant carries a byte buffer [checkpoint marker] *(AUDIT 2026-10-10: fe-api/AGENTS.md §asset-ingest 'Bytes never cross the channel — by construction' (`StoredGlb` capability type); fe-database 281 green @79e7ac9)*
 
 ---
 
@@ -81,7 +81,7 @@ Tasks:
       `validate_glb` → `spawn_blocking(add_blob)` → `DbCommand::CreateAsset`;
       wire route with per-route `DefaultBodyLimit::max(MAX_ASSET_BYTES +
       1 MiB)` per fe-hexon-registry precedent; refactor)
-- [x] Task 2.3: `DELETE /api/v1/nodes/{node_id}` (TDD: tests — Editor + *(AUDIT 2026-10-10: server.rs:140-141 → fe-api/src/endpoint.rs:256 `delete_node` (sync-safe TombstoneNode/CascadeTombstoneNode, T5 cdd3291); denial parity in `tests/existence_oracle_test.rs`)*
+- [x] Task 2.3: `DELETE /api/v1/nodes/{node_id}` (TDD: tests — Editor + *(AUDIT 2026-10-10: server.rs:140-141 → fe-api/src/endpoint.rs:256 `delete_node` (sync-safe TombstoneNode/CascadeTombstoneNode, T5 e5688ca); denial parity in `tests/existence_oracle_test.rs`)*
       `resolve_node_scope` enforced, 404 on missing node (map the handler's
       "matched no node" error), 200 `{ node_id, petal_id }` on success;
       implement over existing `DbCommand::DeleteNode`; document cascade
@@ -99,7 +99,7 @@ Tasks:
       if divergence is found
 - [x] Verification: targeted `cargo test -p fe-api` green; manual curl
       transcript (upload → fetch blob by hash → delete node) recorded in the
-      task note [checkpoint marker] *(AUDIT 2026-10-10: manual curl transcript SUBSTITUTED by `mcp_integration.rs::upload_asset_round_trip_then_place` + `upload_asset_rejects_bad_bytes_and_writes_nothing`; fe-api 234 green @5b06795)*
+      task note [checkpoint marker] *(AUDIT 2026-10-10: manual curl transcript SUBSTITUTED by `mcp_integration.rs::upload_asset_round_trip_then_place` + `upload_asset_rejects_bad_bytes_and_writes_nothing`; fe-api 234 green @79e7ac9)*
 
 ---
 
@@ -126,7 +126,7 @@ Tasks:
       `require_role(`/`require_role_and_scope(` call sites remain inside
       individual tool handler bodies; authz lives only in the dispatcher
 - [x] Verification: targeted `cargo test -p fe-api mcp` green; tool count
-      still 6, schemas unchanged [checkpoint marker] *(AUDIT 2026-10-10: superseded checkpoint — table landed with the full vocabulary in one feature (F13 @635b8c5))*
+      still 6, schemas unchanged [checkpoint marker] *(AUDIT 2026-10-10: superseded checkpoint — table landed with the full vocabulary in one feature (F13 @f65aaa2))*
 
 ---
 
@@ -136,7 +136,7 @@ Goal: the complete primitive vocabulary from spec FR-2/3/4/6, every tool on
 the dispatch table, each with success + RBAC-negative tests.
 
 Tasks:
-- [x] Task 4.1: `upload_asset` (base64) + `place_asset` + `delete_node` *(AUDIT 2026-10-10: `mcp_integration.rs::upload_asset_round_trip_then_place`, `upload_asset_rejects_bad_bytes_and_writes_nothing`, `place_asset_rejects_a_foreign_scope_asset`; /mcp body limit later CUT to 16 MiB by DEC-C21 (@5b06795, `MCP_MAX_ASSET_BYTES` 11 MiB) — NFR-2's 349 MiB figure was a DoS surface)*
+- [x] Task 4.1: `upload_asset` (base64) + `place_asset` + `delete_node` *(AUDIT 2026-10-10: `mcp_integration.rs::upload_asset_round_trip_then_place`, `upload_asset_rejects_bad_bytes_and_writes_nothing`, `place_asset_rejects_a_foreign_scope_asset`; /mcp body limit later CUT to 16 MiB by DEC-C21 (@79e7ac9, `MCP_MAX_ASSET_BYTES` 11 MiB) — NFR-2's 349 MiB figure was a DoS surface)*
       tools (TDD: tests — upload/place/delete happy path against in-memory
       harness; invalid base64 / non-GLB / unknown asset_id / missing node ⇒
       `isError`; Viewer ⇒ denied; implement — `upload_asset` shares the
@@ -154,7 +154,7 @@ Tasks:
       (multipart stays for REST; MCP takes `data_base64`); red tests: valid
       minimal GPX fixture creates track+waypoints, malformed GPX ⇒ `isError`,
       RBAC negatives; implement; refactor)
-- [x] Task 4.4: Terrain + tileset + GIS tools — `set_petal_terrain` *(AUDIT 2026-10-10: `mcp_integration.rs::terrain_and_tileset_tools_reach_their_cores`; install_tileset role unified to Editor (DEC-C21 @5b06795); set_petal_terrain live via correlated replies 9cbdea6 (`tests/terrain_mutation_test.rs`))*
+- [x] Task 4.4: Terrain + tileset + GIS tools — `set_petal_terrain` *(AUDIT 2026-10-10: `mcp_integration.rs::terrain_and_tileset_tools_reach_their_cores`; install_tileset role unified to Editor (DEC-C21 @79e7ac9); set_petal_terrain live via correlated replies 94be5b6 (`tests/terrain_mutation_test.rs`))*
       (`terrain: null` clears), `list_tilesets`, `install_tileset` (verify
       and mirror the REST handler's role — spec open question 1),
       `get_gis_nodes` (TDD; implement; refactor)
@@ -164,7 +164,7 @@ Tasks:
       matches the banned semantic-verb list (`place_building`, `create_road`,
       `*footprint*`, `*occupancy*`) as a tripwire for directive #1
 - [x] Verification: targeted `cargo test -p fe-api` green; 20 tools listed
-      [checkpoint marker] *(AUDIT 2026-10-10: 29 listed per DEC-C14; fe-api 199 green @635b8c5)*
+      [checkpoint marker] *(AUDIT 2026-10-10: 29 listed per DEC-C14; fe-api 199 green @f65aaa2)*
 
 ---
 
@@ -198,10 +198,10 @@ Tasks:
       NFR-2, cascade semantics, operator token flow pointer to spec);
       one-line pointers from code; fe-database handler notes for
       `CreateAsset`/`CreateNodeWithAsset` (GltfImported reuse rationale)
-- [x] Task 5.5: **Single full workspace sweep** (once, per repo policy): *(AUDIT 2026-10-10: F19 sweep fmt/clippy/test 3,245/0 @1e9be3a)*
+- [x] Task 5.5: **Single full workspace sweep** (once, per repo policy): *(AUDIT 2026-10-10: F19 sweep fmt/clippy/test 3,245/0 @d198bd2)*
       `cargo fmt --check` + `cargo clippy -- -D warnings` + `cargo test`
       across the workspace; fix fallout; re-run once
-- [x] Verification: full-loop test green in the sweep; spec acceptance *(AUDIT 2026-10-10: F13/F14/F19 evidence above; fe-ui untouched by F13 (`git show --stat 635b8c5`))*
+- [x] Verification: full-loop test green in the sweep; spec acceptance *(AUDIT 2026-10-10: F13/F14/F19 evidence above; fe-ui untouched by F13 (`git show --stat f65aaa2`))*
       criteria walked FR-by-FR with evidence links; confirm zero fe-ui diffs
       (`git diff --stat -- fe-ui/` empty) [checkpoint marker]
 

@@ -21,7 +21,7 @@ extracted views and ~2.76 GB of per-view GPU data.
 
 ## 2. Verification evidence
 
-- **Root-cause fix committed @ `46e19de`** — glb-embedded-camera deactivation
+- **Root-cause fix committed @ `fa55be4`** — glb-embedded-camera deactivation
   (`deactivate_foreign_cameras`) in `fe-renderer/src/camera.rs`. In-commit
   verification: **309s run at full frame rate, 0 validation errors, views max 3,
   data_buffer ~1.5 MB** vs the 2.76 GB failure — satisfying FR-5's primary
@@ -31,7 +31,7 @@ extracted views and ~2.76 GB of per-view GPU data.
   wired across `fe-ui/src/verse_manager/{spawn,petal_respawn,primitive_materialize,db_results/*}.rs`
   and `fe-ui/src/plugin.rs`/`settings.rs`.
 - **FR-6 render horizon delivered CROSS-TRACK** by p2p_asset_streaming FR-4
-  @ `320ebfe`: `residency.settings.render_distance` is consumed in
+  @ `7bdcfbe`: `residency.settings.render_distance` is consumed in
   `path_asset_materialize.rs:265`, `petal_respawn.rs:100`,
   `primitive_materialize.rs:151`. FR-6's dense-petal live-run acceptance bar
   transfers to that delivery with it.

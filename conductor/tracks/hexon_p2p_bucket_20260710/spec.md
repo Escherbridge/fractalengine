@@ -59,7 +59,7 @@ get to a peer that doesn't have them yet.
 | Sovereign authorship (ed25519 signing) | **Exists** | `fe-format/src/signature.rs::{sign_manifest, verify_manifest, verifying_key_to_did}` — already used for hexon manifests (Phase 6.5) |
 | Signed hexon manifests + registry + local install | **Exists** | `fe-format` (Phase 6.5), `fe-hexon`/`fe-hexon-registry` (Phase 8) |
 | P2P blob transport over iroh | **Stub only, not implemented** | `fe-network/src/iroh_blobs.rs` is 13 lines — `register_asset`/`fetch_asset` are the original Wave-1 scaffold signatures, never filled in. **This is the single biggest gap this spec identifies**: none of the "transported over iroh" vision exists yet at the blob layer, though iroh *is* wired up elsewhere (`fe-sync` gossip/replication, iroh-docs) |
-| `GET /nodes/{id}/asset`, `GET /assets/by-id/{asset_id}` endpoints | **Landed 2026-07-11**, commit `3a97fc1` | `fe-api` — three GET endpoints total (`/api/v1/assets/{content_hash}`, `/api/v1/assets/by-id/{asset_id}`, `/api/v1/nodes/{node_id}/asset`), Viewer+ RBAC via `resolve_node_scope`, real `content_type`/`name`/`size` from the DB. See `fe-api/AGENTS.md` §assets for the full contract (including the noted "asset has no owner column of its own" caveat) — not duplicated here. **These currently read the DB/blob store directly from the async API-gateway thread**, not through the `DbCommand` channel (see Follow-up below). |
+| `GET /nodes/{id}/asset`, `GET /assets/by-id/{asset_id}` endpoints | **Landed 2026-07-11**, commit `fd6ee3d` | `fe-api` — three GET endpoints total (`/api/v1/assets/{content_hash}`, `/api/v1/assets/by-id/{asset_id}`, `/api/v1/nodes/{node_id}/asset`), Viewer+ RBAC via `resolve_node_scope`, real `content_type`/`name`/`size` from the DB. See `fe-api/AGENTS.md` §assets for the full contract (including the noted "asset has no owner column of its own" caveat) — not duplicated here. **These currently read the DB/blob store directly from the async API-gateway thread**, not through the `DbCommand` channel (see Follow-up below). |
 
 ## Functional Requirements (design sketch — no implementation this round)
 
@@ -268,7 +268,7 @@ and the research report's measured numbers. Binding on the implementation track:
 ## Follow-up (post-close-out, 2026-07-11)
 
 The `GET /nodes/{id}/asset` family of endpoints landed during the same
-ultrapilot run this spec was written in (commit `3a97fc1`) — the exists-table
+ultrapilot run this spec was written in (commit `fd6ee3d`) — the exists-table
 above has been updated accordingly. That landing surfaced one concrete gap
 this spec's FR-1/FR-4 (generic asset model, download/upload endpoints)
 should account for:

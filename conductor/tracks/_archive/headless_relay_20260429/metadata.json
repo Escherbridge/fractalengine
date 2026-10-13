@@ -13,7 +13,7 @@
     "release_ci_20260429",
     "iot_spatial_reporting_20260714"
   ],
-  "notes": "2026-07-14 ref cleanup: former blocks 'web_client_sdk' and 'mobile_client' were aspirational (no such tracks exist) and were removed; 'docker_deployment' removed (delivered by this track's Dockerfile); 'iot_integration' replaced by iot_spatial_reporting_20260714. depends_on realtime_api_mcp_20260427 is archived/complete. 2026-07-15: all phases complete — pending session-end sweep. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "2026-07-14 ref cleanup: former blocks 'web_client_sdk' and 'mobile_client' were aspirational (no such tracks exist) and were removed; 'docker_deployment' removed (delivered by this track's Dockerfile); 'iot_integration' replaced by iot_spatial_reporting_20260714. depends_on realtime_api_mcp_20260427 is archived/complete. 2026-07-15: all phases complete — pending session-end sweep. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "phases": [
     {
       "id": 1,

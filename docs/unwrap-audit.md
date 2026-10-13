@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Date | 2026-10-11 |
-| Commit | `7d40a4e` plus the uncommitted 2026-10-11 completeness-campaign batches |
+| Commit | `562f551` plus the uncommitted 2026-10-11 completeness-campaign batches |
 | Command | `scripts/unwrap-census.sh` (`scripts/unwrap-census.ps1` on Windows) |
 | Underlying | `cargo clippy --workspace --lib --bins --message-format=short -- -A clippy::all -W clippy::unwrap_used -W clippy::expect_used` |
 | Total | **194 production sites** (86 `unwrap`, 108 `expect`) |
@@ -65,7 +65,7 @@ just-assigned value, or an infallible serde of a plain struct. Examples:
 
 | Site | Justification |
 |---|---|
-| ~~`fe-database/src/lib.rs` `.expect("SurrealDB init")`~~ | **REMOVED** in `d3c5fab` (2026-05-02); DB init failures now surface as errors. Kept here only as a tombstone. |
+| ~~`fe-database/src/lib.rs` `.expect("SurrealDB init")`~~ | **REMOVED** in `70a5ebf` (2026-05-02); DB init failures now surface as errors. Kept here only as a tombstone. |
 | Tokio runtime builders: `fe-api/src/lib.rs:135`, `fe-network/src/lib.rs:22`, `fe-plugin/src/lib.rs:206`, `fe-sync/src/sync_thread.rs:411`, `fractalengine/src/main.rs:311,338,440`, `fractalengine-relay/src/main.rs:240,306,543` | Each worker thread cannot run without its runtime. Failure means the OS refused threads or an epoll fd. |
 | `fe-plugin/src/lib.rs:203` thread spawn | Same as above, for the plugin-host thread. |
 | `fractalengine/src/main.rs:92`, `fractalengine-relay/src/main.rs:82` keypair from seed | Re-derives a keypair from a seed that was just produced. |

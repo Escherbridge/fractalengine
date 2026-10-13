@@ -6,7 +6,7 @@
   "status": "done",
   "execution_wave": 4,
   "wave_rationale": "Backlog fe-ui hot-path fixes; counterpart to p2p_unblock_now_20260711 engine-side fixes.",
-  "notes": "verified 2026-07-10: update_node_position/update_node_url still O(n^3) nested tree walk | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "verified 2026-07-10: update_node_position/update_node_url still O(n^3) nested tree walk | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P2",

@@ -41,7 +41,7 @@ that session.
 
 ## 3. Verification evidence
 
-- Commit `906d9cc` — **local-only, NOT pushed**.
+- Commit `0082c64` — **local-only, NOT pushed**.
 - Full sweep green: **1517 tests**, `clippy -D warnings`, `fmt`.
 - **Caveat: in-app verification remains user-gated** — automated evidence
   only; the user has not yet confirmed the fixes hands-on in the running app.

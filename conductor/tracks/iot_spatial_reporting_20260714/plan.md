@@ -9,7 +9,7 @@ resource: ./spec.md
 # Plan: IoT Spatial Reporting
 
 **Track:** `iot_spatial_reporting_20260714` · **P1 / CORE-ANALYTICS** · Crates: `fe-database`, `fe-query`, `fe-api`
-Spec: `./spec.md` · Roadmap: `conductor/roadmap.md §1` · Depends on: `analytics_egress_20260714` (landed — query_guard/limits/export/share all exist as of f062921)
+Spec: `./spec.md` · Roadmap: `conductor/roadmap.md §1` · Depends on: `analytics_egress_20260714` (landed — query_guard/limits/export/share all exist as of 77f0061)
 
 ## Verified starting state (2026-07-15 — do not re-derive)
 
@@ -34,7 +34,7 @@ Style constraints (all phases): ~300-line files, terse one-line doc comments (ra
 
 ## Phase 0 — FR-2: node_log cap (PRE-SATISFIED)
 
-- [x] **Task 0.1 — `node_log` ring cap.** *(Pre-satisfied: landed via `p2p_unblock_now_20260711` FR-2 in commit `9ef76a1` — bounded node_log ring in `fe-entity-store`. Nothing to do here; recorded per spec's "do it here if that track hasn't landed it" clause — it has.)*
+- [x] **Task 0.1 — `node_log` ring cap.** *(Pre-satisfied: landed via `p2p_unblock_now_20260711` FR-2 in commit `82c373f` — bounded node_log ring in `fe-entity-store`. Nothing to do here; recorded per spec's "do it here if that track hasn't landed it" clause — it has.)*
 
 ## Phase 1 — FR-1: IoT reading schema + write path [fe-database]
 
@@ -81,12 +81,12 @@ Style constraints (all phases): ~300-line files, terse one-line doc comments (ra
 
 ## Phase 4 — FR-5 remaining polish + sweep (NOT this session)
 
-- [x] **Task 4.1 — Reading-shaped parquet/CSV export.** *(AUDIT 2026-10-10: F11 @2023809 — fe-api/src/export.rs:110 `classify_export_table` two-table whitelist + batched anchor join; tests `export_share_test.rs::export_readings_round_trips_scope_filtered_with_anchor_position`, `export_readings_latlon_converts_anchor_position`, `share_readings_parquet_round_trip_is_scope_filtered`; DuckDB-read live in scripts/bi-egress-verify.log.)* `export.parquet`/`export.csv` are node-snapshot-shaped (`prepare_export` rejects non-`node` tables); a readings export needs a flat reading→row mapping (+ optional anchor-position join and `coords=latlon` via the petal `Projection`) before IoT rows flow to DuckDB/PowerBI **files** — until then `/query` JSON + shared URLs are the IoT egress. Coordinate with `analytics_egress_20260714` Phase-6 e2e.
+- [x] **Task 4.1 — Reading-shaped parquet/CSV export.** *(AUDIT 2026-10-10: F11 @73f4777 — fe-api/src/export.rs:110 `classify_export_table` two-table whitelist + batched anchor join; tests `export_share_test.rs::export_readings_round_trips_scope_filtered_with_anchor_position`, `export_readings_latlon_converts_anchor_position`, `share_readings_parquet_round_trip_is_scope_filtered`; DuckDB-read live in scripts/bi-egress-verify.log.)* `export.parquet`/`export.csv` are node-snapshot-shaped (`prepare_export` rejects non-`node` tables); a readings export needs a flat reading→row mapping (+ optional anchor-position join and `coords=latlon` via the petal `Projection`) before IoT rows flow to DuckDB/PowerBI **files** — until then `/query` JSON + shared URLs are the IoT egress. Coordinate with `analytics_egress_20260714` Phase-6 e2e.
 - [ ] **Task 4.2 — FR-4 "external API" puller.** *(AUDIT 2026-10-10: STILL OPEN by design — spec marks the poll-connector catalog future work; outstanding_decisions D-6 [DEFAULTED] 'polling connectors remain future work'. Ledger: OFF_STRATEGY_OR_SPEC_ONLY.)* This track lands the minimal v1 ingestion shape (authenticated batch POST — webhook-able). A poll-based connector catalog is explicitly future work per spec.
-- [x] **Task 4.3 — Integrated sweep.** *(AUDIT 2026-10-10: F19 workspace sweep 3,245/0 @1e9be3a (fe-database/fe-query/fe-api included).)* `cargo test -p fe-database -p fe-query -p fe-api` + clippy, once, at session end per test policy.
+- [x] **Task 4.3 — Integrated sweep.** *(AUDIT 2026-10-10: F19 workspace sweep 3,245/0 @d198bd2 (fe-database/fe-query/fe-api included).)* `cargo test -p fe-database -p fe-query -p fe-api` + clippy, once, at session end per test policy.
 
 ## Cross-track notes
 
-- FR-2 is shared with `p2p_unblock_now_20260711` — landed there (9ef76a1); Phase 0 records it, nothing duplicated.
+- FR-2 is shared with `p2p_unblock_now_20260711` — landed there (82c373f); Phase 0 records it, nothing duplicated.
 - `analytics_egress_20260714`: this track deliberately reuses its guard pipeline verbatim; any guard change here (Task 3.3) keeps its tests green.
 - CRS seam: readings have no coordinates, so no CRS surface is added; anchor-join exports (Task 4.1) must reuse `fe-api/src/crs.rs` when they land.

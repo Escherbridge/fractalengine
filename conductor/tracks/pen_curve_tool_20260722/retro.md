@@ -10,7 +10,7 @@ resource: ./spec.md
 
 ## What Shipped
 
-**Phases 1-7 COMPLETE, ALL LANDED + PUSHED to origin/main** (commits 09e539b feat + ab08b68 conductor + 190188f/4d718a1/b12b646):
+**Phases 1-7 COMPLETE, ALL LANDED + PUSHED to origin/main** (commits a65d60a feat + 8b80266 conductor + 109c2d6/412763e/ba6e12f):
 
 - **Phase 1:** Per-anchor bezier data model (`handle_in`/`handle_out: Option<[f32;3]>` + `corner: CornerKind` + `smoothness: f32`) on `PathPointRow` and render twin `TimestampedRoutePoint`; extended to `TimestampedRoutePoint` fe-terrain-local mirror.
 - **Phase 2:** Anchor-aware `flatten_route` in `fe-terrain/src/mesh/curve.rs` (de Casteljau duplicate, ~15 lines); wired into `render_gpx_tracks` + `TrackPickShape` — all-corner tracks byte-identical legacy mesh.

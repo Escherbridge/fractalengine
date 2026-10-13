@@ -14,6 +14,6 @@
     "assessed": "2026-07-14"
   },
   "archived": true,
-  "notes": "2026-07-14 ALIGNMENT: VERIFY-THEN-ARCHIVE — Entity-CRUD + DbCommand-extension backbone shipped (CreateVerse/CreateNode/DeleteNode/CreatePetal/CreateFractal present). Only the onboarding-wizard UX remains — off-strategy, belongs to the user's future UX track. Archived (backbone done); residual UX deferred to the user's QA-driven UX track. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "2026-07-14 ALIGNMENT: VERIFY-THEN-ARCHIVE — Entity-CRUD + DbCommand-extension backbone shipped (CreateVerse/CreateNode/DeleteNode/CreatePetal/CreateFractal present). Only the onboarding-wizard UX remains — off-strategy, belongs to the user's future UX track. Archived (backbone done); residual UX deferred to the user's QA-driven UX track. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "archived_at": "2026-07-15T00:00:00Z"
 }

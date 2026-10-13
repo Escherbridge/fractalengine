@@ -22,7 +22,7 @@ audit was never run.
   - **Status 2026-10-11: DONE (commit pending).** `scripts/unwrap-census.sh` and its
     `.ps1` twin are committed. They run lib and bin targets only, so tests are excluded.
     docs/unwrap-audit.md is rewritten with 194 sites in 6 categories, the
-    intentional-panic register (the SurrealDB-init expect is marked REMOVED in d3c5fab),
+    intentional-panic register (the SurrealDB-init expect is marked REMOVED in 70a5ebf),
     and follow-ups F-1 to F-4. F-1 is the only site reachable from untrusted input
     (fe-plugin wasm `into_memory().unwrap()`). STALE marker removed.
 - **FR-2**: Flesh out the webview threat model and security checklist against the current architecture.

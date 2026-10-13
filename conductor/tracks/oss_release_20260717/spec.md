@@ -48,7 +48,7 @@ backfill and no dual-read". Legacy op_log rows are permanently unsigned; real si
 lives in the canonical log (fe-canonical-log), not in these sites. This register is the
 disclosure artifact for SECURITY.md and README.
 
-**Re-grep (2026-10-11, working tree on 7d40a4e):**
+**Re-grep (2026-10-11, working tree on 562f551):**
 `git grep -n '"00"\.repeat(64)' -- '*.rs'` → **22 hits in 9 files, all fe-database**:
 21 production write paths + 1 `#[cfg(test)]` fixture. (Equivalent:
 `rg -n '"00"\.repeat\(64\)' --type rust -g '!target'`.) Task 6.4 is a re-run of this
@@ -80,7 +80,7 @@ command against the table below.
 | T | [fe-database/src/op_log.rs:420](../../../fe-database/src/op_log.rs#L420) | `probe_entry` — `#[cfg(test)]` fixture, not a production path |
 
 Drift since the 2026-07-17 register (13 sites): crud.rs 0→6 (node-lifecycle spine
-c6fdf0d and later handler work), space_manager.rs 4→5, elevated_query.rs 0→1 (7d40a4e),
+c99dcf2 and later handler work), space_manager.rs 4→5, elevated_query.rs 0→1 (562f551),
 op_log.rs test fixture +1; the original sites' line numbers shifted. (A cosmetic `signature_placeholder_here` in
 `fe-hexon/src/manifest.rs` is test-fixture-only — not in the register.)
 
@@ -148,7 +148,7 @@ unsigned-op-log register and any open RBAC gaps. Attack surface justifying it: P
 
 - Fast lint job (fmt --check + clippy -D warnings, Linux-only) in
   `build-artifacts.yml` — README:79 declares the standard; CI must enforce it.
-- `release.yml` build-job timeouts bumped 120→150 to match commit 43655f9's
+- `release.yml` build-job timeouts bumped 120→150 to match commit f0d4bd3's
   cold-cache headroom (tag builds are the coldest).
 - build-artifacts workflow badge in README.
 - The intentionally-scoped 3-crate PR test sweep is either documented in the workflow

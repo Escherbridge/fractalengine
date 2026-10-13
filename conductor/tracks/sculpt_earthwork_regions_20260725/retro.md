@@ -10,18 +10,18 @@ resource: ./spec.md
 
 ## What shipped
 
-- **09e8e2e** (Wave 1 leaf): the Bevy-free `fe-terrain/src/sculpt/mod.rs`.
+- **e96fa75** (Wave 1 leaf): the Bevy-free `fe-terrain/src/sculpt/mod.rs`.
   - Footprints: brush, circle, rect and polygon.
   - Raise/Lower/Level/Smooth ops over a read-only base surface (NFR-1).
   - The `EarthworkRegion` record.
   - Heightfield cut/fill volume in real units via the scale authority.
-- **623145f** (integration):
+- **195f5cc** (integration):
   - Committed regions become addressable node rows (`node_kind = earthwork_region`, plus
     material and cut/fill).
   - The bake reports volumes back onto the node, with a changed-value DB gate.
-- **631f389**: Brush promoted to a first-class tool (`node_manager/brush_interaction.rs`),
+- **118e666**: Brush promoted to a first-class tool (`node_manager/brush_interaction.rs`),
   with the tool panels restored.
-- **cdd3291 / 4d0c12d**: T5 earthwork summary, plus D-6 units and preview.
+- **e5688ca / e76bbb9**: T5 earthwork summary, plus D-6 units and preview.
 - **This batch (2026-10-11 spatial-builder-residue, commit pending)**:
   - `sculpt_ops_are_bit_identical_on_repeat` covers every op × footprint (rect, circle,
     polygon) × `world_scale` (1.0, 0.01). Heights and cut/fill (`apply_sculpt`,
@@ -35,7 +35,7 @@ resource: ./spec.md
 ## Lessons
 
 - **A handler with no producer is not a feature.** `handle_delete_region` was correct
-  and tested from 623145f, but no UI path ever produced `SculptDeleteRegion`. The menu's
+  and tested from 195f5cc, but no UI path ever produced `SculptDeleteRegion`. The menu's
   only ground tier read `ProposalEditState`, which deliberately filters out
   material-tagged regions (the finding #1 data-loss guard). Region delete was therefore
   unreachable. For every new `UiAction`, look for a producer as well as a test of its
@@ -45,7 +45,7 @@ resource: ./spec.md
   HashMap-ordered lattice or a parallel reduction now goes red.
 - **Integration regression.** The 2026-07-26 in-app pass found terrain tools dead and the
   app aborting on an emath NaN, despite a green 2050-test sweep. Both were fixed in
-  631f389 and the NaN guard work. Run an in-app smoke after every integration wave.
+  118e666 and the NaN guard work. Run an in-app smoke after every integration wave.
 
 ## Open residuals
 

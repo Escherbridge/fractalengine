@@ -53,7 +53,7 @@ truth alignment → community/CI → metadata → ratification → preflight + p
         list is ratified, add `licenses` to the CI command and tick this item.
 - [x] 1.4 `THIRD-PARTY-LICENSES.md` names SurrealDB BUSL-1.1 + the Additional Use
       Grant terms explicitly; note the regeneration command used.
-      — AUDIT 2026-10-10: DONE d5cc361/b555082 — `THIRD-PARTY-LICENSES.md:8-34` (BUSL-1.1, Additional Use Grant DBaaS carve-out, Change Date) + `:36-47` regeneration (`cargo deny check licenses`, `cargo about generate`); surrealdb 3.0.5 still matches `Cargo.lock`.
+      — AUDIT 2026-10-10: DONE 7f0bd9a/1e986d1 — `THIRD-PARTY-LICENSES.md:8-34` (BUSL-1.1, Additional Use Grant DBaaS carve-out, Change Date) + `:36-47` regeneration (`cargo deny check licenses`, `cargo about generate`); surrealdb 3.0.5 still matches `Cargo.lock`.
 - [x] 1.5 Re-grep `"00".repeat(64)` and reconcile against the spec FR-2 register
       (13 sites, all fe-database, as of 2026-07-17).
       — AUDIT 2026-10-10: OPEN, DRIFTED — the re-grep now finds 20 sites, still all fe-database (`handlers/crud.rs` 6, `space_manager.rs` 5, `queries.rs` 3, `handlers/entity_property.rs` 2, `role_manager.rs` 2, `handlers/transform.rs` 1, `session_cache.rs` 1); the FR-2 register needs updating. D-CL24(5) fixes these legacy rows as permanently unsigned.
@@ -95,7 +95,7 @@ truth alignment → community/CI → metadata → ratification → preflight + p
       referencing the test policy (REL-07). (done 2026-07-17)
 - [x] 3.4 Fast lint job (fmt --check + clippy -D warnings, Linux-only) in
       `build-artifacts.yml` (spec FR-8). (done 2026-07-17)
-- [x] 3.5 `release.yml` build-job timeouts 120→150 (parity with 43655f9).
+- [x] 3.5 `release.yml` build-job timeouts 120→150 (parity with f0d4bd3).
       (done 2026-07-17)
 - [x] 3.6 build-artifacts badge in README; document the scoped 3-crate test sweep in
       the workflow (widening is D-66 — do not silently change scope).
@@ -140,7 +140,7 @@ truth alignment → community/CI → metadata → ratification → preflight + p
           present, but consider `include`-ing LICENSE-APACHE before a real publish.
 - [x] 4.3 Root .glb strays (`camera.glb` 14-byte placeholder, `duck.glb`,
       `info_panel.glb`) relocated under assets/ or examples/; camera.glb replaced.
-      — DONE 2026-10-11/12: moved to fractalengine/assets/samples/ (40590e9); camera.glb
+      — DONE 2026-10-11/12: moved to fractalengine/assets/samples/ (49e2de0); camera.glb
       (a saved 404 page) deleted; duck.glb (SCEA, non-OSI) replaced by CC0 Khronos
       "Cameras" as cameras.glb (2 embedded cameras — keeps the camera regression asset);
       info_panel.glb verified CC-BY-4.0 (c) 2017 Cesium and attributed in
@@ -200,7 +200,7 @@ truth alignment → community/CI → metadata → ratification → preflight + p
         - 1 is a `Cargo.lock` false positive (the `crypto_secretbox` crate name).
         - **12 are 6 real local API bearer JWTs** (EdDSA, localhost:8765, roles
           viewer/manager/editor). They sit in the tracked
-          `.claude/settings.local.json`, introduced in d3c5fab and STILL in HEAD as
+          `.claude/settings.local.json`, introduced in 70a5ebf and STILL in HEAD as
           Claude Code permission entries.
 
         The JWTs all expired on 2026-05-31 and are scoped to one local dev petal. No

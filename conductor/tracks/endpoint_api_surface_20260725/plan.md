@@ -14,7 +14,7 @@ isolated Wave-1 track (own crates).
 
 ## Phase 1: Public endpoint addressing (FR-1) [P0]
 
-- [x] Task: project T1's stable address → public URI; resolve URI→object and *(AUDIT 2026-10-10: cdd3291 — `GET /api/v1/nodes/{id}/address` + `GET /api/v1/address?uri=` (fe-api/src/endpoint.rs); fe-renderer/src/addressing.rs tests `render_uri_matches_t1_format`, `stable_across_rename_and_move`)*
+- [x] Task: project T1's stable address → public URI; resolve URI→object and *(AUDIT 2026-10-10: e5688ca — `GET /api/v1/nodes/{id}/address` + `GET /api/v1/address?uri=` (fe-api/src/endpoint.rs); fe-renderer/src/addressing.rs tests `render_uri_matches_t1_format`, `stable_across_rename_and_move`)*
       back; reconcile `fe-renderer/src/addressing.rs`; stability-across-move test.
 
 ## Phase 2: Read endpoint per object (FR-2) [P1]
@@ -32,7 +32,7 @@ isolated Wave-1 track (own crates).
 
 ## Phase 4: MCP per-endpoint CRUD (FR-4) [P1]
 
-- [x] Task: extend `fe-api/src/mcp.rs` so an MCP client can address/read/mutate/ *(AUDIT 2026-10-10: MCP `read_node`, `node_address`, `delete_node` (cascade), `promote_instance`, `update_transform` in the ToolSpec table (fe-api/src/mcp/mod.rs, F13 635b8c5); primitives-only preserved by the exact `tools_list_inventory` assertion)*
+- [x] Task: extend `fe-api/src/mcp.rs` so an MCP client can address/read/mutate/ *(AUDIT 2026-10-10: MCP `read_node`, `node_address`, `delete_node` (cascade), `promote_instance`, `update_transform` in the ToolSpec table (fe-api/src/mcp/mod.rs, F13 f65aaa2); primitives-only preserved by the exact `tools_list_inventory` assertion)*
       delete an endpoint; authz + sync-safety preserved; primitives-only
       guarantees preserved or explicitly extended.
 
@@ -47,15 +47,15 @@ isolated Wave-1 track (own crates).
       `fe-query` (filter/GIS/egress) via the generic node abstraction + type
       tags; integration test against real T2/T3 data at join time ("all stamps
       on path X", "total cut/fill in petal P").
-- [x] Task: `fe-api/AGENTS.md` + `fe-query` notes — URI scheme, read/write *(AUDIT 2026-10-10: fe-api/AGENTS.md §endpoint-surface; fe-query/src/AGENTS.md §spatial-nodes (cdd3291))*
+- [x] Task: `fe-api/AGENTS.md` + `fe-query` notes — URI scheme, read/write *(AUDIT 2026-10-10: fe-api/AGENTS.md §endpoint-surface; fe-query/src/AGENTS.md §spatial-nodes (e5688ca))*
       contract, MCP surface, auth model (N-7).
-- [ ] Task: single sweep — `clippy -D warnings`, `fmt --check`, workspace tests *(AUDIT 2026-10-10: sweep part DONE (F19 3,245/0 @1e9be3a); retro not written; in-app/endpoint verify user-gated)* **Retro written 2026-10-11 (below); only the user-gated in-app/endpoint verify remains.**
+- [ ] Task: single sweep — `clippy -D warnings`, `fmt --check`, workspace tests *(AUDIT 2026-10-10: sweep part DONE (F19 3,245/0 @d198bd2); retro not written; in-app/endpoint verify user-gated)* **Retro written 2026-10-11 (below); only the user-gated in-app/endpoint verify remains.**
       (N-6). Retro; in-app/endpoint verify user-gated.
 
 ## Retro (2026-10-11)
 
 **Landed.** Addressing, per-object read, delete/cascade/promote through T1's ops, MCP per-endpoint
-CRUD and the egress seam shipped in Wave 1 (cdd3291) and the F13/F14 mission work. The
+CRUD and the egress seam shipped in Wave 1 (e5688ca) and the F13/F14 mission work. The
 2026-10-11 completeness campaign closed the remaining FR-3/FR-6 acceptance:
 - **T5-LOCK** (batch auth-policy): a promoted stamp cannot be free-translated on any transport.
   The DB handler is authoritative; `rest.rs::stamp_translate_denied` fails fast before the

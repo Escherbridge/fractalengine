@@ -73,10 +73,10 @@ greenfield):**
 > live gap list. GeoParquet has a real writer/reader
 > (`fe-query/src/columnar/geoparquet/{mod,codec}.rs`, `analytics_egress_20260714`
 > Phase 1, 2026-07-15) with spec-legal `crs` metadata (DEC-C16, commit
-> `1ea14ba`). The BI-egress surface shipped and is **live-verified, not just
+> `bd46845`). The BI-egress surface shipped and is **live-verified, not just
 > landed**: `export.parquet`/`export.csv` (incl. the reading-shaped export,
-> F11 `2023809`), a live-DuckDB-over-httpfs e2e proof re-runnable via
-> `scripts/bi-egress-verify.ps1` (F10 `2a4026e`, 49/49 after the M4 review
+> F11 `73f4777`), a live-DuckDB-over-httpfs e2e proof re-runnable via
+> `scripts/bi-egress-verify.ps1` (F10 `7418a16`, 49/49 after the M4 review
 > hardening), and signed/shareable query URLs with a persistent share-signer
 > keystore slot (F11). Copy-paste UX landed earlier (`fe-ui/src/panels/egress_card.rs`,
 > `analytics_egress_20260714` Phase 4). IoT → queryable spatial rows landed
@@ -129,7 +129,7 @@ closed foundry + official registry + marketplace as a separate product.
   > **CORRECTION 2026-10-09 (F18 conductor reconciliation):** "replication
   > mock-backed" is now FALSE and should be struck from future copies of
   > this gap list. Real iroh-docs replication landed across M1+M2 of the
-  > prod-ready mission (F1–F4, F20–F24; commit range `f9c609a`..`0105bba`):
+  > prod-ready mission (F1–F4, F20–F24; commit range `c004a33`..`9ffd1c4`):
   > `IrohDocsReplicator` rides real `Doc::set_bytes`/`del`/`subscribe`, the
   > relay opens and applies replicas for every hosted verse with graceful
   > shutdown, and the sharded timeseries fabric + distributed query fan-out

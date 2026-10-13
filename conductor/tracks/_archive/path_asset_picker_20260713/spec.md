@@ -13,7 +13,7 @@ resource: ./metadata.json
 
 ## Vision / Why (user, 2026-07-13)
 
-The hexon-as-path-asset stamp pipeline shipped (commit `35956dd`): a track's
+The hexon-as-path-asset stamp pipeline shipped (commit `0c8f311`): a track's
 `path_asset` property drives `reconcile_path_asset`, which stamps a model
 repeatedly along a GPX path. But the assignment UX is a v1 stub —
 `fe-ui/src/panels/tool_panel.rs::render_path_asset_section` is just a raw

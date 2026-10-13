@@ -299,7 +299,7 @@ phase in `p2p_asset_streaming` (FR-7). Consumed by both the residency ledger
 ## Evidence (2026-10-11)
 
 Phase 0 evidence pack: `conductor/tracks/p2p_asset_streaming_20260718/evidence.md`
-(measured at `40590e9`, reproduction script in its appendix).
+(measured at `49e2de0`, reproduction script in its appendix).
 
 - **Risk #8 (bundle sizing) — now measured.** Corpus: 3 gis-tile-etl tilesets
   (0.8 / 1.4 / 7.3 MiB), the sample hexons, and the one installed tileset. Real

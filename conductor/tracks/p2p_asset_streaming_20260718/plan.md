@@ -38,9 +38,9 @@ Single workspace sweep at the end per standing policy.
 - [x] Task: `RelayConfig` (Default/Custom/Disabled) plumbed into
       `SyncEndpoint::new`; startup warning on EOL-bound default n0 relays (TDD:
       config parsing + warning emission)
-      — AUDIT 2026-10-10: DONE 320ebfe — `fe-sync/src/relay_config.rs:14` enum + `:100` EOL warn + `:133` `is_default_infra`; `fe-sync/src/endpoint.rs:72` `SyncEndpoint::new(secret_key, &RelayConfig)`; tests `relay_config.rs:206-276` (incl. `is_default_infra_only_for_default_variant`).
+      — AUDIT 2026-10-10: DONE 7bdcfbe — `fe-sync/src/relay_config.rs:14` enum + `:100` EOL warn + `:133` `is_default_infra`; `fe-sync/src/endpoint.rs:72` `SyncEndpoint::new(secret_key, &RelayConfig)`; tests `relay_config.rs:206-276` (incl. `is_default_infra_only_for_default_variant`).
 - [x] Task: Relay health surfaced in `SyncStatus` (TDD: status transitions)
-      — AUDIT 2026-10-10: DONE 320ebfe — `fe-sync/src/status.rs:30` `health: RelayHealth`, `:104` `SyncEvent::RelayHealthChanged` applied; startup bind + gossip-spawn outcomes only (continuous `home_relay()` watcher still `TODO(ultrapilot)` at `fe-sync/src/sync_thread.rs:586`).
+      — AUDIT 2026-10-10: DONE 7bdcfbe — `fe-sync/src/status.rs:30` `health: RelayHealth`, `:104` `SyncEvent::RelayHealthChanged` applied; startup bind + gossip-spawn outcomes only (continuous `home_relay()` watcher still `TODO(ultrapilot)` at `fe-sync/src/sync_thread.rs:586`).
 - [ ] Verification: headless run shows relay mode + health; sweep-deferred [checkpoint]
       — AUDIT 2026-10-10: OPEN — no recorded headless run showing relay mode/health.
 
@@ -71,7 +71,7 @@ Single workspace sweep at the end per standing policy.
 - [ ] Task: Distance-ranked ledger resource replacing `mesh_budget.exceeded`
       boolean; first system in VerseManagerPlugin chain; hysteresis (TDD: pure
       ledger math, ring membership, hysteresis windows)
-      — AUDIT 2026-10-10: PARTIAL — soft distance-ranked allowance with hysteresis taper landed 320ebfe (`fe-ui/src/verse_manager/spawn.rs:34` `distance_ranked_allowance`, tests `spawn.rs:321-338`; called from `petal_respawn.rs:98`, `primitive_materialize.rs:149`, `path_asset_materialize.rs:424`), but it still sits behind the `mesh_budget.exceeded` boolean and no pointer-set `{(hexon_uri, bundle_hash)}` ledger resource exists (D-74 shape).
+      — AUDIT 2026-10-10: PARTIAL — soft distance-ranked allowance with hysteresis taper landed 7bdcfbe (`fe-ui/src/verse_manager/spawn.rs:34` `distance_ranked_allowance`, tests `spawn.rs:321-338`; called from `petal_respawn.rs:98`, `primitive_materialize.rs:149`, `path_asset_materialize.rs:424`), but it still sits behind the `mesh_budget.exceeded` boolean and no pointer-set `{(hexon_uri, bundle_hash)}` ledger resource exists (D-74 shape).
 - [ ] Task: Lazy `HexonTileSource` (offset-index header phase, on-demand member
       reads); async `fetch_tile` dispatch; double-residency dedup via Arc (TDD)
 - [ ] Task: Despawn-on-exit-ring eviction wired to the ledger (TDD)

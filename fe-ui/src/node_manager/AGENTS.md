@@ -194,7 +194,7 @@ Pen an Illustrator-style per-anchor cubic-bezier curve tool.
   Because `PathPlace` outranks
   `NodePick`, a Pen-mode empty press wins the frame and node-pick yields;
   in Select mode path-point declines to claim `PathPlace`, so `NodePick`
-  gets the click. This structurally reproduces the ab9c53c fix (node
+  gets the click. This structurally reproduces the 4ab5c4b fix (node
   selection wins in Select mode) — see §input-router.
 - **Two append actions.** A below-threshold Corner click still emits the
   legacy `UiAction::PathAppendPoint` unchanged; an anchor that carries
@@ -631,7 +631,7 @@ ownership instead of racing ad-hoc booleans (replaces the old
   it succeeds iff `available && owner.is_none()`. A consumer that declines to
   claim (e.g. a gimbal press that misses every axis, or path-point in Select
   mode) leaves the frame for the next consumer down the chain.
-- **ab9c53c fix, structurally.** In Select mode path-point does NOT claim
+- **4ab5c4b fix, structurally.** In Select mode path-point does NOT claim
   `PathPlace` on an empty click, so `NodePick` wins (model selection). In Pen
   mode path-point claims `PathPlace`, which outranks `NodePick`, so placement
   wins. No per-system flag bookkeeping needed.
@@ -679,7 +679,7 @@ drop_selection_of_closed_track):
   plus the FR-2 eager track-list load). Registered in `mod.rs`'s `.chain()` as
   `pointer::open_track_on_select`, still IMMEDIATELY after `handle_viewport_click`
   so it reacts to the same-frame `NodeManager.selected` change (FR-2, commits
-  b12b646/190188f) — the chain position is load-bearing and was NOT reordered.
+  ba6e12f/109c2d6) — the chain position is load-bearing and was NOT reordered.
 - **No-bypass claim routing.** The consumer systems' CLAIM/select decisions now
   route through `dispatch::resolve_operation` (the FR-2 table) instead of
   hardcoding the verb: `handle_viewport_click` (`Node`/`Empty` →

@@ -59,7 +59,7 @@ is rejected by the schema and the whole statement fails.
 
 Do NOT route these inserts through `fe_query::InsertBuilder` + `exec_query`:
 the generic builder renders `CREATE {table} CONTENT $p0` and has no way to
-emit a cast. A 2026-05 refactor (commit `059f381`) did exactly that and every
+emit a cast. A 2026-05 refactor (commit `fb3c2f0`) did exactly that and every
 node/petal creation silently failed for weeks — "silently" because
 `exec_query` also didn't call `.check()`, so statement-level errors were
 swallowed. Both defects are fixed: the three geometry insert paths in

@@ -9,11 +9,11 @@
   "depends_on": [],
   "blocks": [],
   "archived": true,
-  "notes": "user report 2026-07-11: 'downloading assets UI is there but the button does not work — no glb download box'. Prior feature landed in 3a97fc1/19a2df2. Part of GIS-hardening ultrapilot run (W2). | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "user report 2026-07-11: 'downloading assets UI is there but the button does not work — no glb download box'. Prior feature landed in fd6ee3d/0cd671e. Part of GIS-hardening ultrapilot run (W2). | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "alignment": {
     "verdict": "PLATFORM-KEEP",
     "priority": "P1",
-    "rationale": "Live download-button bug on the 3D base; all four FRs implemented and tested (FR-2 rfd save dialog in asset_bridge.rs prompt_and_copy, FR-4 has_asset/no-cached-path error) — landed in 1ea62df; in-app smoke verification remains user-gated.",
+    "rationale": "Live download-button bug on the 3D base; all four FRs implemented and tested (FR-2 rfd save dialog in asset_bridge.rs prompt_and_copy, FR-4 has_asset/no-cached-path error) — landed in 2491704; in-app smoke verification remains user-gated.",
     "assessed": "2026-07-14"
   },
   "archived_at": "2026-07-15T00:00:00Z"

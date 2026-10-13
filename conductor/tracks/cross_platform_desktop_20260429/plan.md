@@ -48,7 +48,7 @@ linker = "rust-lld.exe"
 
 ---
 
-### Task 1.2 — Verify Linux x86_64 compile [x] (CI wired 2026-07-15; first run failed on missing glib-2.0 system dep — workflow deps fixed) — AUDIT 2026-10-10: DONE — Linux build+test job green on build-artifacts runs 29687337676 (2026-07-19) and 38095577669 (2026-10-10, e96c972).
+### Task 1.2 — Verify Linux x86_64 compile [x] (CI wired 2026-07-15; first run failed on missing glib-2.0 system dep — workflow deps fixed) — AUDIT 2026-10-10: DONE — Linux build+test job green on build-artifacts runs 29687337676 (2026-07-19) and 38095577669 (2026-10-10, a064144).
 
 On an Ubuntu system (or CI runner) with system deps installed:
 
@@ -67,7 +67,7 @@ Fix any compile errors. Expected issues:
 
 ---
 
-### Task 1.3 — Verify macOS aarch64 compile [x] (macOS CI job added to build-artifacts.yml 2026-07-15) — AUDIT 2026-10-10: compiled + tested green on run 29687337676 (2026-07-19); platform then DESCOPED by owner direction in 6aaeabd (2026-08-20, "ci: remove macOS from both workflows") — no macOS coverage remains.
+### Task 1.3 — Verify macOS aarch64 compile [x] (macOS CI job added to build-artifacts.yml 2026-07-15) — AUDIT 2026-10-10: compiled + tested green on run 29687337676 (2026-07-19); platform then DESCOPED by owner direction in c272246 (2026-08-20, "ci: remove macOS from both workflows") — no macOS coverage remains.
 
 On a macOS host with Xcode installed:
 
@@ -314,7 +314,7 @@ cargo build --release -p fractalengine
 
 ---
 
-### Task 3.2 — Full workspace test on all platforms [~] (Windows verified; Linux/macOS scoped sweep now in CI with FE_KEYSTORE_BACKEND=env) — AUDIT 2026-10-10: PARTIAL — Windows full workspace 3,245 passed (RUNBOOK §2, 2026-10-10); Linux CI runs only the scoped 3-crate sweep (`build-artifacts.yml:118`, green on 38095577669); macOS descoped (6aaeabd). Linux `--workspace` never run.
+### Task 3.2 — Full workspace test on all platforms [~] (Windows verified; Linux/macOS scoped sweep now in CI with FE_KEYSTORE_BACKEND=env) — AUDIT 2026-10-10: PARTIAL — Windows full workspace 3,245 passed (RUNBOOK §2, 2026-10-10); Linux CI runs only the scoped 3-crate sweep (`build-artifacts.yml:118`, green on 38095577669); macOS descoped (c272246). Linux `--workspace` never run.
 
 Run `cargo test --workspace` on:
 - Ubuntu latest (x86_64)

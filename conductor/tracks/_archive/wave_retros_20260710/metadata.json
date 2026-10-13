@@ -6,5 +6,5 @@
   "status": "completed",
   "archived": true,
   "archived_at": "2026-07-10T00:00:00Z",
-  "notes": "consolidated rather than per-wave (see spec.md rationale); precedent is code_review_retro_20260701. UPDATED 2026-07-11: appended 'Ultrapilot Run — Analytics & Extension Platform' section covering the 5-worker+integration landing (commits 3a97fc1, 0ddb539, c811856, 7df071c, 8060af4, 19a2df2) and 3 incidents (geometry-cast regression family, concurrent-compile rustc OOM, Rhai call_fn const visibility)."
+  "notes": "consolidated rather than per-wave (see spec.md rationale); precedent is code_review_retro_20260701. UPDATED 2026-07-11: appended 'Ultrapilot Run — Analytics & Extension Platform' section covering the 5-worker+integration landing (commits fd6ee3d, 2927a24, ab29463, f678dbe, 9f1bc05, 0cd671e) and 3 incidents (geometry-cast regression family, concurrent-compile rustc OOM, Rhai call_fn const visibility)."
 }

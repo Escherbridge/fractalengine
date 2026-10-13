@@ -13,7 +13,7 @@ resource: ./spec.md
   `materialize_cached_primitives` + third `spawn_branch` in `petal_respawn.rs`; FR-2 live
   reconcile in place).
 - **P2 — IMPLEMENTED** (FR-3 loader + FR-4 `TextureRegistry` landed).
-- **P3 — SUPERSEDED** — GPX rip-walls landed separately in commit `1b39af3`; path→wall
+- **P3 — SUPERSEDED** — GPX rip-walls landed separately in commit `53a8826`; path→wall
   extrusion here is redundant. Do not execute.
 - **P4 — DEFERRED** — blocked on the placeholder plugin transaction handlers
   (`fe-plugin/src/lib.rs:294` stub); FR-7/FR-9 park with it.
@@ -77,7 +77,7 @@ cargo test -j 2 --no-fail-fast -p fe-query -p fe-database -p fe-terrain -F fe-te
   material. Test: a primitive with a `texture_ref` renders with the loaded material.
 - `[checkpoint marker]`
 
-## Phase 3 — Path → wall (FR-5, FR-6) — SUPERSEDED by GPX rip-walls (commit `1b39af3`)
+## Phase 3 — Path → wall (FR-5, FR-6) — SUPERSEDED by GPX rip-walls (commit `53a8826`)
 
 - **P3.1** Wall mesh builder: extrude a `gpx_points` polyline into a quad-strip wall of a given
   height (`bake_splat_mesh` at `splat/render.rs:313` is the raw-mesh reference). Pure function,

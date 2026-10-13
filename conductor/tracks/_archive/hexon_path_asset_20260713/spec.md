@@ -76,7 +76,7 @@ bundle into the parallel wave (depends on not-yet-existing APIs).
 
 ## As-built notes (reconciled 2026-07-15)
 
-- **FR-1..FR-4 shipped** (commits 35956dd, aad5542, 0be9628). The shipped
+- **FR-1..FR-4 shipped** (commits 0c8f311, e40d04f, 601f995). The shipped
   render path loads scenes via `asset_server.load("{path}#Scene0")` in
   `fe-ui/src/verse_manager/spawn.rs` — it does **not** go through
   `fe-renderer::load_to_bevy`, which remains the placeholder stub

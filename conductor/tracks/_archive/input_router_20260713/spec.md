@@ -28,7 +28,7 @@ Every new click-consumer forces every *existing* system to remember another
 flag to check. This already caused a real regression: adding the pen tool
 initially left `path_edit_capturing` un-gated, so pen-mode clicks stole
 model-selection clicks in `Select` mode. It was fixed reactively at commit
-`ab9c53c` by gating `path_edit_capturing` on `Tool::Pen` inside
+`4ab5c4b` by gating `path_edit_capturing` on `Tool::Pen` inside
 `path_point_interaction.rs` (see line ~145-146 and the `Tool::Pen` check at
 ~222-224). That fix is correct but narrow — it patches one collision, not the
 pattern. The next click-consumer (glb mesh picking, already queued as
@@ -88,7 +88,7 @@ against every other system.
   viewport-rect gating ~43-45.
 - `fe-ui/src/node_manager/path_point_interaction.rs` — `handle_path_point_interaction`;
   sets `path_edit_capturing` ~119, ~137, ~145-146; `Tool::Pen` gating fix
-  (commit `ab9c53c`) ~222-224.
+  (commit `4ab5c4b`) ~222-224.
 - `fe-ui/src/node_manager/mod.rs` — `NodeManager.path_edit_capturing` field
   ~42-46; `NodeManager::is_dragging` ~79-80; system registration + `.chain()`
   order encoding the current implicit priority ~116-133.

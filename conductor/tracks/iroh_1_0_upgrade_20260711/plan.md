@@ -13,7 +13,7 @@ resource: ./spec.md
 Ported 2026-10-11 as three serial slices: (a) manifests plus the type-only crates,
 (b) fe-sync core plus SYNC-RELAYWATCH, (c) workspace fallout plus docs. The slices did
 not build or test themselves; the orchestrator runs one serial test sweep at the end.
-Everything below is **uncommitted** in the working tree on `main` (base `4b30d17`).
+Everything below is **uncommitted** in the working tree on `main` (base `7a74214`).
 
 Pinned stack: iroh **1.3** · iroh-docs **0.101** · iroh-gossip **0.101** · iroh-blobs
 **0.103.1** (0.103.0 is yanked) · noq-proto **1.3** (replaces iroh-quinn-proto 0.13) ·

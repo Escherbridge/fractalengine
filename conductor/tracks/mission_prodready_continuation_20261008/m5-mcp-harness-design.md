@@ -7,7 +7,7 @@ timestamp: 2026-10-09T10:30:00Z
 
 # M5 — MCP + API integration: implementation map
 
-Recon (sonnet explore, 2026-10-09). Line cites at recon time (post-2023809).
+Recon (sonnet explore, 2026-10-09). Line cites at recon time (post-73f4777).
 
 ## Load-bearing facts
 

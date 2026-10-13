@@ -55,7 +55,7 @@ is `#[non_exhaustive]`, so no crate outside `fe-canonical-log` can build one by 
 (a `compile_fail` doctest on the type pins this; this crate's tests now mint theirs from a
 real signed envelope via `verify_from_bytes`). But the unverified projection
 `fe_canonical_log::materialize::verified_envelope_meta_from(&CompleteEnvelope, op_id)` is
-still `pub` (RUNBOOK a31c403 §10a residual 5, `CDL-R-ACCEPTED`): any caller holding a decoded-but-unadmitted envelope can mint
+still `pub` (RUNBOOK 1694d07 §10a residual 5, `CDL-R-ACCEPTED`): any caller holding a decoded-but-unadmitted envelope can mint
 one with a chosen `op_id` and call `append_admitted` with it. The seal narrows the forging
 door; it does not close it.
 

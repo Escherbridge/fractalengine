@@ -8,5 +8,5 @@
   "blocks": [],
   "archived": true,
   "archived_at": "2026-07-11T00:00:00Z",
-  "notes": "verified: commit 66395c5 (21 tests) + user in-app confirmation 2026-07-11 with region-overview screenshot. Follow-on rendering issues it surfaced are tracked in terrain_lod_hardening_20260711."
+  "notes": "verified: commit a11ad4c (21 tests) + user in-app confirmation 2026-07-11 with region-overview screenshot. Follow-on rendering issues it surfaced are tracked in terrain_lod_hardening_20260711."
 }

@@ -6,7 +6,7 @@
   "status": "done",
   "execution_wave": 4,
   "wave_rationale": "Backlog refactor; no blocking deps.",
-  "notes": "verified 2026-07-14: apply_db_results now ~620 lines with ~30 match arms, unrefactored; lives in fe-ui/src/verse_manager/db_results.rs (verse_manager.rs was split into a module directory) | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "verified 2026-07-14: apply_db_results now ~620 lines with ~30 match arms, unrefactored; lives in fe-ui/src/verse_manager/db_results.rs (verse_manager.rs was split into a module directory) | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P3",

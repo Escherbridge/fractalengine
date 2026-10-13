@@ -31,11 +31,11 @@ Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 5 `pending` �
 > against the tree. **Status corrections:** `node_lifecycle_addressing` pending→done;
 > `endpoint_api_surface` pending→in_progress; `contextual_controls`, `shell_ux_sidebar`,
 > `stamped_asset_nodes`, `sculpt_earthwork_regions` pending→implemented_pending_inapp_verify
-> (Spatial Builder Wave 0/1 landed c6fdf0d→631f389, the board still said "NOT started");
+> (Spatial Builder Wave 0/1 landed c99dcf2→118e666, the board still said "NOT started");
 > `pen_curve_tool`, `ui_shell_architecture`, `ui_semantics_unification`
 > →implemented_pending_inapp_verify; `inspector_settings`, `outstanding_decisions`
 > →blocked_on_ratification; `light_box`, `profile_manager` →off_strategy;
-> `canonical_data_log` Wave 3 recorded as landed (b820b67 + 3R fa0d9d9/d01b098).
+> `canonical_data_log` Wave 3 recorded as landed (23081af + 3R 2f45e3f/04cefe8).
 > **Consolidator un-ticks** (task's own acceptance test absent): `mcp_scene_primitives`
 > 2.2 + 5.2 (track done→in_progress), `sculpt_earthwork_regions` determinism test,
 > `stamped_asset_nodes` viewport-gimbal translate lock. **JSON repaired:**
@@ -50,10 +50,10 @@ Open = 7 `implemented_pending_inapp_verify` · 11 `in_progress` · 5 `pending` �
 Closed with evidence; move to `_archive/` with a retro when convenient.
 
 - [x] **mission_prodready_continuation** — factory mission F9–F19, A20–A33 validated;
-  pushed at `1e9be3a`; deferred register ledgered —
+  pushed at `d198bd2`; deferred register ledgered —
   [./tracks/mission_prodready_continuation_20261008/](./tracks/mission_prodready_continuation_20261008/)
 - [x] **node_lifecycle_addressing** — Spatial Builder SPINE: tombstone/cascade/reflow,
-  `fe://` addresses, lazy promotion, `CallerAuth::Local` (c6fdf0d, aeba832; live P2P
+  `fe://` addresses, lazy promotion, `CallerAuth::Local` (c99dcf2, 2377089; live P2P
   tombstone merge via `two_peer_tombstone_sync`). Residuals: cascade not one txn
   (T1-TXN), tombstone GC (T1-GC) —
   [./tracks/node_lifecycle_addressing_20260725/](./tracks/node_lifecycle_addressing_20260725/)
@@ -62,10 +62,10 @@ Closed with evidence; move to `_archive/` with a retro when convenient.
   [docs/bi-egress.md](../docs/bi-egress.md) —
   [./tracks/analytics_egress_20260714/](./tracks/analytics_egress_20260714/)
 - [x] **iot_spatial_reporting** — `iot_reading` rows, ingest endpoint, timeseries builder,
-  readings export (F11 2023809). Poll-connector catalog stays future work (D-6) —
+  readings export (F11 73f4777). Poll-connector catalog stays future work (D-6) —
   [./tracks/iot_spatial_reporting_20260714/](./tracks/iot_spatial_reporting_20260714/)
 - [x] **api_mcp_integration_tests** — ApiHarness + api/mcp suites, strict `wart_*`
-  denials (635b8c5). One non-blocking item: endpoint inventory artifact (API-INV-1) —
+  denials (f65aaa2). One non-blocking item: endpoint inventory artifact (API-INV-1) —
   [./tracks/api_mcp_integration_tests_20260717/](./tracks/api_mcp_integration_tests_20260717/)
 - [x] **p2p_mycelium_completion** — real iroh-docs 0.35 replication (F1–F4, F20–F23);
   phases 2/3/5 superseded, per-petal topics superseded by SPEC-3. Residual: relay
@@ -84,8 +84,8 @@ Closed with evidence; move to `_archive/` with a retro when convenient.
 Anchor decision record:
 [./decisions/spatial-builder-program-20260725.md](./decisions/spatial-builder-program-20260725.md)
 (thesis, D-A1..A11, NFR pool N-1..N-10, file partition). **Wave 0 + Wave 1 landed**
-(leaves c6fdf0d→cdd3291, serial integration 623145f, tool restore 631f389). The
-2026-07-26 in-app pass was PARTIAL FAIL; the regressions were fixed (631f389, 4d0c12d)
+(leaves c99dcf2→e5688ca, serial integration 195f5cc, tool restore 118e666). The
+2026-07-26 in-app pass was PARTIAL FAIL; the regressions were fixed (118e666, e76bbb9)
 but **no in-app re-verify has happened** (SB-INAPP-VERIFY, user-gated). No track has a
 retro yet (SB-RETROS). The spine (`node_lifecycle_addressing`) is done — see above.
 
@@ -93,7 +93,7 @@ retro yet (SB-RETROS). The spine (`node_lifecycle_addressing`) is done — see a
 
 _Link: [./tracks/shell_ux_sidebar_20260725/](./tracks/shell_ux_sidebar_20260725/) · implemented_pending_inapp_verify · 7 done / 2 open_
 
-FR-1/2/3 landed in b3f4df4: sticky `left_visibility` + Ctrl+B, Settings and Maps are
+FR-1/2/3 landed in ff33d24: sticky `left_visibility` + Ctrl+B, Settings and Maps are
 right-sidebar sections, the floating Settings window is deleted. Open: the fe-ui
 directory docs still describe AutoCollapse and the deleted window (SHELL-STALE-DOCS);
 retro; in-app verify.
@@ -103,7 +103,7 @@ retro; in-app verify.
 _Link: [./tracks/stamped_asset_nodes_20260725/](./tracks/stamped_asset_nodes_20260725/) · implemented_pending_inapp_verify · 9 done / 3 open_
 
 Arc-length curve sampling + true tangent, lazy promotion on select, sparse scale/rotate
-overrides, instancing data layer + 10k pick bench, reflow (56ccc3b, 623145f, 631f389).
+overrides, instancing data layer + 10k pick bench, reflow (9106d29, 195f5cc, 118e666).
 Open: N-9 row-count test; the **viewport Move gimbal still drags a bridged stamp**
 (un-ticked 2026-10-10 — `gimbal_interaction.rs:267` treats Stamp as Node;
 STAMP-GIMBAL-TRANSLATE-LOCK); retro/in-app.
@@ -113,7 +113,7 @@ STAMP-GIMBAL-TRANSLATE-LOCK); retro/in-app.
 _Link: [./tracks/sculpt_earthwork_regions_20260725/](./tracks/sculpt_earthwork_regions_20260725/) · implemented_pending_inapp_verify · 9 done / 2 open_
 
 Footprints, raise/lower/level/smooth, region nodes with real-unit cut/fill, report +
-REST summary (09e8e2e, 623145f, 631f389). Open: determinism test (un-ticked
+REST summary (e96fa75, 195f5cc, 118e666). Open: determinism test (un-ticked
 2026-10-10); retro/in-app. Gap: `SculptDeleteRegion` has a handler but **no UI
 producer**, so a region cannot be deleted from the app (SB-EARTHWORK-DELETE).
 
@@ -122,14 +122,14 @@ producer**, so a region cannot be deleted from the app (SB-EARTHWORK-DELETE).
 _Link: [./tracks/contextual_controls_20260725/](./tracks/contextual_controls_20260725/) · implemented_pending_inapp_verify · 8 done / 1 open_
 
 `menu_for(HitTarget)` table, Delete/cascade, rename/duplicate/promote, copy-API/report
-via the T5 seam (4f765fe, 623145f, D16 classifier 4d0c12d). Open: retro + in-app.
+via the T5 seam (25d908c, 195f5cc, D16 classifier e76bbb9). Open: retro + in-app.
 
 ### [~] endpoint_api_surface — every object a read/write API endpoint (+ MCP)
 
 _Link: [./tracks/endpoint_api_surface_20260725/](./tracks/endpoint_api_surface_20260725/) · in_progress · 5 done / 4 open_
 
 Addresses (`/nodes/{id}/address`, `/address?uri=`), per-object GET, DELETE/cascade,
-promote, MCP `read_node`/`node_address`, egress strings (cdd3291, 623145f). Open:
+promote, MCP `read_node`/`node_address`, egress strings (e5688ca, 195f5cc). Open:
 stamp position-lock not enforced on REST/MCP `update_transform` (T5-LOCK); UI-vs-API
 op-log parity + earthwork summary on real rows (T5-PARITY); trigger-op vocabulary
 needs ratification (T5-TRIGGER); retro.
@@ -142,8 +142,8 @@ needs ratification (T5-TRIGGER); retro.
 
 _Link: [./tracks/ui_shell_architecture_20260724/](./tracks/ui_shell_architecture_20260724/) · implemented_pending_inapp_verify · 23 done / 6 open_
 
-Phases 0–6 landed and pushed (a731369..dbe2e39, efe2126). The FR-1 terrain crash was
-closed out of band (190188f proposals-only doc shape + 631f389 smart_aim NaN from
+Phases 0–6 landed and pushed (b953140..68e734d, 7b73c92). The FR-1 terrain crash was
+closed out of band (109c2d6 proposals-only doc shape + 118e666 smart_aim NaN from
 `f32::MAX` DragValue ranges). All 6 open boxes are user-gated in-app checkpoints.
 Small doable follow-up: debounced warning on a silent path-pick no-op
 (UISHELL-SILENT-PICK-WARN). `panic = "abort"` kept by ratification.
@@ -152,7 +152,7 @@ Small doable follow-up: debounced warning on a silent path-pick no-op
 
 _Link: [./tracks/ui_semantics_unification_20260808/](./tracks/ui_semantics_unification_20260808/) · implemented_pending_inapp_verify_
 
-All phases committed in 4d0c12d (mislabelled as the visibility-resolver commit; 62
+All phases committed in e76bbb9 (mislabelled as the visibility-resolver commit; 62
 files). Open: in-app verify; record the D-1..D-18 rulings in spec §4
 (UISEM-RULINGS-RECORD); optional `f32::MAX`-in-`.range(` lint (needs a yes).
 
@@ -160,7 +160,7 @@ files). Open: in-app verify; record the D-1..D-18 rulings in spec §4
 
 _Link: [./tracks/hierarchy_visibility_groups_20260808/](./tracks/hierarchy_visibility_groups_20260808/) · in_progress_
 
-All 18 decisions ratified 2026-08-08. Phases 0–1 + part of Phase 2 landed in 4d0c12d
+All 18 decisions ratified 2026-08-08. Phases 0–1 + part of Phase 2 landed in e76bbb9
 (resolver, eyes, chip, viewport-pick + camera filters, force-deselect). Phases 2–6 are
 agent-doable: remaining pickers + H/Shift+H/Alt+H + Isolate menu (VIS-PH2), persisted
 `view.state`/`view.groups` (VIS-PH3), petal group registry + persisted fractal/verse
@@ -186,7 +186,7 @@ Not started. Design user-ratified 2026-07-16 (input layer only); its prerequisit
 
 _Link: [./tracks/pen_curve_tool_20260722/](./tracks/pen_curve_tool_20260722/) · implemented_pending_inapp_verify · 31 done_
 
-Phases 1–7 landed and pushed (34a5160 Ph1-2, Ph3-6 + retro 2026-07-24). The 2026-07-24
+Phases 1–7 landed and pushed (8c45028 Ph1-2, Ph3-6 + retro 2026-07-24). The 2026-07-24
 point-selection blocker was fixed by ui_shell FR-2. Only the user's in-app re-verify
 and archival remain.
 
@@ -201,7 +201,7 @@ BI egress (the headline) is **done** — see above. Remaining analytics work:
 _Link: [./tracks/hexon_scale_orchestration_20260712/](./tracks/hexon_scale_orchestration_20260712/) · in_progress · 17 done / 7 open_
 
 Phases 1–4 done (scale plumbing, `RulerPlugin` scale bar); GPX path-length readout done
-(906d9cc). Open: tape/bearing + area tools (HS-P5), adaptive metric grid (HS-P6-GRID),
+(0082c64). Open: tape/bearing + area tools (HS-P5), adaptive metric grid (HS-P6-GRID),
 dimension callouts (blocked on D-11), user in-app check. The D-10 gate (egress GA) is met.
 
 ### [ ] map_scale_authority — map-authoritative scale for placement + UI numbers
@@ -217,7 +217,7 @@ P5 — P3 also closes the ux_qa scale-authority split); Phase 4 snap-on-place wa
 _Link: [./tracks/auth_policy_pattern_20260710/](./tracks/auth_policy_pattern_20260710/) · in_progress · 13 done / 3 open_
 
 fe-policy crate, fe-database/fe-hexon routing, hexon HTTP routes through the engine
-(916a3ae), inbound peer admission at the DB thread (F3, supersedes the sync-thread
+(5199352), inbound peer admission at the DB thread (F3, supersedes the sync-thread
 `PolicyHandle` flip). Open: fe-api `auth.rs` still bypasses the engine (AP-3.1);
 `TokenScopePolicy` + `OwnershipPolicy` absent (AP-3.4). Task 3.5 (causal-DAG
 membership) is stale — superseded by the canonical data log (D-CL24(5)).
@@ -231,8 +231,8 @@ membership) is stale — superseded by the canonical data log (D-CL24(5)).
 _Link: [./tracks/mcp_scene_primitives_20260716/](./tracks/mcp_scene_primitives_20260716/) · in_progress (was done) · 23 done / 3 open_
 
 All functionality shipped: CreateAsset/CreateNodeWithAsset, multipart upload, ToolSpec
-dispatcher, 29 tools with exact inventory test, RBAC negatives (F13 635b8c5, F14,
-5b06795, 9cbdea6). Reopened 2026-10-10 for owed tests: REST upload 201/403/503
+dispatcher, 29 tools with exact inventory test, RBAC negatives (F13 f65aaa2, F14,
+79e7ac9, 94be5b6). Reopened 2026-10-10 for owed tests: REST upload 201/403/503
 (MCP-TEST-UPLOAD), one chained FR-8 loop (MCP-TEST-LOOP), plus REST `create_node`
 with `asset_id`/rotation/scale (MCP-2.4).
 
@@ -261,7 +261,7 @@ Fully ratified (user directives 2026-07-16) and agent-doable in order HU-P1→P6
 
 _Link: [./tracks/p2p_asset_streaming_20260718/](./tracks/p2p_asset_streaming_20260718/) · in_progress · 8 done / 24 open · D-73…D-78 ratified_
 
-Done: Phase-1 `RelayConfig` + relay health with the EOL warning (320ebfe). Partial:
+Done: Phase-1 `RelayConfig` + relay health with the EOL warning (7bdcfbe). Partial:
 soft residency allowance (no ledger), settings surface (no persistence, two knobs).
 Open: evidence pack (PAS-P0), headless relay verification (PAS-P1V), chunk transport
 (`handle_request_chunk` still emits `ChunkFailed`, PAS-P3), residency ledger + lazy
@@ -303,7 +303,7 @@ preflight; user-gated: vulnerability reporting toggle, publishing gate, visibili
 _Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/) · in_progress · 9 done / 1 open_
 
 Only task 2.7 remains: the first `v*` tag run (user-gated). Its artifact checklist must
-be re-derived after macOS removal (6aaeabd): Linux x64, Windows x64, Windows ARM64,
+be re-derived after macOS removal (c272246): Linux x64, Windows x64, Windows ARM64,
 musl relay ×2, GHCR image. Latest main CI 38095577669 is fully green.
 
 ### [~] cross_platform_desktop — Linux / Windows-ARM64 builds
@@ -311,7 +311,7 @@ musl relay ×2, GHCR image. Latest main CI 38095577669 is fully green.
 _Link: [./tracks/cross_platform_desktop_20260429/](./tracks/cross_platform_desktop_20260429/) · in_progress · 12 done / 2 open_
 
 Linux compile green (29687337676, 38095577669); macOS compiled once then descoped by the
-owner (6aaeabd). Open: Windows ARM64 (same tag run as release_ci 2.7), Linux
+owner (c272246). Open: Windows ARM64 (same tag run as release_ci 2.7), Linux
 `--workspace` tests (tied to D-66 CI scope), manual launch smoke test.
 
 ---
@@ -336,7 +336,7 @@ Their signing / HashSeq / log-first premises are now realized in-core by
 ## Backlog / deferred
 
 - [~] **thorns_shields** — security hardening; fuzz targets + threat model landed
-  (d5cc361). Open: unwrap/expect census script + rewritten audit (TS-FR1), fuzz CI job
+  (7f0bd9a). Open: unwrap/expect census script + rewritten audit (TS-FR1), fuzz CI job
   (TS-FR3); two webview v2 gaps await a v1/v2 call (TS-FR2) —
   [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
 - [ ] **inspector_settings** — blocked_on_ratification: FR-1/FR-2 shipped; FR-3
@@ -407,10 +407,10 @@ One line per batch; full detail lives in each folder under
   hexon_unification)
 - **2026-07-24 — pruning-pass batch** (5 folders, each with its own
   [`_archive/<id>/retro.md`](./tracks/_archive/)): runtime_instance_guardrails
-  (done — GPU-OOM root cause fixed @ 46e19de, FR-6 delivered cross-track @
-  320ebfe), terrain_editor_overhaul (done — FR-1..6 @ 320ebfe + regression
-  fixes @ f223bfa; viewport point-selection defect TRANSFERRED to
+  (done — GPU-OOM root cause fixed @ fa55be4, FR-6 delivered cross-track @
+  7bdcfbe), terrain_editor_overhaul (done — FR-1..6 @ 7bdcfbe + regression
+  fixes @ 06abf7f; viewport point-selection defect TRANSFERRED to
   ui_shell_architecture_20260724), tool_inspector_ux (superseded — Phase 1
-  delivered @ f223bfa; sidebar→tooltip, Phases 2-6 subsumed),
-  ux_interaction_hardening (superseded — FR-5 shipped @ 320ebfe; FR-1..4
+  delivered @ 06abf7f; sidebar→tooltip, Phases 2-6 subsumed),
+  ux_interaction_hardening (superseded — FR-5 shipped @ 7bdcfbe; FR-1..4
   absorbed), drag_drop_placement (superseded — spec-only on a void base)

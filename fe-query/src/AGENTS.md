@@ -52,7 +52,7 @@ whole-GeoJSON bind parameter) are left in place for genuinely-geographic
 columns should one ever exist, but they are wrong for `node.position` for
 both reasons above — the CRS mismatch, and the opaque-GeoJSON-parameter
 pattern that `fe-database/src/AGENTS.md` §geometry-inserts warns against
-(the commit `059f381` defect family). This CRS mismatch is also why the
+(the commit `fb3c2f0` defect family). This CRS mismatch is also why the
 builders are hand-written strings returning `BuiltQuery` rather than
 `QueryBuilder` compositions: the fluent `Filter` API has no way to express
 component-wise arithmetic on a geometry column.

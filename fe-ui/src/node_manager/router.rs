@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn node_pick_wins_when_higher_priorities_dont_claim() {
         // Select-mode empty click: gimbal + path-point decline to claim, so the
-        // lowest-priority NodePick gets the frame (reproduces the ab9c53c fix).
+        // lowest-priority NodePick gets the frame (reproduces the 4ab5c4b fix).
         let mut arb = available_arbiter();
         assert!(arb.claim(ClickPriority::NodePick));
         assert!(arb.is_owner(ClickPriority::NodePick));

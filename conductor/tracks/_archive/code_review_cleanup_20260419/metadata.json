@@ -6,7 +6,7 @@
   "status": "done",
   "execution_wave": 4,
   "wave_rationale": "P0 SSRF fix already done; remaining items are backlog cleanup.",
-  "notes": "2026-07-15: all FRs implemented (FR-3 docs, FR-8 button removed, FR-9 field removed, FR-10 tracing everywhere, FR-11 node_options clone removed / node_manager site moot, FR-1 residual: decide_navigation helper + 6 tests). Remaining: end-of-session integrated test sweep + Phase 2/3/4 manual verification checkpoints. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "2026-07-15: all FRs implemented (FR-3 docs, FR-8 button removed, FR-9 field removed, FR-10 tracing everywhere, FR-11 node_options clone removed / node_manager site moot, FR-1 residual: decide_navigation helper + 6 tests). Remaining: end-of-session integrated test sweep + Phase 2/3/4 manual verification checkpoints. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "alignment": {
     "verdict": "ENABLING-HARDENING",
     "priority": "P1 (FR-1) / P3 rest",

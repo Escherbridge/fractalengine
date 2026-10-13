@@ -803,7 +803,7 @@ diagnostics echo.
   inbound gate (`admit_inbound_row`, fe-database `src/AGENTS.md` §handlers
   `replicated_row`). The author's own durable creator copy is then the ONLY
   copy of those rows, and the author is not a ledger host for them. Commit
-  4b30d17 added `hosted_subset` filtering (ledgered as "a pure efficiency
+  7a74214 added `hosted_subset` filtering (ledgered as "a pure efficiency
   win, not a correctness fix") — that was
   false: the author dropped the request as `NOT_HOSTED`, the denying host
   answered an honest-looking covered-empty, and the merged result was

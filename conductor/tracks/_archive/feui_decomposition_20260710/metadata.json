@@ -9,5 +9,5 @@
   "resolves": ["code_review_20260430_mega_function"],
   "archived": true,
   "archived_at": "2026-07-11T00:00:00Z",
-  "notes": "verified 2026-07-10 line counts: panels.rs 1991, plugin.rs 1397, dialogs.rs 1183, verse_manager.rs 914, node_manager.rs 834 — all well over the ~300-line soft cap. CLOSED 2026-07-11 per commit 7df071c: split into actions/panels/dialogs/node_manager/verse_manager/terrain_map/portal modules, plugin.rs now a 480-line shell. FOLLOW-UP (tracked in spec.md, not blocking closure): panels/inspector.rs (1042), dialogs/entity_settings.rs (799), dialogs/hexon_manager.rs (466) still exceed the ~300-line guideline — second split pass needed."
+  "notes": "verified 2026-07-10 line counts: panels.rs 1991, plugin.rs 1397, dialogs.rs 1183, verse_manager.rs 914, node_manager.rs 834 — all well over the ~300-line soft cap. CLOSED 2026-07-11 per commit f678dbe: split into actions/panels/dialogs/node_manager/verse_manager/terrain_map/portal modules, plugin.rs now a 480-line shell. FOLLOW-UP (tracked in spec.md, not blocking closure): panels/inspector.rs (1042), dialogs/entity_settings.rs (799), dialogs/hexon_manager.rs (466) still exceed the ~300-line guideline — second split pass needed."
 }

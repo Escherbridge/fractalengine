@@ -28,7 +28,7 @@ F9. This track continues that mission to completion in Claude Code.
 
 - **Complete & committed** (local main, 14 commits ahead of origin, NO pushes):
   M1 (F1–F4, F20, validators), M2 (F5–F7, F21–F23, validators), M3 partial
-  (F24 live-surface restoration, F8 simulation lab @ `c0266e3`).
+  (F24 live-surface restoration, F8 simulation lab @ `c90cd3f`).
 - **In flight (uncommitted)**: F9 worker's partial fe-sync diff — gossip/compute
   plane virtualization (A21 seam): `TopicSender {Real, Virtual}` enum,
   `VirtualGossipTopic`/`VirtualGossipMessage` trait surface on

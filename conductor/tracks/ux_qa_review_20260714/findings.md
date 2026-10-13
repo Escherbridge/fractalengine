@@ -111,7 +111,7 @@ the user-owned UX track — logged here so they survive until it is scoped.
 ## 2026-07-24 — user live-testing batch #2 (in-app)
 
 Findings from the user's live in-app test on 2026-07-24 (run on the pen_curve
-Phases 3-6 build, CI green @ `f5d9673`). All three are owned by
+Phases 3-6 build, CI green @ `7c82aa2`). All three are owned by
 `ui_shell_architecture_20260724`.
 
 ### [MAJOR] paths-gis — cannot select/manipulate existing path points from the viewport
@@ -136,7 +136,7 @@ Phases 3-6 build, CI green @ `f5d9673`). All three are owned by
   bevy_egui `run_egui_context_pass_loop_system` panic ("pass output has not
   been prepared") and `Main::run_main` abort, exit code 101.
 - **Status:** owned by `ui_shell_architecture_20260724`.
-- **Audit 2026-10-10:** FIXED in code — 190188f (malformed proposals-only terrain doc) + 631f389 / `sanitize_numeric_state()` (emath smart_aim NaN from `f32::MAX` DragValue ranges, root-caused in ui_semantics_unification_20260808); awaiting the user's in-app re-check.
+- **Audit 2026-10-10:** FIXED in code — 109c2d6 (malformed proposals-only terrain doc) + 118e666 / `sanitize_numeric_state()` (emath smart_aim NaN from `f32::MAX` DragValue ranges, root-caused in ui_semantics_unification_20260808); awaiting the user's in-app re-check.
 - **Severity:** blocker
 
 ### [MINOR] styling — tool-descriptions sidebar always open wastes real estate
@@ -147,7 +147,7 @@ Phases 3-6 build, CI green @ `f5d9673`). All three are owned by
 - **Suggested fix:** replace with a tooltip model (user verdict 2026-07-24);
   `tool_inspector_ux_20260719` superseded accordingly.
 - **Status:** owned by `ui_shell_architecture_20260724`.
-- **Audit 2026-10-10:** FIXED — left tool panel retired, rich tooltips from `TOOL_DEFS` + `panel_descriptor` (ui_shell FR-8, a731369).
+- **Audit 2026-10-10:** FIXED — left tool panel retired, rich tooltips from `TOOL_DEFS` + `panel_descriptor` (ui_shell FR-8, b953140).
 - **Severity:** minor
 
 ---

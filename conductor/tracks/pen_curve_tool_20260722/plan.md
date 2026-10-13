@@ -49,21 +49,21 @@ Tasks:
 - [x] Task: Add `CornerKind { #[default] Corner, Smooth, Symmetric }` +
       `handle_in`/`handle_out: Option<[f32;3]>` (relative meter offsets) +
       `corner`/`smoothness: f32` to `PathPointRow` (`fe-ui/src/gis/mod.rs:120-124`);
-      update every constructor/test that builds a `PathPointRow`. **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — `CornerKind` fe-ui/src/gis/mod.rs:120, `handle_in`/`smoothness` on PathPointRow :207-213]**
+      update every constructor/test that builds a `PathPointRow`. **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — `CornerKind` fe-ui/src/gis/mod.rs:120, `handle_in`/`smoothness` on PathPointRow :207-213]**
 - [x] Task: Mirror the fields onto `TimestampedRoutePoint`
       (`fe-terrain/src/iot/animation.rs:47-50`) with a fe-terrain-local corner enum;
-      handle the `#[cfg(feature="render")]` twin. **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — fe-terrain/src/iot/animation.rs:48 (local `CornerKind`), :80-85]**
+      handle the `#[cfg(feature="render")]` twin. **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — fe-terrain/src/iot/animation.rs:48 (local `CornerKind`), :80-85]**
 - [x] Task: Extend encoder `route_points_to_json` (`gpx_bridge.rs:242-251`) to emit
       the compact 4-slot form for handle-less corners and the 12-slot
       `[x,y,z,t,in3,out3,corner_code,smoothness]` form otherwise (never shorten an
-      existing longer row; never emit an intermediate length). **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — fractalengine/src/gpx_bridge.rs:271; tests plain_corner_encodes_compact_4slot_and_round_trips, symmetric_smooth_anchor_encodes_12slot_and_round_trips]**
+      existing longer row; never emit an intermediate length). **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — fractalengine/src/gpx_bridge.rs:271; tests plain_corner_encodes_compact_4slot_and_round_trips, symmetric_smooth_anchor_encodes_12slot_and_round_trips]**
 - [x] Task: Extend BOTH decoders (`json_to_route_points` `gpx_bridge.rs:256-275`,
       `decode_gpx_points` `query.rs:171-190`) to read slots 4-11 with
       `.get()`/`unwrap_or` defaults (Corner / None / 0.0), plus the partial-row
-      normalization guard (Open Q 6). **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — json_to_route_points gpx_bridge.rs:317 + decode_gpx_points fe-ui/src/gis/query.rs:185; tests mixed_length_array_decodes_each_row, smooth_claim_with_zero_handles_normalizes_to_corner]**
+      normalization guard (Open Q 6). **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — json_to_route_points gpx_bridge.rs:317 + decode_gpx_points fe-ui/src/gis/query.rs:185; tests mixed_length_array_decodes_each_row, smooth_claim_with_zero_handles_normalizes_to_corner]**
 - [x] TDD: write failing tests first — legacy 4-slot decode ⇒ Corner/no-handle;
       12-slot bezier round-trip; mixed-length array; extend
-      `fe-database/tests/gpx_path_persistence_test.rs:169-200`. [checkpoint] **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — legacy_4slot_decodes_to_corner_no_handles, decode_gpx_points_legacy_4slot_is_corner_no_handles, decode_gpx_points_12slot_reads_handles_and_corner, gpx_points_12slot_bezier_row_persists_and_reads_back (fe-database/tests/gpx_path_persistence_test.rs:191)]**
+      `fe-database/tests/gpx_path_persistence_test.rs:169-200`. [checkpoint] **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — legacy_4slot_decodes_to_corner_no_handles, decode_gpx_points_legacy_4slot_is_corner_no_handles, decode_gpx_points_12slot_reads_handles_and_corner, gpx_points_12slot_bezier_row_persists_and_reads_back (fe-database/tests/gpx_path_persistence_test.rs:191)]**
 
 ## Phase 2: Curve rendering + pick (reuse existing tessellation)
 
@@ -75,17 +75,17 @@ Tasks:
       `fe-terrain/src/mesh/curve.rs` (small anchor-aware de Casteljau, mirroring
       `node_manager/curve.rs::push_cubic:157`): cubic
       `[P_i, P_i+out_i, P_{i+1}+in_{i+1}, P_{i+1}]`; both-handles-`None` ⇒ straight
-      passthrough (zero added points). Only subdivide handle-carrying segments. **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — fe-terrain/src/mesh/curve.rs:21]**
+      passthrough (zero added points). Only subdivide handle-carrying segments. **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — fe-terrain/src/mesh/curve.rs:21]**
 - [x] Task: Call `flatten_route` before the centroid-recenter + `track_mesh` in
       `render_gpx_tracks` (`terrain_plugin.rs:718-722`); `track_mesh`
       (`mesh/track.rs:48`) stays polyline-based, width stays meter-frame, Transform
-      stays scale-1. **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — fe-terrain/src/terrain_plugin.rs:710]**
+      stays scale-1. **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — fe-terrain/src/terrain_plugin.rs:710]**
 - [x] Task: Build `TrackPickShape` / `track_pick_shape`
       (`path_segment_interaction.rs:26-33`, `gpx_bridge.rs:524-555`) from the SAME
-      flattened polyline so clicks hit the visible curve. **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — fractalengine/src/gpx_bridge.rs:632-640 calls flatten_route]**
+      flattened polyline so clicks hit the visible curve. **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — fractalengine/src/gpx_bridge.rs:632-640 calls flatten_route]**
 - [x] TDD: `flatten_route` — straight passthrough == identical polyline; single
       cubic sample count; symmetric handles; assert **no `world_scale` leakage**;
-      assert an all-corner track meshes byte-identically. [checkpoint] **[audit 2026-10-10: DONE 34a5160 (Phases 1-2, pushed; bookkeeping 01c175d) — curve.rs tests all_corner_track_flattens_to_identical_polyline, symmetric_handle_segment_is_subdivided_and_hits_endpoints, positions_pass_through_without_scaling, mixed_track_only_subdivides_curved_segments]**
+      assert an all-corner track meshes byte-identically. [checkpoint] **[audit 2026-10-10: DONE 8c45028 (Phases 1-2, pushed; bookkeeping 0409899) — curve.rs tests all_corner_track_flattens_to_identical_polyline, symmetric_handle_segment_is_subdivided_and_hits_endpoints, positions_pass_through_without_scaling, mixed_track_only_subdivides_curved_segments]**
 
 ## Phase 3: Ops, actions & bridge persistence
 

@@ -155,7 +155,7 @@ FR-4's analytics shape).
 
 ## Residual (post-ultrapilot, 2026-07-11)
 
-Track closed in `conductor/tracks.md` per commit `0ddb539` — the
+Track closed in `conductor/tracks.md` per commit `2927a24` — the
 extension-facing contract (capabilities `storage.read`/`storage.write`/
 `query.select`, fail-closed gating, WIT `query-api`, `fe-plugin` unified onto
 `fe-sdk`) is shipped. Two items surfaced during the close-out that are **not**

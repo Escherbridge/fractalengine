@@ -114,7 +114,7 @@ from `verify_chain`/`verify_chain_bytes`. Field reads are unaffected and no call
 last out-of-crate struct literal (`fe-database` `canon_log::admission` tests) was replaced by a
 real signed envelope admitted through `verify_from_bytes`; a `compile_fail` doctest pins it.
 Unlike `VerifiedCapability` it still has a public unverified door,
-`verified_envelope_meta_from` (RUNBOOK a31c403 §10a residual 5, open by decision), so its seal closes literals only.
+`verified_envelope_meta_from` (RUNBOOK 1694d07 §10a residual 5, open by decision), so its seal closes literals only.
 
 `PinnedSession` is the weaker of the two and the honest statement is that **it does not carry
 the grant it was pinned from**. It records the leaf principal, chain, certificate, epoch scope,

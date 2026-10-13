@@ -171,15 +171,15 @@ Tauri-Host-Shell spike has not been started.
 ## Ultrapilot Run — Analytics & Extension Platform (2026-07-10/11)
 
 **What shipped:** 5 parallel workers + an integration pass, ~10 commits.
-Node-asset download UI+API end-to-end (`3a97fc1` API endpoints +
-`19a2df2` integration), the extension storage/query API
-(`0ddb539` — capabilities `storage.read`/`storage.write`/`query.select`,
+Node-asset download UI+API end-to-end (`fd6ee3d` API endpoints +
+`0cd671e` integration), the extension storage/query API
+(`2927a24` — capabilities `storage.read`/`storage.write`/`query.select`,
 fail-closed gating, WIT `query-api`, `fe-plugin` unified onto `fe-sdk`), an
-IoT bridge vertical slice (`c811856`, 6 bridge-loop tests green through
+IoT bridge vertical slice (`ab29463`, 6 bridge-loop tests green through
 `fe-plugin-test`'s `RhaiTestRunner`), the fe-ui god-file decomposition
-(`7df071c` — five files split into `actions/panels/dialogs/node_manager/
+(`f678dbe` — five files split into `actions/panels/dialogs/node_manager/
 verse_manager/terrain_map/portal`, `plugin.rs` down to a 480-line shell),
-and this conductor reconciliation pass itself (`9adedea` + this run's
+and this conductor reconciliation pass itself (`053b4ad` + this run's
 close-out). Two new spec-only tracks (`hexon_delta_format_20260710`,
 `auth_policy_pattern_20260710`) plus a third added mid-run
 (`hexon_p2p_bucket_20260710`) captured design work without implementation,
@@ -188,15 +188,15 @@ per explicit coordinator instruction to keep them spec-only this round.
 **Incidents worth recording:**
 
 1. **The geometry-cast regression family — a bug that came back after being
-   fixed once, in a different code path.** `059f381` (2026-05, per
+   fixed once, in a different code path.** `fb3c2f0` (2026-05, per
    `fe-database/src/AGENTS.md` §geometry-inserts) broke geometry inserts by
    routing them through `fe_query::InsertBuilder`, which can't emit the
-   required `<geometry<point>>`/`<geometry<polygon>>` casts. `75f2aab` fixed
+   required `<geometry<point>>`/`<geometry<polygon>>` casts. `a36e70a` fixed
    the **CREATE** path — but the **UPDATE**/movement path had the exact same
-   defect, silently broken since the same original `059f381` commit, and was
-   only found and fixed (`8060af4`) during this run's *integration* step —
+   defect, silently broken since the same original `fb3c2f0` commit, and was
+   only found and fixed (`9f1bc05`) during this run's *integration* step —
    specifically, once `exec_query` gained a `.check()` call (the same fix
-   `75f2aab` applied to the create path), the update path's silent failures
+   `a36e70a` applied to the create path), the update path's silent failures
    started surfacing as real errors instead of a quiet no-op. **Lesson:** a
    fix that adds `.check()`/read-back verification to one code path can (and
    here, did) surface a *sibling* bug that error-swallowing was hiding

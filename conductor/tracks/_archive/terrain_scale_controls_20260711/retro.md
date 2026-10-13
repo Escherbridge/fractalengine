@@ -10,7 +10,7 @@ resource: ./metadata.json
 
 ## What shipped
 
-Commit `66395c5` — `world_scale` (world units per real meter, additive serde
+Commit `a11ad4c` — `world_scale` (world units per real meter, additive serde
 field) in `TerrainConfig`, pure scale math in `fe-terrain/src/scale.rs`,
 scale-aware camera (`CameraScaleSettings`: far plane, zoom-out ceiling,
 proportional log zoom) in `fe-renderer/src/camera.rs`, and a "Terrain scale"

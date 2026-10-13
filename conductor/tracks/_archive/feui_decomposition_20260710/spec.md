@@ -158,7 +158,7 @@ in `node_manager/mod.rs`.
 
 ## Follow-up (post-completion, 2026-07-11)
 
-Track closed in `conductor/tracks.md` per commit `7df071c` — the five
+Track closed in `conductor/tracks.md` per commit `f678dbe` — the five
 originally-named god-files (`panels.rs`, `plugin.rs`, `dialogs.rs`,
 `verse_manager.rs`, `node_manager.rs`) are split into `actions/`, `panels/`,
 `dialogs/`, `node_manager/`, `verse_manager/`, `terrain_map/`, `portal/`

@@ -24,7 +24,7 @@ continuation track; this file summarizes and points, it does not duplicate.
 
 ## What it is (summary)
 
-- **fe-sim crate** (new workspace member, `c0266e3` / F8, A18+A19): virtual
+- **fe-sim crate** (new workspace member, `c90cd3f` / F8, A18+A19): virtual
   transport (`VirtualReplica`/`VirtualTransportFactory`, byte-identical
   command loop to production — no parallel sim-replication model, D3);
   `SimClock` (accelerable, pluggable wall-clock override, process-global
@@ -33,13 +33,13 @@ continuation track; this file summarizes and points, it does not duplicate.
   pure sensor models (sine/weather/random-walk) feeding real `iot_reading`
   rows through the F5/F7 DB-thread ingestion seam — sim readings are real
   rows, not a parallel fixture format.
-- **Virtual gossip plane** (`1f2b6fd` / F9 part A, A21): `TopicSender`
+- **Virtual gossip plane** (`db945e4` / F9 part A, A21): `TopicSender`
   `{Real,Virtual}`, DID-sorted deterministic fan-out, miss-forever
   semantics; ≥2 checked-in CI scenarios (`sharded_query.json`,
   `offline_degraded.json`); the f64 1-ULP delta was root-caused to
   serde_json float round-tripping and fixed workspace-wide (DEC-C6) — 0 of
   200k deltas, was 5,395 of 200k.
-- **Control surface** (`4854227` / F9 part B, A20): `ScenarioSession`
+- **Control surface** (`545fa0b` / F9 part B, A20): `ScenarioSession`
   decomposing the blocking `run_scenario` into start/step/inject-fault/
   stop/status, `SimControlCommand/Call/Result` living in fe-runtime (zero
   new fe-api deps), `POST /api/v1/sim/*` + 5 MCP tools, relay-only behind a
@@ -52,7 +52,7 @@ continuation track; this file summarizes and points, it does not duplicate.
   runtime opt-in required beyond the compile feature.
 - **M3 milestone review** (adversarial opus, 2026-10-09): PASS-WITH-FIXES
   on 3 MAJOR findings (bounded-channel deadlock, process-global HLC skew,
-  F24 ingest correlation) — fixes landed @`2023809` (combined with F11);
+  F24 ingest correlation) — fixes landed @`73f4777` (combined with F11);
   verdict then M3 VALIDATED.
 
 ## Status

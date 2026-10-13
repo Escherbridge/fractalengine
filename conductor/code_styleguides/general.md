@@ -101,7 +101,7 @@ Rust-specific rules live in `rust.md`; UI/UX semantics for `fe-ui` (panel/dialog
   are for the read/analytics lane only** — non-geometry tables, ad-hoc
   filters, extension-facing query APIs. They are not a substitute for
   hand-written writes on schema-typed tables.
-- **The incident:** a 2026-05 refactor (commit `059f381`) routed geometry
+- **The incident:** a 2026-05 refactor (commit `fb3c2f0`) routed geometry
   inserts through `InsertBuilder`, which rendered a plain `CREATE {table}
   CONTENT $p0` with no cast — every node/petal creation silently failed for
   weeks, compounded by `exec_query` not calling `.check()` so the failure

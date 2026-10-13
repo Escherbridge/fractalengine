@@ -38,7 +38,7 @@ De-scoped per the analytics roadmap (`conductor/roadmap.md`) — verdict PLATFOR
   `fe-ui/src/verse_manager/AGENTS.md` §primitives). Selection-time reconcile
   (`reconcile_selected_primitive`) stays as the live-edit update path.
 - **FR-2, FR-3, FR-4 IMPLEMENTED** (P1/P2 done).
-- **FR-5, FR-6 SUPERSEDED** — the GPX rip-walls feature landed separately (commit `1b39af3`,
+- **FR-5, FR-6 SUPERSEDED** — the GPX rip-walls feature landed separately (commit `53a8826`,
   `gpx_path_reorient` work); path→wall extrusion here is redundant. P3 will not run.
 - **FR-7, FR-9 DEFERRED** — transform-ops-over-API + plugin transaction forwarding blocked on
   the placeholder transaction handlers (`fe-plugin/src/lib.rs:294` stub). P4 parked until the

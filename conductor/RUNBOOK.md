@@ -2,13 +2,13 @@
 type: runbook
 title: FractalEngine session runbook
 updated: 2026-10-13
-head: fc459ea
+head: 850466d
 ---
 
 # FractalEngine — Runbook
 
 **Last updated:** 2026-10-13 · **Branch:** `main` · **Last commit:** see `git log -1`
-(written at `f986ee1` + this runbook commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
+(written at `a6e1a4a` + this runbook commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
 
 Foundation under this file: `conductor/product.md`, `tech-stack.md`, `workflow.md`,
 `tracks.md`, and the work queue `conductor/doneness-ledger.md`.
@@ -20,7 +20,7 @@ multi-round `AskUserQuestion` loop. Do not start building until the loop ends.
 
 **0a. Retrieve context first (silently, cheap, before the first question):**
 1. `git status --short --branch`, `git log --oneline -10`, `git reflog show refs/remotes/origin/main -n 5`
-   — did ANOTHER actor push since `9e09b12`/`f986ee1`? (It happened twice: §1 incidents.)
+   — did ANOTHER actor push since `4765bc5`/`a6e1a4a`? (It happened twice: §1 incidents.)
 2. `gh run list --branch main --limit 3` — CI verdict on the last pushed tip (§2 names the run to check).
 3. Read §2 State, §3 Decisions, §4 Assumptions of this file; skim `conductor/doneness-ledger.md`
    class counts (`grep -c NEEDS_RATIFICATION conductor/doneness-ledger.md` etc.).
@@ -50,7 +50,7 @@ multi-round `AskUserQuestion` loop. Do not start building until the loop ends.
    `fractalengine/assets/imported/` (untrack + ignore vs keep), pending-track gating decisions, the
    `outstanding_decisions_20260715` register (55 items — ask whether to batch-ratify).
 5. **Context the agent lacks — desired retrieval (ask explicitly, freeform-first):**
-   - Who/what is the other actor that pushed `1e9be3a` and `e96c972` (a hermes-agent session?
+   - Who/what is the other actor that pushed `d198bd2` and `a064144` (a hermes-agent session?
      the user?) — should it be stopped or locked down?
    - In-app verification results for W4 UI work (Measure/grid, visibility groups, settings.ron,
      terrain live-update) and the Zurich/Fuji terrain + scale bar.
@@ -63,35 +63,35 @@ multi-round `AskUserQuestion` loop. Do not start building until the loop ends.
 ## 1. Retro — everything completed 2026-10-09 → 2026-10-12
 
 **A. Push reconciliation + CI (2026-10-10).** The 30 prod-ready-mission commits had already been
-pushed (`1e9be3a`) by another actor although the prior runbook said "nothing pushed" →
-runbook corrected (`6bce04b`). CI Lint had been red since August: rustc 1.99's
+pushed (`d198bd2`) by another actor although the prior runbook said "nothing pushed" →
+runbook corrected (`a5f012b`). CI Lint had been red since August: rustc 1.99's
 `clippy::double_must_use` fired 17× inside `#[async_trait]` expansion (fixed by bumping
 async-trait 0.1.89→0.1.92, upstream #303) and `--keep-going` exposed one hidden
-`collapsible_match` (`d4a4744`) → first fully-green main since 2026-08-20.
+`collapsible_match` (`0682517`) → first fully-green main since 2026-08-20.
 
-**B. Security/correctness, 4 workflows (2026-10-10; pushed in `e96c972` by another actor, CI green):**
-`9cbdea6` SetPetalTerrain reply correlation (REST/MCP terrain mutation live; HIGH fix: an API
-write to petal B no longer hijacks the desktop's live petal A) · `9c4da00` `/query/elevated`
+**B. Security/correctness, 4 workflows (2026-10-10; pushed in `a064144` by another actor, CI green):**
+`94be5b6` SetPetalTerrain reply correlation (REST/MCP terrain mutation live; HIGH fix: an API
+write to petal B no longer hijacks the desktop's live petal A) · `ba0b8d2` `/query/elevated`
 fail-closed + **Viewer `/query` could read any record by id** (`role:x.*`, `$v.to_record()`) —
-closed · `6763302` one uniform denial for missing vs foreign resources (`rest::covered_scope`)
-+ stamp cross-tenant read via `?path_id=` closed · `7760be1` TilesetMeta Default · `da922a6`
+closed · `04c91f1` one uniform denial for missing vs foreign resources (`rest::covered_scope`)
++ stamp cross-tenant read via `?path_id=` closed · `e2c6796` TilesetMeta Default · `87f72d3`
 CI clippy `--keep-going`. Reviewers found 4 live holes beyond their briefs.
 
 **C. Completeness campaign, 5 workflows (2026-10-10/11):**
 
 | Commit | Workflow | Delivered |
 |---|---|---|
-| `9f7a882` | W1 | Board truth: 41 tracks verified vs code/git; `doneness-ledger.md` (181 items) |
-| `7d40a4e` | W2 | 14 data/API deferrals: GetPetalTerrain + GUI RawQuery correlation, elevated writes via DB thread (snapshot → atomic op-log commit → diff → replicate), atomic tombstones, id indexes, asset owner + GC + quota, zip-bomb caps |
-| `40590e9` | W3 | 23 items: fe-policy TokenScope/Ownership/RoleFloor + fe-api routed through it, stamp translate lock, REST/MCP surface tests, cargo-deny + bounded fuzz in CI, canonical-log hardening |
-| `4b30d17` | W4 | Measure tool (M) + metric grid, visibility groups P2–P6 (pickers, H keys, persistence, registry, REST/MCP), settings.ron persistence, editor/terrain residue |
-| `d44f008` | W5 | iroh 0.35 → 1.3 (docs 0.101, gossip 0.101, blobs 0.103.1, noq BBRv3, MSRV 1.91), store migration, relay-health watcher. **Flag day** |
-| `a210961` | fix | Reverted W4 responder filtering (creator copies are load-bearing) + non-blocking query echo |
-| `9e09b12` | docs | Runbook close-out |
+| `97663e4` | W1 | Board truth: 41 tracks verified vs code/git; `doneness-ledger.md` (181 items) |
+| `562f551` | W2 | 14 data/API deferrals: GetPetalTerrain + GUI RawQuery correlation, elevated writes via DB thread (snapshot → atomic op-log commit → diff → replicate), atomic tombstones, id indexes, asset owner + GC + quota, zip-bomb caps |
+| `49e2de0` | W3 | 23 items: fe-policy TokenScope/Ownership/RoleFloor + fe-api routed through it, stamp translate lock, REST/MCP surface tests, cargo-deny + bounded fuzz in CI, canonical-log hardening |
+| `7a74214` | W4 | Measure tool (M) + metric grid, visibility groups P2–P6 (pickers, H keys, persistence, registry, REST/MCP), settings.ron persistence, editor/terrain residue |
+| `ff8b1e4` | W5 | iroh 0.35 → 1.3 (docs 0.101, gossip 0.101, blobs 0.103.1, noq BBRv3, MSRV 1.91), store migration, relay-health watcher. **Flag day** |
+| `df35a7f` | fix | Reverted W4 responder filtering (creator copies are load-bearing) + non-blocking query echo |
+| `4765bc5` | docs | Runbook close-out |
 
 Final sweep (tests deferred until code complete, per user rule): `cargo test --workspace`
 **3452 passed / 0 failed** (106 binaries; was 3245); harness real-loopback iroh **15/15 ×2**;
-e2e bi-egress 49/49, hexon-install 15/15, hexon-serve 40/40. Pushed `e96c972..9e09b12`
+e2e bi-egress 49/49, hexon-install 15/15, hexon-serve 40/40. Pushed `a064144..4765bc5`
 on 2026-10-12 under the new push-on-green rule.
 
 **Incidents (and the rule each produced):**
@@ -111,20 +111,20 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-10-13 session open:** origin/main = `fc459ea` — two `ci(fuzz)` commits (`3704950`,
-  `fc459ea`) landed after this runbook was written (prior Claude session). **CI fully green on
-  `fc459ea`** (run 38277696834: Lint incl. cargo-deny + bounded fuzz, Linux build+test, Windows,
+- **2026-10-13 session open:** origin/main = `850466d` — two `ci(fuzz)` commits (`f002e8e`,
+  `850466d`) landed after this runbook was written (prior Claude session). **CI fully green on
+  `850466d`** (run 38277696834: Lint incl. cargo-deny + bounded fuzz, Linux build+test, Windows,
   `latest` prerelease) — §7 step 2 is moot. Ledger is stale (dated 10-10; "commit pending" rows
   are committed; 7 NEEDS_RATIFICATION rows were decided 10-12) → W0 bookkeeping refreshes it.
-- **origin/main = `9e09b12` + `f986ee1` `26546ec` `e2a3349`** (all pushed 2026-10-12 under
+- **origin/main = `4765bc5` + `a6e1a4a` `3e87279` `93b1bcd`** (all pushed 2026-10-12 under
   push-on-green; the last three are docs/assets only): untrack `.claude/settings.local.json`
-  (its `.gitignore` line landed in `e2a3349`), this runbook, and the sample-GLB swap —
+  (its `.gitignore` line landed in `93b1bcd`), this runbook, and the sample-GLB swap —
   `duck.glb` (SCEA, non-OSI) → CC0 Khronos "Cameras" `cameras.glb` (2 embedded cameras, still
   the `deactivate_foreign_cameras` regression asset); `info_panel.glb` verified CC-BY-4.0.
 - **Open licence residual:** `fractalengine/assets/imported/` tracks 20 byte-identical copies of
   the SCEA Duck (runtime import cache). Untracking them deletes the files on other clones at
   their next pull and may break nodes whose `asset_path` points there — USER decision (§0c.4).
-- CI for `9e09b12` was being watched at writing time — **verify in §0a**. It is the FIRST real run
+- CI for `4765bc5` was being watched at writing time — **verify in §0a**. It is the FIRST real run
   of the cargo-deny and bounded-fuzz lint steps (fuzz was only `cargo check`ed locally; sanitizer
   builds need Linux nightly). If Lint is red, fix that first.
 - **Verified:** the final sweep above. **Not verified:** in-app GUI behavior of W4 work;
@@ -137,16 +137,16 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 | Phase | Checkpoint | Findings | Verdict |
 |---|---|---|---|
-| CI fix `d4a4744` | independent review of async-trait diff | 1 misread corrected | SOUND |
-| `9cbdea6` terrain correlation | adversarial review-and-fix | 1H 3M 2L | FIXED |
-| `9c4da00` elevated + query guard | security review-and-fix | 1H (record-id leak) 2M 1L | FIXED |
-| `6763302` existence oracle | review-and-fix | 1H (stamp cross-tenant) 2M | FIXED |
-| `7760be1` TilesetMeta | review-and-fix | 1L advisory | SOUND |
-| W2 `7d40a4e` | review-and-fix | 1H (zip-bomb reserve) 1M (GC vs stamp blob) 4L | FIXED |
-| W3 `40590e9` | review-and-fix | 1M (stamp lock bypass via move_waypoint) 1L | FIXED |
-| W4 `4b30d17` | 2 reviews + reconcile | 1H (hidden ribbons pickable) 2M 4L | FIXED |
-| W5 `d44f008` | review-and-fix | 1H (watcher masked stack-failure health) 1M (doc handle leak) 3L | FIXED |
-| Final sweep | full tests + harness + e2e | harness 14/15 → root-caused, `a210961` | GREEN after fix |
+| CI fix `0682517` | independent review of async-trait diff | 1 misread corrected | SOUND |
+| `94be5b6` terrain correlation | adversarial review-and-fix | 1H 3M 2L | FIXED |
+| `ba0b8d2` elevated + query guard | security review-and-fix | 1H (record-id leak) 2M 1L | FIXED |
+| `04c91f1` existence oracle | review-and-fix | 1H (stamp cross-tenant) 2M | FIXED |
+| `e2c6796` TilesetMeta | review-and-fix | 1L advisory | SOUND |
+| W2 `562f551` | review-and-fix | 1H (zip-bomb reserve) 1M (GC vs stamp blob) 4L | FIXED |
+| W3 `49e2de0` | review-and-fix | 1M (stamp lock bypass via move_waypoint) 1L | FIXED |
+| W4 `7a74214` | 2 reviews + reconcile | 1H (hidden ribbons pickable) 2M 4L | FIXED |
+| W5 `ff8b1e4` | review-and-fix | 1H (watcher masked stack-failure health) 1M (doc handle leak) 3L | FIXED |
+| Final sweep | full tests + harness + e2e | harness 14/15 → root-caused, `df35a7f` | GREEN after fix |
 
 ## 3. Decisions
 
@@ -154,7 +154,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 - R1 · Delta: nothing new on the user's side (no in-app checks, pushes or constraints).
 - R1 · Git identity: this clone's `.git/config` had `user.name = hermes-agent`, which made every
   commit (Claude's included) indistinguishable. Now `Jade Zaher` (matches global + GitHub);
-  Claude is credited via the `Co-Authored-By` trailer. Pushes `1e9be3a`/`e96c972` appear in no
+  Claude is credited via the `Co-Authored-By` trailer. Pushes `d198bd2`/`a064144` appear in no
   Claude transcript — not investigated further (user chose the identity fix).
 - R1 · Direction: keep §7 as written (large phases → role propagation → 2026-10-12 decisions).
 - R2 · D-69 was already RESOLVED 2026-07-17 (Apache-2.0 single) — the old "licence gate" line was stale.
@@ -238,7 +238,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   elevated: DB-side TIMEOUT on every statement + 32-statement cap.
 - **v1 ship gate:** public OSS release ready.
 - **Push rule:** the agent may push when the gate is green (no per-batch ask) and must watch CI.
-- **Do-now (2026-10-12):** pushed `9e09b12`; untracked `.claude/settings.local.json`; replace
+- **Do-now (2026-10-12):** pushed `4765bc5`; untracked `.claude/settings.local.json`; replace
   licence-unverified sample GLBs (keep an embedded-camera regression asset).
 
 **Working rules (user, standing):** small sequential workflows (builds never overlap; `TaskStop`
@@ -351,10 +351,10 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 ## 8. Session log
 
 ### 2026-10-12 — handoff after the completeness campaign
-- Done: retro (§1); 5-round grill loop → §3 decisions; pushed `e96c972..9e09b12`; untracked
-  `.claude/settings.local.json` (`f986ee1`); runbook rewritten.
+- Done: retro (§1); 5-round grill loop → §3 decisions; pushed `a064144..4765bc5`; untracked
+  `.claude/settings.local.json` (`a6e1a4a`); runbook rewritten.
 - Reviewed: every phase in the §2 ledger has a verdict.
-- Also done: sample GLBs licence-verified/replaced (`e2a3349`); ledger OSS-4.3 updated.
+- Also done: sample GLBs licence-verified/replaced (`93b1bcd`); ledger OSS-4.3 updated.
 - In flight: CI on the pushed tip (verify in §0a).
 - Blocked: nothing; remaining decisions are the ledger's NEEDS_RATIFICATION rows.
 - Next: §0 grill loop, then the large-phases campaign.

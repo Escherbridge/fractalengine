@@ -12,7 +12,7 @@ body:
     attributes:
       label: Version / commit
       description: Release version or `git rev-parse --short HEAD` if building from source.
-      placeholder: "0.1.0 / dbc421d"
+      placeholder: "0.1.0 / 27cdc4f"
     validations:
       required: true
   - type: dropdown

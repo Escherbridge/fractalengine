@@ -231,7 +231,7 @@ Migrate GUI `main.rs` to use `wire_engine()` + `setup_core_systems()` (replacing
 
 ---
 
-### [x] Task 2.5 — Phase 2 docs [df0d175]
+### [x] Task 2.5 — Phase 2 docs [e6464d5]
 
 - `BUILDING.md`: add "Building the relay" section with `cargo build -p fractalengine-relay`
 - `README.md`: update architecture diagram showing two binaries sharing core crates

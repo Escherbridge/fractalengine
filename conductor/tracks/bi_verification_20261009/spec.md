@@ -26,27 +26,27 @@ the VERIFICATION record specifically, per the F18 deliverable list.
 
 ## What was verified (summary)
 
-- **A22 (live DuckDB e2e, F10 `2a4026e`):** `scripts/bi-egress-verify.ps1`
+- **A22 (live DuckDB e2e, F10 `7418a16`):** `scripts/bi-egress-verify.ps1`
   against a real running relay + real DuckDB CLI (fetched to `tools/`, no
   system install) — 31/31 checks at F10, 48/48 after the first remediation
   pass, 49/49 after the second. DEC-C10 implemented single-range 206
   (DuckDB httpfs genuinely issues ranged GETs, observed live) instead of
   the false `Accept-Ranges: bytes` advertisement.
-- **A23/A24 (readings export + share-signer persistence, F11 `2023809`):**
+- **A23/A24 (readings export + share-signer persistence, F11 `73f4777`):**
   reading-shaped parquet/CSV export with the batched anchor join;
   share-signer moved to a dedicated keystore slot (DEC-C9) so share URLs
   survive restarts.
-- **A25 (docs, F12 `a6d23f3`):** `docs/bi-egress.md`, every command sourced
+- **A25 (docs, F12 `4fde52b`):** `docs/bi-egress.md`, every command sourced
   from the verified script/log; PowerBI/spreadsheet legs honestly marked
   derived-not-script-verified (only the DuckDB leg is live-verified).
 - **M4 milestone review saga** (the reason this gets its own record):
   adversarial opus review verdict **FAIL** (2 BLOCKERs: bypassable
   scope-filter string-append, uncorrelated RawQuery/QueryResult reply
-  routing) → fix pass @`667aa18` (DEC-C17: scope-source substitution +
+  routing) → fix pass @`6f23aa7` (DEC-C17: scope-source substitution +
   `correlation_id` + ETag/If-Range + SurrealQL `TIMEOUT 5s` + A24 honesty
   restated) → re-review verdict **STILL-FAILING narrowly** (1 new HIGH:
   `node_log` side-channel leaking unscoped `petal_id`/`name`/`position`) →
-  remediation @`770acd3` (DEC-C19: `node_log` removed from
+  remediation @`236ae8e` (DEC-C19: `node_log` removed from
   `ALLOWED_TABLES`; DEC-C20 grammar audit found + fixed 1 critical
   comment-token-splitting bypass in `reject_record_constructors`, 17 other
   SurrealQL 3.0.5 form classes verified sound) → final gate green, e2e

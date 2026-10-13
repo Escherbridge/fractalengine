@@ -14,12 +14,12 @@ resource: ./metadata.json
 evidence-based audit of the board rather than trusting checkbox state.
 
 **Method:** a 37-agent audit swept every open track against the actual
-codebase, followed by a board prune (`c32e873`); then three crate-partitioned
-implementation waves (`9ef76a1`, `f062921`, `51bc90e`) executed the surviving
+codebase, followed by a board prune (`afc819d`); then three crate-partitioned
+implementation waves (`82c373f`, `77f0061`, `4345e13`) executed the surviving
 work in parallel with file-ownership boundaries per crate; a decision
 register (`outstanding_decisions_20260715`) captured every judgment call the
 waves made; a chunked full-workspace test sweep plus post-sweep fixes and
-security hardening (`626f307`) verified the result; and a final archival pass
+security hardening (`54fce7b`) verified the result; and a final archival pass
 moved 28 completed/superseded track folders into `conductor/tracks/_archive/`
 (metadata `archived: true`, `archived_at` 2026-07-15).
 
@@ -70,8 +70,8 @@ moved 28 completed/superseded track folders into `conductor/tracks/_archive/`
 
 ## 3. Verification evidence
 
-- **Commits:** `c32e873` (board prune), `9ef76a1` (wave 1), `f062921`
-  (wave 2), `51bc90e` (wave 3 + workspace fmt), `626f307` (sweep fixes +
+- **Commits:** `afc819d` (board prune), `82c373f` (wave 1), `77f0061`
+  (wave 2), `4345e13` (wave 3 + workspace fmt), `54fce7b` (sweep fixes +
   security hardening + decision register).
 - **Test sweep:** full workspace green in 5 sequential crate chunks, run
   with `CARGO_PROFILE_{DEV,TEST}_DEBUG=0` and `-j2` to stay inside this

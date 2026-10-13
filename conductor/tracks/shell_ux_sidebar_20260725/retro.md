@@ -10,7 +10,7 @@ resource: ./spec.md
 
 ## What shipped
 
-- **b3f4df4** (Wave 0): everything this track had to build.
+- **ff33d24** (Wave 0): everything this track had to build.
   - FR-3: the left sidebar is user-sticky. `left_visibility(policy, user_intent)` has the
     single `Manual` policy (auto-collapse removed, D-A11 / Q-3). The topbar ☰ button and
     Ctrl/Cmd+B flip `user_intent`, and the per-frame `!right_open` stomp is gone.
@@ -19,7 +19,7 @@ resource: ./spec.md
     deleted.
   - FR-2: Maps (the hexon manager) is the `RightSidebarSection::Maps` section.
   - The Wave-1 registration scaffold, so T2/T3/T4 never edited `right_sidebar.rs`.
-- **623145f**: re-swept as part of the serial integration pass.
+- **195f5cc**: re-swept as part of the serial integration pass.
 - **This batch (2026-10-11 spatial-builder-residue, commit pending)**: the directory docs
   now match the code.
   - `ui_shell/AGENTS.md` §left describes the 2-arg sticky policy and Ctrl+B with no
@@ -32,13 +32,13 @@ resource: ./spec.md
 ## Lessons
 
 - **Docs rot fastest at the seam you just removed.** The code removal was complete in
-  b3f4df4, but three directory docs went on describing the deleted policy and window for
+  ff33d24, but three directory docs went on describing the deleted policy and window for
   2.5 months. The 2026-10-10 audit caught it only by reading prose against code. When a
   commit deletes a variant or file, grep the `AGENTS.md` tree for its name in the same
   commit.
 - **Owning the shared seam worked.** Making T6 the single owner of `ui_shell/*` and
   `panels/mod.rs` let three Wave-1 leaves run in parallel without collisions. It also
-  meant their wiring had to wait for the serial integration wave (623145f). That cost
+  meant their wiring had to wait for the serial integration wave (195f5cc). That cost
   is expected, so budget for it.
 
 ## Open residuals

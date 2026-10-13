@@ -8,7 +8,7 @@ resource: ./metadata.json
 
 # Outstanding Decision Register — 2026-07-14/15
 
-Sources: 37-agent track audit (2026-07-14; 68 raw items → 53 deduped entries) + 72 provisional decisions logged by the 3 implementation waves (2026-07-14/15, commits 9ef76a1, f062921, 51bc90e). Wave decisions that refine an audit entry are merged into that entry's default with the implementing track cited; genuinely new calls got new numbers (D-54..D-67). Pure implementation-detail wave notes (no ratification value) are NOT registered — they live in the implementing tracks' plan.md / AGENTS.md dated notes.
+Sources: 37-agent track audit (2026-07-14; 68 raw items → 53 deduped entries) + 72 provisional decisions logged by the 3 implementation waves (2026-07-14/15, commits 82c373f, 77f0061, 4345e13). Wave decisions that refine an audit entry are merged into that entry's default with the implementing track cited; genuinely new calls got new numbers (D-54..D-67). Pure implementation-detail wave notes (no ratification value) are NOT registered — they live in the implementing tracks' plan.md / AGENTS.md dated notes.
 
 **72 entries: 34 [USER], 38 [DEFAULTED].** Tags: **[USER]** = genuine product/money/scope-kill call — needs an actual decision. **[DEFAULTED]** = a sensible default was taken (audit pass or implementation wave); needs only ratification (see checklist at bottom). Track names drop their `_2026xxxx` suffix.
 
@@ -70,7 +70,7 @@ Sources: 37-agent track audit (2026-07-14; 68 raw items → 53 deduped entries) 
 - **D-31 Reportable-selection affordances** [USER] — Where the analytics-egress affordance lives in the UI and which spatial selections are reportable (petal / track / bbox; checklist §F). Feeds analytics_egress Phase 4. Src: ux_qa_review. Undecided: copy-paste UX ships to a guess of the workflow.
 - **D-32 Inspector scope under repositioning** [USER] — Is FR-3 (petal/fractal/verse inspection) still wanted, and is first FR-4 delivery cut to a read/write role list (deferring invites/presets/audit history)? Src: inspector_settings ×2. Undecided: track scope 3× larger than the strategy needs.
 - **D-33 Inspector tab taxonomy** [DEFAULTED] — Keep shipped Properties/ApiAccess/Query + add Access, vs rebuild toward spec'd Info/Settings/Access? Src: inspector_settings ×2. Wave (inspector_settings): FR-2 FOLD taken — spec folded to the shipped tab set; Access lands as a NEW fourth InspectorTab variant; the "Settings" concept is covered by the entity_settings dialog; active_tab intentionally persists across selections (spec OQ 3 resolved by the fold; per-tab sensitive state resets via inspector_sync). Still open [USER] residuals: multi-selection behavior, panel resizability. Undecided: was [USER]; ratify the fold.
-- **D-34 BIM FR-5 superseded** [DEFAULTED] — Confirm FR-5 wall-binding is fully superseded by the GPX rip-walls work (commit 1b39af3) and amend the spec. Src: bim_primitives. Default: superseded per alignment note; spec amendment pending. Undecided: spec/reality drift invites re-implementation.
+- **D-34 BIM FR-5 superseded** [DEFAULTED] — Confirm FR-5 wall-binding is fully superseded by the GPX rip-walls work (commit 53a8826) and amend the spec. Src: bim_primitives. Default: superseded per alignment note; spec amendment pending. Undecided: spec/reality drift invites re-implementation.
 - **D-35 Petal-wide primitive materialization** [USER] — Is selected-only promotion acceptable for v1, or is petal-wide materialization required to call P1 done? Src: bim_primitives. Wave (bim_primitives_on_paths): FR-1 petal-wide path landed via async GetNodeProperties on cold cache — fallback sign appears first, promotes when the fetch lands (fe-runtime hierarchy payload out of territory; truly-immediate cold start would carry the primitive prop in NodeHierarchyData). Question narrows to: is sign-first-then-promote acceptable v1 behavior? Undecided: P1 completion status is ambiguous.
 - **D-36 Path-asset stamping end state** [USER] — Is the shipped asset-node/blob:// picker (path_asset_picker v1) the accepted end state, or are hexon-ref semantics (picker mirrors hexon_manager) still wanted? FR-1a browse-new-glb also gated on the user lifting the fe-database ImportGltf quarantine. Src: hexon_path_asset. Wave: hexon_ref-vs-asset-node recorded as spec.md Open Question 1 — decide during/after FR-6. Undecided: FR-1a stays quarantine-blocked; picker direction unsettled.
 - **D-37 Sidebar toggle + logging style** [DEFAULTED] — FR-8: remove the sidebar toggle (plan default: remove + TODO) vs keep as auto-collapse override; FR-10: tracing vs documented eprintln! for pre-LogPlugin messages (plan gives guidance). Src: code_review_cleanup ×2. Undecided: trivial; agent proceeds on plan defaults.
@@ -174,36 +174,36 @@ superseded — user confirms):**
 - D-1, D-2 — superseded by user-ratified mission decision **D1 (2026-10-06)**:
   "DuckDB-first: hardened parquet-over-HTTP + signed share URLs" (factory
   mission library/decisions.md). Live-verified by scripts/bi-egress-verify.ps1
-  (49/49 @770acd3); IoT file egress now exists (F11 @2023809).
+  (49/49 @236ae8e); IoT file egress now exists (F11 @73f4777).
 - D-10 — its gate ("rulers/callouts after egress GA") is met: BI egress
   validated 2026-10-09 (mission M4). hexon_scale Phase 5/6 are unblocked except
   callouts (D-11).
 - D-14 — p2p_mycelium priority is moot: mission M1/M2 turned the real iroh-docs
-  P2P stack on (2364600, 853af53, fa09a47, 9b170e7, c7559d5).
+  P2P stack on (3f957c4, bef1be0, 7ca1213, 5430fc3, d5e2ce7).
 - D-21 — superseded: the sync write path IS gated now (fe-database
-  `admit_inbound_row` Editor+ inbound gate, 20c3a96; F23 sync-plane admission
-  control, 138ea3d).
+  `admit_inbound_row` Editor+ inbound gate, ea158b7; F23 sync-plane admission
+  control, 098f029).
 - D-36 — path-asset stamping end state superseded by the Spatial Builder
   program's stamps-as-addressable-nodes (D-A1/D-A5, stamped_asset_nodes_20260725,
-  56ccc3b + 623145f).
-- D-50 — answered by D-CI2 (2026-08-20): macOS removed from CI (6aaeabd).
-- D-55 — superseded: the share signer is persistent (DEC-C9, F11 @2023809;
+  9106d29 + 195f5cc).
+- D-50 — answered by D-CI2 (2026-08-20): macOS removed from CI (c272246).
+- D-55 — superseded: the share signer is persistent (DEC-C9, F11 @73f4777;
   fe-api/tests/share_signer_persistence_test.rs).
-- D-61 — superseded: a true node rename op exists (Rename spine op @623145f;
+- D-61 — superseded: a true node rename op exists (Rename spine op @195f5cc;
   fe-database/tests/node_lifecycle_test.rs
   `rename_is_authorized_persists_and_emits_one_event`).
-- D-68 — superseded and tightened: since 9c4da00 the elevated endpoint no longer
+- D-68 — superseded and tightened: since ba0b8d2 the elevated endpoint no longer
   retains role/verse_member (fe-api/AGENTS.md §elevated-query); node_log left
-  the /query whitelist @770acd3.
+  the /query whitelist @236ae8e.
 
 **Needs a user action, not a decision:** D-29 (hands-on UX-QA pass), D-46
 (confirm Download button in the running app), D-53 (repo settings/tag for
-GHCR + Releases; the rolling `latest` channel landed 99233f4 per D-CI3).
+GHCR + Releases; the rolling `latest` channel landed 2cb193a per D-CI3).
 
 **Partly overtaken:** D-51 (macOS half answered by D-CI2; ARM64/matrix remain),
 D-66 (its "mirrored on macOS" clause is moot after D-CI2), D-54 (GeoParquet
-crs is now spec-legal null + `fe:crs`, DEC-C16 @1ea14ba), D-9 (same DEC-C16
-encoding change), D-4 (row scoping is now FROM-substitution, M4 @667aa18, not
+crs is now spec-legal null + `fe:crs`, DEC-C16 @bd46845), D-9 (same DEC-C16
+encoding change), D-4 (row scoping is now FROM-substitution, M4 @6f23aa7, not
 `inject_scope_filter`), D-38 (map_scale_authority_20260716 FR-5 proposes
 snap-on-place).
 

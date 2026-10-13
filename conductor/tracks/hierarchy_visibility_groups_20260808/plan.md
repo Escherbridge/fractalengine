@@ -13,11 +13,11 @@ so the picker filters ARE the hide mechanism. Rationale for the shipped code liv
 §visibility-pickers / §staged-escape and `fe-database/src/AGENTS.md` §lifecycle
 ("Node view").
 
-## Phase 0 — resolver + state types [DONE 4d0c12d]
+## Phase 0 — resolver + state types [DONE e76bbb9]
 
 - [x] `fe-ui/src/visibility/resolve.rs` lattice (solo > override > ancestor > ANY-hidden-group) + `VisibilityState`.
 
-## Phase 1 — sidebar eyes + apply system [DONE 4d0c12d]
+## Phase 1 — sidebar eyes + apply system [DONE e76bbb9]
 
 - [x] Sidebar eye per row, muted hidden rows, tri-state rollup, "N hidden" status chip (D-16).
 - [x] `sync_node_visibility` spawn-then-hide apply + D-13 force-deselect; viewport_pick filter; D-14 camera-focus refusal.

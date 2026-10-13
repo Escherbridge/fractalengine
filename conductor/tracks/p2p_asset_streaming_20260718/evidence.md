@@ -8,7 +8,7 @@ resource: ./plan.md
 
 # Evidence pack — P2P Asset Streaming, Phase 0
 
-Measured at HEAD `40590e9` on 2026-10-11. Reproduction script is in the
+Measured at HEAD `49e2de0` on 2026-10-11. Reproduction script is in the
 appendix (zip-level walk, no product code). Feeds risk #8 and D-74 "mandated
 prior art" in `conductor/decisions/p2p-streaming-20260718.md`.
 
@@ -105,9 +105,9 @@ Consequences:
 
 Designed, never built (apart from what later landed independently):
 
-| archived design | status at 40590e9 | delta vs D-74 |
+| archived design | status at 49e2de0 | delta vs D-74 |
 |---|---|---|
-| `AppSettings` RON at `~/.config/fractalengine/settings.ron`, defaults on missing/corrupt, debounced save | resource landed 320ebfe; persistence lands in this track's Phase 4b (PAS-P4B) | same design; path is the platform config dir (`dirs::config_dir()`), not a hard-coded `~/.config` |
+| `AppSettings` RON at `~/.config/fractalengine/settings.ron`, defaults on missing/corrupt, debounced save | resource landed 7bdcfbe; persistence lands in this track's Phase 4b (PAS-P4B) | same design; path is the platform config dir (`dirs::config_dir()`), not a hard-coded `~/.config` |
 | `render_distance` clamp [50, 1000] world units, default 300 | default 500 (matches `PetalManifest.render_distance`), clamp widened to [0, 50 000] | D-74 uses `0` as "halt distance-ranked spawning" and real-world-scale petals exceed 1 km, so the 1000 m hard limit is not carried over |
 | `RenderVolume` + per-entity `Visibility` toggle | superseded | D-74 gates **spawns** (prevention, not recovery; render buffers never shrink), it does not hide already-spawned entities |
 | 3-tier LOD (`lod_mid_hash`/`lod_low_hash` node fields, 30/70/100 % bands, 0.5 s / 2 m hysteresis) | not built | out of scope for D-74; the tier thresholds and the hysteresis numbers are the reusable part if LOD returns |

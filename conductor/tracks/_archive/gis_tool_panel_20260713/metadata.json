@@ -11,6 +11,6 @@
     "hexon_path_asset_20260713"
   ],
   "archived": true,
-  "notes": "gardener_console gained a trailing tool_panel param; plugin.rs caller + ToolPanelState resource init wired at integration (plugin.rs shared with W7a pen tool). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 626f307). In-app/manual verification checkpoints, where noted, remain user-gated.",
+  "notes": "gardener_console gained a trailing tool_panel param; plugin.rs caller + ToolPanelState resource init wired at integration (plugin.rs shared with W7a pen tool). | PRUNE 2026-07-14: verified shipped + working in code (feature present, tested); flipped stale status->done and archived. | Archived 2026-07-15 session close-out: full workspace test sweep + clippy -D warnings + fmt green (commit 54fce7b). In-app/manual verification checkpoints, where noted, remain user-gated.",
   "archived_at": "2026-07-15T00:00:00Z"
 }

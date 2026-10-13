@@ -13,7 +13,7 @@ transferred (see §3).
 
 ## 1. What shipped
 
-- **FR-1..6 committed @ `320ebfe`**: `SelectionKind` typed read-model facade
+- **FR-1..6 committed @ `7bdcfbe`**: `SelectionKind` typed read-model facade
   (`node_manager/dispatch.rs` + `selection.rs`) over the two codified selection
   authorities (NOT a merge, ui_ux.md §5); object-type-aware left-click op
   table; FR-3 gimbal-on-path and FR-4 path-delete cascade-stamp QA fixes;
@@ -21,18 +21,18 @@ transferred (see §3).
   (`fe-terrain/src/terrain_proposal.rs`, `layers/stack.rs`,
   `terrain_plugin.rs` — never writing `TerrainHeightField`, the analytics
   contract); FR-6 ruler.rs geometry math wired into the scale/geometry report.
-- **The four in-app regression fixes landed @ `f223bfa`** — the metadata's
+- **The four in-app regression fixes landed @ `06abf7f`** — the metadata's
   2026-07-19 "LOCAL/uncommitted" validation note was **stale**; the fixes
   (GLB-select recursive-AABB-DFS, gimbal grab-wherever-shown +
   marker-body-yield, ribbon default 0.1, tool-inspector Phase 1 spillover) are
   committed.
-- **CI green @ `f5d9673`** — the workspace sweep including this track's
+- **CI green @ `7c82aa2`** — the workspace sweep including this track's
   surface passes the full Lint (`clippy -D warnings`) + build + test matrix.
 
 ## 2. Verification evidence
 
-- Commits: `320ebfe` (FR-1..6), `f223bfa` (regression fixes), CI success on
-  `f5d9673` (run 30055712210).
+- Commits: `7bdcfbe` (FR-1..6), `06abf7f` (regression fixes), CI success on
+  `7c82aa2` (run 30055712210).
 
 ## 3. DEFECT TRANSFERRED → ui_shell_architecture_20260724
 
