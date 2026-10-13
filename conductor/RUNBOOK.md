@@ -1,13 +1,13 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-10-12
-head: f986ee1
+updated: 2026-10-13
+head: fc459ea
 ---
 
 # FractalEngine — Runbook
 
-**Last updated:** 2026-10-12 · **Branch:** `main` · **Last commit:** see `git log -1`
+**Last updated:** 2026-10-13 · **Branch:** `main` · **Last commit:** see `git log -1`
 (written at `f986ee1` + this runbook commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
 
 Foundation under this file: `conductor/product.md`, `tech-stack.md`, `workflow.md`,
@@ -111,6 +111,11 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-10-13 session open:** origin/main = `fc459ea` — two `ci(fuzz)` commits (`3704950`,
+  `fc459ea`) landed after this runbook was written (prior Claude session). **CI fully green on
+  `fc459ea`** (run 38277696834: Lint incl. cargo-deny + bounded fuzz, Linux build+test, Windows,
+  `latest` prerelease) — §7 step 2 is moot. Ledger is stale (dated 10-10; "commit pending" rows
+  are committed; 7 NEEDS_RATIFICATION rows were decided 10-12) → W0 bookkeeping refreshes it.
 - **origin/main = `9e09b12` + `f986ee1` `26546ec` `e2a3349`** (all pushed 2026-10-12 under
   push-on-green; the last three are docs/assets only): untrack `.claude/settings.local.json`
   (its `.gitignore` line landed in `e2a3349`), this runbook, and the sample-GLB swap —
@@ -144,6 +149,70 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | Final sweep | full tests + harness + e2e | harness 14/15 → root-caused, `a210961` | GREEN after fix |
 
 ## 3. Decisions
+
+**From the 2026-10-13 grill (user, rolling):**
+- R1 · Delta: nothing new on the user's side (no in-app checks, pushes or constraints).
+- R1 · Git identity: this clone's `.git/config` had `user.name = hermes-agent`, which made every
+  commit (Claude's included) indistinguishable. Now `Jade Zaher` (matches global + GitHub);
+  Claude is credited via the `Co-Authored-By` trailer. Pushes `1e9be3a`/`e96c972` appear in no
+  Claude transcript — not investigated further (user chose the identity fix).
+- R1 · Direction: keep §7 as written (large phases → role propagation → 2026-10-12 decisions).
+- R2 · D-69 was already RESOLVED 2026-07-17 (Apache-2.0 single) — the old "licence gate" line was stale.
+- R2 · SCEA Duck copies (`fractalengine/assets/imported/`, 20 files): untrack + `.gitignore`
+  (local files kept) **and** purge from git history (filter-repo + force-push; root `duck.glb`
+  history too) **and** retire the `imported/` disk fallback in `crud.rs` (backfill any
+  referenced GLB into the blob store first).
+- R2 · 0.35 store fixture: generate it in Linux CI with the pinned generator
+  (`fe-sync/tests/fixtures/p2p_store_v035_gen`); the migration test FAILS instead of skipping
+  when `FE_REQUIRE_STORE_FIXTURE=1`. Fixture stays out of git.
+- R2 · CDL-R2 enrolment artifact: **self-signed, replicated** — the principal's ed25519 key signs
+  `{principal, device X25519 key, enrolled_at}`; only that principal may write it; replicates as
+  an ordinary row; revocation = signed tombstone. Unblocks a production `DeviceEnrolmentView`
+  in CDL Wave 4.
+- R3 · Decision register (`outstanding_decisions_20260715`): CLOSE 14 superseded (D-1, D-2,
+  D-10, D-14, D-21, D-36, D-50, D-55, D-61, D-68 per the 10-10 audit; D-11, D-22, D-23 per the
+  10-12 grill; D-62 by the iroh 1.3 port). RATIFY the 28 remaining [DEFAULTED] checklist items
+  as written (D-3, D-4, D-6, D-9, D-13, D-24, D-25, D-28, D-33, D-34, D-37, D-39, D-41, D-44,
+  D-45, D-49, D-52, D-54, D-56..D-60, D-63..D-67) — a 2026-10-12 decision wins on conflict
+  (D-54: f64 positions + ENU WKB frame). The no-default [USER] entries: agent drafts a
+  recommendation each AND walks them in grill rounds 4+.
+- R3 · History purge timing: NOW, before the campaign — bundle backup outside the repo →
+  `git filter-repo` strip the Duck blob(s) from every path → remap old→new SHA citations in
+  tracked docs + memory via filter-repo's commit-map → force-push `main` + `latest` → watch CI.
+  Repo is already PUBLIC (`Escherbridge/fractalengine`, 0 forks); 235/256 commits rewrite.
+- R4 · ACCEPTED as recommended: D-7 (node_log = local audit ring, K=1024; fe-sync never reads it),
+  D-8 (BIM stats via fe-query SQL only), D-31 (anything addressable is reportable via Copy API /
+  Report; bbox later), D-12 (open engine + format + reference tooling here; closed foundry /
+  registry / marketplace separate, repo created when first scheduled), D-15/16/18/19 (deferred to
+  the foundry), D-30 (agents may seed findings.md, tagged `[agent-seeded]`), D-35
+  (sign-first-then-promote OK), D-38 (snap to terrain when present, Y=0 otherwise → MSA-P4 doable).
+- R4 · OVERRIDES (user, verbatim intent): **D-5** "surrealdb stores a recordId for a file stored in
+  blob storage on iroh; extensions for IoT devices can bring their format and store whatever data
+  they want that way; allow for multiple records (a list of records)". **D-17** generic assets must
+  work alongside `hexon_p2p_bucket` (NOT foundry-only). **D-20** path asset stays. **D-32** "FR-4 is
+  needed". Exact shapes confirmed in R5.
+- R5 · **Generic asset + IoT payload model (D-5/D-17):** the existing `asset` table (MIME
+  `content_type` + iroh blob `content_hash` + `owner_did`, `fe-database/src/schema.rs:228`) is the
+  generic asset in core (open). A NEW device-payload record (node, petal, format, recorded_at,
+  **list of asset ids**) sits ALONGSIDE scalar `iot_reading` (which stays SQL/BI-queryable).
+  `hexon_p2p_bucket` builds on the same asset model (one model across IoT, path assets, buckets).
+- R5 · **Device extensions:** BOTH a declared format descriptor (format_id + MIME + optional
+  schema; bytes stored opaque) AND sandboxed decoder plugins (Rhai/Wasm → scalar readings /
+  properties). Decoders activate the dormant plugin host (PLUG-HOST) → mandatory sandbox security
+  review. Sequencing default: descriptor first, decoders after the host is wired.
+- R5 · **D-20:** path-asset W5 op-store (PetalHexon op-store + multi-asset x-fe-directory) is IN v1,
+  reconciled with the generic asset model. **D-32:** inspector FR-3 (petal/fractal/verse
+  inspection) AND FR-4 in full (role list + invites + role presets + audit history), after role
+  propagation.
+- R6 · ACCEPTED: D-40 archive light_box · D-42 Tauri shell spike closed NO-GO (Tauri stays the
+  webview backend only) · D-43 splat LOD fix not revived · D-47 onboarding wizard → user's UX
+  track, seedling_onboarding archived (its CRUD gap → D-48) · D-27 SSO admin UI in egui · **D-48**
+  verse/fractal/petal rename + delete over REST + MCP behind fe-policy (Manager+), on the existing
+  `RenameEntity`/`DeleteEntity` DbCommands · D-51 keep the current release matrix (no macOS).
+- R6 · **D-26 NOT accepted** (1 h + refresh unticked, no override) → stays open.
+- R6 · Relay host (D-23): undecided — the relay-assisted acceptance test runs against a LOCAL
+  iroh-relay 1.3 container; `FE_SYNC_RELAY` stays a settings placeholder until a host exists.
+- R6 · Loop ended by the user ("Done: start building") after 6 rounds.
 
 **From the 2026-10-12 grill (user):**
 - **Next work order:** large in-progress phases FIRST — PAS-P3+P4 (transport + chunk handlers +
@@ -188,6 +257,24 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 
 ## 4. Assumptions (highest reversal cost first — confirm the top line before building on it)
 
+**Added 2026-10-13 (unasked in the grill):**
+- Campaign shape: W0 housekeeping first (history purge + SHA remap, fixture CI generation,
+  `imported/` fallback retirement with blob backfill, ledger/register bookkeeping), then §7 steps
+  3-6 as ratified, ending in a final sweep + push. The 2026-10-13 scope additions (generic asset +
+  device-payload records + format descriptors, decoder plugins/PLUG-HOST, D-20 W5 op-store, D-32
+  inspector FR-3/FR-4, D-48 CRUD, MSA-P4 snap) form a SECOND campaign after that sweep, so the
+  first sweep is not deferred behind months of code · to reverse: merge the campaigns (cheap now).
+- Decoder plugins come after descriptors and after the plugin host is wired; sandbox security
+  review mandatory · to reverse: reorder (cheap).
+- v1 date: none given → "ready" = the v1 gate (public OSS release readiness) green; no external
+  consumers or demos · to reverse: tell me a date (re-plan).
+- User-owned, unscheduled: D-29 UX-QA pass, D-46 Download check, D-53/RCI-2.7 `v*` tag +
+  publishing, every in-app verification · to reverse: schedule them.
+- Campaign length unbounded (long horizon); report once at the end as an artifact; model tiers
+  per standing rules (haiku bookkeeping, sonnet standard, opus hard/review) · to reverse: time box.
+- The 0.35 fixture "stays untracked" assumption below is superseded by R2 (CI generation).
+
+**Carried from 2026-10-12:**
 - Role-table replication semantics: last-writer-wins by HLC per (verse, peer) row; revocation =
   tombstoned role row; the owner role is never replicated-in (derived from `created_by`) ·
   default taken: as stated · to reverse: redesign before anything depends on it (moderate).
