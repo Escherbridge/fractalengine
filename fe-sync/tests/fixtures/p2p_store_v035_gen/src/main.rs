@@ -3,8 +3,9 @@
 //! (fe-sync/src/AGENTS.md §store-migration).
 //!
 //! Standalone crate (NOT a workspace member; iroh 0.35 cannot coexist with
-//! the 1.x workspace). Regenerate with:
-//!   cd fe-sync/tests/fixtures/p2p_store_v035_gen && cargo run -- ../p2p_store_v035
+//! the 1.x workspace), pinned by its own Cargo.lock. The output is gitignored
+//! and CI-generated. Regenerate with:
+//!   cd fe-sync/tests/fixtures/p2p_store_v035_gen && cargo run --locked -- ../p2p_store_v035
 //! (the output dir must not exist yet).
 
 use iroh::protocol::Router;

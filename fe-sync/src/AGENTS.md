@@ -265,7 +265,7 @@ start fresh — rows written locally stay in SurrealDB, but doc-only rows
 re-syncing from 1.x peers.
 
 **Proof:** `p2p_store_migration::tests::legacy_v035_fixture_migrates_and_reads_back`
-copies the committed 0.35-written fixture `fe-sync/tests/fixtures/p2p_store_v035/`
+copies the 0.35-written fixture `fe-sync/tests/fixtures/p2p_store_v035/`
 (written by a real iroh 0.35 / iroh-docs 0.35 / iroh-blobs 0.35 build — the
 standalone, non-member generator crate beside it, `p2p_store_v035_gen/`,
 mirrors the 0.35 `DocsStack` + `IrohDocsReplicator` write path:
@@ -273,9 +273,45 @@ mirrors the 0.35 `DocsStack` + `IrohDocsReplicator` write path:
 row, a 40 KiB row that lands in `blobs/data/`, and a `Doc::del` tombstone),
 migrates it, spawns the 1.x `DocsStack` on it, reopens the doc secretlessly
 and asserts every `expected.json` row (len, blake3, tombstone flag), plus
-that a second migration is a no-op. The root `.gitignore` ignores `data/`, so
-it carries a negation for the fixture's `blobs/data/` dir. The test skips
-loudly if the fixture is ever removed.
+that a second migration is a no-op.
+
+**The fixture is generated, never committed** (RUNBOOK §3 R2, 2026-10-13).
+`fe-sync/tests/fixtures/p2p_store_v035/` is gitignored (~7 MB of redb + blob
+data). The generator is pinned: its own `[workspace]` with a committed
+`Cargo.lock`, always run `--locked`. It cannot join the root workspace,
+because iroh 0.35 and the 1.x stack cannot coexist in one dependency graph.
+Seeds are fixed but entry timestamps are not, so two runs are not
+byte-identical. That is fine: `expected.json` records content hashes, and any
+fresh run satisfies the test.
+
+- **Regenerate locally** (the output dir must not exist):
+  `cd fe-sync/tests/fixtures/p2p_store_v035_gen && rm -rf ../p2p_store_v035 && cargo run --locked -- ../p2p_store_v035`.
+  Its `target/` stays inside the generator dir and is gitignored.
+- **`FE_REQUIRE_STORE_FIXTURE` contract.** Unset, or any value but `1`: the
+  test skips with an `eprintln!` when `expected.json` is missing or the test
+  endpoint cannot bind, so a dev box without the fixture stays green. Set to
+  `1`: both skips become panics. A missing fixture or a skipped read-back is
+  then red, never skip-as-green. CI sets it. No fixture-path override exists;
+  the generator writes the default path directly.
+- **CI** (`.github/workflows/build-artifacts.yml`, `linux` job, after the
+  scoped test sweep — D-66 keeps fe-sync out of that sweep). The job runs the
+  generator in the dev profile. It then runs the 3 `p2p_store_migration` lib
+  tests with `FE_REQUIRE_STORE_FIXTURE=1`. Two choices in that step matter:
+  - It passes the sweep's `-p` set plus `-p fe-sync`. Cargo unifies features
+    over the selected packages, so `-p fe-sync` alone would resolve shared
+    crates (tokio, bevy, serde, …) differently and rebuild most of the
+    release graph. With the sweep's set, every dependency is reused. `--lib`
+    plus the name filter means only the migration tests run.
+  - The generator's `target/` is cached with plain `actions/cache`, keyed on
+    rustc + the generator lock. A second `Swatinem/rust-cache` would break
+    the main cache: its post step prunes `~/.cargo/registry/cache` down to
+    its own workspace's crates, and the main cache would then be saved
+    without its crates.
+  - The step tees the test output and greps for
+    `legacy_v035_fixture_migrates_and_reads_back ... ok`. A name filter that
+    matches zero tests exits 0, so a renamed or cfg'd-out test would
+    otherwise go green; the grep makes "the fixture test ran and passed" the
+    pass condition.
 
 ## §namespace-id-capability (SYNC-NSID-CAP, 2026-10-11)
 

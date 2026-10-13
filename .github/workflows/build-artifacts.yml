@@ -121,7 +121,10 @@ jobs:
     runs-on: ubuntu-latest
     # 150: cold-cache builds (e.g. after a profile change invalidates rust-cache)
     # need ~2h; warm-cache runs finish far under. 90 killed the first thin-LTO run.
-    timeout-minutes: 150
+    # 180: +headroom for the cold 0.35 fixture generator + store-migration test
+    # build. A timeout cancels the job and skips the cache save, so a too-tight
+    # cap would keep every later run cold.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -140,6 +143,7 @@ jobs:
             libgl1-mesa-dev
 
       - name: Install Rust toolchain
+        id: toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo + target
@@ -158,6 +162,43 @@ jobs:
           # Env-backed keystore: no OS keychain / Secret Service on runners.
           FE_KEYSTORE_BACKEND: env
         run: cargo test --release -p fe-ui -p fe-terrain -p fractalengine
+
+      # iroh 0.35 -> 1.x store-migration proof (fe-sync/src/AGENTS.md
+      # §store-migration). The 0.35 fixture is never committed: a real
+      # iroh 0.35 build writes it here, then the migration tests run with
+      # FE_REQUIRE_STORE_FIXTURE=1, so a missing fixture FAILS instead of skipping.
+      # The generator is its own workspace. Its target dir is cached with plain
+      # actions/cache: a second rust-cache would prune the shared
+      # ~/.cargo/registry down to its own crates before the main cache saves.
+      - name: Cache 0.35 fixture generator target
+        uses: actions/cache@v4
+        with:
+          path: fe-sync/tests/fixtures/p2p_store_v035_gen/target
+          key: v035-fixture-gen-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('fe-sync/tests/fixtures/p2p_store_v035_gen/Cargo.lock') }}
+
+      - name: Generate iroh 0.35 store fixture
+        timeout-minutes: 30
+        working-directory: fe-sync/tests/fixtures/p2p_store_v035_gen
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_INCREMENTAL: "0"
+        run: cargo run --locked -- ../p2p_store_v035
+
+      # Same -p set as the sweep (+ fe-sync): cargo unifies features across the
+      # selected packages, so this resolves exactly like the sweep and reuses
+      # its release build. --lib plus the name filter runs only the migration tests.
+      # The grep fails the step if the fixture test did not run and pass (a
+      # renamed or cfg'd-out test would otherwise match zero tests and go green).
+      - name: Store-migration test (0.35 fixture required)
+        timeout-minutes: 45
+        shell: bash
+        env:
+          FE_REQUIRE_STORE_FIXTURE: "1"
+        run: |
+          cargo test --release -p fe-ui -p fe-terrain -p fractalengine -p fe-sync --lib p2p_store_migration \
+            -- --color never 2>&1 | tee "$RUNNER_TEMP/store-migration-test.log"
+          grep -q 'p2p_store_migration::tests::legacy_v035_fixture_migrates_and_reads_back \.\.\. ok' \
+            "$RUNNER_TEMP/store-migration-test.log"
 
       - name: Upload fractalengine (GUI) binary
         uses: actions/upload-artifact@v4

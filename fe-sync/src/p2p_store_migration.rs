@@ -167,9 +167,17 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    /// Committed 0.35-written fixture (see AGENTS.md §store-migration).
+    /// Generated (never committed) 0.35-written fixture (see AGENTS.md §store-migration).
     fn fixture_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p2p_store_v035")
+    }
+
+    /// Skips the test, or fails it when `FE_REQUIRE_STORE_FIXTURE=1` (AGENTS.md §store-migration).
+    fn skip_unless_required(reason: &str) {
+        if std::env::var("FE_REQUIRE_STORE_FIXTURE").is_ok_and(|v| v == "1") {
+            panic!("FE_REQUIRE_STORE_FIXTURE=1 forbids skipping: {reason}");
+        }
+        eprintln!("skipping: {reason}");
     }
 
     #[test]
@@ -209,10 +217,11 @@ mod tests {
         let fixture = fixture_dir();
         let expected_path = fixture.join("expected.json");
         if !expected_path.is_file() {
-            eprintln!(
-                "skipping: 0.35 store fixture not generated yet ({}); see AGENTS.md §store-migration",
+            skip_unless_required(&format!(
+                "0.35 store fixture not generated ({}); run the p2p_store_v035_gen generator \
+                 (fe-sync/src/AGENTS.md §store-migration)",
                 fixture.display()
-            );
+            ));
             return;
         }
         let expected: serde_json::Value =
@@ -246,7 +255,7 @@ mod tests {
         {
             Ok(ep) => ep,
             Err(e) => {
-                eprintln!("skipping read-back: endpoint bind failed ({e})");
+                skip_unless_required(&format!("read-back: endpoint bind failed ({e})"));
                 return;
             }
         };
