@@ -9,10 +9,7 @@ use fe_runtime::messages::{
 };
 
 use super::invite::{generate_namespace_secret, store_namespace_secret};
-use crate::{
-    hash_from_hex, hash_to_hex, imported_assets_dir, replicate_row, BlobStoreHandle,
-    ReplicationSender, IMPORTED_ASSETS_SUBDIR,
-};
+use crate::{hash_from_hex, hash_to_hex, replicate_row, BlobStoreHandle, ReplicationSender};
 
 // ---------------------------------------------------------------------------
 // Verse
@@ -745,35 +742,23 @@ pub(crate) async fn load_hierarchy_handler(
     // -----------------------------------------------------------------------
     // Phase 4: Assemble the hierarchy tree in-memory
     // -----------------------------------------------------------------------
+    // Blob store is the only asset source (src/AGENTS.md §asset-resolution).
     let resolve_asset_path = |aid: &str| -> Option<String> {
-        if let Some(ch) = asset_hash_map.get(aid) {
-            if let Ok(hash) = hash_from_hex(ch) {
-                if blob_store.has_blob(&hash) {
-                    return Some(format!("blob://{}.glb", ch));
-                }
+        let Some(ch) = asset_hash_map.get(aid) else {
+            tracing::warn!("Hierarchy asset missing for asset_id={aid} (no content_hash)");
+            return None;
+        };
+        match hash_from_hex(ch) {
+            Ok(hash) if blob_store.has_blob(&hash) => Some(format!("blob://{ch}.glb")),
+            Ok(_) => {
                 tracing::warn!("Blob missing for asset_id={aid} content_hash={ch}");
+                None
+            }
+            Err(e) => {
+                tracing::warn!("Invalid content_hash for asset_id={aid}: {e}");
+                None
             }
         }
-        let dir = imported_assets_dir();
-        for ext in ["glb", "gltf"] {
-            let file_name = format!("{}.{}", aid, ext);
-            let disk_path = dir.join(&file_name);
-            let exists = disk_path.exists();
-            tracing::debug!(
-                "Hierarchy asset probe: {} exists={}",
-                disk_path.display(),
-                exists
-            );
-            if exists {
-                let rel = std::path::Path::new(IMPORTED_ASSETS_SUBDIR)
-                    .join(&file_name)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                return Some(rel);
-            }
-        }
-        tracing::warn!("Hierarchy asset missing for asset_id={aid} (no blob, no imported file)");
-        None
     };
 
     let verses: Vec<VerseHierarchyData> = verses_raw

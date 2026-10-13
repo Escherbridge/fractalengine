@@ -9,11 +9,9 @@ graph TD
     Read --> Hash[BLAKE3 Hash<br/>Content Address]
 
     Hash --> BlobStore[BlobStore::add_blob<br/>Content-addressed storage]
-    Hash --> Copy[Copy to<br/>assets/imported/{hash}.glb]
 
     BlobStore --> AssetRow[CREATE asset {<br/>  asset_id, name,<br/>  content_type, size_bytes,<br/>  content_hash<br/>}]
-    Copy --> NodeRow[CREATE node {<br/>  node_id, petal_id,<br/>  asset_id, position,<br/>  elevation<br/>}]
-    AssetRow --> NodeRow
+    AssetRow --> NodeRow[CREATE node {<br/>  node_id, petal_id,<br/>  asset_id, position,<br/>  elevation<br/>}]
 
     NodeRow --> Result[DbResult::GltfImported]
     Result --> Spawn[Bevy: Spawn SceneRoot<br/>at click position]
@@ -21,7 +19,7 @@ graph TD
 
     subgraph "Content Addressing"
         Hash2[BLAKE3 bytes → hex string]
-        Path["Asset path: blob://{hash}.glb<br/>or assets/imported/{hash}.glb"]
+        Path["Asset path: blob://{hash}.glb<br/>(blob store is the only source)"]
     end
 
     Hash --> Hash2 --> Path
@@ -48,6 +46,33 @@ sequenceDiagram
     end
 
     Note over Startup: Legacy rows now reference<br/>blob store via content_hash
+```
+
+## Legacy `imported/` Backfill (one-time, idempotent)
+
+Runs right after the Phase C migration. The disk fallback that used to serve
+`fractalengine/assets/imported/<asset_id>.glb` is retired; see
+`fe-database/src/AGENTS.md` §asset-resolution.
+
+```mermaid
+sequenceDiagram
+    participant Startup as DB Thread Startup
+    participant Dir as assets/imported/ (legacy, read-only)
+    participant DB as SurrealDB (T3)
+    participant Blob as BlobStore
+
+    Startup->>Dir: any .glb / .gltf?
+    alt none (fresh install)
+        Note over Startup: return immediately
+    else legacy files present
+        Startup->>DB: SELECT asset_id, content_hash FROM asset
+        loop rows with no content_hash or a missing blob
+            Startup->>Dir: read {asset_id}.glb (else .gltf)
+            Startup->>Blob: add_blob(bytes)
+            Startup->>DB: UPDATE asset SET content_hash, size_bytes
+        end
+        Note over Startup: log backfilled / missing / failed<br/>legacy files are never deleted
+    end
 ```
 
 ## Asset Distribution (Peer-to-Peer)

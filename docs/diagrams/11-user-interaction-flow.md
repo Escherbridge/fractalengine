@@ -52,7 +52,6 @@ sequenceDiagram
     T3->>T3: Read file bytes
     T3->>T3: BLAKE3(bytes) → content_hash
     T3->>Blob: add_blob(bytes)
-    T3->>T3: Copy to assets/imported/{hash}.glb
     T3->>T3: CREATE asset { asset_id, content_hash, size_bytes }
     T3->>T3: CREATE node { node_id, petal_id, asset_id, position }
 

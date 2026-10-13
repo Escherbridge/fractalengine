@@ -1,10 +1,11 @@
 //! Diagnostic: dump nodes, assets, petals from the local SurrealDB.
-//! Run with: cargo run -p fe-database --example dump_db
+//! Run with: [FE_DB_PATH=data/fractalengine.db] cargo run -p fe-database --example dump_db
 use surrealdb::engine::local::SurrealKv;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let db = surrealdb::Surreal::new::<SurrealKv>("data/fractalengine.db").await?;
+    let path = std::env::var("FE_DB_PATH").unwrap_or_else(|_| "data/fractalengine.db".to_string());
+    let db = surrealdb::Surreal::new::<SurrealKv>(path.as_str()).await?;
     db.use_ns("fractalengine").use_db("fractalengine").await?;
 
     println!("=== VERSES ===");
@@ -43,19 +44,23 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    println!("\n=== ASSETS (name only) ===");
+    println!("\n=== ASSETS (no bytes) ===");
     let mut r = db
-        .query("SELECT asset_id, name, size_bytes FROM asset")
+        .query("SELECT asset_id, name, size_bytes, content_hash FROM asset")
         .await?;
     let rows: Vec<serde_json::Value> = r.take(0)?;
     for a in &rows {
-        println!("  {} : {} ({}b)", a["asset_id"], a["name"], a["size_bytes"]);
+        println!(
+            "  {} : {} ({}b) content_hash={}",
+            a["asset_id"], a["name"], a["size_bytes"], a["content_hash"]
+        );
     }
 
-    println!("\n=== IMPORTED FILES ON DISK ===");
-    let dir = std::path::Path::new("fractalengine/assets/imported");
+    // Legacy pre-blob imports: read once by the startup backfill, never served.
+    println!("\n=== LEGACY IMPORTED FILES ON DISK (backfill source) ===");
+    let dir = fe_database::imported_assets_dir();
     if dir.exists() {
-        for e in std::fs::read_dir(dir)? {
+        for e in std::fs::read_dir(&dir)? {
             let e = e?;
             println!("  {}", e.file_name().to_string_lossy());
         }

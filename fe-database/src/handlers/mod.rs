@@ -3,6 +3,7 @@
 
 pub mod admin;
 pub mod api_token;
+pub mod asset_backfill;
 pub mod asset_gc;
 pub mod crate_registry;
 pub mod crud;

@@ -89,14 +89,12 @@ pub use role_level::RoleLevel;
 pub use scope::{build_scope, parent_scope, parse_scope, scope_contains, ScopeParts};
 pub use types::*;
 
-/// Subdirectory under `fractalengine/assets/` where imported GLTF/GLB files are written.
-/// Used by BOTH the write path (`import_gltf_handler`) and the read path
-/// (`load_hierarchy_handler`) so the two stay in sync.
+/// Legacy `fractalengine/assets/` subdirectory of pre-blob-store GLB imports —
+/// source for the one-time startup backfill only (src/AGENTS.md §asset-resolution).
 pub const IMPORTED_ASSETS_SUBDIR: &str = "imported";
 
-/// Base directory (relative to CWD) where imported assets live on disk.
-/// The Bevy asset server loads files relative to `fractalengine/assets/`, so the
-/// path passed to `asset_server.load(...)` uses only `IMPORTED_ASSETS_SUBDIR` as the prefix.
+/// Legacy imports directory (relative to CWD), read only by the one-time
+/// blob-store backfill; nothing writes or serves from it any more.
 pub fn imported_assets_dir() -> std::path::PathBuf {
     std::path::Path::new("fractalengine")
         .join("assets")
@@ -468,6 +466,18 @@ pub fn spawn_db_thread_with_sync_and_lifecycle(
                     }
                 }
                 Err(e) => tracing::error!("Asset migration failed: {e}"),
+            }
+
+            // Legacy imported/ files → blob store, before the first LoadHierarchy
+            // (src/AGENTS.md §asset-resolution). Failure must not prevent startup.
+            if let Err(e) = handlers::asset_backfill::backfill_imported_assets(
+                &db,
+                &blob_store,
+                &imported_assets_dir(),
+            )
+            .await
+            {
+                tracing::error!("Legacy imported/ asset backfill failed: {e}");
             }
 
             tracing::info!("SurrealDB ready");
@@ -1677,13 +1687,10 @@ async fn migrate_base64_assets_to_blob_store(
 mod subdir_tests {
     use super::*;
 
+    /// The backfill must read where the pre-blob import path wrote; a moved
+    /// path would make the startup backfill silently find nothing.
     #[test]
-    fn imported_assets_subdir_constant() {
-        assert_eq!(IMPORTED_ASSETS_SUBDIR, "imported");
-    }
-
-    #[test]
-    fn imported_assets_dir_joins_correctly() {
+    fn legacy_imported_dir_is_where_old_imports_were_written() {
         let p = imported_assets_dir();
         assert!(
             p.ends_with("imported"),

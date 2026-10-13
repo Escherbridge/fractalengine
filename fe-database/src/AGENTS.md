@@ -7,7 +7,8 @@ doc comments; the "why" lives here.
 
 Two read-only examples inspect the live SurrealKV store (`FE_DB_PATH`, default
 `data/fractalengine.db`): `examples/dump_db.rs` (raw row dump of
-verse/petal/node/asset) and `examples/inspect_db.rs` (table discovery via
+verse/petal/node/asset incl. `content_hash`, plus a listing of the legacy
+`imported/` backfill source — §asset-resolution) and `examples/inspect_db.rs` (table discovery via
 `INFO FOR DB`, per-table row counts, top petals by node count, node property
 histograms, gpx_points sizes, node_log/asset breakdowns, disk size). Both open
 the store normally but run only SELECT queries — safe against the user's live
@@ -389,6 +390,8 @@ one sub-module per domain:
   and hexon blobs share the store). Fire-and-forget: success replies
   `AssetsGarbageCollected`; failure is only logged, because an uncorrelated
   `Error` would be delivered to the oldest API waiter
+- `asset_backfill` — one-time startup ingest of legacy `imported/` GLBs into
+  the blob store (§asset-resolution)
 - `entity` — rename, delete, description updates
 - `entity_property` — custom property CRUD for nodes
 - `field_def` — field definition schema CRUD
@@ -451,6 +454,55 @@ one sub-module per domain:
   `DEFAULT 'viewer'` (no ASSERT), so without this a replicated manifest
   could set `"editor"` and make every unknown peer resolve to a writer for
   that verse, defeating A3 deny-by-default on the one path that writes it.
+
+## §asset-resolution
+
+**The blob store is the only asset source** (retired 2026-10-13, RUNBOOK §3
+R2). `load_hierarchy_handler`'s `resolve_asset_path` and
+`load_nodes_by_petal_handler` turn a node's `asset_id` into
+`blob://{content_hash}.glb` only when the asset row has a `content_hash`
+whose blob `has_blob`; anything else is `None` (no mesh) with a warn in the
+hierarchy path ("no content_hash" / "Blob missing" / "Invalid content_hash").
+There is **no disk fallback** any more: the old resolver probed
+`fractalengine/assets/imported/<asset_id>.{glb,gltf}` and returned the
+asset-server-relative `imported/<file>` path. Nothing has written that
+directory since import moved to the blob store (`import_gltf_handler`,
+`seed_assets`, API `create_asset_reply` all `add_blob` then record the hash);
+it is now gitignored and its local copies are kept.
+
+**One-time backfill** (`handlers/asset_backfill.rs`,
+`backfill_imported_assets`) closes the gap for rows that only ever rendered
+via that fallback:
+
+- **Where:** the DB thread's startup block, right after the Phase C
+  base64→blob migration and before `DbResult::Started`. That block is the one
+  place that already owns both the `Db` and the `BlobStoreHandle`, runs once
+  per process, and finishes before the UI can send the first `LoadHierarchy`
+  — so the first hierarchy load already sees the backfilled hashes. Doing it
+  lazily inside `load_hierarchy_handler` would put disk I/O and writes on a
+  read path that runs on every navigation reload. Failure is logged and never
+  blocks startup (same contract as Phase C).
+- **What:** if `imported_assets_dir()` holds no `.glb`/`.gltf` (the normal
+  case on a fresh install) it returns before touching the DB. Otherwise it
+  scans every `asset` row (`asset_id, content_hash`); a row whose
+  hash parses and whose blob exists is skipped (this is the idempotency — a
+  second run finds nothing). For the rest it ingests
+  `<asset_id>.glb`, else `.gltf` (the old probe order) with `add_blob` and
+  `UPDATE asset SET content_hash, size_bytes` (`size_bytes` is always the
+  ingested file's length, so it matches the blob the row now names, even
+  when the hash was re-pointed). Summary log:
+  `backfilled` / `missing` (no blob and no legacy file — unrecoverable here;
+  the node renders without a mesh and the resolver warns) / `failed`.
+- **Full scan, not dir-driven:** the `missing` count needs every row; the
+  cost (one SELECT + one `has_blob` stat per row) is paid only on machines
+  that still have legacy files.
+- **Hash replacement:** a row whose recorded `content_hash` blob is gone but
+  whose legacy file hashes differently is re-pointed at the file's hash (warn
+  logged) — that file is exactly what the old fallback was rendering.
+- **Local-only, never deletes:** like Phase C it is a plain `UPDATE` (no
+  `replicate_row` call site emits the `asset` table) and it never removes files from the legacy
+  directory. `IMPORTED_ASSETS_SUBDIR` / `imported_assets_dir()` survive only
+  as the backfill's source path (`examples/dump_db.rs` lists the directory).
 
 ## §timeseries-settings (M2/F6)
 

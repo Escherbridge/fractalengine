@@ -196,7 +196,7 @@ sequenceDiagram
     T3->>T3: Read file bytes
     T3->>T3: BLAKE3 hash → content_hash
     T3->>Blob: blob_store.add_blob(bytes)
-    T3->>T3: Copy to assets/imported/{content_hash}.glb
+    Note over T3,Blob: Blob store is the only copy — no assets/imported/ file<br/>(legacy imports are backfilled at startup)
 
     T3->>T3: CREATE asset { asset_id, name, content_hash, ... }
     T3->>T3: CREATE node { node_id, petal_id, asset_id, position, ... }
