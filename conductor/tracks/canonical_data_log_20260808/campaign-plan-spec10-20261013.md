@@ -33,6 +33,8 @@ status: proposed
 >    id. Treat it as a retry only when the existing row has the same petal (and the same source/principal);
 >    otherwise return a conflict that reveals nothing. Test: a retry from another petal/principal gets the
 >    conflict and no asset ids.
+>    Also (repeat automated review, 2026-10-14): validate a client-supplied `payload_id` as a ULID, and scope
+>    `fetch_payload` itself by petal so no other caller can reuse the unscoped lookup.
 
 This plan covers the fourth large phase in RUNBOOK §7 step 3 (PAS-P3+P4 → PAS-P5 → CDL Wave 4 → **CDL SPEC-10**).
 The phase is first a **specification deliverable**. The owner approves specs (track `plan.md`, "Workstream S";
