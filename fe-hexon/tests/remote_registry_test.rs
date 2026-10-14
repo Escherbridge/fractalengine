@@ -13,6 +13,7 @@ use fe_hexon_registry::{build_router, scan_dir, RegistryState};
 const ALPINE_V12_BLOB: &[u8] = b"alpine tile data v1.2.0 (newer)";
 
 /// Minimal fixture builder (mirrors fe-hexon-registry/tests/support/fixtures.rs).
+#[allow(clippy::too_many_arguments)] // test fixture — params mirror manifest fields
 fn build_hexon(
     id: &str,
     version: &str,

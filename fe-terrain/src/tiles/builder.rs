@@ -33,6 +33,12 @@ mod inner {
     /// `render::SplatConfig::stride`) is fine and gives the fill less work.
     const BAKE_SPLAT_STRIDE: usize = 1;
 
+    /// Shared, lock-guarded accumulator of `(cache_key, tile_bytes)` pairs
+    /// collected across the sequential download loop in `download_tiles`
+    /// (C10 feature-matrix gate: factored out of the call site's type
+    /// annotation, which clippy's `type_complexity` flags at `fetch,render`).
+    type DownloadedTiles = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
     /// Result of a tileset build operation.
     #[derive(Debug, Clone)]
     pub struct TilesetBuildResult {
@@ -116,7 +122,7 @@ mod inner {
 
             let downloaded: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
             let failed: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
-            let tiles: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+            let tiles: DownloadedTiles = Arc::new(Mutex::new(Vec::new()));
 
             // Download tiles sequentially to respect source's internal semaphore
             for coord in &coords {

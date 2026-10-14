@@ -8,6 +8,10 @@ use crate::manifest::{HexonKind, HexonManifest, InstalledCrate};
 use crate::package::{hexon_uri, HexonPackageData};
 use crate::signature;
 
+/// Overrides [`FsBlobStore::default_path`]'s `data/blobs` default — identical
+/// name and precedence to fe-sync's own copy (OF-1/S1b).
+const FE_BLOB_DIR_ENV: &str = "FE_BLOB_DIR";
+
 /// Error types for registry operations.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -104,9 +108,24 @@ impl FsBlobStore {
         ))
     }
 
-    /// Default location: the runtime blob root,
-    /// `{dirs::data_local_dir()}/fractalengine/blobs/` (same as fe-sync's store).
+    /// Default location: the runtime blob root, co-located with this
+    /// install's own DB at `data/blobs` (CWD-relative), overridable by
+    /// `FE_BLOB_DIR` — identical logic to fe-sync's `FsBlobStore::default_path`
+    /// so the two independently-maintained copies never re-diverge (OF-1/S1b,
+    /// fe-hexon/src/AGENTS.md §blob-store).
     pub fn default_path() -> PathBuf {
+        if let Ok(dir) = std::env::var(FE_BLOB_DIR_ENV) {
+            return PathBuf::from(dir);
+        }
+        PathBuf::from("data").join(fe_runtime::blob_store::DEFAULT_BLOB_DIR_NAME)
+    }
+
+    /// Pre-2026-10-14 per-user default, kept only so existing callers of a
+    /// literal `dirs::data_local_dir()` path can be compared in tests
+    /// (migration itself lives in `fe-database::handlers::blob_migration`,
+    /// which reads fe-sync's `legacy_default_path` — fe-hexon has no
+    /// migration pass of its own, since both stores share one on-disk root).
+    pub fn legacy_default_path() -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("fractalengine")
@@ -416,6 +435,25 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
     use std::collections::HashMap;
+
+    /// `FE_BLOB_DIR` is process-global; serialize tests that touch it.
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn default_path_under_data_dir_with_no_override() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(FE_BLOB_DIR_ENV);
+        assert_eq!(FsBlobStore::default_path(), PathBuf::from("data/blobs"));
+    }
+
+    #[test]
+    fn default_path_honors_fe_blob_dir_override() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(FE_BLOB_DIR_ENV, "/custom/blobs");
+        let got = FsBlobStore::default_path();
+        std::env::remove_var(FE_BLOB_DIR_ENV);
+        assert_eq!(got, PathBuf::from("/custom/blobs"));
+    }
 
     fn test_signing_key() -> SigningKey {
         SigningKey::generate(&mut OsRng)

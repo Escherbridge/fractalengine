@@ -52,10 +52,14 @@ fe-runtime (trait)  <---  fe-database (uses handle)
 Hashes are raw BLAKE3 digests (`[u8; 32]`); hex encoding is provided for DB
 rows (`content_hash` column) and paths (`blob://{hex}.glb`).
 
-**Canonical on-disk layout (RT-FSBLOB, 2026-10-11).** Every filesystem blob
-store lays a blob out as `{root}/{hex[0..2]}/{hex}` (`blob_relative_path` /
-`canonical_blob_path`), and the default root is
-`{data_local_dir}/fractalengine/{DEFAULT_BLOB_DIR_NAME}` (`blobs`). Both
+**Canonical on-disk layout (RT-FSBLOB, 2026-10-11; default root corrected
+OF-1/S1b, 2026-10-14).** Every filesystem blob store lays a blob out as
+`{root}/{hex[0..2]}/{hex}` (`blob_relative_path` / `canonical_blob_path`), and
+the default root is now **`data/{DEFAULT_BLOB_DIR_NAME}`** (`data/blobs`,
+CWD-relative, overridable by `FE_BLOB_DIR`) — co-located with this install's
+own DB, not the pre-2026-10-14 per-user `{data_local_dir}/fractalengine/blobs`
+(that expression survives only as `legacy_default_path()`, the one-time
+migration source for `fe-database::handlers::blob_migration`). Both
 `fe_sync::FsBlobStore` (the runtime store) and `fe_hexon::registry::FsBlobStore`
 (hexon installs, material/texture loading) build paths only through these
 helpers, so a hexon-installed blob is servable by the runtime store and a
@@ -409,9 +413,12 @@ things key off it:
 A dev build is never "packaged": `target/{debug,release}/assets` does not
 exist, so `cargo run` behaves exactly as before. The relay does not use this:
 it is a server and keeps `FE_DB_PATH` / `FE_P2P_DIR` (CWD-relative defaults).
-Per-user state outside `data/` is unaffected: the blob store
-(`<data_local_dir>/fractalengine/blobs`), settings
-(`<config_dir>/fractalengine/settings.ron`) and the OS keychain identity.
+**Correction (OF-1/S1b, 2026-10-14):** the blob store is no longer per-user
+state — it is per-install, under `data/blobs` beside `data/fractalengine.db`,
+the same `set_current_dir(packaged_root)` guarantee covers it. Only settings
+(`<config_dir>/fractalengine/settings.ron`) and the OS keychain identity
+remain per-user outside `data/`; the old per-user blob path is named only as
+`FsBlobStore::legacy_default_path()`, the one-time migration source.
 
 ## §render-pressure (p2p_asset_streaming S8, D-74 B3)
 

@@ -153,6 +153,44 @@ fn main() {
         }
     };
 
+    // OF-1/S1b: co-locate the blob store with this install's own DB. The
+    // pre-2026-10-14 default was per-USER while the DB is per-INSTALL, so one
+    // machine's installs could share a blob store and one install's asset GC
+    // could delete a blob another install's DB still referenced. Runs once,
+    // right after the DB thread's shared handle is ready and before
+    // `blob_store` is handed to anything else (the sync thread below,
+    // `schedule_asset_gc`'s periodic Bevy system) — see
+    // fe-database/src/handlers/blob_migration.rs, fe-sync/src/AGENTS.md
+    // §blob-store. A migration failure is logged and never blocks startup:
+    // the store is still usable, just not backfilled.
+    {
+        let legacy_root = fe_sync::FsBlobStore::legacy_default_path();
+        let new_root = fe_sync::FsBlobStore::default_path();
+        let migration_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("blob migration runtime");
+        match migration_rt.block_on(
+            fe_database::handlers::blob_migration::migrate_legacy_blob_store(
+                &shared_db,
+                blob_store.as_ref(),
+                &new_root,
+                &legacy_root,
+            ),
+        ) {
+            Ok(report) if report.copied > 0 => {
+                tracing::info!(
+                    copied = report.copied,
+                    "Migrated blobs from the legacy per-user store"
+                )
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(%error, "Legacy blob-store migration failed — continuing with an unmigrated store")
+            }
+        }
+    }
+
     // `lifecycle_rx` rides into `BevyHandles` below: fe-runtime pumps it into
     // `Messages<LifecycleEvent>` so in-app consumers (fe-ui PathReflow re-flow,
     // T5 reporting) observe create/promote/tombstone/reflow (FR-6). The op-log

@@ -1,5 +1,27 @@
 # fe-sync — module notes
 
+## §blob-store (default path, corrected OF-1/S1b 2026-10-14)
+
+`FsBlobStore::default_path()` is **per-install**, co-located with that
+install's own DB: `data/blobs` (CWD-relative; the GUI binary's
+`set_current_dir(packaged_root)` lands it beside `data/fractalengine.db`),
+overridable by `FE_BLOB_DIR` — same override-env-first precedence as the
+relay's `FE_DB_PATH`/`FE_P2P_DIR`. It was previously **per-user**
+(`{data_local_dir}/fractalengine/blobs`), which every install on one machine
+shared; asset GC's "my DB doesn't name this hash" check (fe-database
+src/AGENTS.md §handlers asset_gc) is only correct when the store it operates
+on is exclusive to that DB, so a shared store let install A's GC delete a
+blob install B's DB still referenced. The old expression survives only as
+`legacy_default_path()`, read once by
+`fe_database::handlers::blob_migration::migrate_legacy_blob_store` at startup
+to copy forward (never move or delete) anything a DB still names. Both
+`fe_sync::FsBlobStore` and `fe_hexon::registry::FsBlobStore::default_path()`
+(the independently-maintained duplicate, fe-hexon src/AGENTS.md §blob-store)
+carry identical `FE_BLOB_DIR`/`data/blobs` logic — covered by
+`fe-test-harness/tests/blob_store_cross_read.rs`'s
+`default_path_agrees_between_fe_sync_and_fe_hexon` so the two never
+re-diverge.
+
 ## §blob-store-directory-initialization
 
 `FsBlobStore` evaluates `create_dir_all` by its required postcondition: an error

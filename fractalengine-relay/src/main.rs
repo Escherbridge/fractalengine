@@ -130,6 +130,38 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // OF-1/S1b: co-locate the blob store with this install's own DB, mirroring
+    // the GUI binary (see fractalengine/src/main.rs for the full rationale).
+    // Runs once, right after the shared DB handle is ready and before
+    // `blob_store` is handed to the sync thread below.
+    {
+        let legacy_root = fe_sync::FsBlobStore::legacy_default_path();
+        let new_root = fe_sync::FsBlobStore::default_path();
+        let migration_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("blob migration runtime");
+        match migration_rt.block_on(
+            fe_database::handlers::blob_migration::migrate_legacy_blob_store(
+                &shared_db,
+                blob_store.as_ref(),
+                &new_root,
+                &legacy_root,
+            ),
+        ) {
+            Ok(report) if report.copied > 0 => {
+                tracing::info!(
+                    copied = report.copied,
+                    "Migrated blobs from the legacy per-user store"
+                )
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(%error, "Legacy blob-store migration failed — continuing with an unmigrated store")
+            }
+        }
+    }
+
     // A10 letter gap (F20 fold-in): the seed send was a bare `.ok()` — a
     // closed DB channel (dead DB thread) was silent. Mirror the GUI's
     // seed-gate: loud error + exit, never a quiet drop.

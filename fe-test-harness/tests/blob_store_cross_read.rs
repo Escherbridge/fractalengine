@@ -34,6 +34,27 @@ fn hexon_stored_blob_is_servable_by_the_runtime_store() {
     assert_eq!(std::fs::read(path).expect("read blob"), bytes);
 }
 
+/// OF-1/S1b: the two independently-maintained `FsBlobStore::default_path()`
+/// copies (fe-sync, fe-hexon) must never re-diverge. `FE_BLOB_DIR` is
+/// process-global, so this is the one test allowed to set it — pinned to a
+/// value so CI never touches a real per-user directory.
+#[test]
+fn default_path_agrees_between_fe_sync_and_fe_hexon() {
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
+    std::env::set_var("FE_BLOB_DIR", "/ci-pinned/blobs");
+    let runtime_default = fe_sync::FsBlobStore::default_path();
+    let hexon_default = fe_hexon::registry::FsBlobStore::default_path();
+    std::env::remove_var("FE_BLOB_DIR");
+
+    assert_eq!(runtime_default, hexon_default);
+    assert_eq!(
+        runtime_default,
+        std::path::PathBuf::from("/ci-pinned/blobs")
+    );
+}
+
 #[test]
 fn hexon_store_refuses_data_that_does_not_match_its_hash() {
     let root = tempfile::tempdir().expect("tempdir");

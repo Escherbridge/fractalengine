@@ -12,6 +12,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+/// Overrides [`FsBlobStore::default_path`]'s `data/blobs` default, same
+/// precedence pattern as the relay's `FE_DB_PATH`/`FE_P2P_DIR` (OF-1/S1b).
+const FE_BLOB_DIR_ENV: &str = "FE_BLOB_DIR";
+
 fn finish_create_dir(path: &Path, result: io::Result<()>) -> anyhow::Result<()> {
     match result {
         Ok(()) => Ok(()),
@@ -57,9 +61,28 @@ impl FsBlobStore {
         Ok(Self { root })
     }
 
-    /// Default blob store location:
-    /// `{dirs::data_local_dir()}/fractalengine/blobs/`.
+    /// Default blob store location: co-located with this install's own DB,
+    /// `data/blobs` (CWD-relative — the GUI binary already
+    /// `set_current_dir(packaged_root)`s before this runs), overridable by
+    /// `FE_BLOB_DIR` (same override-env-first precedence as the relay's
+    /// `FE_DB_PATH`/`FE_P2P_DIR`). OF-1/S1b: the pre-2026-10-14 default was
+    /// per-USER while the DB is per-INSTALL, so one machine's installs shared
+    /// one blob store and install A's asset GC could delete a blob install
+    /// B's DB still referenced — see `legacy_default_path` and
+    /// `fe-database::handlers::blob_migration` (fe-sync/src/AGENTS.md
+    /// §blob-store-directory-initialization).
     pub fn default_path() -> PathBuf {
+        if let Ok(dir) = std::env::var(FE_BLOB_DIR_ENV) {
+            return PathBuf::from(dir);
+        }
+        PathBuf::from("data").join(DEFAULT_BLOB_DIR_NAME)
+    }
+
+    /// Pre-2026-10-14 per-user default (`{data_local_dir}/fractalengine/blobs`).
+    /// Kept only as the one-time migration source for
+    /// `fe-database::handlers::blob_migration::migrate_legacy_blob_store` —
+    /// never re-inlined into `default_path` (OF-1/S1b).
+    pub fn legacy_default_path() -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("fractalengine")
@@ -155,6 +178,11 @@ mod tests {
     use super::*;
     use fe_runtime::blob_store::hash_to_hex;
 
+    /// `FE_BLOB_DIR` is process-global; serialize the tests that touch it so
+    /// `default_path` reads a stable value (same pattern as
+    /// `fe-hexon/src/p2p/config.rs`).
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn round_trip_add_get_remove() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -242,9 +270,29 @@ mod tests {
         assert!(!store.has_blob(&hash));
     }
 
+    /// OF-1/S1b: packaged layout puts blobs under `data/`, never
+    /// `dirs::data_local_dir()`, when no override is set.
     #[test]
-    fn default_path_under_data_local_dir() {
-        let p = FsBlobStore::default_path();
+    fn default_path_under_data_dir_with_no_override() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(FE_BLOB_DIR_ENV);
+        assert_eq!(FsBlobStore::default_path(), PathBuf::from("data/blobs"));
+    }
+
+    #[test]
+    fn default_path_honors_fe_blob_dir_override() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(FE_BLOB_DIR_ENV, "/custom/blobs");
+        let got = FsBlobStore::default_path();
+        std::env::remove_var(FE_BLOB_DIR_ENV);
+        assert_eq!(got, PathBuf::from("/custom/blobs"));
+    }
+
+    /// The pre-2026-10-14 expression stays exactly as it was, under its new
+    /// name — migration's only remaining caller.
+    #[test]
+    fn legacy_default_path_under_data_local_dir() {
+        let p = FsBlobStore::legacy_default_path();
         let s = p.to_string_lossy().replace('\\', "/");
         assert!(s.contains("fractalengine/blobs"), "got: {s}");
     }

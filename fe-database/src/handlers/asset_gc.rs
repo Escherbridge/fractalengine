@@ -70,35 +70,10 @@ pub async fn gc_unreferenced_assets(
         .check()?;
 
     let hashes: Vec<String> = doomed_hashes.into_iter().collect();
-    let mut still_named: HashSet<String> = strings(
-        db,
-        "SELECT VALUE content_hash FROM asset WHERE content_hash IN $hashes",
-        Some(&hashes),
-    )
-    .await?
-    .into_iter()
-    .collect();
-    still_named.extend(
-        strings(
-            db,
-            "SELECT VALUE asset_hash FROM crate_entry WHERE asset_hash IN $hashes",
-            Some(&hashes),
-        )
-        .await?,
-    );
-    // Path stamps name their GLB by `blob://{hash}.{ext}` (fe-sdk `path_asset`), not asset_id.
-    still_named.extend(
-        strings(
-            db,
-            "SELECT VALUE properties.path_asset.asset_path FROM node \
-             WHERE properties.path_asset.asset_path != NONE",
-            None,
-        )
-        .await?
-        .iter()
-        .filter_map(|uri| uri.strip_prefix("blob://")?.split('.').next())
-        .map(str::to_ascii_lowercase),
-    );
+    // Same three queries as `blob_migration::referenced_asset_hashes` (S1b
+    // extracted it so neither copy drifts), run there over every row instead
+    // of this pass's doomed subset.
+    let still_named: HashSet<String> = super::blob_migration::referenced_asset_hashes(db).await?;
 
     let mut removed_blobs = 0;
     for hex in hashes.iter().filter(|h| !still_named.contains(*h)) {
@@ -122,7 +97,12 @@ pub async fn gc_unreferenced_assets(
 }
 
 /// Run a `SELECT VALUE <string field>` (optionally bound to `$hashes`).
-async fn strings(db: &Db, sql: &str, hashes: Option<&[String]>) -> anyhow::Result<Vec<String>> {
+/// `pub(crate)`: shared with `blob_migration::referenced_asset_hashes`.
+pub(crate) async fn strings(
+    db: &Db,
+    sql: &str,
+    hashes: Option<&[String]>,
+) -> anyhow::Result<Vec<String>> {
     let mut query = db.query(sql);
     if let Some(hashes) = hashes {
         query = query.bind(("hashes", hashes.to_vec()));

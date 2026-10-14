@@ -12,11 +12,13 @@ Bevy) wraps the decoded bytes into `bevy::image::Image` + `StandardMaterial`
 — see `fe-ui/src/verse_manager/AGENTS.md` §primitives. Missing/undecodable
 blobs resolve to `None` per role rather than failing the whole material.
 
-## §blob-store (RT-FSBLOB, 2026-10-11)
+## §blob-store (RT-FSBLOB, 2026-10-11; default root corrected OF-1/S1b, 2026-10-14)
 
 `registry::FsBlobStore` shares the runtime store's canonical layout
 (`{root}/{hex[0..2]}/{hex}`, fe-runtime/src/AGENTS.md §blob-store) and its
-default root (`{data_local_dir}/fractalengine/blobs`), so hexon installs and
+default root (`data/blobs`, CWD-relative, `FE_BLOB_DIR` override — no longer
+the per-user `{data_local_dir}/fractalengine/blobs`, kept only as
+`legacy_default_path()`, fe-sync/src/AGENTS.md §blob-store), so hexon installs and
 the P2P/runtime store are ONE content-addressed store. `store` refuses a
 non-64-hex hash or a `blake3(data)` mismatch (`RegistryError::Package`) and
 writes atomically; `has` answers `false` for an invalid hash. The old flat
