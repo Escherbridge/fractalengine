@@ -461,15 +461,19 @@ impl HexonStore {
     /// already does after `install_tileset`'s renames — durable file
     /// content alone is not enough; the directory entry the rename created
     /// needs its own fsync too (no-op on Windows, where NTFS's metadata
-    /// journal already covers it). Every caller holds `_write_guard` before
-    /// reaching here, so the one shared `registry.json.tmp` path is never
-    /// raced. No dedicated test: like `install_tileset`'s fsyncs, success
-    /// has no externally observable effect short of an actual power-loss
-    /// event.
+    /// journal already covers it). The temp path is unique per call
+    /// ([`Self::temp_path`]), not a fixed `registry.json.tmp`: `write_lock`
+    /// only serializes writers inside ONE process, and the GUI and the
+    /// headless relay both default to the same store directory, so a fixed
+    /// name let one process truncate the temp file the other was about to
+    /// rename into place (a torn `registry.json` → every install "vanishes").
+    /// The fsyncs themselves have no dedicated test (unobservable short of a
+    /// power loss); `a_stale_registry_temp_file_never_blocks_a_save` pins
+    /// the unique temp path.
     fn save_registry(&self, reg: &RegistryData) -> Result<()> {
         let path = self.registry_path();
         let json = serde_json::to_string_pretty(reg).context("failed to serialize registry")?;
-        let tmp_path = path.with_extension("json.tmp");
+        let tmp_path = self.temp_path("registry", "json");
         write_synced_and_rename(&tmp_path, &path, json.as_bytes())?;
         self.fsync_dir();
         Ok(())
@@ -660,6 +664,28 @@ mod tests {
         assert!(err.to_string().contains(UNSAFE_HEXON_ID_ERROR), "{err:#}");
         assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// W3b review: `save_registry` writes through a per-call unique temp
+    /// file — a leftover (or another process's in-flight) temp at the old
+    /// fixed `registry.json.tmp` name never blocks or tears a registry save.
+    #[test]
+    fn a_stale_registry_temp_file_never_blocks_a_save() {
+        let (store, dir) = temp_store();
+        // A directory squatting the old fixed temp name: `File::create` on it
+        // fails, so a fixed-name save would refuse every install.
+        std::fs::create_dir_all(dir.join("registry.json.tmp")).unwrap();
+
+        store
+            .install_tileset(&make_hexon_bytes("tileset-tmp"))
+            .expect("install must not depend on a fixed registry temp name");
+        store
+            .set_seeding("tileset-tmp", true)
+            .expect("set_seeding must not depend on a fixed registry temp name");
+        let list = store.list_installed();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].seeding_enabled);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

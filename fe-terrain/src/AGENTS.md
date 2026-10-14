@@ -804,8 +804,7 @@ camera can see.
   "Publish validation" step 3). The same lock guards every other
   `registry.json` read-modify-write (`remove_tileset`, `set_seeding`,
   `update_last_served`), so an unserialized install can never write back a
-  stale registry snapshot (losing a toggle) or collide on the one
-  `registry.json.tmp` (W2b review; test
+  stale registry snapshot (losing a toggle) (W2b review; test
   `installs_racing_seeding_toggles_lose_no_registry_update`). `write_synced_and_rename` also
   `File::create`s + `write_all`s + `sync_all`s the temp file BEFORE each
   rename (the old `std::fs::write` had no fsync), and `install_tileset`
@@ -825,7 +824,15 @@ camera can see.
   can no longer leave `load_registry` reading an empty/corrupt file and
   silently reporting `RegistryData::default()` (every installed tileset
   "vanishes" from the list, though the `.hexon` files themselves survive).
-  No dedicated test, same reasoning as the hexon/meta fsyncs above.
+  No dedicated test for the fsyncs, same reasoning as the hexon/meta fsyncs
+  above. Its temp file is unique per call (`temp_path("registry", "json")`,
+  W3b review), not a fixed `registry.json.tmp`: `write_lock` serializes
+  writers in ONE process only, and the GUI and the headless relay both
+  default to the same store directory, so a fixed name let one process
+  truncate the temp the other was renaming into place. (Cross-process
+  read-modify-write is still unserialized — two processes toggling at once
+  can lose one update; no cross-process lock exists today.) Test:
+  `a_stale_registry_temp_file_never_blocks_a_save`.
 - **The lock is the reason remove/seeding moved off the Bevy main thread
   too (W3b fixup, AC-30b, 2026-10-14).** This lock is also why
   `HexonOp::Remove`/`SetSeeding` can no longer run inline in
@@ -834,10 +841,10 @@ camera can see.
   stale) — a worker install can hold `write_lock` across a write + `sync_all`
   of up to 1 GiB (`fe-format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES`), and a
   main-thread caller blocking on the SAME `std::sync::Mutex` would freeze
-  frames for that long. Both ops now run on their own `std::thread::spawn`
-  worker and report back over `HexonAssembleResultSender`, exactly like
-  `Install`/`AssembleDownload` already did (see `fractalengine/src/AGENTS.md`
-  §tileset-p2p). `update_last_served` has no production caller today, but
+  frames for that long. Both ops now run on ONE serial worker thread
+  (`HexonMutationWorker`, FIFO, so clicks apply in order) and report back
+  over `HexonAssembleResultSender`, like `Install`/`AssembleDownload` (see
+  `fractalengine/src/AGENTS.md` §tileset-p2p). `update_last_served` has no production caller today, but
   would need the same treatment if one is ever wired up.
 - **`load_tileset` refuses unsafe ids** (`is_safe_hexon_id`) before the path
   join: the id arrives from a (replicated) petal terrain config.

@@ -589,7 +589,10 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   never checked — it now asserts `rx.try_recv()` is empty immediately after
   `app.update()` returns, before blocking on `recv_timeout`, for both the
   tampered and sealed legs; an inline main-thread install would already have
-  queued its outcome by then).
+  queued its outcome by then). The check can only fail one way on correct
+  code — a preempted test thread letting the tiny worker finish first — so a
+  rare red there is a scheduling flake, not a regression; re-run before
+  bisecting.
 - **Install from registry (PAS-P5 S7b, A9).** `HexonOp::InstallFromRegistry { uri }`
   (queued by the Hexon Manager's "Install from registry" field, enabled only
   when `AppSettings.hexon_registry_url`/`FE_HEXON_REGISTRY_URL` resolves to
@@ -650,14 +653,26 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   `fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES` (fe-terrain
   `src/AGENTS.md` §install-lock), so a main-thread Remove/SetSeeding click
   could block on that `std::sync::Mutex` for as long as the install's disk
-  write takes. They now mirror `Install`/`AssembleDownload`: `drain_hexon_ops`
-  spawns a worker thread per op and reports
+  write takes. They now run off-thread like `Install`/`AssembleDownload`, but
+  on ONE serial worker (`HexonMutationWorker`, a `Local` in `drain_hexon_ops`
+  feeding a FIFO channel to a long-lived `hexon-store-mutations` thread), not
+  a thread per op: per-op threads contend for `write_lock` in no fixed order,
+  so a quick on→off seeding toggle could land off→on (store left seeding, ad
+  re-published) or a Remove overtake an earlier toggle (W3b review). The
+  worker reports
   `HexonAssembleOutcome::RemoveApplied { tileset_id, result }` /
   `SetSeedingApplied { tileset_id, enabled, result }` over the SAME
   `HexonAssembleResultSender` channel; `drain_hexon_assemble_results` applies
   the result (log, dialog refresh, and the P2P side effect below) once it
-  actually lands, never inline. Test:
-  `remove_and_seeding_ops_report_through_the_worker_channel`.
+  actually lands, never inline. A seeding ENABLE whose write failed is never
+  published (fail closed: the store still says "not seeding"); a disable or
+  remove still sends `UnpublishTileset` even on failure (withdrawing is the
+  safe direction). Tests: `remove_and_seeding_ops_report_through_the_worker_channel`,
+  `queued_store_mutations_apply_in_click_order`,
+  `a_seeding_enable_that_fails_to_persist_is_never_published`. Known gap
+  (pre-existing): `spawn_bundle_and_publish` bundles on its own thread, so an
+  on→off toggle faster than the bundling can still see `UnpublishTileset`
+  reach the sync thread BEFORE the late `PublishTileset`.
 - **Seeding → publish.** `terrain_bridge::spawn_bundle_and_publish(registry,
   sync_tx, tileset_id)` is the GUI's thread+channel wrapper around the ONE
   shared bundling implementation, `fe_terrain::tiles::bundle_for_seeding`

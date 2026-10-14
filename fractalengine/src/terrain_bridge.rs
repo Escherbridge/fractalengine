@@ -280,6 +280,49 @@ pub fn spawn_bundle_and_publish(
     });
 }
 
+/// One queued `HexonStore` mutation for [`HexonMutationWorker`].
+type HexonMutationJob = Box<dyn FnOnce() + Send>;
+
+/// Serial (FIFO) worker thread for `HexonOp::Remove`/`SetSeeding`: off the
+/// Bevy main thread, yet applied in click order — see `src/AGENTS.md`
+/// §tileset-p2p (W3b review).
+#[derive(Default)]
+pub struct HexonMutationWorker(Option<crossbeam::channel::Sender<HexonMutationJob>>);
+
+impl HexonMutationWorker {
+    /// Queue `job` behind every earlier one; (re)starts the worker thread on
+    /// first use or if a previous one is gone.
+    fn submit(&mut self, job: HexonMutationJob) {
+        let job = match &self.0 {
+            Some(tx) => match tx.send(job) {
+                Ok(()) => return,
+                Err(crossbeam::channel::SendError(job)) => job,
+            },
+            None => job,
+        };
+        let (tx, rx) = crossbeam::channel::unbounded::<HexonMutationJob>();
+        let spawned = std::thread::Builder::new()
+            .name("hexon-store-mutations".to_string())
+            .spawn(move || {
+                for job in rx {
+                    job();
+                }
+            });
+        match spawned {
+            Ok(_) => {
+                if tx.send(job).is_err() {
+                    tracing::warn!("Hexon store mutation dropped — worker thread exited");
+                }
+                self.0 = Some(tx);
+            }
+            Err(e) => {
+                tracing::warn!("Hexon store mutation dropped — worker thread failed to start: {e}");
+                self.0 = None;
+            }
+        }
+    }
+}
+
 /// Drains fe-ui's queued hexon registry ops and refreshes the Hexon Manager dialog.
 pub fn drain_hexon_ops(
     mut ops: ResMut<PendingHexonOps>,
@@ -288,6 +331,7 @@ pub fn drain_hexon_ops(
     assemble_tx: Option<Res<HexonAssembleResultSender>>,
     app_settings: Res<AppSettings>,
     mut downloads: ResMut<TilesetDownloads>,
+    mut mutation_worker: Local<HexonMutationWorker>,
 ) {
     if ops.0.is_empty() {
         return;
@@ -343,10 +387,11 @@ pub fn drain_hexon_ops(
             // `write_lock` a worker install can hold across a write +
             // `sync_all` of up to 1 GiB (fe-terrain `src/AGENTS.md`
             // §install-lock) — running them inline here could freeze the
-            // Bevy main thread for that long. Both move to a worker thread,
-            // exactly like `Install`/`AssembleDownload` above; the dialog
-            // refresh + P2P side effect apply once the real outcome lands,
-            // in `drain_hexon_assemble_results`.
+            // Bevy main thread for that long. Both run on ONE serial
+            // `HexonMutationWorker` (not a thread per op, which would let a
+            // quick on→off seeding toggle land off→on); the dialog refresh +
+            // P2P side effect apply once the real outcome lands, in
+            // `drain_hexon_assemble_results`.
             HexonOp::Remove(id) => {
                 let Some(tx) = assemble_tx.as_ref().map(|t| t.0.clone()) else {
                     tracing::warn!(
@@ -356,7 +401,7 @@ pub fn drain_hexon_ops(
                     continue;
                 };
                 let reg_for_task = registry.0.clone();
-                std::thread::spawn(move || {
+                mutation_worker.submit(Box::new(move || {
                     let result = reg_for_task.remove(&id).map_err(|e| e.to_string());
                     if tx
                         .send(HexonAssembleOutcome::RemoveApplied {
@@ -367,7 +412,7 @@ pub fn drain_hexon_ops(
                     {
                         tracing::warn!(hexon_id = %id, "Hexon remove result channel closed");
                     }
-                });
+                }));
             }
             HexonOp::SetSeeding(id, enabled) => {
                 let Some(tx) = assemble_tx.as_ref().map(|t| t.0.clone()) else {
@@ -378,7 +423,7 @@ pub fn drain_hexon_ops(
                     continue;
                 };
                 let reg_for_task = registry.0.clone();
-                std::thread::spawn(move || {
+                mutation_worker.submit(Box::new(move || {
                     let result = reg_for_task
                         .set_seeding(&id, enabled)
                         .map_err(|e| e.to_string());
@@ -392,7 +437,7 @@ pub fn drain_hexon_ops(
                     {
                         tracing::warn!(hexon_id = %id, "Hexon set_seeding result channel closed");
                     }
-                });
+                }));
             }
             HexonOp::RefreshList => refresh = true,
             HexonOp::AssembleDownload {
@@ -786,11 +831,20 @@ pub fn drain_hexon_assemble_results(
                 enabled,
                 result,
             } => {
+                refreshed = true;
+                // Fail closed: a seeding ENABLE that never persisted leaves the
+                // store saying "not seeding", so it is never advertised. A
+                // disable still withdraws the ad even if its persist failed —
+                // withdrawing is always the safe direction.
                 if let Err(e) = &result {
                     tracing::warn!(hexon_id = %tileset_id, "Hexon set_seeding failed: {e}");
                 }
-                refreshed = true;
-                if enabled {
+                if enabled && result.is_err() {
+                    tracing::warn!(
+                        hexon_id = %tileset_id,
+                        "SetSeeding(true) not persisted — not publishing"
+                    );
+                } else if enabled {
                     if let (Some(sender), Some(registry)) =
                         (sync_sender.as_ref(), registry.as_ref())
                     {
@@ -2274,6 +2328,161 @@ mod tests {
         assert!(
             tileset_registry.list_tilesets().is_empty(),
             "the store must reflect the removal"
+        );
+    }
+
+    /// Installs a one-tile sealed tileset `hexon_id` into `registry`.
+    fn install_sealed_fixture(registry: &TilesetRegistry, key_seed: u8, hexon_id: &str) {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[key_seed; 32]);
+        let sealed = fe_format::seal(
+            &fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest(hexon_id),
+                synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+                &[("10/0/0".to_string(), vec![1u8; 8])],
+                &[],
+                None,
+            )
+            .expect("export archive"),
+            &key,
+        )
+        .expect("seal archive");
+        registry.install(&sealed).expect("install fixture");
+    }
+
+    /// W3b review: Remove/SetSeeding run on ONE serial worker, so a burst of
+    /// clicks (one per frame) lands in click order. A thread per op let a
+    /// quick on→off toggle land off→on — the store left seeding and the ad
+    /// re-published after the user turned it off — and let a Remove overtake
+    /// an earlier toggle. Mutation check: back to a `std::thread::spawn` per
+    /// op, 16 threads contend for `HexonStore::write_lock` (not FIFO), so the
+    /// applied order almost surely differs from the click order.
+    #[test]
+    fn queued_store_mutations_apply_in_click_order() {
+        let hexon_id = "w3b-click-order";
+        let (_store_tmp, tileset_registry) = fresh_tileset_registry();
+        install_sealed_fixture(&tileset_registry, 98, hexon_id);
+        let tileset_registry = std::sync::Arc::new(tileset_registry);
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let mut app = app_for_install_from_registry(tileset_registry.clone(), String::new(), tx);
+
+        let toggles: Vec<bool> = (0..16).map(|i| i % 2 == 0).collect();
+        for &enabled in &toggles {
+            app.world_mut()
+                .resource_mut::<PendingHexonOps>()
+                .0
+                .push(HexonOp::SetSeeding(hexon_id.to_string(), enabled));
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<PendingHexonOps>()
+            .0
+            .push(HexonOp::Remove(hexon_id.to_string()));
+        app.update();
+
+        let mut applied = Vec::new();
+        for _ in &toggles {
+            match rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("every toggle reports an outcome")
+            {
+                HexonAssembleOutcome::SetSeedingApplied {
+                    enabled, result, ..
+                } => {
+                    assert!(result.is_ok(), "{result:?}");
+                    applied.push(enabled);
+                }
+                other => panic!("expected SetSeedingApplied before the Remove, got {other:?}"),
+            }
+        }
+        assert_eq!(applied, toggles, "toggles must apply in click order");
+        match rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the remove reports an outcome")
+        {
+            HexonAssembleOutcome::RemoveApplied { result, .. } => {
+                assert!(result.is_ok(), "{result:?}")
+            }
+            other => panic!("expected RemoveApplied last, got {other:?}"),
+        }
+        assert!(tileset_registry.list_tilesets().is_empty());
+    }
+
+    /// Runs `app` frames until `done(seen)` holds or `timeout` passes;
+    /// returns every `SyncCommand` the frames sent.
+    fn pump_sync_commands(
+        app: &mut App,
+        cmd_rx: &crossbeam::channel::Receiver<fe_sync::SyncCommand>,
+        timeout: std::time::Duration,
+        done: impl Fn(&[fe_sync::SyncCommand]) -> bool,
+    ) -> Vec<fe_sync::SyncCommand> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            app.update();
+            seen.extend(cmd_rx.try_iter());
+            if done(&seen) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        seen
+    }
+
+    /// W3b review, full flow (`drain_hexon_ops` → worker →
+    /// `drain_hexon_assemble_results` → sync thread): a seeding toggle's P2P
+    /// side effect follows the store write that actually landed. Enable
+    /// publishes, disable unpublishes, and an enable whose write FAILED (a
+    /// corrupt `registry.json` no longer lists the tileset, though its
+    /// `.hexon` is still bundleable) is never advertised. Mutation check:
+    /// dropping the `result.is_err()` gate publishes on the last leg.
+    #[test]
+    fn a_seeding_enable_that_fails_to_persist_is_never_published() {
+        let hexon_id = "w3b-fail-closed";
+        let (_store_tmp, tileset_registry) = fresh_tileset_registry();
+        install_sealed_fixture(&tileset_registry, 99, hexon_id);
+        let registry_json = tileset_registry.store().base_dir().join("registry.json");
+        let tileset_registry = std::sync::Arc::new(tileset_registry);
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        let mut app = app_for_install_from_registry(tileset_registry, String::new(), tx);
+        app.insert_resource(HexonAssembleResults(rx))
+            .insert_resource(fe_sync::SyncCommandSenderRes(cmd_tx))
+            .add_systems(Update, drain_hexon_assemble_results);
+        let is_publish = |c: &fe_sync::SyncCommand| matches!(c, fe_sync::SyncCommand::PublishTileset { tileset_id, .. } if tileset_id == hexon_id);
+        let is_unpublish = |c: &fe_sync::SyncCommand| matches!(c, fe_sync::SyncCommand::UnpublishTileset { tileset_id } if tileset_id == hexon_id);
+        let click = |app: &mut App, enabled: bool| {
+            app.world_mut()
+                .resource_mut::<PendingHexonOps>()
+                .0
+                .push(HexonOp::SetSeeding(hexon_id.to_string(), enabled));
+        };
+        let wait = std::time::Duration::from_secs(10);
+
+        click(&mut app, true);
+        let seen = pump_sync_commands(&mut app, &cmd_rx, wait, |s| s.iter().any(is_publish));
+        assert!(
+            seen.iter().any(is_publish),
+            "a persisted enable publishes: {seen:?}"
+        );
+
+        click(&mut app, false);
+        let seen = pump_sync_commands(&mut app, &cmd_rx, wait, |s| s.iter().any(is_unpublish));
+        assert!(
+            seen.iter().any(is_unpublish),
+            "a disable unpublishes: {seen:?}"
+        );
+
+        std::fs::write(&registry_json, b"{ not json").expect("corrupt registry.json");
+        click(&mut app, true);
+        let seen = pump_sync_commands(
+            &mut app,
+            &cmd_rx,
+            std::time::Duration::from_millis(1500),
+            |s| s.iter().any(is_publish),
+        );
+        assert!(
+            !seen.iter().any(is_publish),
+            "an enable that never persisted must not publish: {seen:?}"
         );
     }
 
