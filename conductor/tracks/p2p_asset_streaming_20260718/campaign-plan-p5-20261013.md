@@ -534,6 +534,17 @@ FsBlobStore canonical layout and atomic write stay (§blob-store). The HTTP clie
 
 ### S6 — Install-side enforcement + chunk containers in fe-terrain (size M)
 
+**Critic amendment (tick 4, AC-21b/c):**
+(c) `HexonStore::install_tileset` must install **atomically**: write to a temp file in the same
+directory, fsync, then rename over the old file. Today it rewrites `{id}.hexon` in place
+(`fe-terrain/src/tiles/store.rs:169` `std::fs::write`) while lazy readers may hold it open, and P2P
+same-id installs now race them. On Windows, handle rename-over-open-file semantics explicitly and
+document the behavior. Test: a reader holding the old file keeps valid bytes through a concurrent
+install, and a new open sees the new file.
+(b) Make the `TILE_BYTE_BUDGET` (`fe-terrain/src/tiles/residency.rs:7`) **global across sources**
+instead of per source (today N tilesets × 256 MiB), or document an explicit per-source rationale
+and cap the number of sources. Choose, justify in this plan, and test the choice.
+
 **Owned files:** `fe-terrain/src/tiles/store.rs`, `fe-terrain/src/tiles/registry.rs`,
 `fe-terrain/src/tiles/hexon_source.rs`, `fe-terrain/src/tiles/distribution.rs` (`assemble_chunks`
 only, coordinated with the P3 changes already landed), `fe-terrain/src/tiles/builder.rs`,
@@ -574,6 +585,28 @@ once at the network→disk boundary (fe-hexon AGENTS §blob-store trusts its own
 
 ### S5 — P2P partial fetch over the PAS-P3 transport (size M)
 
+**Critic amendment (tick 4, AC-20 + AC-21a) — SUPERSEDES the orchestrator's S5 "extra" brief in the
+workflow prompt (`.omc/accountability/tick-20261014-0149.md`):**
+(a) Non-blocking `SyncEvent` emission must be **lossless for state-bearing events** —
+`RowApplied`, `BlobReady`, `NodeTransformed`, `TilesetMetaReceived`, `ChunkReceived`/`ChunkFailed`,
+`TilesetDownloadComplete`/`Resumed`, `ReplicaOpenFailed`, `ShardLedger`, `Started`/`Stopped`
+(`fe-sync/src/messages.rs` ~152-276) — over the `bounded(256)` channel (`fractalengine/src/main.rs:205`).
+Only advisory/coalescible events (repeat `PeerTilesetAdvertisement`, superseded
+`RelayHealthChanged`, progress/health ticks) may be dropped or coalesced, counted and warned. The
+loop must never block on a full channel: drain a loop-local pending queue (fe-sync's self-drain
+rule, `fe-sync/src/AGENTS.md`) rather than `.await` a send the loop itself must keep servicing.
+(b) The in-flight request timeout is **host-side**, where the slots live —
+`fractalengine/src/terrain_bridge.rs` ~427-432 (`StreamedTilesetState` `meta_requested`/
+`chunk_requested`, checked at ~761-789) — and expiry frees the slot into the existing
+`chunk_backoff`/`meta_backoff` retry path.
+(c) Flow tests: a burst of > 256 terminal events from spawned tasks all arrive and the loop keeps
+serving `Shutdown`; a never-answered request frees its slot after the timeout and is retried with
+backoff.
+(d) **AC-21(a):** add a disk budget with LRU eviction for streamed download caches
+(`downloads/<id>/`) so a peer-replicated petal terrain row cannot grow every member's disk without
+bound across restarts. Test: exceeding the budget evicts least-recently-used caches, never an
+in-progress or installed one.
+
 **Owned files** (default placement, C-P3 #1 — **fixed by P3P4 §10 C3: the trait is in fe-runtime,
 so the fe-sync alternative is struck**): `fe-hexon/src/partial/p2p.rs` (new),
 `fe-hexon/tests/partial_fetch_p2p.rs` (new), `fe-hexon/src/AGENTS.md`.
@@ -612,6 +645,12 @@ AGENTS §congestion-control).
   published children equal the container's signed `chunks/index.json` hashes.
 
 ### S7a — P2P download path consumes the integrity root (size M)
+
+**Critic amendment (tick 4):** the TOFU publisher pin candidate must be the `publisher_did` from
+the **same provider-map entry** that `root_for` selected (authenticated entries preferred over
+relayed — `fe-sync/src/sync_thread.rs:2228` ordering, `:2254` `root_for`) — never a relayed hint's
+DID. Otherwise a relayed ad carrying a bogus `publisher_did` makes an honest first-contact download
+fail its pin check. Add a test asserting this.
 
 **Owned files:** the P3-landed regions of `fe-sync/src/sync_thread.rs` (tileset meta/chunk
 handlers only), `fe-sync/src/messages.rs` (tileset events/commands only),
@@ -860,3 +899,4 @@ overlap, P3P4 owns the shared piece and P5 adapts (§3.5).
 | C7 | The D-5/D-17 deferral row is re-classified: device-payload records are built by CDL-SPEC10 A3 in this campaign; RUNBOOK §4 is an assumption, not a user decision. | mis-justified deferral |
 | C8 | Reviewer brief (S8) extended with the confirm gate, pin provenance and headers. | security review scope |
 | C9 | New slice **S1b** added (source: OF-1 orchestrator finding, `conductor/accountability-log.md` Tick 2): co-locates the blob store with the DB (`data/blobs`, `FE_BLOB_DIR` override, copy-only migration from the legacy per-user dir), closing the install-A-deletes-install-B's-blob gap. Placed right after S1 — no dependency either way on the format/integrity work. | scheduled fix (not previously a slice) |
+| C10 | **(tick 4, AC-19 — feature-matrix gate.)** Every remaining slice (S1b onward), S8 and the final review must also run and pass, in addition to the workspace check/clippy/fmt: `cargo check -j4 -p fe-terrain --features fetch,render --tests`, `cargo check -j4 -p fe-hexon --all-features --tests`, `cargo check -j4 -p fe-format --no-default-features`, and `cargo +1.99.0 clippy -j4 -D warnings` on the same three feature sets; report them in `checks_run`; `gate_green=false` if any fails. No workspace crate enables `fe-terrain`'s `fetch` feature or `fe-hexon`'s `remote` feature (grep of every `Cargo.toml`; `fractalengine` enables only `render`), and CI clippy runs `--workspace --all-targets` with no features (`.github/workflows/build-artifacts.yml:112`), so this build has been dark since W1 S1 flagged it (open_issue, never closed) and would break under a green gate — W2 S1 is adding `integrity: Option<IntegrityRoot>` to `HexonManifest` while the fetch-gated `builder.rs:223`/`:326` literals are exhaustive. The first slice after this amendment (S1b or S2) repairs those two `HexonManifest` struct literals (`fe-terrain/src/tiles/builder.rs:223`, `:326` — add `integrity: None`) and any other feature-gated breakage these commands reveal. The final-sweep manifest also runs the feature-matrix tests, and the A7 conformance tests (`http_source_passes_conformance`, `in_memory_p2p_source_passes_conformance`) must appear by name in the output (non-vacuous). | dark build / unwired gate |
