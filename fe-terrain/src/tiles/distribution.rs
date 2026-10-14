@@ -337,7 +337,7 @@ impl PartialTileSource {
     }
 
     /// Look up an elevation tile across all loaded chunks.
-    pub fn get_tile(&self, coord: super::source::TileCoord) -> Option<&[u8]> {
+    pub fn get_tile(&self, coord: super::source::TileCoord) -> Option<std::sync::Arc<[u8]>> {
         for source in self.chunks.values() {
             if let Some(tile) = source.get_tile(coord) {
                 return Some(tile);
@@ -347,7 +347,10 @@ impl PartialTileSource {
     }
 
     /// Look up a satellite tile across all loaded chunks.
-    pub fn get_satellite_tile(&self, coord: super::source::TileCoord) -> Option<&[u8]> {
+    pub fn get_satellite_tile(
+        &self,
+        coord: super::source::TileCoord,
+    ) -> Option<std::sync::Arc<[u8]>> {
         for source in self.chunks.values() {
             if let Some(tile) = source.get_satellite_tile(coord) {
                 return Some(tile);

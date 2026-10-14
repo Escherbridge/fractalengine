@@ -264,7 +264,9 @@ fn find_baked_splats(
     composite: &CompositeTileSource,
     coord: TileCoord,
 ) -> Option<crate::splat::format::BakedSplatBuffer> {
-    composite.get_baked_splats_sync(coord).cloned()
+    composite
+        .get_baked_splats_sync(coord)
+        .map(|splats| (*splats).clone())
 }
 
 /// Re-fetch a tile's data and bake all its splats into one mesh; `None` when unusable.

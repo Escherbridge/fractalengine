@@ -24,13 +24,14 @@ use crate::mesh::track::{
     ColorMode as TrackColorMode, PreparedTrackZone,
 };
 use crate::petal_binding::{
-    apply_terrain_assignments, ActivePetalTerrain, ActiveTileSource, TerrainAssignmentMsg,
+    apply_terrain_assignments, mean_tile_elevation, ActivePetalTerrain, ActiveTileSource,
+    TerrainAssignmentMsg,
 };
 use crate::projection::Projection;
 use crate::scale::{scale_elevations, scale_local, scaled_tile_size, world_to_real_height};
 use crate::tiles::{
-    decode_png_pixels, CompositeTileSource, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder,
-    TileCoord,
+    decode_png_pixels, ElevationDecoder, LoadedTile, Residency, TerrainRgbDecoder,
+    TerrariumDecoder, TileCoord, TileResidency,
 };
 use fe_renderer::terrain_height::{HeightTile, TerrainHeightField};
 
@@ -259,10 +260,30 @@ impl Default for WaypointMarkerConfig {
 }
 
 /// Tiles that failed to load under the current assignment revision (anti retry-storm).
+///
+/// Only "absent from every covering index" or "undecodable" lands here; a tile
+/// whose load is still in flight is pending, never failed (§tile-residency).
 #[derive(Resource, Default)]
 pub struct FailedTiles {
     revision: u64,
     tiles: HashSet<(u8, u32, u32)>,
+}
+
+impl FailedTiles {
+    /// Whether `coord` is recorded as failed for the current revision.
+    pub fn contains(&self, coord: TileCoord) -> bool {
+        self.tiles.contains(&(coord.zoom, coord.x, coord.y))
+    }
+
+    /// Number of failed tiles recorded for the current revision.
+    pub fn len(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// True when no tile has failed under the current revision.
+    pub fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
+    }
 }
 
 /// The main terrain rendering plugin; see `src/AGENTS.md` §terrain_plugin.
@@ -278,6 +299,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ActivePetalTerrain>()
             .init_resource::<ActiveTileSource>()
             .init_resource::<FailedTiles>()
+            .init_resource::<TileResidency>()
             .init_resource::<ProposalRenderState>()
             .init_resource::<ProposalOverlayBudget>()
             .init_resource::<EarthworkBakeState>()
@@ -333,12 +355,14 @@ pub(crate) fn tile_world_size_m(lat: f64, zoom: u8) -> f64 {
 }
 
 /// Despawn chunks beyond the hysteresis view radius, or at a stale zoom once the
-/// desired-zoom replacement fully covers them (hole-free); see AGENTS.md §terrain_plugin.
-fn update_terrain_lod(
+/// desired-zoom replacement fully covers them (hole-free), releasing their tile
+/// bytes (exit-ring eviction); see AGENTS.md §terrain_plugin, §tile-residency.
+pub fn update_terrain_lod(
     camera_query: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
     chunk_query: Query<(Entity, &TerrainChunk, &GlobalTransform)>,
     lod_config: Res<TerrainLodConfig>,
     active: Res<ActivePetalTerrain>,
+    tile_source: Res<ActiveTileSource>,
     mut commands: Commands,
     mut height_field: Option<ResMut<TerrainHeightField>>,
 ) {
@@ -394,19 +418,24 @@ fn update_terrain_lod(
             if let Some(field) = height_field.as_mut() {
                 field.remove(&chunk.tile_coords);
             }
+            if let Some(composite) = tile_source.composite.as_ref() {
+                composite.release_tile(coord);
+            }
         }
     }
 }
 
 /// Offline-first chunk spawning: an adaptive tile ring (frustum-sized, nearest-first)
-/// around the camera at the desired zoom; see AGENTS.md §terrain_plugin.
+/// around the camera at the desired zoom, fed by async tile residency (pending tiles
+/// are skipped, never failed); see AGENTS.md §terrain_plugin, §tile-residency.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch_and_spawn_terrain_chunks(
     camera_query: Query<(&GlobalTransform, &CameraProjection), With<Camera>>,
     chunk_query: Query<&TerrainChunk>,
     lod_config: Res<TerrainLodConfig>,
-    active: Res<ActivePetalTerrain>,
-    tile_source: Res<ActiveTileSource>,
+    mut active: ResMut<ActivePetalTerrain>,
+    mut tile_source: ResMut<ActiveTileSource>,
+    mut residency: ResMut<TileResidency>,
     layer_stack: Res<LayerStack>,
     mut failed: ResMut<FailedTiles>,
     mut commands: Commands,
@@ -415,15 +444,18 @@ pub fn fetch_and_spawn_terrain_chunks(
     mut images: ResMut<Assets<Image>>,
     mut height_field: Option<ResMut<TerrainHeightField>>,
 ) {
-    let Some(config) = active.config.as_ref().filter(|c| c.enabled) else {
+    residency.poll();
+    let Some(elevation_source) = active
+        .config
+        .as_ref()
+        .filter(|c| c.enabled)
+        .map(|c| c.elevation_source.clone())
+    else {
         return;
     };
-    let (Some(composite), Some(projection)) = (
-        tile_source.composite.as_ref(),
-        tile_source.projection.as_ref(),
-    ) else {
+    if tile_source.composite.is_none() || tile_source.projection.is_none() {
         return;
-    };
+    }
     let Ok((cam_transform, cam_proj)) = camera_query.single() else {
         return;
     };
@@ -432,6 +464,51 @@ pub fn fetch_and_spawn_terrain_chunks(
         failed.tiles.clear();
         failed.revision = active.revision;
     }
+    if residency.revision() != active.revision {
+        // Assignment ran without a residency resource in reach: start clean, ungrounded.
+        residency.reset(active.revision, None);
+    }
+
+    // Ground the projection origin from the center tile before any chunk spawns,
+    // so every chunk anchors against the same origin_ele (§tile-residency).
+    if let Some(center) = residency.grounding() {
+        let Some(composite) = tile_source.composite.as_ref() else {
+            return;
+        };
+        let elevation = match residency.ensure_resident(center, composite) {
+            Residency::Pending => return,
+            Residency::Absent => None,
+            Residency::Ready(tile) => {
+                let elevation = tile
+                    .elevation
+                    .as_ref()
+                    .and_then(|hit| mean_tile_elevation(&hit.bytes, &elevation_source));
+                residency.put_back(center, tile);
+                elevation
+            }
+        };
+        residency.finish_grounding();
+        if let Some(ele) = elevation {
+            tracing::info!(
+                origin_ele = ele,
+                "grounded terrain origin from center-tile elevation"
+            );
+            if let Some(config) = active.config.as_mut() {
+                config.origin.origin_ele = ele;
+            }
+            if let Some(projection) = tile_source.projection.as_mut() {
+                projection.origin_ele = ele;
+            }
+        }
+    }
+
+    let (Some(config), Some(composite), Some(projection)) = (
+        active.config.as_ref(),
+        tile_source.composite.as_ref(),
+        tile_source.projection.as_ref(),
+    ) else {
+        return;
+    };
 
     let mut active_count = chunk_query.iter().count();
     if active_count >= lod_config.max_chunks {
@@ -490,10 +567,18 @@ pub fn fetch_and_spawn_terrain_chunks(
             continue;
         }
 
+        let tile = match residency.ensure_resident(coord, composite) {
+            Residency::Pending => continue,
+            Residency::Absent => {
+                failed.tiles.insert(key);
+                continue;
+            }
+            Residency::Ready(tile) => tile,
+        };
         if spawn_chunk(
             coord,
+            &tile,
             config,
-            composite,
             projection,
             &layer_stack,
             upsample,
@@ -503,6 +588,8 @@ pub fn fetch_and_spawn_terrain_chunks(
             &mut images,
             height_field.as_deref_mut(),
         ) {
+            // Live chunk: its bytes stay resident until the exit ring releases them.
+            composite.pin_tile(coord, &tile);
             active_count += 1;
             spawned_this_frame += 1;
         } else {
@@ -517,8 +604,8 @@ pub fn fetch_and_spawn_terrain_chunks(
 #[allow(clippy::too_many_arguments)]
 fn spawn_chunk(
     coord: TileCoord,
+    tile: &LoadedTile,
     config: &TerrainConfig,
-    composite: &CompositeTileSource,
     projection: &Projection,
     layer_stack: &LayerStack,
     upsample: u32,
@@ -528,8 +615,8 @@ fn spawn_chunk(
     images: &mut Assets<Image>,
     height_field: Option<&mut TerrainHeightField>,
 ) -> bool {
-    let elevation_png = composite.get_tile_sync(coord);
-    let satellite_bytes = composite.get_satellite_tile_sync(coord);
+    let elevation_png = tile.elevation.as_ref().map(|hit| &hit.bytes);
+    let satellite_bytes = tile.satellite.as_ref().map(|hit| &hit.bytes);
     if elevation_png.is_none() && satellite_bytes.is_none() {
         tracing::warn!(tile = %coord.cache_key(), "no elevation or satellite tile available; skipping");
         return false;
@@ -543,7 +630,7 @@ fn spawn_chunk(
     let (s_lat, _) = TileCoord::new(coord.x, coord.y.saturating_add(1), coord.zoom).to_lat_lon();
     let tile_size = scaled_tile_size(tile_world_size_m((nw_lat + s_lat) / 2.0, coord.zoom), scale);
 
-    let elevation_data = elevation_png.and_then(|png| match decode_png_pixels(&png) {
+    let elevation_data = elevation_png.and_then(|png| match decode_png_pixels(png) {
         Ok((_, w, h)) if w > MAX_TILE_DIMENSION || h > MAX_TILE_DIMENSION => {
             // Oversized tile: one such PNG upsampled could allocate multi-GB
             // meshes and OOM the host — reject it (§tile-budget).
@@ -597,7 +684,7 @@ fn spawn_chunk(
     };
 
     let has_satellite_texture;
-    let material = match satellite_bytes.as_deref().and_then(decode_satellite_image) {
+    let material = match satellite_bytes.and_then(|bytes| decode_satellite_image(bytes)) {
         Some(image) => {
             has_satellite_texture = true;
             let handle = images.add(image);

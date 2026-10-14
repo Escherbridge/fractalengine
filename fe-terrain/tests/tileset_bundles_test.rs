@@ -169,10 +169,11 @@ fn a_bundled_tileset_reassembles_to_identical_tiles() {
     for (key, bytes) in &source.elevation_tiles {
         let (z, x, y) = key_coord(key);
         let got = loaded
-            .get_tile(TileCoord::new(x, y, z))
+            .load_tile_blocking(TileCoord::new(x, y, z))
+            .expect("elevation read")
             .unwrap_or_else(|| panic!("elevation tile {key} missing after reassembly"));
         assert_eq!(
-            got,
+            &*got,
             bytes.as_slice(),
             "elevation tile {key} differs after reassembly"
         );
@@ -180,10 +181,11 @@ fn a_bundled_tileset_reassembles_to_identical_tiles() {
     for (key, bytes) in &source.satellite_tiles {
         let (z, x, y) = key_coord(key);
         let got = loaded
-            .get_satellite_tile(TileCoord::new(x, y, z))
+            .load_satellite_tile_blocking(TileCoord::new(x, y, z))
+            .expect("satellite read")
             .unwrap_or_else(|| panic!("satellite tile {key} missing after reassembly"));
         assert_eq!(
-            got,
+            &*got,
             bytes.as_slice(),
             "satellite tile {key} differs after reassembly"
         );

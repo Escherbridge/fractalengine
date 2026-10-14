@@ -4,7 +4,7 @@ use fe_format::manifest::{ElevationEncoding, HexonManifest, HexonType, TilesetMe
 use fe_format::HexonArchive;
 use fe_terrain::tiles::cache::DiskTileCache;
 use fe_terrain::tiles::composite::CompositeTileSource;
-use fe_terrain::tiles::hexon_source::HexonTileSource;
+use fe_terrain::tiles::hexon_source::{HexonTileSource, TileLayer};
 use fe_terrain::tiles::regions::*;
 use fe_terrain::tiles::source::TileCoord;
 
@@ -98,7 +98,7 @@ fn check1_hexon_tile_source_offline_4_tiles() {
         );
         assert!(source.has_tile(coord), "should have tile {key}");
         let data = source.get_tile(coord).expect("get_tile should return data");
-        assert_eq!(data, expected_data.as_slice(), "data mismatch for {key}");
+        assert_eq!(&*data, expected_data.as_slice(), "data mismatch for {key}");
     }
 
     // Out-of-range coord returns None
@@ -133,7 +133,7 @@ fn check1_hexon_tile_source_satellite() {
     let source = HexonTileSource::from_archive(&bytes).unwrap();
     let coord = TileCoord::new(5, 5, 5);
     assert!(source.get_satellite_tile(coord).is_some());
-    assert_eq!(source.get_satellite_tile(coord).unwrap(), &[0xFFu8; 16]);
+    assert_eq!(&*source.get_satellite_tile(coord).unwrap(), &[0xFFu8; 16]);
     assert!(source.get_tile(coord).is_none()); // no elevation tile
 }
 
@@ -191,9 +191,14 @@ fn check2_composite_disk_cache_fallback() {
     composite.set_cache(cache);
 
     let coord = TileCoord::new(99, 99, 5);
-    let data = composite.get_tile_sync(coord);
+    // Disk-cache tiles are reached by the off-thread loader, never the resident lookup.
+    assert!(
+        composite.get_tile_sync(coord).is_none(),
+        "resident lookup does no I/O"
+    );
+    let data = composite.load_blocking(coord).elevation;
     assert!(data.is_some(), "should find tile in disk cache");
-    assert_eq!(data.unwrap(), test_data);
+    assert_eq!(&*data.unwrap().bytes, test_data);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -518,19 +523,25 @@ fn check6_hexon_source_from_roundtripped_archive() {
     let source = HexonTileSource::from_archive(&bytes).unwrap();
 
     // Re-export from source data
+    let members = |layer: TileLayer| -> Vec<(String, Vec<u8>)> {
+        source
+            .member_keys(layer)
+            .into_iter()
+            .map(|(z, x, y)| {
+                let coord = TileCoord::new(x, y, z);
+                let bytes = match layer {
+                    TileLayer::Satellite => source.get_satellite_tile(coord),
+                    _ => source.get_tile(coord),
+                };
+                (coord.cache_key(), bytes.expect("eager member").to_vec())
+            })
+            .collect()
+    };
     let re_exported = HexonArchive::export_tileset(
         make_manifest("re-export"),
         &source.tileset_meta,
-        &source
-            .tiles
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect::<Vec<_>>(),
-        &source
-            .satellite
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect::<Vec<_>>(),
+        &members(TileLayer::Elevation),
+        &members(TileLayer::Satellite),
         None,
     )
     .expect("re-export");
@@ -539,7 +550,10 @@ fn check6_hexon_source_from_roundtripped_archive() {
     let source2 = HexonTileSource::from_archive(&re_exported).unwrap();
     assert_eq!(source2.bounds(), source.bounds());
     assert_eq!(source2.zoom_range(), source.zoom_range());
-    assert_eq!(source2.tiles.len(), source.tiles.len());
+    assert_eq!(
+        source2.member_keys(TileLayer::Elevation),
+        source.member_keys(TileLayer::Elevation)
+    );
 }
 
 // =========================================================================

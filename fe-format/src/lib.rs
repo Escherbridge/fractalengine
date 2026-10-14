@@ -4,6 +4,7 @@
 //! licensing, Ed25519 signing, and archive read/write.
 
 mod archive;
+pub mod archive_index;
 pub mod entries;
 pub mod license;
 pub mod limits;
@@ -12,6 +13,7 @@ pub mod signature;
 
 // Re-exports for convenience
 pub use archive::*;
+pub use archive_index::{ArchiveChanged, HexonArchiveIndex, ARCHIVE_CHANGED_ERROR};
 pub use entries::*;
 pub use license::*;
 pub use limits::read_entry_capped;

@@ -501,8 +501,12 @@ pub async fn get_elevation_tile(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    match registry.get_tile(&tileset_id, z, x, y) {
-        Some(bytes) => {
+    // Lazy one-member read, off the async runtime (fe-terrain `src/AGENTS.md` §lazy-tiles).
+    let registry = Arc::clone(registry);
+    let tile = tokio::task::spawn_blocking(move || registry.get_tile(&tileset_id, z, x, y)).await;
+    match tile {
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Some(bytes)) => {
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
             headers.insert(
@@ -511,7 +515,7 @@ pub async fn get_elevation_tile(
             );
             (StatusCode::OK, headers, bytes).into_response()
         }
-        None => StatusCode::NOT_FOUND.into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -539,8 +543,13 @@ pub async fn get_satellite_tile(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    match registry.get_satellite_tile(&tileset_id, z, x, y) {
-        Some(bytes) => {
+    let registry = Arc::clone(registry);
+    let tile =
+        tokio::task::spawn_blocking(move || registry.get_satellite_tile(&tileset_id, z, x, y))
+            .await;
+    match tile {
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Some(bytes)) => {
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
             headers.insert(
@@ -549,7 +558,7 @@ pub async fn get_satellite_tile(
             );
             (StatusCode::OK, headers, bytes).into_response()
         }
-        None => StatusCode::NOT_FOUND.into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

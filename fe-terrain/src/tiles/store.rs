@@ -236,15 +236,16 @@ impl HexonStore {
         self.load_registry().tilesets
     }
 
-    /// Load a tileset from disk into a `HexonTileSource` (in-memory tile map).
+    /// Open an installed tileset as a lazy `HexonTileSource` (header phase only; tiles on demand).
     ///
     /// Backfills missing scale fields (FR-3) via [`backfill_scale_fields`];
     /// idempotent — already-populated fields are left untouched.
     pub fn load_tileset(&self, hexon_id: &str) -> Result<super::hexon_source::HexonTileSource> {
+        if !is_safe_hexon_id(hexon_id) {
+            bail!("{UNSAFE_HEXON_ID_ERROR}: {hexon_id:?}");
+        }
         let hexon_path = self.hexon_path(hexon_id);
-        let bytes = std::fs::read(&hexon_path)
-            .with_context(|| format!("failed to read hexon file: {}", hexon_path.display()))?;
-        let mut source = super::hexon_source::HexonTileSource::from_archive(&bytes)
+        let mut source = super::hexon_source::HexonTileSource::open(&hexon_path)
             .with_context(|| format!("failed to load tileset '{hexon_id}'"))?;
         backfill_scale_fields(&mut source.tileset_meta);
         Ok(source)

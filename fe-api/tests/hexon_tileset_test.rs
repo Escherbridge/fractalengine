@@ -32,6 +32,15 @@ fn build_tiny_hexon_tileset(hexon_id: &str) -> Vec<u8> {
 
 /// A `TerrainTileset` archive carrying `tiles` (stored, uncompressed).
 fn build_hexon_tileset(hexon_id: &str, tiles: &[(String, Vec<u8>)]) -> Vec<u8> {
+    build_hexon_tileset_layers(hexon_id, tiles, &[])
+}
+
+/// A `TerrainTileset` archive carrying elevation `tiles` and `satellite` imagery.
+fn build_hexon_tileset_layers(
+    hexon_id: &str,
+    tiles: &[(String, Vec<u8>)],
+    satellite: &[(String, Vec<u8>)],
+) -> Vec<u8> {
     let now = chrono::Utc::now().to_rfc3339();
     let manifest = HexonManifest {
         schema_version: "1.0.0".to_string(),
@@ -66,7 +75,8 @@ fn build_hexon_tileset(hexon_id: &str, tiles: &[(String, Vec<u8>)]) -> Vec<u8> {
         crs: None, // deliberately legacy (no CRS) — differs from Default's Some("EPSG:4326")
         ..Default::default()
     };
-    HexonArchive::export_tileset(manifest, &meta, tiles, &[], None).expect("export tileset archive")
+    HexonArchive::export_tileset(manifest, &meta, tiles, satellite, None)
+        .expect("export tileset archive")
 }
 
 /// A tileset archive of at least `min_bytes` (plus a few KiB of headers),
@@ -381,5 +391,97 @@ async fn five_mib_tileset_installs_via_rest_and_mcp() {
             .unwrap_or_default()
             .contains("MiB limit"),
         "{refused}"
+    );
+}
+
+/// GET one tile route with `token`; returns the status and body bytes.
+async fn get_tile_bytes(h: &ApiHarness, uri: &str, token: &str) -> (StatusCode, Vec<u8>) {
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("build tile request");
+    let resp = h.request(req).await;
+    let status = resp.status();
+    (
+        status,
+        fractalengine_test_harness::api::body_bytes(resp).await,
+    )
+}
+
+/// PAS-P4 lazy tiles: a tileset installed before startup is only INDEXED by
+/// `load_all` (header phase); its elevation and satellite members are read on
+/// request through the authed routes, and a reinstall of the same id serves the
+/// new bytes (the registry swaps in a fresh source; no stale offsets are reused).
+#[tokio::test]
+async fn startup_indexed_tiles_stream_lazily_and_a_reinstall_serves_new_bytes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store =
+        fe_terrain::tiles::HexonStore::with_dir(tmp.path().join("tilesets")).expect("hexon store");
+    let hexon_id = format!("tileset-lazy-{}", ulid::Ulid::new());
+    let key = || "5/10/12".to_string();
+    store
+        .install_tileset(&build_hexon_tileset_layers(
+            &hexon_id,
+            &[(key(), b"elevation-v1".to_vec())],
+            &[(key(), b"satellite-v1".to_vec())],
+        ))
+        .expect("install before startup");
+    let registry = std::sync::Arc::new(fe_terrain::tiles::TilesetRegistry::new(store));
+    assert_eq!(registry.load_all(), vec![hexon_id.clone()]);
+    let source = registry.source(&hexon_id).expect("indexed");
+    assert!(source.is_lazy());
+    assert_eq!(source.resident_bytes(), 0, "startup reads headers only");
+
+    let h = ApiHarness::spawn_with_tileset_registry(registry)
+        .await
+        .expect("spawn harness with tileset registry");
+    let (petal_id, token) = petal_bound_to(&h, &hexon_id).await;
+    let elevation_uri =
+        format!("/api/v1/tiles/elevation/{hexon_id}/5/10/12.png?petal_id={petal_id}");
+    let satellite_uri =
+        format!("/api/v1/tiles/satellite/{hexon_id}/5/10/12.jpg?petal_id={petal_id}");
+
+    assert_eq!(
+        get_tile_bytes(&h, &elevation_uri, &token).await,
+        (StatusCode::OK, b"elevation-v1".to_vec())
+    );
+    assert_eq!(
+        get_tile_bytes(&h, &satellite_uri, &token).await,
+        (StatusCode::OK, b"satellite-v1".to_vec())
+    );
+    let (status, _) = get_tile_bytes(
+        &h,
+        &format!("/api/v1/tiles/elevation/{hexon_id}/5/10/99.png?petal_id={petal_id}"),
+        &token,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "absent member is a plain 404"
+    );
+
+    // Reinstall the same id with different (and differently sized) bytes.
+    let installed = rest_install(
+        &h,
+        &petal_id,
+        &token,
+        &build_hexon_tileset_layers(
+            &hexon_id,
+            &[(key(), b"elevation-v2-is-longer".to_vec())],
+            &[(key(), b"satellite-v2".to_vec())],
+        ),
+    )
+    .await;
+    assert_eq!(installed["ok"], true, "reinstall: {installed}");
+    assert_eq!(
+        get_tile_bytes(&h, &elevation_uri, &token).await,
+        (StatusCode::OK, b"elevation-v2-is-longer".to_vec())
+    );
+    assert_eq!(
+        get_tile_bytes(&h, &satellite_uri, &token).await,
+        (StatusCode::OK, b"satellite-v2".to_vec())
     );
 }

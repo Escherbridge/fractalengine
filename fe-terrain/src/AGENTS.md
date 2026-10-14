@@ -30,8 +30,17 @@ per frame and, in one pass:
    revision.
 2. Rebuilds `ActiveTileSource`: a fresh `CompositeTileSource` populated from
    `config.tileset_hexon_uris` via `SharedTilesetRegistry` (an
-   `Arc<TilesetRegistry>` inserted by the main binary; each URI is loaded
-   through `store().load_tileset`, failures warn and continue), the config's
+   `Arc<TilesetRegistry>` inserted by the main binary). Each URI resolves to
+   the registry's OWN `Arc<HexonTileSource>` (`registry.source(uri)`); on a
+   miss the tileset is indexed with `store().load_tileset` and registered with
+   `registry.insert_source`, so the renderer and the fe-api tile routes share
+   one source and one byte cache (§lazy-tiles). Failures warn and continue.
+   The miss path's header-phase index open is the one file read left in this
+   system — once per tileset not already indexed by `load_all`/`install`, never
+   per frame and never a tile read.
+   Before the rebuild the outgoing composite's pins are released
+   (`release_all_pins`) because every chunk is about to despawn. Then the
+   config's
    `tile_source_mode`, a `DiskTileCache` rooted at `config.cache_dir`
    (512 MB budget; skipped with a warn when the dir string is empty), and
    `projection = config.origin`. A `None`/disabled config clears both fields.
@@ -73,10 +82,18 @@ at write time):
   bytes with the Terrain-RGB formula puts vertices ~900 km up — invisible
   past the camera's 1000 m far plane, which read as "terrain doesn't load".
   `Raw16` has no decoder yet → `None` (flat).
-- `origin.origin_ele == 0.0` is treated as "unset" and grounded via
-  `sample_center_elevation` (mean of the origin tile at min zoom), because
-  mesh world-Y = absolute elevation − origin_ele; real terrain (e.g. Pacific
-  NW at 500–1500 m ASL) would otherwise float far above the camera.
+- `origin.origin_ele == 0.0` is treated as "unset" and grounded from the
+  mean elevation of the origin tile at min zoom (`mean_tile_elevation`),
+  because mesh world-Y = absolute elevation − origin_ele; real terrain (e.g.
+  Pacific NW at 500–1500 m ASL) would otherwise float far above the camera.
+  **Grounding is deferred (S5):** tile bytes are no longer in RAM at
+  assignment time, and reading one here would be main-thread I/O (NFR-2). So
+  the assignment only names the center tile (`TileResidency::reset(revision,
+  grounding)`); `fetch_and_spawn_terrain_chunks` loads it off-thread, spawns
+  NO chunk until it resolves (pending), then writes `origin_ele` into both
+  `ActivePetalTerrain.config` and `ActiveTileSource.projection` before the
+  first chunk anchors. An absent/undecodable center tile ends grounding with
+  the origin left at 0 (the pre-S5 behavior for a missing tile).
 
 The reconciled config is written back to `ActivePetalTerrain` so
 `fetch_and_spawn_terrain_chunks` and the projection agree.
@@ -112,13 +129,18 @@ Offline-mode override between `apply_terrain_assignments` and the first fetch
   doubling of height above a 200 m base; monotonic + clamped).
 - 3×3 tile ring around `TileCoord::from_lat_lon(lat, lon, zoom)`; tiles
   already spawned (by `(zoom, x, y)`) or previously failed are skipped.
-- Per tile: elevation PNG via `CompositeTileSource::get_tile_sync` decoded by
-  the config's `ElevationSourceKind` decoder → `terrain_mesh`; satellite via
-  the new `get_satellite_tile_sync` (hexon → disk cache namespace
-  `composite_sat`; mirrors `get_tile_sync`) decoded to an RGBA texture. No
-  elevation but satellite → flat 16×16 grid; neither → skip + record in
-  `FailedTiles` (a `HashSet<(u8,u32,u32)>` cleared on revision change) so a
-  missing tile warns once instead of every frame.
+- Per tile: `TileResidency::ensure_resident(coord)` (§tile-residency)
+  returns `Ready(LoadedTile)`, `Pending` or `Absent`. Pending tiles are
+  skipped this frame and NOT recorded anywhere — a load in flight is never a
+  failure. Ready tiles build the chunk from the `LoadedTile` bytes: elevation
+  PNG decoded by the config's `ElevationSourceKind` decoder → `terrain_mesh`;
+  satellite (hexon → disk cache namespace `composite_sat`) decoded to an
+  RGBA texture. No elevation but satellite → flat 16×16 grid. Only `Absent`
+  (in no covering index nor the disk cache) or an undecodable tile lands in
+  `FailedTiles` (a `HashSet<(u8,u32,u32)>` cleared on revision change), so a
+  missing tile warns once instead of every frame. A spawned chunk pins its
+  tile bytes (`composite.pin_tile`); `update_terrain_lod` releases them when
+  it despawns the chunk (exit ring).
 - Geometry: `terrain_mesh` anchors at local (0,0,0) extending +x/+z with row
   index driving +z. World axes are x=east / z=north, while tile image row 0
   is the north edge — so elevation rows are flipped (`flip_rows`), satellite
@@ -666,3 +688,104 @@ identity cross-hexon dedup and the tile pointer-set both depend on.
   in-place instead of re-splitting. Touched outside S1's own owned-files list
   (S4 critic step 5 needs cross-binary reuse) — additive only, no existing
   function's behavior changed.
+
+## §lazy-tiles — offset-indexed `HexonTileSource`, one shared `Arc` (p2p_asset_streaming S5)
+
+**Why.** Before S5 every installed tileset was decoded eagerly into
+`HashMap<String, Vec<u8>>` — once by `TilesetRegistry::load_all` (for the fe-api
+tile routes) and AGAIN by the active petal (`petal_binding` re-read the whole
+`.hexon` into its own `CompositeTileSource`). Evidence §5: 14.6 MiB today,
+~3.8 GB at projected z12, doubled. S5 makes residency proportional to what the
+camera can see.
+
+- **Two backings, one type** (`tiles/hexon_source.rs`). `HexonTileSource::open(path)`
+  is the production path: it opens a `fe_format::HexonArchiveIndex` (header
+  phase only — central directory + manifest/entries/tileset_meta JSON, fe-format
+  `src/AGENTS.md` §archive-index) and builds an I/O-free membership set
+  `HashSet<(TileLayer, (z,x,y))>` from the member names. `from_archive(bytes)` /
+  `from_directory` stay eager (tests, bundle assembly, `PartialTileSource`
+  chunks) — those bytes are already in RAM, so there is nothing to defer.
+- **Resident-only getters.** `get_tile` / `get_satellite_tile` /
+  `get_baked_splats` (and `CompositeTileSource::get_tile_sync` /
+  `get_satellite_tile_sync` / `get_baked_splats_sync`) return
+  `Option<Arc<..>>` from RAM only — they never touch the disk, so any Update
+  system may call them (NFR-2). `probe(layer, coord)` distinguishes `Hit` /
+  `Miss` (member exists, needs a read) / `Absent` (not in this archive)
+  without I/O. The composite getters also no longer consult the disk tile
+  cache: that is a file read; only the off-thread `TileLoader` does it. (The
+  disk cache is not populated by anything in production today — the
+  `fetch`-feature `fetch_tile` that writes it has no caller.)
+- **Blocking loaders.** `load_layer_blocking` / `load_tile_blocking` /
+  `load_satellite_tile_blocking` / `load_baked_splats_blocking` read ONE member
+  through the index (zip-bomb caps per member; CRC-checked by the zip crate),
+  decode baked splats (a corrupt/future-version buffer is "no baked data",
+  FR-5), and insert the value into the source's byte cache UNPINNED. Callers:
+  the residency `TileLoader` on `IoTaskPool`, and fe-api's tile routes inside
+  `spawn_blocking` (the registry's `get_tile` / `get_satellite_tile` are now
+  blocking by contract).
+- **Byte cache** (`tiles/residency.rs` `ByteLru`): byte-bounded LRU at
+  `TILE_BYTE_BUDGET` = 256 MiB per source (a constant — no knob was asked
+  for; reversal = one `AppSettings` field). Pinned entries are never evicted
+  (they belong to live chunks); only unpinned entries (fe-api reads, loads
+  whose chunk never spawned) age out. Pinned bytes may overshoot the budget —
+  the terrain `max_chunks` cap bounds them.
+- **One owner, shared `Arc`s.** `TilesetRegistry.sources` is
+  `HashMap<String, Arc<HexonTileSource>>`; `source(id)` hands out the `Arc`,
+  `insert_source` registers one. `load_all` opens indexes only (cheap
+  startup). `CompositeTileSource.hexon_sources: Vec<Arc<HexonTileSource>>`
+  holds the same `Arc`s (`add_hexon_source` takes `impl Into<Arc<_>>`, so an
+  owned test source still works). A composite never mutates a shared source
+  beyond its cache pins. **No-tear rule:** `registry.install` / `reload`
+  insert a NEW `Arc`; the active composite keeps the old one until the next
+  assignment.
+- **Reinstall in place.** `HexonStore::install_tileset` rewrites
+  `{id}.hexon` in place, so an old `Arc` can find different bytes behind its
+  offsets. `HexonArchiveIndex::read_member` refuses with `ArchiveChanged`
+  when the file's size/mtime moved; `load_layer_blocking` then re-indexes
+  ONCE, swaps the index, drops unpinned (stale) cache entries, and retries.
+  Pinned bytes of live chunks stay as rendered until they leave the ring.
+  `tileset_meta` of the old `Arc` is not refreshed — the next assignment
+  picks up the registry's fresh source.
+- **`load_tileset` refuses unsafe ids** (`is_safe_hexon_id`) before the path
+  join: the id arrives from a (replicated) petal terrain config.
+- **`CompositeTileSource::resident_tile(coord)`** resolves every layer with
+  zero I/O or returns `None` ("a read is needed"): `Online`/`Hybrid` with a
+  disk cache configured always need the loader for hexon misses (only a read
+  can say whether the cache holds the tile); `Offline` never reads the disk
+  cache (NFR-4, preserved in `TileLoader` too).
+
+## §tile-residency — async loads, pending ≠ failed, exit-ring eviction (S5)
+
+`TileResidency` (render feature, `tiles/residency.rs`) realises D-74's "async
+dispatch" decision: the main thread never reads a tile.
+
+- `ensure_resident(coord, composite)`: a ready (loaded, unspawned) tile →
+  `Ready`; a load in flight → `Pending`; `composite.resident_tile` resolves it
+  without I/O → `Ready`/`Absent`; otherwise dispatch
+  `composite.loader().load_blocking(coord)` on `IoTaskPool` (≤
+  `MAX_TILE_LOADS_IN_FLIGHT` = 16; beyond that the coord just stays pending
+  and is retried next frame) → `Pending`. A finished load whose layers are
+  all absent is `Absent` — the only path into `FailedTiles` besides an
+  undecodable tile.
+- `poll()` (first thing in `fetch_and_spawn_terrain_chunks`) harvests
+  finished tasks with `bevy::tasks::futures::check_ready` and drops ready
+  tiles nobody spawned within `READY_TTL_FRAMES` (camera moved on), so a long
+  flight cannot accumulate `Arc`s.
+- `reset(revision, grounding)` (from `apply_terrain_assignments`) cancels
+  in-flight tasks (dropping a `Task` cancels it) and clears held tiles; a
+  revision mismatch seen by the fetch system resets defensively.
+- **Exit-ring byte eviction.** `fetch_and_spawn_terrain_chunks` pins a
+  spawned chunk's hexon-origin layers in the source that supplied them
+  (`pin_tile`, insert-if-evicted). `update_terrain_lod` despawns chunks
+  beyond `DESPAWN_HYSTERESIS` × the spawn radius (or at a stale zoom) and
+  calls `composite.release_tile(coord)`: the last pin drops the bytes
+  immediately — they leave RAM with the chunk, not at some later LRU
+  pressure point. Re-entry reloads them (identical bytes, identical heights).
+  A reassignment releases the old composite's pins wholesale; only the one
+  active composite ever pins.
+- Counters for the S8 readout: `CompositeTileSource::resident_bytes()`
+  (distinct sources) and `HexonTileSource::{resident_bytes, pinned_len}`;
+  `TileResidency::{in_flight_len, ready_len}`.
+- Cost: a chunk now appears a frame or more after it enters the ring (Risk 4,
+  accepted; in-app check is USER_GATED). D-38 snap-to-terrain reads
+  `TerrainHeightField`, which only covers resident chunks — unchanged by S5.

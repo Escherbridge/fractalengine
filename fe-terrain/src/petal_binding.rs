@@ -65,6 +65,25 @@ pub fn config_for_tileset(info: &crate::tiles::TilesetInfo) -> TerrainConfig {
     }
 }
 
+/// Mean decoded elevation (meters) of one elevation tile; `None` when undecodable or flat.
+pub fn mean_tile_elevation(png: &[u8], source: &ElevationSourceKind) -> Option<f64> {
+    use crate::tiles::{decode_png_pixels, ElevationDecoder, TerrainRgbDecoder, TerrariumDecoder};
+    let (pixels, w, h) = decode_png_pixels(png).ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let decoded = match source {
+        ElevationSourceKind::TerrainRgb => TerrainRgbDecoder.decode(&pixels, w, h),
+        ElevationSourceKind::Terrarium => TerrariumDecoder.decode(&pixels, w, h),
+        ElevationSourceKind::None => return None,
+    };
+    if decoded.is_empty() {
+        return None;
+    }
+    let sum: f64 = decoded.iter().map(|v| *v as f64).sum();
+    Some(sum / decoded.len() as f64)
+}
+
 #[cfg(feature = "render")]
 mod render_support {
     use bevy::prelude::*;
@@ -74,8 +93,7 @@ mod render_support {
     use crate::layers::{layer_type_from_config_name, LayerStack, LayerType, MapLayer};
     use crate::terrain_plugin::{GeoJsonOverlay, GeoJsonProcessed, GpxTrackLine, TerrainChunk};
     use crate::tiles::{
-        decode_png_pixels, CompositeTileSource, DiskTileCache, ElevationDecoder, TerrainRgbDecoder,
-        TerrariumDecoder, TileCoord, TilesetRegistry,
+        CompositeTileSource, DiskTileCache, TileCoord, TileResidency, TilesetRegistry,
     };
     use fe_format::manifest::ElevationEncoding;
 
@@ -106,6 +124,19 @@ mod render_support {
         pub projection: Option<crate::projection::Projection>,
     }
 
+    /// The registry's shared source for `uri`, indexing (and registering) it on a miss.
+    fn shared_source(
+        registry: &TilesetRegistry,
+        uri: &str,
+    ) -> anyhow::Result<std::sync::Arc<crate::tiles::HexonTileSource>> {
+        if let Some(source) = registry.source(uri) {
+            return Ok(source);
+        }
+        let source = std::sync::Arc::new(registry.store().load_tileset(uri)?);
+        registry.insert_source(uri, std::sync::Arc::clone(&source));
+        Ok(source)
+    }
+
     /// All terrain-derived scene entities that a re-assignment must despawn.
     type SpawnedTerrainQuery<'w, 's> = Query<
         'w,
@@ -130,11 +161,18 @@ mod render_support {
         mut commands: Commands,
         spawned: SpawnedTerrainQuery,
         mut height_field: Option<ResMut<fe_renderer::terrain_height::TerrainHeightField>>,
+        residency: Option<ResMut<TileResidency>>,
     ) {
         // Only the last assignment per frame wins.
         let Some(TerrainAssignmentMsg(assignment)) = reader.read().last().cloned() else {
             return;
         };
+
+        // The outgoing composite's live chunks are about to despawn: unpin their bytes.
+        if let Some(old) = tile_source.composite.as_ref() {
+            old.release_all_pins();
+        }
+        let mut grounding = None;
 
         active.petal_id = Some(assignment.petal_id.clone());
         active.config = assignment.config.clone();
@@ -150,7 +188,7 @@ mod render_support {
                         tracing::warn!(uri = %uri, "no SharedTilesetRegistry resource; cannot load tileset");
                         continue;
                     };
-                    match reg.0.store().load_tileset(uri) {
+                    match shared_source(&reg.0, uri) {
                         Ok(src) => {
                             hexon_encoding
                                 .get_or_insert(src.tileset_meta.elevation_encoding.clone());
@@ -201,17 +239,15 @@ mod render_support {
                         DEFAULT_TILE_CACHE_BYTES,
                     ));
                 }
-                // Ground the projection: mesh world-Y = elevation − origin_ele,
-                // so an unset origin_ele leaves real terrain hundreds of meters
-                // above the camera (and past the far plane).
+                // Ground the projection: mesh world-Y = elevation − origin_ele, so an
+                // unset origin_ele leaves real terrain far above the camera. The center
+                // tile loads off-thread; chunks wait for it (src/AGENTS.md §tile-residency).
                 if config.origin.origin_ele == 0.0 {
-                    if let Some(ele) = sample_center_elevation(&composite, &config) {
-                        tracing::info!(
-                            origin_ele = ele,
-                            "grounded terrain origin from center-tile elevation"
-                        );
-                        config.origin.origin_ele = ele;
-                    }
+                    grounding = Some(TileCoord::from_lat_lon(
+                        config.origin.origin_lat,
+                        config.origin.origin_lon,
+                        config.min_zoom,
+                    ));
                 }
                 tile_source.composite = Some(composite);
                 tile_source.projection = Some(config.origin.clone());
@@ -263,34 +299,9 @@ mod render_support {
         if let Some(field) = height_field.as_mut() {
             field.clear();
         }
-    }
-
-    /// Mean elevation of the tile at the config origin (min zoom); `None` when
-    /// no elevation tile or decoder is available.
-    fn sample_center_elevation(
-        composite: &CompositeTileSource,
-        config: &TerrainConfig,
-    ) -> Option<f64> {
-        let coord = TileCoord::from_lat_lon(
-            config.origin.origin_lat,
-            config.origin.origin_lon,
-            config.min_zoom,
-        );
-        let png = composite.get_tile_sync(coord)?;
-        let (pixels, w, h) = decode_png_pixels(&png).ok()?;
-        if w == 0 || h == 0 {
-            return None;
+        if let Some(mut residency) = residency {
+            residency.reset(active.revision, grounding);
         }
-        let decoded = match config.elevation_source {
-            ElevationSourceKind::TerrainRgb => TerrainRgbDecoder.decode(&pixels, w, h),
-            ElevationSourceKind::Terrarium => TerrariumDecoder.decode(&pixels, w, h),
-            ElevationSourceKind::None => return None,
-        };
-        if decoded.is_empty() {
-            return None;
-        }
-        let sum: f64 = decoded.iter().map(|v| *v as f64).sum();
-        Some(sum / decoded.len() as f64)
     }
 }
 

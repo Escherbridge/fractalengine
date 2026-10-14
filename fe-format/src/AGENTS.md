@@ -12,6 +12,34 @@ of `ExportNode`s) and generic hexons (models, materials, terrain, ...).
 `HexonArchiveData` is the fully-extracted view: manifest, entry catalog,
 license, nodes, field defs, and schema.
 
+## §archive-index (`archive_index.rs`)
+
+`HexonArchiveIndex` is THE lazy `.hexon` reader (critic C5: PAS-P5 extends it
+with header docs / verified reads / `chunk(seq)` instead of adding a second
+reader). `open(path)` is the header phase: one pass over the zip central
+directory (entry-count cap) plus `manifest.json`, `entries.json` and the
+optional `terrain/tileset_meta.json` under `MAX_JSON_ENTRY_BYTES` and a shared
+archive budget. `read_member(name)` then reads ONE member under
+`MAX_ENTRY_UNCOMPRESSED_BYTES` (JSON members under the JSON cap); stored
+members are a positioned read, deflated ones are inflated by the zip crate,
+and the zip crate checks each member's CRC-32 at EOF.
+
+- **Member table = the zip crate's parsed central directory** (an
+  `Arc<Shared>` index map inside `ZipArchive`), not a hand-rolled offset table:
+  `ZipArchive<R>` is `Clone` and shares the parsed directory, and each member's
+  data offset is cached in a `OnceLock` after its first read, so a read is
+  "clone the directory handle + seek + read", never a re-parse. Hand-rolling
+  inflate/offsets would duplicate the zip crate for no gain.
+- **No long-lived file handle.** The reader is a `LazyFile` whose clones start
+  closed: each `read_member` opens the file, reads, and drops the handle. On
+  Windows a held handle would block `remove_tileset` / reinstall.
+- **Replacement detection.** Size + mtime are captured at `open`; a mismatch
+  at read time fails with the typed `ArchiveChanged` (downcastable from
+  `anyhow`) instead of reading the new file's bytes at the old offsets. The
+  CRC check is the backstop for a same-size, same-mtime rewrite.
+- `HexonArchive::import` is unchanged and still the eager, whole-archive
+  validation path (install, bundling).
+
 ## §manifest (`manifest.rs`)
 
 `HexonType` is the content taxonomy (Scene, Model, ..., TerrainTileset,

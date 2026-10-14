@@ -1,12 +1,16 @@
-//! Composite tile source with ordered fallback chain.
+//! Composite tile source with ordered fallback chain; see `src/AGENTS.md` §lazy-tiles.
 //!
-//! `CompositeTileSource` tries hexon sources first (by bounds check),
-//! then disk cache, then online sources. Results from online fetches
-//! are written back to the disk cache.
+//! `CompositeTileSource` tries hexon sources first (by bounds check), then the
+//! disk cache, then online sources. Hexon sources are shared `Arc`s owned by the
+//! `TilesetRegistry`; resident lookups never touch the disk, `TileLoader` does.
+
+use std::sync::Arc;
 
 use super::cache::DiskTileCache;
-use super::hexon_source::HexonTileSource;
+use super::hexon_source::{HexonTileSource, Probe, ResidentTile, TileLayer};
 use super::source::TileCoord;
+use crate::config::TileSourceMode;
+use crate::splat::format::BakedSplatBuffer;
 
 /// Reconciled real-meter metric frame across all composite sources (FR-4).
 ///
@@ -26,6 +30,131 @@ pub struct SourceLodPick {
     pub zoom: u8,
 }
 
+/// Where a resolved layer's bytes came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileOrigin {
+    /// `hexon_sources[index]`.
+    Hexon(usize),
+    /// The disk tile cache (Online / Hybrid fallback).
+    DiskCache,
+}
+
+/// One resolved image layer of a tile.
+#[derive(Clone)]
+pub struct LayerHit {
+    pub bytes: Arc<[u8]>,
+    pub origin: TileOrigin,
+}
+
+/// One resolved baked-splat buffer and the hexon source it came from.
+#[derive(Clone)]
+pub struct SplatHit {
+    pub splats: Arc<BakedSplatBuffer>,
+    pub source: usize,
+}
+
+/// Every layer of one tile, resolved through the fallback chain.
+#[derive(Clone, Default)]
+pub struct LoadedTile {
+    pub elevation: Option<LayerHit>,
+    pub satellite: Option<LayerHit>,
+    pub baked: Option<SplatHit>,
+}
+
+impl LoadedTile {
+    /// Neither elevation nor satellite exists anywhere in the chain (a real failure).
+    pub fn is_absent(&self) -> bool {
+        self.elevation.is_none() && self.satellite.is_none()
+    }
+
+    /// Bytes this tile holds across its layers.
+    pub fn byte_len(&self) -> u64 {
+        let image = |hit: &Option<LayerHit>| hit.as_ref().map_or(0, |h| h.bytes.len() as u64);
+        let splats = self.baked.as_ref().map_or(0, |hit| {
+            ResidentTile::Splats(Arc::clone(&hit.splats)).byte_cost()
+        });
+        image(&self.elevation) + image(&self.satellite) + splats
+    }
+}
+
+/// Disk-cache namespace per image layer.
+fn cache_namespace(layer: TileLayer) -> &'static str {
+    match layer {
+        TileLayer::Satellite => "composite_sat",
+        TileLayer::Elevation | TileLayer::BakedSplats => "composite",
+    }
+}
+
+/// `Send + 'static` snapshot of a composite's lookup chain for an off-thread load.
+#[derive(Clone)]
+pub struct TileLoader {
+    hexon_sources: Vec<Arc<HexonTileSource>>,
+    cache: Option<Arc<DiskTileCache>>,
+    mode: TileSourceMode,
+}
+
+impl TileLoader {
+    /// Resolve every layer of `coord` with blocking reads (call off the main thread).
+    pub fn load_blocking(&self, coord: TileCoord) -> LoadedTile {
+        LoadedTile {
+            elevation: self.load_image_blocking(TileLayer::Elevation, coord),
+            satellite: self.load_image_blocking(TileLayer::Satellite, coord),
+            baked: self.load_splats_blocking(coord),
+        }
+    }
+
+    fn load_image_blocking(&self, layer: TileLayer, coord: TileCoord) -> Option<LayerHit> {
+        if self.mode != TileSourceMode::Online {
+            for (index, src) in self.hexon_sources.iter().enumerate() {
+                if !src.covers(coord) {
+                    continue;
+                }
+                match src.load_layer_blocking(layer, coord) {
+                    Ok(Some(ResidentTile::Bytes(bytes))) => {
+                        return Some(LayerHit {
+                            bytes,
+                            origin: TileOrigin::Hexon(index),
+                        })
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(
+                        tile = %coord.cache_key(),
+                        ?layer,
+                        error = %err,
+                        "hexon tile read failed; trying the next source"
+                    ),
+                }
+            }
+        }
+        // NFR-4: Offline never reads the disk cache (it may hold online-origin tiles).
+        if self.mode == TileSourceMode::Offline {
+            return None;
+        }
+        let bytes = self
+            .cache
+            .as_ref()?
+            .get(cache_namespace(layer), &coord.cache_key())?;
+        Some(LayerHit {
+            bytes: Arc::from(bytes),
+            origin: TileOrigin::DiskCache,
+        })
+    }
+
+    fn load_splats_blocking(&self, coord: TileCoord) -> Option<SplatHit> {
+        self.hexon_sources
+            .iter()
+            .enumerate()
+            .filter(|(_, src)| src.covers(coord))
+            .find_map(|(source, src)| match src.load_baked_splats_blocking(coord) {
+                Ok(splats) => splats.map(|splats| SplatHit { splats, source }),
+                Err(err) => {
+                    tracing::warn!(tile = %coord.cache_key(), error = %err, "baked splat read failed");
+                    None
+                }
+            })
+    }
+}
+
 /// Ordered fallback tile source.
 ///
 /// Lookup order:
@@ -33,11 +162,11 @@ pub struct SourceLodPick {
 /// 2. Disk cache
 /// 3. Online sources (results cached to disk)
 pub struct CompositeTileSource {
-    hexon_sources: Vec<HexonTileSource>,
-    cache: Option<DiskTileCache>,
+    hexon_sources: Vec<Arc<HexonTileSource>>,
+    cache: Option<Arc<DiskTileCache>>,
     #[cfg(feature = "fetch")]
     online_sources: Vec<Box<dyn super::source::TileSource>>,
-    tile_source_mode: crate::config::TileSourceMode,
+    tile_source_mode: TileSourceMode,
 }
 
 /// Resolve `(gsd_m, native_scale)` for a source's meta, deriving from
@@ -66,35 +195,40 @@ impl CompositeTileSource {
             cache: None,
             #[cfg(feature = "fetch")]
             online_sources: Vec::new(),
-            tile_source_mode: crate::config::TileSourceMode::Hybrid,
+            tile_source_mode: TileSourceMode::Hybrid,
         }
     }
 
     /// Set the tile resolution mode.
-    pub fn set_tile_source_mode(&mut self, mode: crate::config::TileSourceMode) {
+    pub fn set_tile_source_mode(&mut self, mode: TileSourceMode) {
         self.tile_source_mode = mode;
     }
 
     /// The mode tile lookups currently honour.
-    pub fn tile_source_mode(&self) -> &crate::config::TileSourceMode {
+    pub fn tile_source_mode(&self) -> &TileSourceMode {
         &self.tile_source_mode
     }
 
     /// Check if demo mode is active (no hexons loaded + Hybrid mode + FE_DEMO_TILE_URL set).
     pub fn is_demo_mode(&self) -> bool {
-        self.tile_source_mode == crate::config::TileSourceMode::Hybrid
+        self.tile_source_mode == TileSourceMode::Hybrid
             && self.hexon_sources.is_empty()
             && std::env::var("FE_DEMO_TILE_URL").is_ok()
     }
 
-    /// Add a hexon tile source (checked first, by bounds).
-    pub fn add_hexon_source(&mut self, source: HexonTileSource) {
-        self.hexon_sources.push(source);
+    /// Add a hexon tile source (checked first, by bounds); pass the registry's `Arc` to share it.
+    pub fn add_hexon_source(&mut self, source: impl Into<Arc<HexonTileSource>>) {
+        self.hexon_sources.push(source.into());
+    }
+
+    /// The hexon sources, in lookup order.
+    pub fn hexon_sources(&self) -> &[Arc<HexonTileSource>] {
+        &self.hexon_sources
     }
 
     /// Set the disk cache layer.
     pub fn set_cache(&mut self, cache: DiskTileCache) {
-        self.cache = Some(cache);
+        self.cache = Some(Arc::new(cache));
     }
 
     /// Read-only access to each source's [`fe_format::manifest::TilesetMeta`],
@@ -103,16 +237,12 @@ impl CompositeTileSource {
         self.hexon_sources.iter().map(|s| &s.tileset_meta).collect()
     }
 
-    /// Baked splat coverage buffer for a tile, if any covering hexon source carries one (FR-4).
-    pub fn get_baked_splats_sync(
-        &self,
-        coord: TileCoord,
-    ) -> Option<&crate::splat::format::BakedSplatBuffer> {
-        self.hexon_sources.iter().find_map(|src| {
-            src.covers(coord)
-                .then(|| src.get_baked_splats(coord))
-                .flatten()
-        })
+    /// Resident baked splat buffer for a tile from the first covering hexon (FR-4); no I/O.
+    pub fn get_baked_splats_sync(&self, coord: TileCoord) -> Option<Arc<BakedSplatBuffer>> {
+        self.hexon_sources
+            .iter()
+            .filter(|src| src.covers(coord))
+            .find_map(|src| src.get_baked_splats(coord))
     }
 
     /// Reconcile all hexon sources into one common real-meter metric frame
@@ -165,86 +295,152 @@ impl CompositeTileSource {
         self.online_sources.push(source);
     }
 
-    /// Synchronous lookup — checks hexon sources and disk cache only.
-    /// Returns `None` if tile is not available offline.
+    /// Resident elevation bytes from the hexon chain; never touches the disk (NFR-2).
+    ///
+    /// Disk-cache tiles are reachable only through [`load_blocking`](Self::load_blocking).
     pub fn get_tile_sync(&self, coord: TileCoord) -> Option<Vec<u8>> {
-        use crate::config::TileSourceMode;
+        self.resident_image(TileLayer::Elevation, coord)
+            .map(|bytes| bytes.to_vec())
+    }
 
-        match self.tile_source_mode {
-            TileSourceMode::Offline => {
-                // Only hexon sources — skip cache (may contain online tiles)
-                for src in &self.hexon_sources {
-                    if src.covers(coord) {
-                        if let Some(data) = src.get_tile(coord) {
-                            return Some(data.to_vec());
-                        }
-                    }
+    /// Resident satellite bytes from the hexon chain; never touches the disk (NFR-2).
+    pub fn get_satellite_tile_sync(&self, coord: TileCoord) -> Option<Vec<u8>> {
+        self.resident_image(TileLayer::Satellite, coord)
+            .map(|bytes| bytes.to_vec())
+    }
+
+    fn resident_image(&self, layer: TileLayer, coord: TileCoord) -> Option<Arc<[u8]>> {
+        if self.tile_source_mode == TileSourceMode::Online {
+            return None;
+        }
+        self.hexon_sources
+            .iter()
+            .filter(|src| src.covers(coord))
+            .find_map(|src| {
+                src.get_layer(layer, coord)
+                    .and_then(ResidentTile::into_bytes)
+            })
+    }
+
+    /// I/O-free full resolution of `coord`; `None` when any layer still needs a read.
+    pub fn resident_tile(&self, coord: TileCoord) -> Option<LoadedTile> {
+        Some(LoadedTile {
+            elevation: self.resident_layer(TileLayer::Elevation, coord)?,
+            satellite: self.resident_layer(TileLayer::Satellite, coord)?,
+            baked: self.resident_splats(coord)?,
+        })
+    }
+
+    /// `Some(resolved)` when the image layer resolves without I/O, `None` when a read is needed.
+    fn resident_layer(&self, layer: TileLayer, coord: TileCoord) -> Option<Option<LayerHit>> {
+        if self.tile_source_mode != TileSourceMode::Online {
+            for (index, src) in self.hexon_sources.iter().enumerate() {
+                if !src.covers(coord) {
+                    continue;
                 }
-                None
+                match src.probe(layer, coord) {
+                    Probe::Hit(ResidentTile::Bytes(bytes)) => {
+                        return Some(Some(LayerHit {
+                            bytes,
+                            origin: TileOrigin::Hexon(index),
+                        }))
+                    }
+                    Probe::Hit(ResidentTile::Splats(_)) | Probe::Absent => {}
+                    Probe::Miss => return None,
+                }
             }
-            TileSourceMode::Online => {
-                // Skip hexon sources, check cache only
-                if let Some(cache) = &self.cache {
-                    if let Some(data) = cache.get("composite", &coord.cache_key()) {
-                        return Some(data);
-                    }
-                }
-                None
+        }
+        match (&self.tile_source_mode, &self.cache) {
+            (TileSourceMode::Offline, _) | (_, None) => Some(None),
+            // Only a disk read can say whether the cache holds it.
+            (_, Some(_)) => None,
+        }
+    }
+
+    /// `Some(resolved)` when the baked-splat layer resolves without I/O.
+    fn resident_splats(&self, coord: TileCoord) -> Option<Option<SplatHit>> {
+        for (source, src) in self.hexon_sources.iter().enumerate() {
+            if !src.covers(coord) {
+                continue;
             }
-            TileSourceMode::Hybrid => {
-                // 1. Hexon sources (by bounds check)
-                for src in &self.hexon_sources {
-                    if src.covers(coord) {
-                        if let Some(data) = src.get_tile(coord) {
-                            return Some(data.to_vec());
-                        }
-                    }
+            match src.probe(TileLayer::BakedSplats, coord) {
+                Probe::Hit(ResidentTile::Splats(splats)) => {
+                    return Some(Some(SplatHit { splats, source }))
                 }
+                Probe::Hit(ResidentTile::Bytes(_)) | Probe::Absent => {}
+                Probe::Miss => return None,
+            }
+        }
+        Some(None)
+    }
 
-                // 2. Disk cache
-                if let Some(cache) = &self.cache {
-                    if let Some(data) = cache.get("composite", &coord.cache_key()) {
-                        return Some(data);
-                    }
+    /// Snapshot of the lookup chain for an off-thread [`TileLoader::load_blocking`].
+    pub fn loader(&self) -> TileLoader {
+        TileLoader {
+            hexon_sources: self.hexon_sources.clone(),
+            cache: self.cache.clone(),
+            mode: self.tile_source_mode.clone(),
+        }
+    }
+
+    /// Resolve every layer of `coord` with blocking reads (off the main thread only).
+    pub fn load_blocking(&self, coord: TileCoord) -> LoadedTile {
+        self.loader().load_blocking(coord)
+    }
+
+    /// Pin a spawned chunk's hexon-origin layers so the exit ring, not the LRU, frees them.
+    pub fn pin_tile(&self, coord: TileCoord, tile: &LoadedTile) {
+        for (layer, hit) in [
+            (TileLayer::Elevation, &tile.elevation),
+            (TileLayer::Satellite, &tile.satellite),
+        ] {
+            if let Some(LayerHit {
+                bytes,
+                origin: TileOrigin::Hexon(index),
+            }) = hit
+            {
+                if let Some(src) = self.hexon_sources.get(*index) {
+                    src.pin(layer, coord, &ResidentTile::Bytes(Arc::clone(bytes)));
                 }
-
-                None
+            }
+        }
+        if let Some(hit) = &tile.baked {
+            if let Some(src) = self.hexon_sources.get(hit.source) {
+                src.pin(
+                    TileLayer::BakedSplats,
+                    coord,
+                    &ResidentTile::Splats(Arc::clone(&hit.splats)),
+                );
             }
         }
     }
 
-    /// Synchronous satellite lookup — hexon sources and disk cache (`composite_sat`) only.
-    pub fn get_satellite_tile_sync(&self, coord: TileCoord) -> Option<Vec<u8>> {
-        use crate::config::TileSourceMode;
-
-        match self.tile_source_mode {
-            TileSourceMode::Offline => {
-                for src in &self.hexon_sources {
-                    if src.covers(coord) {
-                        if let Some(data) = src.get_satellite_tile(coord) {
-                            return Some(data.to_vec());
-                        }
-                    }
-                }
-                None
-            }
-            TileSourceMode::Online => self
-                .cache
-                .as_ref()
-                .and_then(|c| c.get("composite_sat", &coord.cache_key())),
-            TileSourceMode::Hybrid => {
-                for src in &self.hexon_sources {
-                    if src.covers(coord) {
-                        if let Some(data) = src.get_satellite_tile(coord) {
-                            return Some(data.to_vec());
-                        }
-                    }
-                }
-                self.cache
-                    .as_ref()
-                    .and_then(|c| c.get("composite_sat", &coord.cache_key()))
-            }
+    /// Release a despawned chunk's tile bytes from every covering source (exit ring).
+    pub fn release_tile(&self, coord: TileCoord) {
+        for src in self.hexon_sources.iter().filter(|src| src.covers(coord)) {
+            src.release_tile(coord);
         }
+    }
+
+    /// Release every pin this composite placed (it is being replaced).
+    pub fn release_all_pins(&self) {
+        for src in &self.hexon_sources {
+            src.release_all_pins();
+        }
+    }
+
+    /// Tile bytes resident in RAM across the distinct hexon sources.
+    pub fn resident_bytes(&self) -> u64 {
+        self.hexon_sources
+            .iter()
+            .enumerate()
+            .filter(|(i, src)| {
+                !self.hexon_sources[..*i]
+                    .iter()
+                    .any(|earlier| Arc::ptr_eq(earlier, src))
+            })
+            .map(|(_, src)| src.resident_bytes())
+            .sum()
     }
 }
 
@@ -258,84 +454,32 @@ impl CompositeTileSource {
     /// - `Online` → skip hexon, cache → online
     /// - `Hybrid` → hexon → cache → online (default)
     pub async fn fetch_tile(&self, coord: TileCoord) -> anyhow::Result<Vec<u8>> {
-        use crate::config::TileSourceMode;
-
-        match self.tile_source_mode {
-            TileSourceMode::Offline => {
-                // Only hexon sources
-                for src in &self.hexon_sources {
-                    if src.covers(coord) {
-                        if let Some(data) = src.get_tile(coord) {
-                            return Ok(data.to_vec());
-                        }
+        let local = self.load_blocking(coord).elevation;
+        if let Some(hit) = local {
+            return Ok(hit.bytes.to_vec());
+        }
+        if self.tile_source_mode == TileSourceMode::Offline {
+            anyhow::bail!(
+                "tile {} not found in hexon sources (offline mode)",
+                coord.cache_key()
+            );
+        }
+        for src in &self.online_sources {
+            match src.fetch_tile(coord).await {
+                Ok(data) => {
+                    if let Some(cache) = &self.cache {
+                        let _ = cache.put("composite", &coord.cache_key(), &data);
                     }
+                    return Ok(data);
                 }
-                anyhow::bail!(
-                    "tile {} not found in hexon sources (offline mode)",
-                    coord.cache_key()
-                )
-            }
-            TileSourceMode::Online => {
-                // Skip hexon, check cache then online
-                if let Some(cache) = &self.cache {
-                    if let Some(data) = cache.get("composite", &coord.cache_key()) {
-                        return Ok(data);
-                    }
-                }
-
-                for src in &self.online_sources {
-                    match src.fetch_tile(coord).await {
-                        Ok(data) => {
-                            if let Some(cache) = &self.cache {
-                                let _ = cache.put("composite", &coord.cache_key(), &data);
-                            }
-                            return Ok(data);
-                        }
-                        Err(_) => continue,
-                    }
-                }
-
-                anyhow::bail!(
-                    "tile {} not found in cache or online sources (online mode)",
-                    coord.cache_key()
-                )
-            }
-            TileSourceMode::Hybrid => {
-                // 1. Hexon sources
-                for src in &self.hexon_sources {
-                    if src.covers(coord) {
-                        if let Some(data) = src.get_tile(coord) {
-                            return Ok(data.to_vec());
-                        }
-                    }
-                }
-
-                // 2. Disk cache
-                if let Some(cache) = &self.cache {
-                    if let Some(data) = cache.get("composite", &coord.cache_key()) {
-                        return Ok(data);
-                    }
-                }
-
-                // 3. Online sources — try each in order
-                for src in &self.online_sources {
-                    match src.fetch_tile(coord).await {
-                        Ok(data) => {
-                            if let Some(cache) = &self.cache {
-                                let _ = cache.put("composite", &coord.cache_key(), &data);
-                            }
-                            return Ok(data);
-                        }
-                        Err(_) => continue,
-                    }
-                }
-
-                anyhow::bail!(
-                    "tile {} not found in any source (hexon/cache/online)",
-                    coord.cache_key()
-                )
+                Err(_) => continue,
             }
         }
+        anyhow::bail!(
+            "tile {} not found in any source ({:?} mode)",
+            coord.cache_key(),
+            self.tile_source_mode
+        )
     }
 }
 
@@ -461,6 +605,46 @@ mod tests {
             composite.get_satellite_tile_sync(coord).unwrap(),
             vec![9u8; 4]
         );
+    }
+
+    #[test]
+    fn only_the_off_thread_loader_reads_the_disk_cache_and_never_in_offline_mode() {
+        let dir = std::env::temp_dir().join(format!(
+            "fe_composite_nfr4_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let coord = TileCoord::new(99, 99, 5);
+        let cache = DiskTileCache::new(&dir, 1024 * 1024);
+        cache.put("composite", &coord.cache_key(), b"disk").unwrap();
+        let mut composite = CompositeTileSource::new();
+        composite.set_cache(cache);
+
+        // (mode, what the loader resolves, whether resolution can skip I/O)
+        let cases: [(TileSourceMode, Option<&[u8]>, bool); 3] = [
+            (TileSourceMode::Offline, None, true),
+            (TileSourceMode::Hybrid, Some(b"disk"), false),
+            (TileSourceMode::Online, Some(b"disk"), false),
+        ];
+        for (mode, want, io_free) in cases {
+            composite.set_tile_source_mode(mode.clone());
+            let loaded = composite.load_blocking(coord).elevation;
+            assert_eq!(loaded.as_ref().map(|hit| &*hit.bytes), want, "{mode:?}");
+            if let Some(hit) = loaded {
+                assert_eq!(hit.origin, TileOrigin::DiskCache);
+            }
+            assert!(
+                composite.get_tile_sync(coord).is_none(),
+                "{mode:?}: resident lookup never reads disk"
+            );
+            assert_eq!(
+                composite.resident_tile(coord).is_some(),
+                io_free,
+                "{mode:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
