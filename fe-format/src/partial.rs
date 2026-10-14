@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::integrity::{
-    verify_sealed_header, IntegrityError, IntegrityPolicy, IntegrityStatus, SealCheck,
-    SealedCoverage,
+    verify_archive_with_budget, verify_sealed_header, IntegrityError, IntegrityPolicy,
+    IntegrityStatus, SealCheck, SealedCoverage, MANIFEST_PATH,
 };
+use crate::limits;
 
 /// Header-document format version.
 pub const HEADER_DOC_VERSION: u32 = 1;
@@ -45,6 +46,14 @@ pub struct HeaderDoc {
     /// Total size of the archive this header describes, in bytes.
     pub archive_size: u64,
     pub layout: Layout,
+}
+
+impl HeaderDoc {
+    /// The exact bytes every P2P publisher stores as HashSeq child 0 (one
+    /// encoder, so a hexon seeded by any host has one root).
+    pub fn to_json(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("HeaderDoc serializes (strings, ints, a BTreeMap)")
+    }
 }
 
 /// A [`HeaderDoc`] that passed [`verify_header`]: what every subsequent
@@ -121,6 +130,49 @@ pub fn verify_header(
         status,
         coverage,
     })
+}
+
+/// Check that `archive` is exactly the sealed archive a verified header
+/// describes: its raw `manifest.json` equals `signed_manifest` byte for byte
+/// (no same-publisher substitution) and the whole archive passes
+/// `RequireSealed { pin: publisher_did }` within `total_budget`. The one
+/// whole-archive check every monolithic partial fetch runs (fe-hexon's
+/// `FetchStrategy`, fe-terrain's P2P install and streamed decode).
+pub fn verify_archive_against_header(
+    archive: &[u8],
+    signed_manifest: &str,
+    publisher_did: &str,
+    total_budget: u64,
+) -> Result<(), IntegrityError> {
+    let malformed = |e: &dyn std::fmt::Display| IntegrityError::Malformed(format!("{e:#}"));
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).map_err(|e| malformed(&e))?;
+    let manifest = zip
+        .by_name(MANIFEST_PATH)
+        .map_err(|_| IntegrityError::MissingMember {
+            path: MANIFEST_PATH.into(),
+        })?;
+    let declared = manifest.size();
+    let mut budget = limits::MAX_JSON_ENTRY_BYTES;
+    let served = limits::read_entry_capped(
+        manifest,
+        declared,
+        limits::MAX_JSON_ENTRY_BYTES,
+        &mut budget,
+    )
+    .map_err(|e| malformed(&e))?;
+    if served != signed_manifest.as_bytes() {
+        return Err(IntegrityError::DigestMismatch {
+            path: MANIFEST_PATH.into(),
+        });
+    }
+    verify_archive_with_budget(
+        archive,
+        &IntegrityPolicy::RequireSealed {
+            pin: Some(publisher_did.to_string()),
+        },
+        total_budget,
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use fe_format::manifest::TilesetBundleIndex;
+use anyhow::{bail, Context};
+use fe_format::manifest::{BundleEntry, TilesetBundleIndex, TilesetMeta};
+use fe_format::{HeaderDoc, HexonManifest, IntegrityPolicy};
 
 use super::hexon_source::{HexonTileSource, ResidentTile, TileLayer};
 use super::source::TileCoord;
@@ -26,7 +28,73 @@ use super::source::TileCoord;
 pub struct StreamedTileSource {
     tileset_id: String,
     index: TilesetBundleIndex,
+    /// `(signed manifest, publisher)` when bundle 0 is a whole sealed archive.
+    sealed_whole: Option<(String, String)>,
     state: Mutex<StreamedState>,
+}
+
+/// What one fetched streamed bundle must prove before it is decoded — run
+/// by the host's decode thread (`src/AGENTS.md` §streamed-tilesets "Sealed").
+#[derive(Debug, Clone)]
+pub enum BundleCheck {
+    /// Must hash to this blake3 hex: a sealed container's SIGNED chunk
+    /// digest, or a legacy index's own (HashSeq-bound, unsigned) digest.
+    Digest(String),
+    /// Sealed monolithic bundle 0: must be exactly the signed archive.
+    WholeArchive {
+        signed_manifest: String,
+        publisher_did: String,
+    },
+}
+
+impl BundleCheck {
+    /// Refuse `bytes` unless they are what the index promises.
+    pub fn verify(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        match self {
+            Self::Digest(expected) => {
+                if blake3::hash(bytes).to_hex().as_str() != expected {
+                    bail!("streamed bundle does not match its index digest");
+                }
+                Ok(())
+            }
+            Self::WholeArchive {
+                signed_manifest,
+                publisher_did,
+            } => fe_format::verify_archive_against_header(
+                bytes,
+                signed_manifest,
+                publisher_did,
+                super::hexon_source::STREAMED_BUNDLE_DECODE_BUDGET,
+            )
+            .context("streamed archive is not the one its signed header describes"),
+        }
+    }
+}
+
+/// A one-bundle index for a sealed monolithic tileset: every tile at every
+/// zoom it covers is in bundle 0 (the whole archive).
+fn monolithic_index(tileset_id: &str, meta: TilesetMeta, archive_size: u64) -> TilesetBundleIndex {
+    let bundles = (meta.min_zoom..=meta.max_zoom)
+        .map(|zoom| {
+            let last = (1u64 << zoom.min(31)).saturating_sub(1) as u32;
+            BundleEntry {
+                seq: 0,
+                blake3_hex: String::new(),
+                byte_len: archive_size,
+                tile_count: meta.tile_count,
+                zoom,
+                x_range: [0, last],
+                y_range: [0, last],
+                hilbert_range: [0, u64::MAX],
+            }
+        })
+        .collect();
+    TilesetBundleIndex {
+        schema: 1,
+        tileset_id: tileset_id.to_string(),
+        tileset_meta: meta,
+        bundles,
+    }
 }
 
 #[derive(Default)]
@@ -46,6 +114,7 @@ impl StreamedTileSource {
         Self {
             tileset_id,
             index,
+            sealed_whole: None,
             state: Mutex::new(StreamedState::default()),
         }
     }
@@ -59,7 +128,14 @@ impl StreamedTileSource {
     ///
     /// S8b: the index must name `tileset_id` — a peer answering for X with Y's
     /// index is refused, so a streamed source never serves another tileset.
+    ///
+    /// PAS-P5: a sealed seeder's child 0 is a `HeaderDoc` instead; it must
+    /// verify under `RequireSealed` and name `tileset_id`, and its bundles are
+    /// then checked against the SIGNED digests (see [`Self::from_header_doc`]).
     pub fn from_meta_json(tileset_id: String, meta_json: &str) -> anyhow::Result<Self> {
+        if let Ok(header) = serde_json::from_str::<HeaderDoc>(meta_json) {
+            return Self::from_header_doc(tileset_id, &header);
+        }
         let index: TilesetBundleIndex = serde_json::from_str(meta_json)?;
         if index.tileset_id != tileset_id {
             anyhow::bail!(
@@ -71,8 +147,78 @@ impl StreamedTileSource {
         Ok(Self::new(tileset_id, index))
     }
 
+    /// A source over a sealed seeder's verified `HeaderDoc`: a container
+    /// streams its signed chunks, a monolithic archive streams as bundle 0.
+    pub fn from_header_doc(tileset_id: String, header: &HeaderDoc) -> anyhow::Result<Self> {
+        let verified =
+            fe_format::verify_header(header, &IntegrityPolicy::RequireSealed { pin: None })
+                .context("the streamed tileset's signed header does not verify")?;
+        let coverage = verified
+            .coverage()
+            .context("a RequireSealed header always carries coverage")?;
+        let manifest: HexonManifest =
+            serde_json::from_str(&header.manifest).context("invalid signed manifest")?;
+        if manifest.hexon_id != tileset_id {
+            bail!(
+                "signed header names tileset {:?}, but {:?} was requested",
+                manifest.hexon_id,
+                tileset_id
+            );
+        }
+        let (index, sealed_whole) = match coverage.chunk_index() {
+            Some(index) => (index.clone(), None),
+            None => {
+                let meta_json = header
+                    .header_members
+                    .get("terrain/tileset_meta.json")
+                    .context("a sealed tileset header carries terrain/tileset_meta.json")?;
+                let meta: TilesetMeta =
+                    serde_json::from_str(meta_json).context("invalid signed tileset_meta")?;
+                (
+                    monolithic_index(&tileset_id, meta, header.archive_size),
+                    Some((
+                        header.manifest.clone(),
+                        coverage.publisher_did().to_string(),
+                    )),
+                )
+            }
+        };
+        if index.tileset_id != tileset_id {
+            bail!(
+                "signed chunk index declares tileset {:?}, but {:?} was requested",
+                index.tileset_id,
+                tileset_id
+            );
+        }
+        Ok(Self {
+            tileset_id,
+            index,
+            sealed_whole,
+            state: Mutex::new(StreamedState::default()),
+        })
+    }
+
     pub fn tileset_id(&self) -> &str {
         &self.tileset_id
+    }
+
+    /// What fetched bundle `seq` must prove before the host decodes it;
+    /// `None` when the index names no such bundle.
+    pub fn bundle_check(&self, seq: u32) -> Option<BundleCheck> {
+        match &self.sealed_whole {
+            Some((signed_manifest, publisher_did)) => {
+                (seq == 0).then(|| BundleCheck::WholeArchive {
+                    signed_manifest: signed_manifest.clone(),
+                    publisher_did: publisher_did.clone(),
+                })
+            }
+            None => self
+                .index
+                .bundles
+                .iter()
+                .find(|b| b.seq == seq)
+                .map(|b| BundleCheck::Digest(b.blake3_hex.clone())),
+        }
     }
 
     /// The bundle index this source serves (evidence/diagnostics only).

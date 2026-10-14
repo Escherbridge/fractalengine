@@ -2,7 +2,6 @@
 //! partial-fetch transport — see `src/AGENTS.md` §partial-fetch.
 
 use std::collections::BTreeSet;
-use std::io::Cursor;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -413,42 +412,20 @@ async fn verify_whole_archive(
     .map_err(|e| PartialFetchError::Transport(format!("verification task failed: {e}")))?
 }
 
-/// The served archive must carry the header's exact signed manifest (no
-/// same-publisher substitution) and pass full `RequireSealed` verification.
+/// The served archive must carry the header's exact signed manifest and pass
+/// `RequireSealed` (the shared fe-format check; see `src/AGENTS.md` §partial-fetch).
 fn check_whole_archive(
     bytes: &[u8],
     signed_manifest: &str,
     pin: &str,
 ) -> Result<(), PartialFetchError> {
-    let malformed = |e: &dyn std::fmt::Display| IntegrityError::Malformed(format!("{e:#}"));
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| malformed(&e))?;
-    let manifest = archive
-        .by_name(MANIFEST_PATH)
-        .map_err(|_| IntegrityError::MissingMember {
-            path: MANIFEST_PATH.into(),
-        })?;
-    let declared = manifest.size();
-    let mut budget = limits::MAX_JSON_ENTRY_BYTES;
-    let served = fe_format::read_entry_capped(
-        manifest,
-        declared,
-        limits::MAX_JSON_ENTRY_BYTES,
-        &mut budget,
-    )
-    .map_err(|e| malformed(&e))?;
-    if served != signed_manifest.as_bytes() {
-        return Err(IntegrityError::DigestMismatch {
-            path: MANIFEST_PATH.into(),
-        }
-        .into());
-    }
-    fe_format::verify_archive(
+    fe_format::verify_archive_against_header(
         bytes,
-        &IntegrityPolicy::RequireSealed {
-            pin: Some(pin.to_string()),
-        },
-    )?;
-    Ok(())
+        signed_manifest,
+        pin,
+        limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    )
+    .map_err(PartialFetchError::from)
 }
 
 fn header_len(doc: &HeaderDoc) -> u64 {

@@ -32,6 +32,7 @@ use crate::distributed_query::{
 
 use crate::docs_engine::{p2p_data_dir, DocsStack};
 use crate::endpoint::SyncEndpoint;
+use crate::event_outbox::{EventOutbox, EventSink, SHUTDOWN_FLUSH_TIMEOUT};
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
 use crate::placement::Retention;
 use crate::relay_config::{RelayConfig, RelayHealth, RelayStatusSummary};
@@ -151,10 +152,8 @@ impl PendingWrites {
 
 /// Send a [`SyncEvent`] back to the main thread, warning on failure —
 /// never a bare `.ok()` (§warn-on-send-failure).
-fn send_sync_event(evt_tx: &SyncEventSender, event: SyncEvent) {
-    if let Err(e) = evt_tx.send(event) {
-        tracing::warn!("sync event send failed: {e}");
-    }
+fn send_sync_event(evt_tx: &dyn EventSink, event: SyncEvent) {
+    evt_tx.emit(event);
 }
 
 /// The iroh 0.35 `NodeAddr` JSON shape (`{node_id, relay_url,
@@ -450,6 +449,9 @@ pub fn spawn_sync_thread_with_transport(
             .expect("Failed to build sync Tokio runtime");
 
         rt.block_on(async move {
+            // W1 residual: every emit is non-blocking; a full channel queues
+            // into a backlog this loop drains (AGENTS.md §event-outbox).
+            let evt_tx = EventOutbox::new(evt_tx);
             // Relay-health hardening (track p2p_asset_streaming_20260718 FR-1 /
             // decision D-77): resolve the relay config up front so both the
             // bind attempt and the health signal below use the same value.
@@ -732,7 +734,7 @@ pub fn spawn_sync_thread_with_transport(
             let transport = DistributedTransport::new(
                 local_did.clone(),
                 db_cmd_tx.clone(),
-                evt_tx.clone(),
+                evt_tx.sender(),
             );
 
             // crossbeam's receiver has no async readiness API — bridge the
@@ -759,7 +761,11 @@ pub fn spawn_sync_thread_with_transport(
             // Command loop (select! over commands + inbound replica rows +
             // inbound gossip compute traffic + home-relay status).
             loop {
+                evt_tx.flush();
                 tokio::select! {
+                    // Wakes the loop to drain a backlog queued while the
+                    // channel was full (§event-outbox / self-drain rule).
+                    _ = evt_tx.backlog_ready() => {}
                     maybe_status = next_relay_status(&mut relay_watch), if relay_watch.is_some() => {
                         match maybe_status {
                             Some(statuses) => {
@@ -1092,6 +1098,7 @@ pub fn spawn_sync_thread_with_transport(
                 ep.shutdown().await;
             }
             send_sync_event(&evt_tx, SyncEvent::Stopped);
+            evt_tx.flush_before_exit(SHUTDOWN_FLUSH_TIMEOUT).await;
         });
     })
 }
@@ -1115,7 +1122,7 @@ async fn next_relay_status(
 fn apply_relay_status(
     current: RelayHealth,
     statuses: &[iroh::endpoint::RelayStatus],
-    evt_tx: &SyncEventSender,
+    evt_tx: &dyn EventSink,
 ) -> RelayHealth {
     let summaries: Vec<RelayStatusSummary> = statuses
         .iter()
@@ -1147,7 +1154,7 @@ fn apply_relay_status(
 fn fold_relay_health(
     current: RelayHealth,
     summaries: &[RelayStatusSummary],
-    evt_tx: &SyncEventSender,
+    evt_tx: &dyn EventSink,
 ) -> RelayHealth {
     let next = current.on_relay_status(summaries);
     if next != current {
@@ -1194,7 +1201,7 @@ fn handle_inbound_row_change(
     verse_id: &str,
     change: &RowChange,
     local_did: &str,
-    evt_tx: &SyncEventSender,
+    evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
 ) {
     // Feed the fabric FIRST — before the own-author filter — because our own
@@ -1295,7 +1302,7 @@ fn handle_fetch_blob(
     _endpoint: Option<&SyncEndpoint>,
     hash: &fe_runtime::blob_store::BlobHash,
     verse_id: &str,
-    evt_tx: &SyncEventSender,
+    evt_tx: &dyn EventSink,
 ) {
     let hex = hash_to_hex(hash);
 
@@ -1351,7 +1358,7 @@ async fn seed_reconciliation(
     replicator: &dyn VerseReplicator,
     verse_id: &str,
     local_did: &str,
-    evt_tx: &SyncEventSender,
+    evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     fabric: &mut VerseFabric,
 ) {
@@ -1419,7 +1426,7 @@ async fn handle_open_verse_replica(
     namespace_secret: Option<String>,
     peers: &[iroh::EndpointAddr],
     local_did: &str,
-    evt_tx: &SyncEventSender,
+    evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     blob_store: &BlobStoreHandle,
     pending: &mut PendingWrites,
@@ -2350,7 +2357,7 @@ fn tileset_ad_is_authenticated(
 /// echo it to the UI/terrain layer as [`SyncEvent::PeerTilesetAdvertisement`].
 fn handle_inbound_tileset_ad(
     providers: &mut TilesetProviderMap,
-    evt_tx: &SyncEventSender,
+    evt_tx: &dyn EventSink,
     incoming: &GossipIncoming,
     ad: TilesetAd,
 ) {
@@ -2502,7 +2509,7 @@ async fn handle_advertise_tilesets(
 /// transfer inline.
 async fn pump_transfer_progress(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<TransferEvent>,
-    evt_tx: SyncEventSender,
+    evt_tx: EventOutbox,
 ) {
     while let Some(event) = rx.recv().await {
         send_sync_event(&evt_tx, transfer_event_to_sync_event(event));
@@ -2516,12 +2523,13 @@ async fn pump_transfer_progress(
 /// restart between completion and install still installs), then resume the
 /// rest. A streamed-bundle cache is a cache, not a download, so it is never
 /// reported. See `AGENTS.md` §tileset-transfer.
-async fn report_and_resume_tileset_downloads(
-    transfer: Arc<TilesetTransfer>,
-    evt_tx: SyncEventSender,
-) {
+async fn report_and_resume_tileset_downloads(transfer: Arc<TilesetTransfer>, evt_tx: EventOutbox) {
     if let Err(e) = transfer.catalog_from_tags().await {
         tracing::warn!("Rebuilding tileset catalog from tags failed: {e}");
+    }
+    // AC-21(a): streamed caches persist across restarts; re-apply the budget.
+    if let Err(e) = transfer.trim_streamed_caches().await {
+        tracing::warn!("Trimming streamed tileset caches failed: {e}");
     }
     match transfer.pending_downloads().await {
         Ok(pending) => {
@@ -2636,7 +2644,7 @@ fn handle_request_tileset_meta(
     providers_map: &TilesetProviderMap,
     peer_id: &str,
     tileset_id: &str,
-    evt_tx: &SyncEventSender,
+    evt_tx: &EventOutbox,
 ) {
     let Some(transfer) = transfer.clone() else {
         send_sync_event(
@@ -2682,7 +2690,7 @@ fn handle_download_tileset(
     providers_map: &TilesetProviderMap,
     tileset_id: String,
     provider: Option<String>,
-    evt_tx: &SyncEventSender,
+    evt_tx: &EventOutbox,
 ) {
     let Some(transfer) = transfer.clone() else {
         send_sync_event(evt_tx, offline_meta_event(String::new(), tileset_id));
@@ -2745,7 +2753,7 @@ fn handle_request_chunk(
     transfer: &Option<Arc<TilesetTransfer>>,
     tileset_id: &str,
     chunk_seq: u32,
-    evt_tx: &SyncEventSender,
+    evt_tx: &EventOutbox,
 ) {
     let Some(transfer) = transfer.clone() else {
         send_sync_event(
@@ -2802,7 +2810,7 @@ fn handle_cancel_tileset_download(transfer: &Option<Arc<TilesetTransfer>>, tiles
 /// every currently-joined verse topic. Spawned (never awaited inline).
 fn spawn_publish_tileset(
     transfer: Option<Arc<TilesetTransfer>>,
-    evt_tx: SyncEventSender,
+    evt_tx: EventOutbox,
     gossip_senders: HashMap<String, TopicSender>,
     provider_addr: Option<String>,
     tileset_id: String,
@@ -3887,7 +3895,7 @@ mod tests {
                 dir.path(),
             ));
             let (evt_tx, evt_rx) = crossbeam::channel::unbounded();
-            report_and_resume_tileset_downloads(restarted, evt_tx).await;
+            report_and_resume_tileset_downloads(restarted, EventOutbox::new(evt_tx)).await;
             let events: Vec<SyncEvent> = evt_rx.try_iter().collect();
 
             assert!(
@@ -5779,5 +5787,73 @@ mod tests {
             row.data, manifest_bytes,
             "durable manifest content matches the emitted row"
         );
+    }
+
+    /// W1 residual (§event-outbox): a command burst whose replies overflow
+    /// the production-sized bounded(256) event channel never stalls the
+    /// loop — while the main thread drains NOTHING, all 600 commands and
+    /// `Shutdown` are still accepted through a bounded(1) command channel
+    /// (pre-fix the loop blocked on the 257th event and the sends timed out)
+    /// — and every reply then arrives, in order, followed by `Stopped`.
+    #[test]
+    fn a_command_burst_past_the_event_capacity_never_stalls_the_loop() {
+        let _env_guard = SYNC_THREAD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _p2p_dir = hermetic_p2p_env();
+        const BURST: u32 = 600;
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded(1);
+        let (evt_tx, evt_rx) = crossbeam::channel::bounded(256);
+        let factory = Arc::new(FakeTransportFactory {
+            replica: Arc::new(MockVerseReplicator::new("did:key:burst")),
+            opened: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let handle = spawn_sync_thread_with_transport(
+            iroh::SecretKey::from_bytes(&[91u8; 32]),
+            Arc::new(MockBlobStore::new()),
+            cmd_rx,
+            evt_tx,
+            "did:key:burst".to_string(),
+            None,
+            None,
+            Some(factory),
+        );
+
+        let send = |cmd: SyncCommand| {
+            cmd_tx
+                .send_timeout(cmd, std::time::Duration::from_secs(10))
+                .expect("the sync loop kept accepting commands with the event channel full")
+        };
+        for chunk_seq in 0..BURST {
+            send(SyncCommand::RequestChunk {
+                peer_id: String::new(),
+                tileset_id: "burst".to_string(),
+                chunk_seq,
+                provider: None,
+            });
+        }
+        send(SyncCommand::Shutdown);
+        assert!(evt_rx.is_full(), "the main thread has drained nothing yet");
+
+        let mut failed_seqs = Vec::new();
+        let mut stopped = false;
+        while let Ok(event) = evt_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            match event {
+                SyncEvent::ChunkFailed { chunk_seq, .. } => failed_seqs.push(chunk_seq),
+                SyncEvent::Stopped => {
+                    stopped = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        handle.join().expect("sync thread panicked");
+        restore_p2p_env();
+        assert_eq!(
+            failed_seqs,
+            (0..BURST).collect::<Vec<_>>(),
+            "lossless, in order"
+        );
+        assert!(stopped, "Stopped arrives after every reply");
     }
 }

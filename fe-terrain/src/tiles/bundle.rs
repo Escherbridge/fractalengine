@@ -9,7 +9,10 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 
 use fe_format::manifest::{BundleEntry, ChunkIndex, TilesetBundleIndex, TilesetMeta};
-use fe_format::{HexonArchive, HexonArchiveData};
+use fe_format::{
+    HeaderDoc, HexonArchive, HexonArchiveData, HexonArchiveIndex, HexonManifest, IntegrityPolicy,
+    IntegrityStatus, Layout,
+};
 
 use super::source::TileCoord;
 use super::store::{HexonStore, InstalledTileset};
@@ -439,9 +442,15 @@ fn bundles_dir(store: &HexonStore, hexon_id: &str) -> PathBuf {
     store.base_dir().join("bundles").join(hexon_id)
 }
 
-/// Bundle an **installed** hexon tileset for P2P seeding, writing the index
-/// and bundle files to `<hexon store>/bundles/<id>/` and returning the paths
-/// `SyncCommand::PublishTileset` needs.
+/// Prepare an **installed** hexon tileset for P2P seeding, writing HashSeq
+/// child 0 (`index.json`) and the body files to `<hexon store>/bundles/<id>/`
+/// and returning the paths `SyncCommand::PublishTileset` needs.
+///
+/// The PAS-P5 seeder rule (owner-confirmed R7; `src/AGENTS.md` §bundles
+/// "Seeding"): a SEALED container re-seeds its existing signed chunks and a
+/// sealed monolithic archive seeds whole — child 0 is then the `HeaderDoc`,
+/// so every seeder of one hexon publishes one root. Only a legacy UNSEALED
+/// tileset is re-bundled deterministically (child 0 a `TilesetBundleIndex`).
 ///
 /// Reuses the on-disk bundle set when present and its recorded source hash
 /// still matches the installed `.hexon` file — a seeding toggle or a startup
@@ -472,12 +481,32 @@ pub fn bundle_for_seeding(store: &HexonStore, hexon_id: &str) -> Result<(PathBuf
         }
     }
 
+    // Stale files of an earlier layout never linger beside the new set.
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("failed to clear bundles dir: {}", dir.display()))
+        }
+    }
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create bundles dir: {}", dir.display()))?;
+
+    // A file the header reader refuses falls through to `import`, whose own
+    // `VerifyIfSealed` pass still refuses a tampered sealed archive.
+    if let Ok(reader) = HexonArchiveIndex::open(&hexon_path) {
+        if let IntegrityStatus::Sealed { .. } = reader.integrity_status() {
+            let bundle_paths = write_sealed_seed(&reader, &hexon_path, &dir, &index_path)?;
+            write_source_marker(&hash_marker, &source_hash)?;
+            return Ok((index_path, bundle_paths));
+        }
+    }
+
     let source = HexonArchive::import(&source_bytes)
         .with_context(|| format!("failed to import hexon for bundling: {hexon_id}"))?;
     let bundles = bundle_tileset(&source, DEFAULT_BUNDLE_BYTES)?;
 
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create bundles dir: {}", dir.display()))?;
     std::fs::write(&index_path, &bundles.index_json)
         .with_context(|| format!("failed to write bundle index: {}", index_path.display()))?;
     let mut bundle_paths = Vec::with_capacity(bundles.bundles.len());
@@ -487,26 +516,171 @@ pub fn bundle_for_seeding(store: &HexonStore, hexon_id: &str) -> Result<(PathBuf
             .with_context(|| format!("failed to write bundle file: {}", path.display()))?;
         bundle_paths.push(path);
     }
-    std::fs::write(&hash_marker, &source_hash).with_context(|| {
-        format!(
-            "failed to write source-hash marker: {}",
-            hash_marker.display()
-        )
-    })?;
+    write_source_marker(&hash_marker, &source_hash)?;
 
     Ok((index_path, bundle_paths))
 }
 
-/// Parse a verified bundle index (`SyncEvent::TilesetDownloadComplete`'s
-/// `index_path` bytes) and assemble+install it. The one entry point a host
-/// binary needs for a completed P2P download, so it never needs an
-/// `fe_format` dependency just to deserialize the index (S4).
+/// Record which installed bytes the seeding set was built from.
+fn write_source_marker(hash_marker: &std::path::Path, source_hash: &str) -> Result<()> {
+    std::fs::write(hash_marker, source_hash).with_context(|| {
+        format!(
+            "failed to write source-hash marker: {}",
+            hash_marker.display()
+        )
+    })
+}
+
+/// The sealed seeding set: child 0 = the `HeaderDoc`, then each signed chunk
+/// exactly as the container holds it (verified on read), or the whole archive
+/// (hard-linked, else copied — a later reinstall renames over the store file,
+/// so the link keeps the bytes this header describes).
+fn write_sealed_seed(
+    reader: &HexonArchiveIndex,
+    hexon_path: &std::path::Path,
+    dir: &std::path::Path,
+    index_path: &std::path::Path,
+) -> Result<Vec<PathBuf>> {
+    std::fs::write(index_path, reader.header_doc().to_json())
+        .with_context(|| format!("failed to write header document: {}", index_path.display()))?;
+    match reader.layout() {
+        Layout::Container { chunk_count } => (0..chunk_count)
+            .map(|seq| {
+                let bytes = reader
+                    .chunk(seq)?
+                    .with_context(|| format!("sealed container lists chunk {seq} but lacks it"))?;
+                let path = dir.join(format!("{seq}.bundle"));
+                std::fs::write(&path, bytes)
+                    .with_context(|| format!("failed to write chunk file: {}", path.display()))?;
+                Ok(path)
+            })
+            .collect(),
+        Layout::Monolithic => {
+            if let Ok(meta) = std::fs::metadata(hexon_path) {
+                if meta.len() > MAX_ASSEMBLE_BUNDLE_BYTES {
+                    tracing::warn!(
+                        path = %hexon_path.display(),
+                        bytes = meta.len(),
+                        cap = MAX_ASSEMBLE_BUNDLE_BYTES,
+                        "Seeding a sealed monolithic tileset larger than a peer accepts in one \
+                         piece — re-publish it as a chunked container"
+                    );
+                }
+            }
+            let path = dir.join("0.bundle");
+            if std::fs::hard_link(hexon_path, &path).is_err() {
+                std::fs::copy(hexon_path, &path).with_context(|| {
+                    format!("failed to copy sealed archive to {}", path.display())
+                })?;
+            }
+            Ok(vec![path])
+        }
+    }
+}
+
+/// Verify a completed download whose child 0 is a sealed `HeaderDoc` and
+/// install it: a container's chunk files must hash to their SIGNED digests
+/// (then reassembled with the seal intact), a monolithic file must be exactly
+/// the signed archive. Bound to `expected_tileset_id` like the legacy path.
+pub fn assemble_sealed_download(
+    store: &HexonStore,
+    expected_tileset_id: &str,
+    header: &HeaderDoc,
+    bundle_paths: &[PathBuf],
+) -> Result<InstalledTileset> {
+    let verified = fe_format::verify_header(header, &IntegrityPolicy::RequireSealed { pin: None })
+        .context("the download's signed header does not verify")?;
+    let coverage = verified
+        .coverage()
+        .context("a RequireSealed header always carries coverage")?;
+    let manifest: HexonManifest =
+        serde_json::from_str(&header.manifest).context("invalid signed manifest")?;
+    if manifest.hexon_id != expected_tileset_id {
+        bail!(
+            "signed header names tileset {:?}, but {:?} was requested",
+            manifest.hexon_id,
+            expected_tileset_id
+        );
+    }
+    let mut total: u64 = 0;
+    let mut read_capped = |path: &PathBuf| -> Result<Vec<u8>> {
+        let len = std::fs::metadata(path)
+            .with_context(|| format!("failed to stat download file: {}", path.display()))?
+            .len();
+        if len > MAX_ASSEMBLE_BUNDLE_BYTES {
+            bail!(
+                "download file {} is {len} bytes (cap {MAX_ASSEMBLE_BUNDLE_BYTES})",
+                path.display()
+            );
+        }
+        total = total.saturating_add(len);
+        if total > fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+            bail!(
+                "download totals more than {} bytes",
+                fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES
+            );
+        }
+        std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))
+    };
+    match coverage.chunk_index() {
+        Some(index) => {
+            if bundle_paths.len() != index.bundles.len() {
+                bail!(
+                    "chunk count mismatch: the signed index names {} chunks, got {} files",
+                    index.bundles.len(),
+                    bundle_paths.len()
+                );
+            }
+            let mut chunks = Vec::with_capacity(bundle_paths.len());
+            for (seq, path) in bundle_paths.iter().enumerate() {
+                let seq = seq as u32;
+                let bytes = read_capped(path)?;
+                let signed = coverage
+                    .chunk_digest(seq)
+                    .with_context(|| format!("the signed index has no chunk {seq}"))?;
+                if blake3::hash(&bytes).to_hex().as_str() != signed {
+                    bail!("chunk {seq} does not match its signed digest");
+                }
+                chunks.push((seq, bytes));
+            }
+            super::distribution::assemble_sealed_container(store, header, &chunks)
+        }
+        None => {
+            let [path] = bundle_paths else {
+                bail!(
+                    "a sealed monolithic download is one file, got {}",
+                    bundle_paths.len()
+                );
+            };
+            let bytes = read_capped(path)?;
+            fe_format::verify_archive_against_header(
+                &bytes,
+                &header.manifest,
+                coverage.publisher_did(),
+                fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+            )
+            .context("the downloaded archive is not the one its signed header describes")?;
+            store
+                .install_tileset(&bytes)
+                .context("failed to install the sealed archive")
+        }
+    }
+}
+
+/// Parse a completed P2P download's child 0 (`SyncEvent::TilesetDownloadComplete`'s
+/// `index_path` bytes) and assemble+install it: a sealed `HeaderDoc` takes
+/// [`assemble_sealed_download`], a legacy `TilesetBundleIndex` takes
+/// [`assemble_bundles`]. The one entry point a host binary needs, so it never
+/// needs an `fe_format` dependency just to deserialize child 0 (S4).
 pub fn assemble_bundles_from_index_json(
     store: &HexonStore,
     expected_tileset_id: &str,
     index_json: &[u8],
     bundle_paths: &[PathBuf],
 ) -> Result<InstalledTileset> {
+    if let Ok(header) = serde_json::from_slice::<HeaderDoc>(index_json) {
+        return assemble_sealed_download(store, expected_tileset_id, &header, bundle_paths);
+    }
     let index: TilesetBundleIndex =
         serde_json::from_slice(index_json).context("failed to parse bundle index JSON")?;
     assemble_bundles(store, expected_tileset_id, &index, bundle_paths)
@@ -519,8 +693,17 @@ fn try_reuse_cached_bundles(
     index_path: &std::path::Path,
 ) -> Option<(PathBuf, Vec<PathBuf>)> {
     let index_json = std::fs::read(index_path).ok()?;
-    let index: TilesetBundleIndex = serde_json::from_slice(&index_json).ok()?;
-    let bundle_paths: Vec<PathBuf> = (0..index.bundles.len())
+    let count = match serde_json::from_slice::<HeaderDoc>(&index_json) {
+        Ok(header) => match header.layout {
+            Layout::Container { chunk_count } => chunk_count as usize,
+            Layout::Monolithic => 1,
+        },
+        Err(_) => serde_json::from_slice::<TilesetBundleIndex>(&index_json)
+            .ok()?
+            .bundles
+            .len(),
+    };
+    let bundle_paths: Vec<PathBuf> = (0..count)
         .map(|seq| dir.join(format!("{seq}.bundle")))
         .collect();
     if bundle_paths.iter().all(|p| p.exists()) {

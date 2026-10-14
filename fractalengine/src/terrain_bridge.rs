@@ -204,7 +204,8 @@ fn refresh_installed_dialog(reg: &TilesetRegistry, ui_mgr: &mut UiManager) {
 
 /// Bundles an **installed** tileset for seeding and publishes it — spawned
 /// so bundling (disk I/O + the bundler's CPU work) never runs on the Bevy
-/// main thread (S4 invariant). The ONE bundling implementation
+/// main thread (S4 invariant). Sealed tilesets are never re-bundled (PAS-P5
+/// seeder rule, applied inside `bundle_for_seeding`). The ONE bundling implementation
 /// (`fe_terrain::tiles::bundle_for_seeding`) is shared with the headless
 /// relay's startup seeding (`fractalengine-relay/src/main.rs`) — this
 /// function is the GUI's thin thread+channel wrapper around it, not a second
@@ -423,13 +424,13 @@ pub struct StreamedTilesetState {
     /// tileset_ids this node has seen at least one peer advertise (capped at
     /// [`MAX_ADVERTISED_TILESETS`] — ad ids come from the network).
     advertised: HashSet<String>,
-    /// tileset_ids with a `RequestTilesetMeta` in flight (sent, no reply yet).
-    meta_requested: HashSet<String>,
+    /// tileset_ids with a `RequestTilesetMeta` in flight, and when each was sent.
+    meta_requested: HashMap<String, std::time::Instant>,
     /// tileset_ids whose meta resolution failed: consecutive failures and the
     /// instant before which it is not requested again (retried, never forever).
     meta_backoff: HashMap<String, (u32, std::time::Instant)>,
-    /// `(tileset_id, bundle_seq)` pairs with a `RequestChunk` in flight.
-    chunk_requested: HashSet<(String, u32)>,
+    /// `(tileset_id, bundle_seq)` pairs with a `RequestChunk` in flight, and when each was sent.
+    chunk_requested: HashMap<(String, u32), std::time::Instant>,
     /// `(tileset_id, bundle_seq)` pairs received and being decoded off-thread.
     decoding: HashSet<(String, u32)>,
     /// S8b demand-storm guard: per failed bundle, consecutive failures and
@@ -443,6 +444,9 @@ pub const STREAMED_RETRY_BASE: std::time::Duration = std::time::Duration::from_s
 pub const STREAMED_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(120);
 /// Largest streamed bundle file decoded (the transfer's per-bundle cap).
 pub const MAX_STREAMED_BUNDLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// How long a meta or bundle request may go unanswered before its in-flight
+/// slot is freed into the retry backoff (W1 residual; see `src/AGENTS.md` §tileset-p2p).
+pub const STREAMED_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// Most streamed bundles requested or decoding at once (bounds the sync
 /// thread's fetch tasks and the command burst one frame can send).
 pub const MAX_STREAMED_BUNDLES_IN_FLIGHT: usize = 8;
@@ -463,6 +467,47 @@ fn note_failure<K: std::hash::Hash + Eq>(
     let delay = streamed_retry_delay(failures);
     backoff.insert(key, (failures, std::time::Instant::now() + delay));
     (failures, delay)
+}
+
+/// Free every meta/bundle slot sent before `now - STREAMED_REQUEST_TIMEOUT`
+/// into its backoff (a late reply is then ignored like any unsolicited one);
+/// returns how many expired.
+pub(crate) fn expire_stalled_requests(
+    state: &mut StreamedTilesetState,
+    now: std::time::Instant,
+) -> usize {
+    let stalled = |sent_at: &std::time::Instant| {
+        now.saturating_duration_since(*sent_at) >= STREAMED_REQUEST_TIMEOUT
+    };
+    let metas: Vec<String> = state
+        .meta_requested
+        .iter()
+        .filter(|(_, sent_at)| stalled(sent_at))
+        .map(|(id, _)| id.clone())
+        .collect();
+    let chunks: Vec<(String, u32)> = state
+        .chunk_requested
+        .iter()
+        .filter(|(_, sent_at)| stalled(sent_at))
+        .map(|(key, _)| key.clone())
+        .collect();
+    for tileset_id in &metas {
+        state.meta_requested.remove(tileset_id);
+        let (failures, delay) = note_failure(&mut state.meta_backoff, tileset_id.clone());
+        tracing::warn!(tileset_id, failures, retry_in = ?delay, "streamed tileset meta request timed out");
+    }
+    for key in &chunks {
+        state.chunk_requested.remove(key);
+        let (failures, delay) = note_failure(&mut state.chunk_backoff, key.clone());
+        tracing::warn!(
+            tileset_id = key.0,
+            chunk_seq = key.1,
+            failures,
+            retry_in = ?delay,
+            "streamed bundle request timed out"
+        );
+    }
+    metas.len() + chunks.len()
 }
 
 /// Exponential backoff after `failures` consecutive failures of one bundle (capped).
@@ -545,7 +590,7 @@ pub fn drive_streamed_tilesets(
                 } => {
                     // Only a reply to OUR request: the install flow's meta
                     // replies ride the same feed and must not add sources here.
-                    if !state.meta_requested.remove(&tileset_id) {
+                    if state.meta_requested.remove(&tileset_id).is_none() {
                         continue;
                     }
                     if root_hash.is_empty() {
@@ -591,7 +636,7 @@ pub fn drive_streamed_tilesets(
                     ..
                 } => {
                     let key = (tileset_id.clone(), chunk_seq);
-                    if !state.chunk_requested.remove(&key) {
+                    if state.chunk_requested.remove(&key).is_none() {
                         // Not a bundle we asked for on the streamed path —
                         // fe-ui's install-flow owns its own completion
                         // through `TilesetEventBuffer`.
@@ -600,11 +645,27 @@ pub fn drive_streamed_tilesets(
                     let Some(tx) = bundle_tx.as_ref().map(|t| t.0.clone()) else {
                         continue;
                     };
+                    // PAS-P5: what the (possibly signed) index promises for this bundle.
+                    let check = tile_source
+                        .composite
+                        .as_ref()
+                        .and_then(|c| c.streamed_bundle_check(&tileset_id, chunk_seq));
                     state.decoding.insert(key);
                     std::thread::spawn(move || {
                         // S8b: peer bytes — size-capped before the read and
-                        // decoded under the streamed-bundle zip-bomb budget.
+                        // decoded under the streamed-bundle zip-bomb budget,
+                        // only after they match their index digest / seal.
                         let outcome = match read_streamed_bundle(&path)
+                            .and_then(|bytes| {
+                                check
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "bundle {chunk_seq} is not in the tracked index"
+                                        )
+                                    })?
+                                    .verify(&bytes)?;
+                                Ok(bytes)
+                            })
                             .and_then(|bytes| HexonTileSource::from_streamed_bundle(&bytes))
                         {
                             Ok(source) => StreamedBundleOutcome::Ready {
@@ -629,7 +690,7 @@ pub fn drive_streamed_tilesets(
                     reason,
                 } => {
                     let key = (tileset_id.clone(), chunk_seq);
-                    if !state.chunk_requested.remove(&key) {
+                    if state.chunk_requested.remove(&key).is_none() {
                         continue;
                     }
                     let (failures, delay) = note_failure(&mut state.chunk_backoff, key);
@@ -647,6 +708,9 @@ pub fn drive_streamed_tilesets(
         }
     }
 
+    // A request nobody answered frees its slot into the backoff (W1 residual).
+    expire_stalled_requests(&mut state, std::time::Instant::now());
+
     // Request meta for every uri the active composite is waiting on, once
     // we've seen SOME peer advertise it and it is not backing off.
     let Some(sender) = sync_sender.as_ref() else {
@@ -660,7 +724,7 @@ pub fn drive_streamed_tilesets(
         .pending_streamed_uris()
         .filter(|id| {
             state.advertised.contains(*id)
-                && !state.meta_requested.contains(*id)
+                && !state.meta_requested.contains_key(*id)
                 && !state
                     .meta_backoff
                     .get(*id)
@@ -679,7 +743,7 @@ pub fn drive_streamed_tilesets(
             );
             break;
         }
-        state.meta_requested.insert(tileset_id);
+        state.meta_requested.insert(tileset_id, now);
     }
 }
 
@@ -762,7 +826,7 @@ pub fn request_demanded_bundles(
             return;
         }
         let key = (tileset_id.clone(), *seq);
-        if state.chunk_requested.contains(&key) || state.decoding.contains(&key) {
+        if state.chunk_requested.contains_key(&key) || state.decoding.contains(&key) {
             continue;
         }
         // S8b: a failing bundle waits out its backoff instead of re-requesting every frame.
@@ -786,7 +850,7 @@ pub fn request_demanded_bundles(
             );
             return;
         }
-        state.chunk_requested.insert(key);
+        state.chunk_requested.insert(key, now);
     }
 }
 
@@ -1257,7 +1321,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<StreamedTilesetState>()
             .chunk_requested
-            .insert((tileset_id.to_string(), 0));
+            .insert((tileset_id.to_string(), 0), std::time::Instant::now());
         app.world_mut()
             .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
             .events
@@ -1299,7 +1363,7 @@ mod tests {
             !app.world_mut()
                 .resource_mut::<StreamedTilesetState>()
                 .chunk_requested
-                .contains(&(tileset_id.to_string(), 0)),
+                .contains_key(&(tileset_id.to_string(), 0)),
             "the completed request is no longer tracked as in-flight"
         );
         let stats = *app
@@ -1417,6 +1481,71 @@ mod tests {
         assert_eq!(chunk_requests(&cmd_rx), MAX_STREAMED_BUNDLES_IN_FLIGHT);
         app.update();
         assert_eq!(chunk_requests(&cmd_rx), 0, "nothing answered yet");
+    }
+
+    /// W1 residual: a meta or bundle request nobody ever answers frees its
+    /// in-flight slot after `STREAMED_REQUEST_TIMEOUT` (the clock is the one
+    /// faked input) and is retried through the ordinary backoff, never pinned.
+    #[test]
+    fn a_never_answered_request_frees_its_slot_after_the_timeout_and_retries() {
+        let tileset_id = "silent-tileset";
+        let mut composite = fe_terrain::tiles::CompositeTileSource::new();
+        composite.mark_streamed_pending(tileset_id);
+        let (mut app, cmd_rx) = streamed_app(Some(composite));
+        app.world_mut()
+            .resource_mut::<fe_sync::StreamedTilesetEventBuffer>()
+            .events
+            .push(fe_sync::SyncEvent::PeerTilesetAdvertisement {
+                peer_id: "peer".into(),
+                advertisements_json: format!(r#"[{{"tileset_id":"{tileset_id}"}}]"#),
+            });
+        app.world_mut()
+            .resource_mut::<fe_terrain::tiles::TileBundleDemand>()
+            .demand(tileset_id, 0);
+        let counts = |rx: &crossbeam::channel::Receiver<fe_sync::SyncCommand>| {
+            rx.try_iter().fold((0, 0), |(meta, chunk), cmd| match cmd {
+                fe_sync::SyncCommand::RequestTilesetMeta { .. } => (meta + 1, chunk),
+                fe_sync::SyncCommand::RequestChunk { .. } => (meta, chunk + 1),
+                _ => (meta, chunk),
+            })
+        };
+        app.update();
+        assert_eq!(counts(&cmd_rx), (1, 1), "both requests go out");
+        app.update();
+        assert_eq!(
+            counts(&cmd_rx),
+            (0, 0),
+            "unanswered requests hold their slots"
+        );
+
+        let key = (tileset_id.to_string(), 0);
+        let later = std::time::Instant::now() + STREAMED_REQUEST_TIMEOUT;
+        {
+            let mut state = app.world_mut().resource_mut::<StreamedTilesetState>();
+            assert_eq!(expire_stalled_requests(&mut state, later), 2);
+            assert!(state.meta_requested.is_empty() && state.chunk_requested.is_empty());
+            assert_eq!(state.meta_backoff.get(tileset_id).map(|b| b.0), Some(1));
+            assert_eq!(state.chunk_backoff.get(&key).map(|b| b.0), Some(1));
+        }
+        app.update();
+        assert_eq!(
+            counts(&cmd_rx),
+            (0, 0),
+            "the freed slots wait out their backoff"
+        );
+
+        {
+            let mut state = app.world_mut().resource_mut::<StreamedTilesetState>();
+            let now = std::time::Instant::now();
+            state.meta_backoff.get_mut(tileset_id).unwrap().1 = now;
+            state.chunk_backoff.get_mut(&key).unwrap().1 = now;
+        }
+        app.update();
+        assert_eq!(
+            counts(&cmd_rx),
+            (1, 1),
+            "both are retried after the backoff"
+        );
     }
 
     /// Final review: the streamed path shares the meta feed with the install

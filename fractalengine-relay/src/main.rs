@@ -556,7 +556,10 @@ fn discard_tileset_events(mut buffer: bevy::prelude::ResMut<fe_sync::TilesetEven
 }
 
 /// S4 (`p2p_asset_streaming_20260718`, critic step 5): bundle + publish every
-/// tileset `registry` currently lists as seeding. The ONE seeding
+/// tileset `registry` currently lists as seeding — under the PAS-P5 seeder
+/// rule `bundle_for_seeding` applies (a sealed container re-seeds its signed
+/// chunks, a sealed monolithic archive seeds whole, only a legacy unsealed
+/// tileset is re-bundled; fe-terrain `src/AGENTS.md` §bundles). The ONE seeding
 /// implementation (`fe_terrain::tiles::bundle_for_seeding` — cache-reused
 /// across restarts) shared with the GUI's
 /// `fractalengine::terrain_bridge::spawn_bundle_and_publish`; this function

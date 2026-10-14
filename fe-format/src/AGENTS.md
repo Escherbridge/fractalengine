@@ -258,3 +258,15 @@ member present, never re-serialized, so a client's hash over
   `coverage().check_member(...)`.
 - **Format version.** `HEADER_DOC_VERSION = 1`; an unrecognized `doc.v` is
   `IntegrityError::Unsupported` before anything else is parsed.
+- **`HeaderDoc::to_json`** (PAS-P5 S5) is the ONE encoder of P2P HashSeq
+  child 0. fe-hexon's `publish_to_transport` and fe-terrain's
+  `bundle_for_seeding` both call it, so one sealed hexon has one root
+  whichever host seeds it, and a `P2pPartialFetch` works against any seeder.
+- **`verify_archive_against_header(archive, signed_manifest, publisher, budget)`**
+  (S5) is the one whole-archive check for a monolithic partial fetch. The
+  archive's raw `manifest.json` must equal the header's signed text byte for
+  byte, which rules out a same-publisher swap. The archive must then pass
+  `verify_archive_with_budget(RequireSealed { pin: publisher })`. Three
+  callers: fe-hexon's `FetchStrategy::fetch_chunk(seq 0)`, fe-terrain's sealed
+  P2P install, and fe-terrain's streamed decode, which passes the smaller
+  streamed budget. One guard set, no copies.

@@ -15,8 +15,8 @@ pub mod store;
 pub mod streamed;
 
 pub use bundle::{
-    assemble_bundles, assemble_bundles_from_index_json, bundle_for_seeding, bundle_tileset,
-    TilesetBundles, DEFAULT_BUNDLE_BYTES,
+    assemble_bundles, assemble_bundles_from_index_json, assemble_sealed_download,
+    bundle_for_seeding, bundle_tileset, TilesetBundles, DEFAULT_BUNDLE_BYTES,
 };
 pub use cache::*;
 pub use composite::{CompositeTileSource, LayerHit, LoadedTile, SplatHit, TileLoader, TileOrigin};
@@ -32,6 +32,6 @@ pub use residency::{ByteLru, MAX_TILE_LOADS_IN_FLIGHT, TILE_BYTE_BUDGET};
 pub use residency::{Residency, TileResidency};
 pub use source::*;
 pub use store::{HexonStore, InstalledTileset};
-pub use streamed::StreamedTileSource;
 #[cfg(feature = "render")]
 pub use streamed::TileBundleDemand;
+pub use streamed::{BundleCheck, StreamedTileSource};

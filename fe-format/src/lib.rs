@@ -26,7 +26,10 @@ pub use integrity::{
 pub use license::*;
 pub use limits::read_entry_capped;
 pub use manifest::*;
-pub use partial::{verify_header, HeaderDoc, Layout, VerifiedHeader, HEADER_DOC_VERSION};
+pub use partial::{
+    verify_archive_against_header, verify_header, HeaderDoc, Layout, VerifiedHeader,
+    HEADER_DOC_VERSION,
+};
 pub use signature::{sign_manifest, verify_manifest, verifying_key_to_did};
 
 use serde::{Deserialize, Serialize};

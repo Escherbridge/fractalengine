@@ -704,6 +704,29 @@ identity cross-hexon dedup and the tile pointer-set both depend on.
   in-place instead of re-splitting. Touched outside S1's own owned-files list
   (S4 critic step 5 needs cross-binary reuse) — additive only, no existing
   function's behavior changed.
+- **Seeding rule (PAS-P5 S5, owner-confirmed R7 — "seeders never re-bundle
+  sealed tilesets").** `bundle_for_seeding` opens the installed file with
+  `HexonArchiveIndex`. A SEALED container writes `index.json` =
+  `HeaderDoc::to_json()` and each signed chunk exactly as the container holds
+  it, as `<seq>.bundle`. A sealed MONOLITHIC archive writes the same
+  `index.json` plus `0.bundle`, a hard link to the installed file that falls
+  back to a copy; the store installs by rename, so the link keeps the bytes
+  the header describes. Only a legacy UNSEALED tileset is still re-bundled
+  deterministically. The seeding dir is cleared before a rebuild, so files
+  from an earlier layout never linger, and cache reuse counts files from
+  either child-0 shape. A sealed monolithic archive over
+  `MAX_ASSEMBLE_BUNDLE_BYTES` (64 MiB, a peer's per-blob cap) is seeded with
+  a warning to re-publish it as a container, because re-bundling would
+  break the seal.
+- **Sealed download install (`assemble_sealed_download`, S5).**
+  `assemble_bundles_from_index_json` dispatches on child 0. A `HeaderDoc`
+  must verify under `RequireSealed` and name the requested id. Container
+  chunk files must then hash to their SIGNED digests (size-capped and
+  read before parse) and are reassembled by S6's
+  `assemble_sealed_container`, which keeps the seal. A monolithic file must
+  pass `fe_format::verify_archive_against_header`. A legacy
+  `TilesetBundleIndex` takes the unchanged `assemble_bundles` path. The
+  publisher pin and the confirm-before-chunks gate are S7a's job.
 
 ## §lazy-tiles — offset-indexed `HexonTileSource`, one shared `Arc` (p2p_asset_streaming S5)
 
@@ -913,6 +936,18 @@ anything to the local hexon store.
   `pending_streamed_uris` forever for that assignment (observably identical
   to today's "no source covers it" — the region just never renders, silently,
   instead of once marking `FailedTiles`).
+
+**Sealed streamed tilesets (PAS-P5 S5).** `StreamedTileSource::from_meta_json`
+accepts either child-0 shape. A `HeaderDoc` (`from_header_doc`) must verify
+under `RequireSealed` and name the tileset. A container then streams by its
+signed `chunks/index.json`. A monolithic archive gets a synthesized index:
+bundle 0 = the whole archive, with one full-range entry per zoom, since
+`covers` already bounds the extent. Every source answers
+`bundle_check(seq) -> BundleCheck` (`Digest` = the signed digest, or a
+legacy index's own digest; `WholeArchive` = signed manifest + publisher). The
+host decode thread runs that check on the bytes before decoding them
+(`fractalengine/src/AGENTS.md` §tileset-p2p), so a bundle that no
+index names, or that fails its seal, never becomes terrain.
 
 ## §chunked-containers — sealed chunk containers, atomic install, reassembly (p2p_asset_streaming S6)
 

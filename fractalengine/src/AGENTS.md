@@ -658,3 +658,29 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   - All three register in `main.rs` alongside the existing
     `terrain_bridge`/`drain_hexon_*` systems; the channel is built the same
     way as the S4 assemble channel (`streamed_bundle_channel()`).
+
+### Streamed request timeout and bundle checks (PAS-P5 S5, W1 residual)
+
+- **In-flight timeout.** `StreamedTilesetState.meta_requested`/
+  `chunk_requested` record when each request was sent. Each frame,
+  `drive_streamed_tilesets` calls `expire_stalled_requests(now)`: a request
+  unanswered for `STREAMED_REQUEST_TIMEOUT` (120 s, matching
+  `FetchStrategy`'s default per-request timeout) frees its slot into the
+  existing `meta_backoff`/`chunk_backoff`, so it is retried with backoff
+  and never pins one of the `MAX_STREAMED_BUNDLES_IN_FLIGHT` slots forever.
+  A reply that arrives after expiry is ignored like any unsolicited one. The
+  disk copy, if any, makes the retry cheap. The timeout is host-side
+  because the slots live here, not in fe-sync. Test:
+  `a_never_answered_request_frees_its_slot_after_the_timeout_and_retries`
+  (it fakes only the clock).
+- **Bundle check before decode.** The `ChunkReceived` arm takes
+  `composite.streamed_bundle_check(id, seq)` on the main thread, and the
+  decode thread runs it on the bytes first. That check is a blake3 match
+  against the signed (or legacy) index digest, or a whole-archive seal
+  check for a sealed monolithic tileset (fe-terrain `src/AGENTS.md`
+  §streamed-tilesets). An untracked tileset or unknown seq fails into the
+  ordinary decode backoff.
+- **Seeding.** `spawn_bundle_and_publish` and the relay inherit the PAS-P5
+  seeder rule from `bundle_for_seeding` with no code of their own.
+  Completed downloads with a sealed child 0 install through
+  `assemble_sealed_download` (fe-terrain §bundles).

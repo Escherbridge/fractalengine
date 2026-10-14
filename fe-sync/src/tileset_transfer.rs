@@ -6,6 +6,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use fe_runtime::blob_store::{hash_from_hex, hash_to_hex};
@@ -43,6 +44,10 @@ pub const MAX_HASH_SEQ_CHILDREN: usize = 1 + (1 << 16);
 pub const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Largest accepted `download.json` ledger file.
 pub const MAX_LEDGER_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// Disk budget for all streamed-bundle caches together (LRU-evicted past it).
+pub const MAX_STREAMED_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Per-download file recording when a streamed cache was last used (unix ms).
+pub const LAST_USED_FILE: &str = "last-used";
 
 /// Whether `id` is safe as a path component and tag suffix (the shared `safe_id` guard).
 pub fn is_safe_tileset_id(id: &str) -> bool {
@@ -58,6 +63,8 @@ pub struct TransferLimits {
     pub max_index_bytes: usize,
     /// Largest total bundle bytes one download may store.
     pub max_download_bytes: u64,
+    /// Disk budget shared by every streamed-bundle cache (see `src/AGENTS.md` §tileset-security).
+    pub max_streamed_cache_bytes: u64,
 }
 
 impl Default for TransferLimits {
@@ -66,6 +73,7 @@ impl Default for TransferLimits {
             max_chunk_bytes: MAX_CHUNK_BYTES,
             max_index_bytes: MAX_INDEX_BYTES,
             max_download_bytes: MAX_DOWNLOAD_BYTES,
+            max_streamed_cache_bytes: MAX_STREAMED_CACHE_BYTES,
         }
     }
 }
@@ -441,6 +449,111 @@ pub struct TilesetTransfer {
     limits: TransferLimits,
     catalog: Mutex<BTreeMap<String, CatalogEntry>>,
     ledgers: Mutex<HashMap<String, Arc<Ledger>>>,
+    /// Ids with a meta resolution or bundle fetch running (never evicted).
+    active: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+/// Marks a download id busy for as long as it lives (cache eviction skips it).
+struct ActiveGuard {
+    active: Arc<Mutex<HashMap<String, usize>>>,
+    tileset_id: String,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        let mut active = lock(&self.active);
+        if let Some(count) = active.get_mut(&self.tileset_id) {
+            *count -= 1;
+            if *count == 0 {
+                active.remove(&self.tileset_id);
+            }
+        }
+    }
+}
+
+/// One streamed cache found on disk while enforcing the budget.
+struct CacheDir {
+    tileset_id: String,
+    bytes: u64,
+    last_used_ms: u64,
+}
+
+/// Milliseconds since the unix epoch (the LRU clock).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Total size of the regular files directly under `dir`. Blocking.
+fn dir_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// When `dir` was last used: its `last-used` stamp, else its mtime. Blocking.
+fn last_used_ms(dir: &Path) -> u64 {
+    std::fs::read_to_string(dir.join(LAST_USED_FILE))
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .or_else(|| {
+            let modified = std::fs::metadata(dir).and_then(|m| m.modified()).ok()?;
+            Some(modified.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
+        })
+        .unwrap_or(0)
+}
+
+/// Every streamed cache (ledger present, no full-download marker) under `root`. Blocking.
+fn streamed_caches(root: &Path) -> Vec<CacheDir> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let tileset_id = entry.file_name().to_string_lossy().into_owned();
+            let dir = entry.path();
+            let is_cache = is_safe_tileset_id(&tileset_id)
+                && dir.join(LEDGER_FILE).is_file()
+                && !dir.join(FULL_DOWNLOAD_MARKER).exists();
+            is_cache.then(|| CacheDir {
+                bytes: dir_bytes(&dir),
+                last_used_ms: last_used_ms(&dir),
+                tileset_id,
+            })
+        })
+        .collect()
+}
+
+/// The least-recently-used caches to drop so the rest fit `budget`, skipping `keep`.
+fn caches_to_evict(
+    mut caches: Vec<CacheDir>,
+    budget: u64,
+    keep: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut total: u64 = caches.iter().map(|c| c.bytes).sum();
+    caches.sort_by(|a, b| (a.last_used_ms, &a.tileset_id).cmp(&(b.last_used_ms, &b.tileset_id)));
+    let mut evict = Vec::new();
+    for cache in caches {
+        if total <= budget {
+            break;
+        }
+        if keep(&cache.tileset_id) {
+            continue;
+        }
+        total = total.saturating_sub(cache.bytes);
+        evict.push(cache.tileset_id);
+    }
+    evict
 }
 
 impl TilesetTransfer {
@@ -452,7 +565,51 @@ impl TilesetTransfer {
             limits: TransferLimits::default(),
             catalog: Mutex::new(BTreeMap::new()),
             ledgers: Mutex::new(HashMap::new()),
+            active: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Mark `tileset_id` busy until the guard drops.
+    fn busy(&self, tileset_id: &str) -> ActiveGuard {
+        *lock(&self.active)
+            .entry(tileset_id.to_string())
+            .or_insert(0) += 1;
+        ActiveGuard {
+            active: Arc::clone(&self.active),
+            tileset_id: tileset_id.to_string(),
+        }
+    }
+
+    /// Evict least-recently-used streamed caches until all of them fit
+    /// [`TransferLimits::max_streamed_cache_bytes`]. A full download (in
+    /// progress, or complete and awaiting install) is never a cache, and a
+    /// cache with a request running is never evicted. Returns the evicted ids.
+    pub async fn trim_streamed_caches(&self) -> Result<Vec<String>, TransferError> {
+        let root = self.download_root.clone();
+        let caches = blocking(move || Ok(streamed_caches(&root))).await?;
+        let active = lock(&self.active).clone();
+        let evict = caches_to_evict(caches, self.limits.max_streamed_cache_bytes, &|id| {
+            active.contains_key(id)
+        });
+        for tileset_id in &evict {
+            tracing::info!(
+                tileset_id,
+                "Evicting a least-recently-used streamed tileset cache (disk budget)"
+            );
+            self.cancel(tileset_id).await?;
+        }
+        Ok(evict)
+    }
+
+    /// Stamp `downloads/<id>/last-used` with now (the streamed-cache LRU clock).
+    async fn touch(&self, dir: PathBuf) -> Result<(), TransferError> {
+        blocking(move || {
+            if !dir.is_dir() {
+                return Ok(());
+            }
+            write_atomic(&dir.join(LAST_USED_FILE), now_ms().to_string().as_bytes())
+        })
+        .await
     }
 
     /// The same service under explicit size caps (tests use small ones).
@@ -659,6 +816,7 @@ impl TilesetTransfer {
         if providers.is_empty() {
             return Err(TransferError::NoProviders(tileset_id.to_string()));
         }
+        let _busy = self.busy(tileset_id);
         let existing = match self.ledger(tileset_id).await {
             Ok(ledger) => Some(ledger),
             Err(TransferError::UnknownDownload(_)) => None,
@@ -706,6 +864,7 @@ impl TilesetTransfer {
         self.persist_ledger(&ledger).await?;
         lock(&self.ledgers).insert(tileset_id.to_string(), Arc::clone(&ledger));
         let index_json = self.ensure_index(&ledger).await?;
+        self.touch(ledger.dir.clone()).await?;
         Ok(MetaResolved {
             tileset_id: ledger.tileset_id.clone(),
             root: ledger.root,
@@ -722,6 +881,7 @@ impl TilesetTransfer {
         tileset_id: &str,
         seq: u32,
     ) -> Result<StoredChunk, TransferError> {
+        let busy = self.busy(tileset_id);
         let ledger = self.ledger(tileset_id).await?;
         if seq >= ledger.total() {
             return Err(TransferError::SeqOutOfRange {
@@ -729,14 +889,21 @@ impl TilesetTransfer {
                 total: ledger.total(),
             });
         }
-        store_chunk(
+        let stored = store_chunk(
             Arc::clone(&self.transport),
-            ledger,
+            Arc::clone(&ledger),
             seq,
             self.limits.max_chunk_bytes,
         )
         .await
-        .map_err(|error| TransferError::Chunk { seq, error })
+        .map_err(|error| TransferError::Chunk { seq, error })?;
+        self.touch(ledger.dir.clone()).await?;
+        // Still busy here, so the bundle just stored is never the one evicted.
+        if let Err(e) = self.trim_streamed_caches().await {
+            tracing::warn!(tileset_id, "Trimming streamed tileset caches failed: {e}");
+        }
+        drop(busy);
+        Ok(stored)
     }
 
     /// Fetch every missing bundle (bounded concurrency, provider fallback).

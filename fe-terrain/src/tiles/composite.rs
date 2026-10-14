@@ -301,6 +301,19 @@ impl CompositeTileSource {
         self.streamed_sources.push(source);
     }
 
+    /// What fetched bundle `seq` of streamed `tileset_id` must prove before it
+    /// is decoded (`None`: untracked tileset or unknown seq).
+    pub fn streamed_bundle_check(
+        &self,
+        tileset_id: &str,
+        seq: u32,
+    ) -> Option<super::streamed::BundleCheck> {
+        self.streamed_sources
+            .iter()
+            .find(|s| s.tileset_id() == tileset_id)?
+            .bundle_check(seq)
+    }
+
     /// A verified bundle arrived for `tileset_id`; feed it to the matching
     /// streamed source. A no-op (logged) if no such source is tracked — the
     /// petal may have switched away since the fetch was requested.

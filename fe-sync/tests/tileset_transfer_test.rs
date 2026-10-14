@@ -704,3 +704,81 @@ async fn a_tag_rebuild_never_drops_a_tileset_published_meanwhile() {
         "the concurrent publish keeps its catalog entry (it is still advertised)"
     );
 }
+
+/// AC-21(a): streamed-bundle caches share one disk budget across tilesets
+/// and restarts. Past it the least-recently-used cache is evicted first; an
+/// in-progress full download is never evicted, however old or large.
+#[tokio::test]
+async fn streamed_caches_past_the_disk_budget_evict_least_recently_used_first() {
+    let network = InMemoryNetwork::new();
+    let alice = network.transport("alice");
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let publisher = service(&alice, alice_dir.path());
+    let mut roots = std::collections::HashMap::new();
+    let mut sources = std::collections::HashMap::new();
+    for id in ["full", "old", "mid", "new"] {
+        let source = SourceTileset::write(&alice_dir.path().join(id), id, 2);
+        let entry = publisher
+            .publish(id, source.index_json.clone(), &source.bundle_paths)
+            .await
+            .unwrap();
+        roots.insert(id, entry.root);
+        sources.insert(id, source);
+    }
+    let tick = || tokio::time::sleep(std::time::Duration::from_millis(5));
+    // Room for two one-bundle caches (plus ledger/index overhead), not three.
+    let two_caches = (2 * BUNDLE_BYTES + 16 * 1024) as u64;
+    let bob = service(&network.transport("bob"), bob_dir.path()).with_limits(TransferLimits {
+        max_streamed_cache_bytes: two_caches,
+        ..TransferLimits::default()
+    });
+
+    // An in-progress full download: bundle 1 is withheld, so it stays partial.
+    alice.withhold(sources["full"].chunk_hash(1));
+    let partial = bob
+        .start_download(&[alice.provider_ref()], "full", roots["full"], None)
+        .await
+        .unwrap();
+    assert!(partial.complete.is_none());
+    tick().await;
+
+    for id in ["old", "mid"] {
+        bob.request_meta(&[alice.provider_ref()], id, roots[id])
+            .await
+            .unwrap();
+        bob.fetch_chunk(id, 0).await.unwrap();
+        tick().await;
+    }
+    // Re-reading "old" makes "mid" the least recently used.
+    bob.fetch_chunk("old", 0).await.unwrap();
+    tick().await;
+    bob.request_meta(&[alice.provider_ref()], "new", roots["new"])
+        .await
+        .unwrap();
+    bob.fetch_chunk("new", 0).await.unwrap();
+
+    let present = |id: &str| bob.download_dir(id).unwrap().exists();
+    assert!(!present("mid"), "the least-recently-used cache was evicted");
+    assert!(
+        present("old") && present("new"),
+        "recently used caches stay"
+    );
+    assert!(
+        present("full"),
+        "an in-progress full download is never evicted"
+    );
+    assert!(bob.download_dir("full").unwrap().join("0.bundle").is_file());
+
+    // Across a restart with a tighter budget, startup trimming keeps only the newest cache.
+    let restarted =
+        service(&network.transport("bob-restarted"), bob_dir.path()).with_limits(TransferLimits {
+            max_streamed_cache_bytes: (BUNDLE_BYTES + 8 * 1024) as u64,
+            ..TransferLimits::default()
+        });
+    assert_eq!(restarted.trim_streamed_caches().await.unwrap(), vec!["old"]);
+    assert!(restarted.download_dir("new").unwrap().exists());
+    assert!(restarted.download_dir("full").unwrap().exists());
+    let pending = restarted.pending_downloads().await.unwrap();
+    let ids: Vec<&str> = pending.iter().map(|p| p.tileset_id.as_str()).collect();
+    assert_eq!(ids, vec!["full", "new"]);
+}

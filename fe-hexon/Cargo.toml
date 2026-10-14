@@ -43,6 +43,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 [dev-dependencies]
 fe-terrain = { path = "../fe-terrain" }
 fe-hexon-registry = { path = "../fe-hexon-registry" }
+# PAS-P5 S5 P2P partial-fetch tests: real iroh loopback stacks + the P3P4 seeding path.
+fe-sync = { path = "../fe-sync" }
+iroh = { workspace = true }
 axum = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tempfile = "3"

@@ -439,6 +439,45 @@ that select loop drains.** The regression test
 pins the exact shape: 300-entry doc, live convergence, re-open replay past
 capacity, and `Shutdown` still processing.
 
+## §event-outbox — non-blocking `SyncEvent` emission (`event_outbox.rs`, PAS-P5 S5 / W1 residual)
+
+The sync thread runs on a current_thread runtime. The command loop and every
+task it spawns share one OS thread, so a blocking crossbeam `send` into the
+`bounded(256)` event channel (`fractalengine/src/main.rs`) from any of them
+stalled the WHOLE thread once more than 256 events piled up between Bevy
+frames. It could not serve commands, inbound rows or even `Shutdown`.
+**Every emit now goes through `EventOutbox`** (`EventSink::emit`):
+
+- `try_send` first. On `Full`, the event joins a loop-local FIFO backlog,
+  and once a backlog exists every later event queues behind it, so order
+  is kept.
+- **State-bearing events are lossless** (`RowApplied`, `BlobReady`,
+  `NodeTransformed`, tileset meta/chunk/complete/resumed, `ReplicaOpenFailed`,
+  `ShardLedger`, `Started`/`Stopped`, and everything not listed below). They
+  wait in the backlog for as long as it takes, with a warning at 256 queued
+  and at every 4x past that.
+- **Advisory events coalesce.** A queued `RelayHealthChanged` is replaced in
+  place by a newer one, and an identical queued `PeerTilesetAdvertisement`
+  (same peer, same payload) absorbs the repeat. At most
+  `MAX_ADVISORY_BACKLOG` (1024) advisory events are held; past that they are
+  dropped. Every coalesce or drop is counted (`dropped_advisory`) and warned,
+  at the first and then every 1000th.
+- **The loop drains it (the self-drain rule).** The loop calls `flush()` at
+  the top of every iteration. A `backlog_ready()` select branch wakes it when
+  an emit queued something (`Notify`), then retries every 5 ms while the
+  channel stays full. Nothing ever awaits or blocks on a send the loop must
+  service itself. On exit, `flush_before_exit` gives the main thread
+  `SHUTDOWN_FLUSH_TIMEOUT` (5 s) to take the rest, then drops it with a warning.
+- Production code cannot emit through a raw channel: the `EventSink` impl
+  for `SyncEventSender` is `#[cfg(test)]` only. `distributed_query`
+  keeps its own `try_send` drop-and-count (`EventOutbox::sender`).
+- Tests: `a_burst_from_spawned_tasks_never_blocks_the_loop_and_loses_nothing`
+  and `advisory_events_coalesce_while_state_events_queue` (unit), plus
+  `a_command_burst_past_the_event_capacity_never_stalls_the_loop` (sync_thread.rs).
+  The last one runs 600 commands through a `bounded(1)` command channel
+  while the main thread drains nothing. Every command is accepted, and all
+  600 replies and `Stopped` then arrive in order.
+
 ## §pending-writes (F21/M2 — the verse-manifest open race)
 
 `WriteRowEntry` for a verse whose replica is not open yet is **retained, not
@@ -1072,8 +1111,10 @@ open handler awaits it, so the ordering is unchanged):
 ## §tileset-transfer (PAS-P3 S2, 2026-10-13 — `blob_transport.rs`, `tileset_transfer.rs`)
 
 A tileset travels as one HashSeq `[index, bundle_0 … bundle_n]`: child 0 is
-the opaque bundle-index blob (fe-format `TilesetBundleIndex` JSON in this
-campaign step; PAS-P5 swaps in its signed header, critic C10), children
+the opaque index blob. That is fe-format `TilesetBundleIndex` JSON for a
+legacy unsealed tileset, or since PAS-P5 S5 the signed `HeaderDoc` JSON for
+a sealed one (`fe_terrain::tiles::bundle_for_seeding` picks the shape;
+fe-sync passes either through unparsed). Children
 1.. are the self-contained `.hexon` bundle archives fe-terrain's bundler
 writes. **fe-sync never parses fe-format types**: it verifies bytes against
 HashSeq children only.
@@ -1277,6 +1318,20 @@ and what stops it. Each guard has a named regression test.
   is skipped, so the providers it names are never dialed. `resume_all`
   logs and skips a failing download instead of aborting the others. Test:
   `a_tampered_ledger_is_never_resumed`.
+- **Streamed-cache disk budget (PAS-P5 S5, critic AC-21a).** A streamed
+  cache (ledger, no `full-download` marker) records its last use in
+  `downloads/<id>/last-used` (unix ms), stamped on `request_meta` and every
+  `fetch_chunk`. After each `fetch_chunk` and at sync-thread start
+  (`report_and_resume_tileset_downloads`), `trim_streamed_caches` evicts the
+  least-recently-used caches (`cancel`: files, ledger, tag) until all of
+  them fit `TransferLimits::max_streamed_cache_bytes` (2 GiB default).
+  Three things are never evicted: a full download, whether in progress or
+  complete and awaiting install (the marker); a cache with a meta/chunk
+  request running (an in-memory busy set); and the cache whose bundle was
+  just stored. So one oversized cache can exceed the budget rather than
+  delete the bytes `ChunkReceived` points at. Installed tilesets live in the
+  hexon store, never under `downloads/`. Test:
+  `streamed_caches_past_the_disk_budget_evict_least_recently_used_first`.
 - **Streamed caches stay caches.** `fetch_chunk` (the streamed path, which
   a peer-replicated petal can trigger) never writes the `full-download`
   marker, so a restart never turns it into a full download and auto-install.

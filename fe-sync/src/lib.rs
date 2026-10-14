@@ -6,6 +6,7 @@ pub mod compute;
 pub mod distributed_query;
 pub mod docs_engine;
 pub mod endpoint;
+pub mod event_outbox;
 pub mod lifecycle;
 pub mod messages;
 pub mod offline;

@@ -154,3 +154,54 @@ integrity root (fe-format/src/AGENTS.md §integrity, §partial). Plan:
   (`http_source_passes_conformance`, `strategy_falls_back_from_a_tampering_source_to_an_honest_one`);
   P2P proof: S5's `partial_fetch_p2p.rs`. Both tests are gated on
   `remote`+`conformance`, so they run under `--all-features` (plan §10 C10).
+
+## §partial-fetch-p2p (PAS-P5 S5 — `partial/p2p.rs`)
+
+The P2P transport behind `PartialHexonFetch`, over the PAS-P3
+`fe_runtime::blob_transport::BlobTransport` seam (iroh-free, D-77). It lives
+here, not in fe-sync: the trait is in fe-runtime, and fe-hexon depends on no
+transport crate (plan §3.5, assumption A1).
+
+- **HashSeq layout.** `publish_to_transport(transport, archive_path)` opens
+  the archive with `RequireSealed` and refuses unsealed input. It then stores
+  `[HeaderDoc::to_json(), chunk_0..n]` for a container (each chunk read via
+  `HexonArchiveIndex::chunk`, so it is verified against the signed index on
+  the way out) or `[HeaderDoc, whole archive]` for a monolithic archive
+  (`verify_archive_against_header` runs first). The root is tagged
+  `fe/hexon/<hexon_id@version>`. Archive I/O runs on `spawn_blocking`.
+  It takes a PATH, not bytes as the plan said, because the one header reader
+  (`HexonArchiveIndex`) is file-backed and a seeder already holds the file.
+- **One root per hexon.** The P3P4 seeding path (`fe_terrain::tiles::
+  bundle_for_seeding` → `TilesetTransfer::publish_files`) writes the same
+  child 0 bytes and the same chunk bytes, so it publishes the same root
+  (test `a_sealed_container_is_reseeded_from_its_signed_chunks_without_rebundling`).
+- **`HexonLocator`** maps a uri to `(root, providers)`. It is filled by the
+  caller or from a P3 tileset ad (`insert_advertisement(tileset_id, root_hex,
+  provider_addr)`). A lookup of `id@version` falls back to the bare `id`
+  entry. `sources(transport, uri, priority)` builds one `P2pPartialFetch`
+  per provider.
+- **`P2pPartialFetch { transport, locator, peer, priority }`** resolves a root
+  once per fetcher (HashSeq root-only fetch plus child 0, cached by root,
+  bounded), so a header fetch never touches a chunk. It still returns
+  unverified bytes, since `FetchStrategy` owns verification, but it refuses
+  three things as `Integrity`/`Substituted` before handing anything back:
+  a blob that does not hash to the child it asked for (a poisoned peer
+  store; the in-memory transport returns forged bytes rather than erroring);
+  a chunk child the peer's own signed chunk index does not name, checked
+  before downloading it; and a root whose signed header names a different
+  hexon than requested. Members come from the header (manifest and header
+  members), from a chunk (a container's only body members), or from the
+  whole archive read in memory under the per-entry caps (monolithic).
+  `fetch_blob` overrides the default so `fetch_by_hash` works peer-to-peer.
+- **Caps.** Header child 16 MiB and chunk 64 MiB, which equal fe-sync's
+  `MAX_INDEX_BYTES`/`MAX_CHUNK_BYTES`, so a P3P4-seeded hexon is fetchable
+  both ways. A whole monolithic archive is capped at
+  `limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES`, and at most 1 + 65 536 HashSeq
+  children are accepted.
+- **Tests** (`tests/partial_fetch_p2p.rs`, feature `conformance`):
+  `in_memory_p2p_source_passes_conformance` (the A7 proof, the same
+  `conformance::run` as HTTP), `poisoned_peer_store_is_refused`,
+  `iroh_loopback_fetches_one_chunk_without_the_rest` (real endpoints and
+  stacks; chunks 0 and 2 never reach the fetcher's store), and the reseed
+  test above. fe-sync and iroh are dev-dependencies only, for the loopback
+  and seeding tests.

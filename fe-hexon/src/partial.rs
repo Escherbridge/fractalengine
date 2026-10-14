@@ -14,8 +14,10 @@ use crate::p2p::config::PeerPriority;
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
+pub mod p2p;
 
 pub use crate::p2p::fetch::{pacing_delay, verify_fetched_header, FetchStrategy, SharedSource};
+pub use p2p::{publish_to_transport, HexonLocator, LocatorEntry, P2pPartialFetch, PublishedHexon};
 
 /// Where a partial fetch is served from; the order `FetchStrategy` tries
 /// sources in is this enum's ordering (peers by priority, then registries).
