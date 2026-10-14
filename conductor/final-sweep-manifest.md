@@ -285,6 +285,30 @@ Generated 2026-10-14 from the W2 journal (`wf_4e779cc6-58c`).
 - cargo test -j4 -p fe-hexon-registry (publish_outcomes, concurrent_publishes_of_one_id_admit_exactly_one_publisher, nosniff/attachment route tests)
 - cargo test -j4 -p fractalengine-test-harness: two_peer_tileset_stream scenario and tests/blob_store_cross_read.rs
 
+
+## W2b fixups (`8d8eaf8..474ab9b`)
+
+**Executor `4306cb2` — tests written:**
+- fe-terrain/src/tiles/streamed.rs::an_unsealed_index_is_refused_once_a_sealed_publisher_pin_is_known
+- fe-terrain/src/tiles/streamed.rs::a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused (unit-level, via from_header_doc)
+- fe-terrain/tests/hexon_integrity_flow.rs::concurrent_installs_of_one_id_by_two_publishers_leave_exactly_one_winner
+- fractalengine/src/terrain_bridge.rs::a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused (system-level, through drive_streamed_tilesets)
+- fractalengine/src/terrain_bridge.rs::an_unsealed_streamed_meta_is_refused_once_a_sealed_publisher_is_known (system-level)
+- fractalengine/src/terrain_bridge.rs::only_a_requested_meta_reply_becomes_a_streamed_source (modified to poll frames instead of asserting after one app.update())
+- fractalengine/src/terrain_bridge.rs::a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome
+- fractalengine/src/terrain_bridge.rs::resolve_hexon_registry_token_table
+- fractalengine/src/terrain_bridge.rs::install_from_registry_requires_the_configured_bearer_token
+- fractalengine-relay/src/main.rs::derive_blob_dir_from_db_path_table
+- fe-hexon-registry/tests/registry_test.rs::asset_and_download_routes_carry_nosniff_and_attachment_headers
+
+**Review-and-fix `474ab9b` — must cover (2 vacuous F1 system tests were rewritten to drive verification):**
+- fractalengine lib (terrain_bridge): a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused, a_streamed_header_is_pinned_to_the_installed_publisher, an_unsealed_streamed_meta_is_refused_once_a_sealed_publisher_is_known, only_a_requested_met
+- fe-terrain lib (tiles::streamed): an_unsealed_index_is_refused_once_a_sealed_publisher_pin_is_known, a_streamed_header_signed_by_a_publisher_other_than_the_known_pin_is_refused, a_streamed_index_must_name_the_requested_tileset; fe-terrain lib (tiles::store) se
+- fe-terrain/tests/hexon_integrity_flow.rs: concurrent_installs_of_one_id_by_two_publishers_leave_exactly_one_winner, installs_racing_seeding_toggles_lose_no_registry_update, plus the full file
+- fractalengine-relay bin tests: derive_blob_dir_from_db_path_table (run on both Windows and Linux)
+- fe-hexon-registry/tests/registry_test.rs: asset_and_download_routes_carry_nosniff_and_attachment_headers plus the full file
+- fe-hexon/tests/partial_fetch_p2p.rs: full file (pin arg None call site)
+
 ## W3 CDL-W4 (append at W3 close)
 
 *Reserved by critic tick 5 (2026-10-14, `.omc/accountability/tick-20261014-0722.md` AC-26): the

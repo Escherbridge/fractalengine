@@ -182,3 +182,12 @@ scope trim; `plan.md` wrongly ticked it.
 | AC-26 | MED | W4 plan gate/test drift: per-crate-only gates + campaign-end `cargo test` after slice 9 contradict AC-17 + the tests-at-end rule | **ACCEPT** → docs agent (W4 C6: workspace triple + gate_green halt; tests → manifest "W3 CDL-W4"); no C10-style feature gate needed for W4 crates (fe-identity no-default check only if edited) |
 | AC-27 | LOW | W4 precision: W4-7 key-id index (SecretStore can't enumerate), restart tests must drop+join (one open per process), W4-1 KTX2-guarded fixture, W4-8 role-None review item, re-grounded citation table @8d8eaf8 | **ACCEPT** → docs agent (W4 C8, C9) |
 | AC-28 | LOW | Bookkeeping + prune 7.5 GB PDBs | **ACCEPT** → docs agent; PDBs pruned (114 files) before W2b |
+
+### W2b close — 2026-10-14
+- **W2b DONE** `4306cb2` + review `474ab9b`, gate_green (workspace triple + C10 matrix). Reviewer FAILED the
+  executor on 2 HIGH (streamed path still verified an archive on the main thread via `installed_publisher`;
+  both F1 system tests were vacuous — the unsolicited reply was dropped before verification) + 2 MED
+  (per-frame RequestTilesetMeta storm; registry.json lost updates worker↔main) + 1 L — all fixed.
+- Accepted: streamed path records no TOFU pin of its own (covered by ledger STREAMED-TERRAIN-PIN, RP after
+  RP-4); bare `FE_DB_PATH=db.kv` falls back to `data/blobs` (documented); race tests are probabilistic-red
+  without the fix, deterministic-green with it.
