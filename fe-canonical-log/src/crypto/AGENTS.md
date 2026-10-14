@@ -4,10 +4,12 @@ SPEC-1 §3.5/§5.2/§9, SPEC-3 §10.1–§10.3, SPEC-6 §9.1. Every other module
 ciphertext as opaque bytes; this is the only place a key, a nonce, or an AEAD call exists.
 
 Scope boundary: protocol only. No socket, listener, connection, iroh, libp2p, `fe-network` or
-`fe-sync` reference; no device-enrolment *registry*, no wrap delivery transport, no relay seeding.
+`fe-sync` reference; no wrap delivery transport, no relay seeding, no durable storage.
 §10.2.4 delivery and §10.3.4 network enablement remain owner-gated and are deliberately unbuilt
-here. `key_wrap`'s three view traits are the seams those absent surfaces will answer through: they
-ask questions, they store nothing, and each is deny-by-default until something answers.
+here. `key_wrap`'s three view traits are the seams those surfaces answer through: they ask
+questions, they store nothing, and each is deny-by-default until something answers.
+`device_enrolment` (W4-6) is the one exception that holds state, and only in memory: the pure
+`EnrolmentRegistry` the durable fe-database table loads into (§device-enrolment).
 
 ## §what-is-structural-and-what-is-not
 
@@ -26,13 +28,63 @@ moves with it:
 | The signed `issuer_capability` names the epoch being sealed | **Structural**, checked on both the issuing and the opening side. |
 | A recipient validates the issuer's authority before unwrapping | **Structural — DB-backed `DurableAuthorizationView` (fe-database `canon_log::canonical_epoch`, CDL-R2 2026-10-11).** `open_scope_key` cannot be called without an `IssuerAuthorityView` and refuses anything but `Granted`; the production implementor answers from the durable `role` table exactly as the SPEC-3 §5.1 epoch-bump check does (Manager+ at the exact epoch scope; no row → `Unknown`). Still interim in substance until SPEC-2 authority history replaces the role-table projection (`canon_log/AGENTS.md` §interim-manager-authority). |
 | The issuer holds current Manager+ authority and the recipient a current `decrypt` capability | **Structural at `issue_scope_key_wrap`, absent at `wrap_scope_key`.** The primitive underneath asks no authority question, and its own doc comment says so rather than implying otherwise. |
-| A device-enrolment registry exists | **Not built — blocked on an owner decision.** `DeviceEnrolmentView` has no production implementor in this workspace. SPEC-3 §10.2.1 says only that a device "enrolls one 32-byte X25519 public key bound to its principal"; before a registry can exist the owner must rule on the enrolment artifact (is it a signed principal→device binding, who may write it, does it replicate?). A local table invented without that would be an unattested authority source. A caller can satisfy the trait with a view that answers `Granted` to everything — but that is a visible, reviewable act of writing a permissive view, not an omission nobody notices. |
+| A device-enrolment registry exists | **Structural** — self-signed enrolment artifact (R2, 2026-10-13); durable registry in fe-database `canon_log::device_enrolment`. `device_enrolment::EnrolmentRegistry` is the production `DeviceEnrolmentView`, and it can only be filled with `VerifiedDeviceEnrolment` / `VerifiedDeviceEnrolmentRevocation` values, whose fields are private and whose only constructors are the `decode_and_verify` doors (canonical re-encode, DID binding, the principal's own signature). An unattested row has no spelling. The durable fe-database half (table, replicated-row admission, `DurableDeviceEnrolmentView`) is W4-8; until it lands nothing persists an enrolment. See §device-enrolment. |
 | A recipient checks that the wrap's recipient principal is its own | **Deliberately not checked.** `DeviceSecretKey` carries no principal; the AAD's device key is what the wrap key derives from, and the `key_id` check pins the recovered material to its scope and epoch, so a mis-named recipient yields the same genuine key rather than a foreign one. Documented, not silently absent. |
 
 `AuthorizationRecord` has three states rather than two for the same reason
 `capability::AuthorityState` does: a view holding no record has not said "no". It is a separate
 enum only because `AuthorityState::ManagerPlus` is the wrong name for "this device is enrolled".
 Both non-`Granted` states refuse.
+
+## §device-enrolment — self-signed, replicated, revocation dominates (R2, W4-6)
+
+The owner ruled on 2026-10-13 (RUNBOOK §3 R2): the enrolment artifact is **self-signed and
+replicated**. The principal's own Ed25519 key signs `{principal, device X25519 key, enrolled_at}`;
+only that principal may write it; it replicates as an ordinary row; revocation is a signed
+tombstone. `device_enrolment.rs` is the protocol half: `DeviceEnrolmentV1` /
+`DeviceEnrolmentRevocationV1`, their `Signed*` complete forms, the `Verified*` proof types, the
+`enrolment_record_id` slot key, and `EnrolmentRegistry`.
+
+**Why self-signed.** Enrolment answers one question: "is this X25519 key one of *this principal's*
+devices?" Only the principal can attest that. A Manager-issued enrolment would let any Manager bind
+a device it controls into someone else's identity and then legitimately receive that identity's
+scope keys — enrolment would become an authority grant. `sign` refuses any key but the principal's
+own (`CryptoError::EnrolmentSignerMismatch`), and `decode_and_verify` verifies the signature with
+the key the body names, so neither the issuing nor the receiving side can be talked into a foreign
+binding. Authority (Manager+ issuers, `decrypt` capabilities) stays where it was:
+`IssuerAuthorityView` and `DeliveryAuthorizationView::recipient_decrypt_authority`. Enrolment adds
+no authority; it only names *where* key material may be sealed.
+
+**Why revocation dominates forever.** Authority state is never last-writer-wins (the 2026-07-11
+D1 "auth never LWW" doctrine). Enrolment timestamps are asserted by the principal, so a
+timestamp-ordered merge would let a stolen or stale enrolment — replayed from any replica, or
+signed with a back-dated `enrolled_at_ms` before the key leaked — outrank the tombstone. The
+registry instead orders slot contents totally: a revocation beats every enrolment whatever either
+timestamp says; within one class the earliest assertion, then the smallest bytes, wins. Every
+arrival order of the same artifact set therefore converges on the same stored artifact, and a
+revocation that arrives *before* its enrolment is retained and still dominates it. The cost,
+recorded as an assumption in the campaign plan §8: re-enrolling a revoked device needs a new
+device key (cheap — devices generate keys freely; reversal would be a signed re-enrol counter,
+a wire change).
+
+**Three answers.** Enrolled and never revoked → `Granted`; revoked → `Refused`; nothing held for
+that (principal, device) slot → `Unknown`. A replicated registry can never know it holds every
+row, so absence is not a "no" — but it still refuses, like every non-`Granted` answer.
+
+**One byte form.** Both artifacts are the same four-key map (`0` principal, `1` device key, `2`
+timestamp, `3` signature); only the signature domain (`fe-device-enrolment-v1` vs
+`fe-device-enrolment-revoke-v1`) tells them apart, so an enrolment signature can never be replayed
+as a revocation or the reverse. `VerifiedEnrolmentArtifact::decode_and_verify` classifies bytes
+by which domain the signature verifies under — never by a caller-supplied flag such as a row's
+`revoked` column, which a peer controls. Received bytes must be their own canonical re-encoding.
+An enrolment of a small-order X25519 key is refused (`NonContributoryKeyExchange`): no wrap could
+ever be sealed to it. A revocation of one is accepted — a principal must never be unable to
+revoke. Domains, keys and the record-id derivation are provisional and live in the crate-root
+register (`src/AGENTS.md` §"Provisional wire numbering"), not here.
+
+**Linkability.** A published X25519 device key is a stable identifier visible to every replica
+member. The durable half publishes only on an explicit command (no auto-enrolment when a replica
+opens — campaign plan §6); that is where the privacy trade-off is enforced, not here.
 
 ## §dependencies — approved under D-CL21
 

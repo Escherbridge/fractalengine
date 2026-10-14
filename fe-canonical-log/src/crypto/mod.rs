@@ -6,12 +6,13 @@
 //! live in `src/crypto/AGENTS.md`.
 //!
 //! Pure local key handling: no socket, no listener, no iroh, no libp2p, no `fe-network` and no
-//! `fe-sync`. The device-enrolment registry and wrap delivery transport are deliberately absent;
-//! `key_wrap`'s view traits are the seams they will answer through, and every one of them is
-//! deny-by-default in the meantime.
+//! `fe-sync`. `device_enrolment` holds the self-signed enrolment artifact and the pure registry
+//! answering `DeviceEnrolmentView`; its durable table lives in fe-database. Wrap delivery
+//! transport is deliberately absent, and every `key_wrap` view trait is deny-by-default.
 
 pub mod aead;
 pub mod artifact_aad;
+pub mod device_enrolment;
 pub mod key_id;
 pub mod key_wrap;
 pub mod scope_key;
@@ -29,6 +30,12 @@ pub use aead::{
     SEALING_KEY_LENGTH,
 };
 pub use artifact_aad::StoredArtifactAad;
+pub use device_enrolment::{
+    enrolment_record_id, DeviceEnrolmentRevocationV1, DeviceEnrolmentV1, EnrolmentRegistry,
+    SignedDeviceEnrolment, SignedDeviceEnrolmentRevocation, VerifiedDeviceEnrolment,
+    VerifiedDeviceEnrolmentRevocation, VerifiedEnrolmentArtifact, DEVICE_ENROLMENT_DOMAIN,
+    DEVICE_ENROLMENT_REVOCATION_DOMAIN, ENROLMENT_RECORD_ID_DOMAIN,
+};
 pub use key_id::{derive_key_id, SCOPE_KEY_ID_DOMAIN};
 pub use key_wrap::{
     issue_scope_key_wrap, open_scope_key, wrap_scope_key, AuthorizationRecord,
@@ -112,6 +119,10 @@ pub enum CryptoError {
     /// The signing key offered for issuance is not the named issuer principal's key (§10.2.3).
     #[error("the offered signing key is not the issuer principal's own key")]
     IssuerSigningKeyMismatch,
+    /// A device enrolment or revocation was offered for signing under another principal's key;
+    /// only a principal may bind or unbind its own device (R2).
+    #[error("the offered signing key is not the enrolling principal's own key")]
+    EnrolmentSignerMismatch,
     /// An X25519 exchange produced the all-zero shared secret, so a small-order point was supplied.
     #[error("the X25519 exchange was non-contributory")]
     NonContributoryKeyExchange,

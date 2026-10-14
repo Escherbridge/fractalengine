@@ -169,7 +169,7 @@ code parses JSON.
 | `frontier` | SPEC-1 §6 | W1b |
 | `author_key` | SPEC-2 | W2-author-key-lifecycle — implemented |
 | `capability` | SPEC-3 | W2-capability-chain — implemented |
-| `crypto` | SPEC-1 §9, SPEC-3 §10 | W3-crypto-aead-keywrap — implemented; W3R-crypto — authority hardening |
+| `crypto` | SPEC-1 §9, SPEC-3 §10 | W3-crypto-aead-keywrap — implemented; W3R-crypto — authority hardening; W4-6 — device enrolment (R2) |
 | `materialize` | SPEC-4 | W2-materialize — implemented |
 | `branch` | SPEC-5 | W2-branch-checkpoint — implemented |
 | `retention` | SPEC-5 | W2-retention — implemented |
@@ -366,7 +366,7 @@ crate's own tests; what is missing is the *durable*, database-backed caller a la
 | `AuthorKeyLifecycleView` | `compose::CausalLifecycleView` (W4-3) | `compose::LifecycleDispatcher` (W4-3, in-process); a durable `fe-database` lineage rebuild is W4-7 |
 | `admit_rotation` / `admit_disavow` / `admit_disavow_rescind` / `admit_continuity_grant` | `author_key::admission` (W2) | `compose::LifecycleDispatcher::dispatch` (W4-3) — the four SPEC-2 entrypoints now have a production caller |
 | `MaterializerVersion::registry_id` mapping | `materialize::identity::MaterializerVersion` (W4-3) | `compose::checkpoint_binding_for_selection` (W4-3) |
-| `DeviceEnrolmentView` | none yet | W4-6 |
+| `DeviceEnrolmentView` | `crypto::device_enrolment::EnrolmentRegistry` (W4-6) | fe-database `canon_log::device_enrolment::DurableDeviceEnrolmentView` (W4-8, not yet landed) loads its table into it; exercised in-process by `cross_spec_integration.rs::a_device_enrolment_gates_a_scope_key_wrap` |
 | `ManagerPlusAuthorizationView` | none yet | W4-7 |
 | `DeliveryAuthorizationView` | none yet | W4-8 |
 
@@ -487,6 +487,29 @@ signature computed over the complete wrap. Per SPEC-1 §5.1's unsigned/complete 
 read the signed preimage as the five-key body *without* the signature slot, with the artifact
 adding key 5; on that reading `ScopeKeyWrapBody` is what the spec calls the complete wrap.
 A second implementation following the literal text would compute a different preimage.
+
+### Provisional — SPEC-3 §10.2.1 device enrolment (`crypto/device_enrolment.rs`)
+
+W4-6, under owner decision R2 (2026-10-13: self-signed, replicated, revocation = signed
+tombstone). SPEC-3 §10.2.1 says only that a device "enrolls one 32-byte X25519 public key bound to
+its principal"; it defines no artifact. **Ours, unratified, no interop claimed.**
+
+| Item | Value |
+| --- | --- |
+| Enrolment signature domain | `fe-device-enrolment-v1\0` (`DEVICE_ENROLMENT_DOMAIN`) |
+| Revocation signature domain | `fe-device-enrolment-revoke-v1\0` (`DEVICE_ENROLMENT_REVOCATION_DOMAIN`) |
+| Signed preimage | `domain || canonical_cbor(body)`, body = keys 0..2 below |
+| Record-id domain | `fe-device-enrolment-record-id-v1\0` (`ENROLMENT_RECORD_ID_DOMAIN`) |
+| Record id | `BLAKE3(domain || principal_ed25519_key(32) || device_x25519_key(32))` — the crate's `domain_preimage` convention, not BLAKE3 `derive_key` mode (same deviation W4-3 recorded for the materializer id); raw fixed-length concatenation, no CBOR; shared by an enrolment and its revocation |
+
+Both artifacts use the same map; the domain alone distinguishes them:
+
+| Key | Name | Representation |
+| ---: | --- | --- |
+| 0 | `principal` | principal (SPEC-1 §3.2 author map), DID must bind to the key |
+| 1 | `device_key` | byte string, 32 bytes (X25519) |
+| 2 | `enrolled_at_ms` / `revoked_at_ms` | unsigned integer, principal-asserted, never an authority input |
+| 3 | `signature` | byte string, 64 bytes (complete artifact only) |
 
 ### Provisional — SPEC-5 checkpoint claim v1 (`checkpoint.rs`)
 

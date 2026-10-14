@@ -1,10 +1,10 @@
 //! X25519 HPKE-style recipient-device scope-key wrap (SPEC-3 §10.2); see
 //! `src/crypto/AGENTS.md` §key-wrap for the provisional numbering and the no-`hpke`-crate note.
 //!
-//! Protocol only. The device-enrolment *registry*, wrap delivery, and every transport remain
-//! owner-gated and unbuilt: nothing here opens a socket or names `fe-network`, `fe-sync`, iroh,
-//! or libp2p. [`DeviceEnrolmentView`] and [`IssuerAuthorityView`] are the seams that registry
-//! and a recipient's persistent view will answer through; they are questions, not storage.
+//! Protocol only. Wrap delivery and every transport remain owner-gated and unbuilt: nothing here
+//! opens a socket or names `fe-network`, `fe-sync`, iroh, or libp2p. [`DeviceEnrolmentView`] and
+//! [`IssuerAuthorityView`] are the seams the enrolment registry (`super::device_enrolment`) and a
+//! recipient's persistent view answer through; they are questions, not storage.
 
 use std::fmt;
 
@@ -137,9 +137,9 @@ pub trait IssuerAuthorityView {
 
 /// The §10.2.1 record of which X25519 device keys a principal has enrolled.
 ///
-/// No such registry exists in this workspace: §10.2.4 delivery and device enrolment are
-/// owner-gated and unbuilt. This trait is here so the absence is a view a caller must name and
-/// implement rather than a check nobody notices is missing.
+/// The production answer is `super::device_enrolment::EnrolmentRegistry`, filled only with
+/// principal-self-signed artifacts (owner decision R2); see `src/crypto/AGENTS.md`
+/// §device-enrolment.
 pub trait DeviceEnrolmentView {
     /// Whether `recipient` currently enrols exactly `device_key` as one of its devices.
     fn device_enrolment(

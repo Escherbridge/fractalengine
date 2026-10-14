@@ -4,16 +4,17 @@
 //! no DB and no network. See `conductor/tracks/canonical_data_log_20260808/campaign-plan-w4-20261013.md`
 //! slice W4-5.
 //!
-//! Test 6 (`a_device_enrolment_gates_a_scope_key_wrap`) is named in the plan but explicitly
-//! deferred to W4-6's executor ("placed here only after W4-6 lands") -- `DeviceEnrolmentView`
-//! has no production implementor yet (`crypto/AGENTS.md:29` still reads "Not built"), so there
-//! is nothing to compose it over.
+//! Test 6 (`a_device_enrolment_gates_a_scope_key_wrap`) was appended by W4-6, once
+//! `crypto::device_enrolment::EnrolmentRegistry` gave `DeviceEnrolmentView` a production
+//! implementor to compose over.
 
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fe_canonical_log::capability::{ObjectClass, Verb};
+use fe_canonical_log::capability::{
+    AuthorityState, ManagerAuthorityView, ObjectClass, Principal, Verb,
+};
 use fe_canonical_log::cbor::{decode_canonical, encode_canonical, CborValue};
 use fe_canonical_log::checkpoint::{sign_checkpoint_claim, CheckpointClaimV1, CHECKPOINT_VERSION};
 use fe_canonical_log::compose::{
@@ -22,9 +23,20 @@ use fe_canonical_log::compose::{
 };
 use fe_canonical_log::crypto::aead::{seal, FreshNonce, SealingKey, SEALING_KEY_LENGTH};
 use fe_canonical_log::crypto::artifact_aad::StoredArtifactAad;
+use fe_canonical_log::crypto::device_enrolment::{
+    DeviceEnrolmentRevocationV1, DeviceEnrolmentV1, EnrolmentRegistry, VerifiedEnrolmentArtifact,
+};
 use fe_canonical_log::crypto::key_id::derive_key_id;
+use fe_canonical_log::crypto::key_wrap::{
+    issue_scope_key_wrap, open_scope_key, AuthorizationRecord, DeliveryAuthorizationView,
+    DeviceEnrolmentView, DevicePublicKey, DeviceSecretKey, IssuerAuthorityView,
+    RecipientDeviceBinding, ScopeKeyWrap, ScopeKeyWrapRequest,
+};
 use fe_canonical_log::crypto::scope_key::{InMemoryScopeKeyStore, LaneScopeKeyResolver};
-use fe_canonical_log::envelope::{Author, CapabilityRef, Hash32, Hlc, Identifier32, PayloadRef};
+use fe_canonical_log::crypto::CryptoError;
+use fe_canonical_log::envelope::{
+    Author, CapabilityRef, Hash32, Hlc, Identifier32, PayloadRef, Scope,
+};
 use fe_canonical_log::frontier::SortedFrontier;
 use fe_canonical_log::materialize::errors::{AdmissionDisposition, AdmissionOutcome};
 use fe_canonical_log::materialize::traits::{admit_candidate_with_facts, CandidateVerifier};
@@ -40,6 +52,7 @@ use fe_canonical_log::segment::hashseq::{HashSeqEntry, HashSeqNode, LaneKey};
 use fe_canonical_log::segment::header_lane::HeaderSegmentBody;
 use fe_canonical_log::segment::manifest::{BoundaryNode, SegmentManifestBody, SegmentStatistics};
 use fe_canonical_log::segment::payload_shard::PayloadShardRecord;
+use fe_canonical_log::segment::relay_policy::{PeerIdentity, RelayAuthorizationView};
 use fe_canonical_log::segment::store::SealedArtifactStore;
 use fe_canonical_log::segment::SegmentError;
 use fe_canonical_log::wire::commit::{
@@ -721,5 +734,226 @@ async fn commit_submit_ack_delta_flows_over_the_composed_verifier() {
     assert!(
         CommitDeltaBody::for_subscription([0x22; 16], &verse_subscription, generation, &delta)
             .is_ok()
+    );
+}
+
+/// Test 6's §10.2.1 delivery view, one question per source: SPEC-3 issuer Manager+ authority
+/// from the same `ManagerView` the admission tests use, R2 device enrolment from the production
+/// [`EnrolmentRegistry`], and a `decrypt` grant to exactly one recipient.
+struct EnrolmentGatedDelivery {
+    authority: support::ManagerView,
+    enrolments: EnrolmentRegistry,
+    decrypting_recipient: Principal,
+}
+
+impl IssuerAuthorityView for EnrolmentGatedDelivery {
+    fn issuer_manager_authority(
+        &self,
+        issuer: &Principal,
+        _capability: &CapabilityRef,
+        scope: &Scope,
+        scope_epoch: u64,
+    ) -> AuthorizationRecord {
+        match self
+            .authority
+            .principal_is_manager_plus(issuer, scope, scope_epoch)
+        {
+            AuthorityState::ManagerPlus => AuthorizationRecord::Granted,
+            AuthorityState::NotManagerPlus => AuthorizationRecord::Refused,
+            AuthorityState::Unknown => AuthorizationRecord::Unknown,
+        }
+    }
+}
+
+impl DeviceEnrolmentView for EnrolmentGatedDelivery {
+    fn device_enrolment(
+        &self,
+        recipient: &Principal,
+        device_key: DevicePublicKey,
+    ) -> AuthorizationRecord {
+        self.enrolments.device_enrolment(recipient, device_key)
+    }
+}
+
+impl DeliveryAuthorizationView for EnrolmentGatedDelivery {
+    fn recipient_decrypt_authority(
+        &self,
+        recipient: &Principal,
+        _scope: &Scope,
+        _scope_epoch: u64,
+    ) -> AuthorizationRecord {
+        if *recipient == self.decrypting_recipient {
+            AuthorizationRecord::Granted
+        } else {
+            AuthorizationRecord::Refused
+        }
+    }
+}
+
+/// The SPEC-6 §9.3 lane view: one header lane, one current key, one wrappable peer.
+struct WrappableLane {
+    lane: LaneKey,
+    epoch: u64,
+    key_id: Identifier32,
+    wrappable: PeerIdentity,
+}
+
+impl RelayAuthorizationView for WrappableLane {
+    fn current_scope_epoch(&self, lane: &LaneKey) -> Option<u64> {
+        (*lane == self.lane).then_some(self.epoch)
+    }
+
+    fn current_key_id(&self, lane: &LaneKey) -> Option<Identifier32> {
+        (*lane == self.lane).then_some(self.key_id)
+    }
+
+    fn has_seed_capability(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
+        false
+    }
+
+    fn has_fetch_capability(&self, _: &PeerIdentity, _: &LaneKey, _: u64) -> bool {
+        false
+    }
+
+    fn may_wrap_scope_key_for_peer(&self, peer: &PeerIdentity, lane: &LaneKey, epoch: u64) -> bool {
+        *lane == self.lane && epoch == self.epoch && *peer == self.wrappable
+    }
+}
+
+#[test]
+fn a_device_enrolment_gates_a_scope_key_wrap() {
+    let manager = support::signing_key([0x70; 32]);
+    let recipient_key = support::signing_key([0x71; 32]);
+    let recipient = support::principal_of(&recipient_key);
+    let device = DeviceSecretKey::from_bytes([0x0d; 32]);
+    let verse_scope = support::verse_scope();
+    let lane = LaneKey::Header {
+        verse_id: support::VERSE,
+    };
+    let scope_key = SealingKey::from_bytes([0x5a; SEALING_KEY_LENGTH]);
+    let lane_view = WrappableLane {
+        lane,
+        epoch: support::EPOCH,
+        key_id: derive_key_id(&verse_scope, support::EPOCH, &scope_key).expect("key id"),
+        wrappable: PeerIdentity(recipient.public_key),
+    };
+
+    // The recipient signs its own enrolment; the bytes enter the registry only through the
+    // same verification door a replicated row uses.
+    let enrolment_bytes = DeviceEnrolmentV1 {
+        principal: recipient.clone(),
+        device_key: device.public_key(),
+        enrolled_at_ms: support::NOW_MS,
+    }
+    .sign(&recipient_key)
+    .expect("sign enrolment")
+    .encode_canonical()
+    .expect("encode enrolment");
+    let mut delivery = EnrolmentGatedDelivery {
+        authority: support::ManagerView::at_epoch(
+            support::principal_of(&manager),
+            verse_scope,
+            support::EPOCH,
+        ),
+        enrolments: EnrolmentRegistry::new(),
+        decrypting_recipient: recipient.clone(),
+    };
+    assert!(delivery.enrolments.record(
+        VerifiedEnrolmentArtifact::decode_and_verify(&enrolment_bytes).expect("enrolment verifies")
+    ));
+
+    // Enrolled device + Manager+ issuer + decrypting recipient: the wrap is issued, survives its
+    // canonical byte form, and opens to the exact scope key on the enrolled device.
+    let issuer = support::principal_of(&manager);
+    let binding = RecipientDeviceBinding::resolve(
+        &delivery,
+        &recipient,
+        device.public_key(),
+        &verse_scope,
+        support::EPOCH,
+    )
+    .expect("the registry enrols this device");
+    let request = ScopeKeyWrapRequest {
+        recipient_device_binding: &binding,
+        scope_key: &scope_key,
+        issuer: &issuer,
+        issuer_capability: CapabilityRef {
+            chain_id: support::hash(0x7c),
+            scope_epoch: support::EPOCH,
+        },
+    };
+    let wrap = issue_scope_key_wrap(&lane_view, &delivery, &lane, &manager, &request)
+        .expect("an enrolled, authorized recipient receives a wrap");
+    let received = ScopeKeyWrap::decode_canonical(&wrap.encode_canonical().expect("wrap bytes"))
+        .expect("wrap decodes");
+    assert_eq!(
+        open_scope_key(&received, &device, &delivery).expect("the enrolled device opens it"),
+        scope_key
+    );
+
+    // A non-Manager issuer is refused before any key material is touched.
+    let outsider_key = support::signing_key([0x72; 32]);
+    let outsider = support::principal_of(&outsider_key);
+    assert_eq!(
+        issue_scope_key_wrap(
+            &lane_view,
+            &delivery,
+            &lane,
+            &outsider_key,
+            &ScopeKeyWrapRequest {
+                issuer: &outsider,
+                ..request.clone()
+            },
+        )
+        .err(),
+        Some(CryptoError::IssuerNotAuthorized {
+            record: AuthorizationRecord::Refused
+        })
+    );
+
+    // A device the recipient never enrolled cannot even be named in a wrap request.
+    let unenrolled = DeviceSecretKey::from_bytes([0x0e; 32]);
+    assert_eq!(
+        RecipientDeviceBinding::resolve(
+            &delivery,
+            &recipient,
+            unenrolled.public_key(),
+            &verse_scope,
+            support::EPOCH,
+        ),
+        Err(CryptoError::DeviceNotEnrolled {
+            record: AuthorizationRecord::Unknown
+        })
+    );
+
+    // The recipient's signed tombstone revokes the device, and replaying the old enrolment
+    // afterwards (a late replica row) does not restore it.
+    let revocation_bytes = DeviceEnrolmentRevocationV1 {
+        principal: recipient.clone(),
+        device_key: device.public_key(),
+        revoked_at_ms: support::NOW_MS - 1,
+    }
+    .sign(&recipient_key)
+    .expect("sign revocation")
+    .encode_canonical()
+    .expect("encode revocation");
+    assert!(delivery.enrolments.record(
+        VerifiedEnrolmentArtifact::decode_and_verify(&revocation_bytes)
+            .expect("revocation verifies")
+    ));
+    assert!(!delivery.enrolments.record(
+        VerifiedEnrolmentArtifact::decode_and_verify(&enrolment_bytes).expect("still verifies")
+    ));
+    assert_eq!(
+        RecipientDeviceBinding::resolve(
+            &delivery,
+            &recipient,
+            device.public_key(),
+            &verse_scope,
+            support::EPOCH,
+        ),
+        Err(CryptoError::DeviceNotEnrolled {
+            record: AuthorizationRecord::Refused
+        })
     );
 }
