@@ -332,3 +332,17 @@ Per-petal terrain binding flows through the DB thread and out to fe-terrain:
 - **Runtime**: `terrain_bridge::bridge_petal_terrain` converts `PetalTerrainLoaded`
   into `fe_terrain::petal_binding::TerrainAssignmentMsg` (config parsed via
   `terrain_config_from_petal_json`); `TerrainPlugin` consumes it.
+- **Render distance** (2026-10-13, `p2p_asset_streaming_20260718` S6): the per-petal
+  knob is a replicated `petal.render_distance` column alongside `terrain`, not a
+  manifest field — see `fe-database/src/AGENTS.md` §handlers "petal_render_distance"
+  and `fe-ui/src/AGENTS.md` §app-settings for the global/petal/session precedence.
+
+## §tileset-p2p — streaming hexon tilesets over iroh (fe-sync)
+
+A tileset moves between peers as one iroh HashSeq of size-tuned bundles, never
+as a whole-file transfer: `fe-sync/src/AGENTS.md` §tileset-transfer owns the
+wire shape (`BlobTransport` trait + `TilesetTransfer` service), the bundler
+and per-tile lookup live in fe-format/fe-terrain (`fe-terrain/src/AGENTS.md`
+§bundles, §streamed-tilesets), and the host binary wires the two together
+(`fractalengine/src/AGENTS.md` §tileset-p2p). fe-sync stays format-agnostic —
+it never parses a `TilesetBundleIndex`, only verifies HashSeq children by hash.

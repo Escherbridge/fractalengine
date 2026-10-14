@@ -43,6 +43,13 @@ Single workspace sweep at the end per standing policy.
       — AUDIT 2026-10-10: DONE 7bdcfbe — `fe-sync/src/status.rs:30` `health: RelayHealth`, `:104` `SyncEvent::RelayHealthChanged` applied; startup bind + gossip-spawn outcomes only (continuous `home_relay()` watcher still `TODO(ultrapilot)` at `fe-sync/src/sync_thread.rs:586`).
 - [ ] Verification: headless run shows relay mode + health; sweep-deferred [checkpoint]
       — AUDIT 2026-10-10: OPEN — no recorded headless run showing relay mode/health.
+      UPDATE 2026-10-13 (S4 `3d89b60`): `scripts/relay-health-verify.ps1` now
+      exists — boots `fe-relay` under Default/Custom/Disabled, captures to
+      `scripts/relay-health-verify.log`, asserts the resolved-mode line, the
+      default-relay warning (Default only), and a relay-health line per mode,
+      and kills only the PIDs it spawned. It has **not been executed** (docs-only
+      slice; no GUI/e2e launches this campaign per user rule) — still OPEN,
+      runs at campaign end with output pasted into `evidence.md` §6.
 
 ## Phase 2: Ratification wall — RESOLVED 2026-07-18
 
@@ -54,29 +61,103 @@ Single workspace sweep at the end per standing policy.
 - [x] 2.4 D-76 integrity → **D2** Merkle-extended signature root
 - [x] 2.5 D-77 iroh timing → **E2** build-on-0.35 behind transport trait
 - [x] 2.7 D-78 → **application settings surface** ratified (see Phase 4b / FR-7)
-- [ ] 2.6 Scope call (NOT a ratification gate): does FR-4 subsume
+- [x] 2.6 Scope call (NOT a ratification gate): does FR-4 subsume
       runtime_instance_guardrails FR-6? Decide at Phase 4 start.
+      — RESOLVED 2026-10-13 (campaign-plan-p3p4-20261013.md §7; recorded in
+      `conductor/decisions/p2p-streaming-20260718.md` §2.6): yes, wholesale.
+      `runtime_instance_guardrails_20260717` stays archived; its FR-6
+      acceptance is carried as S8's moving-camera system test + USER_GATED
+      live run.
 
 ## Phase 3: Transport + protocol fill (FR-3, after D-73/D-77)
 
-- [ ] Task: Transport trait (hash + ranges + HashSeq semantics only); iroh 0.35
+- [x] Task: Transport trait (hash + ranges + HashSeq semantics only); iroh 0.35
       impl; ALPN/protocol router registration (TDD against in-memory transport)
-- [ ] Task: Real `handle_request_tileset_meta` / `handle_request_chunk` bodies;
+      — DONE 2026-10-13 (S2 `84cd342`, hardened S8b `4a61b19`): `BlobTransport`
+      trait `fe-runtime/src/blob_transport.rs:85`; `InMemoryNetwork:150` /
+      `InMemoryTransport:183` test double (production-compiled, not
+      `cfg(test)`); iroh impl `fe-sync/src/blob_transport.rs:69`
+      `IrohBlobTransport`, `:193` its `BlobTransport` impl. ALPN router was
+      already registered pre-existing from the 1.x port
+      (`fe-sync/src/docs_engine.rs:159-162` `Router::builder(..).accept(
+      iroh_blobs::ALPN, ..)`), corrected into the decision record (D-77 drift
+      note). Flow tests in `fe-sync/tests/tileset_transfer_test.rs`
+      (`iroh_transport_round_trips_a_hash_seq_on_loopback` etc.) — written,
+      **not run** (campaign-end sweep).
+- [x] Task: Real `handle_request_tileset_meta` / `handle_request_chunk` bodies;
       per-chunk blake3 verified on receipt; spawn_blocking I/O (TDD)
-- [ ] Task: Cross-restart resume for TilesetDownloadTracker (TDD)
+      — DONE 2026-10-13 (S3 `e5d8928`, hardened S8b `4a61b19`):
+      `fe-sync/src/sync_thread.rs:2622` `handle_request_tileset_meta`, `:2726`
+      `handle_request_chunk`, both thin adapters over `TilesetTransfer`
+      (`fe-sync/src/tileset_transfer.rs:438`); `fetch_chunk` verifies
+      `blake3(bytes) == chunk_hashes[seq]` before the atomic write; all new
+      file I/O is `spawn_blocking` (NFR-3). Flow tests in
+      `tileset_transfer_test.rs` (`a_tampered_bundle_is_rejected_and_never_persisted`)
+      — written, **not run**.
+- [x] Task: Cross-restart resume for TilesetDownloadTracker (TDD)
+      — DONE 2026-10-13 (S2/S3 `84cd342`/`e5d8928`): `resume_all`
+      (`fe-sync/src/tileset_transfer.rs:912`) re-verifies on-disk files by
+      blake3 and re-queues only missing seqs; the old in-memory
+      `TilesetDownloadTracker` `HashMap` (`sync_thread.rs:2010-2035` at the
+      HEAD this plan was written against) was replaced by the persisted
+      ledger, its `dead_code` allows deleted. Harness cross-restart proof is
+      S4's scenario (next line). Flow test
+      `an_interrupted_download_resumes_after_restart_without_refetching`
+      (`tileset_transfer_test.rs:183`) — written, **not run**.
 - [ ] Verification: two-instance loopback transfer of a chunked hexon [checkpoint]
+      — OPEN: harness scenario 16 is written
+      (`fe-test-harness/src/scenarios/two_peer_tileset_stream.rs:140` `run()`,
+      registered S4 `3d89b60`) but **not executed** — no cargo has run this
+      campaign. Proves at the single end-of-campaign sweep.
 
 ## Phase 4: Residency ledger + lazy tiles (FR-4, after D-74)
 
-- [ ] Task: Distance-ranked ledger resource replacing `mesh_budget.exceeded`
+- [x] Task: Distance-ranked ledger resource replacing `mesh_budget.exceeded`
       boolean; first system in VerseManagerPlugin chain; hysteresis (TDD: pure
       ledger math, ring membership, hysteresis windows)
-      — AUDIT 2026-10-10: PARTIAL — soft distance-ranked allowance with hysteresis taper landed 7bdcfbe (`fe-ui/src/verse_manager/spawn.rs:34` `distance_ranked_allowance`, tests `spawn.rs:321-338`; called from `petal_respawn.rs:98`, `primitive_materialize.rs:149`, `path_asset_materialize.rs:424`), but it still sits behind the `mesh_budget.exceeded` boolean and no pointer-set `{(hexon_uri, bundle_hash)}` ledger resource exists (D-74 shape).
-- [ ] Task: Lazy `HexonTileSource` (offset-index header phase, on-demand member
+      — DONE 2026-10-13 (S8 `a8a50c1`, hardened S8b `4a61b19`): the D-74
+      pointer-set shape landed — `ResidencyLedger`
+      (`fe-ui/src/verse_manager/residency_ledger.rs:256`) tracks
+      `admitted_nodes`/`admitted_stamp_groups`; `update_residency_ledger`
+      (`:425`) runs after `apply_lifecycle_events`/`apply_db_results`, before
+      every spawner (`fe-ui/src/verse_manager/AGENTS.md:55-65` chain order);
+      `apply_node_residency` (`:488`) spawns/despawns from the ledger instead
+      of the boolean gate. Camera-forward weighting (B2) and the
+      1.0/1.5/1.75 GiB GPU-pressure scale (B3, `RenderPressure` in
+      `fe-runtime/src/diag15m.rs:422`) are both in. Flow tests
+      (`moving_camera_streams_nodes_in_and_out_with_hysteresis`,
+      `rotating_in_place_never_evicts_inside_r`,
+      `gpu_pressure_shrinks_the_admitted_set`, all in `residency_ledger.rs`)
+      — written, **not run**.
+- [x] Task: Lazy `HexonTileSource` (offset-index header phase, on-demand member
       reads); async `fetch_tile` dispatch; double-residency dedup via Arc (TDD)
-- [ ] Task: Despawn-on-exit-ring eviction wired to the ledger (TDD)
+      — DONE 2026-10-13 (S5 `9725dd2`): header-phase reader
+      `fe-format/src/archive_index.rs:89` `HexonArchiveIndex`, `:112` `open`,
+      `:204` `read_member`; `HexonTileSource::get_tile`
+      (`fe-terrain/src/tiles/hexon_source.rs:300`, cache-hit only) +
+      `load_tile_blocking` (`:405`, off-thread loader dispatched via
+      `TileResidency` on `IoTaskPool`); registry dedup —
+      `TilesetRegistry.sources: RwLock<HashMap<String, Arc<HexonTileSource>>>`
+      and `source()` (`fe-terrain/src/tiles/registry.rs:53,107`). A cold tile
+      is pending (not `FailedTiles`) while its load is in flight. Flow tests
+      in `fe-terrain/tests/lazy_tiles_test.rs` — written, **not run**.
+- [x] Task: Despawn-on-exit-ring eviction wired to the ledger (TDD)
+      — DONE 2026-10-13 (S5 `9725dd2` tile bytes, S8 `a8a50c1` nodes/stamps):
+      byte-bounded `ByteLru` in `fe-terrain/src/tiles/residency.rs` —
+      `TILE_BYTE_BUDGET` (`:7`, 256 MiB), pin-release-is-exit-ring-eviction
+      (`:117`), `evict_to_budget` (`:161`); node/stamp eviction is
+      `apply_node_residency` despawning anything the ledger stopped
+      admitting (raw distance > 1.5 r, no rotation thrash). Flow test
+      `tile_bytes_leave_with_the_exit_ring_and_return_on_reentry`
+      (`lazy_tiles_test.rs`) + `a_far_stamp_group_is_evicted_and_restamped_on_return`
+      (`residency_ledger.rs`) — written, **not run**.
 - [ ] Verification: NFR-1/NFR-2 evidence — no spawn spike across ring
       transitions, frame-time delta within noise on tile faults [checkpoint]
+      — OPEN: the automated proxies above are written but unrun (no cargo
+      this campaign); the frame-time delta half is USER_GATED in-app
+      evidence per the plan's deferral audit (§6) and cannot be produced
+      from docs. Both close at the single end-of-campaign sweep / next
+      in-app session.
 
 ## Phase 4b: Application settings surface (FR-7 / D-78) — decision-independent
 

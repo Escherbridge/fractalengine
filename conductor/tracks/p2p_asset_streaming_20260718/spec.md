@@ -119,9 +119,15 @@ invention.
 
 - ~~D-73…D-77 option choices~~ — **RESOLVED 2026-07-18** (A4 / ledger-pointer-set
   in fe-ui / C1 / D2 / E2; D-78 settings added).
-- Whether FR-4's ledger subsumes `runtime_instance_guardrails` FR-6 wholesale
-  or that track keeps the crash-guardrail half (plan task 2.6 — still a scope
-  call, not a ratification gate).
+- ~~Whether FR-4's ledger subsumes `runtime_instance_guardrails` FR-6 wholesale
+  or that track keeps the crash-guardrail half~~ — **RESOLVED 2026-10-13**
+  (plan task 2.6; recorded in
+  `conductor/decisions/p2p-streaming-20260718.md` §2.6): yes, wholesale.
+- ~~PAS-P4B's open "where should a durable per-petal render distance live"
+  question~~ — **RESOLVED 2026-10-13**: a replicated `petal.render_distance`
+  column (PAS-P3P4 campaign S6, `fe-database/src/schema.rs:95`), session
+  override on top of it, global default below both
+  (`effective_render_distance`).
 - Self-hosted relay bridge vs hard 1.0-upgrade deadline if 0.90+ blobs
   production-readiness slips (risk #10 in the decision record).
 - FR-7 settings persistence format (RON per the archived design vs TOML) and

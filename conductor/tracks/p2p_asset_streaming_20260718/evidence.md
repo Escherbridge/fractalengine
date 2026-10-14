@@ -185,6 +185,15 @@ at ~3× tileset bytes.
   ~1.9 GB at the projected z12 coverage) plus the ~1× transient load spike on
   every petal switch.
 
+## 6. PAS-P1V run (relay mode + health, headless)
+
+*(Empty slot — PAS-P3P4 S9, 2026-10-13. `scripts/relay-health-verify.ps1`
+exists (S4 `3d89b60`) and is not yet executed; this slice is docs-only and
+runs no scripts. Paste the captured `scripts/relay-health-verify.log` output
+here — resolved-mode line + default-relay warning (Default only) + a
+relay-health line per mode, for Default / Custom / Disabled — at campaign
+end, per plan Phase 1 verification and the doneness-ledger PAS-P1V row.)*
+
 ## Appendix — reproduction script
 
 Not committed as code; run with any Python 3 (`python hexon_sizes.py`).

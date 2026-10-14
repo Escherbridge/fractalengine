@@ -2,7 +2,7 @@
 type: Decision Record
 title: P2P Streaming Round — transfer granularity, scene-driven residency, registry parity, integrity, iroh timing (D-73…D-77)
 timestamp: 2026-07-18T00:00:00Z
-status: RATIFIED 2026-07-18 — user directive locked D-73…D-77 to their staged defaults ("no new primitive; leverage pointers to multiple hexons") and added D-78 (application settings area); see "## Ratification (2026-07-18)"
+status: RATIFIED 2026-07-18 — user directive locked D-73…D-77 to their staged defaults ("no new primitive; leverage pointers to multiple hexons") and added D-78 (application settings area); see "## Ratification (2026-07-18)". Plan scope call 2.6 resolved 2026-10-13 — see "## 2.6"
 tags: [decision-record, p2p, streaming, hexon, iroh, render-budget, camera]
 ---
 
@@ -112,9 +112,13 @@ All three of `render_distance`, the entity caps, and the budget ceiling become
   publish already caps at 1 GiB.
 - P2P transfer is aspirational: iroh 0.35 gives a bound QUIC endpoint + BBR
   (`fe-sync/src/endpoint.rs:18-41`) and **outbound-only** gossip JSON broadcasts;
-  **no ALPN/protocol router is registered anywhere**, iroh-docs is mock-backed,
-  iroh-blobs is pinned but consumed by no crate, fe-network's libp2p swarm is
-  Kademlia-only with debug-logged events.
+  ~~no ALPN/protocol router is registered anywhere~~ — **drifted, corrected
+  2026-10-13 (PAS-P3P4 S9):** since the iroh 1.x port, `DocsStack::spawn`
+  builds a `Router` accepting all three ALPNs — `iroh_blobs::ALPN`,
+  `iroh_gossip::ALPN`, `iroh_docs::ALPN` — at `fe-sync/src/docs_engine.rs:159-162`
+  (see "## D-77 drift note" below); iroh-docs is mock-backed, iroh-blobs is now
+  consumed by fe-sync's `BlobTransport`/`TilesetTransfer` (PAS-P3 S2/S3),
+  fe-network's libp2p swarm is Kademlia-only with debug-logged events.
 - A complete **chunked tileset protocol already exists in types + UI wiring**
   (`RequestTilesetMeta`/`RequestChunk`/`ChunkReceived`,
   `fe-sync/src/messages.rs:52-57,128-140`; size-capped chunk packaging
@@ -238,6 +242,20 @@ surface relay health in `SyncStatus` so the EOL fails **loudly**; the docker
 relay-container pattern already exists for self-hosting. (fractalengine-relay
 is the app's headless server, NOT an iroh relay.)
 
+**D-77 drift note (added 2026-10-13, PAS-P3P4 S9):** the transport trait was
+kept even though the stack is no longer 0.35 — it is now **iroh 1.3 /
+iroh-docs 0.101 / iroh-gossip 0.101 / iroh-blobs 0.103.1** (ported 2026-10-11;
+`fe-sync/src/AGENTS.md` §iroh-1.x). E2's reasoning survives the version bump
+unchanged: iroh-blobs is still pre-1.0 and will keep churning, tests still need
+an in-memory impl (`fe_runtime::blob_transport::{InMemoryNetwork,
+InMemoryTransport}`, `fe-runtime/src/blob_transport.rs:150,183`), and PAS-P5
+still needs an HTTP impl behind the same seam (campaign-plan-p3p4-20261013.md
+C3). The trait's first implementation targets 0.103.1
+(`fe-sync/src/blob_transport.rs:69` `IrohBlobTransport`, `:193` its
+`BlobTransport` impl), and the "no ALPN/protocol router" claim above is
+corrected above: a `Router` accepting all three ALPNs has been registered
+since the port (`docs_engine.rs:159-162`).
+
 ## D-78 — Application settings surface (new, ratified 2026-07-18)
 
 **User directive:** *"We may need a dedicated application settings area as we
@@ -329,3 +347,27 @@ Phase 0 evidence pack: `conductor/tracks/p2p_asset_streaming_20260718/evidence.m
   projected z12 coverage ~3.8 GB, plus a ~1× transient spike per petal switch.
   `Arc<HexonTileSource>` dedup sketch (registry owns, composite shares) is in
   evidence.md §5 and is a prerequisite of the Phase 4 lazy source.
+
+## 2.6 — FR-4 subsumes runtime_instance_guardrails FR-6 (resolved 2026-10-13)
+
+**Resolution (recorded by PAS-P3P4 S9; decided in
+`campaign-plan-p3p4-20261013.md` §7, a scope call, not a ratification gate):**
+FR-4 subsumes `runtime_instance_guardrails` FR-6 wholesale. That track is
+already ARCHIVED (2026-07-24) with the note "FR-6 render horizon delivered
+CROSS-TRACK by p2p_asset_streaming FR-4 … dense-petal live-run acceptance bar
+transfers with it"
+(`conductor/tracks/_archive/runtime_instance_guardrails_20260717/metadata.json:11`).
+Its crash-guardrail half (FR-1..FR-5: caps, sanitize, watchdog, root-cause fix
+`fa55be4`) is done. Therefore:
+
+- (a) no work is reopened in `runtime_instance_guardrails_20260717`;
+- (b) its FR-6 acceptance ("dense-petal camera-locality") is carried here as
+  S8's moving-camera system test
+  (`fe-ui/src/verse_manager/residency_ledger.rs:425,488`
+  `update_residency_ledger` / `apply_node_residency`) plus a USER_GATED live
+  run (RUNBOOK §4 "every in-app verification" is user-owned);
+- (c) the ledger row `FEUI-RESIDENCY-LEDGER` is already merged into `PAS-P4`
+  (`doneness-ledger.md:20`).
+
+Reversal cost: none — this records an existing state, it does not create new
+scope.
