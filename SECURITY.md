@@ -53,16 +53,29 @@ merely restate them will be deduplicated against this list.
     no upstream fix; reached only through jsonwebtoken, while FractalEngine
     signs and verifies EdDSA only); and `ruzstd` 0.8.3 (RUSTSEC-2026-0344,
     decompression bomb). Bevy 0.18 through 0.20 pins `ruzstd` ^0.8, and the
-    fix exists only in 0.9.1. This one is **reachable**: a GLB that embeds a
-    KTX2 texture with Zstandard supercompression is decoded by `ruzstd` when
-    it loads. A peer who can share a GLB into a verse you open can therefore
-    crash the GUI with an out-of-memory error. This is a denial of service,
-    not code execution. We will lift the ignore once a Bevy release requires
-    `ruzstd` >= 0.9.1.
+    fix exists only in 0.9.1. Unguarded, a GLB that embeds a KTX2 texture
+    with Zstandard supercompression would be decoded by `ruzstd` when it
+    loads, so a peer who can share a GLB into a verse you open could crash
+    the GUI with an out-of-memory error (a denial of service, not code
+    execution). **Interim mitigation (2026-10-13): KTX2 and Basis textures
+    are refused.** A guard parses the GLB container and its glTF JSON (a
+    JSON glTF too, whatever its file extension), percent-decodes image URIs
+    as Bevy does, and refuses the asset if any image is `image/ktx2`, uses
+    `KHR_texture_basisu`, points at a `.ktx2`/`.basis` file, or holds KTX2
+    bytes. It runs at three points. The first is the `blob://` asset reader,
+    which every blob-store asset passes before Bevy decodes it (REST and MCP
+    uploads, peer sync, hexon installs, local imports, path-asset stamps).
+    The other two are REST/MCP upload (HTTP 422, so the refused bytes are
+    never stored) and local import. The guard refuses rather than strips,
+    so a KTX2-textured model cannot be used until the fix ships. Assets
+    loaded from the app's own `assets/` folder are trusted local files and
+    are not guarded. We will lift the guard and the ignore once a Bevy
+    release requires `ruzstd` >= 0.9.1.
 
-  CI runs `cargo deny check advisories bans sources`. A new advisory shows
-  up as a warning on the lint job and in the run summary, but it does not
-  block the build or the rolling download.
+  CI runs `cargo deny --all-features check advisories bans sources licenses`.
+  A new advisory or a licence outside the `deny.toml` allow-list shows up as
+  a warning on the lint job and in the run summary, but it does not block
+  the build or the rolling download.
 - **Peer write admission has residual gaps.** Inbound replicated rows are
   admitted on the database thread only when their author holds Editor+ at
   the verse scope (fe-policy, deny-by-default). Residuals: rows for a verse

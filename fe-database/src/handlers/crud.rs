@@ -373,6 +373,11 @@ pub(crate) async fn import_gltf_handler(
     };
     let size_bytes = bytes.len();
 
+    // Refuse before the bytes enter the replicated blob store
+    // (fe-runtime src/AGENTS.md §ktx2-guard).
+    fe_runtime::ktx2_guard::check_asset_bytes(&bytes, Some(ext))
+        .map_err(|refusal| anyhow::anyhow!("Import refused for {}: {refusal}", path.display()))?;
+
     let hash = blob_store
         .add_blob(&bytes)
         .map_err(|e| anyhow::anyhow!("blob_store.add_blob failed: {e}"))?;

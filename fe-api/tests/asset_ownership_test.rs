@@ -344,3 +344,70 @@ async fn refused_uploads_write_nothing() {
         }
     }
 }
+
+/// A GLB whose one image lives in the BIN chunk, declared as `mime_type`.
+fn glb_with_embedded_image(mime_type: &str, image: &[u8]) -> Vec<u8> {
+    let mut json = format!(
+        r#"{{"asset":{{"version":"2.0"}},"buffers":[{{"byteLength":{len}}}],"bufferViews":[{{"buffer":0,"byteLength":{len}}}],"images":[{{"bufferView":0,"mimeType":"{mime_type}"}}]}}"#,
+        len = image.len()
+    )
+    .into_bytes();
+    json.resize(json.len().div_ceil(4) * 4, b' ');
+    let mut bin = image.to_vec();
+    bin.resize(bin.len().div_ceil(4) * 4, 0);
+    let total = 12 + 8 + json.len() + 8 + bin.len();
+    let mut bytes = b"glTF".to_vec();
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&(total as u32).to_le_bytes());
+    bytes.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"JSON");
+    bytes.extend_from_slice(&json);
+    bytes.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"BIN\0");
+    bytes.extend_from_slice(&bin);
+    bytes
+}
+
+/// RUSTSEC-2026-0344 interim guard (fe-runtime src/AGENTS.md §ktx2-guard): an
+/// upload embedding a KTX2 texture is a 422 that writes neither a blob nor a
+/// row, while the same GLB with a PNG texture is accepted.
+#[tokio::test]
+async fn ktx2_texture_upload_is_refused_and_writes_nothing() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    serve_create_asset(&h);
+    let (verse, fractal, petals) = seed_petals(&h, &["Textures"]).await;
+    let scope = fe_database::build_scope(&verse, Some(&fractal), Some(&petals[0]));
+    let editor = h.mint_token(&scope, "editor");
+
+    let mut ktx2_image = vec![
+        0xAB, b'K', b'T', b'X', b' ', b'2', b'0', 0xBB, b'\r', b'\n', 0x1A, b'\n',
+    ];
+    ktx2_image.resize(48, 0);
+    let refused = glb_with_embedded_image("image/ktx2", &ktx2_image);
+    let (status, body) = upload(&h, &editor, &petals[0], &refused).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("RUSTSEC-2026-0344"),
+        "{body}"
+    );
+    assert!(
+        asset_rows(&h).await.is_empty(),
+        "no row for the refused upload"
+    );
+    let refused_hash = hash_from_hex(&hex::encode(blake3::hash(&refused).as_bytes())).unwrap();
+    assert!(
+        !h.state.blob_store.as_ref().unwrap().has_blob(&refused_hash),
+        "no blob for the refused upload"
+    );
+
+    let accepted = glb_with_embedded_image("image/png", &[0x89; 48]);
+    let (status, body) = upload(&h, &editor, &petals[0], &accepted).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a PNG-textured GLB is accepted: {body}"
+    );
+}

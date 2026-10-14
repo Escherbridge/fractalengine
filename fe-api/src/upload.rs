@@ -12,6 +12,7 @@ use axum_extra::extract::Multipart;
 use base64::Engine as _;
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::blob_store::{hash_to_hex, BlobStoreHandle};
+use fe_runtime::ktx2_guard::{self, Ktx2GuardError};
 use fe_runtime::messages::{DbCommand, DbResult};
 use serde::Serialize;
 
@@ -63,6 +64,10 @@ pub enum UploadError {
         declared: u64,
         actual: u64,
     },
+    /// The GLB's chunks or glTF JSON are malformed (KTX2 guard; 400).
+    MalformedGlb(String),
+    /// The GLB carries a KTX2/Basis texture (RUSTSEC-2026-0344 guard; 422).
+    Ktx2Texture(String),
     /// Blob write / hashing failed (logged; generic to the client).
     StoreFailed,
     /// The DB thread refused or never answered the `CreateAsset` metadata.
@@ -91,6 +96,7 @@ impl UploadError {
             Self::LengthMismatch { declared, actual } => {
                 format!("GLB header declares {declared} bytes but {actual} were sent")
             }
+            Self::MalformedGlb(detail) | Self::Ktx2Texture(detail) => detail.clone(),
             Self::StoreFailed => "asset storage failed".into(),
             Self::RegisterFailed => "asset registration failed".into(),
             Self::QuotaExceeded { quota } => {
@@ -107,6 +113,7 @@ impl UploadError {
             Self::StoreNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
             Self::TooLarge { .. } | Self::QuotaExceeded { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::StoreFailed | Self::RegisterFailed => StatusCode::BAD_GATEWAY,
+            Self::Ktx2Texture(_) => StatusCode::UNPROCESSABLE_ENTITY,
             _ => StatusCode::BAD_REQUEST,
         }
     }
@@ -155,8 +162,18 @@ pub struct StoredGlb {
     size_bytes: u64,
 }
 
+impl From<Ktx2GuardError> for UploadError {
+    fn from(refusal: Ktx2GuardError) -> Self {
+        match refusal {
+            Ktx2GuardError::Ktx2Texture(_) => Self::Ktx2Texture(refusal.to_string()),
+            other => Self::MalformedGlb(other.to_string()),
+        }
+    }
+}
+
 /// FR-7 GLB header check: size cap, 12-byte header, `glTF` magic, version 2,
-/// declared total length == actual length.
+/// declared total length == actual length; then the KTX2 intake guard
+/// (fe-runtime src/AGENTS.md §ktx2-guard).
 pub fn validate_glb(bytes: &[u8], max_len: usize) -> Result<(), UploadError> {
     if bytes.len() > max_len {
         return Err(UploadError::TooLarge { max: max_len });
@@ -176,6 +193,7 @@ pub fn validate_glb(bytes: &[u8], max_len: usize) -> Result<(), UploadError> {
     if declared != actual {
         return Err(UploadError::LengthMismatch { declared, actual });
     }
+    ktx2_guard::check_glb(bytes)?;
     Ok(())
 }
 
@@ -524,6 +542,18 @@ mod tests {
         bytes
     }
 
+    /// A GLB holding one JSON chunk with `json` (space-padded to 4 bytes).
+    fn glb_with_json(json: &str) -> Vec<u8> {
+        let mut chunk = json.as_bytes().to_vec();
+        chunk.resize(chunk.len().div_ceil(4) * 4, b' ');
+        let total = (GLB_HEADER_LEN + 8 + chunk.len()) as u32;
+        let mut bytes = glb(total, 2, GLB_HEADER_LEN);
+        bytes.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"JSON");
+        bytes.extend_from_slice(&chunk);
+        bytes
+    }
+
     /// (label, bytes, max_len, expected).
     type GlbCase = (&'static str, Vec<u8>, usize, Result<(), UploadError>);
 
@@ -558,6 +588,32 @@ mod tests {
                     declared: 99,
                     actual: 20,
                 }),
+            ),
+            (
+                "plain glTF JSON chunk",
+                glb_with_json(r#"{"asset":{"version":"2.0"}}"#),
+                256,
+                Ok(()),
+            ),
+            (
+                "KTX2 texture (RUSTSEC-2026-0344 guard)",
+                glb_with_json(r#"{"images":[{"uri":"t.ktx2"}]}"#),
+                256,
+                Err(UploadError::Ktx2Texture(
+                    ktx2_guard::check_glb(&glb_with_json(r#"{"images":[{"uri":"t.ktx2"}]}"#))
+                        .unwrap_err()
+                        .to_string(),
+                )),
+            ),
+            (
+                "unparseable glTF JSON",
+                glb_with_json("{oops"),
+                256,
+                Err(UploadError::MalformedGlb(
+                    ktx2_guard::check_glb(&glb_with_json("{oops"))
+                        .unwrap_err()
+                        .to_string(),
+                )),
             ),
             (
                 "oversize (injected cap)",

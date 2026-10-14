@@ -87,6 +87,13 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --bin fractalengine --bin fe-relay
 
+      # Pin the interpreter the packaging script runs on rather than relying on
+      # whatever `python` Git Bash happens to find on the runner PATH.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       # bash, not pwsh: pwsh only checks the LAST native exit code.
       - name: Package artifacts
         shell: bash
@@ -119,6 +126,13 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --target aarch64-pc-windows-msvc --bin fractalengine
+
+      # Pin the interpreter the packaging script runs on rather than relying on
+      # whatever `python` Git Bash happens to find on the runner PATH.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Package artifacts
         shell: bash

@@ -69,6 +69,69 @@ cross-check hashes — that is why `fe-runtime` takes a direct `blake3`
 dependency despite the trait itself needing none. If that dep weight ever
 becomes an issue, move the mock into `fe-sync` instead.
 
+## §ktx2-guard (RUSTSEC-2026-0344 interim mitigation, 2026-10-13)
+
+`ktx2_guard.rs` refuses glTF assets that would reach bevy's KTX2 decoder,
+because KTX2 Zstandard supercompression is decoded by `ruzstd` 0.8.3, which
+has a decompression-bomb advisory (an untrusted GLB can OOM the GUI). Bevy
+0.18 through 0.20 pins `ruzstd` ^0.8, so no dependency bump fixes it yet.
+The policy is to refuse, not strip: a stripped texture would silently render
+wrong, and a refusal names the advisory.
+
+**What counts as KTX2.** An image whose `mimeType` is `image/ktx2` (compared
+case-insensitively, as `bevy_image::ImageFormat::from_mime_type` lowercases).
+The `KHR_texture_basisu` extension, in `extensionsUsed`/`extensionsRequired`
+or on a texture. An image `uri` ending `.ktx2` or `.basis`, or a
+`data:image/ktx2` URI. Image bytes that start with the KTX2 identifier
+`«KTX 20»\r\n\x1A\n` (`AB 4B 54 58 20 32 30 BB 0D 0A 1A 0A`), either in a bufferView of the GLB's BIN chunk or in
+a base64 data URI. That last check is defence in depth: bevy picks the
+decoder from the mime type and never sniffs bytes.
+
+**Judge what bevy sees, not what the file says** (adversarial review
+2026-10-13). bevy_gltf percent-decodes every image URI before it tests for
+`data:` or resolves a path, so the guard decodes first too:
+`data:image%2Fktx2%3Bbase64,...` is refused. A URI (image or buffer) that is
+not UTF-8 once decoded is refused as `Malformed`, because bevy `.unwrap()`s
+that decode, and under `panic = "abort"` a peer GLB could kill the GUI. The
+`gltf` crate also picks GLB vs JSON by content (the `glTF` magic), not by
+extension, so `check_asset_bytes` runs the JSON check on any bytes that look
+like a JSON object, whatever the path's extension. A JSON glTF stored as
+`blob://<hash>.glb` is guarded like a `.gltf`.
+
+**Bounded parsing.** The 12-byte header must say `glTF` v2 with a total
+length equal to the byte count. Chunk lengths are checked against the bytes
+actually present before anything is sliced, and the JSON is capped at
+`MAX_GLTF_JSON_LEN` (64 MiB) before parsing. The JSON is deserialized into
+narrow structs (`serde::de::IgnoredAny` for the rest), so nothing is
+allocated from a declared length. A GLB whose first chunk is not JSON passes:
+bevy's `gltf` parser refuses it (`GlbError::ChunkType`), so it can never
+reach a decoder, and existing header-only fixtures keep passing
+`fe_api::upload::validate_glb`.
+
+**Where it runs.**
+1. `bevy_blob_reader::BlobAssetReader::read`: the choke point. Every
+   `blob://` load passes here, whatever wrote the blob (REST/MCP upload,
+   peer sync, hexon install, local import, path-asset stamp). A refusal is
+   an `AssetReaderError::Io(InvalidData)` plus a `warn!`. External images
+   and buffers that a glTF references are read through this same reader, so
+   a `.ktx2` sibling blob is caught by extension or by its magic bytes.
+2. `fe_api::upload::validate_glb` (REST multipart and MCP `upload_asset`):
+   HTTP 422 (`UploadError::Ktx2Texture`), so the refused bytes are never
+   stored.
+3. `fe_database::handlers::crud::import_gltf_handler` (local import): a
+   clear error instead of a model that silently fails to load. Local imports
+   are guarded too, because the blob store is the replicated surface: an
+   imported blob is shared with peers.
+
+Not guarded: Bevy's default `file://` source (the app's own `assets/`
+folder holds trusted, shipped files). The other image decoders in the
+workspace use the `image` crate (`load_from_memory`), which has no KTX2
+support, so they cannot reach `ruzstd`.
+
+**Removing it.** When a bevy release requires `ruzstd` >= 0.9.1, bump bevy,
+delete the guard and its three call sites, and drop the RUSTSEC-2026-0344
+ignore in `deny.toml` together with the SECURITY.md entry.
+
 ## §timeseries (M2/F6)
 
 `timeseries.rs` is the canonical per-verse timeseries-fabric vocabulary:

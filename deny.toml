@@ -1,7 +1,9 @@
 # cargo-deny configuration — see THIRD-PARTY-LICENSES.md for the licensing policy.
-# CI (build-artifacts.yml lint job) runs `check advisories bans sources`;
-# `licenses` is held out until the allow-list decision in
-# conductor/tracks/oss_release_20260717/plan.md task 1.3 is ratified.
+# CI (build-artifacts.yml lint job, warn-only) runs
+# `check advisories bans sources licenses`. The licences allow-list below is the
+# ratified OSS-1.3 decision (2026-10-12, conductor/tracks/oss_release_20260717
+# task 1.3): "allow all 7 outlier licences in deny.toml and turn cargo deny
+# check licenses on in CI".
 
 [licenses]
 allow = [
@@ -15,6 +17,15 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "MPL-2.0",
+    # The 7 outlier licences (OSS-1.3 decision 2026-10-12). Five are permissive
+    # code/data licences, allowed globally:
+    "Unlicense",           # async_io_stream, pharos, ws_stream_wasm, ext-sort
+    "BSL-1.0",             # clipboard-win, error-code (Boost Software License, not BUSL)
+    "CC0-1.0",             # constant_time_eq 0.1, hexf-parse, tiny-keccak
+    "MIT-0",               # encase, encase_derive, encase_derive_impl
+    "CDLA-Permissive-2.0", # webpki-roots, webpki-root-certs (Mozilla CA bundle data)
+    # The other two (OFL-1.1, Ubuntu-font-1.0) are FONT licences and are scoped
+    # to the one crate that embeds fonts -- see `exceptions` below.
 ]
 # BUSL-1.1 permitted ONLY for the embedded SurrealDB engine crates (`surrealdb*`,
 # see THIRD-PARTY-LICENSES.md). SurrealDB 3.x splits the engine across these five.
@@ -24,6 +35,10 @@ exceptions = [
     { name = "surrealdb-protocol", allow = ["BUSL-1.1"] },
     { name = "surrealdb-types", allow = ["BUSL-1.1"] },
     { name = "surrealdb-types-derive", allow = ["BUSL-1.1"] },
+    # OSS-1.3 (2026-10-12): egui's bundled default fonts (Hack, Ubuntu-Light,
+    # Noto Emoji, emoji-icon-font). Scoped, not global, so a code crate under a
+    # font licence still has to be reviewed.
+    { name = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
 ]
 
 # These surrealdb crates declare `license-file` (BUSL text), not an SPDX
@@ -89,10 +104,12 @@ ignore = [
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39 (via tauri plist, parses bundled Info.plist only): fixed in 0.41 only" },
     # ruzstd 0.8.3 decompression bomb. bevy_image 0.18.1 (also 0.19.1, 0.20.0) pins ^0.8 and the
     # fix is 0.9.1 only. Pulled by bevy `3d_api` (ktx2 + zstd_rust, needed by the built-in
-    # tonemapping/SMAA LUTs) and forced by bevy_egui's `zstd_rust`. EXPOSED: a GLB embedding an
-    # `image/ktx2` texture with Zstandard supercompression reaches ruzstd at load, so a peer-shared
-    # GLB can OOM-crash the GUI (DoS, not code execution). Revisit when a bevy release requires
-    # ruzstd >= 0.9.1; until then SECURITY.md "Known limitations" records it.
+    # tonemapping/SMAA LUTs) and forced by bevy_egui's `zstd_rust`. Unguarded, a GLB embedding an
+    # `image/ktx2` texture with Zstandard supercompression reaches ruzstd at load (peer-shared GLB
+    # can OOM-crash the GUI; DoS, not code execution). MITIGATED 2026-10-13 by the KTX2 intake guard
+    # (fe-runtime/src/ktx2_guard.rs, src/AGENTS.md §ktx2-guard), which refuses KTX2/Basis textures.
+    # Revisit when a bevy release requires ruzstd >= 0.9.1: bump bevy, then drop this ignore AND
+    # the guard. Until then SECURITY.md "Known limitations" records it.
     { id = "RUSTSEC-2026-0344", reason = "ruzstd 0.8.3 (via bevy_image ^0.8): fix is 0.9.1 only, no bevy release takes it; peer GLB with zstd KTX2 can OOM the GUI" },
     # Unmaintained, but a direct workspace dependency (fe-terrain baked-splat codec).
     { id = "RUSTSEC-2025-0141", reason = "bincode 1 (direct, fe-terrain splat/format.rs): unmaintained, no vulnerability; replacement is a follow-up" },

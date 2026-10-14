@@ -1323,7 +1323,13 @@ channel.
   (`fractalengine/src/main.rs`), so the hash is immediately servable.
 - **Validation (FR-7):** GLB only — `glTF` magic, version 2, header length ==
   byte length, ≤ `MAX_ASSET_BYTES` (256 MiB, per-node config is a seam).
-  Embedded textures are an uploader requirement, not parsed.
+  Then the KTX2 intake guard (`fe_runtime::ktx2_guard::check_glb`, fe-runtime
+  `src/AGENTS.md` §ktx2-guard, 2026-10-13): a GLB carrying a KTX2/Basis
+  texture is `UploadError::Ktx2Texture` (HTTP 422; RUSTSEC-2026-0344 interim
+  mitigation), and malformed chunks or glTF JSON are `MalformedGlb` (400).
+  Both are refused before `add_blob`, so nothing is stored. Other texture
+  formats are not parsed. Test: `tests/asset_ownership_test.rs`
+  `ktx2_texture_upload_is_refused_and_writes_nothing`.
 - **Limits (NFR-2, DEC-C21):** asset route `DefaultBodyLimit` = 256 MiB +
   1 MiB — **large GLBs go through REST multipart**. `/mcp` =
   `MCP_ROUTE_BODY_LIMIT` = **16 MiB for every JSON-RPC method** (it used to

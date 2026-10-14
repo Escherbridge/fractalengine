@@ -10,7 +10,9 @@ name: Build Artifacts
 #
 # Lint (fmt, clippy, cargo-deny, fuzz) is WARN-ONLY: findings surface as
 # ::warning:: annotations plus a run-summary table, but they never fail the run
-# and never gate build, test or publish (RUNBOOK R7, 2026-10-13).
+# and never gate build or test (RUNBOOK R7, 2026-10-13). ONE exception (AC-4):
+# a crash FOUND by the fuzzer is an ::error and blocks the rolling `latest`
+# publish -- see the lint job's `Fuzz verdict` step and `rolling-release`.
 #
 # This is the first slice of `release_ci_20260429`. The full pipeline (8-target
 # matrix, tag-triggered GitHub Releases, Docker/GHCR image, code signing) stays
@@ -49,11 +51,19 @@ jobs:
   # ::warning:: annotation + a $GITHUB_STEP_SUMMARY row. The job-level
   # `continue-on-error` is the backstop for a NON-lint failure here (apt
   # mirror, toolchain download): "prevents a workflow run from failing when a
-  # job fails". No job `needs: lint`, so lint can never skip build/test/publish.
+  # job fails". Only `rolling-release` needs lint, and it reads just the
+  # `fuzz_crash` output, never lint's result -- so lint can never skip
+  # build/test, and only a found fuzz crash can hold back the publish.
+  # Job outputs "are evaluated on the runner at the end of each job" (workflow
+  # syntax reference, jobs.<job_id>.outputs) -- whether or not a step failed --
+  # so the verdict survives the warn-only failures around it.
   lint:
     name: Lint (warn-only -- fmt, clippy, cargo-deny, fuzz)
     runs-on: ubuntu-latest
     continue-on-error: true
+    outputs:
+      # 'true' only when the fuzzer found a crash; '' or 'false' otherwise.
+      fuzz_crash: ${{ steps.fuzz_verdict.outputs.fuzz_crash }}
     # 120: the bounded fuzz step adds a cold sanitizer build of fe-identity
     # (bevy + iroh) on top of clippy.
     timeout-minutes: 120
@@ -102,11 +112,11 @@ jobs:
           cargo clippy --workspace --all-targets --keep-going --color never -- -D warnings \
             2>&1 | tee "$RUNNER_TEMP/lint-clippy.log"
 
-      # Supply-chain check (deny.toml). `licenses` is deliberately NOT in the
-      # command yet: third-party crates carry licenses outside the ratified
-      # allow-list (Unlicense, BSL-1.0, CC0-1.0, MIT-0, OFL-1.1, Ubuntu-font-1.0,
-      # CDLA-Permissive-2.0) -- an allow-list policy call pending in
-      # conductor/tracks/oss_release_20260717/plan.md task 1.3.
+      # Supply-chain check (deny.toml), including the licence allow-list: the
+      # 7 outlier licences (Unlicense, BSL-1.0, CC0-1.0, MIT-0, OFL-1.1,
+      # Ubuntu-font-1.0, CDLA-Permissive-2.0) were ratified 2026-10-12 (OSS-1.3,
+      # conductor/tracks/oss_release_20260717 task 1.3) and are in deny.toml.
+      # --all-features so feature-gated deps (fe-webview backends etc.) are checked.
       # The CLI rather than cargo-deny-action, so the report can list advisory IDs.
       - name: Install cargo-deny
         id: deny_install
@@ -115,16 +125,21 @@ jobs:
         with:
           tool: cargo-deny
 
-      - name: cargo-deny (advisories, bans, sources)
+      - name: cargo-deny (advisories, bans, sources, licenses)
         id: deny
         continue-on-error: true
         shell: bash
         run: |
-          cargo deny --color never check advisories bans sources \
+          cargo deny --color never --all-features check advisories bans sources licenses \
             2>&1 | tee "$RUNNER_TEMP/lint-deny.log"
 
       # Bounded fuzz smoke (thorns_shields FR-3): build both cargo-fuzz targets
       # and run each for 60 s. fuzz/ is its own workspace (excluded from root).
+      # The ONE lint finding that is not warn-only: a crash found by the fuzzer
+      # (jwt_parse and ed25519_verify are security parsers) sets the job output
+      # `fuzz_crash=true`, which blocks `rolling-release` (AC-4). Infrastructure
+      # failures -- nightly or cargo-fuzz install, fuzz build, step timeout --
+      # stay warnings. Classification: `Fuzz verdict` step below.
       - name: Install nightly toolchain (cargo-fuzz)
         id: fuzz_toolchain
         continue-on-error: true
@@ -137,26 +152,116 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Fuzz (bounded)
-        id: fuzz
+      # --target: the prebuilt cargo-fuzz is a static musl binary and defaults to
+      # its own triple; ASan cannot link against musl's static libc.
+      # LTO off: the workflow-wide thin LTO made the ASan link of the bevy-sized
+      # fuzz binary run past the old 30 min timeout (run 38272824101).
+      # Build is its own step so a build failure reads as infrastructure, never as a crash.
+      - name: Fuzz build
+        id: fuzz_build
         continue-on-error: true
-        timeout-minutes: 45
+        timeout-minutes: 40
         working-directory: fuzz
         shell: bash
-        # --target: the prebuilt cargo-fuzz is a static musl binary and defaults to
-        # its own triple; ASan cannot link against musl's static libc.
-        # LTO off: the workflow-wide thin LTO made the ASan link of the bevy-sized
-        # fuzz binary run past the old 30 min timeout (run 38272824101).
+        env:
+          FUZZ_TARGET_TRIPLE: x86_64-unknown-linux-gnu
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+        run: cargo +nightly fuzz build --target "$FUZZ_TARGET_TRIPLE" 2>&1 | tee "$RUNNER_TEMP/lint-fuzz-build.log"
+
+      # Every target runs even if an earlier one crashed. `rm -rf artifacts`
+      # first, so only THIS run's findings can count (the dir is gitignored and
+      # not cached; this is belt and braces). -timeout=30 turns a hung input into
+      # a libFuzzer `timeout-*` artifact long before the 15 min step cap, which
+      # would otherwise kill the run and read as infrastructure. The exit codes
+      # are libFuzzer's defaults, pinned so the contract is visible.
+      - name: Fuzz run (bounded)
+        id: fuzz
+        if: steps.fuzz_build.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: fuzz
+        shell: bash
         env:
           FUZZ_TARGET_TRIPLE: x86_64-unknown-linux-gnu
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
         run: |
-          {
-            cargo +nightly fuzz build --target "$FUZZ_TARGET_TRIPLE"
-            cargo +nightly fuzz run --target "$FUZZ_TARGET_TRIPLE" jwt_parse -- -max_total_time=60 -rss_limit_mb=2048
-            cargo +nightly fuzz run --target "$FUZZ_TARGET_TRIPLE" ed25519_verify -- -max_total_time=60 -rss_limit_mb=2048
-          } 2>&1 | tee "$RUNNER_TEMP/lint-fuzz.log"
+          rm -rf artifacts
+          failed=0
+          for target in jwt_parse ed25519_verify; do
+            echo "::group::fuzz $target"
+            if ! cargo +nightly fuzz run --target "$FUZZ_TARGET_TRIPLE" "$target" -- \
+                -max_total_time=60 -timeout=30 -rss_limit_mb=2048 \
+                -error_exitcode=77 -timeout_exitcode=70 \
+                2>&1 | tee -a "$RUNNER_TEMP/lint-fuzz.log"; then
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      # Crash = a libFuzzer artifact (crash-/leak-/timeout-/oom-*) under
+      # fuzz/artifacts, OR a sanitizer/libFuzzer report line in the run log once
+      # libFuzzer had started, OR libFuzzer's error (77) / timeout (70) exit code
+      # as cargo-fuzz relays it (or its "Failing input:" line).
+      # Anything else that failed (install, build, step timeout) is NOT a crash.
+      # Runs on always() so a crash is recorded even if a later step is cut short.
+      - name: Fuzz verdict
+        id: fuzz_verdict
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          crash=false
+          artifacts=""
+          if [ -d fuzz/artifacts ]; then
+            artifacts=$(find fuzz/artifacts -type f \( -name 'crash-*' -o -name 'leak-*' -o -name 'timeout-*' -o -name 'oom-*' \) | sort)
+          fi
+          [ -n "$artifacts" ] && crash=true
+          log="$RUNNER_TEMP/lint-fuzz.log"
+          report=""
+          if [ -f "$log" ]; then
+            # Strip ANSI colour first: CARGO_TERM_COLOR=always is set workflow-wide.
+            clean=$(sed 's/\x1b\[[0-9;]*m//g' "$log")
+            # Only libFuzzer (77/70) and cargo-fuzz ("Failing input:") emit these
+            # after a finding, so they count unconditionally.
+            finding=$(printf '%s\n' "$clean" | grep -E \
+              'Fuzz target exited with exit status: (77|70)|^Failing input:' | sort -u | head -n 10)
+            # Sanitizer lines count only once libFuzzer started ("INFO: Seed:" is its
+            # first output). An ASan abort before that (shadow-memory/ASLR mapping on
+            # the runner) is infrastructure, not a finding.
+            sanitizer=$(printf '%s\n' "$clean" | grep -E \
+              '==[0-9]+== ?ERROR: |^SUMMARY: (libFuzzer|[A-Za-z]+Sanitizer)' | sort -u | head -n 10)
+            if [ -n "$sanitizer" ] && ! printf '%s\n' "$clean" | grep -q 'INFO: Seed:'; then
+              echo "::warning title=Fuzz infrastructure::A sanitizer aborted before libFuzzer started; treated as infrastructure, not a crash."
+              sanitizer=""
+            fi
+            report=$(printf '%s\n%s\n' "$finding" "$sanitizer" | sed '/^$/d')
+            [ -n "$report" ] && crash=true
+          fi
+          echo "fuzz_crash=$crash" >> "$GITHUB_OUTPUT"
+          if [ "$crash" = true ]; then
+            echo "::error title=Fuzzer found a crash::A fuzz target (jwt_parse / ed25519_verify) crashed. This blocks the rolling latest release. The reproducer is uploaded as the fuzz-artifacts artifact."
+            {
+              echo "## Fuzz found a crash -- rolling release BLOCKED"
+              echo
+              echo '```'
+              echo "${artifacts:-(no artifact file written)}"
+              echo "$report"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
+
+      - name: Upload fuzz reproducers
+        if: always() && steps.fuzz_verdict.outputs.fuzz_crash == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
 
       # Outcome collector. `always()` so it reports even after a non-lint step
       # failed; it always exits 0 -- lint findings are warnings, never errors.
@@ -170,6 +275,7 @@ jobs:
           OUTCOME_DENY: ${{ steps.deny.outcome }}
           OUTCOME_FUZZ_TOOLCHAIN: ${{ steps.fuzz_toolchain.outcome }}
           OUTCOME_FUZZ_INSTALL: ${{ steps.fuzz_install.outcome }}
+          OUTCOME_FUZZ_BUILD: ${{ steps.fuzz_build.outcome }}
           OUTCOME_FUZZ: ${{ steps.fuzz.outcome }}
         run: |
           set +e
@@ -180,7 +286,7 @@ jobs:
           {
             echo "## Lint (warn-only)"
             echo
-            echo "Lint never fails this run and never blocks build, test or publish."
+            echo "Lint never fails this run and never blocks build or test. Only a fuzz crash blocks the rolling release."
             echo
             echo "| Check | Result |"
             echo "|---|---|"
@@ -216,10 +322,11 @@ jobs:
           report "rustfmt"                  "$OUTCOME_FMT"            fmt    '^Diff in '
           report "clippy -D warnings"       "$OUTCOME_CLIPPY"         clippy '^(error|warning)(\[[a-z0-9_:]+\])?: |^ +--> '
           report "cargo-deny install"       "$OUTCOME_DENY_INSTALL"   none   ''
-          report "cargo-deny"               "$OUTCOME_DENY"           deny   '^(error|warning)\[|ID: RUSTSEC-|(advisories|bans|sources) (ok|FAILED)'
+          report "cargo-deny"               "$OUTCOME_DENY"           deny   '^(error|warning)\[|ID: RUSTSEC-|(advisories|bans|sources|licenses) (ok|FAILED)|rejected: '
           report "nightly toolchain (fuzz)" "$OUTCOME_FUZZ_TOOLCHAIN" none   ''
           report "cargo-fuzz install"       "$OUTCOME_FUZZ_INSTALL"   none   ''
-          report "fuzz (bounded)"           "$OUTCOME_FUZZ"           fuzz   'panicked|ERROR: libFuzzer|SUMMARY: |^error'
+          report "fuzz build"               "$OUTCOME_FUZZ_BUILD"     fuzz-build '^error(\[E[0-9]+\])?: |^ +--> '
+          report "fuzz run (bounded)"       "$OUTCOME_FUZZ"           fuzz   'panicked|ERROR: |SUMMARY: |^error'
           if [ "$not_run" -gt 0 ]; then
             echo "::warning title=Lint incomplete::$not_run lint check(s) did not run (an earlier setup step failed or was skipped). See the run summary."
           fi
@@ -359,6 +466,13 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --bin fractalengine --bin fe-relay
 
+      # Pin the interpreter the packaging script runs on rather than relying on
+      # whatever `python` Git Bash happens to find on the runner PATH.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       # bash (Git Bash) rather than pwsh: pwsh only checks the LAST native
       # exit code, so a failed first packaging call would go unnoticed.
       - name: Package release archives
@@ -383,8 +497,8 @@ jobs:
 
   # D-CI3: the rolling `latest` prerelease -- a public, login-free download
   # channel that tracks the newest commit on `main` whose BUILD + TEST jobs
-  # passed (lint is warn-only and does not gate it). `release.yml` stays the
-  # stable, version-tagged line; this is the bleeding edge.
+  # passed (lint is warn-only; only a fuzz-found crash holds it back -- AC-4).
+  # `release.yml` stays the stable, version-tagged line; this is the bleeding edge.
   #
   # Why this job exists at all: the `actions/upload-artifact` uploads above
   # require a GitHub login to download and expire after 90 days, so they cannot
@@ -400,11 +514,14 @@ jobs:
   rolling-release:
     name: Publish rolling `latest` prerelease
     runs-on: ubuntu-latest
-    # Build jobs only. `!cancelled()` replaces the implicit success() check,
-    # so the explicit per-job results below are the whole gate.
-    needs: [linux, windows]
+    # `!cancelled()` replaces the implicit success() check, so the explicit
+    # conditions below are the whole gate: both build jobs succeeded AND lint
+    # did not report a fuzz crash (AC-4). Lint's own result is deliberately NOT
+    # checked -- every other lint finding is warn-only. A cancelled/skipped lint
+    # job leaves the output empty, which counts as "no crash" (warned below).
+    needs: [lint, linux, windows]
     # `main` only -- a PR run must never move the public rolling channel.
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.linux.result == 'success' && needs.windows.result == 'success' }}
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.lint.outputs.fuzz_crash != 'true' }}
     permissions:
       # An explicit `permissions:` block zeroes every scope it omits, so
       # `actions: read` has to be restated for download-artifact.
@@ -416,6 +533,21 @@ jobs:
       # remote to infer from -- GH_REPO is what makes every `gh` call below work.
       GH_REPO: ${{ github.repository }}
     steps:
+      - name: Fuzz gate (lint verdict)
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          FUZZ_CRASH: ${{ needs.lint.outputs.fuzz_crash }}
+        run: |
+          echo "lint result: $LINT_RESULT, fuzz_crash: '${FUZZ_CRASH}'"
+          case "$LINT_RESULT" in
+            cancelled|skipped)
+              echo "::warning title=Fuzz gate unverified::The lint job was $LINT_RESULT, so no fuzz verdict exists. Publishing as no-crash." ;;
+            *)
+              if [ -z "$FUZZ_CRASH" ]; then
+                echo "::warning title=Fuzz gate unverified::The lint job produced no fuzz verdict. Publishing as no-crash."
+              fi ;;
+          esac
+
       - name: Download this run's packages
         uses: actions/download-artifact@v4
         with:

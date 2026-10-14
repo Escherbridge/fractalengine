@@ -5,6 +5,7 @@ pub mod blob_store;
 pub mod channels;
 pub mod diag15m; // DIAG-15M: temporary render diagnostics
 pub mod distributed_query;
+pub mod ktx2_guard;
 pub mod messages;
 pub mod peer_registry;
 pub mod shared_node;
