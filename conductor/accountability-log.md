@@ -191,3 +191,15 @@ scope trim; `plan.md` wrongly ticked it.
 - Accepted: streamed path records no TOFU pin of its own (covered by ledger STREAMED-TERRAIN-PIN, RP after
   RP-4); bare `FE_DB_PATH=db.kv` falls back to `data/blobs` (documented); race tests are probabilistic-red
   without the fix, deterministic-green with it.
+
+### Tick 6 (W2b close / W3 launch) — 2026-10-14 08:23 MDT · VERDICT: ON_TRACK (1 MED, 3 LOW)
+Report: `.omc/accountability/tick-20261014-0823.md`. Verified: W2b F1–F6 really in the code, rewritten F1
+tests non-vacuous; `20bb91b` faithful except 4 defects; W3 script faithful (no relaunch needed).
+
+| id | sev | directive (short) | disposition |
+|---|---|---|---|
+| AC-29 | MED | Final-sweep manifest lines truncated at a fixed width by the ORCHESTRATOR's extraction (`x[:220]`/`x[:260]`) — named tests silently dropped | **ACCEPT, orchestrator bug** → every truncated line restored from the journals (**73 lines**, not 14 — `tests_written` lines were cut too); no line left at a truncation length; future appends never truncate |
+| AC-30 | LOW | W2b gaps: F4 test bypasses the seam; main-thread `remove`/`set_seeding` can block on the install lock held across a 1 GiB write+sync; `save_registry` lacks sync_all; F2 test name over-claims | **ACCEPT** → W3b fixup at the W3→SPEC10 boundary (brief B) |
+| AC-31 | LOW | Plan amendments before W4-7/W4-9 read the plan (C10, C8(iii) correction, strikes, W4-9 owned files, golden test `legacy_identifier_matches_the_canonical_log_cbor_encoder` over id lengths 0/1/23/24/255/256; RP C10 + ledger `:243` terrain_bridge/petal_binding + streamed-TOFU item); manifest note to copy W4-9 evidence JSON before any target/ prune | **ACCEPT** → docs agent now (plans + ledger); manifest note added by the orchestrator |
+| AC-32 | LOW | Orchestrator duties: review rows W2b + ticks 5/6; RUNBOOK §2 `:116` stale; at W3 close verify docs verdict lines, run both C6 greps, fe-identity `--no-default-features --tests` if touched | **ACCEPT** → rows + §2 fixed now; W3-close items on the checklist |
+| watch | — | 681 processes (> the 646 lag mark) | dry-run reap of own strays at the next boundary |
