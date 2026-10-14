@@ -62,7 +62,7 @@ use fe_canonical_log::wire::commit::{
 use fe_canonical_log::wire::cursor::{
     BranchRegistry, CommittedDelta, CursorTuple, ProjectionIdentity,
 };
-use fe_canonical_log::wire::error::WireError;
+use fe_canonical_log::wire::error::{ProtocolErrorCategory, WireError};
 use fe_canonical_log::wire::session::{CapabilityVerifier, SessionAuthorizationTable};
 use fe_canonical_log::wire::subscription::SubscriptionRecord;
 
@@ -657,6 +657,33 @@ async fn commit_submit_ack_delta_flows_over_the_composed_verifier() {
         CommitAckState::AcceptedPendingMaterialization,
         "VerifyingCommitPipeline materializes nothing, so a successful append is always \
          pending, never Committed -- see its own doc comment"
+    );
+
+    // Mutation check: the ack above is the composed verifier's verdict, not the pipeline's
+    // default. The same body through a pipeline whose authorization view has moved one epoch
+    // on is refused by SPEC-3 and acked as a rejection, not as an append.
+    let bumped_pipeline = VerifyingCommitPipeline::new(
+        support::build_verifier(
+            chain_bytes.clone(),
+            support::ManagerView::at_epoch(
+                support::principal_of(&author),
+                verse_scope,
+                support::EPOCH + 1,
+            ),
+            InMemoryScopeKeyStore::new(),
+        ),
+        support::MemoryLogStore::default(),
+        support::NoEquivocation,
+        support::SameVerseParents,
+    );
+    assert_eq!(
+        handle_commit_submit(&bumped_pipeline, &sessions, &body)
+            .await
+            .state,
+        CommitAckState::Rejected {
+            category: ProtocolErrorCategory::UnauthorizedOperation,
+        },
+        "the commit pipeline must route through the composed verifier's SPEC-3 check"
     );
 
     // The SAME capability chain that gated SPEC-4 admission above also gates a SPEC-7 wire

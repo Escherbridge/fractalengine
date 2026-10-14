@@ -7,6 +7,10 @@
 //! reads are never shared with another test binary's assertions — see
 //! `fe-database/src/migration/mapping_inventory.rs`'s `D_CL20_BYPASS_COUNTS`.
 //!
+//! The binary's tests share those process-global counters and libtest runs them on parallel
+//! threads, so each test holds [`serial`] for its whole body: a concurrent test's hierarchy
+//! creates would otherwise move the "other five did not move" slots mid-assertion.
+//!
 //! Harness pattern follows `fe-database/tests/node_lifecycle_test.rs:30-60`
 //! (real DB thread + `DbCommand` public API over an on-disk SurrealDB), with
 //! `spawn_db_thread_shared` (as `fe-database/tests/shared_handle_test.rs`
@@ -21,6 +25,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Serializes this binary's tests over the process-global counters they assert on.
+async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    static COUNTERS: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    COUNTERS
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
 
 /// The local desktop session (N-5): the harness's local user owns every verse
 /// it creates, so `Local` resolves to Owner/Editor+ and is authorized for the
@@ -169,6 +182,7 @@ fn assert_only_this_kind_bypassed(before: [u64; 6], after: [u64; 6], kind: &str)
 
 #[tokio::test]
 async fn each_dcl20_mutation_records_exactly_one_bypass_of_its_own_kind() {
+    let _serial = serial().await;
     let h = Harness::start();
 
     // --- CreateVerse -------------------------------------------------------
@@ -296,6 +310,7 @@ async fn each_dcl20_mutation_records_exactly_one_bypass_of_its_own_kind() {
 /// the caller. Proves "first statement" and "error text unchanged" together.
 #[tokio::test]
 async fn a_rename_on_a_tombstoned_node_still_records_the_bypass_and_keeps_the_error_text() {
+    let _serial = serial().await;
     let h = Harness::start();
 
     h.send(DbCommand::CreateVerse { name: "V".into() });
@@ -364,4 +379,79 @@ async fn a_rename_on_a_tombstoned_node_still_records_the_bypass_and_keeps_the_er
         "the bypass fires even though the rename itself is refused downstream \
          (record_bypass_for precedes the tombstone lookup)"
     );
+}
+
+/// A GLB whose sole image declares `mimeType: "image/ktx2"`: the shape
+/// `fe_runtime::ktx2_guard::check_glb` refuses (mirrors `handlers/crud.rs`'s
+/// `import_gltf_ktx2_guard_tests::glb_with_ktx2_image`).
+fn ktx2_glb_bytes() -> Vec<u8> {
+    let json = br#"{"images":[{"bufferView":0,"mimeType":"image/ktx2"}],"bufferViews":[{"buffer":0,"byteLength":4}]}"#;
+    let mut json_bytes = json.to_vec();
+    while !json_bytes.len().is_multiple_of(4) {
+        json_bytes.push(b' ');
+    }
+    let bin = [0u8; 4];
+    let mut body = Vec::new();
+    body.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    body.extend_from_slice(b"JSON");
+    body.extend_from_slice(&json_bytes);
+    body.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    body.extend_from_slice(b"BIN\0");
+    body.extend_from_slice(&bin);
+    let mut glb = b"glTF".to_vec();
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&((12 + body.len()) as u32).to_le_bytes());
+    glb.extend_from_slice(&body);
+    glb
+}
+
+/// Plan C8(iii)/C10(b): an import the KTX2 guard refuses still counts as an
+/// `ImportGltf` bypass attempt, because `record_bypass_for` precedes the guard;
+/// the refusal itself is unchanged (an error naming the guard, no node created).
+/// Mutation check: moving the counter line below the guard turns the count red.
+#[tokio::test]
+async fn a_ktx2_refused_import_still_records_its_bypass() {
+    let _serial = serial().await;
+    let h = Harness::start();
+
+    h.send(DbCommand::CreateVerse { name: "V".into() });
+    let verse_id = match h.recv() {
+        DbResult::VerseCreated { id, .. } => id,
+        other => panic!("expected VerseCreated, got {other:?}"),
+    };
+    h.send(DbCommand::CreateFractal {
+        verse_id,
+        name: "F".into(),
+    });
+    let fractal_id = match h.recv() {
+        DbResult::FractalCreated { id, .. } => id,
+        other => panic!("expected FractalCreated, got {other:?}"),
+    };
+    h.send(DbCommand::CreatePetal {
+        fractal_id,
+        name: "P".into(),
+    });
+    let petal_id = match h.recv() {
+        DbResult::PetalCreated { id, .. } => id,
+        other => panic!("expected PetalCreated, got {other:?}"),
+    };
+
+    let dir = tempfile::tempdir().expect("glb temp dir");
+    let glb_path = dir.path().join("ktx2.glb");
+    std::fs::write(&glb_path, ktx2_glb_bytes()).expect("write ktx2 glb fixture");
+    let before = snapshot_counts();
+    h.send(DbCommand::ImportGltf {
+        petal_id,
+        name: "Refused".into(),
+        file_path: glb_path.to_str().unwrap().into(),
+        position: [0.0, 0.0, 0.0],
+    });
+    match h.recv() {
+        DbResult::Error(e) => assert!(
+            e.contains("RUSTSEC-2026-0344") || e.to_lowercase().contains("ktx2"),
+            "the refusal must still name the KTX2 guard, got: {e}"
+        ),
+        other => panic!("expected the KTX2 guard's Error, got {other:?}"),
+    }
+    assert_only_this_kind_bypassed(before, snapshot_counts(), "ImportGltf");
 }

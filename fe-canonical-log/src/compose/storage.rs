@@ -288,6 +288,11 @@ impl<V, S, E, P> VerifyingCommitPipeline<V, S, E, P> {
 /// `PreconditionFailed` and `SameVerseParentViolation` reuse `InvalidEnvelope` as the nearest
 /// permanent-reject category; `compose::ComposedCandidateVerifier` never constructs the former,
 /// so it is unreachable through the production verifier today.
+///
+/// `MaterializationFailed`/`CheckpointMismatch` describe an operation that is already appended
+/// (`materialize/AGENTS.md`), but here they came out of admission, so nothing was appended: they
+/// map to the same indeterminate, retryable `MaterializationPending` reject as a storage fault,
+/// never to `AcceptedPendingMaterialization`, which claims the bytes are durable.
 fn admission_outcome_to_pipeline_result(outcome: AdmissionOutcome) -> PipelineResult {
     match outcome {
         AdmissionOutcome::InvalidEnvelope { .. } => {
@@ -324,7 +329,7 @@ fn admission_outcome_to_pipeline_result(outcome: AdmissionOutcome) -> PipelineRe
             PipelineResult::Rejected(ProtocolErrorCategory::ConflictingOpBytes)
         }
         AdmissionOutcome::MaterializationFailed | AdmissionOutcome::CheckpointMismatch => {
-            PipelineResult::AcceptedPendingMaterialization
+            PipelineResult::Rejected(ProtocolErrorCategory::MaterializationPending)
         }
     }
 }
@@ -701,6 +706,58 @@ mod tests {
             "unjudged bytes must never be appended"
         );
         assert!(state.rows.is_empty());
+    }
+
+    /// Refuses authorization with a fixed outcome, as a verifier other than the composed one may.
+    struct RefusesWith(AdmissionOutcome);
+
+    #[async_trait]
+    impl CandidateVerifier for RefusesWith {
+        async fn verify_envelope(
+            &self,
+            candidate_bytes: &[u8],
+        ) -> Result<VerifiedCandidate, AdmissionOutcome> {
+            verify_candidate(candidate_bytes)
+        }
+
+        async fn verify_authorization(
+            &self,
+            _candidate: &VerifiedCandidate,
+        ) -> Result<(), AdmissionOutcome> {
+            Err(self.0.clone())
+        }
+
+        async fn verify_payload(
+            &self,
+            _candidate: &VerifiedCandidate,
+            _payload_ciphertext: Option<&[u8]>,
+        ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_submit_never_acks_as_appended_what_admission_refused() {
+        let bytes = signed_sample_bytes();
+        for outcome in [
+            AdmissionOutcome::MaterializationFailed,
+            AdmissionOutcome::CheckpointMismatch,
+        ] {
+            let pipeline = VerifyingCommitPipeline::new(
+                RefusesWith(outcome.clone()),
+                RecordingLogStore::default(),
+                NoEquivocation,
+                NoParents,
+            );
+            assert_eq!(
+                pipeline.submit_candidate(&bytes, None).await,
+                PipelineResult::Rejected(ProtocolErrorCategory::MaterializationPending),
+                "{outcome:?} out of admission appended nothing"
+            );
+            let state = pipeline.store.state.lock().expect("lock");
+            assert_eq!(state.fresh_appends, 0);
+            assert!(state.rows.is_empty());
+        }
     }
 
     fn signed_sample_bytes() -> Vec<u8> {

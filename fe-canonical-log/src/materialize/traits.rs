@@ -501,6 +501,13 @@ where
     let payload_facts = verifier
         .verify_payload(&candidate, payload_ciphertext)
         .await?;
+    // Facts reach a reduction as "its own" (§payload-facts), so facts minted for any other
+    // operation or schema are a payload failure, whatever `V` is.
+    if payload_facts.as_ref().is_some_and(|facts| {
+        facts.op_id != candidate.meta.op_id || facts.schema_hash != candidate.meta.schema_hash
+    }) {
+        return Err(AdmissionOutcome::InvalidPayload);
+    }
 
     Ok(AdmittedCandidate {
         candidate,
@@ -1181,5 +1188,78 @@ mod tests {
             Err(AdmissionOutcome::InvalidPayload)
         );
         assert!(PayloadFacts::from_validated_plaintext(&payload_candidate, &[0xa0]).is_ok());
+    }
+
+    /// Answers `verify_payload` with facts minted for `facts_for`, whatever it was asked about.
+    struct FactsForVerifier {
+        facts_for: VerifiedCandidate,
+    }
+
+    #[async_trait]
+    impl CandidateVerifier for FactsForVerifier {
+        async fn verify_envelope(
+            &self,
+            candidate_bytes: &[u8],
+        ) -> Result<VerifiedCandidate, AdmissionOutcome> {
+            verify_candidate(candidate_bytes)
+        }
+
+        async fn verify_authorization(
+            &self,
+            _candidate: &VerifiedCandidate,
+        ) -> Result<(), AdmissionOutcome> {
+            Ok(())
+        }
+
+        async fn verify_payload(
+            &self,
+            _candidate: &VerifiedCandidate,
+            _payload_ciphertext: Option<&[u8]>,
+        ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
+            PayloadFacts::from_validated_plaintext(&self.facts_for, &[0xa0]).map(Some)
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_never_hands_on_payload_facts_minted_for_another_operation() {
+        let scope_key = crate::crypto::aead::SealingKey::from_bytes([0x5a; 32]);
+        // Each sample draws a fresh nonce, so the two envelopes are distinct operations.
+        let (own_bytes, _) = signed_payload_sample(&scope_key, &[0xa0]);
+        let (other_bytes, _) = signed_payload_sample(&scope_key, &[0xa0]);
+        let own = VerifiedCandidate::verify_from_bytes(&own_bytes).expect("admissible");
+        let other = VerifiedCandidate::verify_from_bytes(&other_bytes).expect("admissible");
+        assert_ne!(own.meta.op_id, other.meta.op_id);
+        let no_equivocation = FixedEquivocationIndex(None);
+        let no_parents = FixedParentVerseLookup(HashMap::new());
+
+        let foreign = admit_candidate_with_facts(
+            &FactsForVerifier { facts_for: other },
+            &no_equivocation,
+            &no_parents,
+            &own_bytes,
+            None,
+        )
+        .await;
+        assert_eq!(
+            foreign,
+            Err(AdmissionOutcome::InvalidPayload),
+            "facts for another operation must never reach this operation's reduction"
+        );
+
+        let admitted = admit_candidate_with_facts(
+            &FactsForVerifier {
+                facts_for: own.clone(),
+            },
+            &no_equivocation,
+            &no_parents,
+            &own_bytes,
+            None,
+        )
+        .await
+        .expect("its own facts admit");
+        assert_eq!(
+            admitted.payload_facts.map(|facts| facts.op_id),
+            Some(own.meta.op_id)
+        );
     }
 }

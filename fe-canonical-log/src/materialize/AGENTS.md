@@ -112,6 +112,9 @@ so CDL-SPEC10 B1/B3 consume this signature instead of adding a second, narrower 
   calls `PayloadFacts::from_validated_plaintext` last. That constructor refuses the no-payload
   form and non-canonical CBOR, and binds `op_id`/`schema_hash` from the candidate, so a
   reduction can check the facts are its own (`facts.op_id == meta.op_id`).
+  `admit_candidate_with_facts` enforces that binding itself: facts whose `op_id` or
+  `schema_hash` differ from the admitted candidate's are `InvalidPayload`, whatever verifier
+  produced them (CDL-W4 review-and-fix).
 - **What facts are.** Values only — the decoded canonical-CBOR plaintext. No artifact id to
   dereference, no ciphertext, no key, no handle. G2 holds because there is nothing in the
   argument a reduction could fetch with.
