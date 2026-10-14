@@ -2,7 +2,7 @@
 type: runbook
 title: FractalEngine session runbook
 updated: 2026-10-13
-head: 850466d
+head: d4c0e19
 ---
 
 # FractalEngine — Runbook
@@ -111,27 +111,13 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-10-13 session open:** origin/main = `850466d` — two `ci(fuzz)` commits (`f002e8e`,
-  `850466d`) landed after this runbook was written (prior Claude session). **CI fully green on
-  `850466d`** (run 38277696834: Lint incl. cargo-deny + bounded fuzz, Linux build+test, Windows,
-  `latest` prerelease) — §7 step 2 is moot. Ledger is stale (dated 10-10; "commit pending" rows
-  are committed; 7 NEEDS_RATIFICATION rows were decided 10-12) → W0 bookkeeping refreshes it.
-- **origin/main = `4765bc5` + `a6e1a4a` `3e87279` `93b1bcd`** (all pushed 2026-10-12 under
-  push-on-green; the last three are docs/assets only): untrack `.claude/settings.local.json`
-  (its `.gitignore` line landed in `93b1bcd`), this runbook, and the sample-GLB swap —
-  `duck.glb` (SCEA, non-OSI) → CC0 Khronos "Cameras" `cameras.glb` (2 embedded cameras, still
-  the `deactivate_foreign_cameras` regression asset); `info_panel.glb` verified CC-BY-4.0.
-- **Open licence residual:** `fractalengine/assets/imported/` tracks 20 byte-identical copies of
-  the SCEA Duck (runtime import cache). Untracking them deletes the files on other clones at
-  their next pull and may break nodes whose `asset_path` points there — USER decision (§0c.4).
-- CI for `4765bc5` was being watched at writing time — **verify in §0a**. It is the FIRST real run
-  of the cargo-deny and bounded-fuzz lint steps (fuzz was only `cargo check`ed locally; sanitizer
-  builds need Linux nightly). If Lint is red, fix that first.
-- **Verified:** the final sweep above. **Not verified:** in-app GUI behavior of W4 work;
-  relay-assisted connection through a self-hosted iroh-relay 1.3; the fuzz CI step; the 0.35 store
-  migration on a REAL user data dir (only the committed generator + the local fixture).
-- ~~Untracked on purpose: the 0.35 fixture … commit decision open~~ — RESOLVED 2026-10-13 (R2):
-  CI generates it (`119dbd0`); the test fails, not skips, under `FE_REQUIRE_STORE_FIXTURE=1`.
+- **2026-10-13 post-W0d, HEAD = `d4c0e19`** (W0–W0d complete; W1 PAS-P3+P4 launched, W0d final smoke & push complete, CI in flight on 53a4c4c). **Ledger refreshed 2026-10-13** (dated 10-10; now tracks committed and ratified rows). Section §4 assumptions updated from the grill R1–R7; RUNBOOK §3 decisions frozen.
+- ~~**2026-10-13 session open:** origin/main = `850466d`~~ — superseded. Two `ci(fuzz)` commits + 4 W0–W0d follow-up commits complete.
+- ~~**CI fully green on `850466d`**~~ — superseded. Fuzz CI step now DONE + `850466d` (run 38277696834) verified green on Linux; lint RED on `877e801` (pre-purge cargo-deny advisories), FIXED in W0b/W0c/W0d; §7 step 2 was completed.
+- ~~**Ledger stale**~~ — superseded. Refreshed 2026-10-13 against post-purge history + 2026-10-13 grill R1–R6. "Commit pending" rows traced to their landing commits via `git log -S/--grep` on the post-purge tree.
+- **SCEA Duck purge COMPLETE (2026-10-13, R2/R3):** blob `217170d2` filtered from all history (260 commits rewritten, 905 citations remapped across 160 docs + memory), atomic force-push to `origin/main` `877e801` + branches + tag `latest`, backup at `../backups/2026-10-13-pre-duck-purge/`. **Do NOT cite pre-purge SHAs in new work** — the commit-map (`.git/filter-repo/commit-map`) remapped old→new; all historical cite records were updated by the purge script.
+- **Open licence residual:** `fractalengine/assets/imported/` Duck copies deleted from disk 2026-10-13 (bf28971 `crud.rs` fallback retired), but GitHub old-object cleanup is USER action (§0c.2 decided untrack + purge history + retire fallback).
+- **Verified:** W0–W0d final sweeps (W0b lint, W0c KTX2 + licences + fuzz, W0d packaged smoke + API hydrate); W0 fixture CI generation + migration test; push-gate logs `.omc/research/push-gate-20261013/`. **Not verified (§0c.4):** in-app GUI behavior; relay-assisted connection (needs provisioned host, D-23); full fuzz test under CI's new timeout; large 0.35 store migration (fixture + test only).
 
 ### Review ledger
 
@@ -149,6 +135,9 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | Final sweep | full tests + harness + e2e | harness 14/15 → root-caused, `df35a7f` | GREEN after fix |
 | 2026-10-13 purge `877e801` | critic tick 1 audit | Duck unreachable from every ref; 128/130 cited SHAs resolve (2 foreign) | SOUND |
 | W0 `119dbd0` `bf28971` | adversarial review-and-fix | 1M (zero-match test filter passed vacuously) 2L | FIXED |
+| W0b `6a53a2b` | review-and-fix | 1L (users of old single-file download lose their DB) | FIXED |
+| W0c `da3e6a1` | review-and-fix | 2H (guard bypasses: percent-encoded data URI, JSON glTF as .glb, invalid-UTF-8 URI panic) 1M 3L | FIXED |
+| W0d `558197c` | review-and-fix + packaged re-smoke | 1M (3L residual 5: reader read-only convention needs guarded newtype pre-A3) | FIXED |
 | Planning swarm (5 plans) | cross-check critic edits | 29–37 plan edits (collisions, ordering, security slices) | AMENDED |
 | Critic tick 1 | accountability critic | 2H 3M 3L (R7 not in plan bodies; push gate) | DRIFTING → all ACCEPTED |
 
@@ -353,6 +342,7 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 - **Toolchains:** local default 1.94.0, CI floating stable (1.99.0 at writing); 1.96/1.97.1/1.98/
   1.99.0 installed; MSRV now **1.91**. Reproduce CI Lint with `cargo +1.99.0 clippy --workspace
   --all-targets --keep-going -- -D warnings`.
+- **SurrealKV durability:** the shared DB handle's durability relies on `SURREAL_DATASTORE_SYNC_DATA=every` (per-commit fsync), which both `fractalengine` and `fe-relay` mains set only when unset (`fractalengine/src/main.rs:42-43`). An operator override to a different value (e.g. `periodic` or `off`) silently drops the fsync guarantee — document any such override with the persistence model explicitly stated.
 - **iroh 1.x store migration ops:** the first 1.x start on an existing `FE_P2P_DIR` copies it to
   `<dir>.v035.bak-<unix_ts>`, upgrades `docs.redb` + `blobs/blobs.db`, writes
   `.fe-store-format=iroh1`; failure → loud offline/mock; rollback = restore backup + run a 0.35
