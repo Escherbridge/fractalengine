@@ -9,6 +9,18 @@ ledger_rows: [CDL-W4, CDL-R2]
 supersedes_brief: workstream-g-plan.json waves[3] W4-integration (brief written 2026-08-08; reality has moved, see §2)
 ---
 
+> **OWNER DECISIONS 2026-10-13 (R7, RUNBOOK §3) — supersede this plan wherever they differ:**
+> 1. **E-W4-1 is owner-confirmed, not PENDING-RATIFICATION.** The §7 user-decision default —
+>    quarantine (not reject) when a capability chain or epoch state is unavailable, per SPEC-2
+>    `author-key-lifecycle.md:240-241` — is CONFIRMED by the owner as of 2026-10-13. Record the
+>    erratum as **owner-confirmed 2026-10-13** in the decisions record, not PENDING-RATIFICATION.
+> 2. **Provisional wire numbers stay in the one register.** The materializer-id domain, enrolment
+>    artifact domains/keys and `node-transform-v1` schema keys ship provisional, in the single
+>    CDL-PROV register, pending batch ratification — unchanged from §7 item 3, now owner-confirmed.
+> 3. **Equivalence evidence = dev run until an owner charter exists.** W4-9's harness evidence run
+>    on a harness-created test verse is CONFIRMED as sufficient for now; the formal §6.1 validation
+>    run still waits on an owner-approved run charter (§7 item 2) — unchanged, now owner-confirmed.
+
 # CDL Wave 4 — serial integration campaign plan
 
 Planner output, 2026-10-13. Read-only recon at HEAD `877e801`; no cargo was run. Every claim
@@ -171,11 +183,25 @@ not shared; ONE `#[tokio::test]` driving all six sequentially through the real D
    the two test doubles; `admit_and_append` (`admission.rs:174`) gains the ciphertext parameter
    and passes it through. No behavior change to the precondition ordering.
 5. Fix the stale doc comment `traits.rs:236-247` (StorageUnavailable has landed).
+6. **(A1 hand-back, cross-plan — see §9 critic amendment C4.)** Widen `CausalMaterializer::reduce`
+   (`traits.rs:271-275`) so a reduction can read the admitted operation's own decrypted,
+   schema-validated payload facts, not only `meta` and `envelope_bytes`. Thread a
+   `payload_facts: Option<&PayloadFacts>` (or an equivalent typed accessor existing kind-1..4
+   reductions can ignore, additive so they keep compiling unchanged) from the same
+   `VerifiedCandidate`/payload-ciphertext path step 2 already wires into `admit_candidate`. This
+   is the seam SPEC-10 §12 ("A seam this document exposes") names: a kind-5 reduction needs its
+   admitted payload's extracted facts (SPEC-10 §4.4 rule 2), and W4-9's own `node-transform-v1`
+   `ShadowMaterializer` has the identical need. Solve it once, here, since this slice already owns
+   `traits.rs` and build order puts it before CDL-SPEC10 starts — CDL-SPEC10 B1 (kind-5 reduction)
+   and B3 (shadow reference materializer) consume the widened signature instead of re-widening it.
 
 **Invariants.** `materialize/AGENTS.md` sealing (possession of `VerifiedCandidate` = proof
 `decode_and_admit` ran); `src/AGENTS.md` §ingress (one door for peer bytes);
 `canon_log/AGENTS.md` §admission-order (precondition before append; validate-then-log);
-§unified-vocabularies (no second quarantine enum — the new variant WRAPS `QuarantineReason`).
+§unified-vocabularies (no second quarantine enum — the new variant WRAPS `QuarantineReason`);
+G2 still holds after step 6's signature widening — `reduce` may read only the admitted
+operation's own facts (`meta`, `envelope_bytes`, and now its own decrypted payload facts), never
+fetch, open, or test the presence/length/statistics of an external artifact.
 
 **Flow tests** (in `traits.rs` tests + `canon_log_materialization_test.rs`):
 - `an_unknown_kind_candidate_is_quarantined_not_rejected`: a validly signed envelope with an
@@ -186,6 +212,12 @@ not shared; ONE `#[tokio::test]` driving all six sequentially through the real D
   appends exactly one row (real Surreal store).
 - Table-driven `disposition` test over every `AdmissionOutcome` variant (pure logic with real
   branching — the one allowed unit table).
+- **(A1 hand-back)** `reduce_reads_its_own_payload_facts_and_stays_reference_only`: a fixture
+  reduction that needs payload facts (already decrypted and schema-validated by admission)
+  receives them through the widened signature and still writes only a reference mutation; the
+  signature carries extracted facts only, never an artifact handle, so there is nothing for a
+  reduction to fetch with it. Mutation check: reverting the signature to `meta`+`envelope_bytes`
+  only turns this red (the fixture can no longer compile its reduction).
 
 ---
 
@@ -496,11 +528,24 @@ errors); `crypto/AGENTS.md` three-state answers; `fe-sync/src/AGENTS.md` §distr
 **Owned files:** NEW `fe-database/src/migration/transform_mapping.rs` (first reviewed mapping),
 `fe-database/src/migration/mod.rs`, `fe-database/src/migration/AGENTS.md` (§equivalence-harness,
 §transform-mapping), NEW `fe-database/tests/migration_equivalence_harness.rs`,
-`fe-canonical-log/src/AGENTS.md` (provisional register rows for the intent schema).
-**Crates:** fe-database (+ fe-canonical-log check only).
+`fe-canonical-log/src/AGENTS.md` (provisional register rows for the intent schema),
+NEW `fe-sdk/src/legacy_identifier.rs`, `fe-sdk/src/lib.rs` (one `pub mod`),
+`fe-sdk/src/AGENTS.md` (A1 hand-back: register the `fe-legacy-identifier-v1` domain).
+**Crates:** fe-database, fe-sdk (+ fe-canonical-log check only).
 
 **Steps.**
-1. One reviewed per-kind mapping per migration-plan §4.2.1-2 (`migration-plan.md:138-150`) for
+1. **(A1 hand-back, cross-plan — see §9 critic amendment C5.)** Implement the single
+   `fe_sdk::legacy_identifier(table: LegacyTable, id: &str) -> Identifier32` function:
+   `BLAKE3(ASCII("fe-legacy-identifier-v1") || 00 || canonical_cbor([table, id]))` (SPEC-10 §4.5
+   rule 1; `table` is `"verse"`, `"petal"`, or `"node"`). `fe-sdk` is the one crate every consumer
+   already reaches (fe-canonical-log → fe-sdk only, W4-4 §crate-surface; fe-database and fe-query
+   already depend on it), so this is the single home for both this slice's own candidate-scope
+   derivation (step 2, for `UpdateNodeTransform`'s petal scope and node anchor — SPEC-8 §4.2
+   rule 2's "candidate scope derivation") and CDL-SPEC10's later uses (B1's kind-5 `anchors`
+   field, B2's hexon `anchor` column). SPEC-10 §4.5 rule 2 requires both to be the same function;
+   building it once here, before CDL-SPEC10 starts, is how that holds without a second
+   implementation. Add the domain to the §Provisional wire numbering register (CDL-PROV).
+2. One reviewed per-kind mapping per migration-plan §4.2.1-2 (`migration-plan.md:138-150`) for
    `UpdateNodeTransform` (single-row, non-D-CL20, quantizable via fe-sdk nano-units):
    provisional intent schema `node-transform-v1` (node id, position/rotation/scale as i64
    nano-units, NO previous value — §4.2 rule 3), scope = petal scope, a `CandidateDerivation`
@@ -508,8 +553,9 @@ errors); `crypto/AGENTS.md` three-state answers; `fe-sync/src/AGENTS.md` §distr
    envelope (encrypted payload under the run's scope key), and a `ShadowMaterializer`
    (`migration/rebuild.rs:15`) whose comparator fields are the quantized transform.
    `MappingInventory::seeded()` stays all-Unmapped; only the harness's run charter calls
-   `register_mapped` (`mapping_inventory.rs:153`).
-2. Harness = a test binary that, for a harness-created test verse (§5.1 rule 2 — no legacy
+   `register_mapped` (`mapping_inventory.rs:153`). Derive the node anchor and the petal scope
+   through step 1's `fe_sdk::legacy_identifier` — not a second, local hash.
+3. Harness = a test binary that, for a harness-created test verse (§5.1 rule 2 — no legacy
    history claimed): emits the `branch_genesis` fixture first; runs a corpus (create node via
    legacy, N transform edits incl. concurrent-intent ordering, a tombstone, a denied write, a
    malformed candidate, a mid-run DB-thread restart) through `commit_operation_dual_emit`
@@ -524,12 +570,20 @@ DB handle — structural), §shadow-ledger (append-only), §comparator (no float
 §report/§always-blocked (`blocks_promotion` stays true while the six D-CL20 kinds are unmapped —
 do NOT "fix" it), §no-shadow-exposure; migration-plan §5.1 rule 7 (no peer contact).
 **No change** to any file under `fe-database/src/handlers/` — the live path stays `LegacyOnly`.
+**(A1 hand-back.)** `legacy_identifier` is deterministic and enumerable (SPEC-10 §4.5 rule 3): it
+is never used to produce a value exposed in clear manifest statistics; every caller keeps its
+output inside encrypted payloads, sealed hexons, blinded topics, or header scope only.
 
 **Flow tests** (the harness itself is the test): `transform_corpus_reaches_projection_parity_across_three_replays`
 (asserts `compared_equal` for every transform intent, byte-identical roots ×3, zero
 `legacy_succeeded_without_candidate` for the mapped kind, and that `blocks_promotion` is STILL
 true because of D-CL20); `a_lossy_transform_mapping_is_detected_as_a_difference` (inject a
 mapping that rounds → `compared_different`, proving the harness can fail).
+- **(A1 hand-back)** `legacy_identifier_is_stable_and_collision_free_across_tables` (table-driven,
+  `fe-sdk` unit test): the same `(table, id)` pair always produces the same `Identifier32`; the
+  same `id` string under `"verse"`/`"petal"`/`"node"` never collides across a fixture corpus, nor
+  do distinct ids under the same table. Mutation check: dropping the `table` tag from the hashed
+  CBOR turns the cross-table collision assertion red.
 
 ---
 
@@ -555,7 +609,7 @@ mapping that rounds → `compared_different`, proving the harness can fail).
 | `fe-database/src/migration/AGENTS.md` | §bypass-counter (per-kind), §boundary (counters landed; dual-emit still unwired), §equivalence-harness, §transform-mapping |
 | `fe-database/src/AGENTS.md` | NEW §canon-log-materialization pointing at `canon_log/AGENTS.md` + `migration/AGENTS.md`; §log-first-commit left intact (it documents the live legacy path) |
 | `fe-runtime/src/AGENTS.md` | the two enrolment commands (correlation routing) |
-| track `metadata.json` (`G-WAVE-4`, `CDL-R2`), `conductor/decisions/canonical-data-log-20260808.md` | status + verdict + the PENDING-RATIFICATION items of §7 — written by the orchestrator/bookkeeping agent, not by this planner |
+| track `metadata.json` (`G-WAVE-4`, `CDL-R2`), `conductor/decisions/canonical-data-log-20260808.md` | status + verdict + the §7 items — E-W4-1 as **owner-confirmed 2026-10-13 (R7)**, the other two as recorded defaults — written by the orchestrator/bookkeeping agent, not by this planner |
 
 ## 5. Risks
 
@@ -610,9 +664,9 @@ index are already done (§2); every other item is a slice above.
 ## 7. User decisions (each recorded with a default — none blocks the campaign)
 
 1. **SPEC-4 §5 has no row for "capability chain / epoch state / payload key unavailable".**
-   Default: quarantine per SPEC-2 `author-key-lifecycle.md:240-241`, recorded as
-   PENDING-RATIFICATION erratum E-W4-1 in the decisions record. Reversal: make it a reject —
-   one `disposition()` arm (cheap).
+   Default: quarantine per SPEC-2 `author-key-lifecycle.md:240-241`, recorded as erratum E-W4-1,
+   **owner-confirmed 2026-10-13 (R7)** in the decisions record — not PENDING-RATIFICATION.
+   Reversal: make it a reject — one `disposition()` arm (cheap).
 2. **Formal equivalence run charter** (§6.1 rule 1). Default: W4-9 ships dev evidence on a
    harness-created verse; the formal run waits for the owner's charter. No reversal cost.
 3. **Provisional wire numbers** for the materializer-id domain, enrolment artifacts and
@@ -660,11 +714,13 @@ in.
 
 **Edits made.**
 
-| # | Change | Class |
-|---|---|---|
-| C1 | `/security-review` scope widened to W4-3/W4-4 (chain verify, AEAD open, commit pipeline). `/code-review high` now covers W4-1 (six live handlers) and W4-9 (signs real envelopes), which were in no review scope. | missing review |
-| C2 | W4-4: `SealedProofEnvironment`'s `LaneClass` match has no wildcard, so CDL-SPEC10 A2's lane 5 is compiler-forced (A2 owns that arm). | cross-plan collision |
-| C3 | W4-7: `RegisteredSchemaSet::register` added, so CDL-SPEC10 B3 registers kind 5 with a call. | cross-plan ordering |
+| # | Date | Source | Change | Class |
+|---|---|---|---|---|
+| C1 | 2026-10-13 | critic pass | `/security-review` scope widened to W4-3/W4-4 (chain verify, AEAD open, commit pipeline). `/code-review high` now covers W4-1 (six live handlers) and W4-9 (signs real envelopes), which were in no review scope. | missing review |
+| C2 | 2026-10-13 | critic pass | W4-4: `SealedProofEnvironment`'s `LaneClass` match has no wildcard, so CDL-SPEC10 A2's lane 5 is compiler-forced (A2 owns that arm). | cross-plan collision |
+| C3 | 2026-10-13 | critic pass | W4-7: `RegisteredSchemaSet::register` added, so CDL-SPEC10 B3 registers kind 5 with a call. | cross-plan ordering |
+| C4 | 2026-10-13 | A1 hand-back | W4-2 widens `CausalMaterializer::reduce` (`traits.rs:271-275`) to receive the admitted operation's own decrypted payload facts, solving the seam SPEC-10 §12 names once, here, before CDL-SPEC10 starts. CDL-SPEC10 B1 and B3 consume the widened signature instead of re-widening it. | cross-plan API gap |
+| C5 | 2026-10-13 | A1 hand-back | W4-9 implements the single `fe_sdk::legacy_identifier(table, id) -> Identifier32` (SPEC-10 §4.5) for its own `UpdateNodeTransform` candidate-scope derivation. CDL-SPEC10 B1 (kind-5 `anchors`) and B2 (hexon `anchor` column) consume it instead of a second implementation — §4.5 rule 2 forbids a second one. | cross-plan API gap |
 
 **Later-phase obligations (recorded here; owned by the later plan).**
 - **Role propagation RP-2** turns `role` into a materialized cache and drops `role = "owner"`
@@ -679,3 +735,7 @@ in.
   `record_bypass_for` first-statement lines byte-identical.
 - **CDL-SPEC10 A2** owns the `BulkArtifact` arm in `compose.rs`; **B3** owns the kind-5 schema
   registration and must register through C3.
+- **CDL-SPEC10 B1/B3** depend on W4-2's widened `CausalMaterializer::reduce` (C4); they must not
+  reintroduce a second, narrower signature.
+- **CDL-SPEC10 B1/B2** depend on W4-9's `fe_sdk::legacy_identifier` (C5); they must not
+  reimplement the BLAKE3 domain hash locally.

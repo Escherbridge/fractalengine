@@ -9,7 +9,13 @@ status: proposed
 ---
 
 > **OWNER DECISIONS 2026-10-13 (R7, RUNBOOK §3) — supersede this plan wherever they differ:**
-> 1. **SPEC-10 is PRE-APPROVED with the draft's recommended defaults** — Phase B (B1–B3) builds immediately after A1 drafts the spec; the owner reviews afterwards. Record the approval as 'pre-approved 2026-10-13 (defaults), post-review pending' in the spec and decision log.
+> 1. **SPEC-10 is PRE-APPROVED with the draft's recommended defaults** — status: PRE-APPROVED 2026-10-13
+>    (owner pre-approved the draft's defaults; post-review pending). This is NOT "Phase B builds
+>    immediately after A1": only A1 (the spec + errata docs) was pulled early. Phase B still runs
+>    strictly in campaign order, after A2–A6 land AND after its own code dependencies: B2 needs
+>    `HexonArchiveIndex` from PAS-P3P4 S5 / PAS-P5; B3 needs CDL-W4-7's
+>    `RegisteredSchemaSet::register` (§8 C5/C6). Real build order: PAS-P3P4 → PAS-P5 → CDL-W4 →
+>    CDL-SPEC10 (A2..A6, then B1..B4) → role propagation.
 > 2. Confirmed: A3–A6 (generic asset + device payloads + format descriptors) are built in THIS campaign.
 
 # Campaign plan: SPEC-10 observation plane, reconciled with R5
@@ -54,11 +60,14 @@ small signed operation that references a sealed columnar observation hexon (D-CL
   code has landed. The R5 generic-asset + device-payload + format-descriptor model works end to end (DB,
   REST, MCP, BI query, two-peer replication) with flow tests written. Every slice has a review-and-fix
   verdict recorded.
-- **Phase B (waits on owner approval of SPEC-10):** the observation module, the columnar hexon codec, and
-  the shadow-mode batch sealer + hydrator are complete. They run in `dual_emit_shadow`, and the default
-  stays `legacy_only` (SPEC-8 §3 rule 1).
-- If the owner has not approved SPEC-10 when Phase A finishes, Phase B is **parked on that one decision**
-  (see §7). It is not dropped.
+- **Phase B — PRE-APPROVED 2026-10-13** (owner pre-approved the draft's defaults; post-review pending):
+  the observation module, the columnar hexon codec, and the shadow-mode batch sealer + hydrator are
+  complete. They run in `dual_emit_shadow`, and the default stays `legacy_only` (SPEC-8 §3 rule 1).
+- Phase B is no longer gated on owner approval — R7 (RUNBOOK §3) pre-approved the draft's defaults.
+  It still runs strictly **after** A2–A6 land, and after its own code dependencies: B2 needs
+  `HexonArchiveIndex` (PAS-P3P4 S5 / PAS-P5), B3 needs CDL-W4-7's `RegisteredSchemaSet::register`
+  (see §7, §8 C5/C6). Real campaign order: PAS-P3P4 → PAS-P5 → CDL-W4 → CDL-SPEC10 (A2..A6, then
+  B1..B4) → role propagation.
 
 ---
 
@@ -196,15 +205,18 @@ untrusted user input, so their review is a **security** review-and-fix.
 - `docs/spec/canonical-log/segment-shard-relay.md` (G3: new §3.4 + Errata entry)
 - `docs/spec/canonical-log/log-first-materialization.md` (G6: §7 rule 5 + Errata entry)
 - `docs/spec/canonical-log/AGENTS.md`
-- `conductor/decisions/canonical-data-log-20260808.md` (new **PENDING-RATIFICATION** rows only)
+- `conductor/decisions/canonical-data-log-20260808.md` (new rows, status **PRE-APPROVED 2026-10-13**
+  (owner pre-approved the draft's defaults; post-review pending) — not PENDING-RATIFICATION)
 - `conductor/tracks/canonical_data_log_20260808/metadata.json` (task status strings only)
 
 **Authority split (precedent: commit `c375beb`)**
 - **G3 and G6 are D-CL28-ratified gates.** G1/G2/G4/G5 had their erratum text and code land without a
   further approval round. G3/G6 follow the same path, under an "Owner-ratified under D-CL28" Errata
   subsection dated 2026-10-13.
-- **SPEC-10 itself** is a NEW normative spec. Its Status line reads `**Status:** Draft — owner approval
-  required before implementation.`, which is the exact wording SPEC-1..8 used at draft (`git show 70c5509`).
+- **SPEC-10 itself** is a NEW normative spec. R7 (RUNBOOK §3, 2026-10-13) pre-approved it, so its Status
+  line reads `**Status:** PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review
+  pending).` — NOT the SPEC-1..8 draft wording (`**Status:** Draft — owner approval required before
+  implementation.`, `git show 70c5509`), which no longer applies now that the gate has been pre-cleared.
 
 **SPEC-10 sections.** Follow the house layout: numbered terse normative rules, Design notes, Errata,
 required conformance tests.
@@ -221,7 +233,13 @@ required conformance tests.
      entries.
    - Contents: `observations/readings.parquet` and an optional `observations/payload_refs.parquet`.
    - Parquet profile: required columns and types, f64 allowed (the interior is opaque, SPEC-1 §2), and
-     pinned writer properties (zstd pages, `created_by` constant, statistics enabled).
+     pinned writer properties (**uncompressed pages**, `created_by` constant, statistics enabled).
+     **(A1 hand-back, corrected from an earlier "zstd pages" note in this plan.)** The shipped spec
+     (`observation-plane.md` §3.2 rule 1, D-CL32) pins uncompressed pages, not zstd: `parquet 54.3.1`
+     is built `default-features = false` (no `zstd`/`snap`/`lz4`/`flate2` compiled in,
+     `fe-query/Cargo.toml:15,29-30`), so a codec would need a Cargo change B2 does not own and would
+     turn every future codec-version bump into a byte-determinism hazard. B2's brief (below) matches
+     this.
    - **segmentby=entity**: entity = anchor `node_id`. A row group MUST NOT mix entities; an entity MAY
      span several row groups.
    - **orderby=hlc**: ascending `(hlc_wall_ms, hlc_counter, reading_id)` within an entity.
@@ -281,7 +299,7 @@ required conformance tests.
 **G6 erratum text (SPEC-4 §7 rule 5)**
 - Adds the observation input set to the canonical input identity.
 
-**Decision rows (marked PENDING-RATIFICATION)**
+**Decision rows (marked PRE-APPROVED 2026-10-13 — owner pre-approved the draft's defaults; post-review pending)**
 - D-CL30 SPEC-10 as a whole.
 - D-CL31 kind 5.
 - D-CL32 hexon-archive container + Parquet profile.
@@ -302,6 +320,11 @@ required conformance tests.
 implemented in A2/B1-B3.
 
 #### A2. G3 bulk-artifact lane + G6 source-identity vocabulary (fe-canonical-log, opus, M)
+
+**Brief note (AC-3).** Build order is PAS-P3P4 → PAS-P5 → CDL-W4 → CDL-SPEC10 → role propagation, so
+CDL-W4 lands before this slice starts. Before implementing, **re-ground every file:line citation in
+this slice and in §2's recon after CDL-W4 lands** — W4 touches `fe-canonical-log/src/compose.rs` and
+other files this slice edits, and line numbers cited above may have moved.
 
 **Owned files**
 - `fe-canonical-log/src/segment/artifact.rs`
@@ -357,17 +380,48 @@ and a crypto-gated body codec.
 
 #### A3. R5 data layer: descriptors, device payloads, GC, replication (fe-sdk + fe-runtime + fe-database, sonnet, L)
 
+**Review:** security review-and-fix (per §3's blanket rule for A3-A5 ingest-of-untrusted-input
+slices). **(AC-7)** `fe-database/src/handlers/asset_backfill.rs` is explicitly in scope: this
+slice is what turns its unguarded `asset_id`→path join from dead code into a reachable one (see
+the owned-files entry below), so the reviewer must refute the charset/ULID guard, not just the new
+device-payload surface. **(A1 hand-back, item 3.)** The new `observation_window_member`
+window-membership record is also in scope: the reviewer must refute that the inbound replication
+path cannot write to it under any input, since that table is the sole mechanism SPEC-10 §3.4
+rule 5 relies on to stop a peer from getting this node to sign a row it stamped with this node's
+own DID.
+
 **Owned files**
 - `fe-sdk/src/device_format.rs` (new) and `fe-sdk/src/lib.rs` (one `pub mod`)
 - `fe-runtime/src/messages.rs` (new variants: `RegisterDeviceFormat`, `ListDeviceFormats`,
   `InsertDevicePayloads`, `ListDevicePayloads`, plus replies; `IotReadingInput.payload_id: Option<String>`
-  with `#[serde(default)]`)
+  with `#[serde(default)]`; **(A1 hand-back, item 4)** an explicit `source_class: SourceClass`
+  field — device/connector/manual/simulation — on `InsertIotReadings`/`InsertDevicePayloads`, so
+  the class travels from the caller to the door instead of being inferred from `source_did`
+  (SPEC-10 §7.1 rule 6))
 - `fe-database/src/schema.rs` (`device_format` and `device_payload` tables, `iot_reading.payload_id`
-  optional field, indexes, `ALL_TABLE_NAMES`)
+  optional field, indexes, `ALL_TABLE_NAMES`; **(A1 hand-back, item 3, security)** a new
+  **local-only** `observation_window_member` table, never added to `ALL_TABLE_NAMES`'s replicated
+  set or to `replication_mode.rs` — it is structurally unreplicable by construction — see the
+  window-membership step below)
 - `fe-database/src/admin.rs` (`KnownTable`)
+- `fe-sim/src/session.rs` **(A1 hand-back, item 4, security.)** `session.rs:454-460` sends
+  `InsertIotReadings`/`InsertDevicePayloads` with `source_did` set to the simulation lab's host
+  peer DID, which is the exact pattern SPEC-10 §7.1 rule 6 forbids reading as `device` or
+  `connector`. Set the new `source_class = Simulation` field explicitly on every such send.
 - `fe-database/src/handlers/device_payload.rs` (new) and `fe-database/src/handlers/mod.rs`
 - `fe-database/src/handlers/iot_reading.rs` (validate and write `payload_id`)
 - `fe-database/src/handlers/asset_gc.rs`
+- `fe-database/src/handlers/asset_backfill.rs` **(AC-7, security.)** `asset_backfill.rs:106`
+  (`dir.join(format!("{asset_id}.{ext}"))`) joins a DB-sourced `asset_id` into a filesystem path
+  with no charset guard. This is safe today only because inbound `asset` rows fall to
+  `NotApplicable` (`replicated_row.rs:201-207`) — nothing peer-supplied reaches this join. This
+  slice makes anchored `asset` rows replicate insert-if-absent (§3.3 steps 1/3 above), so a
+  peer-chosen `asset_id` would reach this startup join on any machine that still has legacy
+  `imported/` files (the user's machine does). Add an asset_id charset/ULID guard before the path
+  join — one doctrine for path joins from data, matching P3P4 S1's `hexon_id` guard
+  (`fe-terrain/src/tiles/store.rs`, "shared cores + separate guards = drift", RUNBOOK §5) — so a
+  malformed or path-escaping `asset_id` is refused before `legacy_file`/the write path ever builds
+  a path from it.
 - `fe-database/src/replication_mode.rs`
 - `fe-database/src/handlers/replicated_row.rs`
 - `fe-database/src/lib.rs` (dispatch arms)
@@ -421,6 +475,22 @@ and a crypto-gated body codec.
      it into `Deferred Parent` and owns that change.
 4. Inventory: add `InsertIotReadings` (pre-existing drift), `RegisterDeviceFormat` and
    `InsertDevicePayloads` to `OTHER_DISPATCHED_MUTATION_KINDS`.
+5. **(A1 hand-back, item 3, security — SPEC-10 §3.4 rule 5.)** Record window membership **at the
+   door**, after the durable insert, in both `insert_readings_with_replication` and
+   `insert_device_payloads`: insert one row per accepted `reading_id`/`payload_id` into the new
+   local-only `observation_window_member` table (`{id, table, row_id, petal_id, window_bucket,
+   hlc_wall_ms, hlc_counter}`), keyed by `(petal_id, window_bucket)`. Only these two local door
+   handlers may write to it. The inbound replication path (`replicated_row.rs`) MUST NOT write to
+   it under any circumstance, including for a replicated row whose `source_did` names this node —
+   that is precisely the signing-oracle gap SPEC-10 §3.4 rule 5 and its Design-notes paragraph
+   "Why membership is recorded at the door" close. CDL-SPEC10 B3's sealer later reads *only* this
+   table to decide batch membership.
+6. **(A1 hand-back, item 4.)** Give the ingest door an explicit, caller-declared `source_class` on
+   every path (SPEC-10 §7.1 rule 6): the simulation lab now sets `source_class = Simulation`
+   explicitly (see `fe-sim/src/session.rs` above); REST/MCP callers set `device`/`connector`/
+   `manual` as appropriate (A4/A5 wire this through). The door records the caller-declared class;
+   it MUST NOT assign `device` or `connector` to anything the simulation lab sent, and MUST NOT
+   infer class from `source_did`.
 
 **Invariants**
 - §iot-readings durable-first-then-emit ordering.
@@ -429,6 +499,8 @@ and a crypto-gated body codec.
 - §schema-macro conventions.
 - §log-first-commit is unaffected: these are hot-plane tables, like iot_reading.
 - AGENTS anti-pattern 6: never swallow a channel send error.
+- **(A1 hand-back.)** `observation_window_member` is written only by the two local door handlers;
+  the review (AC-7, below) is widened to confirm the inbound replication path never touches it.
 
 **Flow tests** (`fe-database/tests/device_payload_test.rs`, through the public handlers and DbCommand dispatch, like `tests/iot_reading_test.rs`)
 - `device_payload_ingest_records_asset_list_and_lists_it_back`: declare format → two blobs + asset rows →
@@ -455,9 +527,32 @@ and a crypto-gated body codec.
   `asset.petal_id`, `device_payload.petal_id`, a `device_payload.asset_ids` entry anchored
   elsewhere, `device_format.verse_id`).
 - **(critic)** `an_editor_authored_inbound_device_format_is_denied_and_a_manager_one_applies`.
+- **(AC-7)** Two tests in `fe-database/src/handlers/asset_backfill.rs`'s own `#[cfg(test)] mod
+  tests` (in-file, alongside `backfill_moves_legacy_imports_into_the_blob_store` and
+  `backfill_is_a_no_op_without_a_legacy_dir`), not in this file:
+  - `backfill_ignores_path_escaping_asset_ids`: a legacy row whose `asset_id` is a path-escaping
+    or non-charset string (e.g. `../../etc/passwd`, an absolute path, embedded `..`/`/`/`\\`) is
+    refused by the new guard before `legacy_file`/the write path builds any path from it; the
+    report counts it as a typed failure, not `missing`, and no path outside the legacy dir is ever
+    touched. Mutation check: deleting the guard turns this red (the escaping id would otherwise
+    reach the join).
+  - A re-point test: a row whose **recorded** `content_hash` differs from the **file's actual**
+    hash — the backfill re-points the row to the file's real hash (never trusts the stale recorded
+    value), matching the W0 reviewer's note that this branch had no test.
 - **Note for role propagation:** RP-3 flips the "Viewer-authored row is denied" expectations in
   this file to `Deferred`, and RP-4 flips the unknown-parent rows to `Deferred Parent`. Both edits
   are owned there.
+- **(A1 hand-back, item 3, security)** `inbound_replicated_rows_never_enter_window_membership`: an
+  inbound-replicated `iot_reading` row and an inbound-replicated `device_payload` row, each
+  carrying this node's own DID as `source_did` (simulating a malicious peer), apply to the hot
+  tables under ordinary union semantics but leave `observation_window_member` empty; only the
+  locally-door-accepted sibling rows (same test, same window) appear in it. Mutation check: wiring
+  `apply_row_mode`'s inbound arm to also insert into `observation_window_member` turns this red.
+- **(A1 hand-back, item 4)** `simulated_readings_carry_source_class_simulation_not_inferred_from_did`:
+  a batch built the way `fe-sim/src/session.rs` builds it (host-peer DID as `source_did`) ingests
+  through the real door and records `source_class = Simulation`; an ordinary REST-authored reading
+  in the same test still records `device`. Deleting the explicit field and falling back to
+  `source_did`-based inference turns this red.
 
 #### A4. R5 REST surface: generic asset ingest + device routes (fe-api, sonnet, L; security review-and-fix)
 
@@ -567,7 +662,7 @@ All four use the same core functions as A4, so there is no second validation pat
 **Gate:** the Phase A review checkpoint. A critic/monitor pass checks that no unneeded deferral crept in;
 see §6.
 
-### Phase B: waits on owner approval of SPEC-10 (D-CL30..34)
+### Phase B: PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review pending) — runs after A2-A6 land and after CDL-W4 (D-CL30..34)
 
 #### B1. `observation` module: kind 5, payload codec, preview registry (fe-canonical-log, opus, M)
 
@@ -584,16 +679,24 @@ see §6.
 peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
 
 **Steps**
-1. Write the observation payload codec, using the A2 `ObservationSource`.
+1. Write the observation payload codec, using the A2 `ObservationSource`. Derive every
+   `Identifier32` anchor (the payload's `anchors` list, §4.3 key 6) via `fe_sdk::legacy_identifier`
+   (**dependency, A1 hand-back:** built once in CDL-W4-9; SPEC-10 §4.5 rule 2 forbids a second
+   implementation — see CDL-W4 campaign plan §9 critic amendment C5). Do not hash node ids locally.
 2. Add the kind-5 structural rule (`StructuralRuleError` variants).
 3. Add an `OperationKindAvailability` impl that knows kind 5.
-4. Write a reduction that emits only the reference mutation.
+4. Write a reduction that emits only the reference mutation, using CDL-W4-2's widened
+   `CausalMaterializer::reduce(meta, envelope_bytes, payload_facts)` (**dependency, A1 hand-back:**
+   CDL-W4-2 owns `traits.rs` and lands this signature change once, before this slice starts — see
+   CDL-W4 campaign plan §9 critic amendment C4; do not re-widen it here).
 
 **Invariants**
 - §ingress: `decode_and_admit` is the only door for peer bytes.
 - §unified-vocabularies: no new quarantine enum, and `class()` stays wildcard-free.
 - §Envelope invariants.
-- G2: `reduce` reads only `meta` + `envelope_bytes`.
+- G2: `reduce` still reads only the admitted operation's own facts — `meta`, `envelope_bytes`, and
+  (after CDL-W4-2) its own decrypted payload facts — never an external artifact fetch, presence
+  test, or length/statistics read (SPEC-10 §4.4 rule 2).
 
 **Flow tests**
 - `observation_batch_op_signs_admits_and_reduces_to_reference_only`: build → sign → `decode_and_admit` →
@@ -618,10 +721,16 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
 - `fe-query/src/AGENTS.md` (new §observation-hexon)
 - `fe-format/src/manifest.rs` (`HexonType::ObservationBatch`)
 - `fe-format/src/AGENTS.md` §manifest
+- `docs/hexon-format-spec.md` (**A1 hand-back, item 5:** the Hexon Types table is missing
+  `observation_batch`; add the row here, in the same slice as the code that introduces the
+  `HexonType` variant, so the doc and the enum cannot drift apart)
 
 **Steps**
-1. Write the writer: segmentby anchor, orderby `(hlc, reading_id)`, pinned writer properties, row-group
-   statistics on, plus `payload_refs.parquet`.
+1. Write the writer: segmentby anchor, orderby `(hlc, reading_id)`, pinned writer properties
+   (**uncompressed pages**, not zstd — see A1's corrected note above), row-group statistics on,
+   plus `payload_refs.parquet`. Compute the `anchor` column (§3.2 rule 3/4) via
+   `fe_sdk::legacy_identifier("node", node_id)` (**dependency, A1 hand-back:** the one shared
+   function CDL-W4-9 builds; do not reimplement the BLAKE3 domain hash here).
 2. Write the stored-zip `.hexon` packer using the fe-format archive, with fixed timestamps.
 3. Write the reader/validator. It enforces the profile and returns typed errors. **(Critic, one
    zip reader.)** Open the `.hexon` through `fe_format::archive_index::HexonArchiveIndex` (built
@@ -633,6 +742,10 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
 **Invariants**
 - fe-format §decompression-limits on import.
 - `TilesetMeta`-style additive serde for any new manifest field (`fe-format/src/AGENTS.md` §scale).
+- **(A1 hand-back.)** Pages are uncompressed (D-CL32, spec §3.2 rule 1) — never zstd. `parquet
+  54.3.1` is pinned `default-features = false` (`fe-query/Cargo.toml:15,29-30`); enabling a codec
+  is a Cargo change this slice does not own, and a future codec bump would be a byte-determinism
+  hazard against `same_rows_any_input_order_produce_identical_hexon_bytes`.
 
 **Flow tests**
 - `observation_hexon_round_trip_honours_segment_and_order_profile`: readings for 3 anchors written in
@@ -667,7 +780,10 @@ peer-bytes ingress door (`decode_and_admit`) and a preview decoder.
 node key and appends to the verified log.
 
 **Steps**
-1. Write the sealer. For a closed `(petal, bucket)` window of hot rows:
+1. Write the sealer. For a closed `(petal, bucket)` window, selected **only** from A3's
+   door-recorded `observation_window_member` rows (**A1 hand-back, security — SPEC-10 §3.4 rule
+   5:** never by scanning `iot_reading`/`device_payload`, and never by filtering on `source_did`,
+   a peer-authored column — see A3's window-membership step):
    1. build the hexon (B2);
    2. seal it as BulkArtifact/Shard (A2);
    3. seal the stats artifact;
@@ -675,7 +791,8 @@ node key and appends to the verified log.
    5. append through the `canon_log` append store.
    It runs **only** when `MigrationFlags::mode()` is `DualEmitShadow`/`ShadowRebuild`. The default is
    `legacy_only` (SPEC-8 §3 rule 1).
-2. Materialize the reference rows.
+2. Materialize the reference rows, via CDL-W4-2's widened `reduce` (**dependency, A1 hand-back:**
+   see the note under B1).
 3. Write the hydrator: `materialize/shard` into a separate catalog. A missing artifact is reported as
    unavailable and is never guessed.
 4. Rebuild from the log.
@@ -688,6 +805,9 @@ node key and appends to the verified log.
 - Wiring the sealer to live ingest happens only behind the mode flag; the flag is never flipped by
   parity (SPEC-8 §3 rule 4).
 - No network.
+- **(A1 hand-back.)** Window membership is read, never re-derived: the sealer trusts only A3's
+  door-recorded `observation_window_member` rows. It never infers membership from hot-table
+  content or from `source_did`.
 
 **Flow tests**
 - `legacy_only_ingest_creates_no_observation_candidate`: the default path stays byte-identical.
@@ -697,6 +817,11 @@ node key and appends to the verified log.
 - `rebuild_from_log_reproduces_observation_reference_rows`.
 - `missing_hexon_surfaces_unavailable_at_hydration_not_reduce`.
 - `analytics_identity_records_the_batches_it_read`: the G6 end-to-end check.
+- **(A1 hand-back)** `sealer_never_signs_replicated_observations` (named in SPEC-10 §10 test 15,
+  previously missing from this slice's own list): a replicated `iot_reading`/`device_payload` row
+  whose `source_did` names this node — present in the hot tables via ordinary union replication,
+  but absent from `observation_window_member` by A3's construction — is never selected into a
+  sealed batch. The sealer's window query cannot see it by construction, not by a filter.
 
 #### B4. Phase B docs + approval close (docs, haiku, S)
 
@@ -730,10 +855,16 @@ node key and appends to the verified log.
   - `fe-format/src/AGENTS.md`
   - `fe-sdk/src/AGENTS.md`
   - `fe-test-harness/src/AGENTS.md`
-- **Decision register** rows D-CL30..34 (PENDING-RATIFICATION). Track `metadata.json` task strings.
+- **Decision register** rows D-CL30..34, status **PRE-APPROVED 2026-10-13** (owner pre-approved the
+  draft's defaults; post-review pending) — not PENDING-RATIFICATION. Track `metadata.json` task strings.
 - **Handed to the bookkeeping owner** (not edited here): ledger rows `CDL-SPEC10` (→ draft submitted /
   Phase A done), `DB-TS-RETENTION` (now blocked only on cutover), and a new row for the R5 device-payload
-  model; RUNBOOK §2/§8.
+  model; RUNBOOK §2/§8. **(A1 hand-back, 2026-10-13.)** The five cross-slice items from the A1
+  drafter's hand-back (reduce() payload facts, `legacy_identifier`, door-recorded window
+  membership, fe-sim `source_class`, and the `HexonType`/`commit-preview-wire.md` doc follow-ups —
+  see §8 critic amendments C9-C14) are folded into this plan and the CDL-W4 plan directly; the
+  orchestrator should reflect their landing in the `CDL-SPEC10` ledger row as each owning slice
+  closes.
 
 ---
 
@@ -764,8 +895,11 @@ node key and appends to the verified log.
    must preserve the `device_payload` / `asset` / `device_format` arms.
 8. **Build weight.** B3 makes fe-database compile arrow/parquet. That is not a new compile unit for the
    workspace, but `cargo check -p fe-database` becomes slower. Accepted.
-9. **Approval latency.** If the owner has not reviewed SPEC-10, Phase B cannot start. Phase A is
-   deliberately self-sufficient value, so nothing is wasted.
+9. **Dependency latency (superseded 2026-10-13 by R7's pre-approval).** SPEC-10 approval is no
+   longer the gate on Phase B start — R7 pre-approved the draft's defaults. The remaining gates are
+   code dependencies: B2 waits on `HexonArchiveIndex` (PAS-P3P4/PAS-P5), B3 waits on CDL-W4-7's
+   `RegisteredSchemaSet::register`, and both wait on A2-A6. Phase A is deliberately self-sufficient
+   value regardless, so nothing is wasted while those land.
 
 ---
 
@@ -775,7 +909,7 @@ node key and appends to the verified log.
 |---|---|---|
 | G3 / G6 code + errata text | **No.** Done in A1/A2. | D-CL28 already ratified them; precedent `c375beb`. |
 | R5 descriptors, device payloads, generic asset ingest, MCP/BI parity, two-peer sync | **No.** Done in A3-A6. | Ratified by R5. *Note:* this pulls the R5 slice forward from the "second campaign" assumption in RUNBOOK §4; see §7 assumption 1. |
-| Phase B (observation module, hexon codec, shadow sealer/hydrator) | **Waits, not deferred.** | Missing **user decision**: SPEC-10 approval. Policy: SPEC-8 §3 rule 3 and §7.1, track plan Workstream S. |
+| Phase B (observation module, hexon codec, shadow sealer/hydrator) | **Sequenced, not deferred.** | **No longer a missing user decision** — R7 (RUNBOOK §3, 2026-10-13) pre-approved SPEC-10's defaults. Phase B now waits only on its own code dependencies (B2 needs `HexonArchiveIndex` from PAS-P3P4/PAS-P5; B3 needs CDL-W4-7's `RegisteredSchemaSet::register`) and on A2-A6 landing first. See §7.1 and SPEC-8 §3 rule 3. |
 | Decoder plugins (Rhai/Wasm → readings) | Yes. The seam lands now (`payload_id` link + `DecoderIdentity` in G6). | **Ratified sequencing** (R5: "decoders after the host is wired") + **hard dependency** on PLUG-HOST (L, dormant host, mandatory sandbox security review). Trigger: PLUG-HOST scheduled. |
 | Preview *delivery* of `telemetry_sample_v1` over `/ws/canonical` | Yes. The codec + registry land in B1. | **NO_GO class:** CANON-WS mount (network exposure, owner-gated). |
 | Canonical network replication of batches/segments, relay seeding | Yes. | **NO_GO class:** CDL-NET (`network_enablement: prohibited`). |
@@ -795,17 +929,22 @@ one of: missing user decision, NO_GO, hard external dependency, or explicit rati
 
 ### 7.1 Genuine user decisions
 
-1. **Approve SPEC-10 (D-CL30..34).** This is the only gate on Phase B. The draft presents each choice with
-   its default and the alternatives:
+1. **SPEC-10 (D-CL30..34): PRE-APPROVED 2026-10-13** (owner pre-approved the draft's defaults;
+   post-review pending) — R7, RUNBOOK §3. This is **no longer a gate on Phase B**; Phase B proceeds
+   on the draft's recommended defaults, sequenced after A2-A6 and after its own code dependencies
+   (§6). The remaining step is the owner's **post-review** of each choice below, which the owner
+   may still revise after the fact:
 
-   | Choice | Default | Alternative |
+   | Choice | Default (now implemented) | Alternative |
    |---|---|---|
    | Operation kind | dedicated kind 5 | kind 1 + registered schema |
    | Hexon container | `.hexon` stored-zip containing Parquet | a bare Parquet blob, or a CBOR-wrapped Parquet |
    | Entity (segmentby) | anchor `node_id` | `(node_id, metric)` |
    | Preview registry | `1 = telemetry_sample_v1`, reserved ranges | — |
 
-   The user's standing rule is that the user approves specs, so this cannot become an assumption.
+   The user's standing rule is that the user approves specs; R7 recorded that approval as
+   pre-approved-with-defaults, so the post-review (not the initial approval) is the remaining step
+   and does not block Phase B.
 
 ### 7.2 Assumptions (sensible defaults, with reversal cost)
 
@@ -843,16 +982,22 @@ owns a shared piece; this plan notes the dependency.
 
 **Edits made.**
 
-| # | Change | Class |
-|---|---|---|
-| C1 | A2 owns the `BulkArtifact` arm in `compose.rs` (W4-4's wildcard-free `LaneClass` match), and has a test exercising it. | cross-plan collision / ordering |
-| C2 | A3 owns `fe-test-harness/src/peer.rs` (exhaustive `DbCommand` match) and `fe-runtime/src/app.rs` (correlated reply routing). | missing files (compile + silent non-delivery) |
-| C3 | A3 inbound `device_format` raised to Manager+, matching A4's local gate (strictest reader / no guard drift). | security |
-| C4 | A3 inbound arms check referential confinement to the replica's verse; two tests added. Role propagation RP-4 inherits them and only adds `Deferred Parent`. | security + cross-plan (P2P-REF-CONFINE) |
-| C5 | B2 reads `.hexon` through `HexonArchiveIndex` (PAS-P4/P5); no third zip reader. | cross-plan collision |
-| C6 | B3 registers kind 5 via CDL-W4-7's `RegisteredSchemaSet::register` and owns `canon_log/verifier.rs`. Without it every sealed batch quarantines as `UnknownKind`. | ordering bug |
-| C7 | A2, B1 and B3 reviews upgraded to **security** review-and-fix (crypto lane, ingress rule, node-key signing). | missing security review |
-| C8 | The directory-asset / placeholder rows are re-classed as out-of-scope (other tracks). The §4 "second campaign" cite is flagged as an assumption. | deferral justification |
+| # | Date | Source | Change | Class |
+|---|---|---|---|---|
+| C1 | 2026-10-13 | critic pass | A2 owns the `BulkArtifact` arm in `compose.rs` (W4-4's wildcard-free `LaneClass` match), and has a test exercising it. | cross-plan collision / ordering |
+| C2 | 2026-10-13 | critic pass | A3 owns `fe-test-harness/src/peer.rs` (exhaustive `DbCommand` match) and `fe-runtime/src/app.rs` (correlated reply routing). | missing files (compile + silent non-delivery) |
+| C3 | 2026-10-13 | critic pass | A3 inbound `device_format` raised to Manager+, matching A4's local gate (strictest reader / no guard drift). | security |
+| C4 | 2026-10-13 | critic pass | A3 inbound arms check referential confinement to the replica's verse; two tests added. Role propagation RP-4 inherits them and only adds `Deferred Parent`. | security + cross-plan (P2P-REF-CONFINE) |
+| C5 | 2026-10-13 | critic pass | B2 reads `.hexon` through `HexonArchiveIndex` (PAS-P4/P5); no third zip reader. | cross-plan collision |
+| C6 | 2026-10-13 | critic pass | B3 registers kind 5 via CDL-W4-7's `RegisteredSchemaSet::register` and owns `canon_log/verifier.rs`. Without it every sealed batch quarantines as `UnknownKind`. | ordering bug |
+| C7 | 2026-10-13 | critic pass | A2, B1 and B3 reviews upgraded to **security** review-and-fix (crypto lane, ingress rule, node-key signing). | missing security review |
+| C8 | 2026-10-13 | critic pass | The directory-asset / placeholder rows are re-classed as out-of-scope (other tracks). The §4 "second campaign" cite is flagged as an assumption. | deferral justification |
+| C9 | 2026-10-13 | A1 hand-back | `CausalMaterializer::reduce` needs the admitted payload's extracted facts for a kind-5 reduction (SPEC-10 §4.4 rule 2, §12 seam) and W4-9's `node-transform-v1` has the identical need. Solved once in CDL-W4-2 (`traits.rs`, owns the signature); B1 and B3 consume the widened signature rather than re-widening it. | cross-plan API gap |
+| C10 | 2026-10-13 | A1 hand-back | No ULID→`Identifier32` mapping existed. SPEC-10 §4.5 requires the provisional `fe-legacy-identifier-v1` mapping to equal SPEC-8's candidate scope derivation (§4.2 rule 2), which W4-9 also needs. Implemented once as `fe_sdk::legacy_identifier` in CDL-W4-9; B1 (`anchors`) and B2 (Parquet `anchor` column) consume it. | cross-plan API gap |
+| C11 | 2026-10-13 | A1 hand-back | **Security.** Window membership for sealing must be recorded at the ingest door (A3), never selected by B3 scanning hot tables or by `source_did` — a peer could otherwise stamp this node's DID on a replicated row and get it signed (a signing oracle). A3 now writes a local-only `observation_window_member` table at the door; B3's sealer reads only that table. `sealer_never_signs_replicated_observations` (SPEC-10 §10 test 15) is added to B3's flow tests, and a door-side regression test is added to A3. | security |
+| C12 | 2026-10-13 | A1 hand-back | The `simulation` source class had no carrier: fe-sim sends `InsertIotReadings`/`InsertDevicePayloads` with `source_did` = host DID (`fe-sim/src/session.rs:454-460`), which SPEC-10 §7.1 rule 6 forbids reading as `device`/`connector`. A3 threads an explicit `source_class` through `fe-runtime/src/messages.rs` and sets it in `fe-sim/src/session.rs` (now an A3-owned file), with a test. | security + cross-plan (missing carrier) |
+| C13 | 2026-10-13 | A1 hand-back | Doc follow-ups: the Hexon Types table in `docs/hexon-format-spec.md` is missing `observation_batch` — routed to B2, alongside the code that adds the `HexonType` variant (not B4) so doc and enum cannot drift apart. `commit-preview-wire.md`'s registry cross-reference was already a B4-owned file (confirmed, no change needed). B2's dependency on `HexonArchiveIndex`/PAS-P3P4 S5 was already noted in §1.3, §7.1, §9 (confirmed, no change needed). The `CDL-SPEC10` ledger-row update is flagged for the bookkeeping orchestrator in §4 (not edited here). | doc follow-ups / confirmation |
+| C14 | 2026-10-13 | A1 hand-back | zstd was replaced by uncompressed Parquet pages: an earlier internal note in A1's §3 planning text said "zstd pages", but the shipped spec (§3.2 rule 1, D-CL32) pins uncompressed pages — `parquet 54.3.1` is built `default-features = false` (no codec compiled in), so zstd would need a Cargo change B2 does not own and would risk byte determinism. A1's text and B2's brief are both corrected to match the spec. | spec/plan drift |
 
 **Cross-plan note.** A6's device-payload blob fetch uses `SyncCommand::FetchBlob` over the blob
 ALPN. PAS-P3P4 S8b may add an iroh-blobs request filter, and its brief requires that filter to
