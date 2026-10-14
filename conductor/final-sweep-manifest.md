@@ -17,7 +17,8 @@ All of these must pass green before pushing the campaign to origin.
 | Step | Command / Procedure | Evidence |
 |---|---|---|
 | **Unit + integration tests** | `cargo test --workspace` (3452 baseline) | Test summary with count + zero failures |
-| **Harness scenario 16** | `cargo run -p fractalengine-test-harness` (real loopback iroh, all 15 scenarios ×2) | Terminal output: `15/15 ×2 scenarios pass` |
+| **Harness scenarios** | `cargo run -p fractalengine-test-harness` (real loopback iroh, all 16 scenarios ×2 — W1 added scenario 16 `two_peer_tileset_stream`, `fe-test-harness/src/main.rs:109`) | Terminal output: `16/16 ×2 scenarios pass` |
+| **Feature-matrix gate (AC-19)** | `cargo test -p fe-terrain --features fetch,render`; `cargo test -p fe-hexon --all-features`; `cargo test -p fe-format --no-default-features` | Each command's own test summary pasted in; the A7 conformance tests `http_source_passes_conformance` and `in_memory_p2p_source_passes_conformance` must appear **by name** in the `--all-features` output (a vacuous "0 tests matched" is a FAIL, not a skip — ties to W0 review's "zero-match test filter passed vacuously" precedent) |
 | **fe-sync store migration** | `FE_REQUIRE_STORE_FIXTURE=1 cargo test -p fe-sync --lib p2p_store_migration` | Test pass; `0.35 → 1.x store upgrade` confirmed |
 | **fe-database ignored tests** | `cargo test -p fe-database -- --ignored` (15 deferred tests; judge each) | Judgment table: PASS / SKIP reason / FIX needed for each test |
 | **BI egress e2e** | `scripts/bi-egress-verify.ps1` | Output pasted into `conductor/tracks/analytics_egress_20260714/evidence.md` §X with DuckDB rowcount + schema |
@@ -164,6 +165,7 @@ Generated 2026-10-14 from the W1 journal (`wf_d8699636-cf0`). Base `53a4c4c` →
 ## Signoff checklist
 
 - [ ] All core suite steps executed and passing
+- [ ] Feature-matrix gate green (fe-terrain fetch+render, fe-hexon all-features, fe-format no-default-features) and the A7 conformance tests confirmed present by name in the output (AC-19)
 - [ ] W0/W0b/W0c/W0d must-cover lists reconciled and verified
 - [ ] W1 PAS-P3P4 must-cover list appended and verified
 - [ ] Zero test failures across all scopes

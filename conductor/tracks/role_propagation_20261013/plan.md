@@ -742,6 +742,8 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 - `fe-database/src/handlers/invite.rs`
 - `fe-database/src/handlers/inbound_admissions.rs` (the `Parent` reasons)
 - `fe-database/src/AGENTS.md` (§handlers `replicated_row` paragraph)
+- **(Critic tick 4, AC-21(d).)** `fe-database/src/handlers/petal_terrain.rs` — adds the
+  missing Editor+ gate so a local edit can never diverge from what peers will accept.
 
 **Steps:**
 1. **Immutable identity.** For an inbound verse row on an existing verse, any change to
@@ -786,6 +788,20 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
    `resolve_role` walks up the chain. Over the §2.2 cache, this is `role_at`, the same function
    that grant authority and the sync-plane gates use (§2.5). An Editor appointed by a petal
    Manager therefore passes in that petal and is Deferred elsewhere.
+7. **(Critic tick 4, AC-21(d) — the missing local write-path gate.)**
+   `set_petal_terrain_handler` (`fe-database/src/handlers/petal_terrain.rs:16`) never calls
+   `authorize_edit`, although W1 S6 (PAS-P3P4) made petal terrain replicate and op-log the same
+   as `petal_render_distance.rs`. Today a Viewer's local `SetPetalTerrain` writes and replicates
+   the row; every peer's own write-path check (`is_valid_inbound_petal_terrain` plus the row's
+   role gate, §6 step 6 above) then denies the inbound echo, so the Viewer's local state
+   silently diverges from the verse with no error surfaced. Fix: give
+   `set_petal_terrain_handler` the same shape as `set_petal_render_distance_handler`
+   (`petal_render_distance.rs:44-56`) — thread `local_did: &str` and `auth: &CallerAuth`,
+   resolve the petal's scope with `resolve_petal_scope_handler`, and call
+   `crate::handlers::visibility_groups::authorize_edit(db, local_did, auth, scope,
+   "SetPetalTerrain")` before the strict-shape check and before the op-log entry is built. The
+   `DbCommand::SetPetalTerrain` dispatch site picks up the caller's identity/auth the same way
+   the render-distance command already does.
 
 **Invariants:**
 - §geometry-inserts (strip, then cast).
@@ -816,6 +832,10 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   narrowed bootstrap window does not reopen W4 risk 2).
 - **Owned-file addition (critic):** `fe-database/tests/device_payload_test.rs` (CDL-SPEC10 A3
   unknown-parent rows).
+- **(critic tick 4)** `a_viewers_local_set_petal_terrain_is_refused_and_nothing_is_written`
+  (AC-21(d)): a Viewer-scoped caller's local `SetPetalTerrain` returns the `authorize_edit`
+  error and the petal row's `terrain` column is unchanged — no op-log entry, no replication
+  send.
 
 ### RP-5: sync-plane role view and gates · L · sonnet (opus if the quarantine gets hairy)
 
@@ -839,6 +859,9 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
   - a new §role-view.
 - Not edited: `fe-sim/src/net.rs` (`SimVerseReplicator`) inherits the provided method's
   default.
+- **(Critic tick 4, AC-21(e).)** `fe-sync/src/docs_engine.rs` — the blob-ALPN request filter.
+- **(Critic tick 4, AC-21(e).)** `fe-sync/src/AGENTS.md` §tileset-security "Risk 2" paragraph,
+  resolved (its own revisit trigger fires in this slice).
 
 **Steps:**
 1. Implement §2.5 using `fe_policy::role_grants`:
@@ -860,6 +883,18 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
    - the drain feeds `handle_inbound_row_change`.
 5. Add a `drop_reason::INSUFFICIENT_ROLE` for a requester below Viewer at the requested
    petal's scope. It fires when `default_access = none` and no grant reaches that petal.
+6. **(Critic tick 4, AC-21(e) — the blob-ALPN request filter, deferred at W1 S8b.)**
+   `fe-sync/src/AGENTS.md` §tileset-security "Risk 2" records the exact revisit trigger:
+   "when RP replicates roles, intercept `RequestMode` with an `EventSender` that admits a
+   connection whose `EndpointId` maps to a role in any open verse." This slice is that moment
+   — it already builds the sync-plane role view (`role_at` over the fabric) the filter needs.
+   Implement it: `BlobsProtocol::new(&store, Some(event_sender))` where the `EventSender`
+   resolves the requesting `EndpointId`'s DID (the existing P2P identity mapping) and admits
+   the request only if that DID holds Viewer+ in some open verse whose role view currently
+   accounts for the requested hash (via the `TilesetProviderMap`/download ledger bookkeeping
+   `TilesetTransfer` already maintains, so row-entry content and `two_peer_blob_exchange`
+   fetches that carry no tileset context are unaffected, exactly as the risk note requires). A
+   requester with no role in any open verse is refused.
 
 **Invariants:**
 - The §inbound-apply self-drain rule: quarantine re-evaluation is synchronous and never awaits
@@ -895,6 +930,11 @@ Size key: S ≤ 300 LoC, M ≤ 800, L > 800 (tests included).
 - `fabric_and_db_materialize_identical_effective_roles_from_the_same_statements` (cross-plane
   parity on a shared fixture). The fixture includes subtree grants, an owner pin, and a
   Manager `viewer` statement that must write no cache row.
+- **(critic tick 4)** `a_verse_stranger_is_refused_the_blob_alpn_and_an_open_verse_viewer_is_served`
+  (AC-21(e)): two requesters dial the same provider over the blob ALPN for a tileset root the
+  provider is serving — the caller holding Viewer+ in the open verse that root belongs to is
+  served; the caller with no role in any open verse is refused; the existing row-entry /
+  `two_peer_blob_exchange` fetch inside an open verse is unaffected.
 
 ### RP-6: settlement race closed · L · opus
 
@@ -1229,3 +1269,12 @@ RP-5's role view is the natural source for it later. That is an option, not a de
 **Deferral audit:** every row stands. Each is NO_GO (relayed attribution / signed ops = canonical
 network), a missing user decision (namespace rotation; the D-23 relay-host pin), or user-ratified
 sequencing (D-32 FR-4 "after role propagation").
+
+### Tick 4 (2026-10-14) — source: critic tick 4
+
+| # | Change | Class |
+|---|---|---|
+| C8 | `set_petal_terrain_handler` never calls `authorize_edit` though W1 S6 made petal terrain replicate — a Viewer's local edit silently diverges from peers. **RP-4** adds the gate (§3 RP-4 step 7, owned-file bullet, and flow test above). | missing local gate (AC-21(d)) |
+| C9 | The blob-ALPN request filter (`fe-sync/src/AGENTS.md` §tileset-security "Risk 2") was deferred at W1 S8b with an explicit revisit trigger ("when RP replicates roles …"). This section's own "Corrected cross-cut" paragraph above called it only "an option, not a dependency," so the trigger could never fire. **RP-5** is now scheduled as the moment it fires (§3 RP-5 step 6, owned-file bullets, and flow test above), tied to the role view RP-5 already builds. | scheduled deliverable, previously unreachable (AC-21(e)) |
+
+Both logged against `.omc/accountability/tick-20261014-0149.md` AC-21(d) and AC-21(e).

@@ -35,8 +35,8 @@ fractalengine/          (workspace root)
 ├── fe-ui/              All egui UI, domain managers, and Bevy plugin wiring
 ├── fe-renderer/        Orbit camera controller (OrbitCameraController + CameraControllerPlugin)
 ├── fe-database/        Async DB functions (SurrealDB embedded, SurrealKV backend), called from a spawned thread; session-cache auth helpers live at fe_database::session_cache (absorbed from fe-auth 2026-07-17)
-├── fe-sync/            P2P sync thread (iroh-docs); SyncCommand / SyncCommandSenderRes
-├── fe-runtime/         Shared message types: DbCommand, DbResult, SyncCommand
+├── fe-sync/            P2P sync thread (iroh-docs); SyncCommand / SyncCommandSenderRes; TilesetTransfer (resumable chunked blob download/publish service, fe-sync/src/tileset_transfer.rs)
+├── fe-runtime/         Shared message types: DbCommand, DbResult, SyncCommand; BlobTransport trait (transport-agnostic blob fetch/publish, fe-runtime/src/blob_transport.rs)
 ├── fe-network/         libp2p network thread (no iroh dependency — its iroh_blobs/iroh_docs modules are local placeholders; the real iroh stack lives in fe-sync)
 ├── fe-webview/         Embedded webview for node webpage_url display (Tauri backend default)
 ├── fe-identity/        Identity key management
