@@ -9,7 +9,7 @@ use crate::capability::topic::derive_topic_key;
 use crate::envelope::{Hlc, Identifier32, Scope};
 use crate::retention::crypto_shred::{
     crypto_shred as run_crypto_shred, CryptoShredError, DestructionDisposition, ScopeKeyId,
-    ScopeKeyStore as RetentionScopeKeyStore,
+    ShredLedger,
 };
 use crate::segment::checkpoint_proof::ScopeKeyResolver;
 use crate::segment::hashseq::LaneKey;
@@ -21,8 +21,9 @@ use super::CryptoError;
 /// Local custody of scope-key material, keyed by `(scope, epoch)` (§10.1.4).
 ///
 /// Reads hand out a borrowed [`SealingKey`], never a copy, so no implementation can produce key
-/// bytes that outlive the store's zeroizing drop. Wave 3's `fe-database` store implements this
-/// trait and [`RetentionScopeKeyStore`] over persistent storage.
+/// bytes that outlive the store's zeroizing drop. A production `fe-database` store implements
+/// this trait and `retention::crypto_shred::ShredLedger` over persistent storage (W4-7); see
+/// `src/crypto/AGENTS.md` §scope-key-lifecycle.
 pub trait ScopeKeyStore {
     /// The controlled key for this scope and epoch, or `None` when this store holds none.
     fn scope_key(&self, key: &ScopeKeyId) -> Option<&SealingKey>;
@@ -100,12 +101,7 @@ impl ScopeKeyStore for InMemoryScopeKeyStore {
     }
 }
 
-impl RetentionScopeKeyStore for InMemoryScopeKeyStore {
-    fn stop_reissue(&mut self, key: &ScopeKeyId) -> Result<(), CryptoShredError> {
-        ScopeKeyStore::stop_issuance(self, key);
-        Ok(())
-    }
-
+impl ShredLedger for InMemoryScopeKeyStore {
     fn destroy_scope_key_and_wraps(&mut self, key: &ScopeKeyId) -> Result<(), CryptoShredError> {
         let Some(mut material) = self.keys.remove(key) else {
             return Err(CryptoShredError::KeyNotControlled { key: key.clone() });
@@ -123,10 +119,6 @@ impl RetentionScopeKeyStore for InMemoryScopeKeyStore {
     ) -> Result<(), CryptoShredError> {
         self.dispositions.push(disposition);
         Ok(())
-    }
-
-    fn has_controlled_key(&self, key: &ScopeKeyId) -> bool {
-        self.keys.contains_key(key)
     }
 }
 
@@ -283,7 +275,7 @@ impl<S: ScopeKeyStore> ScopeKeyLifecycle<S> {
     }
 }
 
-impl<S: ScopeKeyStore + RetentionScopeKeyStore> ScopeKeyLifecycle<S> {
+impl<S: ScopeKeyStore + ShredLedger> ScopeKeyLifecycle<S> {
     /// Runs the SPEC-5 §5.5.4 crypto-shred sequence against this store (§10.3.3).
     ///
     /// Erasure is key destruction only: immutable ciphertext, already-delivered wraps, and any
@@ -483,10 +475,6 @@ mod tests {
         assert_eq!(lifecycle.store().dispositions()[0], disposition);
 
         assert!(lifecycle.store().scope_key(&key).is_none());
-        assert!(!RetentionScopeKeyStore::has_controlled_key(
-            lifecycle.store(),
-            &key
-        ));
         assert_eq!(
             lifecycle.get_or_generate(&scope, 4),
             Err(CryptoError::IssuanceStopped { epoch: 4 })

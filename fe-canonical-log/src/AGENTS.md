@@ -176,7 +176,7 @@ code parses JSON.
 | `checkpoint` | SPEC-5 | W2-branch-checkpoint — implemented |
 | `segment` | SPEC-6 | W2-segment — implemented |
 | `wire` | SPEC-7 | W2-wire — implemented |
-| `compose` | cross-cutting facade | Wave 3 integration |
+| `compose` | cross-cutting facade | W4 integration — implemented |
 
 Unimplemented modules are one-line doc-comment placeholders. They exist so `lib.rs` compiles
 today and so module boundaries are settled before parallel slices start writing code.
@@ -243,6 +243,12 @@ other.
   and `compose::ChainCapabilityVerifier` its only production wire `CapabilityVerifier`** (W4-3).
   Both reach SPEC-3 through `capability::verify_chain_bytes` and nothing else, so one §2.4
   implementation sits behind admission and session binding alike. See §composed-verifiers.
+- **`crypto::scope_key::ScopeKeyStore` is the crate's only scope-key custody trait** (W4-4).
+  `retention::crypto_shred` previously defined its own, near-duplicate `ScopeKeyStore` (four
+  destruction-shaped methods, no point-lookup method) under the same name; it is now
+  `retention::crypto_shred::ShredLedger`, the destruction/audit half only, and `crypto_shred`
+  takes the blanket bound `S: ScopeKeyStore + ShredLedger`. See `src/retention/AGENTS.md`
+  §crypto-shred.
 
 ## §composed-verifiers — the production verifiers, and every judgement call in them
 
@@ -326,6 +332,43 @@ the persistent view) and every per-operation caveat input is absent: a leaf carr
 allowlist caveat cannot bind a session, and each operation is re-verified at admission anyway.
 Requester binding is only as strong as the connection's authentication, which the NO_GO
 `/ws/canonical` mount (CANON-WS) owns; nothing here mounts or instantiates it.
+
+## §crate-surface — the curated prelude, and the frozen module tree underneath it
+
+`lib.rs`'s `pub mod` list (§module-ownership) is still the complete, authoritative module tree —
+every existing full-path import (`fe_canonical_log::materialize::traits::...`, and so on) keeps
+working unchanged; nothing was renamed, moved, or hidden. `lib.rs::prelude` (W4-4) adds a second,
+flat, curated surface on top of it for the types a downstream crate reaches for most: the
+production composed verifiers and storage adapters, the admission/append vocabulary, materializer
+identity, and the wire commit pipeline. It is pure re-export — grep at W4-4 time found no
+downstream crate (`fe-database`, `fe-api`) importing a *shallow* `fe_canonical_log::X` path today,
+only full module paths, so there was nothing shallow to preserve; `prelude` is additive, not a
+replacement for any existing import a caller has already written. Add a new type to `prelude` only
+when it is the kind of thing a caller reaches for across module boundaries routinely — not every
+public type belongs here, or the curation is worthless.
+
+## §trait-composition-map — the "0 NO_CALLER" census (ledger CDL-W4)
+
+One row per trait from §2's original gap table (campaign plan, `campaign-plan-w4-20261013.md`),
+production implementor, and production caller. "No production caller yet" names the slice that
+owns wiring it, not a dormant gate — the implementor already exists and is exercised by this
+crate's own tests; what is missing is the *durable*, database-backed caller a later slice adds.
+
+| Trait | Production implementor | Production caller |
+| --- | --- | --- |
+| `CandidateVerifier` | `compose::ComposedCandidateVerifier` (W4-3) | `fe-database canon_log::verifier::durable_candidate_verifier` (W4-7, not yet landed) |
+| wire `CapabilityVerifier` | `compose::ChainCapabilityVerifier` (W4-3) | none — `/ws/canonical` (CANON-WS) is NO_GO; never mounted or instantiated |
+| `SealedArtifactStore` | `compose::ByteStoreSealedArtifactStore` (W4-4) | `fe-database canon_log::artifact_store::SurrealArtifactStore` (W4-7, not yet landed) |
+| `ProofEnvironment` | `compose::SealedProofEnvironment` (W4-4) | none yet — its only real consumer, checkpoint bootstrap/seeding from received segments, is relay/peer distribution and stays NO_GO; exercised directly by this crate's own tests and by W4-5's `cross_spec_integration.rs` |
+| `ScopeKeyResolver` | `crypto::scope_key::LaneScopeKeyResolver` (W3-crypto) | `compose::SealedProofEnvironment` (W4-4), in-process |
+| `ScopeKeyStore` (custody) + `retention::crypto_shred::ShredLedger` (unified W4-4) | `crypto::scope_key::InMemoryScopeKeyStore` | `retention::crypto_shred::crypto_shred` / `crypto::scope_key::ScopeKeyLifecycle` (this crate); a durable `fe-database` store is W4-7 |
+| `CanonicalCommitPipeline` | `compose::VerifyingCommitPipeline` (W4-4) | none — its production mount is inside `fe-api`'s CANON-WS surface, which stays NO_GO; exercised directly by this crate's own tests and by W4-5 |
+| `AuthorKeyLifecycleView` | `compose::CausalLifecycleView` (W4-3) | `compose::LifecycleDispatcher` (W4-3, in-process); a durable `fe-database` lineage rebuild is W4-7 |
+| `admit_rotation` / `admit_disavow` / `admit_disavow_rescind` / `admit_continuity_grant` | `author_key::admission` (W2) | `compose::LifecycleDispatcher::dispatch` (W4-3) — the four SPEC-2 entrypoints now have a production caller |
+| `MaterializerVersion::registry_id` mapping | `materialize::identity::MaterializerVersion` (W4-3) | `compose::checkpoint_binding_for_selection` (W4-3) |
+| `DeviceEnrolmentView` | none yet | W4-6 |
+| `ManagerPlusAuthorizationView` | none yet | W4-7 |
+| `DeliveryAuthorizationView` | none yet | W4-8 |
 
 ## §materializer-identity — one mapping from name/number to identifier
 

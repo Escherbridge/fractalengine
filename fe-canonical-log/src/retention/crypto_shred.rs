@@ -7,6 +7,7 @@
 use thiserror::Error;
 use zeroize::Zeroize;
 
+use crate::crypto::scope_key::ScopeKeyStore;
 use crate::envelope::{Hlc, Scope};
 
 /// Identifies one scope key by its scope and epoch.
@@ -48,10 +49,18 @@ pub enum CryptoShredError {
     },
 }
 
-/// Storage seam for scope keys and their wraps; Wave 3 implements this in `fe-database`.
-pub trait ScopeKeyStore {
-    /// Stops issuing new wraps of this key. Idempotent; does not require the key be present.
-    fn stop_reissue(&mut self, key: &ScopeKeyId) -> Result<(), CryptoShredError>;
+/// The destruction/audit half of crypto-shred custody (SPEC-5 §5.5.4).
+///
+/// Kept separate from [`crate::crypto::scope_key::ScopeKeyStore`] (the one custody trait: point
+/// lookup, insertion, and issuance control) rather than merged into it, so crypto code never
+/// needs disposition bookkeeping and retention code never needs read/generate methods.
+/// [`crypto_shred`] takes the blanket bound `S: ScopeKeyStore + ShredLedger`. Before W4-4 this
+/// module defined its OWN, near-duplicate `ScopeKeyStore` trait (point lookup absent, four
+/// destruction-shaped methods instead) — the exact "two traits, one name, two modules" shape
+/// `src/AGENTS.md` §unified-vocabularies forbids for a wire vocabulary, and forbids here too for
+/// the same reason: a reviewer who checked one had not checked the other. `has_controlled_key`
+/// is gone with it; it was exactly `ScopeKeyStore::scope_key(key).is_some()` restated.
+pub trait ShredLedger {
     /// Destroys the controlled copy of this key and any ephemeral wrap secrets derived from it,
     /// and removes the controlled wraps this store holds (best-effort, local only; §10.3.3).
     fn destroy_scope_key_and_wraps(&mut self, key: &ScopeKeyId) -> Result<(), CryptoShredError>;
@@ -60,18 +69,19 @@ pub trait ScopeKeyStore {
         &mut self,
         disposition: DestructionDisposition,
     ) -> Result<(), CryptoShredError>;
-    /// Reports whether this store still holds a controlled copy of `key`.
-    fn has_controlled_key(&self, key: &ScopeKeyId) -> bool;
 }
 
 /// Runs the §5.5.4 crypto-shred sequence in order: stop reissue, then destroy the key and its
 /// wraps, then record the disposition. Returns the recorded disposition.
-pub fn crypto_shred(
-    store: &mut impl ScopeKeyStore,
+pub fn crypto_shred<S>(
+    store: &mut S,
     key: &ScopeKeyId,
     now: Hlc,
-) -> Result<DestructionDisposition, CryptoShredError> {
-    store.stop_reissue(key)?;
+) -> Result<DestructionDisposition, CryptoShredError>
+where
+    S: ScopeKeyStore + ShredLedger,
+{
+    store.stop_issuance(key);
     store.destroy_scope_key_and_wraps(key)?;
     let disposition = DestructionDisposition {
         key: key.clone(),
@@ -99,49 +109,13 @@ pub fn zero_key_bytes(key: &mut [u8; 32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
 
+    use crate::crypto::aead::{SealingKey, SEALING_KEY_LENGTH};
+    use crate::crypto::scope_key::InMemoryScopeKeyStore;
     use crate::envelope::Identifier32;
 
     fn scope() -> Scope {
         Scope::verse_wide(Identifier32([0x11; 32]))
-    }
-
-    #[derive(Default)]
-    struct InMemoryScopeKeyStore {
-        controlled: HashSet<ScopeKeyId>,
-        reissue_stopped: HashSet<ScopeKeyId>,
-        dispositions: HashMap<ScopeKeyId, DestructionDisposition>,
-    }
-
-    impl ScopeKeyStore for InMemoryScopeKeyStore {
-        fn stop_reissue(&mut self, key: &ScopeKeyId) -> Result<(), CryptoShredError> {
-            self.reissue_stopped.insert(key.clone());
-            Ok(())
-        }
-
-        fn destroy_scope_key_and_wraps(
-            &mut self,
-            key: &ScopeKeyId,
-        ) -> Result<(), CryptoShredError> {
-            if !self.controlled.remove(key) {
-                return Err(CryptoShredError::KeyNotControlled { key: key.clone() });
-            }
-            Ok(())
-        }
-
-        fn record_destruction_disposition(
-            &mut self,
-            disposition: DestructionDisposition,
-        ) -> Result<(), CryptoShredError> {
-            self.dispositions
-                .insert(disposition.key.clone(), disposition);
-            Ok(())
-        }
-
-        fn has_controlled_key(&self, key: &ScopeKeyId) -> bool {
-            self.controlled.contains(key)
-        }
     }
 
     #[test]
@@ -150,21 +124,28 @@ mod tests {
             scope: scope(),
             epoch: 4,
         };
-        let mut store = InMemoryScopeKeyStore::default();
-        store.controlled.insert(key.clone());
-        assert!(store.has_controlled_key(&key));
+        let mut store = InMemoryScopeKeyStore::new();
+        store
+            .insert_scope_key(
+                key.clone(),
+                SealingKey::from_bytes([0x01; SEALING_KEY_LENGTH]),
+            )
+            .expect("insert");
+        assert!(store.scope_key(&key).is_some());
 
         let disposition = crypto_shred(&mut store, &key, Hlc::new(1_000, 0)).expect("shred");
 
-        // Future key access is revoked: the store no longer holds a controlled copy.
-        assert!(!store.has_controlled_key(&key));
-        assert!(store.reissue_stopped.contains(&key));
+        // Future key access is revoked: the store no longer holds a controlled copy, and
+        // issuance for this (scope, epoch) has stopped -- `crypto_shred` runs
+        // `ScopeKeyStore::stop_issuance` first, exactly as `stop_reissue` used to.
+        assert!(store.scope_key(&key).is_none());
+        assert!(store.issuance_stopped(&key));
         assert_eq!(disposition.key, key);
         assert_eq!(disposition.destroyed_at, Hlc::new(1_000, 0));
-        assert_eq!(store.dispositions.get(&key), Some(&disposition));
+        assert_eq!(store.dispositions().to_vec(), vec![disposition]);
 
-        // This module never models ciphertext at all: `ScopeKeyStore` has no byte-store method,
-        // so nothing crypto_shred does can touch a stored artifact. The disposition itself is
+        // This module never models ciphertext at all: neither trait has a byte-store method, so
+        // nothing crypto_shred does can touch a stored artifact. The disposition itself is
         // structurally incapable of carrying key bytes (no byte-array field on the type).
     }
 
@@ -174,12 +155,12 @@ mod tests {
             scope: scope(),
             epoch: 1,
         };
-        let mut store = InMemoryScopeKeyStore::default();
+        let mut store = InMemoryScopeKeyStore::new();
         assert_eq!(
             crypto_shred(&mut store, &key, Hlc::new(1, 0)),
             Err(CryptoShredError::KeyNotControlled { key: key.clone() })
         );
-        assert!(!store.dispositions.contains_key(&key));
+        assert!(store.dispositions().is_empty());
     }
 
     #[test]

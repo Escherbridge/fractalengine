@@ -4,6 +4,7 @@
 //! §composed-verifiers.
 
 pub mod lifecycle;
+pub mod storage;
 pub mod verifier;
 pub mod wire;
 
@@ -11,6 +12,9 @@ pub mod wire;
 mod fixtures;
 
 pub use lifecycle::{CausalLifecycleView, LifecycleDispatch, LifecycleDispatcher, LifecycleKind};
+pub use storage::{
+    ByteStoreSealedArtifactStore, ContentByteStore, SealedProofEnvironment, VerifyingCommitPipeline,
+};
 pub use verifier::{
     AuthorKeyLifecycleView, CapabilityChainSource, Clock, ComposedCandidateVerifier,
     ComposedVerifierParts, PayloadCiphertextSource, PayloadSchemaRegistry, SchemaVerdict,

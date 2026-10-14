@@ -1,8 +1,9 @@
 # src/retention — quarantine, GC leases, tombstone retention, crypto-shredding
 
 SPEC-5 §4, §5.1-§5.5. Pure logic only: no persistence, no networking, no AEAD execution. Wave
-3 implements `quarantine::QuarantineStore`, `crypto_shred::ScopeKeyStore`, and drives
-`leases::GcLeaseRegistry` from `fe-database`.
+3 implements `quarantine::QuarantineStore`; a production `fe-database` store implements
+`crypto::scope_key::ScopeKeyStore` (custody) plus this module's own `crypto_shred::ShredLedger`
+(destruction/audit, W4-7), and drives `leases::GcLeaseRegistry` from `fe-database`.
 
 ## §equivocation — quarantine both, materialize neither (M1)
 
@@ -62,13 +63,27 @@ a caller (Wave 3's GC driver) must invoke it on its own cadence.
 
 ## §crypto-shred — key destruction, not byte deletion
 
-`crypto_shred::crypto_shred` runs stop-reissue, then destroy-key-and-wraps, then
-record-disposition, in that order (§5.5.4). `DestructionDisposition` has no byte-array field —
-it structurally cannot carry the destroyed key. Per §10.3.3, "remove controlled wraps" is
-**best-effort local-store deletion only**: this module makes no claim about immutable
-ciphertext, uncontrolled key copies held elsewhere, or any replicated segment. A caller that
-reads `crypto_shred` returning `Ok` as "the payload is now unrecoverable everywhere" is reading
-more into it than the function promises.
+`crypto_shred::crypto_shred<S: crypto::scope_key::ScopeKeyStore + ShredLedger>` runs
+`ScopeKeyStore::stop_issuance`, then `ShredLedger::destroy_scope_key_and_wraps`, then
+`ShredLedger::record_destruction_disposition`, in that order (§5.5.4). `DestructionDisposition`
+has no byte-array field — it structurally cannot carry the destroyed key. Per §10.3.3, "remove
+controlled wraps" is **best-effort local-store deletion only**: this module makes no claim about
+immutable ciphertext, uncontrolled key copies held elsewhere, or any replicated segment. A
+caller that reads `crypto_shred` returning `Ok` as "the payload is now unrecoverable everywhere"
+is reading more into it than the function promises.
+
+**Unification (W4-4).** Before this slice, this module defined its own `ScopeKeyStore` trait —
+four destruction-shaped methods (`stop_reissue`, `destroy_scope_key_and_wraps`,
+`record_destruction_disposition`, `has_controlled_key`) with no point-lookup method at all,
+duplicating `crypto::scope_key::ScopeKeyStore`'s name while answering a different question. That
+is exactly the "two traits, one name, two modules" shape `src/AGENTS.md` §unified-vocabularies
+forbids for a wire vocabulary, and the same defect applies to a storage-seam vocabulary: a
+reviewer who checked one trait had not checked the other, and `has_controlled_key` was already
+redundant with `ScopeKeyStore::scope_key(key).is_some()`. The local trait and its one in-crate
+duplicate in-memory implementor (a test-only struct inside this file's own test module) are
+deleted; `ShredLedger` is the destruction/audit half that remains, and `InMemoryScopeKeyStore`
+(`crypto/scope_key.rs`) is now the one fixture this module's tests exercise `crypto_shred`
+against, exactly as a production `fe-database` store will implement both traits together.
 
 ## §tombstone — bound to the real checkpoint verification
 

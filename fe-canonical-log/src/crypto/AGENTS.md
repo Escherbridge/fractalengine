@@ -210,10 +210,13 @@ wired.
 
 ## §scope-key-lifecycle — custody, rotation, and the limits of shredding
 
-`ScopeKeyStore` (this module) is custody of key *material* keyed by `(scope, epoch)`;
-`retention::crypto_shred::ScopeKeyStore` is the SPEC-5 destruction contract. They are two traits
-with one name in two modules on purpose: they answer different questions and Wave 3's
-`fe-database` store implements both, exactly as `InMemoryScopeKeyStore` does here.
+`ScopeKeyStore` (this module) is the one custody trait: point lookup, insertion, and issuance
+control, keyed by `(scope, epoch)`. The SPEC-5 destruction contract is a separate, smaller trait,
+`retention::crypto_shred::ShredLedger` (destroy-and-record only); `crypto_shred` takes the
+blanket bound `S: ScopeKeyStore + ShredLedger`, and `InMemoryScopeKeyStore` here implements both.
+Before W4-4 `retention::crypto_shred` defined its own, near-duplicate `ScopeKeyStore` trait; see
+`src/retention/AGENTS.md` §crypto-shred for the unification and why it was duplicated vocabulary,
+not a deliberate two-trait split.
 
 Reads hand out a borrowed `SealingKey` rather than an owned one, and `SealingKey` is no longer
 `Clone`, so the store's API produces no *accidental* copy. The stronger claim this paragraph used
@@ -226,7 +229,7 @@ a convention enforced by a named disclosure point, not a guarantee enforced by t
 stopping first would leave the scope with no issuable key at all if generation failed.
 `get_or_generate` refuses an epoch whose issuance has stopped, so a stale caller cannot resurrect
 a revoked epoch by asking again — that is also what makes a crypto-shred permanent for reissue,
-since `crypto_shred` calls `stop_reissue` first.
+since `crypto_shred` calls `ScopeKeyStore::stop_issuance` first.
 
 `topic_key` derives the §6 blinded topic key from that epoch's scope key through
 `capability::topic::derive_topic_key`, not a second construction. An epoch bump therefore rotates
