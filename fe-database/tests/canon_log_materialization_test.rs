@@ -57,8 +57,6 @@ const FIXTURE_KIND: u16 = 100;
 const VERSE: Identifier32 = Identifier32([0x11; 32]);
 const BRANCH: Identifier32 = Identifier32([0x22; 32]);
 const SEGMENT_MANIFEST: Hash32 = Hash32([0x33; 32]);
-/// The registry identifier of the fixture materializer, as a SPEC-5 claim names it.
-const MATERIALIZER_ID: Identifier32 = Identifier32([0x44; 32]);
 /// Seed of the one signing key the fixture authorization view recognises as Manager+.
 const CHECKPOINT_MANAGER_SEED: u8 = 0xc1;
 /// Seed of a signing key that is a perfectly good signer and not Manager+ anywhere.
@@ -170,7 +168,7 @@ impl CheckpointFixture {
             branch_id: BRANCH,
             frontier_commitment: frontier.commitment(),
             segment_manifest_id: SEGMENT_MANIFEST,
-            materializer_id: MATERIALIZER_ID,
+            materializer_id: materializer_id(),
             materializer_version: u64::from(identity().materializer_version.version),
             projection_root_hash,
         }
@@ -213,7 +211,7 @@ fn binding_selection<'a>(
         branch_id: BRANCH,
         frontier,
         segment_manifest_id: SEGMENT_MANIFEST,
-        materializer_id: MATERIALIZER_ID,
+        materializer_id: materializer_version.registry_id(),
         materializer_version,
     }
 }
@@ -437,6 +435,12 @@ async fn harness() -> Harness {
 
 fn identity() -> ProjectionIdentity {
     ProjectionIdentity::new(MaterializerVersion::new("scene-graph", 1), BRANCH)
+}
+
+/// The registry identifier of the fixture materializer, as a SPEC-5 claim names it; bound to
+/// [`identity`]'s version, which `checkpoint_binding_for_selection` requires.
+fn materializer_id() -> Identifier32 {
+    identity().materializer_version.registry_id()
 }
 
 async fn projection_rows(db: &Db) -> Vec<serde_json::Value> {

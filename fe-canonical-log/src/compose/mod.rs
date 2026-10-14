@@ -1,6 +1,22 @@
-//! Cross-module composition: the crate's single quarantine vocabulary and the bindings that
-//! join SPEC-4's checkpoint binding, SPEC-5's signed claim, and SPEC-6's reachability proof.
-//! See `src/AGENTS.md` §unified-vocabularies.
+//! Cross-module composition: the crate's single quarantine vocabulary, the bindings that join
+//! SPEC-4's checkpoint binding, SPEC-5's signed claim, and SPEC-6's reachability proof, and the
+//! composed production verifiers. See `src/AGENTS.md` §unified-vocabularies and
+//! §composed-verifiers.
+
+pub mod lifecycle;
+pub mod verifier;
+pub mod wire;
+
+#[cfg(test)]
+mod fixtures;
+
+pub use lifecycle::{CausalLifecycleView, LifecycleDispatch, LifecycleDispatcher, LifecycleKind};
+pub use verifier::{
+    AuthorKeyLifecycleView, CapabilityChainSource, Clock, ComposedCandidateVerifier,
+    ComposedVerifierParts, PayloadCiphertextSource, PayloadSchemaRegistry, SchemaVerdict,
+    SystemClock,
+};
+pub use wire::ChainCapabilityVerifier;
 
 use thiserror::Error;
 
@@ -175,6 +191,12 @@ pub enum CompositionError {
     /// The SPEC-4 §6.4 binding comparison against the caller's own selection failed.
     #[error("{0}")]
     Binding(#[from] CheckpointBindingMismatch),
+    /// The caller's own selection names a `materializer_id` that is not its
+    /// `materializer_version.registry_id()`, so the claim cannot be bound to that version.
+    #[error(
+        "the selection's materializer identifier is not its materializer version's registry id"
+    )]
+    MaterializerIdentityUnbound,
     /// The claim names a materializer other than the caller's.
     #[error("the signed claim names a different materializer identifier")]
     MaterializerIdentifierMismatch,
@@ -192,7 +214,8 @@ pub enum CompositionError {
 ///
 /// `materializer_id` is separate because the two specs name a materializer differently: a SPEC-5
 /// claim carries the 32-byte registry identifier, a SPEC-4 binding carries the hand-authored
-/// name/number pair, and only the caller holds the mapping between them.
+/// name/number pair. The mapping is `MaterializerVersion::registry_id`, and
+/// [`checkpoint_binding_for_selection`] refuses a selection that disagrees with it.
 #[derive(Clone, Copy, Debug)]
 pub struct BindingSelection<'a> {
     /// Branch the caller is replaying.
@@ -220,15 +243,22 @@ pub fn checkpoint_binding_for_selection(
     claim: &CheckpointClaimV1,
     selection: &BindingSelection<'_>,
 ) -> Result<CheckpointBinding, CompositionError> {
-    if claim.materializer_id != selection.materializer_id {
-        return Err(CompositionError::MaterializerIdentifierMismatch);
+    // The selection's own two names must agree first: otherwise a claim matching the selection's
+    // identifier would be bound to a version that identifier does not name.
+    if selection.materializer_id != selection.materializer_version.registry_id() {
+        return Err(CompositionError::MaterializerIdentityUnbound);
     }
+    // Version before identifier: the registry id commits to the version, so a bumped version
+    // also changes the id, and the version mismatch is the more precise report of the two.
     let current = u64::from(selection.materializer_version.version);
     if claim.materializer_version != current {
         return Err(CompositionError::MaterializerVersionMismatch {
             claimed: claim.materializer_version,
             current,
         });
+    }
+    if claim.materializer_id != selection.materializer_id {
+        return Err(CompositionError::MaterializerIdentifierMismatch);
     }
     let binding = CheckpointBinding {
         branch_id: claim.branch_id,
@@ -320,7 +350,6 @@ mod tests {
 
     const VERSE: Identifier32 = Identifier32([0x0e; 32]);
     const BRANCH: Identifier32 = Identifier32([0x0a; 32]);
-    const MATERIALIZER: Identifier32 = Identifier32([0x11; 32]);
     const SEGMENT_MANIFEST: Hash32 = Hash32([0x51; 32]);
 
     fn signing_key() -> SigningKey {
@@ -331,6 +360,11 @@ mod tests {
         SortedFrontier::try_new([Hash32([0x10; 32]), Hash32([0x20; 32])]).expect("frontier")
     }
 
+    /// The materializer every claim and selection here runs, unless a case says otherwise.
+    fn scene_graph_v3() -> MaterializerVersion {
+        MaterializerVersion::new("scene-graph", 3)
+    }
+
     fn claim(selected: &SortedFrontier) -> CheckpointClaimV1 {
         CheckpointClaimV1 {
             checkpoint_version: CHECKPOINT_VERSION,
@@ -338,7 +372,7 @@ mod tests {
             branch_id: BRANCH,
             frontier_commitment: selected.commitment(),
             segment_manifest_id: SEGMENT_MANIFEST,
-            materializer_id: MATERIALIZER,
+            materializer_id: scene_graph_v3().registry_id(),
             materializer_version: 3,
             projection_root_hash: Hash32([0x7a; 32]),
             authorization_view_root: Hash32([0x5a; 32]),
@@ -360,7 +394,7 @@ mod tests {
             branch_id: BRANCH,
             frontier,
             segment_manifest_id: SEGMENT_MANIFEST,
-            materializer_id: MATERIALIZER,
+            materializer_id: version.registry_id(),
             materializer_version: version,
         }
     }
@@ -369,7 +403,7 @@ mod tests {
     fn a_claim_derived_binding_is_only_returned_after_it_validates() {
         let selected = frontier();
         let claim = claim(&selected);
-        let version = MaterializerVersion::new("scene-graph", 3);
+        let version = scene_graph_v3();
 
         let binding = checkpoint_binding_for_selection(&claim, &selection(&selected, &version))
             .expect("the claim matches the caller's selection");
@@ -420,13 +454,47 @@ mod tests {
             })
         );
 
-        let foreign_materializer = BindingSelection {
-            materializer_id: Identifier32([0x12; 32]),
+        let foreign_materializer = CheckpointClaimV1 {
+            materializer_id: MaterializerVersion::new("terrain-index", 3).registry_id(),
+            ..claim.clone()
+        };
+        assert_eq!(
+            checkpoint_binding_for_selection(
+                &foreign_materializer,
+                &selection(&selected, &version)
+            ),
+            Err(CompositionError::MaterializerIdentifierMismatch)
+        );
+    }
+
+    #[test]
+    fn a_claim_naming_an_unbound_materializer_identifier_is_refused() {
+        let selected = frontier();
+        let version = scene_graph_v3();
+        // Claim and selection agree with EACH OTHER on an identifier that is not the selected
+        // version's registry id: without the binding check the claim would validate against a
+        // version its identifier does not name.
+        let unbound_identifier = Identifier32([0x11; 32]);
+        let claim = CheckpointClaimV1 {
+            materializer_id: unbound_identifier,
+            ..claim(&selected)
+        };
+        let unbound_selection = BindingSelection {
+            materializer_id: unbound_identifier,
             ..selection(&selected, &version)
         };
         assert_eq!(
-            checkpoint_binding_for_selection(&claim, &foreign_materializer),
-            Err(CompositionError::MaterializerIdentifierMismatch)
+            checkpoint_binding_for_selection(&claim, &unbound_selection),
+            Err(CompositionError::MaterializerIdentityUnbound)
+        );
+
+        // The same claim fields under the version's own registry id bind.
+        let bound_claim = CheckpointClaimV1 {
+            materializer_id: version.registry_id(),
+            ..claim
+        };
+        assert!(
+            checkpoint_binding_for_selection(&bound_claim, &selection(&selected, &version)).is_ok()
         );
     }
 

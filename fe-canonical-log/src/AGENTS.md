@@ -232,8 +232,110 @@ other.
   commitment over the caller's own frontier and matched branch, manifest and materializer against
   the caller's current values. There is deliberately no separate "and also check these agree"
   helper — that would be exactly the gate a future author forgets. SPEC-5 names a materializer by
-  32-byte identifier and SPEC-4 by hand-authored name/number, so `BindingSelection` carries both
-  and only the caller holds the mapping.
+  32-byte identifier and SPEC-4 by hand-authored name/number, so `BindingSelection` carries both.
+  Since W4-3 the mapping between them is no longer the caller's: see §materializer-identity.
+- **`MaterializerVersion::registry_id` is the crate's only name/number → identifier mapping**
+  (W4-3). `checkpoint_binding_for_selection` refuses a selection whose `materializer_id` is not
+  its own version's `registry_id()` (`CompositionError::MaterializerIdentityUnbound`) before it
+  compares anything against the claim, so a claim can no longer be bound to a version its
+  identifier does not name. No caller keeps a second table.
+- **`compose::ComposedCandidateVerifier` is the crate's only production `CandidateVerifier`,
+  and `compose::ChainCapabilityVerifier` its only production wire `CapabilityVerifier`** (W4-3).
+  Both reach SPEC-3 through `capability::verify_chain_bytes` and nothing else, so one §2.4
+  implementation sits behind admission and session binding alike. See §composed-verifiers.
+
+## §composed-verifiers — the production verifiers, and every judgement call in them
+
+W4-3 composed the leaf modules into the verifiers a storage-backed caller instantiates. `compose`
+became a directory once it passed ~1200 lines: `compose/mod.rs` keeps the vocabularies above,
+`compose/verifier.rs` the admission verifier and its seams, `compose/lifecycle.rs` the SPEC-2
+view and dispatcher, `compose/wire.rs` the session verifier. Nothing here touches storage; the
+one production instantiation lives in `fe-database` (`canon_log::verifier`, W4-7).
+
+**Seams.** `CapabilityChainSource`, `PayloadSchemaRegistry`, `PayloadCiphertextSource`,
+`AuthorKeyLifecycleView`, `Clock` — sync, `Send + Sync`, and wherever an answer can be missing
+the missing answer is a third state (`None`, `UnknownSchema`/`UnknownKind`, `KeyState::Unknown`)
+that is never read as an allow. `SystemClock` is the production clock; a pre-epoch system clock
+reads 0, which no chain window contains.
+
+**`ComposedCandidateVerifier`, step by step** (live policy, `VerificationOptions::live()`):
+
+| Step | Check | Outcome on failure |
+| --- | --- | --- |
+| envelope | `verify_candidate` (the one ingress) | `InvalidEnvelope` |
+| envelope | an `OperationKind::Application` kind the registry does not interpret | `UnknownKind` (Quarantine, never `InvalidEnvelope`) |
+| authorization | chain bytes by `capability.chain_id` | absent → `AuthorizationEvidenceUnavailable(CapabilityChainUnavailable)` |
+| authorization | `verify_chain_bytes` for `append/op`; requester = author = envelope author; every request field read from the signed envelope | `EpochScopeUnknown` → `AuthorizationEvidenceUnavailable(EpochStateUnavailable)`; every other `ChainError` → `UnauthorizedOperation` |
+| authorization | the verified chain's id equals the envelope's `chain_id` | `UnauthorizedOperation` |
+| authorization | `AuthorKeyLifecycleView::key_state` at the candidate's parents | `Retired`/`ForkedUnresolved` → `UnauthorizedOperation` |
+| payload | the no-payload form carries no ciphertext | `InvalidPayload` |
+| payload | ciphertext from the caller, else from `PayloadCiphertextSource` | absent → `OpaquePayload` |
+| payload | length + BLAKE3 against `PayloadRef` | supplied bytes → `InvalidPayload`; stored bytes → `OpaquePayload` |
+| payload | a scope key whose derived `key_id` equals `encryption.key_id` | none held → `AuthorizationEvidenceUnavailable(PayloadKeyUnavailable)` |
+| payload | `crypto::aead::open` over `payload_aad_preimage` | `InvalidPayload` |
+| payload | `PayloadSchemaRegistry::validate` | `Invalid` → `InvalidPayload`; `UnknownSchema`/`UnknownKind` → the matching quarantine |
+
+Judgement calls, each with its source:
+
+- **Only `EpochScopeUnknown` is an evidence gap.** SPEC-2 rule 5 quarantines a missing "capability
+  chain, or epoch state" (erratum E-W4-1, owner-confirmed 2026-10-13). `RootAuthorityRecordUnknown`
+  stays a refusal: the view was asked and could not answer, and `capability/AGENTS.md`
+  §step-3-asks-the-view-itself makes an unanswered question a refusal.
+- **`KeyState::Unknown` admits.** SPEC-2 §4 refuses only a key retired on the candidate's causal
+  path (rule 4) or named by a fork (rule 6: "MUST NOT treat either successor as active"). It says
+  nothing against a key no lineage evidence reaches, and rule 2 grounds authority in the
+  capability, which the step before already verified. A rotation reachable from ANY parent puts
+  the candidate in its causal future, so `CausalLifecycleView` answers the worst state any parent
+  induces. A candidate concurrent with the rotation is not retroactively invalid (rule 5).
+- **Disavows are not an admission input.** SPEC-2 §6 rules 4, 5 and 8: a disavow classifies
+  operations for the projection, must not delete evidence, and does not stop a live capability.
+  `CausalLifecycleView` therefore reads the lineage only.
+- **Payload-key resolution is provisional.** SPEC-3 §10.1 says one key seals each scope/epoch but
+  not which `(scope, epoch)` an operation payload uses. The verifier tries the operation's own
+  scope, then its petal, then its verse, all at `capability.scope_epoch`, and accepts a key only
+  when `derive_key_id(scope, epoch, key)` equals the envelope's committed `key_id`. The id commits
+  to all three, so a wrong guess fails closed to `PayloadKeyUnavailable` and never opens with the
+  wrong key. This is a resolution rule, not a wire number; ratify it with CDL-PROV.
+- **A stored-ciphertext mismatch is opaque, not invalid.** Supplied bytes are the candidate's own
+  claim, and a mismatch rejects (SPEC-4 §5 `invalid_payload`); a local store answering a hash
+  with other bytes says nothing about the candidate.
+- **The structural flag** (SPEC-3 §4.7) is set for kinds 2-4, the SPEC-1 §6 structural
+  operations, so a leaf must list them in `allowed_operation_kinds` to append them.
+- **`payload_bytes`** is `ciphertext_length - 16` (the XChaCha20-Poly1305 tag), and 0 for the
+  no-payload form. It is derived from the signed reference, so a `max_payload_bytes` caveat is
+  checked before decryption.
+
+**`LifecycleDispatcher`** gives `admit_rotation`, `admit_disavow`, `admit_disavow_rescind` and
+`admit_continuity_grant` their production caller (`author_key/AGENTS.md` "Every check has a
+caller"). It accepts only an `AdmittedCandidate`, which only admission produces, and hands the
+entrypoint that operation's own authenticated, schema-validated plaintext as
+`PayloadAvailability::Available`. Routing is by schema alone, so a lifecycle schema on the wrong
+kind still reaches its entrypoint and is rejected there. `lifecycle_view` is the
+`CausalLifecycleView` over the lineage the dispatcher builds; that is how a dispatched rotation
+retires its predecessor for the next admission. The `CapabilityAuthorityView` it consults and
+the lineage roots (`register_root_key`) are the caller's: SPEC-2 has no authority history yet
+(`fe-database` `canon_log/AGENTS.md` §interim-manager-authority), so W4-7 supplies both from its
+durable stores.
+
+**`ChainCapabilityVerifier`** is built `for_requester(requester, view, clock)` per authenticated
+connection. The requester is never read from the chain, so §2.4 step 6 refuses a valid chain
+whose leaf audience is somebody else. A wire bitmask naming zero, unknown or several verbs or
+classes is `WireError::WrongShape` (key 2 or 3), not a denial. A session names no operation, so
+the leaf's own `scope_epoch` stands in for `operation_scope_epoch` (step 9 still compares it with
+the persistent view) and every per-operation caveat input is absent: a leaf carrying an
+allowlist caveat cannot bind a session, and each operation is re-verified at admission anyway.
+Requester binding is only as strong as the connection's authentication, which the NO_GO
+`/ws/canonical` mount (CANON-WS) owns; nothing here mounts or instantiates it.
+
+## §materializer-identity — one mapping from name/number to identifier
+
+`MaterializerVersion::registry_id()` = `BLAKE3("fe-materializer-id-v1" || 00 ||
+canonical_cbor({0: materializer_id, 1: version}))`. That is the crate's usual NUL-terminated
+domain convention (`signing::domain_preimage`), not BLAKE3's `derive_key` mode. The name is
+NFC-normalized by `CborValue::text`, and the version is inside the hash, so a version bump
+changes the identifier. `checkpoint_binding_for_selection` therefore compares versions before
+identifiers, so a bump reports `MaterializerVersionMismatch` rather than the less precise
+identifier mismatch. The domain and keys are provisional (register below).
 
 ## §single-seal-entry-point — all four lanes seal through one door
 
@@ -359,6 +461,18 @@ operation envelope's key 10.
 | 4 | `segment_manifest_id` | 11 | `capability` |
 | 5 | `materializer_id` | 12 | `issued_hlc` |
 | 6 | `materializer_version` | 13 | signature |
+
+### Provisional — SPEC-4/SPEC-5 materializer registry identifier (`materialize/identity.rs`)
+
+W4-3. SPEC-5 names a materializer by a 32-byte identifier and SPEC-4 by a hand-authored
+name/number pair; neither spec defines the derivation. **Ours, unratified, no interop claimed.**
+
+| Item | Value |
+| --- | --- |
+| Domain | `fe-materializer-id-v1\0` (`MATERIALIZER_ID_DOMAIN`) |
+| Hash | `BLAKE3(domain || body)` |
+| Body key 0 | `materializer_id`, UTF-8 text, NFC |
+| Body key 1 | `version`, unsigned integer |
 
 ### Provisional — SPEC-6 (`segment`)
 
