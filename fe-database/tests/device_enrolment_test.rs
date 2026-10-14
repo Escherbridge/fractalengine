@@ -533,6 +533,72 @@ fn a_peer_enrolment_is_admitted_only_from_its_own_principal() {
     assert_eq!(rt.block_on(stored_row(&db, &held.record_id)), Some(held));
 }
 
+/// Security review (critic C8(iv)): once the manifest has converged, a principal the verse
+/// resolves to role None (removed, or unknown under `default_access = none`) can no longer plant
+/// enrolment rows, but its revocations always land and pre-manifest enrolments are not lost.
+#[test]
+fn a_principal_without_a_role_cannot_enrol_but_can_always_revoke() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let harness = Harness::open(dir.path(), None, None);
+    let db = harness.db();
+    let rt = runtime();
+    const REMOVED: u8 = 0x36;
+    const DEFAULT_VIEWER: u8 = 0x37;
+    const EARLY: u8 = 0x38;
+    rt.block_on(async {
+        seed_verse_row(&db, VERSE_ID).await;
+        let scope = fe_database::build_scope(VERSE_ID, None, None);
+        fe_database::rbac::assign_role(&db, &principal(REMOVED).did, &scope, "none")
+            .await
+            .expect("seed removed role");
+    });
+
+    let floored = row_for(&enrolment_bytes(REMOVED, 0x0d, 1_000));
+    let revocation = row_for(&revocation_bytes(REMOVED, 0x0e, 1_000));
+    let default_viewer = row_for(&enrolment_bytes(DEFAULT_VIEWER, 0x0d, 1_000));
+    let pre_manifest = row_for(&enrolment_bytes(EARLY, 0x0d, 1_000));
+    let outcomes = rt.block_on(async {
+        [
+            apply_inbound(&db, VERSE_ID, &floored, &principal(REMOVED).did).await,
+            apply_inbound(&db, VERSE_ID, &revocation, &principal(REMOVED).did).await,
+            apply_inbound(
+                &db,
+                VERSE_ID,
+                &default_viewer,
+                &principal(DEFAULT_VIEWER).did,
+            )
+            .await,
+            apply_inbound(
+                &db,
+                "verse-not-yet-converged",
+                &pre_manifest,
+                &principal(EARLY).did,
+            )
+            .await,
+        ]
+    });
+    assert_eq!(
+        outcomes,
+        [
+            ReplicatedRowOutcome::Denied,
+            ReplicatedRowOutcome::AppliedTombstone,
+            ReplicatedRowOutcome::Applied,
+            ReplicatedRowOutcome::Applied,
+        ],
+        "role-None enrolment denied; its revocation, a default-access Viewer's enrolment and a \
+         pre-manifest enrolment all land"
+    );
+    assert_eq!(rt.block_on(stored_row(&db, &floored.record_id)), None);
+    assert_eq!(
+        rt.block_on(stored_row(&db, &revocation.record_id)),
+        Some(revocation)
+    );
+    assert_eq!(
+        rt.block_on(stored_row(&db, &pre_manifest.record_id)),
+        Some(pre_manifest)
+    );
+}
+
 #[test]
 fn a_revocation_survives_a_late_enrolment_replay() {
     let dir = tempfile::tempdir().expect("tempdir");

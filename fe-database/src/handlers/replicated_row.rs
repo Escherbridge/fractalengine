@@ -9,7 +9,8 @@
 //! resolved from the local tables at the verse scope — never from the wire —
 //! and must reach Editor+ (the same fe-policy standard write gate as the
 //! local path). See [`admit_inbound_row`]. The one exception is `canon_device_enrolment`,
-//! gated on signed self-authorship instead of role (`canon_log/AGENTS.md` §device-enrolment).
+//! gated on signed self-authorship plus a Viewer floor for enrolments (`canon_log/AGENTS.md`
+//! §device-enrolment).
 //!
 //! M2/F5: dispatch is keyed on [`ReplicationMode::for_table`] — `Row` tables
 //! take the tombstone-aware merge, `Timeseries` tables (`iot_reading`) the
@@ -301,18 +302,28 @@ async fn admit_inbound_row(
     }
 
     // Device enrolment (owner R2, W4-8): admitted iff the signed artifact verifies AND its
-    // principal is the entry author, whatever that author's role. It must run BEFORE the
-    // bootstrap window, or a forged pre-manifest enrolment would slip in unchecked; see
-    // canon_log/AGENTS.md §device-enrolment.
+    // principal is the entry author. It must run BEFORE the bootstrap window, or a forged
+    // pre-manifest enrolment would slip in unchecked. Once the manifest has converged an
+    // ENROLMENT (never a revocation) also needs a role above None; see canon_log/AGENTS.md
+    // §device-enrolment "Membership floor".
     if table == crate::canon_log::device_enrolment::DEVICE_ENROLMENT_TABLE {
-        return Ok(
-            match crate::canon_log::device_enrolment::admit_replicated_enrolment(
-                record_id, row_bytes, author_did,
-            ) {
-                Ok(()) => Admission::Allow,
-                Err(reason) => Admission::Deny(reason),
-            },
-        );
+        use crate::canon_log::device_enrolment::{admit_replicated_enrolment, SelfAuthoredRow};
+        let row_kind = match admit_replicated_enrolment(record_id, row_bytes, author_did) {
+            Ok(row_kind) => row_kind,
+            Err(reason) => return Ok(Admission::Deny(reason)),
+        };
+        if row_kind == SelfAuthoredRow::Enrolment
+            && row_exists(db, "verse", "verse_id", verse_id).await?
+        {
+            let verse_scope = crate::scope::build_scope(verse_id, None, None);
+            let role = crate::role_manager::resolve_role(db, author_did, &verse_scope).await?;
+            if role == fe_policy::RoleLevel::None {
+                return Ok(Admission::Deny(
+                    "device enrolment by a principal with no role in this verse".to_string(),
+                ));
+            }
+        }
+        return Ok(Admission::Allow);
     }
 
     // Bootstrap window (see the doc comment above).

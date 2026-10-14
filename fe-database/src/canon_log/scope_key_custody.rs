@@ -465,9 +465,10 @@ fn index_key(key: &ScopeKeyId) -> Result<String, StorageError> {
     Ok(format!("{scope}:{}", key.epoch))
 }
 
-/// Parses filed hex material, wiping the text it was handed.
+/// Parses filed hex material, wiping the text it was handed. The error never quotes the text:
+/// `hex::FromHexError` names the offending character, which would put key bytes in the logs.
 fn decode_material(mut secret: String) -> Result<SealingKey, String> {
-    let decoded = hex::decode(&secret).map_err(|error| error.to_string());
+    let decoded = hex::decode(&secret).map_err(|_| "material is not hex".to_string());
     wipe(&mut secret);
     let mut bytes = decoded?;
     let material = <[u8; SEALING_KEY_LENGTH]>::try_from(bytes.as_slice())
@@ -488,4 +489,28 @@ fn wipe(text: &mut String) {
     let mut bytes = std::mem::take(text).into_bytes();
     bytes.fill(0);
     std::hint::black_box(&bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_corrupt_filed_secret_is_refused_without_quoting_any_of_its_characters() {
+        // 63 valid hex digits and one marker: hex::FromHexError would name 'Q' and its index.
+        let corrupt = format!("{}Q", "ab".repeat(SEALING_KEY_LENGTH).split_at(63).0);
+        let error = decode_material(corrupt).expect_err("not hex");
+        assert!(
+            !error.contains('Q'),
+            "load fault must not quote key text: {error}"
+        );
+        assert!(
+            !error.contains("ab"),
+            "load fault must not quote key text: {error}"
+        );
+
+        let wrong_length = decode_material("ab".repeat(4)).expect_err("too short");
+        assert!(wrong_length.contains("4 bytes"), "{wrong_length}");
+        assert!(decode_material("ab".repeat(SEALING_KEY_LENGTH)).is_ok());
+    }
 }

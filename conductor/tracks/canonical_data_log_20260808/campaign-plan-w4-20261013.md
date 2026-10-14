@@ -754,8 +754,10 @@ in.
   (`canonical_epoch.rs:540`) and never consults `verse.created_by`. RP-2 owns the fix so that
   W4-7's `ManagerPlusAuthorizationView` and W4-8's issuer half keep answering Owner-is-Manager+.
 - **Role propagation RP-3/RP-4** must keep W4-8's enrolment branch **first** (verify, then
-  author == principal, role-independent). It is never `Deferred AuthorRole` and never subject to
-  the narrowed manifest-only bootstrap window's role gate. If RP-3 changes
+  author == principal; post-manifest enrolments — never revocations — floored above role None,
+  per the 2026-10-14 security review, `canon_log/AGENTS.md` §device-enrolment). It is never
+  `Deferred AuthorRole` and never subject to the narrowed manifest-only bootstrap window's
+  Editor+ role gate. If RP-3 changes
   `apply_replicated_row_handler`'s signature, it re-points `fe-database/tests/device_enrolment_test.rs`.
 - **Role propagation RP-2** edits `crud.rs` (owner-row removal). It must keep W4-1's six
   `record_bypass_for` first-statement lines byte-identical.

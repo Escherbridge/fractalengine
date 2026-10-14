@@ -347,7 +347,7 @@ where
         payload_ciphertext: Option<&[u8]>,
     ) -> PipelineResult {
         let op_id = self.derive_op_id(complete_envelope_bytes);
-        if let Err(outcome) = admit_candidate(
+        let admitted = match admit_candidate(
             &self.verifier,
             &self.equivocation_index,
             &self.parent_lookup,
@@ -356,7 +356,13 @@ where
         )
         .await
         {
-            return admission_outcome_to_pipeline_result(outcome);
+            Ok(meta) => meta,
+            Err(outcome) => return admission_outcome_to_pipeline_result(outcome),
+        };
+        // `admit_candidate` judges whatever candidate the verifier returned; only append the
+        // bytes it actually judged, whatever `V` is.
+        if admitted.op_id != op_id {
+            return PipelineResult::Rejected(ProtocolErrorCategory::InvalidOpId);
         }
 
         match self
@@ -644,7 +650,64 @@ mod tests {
         }
     }
 
+    /// Answers every candidate with ONE fixed, validly signed envelope: a verifier that judges
+    /// bytes other than the ones it was handed.
+    struct JudgesOtherBytes(Vec<u8>);
+
+    #[async_trait]
+    impl CandidateVerifier for JudgesOtherBytes {
+        async fn verify_envelope(
+            &self,
+            _candidate_bytes: &[u8],
+        ) -> Result<VerifiedCandidate, AdmissionOutcome> {
+            verify_candidate(&self.0)
+        }
+
+        async fn verify_authorization(
+            &self,
+            _candidate: &VerifiedCandidate,
+        ) -> Result<(), AdmissionOutcome> {
+            Ok(())
+        }
+
+        async fn verify_payload(
+            &self,
+            _candidate: &VerifiedCandidate,
+            _payload_ciphertext: Option<&[u8]>,
+        ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_submit_never_appends_bytes_the_verifier_did_not_judge() {
+        let judged = signed_sample_bytes_at(Hlc::new(42, 7));
+        let submitted = signed_sample_bytes_at(Hlc::new(43, 0));
+        assert_ne!(judged, submitted);
+        let pipeline = VerifyingCommitPipeline::new(
+            JudgesOtherBytes(judged),
+            RecordingLogStore::default(),
+            NoEquivocation,
+            NoParents,
+        );
+
+        assert_eq!(
+            pipeline.submit_candidate(&submitted, None).await,
+            PipelineResult::Rejected(ProtocolErrorCategory::InvalidOpId)
+        );
+        let state = pipeline.store.state.lock().expect("lock");
+        assert_eq!(
+            state.fresh_appends, 0,
+            "unjudged bytes must never be appended"
+        );
+        assert!(state.rows.is_empty());
+    }
+
     fn signed_sample_bytes() -> Vec<u8> {
+        signed_sample_bytes_at(Hlc::new(42, 7))
+    }
+
+    fn signed_sample_bytes_at(hlc: Hlc) -> Vec<u8> {
         let signing_key = SigningKey::from_bytes(&[0x42; 32]);
         let unsigned = UnsignedEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -658,7 +721,7 @@ mod tests {
             schema_hash: Hash32([0x44; 32]),
             branch_id: Identifier32([0x55; 32]),
             parents: Vec::new(),
-            hlc: Hlc::new(42, 7),
+            hlc,
             payload: PayloadRef::empty(),
         };
         sign_envelope(&signing_key, &unsigned)

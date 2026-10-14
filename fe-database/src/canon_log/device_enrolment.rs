@@ -369,16 +369,34 @@ fn verify_replicated_row(
     Ok(Some(artifact))
 }
 
+/// What a self-authored inbound row is, which decides whether the membership floor applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelfAuthoredRow {
+    /// The unsigned `Doc::del` marker; applied as `NotApplicable`.
+    DelMarker,
+    /// A signed revocation: only ever reduces authority, so it is never floored.
+    Revocation,
+    /// A signed enrolment: floored at Viewer once the verse manifest has converged.
+    Enrolment,
+}
+
 /// The inbound admission branch: the artifact verifies and its principal IS the entry author.
-/// Role-independent by decision (a Viewer must be able to enrol to receive keys).
+/// The caller then applies the post-manifest membership floor to enrolments only
+/// (§device-enrolment "Membership floor").
 pub(crate) fn admit_replicated_enrolment(
     record_id: &str,
     row_bytes: &[u8],
     author_did: &str,
-) -> Result<(), String> {
+) -> Result<SelfAuthoredRow, String> {
     match verify_replicated_row(record_id, row_bytes)? {
-        None => Ok(()),
-        Some(artifact) if artifact.principal().did == author_did => Ok(()),
+        None => Ok(SelfAuthoredRow::DelMarker),
+        Some(artifact) if artifact.principal().did == author_did => {
+            Ok(if artifact.is_revocation() {
+                SelfAuthoredRow::Revocation
+            } else {
+                SelfAuthoredRow::Enrolment
+            })
+        }
         Some(_) => Err("device enrolment row not authored by its own principal".to_string()),
     }
 }
@@ -752,14 +770,22 @@ mod tests {
 
         assert_eq!(
             admit_replicated_enrolment(&row.record_id, &bytes, &principal_did),
-            Ok(())
+            Ok(SelfAuthoredRow::Enrolment)
         );
         assert!(admit_replicated_enrolment(&row.record_id, &bytes, &stranger_did).is_err());
         assert!(admit_replicated_enrolment(&"00".repeat(32), &bytes, &principal_did).is_err());
         assert_eq!(
             admit_replicated_enrolment(&row.record_id, &[], &stranger_did),
-            Ok(()),
+            Ok(SelfAuthoredRow::DelMarker),
             "the unsigned del marker is admitted only to be reported NotApplicable"
+        );
+
+        // The signature domain, never the `revoked` column, classifies the row for the floor.
+        let revocation = EnrolmentRow::of(&artifact(0x02, 0x0d, true));
+        let revocation_bytes = serde_json::to_vec(&revocation).expect("row json");
+        assert_eq!(
+            admit_replicated_enrolment(&revocation.record_id, &revocation_bytes, &principal_did),
+            Ok(SelfAuthoredRow::Revocation)
         );
     }
 }

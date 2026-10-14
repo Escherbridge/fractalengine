@@ -498,10 +498,17 @@ failure is `RequestFailed` when correlated, else `Error`):
 **Inbound** (`handlers::replicated_row`):
 
 - `admit_inbound_row` runs the enrolment branch BEFORE the bootstrap window. It admits iff the
-  artifact verifies, the wire key is its record id, and `author_did == principal.did`. That
-  check is role-independent: a Viewer must be able to enrol to receive keys. Run after the
-  window, a forged pre-manifest enrolment would slip in (plan §5 risk 2). The
+  artifact verifies, the wire key is its record id, and `author_did == principal.did`. Run
+  after the window, a forged pre-manifest enrolment would slip in (plan §5 risk 2). The
   table-driven test pins that ordering.
+- **Membership floor (security review 2026-10-14, C8(iv)).** Once the verse manifest has
+  converged, an ENROLMENT also needs the author to resolve above `RoleLevel::None` at the verse
+  scope (`resolve_role`: owner, explicit row, else `default_access`). Viewers enrol; a removed
+  member (explicit `none` row) or an unknown principal under `default_access = none` cannot.
+  A REVOCATION is never floored: it only removes authority, and dropping one would let a stale
+  enrolment re-grant a device later. Pre-manifest enrolments are still admitted (self-authorship
+  only), exactly like the bootstrap window for every other table, so out-of-order sync loses
+  nothing.
 - The empty `Doc::del` marker is admitted and then reported `NotApplicable`. It carries no
   signature, so it can never revoke anything.
 - The apply arm re-verifies, so no caller can store unverified bytes, then converges through the
@@ -525,15 +532,23 @@ write. `DurableDeliveryView` is the production `DeliveryAuthorizationView`:
 
 **Security-review items (end-of-campaign `/security-review`, critic C8(iv)).**
 
-- **Role-None enrolment rows. Decision recorded, no floor:** any replica member can publish
-  enrolments for its own principal, whatever its role. Spam is bounded to holders of the
-  replica's namespace capability, and every row is signed by its own principal, one slot per
-  (principal, device). A role floor would lose every enrolment that arrives before the manifest
-  or role rows converge, and would stop Viewers from receiving keys. The residual risk is
-  storage growth: one principal can publish unboundedly many device keys. The eventual holder is
-  role_propagation RP-3/RP-4's Deferred mechanism. RP-3/RP-4 must keep this branch first and
-  role-independent (plan §9 later-phase obligations). A reviewer may instead set a floor here,
-  which is a cheap reversal (plan §8).
+- **Role-None enrolment rows. Reviewed 2026-10-14: floor SET (post-manifest, enrolments
+  only).** The W4-8 interim "no floor" let a member removed from a verse (explicit `none` role)
+  keep writing unboundedly many rows into every replica member's store forever, the one table
+  on the row plane exempt from A3's deny-by-default. The floor closes that without the two costs
+  the interim decision feared: Viewers (by row or by `default_access`) still enrol, and
+  pre-manifest arrivals are still admitted. The remaining cost: an enrolment that arrives after
+  the manifest but before the author's role row converges is denied and not re-delivered; the
+  principal re-runs `EnrolLocalDevice`, which re-publishes the held row (fail closed). Residual:
+  a principal that DOES hold a role can still publish unboundedly many device keys, and anyone
+  can publish revocations (never floored, by design). RP-3/RP-4 must keep this branch first,
+  keep self-authorship as the gate, and keep revocations unfloored (plan §9 later-phase
+  obligations). Reversal: delete the floor block in `admit_inbound_row` (cheap).
+- **Revocation reach (residual).** A revocation is published only into the verse the command
+  names, and a peer only admits it from the principal's own entry. A node that received the
+  enrolment through a different verse keeps answering `Granted` until the principal revokes in
+  that verse too. Run `RevokeLocalDevice` once per verse the enrolment was published into;
+  tracking publication verses is deferred with auto-enrolment (plan §6).
 - `RevokeLocalDevice` deletes the local device secret. Any wrap previously sealed to that key
   becomes unopenable here; keys already received are held in scope-key custody, not in the wrap.
 - The view is a snapshot. A revocation that arrives after `DurableDeliveryView::load` is not
@@ -541,7 +556,9 @@ write. `DurableDeliveryView` is the production `DeliveryAuthorizationView`:
 
 Tests: `fe-database/tests/device_enrolment_test.rs`. They cover the local enrol path, the
 revoke-and-rotate path, a missing keypair, the table-driven inbound admission (including the
-pre-manifest case and the `del` marker), revocation surviving a late replay, and the ledger's
+pre-manifest case and the `del` marker), the membership floor
+(`a_principal_without_a_role_cannot_enrol_but_can_always_revoke`), revocation surviving a late
+replay, and the ledger's
 three CDL-R2 delivery outcomes plus a recipient with no `decrypt` chain.
 
 ## §obligations-discharged
