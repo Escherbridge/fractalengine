@@ -260,3 +260,19 @@ answered or defaulted-as-assumption BEFORE that slice — not queued for the end
 (`iot_reading.rs` ~258-283) unscoped by petal → cross-tenant payload reference; (2) device-payload
 idempotent retry (`device_payload.rs` ~196-205) returns another petal's `asset_ids` → IDOR. **Routed into
 W4's Phase A security review as MANDATORY** (block at the top of the SPEC-10 plan) — A4 is building.
+
+### W4 HALT at B2b — 2026-10-14 ~16:40 MDT (awaiting the user)
+- W4 `wf_22ded023-74a` halted at B2b (index 8) by the AC-17 `gate_green` halt: the B2b executor started its
+  gate in the background and its structured result was forced before the gate finished → no commit.
+- The orphaned gate script then completed: clippy-workspace, fmt-check, 4 feature checks + 4 feature clippys
+  all exit=0; `check-workspace exit=101` was `STATUS_DLL_INIT_FAILED (0xc0000142)` — a Windows process-launch
+  failure under resource pressure (689 processes, 2.4 GB free), compounded by the script running check and
+  clippy concurrently. The orchestrator re-ran `cargo check -j4 --workspace --tests` as the sole builder → exit 0.
+- **B2b's code is UNCOMMITTED in the working tree** (replay.rs, rebuild.rs, canon_log/AGENTS.md,
+  materialize/AGENTS.md, observation-plane.md errata, new canon_log_replay_payload_facts_test.rs).
+- The orchestrator's attempt to commit it and resume W4 past the halt (overrides hook) was DENIED by the
+  auto-mode permission classifier ("Auto-Mode Bypass"). Not routed around. Decision handed to the user.
+- Completed in W4 before the halt (all gate_green, committed): A2 `6b456e4`, A3 `65f39ec`, A3b `01e9668`,
+  A4 `f6e7af2`, A5 `f0b736c`, A6 `3788a6b`, B1 `2515ab9`, B2 `f7f9610`. Remaining: B2b, B3, Phase A + B
+  security reviews (incl. 2 mandatory A3 authz findings), correctness review, B4 docs; then role propagation,
+  the final sweep, push.
