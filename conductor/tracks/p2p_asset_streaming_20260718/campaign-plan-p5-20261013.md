@@ -723,6 +723,19 @@ travel from the worker thread over channels (AGENTS "Key Bevy Patterns"). Send f
 
 ### S8 — Adversarial security review-and-fix + docs close-out (size S–M)
 
+> **MANDATORY KNOWN FINDING (2026-10-14, automated commit review of S2 `cbbd806`, confirmed by reading
+> `fe-format/src/partial.rs:85-124`) — S8 MUST fix and regression-test:** `verify_header` builds
+> `VerifiedHeader { uri, layout, archive_size }` from the UNAUTHENTICATED `HeaderDoc`. Sealed Container
+> `chunk_count` is checked (:103-109), but (1) `uri` is never bound to the signed manifest's
+> `hexon_id@version` → a validly-signed header of hexon A can be served under uri B (substitution);
+> (2) a sealed doc claiming `Layout::Monolithic` while the signed index lists bundles is not rejected
+> (layout downgrade); (3) `archive_size` is unauthenticated. Required: derive `uri` from (or require
+> equality with) the verified manifest, derive `layout` from the signed coverage (`chunk_index()`
+> present ⇒ Container with that count, else Monolithic) and reject a mismatching doc; for unsealed docs
+> derive layout from `header_members[CHUNK_INDEX_PATH]`; mark `archive_size` advisory (or drop it from
+> `VerifiedHeader`) and never use it for a security decision. Tests: substituted-uri header refused;
+> Monolithic-claim over a chunked signed index refused; size mismatch cannot widen any fetch cap.
+
 This is a separate context from the executors, and the reviewer fixes its own findings. A security
 review is mandatory: the slices touch crypto, signature verification, untrusted network input and
 filesystem paths.

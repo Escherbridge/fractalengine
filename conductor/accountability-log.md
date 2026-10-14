@@ -145,3 +145,8 @@ both mandatory S8b findings fixed AND regression-tested (`sync_thread.rs:2188` +
 | AC-21 | MED | W1 residuals without disposition: (a) streamed cache / iroh store growth; (b) per-source tile budget; (c) non-atomic install; (d) set_petal_terrain_handler no authorize_edit; (e) blob-ALPN filter unscheduled | **ACCEPT** → (a) LRU disk budget → P5 S5; iroh-store GC → ledger row IROH-STORE-GC with trigger; (b)+(c) → P5 S6; (d)+(e) → role-propagation deliverables with named tests |
 | AC-22 | LOW | Bookkeeping: harness 16 scenarios, PAS-P1V honesty, track-board counts, RUNBOOK §2 State, review rows ticks 2–4, root AGENTS crate lines | **ACCEPT** → docs lane (sonnet) |
 | watch | — | W2 S1 editing `archive.rs`/`archive_index.rs` (plan assigns them to S2) | check S1's report at landing |
+
+**Automated review of W2 S2 `cbbd806`, MEDIUM, CONFIRMED (narrower than reported):** `verify_header`
+(`fe-format/src/partial.rs:85-124`) returns `uri`/`layout`/`archive_size` from the unauthenticated doc;
+sealed Container chunk_count IS checked, but uri substitution, Monolithic-downgrade and unauthenticated
+size remain. **Routed into W2 S8 as a mandatory fix + tests** (P5 plan S8 section) — S3 is building.
