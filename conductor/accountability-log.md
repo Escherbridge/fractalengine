@@ -255,3 +255,8 @@ answered or defaulted-as-assumption BEFORE that slice — not queued for the end
 - Orchestrator slip (twice): a watcher started with a shell `&` inside a foreground call is an untracked
   process no notification reaches — both killed by exact command-line match (PIDs 50852, 29288); watchers
   only via `run_in_background`.
+
+**Automated review of W4 A3 `65f39ec`, 2× MEDIUM, CONFIRMED:** (1) `fetch_known_payloads`
+(`iot_reading.rs` ~258-283) unscoped by petal → cross-tenant payload reference; (2) device-payload
+idempotent retry (`device_payload.rs` ~196-205) returns another petal's `asset_ids` → IDOR. **Routed into
+W4's Phase A security review as MANDATORY** (block at the top of the SPEC-10 plan) — A4 is building.

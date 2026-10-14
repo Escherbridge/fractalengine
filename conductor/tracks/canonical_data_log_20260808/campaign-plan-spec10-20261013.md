@@ -20,6 +20,20 @@ status: proposed
 
 # Campaign plan: SPEC-10 observation plane, reconciled with R5
 
+> **MANDATORY KNOWN FINDINGS for the Phase A security review-and-fix (2026-10-14, automated commit
+> security review of A3 `65f39ec`, both CONFIRMED by reading the code) — MUST be fixed with regression tests:**
+> 1. **Cross-tenant reference (MEDIUM):** `fetch_known_payloads` (`fe-database/src/handlers/iot_reading.rs`
+>    ~258-283) checks only `payload_id IN ids` — no petal scope — so an `iot_reading` ingested into petal P can
+>    reference (and link to) another petal's `device_payload`. Scope the lookup to the reading's petal (and
+>    verse) and refuse/drop ids not anchored there. Test: a reading in P naming a payload anchored in petal Q is
+>    refused (or its payload_id cleared) and nothing links across petals.
+> 2. **IDOR on idempotent retry (MEDIUM):** the device-payload ingest retry branch
+>    (`fe-database/src/handlers/device_payload.rs` ~196-205) returns `existing.asset_ids` for ANY matching client
+>    `payload_id` before validation — a caller in petal P can learn petal Q's asset ids by guessing/replaying an
+>    id. Treat it as a retry only when the existing row has the same petal (and the same source/principal);
+>    otherwise return a conflict that reveals nothing. Test: a retry from another petal/principal gets the
+>    conflict and no asset ids.
+
 This plan covers the fourth large phase in RUNBOOK §7 step 3 (PAS-P3+P4 → PAS-P5 → CDL Wave 4 → **CDL SPEC-10**).
 The phase is first a **specification deliverable**. The owner approves specs (track `plan.md`, "Workstream S";
 SPEC-8 §7.1). The 2026-10-13 R5 decision already ratified part of what SPEC-10 has to describe, and that part
