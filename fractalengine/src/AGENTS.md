@@ -684,3 +684,52 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   seeder rule from `bundle_for_seeding` with no code of their own.
   Completed downloads with a sealed child 0 install through
   `assemble_sealed_download` (fe-terrain §bundles).
+
+### Install-flow header verification — the two-phase gate (PAS-P5 S7a, 2026-10-14)
+
+fe-sync's `DownloadTileset` resolves the root and child 0 ONLY, then stops —
+`handle_download_tileset` never calls `TilesetTransfer::download` itself (see
+fe-sync `src/AGENTS.md` §partial-fetch-p2p). This binary is the one place
+that closes the loop, because it is the one place that both receives those
+`TilesetMetaReceived` events AND depends on `fe_format`.
+
+- **`drive_streamed_tilesets` grows a second branch.** Its existing
+  `state.meta_requested.remove(&tileset_id).is_none()` check — which used to
+  just `continue` past an install-flow reply — now routes that reply to
+  `verify_install_meta_and_confirm` instead. The STREAMED path (above) and
+  the INSTALL-flow path (here) share one system because they already share
+  one event feed (`StreamedTilesetEventBuffer`); splitting them into two
+  systems would mean draining that buffer twice, which Bevy would then have
+  to serialize anyway.
+- **`verify_install_meta(meta_json, ad_publisher_did, known_pin)`** is the
+  pure decision core (no Bevy, no I/O — independently unit-tested): parse
+  `meta_json` as `fe_format::HeaderDoc`, verify it under
+  `IntegrityPolicy::RequireSealed { pin }` (pin = `known_pin`, else
+  `ad_publisher_did` when non-empty, else `None` — first-contact TOFU), and
+  on success return the verified publisher DID plus the exact chunk hashes a
+  sealed CONTAINER's signed `chunks/index.json` names (`None` for a
+  MONOLITHIC archive, which signs no per-chunk table — the caller then uses
+  whatever the HashSeq itself already resolved, since there is nothing more
+  this layer can check before the whole-archive check S6's install runs).
+  Every network path requires a seal (decision A2): an unsealed header is
+  always `Err`.
+- **`verify_install_meta_and_confirm`** records a first-successful publisher
+  as this node's TOFU pin (`KnownTilesetPublishers`, in-memory, capped at
+  `MAX_KNOWN_PUBLISHERS`) and sends `SyncCommand::ConfirmTilesetDownload` on
+  success, or `SyncCommand::CancelTilesetDownload` on refusal — **no chunk is
+  ever requested from this binary before a `ConfirmTilesetDownload` it sent
+  itself**. A pin, once recorded, is never overwritten by a later header for
+  the same `tileset_id` (a differently-signed "update" for an already-pinned
+  id is refused, not silently trusted).
+- **`ad_publisher_did`** (carried on `TilesetMetaReceived`, fe-sync
+  `src/AGENTS.md` §partial-fetch-p2p) is the TOFU pin CANDIDATE only — this
+  binary is what actually decides whether to trust it (by using it as `pin`
+  only when `known_pin` is `None`). fe-sync guarantees it is always the SAME
+  provider-map entry the resolved root came from, never a different one's
+  claim; this binary still cannot assume the DID is honest on first contact
+  — that is what TOFU means.
+- **Tests** (`terrain_bridge.rs`, no P2P harness needed —
+  `verify_install_meta` is pure): `seeder_with_an_unsigned_chunk_index_is_refused_before_any_chunk_request`,
+  `chunk_not_in_the_signed_index_never_reaches_install`,
+  `a_header_signed_by_a_publisher_other_than_the_pinned_one_is_refused`,
+  `first_contact_tofu_pins_the_publisher_then_refuses_an_impostor`.

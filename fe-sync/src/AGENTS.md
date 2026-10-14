@@ -1158,18 +1158,23 @@ a download root):
   `blake3(bytes) == chunk_hashes[seq]` and it fits `MAX_CHUNK_BYTES`, with an
   atomic tmp + rename write. `download` runs `MAX_CONCURRENT_CHUNK_FETCHES` (4)
   at once, tries providers in candidate order, and reports per-chunk
-  `TransferEvent`s plus a `DownloadReport`.
+  `TransferEvent`s plus a `DownloadReport`. **`download` refuses
+  (`TransferError::AwaitingConfirmation`) until `confirm` has run** — see
+  §partial-fetch-p2p.
 - `pending_downloads` / `resume_all` re-verify files and fetch only missing
   seqs; already complete downloads are listed, not re-run, and only a ledger
   a full `download` marked (`full-download`) is resumed — a streamed-bundle
-  cache is never grown into a full download (§tileset-security). `cancel` deletes
-  the ledger, the files and the download tag. A completed download stays on
-  disk until `cancel` (the host discards it after install; S7 keeps it as a
-  streaming cache).
+  cache is never grown into a full download (§tileset-security). `resume_all`
+  additionally skips any ledger that is not `confirmed` (§partial-fetch-p2p).
+  `cancel` deletes the ledger, the files and the download tag. A completed
+  download stays on disk until `cancel` (the host discards it after install;
+  S7 keeps it as a streaming cache).
 
 On-disk layout, under `<FE_P2P_DIR>/downloads/<id>/`: `download.json`
-(`{schema, tileset_id, root, provider_candidates, chunk_hashes, index_hash}`,
-hashes hex), `index.json` (child 0) and `<seq>.bundle`. **Invariant: "received"
+(`{schema, tileset_id, root, provider_candidates, chunk_hashes, index_hash,
+confirmed}`, hashes hex; `confirmed` added PAS-P5 S7a,
+`#[serde(default)]` so a ledger from before this slice reads `false`),
+`index.json` (child 0) and `<seq>.bundle`. **Invariant: "received"
 is derived, never stored.** It is recomputed from files whose BLAKE3 verifies,
 so the ledger can never claim a chunk the disk does not hold. A ledger read
 back from disk must re-prove `hash_seq_root([index] + chunks) == root`, or it
@@ -1272,6 +1277,71 @@ per advertisement for the life of the process.
 logs one unconditional `info!` before its existing problem/no-problem
 branch, so the headless relay-health script has a reliable info-level line
 to grep in every mode (`Disabled` included), not only the non-problem ones.
+
+### §partial-fetch-p2p — the two-phase download gate (PAS-P5 S7a, 2026-10-14)
+
+`SyncCommand::DownloadTileset` resolves the root and child 0 **only**, emits
+`TilesetMetaReceived`, and stops — **no chunk is ever requested** from this
+command alone (`handle_download_tileset`). A chunk fetch starts only once
+`SyncCommand::ConfirmTilesetDownload { tileset_id, expected_chunk_hashes }`
+arrives (`handle_confirm_tileset_download`), because fe-sync itself cannot
+tell a sealed header from a forged one (format-agnostic by design, §top of
+file); the host (`fractalengine::terrain_bridge`, which does parse
+`fe_format`) is the one place that can.
+
+- **`TilesetTransfer::confirm(tileset_id, expected_chunk_hashes)`** refuses
+  (`TransferError::BadIndex`) unless `expected_chunk_hashes` is byte-for-byte
+  the SAME hashes `request_meta` already resolved from the HashSeq, in the
+  same order — this is what catches a signed chunk index naming fewer (or
+  more) bundles than the HashSeq itself carries (a seeder padding in an
+  unsigned extra chunk, or a tampered index): the confirm is refused outright
+  and the sync thread cancels the download, so the untracked chunk is never
+  reachable through `download`/`resume_all` at all, not merely unverified.
+  On success it is idempotent and persists `Ledger.confirmed = true`
+  (`LEDGER_FILE`'s `confirmed` field).
+- **`download`/`resume_all` check `ledger.confirmed` before anything else** —
+  before `ensure_index`, before the `FULL_DOWNLOAD_MARKER` is even written.
+  An unconfirmed download therefore never becomes a `full_download` `pending_downloads`
+  would hand back as `completed_from`, however many individual chunks a
+  caller fetches one at a time through `fetch_chunk` (the streamed,
+  not-installed path `RequestChunk` drives — deliberately NOT gated here;
+  see below). This is why a restart never re-trusts an unverified header:
+  confirmation lives on disk, not only in the (lost) in-memory state of the
+  process that received the original `TilesetMetaReceived`.
+- **`start_download`** (`request_meta` + `confirm` + `download` in one call)
+  auto-confirms with whatever the HashSeq itself resolved — it is a
+  test/internal convenience with NO production caller; the real network path
+  always drives the three steps separately through `SyncCommand`s so a host
+  can verify in between.
+- **The streamed (not-installed) single-chunk path is intentionally
+  ungated.** `RequestTilesetMeta`/`RequestChunk` (fe-terrain's
+  `StreamedTileSource`, via `fractalengine::terrain_bridge::drive_streamed_tilesets`)
+  call `fetch_chunk` directly and never go through `confirm`. This is safe
+  by construction, not merely unaudited: `fetch_chunk` alone never writes
+  `FULL_DOWNLOAD_MARKER`, so no amount of one-at-a-time streaming can ever
+  make `pending_downloads` report a `full_download` (and so
+  `completed_from`/auto-install never sees it) regardless of whether
+  `confirm` ever ran. Each streamed bundle is still checked against the
+  (possibly signed) index by `fe-terrain`'s own
+  `CompositeTileSource::streamed_bundle_check` before it is decoded —
+  a narrower, per-tile guard than the install-flow's two-phase gate, matching
+  the narrower thing it protects.
+- **Publisher-DID pin provenance (critic tick 4).** `TilesetAd.publisher_did`
+  (wire-optional, `#[serde(default)]`) is carried into
+  `TilesetProvider.publisher_did` by `TilesetProviderMap::record` and
+  resurfaces on `TilesetMetaReceived.ad_publisher_did` — **always the SAME
+  entry `root_for` chose its root from**, never a different entry's claim
+  (`RootChoice` carries root + authenticated + publisher_did together,
+  test: `provider_map_prefers_authenticated_roots_and_ignores_relayed_claims_about_them`).
+  fe-sync never decides whether to trust it; the host's TOFU pin is "locally
+  known publisher for this `hexon_id`, else `ad_publisher_did`" — see
+  `fractalengine/src/AGENTS.md` §tileset-p2p for the verification side.
+- **`CatalogEntry.publisher_did`** is a best-effort hint read by
+  `publisher_did_hint` — pure `serde_json::Value` duck-typing over the index
+  blob (a sealed `HeaderDoc`'s `manifest` field is itself JSON text naming
+  `publisher_did`; a legacy unsealed index has neither shape and yields
+  `""`). This is NOT a `fe_format` dependency: fe-sync parses a generic JSON
+  tree, never a typed `HeaderDoc`/`HexonManifest`.
 
 ### §tileset-security (PAS-P3P4 S8b adversarial review, 2026-10-14)
 

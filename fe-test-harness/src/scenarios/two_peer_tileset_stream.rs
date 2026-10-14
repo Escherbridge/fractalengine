@@ -227,14 +227,47 @@ pub fn run() -> Result<TestResult> {
         SYNC_TIMEOUT,
     )?;
 
-    // 5. Bob downloads: meta resolution + every bundle, driven entirely by
-    //    the sync thread (S3) — the harness never ping-pongs RequestChunk.
+    // 5. Bob downloads: meta resolution, then (PAS-P5 S7a) the two-phase
+    //    gate — no chunk is requested until the host confirms the signed
+    //    chunk hashes. This harness exercises fe-sync's two-phase MECHANISM
+    //    directly (a real `fractalengine::terrain_bridge` host instead runs
+    //    `verify_header` first — see that crate's own S7a flow tests); the
+    //    synthetic tileset here is deliberately unsealed (S4's original
+    //    scope: "proves host wiring over a real network, not the bundler's
+    //    exhaustiveness"), so the harness plays a trusting host and confirms
+    //    with exactly what the HashSeq itself resolved.
     bob.sync_cmd_tx
         .send(SyncCommand::DownloadTileset {
             tileset_id: TILESET_ID.to_string(),
             provider: Some(alice_addr.clone()),
         })
         .map_err(|e| anyhow::anyhow!("failed to send DownloadTileset to bob: {e}"))?;
+    let meta = bob.wait_sync_event(
+        |e| {
+            matches!(e, SyncEvent::TilesetMetaReceived { tileset_id, root_hash, .. }
+            if tileset_id == TILESET_ID && !root_hash.is_empty())
+        },
+        SYNC_TIMEOUT,
+    )?;
+    let expected_chunk_hashes = match meta {
+        SyncEvent::TilesetMetaReceived { chunk_hashes, .. } => chunk_hashes
+            .iter()
+            .map(|h| {
+                let bytes = hex::decode(h)?;
+                let arr: [u8; 32] = bytes
+                    .try_into()
+                    .map_err(|v: Vec<u8>| anyhow::anyhow!("expected 32 bytes, got {}", v.len()))?;
+                Ok::<_, anyhow::Error>(arr)
+            })
+            .collect::<Result<Vec<_>>>()?,
+        _ => unreachable!(),
+    };
+    bob.sync_cmd_tx
+        .send(SyncCommand::ConfirmTilesetDownload {
+            tileset_id: TILESET_ID.to_string(),
+            expected_chunk_hashes,
+        })
+        .map_err(|e| anyhow::anyhow!("failed to send ConfirmTilesetDownload to bob: {e}"))?;
     let complete = bob.wait_sync_event(
         |e| matches!(e, SyncEvent::TilesetDownloadComplete { tileset_id, .. } if tileset_id == TILESET_ID),
         SYNC_TIMEOUT,

@@ -584,6 +584,9 @@ fn main() {
     // tileset path — mirrors the S4 assemble channel above. See
     // src/AGENTS.md §tileset-p2p.
     app.init_resource::<terrain_bridge::StreamedTilesetState>();
+    // PAS-P5 S7a: TOFU publisher pins the install-flow two-phase download
+    // gate learns from a verified header. See src/AGENTS.md §tileset-p2p.
+    app.init_resource::<terrain_bridge::KnownTilesetPublishers>();
     app.init_resource::<fe_runtime::diag15m::ResidencyStats>();
     {
         let (streamed_tx, streamed_rx) = terrain_bridge::streamed_bundle_channel();

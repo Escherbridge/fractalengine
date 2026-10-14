@@ -438,6 +438,126 @@ pub struct StreamedTilesetState {
     chunk_backoff: HashMap<(String, u32), (u32, std::time::Instant)>,
 }
 
+/// PAS-P5 S7a: this node's TOFU-known publisher DID per `tileset_id`, learned
+/// the first time an install-flow header verifies. In-memory only (does not
+/// survive a process restart — the campaign's own flow test only requires
+/// that an UNCONFIRMED download never fetches a chunk across a restart, not
+/// that a pin itself persists; a later slice could persist it if a real gap
+/// is found). See `src/AGENTS.md` §tileset-p2p.
+#[derive(Resource, Default)]
+pub struct KnownTilesetPublishers(HashMap<String, String>);
+
+/// Most tileset ids this node ever pins a publisher for (ad-storm bound,
+/// mirrors [`MAX_ADVERTISED_TILESETS`]).
+pub const MAX_KNOWN_PUBLISHERS: usize = 4096;
+
+/// PAS-P5 S7a two-phase download gate, pure core: decide whether an
+/// install-flow `TilesetMetaReceived` reply may proceed to a chunk fetch.
+/// Pure (no I/O, no Bevy) so it is fast-unit-testable without a real P2P
+/// harness; the system around it only adds the event/command plumbing.
+///
+/// `known_pin` is this node's TOFU-pinned publisher for `tileset_id`, when
+/// one exists; `ad_publisher_did` is the pin candidate fe-sync carried on the
+/// event — the SAME provider-map entry `root_for` chose its root from,
+/// never a different entry's claim (fe-sync's own invariant,
+/// `fe-sync/src/AGENTS.md` §partial-fetch-p2p). The ad's DID is used only
+/// when no local pin exists yet (critic tick 4: an advertiser can never
+/// override an already-pinned publisher).
+///
+/// On success, returns the verified publisher (to record as the TOFU pin,
+/// if not already known) and the exact chunk hashes the signed header names.
+/// `None` for the hashes means a sealed MONOLITHIC archive, which signs no
+/// per-chunk table (the whole-archive check runs later at install, S6) —
+/// the caller should confirm with whatever the HashSeq itself already
+/// resolved in that case, since there is nothing more for this layer to
+/// check. An unsealed header, or anything that fails to parse or verify, is
+/// `Err` — every network path requires a seal (PAS-P5 decision A2).
+/// `Ok((verified_publisher_did, signed_chunk_hashes))` — see
+/// [`verify_install_meta`]'s doc comment for what `None` chunk hashes means.
+type VerifiedInstallMeta = Result<(String, Option<Vec<[u8; 32]>>), String>;
+
+fn verify_install_meta(
+    meta_json: &str,
+    ad_publisher_did: &str,
+    known_pin: Option<&str>,
+) -> VerifiedInstallMeta {
+    let doc: fe_format::HeaderDoc =
+        serde_json::from_str(meta_json).map_err(|e| format!("not a header document: {e}"))?;
+    let pin = known_pin
+        .map(str::to_string)
+        .or_else(|| (!ad_publisher_did.is_empty()).then(|| ad_publisher_did.to_string()));
+    let policy = fe_format::IntegrityPolicy::RequireSealed { pin };
+    let verified =
+        fe_format::verify_header(&doc, &policy).map_err(|e| format!("header refused: {e}"))?;
+    let publisher_did = match &verified.status {
+        fe_format::IntegrityStatus::Sealed { publisher_did } => publisher_did.clone(),
+        fe_format::IntegrityStatus::Unsealed => {
+            return Err("header is unsealed — every network path requires a seal".to_string());
+        }
+    };
+    let coverage = verified
+        .coverage()
+        .ok_or_else(|| "sealed header carries no signed coverage".to_string())?;
+    let hashes = match coverage.chunk_index() {
+        Some(index) => {
+            let mut out = Vec::with_capacity(index.bundles.len());
+            for bundle in &index.bundles {
+                let hash = fe_runtime::blob_store::hash_from_hex(&bundle.blake3_hex)
+                    .map_err(|e| format!("bad signed chunk hash: {e}"))?;
+                out.push(hash);
+            }
+            Some(out)
+        }
+        None => None,
+    };
+    Ok((publisher_did, hashes))
+}
+
+/// Install-flow `TilesetMetaReceived` handling (PAS-P5 S7a): verify the
+/// signed header off the main-thread-blocking path (it is a cheap signature
+/// check, but kept out of the `drive_streamed_tilesets` system body itself
+/// via [`verify_install_meta`] so the decision is independently testable),
+/// then send `ConfirmTilesetDownload` on success or `CancelTilesetDownload`
+/// on refusal — **before any chunk is ever requested**. `resolved_chunk_hashes`
+/// is the event's own (HashSeq-resolved) hashes, used verbatim for a sealed
+/// MONOLITHIC archive (no signed per-chunk table exists to check against).
+fn verify_install_meta_and_confirm(
+    known: &mut KnownTilesetPublishers,
+    sender: &fe_sync::SyncCommandSenderRes,
+    tileset_id: String,
+    meta_json: &str,
+    ad_publisher_did: &str,
+    resolved_chunk_hashes: Vec<[u8; 32]>,
+) {
+    let known_pin = known.0.get(&tileset_id).cloned();
+    match verify_install_meta(meta_json, ad_publisher_did, known_pin.as_deref()) {
+        Ok((publisher_did, signed_hashes)) => {
+            if known.0.len() < MAX_KNOWN_PUBLISHERS {
+                known.0.entry(tileset_id.clone()).or_insert(publisher_did);
+            }
+            let expected_chunk_hashes = signed_hashes.unwrap_or(resolved_chunk_hashes);
+            if let Err(e) = sender.0.send(fe_sync::SyncCommand::ConfirmTilesetDownload {
+                tileset_id: tileset_id.clone(),
+                expected_chunk_hashes,
+            }) {
+                tracing::warn!(tileset_id, "ConfirmTilesetDownload send failed: {e}");
+            }
+        }
+        Err(reason) => {
+            tracing::warn!(
+                tileset_id,
+                reason,
+                "Tileset header verification refused — cancelling the download"
+            );
+            if let Err(e) = sender.0.send(fe_sync::SyncCommand::CancelTilesetDownload {
+                tileset_id: tileset_id.clone(),
+            }) {
+                tracing::warn!(tileset_id, "CancelTilesetDownload send failed: {e}");
+            }
+        }
+    }
+}
+
 /// Shortest wait before a failed streamed bundle is requested again.
 pub const STREAMED_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(2);
 /// Longest wait between retries of a repeatedly failing streamed bundle.
@@ -560,6 +680,7 @@ pub fn drive_streamed_tilesets(
     mut events: ResMut<fe_sync::StreamedTilesetEventBuffer>,
     mut state: ResMut<StreamedTilesetState>,
     mut tile_source: ResMut<ActiveTileSource>,
+    mut known_publishers: ResMut<KnownTilesetPublishers>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
     bundle_tx: Option<Res<StreamedBundleResultSender>>,
 ) {
@@ -586,11 +707,44 @@ pub fn drive_streamed_tilesets(
                     tileset_id,
                     meta_json,
                     root_hash,
+                    chunk_hashes,
+                    ad_publisher_did,
                     ..
                 } => {
-                    // Only a reply to OUR request: the install flow's meta
-                    // replies ride the same feed and must not add sources here.
+                    // Only a reply to OUR (streamed) request adds a source
+                    // here; the install flow's meta replies ride the same
+                    // feed and are handled below instead (PAS-P5 S7a).
                     if state.meta_requested.remove(&tileset_id).is_none() {
+                        let Some(sender) = sync_sender.as_ref() else {
+                            continue;
+                        };
+                        if root_hash.is_empty() {
+                            // fe-sync's own honest-failure reply (no provider
+                            // / offline / over cap) — nothing to verify.
+                            continue;
+                        }
+                        let Ok(resolved_chunk_hashes) = chunk_hashes
+                            .iter()
+                            .map(|h| fe_runtime::blob_store::hash_from_hex(h))
+                            .collect::<anyhow::Result<Vec<_>>>()
+                        else {
+                            tracing::warn!(
+                                tileset_id,
+                                "Install-flow meta reply carried an unparsable chunk hash — cancelling"
+                            );
+                            let _ = sender
+                                .0
+                                .send(fe_sync::SyncCommand::CancelTilesetDownload { tileset_id });
+                            continue;
+                        };
+                        verify_install_meta_and_confirm(
+                            &mut known_publishers,
+                            sender,
+                            tileset_id,
+                            &meta_json,
+                            &ad_publisher_did,
+                            resolved_chunk_hashes,
+                        );
                         continue;
                     }
                     if root_hash.is_empty() {
@@ -1208,6 +1362,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
             .init_resource::<StreamedTilesetState>()
+            .init_resource::<KnownTilesetPublishers>()
             .init_resource::<fe_terrain::tiles::TileBundleDemand>()
             .insert_resource(ActiveTileSource::default())
             .insert_resource(fe_sync::SyncCommandSenderRes(cmd_tx));
@@ -1293,6 +1448,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
             .init_resource::<StreamedTilesetState>()
+            .init_resource::<KnownTilesetPublishers>()
             .init_resource::<fe_runtime::diag15m::ResidencyStats>();
         let mut composite = fe_terrain::tiles::CompositeTileSource::new();
         composite.add_streamed_source(StreamedTileSource::new(
@@ -1389,6 +1545,7 @@ mod tests {
         let (tx, rx) = streamed_bundle_channel();
         app.init_resource::<fe_sync::StreamedTilesetEventBuffer>()
             .init_resource::<StreamedTilesetState>()
+            .init_resource::<KnownTilesetPublishers>()
             .init_resource::<fe_terrain::tiles::TileBundleDemand>()
             .insert_resource(ActiveTileSource {
                 composite,
@@ -1569,6 +1726,7 @@ mod tests {
             root_hash: "ab".repeat(32),
             chunk_hashes: Vec::new(),
             index_path: std::path::PathBuf::new(),
+            ad_publisher_did: String::new(),
         };
         let mut composite = fe_terrain::tiles::CompositeTileSource::new();
         composite.mark_streamed_pending(tileset_id);
@@ -1670,5 +1828,215 @@ mod tests {
             })
             .collect();
         assert_eq!(cancels, vec!["installed".to_string()]);
+    }
+
+    // -------------------------------------------------------------------------
+    // PAS-P5 S7a: install-flow header verification (`verify_install_meta`,
+    // `verify_install_meta_and_confirm`) — see src/AGENTS.md §tileset-p2p.
+    // -------------------------------------------------------------------------
+
+    /// A minimal sealed MONOLITHIC header's JSON (HashSeq child 0 shape),
+    /// signed by `key`.
+    fn sealed_monolithic_header_json(key: &ed25519_dalek::SigningKey, hexon_id: &str) -> String {
+        let unsealed = fe_format::HexonArchive::export_tileset(
+            synthetic_tileset_manifest(hexon_id),
+            synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
+            &[("10/0/0".to_string(), vec![1u8, 2, 3, 4, 5, 6, 7, 8])],
+            &[],
+            None,
+        )
+        .expect("export unsealed archive");
+        let sealed = fe_format::seal(&unsealed, key).expect("seal archive");
+        header_doc_json(&sealed)
+    }
+
+    /// `HeaderDoc` JSON (HashSeq child 0 shape) for whatever archive bytes
+    /// are handed in, sealed or not — the shape `TilesetMetaReceived.meta_json`
+    /// carries over the wire.
+    fn header_doc_json(archive_bytes: &[u8]) -> String {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), archive_bytes).expect("write archive");
+        let index = fe_format::HexonArchiveIndex::open(tmp.path()).expect("open archive index");
+        String::from_utf8(index.header_doc().to_json()).expect("HeaderDoc JSON is UTF-8")
+    }
+
+    /// A sealed CONTAINER's header JSON plus the exact signed per-chunk
+    /// blake3 hashes its `chunks/index.json` names, in seq order.
+    fn sealed_container_header_and_hashes(
+        key: &ed25519_dalek::SigningKey,
+        hexon_id: &str,
+    ) -> (String, Vec<[u8; 32]>) {
+        let tileset_meta = synthetic_tileset(hexon_id).tileset_meta.unwrap();
+        let chunks = vec![
+            fe_format::ChunkInput {
+                seq: 0,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [0, 0],
+                y_range: [0, 0],
+                hilbert_range: [0, 0],
+                archive_bytes: vec![1u8, 2, 3],
+            },
+            fe_format::ChunkInput {
+                seq: 1,
+                tile_count: 1,
+                zoom: 10,
+                x_range: [1, 1],
+                y_range: [0, 0],
+                hilbert_range: [1, 1],
+                archive_bytes: vec![4u8, 5, 6, 7],
+            },
+        ];
+        let expected_hashes: Vec<[u8; 32]> = chunks
+            .iter()
+            .map(|c| {
+                fe_runtime::blob_store::hash_from_hex(&fe_format::integrity::digest_hex(
+                    &c.archive_bytes,
+                ))
+                .expect("digest_hex produces a valid 32-byte hex hash")
+            })
+            .collect();
+        let unsealed = fe_format::HexonArchive::export_chunked(
+            synthetic_tileset_manifest(hexon_id),
+            &tileset_meta,
+            &chunks,
+        )
+        .expect("export container");
+        let sealed = fe_format::seal(&unsealed, key).expect("seal container");
+        (header_doc_json(&sealed), expected_hashes)
+    }
+
+    /// (critic-named flow) `seeder_with_an_unsigned_chunk_index_is_refused_before_any_chunk_request`:
+    /// an UNSEALED header (the shape a legacy/tampered seeder would still
+    /// serve as child 0) is refused outright — PAS-P5 decision A2, "every
+    /// network path requires a seal". Nothing is ever confirmed for it.
+    #[test]
+    fn seeder_with_an_unsigned_chunk_index_is_refused_before_any_chunk_request() {
+        let unsealed = fe_format::HexonArchive::export_tileset(
+            synthetic_tileset_manifest("unsealed-seeder"),
+            synthetic_tileset("unsealed-seeder")
+                .tileset_meta
+                .as_ref()
+                .unwrap(),
+            &[("10/0/0".to_string(), vec![1u8; 8])],
+            &[],
+            None,
+        )
+        .expect("export unsealed archive");
+        let meta_json = header_doc_json(&unsealed);
+
+        let err = verify_install_meta(&meta_json, "", None)
+            .expect_err("an unsealed header must never verify over the network");
+        assert!(err.contains("unsealed") || err.contains("refused"), "{err}");
+    }
+
+    /// (critic-named flow) `chunk_not_in_the_signed_index_never_reaches_install`:
+    /// the hashes `verify_install_meta` hands back for a sealed CONTAINER are
+    /// EXACTLY the signed `chunks/index.json` set — nothing more, nothing
+    /// fewer. `TilesetTransfer::confirm` (fe-sync) then refuses any download
+    /// whose actually-resolved HashSeq disagrees with this exact list (see
+    /// `fe-sync/tests/tileset_transfer_test.rs`
+    /// `a_confirmation_disagreeing_with_the_resolved_hashseq_is_refused`), so
+    /// a seeder-added chunk the signed index never named can never become a
+    /// fetched, installed chunk — it would fail confirmation one layer down.
+    #[test]
+    fn chunk_not_in_the_signed_index_never_reaches_install() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[41u8; 32]);
+        let (meta_json, expected) = sealed_container_header_and_hashes(&key, "container-tileset");
+
+        let (publisher_did, hashes) = verify_install_meta(&meta_json, "", None)
+            .expect("a sealed container with a valid signature verifies");
+        assert_eq!(
+            publisher_did,
+            fe_format::verifying_key_to_did(&key.verifying_key())
+        );
+        assert_eq!(
+            hashes.expect("a container signs a per-chunk table"),
+            expected,
+            "exactly the signed chunk hashes, in seq order — nothing a seeder \
+             might append unsigned ever appears here"
+        );
+    }
+
+    /// (critic-mandated) `a_header_signed_by_a_publisher_other_than_the_pinned_one_is_refused`:
+    /// once a publisher is pinned (TOFU or caller-supplied), a different
+    /// publisher's validly-signed header for the same tileset_id is refused,
+    /// not silently substituted.
+    #[test]
+    fn a_header_signed_by_a_publisher_other_than_the_pinned_one_is_refused() {
+        let key_a = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let key_b = ed25519_dalek::SigningKey::from_bytes(&[43u8; 32]);
+        let pinned_did = fe_format::verifying_key_to_did(&key_a.verifying_key());
+        let meta_from_b = sealed_monolithic_header_json(&key_b, "same-tileset-id");
+
+        let err = verify_install_meta(&meta_from_b, "", Some(&pinned_did))
+            .expect_err("a different publisher's header must be refused against a pin");
+        assert!(err.contains("refused"), "{err}");
+
+        // The honest publisher still verifies against its OWN pin.
+        let meta_from_a = sealed_monolithic_header_json(&key_a, "same-tileset-id");
+        let (publisher_did, hashes) = verify_install_meta(&meta_from_a, "", Some(&pinned_did))
+            .expect("the pinned publisher's own header verifies");
+        assert_eq!(publisher_did, pinned_did);
+        assert!(
+            hashes.is_none(),
+            "a monolithic archive signs no per-chunk table"
+        );
+    }
+
+    /// No local pin yet: the ad's `publisher_did` becomes the TOFU candidate,
+    /// and a successful verification records it so a LATER header from a
+    /// different publisher for the same tileset_id is then refused — without
+    /// ever sending a second `ConfirmTilesetDownload` for the impostor.
+    #[test]
+    fn first_contact_tofu_pins_the_publisher_then_refuses_an_impostor() {
+        let key_a = ed25519_dalek::SigningKey::from_bytes(&[44u8; 32]);
+        let key_b = ed25519_dalek::SigningKey::from_bytes(&[45u8; 32]);
+        let did_a = fe_format::verifying_key_to_did(&key_a.verifying_key());
+        let meta_a = sealed_monolithic_header_json(&key_a, "tofu-tileset");
+        let meta_b = sealed_monolithic_header_json(&key_b, "tofu-tileset");
+
+        let mut known = KnownTilesetPublishers::default();
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        let sender = fe_sync::SyncCommandSenderRes(cmd_tx);
+
+        // First contact: no local pin, no ad hint either — first-use trust.
+        verify_install_meta_and_confirm(
+            &mut known,
+            &sender,
+            "tofu-tileset".to_string(),
+            &meta_a,
+            "",
+            vec![[0u8; 32]],
+        );
+        match cmd_rx.try_recv() {
+            Ok(fe_sync::SyncCommand::ConfirmTilesetDownload { tileset_id, .. }) => {
+                assert_eq!(tileset_id, "tofu-tileset");
+            }
+            other => panic!("expected ConfirmTilesetDownload, got {other:?}"),
+        }
+        assert_eq!(known.0.get("tofu-tileset"), Some(&did_a));
+
+        // An impostor's validly-signed header for the SAME tileset_id, with
+        // no ad pin override, is refused against the now-known pin.
+        verify_install_meta_and_confirm(
+            &mut known,
+            &sender,
+            "tofu-tileset".to_string(),
+            &meta_b,
+            "",
+            vec![[0u8; 32]],
+        );
+        match cmd_rx.try_recv() {
+            Ok(fe_sync::SyncCommand::CancelTilesetDownload { tileset_id }) => {
+                assert_eq!(tileset_id, "tofu-tileset");
+            }
+            other => panic!("expected CancelTilesetDownload for the impostor, got {other:?}"),
+        }
+        assert_eq!(
+            known.0.get("tofu-tileset"),
+            Some(&did_a),
+            "the pin is never overwritten by a refused header"
+        );
     }
 }

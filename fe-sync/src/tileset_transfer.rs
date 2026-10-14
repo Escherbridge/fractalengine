@@ -54,6 +54,22 @@ pub fn is_safe_tileset_id(id: &str) -> bool {
     fe_runtime::safe_id::is_safe_path_id(id)
 }
 
+/// Best-effort publisher DID from an index blob — pure JSON duck-typing,
+/// never a `fe_format` type or dependency (`src/AGENTS.md` §petal-map): a
+/// sealed `HeaderDoc`'s `manifest` field is itself raw JSON text naming
+/// `publisher_did`. A legacy unsealed `TilesetBundleIndex` (or anything
+/// unparsable) has neither shape, so this yields an empty string — the "no
+/// pin hint" case `TilesetAd::publisher_did` and `CatalogEntry::publisher_did`
+/// leave for the host to default (PAS-P5 S7a).
+fn publisher_did_hint(index_json: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(index_json)
+        .ok()
+        .and_then(|doc| doc.get("manifest")?.as_str().map(str::to_string))
+        .and_then(|manifest| serde_json::from_str::<serde_json::Value>(&manifest).ok())
+        .and_then(|manifest| manifest.get("publisher_did")?.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 /// Per-service size caps for peer-supplied blobs (see `src/AGENTS.md` §tileset-security).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransferLimits {
@@ -163,6 +179,12 @@ pub enum TransferError {
         /// The cap.
         cap: u64,
     },
+    /// [`TilesetTransfer::download`]/[`TilesetTransfer::resume_all`] refused:
+    /// the host has not yet confirmed this download against its verified
+    /// header (PAS-P5 S7a two-phase gate, `src/AGENTS.md`
+    /// §partial-fetch-p2p). No bundle is ever fetched for an unconfirmed
+    /// download, even across a restart.
+    AwaitingConfirmation(String),
 }
 
 impl fmt::Display for TransferError {
@@ -182,6 +204,10 @@ impl fmt::Display for TransferError {
             Self::DownloadTooLarge { bytes, cap } => {
                 write!(f, "download stopped at {bytes} bytes (cap {cap})")
             }
+            Self::AwaitingConfirmation(id) => write!(
+                f,
+                "download {id:?} is awaiting host confirmation of its signed chunk index"
+            ),
         }
     }
 }
@@ -199,6 +225,13 @@ pub struct CatalogEntry {
     pub total_chunks: u32,
     /// Sum of bundle sizes.
     pub bytes: u64,
+    /// Best-effort publisher DID read from a sealed index's embedded
+    /// manifest (pure JSON duck-typing — fe-sync parses no fe-format type,
+    /// `src/AGENTS.md` §petal-map); empty for a legacy unsealed index or
+    /// when the index could not be parsed. Carried into a tileset ad's
+    /// `publisher_did` as a TOFU pin hint (PAS-P5 S7a) — never a trust
+    /// decision this crate makes itself.
+    pub publisher_did: String,
 }
 
 /// A download's resolved metadata (the index blob passes through opaque).
@@ -291,6 +324,12 @@ pub struct ResumedDownload {
     pub index_present: bool,
     /// Whether a full download was asked for (else it is a streamed-bundle cache).
     pub full_download: bool,
+    /// Whether the host has confirmed this download against its verified
+    /// header (PAS-P5 S7a). `false` for a download started before this
+    /// slice shipped (the on-disk ledger field defaults to `false` on
+    /// upgrade — never re-trust an unverified header) or one still awaiting
+    /// `ConfirmTilesetDownload`.
+    pub confirmed: bool,
 }
 
 /// On-disk `download.json` (hashes hex-encoded).
@@ -302,6 +341,11 @@ struct LedgerFile {
     provider_candidates: Vec<String>,
     chunk_hashes: Vec<String>,
     index_hash: String,
+    /// PAS-P5 S7a two-phase gate; absent on a ledger from before this slice,
+    /// which must default to `false` — never re-trust an unverified header
+    /// across an upgrade.
+    #[serde(default)]
+    confirmed: bool,
 }
 
 /// Parsed download ledger. "Received" is never stored: it is derived from verified files.
@@ -313,6 +357,8 @@ struct Ledger {
     chunk_hashes: Vec<Hash32>,
     index_hash: Hash32,
     dir: PathBuf,
+    /// See [`ResumedDownload::confirmed`].
+    confirmed: bool,
 }
 
 impl Ledger {
@@ -324,6 +370,7 @@ impl Ledger {
             provider_candidates: self.providers.iter().map(|p| p.0.clone()).collect(),
             chunk_hashes: self.chunk_hashes.iter().map(hash_to_hex).collect(),
             index_hash: hash_to_hex(&self.index_hash),
+            confirmed: self.confirmed,
         }
     }
 
@@ -363,6 +410,7 @@ impl Ledger {
             tileset_id: file.tileset_id,
             chunk_hashes,
             dir,
+            confirmed: file.confirmed,
         })
     }
 
@@ -652,6 +700,9 @@ impl TilesetTransfer {
     ) -> Result<CatalogEntry, TransferError> {
         self.download_dir(tileset_id)?;
         let transport_err = |e: anyhow::Error| TransferError::Transport(format!("{e:#}"));
+        // Cheap (refcounted): kept around only to read `publisher_did` for
+        // the catalog entry/ad hint after the transport takes ownership.
+        let publisher_did = publisher_did_hint(&index_json);
         let mut children = Vec::with_capacity(bundle_paths.len() + 1);
         children.push(
             self.transport
@@ -688,6 +739,7 @@ impl TilesetTransfer {
             root,
             total_chunks: bundle_paths.len() as u32,
             bytes,
+            publisher_did,
         };
         lock(&self.catalog).insert(tileset_id.to_string(), entry.clone());
         tracing::info!(
@@ -780,6 +832,13 @@ impl TilesetTransfer {
                     .map_err(transport_err)?
                     .unwrap_or(0);
             }
+            // Best-effort: re-advertising after a restart carries the same
+            // TOFU pin hint it did before (S7a) — a missing/unreadable index
+            // blob just yields an empty hint, never a hard failure here.
+            let publisher_did = match self.transport.read_local(children[0]).await {
+                Ok(Some(index_bytes)) => publisher_did_hint(&index_bytes),
+                _ => String::new(),
+            };
             rebuilt.insert(
                 id.to_string(),
                 CatalogEntry {
@@ -787,6 +846,7 @@ impl TilesetTransfer {
                     root,
                     total_chunks: (children.len() - 1) as u32,
                     bytes,
+                    publisher_did,
                 },
             );
         }
@@ -853,6 +913,7 @@ impl TilesetTransfer {
                     index_hash: children[0],
                     chunk_hashes: children[1..].to_vec(),
                     dir,
+                    confirmed: false,
                 }
             }
         };
@@ -873,6 +934,48 @@ impl TilesetTransfer {
             index_json,
             index_path: ledger.index_path(),
         })
+    }
+
+    /// Record that the host has independently verified this download's
+    /// signed header and matched `expected_chunk_hashes` against it — the
+    /// PAS-P5 S7a two-phase gate (`src/AGENTS.md` §partial-fetch-p2p).
+    /// [`Self::download`] and [`Self::resume_all`] fetch no bundle until
+    /// this succeeds, and the confirmation is persisted so a restart never
+    /// re-trusts an unverified header.
+    ///
+    /// Refuses (and never marks confirmed) when `expected_chunk_hashes`
+    /// differs from the hashes [`Self::request_meta`] already resolved from
+    /// the HashSeq — a bundle the signed index does not name can never be
+    /// "confirmed" into a chunk this download will fetch. Idempotent: an
+    /// already-confirmed download re-confirmed with the same hashes is a
+    /// no-op `Ok(())`.
+    pub async fn confirm(
+        &self,
+        tileset_id: &str,
+        expected_chunk_hashes: &[Hash32],
+    ) -> Result<(), TransferError> {
+        let ledger = self.ledger(tileset_id).await?;
+        if expected_chunk_hashes != ledger.chunk_hashes.as_slice() {
+            return Err(TransferError::BadIndex(format!(
+                "confirmed {} chunk hash(es) do not match the {} the HashSeq resolved",
+                expected_chunk_hashes.len(),
+                ledger.chunk_hashes.len(),
+            )));
+        }
+        if ledger.confirmed {
+            return Ok(());
+        }
+        let mut confirmed = (*ledger).clone();
+        confirmed.confirmed = true;
+        let confirmed = Arc::new(confirmed);
+        self.persist_ledger(&confirmed).await?;
+        lock(&self.ledgers).insert(tileset_id.to_string(), confirmed);
+        Ok(())
+    }
+
+    /// Whether `tileset_id`'s download has been [`Self::confirm`]ed.
+    pub async fn is_confirmed(&self, tileset_id: &str) -> Result<bool, TransferError> {
+        Ok(self.ledger(tileset_id).await?.confirmed)
     }
 
     /// Fetch + verify + store one bundle (no network when its file already verifies).
@@ -913,6 +1016,13 @@ impl TilesetTransfer {
         events: Option<&UnboundedSender<TransferEvent>>,
     ) -> Result<DownloadReport, TransferError> {
         let ledger = self.ledger(tileset_id).await?;
+        // PAS-P5 S7a: no chunk is ever fetched for an unconfirmed download —
+        // the marker below (which makes it a resumable "full download") is
+        // not written either, so an unconfirmed `fetch_chunk`-by-hand can
+        // never be mistaken for one at startup.
+        if !ledger.confirmed {
+            return Err(TransferError::AwaitingConfirmation(tileset_id.to_string()));
+        }
         self.ensure_index(&ledger).await?;
         // S8b: only an explicitly requested full download is resumed at start-up.
         let marker = ledger.dir.join(FULL_DOWNLOAD_MARKER);
@@ -1015,7 +1125,13 @@ impl TilesetTransfer {
         Ok(report)
     }
 
-    /// [`Self::request_meta`] then [`Self::download`].
+    /// [`Self::request_meta`] then [`Self::download`] — a test/internal
+    /// convenience that trusts whatever root the HashSeq itself resolved
+    /// (it [`Self::confirm`]s with exactly those hashes, which always
+    /// succeeds). No production caller uses this: the real network path
+    /// drives `request_meta`/`confirm`/`download` separately so a host can
+    /// verify the signed header in between (PAS-P5 S7a) — see
+    /// `fractalengine::terrain_bridge`.
     pub async fn start_download(
         &self,
         providers: &[ProviderRef],
@@ -1023,7 +1139,8 @@ impl TilesetTransfer {
         root: Hash32,
         events: Option<&UnboundedSender<TransferEvent>>,
     ) -> Result<DownloadReport, TransferError> {
-        self.request_meta(providers, tileset_id, root).await?;
+        let meta = self.request_meta(providers, tileset_id, root).await?;
+        self.confirm(tileset_id, &meta.chunk_hashes).await?;
         self.download(tileset_id, events).await
     }
 
@@ -1052,7 +1169,8 @@ impl TilesetTransfer {
                             limits.max_index_bytes,
                         );
                         let full_download = ledger.dir.join(FULL_DOWNLOAD_MARKER).is_file();
-                        found.push((ledger, received, index_present, full_download));
+                        let confirmed = ledger.confirmed;
+                        found.push((ledger, received, index_present, full_download, confirmed));
                     }
                     Err(e) => tracing::warn!(tileset_id = %name, "Skipping a bad ledger: {e}"),
                 }
@@ -1062,13 +1180,14 @@ impl TilesetTransfer {
         .await?;
         let mut out = Vec::with_capacity(found.len());
         let mut ledgers = lock(&self.ledgers);
-        for (ledger, received, index_present, full_download) in found {
+        for (ledger, received, index_present, full_download, confirmed) in found {
             out.push(ResumedDownload {
                 tileset_id: ledger.tileset_id.clone(),
                 received: received.iter().filter(|size| size.is_some()).count() as u32,
                 total: ledger.total(),
                 index_present,
                 full_download,
+                confirmed,
             });
             ledgers.insert(ledger.tileset_id.clone(), Arc::new(ledger));
         }
@@ -1099,6 +1218,10 @@ impl TilesetTransfer {
     /// Already-complete downloads are not re-run; [`Self::pending_downloads`] lists them.
     /// A streamed-bundle cache (no [`FULL_DOWNLOAD_MARKER`]) is never grown into a
     /// full download, and one failing download never blocks the others (S8b).
+    /// An unconfirmed download (PAS-P5 S7a: the host never ran
+    /// `ConfirmTilesetDownload` for it, including across this very restart)
+    /// is never resumed — a restart must never re-trust an unverified
+    /// header.
     pub async fn resume_all(
         &self,
         events: Option<&UnboundedSender<TransferEvent>>,
@@ -1112,6 +1235,14 @@ impl TilesetTransfer {
                 tracing::debug!(
                     tileset_id = %pending.tileset_id,
                     "Streamed-bundle cache — not resumed as a full download"
+                );
+                continue;
+            }
+            if !pending.confirmed {
+                tracing::info!(
+                    tileset_id = %pending.tileset_id,
+                    "Tileset download awaiting host confirmation — not resumed \
+                     (never re-trust an unverified header across a restart)"
                 );
                 continue;
             }

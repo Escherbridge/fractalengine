@@ -110,10 +110,18 @@ pub(crate) fn drain_tileset_events(
                 meta_json,
                 ..
             } => {
-                // The sync thread (S3's `TilesetTransfer::download`) fetches
-                // every bundle on its own; this records the estimate for the
-                // progress bar. An empty `root_hash` is fe-sync's honest
-                // failure reply (no provider, offline, download stopped).
+                // PAS-P5 S7a: the root resolving does NOT mean bundles are
+                // flowing yet — the host still has to verify the signed
+                // header and send `ConfirmTilesetDownload` before the sync
+                // thread (`TilesetTransfer::download`) ever requests a chunk.
+                // Reuse `Verifying` (already used for post-download assembly)
+                // rather than add a UI-only status variant: either way it
+                // means "not actively transferring bytes right now". The
+                // first `ChunkReceived` below flips it to `Downloading`. An
+                // empty `root_hash` is fe-sync's honest failure reply (no
+                // provider, offline, download stopped); a header refused by
+                // the host surfaces as `ChunkFailed`/cancellation instead —
+                // see `fractalengine::terrain_bridge` §tileset-p2p.
                 if let Some(dl) = downloads.0.get_mut(&tileset_id) {
                     if root_hash.is_empty() {
                         let reason = serde_json::from_str::<serde_json::Value>(&meta_json)
@@ -124,7 +132,7 @@ pub(crate) fn drain_tileset_events(
                     } else {
                         dl.total_chunks = total_chunks;
                         dl.total_bytes_estimate = approx_size_bytes;
-                        dl.status = DownloadStatus::Downloading;
+                        dl.status = DownloadStatus::Verifying;
                     }
                 }
             }
@@ -135,6 +143,11 @@ pub(crate) fn drain_tileset_events(
                 ..
             } => {
                 if let Some(dl) = downloads.0.get_mut(&tileset_id) {
+                    // The host's header verification + confirmation
+                    // succeeded the moment the first real bundle arrives.
+                    if matches!(dl.status, DownloadStatus::Verifying) {
+                        dl.status = DownloadStatus::Downloading;
+                    }
                     dl.chunks_received += 1;
                     dl.bytes_received += byte_len;
                 }
@@ -262,6 +275,7 @@ mod tests {
                 root_hash: String::new(),
                 chunk_hashes: Vec::new(),
                 index_path: std::path::PathBuf::new(),
+                ad_publisher_did: String::new(),
             });
         app.update();
         let status = app.world().resource::<TilesetDownloads>().0[&tileset_id]
@@ -322,7 +336,22 @@ mod tests {
                 root_hash: "deadbeef".into(),
                 chunk_hashes: vec!["a".into(), "b".into()],
                 index_path: "irrelevant/index.json".into(),
+                ad_publisher_did: String::new(),
             });
+        app.update();
+        // PAS-P5 S7a: the root resolved, but no bundle has arrived yet — the
+        // host is still verifying the signed header and has not sent
+        // `ConfirmTilesetDownload`. The tracker must not claim "Downloading"
+        // for a download that cannot fetch a single chunk yet.
+        assert!(
+            matches!(
+                app.world().resource::<TilesetDownloads>().0[&tileset_id].status,
+                DownloadStatus::Verifying
+            ),
+            "{:?}",
+            app.world().resource::<TilesetDownloads>().0[&tileset_id].status
+        );
+
         app.world_mut()
             .resource_mut::<fe_sync::TilesetEventBuffer>()
             .events
@@ -352,6 +381,11 @@ mod tests {
             assert_eq!(dl.total_chunks, 2);
             assert_eq!(dl.chunks_received, 2);
             assert_eq!(dl.bytes_received, 2048);
+            assert!(
+                matches!(dl.status, DownloadStatus::Downloading),
+                "the first ChunkReceived flips Verifying -> Downloading: {:?}",
+                dl.status
+            );
         }
         assert!(
             matches!(

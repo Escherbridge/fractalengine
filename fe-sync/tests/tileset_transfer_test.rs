@@ -100,6 +100,16 @@ async fn a_published_tileset_downloads_verified_and_complete() {
         "index passes through opaque"
     );
     assert_eq!(std::fs::read(&meta.index_path).unwrap(), source.index_json);
+
+    // PAS-P5 S7a: no chunk before the host confirms the signed hashes it
+    // read from the (here: trivially "verified") header.
+    assert_eq!(
+        fetcher.download("valley", None).await,
+        Err(TransferError::AwaitingConfirmation("valley".to_string())),
+        "an unconfirmed download fetches nothing"
+    );
+    fetcher.confirm("valley", &meta.chunk_hashes).await.unwrap();
+
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let report = fetcher.download("valley", Some(&tx)).await.unwrap();
 
@@ -381,10 +391,11 @@ async fn a_download_over_its_total_byte_cap_stops_without_completing() {
         ..TransferLimits::default()
     });
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    fetcher
+    let meta = fetcher
         .request_meta(&[alice.provider_ref()], "sprawl", entry.root)
         .await
         .unwrap();
+    fetcher.confirm("sprawl", &meta.chunk_hashes).await.unwrap();
     match fetcher.download("sprawl", Some(&tx)).await {
         Err(TransferError::DownloadTooLarge {
             bytes,
@@ -781,4 +792,97 @@ async fn streamed_caches_past_the_disk_budget_evict_least_recently_used_first() 
     let pending = restarted.pending_downloads().await.unwrap();
     let ids: Vec<&str> = pending.iter().map(|p| p.tileset_id.as_str()).collect();
     assert_eq!(ids, vec!["full", "new"]);
+}
+
+/// PAS-P5 S7a (critic, mandatory): a download the host never confirmed is
+/// never resumed — not on the first `resume_all`, and not across a restart
+/// either, since confirmation is persisted in the ledger rather than kept
+/// only in memory. No bundle ever reaches disk for it.
+#[tokio::test]
+async fn an_unconfirmed_download_never_fetches_a_chunk_even_across_a_restart() {
+    let network = InMemoryNetwork::new();
+    let alice = network.transport("alice");
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = SourceTileset::write(&alice_dir.path().join("bundles"), "pending-seal", 3);
+    let entry = service(&alice, alice_dir.path())
+        .publish(
+            "pending-seal",
+            source.index_json.clone(),
+            &source.bundle_paths,
+        )
+        .await
+        .unwrap();
+
+    {
+        let bob = service(&network.transport("bob"), bob_dir.path());
+        bob.request_meta(&[alice.provider_ref()], "pending-seal", entry.root)
+            .await
+            .unwrap();
+        // Never confirmed: the (simulated) host's header verification is
+        // still pending, or was refused.
+        assert_eq!(
+            bob.download("pending-seal", None).await,
+            Err(TransferError::AwaitingConfirmation(
+                "pending-seal".to_string()
+            ))
+        );
+        assert!(bob.resume_all(None).await.unwrap().is_empty());
+    }
+
+    let restarted = service(&network.transport("bob-restarted"), bob_dir.path());
+    let pending = restarted.pending_downloads().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(!pending[0].confirmed, "confirmation never happened");
+    assert!(
+        restarted.resume_all(None).await.unwrap().is_empty(),
+        "an unconfirmed download requests nothing, even across a restart"
+    );
+    let bundles = files_under(&restarted.download_dir("pending-seal").unwrap())
+        .iter()
+        .filter(|p| p.extension().is_some_and(|ext| ext == "bundle"))
+        .count();
+    assert_eq!(bundles, 0, "no chunk ever reached disk");
+}
+
+/// PAS-P5 S7a: `confirm` refuses chunk hashes that do not exactly match what
+/// the HashSeq itself resolved (a seeder's chunk index naming more or fewer
+/// bundles than the HashSeq actually carries) — the mismatch is caught
+/// before any chunk fetch, not discovered partway through one.
+#[tokio::test]
+async fn a_confirmation_disagreeing_with_the_resolved_hashseq_is_refused() {
+    let network = InMemoryNetwork::new();
+    let (alice, bob) = (network.transport("alice"), network.transport("bob"));
+    let (alice_dir, bob_dir) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = SourceTileset::write(&alice_dir.path().join("bundles"), "shrunk", 3);
+    let entry = service(&alice, alice_dir.path())
+        .publish("shrunk", source.index_json.clone(), &source.bundle_paths)
+        .await
+        .unwrap();
+
+    let fetcher = service(&bob, bob_dir.path());
+    let meta = fetcher
+        .request_meta(&[alice.provider_ref()], "shrunk", entry.root)
+        .await
+        .unwrap();
+
+    // A signed index naming only 2 of the 3 chunks the HashSeq actually
+    // carries (as if a seeder appended an unsigned bundle) is refused
+    // outright, never partially accepted.
+    let short: Vec<Hash32> = meta.chunk_hashes[..2].to_vec();
+    assert!(matches!(
+        fetcher.confirm("shrunk", &short).await,
+        Err(TransferError::BadIndex(_))
+    ));
+    assert!(!fetcher.is_confirmed("shrunk").await.unwrap());
+    assert_eq!(
+        fetcher.download("shrunk", None).await,
+        Err(TransferError::AwaitingConfirmation("shrunk".to_string())),
+        "the refused confirmation never unlocked a fetch"
+    );
+
+    // The real signed hashes (exactly what resolved) confirm cleanly.
+    fetcher.confirm("shrunk", &meta.chunk_hashes).await.unwrap();
+    assert!(fetcher.is_confirmed("shrunk").await.unwrap());
+    let report = fetcher.download("shrunk", None).await.unwrap();
+    assert!(report.complete.is_some());
 }

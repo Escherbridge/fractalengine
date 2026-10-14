@@ -1023,6 +1023,17 @@ pub fn spawn_sync_thread_with_transport(
                             Some(SyncCommand::CancelTilesetDownload { tileset_id }) => {
                                 handle_cancel_tileset_download(&tileset_transfer, tileset_id);
                             }
+                            Some(SyncCommand::ConfirmTilesetDownload {
+                                tileset_id,
+                                expected_chunk_hashes,
+                            }) => {
+                                handle_confirm_tileset_download(
+                                    &tileset_transfer,
+                                    tileset_id,
+                                    expected_chunk_hashes,
+                                    &evt_tx,
+                                );
+                            }
                             Some(SyncCommand::SetShardDeclaration {
                                 capacity_bytes,
                                 seeder,
@@ -2109,6 +2120,12 @@ struct TilesetAd {
     approx_bytes: u64,
     /// `EndpointAddr` JSON the provider can be dialed at.
     provider_addr: String,
+    /// Best-effort publisher DID (PAS-P5 S7a) — a TOFU pin *candidate* only,
+    /// never trusted on its own; absent from an older peer's wire frame
+    /// decodes as empty (`#[serde(default)]`), the same "no hint" case an
+    /// empty value from this node's own publisher means.
+    #[serde(default)]
+    publisher_did: String,
 }
 
 /// The only value [`TilesetAd::kind`] may hold.
@@ -2140,15 +2157,23 @@ struct TilesetProvider {
     /// The ad's claimed size (best-effort; not re-verified until a download
     /// actually fetches bundles).
     advertised_bytes: u64,
+    /// This entry's own advertised publisher DID (empty if none) — a TOFU
+    /// pin candidate (PAS-P5 S7a), carried alongside its own root so
+    /// [`TilesetProviderMap::root_for`] never pairs one entry's root with a
+    /// *different* entry's claimed publisher.
+    publisher_did: String,
     /// Recency stamp from [`TilesetProviderMap::clock`].
     seen: u64,
 }
 
-/// The root a download should fetch, and whether an authenticated provider vouched for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The root a download should fetch, whether an authenticated provider
+/// vouched for it, and that SAME entry's advertised publisher DID (PAS-P5
+/// S7a critic amendment: never mixed with a different entry's claim).
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RootChoice {
     root: Hash32,
     authenticated: bool,
+    publisher_did: String,
 }
 
 /// `tileset_id -> known (provider, root)` entries learned from inbound ads,
@@ -2171,6 +2196,7 @@ impl TilesetProviderMap {
     /// An authenticated ad replaces that provider's earlier entries on the
     /// same verse (the provider republished) and every relayed claim made
     /// about it; a relayed ad only ever adds a separate hint entry.
+    #[allow(clippy::too_many_arguments)] // PAS-P5 S7a added publisher_did; params mirror the ad fields
     fn record(
         &mut self,
         verse_id: &str,
@@ -2179,6 +2205,7 @@ impl TilesetProviderMap {
         root: Hash32,
         authenticated: bool,
         advertised_bytes: u64,
+        publisher_did: String,
     ) -> bool {
         self.clock += 1;
         let seen = self.clock;
@@ -2204,6 +2231,7 @@ impl TilesetProviderMap {
             {
                 existing.seen = seen;
                 existing.advertised_bytes = advertised_bytes;
+                existing.publisher_did = publisher_did;
                 Self::order(entries);
                 return true;
             }
@@ -2214,6 +2242,7 @@ impl TilesetProviderMap {
             root,
             authenticated,
             advertised_bytes,
+            publisher_did,
             seen,
         });
         while entries.len() > MAX_PROVIDERS_PER_TILESET {
@@ -2265,6 +2294,7 @@ impl TilesetProviderMap {
             .map(|e| RootChoice {
                 root: e.root,
                 authenticated: e.authenticated,
+                publisher_did: e.publisher_did.clone(),
             })
     }
 
@@ -2309,15 +2339,17 @@ fn resolve_providers(
     out
 }
 
-/// [`resolve_providers`] plus the tileset's advertised root — the pair every
-/// meta/download request needs. An honest named error when either is
+/// [`resolve_providers`] plus the tileset's advertised root and that SAME
+/// entry's claimed publisher DID (PAS-P5 S7a critic amendment: never a
+/// *different* entry's claim — see [`RootChoice`]) — the triple every
+/// meta/download request needs. An honest named error when the root is
 /// unknown (never a silent no-op); a root no authenticated provider vouched
 /// for is used only when none did, and is logged as such.
 fn resolve_providers_and_root(
     map: &TilesetProviderMap,
     tileset_id: &str,
     explicit: Option<&str>,
-) -> Result<(Vec<ProviderRef>, Hash32), &'static str> {
+) -> Result<(Vec<ProviderRef>, Hash32, String), &'static str> {
     let choice = map
         .root_for(tileset_id)
         .ok_or("no advertised root for this tileset yet")?;
@@ -2332,7 +2364,7 @@ fn resolve_providers_and_root(
     if providers.is_empty() {
         return Err("no known provider for this tileset");
     }
-    Ok((providers, root))
+    Ok((providers, root, choice.publisher_did))
 }
 
 /// Pure core of the inbound tileset-ad authentication check
@@ -2384,6 +2416,7 @@ fn handle_inbound_tileset_ad(
         root,
         authenticated,
         ad.approx_bytes,
+        ad.publisher_did.clone(),
     ) {
         tracing::debug!(
             tileset_id = %ad.tileset_id,
@@ -2426,6 +2459,7 @@ fn tileset_ad_from_catalog_entry(entry: &CatalogEntry, provider_addr: &str) -> T
         total_chunks: entry.total_chunks,
         approx_bytes: entry.bytes,
         provider_addr: provider_addr.to_string(),
+        publisher_did: entry.publisher_did.clone(),
     }
 }
 
@@ -2598,6 +2632,7 @@ fn meta_resolved_event(
     peer_id: String,
     resolved: &MetaResolved,
     approx_size_bytes: u64,
+    ad_publisher_did: String,
 ) -> SyncEvent {
     SyncEvent::TilesetMetaReceived {
         peer_id,
@@ -2608,6 +2643,7 @@ fn meta_resolved_event(
         root_hash: hash_to_hex(&resolved.root),
         chunk_hashes: resolved.chunk_hashes.iter().map(hash_to_hex).collect(),
         index_path: resolved.index_path.clone(),
+        ad_publisher_did,
     }
 }
 
@@ -2623,6 +2659,7 @@ fn failed_meta_event(peer_id: String, tileset_id: String, reason: &str) -> SyncE
         root_hash: String::new(),
         chunk_hashes: Vec::new(),
         index_path: PathBuf::new(),
+        ad_publisher_did: String::new(),
     }
 }
 
@@ -2654,16 +2691,17 @@ fn handle_request_tileset_meta(
         return;
     };
     let explicit = (!peer_id.is_empty()).then_some(peer_id);
-    let (providers, root) = match resolve_providers_and_root(providers_map, tileset_id, explicit) {
-        Ok(ok) => ok,
-        Err(reason) => {
-            send_sync_event(
-                evt_tx,
-                failed_meta_event(peer_id.to_string(), tileset_id.to_string(), reason),
-            );
-            return;
-        }
-    };
+    let (providers, root, ad_publisher_did) =
+        match resolve_providers_and_root(providers_map, tileset_id, explicit) {
+            Ok(ok) => ok,
+            Err(reason) => {
+                send_sync_event(
+                    evt_tx,
+                    failed_meta_event(peer_id.to_string(), tileset_id.to_string(), reason),
+                );
+                return;
+            }
+        };
     let approx_size_bytes = providers_map.bytes_for(tileset_id);
     let peer_id = peer_id.to_string();
     let tileset_id = tileset_id.to_string();
@@ -2672,7 +2710,7 @@ fn handle_request_tileset_meta(
         match transfer.request_meta(&providers, &tileset_id, root).await {
             Ok(resolved) => send_sync_event(
                 &evt_tx,
-                meta_resolved_event(peer_id, &resolved, approx_size_bytes),
+                meta_resolved_event(peer_id, &resolved, approx_size_bytes, ad_publisher_did),
             ),
             Err(e) => send_sync_event(
                 &evt_tx,
@@ -2682,9 +2720,13 @@ fn handle_request_tileset_meta(
     });
 }
 
-/// Handle [`SyncCommand::DownloadTileset`]: resolve meta, then fetch every
-/// bundle. Spawned (never awaited inline); per-bundle progress is forwarded
-/// through [`pump_transfer_progress`].
+/// Handle [`SyncCommand::DownloadTileset`]: resolve the root and fetch +
+/// verify its index ONLY. **No chunk is requested** — PAS-P5 S7a's
+/// two-phase gate: the host must independently verify the signed header
+/// (off this `TilesetMetaReceived` reply) and send
+/// [`SyncCommand::ConfirmTilesetDownload`] before
+/// [`handle_confirm_tileset_download`] ever calls `TilesetTransfer::download`.
+/// Spawned (never awaited inline).
 fn handle_download_tileset(
     transfer: &Option<Arc<TilesetTransfer>>,
     providers_map: &TilesetProviderMap,
@@ -2696,7 +2738,7 @@ fn handle_download_tileset(
         send_sync_event(evt_tx, offline_meta_event(String::new(), tileset_id));
         return;
     };
-    let (providers, root) =
+    let (providers, root, ad_publisher_did) =
         match resolve_providers_and_root(providers_map, &tileset_id, provider.as_deref()) {
             Ok(ok) => ok,
             Err(reason) => {
@@ -2707,23 +2749,17 @@ fn handle_download_tileset(
     let approx_size_bytes = providers_map.bytes_for(&tileset_id);
     let evt_tx = evt_tx.clone();
     tokio::spawn(async move {
-        let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let pump = tokio::spawn(pump_transfer_progress(progress_rx, evt_tx.clone()));
         match transfer.request_meta(&providers, &tileset_id, root).await {
             Ok(resolved) => {
                 send_sync_event(
                     &evt_tx,
-                    meta_resolved_event(String::new(), &resolved, approx_size_bytes),
+                    meta_resolved_event(
+                        String::new(),
+                        &resolved,
+                        approx_size_bytes,
+                        ad_publisher_did,
+                    ),
                 );
-                if let Err(e) = transfer.download(&tileset_id, Some(&progress_tx)).await {
-                    tracing::warn!(tileset_id = %tileset_id, "Tileset download failed: {e}");
-                    // Never a silent stop (e.g. `DownloadTooLarge`): the UI's
-                    // tracker reads an empty-root meta reply as Failed.
-                    send_sync_event(
-                        &evt_tx,
-                        failed_meta_event(String::new(), tileset_id.clone(), &e.to_string()),
-                    );
-                }
             }
             Err(e) => {
                 tracing::warn!(tileset_id = %tileset_id, "Tileset meta resolution failed: {e}");
@@ -2732,6 +2768,52 @@ fn handle_download_tileset(
                     failed_meta_event(String::new(), tileset_id.clone(), &e.to_string()),
                 );
             }
+        }
+    });
+}
+
+/// Handle [`SyncCommand::ConfirmTilesetDownload`]: the host has
+/// independently verified the signed header this download's
+/// `TilesetMetaReceived` reply carried and matched `expected_chunk_hashes`
+/// against it (PAS-P5 S7a). Record the confirmation
+/// (`TilesetTransfer::confirm`, persisted so a restart never re-trusts an
+/// unverified header) and only then fetch every bundle. A confirmation
+/// refusal (a mismatch against what the HashSeq itself resolved) cancels
+/// the download outright rather than leaving it stuck awaiting a
+/// confirmation that will never match. Spawned (never awaited inline).
+fn handle_confirm_tileset_download(
+    transfer: &Option<Arc<TilesetTransfer>>,
+    tileset_id: String,
+    expected_chunk_hashes: Vec<Hash32>,
+    evt_tx: &EventOutbox,
+) {
+    let Some(transfer) = transfer.clone() else {
+        tracing::debug!(tileset_id, "ConfirmTilesetDownload ignored — P2P offline");
+        return;
+    };
+    let evt_tx = evt_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = transfer.confirm(&tileset_id, &expected_chunk_hashes).await {
+            tracing::warn!(tileset_id, "Tileset download confirmation refused: {e}");
+            send_sync_event(
+                &evt_tx,
+                failed_meta_event(String::new(), tileset_id.clone(), &e.to_string()),
+            );
+            if let Err(e) = transfer.cancel(&tileset_id).await {
+                tracing::warn!(tileset_id, "Cancelling an unconfirmed download failed: {e}");
+            }
+            return;
+        }
+        let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let pump = tokio::spawn(pump_transfer_progress(progress_rx, evt_tx.clone()));
+        if let Err(e) = transfer.download(&tileset_id, Some(&progress_tx)).await {
+            tracing::warn!(tileset_id = %tileset_id, "Confirmed tileset download failed: {e}");
+            // Never a silent stop (e.g. `DownloadTooLarge`): the UI's
+            // tracker reads an empty-root meta reply as Failed.
+            send_sync_event(
+                &evt_tx,
+                failed_meta_event(String::new(), tileset_id.clone(), &e.to_string()),
+            );
         }
         drop(progress_tx);
         let _ = pump.await;
@@ -3726,19 +3808,51 @@ mod tests {
         let mut map = TilesetProviderMap::default();
         let hint = ProviderRef::new("hint-addr");
         let real = ProviderRef::new("real-addr");
-        assert!(map.record("v1", "ts-1".to_string(), hint.clone(), [1u8; 32], false, 10));
-        assert!(map.record("v1", "ts-1".to_string(), real.clone(), [2u8; 32], true, 20));
+        assert!(map.record(
+            "v1",
+            "ts-1".to_string(),
+            hint.clone(),
+            [1u8; 32],
+            false,
+            10,
+            "did:key:zhint".to_string(),
+        ));
+        assert!(map.record(
+            "v1",
+            "ts-1".to_string(),
+            real.clone(),
+            [2u8; 32],
+            true,
+            20,
+            "did:key:zreal".to_string(),
+        ));
 
         let choice = map.root_for("ts-1").unwrap();
         assert_eq!(choice.root, [2u8; 32]);
         assert!(choice.authenticated);
+        assert_eq!(
+            choice.publisher_did, "did:key:zreal",
+            "PAS-P5 S7a critic: the pin candidate is the SAME entry root_for \
+             chose, never a different entry's claim (checked below against \
+             the hint's own did)"
+        );
+        assert_ne!(choice.publisher_did, "did:key:zhint");
         assert_eq!(map.bytes_for("ts-1"), 20);
         assert_eq!(map.candidates("ts-1", [2u8; 32]), vec![real.clone()]);
         assert_eq!(map.candidates("ts-1", [1u8; 32]), vec![hint]);
 
         // A relayed re-ad naming the authenticated provider is refused outright.
-        assert!(!map.record("v1", "ts-1".to_string(), real, [9u8; 32], false, 999));
+        assert!(!map.record(
+            "v1",
+            "ts-1".to_string(),
+            real,
+            [9u8; 32],
+            false,
+            999,
+            "did:key:zattacker".to_string(),
+        ));
         assert_eq!(map.root_for("ts-1").unwrap().root, [2u8; 32]);
+        assert_eq!(map.root_for("ts-1").unwrap().publisher_did, "did:key:zreal");
         assert_eq!(map.bytes_for("ts-1"), 20);
 
         assert!(map.candidates("ts-unknown", [2u8; 32]).is_empty());
@@ -3750,7 +3864,15 @@ mod tests {
     fn resolve_providers_prefers_explicit_override_and_dedupes() {
         let mut map = TilesetProviderMap::default();
         let known = ProviderRef::new("known-addr");
-        map.record("v1", "ts-1".to_string(), known.clone(), [3u8; 32], true, 0);
+        map.record(
+            "v1",
+            "ts-1".to_string(),
+            known.clone(),
+            [3u8; 32],
+            true,
+            0,
+            String::new(),
+        );
 
         // An explicit override that is ALSO already known appears once, first.
         let resolved = resolve_providers(&map, "ts-1", [3u8; 32], Some("known-addr"));
@@ -3809,6 +3931,7 @@ mod tests {
                 total_chunks: 1,
                 approx_bytes: 14,
                 provider_addr: alice_addr.clone(),
+                publisher_did: String::new(),
             };
             let incoming = |from, direct| GossipIncoming {
                 verse_id: "verse-1".to_string(),
@@ -3831,7 +3954,8 @@ mod tests {
             );
             assert!(choice.authenticated);
 
-            let (providers, root) = resolve_providers_and_root(&map, "valley", None).unwrap();
+            let (providers, root, _ad_publisher_did) =
+                resolve_providers_and_root(&map, "valley", None).unwrap();
             assert_eq!(root, root_a);
             let dir = tempfile::TempDir::new().unwrap();
             let transfer = TilesetTransfer::new(Arc::new(bob), dir.path());
@@ -3940,6 +4064,7 @@ mod tests {
             total_chunks: 1,
             approx_bytes: 1,
             provider_addr: provider_addr.to_string(),
+            publisher_did: String::new(),
         };
         let on_verse = |verse: &str| GossipIncoming {
             verse_id: verse.to_string(),
@@ -3987,6 +4112,7 @@ mod tests {
                 [i as u8; 32],
                 false,
                 1,
+                String::new(),
             );
         }
         assert_eq!(map.by_id["flood"].len(), MAX_PROVIDERS_PER_TILESET);
@@ -3998,6 +4124,7 @@ mod tests {
                 [1u8; 32],
                 false,
                 1,
+                String::new(),
             );
         }
         assert!(map.by_id.len() <= MAX_TRACKED_TILESETS);
@@ -4008,7 +4135,8 @@ mod tests {
                 ProviderRef::new("q"),
                 [2u8; 32],
                 true,
-                1
+                1,
+                String::new(),
             ),
             "an authenticated ad still finds room by evicting a hint-only id"
         );
@@ -4050,10 +4178,26 @@ mod tests {
             total_chunks: 3,
             approx_bytes: 999,
             provider_addr: provider_json.clone(),
+            publisher_did: "did:key:zpublisher".to_string(),
         };
         let decoded = decode_tileset_ad(&serde_json::to_vec(&ad).unwrap())
             .expect("a well-formed tileset_ad frame decodes");
         assert_eq!(decoded, ad);
+
+        // PAS-P5 S7a: an older peer's wire frame (no `publisher_did` field at
+        // all) still decodes — the field defaults to empty, the same "no TOFU
+        // pin hint" case a deliberately-empty one means.
+        let legacy_frame = serde_json::json!({
+            "kind": TILESET_AD_KIND,
+            "tileset_id": "ts-legacy",
+            "root_hash": hash_to_hex(&[8u8; 32]),
+            "total_chunks": 1,
+            "approx_bytes": 1,
+            "provider_addr": provider_json,
+        });
+        let legacy = decode_tileset_ad(&serde_json::to_vec(&legacy_frame).unwrap())
+            .expect("a pre-S7a ad frame still decodes");
+        assert_eq!(legacy.publisher_did, "");
 
         for (direct, claimed, from, expected, label) in [
             (

@@ -18,12 +18,13 @@ rand = "0.8"
 fe-identity = { path = "../fe-identity" }
 fe-webview = { path = "../fe-webview" }
 fe-renderer = { path = "../fe-renderer" }
-# S4 (p2p_asset_streaming_20260718) `terrain_bridge` test only — builds a
-# synthetic tileset archive to exercise the real assemble+install path.
-fe-format = { path = "../fe-format" }
 tempfile = "3"
 
 [dependencies]
+# PAS-P5 S7a: `terrain_bridge::verify_install_meta` parses `fe_format::HeaderDoc`
+# and runs `verify_header` to gate the install-flow two-phase download —
+# promoted from dev-dependencies (was S4 `terrain_bridge` test-fixture-only).
+fe-format = { path = "../fe-format" }
 fe-runtime = { path = "../fe-runtime" }
 fe-network = { path = "../fe-network" }
 fe-database = { path = "../fe-database" }

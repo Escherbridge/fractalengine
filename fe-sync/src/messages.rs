@@ -100,6 +100,23 @@ pub enum SyncCommand {
     },
     /// Cancel an in-progress tileset download.
     CancelTilesetDownload { tileset_id: String },
+    /// Confirm a tileset download the host has independently verified
+    /// (PAS-P5 S7a two-phase gate): `DownloadTileset` resolves the root and
+    /// child 0 only and emits `TilesetMetaReceived`, then stops — **no
+    /// chunk is requested** until this command arrives. `expected_chunk_hashes`
+    /// is the signed per-chunk table the host's `verify_header` read from the
+    /// header (or, for a monolithic archive with no per-chunk table, the
+    /// already-resolved HashSeq hashes echoed back); the sync thread refuses
+    /// to fetch a single bundle when these do not exactly match what the
+    /// HashSeq itself resolved (`TilesetTransfer::confirm`), and persists the
+    /// confirmation so a restart never re-trusts an unverified header
+    /// (`resume_all` skips an unconfirmed download). fe-sync parses no
+    /// fe-format type: these are opaque `[u8; 32]` hashes the host already
+    /// verified.
+    ConfirmTilesetDownload {
+        tileset_id: String,
+        expected_chunk_hashes: Vec<[u8; 32]>,
+    },
     /// Declare the local peer's shard-hosting capacity and seeder role
     /// (M2/F6 — A14). Published to `__peers/{local_did}` in every open
     /// verse's namespace so peers' placement plans see it. `None` capacity
@@ -193,9 +210,14 @@ pub enum SyncEvent {
     ///
     /// On success `root_hash`/`chunk_hashes` are non-empty and `index_path`
     /// names the verified index blob on disk; `meta_json` carries the
-    /// opaque `TilesetBundleIndex` JSON (fe-sync never parses fe-format
-    /// types). On failure every new field is empty/zero and `meta_json`
-    /// carries `{"error": "..."}` (the honest-failure shape, S3).
+    /// opaque index document's raw JSON — a sealed tileset's HashSeq child 0
+    /// is a `fe_format::HeaderDoc` (PAS-P5 S5), a legacy unsealed one is
+    /// still a `TilesetBundleIndex` (fe-sync never parses either; it is one
+    /// opaque document either way). A `DownloadTileset`-triggered reply
+    /// (`peer_id` empty) starts the two-phase gate: no chunk is requested
+    /// until `SyncCommand::ConfirmTilesetDownload` arrives (S7a). On failure
+    /// every new field is empty/zero and `meta_json` carries `{"error":
+    /// "..."}` (the honest-failure shape, S3).
     TilesetMetaReceived {
         peer_id: String,
         tileset_id: String,
@@ -209,6 +231,13 @@ pub enum SyncEvent {
         /// Where the verified index blob landed on disk; empty when
         /// resolution failed.
         index_path: PathBuf,
+        /// The publisher DID advertised by the SAME provider-map entry the
+        /// root was chosen from (empty when none, or on failure) — the TOFU
+        /// pin candidate a host may use when it has no locally-known pin yet
+        /// for this tileset_id (S7a critic amendment: never a different
+        /// entry's claim). fe-sync carries this opaquely; only the host
+        /// (which parses fe-format) decides whether to trust it.
+        ad_publisher_did: String,
     },
     /// A bundle has been fetched, verified and written to disk.
     ChunkReceived {
@@ -649,6 +678,7 @@ mod tests {
             root_hash: "ab".repeat(32),
             chunk_hashes: vec!["cd".repeat(32)],
             index_path: PathBuf::from("downloads/ts-001/index.json"),
+            ad_publisher_did: "did:key:zpub".into(),
         };
         match &ev {
             SyncEvent::TilesetMetaReceived {
